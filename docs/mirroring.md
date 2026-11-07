@@ -129,6 +129,13 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   its host (`mango:1 · <host>`); when it repeats on one host (two sessions given
   one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
   The sidebar, the switcher, both view headers and the page title always agree.
+  These titles are the **fallback**: once a window's conversation has a
+  [name](focus.md#a-sessions-name) (frozen from its first good focus title, or
+  one you gave it with **Rename…** in the session's ⋯ menu), every one of those
+  places calls it by that name instead, with no host or address beside it, and
+  the codename, the tmux address and the host move to the name's tooltip (and
+  the Rendered view's full title). The search still finds the entry by its
+  codename first.
 - **Most recently active first.** One flat order across all your hosts AND
   your dispatched agents, by last activity, newest first. A **Claude Code**
   window's last activity is its conversation's last message (the newest user or

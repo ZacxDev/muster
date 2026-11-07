@@ -144,6 +144,10 @@ type Focus struct {
 	// Cwd is the working directory the session's transcript last named when
 	// its focus was written ("" = unknown): cwd.go, migration 0065.
 	Cwd string
+	// Name is the session's stored name halves (names.go, migration 0090).
+	// A row can carry a name with no focus (a manual name on a mirrored
+	// session never summarized): Has is false for it.
+	Name Name
 }
 
 // Has reports whether f holds a focus at all (a row that only recorded a

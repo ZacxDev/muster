@@ -346,7 +346,7 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	}
 
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Name: chiefName, DisplayName: ChiefDisplayName, Kind: kind, CCAccount: account, Model: req.Model,
+		Name: chiefName, DisplayName: ChiefDisplayName, DisplayNameSource: agents.NameSystem, Kind: kind, CCAccount: account, Model: req.Model,
 		CCAccountChosen: req.CCAccount == "", CCFailover: req.CCFailover,
 		NoteText: chiefIntro(kind), Kickoff: true,
 	})

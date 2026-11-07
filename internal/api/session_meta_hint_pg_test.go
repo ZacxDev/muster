@@ -146,7 +146,7 @@ func TestTheHintListsFocusHitsBeforeRepoHits(t *testing.T) {
 		{[]plugins.SessionHint{a, b, c}, []plugins.SessionHint{d}, "a,b,c"},
 		{nil, []plugins.SessionHint{d, ra, b, c}, "d,a+repo,b"},
 	} {
-		if got := ids(mergeHints(tc.focus, tc.repo, 3)); got != tc.want {
+		if got := ids(mergeHints(3, tc.focus, tc.repo)); got != tc.want {
 			t.Errorf("mergeHints(%s | %s) = %s; want %s", ids(tc.focus), ids(tc.repo), got, tc.want)
 		}
 	}

@@ -331,8 +331,9 @@ func (f *fakeStore) SetDisplayName(ctx context.Context, id int64, name string) (
 	if !ok {
 		return Agent{}, context.Canceled
 	}
+	a.DisplayNameSource = NameManual
 	if name == "" {
-		name = a.Name
+		name, a.DisplayNameSource = a.Name, NameDefault
 	}
 	a.DisplayName = name
 	f.agents[id] = a

@@ -109,10 +109,6 @@ type Server struct {
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
 
-	// approveLocks is each owner's dispatch_approve lock (dispatch_hold_tools.go
-	// approveLock): owner id → *sync.Mutex.
-	approveLocks sync.Map
-
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 
@@ -212,6 +208,9 @@ type Server struct {
 	// outcome-write attempts (zero: jobFinishRetryPause).
 	jobLanes         jobLanes
 	ownJobs          ownJobs
+	// poolFailovers serialises a pool submission's account failover per
+	// (owner, pool) (jobs.go createPoolJob).
+	poolFailovers keyedLocks
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
@@ -666,6 +665,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPinRoutes(mux)
 	// Session tags (internal/sessiontags): the ⋯ menu's tag editor, 404 without a store.
 	s.registerSessionTagRoutes(mux)
+	s.registerSessionNameRoutes(mux)
+	s.registerSessionDriftRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.

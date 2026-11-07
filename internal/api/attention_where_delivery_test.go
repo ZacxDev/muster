@@ -107,9 +107,12 @@ func TestTheChiefsFleetListCarriesEachWindowsWhere(t *testing.T) {
 	if err := json.Unmarshal([]byte(s.toolFleetList(s.attentionPrincipal(context.Background(), 1))), &got); err != nil {
 		t.Fatal(err)
 	}
+	// name is the session's stable name (internal/sessionname): with no
+	// human one, its codename or tmux address — no longer with " @ <host>",
+	// which is `host` (and `where`).
 	want := map[string][3]string{
-		"mirror:" + whereLabelledSID:   {"mango:1 @ ws", "ws", "mango:1 · tmux scratch3:5 @ ws"},
-		"mirror:" + whereUnlabelledSID: {"build:7 @ ws", "ws", "tmux build:7 @ ws"},
+		"mirror:" + whereLabelledSID:   {"mango:1", "ws", "mango:1 · tmux scratch3:5 @ ws"},
+		"mirror:" + whereUnlabelledSID: {"build:7", "ws", "tmux build:7 @ ws"},
 	}
 	if len(got.Sessions) != len(want) {
 		t.Fatalf("%d rows, want %d: %+v", len(got.Sessions), len(want), got.Sessions)

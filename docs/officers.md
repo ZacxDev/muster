@@ -300,6 +300,47 @@ policy allows no port 53, so the only resolver path is the cluster's
 name-filtered one, and a query for a name the attacker controls is refused. On
 a cluster with no such policy the pod resolves nothing at all.
 
+### A custom runner image (`image`)
+
+An officer may run its instances on its **own** image instead of the
+deployment's `MUSTER_AGENT_CC_IMAGE`: one built `FROM` muster's
+`claude-code-agent` image that adds the officer's tooling (a script, a skill
+pack, a pinned CLI). Untiered, it is the officer's `image`; tiered, each pool's
+`tiers.<pool>.image` (a top-level `image` beside `tiers` is refused, as `model`
+is). An officer that sets none runs the deployment's image, unchanged.
+
+```json
+{"id": "review:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "image": "ghcr.io/example-org/officer-runner:1.4.0@sha256:<64 hex digits>"}
+```
+
+**Boot refuses** an image that is not a full reference
+(`<registry host>/<path>[:<tag>]@sha256:<digest>`); one **not pinned by
+digest** — 🔴 a tag alone is refused, because anyone who can push to the
+repository can move a tag and the next pod would run that code with every tool
+allowed (a tag beside the digest is allowed, as a label); one whose first
+component is **not a registry host** — it must contain a `.` or a `:` or be
+exactly `localhost`, the rule container runtimes use (`registry/runner` is a
+Docker Hub path to a runtime, not a host called `registry`); and one whose
+repository is not allowed by `MUSTER_OFFICER_IMAGE_REGISTRIES`: a
+comma-separated list of `<registry host>[/<path>]` prefixes (`ghcr.io/example-org,
+registry.example.com:5000/team/runners`), each entry's first component a
+registry host by the same rule. An image is allowed when its
+repository (the reference without tag and digest) **is** an entry or lies
+under one — `ghcr.io/example-org/officer-runner` is under `ghcr.io/example-org`,
+`ghcr.io/example-orgx/…` is not. **With the variable unset, every `image` is
+refused**; a malformed entry (a scheme, a tag, a glob, a bare name such as
+`registry`) refuses to boot.
+Prefer entries that name your organisation's path, not a whole public registry.
+
+🔴 **The image is the pod's whole userland, and the session runs with every
+tool allowed**, so the allowlist is the deployment's statement of whose images
+an officer may run. muster cannot see what an image was built `FROM`: that it
+carries `ccd` and the CLI version muster speaks to is the image builder's
+promise — build it `FROM` the same `claude-code-agent` tag the deployment runs,
+and rebuild it when that tag moves. The pod's spec (network policy, secrets,
+volume, security context) is the same whatever the image.
+
 ### Reading a repository (`repo`)
 
 The GitHub App connector mints a token only for the **calling agent's own
@@ -436,6 +477,54 @@ repository — approves an officer instance's request, and an officer's approval
 is never shared. Each instance's `github` request waits for its own decision.
 The App is an admin's: an `owner` who is not an admin is offered the stored
 `github` connector instead, and the App mints nothing for them.
+
+### Reading pull requests with `gh`
+
+The real `gh` is not in the image: it only speaks HTTPS to a fixed host and
+cannot reach the in-cluster proxy. `ccd` carries a **read-only** subset of it
+(`cmd/ccd/ghshim.go`), and 🔴 **it is opt-in**: the `claude-code-agent` image
+puts **no `gh` on PATH**, so every other pod — and any script that probes
+`command -v gh` and falls back to `curl` — behaves as before. An officer that
+wants it runs its own [runner image](#a-custom-runner-image-image) that links
+it:
+
+```dockerfile
+FROM ghcr.io/example-org/claude-code-agent:<the deployment's tag>
+RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh
+```
+
+(`ccd` run under the name `gh` is the shim; `ccd gh …` reaches it in any
+image.) It is a subset whose every request is a `GET`
+to `$MUSTER_CONNECT_URL/connect/github/api.github.com/…` carrying the pod's own
+token (`X-Muster-Token`) — so it is decided by the proxy exactly as the
+instance's `curl` would be: its grant, its push gate, its read-only or ship
+token. It is enough for a script that reads a pull request and its comments:
+
+| command | answered from |
+|---|---|
+| `gh pr view <n\|url> [--repo\|-R owner/name] --json <fields>` | `pulls/{n}`, plus `issues/{n}/comments` (`comments`), `pulls/{n}/commits` (`commits`) and `pulls/{n}/files` (`files`), every page |
+| `gh pr diff <n\|url> [--repo owner/name] [--name-only] [--patch]` | `pulls/{n}` as a diff or patch, or its files |
+| `gh api <path> [--paginate] [-X GET] [-H 'Accept: …']` | the path; `--paginate` follows `Link: rel="next"` and merges JSON arrays, as `gh` does; `{owner}`/`{repo}` are filled from the repository below |
+| `gh --version`, `gh auth status` | the shim itself |
+
+`--json` fields: `additions`, `author`, `baseRefName`, `baseRefOid`, `body`,
+`changedFiles`, `closedAt`, `comments`, `commits`, `createdAt`, `deletions`,
+`files`, `headRefName`, `headRefOid`, `headRepository`, `headRepositoryOwner`,
+`id`, `isCrossRepository`, `isDraft`, `labels`, `mergeable`, `mergedAt`,
+`number`, `state`, `title`, `updatedAt`, `url`, in `gh`'s shapes. Another field
+is an error listing these. A comment's `viewerDidAuthor` is always `false`:
+the shim has no viewer. `--jq`, `--template` and `--web` are not supported.
+A pull request URL names its repository; a `--repo` naming a different one is
+refused (exit 1, nothing sent). With no `--repo` and no pull request URL, the
+repository is `GH_REPO`, else the checkout's `origin`. The shim follows no
+redirect: a redirect from the proxy is reported as the non-2xx answer it is.
+
+🔴 **It writes nothing.** Every other command (`gh pr comment`, `merge`,
+`close`, `edit`, `ready`, `create`, `review`, `checkout`, `gh issue …`,
+`gh repo …`, `gh auth login`) and every `gh api` with a method other than
+`GET`, a body flag (`-f`, `-F`, `--field`, `--raw-field`, `--input`) or the
+GraphQL endpoint exits 1 before any request is sent. An officer's writes go
+only through muster's push gate and gated tools.
 
 ## Waking and scaling
 

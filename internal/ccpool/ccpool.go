@@ -54,9 +54,11 @@
 //
 // 🔴 ONLY THE JOB API AND THE FAILOVER REFUSE FOR IT. The job API's
 // worker-pool choice (internal/api chooseWorker, reading
-// [AccountState.CoolingUntil]) skips a worker on a cooling account and answers
-// 429 when every worker is skipped, and [ChooseFailover] never moves an agent
-// onto a cooling account. Agent dispatch ([Choose]) only ranks a cooling
+// [AccountState.CoolingUntil]) skips a worker on a cooling account — and when
+// that leaves no worker it fails one such worker over to a usable account
+// (internal/ccfailover) and places the job there, answering 429 only when no
+// account is usable — and [ChooseFailover] never moves an agent onto a
+// cooling account. Agent dispatch ([Choose]) only ranks a cooling
 // account last and still picks it when it is all there is: an agent outlives a
 // rate-limit window, so refusing to create it for a window of hours would buy
 // nothing.

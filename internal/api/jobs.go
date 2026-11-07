@@ -447,10 +447,149 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 // submitted at once to two idle workers with four places each — four went to
 // one, and two were refused. chooseWorker stays the one place that decides; it
 // is only called where its input cannot go stale.
+//
+// 🔴 A POOL REFUSED ONLY FOR ITS WORKERS' ACCOUNTS IS NOT REFUSED WHILE ANOTHER
+// ACCOUNT IS USABLE. When no worker is eligible and some idle worker was
+// skipped only because its Claude account is cooling down or failed
+// authentication, one such worker is failed over (failoverBlockedWorker: the
+// account failover's own move, to a usable account — a pool worker's PIN does
+// not stop it: ccfailover.Service.AccountFailedForPool) and the choice is made
+// again — so the job runs on it instead of being refused until the account
+// resets. A failover moves only the agent whose own turn failed, and a pool
+// that refuses upfront runs no turn on its workers, so without this it stayed
+// refused (2026-11-07). With no usable account nothing moves and the refusal
+// stands: the 429 naming each worker's reset.
+//
+// 🔴 ONE FAILOVER AT A TIME PER (owner, pool), AND THE CHOICE IS MADE AGAIN
+// UNDER IT. Refused submissions arriving together would otherwise each move a
+// worker (a burst of N moves N workers, restarting N pods for one job's worth
+// of need), and one arriving while another holds the worker it is moving would
+// read that worker as busy and answer the stale 429 although the move was about
+// to free it. So a refused submission takes the pool's failover lock, CHOOSES
+// AGAIN (a submission that waited finds the worker the one before it moved, and
+// takes it without moving another), and only if that is still refused moves a
+// worker itself.
 func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
+	j, created, blocked, err := s.createPoolJobOnce(ctx, n)
+	var refused *jobRefusal
+	if !errors.As(err, &refused) || len(blocked) == 0 || s.ext.AccountFailover == nil {
+		return j, created, err
+	}
+	unlock := s.poolFailovers.lock(strconv.FormatInt(callerID(ctx), 10) + "/" + n.WorkerPool)
+	j, created, blocked, err = s.createPoolJobOnce(ctx, n)
+	if !errors.As(err, &refused) || len(blocked) == 0 {
+		unlock()
+		return j, created, err
+	}
+	moved := s.failoverBlockedWorker(ctx, n.WorkerPool, blocked)
+	unlock()
+	if !moved {
+		return j, created, err
+	}
+	j, created, _, err = s.createPoolJobOnce(ctx, n)
+	return j, created, err
+}
+
+// keyedLocks is one mutex per key, made on first use.
+type keyedLocks struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+// lock blocks until key's mutex is free and returns its release.
+func (k *keyedLocks) lock(key string) func() {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = make(map[string]*sync.Mutex)
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = &sync.Mutex{}
+		k.m[key] = l
+	}
+	k.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// failoverBlockedWorker tries blocked in order (name order) and moves the first
+// that is idle (holdIdleAgent: its job lane is held across the move, so no job
+// of this process starts on it meanwhile) and that the account failover moves
+// to a usable account (AccountFailedForPool: a pool worker's pin does not stop
+// it). A worker on an account for which the failover found no usable target is
+// not tried again for the rest of blocked: every worker on that account would
+// get the same answer. It reports whether a worker is now off its account —
+// moved by this call, or found already moved by another server. When none
+// moves it logs ONE line naming why each worker tried was not.
+func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked []blockedWorker) bool {
+	noTarget := map[string]bool{}
+	var why []string
+	for _, b := range blocked {
+		if noTarget[b.a.CCAccount] {
+			continue
+		}
+		release, idle, busy := s.holdIdleAgent(ctx, b.a)
+		if !idle {
+			why = append(why, b.a.Name+" ("+busy+")")
+			continue
+		}
+		res := s.ext.AccountFailover.AccountFailedForPool(ctx, b.a.ID, b.a.CCAccount, b.failure,
+			"a submission to worker pool "+strconv.Quote(pool)+" found every worker's Claude account unusable")
+		release()
+		if res.Moved {
+			s.logger.Printf("jobs: pool %q: worker %s failed over from %s to %s (its account %s) so the job is not refused",
+				pool, b.a.Name, b.a.CCAccount, res.To, b.failure)
+			return true
+		}
+		if res.NoTarget {
+			noTarget[b.a.CCAccount] = true
+		}
+		why = append(why, b.a.Name+" ("+res.Why+")")
+	}
+	if len(why) > 0 {
+		s.logger.Printf("jobs: pool %q: no worker failed over: %s", pool, strings.Join(why, "; "))
+	}
+	return false
+}
+
+// holdIdleAgent is the pool submission failover's idle check: a is
+// idle when no job holds its lane in this process and the job store counts
+// none queued or running on it, in any process. When idle, a's lane is held
+// until release, so no job of this process starts a turn on it while its pod
+// is restarted; a job that arrives meanwhile waits, then re-reads the agent
+// and waits for its replacement pod (runJob). Not idle: release is nil.
+func (s *Server) holdIdleAgent(ctx context.Context, a agents.Agent) (func(), bool, string) {
+	release, ok := s.jobLanes.tryLock(a.ID)
+	if !ok {
+		return nil, false, "a job is running on it"
+	}
+	if s.ext.Jobs == nil {
+		return release, true, ""
+	}
+	counter, ok := s.ext.Jobs.(jobs.ActiveCounter)
+	if !ok {
+		release()
+		return nil, false, "the job store cannot count its jobs"
+	}
+	counts, err := counter.ActiveCounts(ctx, []int64{a.ID})
+	if err != nil {
+		release()
+		return nil, false, "its jobs could not be counted: " + err.Error()
+	}
+	if c := counts[a.ID]; c.Active() > 0 {
+		release()
+		return nil, false, fmt.Sprintf("%d job(s) queued or running", c.Active())
+	}
+	return release, true, ""
+}
+
+// createPoolJobOnce is one choice and record of createPoolJob. blocked is, when
+// it refused, the members skipped only for their Claude account (idle or not:
+// failoverBlockedWorker checks that when it moves one).
+func (s *Server) createPoolJobOnce(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, []blockedWorker, error) {
 	pool, repo := n.WorkerPool, n.Repo
-	refuse := func(status int, msg string) (jobs.Job, bool, error) {
-		return jobs.Job{}, false, &jobRefusal{status: status, msg: msg}
+	refuse := func(status int, msg string) (jobs.Job, bool, []blockedWorker, error) {
+		return jobs.Job{}, false, nil, &jobRefusal{status: status, msg: msg}
 	}
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
@@ -500,21 +639,24 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 		s.logger.Printf("jobs: read connector grants for pool %q: %v", pool, err)
 		return refuse(http.StatusInternalServerError, "could not read the workers' connector grants")
 	}
-	return s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
-		a, why, full := chooseWorker(pool, members, peers, repo, states, active, github)
-		if why != "" {
+	var blocked []blockedWorker
+	j, created, err := s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
+		c := chooseWorkerDetail(pool, members, peers, repo, states, active, github)
+		if c.why != "" {
+			blocked = c.accountBlocked
 			status := http.StatusServiceUnavailable
-			if full {
+			if c.full {
 				status = http.StatusTooManyRequests
 			}
-			return jobs.NewJob{}, &jobRefusal{status: status, msg: why}
+			return jobs.NewJob{}, &jobRefusal{status: status, msg: c.why}
 		}
-		placed, status, msg := jobOnAgent(n, a)
+		placed, status, msg := jobOnAgent(n, c.chosen)
 		if status != 0 {
 			return jobs.NewJob{}, &jobRefusal{status: status, msg: msg}
 		}
 		return placed, nil
 	})
+	return j, created, blocked, err
 }
 
 // maxWorkerSkipsNamed bounds how many skipped workers a refusal names.
@@ -554,6 +696,35 @@ const maxWorkerSkipsNamed = 10
 // worker is a 503).
 func chooseWorker(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
 	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
+	c := chooseWorkerDetail(pool, members, peers, repo, accounts, active, github)
+	return c.chosen, c.why, c.full
+}
+
+// blockedWorker is a pool member skipped ONLY for its Claude account, and the
+// account failure that stands for: auth_failed, or rate_limited for a
+// cooldown.
+type blockedWorker struct {
+	a       agents.Agent
+	failure string
+}
+
+// workerChoice is chooseWorkerDetail's answer: chooseWorker's three values,
+// and accountBlocked — the members skipped only because their Claude account
+// failed authentication or is cooling down (every check before those passed),
+// in name order. When none is eligible these are what an account failover can
+// return to the pool (createPoolJob), each only if it is idle when it is moved
+// (holdIdleAgent, the one idle rule — not the counts read here, which are
+// stale by the time the move runs).
+type workerChoice struct {
+	chosen         agents.Agent
+	why            string
+	full           bool
+	accountBlocked []blockedWorker
+}
+
+// chooseWorkerDetail is chooseWorker with the account-blocked members.
+func chooseWorkerDetail(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
+	active map[int64]jobs.ActiveCount, github map[int64]string) (out workerChoice) {
 	type cand struct {
 		a  agents.Agent
 		c  jobs.ActiveCount
@@ -590,17 +761,19 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 			skip = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
 		case st.AuthFailed:
 			skip = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
+			out.accountBlocked = append(out.accountBlocked, blockedWorker{a: m, failure: ccpool.FailureAuthFailed})
 		case !st.CoolingUntil.IsZero():
 			skip = fmt.Sprintf("its Claude account %q is cooling down after a rate limit until %s",
 				m.CCAccount, st.CoolingUntil.UTC().Format(time.RFC3339))
-			full = true
+			out.full = true
+			out.accountBlocked = append(out.accountBlocked, blockedWorker{a: m, failure: ccpool.FailureRateLimited})
 		case c.Active() >= jobs.MaxActivePerAgent:
 			skip = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
-			full = true
+			out.full = true
 		case c.Active() == 0 && st.MaxConcurrentJobs > 0 && busy[m.CCAccount] >= st.MaxConcurrentJobs:
 			skip = fmt.Sprintf("its Claude account %q is already running %d job(s) at once, its limit",
 				m.CCAccount, busy[m.CCAccount])
-			full = true
+			out.full = true
 		}
 		if skip != "" {
 			skipped = append(skipped, m.Name+" ("+skip+")")
@@ -614,7 +787,8 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 		if len(named) > maxWorkerSkipsNamed {
 			named, more = named[:maxWorkerSkipsNamed], fmt.Sprintf("; and %d more", len(skipped)-maxWorkerSkipsNamed)
 		}
-		return agents.Agent{}, fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more), full
+		out.why = fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more)
+		return out
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
@@ -632,7 +806,7 @@ func chooseWorker(pool string, members, peers []agents.Agent, repo string, accou
 		}
 		return a.a.Name < b.a.Name
 	})
-	return cands[0].a, "", false
+	return workerChoice{chosen: cands[0].a}
 }
 
 func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {
@@ -825,6 +999,25 @@ func (l *jobLanes) lock(agentID int64) func() {
 	return lane.Unlock
 }
 
+// tryLock is lock without waiting: ok false when a job of agentID holds its
+// lane now.
+func (l *jobLanes) tryLock(agentID int64) (release func(), ok bool) {
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = make(map[int64]*sync.Mutex)
+	}
+	lane, found := l.m[agentID]
+	if !found {
+		lane = &sync.Mutex{}
+		l.m[agentID] = lane
+	}
+	l.mu.Unlock()
+	if !lane.TryLock() {
+		return nil, false
+	}
+	return lane.Unlock, true
+}
+
 // Recording a job's outcome: each attempt is bounded by jobFinishTimeout, on a
 // context detached from the job's own (which has usually just expired when a
 // job times out), and the write is attempted up to jobFinishAttempts times,
@@ -944,6 +1137,21 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	if err != nil {
 		finish(jobs.Failed(jobs.ReasonAgentUnavailable, fmt.Sprintf("agent %q could not be loaded: %v", j.Agent, err)))
 		return
+	}
+	// 🔴 A WORKER THIS PROCESS JUST MOVED TO ANOTHER ACCOUNT IS RESTARTING ITS
+	// POD (a pool submission's failover, or another job's): its row reads
+	// running at once, so a job placed on it must wait for the replacement pod
+	// rather than send its turn into the restart, which would fail it with an
+	// error that is not an account failure, and so is never re-queued.
+	if s.ext.AccountFailover != nil {
+		if r, ok := s.ext.AccountFailover.Rebinding(a.ID); ok && r.To == a.CCAccount {
+			if err := s.ext.AccountFailover.AwaitRebound(ctx, r); err != nil {
+				s.logger.Printf("jobs: %d: %v", j.ID, err)
+				finish(jobs.Failed(jobs.ReasonAgentUnavailable, fmt.Sprintf("agent %q was moved to Claude account %q and its "+
+					"restarted instance was not ready in time", a.Name, a.CCAccount)))
+				return
+			}
+		}
 	}
 	sess, err := s.jobSession(ctx, a, j.Model)
 	if err != nil {

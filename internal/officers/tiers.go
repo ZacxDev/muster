@@ -44,6 +44,9 @@ type TierPool struct {
 	Model string `json:"model"`
 	// MaxInstances is how many of the pool's instances may run at once.
 	MaxInstances int `json:"max_instances"`
+	// Image, when set, is the runner image the pool's pods run (image.go);
+	// checked by the officer's parse, which holds the allowlist.
+	Image string `json:"image,omitempty"`
 	// MaxSessionsPerDay, on the judgement pool only, caps the distinct items
 	// it claims per UTC day (sessions.go); 0 is no cap. The routine pool is
 	// bounded by the `llm` budget instead.
@@ -144,7 +147,7 @@ func (o Officer) Pool(tier string) Officer {
 	if tier == TierRoutine {
 		p.Tier, src = TierRoutine, o.Tiers.Routine
 	}
-	p.Model, p.MaxInstances = src.Model, src.MaxInstances
+	p.Model, p.MaxInstances, p.Image = src.Model, src.MaxInstances, src.Image
 	if p.Tier == TierRoutine {
 		// 🔴 ONLY THE JUDGEMENT POOL SHIPS. A routine instance (a cheaper
 		// model, fed untriaged input) gets no ship tool, push gate or officer
@@ -238,9 +241,9 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	dec.DisallowUnknownFields()
 	var p TierPool
 	if err := dec.Decode(&p); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "image"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
 	}
-	p.Model = strings.TrimSpace(p.Model)
+	p.Model, p.Image = strings.TrimSpace(p.Model), strings.TrimSpace(p.Image)
 	if p.Model == "" {
 		return TierPool{}, errors.New("model is required")
 	}

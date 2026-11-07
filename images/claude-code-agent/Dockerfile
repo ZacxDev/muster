@@ -50,8 +50,14 @@ FROM node:22-bookworm-slim
 # `curl -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" "$MUSTER_CONNECT_URL/connect/<connector>/<host>/<path>"`,
 # and muster replaces it with the credential (see cmd/ccd/connect.go). git goes
 # through the proxy by routing `ccd serve` keeps in step with the agent's grants
-# (`ccd connect-git` applies it at once). `gh` is NOT installed: it only speaks HTTPS to a
-# fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
+# (`ccd connect-git` applies it at once). The real `gh` is NOT installed: it only speaks
+# HTTPS to a fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
+# 🔴 NOR IS ANY `gh` ON PATH: ccd carries a READ-ONLY gh subset (`gh pr view --json`,
+# `gh pr diff`, `gh api` GET, through the proxy with the pod's own token, every write
+# refused — cmd/ccd/ghshim.go), but it is OPT-IN. An officer that wants it runs its
+# own image built FROM this one with `RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh`
+# (docs/officers.md "Reading pull requests with gh"); every other pod keeps finding
+# no gh, so a script's `command -v gh` fallback to curl is unchanged. cc-smoke checks.
 #
 # openssh-client is for a PRIVATE-repository worker pool's read-only deploy key
 # (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): the pod's KEY HOLDER — this image, run as

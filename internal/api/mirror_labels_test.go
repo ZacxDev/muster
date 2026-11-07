@@ -82,8 +82,8 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 			t.Errorf("the row of %s is not named %q:\n%s", c.href, c.name, row)
 		}
 	}
-	if n := strings.Count(list, `mango:1 · `); n != 4 {
-		t.Errorf("%d qualified names, want 4 (the two mango:1 rows' title and text, not solo)", n)
+	if n := strings.Count(list, `mango:1 · `); n != 6 {
+		t.Errorf("%d qualified names, want 6 (the two mango:1 rows' title, data-switcher-name and text, not solo)", n)
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))

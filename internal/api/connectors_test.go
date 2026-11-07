@@ -45,14 +45,40 @@ type connFixture struct {
 
 func newConnFixture(t *testing.T) *connFixture { t.Helper(); return newConnFixtureWith(t, nil) }
 
+// connFixtureMaxConns, when > 0, is the pool size (pool_max_conns) of the next
+// fixture newConnFixtureWith opens; 0 is pgxpool's default. A test that sets it
+// resets it in t.Cleanup (withPoolMaxConns). No test in this package runs in
+// parallel, so a package variable is safe.
+var connFixtureMaxConns int
+
+// withPoolMaxConns makes the fixtures t opens use a pool of n connections.
+func withPoolMaxConns(t *testing.T, n int) {
+	t.Helper()
+	connFixtureMaxConns = n
+	t.Cleanup(func() { connFixtureMaxConns = 0 })
+}
+
 // newConnFixtureWith is newConnFixture with more extensions wired over the same
 // pool (extra may add to ext; nil adds nothing).
 func newConnFixtureWith(t *testing.T, extra func(ext *Extensions, pool *pgxpool.Pool)) *connFixture {
 	t.Helper()
 	dsn := dbtest.DSN(t)
+	// poolDSN is the pool's (pool_max_conns is a pgxpool option, which a plain
+	// pgx.Connect such as OwnerExec's sends to the server and is refused).
+	poolDSN := dsn
+	if connFixtureMaxConns > 0 {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("pool_max_conns", strconv.Itoa(connFixtureMaxConns))
+		u.RawQuery = q.Encode()
+		poolDSN = u.String()
+	}
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
 	t.Cleanup(cancel)
-	pool, err := db.Connect(ctx, dsn)
+	pool, err := db.Connect(ctx, poolDSN)
 	if err != nil {
 		t.Fatal(err)
 	}

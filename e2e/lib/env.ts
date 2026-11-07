@@ -327,6 +327,10 @@ export const mcpDispatchConnectPort = port + 301;
 export const mcpDispatchMirrorMCPPort = port + 302;
 // Its fake model catalogue (MUSTER_E2E_OPENROUTER_MODELS): the spec reaches no network.
 export const mcpDispatchCatalogPort = port + 303;
+// tests/session-names.spec.ts: a session's stable name, its rename and its
+// live line — its own server (mirror plugin on, the focus pass off) and its
+// own fake host. (+320: clear of the blocks other branches took.)
+export const sessionNamesPort = port + 320;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

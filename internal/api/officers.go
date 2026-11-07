@@ -585,13 +585,14 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	a, err := f.s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
-			Name:        name,
-			DisplayName: fmt.Sprintf("officer %s #%s", o.ID, o.InstanceLabel(n)),
-			Kind:        agents.KindClaudeCode,
-			CCAccount:   o.CCAccount,
-			CCFailover:  o.CCFailover,
-			NoteText:    kickoff,
-			Kickoff:     true,
+			Name:              name,
+			DisplayName:       fmt.Sprintf("officer %s #%s", o.ID, o.InstanceLabel(n)),
+			DisplayNameSource: agents.NameSystem,
+			Kind:              agents.KindClaudeCode,
+			CCAccount:         o.CCAccount,
+			CCFailover:        o.CCFailover,
+			NoteText:          kickoff,
+			Kickoff:           true,
 		})
 		return err
 	}
@@ -876,7 +877,9 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// whatever fresh_session_per_item says: what an officer remembers of
 	// earlier items is HQ's (the claim-time history), never a file on its
 	// volume.
-	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true}
+	// Image: the pool's own runner image when it declares one (checked against
+	// MUSTER_OFFICER_IMAGE_REGISTRIES at boot), else the deployment's.
+	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image}
 	if officers.RoutineAgent(o, a.Name) {
 		sess.LLMRoute = true
 		return sess, true
