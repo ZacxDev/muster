@@ -176,21 +176,18 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		title = c.Name
 	}
 	if c.Unreadable {
-		return Div(
+		card := Div(
 			g.Attr("data-dispatch-card", ""),
 			g.Attr("data-dispatch-state", "unreadable"),
 			g.Attr("data-dispatch-agent", strconv.FormatInt(c.AgentID, 10)),
 			g.Attr("role", "status"),
-			// Refreshed on the app's own events (any agent's: its name is
-			// unknown until it reads), never on a timer.
-			hx("hx-get", DispatchCardSrc(c.AgentID)),
-			hx("hx-trigger", "sse:agent.changed from:body, sse:chat.reply from:body"),
-			hx("hx-swap", "outerHTML"),
-			hx("hx-target", "this"),
 			Class("flex w-full max-w-[92%] min-w-0 items-center gap-2 self-start rounded-xl bg-bg/50 px-3 py-2 text-xs text-muted ring-1 ring-inset ring-line"),
 			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("🤖")),
 			Span(Class("min-w-0 break-words"), g.Text(c.Name+": could not be read just now; this card updates when it can.")),
 		)
+		// Refreshed on the app's own events (any agent's: its name is unknown
+		// until it reads), never on a timer.
+		return liveCard(c.AgentID, "sse:agent.changed from:body, sse:chat.reply from:body", card)
 	}
 	state := c.State
 	if c.Gone {
@@ -238,16 +235,44 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		g.Attr("data-dispatch-agent", strconv.FormatInt(c.AgentID, 10)),
 		Class("flex w-full max-w-[92%] min-w-0 flex-col self-start rounded-xl bg-bg/50 ring-1 ring-inset ring-line"),
 	}
-	if !c.Gone && c.Name != "" && c.AgentID > 0 {
-		// Its own refresh (see the file's note). outerHTML: the card replaces
-		// itself, so the next refresh is the new card's.
-		attrs = append(attrs,
-			hx("hx-get", DispatchCardSrc(c.AgentID)),
-			hx("hx-trigger", dispatchCardTrigger(c.Name)),
-			hx("hx-swap", "outerHTML"),
-			hx("hx-target", "this"))
+	card := Div(append(attrs, main, task)...)
+	if c.Gone || c.Name == "" || c.AgentID <= 0 {
+		return card
 	}
-	return Div(append(attrs, main, task)...)
+	return liveCard(c.AgentID, dispatchCardTrigger(c.Name), card)
+}
+
+// DispatchLiveAttr marks a card's refreshing wrapper (liveCard).
+const DispatchLiveAttr = "data-dispatch-live"
+
+// liveCard wraps a card in the element that REFRESHES it: on trigger it asks
+// for the card again and swaps the answer's card into itself (hx-select the
+// card, innerHTML).
+//
+// 🔴 THE REFRESHING ELEMENT NEVER REPLACES ITSELF, AND THAT IS THE FIX FOR A
+// CARD STUCK ON A STALE STATE. The card used to refresh itself with outerHTML.
+// Two of its agent's events in one moment (the status promoter's, then the
+// first turn's stamp) put the second request in htmx's queue behind the first
+// — and the first's outerHTML swap REMOVED the element that queued it, so the
+// newer state was never drawn: CI caught a card on "Starting" while its agent
+// worked. The wrapper stays in the document, so a queued refresh runs from it
+// and the LAST event's answer is the one shown (queue last). The browser case
+// "a dispatched agent" plays that race deterministically.
+//
+// display: contents, so the card still lays out in #chat-log's column as if
+// the wrapper were not there.
+func liveCard(agentID int64, trigger string, card g.Node) g.Node {
+	return Div(
+		g.Attr(DispatchLiveAttr, strconv.FormatInt(agentID, 10)),
+		Class("contents"),
+		hx("hx-get", DispatchCardSrc(agentID)),
+		hx("hx-trigger", trigger),
+		hx("hx-select", "[data-dispatch-card]"),
+		hx("hx-swap", "innerHTML"),
+		hx("hx-target", "this"),
+		hx("hx-sync", "this:queue last"),
+		card,
+	)
 }
 
 // RenderDispatchCard writes one card (DispatchCardPath's answer).

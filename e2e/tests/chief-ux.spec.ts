@@ -123,9 +123,11 @@ async function script(body: { input?: { type?: string; content?: string; call_id
   }
 
   // A new turn, by the owner's words.
-  if (first.includes(KICKOFF)) {
-    // The started agent's first turn: held until the test lets it finish.
-    await gate('kickoff').wait();
+  const kick = new RegExp(KICKOFF + ' run-(\\w+)').exec(first);
+  if (kick) {
+    // The started agent's first turn: held until the test lets it finish (one
+    // gate per run, so a repeated run never finds an earlier run's gate open).
+    await gate('kickoff-' + kick[1]).wait();
     return { text: 'Kickoff done: looked at the task.' };
   }
   const hold = /HOLD-ME-(\w+)/.exec(first);
@@ -423,21 +425,25 @@ for (const vp of [
   });
 }
 
-// The started agent's card: one agent, one run (it spends the chief's start
-// budget and the kickoff gate is the runtime's only one), at a phone's width.
+// The started agent's card, at a phone's width. Each run removes the agent and
+// the task it made, so the chief's live budget is spent once per run, not once
+// per file (the daily cap still bounds a --repeat-each to its size).
 test.describe('a dispatched agent', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
   test('is a live card: its state follows the agent, and a tap opens its page', async ({ page }) => {
     test.setTimeout(150_000);
-    const made = await api('POST', '/api/tasks', { body: `${KICKOFF}: make the export test stop flaking` });
+    const run = Date.now().toString(36);
+    const made = await api('POST', '/api/tasks', { body: `${KICKOFF} run-${run}: make the export test stop flaking` });
     expect(made.status, await made.clone().text()).toBeLessThan(300);
     const task = (await made.json()) as { id: number };
     tasksMade.push(task.id);
 
     await openChief(page);
     await send(page, `Go ahead DISPATCH-TASK-${task.id}`);
-    const card = log(page).locator('[data-dispatch-card][data-dispatch-agent]').last();
+    // THIS run's card, by its task link — never .last(): the thread is shared
+    // with the file's other tests (and with earlier runs of this one).
+    const card = log(page).locator('[data-dispatch-card][data-dispatch-agent]').filter({ has: page.locator(`[data-dispatch-task="${task.id}"]`) });
     // The live stream draws the card as soon as the result arrives.
     await expect(card).toBeVisible({ timeout: 20_000 });
     const open = card.locator('[data-dispatch-open]');
@@ -448,22 +454,49 @@ test.describe('a dispatched agent', () => {
     await expect(card.locator(`[data-dispatch-task="${task.id}"]`)).toHaveAttribute('href', `/tasks/${task.id}`);
 
     // Its first turn runs (the runtime holds it): the card says working, live.
-    await expect.poll(() => gate('kickoff').entered, { timeout: 60_000 }).toBe(1);
-    await expect(log(page).locator(`[data-dispatch-card][data-dispatch-agent]`).last()).toHaveAttribute('data-dispatch-state', 'working', {
-      timeout: 30_000,
-    });
+    await expect.poll(() => gate('kickoff-' + run).entered, { timeout: 60_000 }).toBe(1);
+    await expect(card).toHaveAttribute('data-dispatch-state', 'working', { timeout: 30_000 });
     // The turn ends: the card says it waits for its owner — no reload.
-    gate('kickoff').release();
-    await expect(log(page).locator(`[data-dispatch-card][data-dispatch-agent]`).last()).toHaveAttribute('data-dispatch-state', 'waiting', {
-      timeout: 30_000,
+    gate('kickoff-' + run).release();
+    await expect(card).toHaveAttribute('data-dispatch-state', 'waiting', { timeout: 30_000 });
+    // 🔴 TWO OF ITS AGENT'S EVENTS BACK TO BACK: the LATER one decides the card.
+    // CI caught the card stuck on "Starting" while the agent worked: the
+    // status promoter's agent.changed and the first turn's stamp land in the
+    // same moment, the second while the card's refresh for the first is still
+    // in flight. The refresh replaced the card (outerHTML), so a request htmx
+    // queued behind it fired from the REMOVED card and drew nothing (now the
+    // card is refreshed by a wrapper that stays: ui.liveCard). Played
+    // deterministically here: the first refresh is held and answers a stale
+    // "starting"; the second answers the real state; the card must end on it.
+    let calls = 0;
+    await page.route('**/ui/dispatch-card?agent=*', async (route) => {
+      const n = ++calls;
+      const res = await route.fetch();
+      let body = await res.text();
+      if (n === 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        body = body.replace(/data-dispatch-state="[a-z]+"/, 'data-dispatch-state="starting"');
+      }
+      await route.fulfill({ response: res, body });
     });
+    await page.evaluate((agent) => {
+      const fire = () => document.body.dispatchEvent(new CustomEvent('sse:agent.changed', { detail: { data: JSON.stringify({ id: agent }) } }));
+      fire();
+      setTimeout(fire, 300);
+    }, name);
+    await expect.poll(() => calls, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+    await page.waitForTimeout(2500); // past the held first answer
+    await expect(card).toHaveAttribute('data-dispatch-state', 'waiting');
+    await page.unroute('**/ui/dispatch-card?agent=*');
     // The card's link is the agent's page (its list link: its latest session).
-    await expect(log(page).locator('[data-dispatch-card][data-dispatch-agent] [data-dispatch-open]').last()).toHaveAttribute(
-      'href',
-      new RegExp(`^/agents/${name}\\?session=\\d+&from=list$`),
-    );
-    await log(page).locator('[data-dispatch-card][data-dispatch-agent] [data-dispatch-open]').last().tap();
+    await expect(card.locator('[data-dispatch-open]')).toHaveAttribute('href', new RegExp(`^/agents/${name}\\?session=\\d+&from=list$`));
+    await card.locator('[data-dispatch-open]').tap();
     await page.waitForURL((u) => u.pathname === '/agents/' + name);
     await expect(page.locator('#chat-form')).toBeVisible();
+    // This run's agent and task go, so the next run starts from the same budget.
+    fix('rmagent', '1', name);
+    agentsMade.delete(name);
+    expect((await api('DELETE', `/api/tasks/${task.id}`)).status).toBeLessThan(300);
+    tasksMade.splice(tasksMade.indexOf(task.id), 1);
   });
 });
