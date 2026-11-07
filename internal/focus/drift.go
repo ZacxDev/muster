@@ -130,6 +130,7 @@ func (s *PGStore) DismissDrift(ctx context.Context, sub Subject, title string) e
 	return nil
 }
 
-// MaxDriftTitleRunes bounds a dismissed title: the stored title's own bound
-// (agent_focus_title_cap, migration 0089's check).
+// MaxDriftTitleRunes bounds a dismissed title (migration 0089's
+// agent_focus_drift_dismissed_cap): well past any title that can be offered,
+// which is a nameable one, at most TitleCapRunes.
 const MaxDriftTitleRunes = 80

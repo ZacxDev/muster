@@ -26,6 +26,6 @@ SET LOCAL lock_timeout = '3s';
 
 ALTER TABLE public.agent_focus ADD COLUMN IF NOT EXISTS drift_dismissed TEXT NOT NULL DEFAULT '';
 
--- A focus title's own storage bound (agent_focus_title_cap).
+-- Past any title an offer can carry (a nameable one: focus.TitleCapRunes).
 ALTER TABLE public.agent_focus DROP CONSTRAINT IF EXISTS agent_focus_drift_dismissed_cap;
 ALTER TABLE public.agent_focus ADD CONSTRAINT agent_focus_drift_dismissed_cap CHECK (char_length(drift_dismissed) <= 80);
