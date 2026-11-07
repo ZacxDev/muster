@@ -80,7 +80,13 @@ func isAgentDispatchCall(name string) bool {
 // dispatchCardFor is agent id's card. The read is the caller's principal's: an
 // agent that is gone — or is not the viewer's — draws as removed, and names
 // nothing of it.
-func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*provision.Instance) ui.DispatchCard {
+func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*provision.Instance) (c ui.DispatchCard) {
+	// 🔴 THE VERSION IS TAKEN BEFORE ANY STATE IS READ (ui.dispatchCardGuardJS):
+	// a render that read later always carries a higher version. Wall clock, not
+	// s.now(): it orders real renders, and a test's frozen clock would tie them.
+	// Stamped on every card this returns, whichever branch returns it.
+	version := time.Now().UnixMicro()
+	defer func() { c.Version = version }()
 	a, err := s.ext.Agents.Get(ctx, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -92,7 +98,7 @@ func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*
 		s.logger.Printf("agents: dispatch card for agent %d: %v", id, err)
 		return ui.DispatchCard{AgentID: id, Unreadable: true, Name: "Agent #" + strconv.FormatInt(id, 10)}
 	}
-	c := ui.DispatchCard{
+	c = ui.DispatchCard{
 		AgentID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Repo: a.Repo,
 		Href:    ui.AgentCardView{Name: a.Name, SessionID: s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]}.PageHref(),
 		Runtime: dispatchRuntimeLabel(a.Kind, a.Model),

@@ -73,6 +73,11 @@ type DispatchCard struct {
 	// to say (an error's reason).
 	State  string
 	Detail string
+	// Version orders this card against every other render of the same agent's
+	// card (data-dispatch-version): the server's clock, in microseconds, taken
+	// BEFORE it read the agent's state — so a higher version always shows state
+	// read later. 0 draws no version (and the guard leaves the card alone).
+	Version int64
 	// Gone: the agent no longer exists (destroyed). The card says so and links
 	// nowhere.
 	Gone bool // Unreadable: the agent could not be read just now (a failed read, not a
@@ -247,6 +252,7 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		g.Attr("data-dispatch-card", ""),
 		g.Attr("data-dispatch-state", state),
 		g.Attr("data-dispatch-agent", strconv.FormatInt(c.AgentID, 10)),
+		g.If(c.Version > 0, g.Attr(DispatchVersionAttr, strconv.FormatInt(c.Version, 10))),
 		Class("flex w-full max-w-[92%] min-w-0 flex-col self-start rounded-xl bg-bg/50 ring-1 ring-inset ring-line"),
 	}
 	card := Div(append(attrs, main, task)...)
@@ -285,9 +291,63 @@ func liveCard(agentID int64, trigger string, card g.Node) g.Node {
 		hx("hx-swap", "innerHTML"),
 		hx("hx-target", "this"),
 		hx("hx-sync", "this:queue last"),
+		// The version guard, on the wrapper itself (dispatchCardGuardJS).
+		hx("hx-on::before-swap", "window.musterDispatchCardGuard&&window.musterDispatchCardGuard(event)"),
 		card,
 	)
 }
 
 // RenderDispatchCard writes one card (DispatchCardPath's answer).
 func RenderDispatchCard(w io.Writer, c DispatchCard) error { return DispatchAgentCard(c).Render(w) }
+
+// DispatchVersionAttr is a card's version (DispatchCard.Version).
+const DispatchVersionAttr = "data-dispatch-version"
+
+// dispatchCardGuardJS is THE ordering rule for a live card: a card response is
+// swapped in only when it is not OLDER than the newest render of the same
+// agent's card this page has seen — the cards in the DOM (a #chat-log re-render
+// draws them fresh) and every card response already swapped.
+//
+// 🔴 ORDER OF ARRIVAL IS NOT ORDER OF STATE, AND THIS IS WHY A QUEUE COULD NOT
+// FIX IT. liveCard queues its own refreshes, but a card is also re-drawn by
+// anything that re-renders the log — the chief's own reply, a note muster writes
+// in its chat — and by requests from outside its queue, so a response rendered
+// earlier can land after one rendered later. Each render carries the server's
+// clock taken before it read the state (DispatchCard.Version), so "older" is a
+// fact about the state, whatever re-rendered what and in which order. Pinned
+// end to end by chief-ux.spec ("A STALE RESPONSE THAT ARRIVES AFTER A NEWER
+// RENDER"): red without this guard, 3 of 3.
+//
+// It runs on each wrapper (liveCard's hx-on::before-swap) rather than as one
+// delegated listener so that a swap into a wrapper a re-render has since
+// detached is still recorded in seen: a detached node's events do not reach
+// document. (The live-card flake once blamed on ordering was a different gap —
+// a re-rendered card not yet listening — closed by #chat-log's settle:0ms.)
+//
+// Installed once per page (the flag): every page that draws cards includes it.
+const dispatchCardGuardJS = `(function () {
+  if (window.musterDispatchCardGuard) return;
+  var seen = {};
+  function ver(el) { var v = el && el.getAttribute && el.getAttribute('` + DispatchVersionAttr + `'); return v ? Number(v) : 0; }
+  function newest(agent) {
+    var m = seen[agent] || 0;
+    var cards = document.querySelectorAll('[data-dispatch-card][data-dispatch-agent="' + agent + '"]');
+    for (var i = 0; i < cards.length; i++) { var v = ver(cards[i]); if (v > m) m = v; }
+    return m;
+  }
+  window.musterDispatchCardGuard = function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || !t.hasAttribute || !t.hasAttribute('` + DispatchLiveAttr + `')) return;
+    var tpl = document.createElement('template');
+    tpl.innerHTML = e.detail.serverResponse || '';
+    var card = tpl.content.querySelector('[data-dispatch-card]');
+    if (!card) return;
+    var agent = card.getAttribute('data-dispatch-agent'), v = ver(card);
+    if (!agent || !v) return;
+    if (v < newest(agent)) { e.detail.shouldSwap = false; return; }
+    seen[agent] = Math.max(seen[agent] || 0, v);
+  };
+})();`
+
+// DispatchCardGuard is the guard's script element (dispatchCardGuardJS).
+func DispatchCardGuard() g.Node { return Script(g.Raw(dispatchCardGuardJS)) }

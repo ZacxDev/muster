@@ -466,14 +466,6 @@ test.describe('a dispatched agent', () => {
     // The turn ends: the card says it waits for its owner — no reload.
     gate('kickoff-' + run).release();
     await expect(card).toHaveAttribute('data-dispatch-state', 'waiting', { timeout: 30_000 });
-    // The agent stopped without saying it finished, so muster also notes it in
-    // the chief's chat ("… is WAITING FOR YOUR OWNER", agent_outcome.go), and
-    // that note re-renders this log. Wait for it to land before staging the two
-    // events below: a log re-render inside that window would make the card's
-    // own first fetch the held one, and the check would measure the re-render,
-    // not the card's refresh ordering.
-    await expect(log(page)).toContainText('WAITING FOR YOUR OWNER', { timeout: 30_000 });
-    await expect(card).toHaveAttribute('data-dispatch-state', 'waiting', { timeout: 30_000 });
     // 🔴 TWO OF ITS AGENT'S EVENTS BACK TO BACK: the LATER one decides the card.
     // CI caught the card stuck on "Starting" while the agent worked: the
     // status promoter's agent.changed and the first turn's stamp land in the
@@ -483,6 +475,9 @@ test.describe('a dispatched agent', () => {
     // card is refreshed by a wrapper that stays: ui.liveCard). Played
     // deterministically here: the first refresh is held and answers a stale
     // "starting"; the second answers the real state; the card must end on it.
+    // No wait for the chief's note that re-renders this log just before: a card
+    // that log redraws must hear the first event however close it lands (it is
+    // listening in the swap's own task — #chat-log's settle:0ms, agents_detail.go).
     let calls = 0;
     await page.route('**/ui/dispatch-card?agent=*', async (route) => {
       const n = ++calls;
@@ -501,6 +496,38 @@ test.describe('a dispatched agent', () => {
     }, name);
     await expect.poll(() => calls, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(2500); // past the held first answer
+    await expect(card).toHaveAttribute('data-dispatch-state', 'waiting');
+    await page.unroute('**/ui/dispatch-card?agent=*');
+    // 🔴 A STALE RESPONSE THAT ARRIVES AFTER A NEWER RENDER IS DISCARDED (the
+    // card's version guard, ui.dispatchCardGuardJS). Two refreshes into the same
+    // card from two DIFFERENT elements (htmx serializes requests per source, so
+    // one source would queue the second behind the first and never race): the
+    // first is held and answers a stale "starting" — with the version the server
+    // gave it, older because it was rendered first — and lands AFTER the second.
+    // The card keeps the newer state. (Without the guard: "starting".)
+    let fetched = 0;
+    await page.route('**/ui/dispatch-card?agent=*', async (route) => {
+      const n = ++fetched;
+      const res = await route.fetch();
+      let body = await res.text();
+      if (n === 1) {
+        await new Promise((r) => setTimeout(r, 1200));
+        body = body.replace(/data-dispatch-state="[a-z]+"/, 'data-dispatch-state="starting"');
+      }
+      await route.fulfill({ response: res, body });
+    });
+    const agentId = await card.getAttribute('data-dispatch-agent');
+    await page.evaluate((id) => {
+      const w = document.querySelector(`[data-dispatch-live="${id}"]`)!;
+      const go = () => {
+        const src = document.body.appendChild(document.createElement('div'));
+        (window as any).htmx.ajax('GET', '/ui/dispatch-card?agent=' + id, { source: src, target: w, swap: 'innerHTML', select: '[data-dispatch-card]' });
+      };
+      go();
+      setTimeout(go, 200);
+    }, agentId);
+    await expect.poll(() => fetched, { timeout: 10_000 }).toBe(2);
+    await page.waitForTimeout(2000); // past the held stale answer
     await expect(card).toHaveAttribute('data-dispatch-state', 'waiting');
     await page.unroute('**/ui/dispatch-card?agent=*');
     // The card's link is the agent's page (its list link: its latest session).
