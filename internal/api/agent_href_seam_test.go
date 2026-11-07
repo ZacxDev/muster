@@ -297,7 +297,7 @@ var agentHrefCallLedger = map[string]int{
 	"AgentPath ← internal/api/agent_outcome.go:Server.pushOutcome":                    1,
 	// dispatch_approve's push: the BARE page, as notifyAgentRunning's (#237) —
 	// the agent was just created, so it has no session to name yet.
-	"AgentPath ← internal/api/dispatch_hold_tools.go:Server.tellOwnerOfSessionDispatch": 1,
+	"AgentPath ← internal/api/dispatch_hold_tools.go:Server.pushSessionDispatch": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the
