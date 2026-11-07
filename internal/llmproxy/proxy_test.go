@@ -493,6 +493,47 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	}
 }
 
+// TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding: the meter learns a
+// held item from HQ too, not only from muster's own claim calls. After a
+// restart (a new proxy, nothing in memory) an instance that survived it still
+// holds its item in HQ; the next wake-loop read adopts that item, from zero,
+// and the cap binds it. Only a single held item is adopted: two are ambiguous.
+func TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding(t *testing.T) {
+	const officer = "items:adopt"
+	r := newRig(t, officer, streamOK(0.0001))
+	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request counts 1007 tokens: the cap admits two
+
+	r.p.Sync(officer, map[int][]string{1: {"item-x"}, 2: {"item-y", "item-z"}}, time.Now())
+	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
+		resp, body := r.post(t)
+		if resp.StatusCode != want {
+			t.Fatalf("request %d after the read showed item-x held: %d %s, want %d", i+1, resp.StatusCode, body, want)
+		}
+		if want == http.StatusBadRequest && !strings.Contains(body, "item item-x") {
+			t.Fatalf("the cap refusal does not name the adopted item: %s", body)
+		}
+	}
+	if _, item := r.p.items.used(instanceKey{officer, 2}); item != "" {
+		t.Fatalf("instance 2, shown holding two items, adopted %q; want none", item)
+	}
+
+	// HQ shows the instance holding a different single item: the meter
+	// follows it, from zero.
+	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, time.Now())
+	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-w" || used != 0 {
+		t.Fatalf("after a read showing item-w held: %d on %q, want 0 on item-w", used, item)
+	}
+
+	// A read made BEFORE an end does not re-adopt the ended item.
+	readAt := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	r.p.Ended(officer, 1, "item-w")
+	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, readAt)
+	if _, item := r.p.items.used(instanceKey{officer, 1}); item != "" {
+		t.Fatalf("a read predating the end re-adopted %q", item)
+	}
+}
+
 // TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange: a provider
 // refusal of the key is counted per status, holds the failing gauge at 1, is
 // logged loudly ONCE however many requests hit it, answers the instance with a
