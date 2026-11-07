@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"testing"
@@ -23,13 +24,44 @@ type repromptChat struct {
 	stubGateway
 	mu   sync.Mutex
 	sent []string
+	// newConv is, per send in order, "<agent>: <the turn's
+	// agents.HeaderCCNewConversation route header>" ("" when none).
+	newConv []string
+	// reply, when set, plays the runtime's side of each send (after it is
+	// recorded, with g.mu NOT held): what it marks accepted and the error the
+	// send returns. nil plays a current ccd: a turn asking for a new
+	// conversation is accepted naming one (agents.TurnAcceptance.
+	// NewConversation, "conv-<n>"), and every send answers "on it".
+	reply func(ctx context.Context, name string) error
 }
 
-func (g *repromptChat) Chat(_ context.Context, a agents.Agent, _, message string, _ func(string)) (string, error) {
+func (g *repromptChat) Chat(ctx context.Context, a agents.Agent, _, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.sent = append(g.sent, a.Name+": "+message)
+	nc := ""
+	if rt, ok := agents.TurnRouteFrom(ctx); ok {
+		nc = rt.Header.Get(agents.HeaderCCNewConversation)
+	}
+	g.newConv = append(g.newConv, a.Name+": "+nc)
+	n, reply := len(g.sent), g.reply
+	g.mu.Unlock()
+	if reply != nil {
+		if err := reply(ctx, a.Name); err != nil {
+			return "", err
+		}
+		return "on it", nil
+	}
+	if nc == "1" {
+		agents.MarkTurnAccepted(ctx, agents.TurnAcceptance{NewConversation: fmt.Sprintf("conv-%d", n)})
+	}
 	return "on it", nil
+}
+
+// setReply sets g.reply (nil: a current ccd).
+func (g *repromptChat) setReply(f func(ctx context.Context, name string) error) {
+	g.mu.Lock()
+	g.reply = f
+	g.mu.Unlock()
 }
 
 func (g *repromptChat) count() int { g.mu.Lock(); defer g.mu.Unlock(); return len(g.sent) }

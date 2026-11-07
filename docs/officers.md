@@ -201,6 +201,27 @@ positive and a negative case in the Go suite (`cmd/ccd`,
 still needs a `claude-code-agent` image built from this version: an older
 entrypoint refuses the route's variables, and its pod does not start.
 
+**Memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+`CLAUDE_CODE_DISABLE_ORG_MEMORY=1`).** Every officer instance's pod — either
+pool, untiered too, whatever [`fresh_session_per_item`](#the-two-pools) says —
+is given the Claude Code CLI's own switches for its memory. With the first,
+the CLI neither reads nor writes its auto-memory directory on the instance's
+volume (`<CLAUDE_CONFIG_DIR>/projects/<workspace>/memory`). The second turns
+off org memory, which has its own gate: that gate checks its variable, a
+server-side feature flag and claude.ai authentication, and does not read the
+auto-memory variable, so an instance on a subscription token would otherwise
+keep it whenever the flag is on (whether it ever is for these accounts is not
+known). What an officer remembers of earlier items is HQ's to give (the
+claim-time history), never something a session stored for itself. With one
+conversation per item, such memory would be a channel between items outside
+HQ. The switches are the pod's environment rather than `settings.json` keys
+because a session can rewrite its own settings but not its CLI's environment.
+Files already in the memory directory are left where they are, and are no
+longer read. It takes effect at the instance's next pod start. Both variables
+were read from the CLI bundles, 2.1.289 and the image's 2.1.296 (in both, the
+auto-memory variable is checked before any setting). They were not run in an
+officer pod.
+
 No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
 
@@ -446,7 +467,10 @@ The decision (`officers.Decide`, a pure function):
   started or recently prompted already covers. Without it an instance whose turn
   ended would never look at the queue again while it stays up, and the officer
   would neither work the new item nor go idle. Rate limit: one prompt per
-  instance per 5 minutes (`officers.RepromptAfter`).
+  instance per 5 minutes (`officers.RepromptAfter`) — except an instance of a
+  [`fresh_session_per_item`](#the-two-pools) pool whose conversation has had
+  its one item and that holds no live claim, which is prompted on the next
+  pass.
 
   **How it is sent.** As a turn of its own under the instance's **session
   claim** (`ClaimKickoff`), the claim a first turn and a cairn memo hold for a
@@ -843,6 +867,14 @@ requested once and decided by hand, and how to query a postgres one:
 read-only transaction with a timeout and capped rows, reading `pg_catalog` to
 check tables and columns (the github sentence then says "the only connector
 you may use for it").
+
+An instance of a pool with [`fresh_session_per_item`](#the-two-pools) is
+also told, last, that this conversation is for ONE item: once it has
+completed, released or handed the item on, or asked a person about it, it ends
+its turn without claiming another (`officer_claim` refuses one), and muster
+starts a new conversation, with the same first message, for the next item.
+The wake loop's prompt of such an instance is this whole first message, not
+the "as before" re-prompt.
 
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.
@@ -1482,7 +1514,8 @@ file, so a restarted muster derives the same `seq` for the same event, and its
 resume — which re-reads the backfill window — is deduplicated by HQ's rule
 rather than by memory. It stays below 2^53 (a JSON-safe integer) for any file
 under 256 GiB (2^53 / 2^15 = 2^38 bytes). A new conversation mid-item (a new file, offsets from zero: an
-operator's `/clear`; `ccd` resumes the primary's own conversation by id on a
+operator's `/clear` — never muster's own new conversation per item, which ccd
+starts before the item is claimed; `ccd` resumes the primary's own conversation by id on a
 restart) is shifted above the seqs before it; a muster that restarts INTO such
 a conversation has lost that shift, sees HQ answer `stored: 0` with a
 `last_seq` above a batch it read live, and re-sequences that batch and the ones
@@ -1657,6 +1690,96 @@ An officer may split its instances into two **pools**, one per HQ item tier
     `muster_officer_cap_refusal_withheld` counts the withheld instances,
     and the log says when one is withheld and when it is not any more. A
     restarted muster starts a new episode for a refusal still in force.
+
+- **One conversation per item: `tiers.<pool>.fresh_session_per_item`**
+  (`true` on either pool, or both; **off by default** — leave it out for one
+  conversation the instance keeps). 🔴 Turn it on for a LIVE officer only once
+  HQ serves the claim-time `history` block on the items it claims: with it on,
+  an instance remembers nothing from one item to the next, and that block is
+  where an officer's memory of earlier items is meant to come from. Until
+  then, enable it only on officers used for replay, where carrying nothing
+  over is the point. Without it an instance keeps ONE Claude
+  Code conversation on its volume: `ccd` resumes it on every start (a pod
+  restart, a stop at the idle window or the wall-time cap), and the wake
+  loop's prompt for the next item says "work the queue as before". So every
+  item is worked with every earlier item's context, which biases the next
+  investigation ("same conclusion as the last item") and makes a replay of
+  one item impossible. With it, every item an instance of the pool works
+  starts in a **new conversation**:
+  - **Every turn muster sends the instance asks ccd for a new
+    conversation**: the kickoff deliverer's first turn (a start: the pool woke,
+    a stopped instance restarted for its next item, an instance restarted
+    after the wall-time cap) and the wake loop's prompt of an idle instance
+    (its next item, a `needs_judgement` item promoted from the routine pool).
+    The turn carries `X-Muster-CC-New-Conversation: 1`
+    (`api.Server.OfficerTurnContext`, the one rule both share). ccd then types
+    the CLI's own `/clear` before the turn, waits for a `SessionStart` with
+    source `clear`, fired by the primary CLI's own process (not a `claude`
+    nested in its pane), naming a **new** session id, and only then types the
+    turn. The new session is recorded as the one every later start resumes,
+    so a restart mid-item keeps the item's own conversation. The old
+    conversation's transcript is **kept** on the volume, for audit. A CLI
+    with no transcript yet (a fresh volume) already has a new conversation,
+    and nothing is typed. If that `SessionStart` does not arrive in time, the
+    turn fails `new_conversation_unconfirmed` (a 502, which muster does not
+    re-send at once, unlike `not_ready`) and is **not** typed into the old
+    conversation. `/clear` may still be in the CLI's input line (an Enter that
+    landed while it was still taking the paste), so the next new-conversation
+    turn in that same session presses Enter instead of typing `/clear` again
+    beside it. That submits a `/clear` still waiting there, and does nothing on
+    an empty line.
+  - **ccd confirms the new conversation.** Its answer to such a turn names the
+    new session (`X-Muster-CC-New-Conversation-Session`, on the `103` it sends
+    once the CLI has taken the turn's text, and on the final answer), and its
+    `/healthz` says `"new_conversation": true`. muster frees the instance to
+    claim again only on that confirmation. A ccd that takes the turn without
+    naming a new conversation predates the header, and the turn runs in the
+    conversation the CLI already had. muster logs it (`did not confirm a new
+    conversation`), keeps the instance's claims refused, and sends it no
+    further turn until the instance is started again.
+  - **The turn is the kickoff**, never "as before": the instance calls
+    `officer_brief` and loads the current charter for every item. The kickoff
+    of such a pool ends with a one-item paragraph (see [The first
+    message](#the-first-message)).
+  - **One item per conversation, enforced before HQ**: the conversation is
+    marked by its first **successful** claim, and `officer_claim` (by id or
+    claim-next) then refuses it any other item, naming
+    `fresh_session_per_item` — while it holds the item, and however the hold
+    ends: complete, release, `needs_judgement`, `officer_ask_person`, a lease
+    HQ let lapse, or a complete HQ refused (`lease_lost`). Re-claiming its own
+    item is allowed. The mark is cleared only when ccd confirms a new
+    conversation took a turn muster sent (above), never before the send. The
+    refusal tells the instance to end its turn. The wake loop prompts it again
+    on its next pass, in a new conversation, without waiting out the
+    5-minute re-prompt limit (an instance whose last turn is still ending is
+    refused `409 busy` with nothing typed, and the pass after tries again).
+    ⚠ The mark is muster-server's memory: a muster restarted while an
+    instance's turn is still running forgets that the turn's conversation
+    had its item, and that one turn may claim one more item once it holds
+    none (a live claim is still refused, from HQ's claimed list).
+  - **Transcripts to HQ** (`transcript`) follow it: ccd's `GET
+    /v1/transcript` serves the CLI's current session, which `/clear` moves to
+    the new one, so each item's upload is that item's own conversation.
+  - **Cost.** Each item pays one kickoff it did not before: 5.3 KB (about
+    870 words) for a judgement instance without a repository, 7.7 KB (about
+    1,200 words) with `repo`, `read_repos` and `connectors` (measured from
+    `officers.KickoffText` at this version; a `kube` block adds about 1.5
+    KB). That is roughly 1,300–2,000 input tokens of text, plus one
+    `officer_brief` answer (the charter, open items and recent outcomes; its
+    size is HQ's). The CLI's system prompt and tool definitions are sent on
+    every request either way. In exchange, no request carries earlier items'
+    history.
+  - Not offered to an untiered officer: an officer without `tiers` is
+    exactly what it was.
+  - It needs a `claude-code-agent` image from this version: an older ccd
+    ignores the header, and the turn then runs in the conversation the CLI
+    already has. muster detects that from the missing confirmation (above),
+    and the claim rule still holds.
+  - **Read, not run, on the image's CLI.** `/clear` was measured on the CLI
+    2.1.289 (a workstation). The image's 2.1.296 was read, not run: its bundle
+    still has `/clear` as the local command "Start a new session with empty
+    context; previous session stays on disk", with `SessionStart` source
+    `clear` and `SessionEnd` reason `clear` in its hook schema.
 
 Refused at boot, each naming the problem:
 - a tier key other than `routine` and `judgement`;

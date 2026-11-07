@@ -26,7 +26,7 @@ type ActiveRow struct {
 	Name        string // the agent slug (the route key)
 	DisplayName string // human-facing label ("" → falls back to Name)
 	SessionID   int64  // the session to deep-link to (0 → link to bare /agents/{name})
-	Phase       string // "thinking" | "responding" — the live phase
+	Phase       string // "thinking" | "responding" | "queued" — the live phase
 	Since       string // relative label for recently-active rows (e.g. "2m ago"); "" while in-flight
 	InFlight    bool   // true → show the live phase pill; false → show the Since label
 }
@@ -144,8 +144,13 @@ func activeRow(it ActiveRow) g.Node {
 func activePill(it ActiveRow) g.Node {
 	if it.InFlight {
 		text := "responding"
-		if it.Phase == "thinking" {
+		switch it.Phase {
+		case "thinking":
 			text = "thinking…"
+		case "queued":
+			// A message waiting for the agent's turn in flight (internal/api
+			// chat_busy.go): nothing has been sent yet.
+			text = "queued"
 		}
 		return Span(
 			Class("inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent ring-1 ring-inset ring-accent/30"),

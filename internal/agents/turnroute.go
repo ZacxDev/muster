@@ -54,6 +54,26 @@ const (
 	// for the session's life. A ccd that predates it IGNORES it and starts the
 	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
+	// HeaderCCNewConversation, "1", on a turn of the agent's ORIGINAL CLI (no
+	// HeaderCCSession): ccd starts a NEW conversation in that CLI before it
+	// pastes the turn — the CLI's /clear, whose new session ccd records as the
+	// one every later start resumes — when the current conversation has a
+	// transcript; the old transcript is kept. Set only by the officer runtime,
+	// on every turn of an instance of a fresh_session_per_item pool (internal/
+	// api OfficerTurnContext). ccd ignores it on an explicit session's turn,
+	// and a ccd that predates it ignores it everywhere: the turn then runs in
+	// the conversation the CLI already has, and its answer carries no
+	// HeaderCCNewConversationSession, which is how muster notices
+	// (docs/officers.md, "One conversation per item").
+	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
+	// HeaderCCNewConversationSession is ccd's ANSWER to a turn carrying
+	// HeaderCCNewConversation: the session id of the new conversation the turn
+	// was typed into, on the 103 that says the CLI accepted it (turnaccepted.go
+	// TurnAcceptance.NewConversation) and on the final answer. A ccd that
+	// predates HeaderCCNewConversation never sends it, which is how muster
+	// tells a stale image from a current one (internal/api
+	// OfficerTurnContext).
+	HeaderCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
 )
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names
@@ -102,7 +122,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCNewConversation} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

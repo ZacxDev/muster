@@ -60,6 +60,12 @@ type InstanceState struct {
 	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
 	// instance and not yet delivered. Such an instance is not re-prompted.
 	PromptPending bool
+	// Spent, for an instance of a fresh_session_per_item pool: its current
+	// conversation has claimed its one item (Officer.FreshSessionPerItem).
+	// Held by no live claim, it is done with that item however the hold
+	// ended, and is prompted (into a new conversation) without waiting out
+	// RepromptAfter. Always false for every other pool.
+	Spent bool
 }
 
 // Fleet is how the loop observes and moves an officer's instances.
@@ -353,7 +359,12 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 //
 // Rate limit: an instance prompted within RepromptAfter is not prompted again,
 // and it — like a pending prompt — counts as already covering one claimable
-// item, so a fresh item gets one prompt, not one per instance. An instance
+// item, so a fresh item gets one prompt, not one per instance. Except a SPENT
+// instance (InstanceState.Spent: a fresh_session_per_item pool's whose
+// conversation has had its one item): it is due at once, else a fresh pool
+// would work at most one item per instance per RepromptAfter. If its last
+// turn is still ending, ccd refuses the prompt (409 busy, nothing typed) and
+// the next pass tries again. An instance
 // busy without a claim (deciding which item to take) is thus prompted at most
 // every RepromptAfter, and the deliverer refuses to type into a running turn
 // anyway (ccd's 409 busy), so a prompt never interrupts one.
@@ -366,7 +377,10 @@ func reprompts(insts []InstanceState, heldByUp map[string]bool, uncovered int, p
 			continue
 		}
 		at, prompted := promptedAt[in.N]
-		if in.PromptPending || (prompted && now.Sub(at) < RepromptAfter) {
+		// A spent instance (a fresh pool's, its one item done however its
+		// hold ended — it holds none, above) is not "on its way to the
+		// queue": its conversation may claim nothing more, so it is due now.
+		if in.PromptPending || (prompted && now.Sub(at) < RepromptAfter && !in.Spent) {
 			uncovered-- // already on its way to the queue
 			continue
 		}
@@ -1140,7 +1154,15 @@ func HQFaults() float64 { published.Lock(); defer published.Unlock(); return pub
 
 // RepromptText is the turn an up, idle instance is given when its officer has
 // claimable work. Like KickoffText it carries no credential.
+//
+// 🔴 A FRESH POOL'S IS THE KICKOFF (Officer.FreshSessionPerItem): its turn
+// starts a NEW conversation (internal/api OfficerTurnContext), which has no
+// "as before" to refer to — it must call officer_brief and load the charter
+// like a first start.
 func RepromptText(o Officer, n int) string {
+	if o.FreshSessionPerItem() {
+		return KickoffText(o, n)
+	}
 	return fmt.Sprintf("New work for officer %s (you are instance %s, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
 		"Call %s again only if you need your charter.", o.ID, o.InstanceLabel(n), o.InstanceName(n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
 }

@@ -92,6 +92,33 @@ func Unsent(err error) string {
 	return ""
 }
 
+// TurnInFlight reports whether err is the runtime's typed 409 `busy` refusal —
+// another turn holds the session (or, with code [CodeAwaitingApproval], its pane
+// shows a dialog) and nothing was typed — and returns the refusal's code.
+//
+// It is the `busy` HALF of [UnsentBusy], read through [Unsent] so a tool turn's
+// request 2+ is never mistaken for one. The other half, a 409 `rate_limited`
+// (the CLI's usage-limit menu), is deliberately NOT a turn in flight: waiting for
+// it to clear is waiting for a reset hours away, not for a turn to end.
+//
+// A chat turn the owner typed waits on this and sends again (internal/api
+// chat_busy.go); that is the one reader that must tell the two halves apart.
+func TurnInFlight(err error) (code string, ok bool) {
+	if Unsent(err) != UnsentBusy {
+		return "", false
+	}
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) || rt.Type != "busy" {
+		return "", false
+	}
+	return rt.Code, true
+}
+
+// CodeAwaitingApproval is the `code` of a `busy` refusal whose pane shows a
+// dialog (cmd/ccd awaitingApproval): the session is not mid-turn, it is waiting
+// for someone to answer a prompt in the terminal.
+const CodeAwaitingApproval = "awaiting_approval"
+
 // LanesFull reports whether err is ccd's typed 503 `capacity` refusal
 // (agents.FailureCapacity): the turn named an explicit session, its CLI was
 // not running, and every CLI ccd may run at once is held by a turn. ccd answers
