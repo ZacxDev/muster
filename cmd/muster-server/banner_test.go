@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
@@ -274,6 +275,8 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The outcome watchdog: `agent watchdog: ON — …` with all three, or OFF.
+	envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval,
 	// The officer runtime: `officers: ON — n declared …` or `officers: OFF`.
 	envOfficers,
 	// The Agents list's Idle section: one line in both directions (ON with the
@@ -851,6 +854,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The Agents list's Idle section, at a value that is not the default.
 		AgentsIdleAfter:    72 * time.Hour,
 		AgentsIdleAfterRaw: "3d",
+		// The outcome watchdog: the banner branches on ext.Outcomes (below),
+		// and reports these, at values that are not the defaults.
+		AgentStuck:            agentoutcome.Thresholds{NoReply: 7 * time.Minute, Silent: 45 * time.Minute},
+		AgentWatchdogInterval: 2 * time.Minute,
 		// Android passkeys: the banner branches on ext.AssetLinks (below), built
 		// by the real config.assetLinks over these values.
 		AndroidPackage:    "app.example.passkeys",
@@ -862,6 +869,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		AssetLinks:  assetLinks,
+		Outcomes:    agentoutcome.NewPG(nil),
 		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),

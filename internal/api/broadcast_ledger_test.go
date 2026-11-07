@@ -37,6 +37,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 	want := []string{
 		// requests — the principal's user owns the event.
 		"(*Server).advanceTaskToInProgress → broadcast(ctx)",
+		// An agent's outcome changed (agent_outcome.go): its page and row, and the
+		// chief panel of the chief told about it.
+		"(*Server).outcomeChanged → agentChangedFor(a.OwnerID)",
+		"(*Server).noteOutcomeToChief → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",

@@ -297,8 +297,9 @@ and has no default**. Today that is a pod, `pod/claude-code` or
 `pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
 host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
 words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
-other model you name is `pod/gateway` with that model as its OpenRouter id
-(`openrouter/<provider>/<model>`).
+other model you name is `pod/gateway` with that model: the chief gives its
+OpenRouter model id or name, and muster resolves it to the id
+([checked against the catalogue](provisioner.md#models-are-checked-before-a-pod-starts)).
 Asked to start an agent without a model, the chief calls it with no target, and
 the refusal lists the choices that exist now in your words — "Claude Code (your
 Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it
@@ -325,7 +326,11 @@ creates a claude-code [machine-job worker](jobs.md) (no task), holding one of
 the chief's live slots for as long as it runs.
 
 A claude-code agent runs on an account from your Claude account pool and has
-no per-agent model; `model` is taken only by `pod/gateway`. It works in the
+no per-agent model; `model` is taken only by `pod/gateway`, and it is
+[checked against the model catalogue](provisioner.md#models-are-checked-before-a-pod-starts)
+before anything is reserved: a display name that matches one model is resolved
+to its id, and anything else is refused with up to five of the closest ids in
+`model_suggestions`, so the chief asks you which you meant. It works in the
 task's repository (or the `repo` the chief passes, one of your connected
 repositories; `base` picks the branch): its session starts inside a checkout,
 so the repository's `CLAUDE.md` and project skills load. Its optional `prompt`
@@ -343,12 +348,20 @@ MCP answer says so: the agent's first message names it as your answer given
 over MCP from `<host>`/`<session>`, and the audit row records
 `instructions_via` / `instructions_from`. Anything else is refused, and the
 chief is told to ask you with `task_route_attention`. The `task.chief_dispatch`
-audit row records the kind, the target, the prompt (`instructions`), the ask it
+audit row records the kind, the target, the `model` (and `model_input` when it
+was resolved from a name), the prompt (`instructions`), the ask it
 came from (and, for an MCP answer, where), and any `request_key`. No muster
 page reads that row back yet: query it
 (`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`;
 a start with no task has the object `dispatch:<32 hex>`).
 What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#agent_dispatch-the-guards).
+
+**Every agent the chief starts reports back.** When it finishes, fails or goes
+quiet ([outcomes](provisioner.md#how-an-agents-work-ends)), you get one push,
+and muster writes a note in the chief's chat — `[muster] Agent <name> … that
+you started with agent_dispatch FAILED: <reason>. … offer to start it again …`
+— so the chief can tell you, and offer to start it again with the cause fixed.
+The note costs the chief no turn: it reads it on its next one.
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own

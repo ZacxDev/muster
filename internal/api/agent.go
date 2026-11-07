@@ -352,6 +352,13 @@ func (s *Server) agentTools() []agentTool {
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
 	}
+	// agent_report_done (agent_report_done.go): a started agent's EXPLICIT
+	// "I finished" — the one completion signal besides moving its task. Every
+	// agent but the chief, and on MCP so a claude-code agent has it too; only
+	// with the outcome store that records it.
+	if s.outcomesOn() {
+		tools = append(tools, agentTool{def: agentReportDoneToolDef(), mcp: true, notChief: true})
+	}
 	// ask_owner (owner_ask.go): the chief's question card in its own chat.
 	// Chief-only, and on MCP so a claude-code chief has it too. OFFERED WITH NO
 	// GATE: it needs no store (the card is drawn from the stored call), every
@@ -753,6 +760,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return text
 	}
 	switch name {
+	case agentReportDoneTool:
+		return s.toolAgentReportDone(ctx, a, arguments)
 	case "agent_get_task":
 		if a.NoteID == nil {
 			return toolErr("no task assigned to you")

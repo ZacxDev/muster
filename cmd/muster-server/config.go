@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
@@ -155,6 +156,14 @@ const (
 	// have had no activity to be drawn in the sidebar's collapsed "Idle" group. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
 	// off, refused outside 1h–365d otherwise.
 	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
+	// The outcome watchdog (internal/agentoutcome, internal/api
+	// agent_watchdog.go): a started agent with no first reply and no activity
+	// for NO_REPLY after its kickoff, or no activity for SILENT once it has
+	// replied, is called stuck (one push, a note to the chief that started it).
+	// Go durations, at least 1s; 5m, 30m and 1m when unset.
+	envAgentStuckNoReply     = "MUSTER_AGENT_STUCK_NO_REPLY"
+	envAgentStuckSilent      = "MUSTER_AGENT_STUCK_SILENT"
+	envAgentWatchdogInterval = "MUSTER_AGENT_WATCHDOG_INTERVAL"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -684,6 +693,11 @@ type config struct {
 	// set ("" unset), for the banner.
 	AgentsIdleAfter    time.Duration
 	AgentsIdleAfterRaw string
+	// AgentStuck is the outcome watchdog's thresholds (MUSTER_AGENT_STUCK_NO_REPLY,
+	// MUSTER_AGENT_STUCK_SILENT) and AgentWatchdogInterval its sweep
+	// (MUSTER_AGENT_WATCHDOG_INTERVAL), defaults filled.
+	AgentStuck            agentoutcome.Thresholds
+	AgentWatchdogInterval time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -1491,6 +1505,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v", envAgentsIdleAfter, err)
 	}
 	c.AgentsIdleAfter = idleAfter
+	def := agentoutcome.DefaultThresholds()
+	for _, v := range []struct {
+		name string
+		dst  *time.Duration
+		def  time.Duration
+	}{
+		{envAgentStuckNoReply, &c.AgentStuck.NoReply, def.NoReply},
+		{envAgentStuckSilent, &c.AgentStuck.Silent, def.Silent},
+		{envAgentWatchdogInterval, &c.AgentWatchdogInterval, agentoutcome.DefaultInterval},
+	} {
+		d, err := agentoutcome.ParseThreshold(getenv(v.name), v.def)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v", v.name, err)
+		}
+		*v.dst = d
+	}
 	c.FocusRetention = focus.DefaultRetention
 	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
 		d, err := time.ParseDuration(v)

@@ -52,6 +52,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agentkickoff"
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
@@ -294,6 +295,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
 		TagAutoDispatch:              cfg.TagAutoDispatch,
 		AgentsIdleAfter:              cfg.AgentsIdleAfter,
+		// Every door that sets an agent's model checks it against OpenRouter's
+		// catalogue (internal/api model_validate.go) — the cache the dispatch
+		// form's model picker already reads.
+		ModelCatalog: api.OpenRouterCatalog(),
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
@@ -324,6 +329,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
+		// A started agent's outcome (migration 0088, internal/agentoutcome):
+		// done / failed / stuck, pushed once per change; RunAgentWatchdog sweeps it.
+		ext.Outcomes = agentoutcome.NewPG(pool)
+		ext.AgentWatchdog = cfg.AgentStuck
 		// The request Principal's role comes from users.role (accounts PR 3b);
 		// without this store only user 1 would be admin, by fallback.
 		ext.Users = users.NewPG(pool)
@@ -772,7 +781,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
 	// srv so its changes reach open agent pages and sidebars through srv's broadcast.
-	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, logger); err != nil {
+	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("kickoff deliverer: %w", err)
 	}
@@ -780,7 +789,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("status promoter: %w", err)
 	}
-	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, logger); err != nil {
+	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, srv.OutcomeHold, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("memo relay: %w", err)
 	}
@@ -1086,6 +1095,11 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAttentionSweep(ctx, 0)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
+	// The outcome watchdog: a started agent gone quiet is called stuck, once
+	// (returns at once with no outcome store). Unguarded at replicas > 1 like
+	// the sweeps above: each verdict is a conditional write, so two pods apply —
+	// and push — it once.
+	go a.srv.RunAgentWatchdog(ctx, a.cfg.AgentWatchdogInterval)
 	// Session state: every session's state and its episodes
 	// (MUSTER_SESSION_STATE=1; returns at once when off).
 	go a.srv.RunSessionStateSweep(ctx, api.SessionStateInterval)
@@ -1268,6 +1282,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
 	} else {
 		l.Printf("sidebar: idle group OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+	}
+
+	// The outcome watchdog (internal/api agent_watchdog.go), in both
+	// directions: its thresholds and sweep, or OFF with no outcome store.
+	if ext.Outcomes != nil {
+		l.Printf("agent watchdog: ON — a started agent is stuck after %s with no first reply (%s), or %s silent once it "+
+			"replied (%s); swept every %s (%s)", a.cfg.AgentStuck.NoReply, envAgentStuckNoReply, a.cfg.AgentStuck.Silent,
+			envAgentStuckSilent, a.cfg.AgentWatchdogInterval, envAgentWatchdogInterval)
+	} else {
+		l.Printf("agent watchdog: OFF — no database, so no agent's outcome is tracked (%s, %s and %s are not read)",
+			envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval)
 	}
 
 	// The officer runtime (docs/officers.md), in both directions. Each

@@ -296,6 +296,10 @@ type Server struct {
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool
 
+	// agentOutcomes is the outcome tracker's in-process state (agent_outcome.go):
+	// activity-write throttling and the turns open in this process.
+	agentOutcomes outcomeTracker
+
 	taskDoneMu       sync.Mutex
 	taskDoneNotified map[int64]bool
 

@@ -1237,3 +1237,42 @@ func TestNewRefusesAnIncompleteConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// TestAMemoTurnIsHeldForItsDuration: with Config.TurnHold, every memo turn is
+// held while its Send runs and released after it — on an answer and on a
+// runtime failure alike (cmd/muster-server passes api.Server.OutcomeHold, so a
+// dispatched agent reading a memo is working to the outcome watchdog).
+func TestAMemoTurnIsHeldForItsDuration(t *testing.T) {
+	w := newWorld(agent(1, "ada", "example/widgets"), agent(2, "bob", "example/widgets"))
+	w.src.set("widgets", m(t, 7, "widgets", "2000-01-02T03:04:05Z"))
+	w.gw.fail["bob"] = errors.New("the turn failed mid-stream")
+	var mu sync.Mutex
+	open := map[string]int{}
+	var log []string
+	w.gw.duringSend = func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		log = append(log, fmt.Sprintf("send(%s) held=%d", name, open[name]))
+	}
+	r, err := New(Config{Agents: w.store, Gateway: w.gw, Source: w.src, Ledger: w.ledger, NamespacePrefix: prefix,
+		TaskRepo: func(context.Context, int64) (string, error) { return "", nil },
+		TurnHold: func(a agents.Agent) func() {
+			mu.Lock()
+			open[a.Name]++
+			mu.Unlock()
+			return func() { mu.Lock(); open[a.Name]--; mu.Unlock() }
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick(t, r)
+	mu.Lock()
+	defer mu.Unlock()
+	sort.Strings(log)
+	if want := []string{"send(ada) held=1", "send(bob) held=1"}; !reflect.DeepEqual(log, want) {
+		t.Fatalf("sends %q; want each held while it ran", log)
+	}
+	if open["ada"] != 0 || open["bob"] != 0 {
+		t.Fatalf("holds left open after the tick: %v", open)
+	}
+}

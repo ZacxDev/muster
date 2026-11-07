@@ -312,6 +312,12 @@ export const openCodeSendPort = port + 271;
 export const chiefUxPort = port + 272;
 export const chiefUxConnectPort = port + 273;
 export const chiefUxFakePort = port + 274;
+// tests/agent-outcomes.spec.ts: a dispatched agent ends in a visible outcome —
+// its own server (the e2eterm build: a fake agent runtime every agent's
+// endpoint points at, a fake model catalogue, a 3 s silence watchdog).
+export const outcomesPort = port + 290;
+export const outcomesRuntimePort = port + 291;
+export const outcomesCatalogPort = port + 292;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

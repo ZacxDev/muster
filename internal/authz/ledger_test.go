@@ -87,6 +87,12 @@ var (
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
+		// The outcome tracker (agent_outcome.go): a turn's end, a work report or a
+		// task's status records the agent's OWN row's outcome — from a request or
+		// from the kickoff deliverer alike — and its sweep (agent_watchdog.go) acts
+		// for every owner. Nothing read under System is returned to a caller.
+		"internal/api.(*Server).AgentWatchdogPass",
+		"internal/api.outcomeCtx",
 		"internal/api.(*Server).roleOfChecked", // roleOf delegates to it; the connector door calls it directly
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec

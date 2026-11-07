@@ -88,7 +88,8 @@
     "tests/open-perf.spec.ts": 45.0,
     "tests/agent-sidebar.spec.ts": 10.0,
     "tests/chief-mobile.spec.ts": 12.0,
-    "tests/dock-fade.spec.ts": 8.0
+    "tests/dock-fade.spec.ts": 8.0,
+    "tests/agent-outcomes.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -184,7 +185,8 @@
       "tests/telemetry.spec.ts",
       "tests/open-perf.spec.ts",
       "tests/reconnect.spec.ts",
-      "tests/chief-ux.spec.ts"
+      "tests/chief-ux.spec.ts",
+      "tests/agent-outcomes.spec.ts"
     ]
   }
 }

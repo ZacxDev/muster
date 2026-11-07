@@ -291,7 +291,7 @@ func dispatchRows(result string) []ChatLine {
 // it, never inside it. It refreshes itself on the server's events for THAT agent.
 func TestADispatchedAgentIsACardThatOpensIt(t *testing.T) {
 	href := AgentCardView{Name: "brisk-otter", SessionID: 41}.PageHref()
-	for _, state := range []string{DispatchStarting, DispatchWorking, DispatchWaiting, DispatchDone, DispatchError} {
+	for _, state := range []string{DispatchStarting, DispatchWorking, DispatchWaiting, DispatchDone, DispatchError, DispatchFailed, DispatchStuck} {
 		c := DispatchCard{AgentID: 7, Name: "brisk-otter", DisplayName: "Fix the flaky test", Href: href,
 			Runtime: "Gateway · deepseek/deepseek-v3", Repo: "example-org/widgets", TaskID: 12, State: state}
 		doc := ccRenderLog(t, AgentDetailView{Name: "chief", Messages: dispatchRows(`{"agent_id":7,"agent":"brisk-otter"}`),
