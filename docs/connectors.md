@@ -62,11 +62,46 @@ appears in a route, the tool's output, the agent's environment, a file, a log
 line, the audit trail or an error string: errors are scrubbed of the password
 and of any DSN form (`postgres://user:password@…`, `password=…`).
 
-**Only an admin can create one** (the store refuses a member): muster-server
-dials whatever host it names, with no private-address rule, so the connector is
-the admin's decision about which one database is reached. The proxy at
+**Only an admin can create one** (the store refuses a member): by default
+muster-server dials whatever host it names, with no private-address rule, so the
+connector is the admin's decision about which one database is reached. To refuse
+private and loopback databases, see
+[refusing private addresses](#refusing-private-addresses). The proxy at
 `/connect/` refuses a postgres connector (400) rather than send its password
 over HTTP.
+
+### Refusing private addresses
+
+Set `MUSTER_DIAL_DENY_PRIVATE=1` for deployments where the admin is not the
+host's owner. muster-server then refuses to connect a postgres connector to a
+database whose address is:
+
+| range | examples |
+|---|---|
+| loopback | `127.0.0.0/8`, `::1` |
+| private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7` |
+| link-local | `169.254.0.0/16`, `fe80::/10` |
+| CGNAT (shared address space) | `100.64.0.0/10` |
+| unspecified | `0.0.0.0`, `::` |
+| multicast | `224.0.0.0/4`, `ff00::/8` |
+
+A few other reserved ranges are refused too, such as `0.0.0.0/8`, `198.18.0.0/15`,
+`240.0.0.0/4` and IPv6 forms that embed an IPv4 address. An IPv4-mapped IPv6
+address (`::ffff:` followed by an IPv4 address) is treated as the IPv4 address it
+contains.
+
+**The check is on the resolved address, when the connection is made.** It does
+not look at the host name. muster resolves the name itself and refuses the
+connection if **any** answer is in one of these ranges. It then connects to the
+address it checked, so a name that resolves to a private address is refused,
+and so is a name whose DNS answer changes between the check and the connection.
+The query fails with a `connect` error that says it refused a non-public
+address.
+
+It is **off by default**, so a self-hosted install whose database is on the same
+machine or network keeps working. The same setting covers [Web Push](push.md)
+sends. The HTTP connector proxy at `/connect/` refuses these addresses whether
+or not it is set. The boot log has a `dial guard: ON` or `dial guard: OFF` line.
 
 ### The tool: `postgres_query`
 

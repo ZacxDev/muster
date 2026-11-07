@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
@@ -215,6 +216,10 @@ type Extensions struct {
 	// ConnectorPolicy is the proxy's upstream network policy. The zero value is
 	// production's strict one; see connectors.Policy.
 	ConnectorPolicy connectors.Policy
+	// DialGuard, when set (MUSTER_DIAL_DENY_PRIVATE=1), is how the postgres
+	// connector dials its database: a host that is, or resolves to, a
+	// non-public address is refused at connect time. nil dials any host.
+	DialGuard *safedial.Guard
 
 	// Mirror is the optional MIRRORED-sessions plugin (internal/mirror). nil
 	// means the plugin is off (MUSTER_MIRROR unset), which is the default: GET
@@ -618,7 +623,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 	if ext.Connectors != nil {
 		// Postgres connectors (connectors/postgres.go): the same store; their
 		// queries run in this process, never through the HTTP proxy.
-		s.pgExec = &connectors.PostgresExecutor{Store: ext.Connectors, Logger: s.logger}
+		s.pgExec = &connectors.PostgresExecutor{Store: ext.Connectors, Logger: s.logger, Dial: ext.DialGuard}
 		s.connectProxy = &connectors.Proxy{
 			Store:            ext.Connectors,
 			Policy:           ext.ConnectorPolicy,

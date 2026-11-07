@@ -145,8 +145,9 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 		return Connector{}, err
 	}
 	// 🔴 A DATABASE CONNECTOR IS AN ADMIN'S. muster-server dials whatever host
-	// it names (no private-range rule applies to it), so a member could
-	// otherwise use muster as a way into the cluster's network.
+	// it names (no private-range rule applies to it unless
+	// MUSTER_DIAL_DENY_PRIVATE=1), so a member could otherwise use muster as a
+	// way into the cluster's network.
 	if nc.Scheme == SchemePostgres && !authz.IsAdmin(ctx) {
 		return Connector{}, fmt.Errorf("%w: only an admin may create a postgres connector", ErrInvalid)
 	}

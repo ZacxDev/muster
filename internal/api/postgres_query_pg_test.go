@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -25,9 +26,12 @@ const (
 
 // newPGQueryFixture is connFixture plus a postgres connector "pgro" that logs
 // in to the test database as a dedicated probe role.
-func newPGQueryFixture(t *testing.T) *connFixture {
+func newPGQueryFixture(t *testing.T) *connFixture { t.Helper(); return newPGQueryFixtureWith(t, nil) }
+
+// newPGQueryFixtureWith is newPGQueryFixture over newConnFixtureWith(extra).
+func newPGQueryFixtureWith(t *testing.T, extra func(ext *Extensions, pool *pgxpool.Pool)) *connFixture {
 	t.Helper()
-	f := newConnFixture(t)
+	f := newConnFixtureWith(t, extra)
 	dsn := dbtest.DSN(t)
 	target, err := pgconn.ParseConfig(dsn)
 	if err != nil {
