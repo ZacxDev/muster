@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"testing"
 
@@ -108,7 +109,7 @@ func TestTheMemoRelayIsBuiltOnlyWithACredentialAPoolAndAGateway(t *testing.T) {
 	pool, gw := &pgxpool.Pool{}, &agentgateway.Gateway{}
 	full := config{MemoURL: "http://memos.example.invalid:8125", MemoToken: "memo-credential-fixture"}
 
-	r, err := buildMemoRelay(full, pool, stubStore{}, stubNotesStore{}, gw, logger)
+	r, err := buildMemoRelay(full, pool, stubStore{}, stubNotesStore{}, gw, nil, logger)
 	if err != nil || r == nil {
 		t.Fatalf("control: with all three the relay is not built (relay=%v err=%v)", r, err)
 	}
@@ -117,7 +118,7 @@ func TestTheMemoRelayIsBuiltOnlyWithACredentialAPoolAndAGateway(t *testing.T) {
 	}
 	mapped := full
 	mapped.MemoScopeMap = "widgets=widgets,widgets-clone"
-	if r, err := buildMemoRelay(mapped, pool, stubStore{}, stubNotesStore{}, gw, logger); err != nil ||
+	if r, err := buildMemoRelay(mapped, pool, stubStore{}, stubNotesStore{}, gw, nil, logger); err != nil ||
 		r.ScopeMap().String() != "widgets=widgets,widgets-clone" {
 		t.Fatalf("the configured scope map did not reach the relay: %v (err %v)", r.ScopeMap(), err)
 	}
@@ -132,7 +133,7 @@ func TestTheMemoRelayIsBuiltOnlyWithACredentialAPoolAndAGateway(t *testing.T) {
 		"no pool":       {full, nil, gw},
 		"no gateway":    {full, pool, nil},
 	} {
-		r, err := buildMemoRelay(c.cfg, c.pool, stubStore{}, stubNotesStore{}, c.gw, logger)
+		r, err := buildMemoRelay(c.cfg, c.pool, stubStore{}, stubNotesStore{}, c.gw, nil, logger)
 		if err != nil {
 			t.Errorf("%s: err = %v, want none (inert is not an error)", name, err)
 		}
@@ -207,5 +208,24 @@ func TestATaskThatIsGoneNamesNoRepository(t *testing.T) {
 	read = taskRepoReader(stubNotesStore{err: boom})
 	if _, err := read(context.Background(), 1); !errors.Is(err, boom) {
 		t.Fatalf("a failed read: err = %v; want it passed on", err)
+	}
+}
+
+// TestBuildAppPassesTheOutcomeHoldToTheMemoRelay: buildApp gives the relay the
+// server's outcome hold, so a dispatched agent reading a memo is working to the
+// outcome watchdog (memorelay.Config.TurnHold). A source check, as for the
+// kickoff deliverer's wiring: nothing else would notice a nil here.
+func TestBuildAppPassesTheOutcomeHoldToTheMemoRelay(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(src)
+	if n := strings.Count(text, "buildMemoRelay("); n != 1 {
+		t.Fatalf("instrument check FAILED: main.go calls buildMemoRelay %d time(s), want 1", n)
+	}
+	const want = "buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, srv.OutcomeHold, logger)"
+	if !strings.Contains(text, want) {
+		t.Errorf("main.go does not contain %q: a memo turn would be invisible to the outcome watchdog", want)
 	}
 }

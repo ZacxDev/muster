@@ -156,24 +156,68 @@ func (s *Server) outcomeTurnStarted(ctx context.Context, a agents.Agent) {
 // its 103 (agents.WithTurnAccepted), the first read of its stream — or when the
 // ask ends without an Unsent refusal. The turn is open (the watchdog's
 // "working") for the ask's duration either way.
-func (s *Server) outcomeTurn(ctx context.Context, a agents.Agent) (context.Context, func(reply string, err error)) {
+//
+// 🔴 THE TURN CLOSES EXACTLY ONCE: end (the ask's result, judged) and abandon (a
+// panic: closed, judged as nothing) share one sync.Once, and a caller defers
+// them (outcomeTurnBracket.close). A turn left open reads as "working" to the
+// watchdog for the life of the process.
+func (s *Server) outcomeTurn(ctx context.Context, a agents.Agent) (context.Context, *outcomeTurnBracket) {
 	if !s.outcomesOn() {
-		return ctx, func(string, error) {}
+		return ctx, &outcomeTurnBracket{}
 	}
 	s.agentOutcomes.open(a.ID, 1)
-	var once sync.Once
-	taken := func() { once.Do(func() { s.outcomeTurnTaken(ctx, a) }) }
-	tctx := agents.WithTurnActivity(ctx, func() { taken(); s.outcomeActivity(ctx, a) })
+	b := &outcomeTurnBracket{s: s, ctx: ctx, a: a}
+	tctx := agents.WithTurnActivity(ctx, func() { b.take(); s.outcomeActivity(ctx, a) })
 	tctx = agents.WithTurnAccepted(tctx, func(acc agents.TurnAcceptance) {
 		agents.MarkTurnAccepted(ctx, acc) // the callback ctx already carried
-		taken()
+		b.take()
 	})
-	return tctx, func(reply string, err error) {
-		if agentgateway.Unsent(err) == "" {
-			taken()
-		}
-		s.outcomeTurnEnded(ctx, a, reply, err)
+	return tctx, b
+}
+
+// outcomeTurnBracket is one ask's bracket (outcomeTurn). The zero value (no
+// outcome store) does nothing.
+type outcomeTurnBracket struct {
+	s           *Server
+	ctx         context.Context
+	a           agents.Agent
+	taken, done sync.Once
+}
+
+// take: the runtime took the turn (once).
+func (b *outcomeTurnBracket) take() {
+	b.taken.Do(func() { b.s.outcomeTurnTaken(b.ctx, b.a) })
+}
+
+// end closes the turn with the ask's result, judged (outcomeTurnEnded).
+func (b *outcomeTurnBracket) end(reply string, err error) {
+	if b.s == nil {
+		return
 	}
+	b.done.Do(func() {
+		if agentgateway.Unsent(err) == "" {
+			b.take()
+		}
+		b.s.outcomeTurnEnded(b.ctx, b.a, reply, err)
+	})
+}
+
+// abandon closes the turn and judges nothing (the ask panicked).
+func (b *outcomeTurnBracket) abandon() {
+	if b.s == nil {
+		return
+	}
+	b.done.Do(func() { b.s.agentOutcomes.open(b.a.ID, -1) })
+}
+
+// close is what a caller defers, with its results: on a panic the turn is
+// abandoned and the panic continues; otherwise it ends with them.
+func (b *outcomeTurnBracket) close(reply *string, err *error) {
+	if r := recover(); r != nil {
+		b.abandon()
+		panic(r)
+	}
+	b.end(*reply, *err)
 }
 
 // outcomeTurnTaken: the runtime took a turn of a. Activity now (unthrottled),
@@ -275,7 +319,15 @@ func (s *Server) outcomeAnswered(ctx context.Context, a agents.Agent, reply stri
 }
 
 // outcomeWaiting moves a running (or stuck) agent to waiting on its owner, with
-// the reply's last lines, and — once — says so.
+// the reply's last line as the reason. It TELLS nobody yet: the watchdog sweep
+// does, after the waiting hold (outcomeTellWaiting).
+//
+// 🔴 A WAIT IS NOT TOLD AT ONCE. In a conversation every turn ends waiting on
+// the owner, and pushing (and noting to the chief) at each one buzzed the owner
+// for every reply they were sitting there reading. The tell waits the hold
+// session state uses for a waiting window (insideGrace, Server.waitingGrace:
+// 60 s) and is dropped if, meanwhile, the owner replies (the new turn re-arms
+// the agent: no longer waiting) or opens its page (outcomeViewed).
 func (s *Server) outcomeWaiting(octx context.Context, a agents.Agent, last []string) {
 	reason := "its turn ended with no reply text"
 	if len(last) > 0 {
@@ -292,8 +344,53 @@ func (s *Server) outcomeWaiting(octx context.Context, a agents.Agent, last []str
 	}
 	s.logger.Printf("outcomes: agent %d (%s) is waiting for its owner", a.ID, a.Name)
 	s.outcomeChanged(a)
-	s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", reason)
-	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(last, "\n"))
+}
+
+// outcomeTellWaiting tells a's wait — once, past the waiting hold, if nobody
+// has seen it: the push (unless session state is on: its own episode for the
+// conversation already pushes "needs you", with the same hold) and ONE note in
+// the chief's chat for the wait, quoting the last lines of the agent's newest
+// reply in its latest conversation. Claimed by agentoutcome.Store.Told,
+// conditional on the wait that began at a.OutcomeAt, so of two sweeps (two
+// replicas) one tells, and a newer wait is not told by an older read.
+func (s *Server) outcomeTellWaiting(octx context.Context, a agents.Agent, now time.Time) {
+	if a.Outcome != agentoutcome.Waiting || a.OutcomeToldAt != nil || a.OutcomeAt == nil ||
+		insideGrace(now.Sub(*a.OutcomeAt), s.waitingGrace) {
+		return
+	}
+	applied, err := s.ext.Outcomes.Told(octx, a.ID, a.OutcomeAt, now)
+	if err != nil {
+		s.logger.Printf("outcomes: agent %d: tell waiting: %v", a.ID, err)
+		return
+	}
+	if !applied {
+		return
+	}
+	lines := []string{a.OutcomeReason}
+	if sid := s.latestSessionIDs(octx, []int64{a.ID})[a.ID]; sid > 0 {
+		if msgs, err := s.ext.Agents.ListRecentChatMessages(octx, sid, 1); err == nil && len(msgs) == 1 && msgs[0].Role == "assistant" {
+			if l := agentoutcome.LastLines(agents.ScrubNote(msgs[0].Content, a.PendingNote), 3, outcomePushTitleMax); len(l) > 0 {
+				lines = l
+			}
+		}
+	}
+	if !s.sessionStateOn() {
+		s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", a.OutcomeReason)
+	}
+	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(lines, "\n"))
+}
+
+// outcomeViewed: the agent's owner opened its page. A wait not yet told is
+// seen, and is never told (the push would be for something they looked at).
+func (s *Server) outcomeViewed(ctx context.Context, a agents.Agent) {
+	if !s.outcomesOn() || a.Outcome != agentoutcome.Waiting || requestOwner(ctx) != agentOwnerID(a) {
+		return
+	}
+	octx, cancel := outcomeCtx(ctx)
+	defer cancel()
+	if _, err := s.ext.Outcomes.Told(octx, a.ID, nil, s.now()); err != nil {
+		s.logger.Printf("outcomes: agent %d: seen: %v", a.ID, err)
+	}
 }
 
 // outcomeDone moves a running (or stuck) agent to done, and — once — says so.
@@ -567,10 +664,16 @@ func (s *Server) outcomeWorkReported(ctx context.Context, a agents.Agent, cleare
 	s.outcomeWaiting(octx, fresh, []string{"its background work ended"})
 }
 
-// outcomeTaskDone: an agent moved its task to review or complete — its work is
-// done, whatever it is doing next. The task's agent still running (or stuck)
-// is moved to done.
-func (s *Server) outcomeTaskDone(ctx context.Context, taskID int64, status string) {
+// outcomeTaskDone: actor (an agent's name, from the writer's refOrigin) moved
+// taskID to review or complete. When actor IS the task's own agent its work is
+// done, whatever it is doing next, and it is moved to done.
+//
+// 🔴 ONLY THE TASK'S OWN AGENT. task_set_status is also the chief's (every
+// task) and a mirrored session's; one of them moving an agent's task used to
+// be read as that agent finishing — done, credited to it, no push, and its next
+// question swallowed because a done agent is not waiting. Anyone else's move
+// leaves the agent's outcome alone: it is still judged by its own turns.
+func (s *Server) outcomeTaskDone(ctx context.Context, taskID int64, status, actor string) {
 	if !s.outcomesOn() {
 		return
 	}
@@ -581,7 +684,7 @@ func (s *Server) outcomeTaskDone(ctx context.Context, taskID int64, status strin
 		s.logger.Printf("outcomes: task %d's agents: %v", taskID, err)
 		return
 	}
-	if a, ok := byNote[taskID]; ok {
+	if a, ok := byNote[taskID]; ok && actor != "" && a.Name == actor {
 		// A move to ready_for_review already pushes the owner (notifyTaskDone,
 		// the same funnel): no second push for one transition. complete pushes.
 		s.outcomeDone(octx, a, "moved its task to "+strings.ReplaceAll(status, "_", " "), "", status != notes.StatusReadyForReview)
@@ -623,17 +726,37 @@ func (k *KickoffOutcomeReporter) TurnActivity(ctx context.Context, a agents.Agen
 	k.s.outcomeActivity(ctx, a)
 }
 
-// TurnAnswered: the first turn answered.
+// TurnEnded: the first turn is no longer open (agentkickoff runs it once per
+// TurnStarted, on every path). Closing is all it does.
+func (k *KickoffOutcomeReporter) TurnEnded(_ context.Context, a agents.Agent) {
+	if k.s.outcomesOn() {
+		k.s.agentOutcomes.open(a.ID, -1)
+	}
+}
+
+// TurnAnswered: the first turn answered (it is already closed: TurnEnded).
 func (k *KickoffOutcomeReporter) TurnAnswered(ctx context.Context, a agents.Agent, reply string) {
-	k.s.agentOutcomes.open(a.ID, -1)
 	k.s.outcomeAnswered(ctx, a, reply)
 }
 
-// TurnFailed: the first turn failed (or was never delivered).
+// TurnFailed: the first turn failed (closed already: TurnEnded), or was never
+// delivered (it opened none). It never touches the open-turn count — guessing
+// "this agent's turn is open" from busy() would close another door's turn.
 func (k *KickoffOutcomeReporter) TurnFailed(ctx context.Context, a agents.Agent, reason string) {
-	// A first turn that was never delivered (the dwell bound) opened none.
-	if k.s.agentOutcomes.busy(a.ID) {
-		k.s.agentOutcomes.open(a.ID, -1)
-	}
 	k.s.outcomeFailed(ctx, a, reason)
+}
+
+// OutcomeHold holds a turn of a open for the outcome watchdog — the agent is
+// working, never "silent" — and judges NOTHING: a scheduled job's turn (its
+// reply is the job's result, not the agent waiting on its owner) and a memo
+// relay turn (internal/memorelay Config.TurnHold). It neither records activity
+// nor re-arms a waiting agent. release closes it, exactly once; a no-op when no
+// outcome is tracked.
+func (s *Server) OutcomeHold(a agents.Agent) (release func()) {
+	if s == nil || !s.outcomesOn() {
+		return func() {}
+	}
+	s.agentOutcomes.open(a.ID, 1)
+	var once sync.Once
+	return func() { once.Do(func() { s.agentOutcomes.open(a.ID, -1) }) }
 }

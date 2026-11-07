@@ -229,6 +229,9 @@ type Agent struct {
 	ActivityAt *time.Time `json:"-"`
 	// FirstReplyAt is when the agent's first reply arrived; nil before it.
 	FirstReplyAt *time.Time `json:"-"`
+	// OutcomeToldAt is when a waiting outcome was told (pushed and noted, or
+	// seen by the owner); nil while untold. Every transition clears it.
+	OutcomeToldAt *time.Time `json:"-"`
 	// DispatchedBy is the chief agent that started this one (agent_dispatch);
 	// nil for every other start.
 	DispatchedBy *int64 `json:"-"`

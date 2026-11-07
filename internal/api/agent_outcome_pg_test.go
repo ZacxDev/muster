@@ -175,6 +175,12 @@ func fakeRuntime(t *testing.T, stream func() string) *httptest.Server {
 // gateway to runtime, reporting to the server's outcome tracker.
 func (o *outcomeFixture) kickoff(t *testing.T, runtime *httptest.Server, list ...agents.Agent) {
 	t.Helper()
+	o.kickoffWithin(t, runtime, 0, list...)
+}
+
+// kickoffWithin is kickoff with a first-turn budget (0: the deliverer's default).
+func (o *outcomeFixture) kickoffWithin(t *testing.T, runtime *httptest.Server, budget time.Duration, list ...agents.Agent) {
+	t.Helper()
 	u, _ := url.Parse(runtime.URL)
 	host, port, _ := net.SplitHostPort(u.Host)
 	p, _ := strconv.Atoi(port)
@@ -197,7 +203,7 @@ func (o *outcomeFixture) kickoff(t *testing.T, runtime *httptest.Server, list ..
 		t.Fatal("instrument check FAILED: the server tracks no outcomes")
 	}
 	d, err := agentkickoff.New(agentkickoff.Config{Store: store, Instances: readyInstances{names}, Gateway: gw,
-		NamespacePrefix: o.prefix, Outcome: rep})
+		NamespacePrefix: o.prefix, Outcome: rep, TurnTimeout: budget})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,6 +482,7 @@ func TestAnIdleReplyIsWaitingNeverDone(t *testing.T) {
 	if got.Outcome != agentoutcome.Waiting || got.OutcomeReason != "Which repository should I work in?" {
 		t.Fatalf("a question: outcome %q reason %q; want waiting with its LAST line", got.Outcome, got.OutcomeReason)
 	}
+	o.tellWaits(t) // told once nobody has replied or looked through the hold
 	ps := o.outcomePushes(a.ID)
 	if len(ps) != 1 || ps[0].Title != agentLabel(a)+" is waiting for you: Which repository should I work in?" {
 		t.Fatalf("pushes %+v; want one \"<agent> is waiting for you: <last line>\"", ps)
@@ -572,7 +579,7 @@ func TestDoneIsOnlyAnExplicitSignal(t *testing.T) {
 
 	// Its task to review: done, and the review push is the only one.
 	r := o.dispatchGateway(t, "to review", "openrouter/acme/acme-v4.1-pro")
-	if _, err := o.srv.setNoteStatus(o.asOwner, writerAgentTool, *r.NoteID, notes.StatusReadyForReview); err != nil {
+	if _, err := o.srv.setNoteStatus(withRefOrigin(o.asOwner, refOrigin{Agent: r.Name}), writerAgentTool, *r.NoteID, notes.StatusReadyForReview); err != nil {
 		t.Fatal(err)
 	}
 	if got := o.agent(t, r.ID); got.Outcome != agentoutcome.Done {
@@ -583,7 +590,7 @@ func TestDoneIsOnlyAnExplicitSignal(t *testing.T) {
 	}
 	// To complete (no review push): done, pushed.
 	c := o.dispatchGateway(t, "to complete", "openrouter/acme/acme-v4.1-pro")
-	if _, err := o.srv.setNoteStatus(o.asOwner, writerTaskTool, *c.NoteID, notes.StatusComplete); err != nil {
+	if _, err := o.srv.setNoteStatus(withRefOrigin(o.asOwner, refOrigin{Agent: c.Name}), writerTaskTool, *c.NoteID, notes.StatusComplete); err != nil {
 		t.Fatal(err)
 	}
 	if ps := o.outcomePushes(c.ID); o.agent(t, c.ID).Outcome != agentoutcome.Done || len(ps) != 1 ||
@@ -648,9 +655,17 @@ func (o *outcomeFixture) kickedOff(t *testing.T, a agents.Agent, inFlight bool) 
 	if !inFlight {
 		// The first turn is no longer open in this process — it ended without a
 		// reply, or muster restarted under it: only then can the agent go quiet.
-		o.srv.agentOutcomes.open(a.ID, -1)
+		rep.TurnEnded(o.asOwner, fresh)
 	}
 	return o.agent(t, a.ID)
+}
+
+// tellWaits moves the clock past the waiting hold and sweeps: an untold wait
+// is told (pushed, noted) then — never at the moment it began.
+func (o *outcomeFixture) tellWaits(t *testing.T) {
+	t.Helper()
+	o.clock.Add(EpisodeWaitingGrace + time.Second)
+	o.sweep(t)
 }
 
 func (o *outcomeFixture) sweep(t *testing.T) int {

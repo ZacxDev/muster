@@ -120,3 +120,23 @@ func TestAnErrorFollowedByACompletionIsNotAFailure(t *testing.T) {
 		t.Fatal("control: an error with no completion after it did not fail")
 	}
 }
+
+// TestAnErrorFollowedByAnEmptyCompletionIsTheError (round 2, 🟢8): an `error`
+// event and then a response.completed that answers nothing (no text, no tool
+// call) is the runtime's error, with its own sentence — not an empty answer
+// (which the outcome tracker read as "its turn ended with no reply text"). A
+// completion with a tool call after an error is still the answer.
+func TestAnErrorFollowedByAnEmptyCompletionIsTheError(t *testing.T) {
+	const errEv = "event: error\ndata: {\"type\":\"error\",\"code\":\"model_not_found\",\"message\":\"FailoverError: Unknown model: acme/v9\"}\n\n"
+	empty := errEv + "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"
+	resp, err := parseResponsesSSE(strings.NewReader(empty), nil)
+	var se *StreamError
+	if !errors.As(err, &se) || !strings.Contains(se.Message, "Unknown model: acme/v9") {
+		t.Fatalf("error then an empty completion = (%v, %v); want the runtime's StreamError", resp, err)
+	}
+	tool := errEv + "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"attention_ask\",\"arguments\":\"{}\"}]}}\n\n"
+	resp, err = parseResponsesSSE(strings.NewReader(tool), nil)
+	if err != nil || len(resp.functionCalls()) != 1 {
+		t.Fatalf("error then a completion with a tool call = (%v, %v); want the tool call and no error", resp, err)
+	}
+}

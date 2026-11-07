@@ -669,9 +669,13 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	tctx, ended := s.outcomeTurn(ctx, a)
-	reply, err := s.ext.Gateway.Chat(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, nil)
-	ended(reply, err)
+	// The one turn, in the outcome bracket (outcomeTurn): closed on every path,
+	// a panic included.
+	reply, err := func() (reply string, err error) {
+		tctx, turn := s.outcomeTurn(ctx, a)
+		defer turn.close(&reply, &err)
+		return s.ext.Gateway.Chat(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, nil)
+	}()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return

@@ -789,7 +789,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("status promoter: %w", err)
 	}
-	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, logger); err != nil {
+	if a.memo, err = buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, srv.OutcomeHold, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("memo relay: %w", err)
 	}

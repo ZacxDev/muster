@@ -30,6 +30,11 @@ type Store interface {
 	// when — the stored outcome is one of from. applied is whether it moved:
 	// the caller that pushes is the one whose write applied.
 	Transition(ctx context.Context, id int64, from []string, to, reason string, now time.Time) (applied bool, err error)
+	// Told claims the telling of agent id's wait: it records now as told when
+	// the agent is still waiting and untold and — with episode — still in the
+	// wait that began then (outcome_at). applied: this caller tells (the push
+	// and the chief's note), or, for the owner opening the page, it was seen.
+	Told(ctx context.Context, id int64, episode *time.Time, now time.Time) (applied bool, err error)
 	// MarkStuck moves a running agent to stuck with reason at now when — and
 	// only when — it is still running AND its activity is still seen (the value
 	// the verdict was taken on; nil for none): activity that landed after the
@@ -89,8 +94,18 @@ func (s *PGStore) Replied(ctx context.Context, id int64, now time.Time) error {
 }
 
 func (s *PGStore) Transition(ctx context.Context, id int64, from []string, to, reason string, now time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE agents SET outcome = $3, outcome_reason = $4, outcome_at = $5
+	tag, err := s.pool.Exec(ctx, `UPDATE agents SET outcome = $3, outcome_reason = $4, outcome_at = $5, outcome_told_at = NULL
 		WHERE id = $1 AND outcome = ANY($2)`, id, from, to, reason, now)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (s *PGStore) Told(ctx context.Context, id int64, episode *time.Time, now time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE agents SET outcome_told_at = $3
+		WHERE id = $1 AND outcome = 'waiting' AND outcome_told_at IS NULL
+		  AND ($2::timestamptz IS NULL OR outcome_at = $2)`, id, episode, now)
 	if err != nil {
 		return false, err
 	}

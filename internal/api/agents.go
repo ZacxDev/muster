@@ -1586,6 +1586,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	ctx = op.begin("visit")
 	s.recordAgentVisit(ctx, a.ID)
 	s.episodeViewedAgent(ctx, r, a.ID, active.ID)
+	if viewRequest(r) {
+		s.outcomeViewed(ctx, a) // a wait not yet told is seen (agent_outcome.go)
+	}
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
@@ -2297,8 +2300,8 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// and its end, an answer or a failure, is recorded, pushed once when it
 	// changes the outcome, and told to the chief that started it. Wrapped here,
 	// the one function every chat door's turn passes.
-	ctx, ended := s.outcomeTurn(ctx, a)
-	defer func() { ended(reply, err) }()
+	ctx, turn := s.outcomeTurn(ctx, a)
+	defer turn.close(&reply, &err)
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)

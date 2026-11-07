@@ -24,6 +24,13 @@
 --       transcript and row halves. Written at most every few seconds per agent.
 --   agents.first_reply_at  when the agent's first reply arrived: before it, the
 --       "no reply since kickoff" threshold applies; after it, the silence one.
+--   agents.outcome_told_at when a 'waiting' outcome was TOLD — pushed to the
+--       owner and noted to the chief, or seen by the owner opening the agent's
+--       page (which then tells nothing). NULL while untold; every transition
+--       clears it. A wait is told only after the waiting hold (60 s, the one hold
+--       rule session state uses) and only if the owner neither replied nor
+--       looked in the meantime, claimed by a write conditional on it being NULL,
+--       so of two writers exactly one tells.
 --   agents.dispatched_by   the chief agent that started it (agent_dispatch), so
 --       its outcome is also said in that chief's chat. NULL for any other start.
 --       Not a foreign key: like chat_messages.typed_by (0081) it is a pointer a
@@ -50,7 +57,8 @@
 --   ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_outcome_check;
 --   ALTER TABLE agents DROP COLUMN IF EXISTS outcome, DROP COLUMN IF EXISTS outcome_reason,
 --     DROP COLUMN IF EXISTS outcome_at, DROP COLUMN IF EXISTS activity_at,
---     DROP COLUMN IF EXISTS first_reply_at, DROP COLUMN IF EXISTS dispatched_by;
+--     DROP COLUMN IF EXISTS first_reply_at, DROP COLUMN IF EXISTS dispatched_by,
+--     DROP COLUMN IF EXISTS outcome_told_at;
 --   DELETE FROM schema_migrations WHERE version = 88;
 
 SET LOCAL lock_timeout = '3s';
@@ -61,6 +69,7 @@ ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS outcome_at TIMESTAMPTZ;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS activity_at TIMESTAMPTZ;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS first_reply_at TIMESTAMPTZ;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS dispatched_by BIGINT;
+ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS outcome_told_at TIMESTAMPTZ;
 
 ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_outcome_check;
 ALTER TABLE public.agents ADD CONSTRAINT agents_outcome_check

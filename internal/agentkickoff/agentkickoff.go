@@ -210,8 +210,15 @@ type Config struct {
 // OutcomeReporter hears a first turn's course. Every method must be cheap and
 // must not block the delivery (it is called on the delivery's goroutine).
 type OutcomeReporter interface {
-	// TurnStarted: the first turn was stamped and is about to be sent.
+	// TurnStarted: the first turn was stamped and is about to be sent. Every
+	// TurnStarted is followed by exactly one TurnEnded.
 	TurnStarted(ctx context.Context, a agents.Agent)
+	// TurnEnded: the first turn is no longer open in this process, HOWEVER it
+	// ended — answered, failed, outlived its budget, cut off by shutdown.
+	// Deferred right after TurnStarted, so it runs once on every return path,
+	// and BEFORE TurnAnswered / TurnFailed (those run after the claim's
+	// release). It judges nothing: an abandoned turn is closed, not failed.
+	TurnEnded(ctx context.Context, a agents.Agent)
 	// TurnActivity: the turn's stream returned bytes (called per read; throttle).
 	TurnActivity(ctx context.Context, a agents.Agent)
 	// TurnAnswered: the turn completed with reply (non-empty).
@@ -665,6 +672,13 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	if d.outcome != nil {
 		d.outcome.TurnStarted(parent, fresh)
+		// 🔴 CLOSED ON EVERY PATH, HERE, NOT PER RETURN. A turn left open reads
+		// as "working" to the watchdog for the life of the process: the budget
+		// path (not reported failed, rightly) once returned without closing it,
+		// so that agent could never be called stuck and its next idle reply
+		// never read as waiting. One deferred close covers the budget, shutdown,
+		// never-connected and every later return.
+		defer d.outcome.TurnEnded(parent, fresh)
 		// Every read of the turn's stream is evidence of life (agents.WithTurnActivity):
 		// a first turn running a long tool sequence streams for minutes and must
 		// never be called stuck by the watchdog.

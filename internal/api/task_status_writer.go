@@ -168,12 +168,14 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 		// wctx so its title can name the writer's source (reviewSourceLabel).
 		s.notifyTaskDone(wctx, n)
 	}
-	// The third: an AGENT moving its task to review or complete ends its work —
-	// its outcome becomes done, said once (agent_outcome.go). Only an agent's
-	// own writers: the owner moving a card is not the agent reporting back.
+	// The third: an AGENT moving its OWN task to review or complete ends its
+	// work — its outcome becomes done, said once (agent_outcome.go). Only an
+	// agent's writers, and only the task's own agent (outcomeTaskDone checks the
+	// actor): the owner moving a card, the chief or a mirrored session calling
+	// task_set_status on it, is not that agent reporting back.
 	if prev, ok := previous(); err == nil && ok && prev != status && agentStatusWriter(writer) &&
 		(status == notes.StatusReadyForReview || status == notes.StatusComplete) {
-		s.outcomeTaskDone(ctx, id, status)
+		s.outcomeTaskDone(ctx, id, status, refOriginFrom(ctx).Agent)
 	}
 	return n, err
 }

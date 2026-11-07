@@ -80,18 +80,28 @@ func (s *Server) AgentWatchdogPass(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var open []agents.Agent
+	var open, untold []agents.Agent
 	for _, a := range list {
-		if a.Outcome == agentoutcome.Running || a.Outcome == agentoutcome.Stuck {
+		switch {
+		case a.Outcome == agentoutcome.Running || a.Outcome == agentoutcome.Stuck:
 			open = append(open, a)
+		case a.Outcome == agentoutcome.Waiting && a.OutcomeToldAt == nil:
+			untold = append(untold, a)
 		}
+	}
+	if len(open)+len(untold) == 0 {
+		return 0, nil
+	}
+	now := s.now()
+	// A wait nobody has seen is told once its hold is over (outcomeTellWaiting).
+	for _, a := range untold {
+		s.outcomeTellWaiting(ctx, a, now)
 	}
 	if len(open) == 0 {
 		return 0, nil
 	}
 	last := s.lastMessageByAgents(ctx, open)
 	th := s.watchdogThresholds()
-	now := s.now()
 	stuck := 0
 	for _, a := range open {
 		// 🔴 A TURN IN FLIGHT IS ACTIVITY. ccd answers /v1/responses only when its

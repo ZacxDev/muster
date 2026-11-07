@@ -435,10 +435,13 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	// 🔴 A FAILURE ONLY WHEN NO COMPLETION FOLLOWED. A runtime can report an
+	// 🔴 A FAILURE ONLY WHEN NO ANSWER FOLLOWED. A runtime can report an
 	// `error` event mid-stream (a failover attempt) and then complete the turn
-	// on its fallback; the completed response is the answer, not the error.
-	if failed != nil && final == nil {
+	// on its fallback; a completed response that answers (text, or tool calls)
+	// is the answer, not the error. A completion that answers NOTHING after an
+	// error is the error: read as an empty answer it lost the runtime's own
+	// sentence, and the agent's outcome said "no reply text" instead.
+	if failed != nil && (final == nil || final.answersNothing()) {
 		return nil, failed
 	}
 	if final == nil {
@@ -772,3 +775,9 @@ func toolOutputIsError(out string) bool {
 // green. The httptest-server tests in this package and in agentgateway remain
 // necessary and remain insufficient on their own.
 // ---------------------------------------------------------------------------
+
+// answersNothing reports whether a completed response carries no answer: no
+// message text and no tool call.
+func (r *responsesResponse) answersNothing() bool {
+	return strings.TrimSpace(r.messageText()) == "" && len(r.functionCalls()) == 0
+}

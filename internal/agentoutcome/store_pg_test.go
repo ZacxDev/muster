@@ -144,3 +144,53 @@ func TestTheOutcomeStoreAppliesEachChangeOnce(t *testing.T) {
 		t.Fatalf("Fail(no status): status %q outcome %q", got.Status, got.Outcome)
 	}
 }
+
+// TestAWaitIsToldOnce pins Told's conditional write against the REAL SQL: of
+// two sweeps that both read a wait untold (two replicas), exactly one tells.
+// Told applies once; not to a wait that began at another time (an older read
+// of a newer wait); not to an agent that is not waiting; the owner opening the
+// page (no episode) marks it seen; and a new wait (a transition) is untold again.
+func TestAWaitIsToldOnce(t *testing.T) {
+	ctx, s, ag, a := pgFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := s.Start(ctx, a.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := s.Told(ctx, a.ID, nil, now); err != nil || applied {
+		t.Fatalf("a running agent was told waiting: %v %v", applied, err)
+	}
+	waitAt := now.Add(time.Second)
+	if applied, err := s.Transition(ctx, a.ID, []string{Running}, Waiting, "Which branch?", waitAt); err != nil || !applied {
+		t.Fatalf("instrument check: to waiting: %v %v", applied, err)
+	}
+	other := waitAt.Add(-time.Minute)
+	if applied, _ := s.Told(ctx, a.ID, &other, now.Add(time.Minute)); applied {
+		t.Fatal("a wait that began at another time was told")
+	}
+	if applied, err := s.Told(ctx, a.ID, &waitAt, now.Add(time.Minute)); err != nil || !applied {
+		t.Fatalf("the first tell: %v %v; want applied", applied, err)
+	}
+	if applied, _ := s.Told(ctx, a.ID, &waitAt, now.Add(2*time.Minute)); applied {
+		t.Fatal("a second sweep told the same wait again")
+	}
+	if got := reread(t, ctx, ag, a.ID); got.OutcomeToldAt == nil || !got.OutcomeToldAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("told at %v; want the first tell's time", got.OutcomeToldAt)
+	}
+	// A new wait after a new turn is untold again; the owner's view marks it seen.
+	if applied, _ := s.Transition(ctx, a.ID, []string{Waiting}, Running, "", now.Add(3*time.Minute)); !applied {
+		t.Fatal("instrument check: re-arm")
+	}
+	if applied, _ := s.Transition(ctx, a.ID, []string{Running}, Waiting, "And the tests?", now.Add(4*time.Minute)); !applied {
+		t.Fatal("instrument check: waiting again")
+	}
+	if got := reread(t, ctx, ag, a.ID); got.OutcomeToldAt != nil {
+		t.Fatalf("a new wait kept the old told time %v", got.OutcomeToldAt)
+	}
+	if applied, err := s.Told(ctx, a.ID, nil, now.Add(5*time.Minute)); err != nil || !applied {
+		t.Fatalf("the owner's view: %v %v; want applied", applied, err)
+	}
+	at := now.Add(4 * time.Minute)
+	if applied, _ := s.Told(ctx, a.ID, &at, now.Add(6*time.Minute)); applied {
+		t.Fatal("a sweep told a wait the owner had seen")
+	}
+}

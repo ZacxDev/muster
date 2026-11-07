@@ -2,8 +2,9 @@ package agentkickoff
 
 import (
 	"context"
-
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,9 @@ type recReporter struct {
 func (r *recReporter) add(s string) { r.mu.Lock(); r.events = append(r.events, s); r.mu.Unlock() }
 func (r *recReporter) TurnStarted(_ context.Context, a agents.Agent) {
 	r.add(fmt.Sprintf("started(%d)", a.ID))
+}
+func (r *recReporter) TurnEnded(_ context.Context, a agents.Agent) {
+	r.add(fmt.Sprintf("ended(%d)", a.ID))
 }
 func (r *recReporter) TurnActivity(_ context.Context, a agents.Agent) {
 	r.add(fmt.Sprintf("activity(%d)", a.ID))
@@ -64,7 +68,7 @@ func TestTheOutcomeReporterHearsHowAFirstTurnWent(t *testing.T) {
 	h := newHarness(t, inst, ownedRow())
 	rep := withReporter(t, h)
 	h.tick(t)
-	if got := strings.Join(rep.snapshot(), " "); got != "started(7301) answered(7301,READY — 412 tests)" {
+	if got := strings.Join(rep.snapshot(), " "); got != "started(7301) ended(7301) answered(7301,READY — 412 tests)" {
 		t.Errorf("a good first turn reported %q", got)
 	}
 
@@ -73,20 +77,20 @@ func TestTheOutcomeReporterHearsHowAFirstTurnWent(t *testing.T) {
 	h.gw.err = &agents.StreamError{Message: "FailoverError: Unknown model: openai/Acme v4.1 flash"}
 	h.tick(t)
 	ev := rep.snapshot()
-	if len(ev) != 2 || ev[0] != "started(7301)" || !strings.HasPrefix(ev[1], "failed(7301,first turn failed: ") ||
-		!strings.Contains(ev[1], "Unknown model: openai/Acme v4.1 flash") {
-		t.Errorf("a failed first turn reported %q; want started then failed with the runtime's words", ev)
+	if len(ev) != 3 || ev[0] != "started(7301)" || ev[1] != "ended(7301)" || !strings.HasPrefix(ev[2], "failed(7301,first turn failed: ") ||
+		!strings.Contains(ev[2], "Unknown model: openai/Acme v4.1 flash") {
+		t.Errorf("a failed first turn reported %q; want started, ended, then failed with the runtime's words", ev)
 	}
 
 	h = newHarness(t, inst, ownedRow())
 	rep = withReporter(t, h)
 	h.gw.reply = "  "
 	h.tick(t)
-	if ev := rep.snapshot(); len(ev) != 2 || !strings.HasPrefix(ev[1], "failed(7301,first turn failed: ") {
+	if ev := rep.snapshot(); len(ev) != 3 || ev[1] != "ended(7301)" || !strings.HasPrefix(ev[2], "failed(7301,first turn failed: ") {
 		t.Errorf("an empty reply reported %q; want failed", ev)
 	}
 
-	// Shutdown mid-turn: started, and nothing after.
+	// Shutdown mid-turn: started and closed, never failed.
 	h = newHarness(t, inst, ownedRow())
 	rep = withReporter(t, h)
 	h.gw.hold = make(chan struct{})
@@ -101,8 +105,8 @@ func TestTheOutcomeReporterHearsHowAFirstTurnWent(t *testing.T) {
 	}
 	cancel()
 	h.d.Wait()
-	if ev := rep.snapshot(); len(ev) != 1 || ev[0] != "started(7301)" {
-		t.Errorf("a shutdown-cancelled turn reported %q; want only started (not failed)", ev)
+	if got := strings.Join(rep.snapshot(), " "); got != "started(7301) ended(7301)" {
+		t.Errorf("a shutdown-cancelled turn reported %q; want started and ended (closed, not failed)", got)
 	}
 }
 
@@ -131,17 +135,57 @@ func TestANeverDeliveredFirstTurnIsReportedFailed(t *testing.T) {
 
 }
 
-// TestATurnThatOutlivesItsBudgetIsNotReportedFailed (round 1, 🟡2): the runtime
-// may still be running a turn muster stopped waiting for, as with a shutdown,
-// so the reporter hears it started and nothing more (the watchdog judges what
-// the agent does next).
+// TestATurnThatOutlivesItsBudgetIsNotReportedFailed (round 1, 🟡2; round 2,
+// 🔴1): the runtime may still be running a turn muster stopped waiting for, so
+// it is not reported failed — but it IS closed (ended): left open it read as
+// "working" to the watchdog for the life of the process. The api test
+// TestAnAbandonedFirstTurnIsClosedAndASilentAgentGoesStuck follows it to stuck.
+//
+// 🔴 RED AT 4cca02e3: the reporter heard only "started".
 func TestATurnThatOutlivesItsBudgetIsNotReportedFailed(t *testing.T) {
 	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, ownedRow())
 	rep := withReporter(t, h)
 	h.d.turn = 50 * time.Millisecond
 	h.gw.hold = make(chan struct{})
 	h.tick(t)
-	if ev := rep.snapshot(); len(ev) != 1 || ev[0] != "started(7301)" {
-		t.Fatalf("a turn past its budget reported %q; want only started", ev)
+	if got := strings.Join(rep.snapshot(), " "); got != "started(7301) ended(7301)" {
+		t.Fatalf("a turn past its budget reported %q; want started and ended (closed, not failed)", got)
+	}
+}
+
+// TestEveryStartedFirstTurnEndsExactlyOnce: whatever path a delivery takes after
+// the stamp — an answer, the runtime's error, an empty reply, the budget, a
+// connection never opened, a not_ready past its bound —
+// the reporter hears "ended" exactly once, after "started".
+func TestEveryStartedFirstTurnEndsExactlyOnce(t *testing.T) {
+	inst := []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}
+	for _, c := range []struct {
+		name string
+		set  func(h *harness)
+	}{
+		{"answered", func(*harness) {}},
+		{"runtime error", func(h *harness) { h.gw.err = &agents.StreamError{Message: "boom"} }},
+		{"empty reply", func(h *harness) { h.gw.reply = " " }},
+		{"budget", func(h *harness) { h.d.turn = 50 * time.Millisecond; h.gw.hold = make(chan struct{}) }},
+		{"never connected", func(h *harness) { h.gw.err = &net.OpError{Op: "dial", Err: errors.New("connection refused")} }},
+		{"not ready past its bound", func(h *harness) {
+			h.d.notReadyWait, h.d.notReadyPoll = 20*time.Millisecond, 5*time.Millisecond
+			h.gw.err = &agents.RuntimeError{Status: 503, Type: "not_ready"}
+		}},
+	} {
+		h := newHarness(t, inst, ownedRow())
+		rep := withReporter(t, h)
+		c.set(h)
+		h.tick(t)
+		ev := rep.snapshot()
+		ended := 0
+		for _, e := range ev {
+			if e == "ended(7301)" {
+				ended++
+			}
+		}
+		if len(ev) == 0 || ev[0] != "started(7301)" || ended != 1 {
+			t.Errorf("%s: reported %q; want started then exactly one ended", c.name, ev)
+		}
 	}
 }

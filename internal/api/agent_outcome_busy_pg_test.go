@@ -57,6 +57,7 @@ func TestARefusedAskIsNeitherActivityNorARearm(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.srv.outcomeAnswered(o.asOwner, o.agent(t, a.ID), "Which repository should I work in?")
+	o.tellWaits(t)
 	before := o.agent(t, a.ID)
 	if before.Outcome != agentoutcome.Waiting || before.ActivityAt == nil {
 		t.Fatalf("instrument check: outcome %q activity %v; want waiting with an activity time", before.Outcome, before.ActivityAt)
@@ -94,6 +95,7 @@ func TestARefusedAskIsNeitherActivityNorARearm(t *testing.T) {
 	if _, err := o.srv.chatTurn(o.asOwner, o.agent(t, a.ID), sess.SessionKey, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
+	o.tellWaits(t)
 	got = o.agent(t, a.ID)
 	if got.Outcome != agentoutcome.Waiting || got.OutcomeReason != "Still need the repository name." ||
 		got.ActivityAt == nil || !got.ActivityAt.After(*before.ActivityAt) {
@@ -109,6 +111,7 @@ func TestARefusedAskIsNeitherActivityNorARearm(t *testing.T) {
 	if _, err := o.srv.chatTurn(o.asOwner, o.agent(t, a.ID), sess.SessionKey, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
+	o.tellWaits(t)
 	if got := o.agent(t, a.ID); got.OutcomeReason != "Or the second repository?" || len(o.outcomePushes(a.ID)) != 3 {
 		t.Fatalf("an answer with no earlier sign: reason %q, %d pushes; want re-armed to a third waiting push",
 			got.OutcomeReason, len(o.outcomePushes(a.ID)))
@@ -128,7 +131,7 @@ func TestOutcomeTurnKeepsTheCallerCallback(t *testing.T) {
 	}
 	var outer []string
 	ctx := agents.WithTurnAccepted(o.asOwner, func(acc agents.TurnAcceptance) { outer = append(outer, acc.Lane) })
-	tctx, ended := o.srv.outcomeTurn(ctx, o.agent(t, a.ID))
+	tctx, turn := o.srv.outcomeTurn(ctx, o.agent(t, a.ID))
 	agents.MarkTurnAccepted(tctx, agents.TurnAcceptance{Lane: "lane-q7"})
 	if len(outer) != 1 || outer[0] != "lane-q7" {
 		t.Fatalf("the caller's own 103 callback saw %q; want it called once with the lane", outer)
@@ -136,8 +139,43 @@ func TestOutcomeTurnKeepsTheCallerCallback(t *testing.T) {
 	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Running {
 		t.Errorf("after the runtime's 103: outcome %q; want re-armed to running", got.Outcome)
 	}
-	ended("", context.Canceled)
+	turn.end("", context.Canceled)
 	if o.srv.agentOutcomes.busy(a.ID) {
 		t.Error("the bracket left its turn open")
+	}
+}
+
+// panickingGateway panics inside the turn.
+type panickingGateway struct{ stubGateway }
+
+func (panickingGateway) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	panic("runtime client bug")
+}
+
+// TestATurnThatPanicsIsClosedNotJudged: a chat turn whose code panics closes
+// its turn (no "working" for the life of the process) and judges nothing — not
+// failed, not waiting — and the panic still reaches the caller.
+func TestATurnThatPanicsIsClosedNotJudged(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	a := o.dispatchGateway(t, "panics", "openrouter/acme/acme-v4.1-pro")
+	sess, err := agents.NewPG(o.pool).LatestOrCreateSession(o.asOwner, a.ID, a.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := o.agent(t, a.ID).Outcome
+	o.srv.ext.Gateway = panickingGateway{}
+	panicked := func() (p bool) {
+		defer func() { p = recover() != nil }()
+		_, _ = o.srv.chatTurn(o.asOwner, o.agent(t, a.ID), sess.SessionKey, "hello", nil)
+		return false
+	}()
+	if !panicked {
+		t.Fatal("the panic did not reach the caller")
+	}
+	if o.srv.agentOutcomes.busy(a.ID) {
+		t.Error("a panicked turn is still open")
+	}
+	if got := o.agent(t, a.ID); got.Outcome != before || got.Status == agents.StatusError {
+		t.Errorf("a panicked turn judged the agent: outcome %q -> %q, status %q", before, got.Outcome, got.Status)
 	}
 }
