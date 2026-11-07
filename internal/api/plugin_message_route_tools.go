@@ -168,8 +168,11 @@ type listedMessageView struct {
 }
 
 func (s *Server) toolPluginMessagesList(ctx context.Context, c toolCaller) string {
-	if !c.mirroredSession() {
-		return toolErr(pluginMessageRouteMirrorOnly, pluginMessagesListTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(pluginMessageRouteMirrorOnly, pluginMessagesListTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.pluginMessageRouteToolsOn() {
 		return toolErr("session routing is off on this server")
@@ -208,8 +211,11 @@ func (s *Server) toolPluginMessagesList(ctx context.Context, c toolCaller) strin
 }
 
 func (s *Server) toolPluginMessageRoute(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr(pluginMessageRouteMirrorOnly, pluginMessageRouteTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(pluginMessageRouteMirrorOnly, pluginMessageRouteTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.pluginMessageRouteToolsOn() {
 		return toolErr("session routing is off on this server")

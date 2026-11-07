@@ -110,6 +110,22 @@ func (s *Service) SetWaitingNotify(fn func(owner int64)) { s.hub.SetWaitingNotif
 // SetStatusNotify installs the hub's status hook (Hub.SetStatusNotify).
 func (s *Service) SetStatusNotify(fn func(owner int64)) { s.hub.SetStatusNotify(fn) }
 
+// SetSpawnReplyNotify installs the hub's late-reply hook (Hub.SetSpawnReplyNotify).
+func (s *Service) SetSpawnReplyNotify(fn func(owner int64, host string, m Msg)) { s.hub.SetSpawnReplyNotify(fn) }
+
+// SetListingNotify installs the hub's listing hook (Hub.SetListingNotify).
+func (s *Service) SetListingNotify(fn func(owner int64, host string, windows []Window)) { s.hub.SetListingNotify(fn) }
+
+// SpawnAgent asks one of the viewing principal's hosts to start an agent for
+// host dispatch dispatch. See Hub.SpawnAgent.
+func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, req AgentSpawnReq) (AgentSpawned, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return AgentSpawned{}, err
+	}
+	return s.hub.SpawnAgent(ctx, o, host, dispatch, req)
+}
+
 // SetNotifyDebounce overrides the nudge coalescing window (tests).
 func (s *Service) SetNotifyDebounce(d time.Duration) {
 	s.hub.mu.Lock()

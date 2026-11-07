@@ -31,8 +31,8 @@ import (
 //     As amended: the chief MAPS the owner's words to a target (Claude or a
 //     Claude model → pod/claude-code; any other model → pod/gateway with it), and
 //     when they named no model it asks with ask_owner, offering the refusal's
-//     `choices` (each target in the owner's words). "mirrored" is refused until
-//     mirrored dispatch ships, and never falls back to the cluster.
+//     `choices` (each target in the owner's words). "mirrored" is a held host
+//     target (host_dispatch.go), and never falls back to the cluster.
 //   - `task_id` is optional: the chief can start an agent on a task, or from a
 //     prompt alone. A start with no task is its own ledger object
 //     (plugins.NewDispatchObject), spends the same budget, and needs
@@ -46,10 +46,8 @@ import (
 //   - `request_key` makes a call idempotent per owner for 24 hours (decision
 //     8); a reuse with different parameters is refused.
 //
-// Phase 1 is PODS ONLY. A host/<host>/<runtime> target parses, but no host can
-// advertise spawning yet (hello.agentSpawn is phase 3), so the target list
-// carries no host and a host target is refused with the "cannot start agents
-// now" sentence the design gives an unspawnable host.
+// A host/<host>/<runtime> target (and "mirrored") is mirrored dispatch, phase 3:
+// host_dispatch.go.
 // ---------------------------------------------------------------------------
 
 const agentDispatchTool = "agent_dispatch"
@@ -133,8 +131,11 @@ const chiefDispatchPromptCap = "prompt is over 8 KiB: shorten it"
 const agentDispatchDescription = "Start a new agent, only with your owner's opt-in: on one of your owner's open tasks (task_id), " +
 	"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
 	"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
-	"other model they name → the gateway target with that model: give its OpenRouter model id or name; muster resolves it; \"mirrored\" → mirrored, which is " +
-	"refused until mirrored dispatch ships — never start a cluster agent in its place. If they named no model, do not guess: " +
+	"other model they name → the gateway target with that model: give its OpenRouter model id or name; muster resolves it; \"mirrored\" → a host: " +
+	"\"mirrored on <host> with Claude\" → host/<host>/claude, no host named → host/?/claude, \"mirrored\" alone → mirrored, with repo, " +
+	"a request_key and owner_asked: true; a blank host or model makes muster ask your owner with a card and start nothing — when their " +
+	"answer arrives call again with the same request_key and arguments and exactly the target they chose. Never start a cluster agent " +
+	"in place of a mirrored one. If they named no model, do not guess: " +
 	"call without a target, and the refusal lists the choices that exist right now, each with its label in your owner's " +
 	"words; ask them with ask_owner, offering those. " +
 	"A dispatch with no task needs owner_asked: true — in your answer to a message your owner typed in your chat — and a " +
@@ -270,6 +271,22 @@ func (s *Server) dispatchTargetsNow(ctx context.Context) dispatchTargets {
 		if t := plugins.PodTarget(kind); podTargetRE.MatchString(t) {
 			out.Pods = append(out.Pods, t)
 			out.Choices = append(out.Choices, dispatchChoice{Target: t, Label: dispatchTargetLabel(t), When: dispatchTargetWhen(t)})
+		}
+	}
+	// The owner's hosts that can spawn NOW (hostSpawnable): the same predicate
+	// the call checks, so the list and the refusal cannot disagree.
+	for _, v := range s.spawnableHosts(ctx, "") {
+		ht := dispatchHostTarget{Host: v.Host}
+		for _, r := range v.AgentSpawn {
+			if r == mirror.SpawnRuntimeClaude {
+				t := "host/" + v.Host + "/" + r
+				ht.Targets = append(ht.Targets, t)
+				out.Choices = append(out.Choices, dispatchChoice{Target: t, Label: "Claude Code, mirrored on " + v.Host,
+					When: "your owner said mirrored (on " + v.Host + ") with Claude; pass no model"})
+			}
+		}
+		if len(ht.Targets) > 0 {
+			out.Hosts = append(out.Hosts, ht)
 		}
 	}
 	return out
@@ -569,6 +586,11 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	owner := agentOwnerID(a)
 	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
 		return toolErr("%s", why)
+	}
+	// A HOST target — or "mirrored", which is host/?/? — is mirrored dispatch
+	// (host_dispatch.go): its own flow, the same guards in the same order.
+	if t, ok := parseHostTarget(in.Target); ok {
+		return s.toolHostDispatch(ctx, a, in, t)
 	}
 	// 🔴 FROM HERE ON EVERY ANSWER CARRIES THE CHIEF'S CURRENT BUDGET.
 	refuse := func(msg string) string { return dispatchRefusal(msg, s.chiefBudgetNow(ctx)) }

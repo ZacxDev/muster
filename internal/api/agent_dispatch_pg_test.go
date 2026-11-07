@@ -1030,12 +1030,13 @@ func TestAgentDispatchWithNoModelAsksTheOwnerInTheirWords(t *testing.T) {
 	}
 }
 
-// TestAgentDispatchRefusesMirroredUntilItShips: "mirrored" is a target the
-// chief may name (the owner said mirrored), and it is REFUSED with its own
-// sentence — never quietly started in the cluster. Nothing is reserved, no agent
-// exists afterwards, the provisioner is not called, and a case-variant or a
-// "mirrored/…" spelling is refused the same way.
-func TestAgentDispatchRefusesMirroredUntilItShips(t *testing.T) {
+// TestAgentDispatchMirroredNeverStartsAClusterAgent: "mirrored" is a held host
+// target (host/?/?, host_dispatch.go). With NO host able to spawn it is refused
+// with the no-host sentence before anything else — no card, no hold, nothing
+// reserved, no agent, no provisioner call — and a case-variant or a
+// "mirrored/…" spelling is refused the same way. Never a cluster agent in its
+// place. (Before mirrored dispatch shipped this was agentDispatchMirroredSoon.)
+func TestAgentDispatchMirroredNeverStartsAClusterAgent(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
 	n := f.task(t, "mirrored please")
 	for _, target := range []string{"mirrored", "Mirrored", "mirrored/box-a/claude"} {
@@ -1045,14 +1046,9 @@ func TestAgentDispatchRefusesMirroredUntilItShips(t *testing.T) {
 		} {
 			text := f.callRaw(f.chief, agentDispatchTool, args)
 			f.refusedNothingReserved(t, text, "", 0, 0)
-			if got := errorText(t, text); got != agentDispatchMirroredSoon {
-				t.Fatalf("target %q: error %q\nwant exactly %q", target, got, agentDispatchMirroredSoon)
+			if got := errorText(t, text); got != agentDispatchNoHost {
+				t.Fatalf("target %q: error %q\nwant exactly %q", target, got, agentDispatchNoHost)
 			}
-		}
-	}
-	for _, must := range []string{"not available yet", "no cluster agent was started in its place", "ask_owner"} {
-		if !strings.Contains(agentDispatchMirroredSoon, must) {
-			t.Errorf("the mirrored refusal does not say %q: %s", must, agentDispatchMirroredSoon)
 		}
 	}
 	if got := f.prov.calls(0); got != 0 {

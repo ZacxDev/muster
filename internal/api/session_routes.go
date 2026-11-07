@@ -242,7 +242,25 @@ const (
 	// RefusedPluginsOff: a message_id route on a server without the plugin
 	// interface.
 	RefusedPluginsOff = "plugins_off"
+	// RefusedDispatchedWindow: the target window runs an agent the chief
+	// started (its listing carries a dispatch): task_forward reaches it, for
+	// its task, through the host's tag check (docs/design/chief-dispatch.md 5.1).
+	RefusedDispatchedWindow = "dispatched_window"
 )
+
+// routeDispatchedWindow is RefusedDispatchedWindow's sentence.
+const routeDispatchedWindow = "that window runs an agent the chief started; use task_forward for its task"
+
+// windowDispatch is the dispatch host view h lists window id as carrying, 0
+// for none.
+func windowDispatch(h mirror.HostView, id string) int64 {
+	for _, w := range h.Windows {
+		if w.ID == id {
+			return w.Dispatch
+		}
+	}
+	return 0
+}
 
 // routeArgsRefusal is route_to_session's refusal of arguments that are not one of its
 // three shapes.
@@ -321,6 +339,9 @@ func (s *Server) resolveRouteTarget(ctx context.Context, sub focus.Subject) (rou
 		}
 		if !t.host.Interactive {
 			return t, routeRefusal(RefusedHostNotInteractve, unprefixed(mirror.ErrInteractiveRefused))
+		}
+		if windowDispatch(t.host, e.Window) > 0 {
+			return t, routeRefusal(RefusedDispatchedWindow, routeDispatchedWindow)
 		}
 		if off := mirrorQueueOff(t.host, e); off != "" {
 			return t, routeRefusal(RefusedQueueUnavailable, "the window cannot be queued for: "+off)

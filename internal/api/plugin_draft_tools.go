@@ -137,8 +137,11 @@ type pluginDraftView struct {
 }
 
 func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string {
-	if !c.mirroredSession() {
-		return toolErr(pluginDraftMirrorOnly, pluginDraftsListTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(pluginDraftMirrorOnly, pluginDraftsListTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.pluginDraftToolsOn() {
 		return toolErr("plugins are not configured on this server")
@@ -176,8 +179,11 @@ func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string 
 var bodySHA256Shape = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Server) toolPluginDraftDecide(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr(pluginDraftMirrorOnly, pluginDraftDecideTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(pluginDraftMirrorOnly, pluginDraftDecideTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.pluginDraftToolsOn() {
 		return toolErr("plugins are not configured on this server")

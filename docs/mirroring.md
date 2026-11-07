@@ -1209,6 +1209,69 @@ id reach it as separate arguments. A `default-shell` that is not `sh`, `bash`,
 `zsh`, `dash`, `ksh` or `mksh` is passed over for `/bin/sh`, as is any shell when no tmux server is running
 yet.
 
+## Starting agents for the chief (`-agent-spawn`)
+
+A host started with `-interactive` **and** `-agent-spawn`
+(`MUSTER_MIRROR_AGENT_SPAWN`), on its **default** tmux server, lets your chief
+start a Claude Code agent there ([design](design/chief-dispatch.md), section 3).
+It is off by default, because it starts a process on the host, and it does
+nothing until you also list repositories:
+
+| flag | env | default | |
+|---|---|---|---|
+| `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses) |
+| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in. Empty means nothing spawns |
+| `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
+| `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
+| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit, counted from the audit log |
+| `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log |
+
+**What the host decides, whatever muster sends.** muster names a runtime, a
+repository, a base branch, the prompt and a display name. The host:
+
+- writes the request to its audit log (JSON lines, `0600`) **before anything
+  else**, prompt included, and refuses the spawn if it cannot; a second line
+  records the result. `muster-mirror agent-spawn-log [-n N]` prints the last
+  lines. A copy of each request goes to the mirror's own log;
+- refuses a repository not on `-agent-spawn-repos` before any git command, and
+  needs exactly one clone of it directly under a root (matched by its configured
+  `origin` URL);
+- counts its rate limit from the audit log, so a restart does not reset it;
+- refuses a prompt that does not begin with muster's fixed preface (Claude Code
+  reads a first word that names one of its subcommands as that subcommand, even
+  after `--`);
+- fetches `origin/<base>` and cuts a **new worktree** at
+  `<agent-spawn-dir>/<owner>__<repo>/<dispatch>` on the branch
+  `muster/<dispatch>-<slug>`. Your own checkout is never touched; a dirty clone
+  is fine. Submodules are initialised under a time budget, as a warning if they
+  do not finish;
+- writes Claude Code's folder-trust entry for that worktree and nothing else
+  (`projects[<worktree>].hasTrustDialogAccepted` in `$CLAUDE_CONFIG_DIR/.claude.json`
+  when muster-mirror's environment sets `CLAUDE_CONFIG_DIR`, else
+  `~/.claude.json`: give muster-mirror's env file your `CLAUDE_CONFIG_DIR` if you
+  set one, or the window stops at the trust dialog);
+- writes the prompt to a `0600` file under `$XDG_RUNTIME_DIR/muster-mirror/prompts/`
+  (no `XDG_RUNTIME_DIR`: nothing spawns), which a constant wrapper reads and
+  deletes, and opens a window `cc-<dispatch>-<slug>` in the session `agents`
+  running `claude --session-id <uuid> -- <prompt>` under your login shell, with
+  no permission flag. The window carries the tmux window option
+  `@muster-dispatch <dispatch>`; a global or `agents`-session value of it blocks
+  spawning;
+- gives up 120 seconds after it received the request, and never opens a window
+  past that.
+
+A paste muster makes for the chief's forward names its dispatch, and the host
+types it only into the window whose own `@muster-dispatch` matches, at most 12
+times an hour per window. An hourly sweep removes a spawned worktree whose window
+is gone **only** when it is clean and its branch has no commit the remote lacks;
+anything else stays, logged.
+
+**Turning it on, one step at a time.** Ship the binary with `-agent-spawn` unset
+(nothing changes); then set `-agent-spawn` and **one** repository in
+`-agent-spawn-repos` on one host's default mirror unit only (never a
+`muster-mirror@<tenant>` unit), and restart it. To turn it off, drop either and
+restart: a window already running keeps running, with its worktree.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends

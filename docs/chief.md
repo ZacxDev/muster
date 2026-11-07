@@ -306,9 +306,9 @@ the chat again while it runs and it shows "working…"; the reply appears, and
 "working…" goes, once the turn has finished and its reply is stored.
 
 `agent_dispatch` starts an agent where you say: its `target` is **required
-and has no default**. Today that is a pod, `pod/claude-code` or
-`pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
-host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
+and has no default**. It is a pod, `pod/claude-code` or `pod/gateway`, or a
+window on one of your hosts, `host/<host>/claude` (mirrored dispatch, below;
+`host/<host>/opencode` is not built yet). The chief maps your
 words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
 other model you name is `pod/gateway` with that model: the chief gives its
 OpenRouter model id or name, and muster resolves it to the id
@@ -316,9 +316,22 @@ OpenRouter model id or name, and muster resolves it to the id
 Asked to start an agent without a model, the chief calls it with no target, and
 the refusal lists the choices that exist now in your words — "Claude Code (your
 Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it
-asks you which with an `ask_owner` card. It never picks one for you. "Mirrored"
-is refused until mirrored dispatch ships; it never starts a cluster agent
-instead.
+asks you which with an `ask_owner` card. It never picks one for you.
+
+**Mirrored dispatch.** Say "mirrored" and the agent starts in a new window of
+the tmux session `agents` on one of your hosts, in a fresh git worktree, running
+Claude Code in its normal permission mode, so its asks reach you on muster.
+"Mirrored on <host> with Claude" is `host/<host>/claude`. Name no host and muster
+asks you with a card listing the hosts that can start one now (and, for a bare
+"mirrored", then which model: Claude Code only, for now). Tap it on the
+Attention view or your phone and the chief completes the start with exactly what
+you tapped; type the answer in the chat instead and it starts from your typed
+turn. A host starts nothing unless its muster-mirror has `-agent-spawn` and the
+repository is on its own `-agent-spawn-repos` list
+([mirroring.md](mirroring.md#starting-agents-for-the-chief--agent-spawn)). It
+never starts a cluster agent instead. There is no Stop button: close the window
+on the host, or end its record with `agent_destroy {host_dispatch: N}` from one
+of your sessions.
 
 Each agent the chief starts is drawn in its chat as a card: the agent's name,
 where it runs, its repository and task, and its state — starting, working,
