@@ -732,7 +732,7 @@ func (g *REST) DeleteRef(ctx context.Context, ref string) error {
 
 const updateRefsMutation = `mutation($repo: ID!, $updates: [RefUpdate!]!) { updateRefs(input: {repositoryId: $repo, refUpdates: $updates}) { clientMutationId } }`
 
-// UpdateBranch implements GitHub. MEASURED (a user token, 2026-11-07): with
+// UpdateBranch implements GitHub. MEASURED (a user token): with
 // beforeOid not the branch's sha, GitHub answers an error and the branch is
 // unchanged; with force false, a non-fast-forward is "rejecting non-fast
 // forward update" and unchanged; with both right, the branch moves. REST

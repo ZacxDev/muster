@@ -1233,7 +1233,7 @@ text) when it did not. The scratch ref is deleted when the request ends,
 whatever happened. Pushes to one branch are serialised: a second while one is
 being verified is a 409.
 
-Measured on GitHub (a user token with contents write, 2026-11-07; a GitHub
+Measured on GitHub (a user token with contents write; a GitHub
 App installation token was not measured and is assumed to behave the same
 with Contents write): a push to `refs/<custom>/…` is accepted as a new
 reference; REST `PATCH git/refs` with `force: false` refuses a
