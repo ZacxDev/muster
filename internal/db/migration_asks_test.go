@@ -113,6 +113,9 @@ func TestMigrationAsksAppliesAndRollsBack(t *testing.T) {
 		mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, source_ref, question) VALUES (1, $1, 'claude-code', $1, 'ok?')`, k)
 	}
 	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, question, answered_by, outcome, answered_at) VALUES (1, 'plain_text', 'agent', 'a', 'auto:12', 'answered', now())`)
+	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, answered_by, outcome) VALUES (1, 'plain_text', 'agent', 'other', 'answered')`)
+	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, outcome) VALUES (1, 'plain_text', 'agent', 'unknown')`)
+	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, text_purged_at) VALUES (1, 'plain_text', 'agent', now())`)
 	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, question) VALUES (1, 'plain_text', 'opencode', 'same')`)
 	mustExec(ctx, t, pool, `INSERT INTO asks (owner_id, kind, runtime, question) VALUES (1, 'plain_text', 'opencode', 'same')`)
 	for _, bad := range []struct{ sql, why string }{
@@ -123,6 +126,7 @@ func TestMigrationAsksAppliesAndRollsBack(t *testing.T) {
 		{`INSERT INTO asks (owner_id, kind, runtime, answered_by) VALUES (1, 'plain_text', 'agent', 'operator')`, "attention's word, not the log's"},
 		{`INSERT INTO asks (owner_id, kind, runtime, answer_provenance) VALUES (1, 'plain_text', 'agent', 'typed')`, "an unknown provenance"},
 		{`INSERT INTO asks (owner_id, kind, runtime, question, text_purged_at) VALUES (1, 'plain_text', 'agent', 'kept?', now())`, "a purged row holding text"},
+		{`INSERT INTO asks (owner_id, kind, runtime, options, text_purged_at) VALUES (1, 'plain_text', 'agent', '["kept"]', now())`, "a purged row holding options"},
 		{`INSERT INTO asks (owner_id, kind, runtime, options) VALUES (1, 'plain_text', 'agent', '{"a":1}')`, "options that are not an array"},
 		{`INSERT INTO asks (owner_id, kind, runtime, question) VALUES (1, 'plain_text', 'agent', repeat('x', 4001))`, "a question past its bound"},
 		{`INSERT INTO asks (owner_id, kind, runtime, jev_label) VALUES (1, 'plain_text', 'agent', 'maybe')`, "an unknown classifier label"},

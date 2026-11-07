@@ -24,10 +24,10 @@
 --
 -- 🔴 QUESTION AND ANSWER TEXT IS TRANSCRIPT CONTENT. The store redacts every
 -- text column (redact.Secrets) before it is written, and the retention sweep
--- clears question, question_norm, answer and proposed_answer once a row is
--- older than MUSTER_ASK_LOG_TEXT_TTL (default 30 days), stamping
+-- clears question, question_norm, answer, proposed_answer AND options once a
+-- row is older than MUSTER_ASK_LOG_TEXT_TTL (default 30 days), stamping
 -- text_purged_at; asks_text_purged refuses a purged row that still holds
--- text. The rest of the row is deleted after 180 days.
+-- text in any of them. The rest of the row is deleted after 180 days.
 --
 -- 🔴 A CAPTURE THAT RUNS TWICE RECORDS ONE ROW: asks_one_per_source is unique
 -- on the source's own id (the attention ask, the askq entry, the opencode
@@ -101,12 +101,17 @@ CREATE TABLE IF NOT EXISTS public.asks (
         REFERENCES public.session_episodes (id, owner_id) ON DELETE SET NULL (episode_id),
     CONSTRAINT asks_kind_check CHECK (kind IN ('plain_text', 'ask_user_question', 'attention_ask', 'opencode_question', 'opencode_permission')),
     CONSTRAINT asks_runtime_check CHECK (runtime IN ('claude-code', 'opencode', 'agent')),
-    CONSTRAINT asks_answered_by_check CHECK (answered_by IN ('', 'owner', 'chief', 'shadow') OR answered_by ~ '^auto:[1-9][0-9]{0,18}$'),
+    -- 'other': answered by something that is neither the owner nor the chief
+    -- (a routed message: a plugin's, another session's).
+    CONSTRAINT asks_answered_by_check CHECK (answered_by IN ('', 'owner', 'chief', 'other', 'shadow') OR answered_by ~ '^auto:[1-9][0-9]{0,18}$'),
+    -- 'unknown': muster restarted before it saw how the ask ended (only kinds
+    -- whose resolution lives in the process's memory are closed so).
     CONSTRAINT asks_outcome_check CHECK (outcome IN ('', 'answered', 'answered_in_session', 'declined', 'expired', 'cancelled',
-        'superseded', 'moved_on', 'gone')),
-    -- A purged row holds no text.
+        'superseded', 'moved_on', 'gone', 'unknown')),
+    -- A purged row holds no text: not in a text column, and not in options
+    -- (option labels are transcript text too).
     CONSTRAINT asks_text_purged CHECK (text_purged_at IS NULL
-        OR (question = '' AND question_norm = '' AND answer = '' AND proposed_answer = ''))
+        OR (question = '' AND question_norm = '' AND answer = '' AND proposed_answer = '' AND options = '[]'::jsonb))
 );
 
 ALTER TABLE public.asks ALTER COLUMN owner_id

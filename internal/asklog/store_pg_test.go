@@ -188,6 +188,7 @@ func TestAnotherOwnerReadsAndWritesNoneOfYourAsks(t *testing.T) {
 // days and an hour ago is deleted, one at 179 days kept. An answer recorded on
 // a purged row stores no text.
 func TestPurgeClearsExactlyTheTextColumnsPastTheTTL(t *testing.T) {
+	// (Options too: an AskUserQuestion's option labels are transcript text.)
 	p, pool := pgStore(t)
 	ctx := asUser(2)
 	now := t0.AddDate(1, 0, 0)
@@ -232,11 +233,16 @@ func TestPurgeClearsExactlyTheTextColumnsPastTheTTL(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT proposed_answer FROM asks WHERE id = $1`, oldText).Scan(&proposed); err != nil {
 		t.Fatal(err)
 	}
-	if a.Question != "" || a.QuestionNorm != "" || a.Answer != "" || proposed != "" || !a.TextPurgedAt.Equal(now) {
+	if a.Question != "" || a.QuestionNorm != "" || a.Answer != "" || proposed != "" || string(a.Options) != `[]` || !a.TextPurgedAt.Equal(now) {
 		t.Fatalf("the purged row kept text: %+v proposed=%q", a, proposed)
 	}
+	// 🔴 STRUCTURAL, NOT SPELLED: every text or jsonb column of the table that
+	// is not on asksMetadataColumns (the named, non-content columns) must be
+	// empty on the purged row — so a content column added later, or one
+	// forgotten (options was), fails here without this test being edited.
+	assertNoContentLeft(t, pool, oldText)
 	if a.Kind != KindAttention || a.Repo != "acme/widgets" || a.AgentID != 41 || a.AnsweredBy != ByOwner || a.Outcome != OutcomeAnswered ||
-		a.Latency() != time.Minute || a.Jev.Label != "needs_input" || a.Jev.AskScore != 0.95 || string(a.Options) != `["ship it", "wait"]` {
+		a.Latency() != time.Minute || a.Jev.Label != "needs_input" || a.Jev.AskScore != 0.95 {
 		t.Fatalf("the purge cleared more than the text: %+v", a)
 	}
 	if f, _, _ := p.Get(ctx, fresh); f.Question == "" || f.Answer != "yes, go" || !f.TextPurgedAt.IsZero() {
@@ -253,6 +259,65 @@ func TestPurgeClearsExactlyTheTextColumnsPastTheTTL(t *testing.T) {
 	// A second sweep finds nothing new.
 	if purged, deleted, err := p.Purge(context.Background(), now, 30*day, 180*day); err != nil || purged != 0 || deleted != 0 {
 		t.Fatalf("a second purge: %d %d %v", purged, deleted, err)
+	}
+}
+
+// asksMetadataColumns are the text and jsonb columns of asks that hold no
+// transcript content: names, ids, paths and closed vocabularies. A LEDGER:
+// TestTheMetadataLedgerNamesRealColumns fails when an entry names no column.
+var asksMetadataColumns = map[string]bool{
+	"kind": true, "runtime": true, "mirror_host": true, "mirror_session": true, "mirror_window": true, "claude_session": true,
+	"repo": true, "cwd": true, "source_ref": true, "jev_label": true, "jev_model": true, "jev_error": true,
+	"proposed_class": true, "never_reason": true, "shadow_answer_kind": true, "answered_by": true, "answer_provenance": true,
+	"agreement": true, "outcome": true,
+}
+
+// contentColumns is every text or jsonb column of asks not on
+// asksMetadataColumns, read from the catalog.
+func contentColumns(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(asUser(2), `SELECT column_name, data_type FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'asks' AND data_type IN ('text', 'jsonb') ORDER BY column_name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	seen := map[string]bool{}
+	for rows.Next() {
+		var c, typ string
+		if err := rows.Scan(&c, &typ); err != nil {
+			t.Fatal(err)
+		}
+		seen[c] = true
+		if !asksMetadataColumns[c] {
+			out = append(out, c)
+		}
+	}
+	for c := range asksMetadataColumns {
+		if !seen[c] {
+			t.Fatalf("asksMetadataColumns names %q, which is not a text column of asks", c)
+		}
+	}
+	return out
+}
+
+// assertNoContentLeft fails unless every content column of row id is empty
+// (” for text, [] for jsonb).
+func assertNoContentLeft(t *testing.T, pool *pgxpool.Pool, id int64) {
+	t.Helper()
+	cols := contentColumns(t, pool)
+	if len(cols) < 5 { // question, question_norm, options, proposed_answer, answer
+		t.Fatalf("instrument check: only %d content columns found: %v", len(cols), cols)
+	}
+	for _, c := range cols {
+		var v string
+		if err := pool.QueryRow(asUser(2), `SELECT `+c+`::text FROM asks WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		if v != "" && v != "[]" {
+			t.Errorf("the purged row still holds text in %s: %q", c, v)
+		}
 	}
 }
 
@@ -301,5 +366,54 @@ func TestNoRawSecretIsStoredInAnyTextColumn(t *testing.T) {
 	// it survived — the row is not simply empty.
 	if !strings.Contains(row, "«redacted»") || !strings.Contains(row, "Should I export") || !strings.Contains(row, "yes, with") {
 		t.Fatalf("the stored row is not a redacted copy:\n%s", row)
+	}
+}
+
+// TestCloseStaleEndsOnlyTheKindsAProcessCannotResolveAfterARestart: after a
+// restart, open plain-text and opencode rows asked before it end unknown;
+// an open AskUserQuestion and attention ask (resolved by their source ids from
+// any process), a row asked after the cut-off and an ended row are left; and
+// an answer seen later still replaces unknown (a soft end).
+func TestCloseStaleEndsOnlyTheKindsAProcessCannotResolveAfterARestart(t *testing.T) {
+	p, _ := pgStore(t)
+	ctx := asUser(2)
+	cut := t0.Add(time.Hour)
+	mk := func(kind, ref string, at time.Time) int64 {
+		id, _, err := p.Open(ctx, Ask{Kind: kind, Runtime: RuntimeClaudeCode, SourceRef: ref, Question: "Shall I?", AskedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	plain := mk(KindPlainText, "", t0)
+	oc := mk(KindOpenCodePermission, "per_x", t0)
+	auq := mk(KindAskUserQuestion, "q-1", t0)
+	att := mk(KindAttention, "7", t0)
+	after := mk(KindPlainText, "", cut.Add(time.Minute))
+	ended := mk(KindPlainText, "", t0)
+	if _, ok, _ := p.Resolve(ctx, ended, Resolution{Outcome: OutcomeAnswered, AnsweredBy: ByOwner, At: t0}); !ok {
+		t.Fatal("resolve")
+	}
+	n, err := p.CloseStale(context.Background(), cut)
+	if err != nil || n != 2 {
+		t.Fatalf("closed %d (%v), want 2", n, err)
+	}
+	for id, want := range map[int64]string{plain: OutcomeUnknown, oc: OutcomeUnknown, auq: "", att: "", after: "", ended: OutcomeAnswered} {
+		if a, _, _ := p.Get(ctx, id); a.Outcome != want {
+			t.Errorf("row %d (%s): outcome %q, want %q", id, a.Kind, a.Outcome, want)
+		}
+	}
+	if a, ok, _ := p.ResolveRef(ctx, OpenCodeKinds, "per_x", Resolution{Outcome: OutcomeAnswered, Answer: "once", AnsweredBy: ByOwner, At: cut}); !ok || a.Outcome != OutcomeAnswered {
+		t.Fatalf("an answer after unknown: %+v ok=%v", a, ok)
+	}
+}
+
+// TestAnsweredByFollowsTheReplysProvenance: a nudge is the chief's, a routed
+// message another's, the owner's own send and a pane message the owner's.
+func TestAnsweredByFollowsTheReplysProvenance(t *testing.T) {
+	for prov, want := range map[string]string{ProvNudge: ByChief, ProvRoute: ByOther, ProvMusterSend: ByOwner, ProvPane: ByOwner, "": ByOwner} {
+		if got := AnsweredByFor(prov); got != want {
+			t.Errorf("AnsweredByFor(%q) = %q, want %q", prov, got, want)
+		}
 	}
 }

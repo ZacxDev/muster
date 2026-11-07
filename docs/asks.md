@@ -20,8 +20,8 @@ One row in `asks` per question, whatever kind it was:
 
 | kind | when it is recorded | how it ends |
 |---|---|---|
-| `plain_text` | A mirrored Claude Code window that names its session goes from busy to idle, or a dispatched agent's turn ends, and the turn's last assistant message passes the pre-filter (below). | The first user message after it is the answer, with what muster can prove about who wrote it (provenance, below). A newer assistant message with no user message in between: `moved_on`. The window gone from its (online) host first: `gone`. |
-| `ask_user_question` | The `AskUserQuestion` hook's registration is accepted. Each question, its header, its options and whether it is multi-select. | The CLI records the result: `answered` with the chosen labels (typed from muster or picked in the terminal), `declined` (dismissed), `superseded` (a newer question replaced it), `expired`. |
+| `plain_text` | A mirrored Claude Code window that names its session goes from busy to idle, or a dispatched agent's turn ends, and the turn's last assistant message passes the pre-filter (below). | The first user message after it is the answer, with what muster can prove about who wrote it (provenance, below). A newer assistant message with no user message in between: `moved_on`. The window gone from its (online) host first, or now showing another Claude session: `gone`. |
+| `ask_user_question` | The `AskUserQuestion` hook's registration is accepted. The questions (in the question column), and each one's header, option labels and whether it is multi-select (in options; never the question's text). | The CLI records the result: `answered` with the chosen labels (typed from muster or picked in the terminal), `declined` (dismissed), `superseded` (a newer question replaced it), `expired`. |
 | `attention_ask` | An agent or one of your mirrored sessions raises an `attention_ask` (a question, never a notice; muster's own asks are not recorded). | `answered` (by you, or by the chief for a question put to it), `answered_in_session`, `cancelled`, `expired`. |
 | `opencode_question`, `opencode_permission` | A mirrored opencode window starts waiting on a named form or permission request. | `answered` when you answer it from the Asks page; `moved_on` when it leaves the window unanswered from muster. |
 
@@ -52,6 +52,19 @@ that fails it writes no row and is counted
 A reply is matched to a queued message by the message's own row, never by its
 wording.
 
+Who answered follows the provenance: a `nudge` reply is `answered_by = chief`
+and a `route` reply `answered_by = other`, so a reply muster queued never
+counts as your own approval. `muster_send` and `pane` replies are yours.
+
+### After a restart
+
+A plain-text question's reply link, and an opencode ask's leaving its window,
+live in the memory of the process that opened them. When muster starts, it
+closes the rows of those kinds a previous process left open as `unknown`, so
+they do not read as unanswered for ever; an answer seen later still replaces
+`unknown`. `AskUserQuestion` and `attention_ask` rows are resolved by their own
+ids from any process, and are left open.
+
 ### Classification
 
 With `MUSTER_ASK_LOG_CLASSIFY=1` (and the stall classifier configured, see
@@ -67,8 +80,8 @@ by default so the volume is measured before the classifier is spent on it.
   redactor before it is written, inside the store, whoever calls it.
 - **Yours only.** The table is under forced row-level security: no other user,
   and no admin view, can read your asks.
-- **Text expires.** A daily sweep clears question and answer text after
-  `MUSTER_ASK_LOG_TEXT_TTL` (30 days by default). The rest of the row — the
+- **Text expires.** A daily sweep clears question and answer text — and the
+  option labels — after `MUSTER_ASK_LOG_TEXT_TTL` (30 days by default). The rest of the row — the
   kind, where, the scores, who answered, how long it took, how it ended — is
   kept 180 days, then deleted.
 - **Metrics carry no text.** No metric label holds a question, a host, a
@@ -80,7 +93,8 @@ Every write happens off the path that raised or answered the ask, in order. If
 the database is unreachable, or a transcript cannot be read, the ask goes to
 you exactly as it would without the log; the failure is logged and counted in
 `muster_ask_capture_errors_total{kind, stage}` (`read`, `classify`, `write`),
-never returned to the agent or to you.
+never returned to the agent or to you. A full capture queue counts every
+dropped capture but logs at most one line a minute.
 
 ## Metrics
 
@@ -88,7 +102,7 @@ never returned to the agent or to you.
 |---|---|---|
 | `muster_asks_total` | counter | `kind` |
 | `muster_ask_plain_text_prefilter_total` | counter | `result` (`kept`, `dropped`) |
-| `muster_ask_answer_seconds` | histogram | `kind`, `answered_by` (`owner`, `chief`, `none` for an ask that ended unanswered; `auto` is reserved for the later phases) |
+| `muster_ask_answer_seconds` | histogram | `kind`, `answered_by` (`owner`, `chief`, `other`, `none` for an ask that ended unanswered; `auto` is reserved for the later phases) |
 | `muster_ask_capture_errors_total` | counter | `kind`, `stage` (`read`, `classify`, `write`) |
 
 ## Rollout

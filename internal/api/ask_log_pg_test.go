@@ -16,8 +16,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/asklog"
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -297,8 +297,10 @@ func TestAnAskUserQuestionIsLoggedWhenOpenedAndWhenAnswered(t *testing.T) {
 	a := one(t, asksOf(t, s, 1), asklog.KindAskUserQuestion)
 	if a.Runtime != asklog.RuntimeClaudeCode || a.Host != "ws" || a.ClaudeSession != "sess-1" || a.TmuxSession != "main" || a.Window != "@1" ||
 		a.SourceRef != open[0].ID || a.Question != "Which color do you prefer?\n\nWhich pets do you have?" ||
-		string(a.Options) != `[{"header": "Color", "options": ["Red", "Blue", "Green"], "question": "Which color do you prefer?", "multiSelect": false}, `+
-			`{"header": "Pets", "options": ["Cat", "Dog", "Fish"], "question": "Which pets do you have?", "multiSelect": true}]` ||
+		// The options hold each question's header, labels and flag — never its
+		// text, which is the question column's and is purged with it.
+		string(a.Options) != `[{"header": "Color", "options": ["Red", "Blue", "Green"], "multiSelect": false}, `+
+			`{"header": "Pets", "options": ["Cat", "Dog", "Fish"], "multiSelect": true}]` ||
 		a.Outcome != "" {
 		t.Fatalf("the opened question's row: %+v\n%s", a, a.Options)
 	}
@@ -645,7 +647,9 @@ func TestAPlainTextReplyFromTheSendQueueIsMusterSend(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE send_queue SET state = 'sent', claimed_at = now(), finished_at = now() WHERE id = $1`, qid); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE id = $1`, qid) })
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM send_queue WHERE id = $1`, qid)
+	})
 	f.say("assistant", "Ready to push?", time.Time{})
 	f.status(t, mirror.StatusIdle, 2)
 	f.say("user", "go ahead", time.Now())

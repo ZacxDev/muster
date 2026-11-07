@@ -609,6 +609,12 @@ authority, and the differences are:
   `muster_ask_rule_demotions_total` are left to phases 2–3, which have
   something to count.
 - `ask-log` is a feature in the registry (forwarded by the Compose file).
+- `answered_by` follows a plain-text reply's provenance (`nudge` → `chief`,
+  `route` → `other`, a value the table adds), so a queued reply never counts as
+  the owner's approval. `outcome` adds `unknown`: at start, muster closes the
+  open plain-text and opencode rows a previous process left (their
+  resolution lived in its memory). The purge also clears `options`, which
+  holds only each question's header, labels and flag.
 
 The plan, as written:
 

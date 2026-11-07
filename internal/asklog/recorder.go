@@ -74,7 +74,15 @@ type Recorder struct {
 	queue   []job
 	running bool
 	idle    *sync.Cond
+	// dropped counts captures dropped since the last "queue full" line, and
+	// lastDropLog is when that line was written; clock is time.Now (tests).
+	dropped     int
+	lastDropLog time.Time
+	clock       func() time.Time
 }
+
+// DropLogEvery bounds the "capture queue is full" log line to one per period.
+const DropLogEvery = time.Minute
 
 type job struct {
 	ctx  context.Context
@@ -93,7 +101,7 @@ const (
 
 // NewRecorder is a Recorder logging to logger.
 func NewRecorder(logger *log.Logger) *Recorder {
-	r := &Recorder{logger: logger, max: DefaultQueue, timeout: DefaultCaptureTimeout}
+	r := &Recorder{logger: logger, max: DefaultQueue, timeout: DefaultCaptureTimeout, clock: time.Now}
 	r.idle = sync.NewCond(&r.mu)
 	return r
 }
@@ -105,6 +113,13 @@ func (r *Recorder) SetQueueBound(n int) {
 	r.mu.Unlock()
 }
 
+// SetClock replaces the recorder's clock (tests).
+func (r *Recorder) SetClock(now func() time.Time) {
+	r.mu.Lock()
+	r.clock = now
+	r.mu.Unlock()
+}
+
 // Do queues fn, a capture of kind, to run as ctx's principal (ctx's deadline
 // and cancellation are not inherited: the caller's request may end first).
 func (r *Recorder) Do(ctx context.Context, kind string, fn func(context.Context) error) {
@@ -113,8 +128,21 @@ func (r *Recorder) Do(ctx context.Context, kind string, fn func(context.Context)
 	}
 	r.mu.Lock()
 	if len(r.queue) >= r.max {
+		// Counted every time; LOGGED at most once per DropLogEvery, with how
+		// many were dropped since — a full queue is a burst, and a line per
+		// dropped capture would flood the log exactly when it is busiest.
+		r.dropped++
+		now := r.clock()
+		var line string
+		if r.lastDropLog.IsZero() || now.Sub(r.lastDropLog) >= DropLogEvery {
+			line = fmt.Sprintf("ask log: the capture queue is full (%d waiting): %d capture(s) dropped since the last such line", r.max, r.dropped)
+			r.dropped, r.lastDropLog = 0, now
+		}
 		r.mu.Unlock()
-		Failed(r.logger, kind, AtStage(StageWrite, fmt.Errorf("the capture queue is full (%d waiting)", r.max)))
+		metrics.AskCaptureErrors.WithLabelValues(kind, StageWrite).Inc()
+		if line != "" && r.logger != nil {
+			r.logger.Print(line)
+		}
 		return
 	}
 	r.queue = append(r.queue, job{ctx: context.WithoutCancel(ctx), kind: kind, fn: fn})

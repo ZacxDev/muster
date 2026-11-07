@@ -88,6 +88,9 @@ const askLogAgentMessages = 50
 type askLogger struct {
 	cfg AskLog
 	rec *asklog.Recorder
+	// started is when this process's log began: rows of asklog.StaleKinds
+	// opened before it can be resolved by nothing (askLogCloseStale).
+	started time.Time
 
 	mu sync.Mutex
 	// seen is each mirrored window's last observed status (and the opencode
@@ -113,6 +116,8 @@ type askAgentKey struct{ owner, agent, session int64 }
 
 type askSeen struct {
 	status, prompt string
+	// session is the Claude session the window showed.
+	session string
 }
 
 // askOpen is an open plain-text ask: its row, the raw assistant text it was
@@ -135,7 +140,7 @@ func newAskLogger(cfg AskLog, s *Server) *askLogger {
 	if cfg.TextTTL <= 0 {
 		cfg.TextTTL = asklog.DefaultTextTTL
 	}
-	return &askLogger{cfg: cfg, rec: asklog.NewRecorder(s.logger), seen: map[askWinKey]askSeen{},
+	return &askLogger{cfg: cfg, rec: asklog.NewRecorder(s.logger), started: time.Now(), seen: map[askWinKey]askSeen{},
 		plain: map[askWinKey]askOpen{}, agent: map[askAgentKey]askOpen{}, turns: map[askWinKey]string{}}
 }
 
@@ -173,7 +178,7 @@ func (s *Server) askLogOpen(ctx context.Context, a asklog.Ask) (int64, error) {
 // askLogEnded observes how long an ask waited, once it has ended.
 func askLogEnded(a asklog.Ask, r asklog.Resolution) {
 	by := "none"
-	if asklog.Answered(r.Outcome) && (r.AnsweredBy == asklog.ByOwner || r.AnsweredBy == asklog.ByChief) {
+	if asklog.Answered(r.Outcome) && (r.AnsweredBy == asklog.ByOwner || r.AnsweredBy == asklog.ByChief || r.AnsweredBy == asklog.ByOther) {
 		by = r.AnsweredBy
 	}
 	end := r.At
@@ -323,7 +328,7 @@ func (s *Server) AskLogMirrorChanged(owner int64) {
 			k := askWinKey{owner: owner, host: h.Host, session: w.Session, window: w.ID}
 			listed[k] = true
 			prev, had := l.seen[k]
-			cur := askSeen{status: w.Status}
+			cur := askSeen{status: w.Status, session: w.ClaudeSession}
 			// A window of a runtime that names its asks (opencode; the
 			// runtime's own spec says so, as for the attention queue) waiting on
 			// one it names.
@@ -337,6 +342,12 @@ func (s *Server) AskLogMirrorChanged(owner int64) {
 			}
 			if cur.prompt != "" && cur.prompt != prev.prompt {
 				s.askLogOpenCodeAsk(owner, h.Host, w, at)
+			}
+			// The window now shows ANOTHER Claude session (a /clear, a new
+			// session in the same pane): the old one's open question can never
+			// be read again here — it ends gone, and its turn key goes.
+			if had && prev.session != "" && prev.session != w.ClaudeSession {
+				s.askLogWindowGone(owner, k, at)
 			}
 			if !had || !(w.Claude && w.ClaudeSession != "" && w.Runtime == "") {
 				continue
@@ -524,8 +535,11 @@ func (s *Server) askLogReplyIn(ctx context.Context, k askWinKey, msgs []chiefnud
 			if when.IsZero() || when.Before(open.asked) {
 				when = at
 			}
-			r = asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: m.Text, AnsweredBy: asklog.ByOwner,
-				Provenance: s.askLogProvenance(ctx, k, m.Text), At: when}
+			// Who answered follows what muster can prove of the reply: a nudge
+			// is the chief's, a routed message another's (asklog.AnsweredByFor).
+			prov := s.askLogProvenance(ctx, k, m.Text)
+			r = asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: m.Text, AnsweredBy: asklog.AnsweredByFor(prov),
+				Provenance: prov, At: when}
 			break
 		}
 		if m.Role == "assistant" && strings.TrimSpace(m.Text) != "" {
@@ -683,7 +697,13 @@ func (s *Server) askLogOpenCodeAnswered(owner int64, prompt, choice string) {
 // open question (the first user message after it is the answer; none means the
 // agent moved on), then logs this turn's last text when it passes the
 // pre-filter.
-func (s *Server) askLogAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart) {
+//
+// 🔴 THE ANCHOR IS THE TURN'S OWN LAST MESSAGE (lastID, from persistTurn), not
+// the newest id the queued capture reads: the owner can reply before the
+// capture runs, and a reply read as "older than the anchor" would be lost
+// (the question then read as moved on). lastID 0 (the store refused the
+// write): the newest assistant message read stands in.
+func (s *Server) askLogAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart, lastID int64) {
 	if !s.askLogOn() || a.ID <= 0 || session.ID <= 0 || s.ext.Agents == nil {
 		return
 	}
@@ -709,9 +729,13 @@ func (s *Server) askLogAgentTurn(ctx context.Context, a agents.Agent, session ag
 		if err != nil {
 			return asklog.AtStage(asklog.StageRead, err)
 		}
-		var newest int64
-		for _, m := range msgs {
-			newest = max(newest, m.ID)
+		anchor := lastID
+		if anchor <= 0 {
+			for _, m := range msgs {
+				if m.Role == "assistant" {
+					anchor = max(anchor, m.ID)
+				}
+			}
 		}
 		s.askLog.mu.Lock()
 		open, has := s.askLog.agent[k]
@@ -723,8 +747,9 @@ func (s *Server) askLogAgentTurn(ctx context.Context, a agents.Agent, session ag
 				if m.ID <= open.anchor || m.Role != "user" || (m.Kind != "" && m.Kind != "text") || strings.TrimSpace(m.Content) == "" {
 					continue
 				}
-				r = asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: m.Content, AnsweredBy: asklog.ByOwner,
-					Provenance: askLogAgentProvenance(m), At: m.CreatedAt}
+				prov := askLogAgentProvenance(m)
+				r = asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: m.Content, AnsweredBy: asklog.AnsweredByFor(prov),
+					Provenance: prov, At: m.CreatedAt}
 				break
 			}
 			if err := s.askLogResolve(ctx, open.id, r); err != nil {
@@ -742,7 +767,7 @@ func (s *Server) askLogAgentTurn(ctx context.Context, a agents.Agent, session ag
 			return err
 		}
 		s.askLog.mu.Lock()
-		s.askLog.agent[k] = askOpen{id: id, question: text, asked: at, anchor: newest}
+		s.askLog.agent[k] = askOpen{id: id, question: text, asked: at, anchor: anchor}
 		s.askLog.mu.Unlock()
 		return jerr
 	})
@@ -775,9 +800,11 @@ func (s *Server) askLogQuestion(e askq.Entry) {
 	case askq.Pending:
 		at := e.Created
 		s.askLogDo(owner, asklog.KindAskUserQuestion, func(ctx context.Context) error {
+			// The design's options column: each question's header, options and
+			// multi-select flag — NOT its text, which is the question column's
+			// (and purged with it).
 			type opt struct {
 				Header      string   `json:"header,omitempty"`
-				Question    string   `json:"question"`
 				Options     []string `json:"options"`
 				MultiSelect bool     `json:"multiSelect"`
 			}
@@ -785,7 +812,7 @@ func (s *Server) askLogQuestion(e askq.Entry) {
 			opts := make([]opt, 0, len(e.Questions))
 			for _, q := range e.Questions {
 				qs = append(qs, q.Question)
-				o := opt{Header: q.Header, Question: q.Question, MultiSelect: q.MultiSelect, Options: []string{}}
+				o := opt{Header: q.Header, MultiSelect: q.MultiSelect, Options: []string{}}
 				for _, x := range q.Options {
 					o.Options = append(o.Options, x.Label)
 				}
@@ -1007,6 +1034,7 @@ func (s *Server) RunAskLogSweep(ctx context.Context, interval time.Duration) {
 	if !s.askLogOn() {
 		return
 	}
+	s.askLogCloseStale(ctx)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -1016,6 +1044,21 @@ func (s *Server) RunAskLogSweep(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// askLogCloseStale closes, once at start, the open rows of asklog.StaleKinds a
+// previous process opened: their resolution lived in its memory, so they would
+// stay open for ever and skew the answer rate. They end unknown — a soft end,
+// which an answer seen later (another replica, mid-rollout) still replaces.
+func (s *Server) askLogCloseStale(ctx context.Context) {
+	n, err := s.askLog.cfg.Store.CloseStale(ctx, s.askLog.started)
+	if err != nil {
+		s.logger.Printf("ask log: closing the asks a restart left open: %v", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Printf("ask log: closed %d ask(s) a restart left open (outcome unknown)", n)
 	}
 }
 

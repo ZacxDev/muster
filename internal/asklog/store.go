@@ -33,9 +33,13 @@ type Store interface {
 	// List is the caller's newest rows, at most limit.
 	List(ctx context.Context, limit int) ([]Ask, error)
 	// Purge is the retention sweep, for every owner (the system scope): it
-	// clears the text of rows asked before now-textTTL (text_purged_at) and
-	// deletes rows asked before now-rowTTL. It returns how many of each.
+	// clears the text — every text column and options — of rows asked before
+	// now-textTTL (text_purged_at) and deletes rows asked before now-rowTTL.
+	// It returns how many of each.
 	Purge(ctx context.Context, now time.Time, textTTL, rowTTL time.Duration) (purged, deleted int, err error)
+	// CloseStale closes, for every owner (the system scope), the open rows of
+	// StaleKinds asked before before: outcome unknown. It returns how many.
+	CloseStale(ctx context.Context, before time.Time) (int, error)
 }
 
 // PG is Store on Postgres.
@@ -48,7 +52,8 @@ func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
 var ErrBadAsk = errors.New("asklog: not a valid ask")
 
 // sys is the store's one system-scope helper: the retention sweep, which
-// clears text and deletes rows BY AGE ONLY, returning counts (internal/authz's
+// clears text and deletes rows BY AGE ONLY, and the restart close, which ends
+// open rows of StaleKinds BY AGE ONLY — each returning counts (internal/authz's
 // systemLedger lists it).
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
@@ -195,7 +200,7 @@ func resolveArgs(r Resolution) ([]any, error) {
 		answer = redactedText(r.Answer, MaxAnswerRunes)
 	}
 	return []any{r.Outcome, answer, r.AnsweredBy, r.Provenance, at, Answered(r.Outcome),
-		[]string{OutcomeMovedOn, OutcomeExpired, OutcomeGone, OutcomeSuperseded}}, nil
+		[]string{OutcomeMovedOn, OutcomeExpired, OutcomeGone, OutcomeSuperseded, OutcomeUnknown}}, nil
 }
 
 // Resolve implements Store.
@@ -285,10 +290,23 @@ func (p *PG) Purge(ctx context.Context, now time.Time, textTTL, rowTTL time.Dura
 		return 0, 0, fmt.Errorf("asklog: purge rows: %w", err)
 	}
 	deleted := int(tag.RowsAffected())
-	tag, err = p.pool.Exec(sctx, `UPDATE asks SET question = '', question_norm = '', answer = '', proposed_answer = '', text_purged_at = $1
+	// 🔴 options TOO: option labels are transcript text (asks_text_purged
+	// refuses a purged row that still holds any).
+	tag, err = p.pool.Exec(sctx, `UPDATE asks SET question = '', question_norm = '', answer = '', proposed_answer = '', options = '[]'::jsonb,
+		text_purged_at = $1
 		WHERE text_purged_at IS NULL AND asked_at < $2`, now, now.Add(-textTTL))
 	if err != nil {
 		return 0, deleted, fmt.Errorf("asklog: purge text: %w", err)
 	}
 	return int(tag.RowsAffected()), deleted, nil
+}
+
+// CloseStale implements Store.
+func (p *PG) CloseStale(ctx context.Context, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(sys(ctx), `UPDATE asks SET outcome = 'unknown'
+		WHERE outcome = '' AND kind = ANY($1) AND asked_at < $2`, StaleKinds, before)
+	if err != nil {
+		return 0, fmt.Errorf("asklog: close stale: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

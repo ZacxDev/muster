@@ -69,16 +69,40 @@ const (
 	// assistant turn with no user message in between; an opencode ask that
 	// left the host's list unanswered from here).
 	OutcomeMovedOn = "moved_on"
-	// OutcomeGone: the window was gone before any reply.
+	// OutcomeGone: the window was gone before any reply (or now shows another
+	// session).
 	OutcomeGone = "gone"
+	// OutcomeUnknown: muster restarted before it saw how the ask ended
+	// (PG.CloseStale). An answer seen later replaces it.
+	OutcomeUnknown = "unknown"
 )
 
-// Who answered (asks.answered_by). Phase 1 writes only these two; the later
-// phases add "auto:<rule id>" and "shadow".
+// Who answered (asks.answered_by). The later phases add "auto:<rule id>" and
+// "shadow".
 const (
 	ByOwner = "owner"
+	// ByChief: the chief — its answer to a question put to it, or a nudge or
+	// relayed answer it queued into a session (provenance nudge). 🔴 Never
+	// counted as the owner's approval.
 	ByChief = "chief"
+	// ByOther: neither the owner nor the chief — a routed message (a
+	// plugin's, another session's).
+	ByOther = "other"
 )
+
+// AnsweredByFor is who answered a plain-text question whose reply had
+// provenance prov: a nudge is the chief's, a routed message another's, and a
+// message muster pasted for the owner or one it cannot attribute (pane) the
+// owner's.
+func AnsweredByFor(prov string) string {
+	switch prov {
+	case ProvNudge:
+		return ByChief
+	case ProvRoute:
+		return ByOther
+	}
+	return ByOwner
+}
 
 // Where a plain-text reply came from (asks.answer_provenance): what muster
 // can prove, never a guess.
@@ -188,14 +212,22 @@ func Answered(outcome string) bool {
 // later (a question store entry resolved after it expired; the host's next list
 // arriving before the answer route finished).
 func soft(outcome string) bool {
-	return outcome == OutcomeMovedOn || outcome == OutcomeExpired || outcome == OutcomeGone || outcome == OutcomeSuperseded
+	return outcome == OutcomeMovedOn || outcome == OutcomeExpired || outcome == OutcomeGone || outcome == OutcomeSuperseded ||
+		outcome == OutcomeUnknown
 }
+
+// StaleKinds are the kinds whose resolution lives only in the process that
+// opened them (a plain-text question's reply link; an opencode ask's leaving
+// the window): after a restart nothing can resolve them, so CloseStale closes
+// them unknown. An AskUserQuestion and an attention ask resolve by their source
+// id from any process, and are left open.
+var StaleKinds = []string{KindPlainText, KindOpenCodeQuestion, KindOpenCodePermission}
 
 // validOutcome reports whether o is an outcome.
 func validOutcome(o string) bool {
 	switch o {
 	case OutcomeAnswered, OutcomeAnsweredInSession, OutcomeDeclined, OutcomeExpired, OutcomeCancelled, OutcomeSuperseded,
-		OutcomeMovedOn, OutcomeGone:
+		OutcomeMovedOn, OutcomeGone, OutcomeUnknown:
 		return true
 	}
 	return false

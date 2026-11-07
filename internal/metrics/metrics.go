@@ -129,12 +129,13 @@ var (
 		Help: "Turn ends read for a plain-text question, by pre-filter result (kept|dropped).",
 	}, []string{"result"})
 	// AskAnswerSeconds is how long an ask waited, from asked to how it ended:
-	// answered_by owner or chief for an answer, none for an ask that ended
-	// unanswered (expired, cancelled, moved on, superseded, gone). auto is the
+	// answered_by owner, chief (its answer, or a nudge it queued) or other (a
+	// routed message) for an answer, none for an ask that ended unanswered
+	// (expired, cancelled, moved on, superseded, gone, unknown). auto is the
 	// later phases' (an auto-answer); nothing observes it yet.
 	AskAnswerSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "muster_ask_answer_seconds",
-		Help:    "Time from an ask to its end, by kind and who answered (owner|chief|auto|none).",
+		Help:    "Time from an ask to its end, by kind and who answered (owner|chief|other|auto|none).",
 		Buckets: []float64{5, 15, 30, 60, 120, 300, 900, 1800, 3600, 4 * 3600, 24 * 3600},
 	}, []string{"kind", "answered_by"})
 	// AskCaptureErrors counts captures that failed — the transcript could not
