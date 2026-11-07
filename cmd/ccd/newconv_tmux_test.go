@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -36,20 +38,35 @@ func fileHolds(t *testing.T, path, prompt string) bool {
 	return strings.Contains(string(b), fmt.Sprintf(`"content":%q`, prompt))
 }
 
-// chatNewConversation sends p through muster's client on a turn whose route
+// sendNewConversation sends p through muster's client on a turn whose route
 // carries agents.HeaderCCNewConversation "1" — the header muster's officer
-// runtime sets for an instance of a fresh_session_per_item pool — and
-// requires the fake CLI's reply for exactly those bytes.
-func (r *serveRig) chatNewConversation(t *testing.T, p string) {
+// runtime sets for an instance of a fresh_session_per_item pool — and returns
+// the reply, what ccd's 103 said (agents.TurnAcceptance; the zero value when
+// none came), and the error.
+func (r *serveRig) sendNewConversation(t *testing.T, p string) (string, agents.TurnAcceptance, error) {
 	t.Helper()
 	h := http.Header{}
 	h.Set(agents.HeaderCCNewConversation, "1") // Set canonicalises; a map literal's "CC" key would never be read
 	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Header: h})
+	var mu sync.Mutex
+	var acc agents.TurnAcceptance
+	ctx = agents.WithTurnAccepted(ctx, func(a agents.TurnAcceptance) { mu.Lock(); acc = a; mu.Unlock() })
 	reply, err := mustersGateway(t, "http://"+r.gwAddr).Chat(ctx, contractAgent, "s", p, nil)
+	mu.Lock()
+	defer mu.Unlock()
+	return reply, acc, err
+}
+
+// chatNewConversation is sendNewConversation requiring the fake CLI's reply
+// for exactly those bytes; it returns ccd's acceptance.
+func (r *serveRig) chatNewConversation(t *testing.T, p string) agents.TurnAcceptance {
+	t.Helper()
+	reply, acc, err := r.sendNewConversation(t, p)
 	sum := sha256.Sum256([]byte(p))
 	if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
 		t.Fatalf("prompt %q (new conversation): reply %q err %v; ccd log:\n%s", p, reply, err, r.logs.String())
 	}
+	return acc
 }
 
 // 🔴 A NEW-CONVERSATION TURN STARTS A NEW CONVERSATION AND KEEPS THE OLD ONE.
@@ -75,7 +92,7 @@ func TestTmuxANewConversationTurnStartsAFreshTranscriptAndKeepsTheOld(t *testing
 	old := files[0]
 	oldID := strings.TrimSuffix(filepath.Base(old), ".jsonl")
 
-	r.chatNewConversation(t, "item two")
+	acc := r.chatNewConversation(t, "item two")
 	files = r.transcriptFiles(t)
 	if len(files) != 2 {
 		t.Fatalf("after a new-conversation turn: transcripts %v, want the old one kept and one new one; ccd log:\n%s", files, r.logs.String())
@@ -99,10 +116,74 @@ func TestTmuxANewConversationTurnStartsAFreshTranscriptAndKeepsTheOld(t *testing
 	if got := recordedPrimary(r.cfg, r.ws); got != freshID || got == oldID {
 		t.Fatalf("the recorded primary session is %q, want the new conversation %q (old %q)", got, freshID, oldID)
 	}
+	// 🔴 ccd NAMES THE NEW CONVERSATION on the 103 muster's client reads
+	// (agents.TurnAcceptance.NewConversation): its absence is how muster tells
+	// a ccd that predates the header, which would have run the turn in the old one.
+	if acc.NewConversation != freshID {
+		t.Fatalf("ccd's acceptance named new conversation %q, want %q (lane %q)", acc.NewConversation, freshID, acc.Lane)
+	}
 
 	// An ordinary turn after it stays in the new conversation.
 	r.chat(t, "item two, follow-up")
 	if !fileHolds(t, fresh, "item two, follow-up") || fileHolds(t, old, "item two, follow-up") {
 		t.Fatal("the ordinary turn after a new conversation did not land in the new conversation")
+	}
+}
+
+// 🔴 A /clear ccd TYPED BUT NEVER SAW TAKE IS NEVER TYPED AGAIN BESIDE ITSELF.
+// The fake drops the Enter after the next pasted /clear (an Enter that landed
+// while the TUI was still ingesting the paste), so "/clear" stays in the
+// input line and no SessionStart comes:
+//
+//   - that turn FAILS, and not as a re-sendable not_ready (which promises
+//     nothing was typed, and on which muster re-sends at once): nothing is
+//     typed into the old conversation, and no new transcript appears;
+//   - the next new-conversation turn submits the /clear still in the input
+//     line rather than pasting another beside it ("/clear/clear", which the
+//     CLI would take as a prompt in the OLD conversation): the turn lands in a
+//     new conversation, and no transcript ever holds "/clear/clear".
+func TestTmuxAnUnconfirmedClearIsNeverTypedBesideItself(t *testing.T) {
+	r := startServe(t, "CCD_SUBMIT_TIMEOUT=2s")
+	r.waitHealth(t, "first start", primaryReady)
+	r.chat(t, "item one")
+	files := r.transcriptFiles(t)
+	if len(files) != 1 {
+		t.Fatalf("instrument check: transcripts %v, want one", files)
+	}
+	old := files[0]
+
+	if err := os.WriteFile(filepath.Join(r.cfg, fakeDropClearEnter), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reply, _, err := r.sendNewConversation(t, "item two")
+	if err == nil {
+		t.Fatalf("a turn whose /clear never took succeeded: %q; ccd log:\n%s", reply, r.logs.String())
+	}
+	if u := agentgateway.Unsent(err); u != "" {
+		t.Fatalf("a turn whose /clear was typed failed as %q — muster re-sends that, pasting beside the /clear in the input line: %v", u, err)
+	}
+	if _, err := os.Stat(filepath.Join(r.cfg, fakeDropClearEnter)); !os.IsNotExist(err) {
+		t.Fatalf("instrument check: the fake never dropped an Enter on /clear (marker still there: %v)", err)
+	}
+	if files := r.transcriptFiles(t); len(files) != 1 || fileHolds(t, old, "item two") {
+		t.Fatalf("after the unconfirmed /clear: transcripts %v (the old one holding \"item two\": %v), want only the old one, without it",
+			files, fileHolds(t, old, "item two"))
+	}
+
+	acc := r.chatNewConversation(t, "item two")
+	files = r.transcriptFiles(t)
+	if len(files) != 2 {
+		t.Fatalf("after the next new-conversation turn: transcripts %v, want the old one and one new; ccd log:\n%s", files, r.logs.String())
+	}
+	for _, f := range files {
+		if fileHolds(t, f, "/clear/clear") || fileHolds(t, f, "<local-command>/clear/clear</local-command>") {
+			t.Fatalf("%s holds a doubled /clear: ccd pasted a second one beside the first", f)
+		}
+		if f != old && (!fileHolds(t, f, "item two") || strings.TrimSuffix(filepath.Base(f), ".jsonl") != acc.NewConversation) {
+			t.Fatalf("the new conversation %s should hold \"item two\" and be the one ccd named (%q)", f, acc.NewConversation)
+		}
+	}
+	if fileHolds(t, old, "item two") {
+		t.Fatal("the turn was typed into the old conversation")
 	}
 }

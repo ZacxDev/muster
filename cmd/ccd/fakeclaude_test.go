@@ -37,6 +37,8 @@ import (
 //     no model turn — while a `/` text naming no command ("/etc/hosts is broken")
 //     is an ordinary prompt; all as measured on the real CLI. `/exit` fires
 //     SessionEnd and exits 0;
+//   - an Enter on an empty input line does nothing; while fakeDropClearEnter
+//     exists, an Enter on "/clear" is dropped once;
 //   - `/clear` starts a NEW conversation in the same process, as measured on
 //     the real CLI (2.1.289, a workstation, 2026-11-06): SessionEnd (reason
 //     "clear") for the old session, then SessionStart (source "clear") with a
@@ -73,6 +75,12 @@ func fakeWorktreeMain(dir string) string {
 	}
 	return filepath.Dir(filepath.Dir(wts))
 }
+
+// fakeDropClearEnter is a file in the fake's CLAUDE_CONFIG_DIR: while it
+// exists, the next Enter on an input line holding exactly "/clear" is DROPPED
+// (the file is removed as it is), so "/clear" stays in the input line — an
+// Enter that landed while the TUI was still ingesting the paste. One-shot.
+const fakeDropClearEnter = "fake-drop-clear-enter"
 
 // fakeLocalCommands are the slash commands the fake runs locally.
 var fakeLocalCommands = map[string]bool{"/compact": true, "/help": true, "/model": true}
@@ -372,6 +380,11 @@ func fakeClaude() int {
 					cur = append(cur, '\n')
 				case inPaste:
 					cur = append(cur, c)
+				case c == '\r' && string(cur) == "/clear" && os.Remove(filepath.Join(cfg, fakeDropClearEnter)) == nil:
+					// One Enter dropped (fakeDropClearEnter): "/clear" stays in
+					// the input line, as after an Enter that landed while the
+					// TUI was still ingesting the paste.
+					appendFile(filepath.Join(cfg, "fake-hooks.log"), "dropped the Enter after a pasted /clear\n")
 				case c == '\r':
 					if len(cur) > 0 {
 						submit(string(cur))

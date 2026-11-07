@@ -65,6 +65,14 @@ const (
 	// the conversation the CLI already has (docs/officers.md, "One
 	// conversation per item").
 	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
+	// HeaderCCNewConversationSession is ccd's ANSWER to a turn carrying
+	// HeaderCCNewConversation: the session id of the new conversation the turn
+	// was typed into, on the 103 that says the CLI accepted it (turnaccepted.go
+	// TurnAcceptance.NewConversation) and on the final answer. A ccd that
+	// predates HeaderCCNewConversation never sends it, which is how muster
+	// tells a stale image from a current one (internal/api
+	// OfficerTurnContext).
+	HeaderCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
 )
 
 // FailureCapacity is the `error.type` of ccd's typed 503 for a turn that names

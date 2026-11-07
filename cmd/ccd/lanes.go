@@ -138,6 +138,12 @@ const (
 	// is typed (server.startNewConversation). Ignored on a lane's turn: an
 	// explicit session is a conversation of its own already.
 	headerCCNewConversation = "X-Muster-CC-New-Conversation"
+	// headerCCNewConversationSession: ccd's answer to a turn carrying
+	// headerCCNewConversation — the session id of the new conversation the
+	// turn was typed into, on the 103 and the final answer (muster's
+	// agents.HeaderCCNewConversationSession). Its absence is how muster tells
+	// a ccd that predates the request header.
+	headerCCNewConversationSession = "X-Muster-CC-New-Conversation-Session"
 )
 
 // toollessArgs are the flags a tool-less lane's CLI starts with: no built-in

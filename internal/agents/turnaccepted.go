@@ -42,6 +42,11 @@ const HeaderCCPromptAccepted = "X-Muster-CC-Prompt-Accepted"
 // text runs in — the request's HeaderCCSession, "" for ccd's primary CLI.
 type TurnAcceptance struct {
 	Lane string
+	// NewConversation is the session ccd's 103 names in
+	// HeaderCCNewConversationSession: the NEW conversation a turn that asked
+	// for one (HeaderCCNewConversation) was typed into. "" when the turn did
+	// not ask, or when its ccd predates the header.
+	NewConversation string
 }
 
 type turnAcceptedKey struct{}

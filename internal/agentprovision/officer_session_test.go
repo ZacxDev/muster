@@ -97,11 +97,12 @@ func TestAnOfficerSessionsBypassReachesTheBuiltSpecAndATaskAgentsDoesNot(t *test
 
 // TestAnOfficerSessionDisablesAutoMemoryAndNoOtherAgentsDoes: a session source
 // answering DisableAutoMemory (the officer runtime, for every officer
-// instance) puts CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in THAT agent's built spec
+// instance) puts CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 and
+// CLAUDE_CODE_DISABLE_ORG_MEMORY=1 in THAT agent's built spec
 // — the pod env the CLI inherits through ccd and tmux — and neither a task
 // agent the source does not answer for nor a session the source answers
-// WITHOUT it (the chief's shape: HQMCP) carries the variable (⚠ that half is
-// an INVARIANT guard).
+// WITHOUT it (the chief's shape: HQMCP) carries either variable (⚠ that half
+// is an INVARIANT guard).
 func TestAnOfficerSessionDisablesAutoMemoryAndNoOtherAgentsDoes(t *testing.T) {
 	officer := ccRow("officer-triage-example-web-1")
 	chiefish := ccRow("chief-shaped")
@@ -120,16 +121,23 @@ func TestAnOfficerSessionDisablesAutoMemoryAndNoOtherAgentsDoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, ok := envVal(spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY"); !ok || v != "1" {
-		t.Fatalf("officer: CLAUDE_CODE_DISABLE_AUTO_MEMORY = %q (present %v), want 1", v, ok)
+	// Both of the CLI's memory switches: auto-memory, and org memory — a
+	// separate gate that does not read the auto-memory variable.
+	memoryVars := []string{"CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_ORG_MEMORY"}
+	for _, name := range memoryVars {
+		if v, ok := envVal(spec, name); !ok || v != "1" {
+			t.Errorf("officer: %s = %q (present %v), want 1", name, v, ok)
+		}
 	}
 	for _, other := range []agents.Agent{worker, chiefish} {
 		ospec, err := a.buildSpec(context.Background(), other)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v, ok := envVal(ospec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY"); ok {
-			t.Errorf("INVARIANT: %s's spec carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=%q", other.Name, v)
+		for _, name := range memoryVars {
+			if v, ok := envVal(ospec, name); ok {
+				t.Errorf("INVARIANT: %s's spec carries %s=%q", other.Name, name, v)
+			}
 		}
 	}
 }

@@ -60,6 +60,12 @@ type InstanceState struct {
 	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
 	// instance and not yet delivered. Such an instance is not re-prompted.
 	PromptPending bool
+	// Spent, for an instance of a fresh_session_per_item pool: its current
+	// conversation has claimed its one item (Officer.FreshSessionPerItem).
+	// Held by no live claim, it is done with that item however the hold
+	// ended, and is prompted (into a new conversation) without waiting out
+	// RepromptAfter. Always false for every other pool.
+	Spent bool
 }
 
 // Fleet is how the loop observes and moves an officer's instances.

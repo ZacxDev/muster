@@ -1133,6 +1133,13 @@ type health struct {
 	// runs lanes (one with none refuses every session turn anyway). Reported,
 	// never gating; muster does not read it.
 	ToollessLanes bool `json:"toolless_lanes,omitempty"`
+	// NewConversation says this ccd honours X-Muster-CC-New-Conversation
+	// (startNewConversation) on the primary's turns, for an operator to read
+	// by hand after moving a fresh_session_per_item officer onto a new image:
+	// a ccd that predates it has no such field, and runs every item in the
+	// conversation its CLI already has. muster does not read it — it reads
+	// the per-turn answer (headerCCNewConversationSession) instead.
+	NewConversation bool `json:"new_conversation,omitempty"`
 	authSnapshot
 }
 
