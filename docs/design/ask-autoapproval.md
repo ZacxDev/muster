@@ -1,6 +1,7 @@
 # Design: ask telemetry, review, and progressive auto-approval
 
-**Status: proposal. Nothing on this page is built.** The operator settled the
+**Status: phase 1 (telemetry) is built (#502; user page [asks.md](../asks.md));
+phases 2–4 are proposals, not built.** The operator settled the
 shape (what is recorded, who decides, the only two answers muster may ever
 give, and the reversal of an earlier non-goal) before this was written; it is
 recorded under [Operator decisions](#operator-decisions). The operator then
@@ -587,6 +588,29 @@ does not turn it on. Every regression test is shown red on the pre-change
 commit and green after; the PR states that matrix.
 
 ### Phase 1: telemetry capture
+
+**Built (#502).** Where it differs from the plan below, the code is the
+authority, and the differences are:
+
+- The migration is `0089_asks.sql` (0088 was taken by a sibling branch; it may
+  be renumbered at merge). `episode_id` is composite with `owner_id`
+  (0006's rule), so it adds the unique index `session_episodes_id_owner_key`.
+- 🔴 The plain-text turn end is NOT on `attentionMirrorChanged`: that hook is
+  the hub's **waiting-set** hook and does not fire on busy → idle. The hub has
+  a status hook (`mirror.Service.SetStatusNotify`) that the capture listens on
+  (`internal/api/ask_log.go`, `AskLogMirrorChanged`). A dispatched agent's turn
+  end is `persistTurn`. The turn's question is the last assistant message
+  before any trailing user messages, so a reply already in the transcript when
+  it is read (the quick answer the recon found no episode for) is recorded
+  and linked from the same read.
+- The attention capture wraps the attention store (every create and settle
+  path), and does not record muster's own system asks or notices.
+- `muster_ask_rule_decisions_total`, `muster_ask_never_total` and
+  `muster_ask_rule_demotions_total` are left to phases 2–3, which have
+  something to count.
+- `ask-log` is a feature in the registry (forwarded by the Compose file).
+
+The plan, as written:
 
 - **Files.** `internal/db/migrations/0087_asks.sql` (or the next free number);
   `internal/asklog/` (store, normalise, purge sweep); capture calls in

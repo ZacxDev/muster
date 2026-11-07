@@ -6,7 +6,8 @@ questions, the answer you gave, who gave it and how long it took, so "what
 could my agents have answered without me" is a query rather than an
 impression.
 
-It is **phase 1** of ask auto-approval: telemetry only. Nothing on this page
+It is **phase 1** of ask auto-approval
+([design](design/ask-autoapproval.md)): telemetry only. Nothing on this page
 answers anything for you, proposes an answer or evaluates a rule. Review,
 shadow rules and auto-answers are later phases, each off by default.
 
