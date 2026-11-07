@@ -552,6 +552,11 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 		}
 		out = append(out, it)
 	}
+	// 🔴 NAMED HERE, NOT ONLY IN withFocus: a held question or a waiting
+	// window is PUSHED from this list directly (the queue's diff, an
+	// episode's ask), with no withFocus in between — so its push title
+	// would name the window's place instead of the session's name.
+	s.withNames(ctx, out)
 	return out
 }
 
@@ -719,10 +724,8 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 		return
 	}
 	fi := s.focusIndex(ctx)
+	s.withNamesFrom(ctx, fi, items)
 	for i := range items {
-		if items[i].subject != (focus.Subject{}) && items[i].Name == "" {
-			items[i].Name = s.humanName(ctx, fi, items[i].subject)
-		}
 		if noticeFocus(items[i]) {
 			if v, ok := fi[items[i].subject]; ok && v.Title == items[i].Focus {
 				items[i].focusAt = v.UpdatedAt
@@ -731,6 +734,27 @@ func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 		}
 		if v := fi.mirrorFocus(items[i].claudeSession); v != nil {
 			items[i].Focus, items[i].focusAt = v.Title, v.UpdatedAt
+		}
+	}
+}
+
+// withNames sets each item's Name — the session's HUMAN stable name
+// (humanName), "" when it has none — from ONE read of the stored names, only
+// when an item names a session; an item already named is left alone.
+func (s *Server) withNames(ctx context.Context, items []attentionItem) {
+	for _, it := range items {
+		if it.subject != (focus.Subject{}) && it.Name == "" {
+			s.withNamesFrom(ctx, s.focusIndex(ctx), items)
+			return
+		}
+	}
+}
+
+// withNamesFrom is withNames over an index the caller already read.
+func (s *Server) withNamesFrom(ctx context.Context, fi focusIndex, items []attentionItem) {
+	for i := range items {
+		if items[i].subject != (focus.Subject{}) && items[i].Name == "" {
+			items[i].Name = s.humanName(ctx, fi, items[i].subject)
 		}
 	}
 }

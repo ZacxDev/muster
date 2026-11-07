@@ -35,13 +35,15 @@ func focusToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored agent windows (Claude Code, opencode) — compactly: " +
-				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
+				"id, kind, name (the session's stable name, what your owner calls it), code (a dispatched agent's slug — the name " +
+				"a tool like agent_destroy takes; a mirrored window's codename and tmux address are in where), status, focus title " +
+				"(what it is working on) with how old it is — focus_set_at, and focus_age " +
 				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
-				"matches first: id, kind, title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
+				"matches first: id, kind, name (the session's stable name), title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
 				"Only sessions muster can see now are returned. By default it searches each session's CURRENT focus; with since_hours " +
 				"it searches every focus each session had in that many past hours instead (a session's focus moves between subtasks " +
 				"of one job, so its current focus can miss what it has been on all along). Either way, an online mirrored session whose " +

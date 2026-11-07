@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // namedFocusStore is a focus store where window @1's conversation is named
@@ -138,5 +142,165 @@ func TestAnAgentsOutcomePushNamesItByItsStableName(t *testing.T) {
 	a := agents.Agent{ID: 7, Name: "brave-otter", DisplayName: "brave-otter"}
 	if got := s.agentLabel(operatorCtx(), a); got != "Billing migration" {
 		t.Fatalf("agentLabel = %q, want the stable name", got)
+	}
+}
+
+// TestAPRAuthorHintNamesTheSessionByItsStableName: the PR author hint a plugin
+// message carries names its online session by its stable name once it has a
+// human one; before, by its focus title or window title, as it always did.
+func TestAPRAuthorHintNamesTheSessionByItsStableName(t *testing.T) {
+	f := newPRFixture(t)
+	fs := focus.NewPG(f.pool)
+	f.srv.ext.Focus = fs
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, routeSID)
+	})
+	f.authored(t, f.asOwner, routeSID, prCreated())
+	m, _, err := f.plugins.Submit(f.asOwner, f.agentMail.ID, plugins.MessageIn{ExternalID: "pr-name-hint-1", Sender: prSender,
+		Subject: "review: Gizmo route", Body: reviewBody(fullFields()), SenderVerified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.srv.prAuthorHint(f.asOwner, m)
+	if before == nil || before.Name == "" || before.Name == "Gizmo release" {
+		t.Fatalf("control: the hint before a name = %+v", before)
+	}
+	if _, err := fs.SetManualName(f.asOwner, focus.MirrorSubject(routeSID), "Gizmo release"); err != nil {
+		t.Fatal(err)
+	}
+	if h := f.srv.prAuthorHint(f.asOwner, m); h == nil || h.Name != "Gizmo release" {
+		t.Fatalf("the hint after the session was named = %+v, want its stable name", h)
+	}
+}
+
+// nameNudgeSession gives the state/nudge fixture's window conversation
+// (nudgeSID) a manual name, removed after the test.
+func nameNudgeSession(t *testing.T, f *stateFixture, name string) {
+	t.Helper()
+	if _, err := focus.NewPG(f.pool).SetManualName(asUser(authz.OperatorUserID), focus.MirrorSubject(nudgeSID), name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, nudgeSID)
+	})
+}
+
+// TestAWaitingEpisodesPushNamesTheSessionByItsName: through the real episode
+// push (the hub hook, session state on), a named window's "needs you" push
+// title is its stable name (episodeWho's human-name branch), not its place.
+func TestAWaitingEpisodesPushNamesTheSessionByItsName(t *testing.T) {
+	f := newStateFixture(t, false)
+	nameNudgeSession(t, f, "Release prep")
+	f.noGrace()
+	f.waitWithSecrets()
+	f.srv.AttentionMirrorChanged(authz.OperatorUserID)
+	f.oneEpisode(t)
+	ps := f.payloads()
+	if len(ps) != 1 || ps[0].Title != "Release prep needs you" {
+		t.Fatalf("pushes %+v, want one titled by the session's name", ps)
+	}
+}
+
+// TestAHeldQuestionsEpisodePushNamesTheSessionByItsName: an AskUserQuestion
+// still open past its grace is pushed as the episode's ask (episodeAsk →
+// attentionNotification, no withFocus in between); its title names the
+// session by its stable name.
+func TestAHeldQuestionsEpisodePushNamesTheSessionByItsName(t *testing.T) {
+	f := newStateFixture(t, false)
+	nameNudgeSession(t, f, "Release prep")
+	f.asks(t)
+	f.advance(61 * time.Second)
+	f.statePass(t)
+	ps := f.payloads()
+	if len(ps) != 1 || ps[0].Title != "Release prep is asking" {
+		t.Fatalf("pushes %+v, want the ask titled by the session's name", ps)
+	}
+}
+
+// TestAHeldQuestionsDiffPushNamesTheSessionByItsName: with session state OFF,
+// a held question is pushed by the queue's diff (attentionMirrorChanged →
+// attentionNotify straight from waitingSessionsIn); its title names the
+// session by its stable name.
+func TestAHeldQuestionsDiffPushNamesTheSessionByItsName(t *testing.T) {
+	f := newAttnFixture(t)
+	if _, err := focus.NewPG(f.pool).SetManualName(asUser(1), focus.MirrorSubject(focusSID), "Ledger cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, focusSID)
+	})
+	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	f.srv.now = func() time.Time { return clock }
+	nudge := func() {
+		f.srv.BroadcastAgentsChangedFor(1)
+		f.srv.WaitForPushes()
+	}
+	f.setWindows(mirror.StatusIdle)
+	nudge() // the host's first observation: nothing waits
+	qs := []askq.Question{{Question: "Which ledger?", Options: []askq.Option{{Label: "main"}, {Label: "archive"}}}}
+	if _, err := f.srv.Questions().Open(askq.Key{Owner: 1, Source: askSourceMirror, Scope: "ws", Session: focusSID, ToolUseID: "toolu_named"},
+		qs, askq.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	f.setWindows(mirror.StatusWaiting)
+	nudge()
+	clock = clock.Add(EpisodeWaitingGrace + time.Second)
+	nudge()
+	var titles []string
+	for _, p := range f.pusher.to(ep("attn-operator")) {
+		if p.Type == "attention" {
+			titles = append(titles, p.Title)
+		}
+	}
+	if len(titles) != 1 || titles[0] != "Ledger cleanup is asking" {
+		t.Fatalf("held question pushes %q, want one titled by the session's name", titles)
+	}
+}
+
+// TestTheChiefsToolsNameAnAgentByItsStableName: through the real tools on a
+// real store, an agent whose display name is only its slug and whose auto
+// name froze is named by the auto name on its fleet_list row (with its slug
+// as `code`) and on its focus_search hit.
+func TestTheChiefsToolsNameAnAgentByItsStableName(t *testing.T) {
+	f := newAttnFixture(t)
+	slug := "fleet-name-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	a := f.agentFor(t, 1, slug, slug, "fleet-name-tok-"+slug)
+	if _, err := focus.NewPG(f.pool).Upsert(asUser(1), focus.AgentSubject(a.ID), focus.Write{Title: "Reconciling the zebrafish ledger",
+		Source: focus.SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agent_focus SET name_auto = 'Zebrafish accounts', name_auto_at = now()
+		WHERE subject_kind = 'agent' AND subject_key = $1`, strconv.FormatInt(a.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := asUser(1)
+	var fl struct {
+		Sessions []fleetListRow `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(f.srv.toolFleetList(ctx)), &fl); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range fl.Sessions {
+		if r.ID == focus.AgentSubject(a.ID).String() {
+			found = true
+			if r.Name != "Zebrafish accounts" || r.Code != slug {
+				t.Fatalf("fleet_list agent row: name %q code %q, want the auto name and the slug", r.Name, r.Code)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("fleet_list has no row for agent %d", a.ID)
+	}
+	var fs struct {
+		Results []struct {
+			ID, Name string
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(f.srv.toolFocusSearch(ctx, `{"query":"zebrafish ledger"}`)), &fs); err != nil {
+		t.Fatal(err)
+	}
+	if len(fs.Results) != 1 || fs.Results[0].ID != focus.AgentSubject(a.ID).String() || fs.Results[0].Name != "Zebrafish accounts" {
+		t.Fatalf("focus_search: %+v, want the agent named by its auto name", fs.Results)
 	}
 }
