@@ -149,10 +149,13 @@ type Observation struct {
 	Claimed   []Item
 	Instances []InstanceState
 	// Capped: the pool is a judgement pool that has spent its day's session
-	// cap (JudgementLedger.Capped); then only Counted items — those it
+	// cap (JudgementLedger.Usage); then only Counted items — those it
 	// already claimed today — are work for it.
 	Capped  bool
 	Counted map[ItemID]bool
+	// Used is how many judgement sessions the pool has used today
+	// (JudgementLedger.Usage); 0 for an uncapped pool or an unreadable ledger.
+	Used int
 }
 
 // Overrun is a live claim past its pool's wall-time cap (Officer.ItemCap).
@@ -187,6 +190,9 @@ type Decision struct {
 	Idle bool
 	// Claimable is how many items an instance could claim now.
 	Claimable int
+	// CapWaiting is how many items would be Claimable but for the day's
+	// judgement session cap (obs.Capped): work held back by the cap.
+	CapWaiting int
 	// Held is how many live claims its instances hold.
 	Held int
 }
@@ -249,13 +255,20 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	// claimable: the pool could claim it now. A capped judgement pool may
 	// claim only the items it already counted today (officer_claim refuses
 	// any other), so no other item is work for it.
+	workable := func(it Item) bool { return !it.Blocked && o.worksItem(it) }
 	claimable := func(it Item) bool {
-		return !it.Blocked && o.worksItem(it) && (!obs.Capped || obs.Counted[it.ID])
+		return workable(it) && (!obs.Capped || obs.Counted[it.ID])
+	}
+	count := func(it Item) {
+		switch {
+		case claimable(it):
+			d.Claimable++
+		case workable(it):
+			d.CapWaiting++
+		}
 	}
 	for _, it := range obs.Open {
-		if claimable(it) {
-			d.Claimable++
-		}
+		count(it)
 	}
 	heldByUp := map[string]bool{}
 	overrun := map[string]bool{}
@@ -264,9 +277,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 	limit := o.ItemCap()
 	for _, it := range obs.Claimed {
 		if !it.LeaseLive(now) {
-			if claimable(it) {
-				d.Claimable++
-			}
+			count(it)
 			continue
 		}
 		in, mine := ours(it.ClaimedBy)
@@ -437,6 +448,12 @@ type officerState struct {
 	// strikes counts consecutive passes that saw a permanent refusal; a
 	// successful answer and an outage (5xx, network) both reset it.
 	strikes int
+	// capReached: the last pass succeeded and saw the judgement pool at its
+	// daily session cap with claimable judgement items waiting
+	// (muster_officer_judgement_cap_reached); a failed pass clears it. capLoggedDay is the UTC day that
+	// was last logged, so the line is written once per (officer, UTC day).
+	capReached   bool
+	capLoggedDay string
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -579,6 +596,11 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	obs, err := r.observe(ctx, pools)
 	if err != nil {
 		r.mu.Lock()
+		// A pass that saw nothing cannot say the pool is held back by its
+		// session cap: muster_officer_judgement_cap_reached is the last
+		// SUCCESSFUL pass's state, so a failed pass (and a fault scale-down,
+		// which follows one) clears it rather than republish a stale value.
+		s.capReached = false
 		s.failures++
 		s.nextAt = now.Add(Backoff(o, s.failures))
 		f, next := s.failures, s.nextAt
@@ -652,6 +674,23 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 			r.log.Printf("officers: %s: HQ gave item %s no claimed_at, so max_item_minutes cannot time it: such items are NOT capped (logged once)", o.ID, d.Unclocked[0])
 		}
 	}
+	var capLines []string
+	for i, p := range pools {
+		limit := p.SessionCap()
+		if limit == 0 {
+			continue
+		}
+		// obs.Used >= limit tells the cap from an unreadable ledger, which
+		// also reads as Capped (fail closed) but with Used 0.
+		reached := obs[i].Capped && obs[i].Used >= limit && ds[i].CapWaiting > 0
+		s.capReached = reached
+		if day := utcDay(now); reached && s.capLoggedDay != day {
+			s.capLoggedDay = day
+			reset := CapResetAt(now)
+			capLines = append(capLines, fmt.Sprintf("officers: %s: %s: %d claimable judgement item(s) wait in HQ and are not claimed until the cap resets at %s "+
+				"(tiers.judgement.max_sessions_per_day; logged once per UTC day)", p.label(), CapReason(obs[i].Used, limit, reset), ds[i].CapWaiting, reset.Format(time.RFC3339)))
+		}
+	}
 	var ended []refusedCap
 	for id, c := range s.capRefused {
 		if !over[id] {
@@ -674,6 +713,9 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	}
 	r.mu.Unlock()
 	r.publish()
+	for _, l := range capLines {
+		r.log.Print(l)
+	}
 	for _, c := range ended {
 		r.endCapHold(c)
 	}
@@ -761,8 +803,11 @@ func (r *Reconciler) noteErrors(o Officer, pools []Officer, obs []Observation) {
 func (r *Reconciler) publish() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	slots, faults, withheld := 0, 0, 0
+	slots, faults, withheld, capReached := 0, 0, 0, 0
 	for _, s := range r.state {
+		if s.capReached {
+			capReached++
+		}
 		slots += len(s.errored)
 		if s.fault != "" {
 			faults++
@@ -772,6 +817,7 @@ func (r *Reconciler) publish() {
 	metrics.OfficerErrorSlots.Set(float64(slots))
 	metrics.OfficerHQFaults.Set(float64(faults))
 	metrics.OfficerCapRefusalWithheld.Set(float64(withheld))
+	metrics.OfficerJudgementCapReached.Set(float64(capReached))
 	published.Lock()
 	published.slots, published.faults = float64(slots), float64(faults)
 	published.Unlock()
@@ -797,15 +843,16 @@ func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observatio
 		if err != nil {
 			return nil, err
 		}
-		capped, counted, err := r.judgement.Capped(ctx, p, r.now())
+		used, counted, err := r.judgement.Usage(ctx, p, r.now())
+		capped := used > 0 && used >= p.SessionCap()
 		if err != nil {
 			// Only the CAPPED pool pays for an unreadable ledger: it is
 			// treated as capped (no new work, fail closed), and the other
 			// pool's pass goes on.
 			r.log.Printf("officers: %s: %v — not waking it for new work this pass", p.label(), err)
-			capped, counted = true, nil
+			used, capped, counted = 0, true, nil
 		}
-		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted}
+		out[i] = Observation{Open: open, Claimed: claimed, Instances: insts, Capped: capped, Counted: counted, Used: used}
 	}
 	return out, nil
 }

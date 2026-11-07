@@ -1053,10 +1053,11 @@ with `Ctrl-b d`; the agent keeps running and stays in muster.
 8. **Optional: the native Android app** at
    <https://github.com/ZacxDev/muster-android>.
 9. **No chief, on purpose.** muster's *chief* is an optional agent that reports
-   on and manages the rest of the fleet. It is **off by default** and runs in a
-   Kubernetes pod, which this install does not have, so home opens the Agents
-   list and **Account → Chief** says "Not available on this install". Nothing
-   else needs it (`docs/chief.md`).
+   on the rest of the fleet. It is **off by default** and this guide does not
+   turn it on: it needs the Compose `chief` profile (amd64 hosts only) and a
+   credential, a Claude subscription token or an OpenRouter key. Until then
+   **Account → Chief** says "Not available on this install yet" and how to turn
+   it on. Nothing else needs it (`docs/features.md#chief`, `docs/chief.md`).
 
 ---
 
