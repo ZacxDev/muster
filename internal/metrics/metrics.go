@@ -131,8 +131,10 @@ var (
 	// AskAnswerSeconds is how long an ask waited, from asked to how it ended:
 	// answered_by owner, chief (its answer, or a nudge it queued) or other (a
 	// routed message) for an answer, none for an ask that ended unanswered
-	// (expired, cancelled, moved on, superseded, gone, unknown). auto is the
-	// later phases' (an auto-answer); nothing observes it yet.
+	// (expired, cancelled, moved on, superseded, gone). A row a restart closed
+	// unknown is NOT observed (the close is one UPDATE across rows, and its
+	// time says nothing about the ask). auto is the later phases' (an
+	// auto-answer); nothing observes it yet.
 	AskAnswerSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "muster_ask_answer_seconds",
 		Help:    "Time from an ask to its end, by kind and who answered (owner|chief|other|auto|none).",

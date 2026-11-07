@@ -328,7 +328,13 @@ func (s *Server) AskLogMirrorChanged(owner int64) {
 			k := askWinKey{owner: owner, host: h.Host, session: w.Session, window: w.ID}
 			listed[k] = true
 			prev, had := l.seen[k]
+			// session is the last NON-EMPTY Claude session the window showed:
+			// a cycle where the host names none (its locator missed the pane,
+			// a --resume) is not a new session.
 			cur := askSeen{status: w.Status, session: w.ClaudeSession}
+			if cur.session == "" {
+				cur.session = prev.session
+			}
 			// A window of a runtime that names its asks (opencode; the
 			// runtime's own spec says so, as for the attention queue) waiting on
 			// one it names.
@@ -345,8 +351,9 @@ func (s *Server) AskLogMirrorChanged(owner int64) {
 			}
 			// The window now shows ANOTHER Claude session (a /clear, a new
 			// session in the same pane): the old one's open question can never
-			// be read again here — it ends gone, and its turn key goes.
-			if had && prev.session != "" && prev.session != w.ClaudeSession {
+			// be read again here — it ends gone, and its turn key goes. Only a
+			// DIFFERENT non-empty session: a blip to none closes nothing.
+			if had && prev.session != "" && w.ClaudeSession != "" && prev.session != w.ClaudeSession {
 				s.askLogWindowGone(owner, k, at)
 			}
 			if !had || !(w.Claude && w.ClaudeSession != "" && w.Runtime == "") {

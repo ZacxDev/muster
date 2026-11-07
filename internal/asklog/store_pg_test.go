@@ -262,9 +262,9 @@ func TestPurgeClearsExactlyTheTextColumnsPastTheTTL(t *testing.T) {
 	}
 }
 
-// asksMetadataColumns are the text and jsonb columns of asks that hold no
+// asksMetadataColumns are the columns of asks that can hold text but hold no
 // transcript content: names, ids, paths and closed vocabularies. A LEDGER:
-// TestTheMetadataLedgerNamesRealColumns fails when an entry names no column.
+// contentColumns fails when an entry names no such column.
 var asksMetadataColumns = map[string]bool{
 	"kind": true, "runtime": true, "mirror_host": true, "mirror_session": true, "mirror_window": true, "claude_session": true,
 	"repo": true, "cwd": true, "source_ref": true, "jev_label": true, "jev_model": true, "jev_error": true,
@@ -272,51 +272,121 @@ var asksMetadataColumns = map[string]bool{
 	"agreement": true, "outcome": true,
 }
 
-// contentColumns is every text or jsonb column of asks not on
-// asksMetadataColumns, read from the catalog.
-func contentColumns(t *testing.T, pool *pgxpool.Pool) []string {
+// contentColumn is a column of asks that can hold text, and how to write a
+// marker into it.
+type contentColumn struct {
+	name   string
+	marker string // a SQL expression of the column's type holding contentMarker
+}
+
+// contentMarker is the text the fill writes into every content column.
+const contentMarker = "MARKERcontent"
+
+// contentColumns is every column of asks that CAN hold text — text, varchar,
+// char, json, jsonb, and arrays of text or varchar — not on
+// asksMetadataColumns, read from the catalog, each with a marker expression
+// of its own type.
+func contentColumns(t *testing.T, pool *pgxpool.Pool) []contentColumn {
 	t.Helper()
-	rows, err := pool.Query(asUser(2), `SELECT column_name, data_type FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = 'asks' AND data_type IN ('text', 'jsonb') ORDER BY column_name`)
+	rows, err := pool.Query(asUser(2), `SELECT column_name, data_type, udt_name, coalesce(character_maximum_length, 0)
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'asks'
+		  AND (data_type IN ('text', 'character varying', 'character', 'json', 'jsonb')
+		       OR (data_type = 'ARRAY' AND udt_name IN ('_text', '_varchar', '_bpchar')))
+		ORDER BY column_name`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	var out []string
+	var out []contentColumn
 	seen := map[string]bool{}
 	for rows.Next() {
-		var c, typ string
-		if err := rows.Scan(&c, &typ); err != nil {
+		var c, typ, udt string
+		var maxLen int
+		if err := rows.Scan(&c, &typ, &udt, &maxLen); err != nil {
 			t.Fatal(err)
 		}
 		seen[c] = true
-		if !asksMetadataColumns[c] {
-			out = append(out, c)
+		if asksMetadataColumns[c] {
+			continue
 		}
+		m := "'" + contentMarker + "'"
+		switch {
+		case typ == "character" && maxLen > 0 && maxLen < len(contentMarker):
+			m = "'" + contentMarker[:maxLen] + "'"
+		case typ == "json" || typ == "jsonb":
+			m = `'["` + contentMarker + `"]'::` + typ
+		case typ == "ARRAY":
+			m = "ARRAY['" + contentMarker + "']::" + udt[1:] + "[]"
+		}
+		out = append(out, contentColumn{name: c, marker: m})
 	}
 	for c := range asksMetadataColumns {
 		if !seen[c] {
-			t.Fatalf("asksMetadataColumns names %q, which is not a text column of asks", c)
+			t.Fatalf("asksMetadataColumns names %q, which is not a text-holding column of asks", c)
 		}
+	}
+	if len(out) < 5 { // question, question_norm, options, proposed_answer, answer
+		t.Fatalf("instrument check: only %d content columns found: %v", len(out), out)
 	}
 	return out
 }
 
 // assertNoContentLeft fails unless every content column of row id is empty
-// (” for text, [] for jsonb).
+// (” for text, [] for json, {} or NULL for an array).
 func assertNoContentLeft(t *testing.T, pool *pgxpool.Pool, id int64) {
 	t.Helper()
-	cols := contentColumns(t, pool)
-	if len(cols) < 5 { // question, question_norm, options, proposed_answer, answer
-		t.Fatalf("instrument check: only %d content columns found: %v", len(cols), cols)
-	}
-	for _, c := range cols {
-		var v string
-		if err := pool.QueryRow(asUser(2), `SELECT `+c+`::text FROM asks WHERE id = $1`, id).Scan(&v); err != nil {
+	for _, c := range contentColumns(t, pool) {
+		var v *string
+		if err := pool.QueryRow(asUser(2), `SELECT `+c.name+`::text FROM asks WHERE id = $1`, id).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
-		if v != "" && v != "[]" {
-			t.Errorf("the purged row still holds text in %s: %q", c, v)
+		if v != nil && *v != "" && *v != "[]" && *v != "{}" {
+			t.Errorf("the purged row still holds text in %s: %q", c.name, *v)
+		}
+	}
+}
+
+// TestPurgeClearsEveryContentColumnTheCatalogNames: a row with a marker
+// written into EVERY content column the catalog lists (contentColumns, its
+// type filter as wide as "can hold text"), purged, holds the marker in none.
+// 🔴 The fill is generated from the catalog, so a column added later — of any
+// text-holding type, whether or not any capture writes it — is filled and
+// must be cleared, without this test being edited. (Proved by adding a
+// VARCHAR(500) column with no default to the migration: red.)
+func TestPurgeClearsEveryContentColumnTheCatalogNames(t *testing.T) {
+	p, pool := pgStore(t)
+	ctx := asUser(2)
+	now := t0.AddDate(1, 0, 0)
+	a := attentionAsk("filled")
+	a.AskedAt = now.Add(-31 * 24 * time.Hour)
+	id, _, err := p.Open(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cols := contentColumns(t, pool)
+	for _, c := range cols {
+		if _, err := pool.Exec(ctx, `UPDATE asks SET `+c.name+` = `+c.marker+` WHERE id = $1`, id); err != nil {
+			t.Fatalf("fill %s: %v", c.name, err)
+		}
+	}
+	// Positive control: the marker is in every content column before the purge.
+	for _, c := range cols {
+		var v string
+		if err := pool.QueryRow(ctx, `SELECT `+c.name+`::text FROM asks WHERE id = $1`, id).Scan(&v); err != nil || !strings.Contains(v, contentMarker[:6]) {
+			t.Fatalf("control: %s does not hold the marker before the purge: %q %v", c.name, v, err)
+		}
+	}
+	if purged, _, err := p.Purge(context.Background(), now, 30*24*time.Hour, 180*24*time.Hour); err != nil || purged != 1 {
+		t.Fatalf("purge: %d %v", purged, err)
+	}
+	for _, c := range cols {
+		var v *string
+		if err := pool.QueryRow(ctx, `SELECT `+c.name+`::text FROM asks WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		if v != nil && strings.Contains(*v, contentMarker[:6]) {
+			t.Errorf("after the purge %s still holds the marker: %q", c.name, *v)
 		}
 	}
 }

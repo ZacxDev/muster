@@ -56,6 +56,30 @@ func TestAFullQueueLogsAtMostOncePerMinute(t *testing.T) {
 	flush(t, r)
 }
 
+// TestTheDropsStillUnloggedAreSaidWhenTheQueueDrains (round 2): drops held
+// back by the once-a-minute limit are logged, with their count, when the queue
+// drains — so none goes unlogged.
+func TestTheDropsStillUnloggedAreSaidWhenTheQueueDrains(t *testing.T) {
+	var buf strings.Builder
+	var mu sync.Mutex
+	r := NewRecorder(log.New(&lockedWriter{w: &buf, mu: &mu}, "", 0))
+	r.SetQueueBound(1)
+	r.SetClock(func() time.Time { return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) })
+	release := make(chan struct{})
+	r.Do(context.Background(), KindAttention, func(context.Context) error { <-release; return nil })
+	for i := 0; i < 20; i++ {
+		r.Do(context.Background(), KindAttention, func(context.Context) error { return nil })
+	}
+	close(release)
+	flush(t, r)
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+	if strings.Count(out, "capture queue is full") != 1 || !strings.Contains(out, "capture queue drained") {
+		t.Fatalf("the log after a burst and a drain:\n%s", out)
+	}
+}
+
 type lockedWriter struct {
 	w  io.Writer
 	mu *sync.Mutex

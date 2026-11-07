@@ -130,3 +130,59 @@ func TestTheSweepClosesWhatARestartLeftOpen(t *testing.T) {
 		t.Fatalf("the open AskUserQuestion row was closed: %+v", a)
 	}
 }
+
+// TestABlipToNoSessionClosesNothing (round 2): the window names no Claude
+// session for a cycle (its locator missed the pane, a --resume), then the same
+// session again; the open question is NOT closed gone, and the owner's reply
+// is still linked. A different session after the blip still closes it.
+func TestABlipToNoSessionClosesNothing(t *testing.T) {
+	f := newPlainFixture(t, pgAskStore)
+	f.say("assistant", "Shall I continue?", time.Time{})
+	f.status(t, mirror.StatusIdle, 2)
+	set := func(cs, st string, since int64) {
+		f.m.mu.Lock()
+		f.m.windows[0].ClaudeSession, f.m.windows[0].Status, f.m.windows[0].StatusSince = cs, st, since
+		f.m.mu.Unlock()
+		f.s.AskLogMirrorChanged(1)
+		flushAsks(t, f.s)
+	}
+	set("", mirror.StatusIdle, 2) // the blip
+	if a := one(t, asksOf(t, f.s, 1), asklog.KindPlainText); a.Outcome != "" {
+		t.Fatalf("a blip to no session closed the question: %+v", a)
+	}
+	set(focusSID, mirror.StatusIdle, 2) // back
+	f.say("user", "yes", time.Now())
+	set(focusSID, mirror.StatusBusy, 3)
+	if a := one(t, asksOf(t, f.s, 1), asklog.KindPlainText); a.Outcome != asklog.OutcomeAnswered || a.Answer != "yes" {
+		t.Fatalf("the reply after a blip: %+v", a)
+	}
+	// Control: a blip, then a DIFFERENT session, closes the next question gone.
+	f.say("assistant", "Want me to push?", time.Time{})
+	set(focusSID, mirror.StatusIdle, 4)
+	set("", mirror.StatusIdle, 4)
+	set("1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", mirror.StatusBusy, 5)
+	rows := asksOf(t, f.s, 1)
+	if len(rows) != 2 || rows[1].Outcome != asklog.OutcomeGone {
+		t.Fatalf("a different session after a blip: %+v", rows)
+	}
+}
+
+// TestAnAgentsQuestionAnsweredByARoutedMessageIsOther (round 2): a dispatched
+// agent's question answered by a routed message is answered_by other.
+func TestAnAgentsQuestionAnsweredByARoutedMessageIsOther(t *testing.T) {
+	f := askLogAttnFixture(t, pgAskStore)
+	ctx := asUser(1)
+	store := agents.NewPG(f.pool)
+	sess, err := store.LatestOrCreateSession(ctx, f.op.ID, f.op.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.persistTurn(ctx, f.op, sess, []agents.TurnPart{{Kind: "text", Content: "Shall I file it?"}})
+	if _, err := store.AddChatMessage(ctx, agents.ChatMessage{AgentID: f.op.ID, SessionID: sess.ID, Role: "user", Content: RoutedPrefacePrefix + "a plugin: file it"}); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.persistTurn(ctx, f.op, sess, []agents.TurnPart{{Kind: "text", Content: "Filed."}})
+	if a := one(t, asksOf(t, f.srv, 1), asklog.KindPlainText); a.AnsweredBy != asklog.ByOther || a.Provenance != asklog.ProvRoute {
+		t.Fatalf("an agent's question answered by a routed message: %+v", a)
+	}
+}

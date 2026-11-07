@@ -159,8 +159,18 @@ func (r *Recorder) work() {
 		r.mu.Lock()
 		if len(r.queue) == 0 {
 			r.running = false
+			// Drained: the drops since the last line (held back by
+			// DropLogEvery) are said now, so none goes unlogged.
+			var line string
+			if r.dropped > 0 {
+				line = fmt.Sprintf("ask log: the capture queue drained: %d capture(s) dropped since the last such line", r.dropped)
+				r.dropped, r.lastDropLog = 0, r.clock()
+			}
 			r.idle.Broadcast()
 			r.mu.Unlock()
+			if line != "" && r.logger != nil {
+				r.logger.Print(line)
+			}
 			return
 		}
 		j := r.queue[0]

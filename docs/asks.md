@@ -94,7 +94,8 @@ the database is unreachable, or a transcript cannot be read, the ask goes to
 you exactly as it would without the log; the failure is logged and counted in
 `muster_ask_capture_errors_total{kind, stage}` (`read`, `classify`, `write`),
 never returned to the agent or to you. A full capture queue counts every
-dropped capture but logs at most one line a minute.
+dropped capture but logs at most one line a minute, and the count still
+unlogged when the queue drains.
 
 ## Metrics
 
@@ -102,7 +103,7 @@ dropped capture but logs at most one line a minute.
 |---|---|---|
 | `muster_asks_total` | counter | `kind` |
 | `muster_ask_plain_text_prefilter_total` | counter | `result` (`kept`, `dropped`) |
-| `muster_ask_answer_seconds` | histogram | `kind`, `answered_by` (`owner`, `chief`, `other`, `none` for an ask that ended unanswered; `auto` is reserved for the later phases) |
+| `muster_ask_answer_seconds` | histogram | `kind`, `answered_by` (`owner`, `chief`, `other`, `none` for an ask that ended unanswered; a row a restart closed `unknown` is not observed; `auto` is reserved for the later phases) |
 | `muster_ask_capture_errors_total` | counter | `kind`, `stage` (`read`, `classify`, `write`) |
 
 ## Rollout
