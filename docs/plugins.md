@@ -1269,9 +1269,29 @@ security) and only for windows online now; a row unseen for 30 days never
 counts. A **merged or closed** pull request still counts: its state is known
 only through the optional GitHub App, and a follow-up on what a pull request
 shipped is as much its session's. `focus_search` lists these first too, with
-`matched: "pull request or branch"` and `pull_requests`. The mirror wire does
-not carry a window's current git branch, so a branch is matched only when its
-session's hook reported pushing it.
+`matched: "pull request or branch"` and `pull_requests`.
+
+A session is also listed by **the branch its window has checked out**, with
+those exact matches (after a pull-request or push hit, before every focus
+hit), so one that has not pushed yet is found too. The mirror host reads each
+window's branch from the repository's `HEAD` in the window's working directory
+(following a worktree's or submodule's `.git` file to its gitdir; no `git`
+process; the repository's location cached for 5 minutes per directory and the
+`HEAD` re-read at most every 10 seconds per checkout, so a `git checkout`
+shows within about 15 seconds) and sends the window-id → branch map on a
+`branches` message of its own after its window list. A detached `HEAD`, a
+directory outside git, or a name outside the stored-branch grammar
+(`[A-Za-z0-9._/+-]`, at most 255 bytes, no `..`, no leading `-` or trailing
+`/`) is no branch — a name is dropped whole, never cut, since a cut name is
+another branch's. The branch is matched by exactly the push row's rule above
+(whole word, distinctive: never `main` or `follow-up`), only for the owner's
+windows online now (an offline host's windows carry none). The line says
+"listed by its branch `<name>`" and when the session was last active, inside
+the fence; a session a push row already lists by the same branch says it once.
+`focus_search` returns such a session with `matched: "pull request or
+branch"` and `branch`. An older muster-mirror sends no `branches` message,
+and its sessions are found by their push rows exactly as before; an older
+muster ignores the message.
 
 A **task event** gets the block too, matched on the task's own title and
 body (as muster stores them) and its change line, never on the event's JSON,

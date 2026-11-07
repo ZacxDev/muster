@@ -19,7 +19,7 @@ func TestAPullRequestHintLineIsExactlyThis(t *testing.T) {
 			"|   listed by its pull request acme/infra-config#2855, acme/infra-config branch feat/stage-c-job, last active 2000-01-02T03:04:05Z\n" +
 			"<<<end session-hints nonce=fedcba9876543210>>>\n",
 		"or created or pushed a pull request or branch named in it, as its host's hook reported (its line then says " +
-			"\"listed by its pull request\").",
+			"\"listed by its pull request\"), or has a branch",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("hint block lacks %q:\n%s", want, got)

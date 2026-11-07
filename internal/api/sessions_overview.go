@@ -193,9 +193,9 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 	} else {
 		h.Author = s.prAuthorHint(ctx, m)
 	}
-	byPR := s.prHints(ctx, text)
+	byPR, byBranch := s.prHints(ctx, text), s.branchHints(ctx, text)
 	if s.ext.Focus == nil {
-		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR)
+		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR, byBranch)
 		return h
 	}
 	live := s.liveSessions(ctx, chief.ID)
@@ -232,7 +232,7 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 			byFocus = append(byFocus, sh)
 		}
 	}
-	h.Sessions = mergeHints(plugins.MaxHintSessions, byPR, byFocus, s.repoHints(ctx, text))
+	h.Sessions = mergeHints(plugins.MaxHintSessions, byPR, byBranch, byFocus, s.repoHints(ctx, text))
 	return h
 }
 
@@ -241,7 +241,8 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 // limit in all. The hint passes its pull-request matches, then its focus
 // matches, then its repo matches: focus_search's order (focusSearchAnswer). A
 // session in several is listed once, with every line it was listed by: its
-// focus titles, its pull requests, its repo.
+// focus titles, its pull requests, its branch, its repo. The branch matches
+// (branchHints) come right after the pull-request ones: exact as they are.
 //
 // 🔴 PULL-REQUEST MATCHES FIRST. One is exact — the message spells the very
 // pull request or branch muster recorded that session creating or pushing —
@@ -265,6 +266,9 @@ func mergeHints(limit int, lists ...[]plugins.SessionHint) []plugins.SessionHint
 			}
 			if len(y.PRs) == 0 && len(x.PRs) > 0 {
 				y.PRs, y.LastActive = x.PRs, x.LastActive
+			}
+			if y.Branch == "" && x.Branch != "" {
+				y.Branch, y.LastActive = x.Branch, x.LastActive
 			}
 			if !y.ByRepo && x.ByRepo {
 				y.ByRepo, y.Repo, y.LastActive = true, x.Repo, x.LastActive
@@ -363,6 +367,48 @@ func matchPRHints(mentions []prroute.Mention, branches []string, rows []plugins.
 		if !slices.Contains(out[i].PRs, named) && len(out[i].PRs) < plugins.MaxHintPRs {
 			out[i].PRs = append(out[i].PRs, named)
 		}
+	}
+	return out
+}
+
+// branchHints is the hint's branch matches for text: the online mirrored
+// Claude Code windows of ctx's principal — every one, idle or not, as
+// repoHints — whose current branch, as their host reports it
+// (mirror.TypeBranches, SessionView.Branch), is a distinctive branch text
+// spells as a whole token (prroute.BranchCandidates: the same rule a push
+// row's branch is matched by), at most plugins.MaxHintSessions, most recently
+// active first. It needs no store: a session found here never pushed.
+//
+// 🔴 ONLY THE OWNER'S OWN ONLINE SESSIONS (mirrorClaudeEntries, owner-scoped
+// by mirror.Service; an offline host's entries carry no branch at all), and
+// never a generic name: "main", "develop" or "follow-up" is no candidate.
+func (s *Server) branchHints(ctx context.Context, text string) []plugins.SessionHint {
+	branches := prroute.BranchCandidates(text)
+	if len(branches) == 0 {
+		return nil
+	}
+	return matchBranchHints(branches, s.mirrorClaudeEntries(ctx), plugins.MaxHintSessions)
+}
+
+// matchBranchHints is branchHints' matching over entries (mirror.Ordered's
+// order, the most recently active window first): each conversation's first
+// online window whose Branch is one of branches, at most limit.
+func matchBranchHints(branches []string, entries []mirror.SessionView, limit int) []plugins.SessionHint {
+	var out []plugins.SessionHint
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if len(out) == limit {
+			break
+		}
+		if !e.Online || e.ClaudeSession == "" || seen[e.ClaudeSession] {
+			continue
+		}
+		seen[e.ClaudeSession] = true
+		if e.Branch == "" || !slices.Contains(branches, e.Branch) {
+			continue
+		}
+		out = append(out, plugins.SessionHint{ID: focus.MirrorSubject(e.ClaudeSession).String(), Name: e.DisplayTitle(),
+			Host: e.Host, Where: e.Where(), Branch: e.Branch, LastActive: e.ActiveAt()})
 	}
 	return out
 }

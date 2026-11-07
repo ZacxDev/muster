@@ -456,6 +456,10 @@ type Msg struct {
 	// Colors (colors) is, per window id, the window's tmux identity colour as
 	// lowercase #rrggbb — the WHOLE map each time (work.go).
 	Colors map[string]string `json:"colors,omitempty"`
+	// Branches (branches) is, per window id, the git branch the window's
+	// working directory has checked out — the WHOLE map each time
+	// (branches.go).
+	Branches map[string]string `json:"branches,omitempty"`
 
 	// ---- tracing (internal/telemetry) ----
 

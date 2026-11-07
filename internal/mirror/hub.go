@@ -152,6 +152,12 @@ type HostView struct {
 	// it sent none. Kept offline, like Repos: it is the window's identity, not
 	// its state.
 	Colors map[string]string
+	// Branches is the git branch per WINDOW ID the host last sent
+	// (TypeBranches, branches.go), restricted to its windows when it arrived;
+	// nil when it sent none (an older muster-mirror). 🔴 NEVER KEPT FOR AN
+	// OFFLINE HOST, like Work: a checkout is a claim about NOW, and only an
+	// online session is hinted by it.
+	Branches map[string]string
 	// OfflineSince is when an offline host disconnected; zero while Online.
 	// Its Windows keep the Status they last reported only when it reported
 	// status (StatusReport) — the attention queue keeps such a host's waiting
@@ -422,11 +428,14 @@ type hostConn struct {
 	repos map[string]string
 	// work and colors are the host's last TypeWork and TypeColors maps
 	// (NormalizeWork / NormalizeColors over windows).
-	work    map[string]WindowWork
-	colors  map[string]string
-	streams map[uint32]*stream
-	watches map[uint32]*watch
-	pastes  map[uint32]chan error
+	work   map[string]WindowWork
+	colors map[string]string
+	// branches is the host's last TypeBranches map (NormalizeBranches over
+	// windows).
+	branches map[string]string
+	streams  map[uint32]*stream
+	watches  map[uint32]*watch
+	pastes   map[uint32]chan error
 	// scrolls are the scroll requests waiting for the host's scrolled, by id
 	// (the same id space as streams and pastes).
 	scrolls map[uint32]chan error
@@ -470,7 +479,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Branches: maps.Clone(hc.branches), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode]})
 		hc.mu.Unlock()
@@ -986,6 +995,15 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 					if !same {
 						h.changed(hc.key.owner)
 					}
+				}
+			case TypeBranches:
+				// The windows' git branches (branches.go): a v2 host only,
+				// restricted to the windows it lists now. Nothing draws one,
+				// so no view is nudged; the hint reads it when it runs.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					hc.branches = NormalizeBranches(m.Branches, hc.windows)
+					hc.mu.Unlock()
 				}
 			case TypeEvents:
 				if hc.version >= 2 {

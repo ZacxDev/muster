@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // Ref is the pull request a review mail names.
@@ -28,9 +30,6 @@ var (
 	// RepoPattern is a repository as the mail and a transcript name it.
 	RepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 	shaPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	// refPattern is a branch name this feature stores: git's own grammar is
-	// wider, and a name outside this simply matches nothing.
-	refPattern = regexp.MustCompile(`^[A-Za-z0-9._/+-]{1,255}$`)
 	// fenceOpen is a backtick fence's opening line (CommonMark: at most three
 	// spaces of indent), its length and info string.
 	fenceOpen = regexp.MustCompile("^ {0,3}(`{3,})([^`]*)$")
@@ -76,11 +75,10 @@ func (s Signal) Valid() bool {
 // ValidRef reports whether s is a branch name this feature stores.
 func ValidRef(s string) bool { return validRef(s) }
 
-// validRef is a stored branch name: refPattern, and no "..", leading "-" or
-// trailing "/" (none of which git accepts as a branch).
-func validRef(s string) bool {
-	return refPattern.MatchString(s) && !strings.Contains(s, "..") && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "/")
-}
+// validRef is a stored branch name: mirror.ValidBranch, the ONE rule, so the
+// branch a host reports a window on (mirror.TypeBranches) and the branch a
+// hook reports pushing are kept by the same grammar and can be compared.
+func validRef(s string) bool { return mirror.ValidBranch(s) }
 
 // ParseMail is the pull request mail body names, read from the LAST fenced
 // ```json block of the body. ok is false for anything malformed — no such

@@ -190,7 +190,7 @@ func NamesBranch(text, ref string) bool {
 	return slices.Contains(BranchCandidates(text), ref)
 }
 
-// isRefByte is a byte a stored branch name may hold (refPattern).
+// isRefByte is a byte a stored branch name may hold (mirror.ValidBranch).
 func isRefByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || strings.IndexByte("._/+-", b) >= 0
 }

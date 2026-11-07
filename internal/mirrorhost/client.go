@@ -171,6 +171,9 @@ type Client struct {
 	// repos names each window's repository (repo.go); its per-cwd cache
 	// outlives each connection too.
 	repos *repoNamer
+	// branches reads each window's git branch (branch.go); its caches
+	// outlive each connection too.
+	branches *branchReader
 	// work holds each Claude session's transcript ledger (work.go); it
 	// outlives each connection too.
 	work   *workCounter
@@ -256,7 +259,7 @@ func New(cfg Config) (*Client, error) {
 	if cat == nil {
 		cat = &CatalogScanner{}
 	}
-	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
+	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}, branches: &branchReader{}}
 	c.tunnelTr = tunnelTransport(&c.wire)
 	// 🔴 NO REDIRECTS: the token rides every connect's Authorization header,
 	// which net/http would re-send to a Location on this hostname or a
@@ -411,6 +414,11 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	// that listed its windows.
 	if len(first.repos) > 0 {
 		if err := conn.sendRepos(first.repos); err != nil {
+			return err
+		}
+	}
+	if len(first.branches) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypeBranches, Branches: first.branches}); err != nil {
 			return err
 		}
 	}
@@ -597,6 +605,9 @@ type listing struct {
 	// on a repos message of its own (sendRepos), the window list having no room
 	// for it (mirror/repos.go).
 	repos map[string]string
+	// branches is each window's git branch by window id (branch.go), on a
+	// branches message of its own exactly like repos (mirror/branches.go).
+	branches map[string]string
 	// work and colors are each window's live work counts and identity colour
 	// by window id (work.go), on messages of their own exactly like repos
 	// (mirror/work.go).
@@ -661,6 +672,7 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
+		l.branches = mirror.NormalizeBranches(h.c.branchReader().windowBranches(raw), windows)
 		if !h.c.cfg.NoWork {
 			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
 			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
@@ -1028,6 +1040,11 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 			return false
 		}
 	}
+	if !maps.Equal(now.branches, last.branches) {
+		if err := h.send(mirror.Msg{Type: mirror.TypeBranches, Branches: now.branches}); err != nil {
+			return false
+		}
+	}
 	if !maps.Equal(now.work, last.work) {
 		if err := h.send(mirror.Msg{Type: mirror.TypeWork, Work: now.work}); err != nil {
 			return false
@@ -1074,6 +1091,15 @@ func (c *Client) repoNamer() *repoNamer {
 		c.repos = &repoNamer{}
 	}
 	return c.repos
+}
+
+// branchReader is the client's branch reader (a zero Client — a test's —
+// gets one).
+func (c *Client) branchReader() *branchReader {
+	if c.branches == nil {
+		c.branches = &branchReader{}
+	}
+	return c.branches
 }
 
 func (h *hostSide) keepalive(cancel context.CancelFunc) {
