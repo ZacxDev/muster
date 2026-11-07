@@ -312,10 +312,25 @@ export const openCodeSendPort = port + 271;
 export const chiefUxPort = port + 272;
 export const chiefUxConnectPort = port + 273;
 export const chiefUxFakePort = port + 274;
+// tests/agent-outcomes.spec.ts: a dispatched agent ends in a visible outcome —
+// its own server (the e2eterm build: a fake agent runtime every agent's
+// endpoint points at, a fake model catalogue, a 3 s silence watchdog).
+export const outcomesPort = port + 290;
+export const outcomesRuntimePort = port + 291;
+export const outcomesCatalogPort = port + 292;
+// tests/mcp-dispatch.spec.ts: the owner's mirrored session starts an agent in
+// two verbs (dispatch_request, dispatch_approve) — its own server (mirror plugin
+// on, chief dispatch on, both pod kinds over the noop driver), its connect
+// listener, and its fake host's loopback MCP endpoint.
+export const mcpDispatchPort = port + 300;
+export const mcpDispatchConnectPort = port + 301;
+export const mcpDispatchMirrorMCPPort = port + 302;
+// Its fake model catalogue (MUSTER_E2E_OPENROUTER_MODELS): the spec reaches no network.
+export const mcpDispatchCatalogPort = port + 303;
 // tests/session-names.spec.ts: a session's stable name, its rename and its
 // live line — its own server (mirror plugin on, the focus pass off) and its
-// own fake host. (+290: clear of the block other open branches are taking.)
-export const sessionNamesPort = port + 290;
+// own fake host. (+320: clear of the blocks other branches took.)
+export const sessionNamesPort = port + 320;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

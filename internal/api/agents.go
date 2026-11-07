@@ -617,8 +617,11 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// Decided from kickoff_error's muster-written prefix too; the boolean crosses.
 		KickoffAwaitingGrant: agents.KickoffAwaitingGrant(a),
 		GitHubProblem:        s.githubAgentProblem(a),
-		Namespace:            a.Namespace,
-		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// The outcome and its reason (agent_outcome.go), scrubbed of the note.
+		Outcome:       a.Outcome,
+		OutcomeReason: agents.ScrubNote(a.OutcomeReason, a.PendingNote),
+		Namespace:     a.Namespace,
+		NoteID:        a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
 		// The ONE chief predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
@@ -800,8 +803,8 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
-		Kickoff: action == "dispatch",
-		Kind:    kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
+		Kickoff: action == "dispatch", TrackOutcome: true,
+		Kind: kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
 	})
 	if err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
@@ -975,6 +978,14 @@ type dispatchParams struct {
 	// `stopped` first, and in that window the agent would drop out of the
 	// chief's live count (agent_dispatch's worker_pool without a prompt).
 	StartWithoutKickoff bool
+	// DispatchedBy is the chief agent starting this one (agent_dispatch), 0 for
+	// every other door: its outcome is then also said in that chief's chat
+	// (agent_outcome.go).
+	DispatchedBy int64
+	// TrackOutcome: this start is a DISPATCH whose work must end in an outcome
+	// (agent_outcome.go) — the dispatch form and the chief's agent_dispatch. An
+	// officer's instance and the chief's own provisioning are not tracked.
+	TrackOutcome bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -1124,6 +1135,18 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// rule cannot be right in one and absent in the other. See
 	// agents/modelauth.go for the measured failure this prevents — an agent that
 	// runs forever on its FALLBACK model while reporting nothing wrong.
+	//
+	// 🔴 AND, FIRST, A MODEL THAT IS NOT IN THE CATALOGUE (model_validate.go): a
+	// display name the runtime would read as a model of its default provider,
+	// failing every turn while the agent read `running`. A name that maps to one
+	// model is resolved to its id here; anything else is refused before the row.
+	if p.Model != "" {
+		model, err := s.checkAgentModel(ctx, p.Model)
+		if err != nil {
+			return agents.Agent{}, err
+		}
+		p.Model = model
+	}
 	if err := agents.ValidateModelCredential(p.Model); err != nil {
 		return agents.Agent{}, err
 	}
@@ -1176,6 +1199,11 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if err != nil {
 		return agents.Agent{}, err
 	}
+	// A first turn is owed: the agent's work now has an outcome to end in
+	// (agent_outcome.go) — running until it answers, fails or goes quiet.
+	if p.Kickoff && p.TrackOutcome {
+		s.outcomeDispatched(ctx, rec, p.DispatchedBy)
+	}
 	// The agent was just created (provisioning): nudge open pages so a task's
 	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
@@ -1216,7 +1244,13 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
+	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error {
+		err := s.ext.Provisioner.Start(ctx, id)
+		if err == nil {
+			s.outcomeRestarted(ctx, id)
+		}
+		return err
+	}, "start")
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
@@ -1307,6 +1341,22 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
 		return
+	}
+	// The catalogue check (model_validate.go), after the kind's refusal so a
+	// claude-code agent keeps its own sentence: a name resolves to its id, an
+	// unknown value is refused with the closest ids. Re-checked against the
+	// credential rule, since a resolved id is a new slug.
+	if model != "" {
+		resolved, err := s.checkAgentModel(ctx, model)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		model = resolved
+		if err := agents.ValidateModelCredential(model); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	updated, err := s.ext.Agents.SetModel(ctx, id, model)
 	if err != nil {
@@ -1559,6 +1609,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	ctx = op.begin("visit")
 	s.recordAgentVisit(ctx, a.ID)
 	s.episodeViewedAgent(ctx, r, a.ID, active.ID)
+	if viewRequest(r) {
+		s.outcomeViewed(ctx, a) // a wait not yet told is seen (agent_outcome.go)
+	}
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
@@ -2165,11 +2218,15 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 // persistTurn stores a finished turn's parts and tells open pages a reply was
 // persisted.
 func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart) {
+	var lastID int64 // the turn's last stored message (the ask log's anchor)
 	for _, part := range parts {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		m, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: session.ID, Role: "assistant",
 			Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK,
 		})
+		if err == nil && m.ID > lastID {
+			lastID = m.ID
+		}
 	}
 	if len(parts) > 0 {
 		// Nudge the shell's notification FAB to refetch its panel + badge: one
@@ -2177,6 +2234,8 @@ func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents
 		// needs the nudge).
 		s.broadcast(ctx, EventChatReply, a.Name)
 	}
+	// The ask log (ask_log.go): a turn ended; was its last word a question?
+	s.askLogAgentTurn(ctx, a, session, parts, lastID)
 }
 
 // resolveSession picks the chat session for a request: the ?session=<id> one
@@ -2263,17 +2322,22 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // dispatchOperatorTool arms; with it gone, a chat turn cannot render a pod at all.
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
-func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
+func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (reply string, err error) {
+	// 🔴 EVERY TURN'S COURSE FEEDS THE AGENT'S OUTCOME (agent_outcome.go
+	// outcomeTurn): the runtime taking it and its stream are activity the
+	// watchdog reads — an ask refused untyped (a held message's busy) is not —
+	// and its end, an answer or a failure, is recorded, pushed once when it
+	// changes the outcome, and told to the chief that started it. Wrapped here,
+	// the one function every chat door's turn passes.
+	ctx, turn := s.outcomeTurn(ctx, a)
+	defer turn.close(&reply, &err)
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
 	// "working…" for any page that opens this conversation while the turn runs.
 	defer s.sessionTurns.begin(sessionKey)()
-	// ask_owner ends the turn it is called in (owner_ask.go): the tool loop reads
-	// this mark after each round of calls.
-	ctx = agents.WithTurnEnd(ctx)
-	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
-	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
+	ctx, tt := s.turnTools(ctx, a)
+	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
 	// 404 on request 2+ comes after the runtime answered request 1 and its tools
 	// ran; resending the message toolless there pastes it into the session twice

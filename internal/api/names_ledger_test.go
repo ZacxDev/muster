@@ -31,6 +31,7 @@ var sessionNameAdapters = []string{
 var sessionNameCallers = []string{
 	"agents.go Server.activeNotificationRows", // the notifications panel's active rows
 	"agents.go Server.cardViewIndexed",        // the sidebar rows, switcher pills and palette (agents)
+	"agent_outcome.go Server.agentLabel",      // an agent outcome's push title and its note to the chief
 	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
 	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
 	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
@@ -50,6 +51,7 @@ var sessionNameCallers = []string{
 	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
 	"session_push.go Server.episodeWho",                          // a stalled / waiting session's push title
 	"session_routes.go Server.resolveRouteTarget",                // route_to_session's text
+	"sessions_overview.go Server.repoHints",                      // a hint naming a session by its repo (#500)
 	"sessions_overview.go Server.liveSessions",                   // the chief's sessions_overview and the session hints
 	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)

@@ -84,6 +84,29 @@ class Decide(unittest.TestCase):
                  user(denied, {"type": "text", "text": "Now comment on it, please. TASK-5"})]}
         self.assertEqual(fake_llm.decide(after), ("text", "COMMENT-RESULT:error:denied"))
 
+    def test_comment_on_it_asks_for_task_comment_even_when_it_was_not_offered(self):
+        # The Compose chief is not offered task_comment: the fake names it anyway,
+        # as a model naming a tool it was never given.
+        body = {"tools": TOOLS, "messages": [user({"type": "text", "text": "Now comment on it, please. TASK-7"})]}
+        self.assertEqual(fake_llm.decide(body), ("tool", "mcp__muster__task_comment",
+                                                 {"id": 7, "body": "fake-llm comment that must never land"}))
+
+    def test_touch_the_file_asks_for_bash_after_the_comment_step(self):
+        comment = {"type": "tool_result", "tool_use_id": "toolu_comment_2", "is_error": True, "content": "No such tool"}
+        hist = [user({"type": "text", "text": "Now comment on it, please. TASK-5"}), asked("toolu_comment_2")]
+        # The comment result still in the history, and the new prompt: Bash.
+        body = {"tools": TOOLS, "messages": hist + [user(comment, {"type": "text", "text": "Now touch the file, please."})]}
+        self.assertEqual(fake_llm.decide(body), ("tool", "Bash", fake_llm.BASH_TOUCH))
+        # Its result is reported, never asked again; the comment result is not.
+        denied = {"type": "tool_result", "tool_use_id": "toolu_bash_3", "is_error": True,
+                  "content": "Permission to use Bash has been denied."}
+        after = {"tools": TOOLS, "messages": body["messages"] + [asked("toolu_bash_3"),
+                 user(denied, {"type": "text", "text": "reminder: touch the file"})]}
+        self.assertEqual(fake_llm.decide(after), ("text", "BASH-RESULT:error:Permission to use Bash has been denied."))
+        # Control: without Bash offered, no Bash call.
+        no_bash = {"tools": [{"name": "mcp__muster__tasks_list"}], "messages": [user({"type": "text", "text": "touch the file"})]}
+        self.assertEqual(fake_llm.decide(no_bash), ("text", "ok"))
+
     def test_a_marker_in_the_question_is_not_echoed(self):
         # A marker typed in the prompt must not satisfy the check: only a tool
         # result's does.

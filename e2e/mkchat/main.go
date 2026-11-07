@@ -320,7 +320,7 @@ func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string
 		// chief-runtimes spec's chief); unset, the default kind as before.
 		// MUSTER_E2E_REPO gives it a repository ("owner/name"; unset, none).
 		// A display name given here is a person's (the chief's "chief"):
-		// manual, as migration 0088 classifies such a name.
+		// manual, as migration 0090 classifies such a name.
 		src := agents.NameDefault
 		if display != "" && display != name {
 			src = agents.NameManual

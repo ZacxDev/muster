@@ -236,6 +236,8 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.logger.Printf("attention: answered an opencode ask on %s", h.Host)
+	// The ask log (ask_log.go): the answer muster relayed.
+	s.askLogOpenCodeAnswered(requestOwner(r.Context()), r.PostFormValue("prompt"), r.PostFormValue("choice"))
 	http.Redirect(w, r, attentionPath+"?answered=opencode", http.StatusSeeOther)
 }
 

@@ -111,6 +111,8 @@ func (s *Server) wireAsks(m Mirror) {
 	}
 	s.asks.OnChange(func(e askq.Entry) {
 		if e.Key.Source == askSourceMirror {
+			// The ask log (ask_log.go): the question opened, or ended.
+			s.askLogQuestion(e)
 			a.Nudge(e.Key.Owner)
 			s.AttentionMirrorChanged(e.Key.Owner)
 			s.askNotify(askWatchKey{e.Key.Owner, e.Key.Scope, e.Key.Session})

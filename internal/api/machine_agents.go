@@ -90,6 +90,13 @@ type agentJSON struct {
 	// recorded cause proves nothing was sent (agents.KickoffResendSafe); otherwise the
 	// runtime may still be running the turn, and the agent page's remedy says to check first.
 	KickoffFailed bool `json:"kickoffFailed"`
+	// Outcome is how the work the agent was started on ended, or "" when nobody
+	// started it with a first turn: running|done|failed|stuck (agent_outcome.go,
+	// AgentOutcome), and OutcomeReason why (a failure's error, the watchdog's
+	// "no reply since kickoff" / "silent for 30 min"). NOT omitempty: "" is an answer.
+	Outcome       string     `json:"outcome"`
+	OutcomeReason string     `json:"outcomeReason"`
+	OutcomeAt     *time.Time `json:"outcomeAt"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an
 	// empty reason is a different (and worse) fact than a red agent with one.
@@ -181,6 +188,8 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		KickedOff:       a.KickedOff,
 		KickoffOwed:     agents.KickoffOwed(a),
 		KickoffFailed:   agents.KickoffFailed(a),
+		Outcome:         a.Outcome,
+		OutcomeReason:   agents.ScrubNote(a.OutcomeReason, a.PendingNote),
 		ErrorMessage:    agents.ScrubNote(a.ErrorMessage, a.PendingNote),
 		KickoffError:    agents.ScrubNote(a.KickoffError, a.PendingNote),
 		KickoffAttempts: a.KickoffAttempts,
@@ -196,6 +205,10 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 	if !lastMsg.IsZero() {
 		at := lastMsg
 		v.LastMessageAt = &at
+	}
+	if a.OutcomeAt != nil {
+		at := *a.OutcomeAt
+		v.OutcomeAt = &at
 	}
 	return v
 }
@@ -656,7 +669,13 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	reply, err := s.ext.Gateway.Chat(withSessionRoute(ctx, a, sess), a, sess.SessionKey, body.Message, nil)
+	// The one turn, in the outcome bracket (outcomeTurn): closed on every path,
+	// a panic included.
+	reply, err := func() (reply string, err error) {
+		tctx, turn := s.outcomeTurn(ctx, a)
+		defer turn.close(&reply, &err)
+		return s.ext.Gateway.Chat(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, nil)
+	}()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return

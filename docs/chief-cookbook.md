@@ -200,10 +200,10 @@ Task 1 went across as the task itself, not a paraphrase, so lynx gets the title,
 
 ## What it cannot do on the Compose install
 
-On the Compose install the chief runs with exactly eight tools pre-approved
-(`sessions_overview`, `fleet_list`, `focus_search`, `fleet_report`,
-`tasks_list`, `task_get`, `attention_list` and, with session routing on,
-`route_to_session`) and **every other prompt is denied at once**
+On the Compose install the chief is offered, and runs without a prompt,
+exactly these tools: `sessions_overview`, `fleet_list`, `focus_search`,
+`fleet_report`, `tasks_list`, `task_get`, `attention_list`, `ask_owner` and,
+with session routing on, `route_to_session`; **every other prompt is denied at once**
 ([chief.md](chief.md#on-the-docker-compose-install)). So it reports and
 routes; it does not:
 
@@ -214,10 +214,10 @@ routes; it does not:
   I can't file it — I have no task-creation tool in this session.
   ```
 
-  and then, wrongly, that it could still comment on tasks and change their
-  status: `task_comment` and `task_set_status` are among the denied prompts. A
-  model can misstate its own tools; the allowlist above is what holds. File the
-  task yourself, or have it route the idea to a session.
+  In that run it then added, wrongly, that it could still comment on tasks
+  and change their status. It is now offered only the tools above, and its
+  instructions say plainly that filing or commenting on a task and changing
+  its status are not available on this install. File the task yourself, or have it route the idea to a session.
 - comment on a task, draft a reply, or start an agent (`agent_dispatch`
   needs Kubernetes).
 - route to anything but a mirrored Claude Code window that can take a paste:

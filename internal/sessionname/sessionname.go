@@ -101,7 +101,7 @@ func Resolve(p Parts) Name {
 // agent_focus row's; the zero value for none).
 //
 // a.DisplayName counts as MANUAL or SYSTEM by its DisplayNameSource
-// (migration 0088), as DISPATCH when it was derived from a task, and is
+// (migration 0090), as DISPATCH when it was derived from a task, and is
 // otherwise the slug copied — the fallback, as a.Name is.
 func Agent(a agents.Agent, stored focus.Name) Name {
 	// The fallback is the display name as stored — for a default source,

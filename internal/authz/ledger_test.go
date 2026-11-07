@@ -87,6 +87,12 @@ var (
 		"internal/api.(*Server).agentByToken",
 		"internal/api.(*Server).agentOwner",
 		"internal/api.(*Server).notifyAgentRunning",
+		// The outcome tracker (agent_outcome.go): a turn's end, a work report or a
+		// task's status records the agent's OWN row's outcome — from a request or
+		// from the kickoff deliverer alike — and its sweep (agent_watchdog.go) acts
+		// for every owner. Nothing read under System is returned to a caller.
+		"internal/api.(*Server).AgentWatchdogPass",
+		"internal/api.outcomeCtx",
 		"internal/api.(*Server).roleOfChecked", // roleOf delegates to it; the connector door calls it directly
 		// Bring-your-own credentials: whose model-provider credentials an
 		// OWNER's agents run on is decided by that owner's ROLE, and the pod-spec
@@ -189,6 +195,11 @@ var (
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
 		"internal/jobs.sys",
+		// The ask log (migration 0089): the retention sweep's one helper. It
+		// clears question and answer text past the TTL and deletes rows past
+		// 180 days, by age only, across every owner (asklog.PG.Purge), and
+		// returns only counts.
+		"internal/asklog.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -249,6 +260,10 @@ var (
 		// started and stopped as the officer's configured owner, through
 		// authz.ViaOfficer.
 		"internal/api.(*Server).officerPrincipal",
+		// The kickoff deliverer's tool-enabled first turn: a gateway agent's
+		// tool calls run as the agent's owner, through authz.ViaKickoff, after
+		// the deliverer read the agent's row under System.
+		"internal/api.(*Server).kickoffPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -272,7 +287,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

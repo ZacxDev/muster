@@ -175,6 +175,16 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 			"install does not do. Unset %s", envChiefRuntime, chiefRuntimeCompose, strings.Join(set, ", "),
 			map[bool]string{true: "is", false: "are"}[len(set) == 1], strings.Join(set, ", "))
 	}
+	// Task routing hands the chief a task's events to decide on, with
+	// agent_dispatch, task_forward or task_route_attention — none of which the
+	// Compose chief is offered (agentspec.ComposeChiefAllowedMCPTools) — and a
+	// task event is no_reply, so nothing puts an undecided one in front of the
+	// owner either. Refused rather than delivered to a chief that cannot act.
+	if c.TaskRouting {
+		return fmt.Errorf("%s=%s runs the chief in its Compose container, which cannot decide a task event (it is not "+
+			"offered agent_dispatch, task_forward or task_route_attention), but %s is also set. Unset %s",
+			envChiefRuntime, chiefRuntimeCompose, envTaskRouting, envTaskRouting)
+	}
 	c.AgentProvisioner = provisionerCompose
 	c.AgentGateway = gatewayHooksSHA256
 	c.AgentGatewayModel = composeGatewayModel

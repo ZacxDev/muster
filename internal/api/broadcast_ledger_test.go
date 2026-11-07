@@ -37,6 +37,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 	want := []string{
 		// requests — the principal's user owns the event.
 		"(*Server).advanceTaskToInProgress → broadcast(ctx)",
+		// An agent's outcome changed (agent_outcome.go): its page and row, and the
+		// chief panel of the chief told about it.
+		"(*Server).outcomeChanged → agentChangedFor(a.OwnerID)",
+		"(*Server).noteOutcomeToChief → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",
@@ -58,6 +62,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// The gate released on the owner's typed word (chief_owner_release.go):
 		// ctx is task_dispatch's, the chief's owner, who owns the task.
 		"(*Server).applyGateRelease → broadcast(ctx)",
+		// The gate released on the owner's Release tap (answer_release.go): ctx
+		// is the answer's — the owner's browser session or paired phone — and
+		// the ask's owner owns the task.
+		"(*Server).applyAnswerRelease → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

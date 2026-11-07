@@ -49,7 +49,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/ext.go (*Server).requireDispatchServed dispatchServed()":        1, // POST /agents' second door
 
 	// --- DISPATCH: must read dispatchServed (the Compose chief answers no) ---
-	"internal/api/agent_dispatch.go (*Server).toolAgentDispatch dispatchServed()":            1, // agent_dispatch's start
+	"internal/api/agent_dispatch.go (*Server).startReserved dispatchServed()":                1, // agent_dispatch's and dispatch_approve's start
 	"internal/api/task_actions.go (*Server).chiefDispatchDeploymentRefusal dispatchServed()": 1, // agent_dispatch's refusal, the task actions' offer
 	"internal/api/agents.go (*Server).handleAgentNewModal dispatchServed()":                  1, // the dispatch sheet
 	"internal/api/notes.go (*Server).taskCardView dispatchServed()":                          1, // a task card's Dispatch

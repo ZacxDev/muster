@@ -38,3 +38,7 @@ func EmbeddedMigrationsForTest() ([]EmbeddedMigrationForTest, error) {
 	}
 	return out, nil
 }
+
+// AsksMigrationVersionForTest is the version RLSOn re-applies for asks, so the
+// migration test can check it names the file (renumbered together at merge).
+const AsksMigrationVersionForTest = asksMigrationVersion
