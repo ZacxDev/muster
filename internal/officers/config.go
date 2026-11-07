@@ -407,7 +407,9 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 		if d.MaxInstances != 0 {
 			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's size as tiers.judgement.max_instances; remove the top-level max_instances", o.ID)
 		}
-		// STUB (red-first commit): no top-level image refusal yet.
+		if o.Image != "" {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set each pool's image as tiers.<pool>.image; remove the top-level image", o.ID)
+		}
 		// 🔴 A TIERED SHIPPING OFFICER SHIPS FROM ITS JUDGEMENT POOL ONLY.
 		// Officer.Pool(TierRoutine) has no Ship and no CILogs, so a routine
 		// instance gets no ship tool, no push gate and no officer App token:

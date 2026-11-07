@@ -222,9 +222,11 @@ func TestTheShimResolvesTheRepository(t *testing.T) {
 			t.Fatalf("placeholders with origin %s: %d %s", origin, rc, out)
 		}
 	}
-	g, _, errb := p.shim("")
-	if rc := g.run([]string{"pr", "view", "900", "--json", "number"}); rc != 1 || !strings.Contains(errb.String(), "no repository") {
-		t.Fatalf("no repository anywhere: %d %s", rc, errb)
+	for _, origin := range []string{"", "https://notgithub.com/" + ghRepo + ".git", "https://gitlab.example.test/" + ghRepo} {
+		g, _, errb := p.shim(origin)
+		if rc := g.run([]string{"pr", "view", "900", "--json", "number"}); rc != 1 || !strings.Contains(errb.String(), "no repository") {
+			t.Fatalf("origin %q is not a GitHub repository: %d %s", origin, rc, errb)
+		}
 	}
 }
 

@@ -424,8 +424,9 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 // ccImage is the image a claude-code pod runs: the session's own (an officer's
 // runner image) when set, else the deployment's.
 func ccImage(cc *ClaudeCodeConfig, sess ClaudeCodeSession) string {
-	// STUB (red-first commit): the session's image is not honoured yet.
-	_ = sess
+	if img := strings.TrimSpace(sess.Image); img != "" {
+		return img
+	}
 	return cc.Image
 }
 

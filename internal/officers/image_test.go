@@ -15,12 +15,12 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	imgAllow   = "ghcr.io/example-org, registry.example.test:5000/team/runners/"
+	imgAllow   = "ghcr.io/example-org, localhost:5000/team/runners/"
 	imgDigest  = "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	imgOfficer = "release:example-web"
 )
 
-var imgAllowList = []string{"ghcr.io/example-org", "registry.example.test:5000/team/runners"}
+var imgAllowList = []string{"ghcr.io/example-org", "localhost:5000/team/runners"}
 
 // TestImageAllowed: the one rule. Allowed: a pinned reference whose
 // repository is an entry or lies under one. Refused, each with its reason:
@@ -32,8 +32,8 @@ func TestImageAllowed(t *testing.T) {
 		"ghcr.io/example-org/officer-runner" + imgDigest,
 		"ghcr.io/example-org/officer-runner:1.2.3" + imgDigest,
 		"ghcr.io/example-org/deep/path/runner:abc1234",
-		"registry.example.test:5000/team/runners:7",
-		"registry.example.test:5000/team/runners/audit:7",
+		"localhost:5000/team/runners:7",
+		"localhost:5000/team/runners/audit:7",
 	} {
 		if err := officers.ImageAllowed(ref, imgAllowList); err != nil {
 			t.Errorf("%s: refused: %v", ref, err)
@@ -44,8 +44,8 @@ func TestImageAllowed(t *testing.T) {
 		"ghcr.io/example-orgx/officer-runner:1":        "is not in a repository",
 		"ghcr.io/example/officer-runner:1":             "is not in a repository",
 		"docker.io/example-org/officer-runner:1":       "is not in a repository",
-		"registry.example.test:5000/team/runnersx:7":   "is not in a repository",
-		"registry.example.test:5000/team/other/x:7":    "is not in a repository",
+		"localhost:5000/team/runnersx:7":   "is not in a repository",
+		"localhost:5000/team/other/x:7":    "is not in a repository",
 		"https://ghcr.io/example-org/officer-runner:1": "is not a full image reference",
 		"ghcr.io/example-org/../x/officer-runner:1":    "is not a full image reference",
 		"ghcr.io/example-org/Runner:1":                 "is not a full image reference",
@@ -78,14 +78,14 @@ func TestParseReadsAnOfficerImage(t *testing.T) {
 		t.Fatalf("image = %q", got)
 	}
 	list, err = officers.Parse(`[{"id":"`+imgOfficer+`","hq_url":"https://hq.example.com/api/v1","tiers":{
-		"routine":{"model":"haiku","image":"registry.example.test:5000/team/runners/routine:4"},
+		"routine":{"model":"haiku","image":"localhost:5000/team/runners/routine:4"},
 		"judgement":{"model":"opus","image":"ghcr.io/example-org/officer-runner`+imgDigest+`"}}}]`, env(imgEnv(imgAllow)), "muster-agent-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	o := list[0]
 	if j, r := o.Pool(officers.TierJudgement).Image, o.Pool(officers.TierRoutine).Image; j != "ghcr.io/example-org/officer-runner"+imgDigest ||
-		r != "registry.example.test:5000/team/runners/routine:4" || o.Image != j {
+		r != "localhost:5000/team/runners/routine:4" || o.Image != j {
 		t.Fatalf("judgement %q, routine %q, officer %q", j, r, o.Image)
 	}
 	list, err = officers.Parse(`[{"id":"`+imgOfficer+`","hq_url":"https://hq.example.com/api/v1"}]`, env(imgEnv("")), "muster-agent-")

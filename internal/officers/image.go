@@ -51,7 +51,7 @@ func parseImageRegistries(raw string) ([]string, error) {
 		if e == "" {
 			continue
 		}
-		if false && !imageEntryRE.MatchString(e) {
+		if !imageEntryRE.MatchString(e) {
 			return nil, fmt.Errorf("%s entry %q is not an image repository prefix (<registry host>[/<path>], no scheme, tag, digest or glob)", ImageRegistriesEnv, e)
 		}
 		out = append(out, e)
@@ -63,10 +63,6 @@ func parseImageRegistries(raw string) ([]string, error) {
 // pinned, well-formed reference whose repository is an entry of allow or lies
 // under one. Every refusal names the reason.
 func ImageAllowed(ref string, allow []string) error {
-	// STUB (red-first commit): the guard is not implemented yet.
-	if ref != "" {
-		return nil
-	}
 	m := imageRefRE.FindStringSubmatch(ref)
 	if m == nil {
 		return fmt.Errorf("image %q is not a full image reference (<registry host>/<path>[:<tag>][@sha256:<digest>])", ref)

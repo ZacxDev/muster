@@ -76,10 +76,6 @@ func (g *ghShim) fail(format string, args ...any) int {
 }
 
 func (g *ghShim) refuse(what string) int {
-	// STUB (red-first commit): writes are not refused yet.
-	if what != "" {
-		return 0
-	}
 	return g.fail("gh (muster's read-only shim): %s writes or is not supported — refused, nothing was sent. "+
 		"Reads only: gh pr view --json, gh pr diff, gh api GET. Writes go through muster's gated tools.", what)
 }
@@ -165,7 +161,7 @@ func last(vals map[string][]string, names ...string) string {
 var (
 	ghRepoRE   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
 	ghPRURLRE  = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]{0,9})(?:[/?#].*)?$`)
-	ghOriginRE = regexp.MustCompile(`github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$`)
+	ghOriginRE = regexp.MustCompile(`(?:^|[@/])github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$`)
 )
 
 // repoAndPR resolves a pull request argument (a number, or its URL) and the
@@ -644,7 +640,7 @@ var apiWriteFlags = map[string]bool{"-f": true, "-F": true, "--field": true, "--
 func (g *ghShim) api(args []string) int {
 	for _, a := range args {
 		name, _, _ := strings.Cut(a, "=")
-		if false && apiWriteFlags[name] {
+		if apiWriteFlags[name] {
 			return g.refuse("gh api " + name + " (a request body)")
 		}
 	}
@@ -653,7 +649,7 @@ func (g *ghShim) api(args []string) int {
 	if err != nil {
 		return g.fail("gh api: %v (the shim takes --paginate, -X GET and -H only)", err)
 	}
-	if m := last(vals, "-X", "--method"); false && m != "" && !strings.EqualFold(m, http.MethodGet) {
+	if m := last(vals, "-X", "--method"); m != "" && !strings.EqualFold(m, http.MethodGet) {
 		return g.refuse("gh api -X " + m)
 	}
 	if h := last(vals, "--hostname"); h != "" && h != "github.com" {

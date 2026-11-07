@@ -878,7 +878,7 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// volume.
 	// Image: the pool's own runner image when it declares one (checked against
 	// MUSTER_OFFICER_IMAGE_REGISTRIES at boot), else the deployment's.
-	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true}
+	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image}
 	if officers.RoutineAgent(o, a.Name) {
 		sess.LLMRoute = true
 		return sess, true
