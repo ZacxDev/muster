@@ -311,7 +311,7 @@ the App Link is the one that cannot be hijacked.
   a measured conversion problem, or past ~100 tenants when one repository of
   overlays gets unwieldy. The renderer is reusable either way.
 
-### 3. Tenant isolation on a shared homelab (the critical section)
+### 3. Tenant isolation on a shared personal cluster (the critical section)
 
 🔴 **The risk.** A muster deployment can dispatch agents that run arbitrary
 code: `claude-code` agents run a model with shell access, against any
@@ -337,7 +337,7 @@ The options:
 | control | what it buys | what it costs | verdict |
 |---|---|---|---|
 | **no cluster agents for hosted tenants** (host mirrors and BYO only) | removes arbitrary code from the cluster entirely; what remains is muster-server, GoTrue and Postgres, code the operator ships | the most differentiated features: dispatch, the chief, officers, worker pools, jobs | **default** |
-| gVisor (`runsc`) RuntimeClass | a user-space kernel between the agent and the node; blocks most kernel exploits | a Talos system extension and a node reboot; syscall overhead; some tools (git, Node) slower or broken (**UNVERIFIED** for the claude-code image) | phase 3, only if agents are offered |
+| gVisor (`runsc`) RuntimeClass | a user-space kernel between the agent and the node; blocks most kernel exploits | an OS-level runtime install on the nodes and a reboot; syscall overhead; some tools (git, Node) slower or broken (**UNVERIFIED** for the claude-code image) | phase 3, only if agents are offered |
 | Kata Containers | a micro-VM per pod | nested virtualisation or bare-metal KVM on the nodes (**UNVERIFIED**), more memory per pod | not at this scale |
 | a dedicated node | a kernel escape lands on a node with nothing else on it | a node; at home it is still on the LAN; in the cloud it is off the LAN but in the same cluster and API | **yes** for hosted pods: a tainted node pool, preferably a cloud node like the CI-burst ones, so hosted traffic and a compromise both stay off the home network |
 | Cilium egress allowlist by name (`toFQDNs`) | closes "any public 443": only the hosts the tenant needs | the list must be kept; DNS proxy in the path | **yes**, for every tenant pod |
