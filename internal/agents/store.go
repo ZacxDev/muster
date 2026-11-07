@@ -331,8 +331,11 @@ type AgentUnread struct {
 	AgentID     int64  `json:"agentId"`
 	AgentName   string `json:"agentName"`
 	DisplayName string `json:"displayName"`
-	SessionID   int64  `json:"sessionId"` // the link target (most-recently-active session)
-	Count       int    `json:"count"`     // total unread assistant messages across the agent
+	// DisplayNameSource is the agent's Agent.DisplayNameSource: who set
+	// DisplayName, which the name rule (internal/sessionname) ranks by.
+	DisplayNameSource string `json:"displayNameSource,omitempty"`
+	SessionID         int64  `json:"sessionId"` // the link target (most-recently-active session)
+	Count             int    `json:"count"`     // total unread assistant messages across the agent
 }
 
 // Store is the agents persistence behaviour.

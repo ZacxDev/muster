@@ -116,7 +116,7 @@ func TestAWaitIsToldOnlyWhenTheOwnerIsAway(t *testing.T) {
 	}
 	o.tellWaits(t)
 	ps := o.outcomePushes(e.ID)
-	if len(ps) != 1 || ps[0].Title != agentLabel(e)+" is waiting for you: Which environment?" {
+	if len(ps) != 1 || ps[0].Title != o.srv.agentLabel(asUser(e.OwnerID), e)+" is waiting for you: Which environment?" {
 		t.Fatalf("with session state on, past the hold: pushes %+v; want one carrying the question", ps)
 	}
 	if n := o.chiefNotes(t, e.Name); len(n) != 1 {
@@ -216,7 +216,7 @@ func TestAReplyDuringAJobIsJudgedWhenTheJobEnds(t *testing.T) {
 		t.Fatalf("after the job: outcome %q reason %q; want waiting on the reply put off during it", got.Outcome, got.OutcomeReason)
 	}
 	o.tellWaits(t)
-	if ps := o.outcomePushes(a.ID); len(ps) != 1 || ps[0].Title != agentLabel(a)+" is waiting for you: Should the nightly check also run the slow suite?" {
+	if ps := o.outcomePushes(a.ID); len(ps) != 1 || ps[0].Title != o.srv.agentLabel(asUser(a.OwnerID), a)+" is waiting for you: Should the nightly check also run the slow suite?" {
 		t.Fatalf("pushes %+v; want one carrying the put-off reply's question", ps)
 	}
 }

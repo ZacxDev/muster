@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +64,8 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 			return chiefThreadRows(ChiefThreadsView{Threads: []SessionView{{ID: 9, Title: "Review [PR 9](https://example.com/9) _today_"}}})
 		}},
 		{"notification row", "Agent ten done", func() g.Node {
-			return notifRow(NotificationRow{Name: "a10", DisplayName: "Agent `ten` **done**", Count: 1})
+			// Its name is the rule's (internal/sessionname), which plains it.
+			return notifRow(NotificationRow{Name: "a10", SessionName: sessionname.Resolve(sessionname.Parts{Dispatch: "Agent `ten` **done**", Fallback: "a10"}), Count: 1})
 		}},
 		{"switcher Recent view", "Eleven builds", func() g.Node {
 			return switcherRefresh(NewSwitcher([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}}, SwitcherCurrent{}))

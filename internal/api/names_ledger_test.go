@@ -11,12 +11,13 @@ import (
 	"testing"
 )
 
-// sessionNameAdapters are names.go's four doors to the one name rule
+// sessionNameAdapters are names.go's doors to the one name rule
 // (internal/sessionname): the only functions that may call sessionname.Agent
 // or sessionname.Mirror.
 var sessionNameAdapters = []string{
 	"names.go focusIndex.agentName",
 	"names.go focusIndex.mirrorName",
+	"names.go focusIndex.storedMirrorName",
 	"names.go Server.agentName",
 	"names.go Server.mirrorName",
 }
@@ -28,15 +29,40 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.cardViewIndexed",            // the sidebar rows, switcher pills and palette (agents)
-	"agents.go Server.handleAgentName",            // a Save of the unchanged prefilled name is not a rename
-	"session_names.go Server.mirrorNameUnchanged", // the same, for a mirrored session
-	"agents.go Server.handleAgentDetail",          // the agent page's header and <title>
-	"mirror.go Server.mirrorCards",                // the sidebar rows, switcher pills and palette (mirrored)
-	"mirror.go Server.handleMirrorTerminalPage",   // a mirrored terminal page's header and <title>
-	"mirror_view.go Server.handleMirrorViewPage",  // the Rendered view's header and <title>
-	"terminal.go Server.handleAgentTerminalPage",  // an agent's terminal page's header and <title>
+	"agents.go Server.activeNotificationRows", // the notifications panel's active rows
+	"agents.go Server.cardViewIndexed",        // the sidebar rows, switcher pills and palette (agents)
+	"agent_outcome.go Server.agentLabel",      // an agent outcome's push title and its note to the chief
+	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
+	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
+	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
+	"attention.go Server.withNamesFrom",           // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"chat_log_live.go Server.dispatchCardFor",
+	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
+	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
+	"fleet_report.go Server.collectFleet",                        // the fleet report
+	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
+	"focus_tools.go Server.toolFocusSearch",                      // the chief's focus_search hits
+	"mirror.go Server.handleMirrorTerminalPage",                  // a mirrored terminal page's header and <title>
+	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
+	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
+	"mirror_view.go Server.handleMirrorViewPage",                 // the Rendered view's header and <title>
+	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
+	"pr_routes.go Server.prAuthorHint",                           // a plugin message's PR author hint
+	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
+	"session_push.go Server.episodeWho",                          // a stalled / waiting session's push title
+	"session_routes.go Server.resolveRouteTarget",                // route_to_session's text
+	"sessions_overview.go Server.repoHints",                      // a hint naming a session by its repo (#500)
+	"sessions_overview.go Server.liveSessions",                   // the chief's sessions_overview and the session hints
+	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
+	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
+	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
 }
+
+// nameAdapterSelectors are names.go's functions a surface calls to name a
+// session: the adapters and the helpers built on them.
+var nameAdapterSelectors = map[string]bool{"agentName": true, "mirrorName": true, "storedMirrorName": true,
+	"subjectName": true, "subjectNameOf": true, "humanName": true, "mirrorLabel": true,
+	"humanMirrorName": true}
 
 // TestTheSessionNameCallerLedger pins the SEAM between the name rule and the
 // surfaces: (1) in the whole module, only names.go's adapters call
@@ -99,7 +125,7 @@ func TestTheSessionNameCallerLedger(t *testing.T) {
 		}
 		for _, fn := range nameLedgerCallers(t, path, func(c *ast.CallExpr) bool {
 			sel, ok := c.Fun.(*ast.SelectorExpr)
-			return ok && (sel.Sel.Name == "agentName" || sel.Sel.Name == "mirrorName")
+			return ok && nameAdapterSelectors[sel.Sel.Name]
 		}) {
 			adapterCallers[path+" "+fn] = true
 		}

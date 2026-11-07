@@ -188,7 +188,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		officer := false
 		shipNote := ""
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
-			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, s.agentRepo(a)
+			v.Agent, v.TaskID, v.Repo = s.agentName(ctx, a).Text, a.NoteID, s.agentRepo(a)
 			if g.Connector == officers.GitHubConnector {
 				v.ReadRepos = s.agentReadRepos(a)
 			}

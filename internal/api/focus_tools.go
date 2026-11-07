@@ -35,13 +35,15 @@ func focusToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: fleetListToolName,
 			Description: "List your owner's sessions — dispatched agents and mirrored agent windows (Claude Code, opencode) — compactly: " +
-				"id, kind, name, status, focus title (what it is working on) with how old it is — focus_set_at, and focus_age " +
+				"id, kind, name (the session's stable name, what your owner calls it), code (a dispatched agent's slug — the name " +
+				"a tool like agent_destroy takes; a mirrored window's codename and tmux address are in where), status, focus title " +
+				"(what it is working on) with how old it is — focus_set_at, and focus_age " +
 				"(\"2d\") past a day: an old title may no longer be what the session is doing — and, when a session has no focus or a stale one, " +
 				"focus_problem: the short reason (e.g. no OpenRouter key, rate-limited). Use focus_search to find one by topic." + focusUntrustedTail,
 			Parameters: objSchema(map[string]any{})},
 		{Type: "function", Name: focusSearchToolName,
 			Description: "Full-text search over your owner's sessions' focus (what each is working on). Returns the best " +
-				"matches first: id, kind, title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
+				"matches first: id, kind, name (the session's stable name), title (with focus_set_at, and focus_age \"2d\" past a day) and a short snippet. Use it to find which session is best placed to handle something. " +
 				"Only sessions muster can see now are returned. By default it searches each session's CURRENT focus; with since_hours " +
 				"it searches every focus each session had in that many past hours instead (a session's focus moves between subtasks " +
 				"of one job, so its current focus can miss what it has been on all along). Either way, an online mirrored session whose " +
@@ -64,6 +66,10 @@ type fleetListRow struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Name string `json:"name"`
+	// Code is a dispatched agent's slug, which Name (internal/sessionname) no
+	// longer spells: what the owner may still type it as. A mirrored window's
+	// codename and tmux address are in Where. The ID addresses either.
+	Code string `json:"code,omitempty"`
 	// Host is a mirrored session's host ("" for a dispatched agent).
 	Host string `json:"host,omitempty"`
 	// Where is a mirrored session's window as the owner finds it in a
@@ -93,7 +99,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
+				Name: fi.agentName(a).Text, Code: a.Name, Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
 				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 		}
 	}
@@ -109,7 +115,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		if status == "" {
 			status = "unknown"
 		}
-		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
+		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
 			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
@@ -147,8 +153,11 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		return toolErr("the search failed")
 	}
 	type row struct {
-		ID      string `json:"id"`
-		Kind    string `json:"kind"`
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+		// Name is the session's stable name (internal/sessionname); Title the
+		// focus title that matched.
+		Name    string `json:"name,omitempty"`
 		Title   string `json:"title"`
 		Snippet string `json:"snippet,omitempty"`
 		// focusAgeFields: how old Title (the session's current focus) is.
@@ -162,7 +171,7 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	out := make([]any, 0, len(hits))
 	ids := make([]string, 0, len(hits))
 	for _, h := range hits {
-		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet}
+		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Name: s.subjectName(ctx, fi, h.Subject), Title: h.Title, Snippet: h.Snippet}
 		// The age is the stored focus's only while it is still this title (a
 		// refresh between the search and the read moved it on: no age).
 		if f, ok := fi[h.Subject]; ok && f.Title == h.Title {
