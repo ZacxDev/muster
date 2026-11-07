@@ -274,7 +274,8 @@ const ActionTaskRouted = "task.chief_routed"
 
 // ReserveChiefDispatch: see DispatchStore.
 //
-// 🔴 SERIALISED PER OWNER ON A TRANSACTION ADVISORY LOCK, so the prior check,
+// 🔴 SERIALISED PER OWNER ON A TRANSACTION ADVISORY LOCK (inChiefDispatchLock,
+// which waits for it without holding a pool connection), so the prior check,
 // both counts and the insert are one decision: two concurrent calls for one task
 // reserve once, and two for different tasks cannot both see one slot left —
 // which holds for the LIVE cap only because a reservation whose agent is not
@@ -296,11 +297,7 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, object string, detai
 	}
 	key, hash := requestKeyOf(detail)
 	var out ChiefDispatch
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
-			strconv.FormatInt(p.UserID, 10)); err != nil {
-			return err
-		}
+	err := s.inChiefDispatchLock(ctx, p.UserID, func(tx pgx.Tx) error {
 		// 🔴 THE request_key FIRST, UNDER THE LOCK: before the task's prior
 		// start, before check and before the caps. Two concurrent calls with one
 		// key are serialised here, so the second finds the first's reservation.
@@ -643,11 +640,7 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 		return false, errors.New("plugins: a chief-dispatch release needs a user principal")
 	}
 	wrote := false
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
-			strconv.FormatInt(p.UserID, 10)); err != nil {
-			return err
-		}
+	err := s.inChiefDispatchLock(ctx, p.UserID, func(tx pgx.Tx) error {
 		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, NoteObject(taskID))
 		if err != nil {
 			return err
@@ -683,11 +676,7 @@ func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, object string
 		return false, nil
 	}
 	wrote := false
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
-			strconv.FormatInt(p.UserID, 10)); err != nil {
-			return err
-		}
+	err := s.inChiefDispatchLock(ctx, p.UserID, func(tx pgx.Tx) error {
 		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, object)
 		if err != nil {
 			return err

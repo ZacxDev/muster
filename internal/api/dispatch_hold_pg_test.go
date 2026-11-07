@@ -557,9 +557,17 @@ func TestAnExpiredHoldIsRefused(t *testing.T) {
 }
 
 // TestConcurrentApprovalsStartOneAgent: eight approvals of one hold at once
-// start exactly one agent; the rest are refused as already approved.
+// start exactly one agent; the rest are refused as already approved. On a
+// 2-connection pool, so the approvals waiting on the owner's reservation lock
+// outnumber the connections on every host (it was red only on 2 CPUs, where
+// pgxpool's default is 4): a waiter holding a connection starves the holder's
+// check (57014 after the statement timeout).
 func TestConcurrentApprovalsStartOneAgent(t *testing.T) {
+	withPoolMaxConns(t, 2)
 	h := newHoldFixture(t)
+	if got := h.pool.Config().MaxConns; got != 2 {
+		t.Fatalf("control: the fixture's pool has %d connections, want 2", got)
+	}
 	held := h.request(t, gatewayRequest())
 	const approvals = 8
 	texts := make([]string, approvals)

@@ -1235,6 +1235,44 @@ its focus matches, and there the label counts too (a codename typed on
 purpose): an online mirrored session whose repo or label matches the query
 comes back with `matched: "repo or window label"`.
 
+A session is also listed by **its pull request**, and these come **first**:
+an online mirrored Claude Code window, however long idle, that muster
+recorded (`session_prs`, the
+[pull-request review mail](#a-pull-request-review-mail)'s record, so only with
+that feature on) creating a pull request the message names, or pushing a
+branch it spells. A pull request reference finds the session that created it;
+a branch name finds a session that pushed it. A
+pull request is named as `<repo>#N`, `<owner>/<repo>#N` or its
+`github.com/<owner>/<repo>/pull/N` URL, compared case-insensitively — **a bare
+`#N` names none**, nor does `PR 2855` — and only one muster recorded for that
+very repository and number counts, so `issue#12` names nothing unless a
+recorded repository is called `issue`. A `gh pr create` row matches by its
+number; a `git push` row names no number and matches by its branch only. A
+branch counts when the message
+spells it as a whole word (`feat/stage-c-job`, and also after `refs/heads/`,
+in a `…/tree/<branch>` URL or either side of a `...` compare range; not inside
+`feat/stage-c-job-2` or `origin/feat/stage-c-job`), it is at least five
+characters, and it holds a `/`, a digit, or a `-`/`_`-separated part of three
+or more letters that is not a dictionary word: `main`, `master` or `develop` —
+what a trunk-deployed session pushes every day — and words like `follow-up`,
+`read-only` or `gh-pages` never name a session. muster narrows the stored rows
+to the pull requests and branches the message names before it reads at most
+500 of them, so busy sessions' newer rows never push an idle author out. This finds the session a repo match
+cannot: one in a local clone named differently from the pull request's
+repository, whose focus never spelled the number. Its line says it was listed
+by its pull request, with what it was listed by (at most two) and when it was
+last active; that text is a host hook's report, inside the fence. They come
+before the focus matches because they are exact: three loose focus matches
+would otherwise fill the three places and push out the session the message
+names. Only the owner's own rows are read (`session_prs` is under row-level
+security) and only for windows online now; a row unseen for 30 days never
+counts. A **merged or closed** pull request still counts: its state is known
+only through the optional GitHub App, and a follow-up on what a pull request
+shipped is as much its session's. `focus_search` lists these first too, with
+`matched: "pull request or branch"` and `pull_requests`. The mirror wire does
+not carry a window's current git branch, so a branch is matched only when its
+session's hook reported pushing it.
+
 A **task event** gets the block too, matched on the task's own title and
 body (as muster stores them) and its change line, never on the event's JSON,
 and **leaving out the agents bound to the task** — those the event records and
