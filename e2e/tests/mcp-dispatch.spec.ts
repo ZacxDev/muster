@@ -1,10 +1,11 @@
 import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
-import { binDir, dsn, mcpDispatchConnectPort, mcpDispatchMirrorMCPPort, mcpDispatchPort, repoRoot, versionTerm } from '../lib/env';
+import { binDir, dsn, mcpDispatchCatalogPort, mcpDispatchConnectPort, mcpDispatchMirrorMCPPort, mcpDispatchPort, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // THE OWNER STARTS AN AGENT FROM THEIR OWN MIRRORED SESSION, IN TWO VERBS, every
@@ -12,7 +13,8 @@ import { serverBinary, startServer, Running } from '../lib/server';
 // LOOPBACK MCP endpoint (a real muster-mirror, -tags e2emirror), which forwards
 // to muster's /mirror/mcp with the host's token and the pane's Claude session.
 //
-//   dispatch_request holds the start (nothing exists yet) → dispatch_approve
+//   dispatch_request, naming the model by its display name, holds the start
+//   with the catalogue's id (a fake catalogue: no network) → dispatch_approve
 //   starts exactly it: an agent row appears with the held model and a first
 //   message that is the held prompt, fenced as relayed from the owner's
 //   session, muster's rules last → a second approval is refused → the agent's
@@ -32,7 +34,10 @@ const tr = path.join(dir, sid + '.jsonl');
 const fakeTMUX = '/tmp/muster-e2e-fake-tmux/default,1,0';
 const mcpSecretFile = path.join(dir, 'mcp-secret');
 const localMCP = `http://127.0.0.1:${mcpDispatchMirrorMCPPort}/mcp`;
+// The model as the owner named it (a display name), and the id it resolves to.
+const modelName = 'Coder 7';
 const model = 'openrouter/vendor-a/coder-7';
+let catalog: http.Server | undefined;
 const prompt = 'Profile the nightly export and open a draft PR.';
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
@@ -47,6 +52,11 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true
 test.beforeAll(async () => {
   test.setTimeout(240_000);
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
+  catalog = http.createServer((_req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ data: [{ id: 'vendor-a/coder-7', name: 'Vendor A: Coder 7' }] }));
+  });
+  await new Promise<void>((r) => catalog!.listen(mcpDispatchCatalogPort, '127.0.0.1', () => r()));
   server = await startServer(versionTerm, mcpDispatchPort, {
     MUSTER_MIRROR: '1',
     MUSTER_FOCUS_INTERVAL: '0',
@@ -66,6 +76,7 @@ test.beforeAll(async () => {
     MUSTER_AGENT_RUNTIME_INSTALL: 'exec true',
     MUSTER_E2E_AGENT_ENDPOINT: 'http://127.0.0.1:9',
     MUSTER_AGENT_KINDS: 'gateway,claude-code',
+    MUSTER_E2E_OPENROUTER_MODELS: `http://127.0.0.1:${mcpDispatchCatalogPort}/models`,
     MUSTER_AGENT_OPENROUTER_KEY: 'sk-or-v1-FAKE-e2e-mcp-dispatch',
     MUSTER_AGENT_CC_IMAGE: 'ghcr.io/example-org/claude-code-agent:e2e',
     MUSTER_AGENT_CC_ACCOUNTS: 'alpha',
@@ -110,6 +121,7 @@ test.afterAll(async () => {
       await done;
     }
     await server?.stop();
+    await new Promise<void>((r) => (catalog ? catalog.close(() => r()) : r()));
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -146,10 +158,12 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
 
 test('a mirrored session holds a start, approves it, and exactly that agent appears', async ({ page }) => {
   test.setTimeout(120_000);
-  const held = await call('dispatch_request', { target: 'pod/gateway', model, prompt });
+  const held = await call('dispatch_request', { target: 'pod/gateway', model: modelName, prompt });
   expect(held.isError, JSON.stringify(held.body)).toBe(false);
   const holdID = held.body.hold_id as string;
   expect(holdID).toMatch(/^held:[0-9a-f]{32}$/);
+  // The display name was resolved to the catalogue's id.
+  expect(held.body.model).toBe(model);
   expect(held.body.summary as string).toContain(model);
   expect(held.body.next as string).toContain('dispatch_approve');
 

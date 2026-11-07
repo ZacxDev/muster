@@ -325,6 +325,8 @@ export const outcomesCatalogPort = port + 292;
 export const mcpDispatchPort = port + 300;
 export const mcpDispatchConnectPort = port + 301;
 export const mcpDispatchMirrorMCPPort = port + 302;
+// Its fake model catalogue (MUSTER_E2E_OPENROUTER_MODELS): the spec reaches no network.
+export const mcpDispatchCatalogPort = port + 303;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
