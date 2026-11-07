@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentoutcome"
@@ -181,6 +183,15 @@ func (o *outcomeFixture) kickoff(t *testing.T, runtime *httptest.Server, list ..
 // kickoffWithin is kickoff with a first-turn budget (0: the deliverer's default).
 func (o *outcomeFixture) kickoffWithin(t *testing.T, runtime *httptest.Server, budget time.Duration, list ...agents.Agent) {
 	t.Helper()
+	kickoffOnce(t, o.srv, o.pool, o.prefix, runtime, budget, list...)
+}
+
+// kickoffOnce runs ONE tick of the real kickoff deliverer — wired to srv as
+// cmd/muster-server's buildKickoffDeliverer wires it (the outcome tracker, and
+// srv.KickoffTurnTools for the first turn's tools) — for agents under prefix,
+// over the real gateway transport to runtime.
+func kickoffOnce(t *testing.T, srv *Server, pool *pgxpool.Pool, prefix string, runtime *httptest.Server, budget time.Duration, list ...agents.Agent) {
+	t.Helper()
 	u, _ := url.Parse(runtime.URL)
 	host, port, _ := net.SplitHostPort(u.Host)
 	p, _ := strconv.Atoi(port)
@@ -190,7 +201,7 @@ func (o *outcomeFixture) kickoffWithin(t *testing.T, runtime *httptest.Server, b
 		t.Fatal(err)
 	}
 	var names []string
-	store := agents.NewPG(o.pool)
+	store := agents.NewPG(pool)
 	for _, a := range list {
 		names = append(names, a.Name)
 		// The token the provisioner mints at creation (recordingProvisioner does not).
@@ -198,12 +209,12 @@ func (o *outcomeFixture) kickoffWithin(t *testing.T, runtime *httptest.Server, b
 			t.Fatal(err)
 		}
 	}
-	rep, ok := o.srv.KickoffOutcomes()
+	rep, ok := srv.KickoffOutcomes()
 	if !ok {
 		t.Fatal("instrument check FAILED: the server tracks no outcomes")
 	}
 	d, err := agentkickoff.New(agentkickoff.Config{Store: store, Instances: readyInstances{names}, Gateway: gw,
-		NamespacePrefix: o.prefix, Outcome: rep, TurnTimeout: budget})
+		NamespacePrefix: prefix, Outcome: rep, TurnTimeout: budget, TurnTools: srv.KickoffTurnTools})
 	if err != nil {
 		t.Fatal(err)
 	}

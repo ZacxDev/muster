@@ -59,7 +59,7 @@ func TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		changed = append(changed, name)
-	}, nil, nil, logger)
+	}, nil, nil, nil, logger)
 	if err != nil || d == nil {
 		t.Fatalf("buildKickoffDeliverer: deliverer=%v err=%v", d != nil, err)
 	}
@@ -100,10 +100,11 @@ func TestBuildAppPassesTheServersBroadcastToTheDeliverer(t *testing.T) {
 	// srv.OfficerTurnContext (#497) and kickoffOutcomes(srv): a fresh officer
 	// pool's kickoff starts a new conversation, and the server's outcome tracker
 	// hears every first turn's course (internal/api agent_outcome.go).
-	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), logger)"
+	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), srv.KickoffTurnTools, logger)"
 	if !strings.Contains(text, want) {
 		t.Errorf("main.go does not contain %q: the deliverer's background card changes would "+
 			"reach no open Agents list, or a fresh_session_per_item officer's kickoff would not "+
-			"start a new conversation (srv.OfficerTurnContext)", want)
+			"start a new conversation (srv.OfficerTurnContext), or a gateway agent's first turn would carry "+
+			"no muster tool (srv.KickoffTurnTools)", want)
 	}
 }

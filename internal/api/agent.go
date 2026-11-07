@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -724,6 +725,50 @@ func GitPushRecipe(connector, path string) string {
 	proxy := "$MUSTER_CONNECT_URL/connect/" + connector + "/"
 	return `git -c "http.` + proxy + `.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" -c "http.` + proxy +
 		`.followRedirects=false" push ` + proxy + path
+}
+
+// turnTools is what one in-process turn of agent a carries — its system prompt
+// (AgentInstructions), the native function tools it may see (AgentToolDefsFor)
+// and the dispatch that runs them (AgentToolDispatch) — and the context the turn
+// runs under: ask_owner ends the turn it is called in (owner_ask.go), and the
+// tool loop reads that mark after each round of calls.
+//
+// 🔴 ONE ASSEMBLY FOR EVERY TOOL-ENABLED TURN: a chat turn (chatTurn) and a
+// gateway agent's first turn (KickoffTurnTools). The first turn once had none of
+// it, so a dispatched gateway agent — which does its whole job in that turn —
+// was told to call agent_report_done and never offered it.
+func (s *Server) turnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools) {
+	ctx = agents.WithTurnEnd(ctx)
+	return ctx, agentkickoff.TurnTools{Instructions: s.AgentInstructions(a), Tools: s.AgentToolDefsFor(ctx, a),
+		Dispatch: s.AgentToolDispatch(ctx, a)}
+}
+
+// KickoffTurnTools is agentkickoff.Config.TurnTools: a GATEWAY-kind agent's first
+// turn carries its muster tools (turnTools), as each of its chat turns does.
+//
+// 🔴 THE TURN'S TOOLS RUN AS THE AGENT'S OWNER (kickoffPrincipal), NEVER AS THE
+// DELIVERER'S authz.System. Under System row-level security sees every owner's
+// rows, so an agent's tools would reach across owners; and an insert that takes
+// its owner from the principal (attention_ask, connector_request) fails outright
+// — measured: both answered an error under System and succeeded as the owner.
+//
+// ⚠ NOT FOR A CLAUDE-CODE AGENT (ok false): its CLI reaches muster's tools over
+// MCP from inside its pod (MCPToolDefsFor), and ccd accepts and ignores a
+// request's instructions and tools (cmd/ccd/server.go responsesRequest), so its
+// first turn stays the toolless one it always was.
+func (s *Server) KickoffTurnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools, bool) {
+	if agents.ResolveKind(a.Kind) != agents.KindGateway {
+		return ctx, agentkickoff.TurnTools{}, false
+	}
+	ctx, tt := s.turnTools(s.kickoffPrincipal(ctx, agentOwnerID(a)), a)
+	return ctx, tt, true
+}
+
+// kickoffPrincipal is ctx acting as owner, through authz.ViaKickoff: how a
+// gateway agent's first turn runs its tools, so row-level security confines
+// them to that owner's rows.
+func (s *Server) kickoffPrincipal(ctx context.Context, owner int64) context.Context {
+	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaKickoff))
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls

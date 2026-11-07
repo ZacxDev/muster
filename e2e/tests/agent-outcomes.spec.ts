@@ -35,6 +35,9 @@ let serverEnv: Record<string, string> = {};
 let runtime: http.Server | undefined;
 let catalog: http.Server | undefined;
 const held: http.ServerResponse[] = [];
+// reportTools is the tool names each OUTCOME-REPORT first request carried.
+const reportTools: string[][] = [];
+const REPORTED = 'Opened draft PR #7 with the fix.';
 
 const sse = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 
@@ -49,6 +52,21 @@ test.beforeAll(async () => {
         return res.end();
       }
       res.setHeader('Content-Type', 'text/event-stream');
+      const done = (output: unknown[]) => res.end(sse('response.completed', { response: { status: 'completed', output } }));
+      const say = (text: string) => done([{ type: 'message', content: [{ type: 'output_text', text }] }]);
+      if (body.includes('OUTCOME-REPORT') || body.includes('function_call_output')) {
+        // Plays the incident's model: offered agent_report_done it calls it, and
+        // answers once the call's output comes back; not offered it, it says so.
+        const req = JSON.parse(body) as { input?: { type: string }[]; tools?: { name: string }[] };
+        const tools = (req.tools ?? []).map((t) => t.name);
+        if ((req.input ?? []).some((i) => i.type === 'function_call_output')) return say('Reported; the draft PR is up.');
+        reportTools.push(tools);
+        if (tools.includes('agent_report_done')) {
+          return done([{ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'agent_report_done',
+            arguments: JSON.stringify({ summary: REPORTED }) }]);
+        }
+        return say("`agent_report_done` isn't in my available toolset, so I'm reporting here instead.");
+      }
       if (body.includes('OUTCOME-HANG')) {
         // Took the turn, and says nothing: the watchdog's case.
         res.flushHeaders();
@@ -216,6 +234,32 @@ for (const vp of [
         await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
         await page.waitForTimeout(2500); // two watchdog sweeps
         expect(outcomePushes(a.id), 'one notification per change').toBe(1);
+      });
+    });
+
+    // 🔴 THE INCIDENT THIS PINS: a dispatched gateway agent's first turn — the one
+    // it does its whole job in — carried NO muster tool (agentkickoff sent it
+    // toolless), so the agent_report_done it was told to call was never offered
+    // and it could only ever end `waiting`.
+    test('a dispatched agent that reports done in its first turn ends done, and its owner is told once', async ({ page }) => {
+      test.setTimeout(90_000);
+      await signIn(page, origin);
+      await withDevice(page, async () => {
+        const seen = reportTools.length;
+        const a = await dispatch(page, 'openrouter/acme/acme-v4.1-pro', `OUTCOME-REPORT ${vp.label}: fix the flaky test`);
+        await expect.poll(() => reportTools.length, { timeout: 30_000 }).toBe(seen + 1);
+        expect(reportTools[seen], 'the first turn offered agent_report_done').toContain('agent_report_done');
+        await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('done');
+        expect((await agentRows()).find((x) => x.id === a.id)?.status).not.toBe('error');
+        // One "<agent> finished: <summary>" notification.
+        await expect.poll(() => outcomePushes(a.id), { timeout: 10_000 }).toBe(1);
+        await page.waitForTimeout(2500); // two watchdog sweeps: a done agent is never called stuck
+        expect(outcomePushes(a.id), 'one notification per change').toBe(1);
+        expect((await agentRows()).find((x) => x.id === a.id)?.outcome).toBe('done');
+        // The page draws no failed or stuck outcome for it.
+        await page.goto(origin + '/agents/' + a.name);
+        await expect(page.locator('#agent-strip')).toBeVisible();
+        await expect(page.locator('[data-agent-outcome]')).toHaveCount(0);
       });
     });
 

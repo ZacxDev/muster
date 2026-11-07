@@ -205,6 +205,39 @@ type Config struct {
 	// FAILED. The runtime may still be running it (ShutdownCancelledReason); the
 	// watchdog judges the agent by what it does next instead.
 	Outcome OutcomeReporter
+	// TurnTools, when set, gives a first turn the agent's muster tools: for an
+	// agent it answers ok for, the turn is sent through the gateway's
+	// [ToolSender] with the returned context, system prompt, native function
+	// tools and in-process dispatch, exactly as a chat turn is. cmd/muster-server
+	// passes api.Server.KickoffTurnTools, which answers ok for a GATEWAY-kind
+	// agent only (a claude-code agent reaches its tools over MCP from inside its
+	// pod; ccd ignores a request's tools). nil, or not ok: the toolless turn.
+	//
+	// 🔴 WITHOUT IT A GATEWAY AGENT'S FIRST TURN HAS NO MUSTER TOOL AT ALL. A
+	// dispatched gateway agent does its whole job in that turn, so it was told
+	// to call agent_report_done (and, on a task, agent_set_task_status) and was
+	// never offered either: its outcome could only ever end `waiting`. New
+	// refuses a TurnTools whose Gateway is not a ToolSender, so the tools cannot
+	// be configured and then silently dropped.
+	TurnTools func(ctx context.Context, a agents.Agent) (context.Context, TurnTools, bool)
+}
+
+// TurnTools is what a tool-enabled first turn carries (Config.TurnTools).
+type TurnTools struct {
+	// Instructions is the agent's system prompt.
+	Instructions string
+	// Tools are the native function tools the model is offered.
+	Tools []agents.ToolDef
+	// Dispatch runs each call in muster's process. REQUIRED with Tools.
+	Dispatch agents.ToolDispatch
+}
+
+// ToolSender runs a tool-enabled turn against a resolved target
+// (agentgateway.Gateway.SendWithTools). A Gateway must implement it for
+// Config.TurnTools to be set.
+type ToolSender interface {
+	SendWithTools(ctx context.Context, t agentgateway.Target, sessionKey, instructions, message string,
+		tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error)
 }
 
 // OutcomeReporter hears a first turn's course. Every method must be cheap and
@@ -246,7 +279,11 @@ type Deliverer struct {
 	// turnCtx is Config.TurnContext (nil: none).
 	turnCtx func(ctx context.Context, a agents.Agent) context.Context
 	outcome OutcomeReporter
-	wg      sync.WaitGroup
+	// tools is Config.TurnTools (nil: every first turn is toolless) and ts the
+	// gateway as its ToolSender (non-nil whenever tools is).
+	tools func(ctx context.Context, a agents.Agent) (context.Context, TurnTools, bool)
+	ts    ToolSender
+	wg    sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
 	done     chan struct{}
@@ -265,6 +302,11 @@ func New(cfg Config) (*Deliverer, error) {
 		return nil, errors.New("agentkickoff: Config.Gateway is required (a deliverer with no " +
 			"gateway delivers nothing, which is the defect this package exists to close)")
 	}
+	ts, toolSender := cfg.Gateway.(ToolSender)
+	if cfg.TurnTools != nil && !toolSender {
+		return nil, errors.New("agentkickoff: Config.TurnTools is set but Config.Gateway cannot send a " +
+			"tool-enabled turn (no SendWithTools): every first turn would silently go out without the tools")
+	}
 	d := &Deliverer{
 		store:   cfg.Store,
 		insts:   cfg.Instances,
@@ -277,6 +319,8 @@ func New(cfg Config) (*Deliverer, error) {
 		notify:  cfg.OnChange,
 		turnCtx: cfg.TurnContext,
 		outcome: cfg.Outcome,
+		tools:   cfg.TurnTools,
+		ts:      ts,
 		done:    make(chan struct{}),
 	}
 	if d.owner == "" {
@@ -707,7 +751,8 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	if d.turnCtx != nil {
 		sendCtx = d.turnCtx(ctx, fresh)
 	}
-	reply, err := d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
+	send := d.firstTurnSender(sendCtx, target, sess.SessionKey, fresh)
+	reply, err := send()
 	for waited := time.Duration(0); err != nil && runtimeRefusedUnsent(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
 		select {
 		case <-ctx.Done():
@@ -716,7 +761,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		if ctx.Err() != nil {
 			break
 		}
-		reply, err = d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
+		reply, err = send()
 	}
 	if err != nil && runtimeRefusedUnsent(err) {
 		// Still refused when the delivery ended — the bound, or a shutdown
@@ -892,10 +937,49 @@ func runtimeNotReady(err error) bool {
 // (its pane shows the CLI's usage-limit menu; the gateway has marked the
 // account and failed the agent over by the time Send returns). Typed bodies
 // only, as runtimeNotReady.
+//
+// 🔴 A REFUSAL AFTER THE FIRST REQUEST IS NEVER "UNSENT". A tool-enabled first
+// turn (Config.TurnTools) is several requests; by request 2 the runtime has the
+// message and its tools have run, so re-sending would paste the kickoff twice
+// (agents.AfterFirstRequestError). A toolless turn is one request and never
+// carries that wrapper, so this changes nothing for it.
 func runtimeRefusedUnsent(err error) bool {
+	if agents.PastFirstRequest(err) {
+		return false
+	}
 	var rt *agents.RuntimeError
 	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict &&
 		(rt.Type == "busy" || rt.Type == "rate_limited")
+}
+
+// firstTurnSender is the one send of agent a's first turn: tool-enabled when
+// Config.TurnTools answers ok for a (its context, system prompt, tools and
+// dispatch), toolless otherwise. Built once per delivery, so a not_ready re-send
+// repeats the same request.
+//
+// 🔴 THE TOOLLESS FALLBACK IS TAKEN ONLY FOR A 404 ON THE FIRST REQUEST — a
+// runtime image that predates /v1/responses, where the tool turn cannot run at
+// all — which is api.Server.chatTurn's rule for a chat turn. A 404 on a later
+// request comes after the runtime took the message and ran its tools; sending it
+// again toolless would deliver the kickoff twice.
+func (d *Deliverer) firstTurnSender(ctx context.Context, target agentgateway.Target, sessionKey string, a agents.Agent) func() (string, error) {
+	toolless := func() (string, error) { return d.gw.Send(ctx, target, sessionKey, a.PendingNote, nil) }
+	if d.tools == nil {
+		return toolless
+	}
+	tctx, tt, ok := d.tools(ctx, a)
+	if !ok {
+		return toolless
+	}
+	return func() (string, error) {
+		reply, err := d.ts.SendWithTools(tctx, target, sessionKey, tt.Instructions, a.PendingNote, tt.Tools, tt.Dispatch, nil)
+		if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
+			d.log.Printf("agentkickoff: agent %d (%s): runtime lacks /v1/responses; sending the first turn WITHOUT tools",
+				a.ID, a.Name)
+			return toolless()
+		}
+		return reply, err
+	}
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

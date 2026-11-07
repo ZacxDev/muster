@@ -2313,11 +2313,8 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	ctx = s.sessionRoute(ctx, a, sessionKey)
 	// "working…" for any page that opens this conversation while the turn runs.
 	defer s.sessionTurns.begin(sessionKey)()
-	// ask_owner ends the turn it is called in (owner_ask.go): the tool loop reads
-	// this mark after each round of calls.
-	ctx = agents.WithTurnEnd(ctx)
-	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
-	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
+	ctx, tt := s.turnTools(ctx, a)
+	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
 	// 404 on request 2+ comes after the runtime answered request 1 and its tools
 	// ran; resending the message toolless there pastes it into the session twice
