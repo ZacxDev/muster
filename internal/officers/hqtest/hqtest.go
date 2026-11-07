@@ -59,6 +59,9 @@ type Item struct {
 	// outcome needs_judgement (HQ's routine_summary, kept for the judgement
 	// claimer); absent when none.
 	RoutineSummary string `json:"routine_summary,omitempty"`
+	// Payload is the item's payload as HQ serves it on every items list;
+	// absent when unset (SetPayload).
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // tierOf is the tier item it reads as: its own, or judgement when unset.
@@ -585,6 +588,13 @@ func (s *Server) SetClaim(id, holder string, expires time.Time) {
 		it.ClaimedAt = &now
 	}
 	it.Status, it.ClaimedBy, it.LeaseExpiresAt = "claimed", holder, &expires
+}
+
+// SetPayload sets item id's payload (raw JSON).
+func (s *Server) SetPayload(id, payload string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].Payload = json.RawMessage(payload)
 }
 
 // SetBlocked marks item id blocked by the tasks by (none: unblocked, both

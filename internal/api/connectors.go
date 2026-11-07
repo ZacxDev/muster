@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -226,7 +227,44 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 func (s *Server) callerOf(a agents.Agent) connectors.Caller {
 	_, _, officer := s.officerOf(a)
 	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadRepos: s.agentReadRepos(a),
-		ReadOnly: officer, Gate: s.shipGate(a)}
+		ReadOnly: officer, Gate: s.shipGate(a), ReadPin: s.readPinOf(a)}
+}
+
+// readPinOf is officer instance a's pinned-read policy
+// (officers.Officer.PinRepoReadsToItem), nil for every other agent. Its pins
+// are resolved for each request from the ONE item a holds a live claim on
+// (heldItemRecord: HQ's claimed list, read with the officer's own token) —
+// that item's payload `replay.repo_refs` (officers.ItemRepoPins). 🔴 EVERY
+// FAILURE REFUSES THE READ: no held item, more than one, an item that pins
+// nothing or pins badly, HQ unreachable.
+func (s *Server) readPinOf(a agents.Agent) *connectors.ReadPin {
+	o, _, ok := s.officerOf(a)
+	if !ok || !o.PinRepoReadsToItem {
+		return nil
+	}
+	// The App's own API host (a deployment's may differ from GitHub's);
+	// githubapp.DefaultAPIHost for a stored `github` connector.
+	apiHost := githubapp.DefaultAPIHost
+	if app, ok := s.ext.GitHubApp.(interface{ APIHost() string }); ok {
+		apiHost = app.APIHost()
+	}
+	name := a.Name
+	return &connectors.ReadPin{Connector: officers.GitHubConnector, APIHost: apiHost,
+		Pins: func(ctx context.Context) ([]connectors.RepoPin, error) {
+			it, err := s.heldItemRecord(ctx, s.officerRT.hq.Client(o), name, "", true)
+			if err != nil {
+				return nil, err
+			}
+			refs, err := officers.ItemRepoPins(it.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("item %s: %w", it.ID, err)
+			}
+			pins := make([]connectors.RepoPin, 0, len(refs))
+			for _, r := range refs {
+				pins = append(pins, connectors.RepoPin{Repo: r.Repo, SHA: r.SHA})
+			}
+			return pins, nil
+		}}
 }
 
 // --- the proxy ------------------------------------------------------------------------

@@ -346,6 +346,16 @@ func (a *App) Renames() []string {
 
 // --- the connector ---------------------------------------------------------------
 
+// APIHost is the API host the App serves (Config.APIHost, else
+// DefaultAPIHost): the host a pinned caller's reads are served on
+// (connectors.ReadPin). Nil-safe.
+func (a *App) APIHost() string {
+	if a == nil {
+		return DefaultAPIHost
+	}
+	return a.cfg.APIHost
+}
+
 // Describe is the `github` connector's public description: the same hosts and
 // auth shape as the GitHub preset (basic, username x-access-token — the one
 // shape both git over HTTPS and the REST API accept), with no stored secret.

@@ -43,33 +43,40 @@ func splitItemID(raw []byte) (rest []byte, item officers.ItemID, present bool, e
 // names (which must be among them), or its only one. With required false, an
 // instance holding none gets "" and no error (a read that is no item's).
 func (s *Server) heldItem(ctx context.Context, c *officers.Client, instance string, named officers.ItemID, required bool) (officers.ItemID, error) {
+	it, err := s.heldItemRecord(ctx, c, instance, named, required)
+	return it.ID, err
+}
+
+// heldItemRecord is heldItem's item as HQ listed it (its payload included):
+// the zero Item, and no error, when required is false and none is held.
+func (s *Server) heldItemRecord(ctx context.Context, c *officers.Client, instance string, named officers.ItemID, required bool) (officers.Item, error) {
 	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
-		return "", err
+		return officers.Item{}, err
 	}
 	now := s.officerRT.clock()
-	var held []officers.ItemID
+	var held []officers.Item
 	for _, it := range claimed {
 		if it.ClaimedBy == instance && it.LeaseLive(now) {
-			held = append(held, it.ID)
+			held = append(held, it)
 		}
 	}
 	switch {
 	case named != "":
-		for _, id := range held {
-			if id == named {
-				return id, nil
+		for _, it := range held {
+			if it.ID == named {
+				return it, nil
 			}
 		}
-		return "", fmt.Errorf("you hold no live claim on item %s: a read is counted against an item you hold", named)
+		return officers.Item{}, fmt.Errorf("you hold no live claim on item %s: a read is counted against an item you hold", named)
 	case len(held) == 1:
 		return held[0], nil
 	case len(held) == 0 && !required:
-		return "", nil
+		return officers.Item{}, nil
 	case len(held) == 0:
-		return "", errors.New("you hold no claimed item: claim one first (officer_claim) — every read is counted against the item it is for")
+		return officers.Item{}, errors.New("you hold no claimed item: claim one first (officer_claim) — every read is counted against the item it is for")
 	}
-	return "", fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
+	return officers.Item{}, fmt.Errorf("you hold %d items: name the one this read is for with item_id", len(held))
 }
 
 // heldItemRefusal is tool's answer to a heldItem error: HQ's own refusal or

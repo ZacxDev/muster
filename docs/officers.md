@@ -59,6 +59,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
 | `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. |
+| `pin_repo_reads_to_item` | `false` | Pins every `github` read of the instances to the item each one holds: the item's payload `replay.repo_refs` names, per repository, the ONE commit it may be read at, and the proxy refuses every other read — see [Pinned reads](#pinned-reads-pin_repo_reads_to_item). For replaying a past event against the repositories as they were. Needs `repo`; refused beside `ship`. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -357,6 +358,36 @@ the App's error (never anonymously).
   shipping officer is accepted when `MUSTER_GITHUB_APP_ID` is set, and a boot
   refusal naming the officer when it is not
   ([below](#shipping-officers)).
+
+**Pinned reads (`pin_repo_reads_to_item`).** An officer that replays a past
+event must read its repositories as they were then, with nothing that came
+after — no later commit, fix, pull request or issue. With
+`"pin_repo_reads_to_item": true`, every request an instance makes to the
+`github` connector is checked against the item it holds
+(`connectors.Caller.ReadPin`, set by `Server.callerOf`), before any credential
+is minted and before the upstream sees a byte:
+
+- **The pins come from the held item.** For each request muster reads the
+  instance's ONE live claim from HQ (`heldItemRecord`, the officer's own
+  token) and its payload's `replay.repo_refs`
+  (`officers.ItemRepoPins`): a list of `{"repo": "owner/name", "sha": "<40
+  hex>"}`, at most 8, each repository once.
+- **Two reads are served, at exactly the pinned sha** (`connectors.CheckPinnedRead`):
+  `GET|HEAD /repos/<owner>/<name>/contents[/<path>]?ref=<sha>` (`ref` required
+  and the only query key) and `GET|HEAD /repos/<owner>/<name>/git/trees/<sha>`
+  (optionally `?recursive=…`), on the App's API host.
+- **Everything else is a 403** naming what is served, audited as `pinned read
+  refused`: git over the git host (a clone sees every branch), commits,
+  compare, pull requests, issues, branches, tags, tarballs, search, GraphQL,
+  the repository's metadata, a contents read with no `ref` (the default
+  branch) or another ref, a repository the item does not pin, and any write.
+- **It fails closed.** No held item, more than one, an item whose payload pins
+  nothing or pins badly, or HQ unreachable refuses every read.
+- The instance's first message teaches the two served reads instead of the
+  clone and history recipes (`pinnedRepoNote`). The grant, its approval and
+  the token's scope are unchanged: `repo` and `read_repos` still decide which
+  repositories get a READ-ONLY token, and the pin narrows what may be read
+  from them.
 
 **`github`, and the connectors it declares, only.** An officer instance may
 request and use the `github` connector and the connectors its officer lists in

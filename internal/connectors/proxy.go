@@ -194,6 +194,12 @@ type Caller struct {
 	// for an officer instance that ships code (api.Server.callerOf); nil for
 	// every other caller.
 	Gate Gate
+	// ReadPin, when set, pins this caller's reads through ReadPin.Connector:
+	// each repository to one commit, every other request refused before a
+	// credential exists (pinned_read.go). Set for an instance of an officer
+	// with `pin_repo_reads_to_item` (api.Server.callerOf); nil for every
+	// other caller.
+	ReadPin *ReadPin
 }
 
 // Gate is a per-caller WRITE POLICY with its own credential: an officer
@@ -602,6 +608,28 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		}
 		refuse(http.StatusForbidden, RefusalBody{Error: msg, Grant: st, GrantID: acc.Grant.ID}, "no grant: "+st)
 		return
+	}
+
+	// A PINNED caller (pinned_read.go): its request to the pinned connector is
+	// one of the allowed shapes at the pinned commit, or it is refused here,
+	// before any credential is minted or the upstream sees a byte.
+	if pin := caller.ReadPin; pin != nil && connector == pin.Connector {
+		var pins []RepoPin
+		var err error
+		if pin.Pins == nil {
+			err = errors.New("no pin resolver")
+		} else {
+			pins, err = pin.Pins(ctx)
+		}
+		if err == nil {
+			err = CheckPinnedRead(r.Method, pin.APIHost, host, rest, r.URL.RawQuery, pins)
+		} else {
+			err = fmt.Errorf("%w: %v", ErrPinnedRead, err)
+		}
+		if err != nil {
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "pinned read refused")
+			return
+		}
 	}
 
 	// A GATED caller (an officer that ships code) is served by its gate and

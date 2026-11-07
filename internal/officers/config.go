@@ -98,6 +98,14 @@ type Officer struct {
 	// holds it, at most MaxReadRepos, and accepted beside any ship stage (never
 	// one of ship.repos).
 	ReadRepos []string `json:"read_repos,omitempty"`
+	// PinRepoReadsToItem pins every `github` read of the officer's instances
+	// to the item each one holds: the item's payload names, per repository,
+	// the ONE commit it may be read at (ItemRepoPins), and the proxy refuses
+	// any other read — git, history, pull requests, search, another ref —
+	// before a credential exists (connectors.CheckPinnedRead). For replaying
+	// a past event against the repository as it was. Requires Repo; refused
+	// beside Ship.
+	PinRepoReadsToItem bool `json:"pin_repo_reads_to_item,omitempty"`
 	// Ship, when set, lets the officer push branches, open pull requests, and
 	// (by stage) merge its own pull requests and tag releases in Repo — every
 	// write filtered or performed by muster (ship.go). nil for every other
@@ -173,6 +181,7 @@ type declared struct {
 	Model        string   `json:"model"`
 	Repo         string   `json:"repo"`
 	ReadRepos    []string `json:"read_repos"`
+	PinReads     bool     `json:"pin_repo_reads_to_item"`
 	Connectors   []string `json:"connectors"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
@@ -415,6 +424,18 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 	}
 	o.ReadRepos = readRepos
+	if d.PinReads {
+		// 🔴 A PINNED OFFICER NEEDS repo: the App mints only for an agent with
+		// a repository, so without one every pinned read would fail with the
+		// App's error, and the officer would look pinned while reading nothing.
+		if o.Repo == "" {
+			return Officer{}, fmt.Errorf("officer %s: pin_repo_reads_to_item needs `repo`: the pinned reads go through the GitHub App, which serves an officer with a repository only", o.ID)
+		}
+		if len(d.Ship) > 0 && string(d.Ship) != "null" {
+			return Officer{}, fmt.Errorf("officer %s: pin_repo_reads_to_item is refused beside `ship`: a shipping officer's requests are its push gate's, which a pinned read cannot narrow", o.ID)
+		}
+		o.PinRepoReadsToItem = true
+	}
 	seenConn := map[string]bool{}
 	for _, c := range d.Connectors {
 		c = strings.TrimSpace(c)

@@ -156,7 +156,27 @@ func repoNote(o Officer) string {
 	if o.Ship != nil {
 		return shipNote(o) + readReposNote(o)
 	}
+	if o.PinRepoReadsToItem {
+		return pinnedRepoNote(o)
+	}
 	return readOnlyRepoNote(o) + readReposNote(o)
+}
+
+// pinnedRepoNote is repoNote's text for an officer whose reads are pinned to
+// the item it holds (Officer.PinRepoReadsToItem): the one recipe the proxy
+// serves it (connectors.CheckPinnedRead) — contents and trees at the item's
+// pinned commit — and that git, history, pull requests and search are
+// refused. It replaces readOnlyRepoNote and readReposNote, whose git and
+// history recipes would be refused.
+func pinnedRepoNote(o Officer) string {
+	repos := append([]string{o.Repo}, o.ReadRepos...)
+	return fmt.Sprintf(`
+
+You may READ these repositories through muster's %[1]q connector — %[2]s: %[3]s. Ask once with connector_request{name: %[1]q, reason}; the operator decides it by hand, so then wait with connector_status{name: %[1]q, wait_seconds: 50}, repeated while it says pending.
+Your reads are PINNED to the item you hold: its payload's replay.repo_refs names, for each repository, the ONE commit you may read it at (each {repo, sha}). muster serves only these two reads, at exactly that sha, and refuses everything else — git clone, commits, compare, pull requests, issues, branches, search, a read with no ref or another ref, and any repository the item does not pin:
+- a file or a directory: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" -H \"Accept: application/vnd.github.raw\" \"$MUSTER_CONNECT_URL/connect/%[1]s/api.github.com/repos/<owner>/<name>/contents/<path>?ref=<sha>\"`"+` (without the Accept header a file comes back as JSON with base64 content; a directory is always a JSON listing);
+- the whole tree, to find a file: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[1]s/api.github.com/repos/<owner>/<name>/git/trees/<sha>?recursive=1\"`"+`.
+A refusal (403) names what is served. muster attaches a READ-ONLY token to each request on your behalf, so you never hold or need one. Reading is all it is for: you never push or merge.`, GitHubConnector, onlyConnector(o), strings.Join(repos, ", "))
 }
 
 // readOnlyRepoNote is repoNote's text for an officer that does not ship: how

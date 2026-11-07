@@ -107,6 +107,9 @@ type Item struct {
 	// muster. Absent (an HQ without it): the item has no clock, and is not
 	// capped.
 	ClaimedAt *time.Time `json:"claimed_at"`
+	// Payload is the item's payload as HQ sent it; muster reads only the
+	// repository pins of a pinned officer's held item from it (ItemRepoPins).
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with
