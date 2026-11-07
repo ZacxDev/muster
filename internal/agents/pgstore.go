@@ -1034,7 +1034,7 @@ func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64,
 
 func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
 		WHERE session_id=$1 ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -1043,7 +1043,7 @@ func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]Chat
 	out := make([]ChatMessage, 0)
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1083,7 +1083,7 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	// drift, and the drift would present as the first page of a paged read
 	// disagreeing with an unpaged one about what the conversation says.
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
+		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
 		WHERE session_id=$1 AND ($2 <= 0 OR id < $2) ORDER BY id DESC LIMIT $3`, sessionID, beforeID, limit)
 	if err != nil {
 		return nil, err
@@ -1092,7 +1092,7 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	out := make([]ChatMessage, 0, limit)
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

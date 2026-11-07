@@ -328,4 +328,7 @@ var agentHrefCallLedger = map[string]int{
 	// Home (`/`, GET /agents) with no chief on: the session opened last that
 	// is still listed, else the sidebar's first row — a list's link.
 	"PageHref ← internal/ui/list_order.go:HomeHref": 2,
+	// The chief's card for an agent it started (chat_log_live.go): the agent's
+	// LIST link, so a tap lands on its latest session, as a sidebar row's does.
+	"PageHref ← internal/api/chat_log_live.go:Server.dispatchCardFor": 1,
 }
