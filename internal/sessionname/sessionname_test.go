@@ -69,6 +69,15 @@ func TestAnAgentsDisplayNameRanksByItsSource(t *testing.T) {
 	if got := Agent(agents.Agent{Name: "brave-otter", DisplayName: "brave-otter"}, focus.Name{}); got != (Name{"brave-otter", SourceFallback, "brave-otter"}) {
 		t.Errorf("slug before freeze: %+v", got)
 	}
+	// A default-sourced display name that is not the slug (a writer that set
+	// no source) heads the agent PLAINED until the auto name freezes.
+	odd := agents.Agent{Name: "brave-otter", DisplayName: "#41 · **Fix** the login"}
+	if got := Agent(odd, focus.Name{}); got != (Name{"#41 · Fix the login", SourceDispatch, "brave-otter"}) {
+		t.Errorf("default-sourced custom name: %+v", got)
+	}
+	if got := Agent(odd, stored); got.Source != SourceAuto {
+		t.Errorf("default-sourced custom name after the freeze: %+v, want the auto name", got)
+	}
 
 }
 
