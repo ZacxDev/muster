@@ -232,6 +232,8 @@ func (s *Server) attentionFormFailed(w http.ResponseWriter, r *http.Request, err
 	if page, ok := attentionReturnPage(r); ok {
 		code := noticeAskFailed
 		switch {
+		case isReleaseRefusal(err): // before ErrInvalid, which it wraps
+			code = noticeAskReleaseRefused
 		case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
 			code = noticeAskClosed
 		case errors.Is(err, attention.ErrInvalid):
@@ -250,6 +252,8 @@ const (
 	noticeAskClosed  = "ask-closed"
 	noticeAskInvalid = "ask-invalid"
 	noticeAskFailed  = "ask-failed"
+	// noticeAskReleaseRefused: a Release option refused (answer_release.go).
+	noticeAskReleaseRefused = "ask-release-refused"
 )
 
 func init() {
@@ -265,4 +269,9 @@ func init() {
 		text string
 		ok   bool
 	}{"Not recorded: the answer could not be saved. Try again, or answer on the Asks page.", false}
+	composerNotices[noticeAskReleaseRefused] = struct {
+		text string
+		ok   bool
+	}{"Not released: the task changed (its gate is already off, a gate of yours is on it, or it is no longer open), " +
+		"or only your own tap can release it. Nothing was recorded; open the task.", false}
 }

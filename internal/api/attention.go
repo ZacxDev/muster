@@ -1641,11 +1641,19 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 // first). The ONE answer path both doors take.
 func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
 	var a attention.Ask
-	var err error
+	// A Release option of a routed task's ask (answer_release.go): checked
+	// before the answer is recorded, applied before anyone is woken by it.
+	rel, err := s.releaseForAnswer(ctx, id, answer, src)
+	if err != nil {
+		return a, err
+	}
 	if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {
 		a, err = s.ext.Attention.Answer(ctx, id, answer)
+	}
+	if err == nil && rel != nil {
+		s.applyAnswerRelease(ctx, a, rel)
 	}
 	if err == nil {
 		s.askSettled(a)

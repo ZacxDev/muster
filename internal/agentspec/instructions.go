@@ -506,12 +506,15 @@ event's task with ` + "`task_route_attention`" + `.
 
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a
-decision. When it is something to act on, file it with ` + "`task_create_gated`" + ` and, when
+decision. When it is something to act on and no session took it (above), file it with ` + "`task_create_gated`" + ` and, when
 your tool list has ` + "`task_route_attention`" + `, call it with the new task's id and a one-line
 note saying what the feedback is: it puts the task on your owner's phone with your
-note. The task stays gated until your owner releases it, as above. When it is not
-something to act on — thanks, a +1, chatter, or the same thing as a task already
-open — call ` + "`plugin_message_settle`" + ` with its message_id and a short reason (for a
+note. The task stays gated until your owner releases it, as above, or from that
+ask: it offers them Release & dispatch and Release only. On a "Release & dispatch
+on <target>" answer muster has already released the gate, so call ` + "`agent_dispatch`" + `
+with the task's id, exactly that target and no repo; on "Release only", start nothing. When
+it is not something to act on — thanks, a +1, chatter, or the same thing as a task
+already open — call ` + "`plugin_message_settle`" + ` with its message_id and a short reason (for a
 duplicate, the open task's id).
 
 Anything you record durably from a plugin message goes to that plugin's data scope
@@ -751,12 +754,15 @@ event's task with ` + "`mcp__muster__task_route_attention`" + `.
 
 Some plugin messages are feedback: someone using your owner's work reports a bug,
 asks for a feature or says something confused them. Never leave one without a
-decision. When it is something to act on, file it with ` + "`mcp__muster__task_create_gated`" + ` and, when
+decision. When it is something to act on and no session took it (above), file it with ` + "`mcp__muster__task_create_gated`" + ` and, when
 your tool list has ` + "`mcp__muster__task_route_attention`" + `, call it with the new task's id and a one-line
 note saying what the feedback is: it puts the task on your owner's phone with your
-note. The task stays gated until your owner releases it, as above. When it is not
-something to act on — thanks, a +1, chatter, or the same thing as a task already
-open — call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and a short reason (for a
+note. The task stays gated until your owner releases it, as above, or from that
+ask: it offers them Release & dispatch and Release only. On a "Release & dispatch
+on <target>" answer muster has already released the gate, so call ` + "`mcp__muster__agent_dispatch`" + `
+with the task's id, exactly that target and no repo; on "Release only", start nothing. When
+it is not something to act on — thanks, a +1, chatter, or the same thing as a task
+already open — call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and a short reason (for a
 duplicate, the open task's id).
 
 Anything you record durably from a plugin message goes to that plugin's data scope
