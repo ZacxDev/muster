@@ -273,7 +273,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 				return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
 					t.Host, sid, mirrorSessionHeader)
 			}
-			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorName(r.Context(), e).Text}}
+			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}}
 			// chief_ask is this door's alone, like route_reply below (listed only
 			// with chiefAskOn, and serveMCP refuses an unlisted name).
 			if name == chiefAskTool {

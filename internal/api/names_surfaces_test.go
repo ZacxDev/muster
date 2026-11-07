@@ -19,8 +19,8 @@ func namedFocusStore() *memFocus {
 }
 
 // TestTheChiefsToolsNameASessionByItsStableName: fleet_list names the window
-// by its stable name, keeps its codename as `code` (what the owner may type)
-// and its place as `where`, and addresses it by `id`; focus_search's hit
+// by its stable name, keeps its codename and place in `where`, and addresses
+// it by `id`; focus_search's hit
 // carries the same name; sessions_overview's row too.
 func TestTheChiefsToolsNameASessionByItsStableName(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
@@ -41,8 +41,8 @@ func TestTheChiefsToolsNameASessionByItsStableName(t *testing.T) {
 	if row == nil {
 		t.Fatalf("fleet_list has no row for the window: %+v", fl.Sessions)
 	}
-	if row.Name != "Billing migration" || row.Code != "mango:1" || !strings.Contains(row.Where, "tmux main:1 @ ws") {
-		t.Fatalf("fleet_list row = name %q code %q where %q; want the stable name, the codename, the place", row.Name, row.Code, row.Where)
+	if row.Name != "Billing migration" || row.Code != "" || row.Where != "mango:1 · tmux main:1 @ ws" {
+		t.Fatalf("fleet_list row = name %q code %q where %q; want the stable name, no code (where has it), the place", row.Name, row.Code, row.Where)
 	}
 	if got := s.subjectName(ctx, s.focusIndex(ctx), focus.MirrorSubject(focusSID)); got != "Billing migration" {
 		t.Fatalf("a hit's name (focus_search) = %q", got)
@@ -90,6 +90,10 @@ func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
 	span := attentionSourceSpan(it)
 	if !strings.Contains(span, `>Billing migration<`) || !strings.Contains(span, `title="mango:1 · tmux main:1 @ ws"`) {
 		t.Fatalf("Asks row who = %s", span)
+	}
+	// The status bar's summary titles the item as its push does.
+	if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != "Billing migration" {
+		t.Fatalf("summary title %q, want the push's who", got)
 	}
 	it.Name = ""
 	if got := attentionNotification(it, false).Title; got != "mango:1 · tmux main:1 @ ws is asking" {

@@ -13,7 +13,7 @@ import (
 // A SESSION'S NAME, AS EVERY SURFACE HERE ASKS FOR IT (internal/sessionname;
 // docs/focus.md#a-sessions-name).
 //
-// 🔴 THESE FOUR ARE THE ONLY CALLERS OF sessionname.Agent AND sessionname.Mirror,
+// 🔴 THESE ARE THE ONLY CALLERS OF sessionname.Agent AND sessionname.Mirror,
 // and every surface that names a session reaches the rule through one of them:
 // the batch pair over a focusIndex (a list, read once per render), or the
 // single pair (one Get), for a surface that names one session. Their callers
@@ -102,6 +102,17 @@ func (s *Server) humanName(ctx context.Context, fi focusIndex, sub focus.Subject
 		return ""
 	}
 	return n.Text
+}
+
+// mirrorLabel is how a chief-facing text names mirrored entry e (an ask's
+// label, a comment's author, a route's session): its HUMAN name when it has
+// one, else — as before the rule — its title and its host, "mango:1 @ ws",
+// which tells the chief two unnamed windows on two hosts apart.
+func (s *Server) mirrorLabel(ctx context.Context, e mirror.SessionView) string {
+	if n := s.mirrorName(ctx, e); n.Human() {
+		return n.Text
+	}
+	return e.DisplayTitle() + " @ " + e.Host
 }
 
 // storedName is sub's stored name halves, the zero value for none.

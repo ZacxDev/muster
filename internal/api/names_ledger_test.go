@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// sessionNameAdapters are names.go's four doors to the one name rule
+// sessionNameAdapters are names.go's doors to the one name rule
 // (internal/sessionname): the only functions that may call sessionname.Agent
 // or sessionname.Mirror.
 var sessionNameAdapters = []string{
@@ -34,10 +34,12 @@ var sessionNameCallers = []string{
 	"agents.go Server.handleAgentDetail",                         // the agent page's header and <title>
 	"agents.go Server.handleAgentName",                           // a Save of the unchanged prefilled name is not a rename
 	"agents.go Server.handleNotifications",                       // the notifications panel's unread rows
+	"attention.go Server.withFocus",                              // every attention item's name: the Asks list, pushes, attention_list, the summary
 	"chat_log_live.go Server.dispatchCardFor",                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
 	"fleet_report.go Server.collectFleet",                        // the fleet report
 	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
+	"focus_tools.go Server.toolFocusSearch",                      // the chief's focus_search hits
 	"mirror.go Server.handleMirrorTerminalPage",                  // a mirrored terminal page's header and <title>
 	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
 	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
@@ -52,6 +54,11 @@ var sessionNameCallers = []string{
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
 	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
 }
+
+// nameAdapterSelectors are names.go's functions a surface calls to name a
+// session: the adapters and the helpers built on them.
+var nameAdapterSelectors = map[string]bool{"agentName": true, "mirrorName": true, "storedMirrorName": true,
+	"subjectName": true, "subjectNameOf": true, "humanName": true, "mirrorLabel": true}
 
 // TestTheSessionNameCallerLedger pins the SEAM between the name rule and the
 // surfaces: (1) in the whole module, only names.go's adapters call
@@ -114,7 +121,7 @@ func TestTheSessionNameCallerLedger(t *testing.T) {
 		}
 		for _, fn := range nameLedgerCallers(t, path, func(c *ast.CallExpr) bool {
 			sel, ok := c.Fun.(*ast.SelectorExpr)
-			return ok && (sel.Sel.Name == "agentName" || sel.Sel.Name == "mirrorName")
+			return ok && nameAdapterSelectors[sel.Sel.Name]
 		}) {
 			adapterCallers[path+" "+fn] = true
 		}

@@ -289,7 +289,7 @@ func (s *Server) routeSubjectFor(ctx context.Context, raw string) (focus.Subject
 			continue // the most recently active window holding it (mirrorEntryForSession's)
 		}
 		seen[e.ClaudeSession] = true
-		cands = append(cands, routeCandidate{Subject: string(focus.KindMirror) + ":" + e.ClaudeSession, Session: s.mirrorName(ctx, e).Text, Where: e.Where()})
+		cands = append(cands, routeCandidate{Subject: string(focus.KindMirror) + ":" + e.ClaudeSession, Session: s.mirrorLabel(ctx, e), Where: e.Where()})
 	}
 	return focus.Subject{}, subjectRefusal(RefusedSubjectNotFound, "subject "+strconv.Quote(raw)+
 		" is not \"mirror:<claude session id>\" of a session an online mirrored window shows; name one of the candidates by its subject", cands)

@@ -126,12 +126,14 @@ holds its only callers; `TestTheSessionNameCallerLedger` lists every surface):
   its age), the switcher's pills and dock, the search palette, the agent page,
   the Rendered view and the terminal page (header and `<title>`), the
   notifications panel, a dispatch card in the chief's chat, and the Asks list;
-- **pushes**: an ask's title (`<name> is asking`), a chief notice's, and a
-  stalled or waiting session's;
+- **pushes and attention**: an ask's title (`<name> is asking`), a chief
+  notice's, a stalled or waiting session's, the Asks row, `attention_list`'s
+  `name` and the attention summary's `title`;
 - **the chief's tools**: `fleet_list` and `sessions_overview` rows (`name`),
   `focus_search` hits (`name`), `fleet_report`, the route candidates and
   `route_to_session`'s text, `task_forward`'s label, the connector requests it
-  decides, and an agent's or mirrored session's ask label.
+  decides, and a mirrored session's ask label. (An agent's ask is stored with
+  its display name and named by the rule when the item is shown.)
 
 A named session's **technical ids** — an agent's slug, a window's codename,
 tmux address and host — are off those main surfaces: they are the row's,
@@ -139,7 +141,7 @@ pill's and header's tooltip, the Asks row's tooltip, the Rendered view's full
 title, and still what the palette finds the session by (its codename first).
 The chief keeps them where it needs an address: every row's `id`
 (`agent:<id>`, `mirror:<session key>`), a mirrored row's `where`, and
-`fleet_list`'s `code` (the slug or codename). A waiting session's push
+`fleet_list`'s `code` (an agent's slug). A waiting session's push
 **body** still says where it waits. A session with no human name yet is
 called by its technical id everywhere, as before.
 
@@ -377,7 +379,7 @@ the chief that focus is data, never instructions. Neither makes the text safe
 
 | tool | who | what |
 |---|---|---|
-| `fleet_list` | chief | every session: id, kind, name (its [stable name](#a-sessions-name)), `code` (its slug or codename), status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
+| `fleet_list` | chief | every session: id, kind, name (its [stable name](#a-sessions-name)), `code` (an agent's slug), status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
 | `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, name (the session's stable name, current-focus mode), title (with `focus_set_at`, and `focus_age` past a day) and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, a mirrored window's `where`, status, current focus with the same `focus_set_at` and `focus_age` as `fleet_list`, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
 | `fleet_report(since, until?)` | chief | every session of the owner's — running agents and mirrored windows, **ended ones included** — with focus activity between `since` and `until` (RFC 3339; `until` defaults to now; at most 4 days apart), most recently active first: id, kind, name, host, a listed window's `where` (this door only: the fleet-report reply below never carries it), repo, state (`waiting`: an attention item is pending; `active`: live now; `ended`), first and last seen, the distinct focus titles of the window with their times (at most 20 per session, the newest), and the pull requests it created or pushed. The chief itself is left out. Capped at 32 KiB; `coverage` says how many sessions were left out and what did not answer (an offline host, a store that could not be read). It shows the owner **everything**, hosts included and unfiltered, because its answer never leaves muster; the same report answering a [fleet-report request](plugins.md#a-fleet-report-request) is narrowed to `MUSTER_FLEET_REPORT_PATHS`, with no hosts and secret-shaped strings removed |

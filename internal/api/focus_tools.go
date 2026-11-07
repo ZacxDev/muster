@@ -58,9 +58,9 @@ type fleetListRow struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Name string `json:"name"`
-	// Code is the session's technical name — an agent's slug, a window's
-	// codename or tmux address — which Name (internal/sessionname) no longer
-	// spells: what the owner may still type it as. The ID addresses it.
+	// Code is a dispatched agent's slug, which Name (internal/sessionname) no
+	// longer spells: what the owner may still type it as. A mirrored window's
+	// codename and tmux address are in Where. The ID addresses either.
 	Code string `json:"code,omitempty"`
 	// Host is a mirrored session's host ("" for a dispatched agent).
 	Host string `json:"host,omitempty"`
@@ -107,7 +107,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		if status == "" {
 			status = "unknown"
 		}
-		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Code: e.DisplayTitle(), Host: e.Host,
+		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Host: e.Host,
 			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
