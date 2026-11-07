@@ -53,6 +53,13 @@ func TestTheGuardRefusesEveryNonPublicRange(t *testing.T) {
 		{"this-network 0/8", "0.1.2.3"},
 		{"NAT64 of a private address", "64:ff9b::a00:1"},
 		{"6to4 of a private address", "2002:a00:1::1"},
+		{"IPv4-compatible ::/96, loopback", "::127.0.0.1"},
+		{"IPv4-compatible ::/96, private", "::" + v4(10, 0, 0, 1)},
+		{"IPv4-compatible ::/96, top", "::ffff:fffe"},
+		{"SIIT ::ffff:0:0:0/96, loopback", "::ffff:0:127.0.0.1"},
+		{"SIIT ::ffff:0:0:0/96, private", "::ffff:0:" + v4(10, 0, 0, 1)},
+		{"Teredo 2001::/32", "2001:0:4136:e378:8000:63bf:3fff:fdd2"},
+		{"Teredo 2001::/32, start", "2001::1"},
 	} {
 		t.Run(tc.rng, func(t *testing.T) {
 			ip := netip.MustParseAddr(tc.addr)
@@ -69,7 +76,8 @@ func TestTheGuardRefusesEveryNonPublicRange(t *testing.T) {
 // TestTheGuardAdmitsPublicAddresses is the other direction: a guard that
 // refused everything would pass the table above.
 func TestTheGuardAdmitsPublicAddresses(t *testing.T) {
-	for _, a := range []string{"140.82.112.3", "8.8.8.8", "100.128.0.1", "172.32.0.1", "11.0.0.1", "2606:4700::1111", "::ffff:8.8.8.8"} {
+	for _, a := range []string{"140.82.112.3", "8.8.8.8", "100.128.0.1", "172.32.0.1", "11.0.0.1", "2606:4700::1111", "::ffff:8.8.8.8",
+		"2001:4860:4860::8888"} {
 		ip := netip.MustParseAddr(a)
 		if !(Guard{}).Allowed(ip) {
 			t.Errorf("the strict guard refuses public %s", a)
@@ -77,6 +85,26 @@ func TestTheGuardAdmitsPublicAddresses(t *testing.T) {
 		if err := (Guard{}).Control("tcp", netip.AddrPortFrom(ip, 443).String(), nil); err != nil {
 			t.Errorf("the socket check refuses public %s: %v", a, err)
 		}
+	}
+}
+
+// TestControlRefusesAPrivateSocketDestinationAndAdmitsAPublicOne: the
+// Dialer's Control hook on its own. On DialContext's path it cannot refuse
+// (every address it dials already passed Allowed), so it is tested here
+// directly.
+func TestControlRefusesAPrivateSocketDestinationAndAdmitsAPublicOne(t *testing.T) {
+	for _, addr := range []string{v4(10, 0, 0, 1) + ":5432", "127.0.0.1:5432", "[fd00::1]:5432", "169.254.169.254:80"} {
+		if err := (Guard{}).Control("tcp", addr, nil); !errors.Is(err, ErrForbiddenAddress) {
+			t.Errorf("Control(%s) = %v, want ErrForbiddenAddress", addr, err)
+		}
+	}
+	for _, addr := range []string{"140.82.112.3:5432", "[2606:4700::1111]:443"} {
+		if err := (Guard{}).Control("tcp", addr, nil); err != nil {
+			t.Errorf("Control(%s) = %v, want nil", addr, err)
+		}
+	}
+	if err := (Guard{}).Control("tcp", "not-an-address", nil); !errors.Is(err, ErrForbiddenAddress) {
+		t.Errorf("Control on an unparseable address = %v, want ErrForbiddenAddress", err)
 	}
 }
 

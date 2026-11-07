@@ -342,10 +342,11 @@ const (
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
 	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
 	// The opt-in dial guard (internal/safedial): with it on, the postgres
-	// connector and Web Push sends refuse a destination that is, or resolves to,
-	// a loopback, private, link-local, CGNAT, unspecified or multicast address,
-	// checked at connect time. Off by default: a self-hoster's own LAN database
-	// stays reachable. The HTTP connector proxy refuses those ranges always.
+	// connector refuses a database that is, or resolves to, a loopback,
+	// private, link-local, CGNAT, unspecified or multicast address, checked at
+	// connect time. Off by default: a self-hoster's own LAN database stays
+	// reachable. The HTTP connector proxy refuses those ranges always. Web
+	// Push sends are not covered (internal/push.Allowlist).
 	envDialDenyPrivate = "MUSTER_DIAL_DENY_PRIVATE"
 	// The Android app's PIN-key policy (docs/design/android.md, "The step-up
 	// key"): set, a phone with no strong biometric may pair with a
@@ -765,9 +766,8 @@ type config struct {
 	SessionState           bool
 	ChiefNudgeAskThreshold float64
 
-	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): every
-	// dial to an admin- or user-configured address goes through safedial
-	// (dialGuard).
+	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
+	// postgres connector dials its database through safedial (dialGuard).
 	DialDenyPrivate bool
 
 	// AskLog is the ask log's configuration (asklog_config.go).
@@ -2143,8 +2143,8 @@ func (c config) pushAllowlist() push.Allowlist {
 
 // dialGuard is the ONE answer to "are configured-address dials guarded": the
 // strict safedial.Guard with MUSTER_DIAL_DENY_PRIVATE=1, nil (no guard) without
-// it. The postgres connector (api.Extensions.DialGuard), Web Push
-// (buildPushService) and the boot banner all read it.
+// it. The postgres connector (api.Extensions.DialGuard) and the boot banner
+// read it.
 func (c config) dialGuard() *safedial.Guard {
 	if !c.DialDenyPrivate {
 		return nil

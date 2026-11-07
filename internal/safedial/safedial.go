@@ -3,9 +3,8 @@
 // that applies it at connect time ([Guard.DialContext]).
 //
 // One rule, one place. The HTTP connector proxy (internal/connectors, always
-// on), the postgres connector and Web Push sends (both only with
-// MUSTER_DIAL_DENY_PRIVATE=1) all dial through a Guard, so a range added here
-// is refused by every one of them.
+// on) and the postgres connector (only with MUSTER_DIAL_DENY_PRIVATE=1) both
+// dial through a Guard, so a range added here is refused by both.
 //
 // 🔴 THE CHECK IS ON THE RESOLVED ADDRESS, NEVER ON THE NAME. DialContext
 // resolves the host itself, refuses the dial if ANY answer is non-public, and
@@ -22,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/netip"
 	"syscall"
 	"time"
@@ -46,10 +44,16 @@ var nonPublic = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),  // documentation
 	netip.MustParsePrefix("fec0::/10"),      // deprecated site-local
 	netip.MustParsePrefix("::ffff:0:0/96"),  // IPv4-mapped (unmapped before the check; belt and braces)
+	// IPv4-compatible (deprecated): embeds an IPv4 address. It also contains
+	// :: and ::1, which the unspecified and loopback checks above decide
+	// first, so AllowLoopback still admits ::1.
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:0:0:0/96"), // SIIT IPv4-translated: embeds an IPv4 address
+	netip.MustParsePrefix("2001::/32"),       // Teredo: embeds an IPv4 server and (obfuscated) client
 }
 
-// DefaultDialTimeout bounds one connection attempt when Guard.Timeout is 0.
-const DefaultDialTimeout = 15 * time.Second
+// DialTimeout bounds one connection attempt.
+const DialTimeout = 15 * time.Second
 
 // Guard is a dialer that connects only to public addresses.
 //
@@ -62,8 +66,6 @@ type Guard struct {
 	AllowLoopback bool
 	// Resolve replaces the system resolver. nil means net.DefaultResolver.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
-	// Timeout bounds one connection attempt; 0 is DefaultDialTimeout.
-	Timeout time.Duration
 }
 
 // Allowed reports whether g permits connecting to ip. An IPv4-mapped IPv6
@@ -121,11 +123,9 @@ func (g Guard) DialContext(ctx context.Context, network, addr string) (net.Conn,
 			return nil, fmt.Errorf("%w (%s resolves to one)", ErrForbiddenAddress, host)
 		}
 	}
-	timeout := g.Timeout
-	if timeout <= 0 {
-		timeout = DefaultDialTimeout
-	}
-	d := &net.Dialer{Timeout: timeout, Control: g.Control}
+	// Control is a second check: every address dialled below already passed
+	// Allowed, so by construction it cannot refuse on this path.
+	d := &net.Dialer{Timeout: DialTimeout, Control: g.Control}
 	var lastErr error
 	for _, ip := range ips {
 		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -145,21 +145,4 @@ func (g Guard) Control(_, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("%w (socket destination)", ErrForbiddenAddress)
 	}
 	return nil
-}
-
-// Transport is an http.Transport whose every connection is dialled through g.
-//
-// 🔴 Proxy IS nil, DELIBERATELY: with an HTTP(S)_PROXY in the environment the
-// guard would be checking the PROXY's address rather than the destination's,
-// and a request to a private destination would be handed to the proxy to make.
-func (g Guard) Transport() *http.Transport {
-	return &http.Transport{
-		Proxy:                 nil,
-		DialContext:           g.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          32,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ExpectContinueTimeout: time.Second,
-	}
 }

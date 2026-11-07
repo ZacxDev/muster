@@ -102,20 +102,20 @@ func TestPolicyRefusesEveryNonPublicRange(t *testing.T) {
 		netip.AddrFrom16(v4(10, 0, 0, 1).As16()), // IPv4-mapped private
 		netip.MustParseAddr("2002:a00:1::1"),
 	}
-	var strict Policy
+	strict := Policy{}.guard()
 	for _, ip := range refused {
-		if strict.AllowedAddr(ip) {
+		if strict.Allowed(ip) {
 			t.Errorf("the strict policy allows %s", ip)
 		}
 	}
 	allowed := []netip.Addr{v4(140, 82, 112, 3), v4(8, 8, 8, 8), netip.MustParseAddr("2606:4700::1111")}
 	for _, ip := range allowed {
-		if !strict.AllowedAddr(ip) {
+		if !strict.Allowed(ip) {
 			t.Errorf("the strict policy refuses public %s", ip)
 		}
 	}
-	loop := Policy{AllowLoopback: true}
-	if !loop.AllowedAddr(v4(127, 0, 0, 1)) || loop.AllowedAddr(v4(10, 0, 0, 1)) || loop.AllowedAddr(v4(169, 254, 169, 254)) {
+	loop := Policy{AllowLoopback: true}.guard()
+	if !loop.Allowed(v4(127, 0, 0, 1)) || loop.Allowed(v4(10, 0, 0, 1)) || loop.Allowed(v4(169, 254, 169, 254)) {
 		t.Error("AllowLoopback must admit loopback and nothing else non-public")
 	}
 }
@@ -270,13 +270,13 @@ func TestTheDialRefusesBeforeConnectingAndAtTheSocket(t *testing.T) {
 	if !errors.Is(err, ErrForbiddenAddress) || !strings.Contains(err.Error(), "resolves to one") {
 		t.Fatalf("resolution guard: err = %v", err)
 	}
-	if err := p.checkSocketAddr("127.0.0.1:443"); !errors.Is(err, ErrForbiddenAddress) {
+	if err := p.guard().Control("tcp", "127.0.0.1:443", nil); !errors.Is(err, ErrForbiddenAddress) {
 		t.Fatalf("socket guard admitted loopback: %v", err)
 	}
-	if err := p.checkSocketAddr("[fd00::1]:443"); !errors.Is(err, ErrForbiddenAddress) {
+	if err := p.guard().Control("tcp", "[fd00::1]:443", nil); !errors.Is(err, ErrForbiddenAddress) {
 		t.Fatalf("socket guard admitted a ULA: %v", err)
 	}
-	if err := p.checkSocketAddr("140.82.112.3:443"); err != nil {
+	if err := p.guard().Control("tcp", "140.82.112.3:443", nil); err != nil {
 		t.Fatalf("socket guard refused a public address: %v", err)
 	}
 }

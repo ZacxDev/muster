@@ -99,9 +99,11 @@ The query fails with a `connect` error that says it refused a non-public
 address.
 
 It is **off by default**, so a self-hosted install whose database is on the same
-machine or network keeps working. The same setting covers [Web Push](push.md)
-sends. The HTTP connector proxy at `/connect/` refuses these addresses whether
-or not it is set. The boot log has a `dial guard: ON` or `dial guard: OFF` line.
+machine or network keeps working. It covers postgres connectors only:
+[Web Push](push.md#which-push-services) sends go to the push hosts the operator
+configures and are not checked. The HTTP connector proxy at `/connect/` refuses
+these addresses whether or not it is set. The boot log has a `dial guard: ON` or
+`dial guard: OFF` line.
 
 ### The tool: `postgres_query`
 

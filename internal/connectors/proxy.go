@@ -54,11 +54,8 @@ var ErrForbiddenAddress = safedial.ErrForbiddenAddress
 // non-public, and checking the RESOLVED address at connect time — lives in
 // internal/safedial, shared with every other guarded dial site.
 func (p Policy) guard() safedial.Guard {
-	return safedial.Guard{AllowLoopback: p.AllowLoopback, Resolve: p.Resolve, Timeout: 15 * time.Second}
+	return safedial.Guard{AllowLoopback: p.AllowLoopback, Resolve: p.Resolve}
 }
-
-// AllowedAddr reports whether the policy permits connecting to ip.
-func (p Policy) AllowedAddr(ip netip.Addr) bool { return p.guard().Allowed(ip) }
 
 // dialContext is safedial.Guard.DialContext under this policy: resolve, refuse
 // if ANY answer is non-public, dial a checked ADDRESS (which is what defeats DNS
@@ -66,12 +63,6 @@ func (p Policy) AllowedAddr(ip netip.Addr) bool { return p.guard().Allowed(ip) }
 // hook.
 func (p Policy) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	return p.guard().DialContext(ctx, network, addr)
-}
-
-// checkSocketAddr is the dialer's last-moment check on the address a socket is
-// about to connect to ("ip:port").
-func (p Policy) checkSocketAddr(address string) error {
-	return p.guard().Control("tcp", address, nil)
 }
 
 // Transport builds the upstream transport for this policy.

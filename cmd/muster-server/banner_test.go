@@ -435,9 +435,9 @@ var bannerLedger = []string{
 	// 30 s and, where the chief's nudges classify, the same classifier runs on
 	// it — so the log must say which state this is.
 	envSessionState,
-	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors and push sends refuse
-	// non-public destinations; OFF, they reach whatever address they name — so
-	// the log must say which.
+	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
+	// databases; OFF, they reach whatever address they name — so the log must
+	// say which.
 	envDialDenyPrivate,
 	// THE ASK LOG IS LEDGERED: ON, every question an agent asks is recorded
 	// with its answer — transcript text, kept for the text TTL — so the log

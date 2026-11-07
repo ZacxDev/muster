@@ -97,12 +97,9 @@ with a 3xx counts as a failed send, and the device's failure count goes up. This
 applies to every push service. Without it, a listed host could redirect a send to
 a host that is not on the list.
 
-By default muster does not check which address a listed host resolves to, so an
-in-cluster ntfy that resolves to a private address works. With
-[`MUSTER_DIAL_DENY_PRIVATE=1`](connectors.md#refusing-private-addresses), a send
-to a host that resolves to a loopback, private, link-local, CGNAT, unspecified or
-multicast address is refused when the connection is made, and counts as a failed
-send.
+muster does not check which address a listed host resolves to. An in-cluster
+ntfy that resolves to a private address works. `MUSTER_DIAL_DENY_PRIVATE` does
+not apply to push sends.
 
 ⚠ If your ntfy host is behind a CDN, its bot filter may refuse requests with an
 unusual `User-Agent`. muster sends Go's default one (`Go-http-client/1.1`).

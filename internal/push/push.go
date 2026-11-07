@@ -37,8 +37,6 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-
-	"github.com/ZacxDev/muster/internal/safedial"
 )
 
 // VAPIDConfig is the application-server identity. PublicKey is handed to
@@ -201,17 +199,6 @@ type WebpushPusher struct {
 // never follows a redirect (pushHTTPClient).
 func NewWebpushPusher(vapid VAPIDConfig) *WebpushPusher {
 	return &WebpushPusher{vapid: vapid, client: pushHTTPClient(nil), ttl: 3600}
-}
-
-// WithDialGuard makes every send dial through g (MUSTER_DIAL_DENY_PRIVATE=1):
-// an endpoint whose host is, or resolves to, a loopback, private, link-local,
-// CGNAT, unspecified or multicast address is refused at connect time, and the
-// send fails. nil leaves the default transport. It returns p.
-func (p *WebpushPusher) WithDialGuard(g *safedial.Guard) *WebpushPusher {
-	if g != nil {
-		p.client = pushHTTPClient(g.Transport())
-	}
-	return p
 }
 
 // pushHTTPClient is the client every push send uses. rt nil is the default
