@@ -109,10 +109,6 @@ type Server struct {
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
 
-	// approveLocks is each owner's dispatch_approve lock (dispatch_hold_tools.go
-	// approveLock): owner id → *sync.Mutex.
-	approveLocks sync.Map
-
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 

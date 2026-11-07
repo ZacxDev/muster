@@ -32,9 +32,9 @@ import (
 //
 // 🔴 SINGLE USE IS DECIDED UNDER THE OWNER'S RESERVATION LOCK. The approving
 // caller reads the hold (DispatchHold) inside ReserveChiefDispatch's check,
-// which runs after pg_advisory_xact_lock on the owner and before the
-// reservation row is inserted in the same transaction. Every reservation of the
-// owner's takes that lock, so a second approval of the same hold waits for the
+// which runs holding the owner's transaction advisory lock (inChiefDispatchLock)
+// and before the reservation row is inserted in the same transaction. Every
+// reservation of the owner's takes that lock, so a second approval of the same hold waits for the
 // first to commit and then reads the reservation that names it.
 //
 // ⚠ A RESERVATION WHOSE CREATE WAS THEN REFUSED STILL CONSUMES ITS HOLD

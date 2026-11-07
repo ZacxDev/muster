@@ -92,6 +92,9 @@ const (
 
 	agentDispatchKeyShape  = "request_key must be 1-64 of [A-Za-z0-9._:-]"
 	agentDispatchKeyReused = "request_key %q was used in the last 24 hours for a different dispatch: use a new key for a new request"
+	// agentDispatchBusy: the reservation only waited too long (reservationBusy);
+	// nothing was reserved or spent, so a retry (same request_key) is clean.
+	agentDispatchBusy = "the start could not be reserved now: another start of your owner's held the reservation too long. Nothing was started or spent: call agent_dispatch again"
 
 	agentDispatchNoTaskOwnerAsked = "a dispatch with no task needs owner_asked: true, in your answer to a message your owner typed " +
 		"in your chat; otherwise file it with task_create_gated and use task_route_attention"
@@ -789,6 +792,8 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		return dispatchRefusal(chiefDispatchLiveCap, res.Budget)
 	case errors.Is(err, plugins.ErrChiefDailyCap):
 		return dispatchRefusal(chiefDispatchDailyCap, res.Budget)
+	case reservationBusy(err):
+		return refuse(agentDispatchBusy)
 	default:
 		s.logger.Printf("task routing: reserve a start (%s): %v", object, err)
 		return refuse("the start could not be reserved")

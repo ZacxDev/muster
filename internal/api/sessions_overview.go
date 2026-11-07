@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/prroute"
 	"github.com/ZacxDev/muster/internal/redact"
 )
 
@@ -171,13 +173,15 @@ func liveOf(sessions []liveSession) focus.Live {
 	return l
 }
 
-// pluginSessionHints is plugins.HintFunc: the live sessions (not the chief)
-// whose focus history over the last focus.HistoryWindow shares at least
-// hintMinTerms words with message m's subject and body, best first, then the
-// online mirrored windows whose repo name does (repoHints, no activity cutoff),
-// up to plugins.MaxHintSessions in all (mergeHints) — and, for a pull-request
-// review muster could not route, the session that authored it (prAuthorHint).
-// Any failure is no hint — logged, never a failed delivery.
+// pluginSessionHints is plugins.HintFunc: the online mirrored windows that
+// muster recorded creating or pushing a pull request or branch message m's
+// subject and body name (prHints, no activity cutoff), then the live sessions
+// (not the chief) whose focus history over the last focus.HistoryWindow shares
+// at least hintMinTerms words with it, best first, then the online mirrored
+// windows whose repo name does (repoHints, no activity cutoff), up to
+// plugins.MaxHintSessions in all (mergeHints) — and, for a pull-request review
+// muster could not route, the session that authored it (prAuthorHint). Any
+// failure is no hint — logged, never a failed delivery.
 //
 // A TASK EVENT is matched on the TASK's words instead (taskEventHintText: its
 // title and body as stored, and the event's change line), never on the event's
@@ -192,7 +196,9 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 	} else {
 		h.Author = s.prAuthorHint(ctx, m)
 	}
+	byPR := s.prHints(ctx, text)
 	if s.ext.Focus == nil {
+		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR)
 		return h
 	}
 	live := s.liveSessions(ctx, chief.ID)
@@ -229,34 +235,137 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 			byFocus = append(byFocus, sh)
 		}
 	}
-	h.Sessions = mergeHints(byFocus, s.repoHints(ctx, text), plugins.MaxHintSessions)
+	h.Sessions = mergeHints(plugins.MaxHintSessions, byPR, byFocus, s.repoHints(ctx, text))
 	return h
 }
 
-// mergeHints is the focus matches, then the repo matches not among them, at
-// most limit in all — focus_search's order (focusSearchAnswer). A session in
-// both is listed once, at its focus match's place, with its repo line.
-func mergeHints(byFocus, byRepo []plugins.SessionHint, limit int) []plugins.SessionHint {
-	repo := map[string]plugins.SessionHint{}
-	for _, x := range byRepo {
-		repo[x.ID] = x
-	}
-	out := make([]plugins.SessionHint, 0, len(byFocus)+len(byRepo))
-	listed := map[string]bool{}
-	for _, x := range byFocus {
-		if r, ok := repo[x.ID]; ok {
-			x.ByRepo, x.Repo, x.LastActive = true, r.Repo, r.LastActive
-		}
-		out = append(out, x)
-		listed[x.ID] = true
-	}
-	for _, x := range byRepo {
-		if !listed[x.ID] {
-			out = append(out, x)
+// mergeHints is the lists' sessions in order — each list in its own order, a
+// session an earlier list already has kept at that first place — at most
+// limit in all. The hint passes its pull-request matches, then its focus
+// matches, then its repo matches: focus_search's order (focusSearchAnswer). A
+// session in several is listed once, with every line it was listed by: its
+// focus titles, its pull requests, its repo.
+//
+// 🔴 PULL-REQUEST MATCHES FIRST. One is exact — the message spells the very
+// pull request or branch muster recorded that session creating or pushing —
+// where a focus match needs only two shared terms. With focus first, three
+// loose focus matches would fill MaxHintSessions and push out the one session
+// the message names.
+func mergeHints(limit int, lists ...[]plugins.SessionHint) []plugins.SessionHint {
+	var out []plugins.SessionHint
+	at := map[string]int{}
+	for _, list := range lists {
+		for _, x := range list {
+			i, ok := at[x.ID]
+			if !ok {
+				at[x.ID] = len(out)
+				out = append(out, x)
+				continue
+			}
+			y := &out[i]
+			if len(y.Titles) == 0 {
+				y.Titles = x.Titles
+			}
+			if len(y.PRs) == 0 && len(x.PRs) > 0 {
+				y.PRs, y.LastActive = x.PRs, x.LastActive
+			}
+			if !y.ByRepo && x.ByRepo {
+				y.ByRepo, y.Repo, y.LastActive = true, x.Repo, x.LastActive
+			}
 		}
 	}
 	if len(out) > limit {
 		out = out[:limit]
+	}
+	return out
+}
+
+// prHints is the hint's pull-request matches for text: the online mirrored
+// Claude Code windows of ctx's principal — every one, idle or not, as
+// repoHints — that muster recorded creating or pushing (session_prs,
+// PRSessionStore.SessionRefs) a pull request text names ("<repo>#N",
+// "<owner>/<repo>#N" or its github.com URL, prroute.Mentions; never a bare
+// "#N") or a distinctive branch text spells (prroute.NamesBranch), at most
+// plugins.MaxHintSessions (matchPRHints). nil without pull-request routing's
+// store.
+//
+// 🔴 ONLY THE OWNER'S OWN ONLINE SESSIONS. The windows are the principal's
+// (mirrorClaudeEntries, owner-scoped by mirror.Service) and online now, and
+// the rows are read as the principal (session_prs is under FORCE row-level
+// security), so another owner's record of the same pull request names
+// nothing, and a session no online window shows is never listed.
+//
+// ⚠ A MERGED OR CLOSED PULL REQUEST STILL COUNTS. Its state is knowable only
+// through the GitHub App (ClosedPRs), which is optional and rate-limited, and
+// a message naming a merged pull request — a follow-up on what it shipped — is
+// as much that session's as one naming an open one. Rows unseen for
+// PRSessionRetention are never read.
+func (s *Server) prHints(ctx context.Context, text string) []plugins.SessionHint {
+	if s.ext.PRSessions == nil {
+		return nil
+	}
+	mentions, branches := prroute.Mentions(text), prroute.BranchCandidates(text)
+	if len(mentions) == 0 && len(branches) == 0 {
+		return nil // nothing the text could name: no query
+	}
+	entries := map[string]mirror.SessionView{}
+	var keys []string
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		if _, seen := entries[e.ClaudeSession]; seen {
+			continue
+		}
+		entries[e.ClaudeSession] = e
+		keys = append(keys, e.ClaudeSession)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	// The store narrows to the rows these can name BEFORE its bound
+	// (SessionRefs), so busy sessions' newer rows cannot push an idle
+	// author's out.
+	rows, err := s.ext.PRSessions.SessionRefs(ctx, keys, mentions, branches)
+	if err != nil {
+		s.logger.Printf("plugins: session hint by pull request: %v", err)
+		return nil
+	}
+	return matchPRHints(mentions, branches, rows, entries, plugins.MaxHintSessions)
+}
+
+// matchPRHints is prHints' matching over rows (most recently seen first) for
+// the sessions entries holds: each session with a row that one of mentions
+// names (a create, by its number) or whose branch is one of branches (a push
+// or a create naming its head), in the order of its first such row, with what
+// it was listed by (at most plugins.MaxHintPRs), at most limit sessions.
+func matchPRHints(mentions []prroute.Mention, branches []string, rows []plugins.PRSession, entries map[string]mirror.SessionView, limit int) []plugins.SessionHint {
+	var out []plugins.SessionHint
+	at := map[string]int{}
+	for _, r := range rows {
+		e, ok := entries[r.ClaudeSession]
+		if !ok {
+			continue // no window of the principal's shows it online now
+		}
+		var named string
+		switch {
+		case r.PR > 0 && prroute.NamesAny(mentions, r.Repo, r.PR):
+			named = r.Repo + "#" + strconv.FormatInt(r.PR, 10)
+		case r.HeadRef != "" && slices.Contains(branches, r.HeadRef):
+			named = r.Repo + " branch " + r.HeadRef
+		default:
+			continue
+		}
+		i, listed := at[r.ClaudeSession]
+		if !listed {
+			if len(out) == limit {
+				continue
+			}
+			i = len(out)
+			at[r.ClaudeSession] = i
+			out = append(out, plugins.SessionHint{ID: focus.MirrorSubject(r.ClaudeSession).String(), Name: e.DisplayTitle(),
+				Host: e.Host, Where: e.Where(), LastActive: e.ActiveAt()})
+		}
+		if !slices.Contains(out[i].PRs, named) && len(out[i].PRs) < plugins.MaxHintPRs {
+			out[i].PRs = append(out[i].PRs, named)
+		}
 	}
 	return out
 }

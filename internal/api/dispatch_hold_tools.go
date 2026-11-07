@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -577,21 +576,13 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if dispatchApproveBeforeReserve != nil {
 		dispatchApproveBeforeReserve()
 	}
-	// 🔴 ONE APPROVAL OF AN OWNER'S AT A TIME REACHES THE RESERVATION, in this
-	// process. The reservation's transaction holds a pool connection while it
-	// waits on the owner's advisory lock, and the holder's check reads through
-	// OTHER connections (the hold, the task). With approvals of one owner piled
-	// up past the pool's size, every connection was a transaction waiting on
-	// the lock while the holder waited for a connection: nothing moved until
-	// statement_timeout (10 s) cancelled the waiters, which then answered a raw
-	// "could not be reserved" (measured: 8 concurrent approvals on 2 CPUs, a
-	// 4-connection pool, 20 s, 6 such answers). Serialised here, the holder's
-	// reads always find a connection, and the next approval reads the hold
-	// the first one consumed.
-	mu := s.approveLock(owner)
-	mu.Lock()
+	// Concurrent approvals of one owner's serialise on the owner's reservation
+	// lock, which a waiter waits for WITHOUT holding a pool connection
+	// (plugins' inChiefDispatchLock): the holder's check reads the hold and the
+	// task through other connections, and a blocking wait once let waiters fill
+	// the pool and starve it (#501's 57014s). One mechanism for every door —
+	// agent_dispatch's included — and across replicas, not one process.
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, object, detail, check)
-	mu.Unlock()
 	var refusal errTaskDispatch
 	switch {
 	case err == nil:
@@ -708,16 +699,14 @@ func (s *Server) taskModelResolution(ctx context.Context, kind, given, taskModel
 	return s.resolveAgentModel(ctx, taskModel), true
 }
 
-// approveLock is owner's dispatch_approve lock (see toolDispatchApprove).
-func (s *Server) approveLock(owner int64) *sync.Mutex {
-	m, _ := s.approveLocks.LoadOrStore(owner, &sync.Mutex{})
-	return m.(*sync.Mutex)
-}
-
 // reservationBusy reports whether a reservation failed only for waiting: the
-// database cancelled a statement past its timeout (SQLSTATE 57014), or a lock
-// wait or the request's own deadline ran out. Nothing was written.
+// owner's reservation lock stayed held past its wait (plugins.ErrChiefDispatchBusy),
+// the database cancelled a statement past its timeout (SQLSTATE 57014), or a
+// lock wait or the request's own deadline ran out. Nothing was written.
 func reservationBusy(err error) bool {
+	if errors.Is(err, plugins.ErrChiefDispatchBusy) {
+		return true
+	}
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && (pg.Code == "57014" || pg.Code == "55P03") {
 		return true
