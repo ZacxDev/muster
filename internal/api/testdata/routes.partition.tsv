@@ -83,10 +83,13 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=70 router=63 shared=14 total=147
+# counts: muster=71 router=63 shared=14 total=148
 #
-#   muster + router + shared = 70 + 63 + 14 = 147
-#   muster's projected post-carve registration count = 70 + 14 = 84
+#   muster + router + shared = 71 + 63 + 14 = 148
+#   muster's projected post-carve registration count = 71 + 14 = 85
+#
+#   ⚠ 70 / 147 / 84 UNTIL THE CHIEF'S DISPATCHED-AGENT CARD. GET
+#   /ui/dispatch-card (chat_log_live.go) is a muster row.
 #
 #   ⚠ 70 / 147 / 84 UNTIL THE CARDS LOST THEIR PREVIEW. GET
 #   /ui/agents/{id}/recent served only the cards' lazy recent-log slot and was
@@ -230,6 +233,7 @@ router	attention.go:registerAttentionRoutes	GET /ui/attention
 router	server.go:registerRoutes	GET /ui/auto-approve-banner
 muster	server.go:registerRoutes	GET /ui/chief/panel
 muster	server.go:registerRoutes	GET /ui/chief/threads/search
+muster	agents.go:registerAgentRoutes	GET /ui/dispatch-card
 router	layout_ui.go:registerLayoutUIRoutes	GET /ui/layout
 muster	agents.go:registerAgentRoutes	GET /ui/notifications
 muster	github.go:registerGitHubRoutes	GET /ui/repos

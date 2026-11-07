@@ -9,15 +9,17 @@ import (
 )
 
 // TestTheComposeChiefsAllowedToolsArePinned is the ledger of the tools the
-// Compose chief runs without a prompt (operator decision: exactly these eight,
-// reading the fleet and the board and routing to a session). It fails if the
+// Compose chief runs without a prompt (operator decision: exactly these nine,
+// reading the fleet and the board, routing to a session, and ask_owner — which
+// only draws a question card in the chief's chat, so the chief's own way of
+// asking its owner is never itself a prompt the container denies). It fails if the
 // set GROWS or SHRINKS: a change is a change to the chief's permission posture
 // and needs the same decision. The spec carries exactly that set and no HQ
 // server (no blanket HQ approval on Compose); a pod spec carries no such list;
 // and a session asking for its own list, or for the HQ server, is refused, so
 // the ledger is the one source.
 func TestTheComposeChiefsAllowedToolsArePinned(t *testing.T) {
-	want := []string{"attention_list", "fleet_list", "fleet_report", "focus_search",
+	want := []string{"ask_owner", "attention_list", "fleet_list", "fleet_report", "focus_search",
 		"route_to_session", "sessions_overview", "task_get", "tasks_list"}
 	if got := slices.Sorted(slices.Values(ComposeChiefAllowedMCPTools)); !slices.Equal(got, want) {
 		t.Fatalf("the Compose chief's pre-allowed tools are %v, want exactly %v", got, want)

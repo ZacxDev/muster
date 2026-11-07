@@ -258,6 +258,9 @@ type Server struct {
 	// turns counts chat turns per agent and lets the chief replacement close
 	// one (turn_gate.go).
 	turns turnGate
+	// sessionTurns counts the turns running per chat session, which is what
+	// draws a reloaded page's "working…" (session_turns.go).
+	sessionTurns sessionTurnCount
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.

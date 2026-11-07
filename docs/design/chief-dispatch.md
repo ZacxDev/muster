@@ -114,6 +114,25 @@ These are binding, and this page does not reopen them.
    plus a runtime of `claude` or `opencode`. The tool refuses a call without a
    target, so the chief has to ask. The refusal is structural, not a prompt
    instruction.
+
+   **Amended by a later owner decision.** The chief resolves the target from
+   what the owner said, and the tool still never invents one:
+   - "with Claude", or any Claude model → `pod/claude-code` (no model);
+   - any other model the owner names → `pod/gateway`, with that model as its
+     OpenRouter id (`openrouter/<provider>/<model>`);
+   - no model named → the chief **asks** with an `ask_owner` question card:
+     Claude, or an OpenRouter model (a few sensible ones, plus the card's own
+     "Other" box). It never picks one;
+   - "mirrored" → `mirrored`, which is **refused** until mirrored dispatch
+     ships, with a sentence saying so. It never falls back to the cluster;
+   - not mirrored → the cluster.
+
+   The no-target refusal says to ask with `ask_owner`, and lists each target as
+   a choice in the owner's words — "Claude Code (your Claude account)",
+   "Gateway (OpenRouter model: <model>)" — not as a raw `pod/` name alone. The
+   mapping is stated in the tool's description and in the chief's standing
+   instructions (both runtimes); the description still names no target string,
+   for the same reason it carries no cap number.
 2. **tmux spawn.** The agent opens as a new window in a dedicated `agents` tmux
    session on that host's default tmux server. It runs in a fresh git worktree
    of the named repository, never in a checkout the owner has open. The
@@ -649,10 +668,14 @@ budget:
 
 ```json
 {
-  "error": "target is required and has no default: ask your owner where to run this, offering the targets below. Never choose one they did not name.",
+  "error": "target is required and has no default, and your owner named no model: ask them with ask_owner which to use — Claude, or an OpenRouter model (offer two or three sensible ones) — using the labels in choices below, then call again with the target and model their answer names. Never choose one they did not name.",
   "targets": {
-    "pods": ["pod/claude-code"],
-    "hosts": [{"host": "<host>", "targets": ["host/<host>/claude", "host/<host>/opencode"]}]
+    "pods": ["pod/claude-code", "pod/gateway"],
+    "hosts": [{"host": "<host>", "targets": ["host/<host>/claude", "host/<host>/opencode"]}],
+    "choices": [
+      {"target": "pod/claude-code", "label": "Claude Code (your Claude account)", "when": "your owner said Claude, or named a Claude model; pass no model"},
+      {"target": "pod/gateway", "label": "Gateway (OpenRouter model: <model>)", "when": "your owner named any other model; pass it as model, as its OpenRouter id: openrouter/<provider>/<model>"}
+    ]
   },
   "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}
 }
@@ -2449,7 +2472,11 @@ still works: every phase ships on its own.
 **Mutation checks.** Rebuild and re-run for each mutant, and keep one mutant
 known to be caught in the batch as a positive control:
 - Default the target to `pod/claude-code`: the no-target test goes red **with
-  the target refusal**, not with another error.
+  the target refusal**, not with another error — and so do the no-model test
+  (`TestAgentDispatchWithNoModelAsksTheOwnerInTheirWords`: the refusal must
+  tell the chief to ask with `ask_owner` and list the choices in the owner's
+  words) and the browser case where "dispatch" with no model must draw an
+  `ask_owner` card offering Claude and OpenRouter models.
 - Drop the `hostSpawnable` filter from the list: the read-only-host case goes
   red.
 - Drop the `ownerTurnFor` call for task-less dispatches: the plugin-turn case
