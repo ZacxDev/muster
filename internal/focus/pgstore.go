@@ -33,6 +33,9 @@ type Store interface {
 	// history row (migration 0022).
 	Upsert(ctx context.Context, s Subject, w Write) (Focus, error)
 	RecordError(ctx context.Context, s Subject, msg string) error
+	// SetManualName stores a MIRRORED session's manual name ("" clears it):
+	// names.go.
+	SetManualName(ctx context.Context, s Subject, name string) (Name, error)
 	// Touch marks the caller's mirrored subjects seen now; PruneAll deletes
 	// EVERY owner's mirrored rows last seen before before (the retention sweep).
 	Touch(ctx context.Context, subs []Subject) error
@@ -72,6 +75,10 @@ type Write struct {
 	// directory; named replaces it — with "" (unknown) when it was malformed.
 	Cwd      string
 	CwdNamed bool
+	// Nameable: this title may freeze the session's auto name (names.go): the
+	// refresh judged it by the bar (Nameable). It freezes only while the
+	// session has none; NameableTitle is checked again by Upsert.
+	Nameable bool
 }
 
 // MaxSearchResults bounds focus_search.
@@ -86,16 +93,19 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 var _ Store = (*PGStore)(nil)
 
 const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, updated_at,
-	last_error, coalesce(error_at, 'epoch'::timestamptz), cwd`
+	last_error, coalesce(error_at, 'epoch'::timestamptz), cwd, name_auto, coalesce(name_auto_at, 'epoch'::timestamptz),
+	name_manual, coalesce(name_manual_at, 'epoch'::timestamptz)`
 
 func scan(row pgx.Row) (Focus, error) {
 	var f Focus
 	var kind, src string
 	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.UpdatedAt,
-		&f.LastError, &f.ErrorAt, &f.Cwd)
+		&f.LastError, &f.ErrorAt, &f.Cwd, &f.Name.Auto, &f.Name.AutoAt, &f.Name.Manual, &f.Name.ManualAt)
 	f.Subject.Kind, f.Source = Kind(kind), Source(src)
-	if f.ErrorAt.Unix() == 0 {
-		f.ErrorAt = time.Time{}
+	for _, t := range []*time.Time{&f.ErrorAt, &f.Name.AutoAt, &f.Name.ManualAt} {
+		if t.Unix() == 0 {
+			*t = time.Time{}
+		}
 	}
 	return f, err
 }
@@ -201,8 +211,12 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 	// An invalid directory is unknown (""), never stored: the column's CHECK
 	// would refuse it.
 	cwd, _ := CleanCwd(w.Cwd)
+	// The auto name freezes from this title only when the caller judged it a
+	// name (Write.Nameable) AND it is one by the bar's own title rule —
+	// checked again here, so no caller can freeze a title the bar refuses.
+	nameable := w.Nameable && NameableTitle(title)
 	f, err := scan(tx.QueryRow(ctx, upsertFocusSQL, string(sub.Kind), sub.Key, agentArg(sub), title, desc, string(w.Source), w.Fingerprint,
-		cwd, w.CwdNamed))
+		cwd, w.CwdNamed, nameable))
 	if err != nil {
 		return Focus{}, errf("upsert: %w", err)
 	}
@@ -218,15 +232,25 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 // upsertFocusSQL writes the caller's focus for one subject, clearing any
 // recorded error: ($1 kind, $2 key, $3 agent id or NULL, $4 title, $5
 // description, $6 source, $7 fingerprint, $8 cwd or ”, $9 whether the tail
-// named one). A write whose tail named no working directory keeps the stored
-// one (migration 0065).
+// named one, $10 whether this title may freeze the session's auto name). A
+// write whose tail named no working directory keeps the stored one (migration
+// 0065).
+//
+// 🔴 THE AUTO NAME FREEZES ONCE, HERE (migration 0090). A nameable write sets
+// name_auto only while it is empty; once set, no write — nameable or not —
+// changes it: the CASE keeps the stored one. Doing it in this statement means
+// the name is exactly a title this row held, and two writers of one subject
+// cannot both freeze (the row lock serialises them; the second sees a name).
 const upsertFocusSQL = `INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title, description,
-		source, fingerprint, updated_at, last_error, error_at, cwd)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL, $8)
+		source, fingerprint, updated_at, last_error, error_at, cwd, name_auto, name_auto_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, now(), '', NULL, $8,
+		CASE WHEN $10::boolean THEN $4 ELSE '' END, CASE WHEN $10::boolean THEN now() END)
 	ON CONFLICT (owner_id, subject_kind, subject_key) DO UPDATE SET seen_at = now(), title = EXCLUDED.title,
 		description = EXCLUDED.description, source = EXCLUDED.source, fingerprint = EXCLUDED.fingerprint,
 		updated_at = now(), last_error = '', error_at = NULL,
-		cwd = CASE WHEN $9::boolean THEN EXCLUDED.cwd ELSE agent_focus.cwd END
+		cwd = CASE WHEN $9::boolean THEN EXCLUDED.cwd ELSE agent_focus.cwd END,
+		name_auto = CASE WHEN agent_focus.name_auto = '' AND $10::boolean THEN EXCLUDED.title ELSE agent_focus.name_auto END,
+		name_auto_at = CASE WHEN agent_focus.name_auto = '' AND $10::boolean THEN now() ELSE agent_focus.name_auto_at END
 	RETURNING ` + cols
 
 // appendHistorySQL appends a focus to its subject's history unless the
@@ -285,8 +309,14 @@ func (s *PGStore) Touch(ctx context.Context, subs []Subject) error {
 // reports how many: the retention sweep (Retainer), under the system scope, so
 // a disabled owner's rows — or any owner no pass reaches — age out too. An
 // agent's row is never pruned: it dies with its agent.
+//
+// 🔴 A ROW CARRYING A NAME — auto or manual — IS KEPT NameRetention LONGER
+// (migration 0090): a laptop closed for a few weeks must not come back to a
+// conversation whose name is gone (a manual one lost, or an auto one frozen
+// again from a later, different title).
 func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {
-	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1`, before)
+	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1
+		AND ((name_manual = '' AND name_auto = '') OR seen_at < $2)`, before, before.Add(-NameRetention))
 	if err != nil {
 		return 0, errf("prune: %w", err)
 	}

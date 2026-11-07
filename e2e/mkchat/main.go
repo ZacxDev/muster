@@ -125,6 +125,13 @@ func run() error {
 		return appendMessages(ctx, pool, name, msgs)
 	}
 
+	// MUSTER_E2E_FOCUS_ONLY=1: write MUSTER_E2E_FOCUS for the existing agent
+	// (and the mirrored sessions it names) and nothing else — a spec's later
+	// refresh of a session it already set up.
+	if os.Getenv("MUSTER_E2E_FOCUS_ONLY") == "1" {
+		return writeFocus(ctx, pool, as, name)
+	}
+
 	display := os.Getenv("MUSTER_E2E_DISPLAY_NAME")
 	if os.Getenv("MUSTER_E2E_THREADS") == "1" {
 		var threads []thread
@@ -189,6 +196,12 @@ type focusSpec struct {
 	// agent_focus.updated_at; its history is left as written), so a spec can
 	// see a title's age ("· 2d") and a stale one.
 	AgeHours float64 `json:"ageHours"`
+	// Tail, when set, is the conversation the focus was computed from: the
+	// focus is written as the refresh writes it, its name bar judged by
+	// focus.Nameable over this tail (the same call internal/focus's Refresher
+	// makes), so the session's auto name freezes exactly when a refresh's
+	// would.
+	Tail []focus.Entry `json:"tail"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -238,7 +251,8 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 				return fmt.Errorf("focus history %s: %w", sub, err)
 			}
 		}
-		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer}); err != nil {
+		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer,
+			Nameable: len(sp.Tail) > 0 && focus.Nameable(sp.Title, sp.Tail)}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
 		}
 		if sp.AgeHours > 0 {
@@ -305,7 +319,13 @@ func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string
 		// MUSTER_E2E_KIND / MUSTER_E2E_CC_ACCOUNT make it a claude-code agent (the
 		// chief-runtimes spec's chief); unset, the default kind as before.
 		// MUSTER_E2E_REPO gives it a repository ("owner/name"; unset, none).
-		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true,
+		// A display name given here is a person's (the chief's "chief"):
+		// manual, as migration 0090 classifies such a name.
+		src := agents.NameDefault
+		if display != "" && display != name {
+			src = agents.NameManual
+		}
+		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, DisplayNameSource: src, Namespace: "agents", Status: "running", KickedOff: true,
 			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), Repo: os.Getenv("MUSTER_E2E_REPO"), NoteID: noteID})
 		if err != nil {
 			return fmt.Errorf("create agent: %w", err)

@@ -89,7 +89,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	s.episodeViewedMirror(vctx, r, h, e)
 	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+		SessionName: s.mirrorName(ctx, e), StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		DictateOff: s.dictatePath() == "", UploadOff: s.uploadPath() == "",
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
 		LiveCopy: e.LiveCopyWarning(),

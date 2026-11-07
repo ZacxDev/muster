@@ -418,6 +418,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /sessions/tags":         classList,
 	"POST /sessions/tags":        classList,
 	"POST /sessions/tags/delete": classList,
+	// A mirrored session's name (session_names.go): addressed by
+	// host=&session=&window=, which B's hub does not list — B's post is a 404,
+	// as for a ghost.
+	"POST /sessions/name": classMirror,
 	// The send queue (0019): the queue form, the list and the plain confirm
 	// page name A's mirrored window; Cancel, Retry and Delete name A's queued
 	// message by id.

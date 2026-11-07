@@ -77,6 +77,66 @@ The transcript **path** is not sent to the server. The window list is one
 WebSocket message, and its largest case already fills 96% of a frame; muster
 reads a transcript through the host's own transcript stream instead (below).
 
+## A session's name
+
+A session is headed by a **name** that does not move, with its focus as the
+line under it. The focus changes with the work; the name is how you find the
+same session tomorrow. One rule decides it (`internal/sessionname`), and the
+first of these that a session has wins:
+
+| rank | name | where it comes from |
+|---|---|---|
+| 1 | **manual** | the name you gave it: **Rename…** in the session's ⋯ menu (the bar on every session page), or an agent's own ⋯ menu. Nothing automatic ever replaces it. An empty name hands the session back to the rows below. |
+| 2 | **system** | a name muster pinned for a role: the chief, an officer's instance. The rest of muster finds the role by it, so the automatic name never replaces it. |
+| 3 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`. It is the agent's stable name: it never changes on its own, and only a manual rename replaces it. |
+| 4 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. (A task-dispatched agent's auto name is frozen too, but never shown: its task name ranks above it.) |
+| 5 | fallback | the session's technical id: an agent's slug, a mirrored window's host label (`mango:1`) or tmux address. |
+
+A mirrored window's **host label** (`muster-mirror -labels-file`, drawn as
+`<codename>:<window index>`) ranks as a fallback, not a name: it is the
+operator's codename for a tmux session, shared by every conversation that
+window ever holds. Once the conversation has an auto or manual name, the label
+moves to the row's tooltip and the search palette (it is still what the
+palette matches first). An agent's display name ranks by who set it
+(`agents.display_name_source`, migration `0090`): `manual`, `system` and
+`dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: a chief
+(slug `chief` or `chief-<owner id>`) is `system`, the slug copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
+is `system`, and any other display name is `manual`, since a person set it.
+
+The name is **stored**, not derived: focus history is pruned after 30 days, so
+"the oldest title" would move. The auto and manual names are columns of the
+session's focus row (`agent_focus.name_auto`, `name_manual`, migration
+`0090`), which lives as long as the session: an agent's dies with the agent; a
+mirrored one is pruned with its focus a retention after it was last seen, but a
+row carrying a name (auto or manual) is kept 90 days longer. A mirrored session's
+manual name follows its **conversation** (the key its focus has), so it moves
+with the conversation to another window, and a window that later holds a
+different conversation is not called by it. A window with no conversation
+muster can see (a shell, an older `muster-mirror`) cannot be renamed. An
+agent's manual name stays its display name, so the chief is still found by its
+display name.
+
+### The name bar
+
+The auto name freezes from the first focus that passes this bar, in the same
+database write that stores that focus (`focus.Nameable`, checked in code, not
+asked of the model):
+
+- the conversation has had a **real turn**: a prompt from the person that is
+  not an opener, answered by a reply. An opener is a prompt made only of
+  greeting, "carry on" and acknowledgement words (`hi`, `continue`, `ok go
+  on`): a closed vocabulary in `internal/focus/names.go`, matched word for
+  word;
+- the title is one the summarizer may keep (`FeedableTitle`: within 60
+  characters, plain, no markdown);
+- it has at least **two words**;
+- it is not itself an opener (`Greeting the user`, `Continue previous
+  session`, `Awaiting user instructions`).
+
+A title with one word outside that vocabulary passes (`Greeting the billing
+team`). Until a focus passes, the session keeps the name below it in the
+table.
+
 ## How focus is written
 
 Only muster writes it, server-side, in a periodic pass (`MUSTER_FOCUS_INTERVAL`,

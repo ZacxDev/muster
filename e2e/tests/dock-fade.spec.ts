@@ -68,7 +68,9 @@ test('the switcher row fades only at an edge with more to scroll to', async ({ p
   });
   await openAgent(page, VIEWER);
   await expect(row(page)).toBeVisible();
-  for (const l of LABELS) await expect(row(page).locator(`[data-switcher-entry][title="${l}"]`)).toHaveCount(1);
+  // By name (data-switcher-name): a named entry's title is its tooltip,
+  // which also carries the technical id the pill no longer spells.
+  for (const l of LABELS) await expect(row(page).locator(`[data-switcher-entry][data-switcher-name="${l}"]`)).toHaveCount(1);
 
   // More on the right (the positive control: the row really overflows).
   const a = await edges(page);

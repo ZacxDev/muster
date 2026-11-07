@@ -174,7 +174,9 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
   // reading of them, for the palette and the switcher dock's filter alike
   // (switcher_dock.go), so the two match the same fields.
   window.musterPaletteEntry = function (a, n) {
-    var label = a.getAttribute('title') || a.textContent;
+    // data-switcher-name is the entry's NAME; its title is the tooltip,
+    // which also carries the technical id a human name hides (SwitcherItem.Tip).
+    var label = a.getAttribute('data-switcher-name') || a.getAttribute('title') || a.textContent;
     return { href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
       title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
       prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
