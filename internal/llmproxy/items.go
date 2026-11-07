@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -10,20 +11,23 @@ import (
 // it began holding it.
 //
 // It is told about claims by the officer tools (Claimed, Ended) and about what
-// HQ says each instance holds by the wake loop (Sync). When the held item
+// HQ says each instance holds by the wake loop (Sync). Sync also ADOPTS: when
+// HQ shows an instance holding exactly one item and the meter holds a
+// different one or none, the meter holds HQ's. That covers a claim path that
+// does not call Claimed and a muster restart (an instance outlives it still
+// holding its item), within one wake-loop interval. When the held item
 // changes, the count starts again at zero.
 //
 // 🔴 A CAPPED INSTANCE IS NOT STUCK FOREVER. Once the cap is reached the
 // instance's next request is refused, its turn ends, it cannot heartbeat, and
 // its lease lapses in HQ (which promotes the item to the judgement tier). The
-// wake loop's next read then shows the instance holding nothing, Sync resets
-// its count, and its next item starts at zero. Tokens used while holding no
-// item are counted under "" and reset by every Sync pass that sees the
-// instance holding nothing: the daily USD budget, not this cap, is the wall
-// for an instance that never claims.
+// wake loop's next read then shows the instance holding nothing, Sync clears
+// its item, and its next item starts at zero. Tokens used while holding no
+// item are not counted (the proxy applies the cap to a held item only): the
+// daily USD budget, not this cap, is the wall for a turn holding no item.
 //
 // In memory only: a restart forgets the counts (the daily budget is the
-// persisted wall).
+// persisted wall); an adopted item starts at zero.
 type items struct {
 	mu sync.Mutex
 	m  map[instanceKey]*held
@@ -76,21 +80,27 @@ func (t *items) ended(k instanceKey, item string, at time.Time) {
 }
 
 // sync is a wake-loop pass's view of officer's claims, read at at: holding
-// maps an instance number to the items HQ shows it claiming. An instance whose
-// held item is not among them, and that began holding it before at, holds
-// nothing now; an instance holding nothing has its count reset.
+// maps an instance number to the items HQ shows it claiming. Only an instance
+// whose meter last changed before at is touched (a read never undoes a later
+// claim or end). If HQ shows it holding the meter's item, its count is kept.
+// Otherwise, if HQ shows it holding exactly one item, the meter adopts that
+// item from zero; if HQ shows none or several, it holds nothing.
 func (t *items) sync(officer string, holding map[int][]string, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	for n := range holding {
+		t.get(instanceKey{officer, n}) // an instance the meter has not seen (a restart) can be adopted too
+	}
 	for k, h := range t.m {
 		if k.officer != officer || h.since.After(at) {
 			continue
 		}
-		still := false
-		for _, it := range holding[k.instance] {
-			still = still || (h.item != "" && it == h.item)
-		}
-		if !still {
+		its := holding[k.instance]
+		switch {
+		case h.item != "" && slices.Contains(its, h.item):
+		case len(its) == 1:
+			*h = held{item: its[0], since: at}
+		case h.item != "":
 			*h = held{since: at}
 		}
 	}
@@ -105,8 +115,12 @@ func (t *items) used(k instanceKey) (int64, string) {
 }
 
 // add charges n tokens to the instance's held item, if it still holds item
-// (the one the request was admitted under).
+// (the one the request was admitted under). A request admitted holding no
+// item is charged to nothing.
 func (t *items) add(k instanceKey, item string, n int64) {
+	if item == "" {
+		return
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	h := t.get(k)

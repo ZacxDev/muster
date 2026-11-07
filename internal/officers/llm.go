@@ -52,7 +52,8 @@ type LLM struct {
 	DailyBudgetUSD float64 `json:"daily_budget_usd"`
 	// MaxTokensPerItem ends a runaway turn: once an instance has used this
 	// many tokens (input, cache and output together) on the item it holds,
-	// its next request is refused until it holds a different item.
+	// its next request is refused until it holds a different item. It does
+	// not apply while the instance holds no item: DailyBudgetUSD bounds that.
 	MaxTokensPerItem int64 `json:"max_tokens_per_item"`
 	key              string
 }
