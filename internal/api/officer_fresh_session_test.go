@@ -19,10 +19,11 @@ import (
 //     deliverer's first turn — carries agents.HeaderCCNewConversation, on
 //     which ccd starts a new conversation (the old transcript kept) before it
 //     pastes the turn; and the turn's text is the kickoff, never "as before";
-//   - officer_claim holds it to one item per conversation: a second claim
-//     while it holds one, and any claim once its hold has ended (complete,
-//     release, ask), is refused before HQ until muster has started it a new
-//     conversation.
+//   - officer_claim holds it to one item per conversation: the conversation
+//     is marked at its first successful claim and refused any other item
+//     before HQ — while it holds it, and however the hold ends (complete,
+//     release, ask, a lapsed lease, a complete HQ refused) — until ccd
+//     confirms a new conversation took a turn muster sent.
 // ---------------------------------------------------------------------------
 
 // newFreshOfficerRig is the rig over tiered officer T — judgement opus ×2

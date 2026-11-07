@@ -87,7 +87,7 @@ func traceTurnAccepted(req *http.Request) *http.Request {
 	return req.WithContext(httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		Got1xxResponse: func(code int, h textproto.MIMEHeader) error {
 			if code == http.StatusEarlyHints && h.Get(HeaderCCPromptAccepted) == "1" {
-				MarkTurnAccepted(ctx, TurnAcceptance{Lane: lane})
+				MarkTurnAccepted(ctx, TurnAcceptance{Lane: lane, NewConversation: h.Get(HeaderCCNewConversationSession)})
 			}
 			return nil
 		},

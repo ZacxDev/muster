@@ -134,6 +134,18 @@ type server struct {
 	screenBlocked bool
 	clock         func() time.Time
 	pending       *pendingTurn
+	// clearWait is startNewConversation's wait for the CLI's /clear, while it
+	// waits (nil otherwise): handleHook hands it the new session id of a
+	// SessionStart with source "clear" that the primary CLI's own process
+	// fired, naming a session other than from.
+	clearWait *clearWait
+	// clearTypedIn is the session in which ccd typed /clear and saw no such
+	// SessionStart (the Enter may have landed while the TUI was ingesting the
+	// paste, leaving "/clear" in the input line): the next new conversation
+	// in that same session presses Enter rather than typing /clear again
+	// beside it. "" once a clear is confirmed, and when the CLI exits (the
+	// input line goes with it).
+	clearTypedIn string
 	// work reports the pod's work counts to muster (work.go); set on the
 	// primary's server only, nil when the pod is not offered muster's surface.
 	work *workReporter
@@ -299,8 +311,13 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if target.recordsPrimary && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
 		if why := s.notFiredByPrimary(r); why != "" {
 			log.Printf("ccd: not recording session %s as the primary's: %s", ev.SessionID, why)
-		} else if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
-			log.Printf("ccd: record the primary session id: %v", err)
+		} else {
+			if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
+				log.Printf("ccd: record the primary session id: %v", err)
+			}
+			// Fired by the primary's own process: the /clear
+			// startNewConversation waits for, if its source says so.
+			target.primaryCleared(ev)
 		}
 	}
 	// A session a lane's hooks name that is not marked as a lane's (/clear in
@@ -353,6 +370,9 @@ func (s *server) cliExited() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionStarted, s.busy = false, false
+	// The input line went with the CLI: a /clear typed and unconfirmed is no
+	// longer sitting in it (startNewConversation).
+	s.clearTypedIn = ""
 }
 
 // notFiredByPrimary says why a hook cannot be shown to come from the primary
@@ -722,7 +742,14 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// session's lane is a conversation of its own already, and the header is
 	// ignored there). See startNewConversation.
 	if target == s && r.Header.Get(headerCCNewConversation) == "1" {
-		ctx = context.WithValue(ctx, newConversationKey{}, true)
+		// Its answer names the new conversation, on the 103 below and the
+		// final answer: set before the 103 is written, which carries the
+		// headers set so far. A ccd that predates the request header never
+		// sets it, which is how muster tells one (agents.TurnAcceptance.
+		// NewConversation).
+		ctx = context.WithValue(ctx, newConversationKey{}, func(session string) {
+			w.Header().Set(headerCCNewConversationSession, session)
+		})
 	}
 	if r.Header.Get(headerCCPromptAccepted) == "1" {
 		ctx = withPromptSubmitted(ctx, func() {
@@ -755,44 +782,87 @@ func withPromptSubmitted(ctx context.Context, fn func()) context.Context {
 	return context.WithValue(ctx, promptSubmittedKey{}, fn)
 }
 
-// newConversationKey marks a turn that starts a new conversation first
-// (headerCCNewConversation; startNewConversation).
+// newConversationKey carries, for a turn that starts a new conversation first
+// (headerCCNewConversation), the func startNewConversation hands the new
+// conversation's session id once it has one.
 type newConversationKey struct{}
 
 // clearCommand is the CLI's own command for a new conversation.
 const clearCommand = "/clear"
 
+// clearWait is one startNewConversation's wait (server.clearWait): the session
+// it cleared from, and where primaryCleared sends the new one.
+type clearWait struct {
+	from string
+	got  chan string // capacity 1
+}
+
+// primaryCleared hands a SessionStart the PRIMARY CLI's own process fired
+// (handleHook has checked: notFiredByPrimary) to the /clear wait, if one is
+// running and the event is that clear: source "clear", naming a session other
+// than the one cleared from. Any other SessionStart — another source, or
+// (never reaching here) one a `claude` nested in the pane sent — is not the
+// clear, and the wait goes on.
+func (s *server) primaryCleared(ev hookEvent) {
+	if !strings.EqualFold(ev.Source, "clear") || ev.SessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.clearWait; w != nil && ev.SessionID != w.from {
+		select {
+		case w.got <- ev.SessionID:
+		default:
+		}
+	}
+}
+
 // startNewConversation starts a NEW conversation in the CLI before a turn that
 // asked for one (headerCCNewConversation): muster sets it on every turn of an
 // officer instance whose pool works each item in a conversation of its own
 // (internal/api OfficerTurnContext). Called by runTurn under the turn slot,
-// with the CLI's pane.
+// with the CLI's pane; on success it hands the new conversation's session id
+// to the turn's newConversationKey func, which names it on the answer
+// (headerCCNewConversationSession).
 //
-// 🔴 IT IS THE CLI'S OWN /clear, AND ccd CONFIRMS IT BY THE SESSION ID. Measured
-// on the real CLI (2.1.289, a workstation, 2026-11-06; the image pins 2.1.296,
-// not measured there): /clear, in the same process, fires SessionEnd (reason
-// "clear") for the old session, then SessionStart (source "clear") with a NEW
-// session id and a new transcript path; the old transcript is left on disk as
-// it was, and the CLI's sessions/<pid>.json names the new id — which is what
-// GET /v1/transcript reads, so muster's per-item transcript forwarding follows
-// the new conversation. ccd waits for a SessionStart naming a session other
-// than the one it saw before the paste; the primary's handleHook records that
-// session as the one every later start resumes (primaryRecordFile), so a
-// restart never returns to the old conversation.
+// 🔴 IT IS THE CLI'S OWN /clear, AND ccd CONFIRMS IT BY THE HOOK. Measured on
+// the real CLI (2.1.289, a workstation, 2026-11-06): /clear, in the same
+// process, fires SessionEnd (reason "clear") for the old session, then
+// SessionStart (source "clear") with a NEW session id and a new transcript
+// path; the old transcript is left on disk as it was, and the CLI's
+// sessions/<pid>.json names the new id — which is what GET /v1/transcript
+// reads, so muster's per-item transcript forwarding follows the new
+// conversation. The image's 2.1.296 was read, not run: its bundle still has
+// /clear as the local command "Start a new session with empty context;
+// previous session stays on disk", with SessionStart source "clear" and
+// SessionEnd reason "clear" in its hook schema. ccd waits for a SessionStart
+// with source "clear", naming a session other than the one it saw before the
+// paste, that the PRIMARY CLI's own process fired (primaryCleared) — never one
+// a `claude` nested in the pane sent, which onHook does not tell apart. The
+// primary's handleHook records that session as the one every later start
+// resumes (primaryRecordFile), so a restart never returns to the old
+// conversation.
 //
 //   - No transcript yet (a CLI on a fresh volume: the CLI writes none until
 //     its first prompt): the conversation is already new; nothing is typed.
 //     (A /clear does write one at once — measured: its local-command record —
 //     so a second request right after a clear clears again.)
-//   - No new SessionStart within SubmitTimeout: 503 not_ready, and the turn is
-//     NOT typed — muster re-sends it, and a re-send that finds the clear did
-//     land clears again into another empty conversation, which costs nothing.
-//     The turn is never typed into the old conversation.
+//   - 🔴 No such SessionStart within SubmitTimeout: a typed failure that is
+//     NOT not_ready — "/clear" was typed and may still sit in the input line
+//     (an Enter that landed while the TUI was ingesting the paste), and
+//     not_ready promises nothing was typed, on which muster re-sends at once.
+//     The turn is NOT typed. ccd remembers the session it typed /clear in
+//     (clearTypedIn): the next new conversation asked for in that same
+//     session presses Enter instead of typing /clear again — which submits a
+//     /clear still in the input line, and is a no-op on an empty one — so it
+//     never pastes a second /clear beside the first ("/clear/clear", which the
+//     CLI would take as a prompt in the OLD conversation).
 //   - The pane refuses the paste (a dialog, the usage-limit menu, a dead
-//     pane): the same refusal a turn's own paste gets (pasteRefused).
+//     pane): the same refusal a turn's own paste gets (pasteRefused), with
+//     nothing typed.
 func (s *server) startNewConversation(ctx context.Context, pane paneRef) *failure {
 	s.mu.Lock()
-	started, busy, old, path := s.sessionStarted, s.busy, s.sessionID, s.transcriptPath
+	started, busy, old, path, typed := s.sessionStarted, s.busy, s.sessionID, s.transcriptPath, s.clearTypedIn
 	s.mu.Unlock()
 	switch {
 	case !started:
@@ -800,35 +870,65 @@ func (s *server) startNewConversation(ctx context.Context, pane paneRef) *failur
 	case busy:
 		return busyFailure()
 	}
+	named := func(session string) {
+		if fn, ok := ctx.Value(newConversationKey{}).(func(string)); ok && fn != nil {
+			fn(session)
+		}
+	}
 	if path == "" || !fileIsRegular(path) {
 		log.Printf("ccd: a new conversation was asked for; session %s has no transcript yet, so it is one already", old)
+		named(old)
 		return nil
 	}
-	if err := s.term.Paste(ctx, pane, clearCommand); err != nil {
+	wait := &clearWait{from: old, got: make(chan string, 1)}
+	s.mu.Lock()
+	s.clearWait = wait
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.clearWait == wait {
+			s.clearWait = nil
+		}
+		s.mu.Unlock()
+	}()
+	enterOnly := typed != "" && typed == old
+	var err error
+	if enterOnly {
+		log.Printf("ccd: a new conversation was asked for; ccd typed %s in session %s and saw it take no effect, so it presses Enter (never a second %s beside it)",
+			clearCommand, old, clearCommand)
+		err = s.term.Enter(ctx, pane)
+	} else {
+		err = s.term.Paste(ctx, pane, clearCommand)
+	}
+	if err != nil && !errors.Is(err, errPastedNotSubmitted) {
+		// Refused before anything was typed.
+		return s.pasteRefused(err)
+	}
+	s.mu.Lock()
+	s.clearTypedIn = old // until the clear is confirmed
+	s.mu.Unlock()
+	if err != nil {
 		return s.pasteRefused(err)
 	}
 	s.setScreenBlocked(false, "")
 	deadline := time.NewTimer(s.cfg.SubmitTimeout)
 	defer deadline.Stop()
-	tick := time.NewTicker(50 * time.Millisecond)
-	defer tick.Stop()
-	for {
+	select {
+	case id := <-wait.got:
 		s.mu.Lock()
-		started, id := s.sessionStarted, s.sessionID
+		s.clearTypedIn = ""
 		s.mu.Unlock()
-		if started && id != "" && id != old {
-			log.Printf("ccd: started a new conversation, session %s; the previous one, %s, is kept at %s", id, old, path)
-			return nil
-		}
-		select {
-		case <-tick.C:
-		case <-deadline.C:
-			return paneNotReady(fmt.Sprintf("ccd typed %s for a new conversation, but no SessionStart for a new session arrived within %s; "+
-				"the turn was NOT typed — send it again", clearCommand, s.cfg.SubmitTimeout))
-		case <-ctx.Done():
-			return &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
-				Message: "caller went away while ccd started a new conversation; the turn was not typed"}
-		}
+		log.Printf("ccd: started a new conversation, session %s; the previous one, %s, is kept at %s", id, old, path)
+		named(id)
+		return nil
+	case <-deadline.C:
+		return &failure{Status: http.StatusBadGateway, Type: failNewConversation,
+			Message: fmt.Sprintf("ccd typed %s for a new conversation, but the CLI sent no SessionStart (source clear) for a new session within %s; "+
+				"the turn was NOT typed. %s may still be in the input line: the next new-conversation turn presses Enter rather than typing it again — "+
+				"attach to the pane to see it", clearCommand, s.cfg.SubmitTimeout, clearCommand)}
+	case <-ctx.Done():
+		return &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
+			Message: "caller went away while ccd started a new conversation; the turn was not typed"}
 	}
 }
 
@@ -893,7 +993,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
 
-	if v, _ := ctx.Value(newConversationKey{}).(bool); v {
+	if _, ok := ctx.Value(newConversationKey{}).(func(string)); ok {
 		if f := s.startNewConversation(ctx, pane); f != nil {
 			return turnOutcome{}, f
 		}
@@ -1196,6 +1296,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		h.Lanes = s.lanes.health()
 		h.ToollessLanes = true
 	}
+	h.NewConversation = true
 	h.OK = (h.Terminal == "ok" || waitingCheckout) && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {

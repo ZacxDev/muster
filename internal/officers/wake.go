@@ -348,7 +348,12 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map
 //
 // Rate limit: an instance prompted within RepromptAfter is not prompted again,
 // and it — like a pending prompt — counts as already covering one claimable
-// item, so a fresh item gets one prompt, not one per instance. An instance
+// item, so a fresh item gets one prompt, not one per instance. Except a SPENT
+// instance (InstanceState.Spent: a fresh_session_per_item pool's whose
+// conversation has had its one item): it is due at once, else a fresh pool
+// would work at most one item per instance per RepromptAfter. If its last
+// turn is still ending, ccd refuses the prompt (409 busy, nothing typed) and
+// the next pass tries again. An instance
 // busy without a claim (deciding which item to take) is thus prompted at most
 // every RepromptAfter, and the deliverer refuses to type into a running turn
 // anyway (ccd's 409 busy), so a prompt never interrupts one.
@@ -361,7 +366,10 @@ func reprompts(insts []InstanceState, heldByUp map[string]bool, uncovered int, p
 			continue
 		}
 		at, prompted := promptedAt[in.N]
-		if in.PromptPending || (prompted && now.Sub(at) < RepromptAfter) {
+		// A spent instance (a fresh pool's, its one item done however its
+		// hold ended — it holds none, above) is not "on its way to the
+		// queue": its conversation may claim nothing more, so it is due now.
+		if in.PromptPending || (prompted && now.Sub(at) < RepromptAfter && !in.Spent) {
 			uncovered-- // already on its way to the queue
 			continue
 		}

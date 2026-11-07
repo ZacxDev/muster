@@ -62,8 +62,9 @@ const (
 	// on every turn of an instance of a fresh_session_per_item pool (internal/
 	// api OfficerTurnContext). ccd ignores it on an explicit session's turn,
 	// and a ccd that predates it ignores it everywhere: the turn then runs in
-	// the conversation the CLI already has (docs/officers.md, "One
-	// conversation per item").
+	// the conversation the CLI already has, and its answer carries no
+	// HeaderCCNewConversationSession, which is how muster notices
+	// (docs/officers.md, "One conversation per item").
 	HeaderCCNewConversation = "X-Muster-CC-New-Conversation"
 	// HeaderCCNewConversationSession is ccd's ANSWER to a turn carrying
 	// HeaderCCNewConversation: the session id of the new conversation the turn

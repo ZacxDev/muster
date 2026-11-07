@@ -72,9 +72,12 @@ type TierPool struct {
 //     the wake loop's prompt and the kickoff deliverer's first turn — carries
 //     agents.HeaderCCNewConversation, on which the pod's ccd starts a new
 //     conversation (the old transcript kept) before it pastes the turn;
-//   - internal/api officer_claim: one item per conversation — a second claim
-//     while the instance holds one, and any claim after its hold ended, is
-//     refused before HQ until muster starts it a new conversation.
+//   - internal/api officer_claim: one item per conversation — the
+//     conversation is marked at its first successful claim and refused any
+//     other item before HQ, however that hold ends, until ccd confirms a new
+//     conversation took a turn muster sent;
+//   - InstanceState.Spent (internal/api Instances): such an instance, holding
+//     nothing, is prompted without waiting out RepromptAfter.
 //
 // 🔴 AN UNTIERED OFFICER IS NOT OFFERED IT. An officer without `tiers` is
 // exactly today's officer (see the top of this file); the option lives with

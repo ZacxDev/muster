@@ -82,7 +82,8 @@ type officerRuntime struct {
 	judgement *officers.JudgementLedger
 	now       func() time.Time
 	// claimLocks serialises officer_claim per instance name (*sync.Mutex) for
-	// a capped judgement pool's one-claim rule (oneClaimRefusal).
+	// a capped judgement pool's one-claim rule (oneClaimRefusal) and a fresh
+	// pool's one item per conversation (freshClaimRefusal).
 	claimLocks sync.Map
 	// kube is officer_kube_read's state (officer_kube.go); nil when no
 	// declared officer has a `kube` block.
@@ -91,19 +92,27 @@ type officerRuntime struct {
 	// shared by every tool officers.CountsRead names (officer_reads.go).
 	reads *officers.ReadBudget
 	// worked is, per instance name of a fresh_session_per_item pool, the item
-	// whose hold ENDED in the instance's current conversation (complete,
-	// release, ask): officer_claim refuses that conversation another item
-	// (freshClaimRefusal). Cleared when muster starts the instance a new
-	// conversation (newConversation). Guarded by workedMu.
+	// its CURRENT conversation claimed — marked when the claim SUCCEEDS
+	// (claimedInConversation), so however the hold then ends (complete,
+	// release, ask, a lapsed lease, a complete HQ refuses) officer_claim
+	// refuses that conversation any other item (freshClaimRefusal). Cleared
+	// ONLY when ccd confirms a new conversation took a turn muster sent
+	// (conversationConfirmed, from OfficerTurnContext). Guarded by workedMu.
 	workedMu sync.Mutex
 	worked   map[string]officers.ItemID
+	// stale is, per instance name of a fresh_session_per_item pool, true once
+	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
+	// (an image that predates agents.HeaderCCNewConversation): muster sends it
+	// no further turn (Reprompt) until it is started again (Start). Guarded by
+	// workedMu.
+	stale map[string]bool
 }
 
-// itemEnded records that instance's hold on item ended (complete, release,
-// ask) in its current conversation, for a fresh_session_per_item pool o; any
-// other pool records nothing.
-func (rt *officerRuntime) itemEnded(o officers.Officer, instance string, item officers.ItemID) {
-	if !o.FreshSessionPerItem() {
+// claimedInConversation marks instance's current conversation as having
+// claimed item, for a fresh_session_per_item pool o; any other pool records
+// nothing.
+func (rt *officerRuntime) claimedInConversation(o officers.Officer, instance string, item officers.ItemID) {
+	if !o.FreshSessionPerItem() || item == "" {
 		return
 	}
 	rt.workedMu.Lock()
@@ -114,33 +123,60 @@ func (rt *officerRuntime) itemEnded(o officers.Officer, instance string, item of
 	rt.worked[instance] = item
 }
 
-// workedItem is the item instance's current conversation has already worked
-// ("" when none).
+// workedItem is the item instance's current conversation has claimed ("" when
+// none).
 func (rt *officerRuntime) workedItem(instance string) officers.ItemID {
 	rt.workedMu.Lock()
 	defer rt.workedMu.Unlock()
 	return rt.worked[instance]
 }
 
-// newConversation forgets the item instance's conversation worked: muster is
-// starting it a NEW conversation (officerFleet.Start, Reprompt). The returned
-// func puts it back — for a turn ccd refused before typing anything, whose
-// conversation therefore did not change.
-func (rt *officerRuntime) newConversation(instance string) (undo func()) {
+// conversationConfirmed forgets the item instance's conversation claimed:
+// its ccd has confirmed that a turn muster sent was typed into a NEW
+// conversation (agents.TurnAcceptance.NewConversation).
+func (rt *officerRuntime) conversationConfirmed(instance string) {
 	rt.workedMu.Lock()
 	defer rt.workedMu.Unlock()
-	prev, had := rt.worked[instance]
 	delete(rt.worked, instance)
-	return func() {
-		if !had {
-			return
-		}
-		rt.workedMu.Lock()
-		defer rt.workedMu.Unlock()
-		if _, again := rt.worked[instance]; !again {
-			rt.worked[instance] = prev
-		}
+	delete(rt.stale, instance)
+}
+
+// markStale records that instance's ccd accepted a turn asking for a new
+// conversation without naming one.
+func (rt *officerRuntime) markStale(instance string) {
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	if rt.stale == nil {
+		rt.stale = map[string]bool{}
 	}
+	rt.stale[instance] = true
+}
+
+// isStale reports markStale's record for instance.
+func (rt *officerRuntime) isStale(instance string) bool {
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	return rt.stale[instance]
+}
+
+// forgetStale drops markStale's record for instance: it is being started
+// again, perhaps onto a newer image.
+func (rt *officerRuntime) forgetStale(instance string) {
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	delete(rt.stale, instance)
+}
+
+// spent reports, for an instance of a fresh_session_per_item pool o, that its
+// current conversation has claimed its one item (officers.InstanceState.Spent)
+// — and its ccd is not known to be stale, which muster sends nothing.
+func (rt *officerRuntime) spent(o officers.Officer, instance string) bool {
+	if !o.FreshSessionPerItem() {
+		return false
+	}
+	rt.workedMu.Lock()
+	defer rt.workedMu.Unlock()
+	return rt.worked[instance] != "" && !rt.stale[instance]
 }
 
 // clock is the runtime's now (time.Now when unset).
@@ -528,7 +564,8 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 		a, ok := rows[name]
 		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
 			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
-			PromptPending: ok && promptPending(a)})
+			PromptPending: ok && promptPending(a),
+			Spent:         f.s.officerRT.spent(o, name)})
 	}
 	return out, nil
 }
@@ -539,8 +576,11 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	name := o.InstanceName(n)
 	if o.FreshSessionPerItem() {
-		// Its first turn is a new conversation (OfficerTurnContext).
-		f.s.officerRT.newConversation(name)
+		// A start may bring a newer image: whether its ccd starts new
+		// conversations is learnt again from its first turn
+		// (OfficerTurnContext). What its conversation claimed is NOT
+		// forgotten here: only ccd's confirmation of a new one does that.
+		f.s.officerRT.forgetStale(name)
 	}
 	a, err := f.s.ext.Agents.GetByName(octx, name)
 	if err != nil {
@@ -579,6 +619,18 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 // TurnContext, wired by cmd/muster-server) — so a pod started for an item, a
 // pod restarted at the wall-time cap, and an idle instance prompted for its
 // next item all begin that item in a new conversation.
+//
+// 🔴 THE CONVERSATION IS FREED ONLY WHEN ccd CONFIRMS IT. The context also
+// asks for ccd's 103 (agents.WithTurnAccepted), sent once the CLI has taken
+// the turn's text; ccd's names the new conversation the text went into
+// (agents.TurnAcceptance.NewConversation). Only then is what the instance's
+// conversation claimed forgotten (officerConversationAccepted) — never before
+// the send, when a turn ccd then refused (409 busy: the old turn still
+// running) would have let the OLD conversation claim again for one round
+// trip, and never for a ccd that took the text without naming one.
+// ⚠ The 103 is read on the transport's goroutine as it arrives; the
+// instance's first claim needs a model request and a tool call after it, so
+// the order is the CLI's, not a lock's.
 func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context.Context {
 	o, _, ok := s.officerOf(a)
 	if !ok || !o.FreshSessionPerItem() {
@@ -588,7 +640,26 @@ func (s *Server) OfficerTurnContext(ctx context.Context, a agents.Agent) context
 	// Header.Get — applyTurnRoute's read — would never find it.
 	h := http.Header{}
 	h.Set(agents.HeaderCCNewConversation, "1")
-	return agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
+	name := a.Name
+	ctx = agents.WithTurnRoute(ctx, agents.TurnRoute{Header: h})
+	return agents.WithTurnAccepted(ctx, func(acc agents.TurnAcceptance) { s.officerConversationAccepted(name, acc) })
+}
+
+// officerConversationAccepted is ccd's acceptance of a turn OfficerTurnContext
+// asked a new conversation for, for instance name: a new conversation named
+// frees the instance to claim one item in it; none named is a ccd that
+// predates the header — the turn runs in the conversation the CLI already
+// had, so nothing is freed, the operator is told, and Reprompt sends that
+// instance nothing more until it is started again.
+func (s *Server) officerConversationAccepted(name string, acc agents.TurnAcceptance) {
+	if acc.NewConversation != "" {
+		s.officerRT.conversationConfirmed(name)
+		return
+	}
+	s.officerRT.markStale(name)
+	s.logger.Printf("officers: %s: 🔴 its ccd took a fresh_session_per_item turn but did not confirm a new conversation (no %s on its answer): "+
+		"it predates that header, and the turn runs in the conversation the CLI already had. Its claims stay refused after its current item, and muster "+
+		"sends it no further turn until it is started again on a claude-code-agent image from this version", name, agents.HeaderCCNewConversationSession)
 }
 
 // promptPending is the kickoff deliverer's own "owed" rule
@@ -667,15 +738,14 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		release()
 		return fmt.Errorf("officers: %s's session: %w", name, err)
 	}
-	// 🔴 A FRESH POOL'S TURN IS A NEW CONVERSATION (OfficerTurnContext), and its
-	// instance may claim again in it. Cleared HERE, under the session claim: no
-	// turn muster sent the instance is running (each holds this claim for its
-	// whole length), so its last conversation's turn is over. A turn ccd
-	// refuses before typing anything (Unsent: busy, not_ready) changed no
-	// conversation, and the item it worked is put back.
-	undoConversation := func() {}
-	if o.FreshSessionPerItem() {
-		undoConversation = s.officerRT.newConversation(name)
+	// A fresh pool's turn is a new conversation (OfficerTurnContext), and its
+	// instance may claim again in it once ccd confirms one. An instance whose
+	// ccd took such a turn WITHOUT confirming one is sent nothing more: the
+	// turn would run in the conversation that already had its item.
+	if o.FreshSessionPerItem() && s.officerRT.isStale(name) {
+		release()
+		return fmt.Errorf("officers: %s: its ccd does not start a new conversation per item (an image that predates %s); not prompting it until it is started again",
+			name, agents.HeaderCCNewConversation)
 	}
 	// 🔴 THE SEND ENDS AT SHUTDOWN, AND RELEASES ITS CLAIM WHEN IT DOES. Its
 	// context is cancelled by EndStreams — as a plugin delivery's is — and the
@@ -695,7 +765,6 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		// through context.AfterFunc, which runs asynchronously, so sendCtx may
 		// not read cancelled yet when shutdown has already begun.
 		if sendCtx.Err() != nil || s.streams.context().Err() != nil {
-			undoConversation()
 			return
 		}
 		tctx, cancel := context.WithTimeout(s.OfficerTurnContext(sendCtx, fresh), turn)
@@ -704,7 +773,6 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		if unsent := agentgateway.Unsent(err); unsent != "" {
 			// Refused before anything was typed (ccd's 409 busy, 503
 			// not_ready): not a turn, so nothing goes on the transcript.
-			undoConversation()
 			s.logger.Printf("officers: %s: re-prompt not sent (%s); the next pass tries again", name, unsent)
 			return
 		}
@@ -1157,18 +1225,24 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body = page.Raw
 	case officers.ToolClaim:
 		if o.ItemCap() > 0 || o.FreshSessionPerItem() {
-			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, AND PER FRESH
-			// POOL'S CONVERSATION, before HQ and before the session ledger (a
-			// refused claim spends no session). The wake loop enforces
-			// max_item_minutes by stopping the holder's whole instance, so a
-			// second item it held would lose its work; a fresh pool works one
-			// item per conversation (freshClaimRefusal). Serialised per
-			// instance, so two parallel calls cannot both pass.
+			// 🔴 ONE LIVE CLAIM PER CAPPED JUDGEMENT INSTANCE, AND ONE ITEM PER
+			// FRESH POOL'S CONVERSATION, before HQ and before the session
+			// ledger (a refused claim spends no session). The wake loop
+			// enforces max_item_minutes by stopping the holder's whole
+			// instance, so a second item it held would lose its work
+			// (oneClaimRefusal); a fresh pool's conversation is marked by its
+			// first successful claim, below, and refused any other item
+			// however that hold ends (freshClaimRefusal). Serialised per
+			// instance, so two parallel calls cannot both pass, and the mark
+			// is written under the lock.
 			unlock := s.officerRT.lockClaims(instance)
 			defer unlock()
-			if refusal := s.freshClaimRefusal(o, instance); refusal != "" {
+			if refusal := s.freshClaimRefusal(o, instance, in.ItemID); refusal != "" {
 				return refusal, true
 			}
+			// Still asked for a fresh pool: HQ's claimed list is the one
+			// record a RESTARTED muster has of a claim the conversation holds
+			// (worked is this process's memory).
 			if refusal := s.oneClaimRefusal(ctx, c, o, instance, in.ItemID); refusal != "" {
 				return refusal, true
 			}
@@ -1198,6 +1272,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			if err == nil && claimed != "" && s.officerRT.fwd != nil {
 				s.officerRT.fwd.Claimed(o, instance, claimed)
 			}
+			if err == nil {
+				s.officerRT.claimedInConversation(o, instance, claimed)
+			}
 			break
 		}
 		if bad := needItem(); bad != "" {
@@ -1222,6 +1299,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		if err == nil {
 			s.llmClaimed(o, instance, in.ItemID)
+			s.officerRT.claimedInConversation(o, instance, in.ItemID)
 		}
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
@@ -1305,37 +1383,42 @@ func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o off
 
 // officerItemEnded is THE end of an instance's hold on item, by its own tool
 // (officer_complete, officer_release, officer_ask_person): the transcript
-// forwarder and the LLM proxy's item meter stop for it, and a
-// fresh_session_per_item pool's conversation is marked as having worked it
-// (freshClaimRefusal).
+// forwarder and the LLM proxy's item meter stop for it. (A
+// fresh_session_per_item pool's one-item rule does not wait for this: its
+// conversation is marked at the claim, claimedInConversation.)
 func (s *Server) officerItemEnded(o officers.Officer, instance string, item officers.ItemID) {
 	if s.officerRT.fwd != nil {
 		s.officerRT.fwd.Ended(o, instance, item)
 	}
 	s.llmEnded(o, instance, item)
-	s.officerRT.itemEnded(o, instance, item)
 }
 
 // freshClaimRefusal is officer_claim's refusal for an instance of a
-// fresh_session_per_item pool whose current conversation has already worked
-// an item (its hold ended: complete, release, ask), or "" otherwise. The
-// instance's next item is muster's to start, in a new conversation, on the
-// wake loop's next pass (officerFleet.Reprompt).
+// fresh_session_per_item pool whose current conversation has already claimed
+// an item other than item ("" = claim-next, whose item is HQ's to pick, so
+// any earlier claim refuses it), or "" otherwise. The conversation is marked
+// at its first SUCCESSFUL claim (claimedInConversation), so it stays refused
+// however that hold ends — complete, release, ask, a lapsed lease, a complete
+// HQ refuses — and while it is still held (one claim at a time, as a capped
+// pool's oneClaimRefusal holds it). Re-claiming its OWN item (a lapsed lease
+// it still works) is not refused. The instance's next item is muster's to
+// start, in a new conversation (OfficerTurnContext), which frees it.
 //
 // ⚠ What it rests on is this process's memory (officerRuntime.worked): a
 // muster restarted while an instance's turn is still running forgets that
-// the turn's conversation worked an item, and that one turn may claim one
+// the turn's conversation claimed an item, and that one turn may claim one
 // more. Every turn muster sends afterwards starts a new conversation.
-func (s *Server) freshClaimRefusal(o officers.Officer, instance string) string {
+func (s *Server) freshClaimRefusal(o officers.Officer, instance string, item officers.ItemID) string {
 	if !o.FreshSessionPerItem() {
 		return ""
 	}
-	item := s.officerRT.workedItem(instance)
-	if item == "" {
+	worked := s.officerRT.workedItem(instance)
+	if worked == "" || (item != "" && item == worked) {
 		return ""
 	}
-	return toolErr("this conversation has already worked item %s, and tiers.%s.fresh_session_per_item gives each item a NEW conversation: "+
-		"do not claim another here. Stop now and end your turn; muster starts you a new conversation for the next item", item, o.Tier)
+	return toolErr("this conversation has already claimed item %s, and tiers.%s.fresh_session_per_item gives each item a NEW conversation: "+
+		"do not claim another here. Finish item %s (complete or release it) if you still hold it, then stop and end your turn; "+
+		"muster starts you a new conversation for the next item", worked, o.Tier, worked)
 }
 
 // askToolResult is officer_ask_person's answer: HQ's JSON with askedNote on
