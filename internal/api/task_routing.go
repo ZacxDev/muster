@@ -730,7 +730,7 @@ func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note
 		ev.Gate = reason
 	}
 	for _, x := range on {
-		ev.Agents = append(ev.Agents, plugins.TaskEventAgent{ID: x.ID, Name: firstNonBlank(x.DisplayName, x.Name), Status: x.Status})
+		ev.Agents = append(ev.Agents, plugins.TaskEventAgent{ID: x.ID, Name: s.agentName(ctx, x).Text, Status: x.Status})
 	}
 	in, err := plugins.NewTaskEventIn(ev, key+"\x00"+notice.Discriminator)
 	if err != nil {

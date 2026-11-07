@@ -1208,7 +1208,7 @@ func (s *PGStore) UnreadByAgent(ctx context.Context) ([]AgentUnread, error) {
 			FROM chat_sessions
 			ORDER BY agent_id, updated_at DESC, id DESC
 		)
-		SELECT u.agent_id, a.name, a.display_name, t.session_id, u.cnt
+		SELECT u.agent_id, a.name, a.display_name, a.display_name_source, t.session_id, u.cnt
 		FROM unread u
 		JOIN agents a ON a.id = u.agent_id
 		JOIN target t ON t.agent_id = u.agent_id
@@ -1220,7 +1220,7 @@ func (s *PGStore) UnreadByAgent(ctx context.Context) ([]AgentUnread, error) {
 	out := make([]AgentUnread, 0)
 	for rows.Next() {
 		var u AgentUnread
-		if err := rows.Scan(&u.AgentID, &u.AgentName, &u.DisplayName, &u.SessionID, &u.Count); err != nil {
+		if err := rows.Scan(&u.AgentID, &u.AgentName, &u.DisplayName, &u.DisplayNameSource, &u.SessionID, &u.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

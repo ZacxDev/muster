@@ -499,6 +499,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	for _, u := range unread {
 		rows = append(rows, ui.NotificationRow{
 			Name: u.AgentName, DisplayName: u.DisplayName, SessionID: u.SessionID, Count: u.Count,
+			SessionName: s.agentName(ctx, agents.Agent{ID: u.AgentID, Name: u.AgentName, DisplayName: u.DisplayName, DisplayNameSource: u.DisplayNameSource}),
 		})
 	}
 	active := s.activeNotificationRows(ctx)
@@ -539,7 +540,7 @@ func (s *Server) activeNotificationRows(ctx context.Context) []ui.ActiveRow {
 		if err != nil {
 			continue
 		}
-		row.DisplayName = a.DisplayName
+		row.DisplayName, row.SessionName = a.DisplayName, s.agentName(ctx, a)
 		if sess, serr := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name); serr == nil {
 			row.SessionID = sess.ID
 		}

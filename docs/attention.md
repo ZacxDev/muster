@@ -259,6 +259,11 @@ command, path or URL, never what Claude said.
 | a [notice](#notices) | `<where> may be waiting on you` | the session's focus title (with its age past a day, ` · 2d`: [focus.md](focus.md#how-old-a-focus-is)), then the chief's message; no options and no `ask` payload |
 
 `<where>` is the window's exact tmux target — see [How a window is named](#how-a-window-is-named).
+A **title** names the session by its [stable name](focus.md#a-sessions-name)
+instead, whenever it has a human one (`Billing migration is asking`,
+`Billing migration needs you`); the body keeps `<where>`. On the Asks list the
+same name leads the row, with `<where>` as its tooltip, and `attention_list`
+carries it as each item's `name` (absent when the session has no human name).
 
 ### How a window is named
 
@@ -850,7 +855,7 @@ you, your mirror hosts' busy and idle Claude windows, and your
 | `items[].key` | The item's id (`ask-<id>`, `session-<hash>`, `draft-<id>`, `task-<id>`). A held question has its window's `session-…` key. |
 | `items[].kind` | `ask`, `session`, `question`, `plugin` (a reply draft), `task` or `notice` (a [notice](#notices)). |
 | `items[].host` | The mirror host it is on; `""` for an agent's ask, muster's own, a reply draft and a task. |
-| `items[].title`, `items[].why` | What its notification says: the source as a title, and the first line of the notification body (a notice's focus title with its age past a day, ` · 2d`, as its push). Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
+| `items[].title`, `items[].why` | What its notification says: the source as a title (the session's [stable name](focus.md#a-sessions-name) when it has a human one, as its push's title), and the first line of the notification body (a notice's focus title with its age past a day, ` · 2d`, as its push). Secrets are redacted, a waiting session is `Waiting: <tool> · <where>` (its exact tmux target, [How a window is named](#how-a-window-is-named), kept verbatim), a reply draft is who and where only. Never Claude's last words, an ask's options or its suggested replies. |
 | `items[].since`, `items[].age_secs` | When it started waiting (Unix seconds) and `ts` minus that; `0` and `0` when unknown. |
 | `items[].offline` | A session item whose host dropped within the last 5 minutes, shown as last seen. |
 | `items[].target` | A `notice`'s window as tmux takes it, `<session>:<window index>`, resolved when the summary is built. Absent for every other kind, and for a notice whose session no window shows now. With `host`, it is what [`muster nudge next`](cli.md#jumping-to-a-chief-nudge) switches to. |

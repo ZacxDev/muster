@@ -167,6 +167,9 @@ type Session struct {
 	Runtime string
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
+	// Name is the session's stable name (internal/sessionname) as the stall
+	// prompt names it to the chief, "" when it has no human one.
+	Name string
 	// Index is the window's tmux index when the sweep saw it (mirror
 	// Window.Index): display only, for the ask's text (mirror.Where) — tmux
 	// renumbers windows, so nothing is addressed by it.

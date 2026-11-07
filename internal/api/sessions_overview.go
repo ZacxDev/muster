@@ -114,6 +114,9 @@ type liveSession struct {
 // not an idle session.
 func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession {
 	cutoff := s.now().Add(-overviewActiveWithin)
+	// The stored names, read once: every session is named by its stable
+	// name (internal/sessionname), as the owner's own views name it.
+	fi := s.focusIndex(ctx)
 	var out []liveSession
 	if s.ext.Agents != nil {
 		list, err := s.ext.Agents.List(ctx)
@@ -129,7 +132,7 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 				continue
 			}
 			out = append(out, liveSession{sub: focus.AgentSubject(a.ID), kind: agents.ResolveKind(a.Kind),
-				name: firstNonBlank(a.DisplayName, a.Name), status: status, activeAt: at})
+				name: fi.agentName(a).Text, status: status, activeAt: at})
 		}
 	}
 	seen := map[string]bool{}
@@ -146,7 +149,7 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 		if status == "" {
 			status = "unknown"
 		}
-		out = append(out, liveSession{sub: focus.MirrorSubject(e.ClaudeSession), kind: "mirror", name: e.DisplayTitle(),
+		out = append(out, liveSession{sub: focus.MirrorSubject(e.ClaudeSession), kind: "mirror", name: fi.mirrorName(e).Text,
 			host: e.Host, where: e.Where(), status: status, activeAt: at})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].activeAt.After(out[j].activeAt) })

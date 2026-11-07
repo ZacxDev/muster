@@ -379,13 +379,21 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
 			if a, err := s.ext.Agents.Get(octx, ep.AgentID); err == nil {
-				return a.Name, a.Name
+				// Its stable name (internal/sessionname), plain already: kept
+				// whole by the title rule.
+				n := s.agentName(octx, a).Text
+				return n, n
 			}
 		}
 		return "An agent", ""
 	}
 	if ep.Host != "" && ep.Key != "" {
-		if _, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
+		if e, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
+			// A conversation with a HUMAN name is called by it; its place is
+			// the push's to omit and the Asks page's to show.
+			if n := s.mirrorName(octx, e); n.Human() {
+				return n.Text, n.Text
+			}
 			return where, keep
 		}
 	}
