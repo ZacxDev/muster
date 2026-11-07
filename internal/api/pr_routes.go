@@ -135,12 +135,21 @@ func (s *Server) prAuthorHint(ctx context.Context, m plugins.Message) *plugins.A
 	}
 	a := &plugins.AuthorHint{ID: focus.MirrorSubject(hit.ClaudeSession).String(), Host: hit.Host, Kind: string(hit.Kind),
 		Repo: hit.Repo, PR: hit.PR, HeadRef: hit.HeadRef, LastSeen: hit.LastSeen}
-	if e, ok := s.mirrorEntryForSession(ctx, hit.ClaudeSession); ok {
+	e, online := s.mirrorEntryForSession(ctx, hit.ClaudeSession)
+	if online {
 		a.Online, a.Host, a.Name, a.Where = true, e.Host, e.DisplayTitle(), e.Where()
 	}
 	if s.ext.Focus != nil {
 		if f, has, err := s.ext.Focus.Get(ctx, focus.MirrorSubject(hit.ClaudeSession)); err == nil && has && f.Has() {
 			a.Name = f.Title
+		}
+	}
+	// The session's stable name wins when it has a HUMAN one
+	// (internal/sessionname), as every surface names it; otherwise its focus
+	// title, else its window's title, as before the rule.
+	if online {
+		if n := s.mirrorName(ctx, e); n.Human() {
+			a.Name = n.Text
 		}
 	}
 	return a

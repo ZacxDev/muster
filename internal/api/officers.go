@@ -585,13 +585,14 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 	a, err := f.s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		_, err := f.s.createAndDispatchAgent(octx, dispatchParams{
-			Name:        name,
-			DisplayName: fmt.Sprintf("officer %s #%s", o.ID, o.InstanceLabel(n)),
-			Kind:        agents.KindClaudeCode,
-			CCAccount:   o.CCAccount,
-			CCFailover:  o.CCFailover,
-			NoteText:    kickoff,
-			Kickoff:     true,
+			Name:              name,
+			DisplayName:       fmt.Sprintf("officer %s #%s", o.ID, o.InstanceLabel(n)),
+			DisplayNameSource: agents.NameSystem,
+			Kind:              agents.KindClaudeCode,
+			CCAccount:         o.CCAccount,
+			CCFailover:        o.CCFailover,
+			NoteText:          kickoff,
+			Kickoff:           true,
 		})
 		return err
 	}

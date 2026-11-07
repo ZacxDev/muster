@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"encoding/json"
 	"io"
 	"net/url"
@@ -211,53 +213,27 @@ func agentDeleteConfirm(ids string) g.Node {
 	)
 }
 
-// agentRenamePopover is the rename form, in a popover the menu's Rename opens:
-// a name input (the display name; the slug is fixed) posting to
+// agentRenamePopover is the rename form, in a popover the menu's Rename opens
+// (renamePopover, the one rename dialog): a name input posting to
 // POST /agents/{id}/name, whose answer reloads the page (HX-Refresh), so the
-// header, the tab's title and the sidebar all read the new name.
+// header, the tab's title and the sidebar all read the new name. A name typed
+// here is the agent's MANUAL name (agents.NameManual), which nothing automatic
+// replaces; an empty one hands the agent back to its automatic name.
+//
+// It is prefilled with what the agent is called now: its display name as
+// written when that is the person's own, else its resolved name when it is a
+// human one (an auto or task name) — never the slug, which is its placeholder.
 func agentRenamePopover(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
-	return Div(
-		ID(AgentRenameID),
-		g.Attr("popover", "auto"),
-		g.Attr("role", "dialog"),
-		g.Attr("aria-label", "Rename agent"),
-		Class("inset-x-0 bottom-auto top-[max(0.5rem,10vh)] mx-auto my-0 w-[min(28rem,calc(100vw-1rem))] rounded-xl border-0 bg-s1 p-0 text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/40"),
-		Form(
-			Class("flex flex-col gap-3 p-4"),
-			hx("hx-post", "/agents/"+ids+"/name"),
-			hx("hx-swap", "none"),
-			Label(
-				Class("flex flex-col gap-1 text-xs font-medium text-muted"),
-				Span(g.Text("Rename agent")),
-				Input(
-					Type("text"),
-					Name("name"),
-					Value(displayOr(a.DisplayName, a.Name)),
-					g.Attr("aria-label", "Agent display name"),
-					g.Attr("autocomplete", "off"),
-					Placeholder(a.Name),
-					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-				),
-			),
-			Span(Class("break-all text-[11px] text-muted"), g.Text("slug: "+a.Name+" (fixed)")),
-			Div(
-				Class("flex items-center gap-2"),
-				Button(
-					Type("submit"),
-					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
-					g.Text("Save"),
-				),
-				Button(
-					Type("button"),
-					g.Attr("popovertarget", AgentRenameID),
-					g.Attr("popovertargetaction", "hide"),
-					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl px-4 text-sm font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2"),
-					g.Text("Cancel"),
-				),
-			),
-		),
-	)
+	current := ""
+	switch {
+	case a.SessionName.Source == sessionname.SourceManual:
+		current = a.DisplayName
+	case a.SessionName.Human():
+		current = a.SessionName.Text
+	}
+	return renamePopover(renameDialog{id: AgentRenameID, action: "/agents/" + ids + "/name", heading: "Rename agent",
+		current: current, placeholder: a.Name, note: "slug: " + a.Name + " (fixed). Leave it empty to let muster name it."})
 }
 
 // agentNoticesBody is what the notices above the transcript hold: a failed

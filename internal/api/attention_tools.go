@@ -143,6 +143,13 @@ type toolCaller struct {
 }
 
 // callerOfAgent is agent a as a tool caller.
+//
+// 🔴 ITS LABEL STAYS OUTSIDE THE NAME RULE (operator decision, #505 round 0
+// Q1): an ask RECORDS the name its agent had when it was filed
+// (attention_asks.asker_label) — a historical fact, not a live name — and it
+// is built with no query because it runs on EVERY agent tool call. The
+// surfaces that SHOW an ask name its agent by its live stable name
+// (internal/sessionname) when they build the item (withFocus).
 func callerOfAgent(a agents.Agent) toolCaller {
 	return toolCaller{agent: &a, asker: attention.Asker{AgentID: a.ID, Label: firstNonBlank(a.DisplayName, a.Name)}}
 }

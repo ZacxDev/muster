@@ -47,13 +47,14 @@ test('a task-derived agent name with markdown reads plain on its sidebar row and
   // The page's own header title: the whole plain name (its title attribute)
   // and none of the markers in what it draws.
   const title = page.locator('[data-agent-title] h1');
-  await expect(title).toHaveAttribute('title', plainName);
+  // (Its tooltip ends with the slug the header no longer spells.)
+  await expect(title).toHaveAttribute('title', plainName + ' · ' + agentName);
   // The sidebar's row (a drawer on a phone): the whole plain label as its
   // title, and none of the markers in its text.
   await page.locator('#sidebar-open').click();
   const row = page.locator(`#sidebar-agents-list a#nav-agent-${agentID}`);
   await expect(row).toBeVisible();
-  await expect(row).toHaveAttribute('title', plainName);
+  await expect(row).toHaveAttribute('title', plainName + ' · ' + agentName);
   await expect(row).toContainText(plainName);
   for (const el of [row, title]) {
     const shown = await el.innerText();

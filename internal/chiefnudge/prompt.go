@@ -71,7 +71,12 @@ func Prompt(s Session, last Msg, owner []Msg, idle time.Duration, hint Hint, non
 			"one or two sentences. A nudge is accepted only for a permission request (asks_permission) " +
 			"that one of the owner's messages below already covers. " + askSeveralItems
 	}
-	lines := []string{"focus title: " + fence.Sanitize(s.Title)}
+	var lines []string
+	if s.Name != "" {
+		// The session as every other surface names it (its stable name).
+		lines = append(lines, "session: "+fence.Sanitize(s.Name))
+	}
+	lines = append(lines, "focus title: "+fence.Sanitize(s.Title))
 	if s.TitleAge != "" {
 		lines = append(lines, fence.Sanitize(s.TitleAge))
 	}

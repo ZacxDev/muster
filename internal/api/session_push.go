@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/ZacxDev/muster/internal/focus"
 	"html"
 	"regexp"
 	"strconv"
@@ -379,12 +380,23 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
 			if a, err := s.ext.Agents.Get(octx, ep.AgentID); err == nil {
-				return a.Name, a.Name
+				// Its stable name (internal/sessionname), plain already: kept
+				// whole by the title rule.
+				n := s.agentName(octx, a).Text
+				return n, n
 			}
 		}
 		return "An agent", ""
 	}
 	if ep.Host != "" && ep.Key != "" {
+		// A conversation with a HUMAN name is called by it; its place is the
+		// push's to omit and the Asks page's to show. Looked up by the
+		// episode's own key: the entry sessionKeyWhere builds carries no
+		// session key of its own (round 1 of #505: the name was never found).
+		sub := focus.MirrorSubject(ep.Key)
+		if n := (focusIndex{sub: {Subject: sub, Name: s.storedName(octx, sub)}}).humanMirrorName(ep.Key); n != "" {
+			return n, n
+		}
 		if _, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
 			return where, keep
 		}

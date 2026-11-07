@@ -355,7 +355,7 @@ func TestAFailedKickoffTurnIsAnErrorAPushAndANoteToTheChief(t *testing.T) {
 	if len(ps) != 1 {
 		t.Fatalf("%d outcome pushes; want exactly 1", len(ps))
 	}
-	if !strings.HasPrefix(ps[0].Title, agentLabel(a)+" failed: ") || !strings.Contains(ps[0].Title, "Unknown model") ||
+	if !strings.HasPrefix(ps[0].Title, o.srv.agentLabel(asUser(a.OwnerID), a)+" failed: ") || !strings.Contains(ps[0].Title, "Unknown model") ||
 		ps[0].Data["url"] != "/agents/"+a.Name {
 		t.Errorf("push %+v; want \"<agent> failed: <reason>\" linking to /agents/%s", ps[0], a.Name)
 	}
@@ -495,7 +495,7 @@ func TestAnIdleReplyIsWaitingNeverDone(t *testing.T) {
 	}
 	o.tellWaits(t) // told once nobody has replied or looked through the hold
 	ps := o.outcomePushes(a.ID)
-	if len(ps) != 1 || ps[0].Title != agentLabel(a)+" is waiting for you: Which repository should I work in?" {
+	if len(ps) != 1 || ps[0].Title != o.srv.agentLabel(asUser(a.OwnerID), a)+" is waiting for you: Which repository should I work in?" {
 		t.Fatalf("pushes %+v; want one \"<agent> is waiting for you: <last line>\"", ps)
 	}
 	notes := o.chiefNotes(t, a.Name)
@@ -567,7 +567,7 @@ func TestDoneIsOnlyAnExplicitSignal(t *testing.T) {
 	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Done {
 		t.Fatalf("after agent_report_done: outcome %q", got.Outcome)
 	}
-	if ps := o.outcomePushes(a.ID); len(ps) != 1 || ps[0].Title != agentLabel(a)+" finished: Opened draft PR #12 with the fix." {
+	if ps := o.outcomePushes(a.ID); len(ps) != 1 || ps[0].Title != o.srv.agentLabel(asUser(a.OwnerID), a)+" finished: Opened draft PR #12 with the fix." {
 		t.Fatalf("pushes %+v; want one finished push with the summary", ps)
 	}
 	if n := o.chiefNotes(t, a.Name); len(n) != 1 || !strings.Contains(n[0], "finished: Opened draft PR #12") {
@@ -715,7 +715,7 @@ func TestTheWatchdogCallsAQuietAgentStuckOncePerChange(t *testing.T) {
 		t.Fatalf("after the verdict: outcome %q reason %q status %q", got.Outcome, got.OutcomeReason, got.Status)
 	}
 	ps := o.outcomePushes(a.ID)
-	if len(ps) != 1 || ps[0].Title != agentLabel(a)+" is stuck: no reply since kickoff" {
+	if len(ps) != 1 || ps[0].Title != o.srv.agentLabel(asUser(a.OwnerID), a)+" is stuck: no reply since kickoff" {
 		t.Fatalf("pushes %+v; want one stuck push", ps)
 	}
 	if n := o.chiefNotes(t, a.Name); len(n) != 1 || !strings.Contains(n[0], "STUCK: no reply since kickoff") {
@@ -766,7 +766,7 @@ func TestTheWatchdogCallsAQuietAgentStuckOncePerChange(t *testing.T) {
 	if got := o.agent(t, a.ID); got.OutcomeReason != "silent for 30 min" {
 		t.Fatalf("silence reason %q", got.OutcomeReason)
 	}
-	if ps := o.outcomePushes(a.ID); len(ps) != 2 || ps[1].Title != agentLabel(a)+" is stuck: silent for 30 min" {
+	if ps := o.outcomePushes(a.ID); len(ps) != 2 || ps[1].Title != o.srv.agentLabel(asUser(a.OwnerID), a)+" is stuck: silent for 30 min" {
 		t.Fatalf("pushes %+v; want the second stuck push", ps)
 	}
 }

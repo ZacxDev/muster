@@ -255,8 +255,11 @@ func (r *Refresher) Refresh(ctx context.Context, owner int64, sub Subject) (Outc
 	}
 	r.setRefused(owner, sub, "")
 	cwd, named := LatestCwd(entries)
+	// The session's NAME freezes from the first focus that passes the name
+	// bar (names.go: a real turn, a nameable title) — in the same write, and
+	// only while it has none (PGStore.Upsert).
 	if _, err := r.Store.Upsert(ctx, sub, Write{Title: sum.Title, Description: sum.Description, Source: SourceSummarizer, Cwd: cwd, CwdNamed: named,
-		Fingerprint: fp}); err != nil {
+		Fingerprint: fp, Nameable: Nameable(sum.Title, entries)}); err != nil {
 		r.record(ctx, sub, err)
 		return OutcomeFailed, err
 	}

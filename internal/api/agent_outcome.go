@@ -421,7 +421,7 @@ func (s *Server) outcomeTellWaiting(octx context.Context, a agents.Agent, now ti
 	// so leaving a dispatched agent's wait to it (as this once did) meant a
 	// push ten minutes late or never. THIS tracker owns a tracked agent's wait;
 	// session state stands down for it (outcomeOwnsWait, session_state.go).
-	s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", a.OutcomeReason)
+	s.pushOutcome(octx, a, agentoutcome.Waiting, "is waiting for you", a.OutcomeReason)
 	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(lines, "\n"))
 }
 
@@ -455,7 +455,7 @@ func (s *Server) outcomeDone(octx context.Context, a agents.Agent, verb, detail 
 	s.logger.Printf("outcomes: agent %d (%s) %s", a.ID, a.Name, verb)
 	s.outcomeChanged(a)
 	if push {
-		s.pushOutcome(a, agentoutcome.Done, verb, detail)
+		s.pushOutcome(octx, a, agentoutcome.Done, verb, detail)
 	}
 	s.noteOutcomeToChief(octx, a, agentoutcome.Done, verb, detail)
 }
@@ -518,24 +518,22 @@ func (s *Server) outcomeIsChief(octx context.Context, a agents.Agent) bool {
 	return chiefPredicate(list)(a)
 }
 
-// agentLabel is how a push and a note name an agent: its display name, else its slug.
-func agentLabel(a agents.Agent) string {
-	if l := strings.TrimSpace(a.DisplayName); l != "" {
-		return l
-	}
-	return a.Name
+// agentLabel is how an outcome's push and its note to the chief name an
+// agent: its stable name (internal/sessionname), as every surface does.
+func (s *Server) agentLabel(ctx context.Context, a agents.Agent) string {
+	return s.agentName(ctx, a).Text
 }
 
 // announceOutcome pushes a's new outcome to its owner and notes it in the chat
 // of the chief that started it.
 func (s *Server) announceOutcome(octx context.Context, a agents.Agent, outcome, verb, detail string) {
-	s.pushOutcome(a, outcome, verb, detail)
+	s.pushOutcome(octx, a, outcome, verb, detail)
 	s.noteOutcomeToChief(octx, a, outcome, verb, detail)
 }
 
 // pushOutcome is the one push an outcome change sends: "<agent> <verb>: <detail>".
-func (s *Server) pushOutcome(a agents.Agent, outcome, verb, detail string) {
-	label := agentLabel(a)
+func (s *Server) pushOutcome(ctx context.Context, a agents.Agent, outcome, verb, detail string) {
+	label := s.agentLabel(ctx, a)
 	title := label + " " + verb
 	if detail != "" {
 		title += ": " + truncate(detail, outcomePushTitleMax)
@@ -558,8 +556,8 @@ func (s *Server) pushOutcome(a agents.Agent, outcome, verb, detail string) {
 }
 
 // outcomeChiefNote is the note a chief reads about an agent it started.
-func outcomeChiefNote(a agents.Agent, outcome, verb, detail string) string {
-	who := fmt.Sprintf("Agent %s (%q, id %d) that you started with agent_dispatch", a.Name, agentLabel(a), a.ID)
+func outcomeChiefNote(a agents.Agent, label, outcome, verb, detail string) string {
+	who := fmt.Sprintf("Agent %s (%q, id %d) that you started with agent_dispatch", a.Name, label, a.ID)
 	switch outcome {
 	case agentoutcome.Failed:
 		return "[muster] " + who + " FAILED: " + detail + ". Its status is now error. Tell your owner what went wrong, " +
@@ -593,7 +591,7 @@ func (s *Server) noteOutcomeToChief(octx context.Context, a agents.Agent, outcom
 		return
 	}
 	if _, err := s.ext.Agents.AddChatMessage(octx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user",
-		Content: outcomeChiefNote(a, outcome, verb, detail)}); err != nil {
+		Content: outcomeChiefNote(a, s.agentLabel(octx, a), outcome, verb, detail)}); err != nil {
 		s.logger.Printf("outcomes: agent %d: note to the chief: %v", a.ID, err)
 		return
 	}

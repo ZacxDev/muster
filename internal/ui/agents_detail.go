@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -88,9 +90,14 @@ type AgentDetailView struct {
 	Tags        []string
 	Name        string
 	DisplayName string
-	Status      string
-	Repo        string
-	Model       string // OpenRouter slug; "" = cluster default
+	// SessionName is the agent's name (internal/sessionname): the header and
+	// the <title> draw it (agentTitle, agentDocTitle).
+	SessionName sessionname.Name
+	// Drift is the page's rename offer (driftBanner), nil for none.
+	Drift  *SessionDrift
+	Status string
+	Repo   string
+	Model  string // OpenRouter slug; "" = cluster default
 	// Kind is the agent's kind. A claude-code agent shows its kind and account
 	// instead of the model picker: it has no per-agent model (the server refuses
 	// one), so a picker there would be a control that can only fail.
@@ -534,13 +541,19 @@ func agentHeaderToolsWidth(n int) string {
 // textplain.Title (via plainOr), the SAME treatment the sidebar and the
 // switcher give this string — see textplain.Title for why it is stripped, not rendered.
 func agentTitle(v AgentDetailView) g.Node {
-	full := plainOr(v.DisplayName, v.Name)
+	full := sessionTitle(v.SessionName, v.DisplayName, v.Name)
 	short, clamped := clampTitle(full)
 	const line = "overflow-hidden text-clip whitespace-nowrap"
 	text := g.Attr("data-agent-title-text", "")
 	var heading g.Node
+	// The tooltip also carries the agent's technical id (its slug) when it is
+	// called by a human name: where the slug the header no longer spells is.
+	tip := full
+	if v.SessionName.Human() && v.SessionName.Technical != "" && v.SessionName.Technical != full {
+		tip += " · " + v.SessionName.Technical
+	}
 	if v.NoteID == nil {
-		heading = H1(text, Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", full), g.Text(short))
+		heading = H1(text, Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", tip), g.Text(short))
 	} else {
 		heading = H1(Class("flex min-w-0"),
 			Button(
@@ -639,7 +652,7 @@ const agentTitlePopoverID = "agent-title-full"
 // agentDocTitle is the agent page's <title>: the same clamp as the header, so
 // a 600-character name does not become a 600-character tab label either.
 func agentDocTitle(v AgentDetailView) string {
-	short, clamped := clampTitle(plainOr(v.DisplayName, v.Name))
+	short, clamped := clampTitle(sessionTitle(v.SessionName, v.DisplayName, v.Name))
 	if clamped {
 		short += "…"
 	}
@@ -919,6 +932,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
+		// The rename offer, when the agent's work has moved on from its name.
+		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
 		Div(
 			ID("chat-log"),
 			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
