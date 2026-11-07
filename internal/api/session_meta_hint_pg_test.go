@@ -13,11 +13,12 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// 🔴 A LIVE SESSION WITH NO RECENT FOCUS IS FOUND BY ITS REPO AND WINDOW
-// LABEL — the hint and focus_search, on both transports, against a real
-// Postgres. The shape of the miss: a window open on an app's repo, idle for
-// ten days, with no focus row at all; a message about that app. Synthetic
-// names only ("x-app-yt-thumbnail", hosts "box-1"/"box-2").
+// 🔴 A LIVE SESSION WITH NO RECENT FOCUS IS FOUND BY ITS REPO — the hint and
+// focus_search, on both transports, against a real Postgres; focus_search
+// also by its window label, a host codename ("<codename>:<n>", as hosts send
+// it). The shape of the miss: a window open on an app's repo, idle for ten
+// days, with no focus row at all; a message about that app. Synthetic names
+// only ("x-app-yt-thumbnail", codenames "Mars"/"Iris", host "box-1").
 
 const (
 	sidMetaIdle  = "0b2c3d4e-meta-idle"
@@ -42,22 +43,23 @@ func (m scopedMirror) Hosts(ctx context.Context) []mirror.HostView {
 }
 
 // metaReplay is the miss: an idle window in repo "x-app-yt-thumbnail", label
-// "Update desktop layout for generator formats", ten days quiet and with no
-// focus row; and a busy, unrelated window with a focus.
+// "Mars:3", ten days quiet and with no focus row; and a busy, unrelated window
+// ("Iris:4") with a focus.
 func metaReplay(t *testing.T) *gatedFixture {
 	g := newGatedFixture(t)
 	idle := time.Now().Add(-240 * time.Hour).Unix()
 	h1 := overviewHost("box-1", true,
 		mirror.Window{Session: "work", ID: "@7", Index: 3, Active: true, Claude: true, ClaudeSession: sidMetaIdle,
-			Label: "Update desktop layout for generator formats", Activity: idle},
-		mirror.Window{Session: "work", ID: "@8", Index: 4, Claude: true, ClaudeSession: sidMetaOther, Activity: time.Now().Unix()})
+			Label: "Mars:3", Activity: idle},
+		mirror.Window{Session: "work", ID: "@8", Index: 4, Claude: true, ClaudeSession: sidMetaOther, Label: "Iris:4",
+			Activity: time.Now().Unix()})
 	h1.Repos = map[string]string{"@7": "x-app-yt-thumbnail", "@8": "cache-quorum"}
 	g.setFocus(t, focus.MirrorSubject(sidMetaOther), "Reading the cache dashboards", "")
 	g.srv.ext.Mirror = scopedMirror{overviewMirror{hosts: []mirror.HostView{h1}}, g.owner}
 	return g
 }
 
-func TestAnIdleSessionIsHintedByItsRepoAndLabel(t *testing.T) {
+func TestAnIdleSessionIsHintedByItsRepo(t *testing.T) {
 	g := metaReplay(t)
 	want := "mirror:" + sidMetaIdle
 	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 1, Subject: "[app feedback] YT Thumbnail #198", Body: metaMessage})
@@ -68,10 +70,13 @@ func TestAnIdleSessionIsHintedByItsRepoAndLabel(t *testing.T) {
 	if len(ids) != 1 || ids[0] != want {
 		t.Fatalf("hint lists %v; want exactly %s", ids, want)
 	}
-	// Generic mail names nothing; nor does the app's prose without its name.
+	// Generic mail names nothing; nor does the app's prose without its name;
+	// nor a codename spelled in prose — the label is not matched by the hint,
+	// so "Mars" is no second term beside one repo part.
 	for _, body := range []string{
 		"Quick update on our meeting next week: please review the desktop layout and the generator formats.",
 		"The desktop layout for the generator formats looks cramped.",
+		"The thumbnail on the Mars page looks off.",
 	} {
 		if h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 2, Subject: "news", Body: body}); len(h.Sessions) != 0 {
 			t.Errorf("%q named %+v", body, h.Sessions)
@@ -86,7 +91,8 @@ func TestAnIdleSessionIsHintedByItsRepoAndLabel(t *testing.T) {
 
 func TestFocusSearchFindsAnIdleSessionByItsRepo(t *testing.T) {
 	g := metaReplay(t)
-	for _, args := range []string{`{"query":"thumbnail"}`, `{"query":"thumbnail","since_hours":24}`, `{"query":"yt-thumbnail"}`} {
+	for _, args := range []string{`{"query":"thumbnail"}`, `{"query":"thumbnail","since_hours":24}`, `{"query":"yt-thumbnail"}`,
+		`{"query":"Mars"}`} {
 		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", args) {
 			if isToolErr(text) || !strings.Contains(text, `"id":"mirror:`+sidMetaIdle+`"`) {
 				t.Errorf("%s %s: the idle session was not found: %s", surface, args, text)
@@ -104,7 +110,34 @@ func TestFocusSearchFindsAnIdleSessionByItsRepo(t *testing.T) {
 	}
 }
 
-// The hint's bounds hold for repo/label matches: many windows in the app's repo
+// mergeHints: focus hits first, then repo hits not among them, up to the
+// limit; a session in both keeps its focus place and gains its repo line.
+func TestTheHintListsFocusHitsBeforeRepoHits(t *testing.T) {
+	a, b, c, d := plugins.SessionHint{ID: "a"}, plugins.SessionHint{ID: "b"}, plugins.SessionHint{ID: "c"}, plugins.SessionHint{ID: "d"}
+	ra := plugins.SessionHint{ID: "a", Repo: "r", ByRepo: true}
+	ids := func(hs []plugins.SessionHint) string {
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.ID+map[bool]string{true: "+repo"}[h.ByRepo])
+		}
+		return strings.Join(out, ",")
+	}
+	for _, tc := range []struct {
+		focus, repo []plugins.SessionHint
+		want        string
+	}{
+		{[]plugins.SessionHint{b}, []plugins.SessionHint{d, ra}, "b,d,a+repo"},
+		{[]plugins.SessionHint{a}, []plugins.SessionHint{d, ra}, "a+repo,d"},
+		{[]plugins.SessionHint{a, b, c}, []plugins.SessionHint{d}, "a,b,c"},
+		{nil, []plugins.SessionHint{d, ra, b, c}, "d,a+repo,b"},
+	} {
+		if got := ids(mergeHints(tc.focus, tc.repo, 3)); got != tc.want {
+			t.Errorf("mergeHints(%s | %s) = %s; want %s", ids(tc.focus), ids(tc.repo), got, tc.want)
+		}
+	}
+}
+
+// The hint's bounds hold for repo matches: many windows in the app's repo
 // are listed MaxHintSessions at most.
 func TestARepoHintIsBounded(t *testing.T) {
 	g := newGatedFixture(t)

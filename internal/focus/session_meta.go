@@ -8,8 +8,9 @@ import (
 )
 
 // MATCHING A LIVE SESSION BY WHAT ITS WINDOW SAYS, NOT ONLY BY ITS FOCUS: the
-// repository it works in and its window label, as its mirror host reports
-// them (mirror.SessionView.Repo / Label).
+// repository it works in (the hint and focus_search) and its window label
+// (focus_search only), as its mirror host reports them
+// (mirror.SessionView.Repo / Label).
 //
 // 🔴 WHY. Focus is written only when a session's transcript moves
 // (refresher.go), so a session that is open on a job but has not had a turn
@@ -21,9 +22,16 @@ import (
 // every row the session had was older than the window and none said
 // "thumbnail". Its repository name did.
 //
-// 🔴 THE SAME TWO RULES AS MatchHistory. A match needs a DISTINCTIVE shared
-// term and at least minTerms terms in all; generic overlap alone names
-// nothing. What is distinctive here:
+// 🔴 THE HINT MATCHES THE REPO ONLY (MatchRepos), NEVER THE LABEL. A Claude
+// window's label is its host's codename and index ("<codename>:<n>",
+// mirror.Window.Label), not a task title — so a label term in a message is a
+// word of prose that happens to spell a codename, and naming a session for it
+// is the generic overlap MatchHistory refuses. focus_search (SearchMeta) does
+// search the label: there the chief typed the codename on purpose.
+//
+// 🔴 THE SAME TWO RULES AS MatchHistory. A repo match needs at least minTerms
+// covered parts, all from a DISTINCTIVE run; generic overlap alone names
+// nothing. A run counts when it is:
 //
 //   - a RUN of the repository name's parts (split on anything not a letter
 //     or digit) that the text spells consecutively in any case and with any
@@ -36,18 +44,15 @@ import (
 //     message that says "acme app": only one whose own part it spells. The
 //     names are counted distinct, so two windows in ONE repository share
 //     nothing by it. This only ever REMOVES a match: a part unique to one
-//     repository still has to be a run as above;
-//   - an identifier (terms.go) the text and the label both carry.
+//     repository still has to be a run as above.
 //
-// Every covered repository part counts as a term, and so does every english
-// lexeme (stop words dropped, as MatchHistory's) the label shares with the
-// text outside its identifiers.
+// Every covered repository part counts as one term.
 //
 // ⚠ THE REPO AND THE LABEL ARE UNTRUSTED, like titles: a host sends them.
 // They decide only WHETHER a session the caller already holds is listed —
 // never which sessions exist — and whoever renders them fences them.
 
-// MaxMetaSessions bounds how many sessions one MatchMeta or SearchMeta call
+// MaxMetaSessions bounds how many sessions one MatchRepos or SearchMeta call
 // reads; the rest are not considered.
 const MaxMetaSessions = 1024
 
@@ -59,11 +64,11 @@ type SessionMeta struct {
 	Repo, Label string
 }
 
-// MetaMatch is one session whose repository name or window label shares terms
-// with a text: how many in all (Terms) and how many distinctive (Distinctive).
+// MetaMatch is one session whose repository name shares terms with a text:
+// how many of its parts the text covers (Terms).
 type MetaMatch struct {
-	Subject            Subject
-	Terms, Distinctive int
+	Subject Subject
+	Terms   int
 }
 
 // repoSplitRE splits a repository name, and a text, into the words a run is
@@ -153,22 +158,19 @@ func sharedParts(metas []SessionMeta) func(string) bool {
 	return func(p string) bool { return n[p] >= 2 }
 }
 
-// MatchMeta is the sessions of metas whose repository name or window label
-// shares at least minTerms terms with text, at least one of them distinctive
-// (see the top of this file): most distinctive terms first, then most terms,
-// then the subject; at most limit (bounded by MaxSearchResults). minTerms < 1
-// is 1. The text is cut as MatchHistory's is.
-//
-// It reads no table: Postgres is asked only for the english lexemes the labels
-// share with the text (the same parser MatchHistory's word overlap uses), and
-// only for sessions that already carry a distinctive term. Scoping is the
-// caller's: metas are sessions it holds.
-func (s *PGStore) MatchMeta(ctx context.Context, text string, metas []SessionMeta, minTerms, limit int) ([]MetaMatch, error) {
+// MatchRepos is the sessions of metas whose repository name the text covers
+// in at least minTerms parts, from qualifying runs (see the top of this file):
+// most parts first, then the subject; at most limit (bounded by
+// MaxSearchResults). minTerms < 1 is 1. The text is cut as MatchHistory's is.
+// Labels are not read. Pure: scoping is the caller's (metas are sessions it
+// holds).
+func MatchRepos(text string, metas []SessionMeta, minTerms, limit int) []MetaMatch {
 	if len(text) > MaxMatchTextBytes {
 		text = strings.ToValidUTF8(text[:MaxMatchTextBytes], "")
 	}
+	out := []MetaMatch{}
 	if strings.TrimSpace(text) == "" || len(metas) == 0 {
-		return []MetaMatch{}, nil
+		return out
 	}
 	if len(metas) > MaxMetaSessions {
 		metas = metas[:MaxMetaSessions]
@@ -179,74 +181,20 @@ func (s *PGStore) MatchMeta(ctx context.Context, text string, metas []SessionMet
 	if limit <= 0 || limit > MaxSearchResults {
 		limit = MaxSearchResults
 	}
-	keys, rest := distinctiveTerms(text, MaxDistinctiveTerms)
-	want := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		want[k] = true
-	}
 	words, shared := repoParts(text), sharedParts(metas)
-	type cand struct {
-		meta  SessionMeta
-		terms map[string]bool
-		nd    int
-	}
-	var cands []*cand
-	var labels []string
 	for _, m := range metas {
-		c := &cand{meta: m, terms: map[string]bool{}}
-		if m.Repo != "" {
-			covered, ok := repoCover(words, repoParts(m.Repo), shared)
-			if ok {
-				for p := range covered {
-					c.terms["repo:"+p] = true
-				}
-				c.nd += len(covered)
-			}
-		}
-		if m.Label != "" {
-			lk, _ := distinctiveTerms(m.Label, 0)
-			for _, k := range lk {
-				if want[k] && !c.terms["key:"+k] {
-					c.terms["key:"+k] = true
-					c.nd++
-				}
-			}
-		}
-		if c.nd == 0 {
-			continue // nothing distinctive: nothing can be named
-		}
-		cands = append(cands, c)
-		labels = append(labels, m.Label)
-	}
-	if len(cands) == 0 {
-		return []MetaMatch{}, nil
-	}
-	lexemes, err := s.sharedLexemes(ctx, rest, labels)
-	if err != nil {
-		return nil, err
-	}
-	var out []MetaMatch
-	for i, c := range cands {
-		for _, w := range lexemes[i] {
-			c.terms["word:"+w] = true
-		}
-		// A repository part and a label word that are the same word count once.
-		n := len(c.terms)
-		for t := range c.terms {
-			if strings.HasPrefix(t, "word:") && c.terms["repo:"+strings.TrimPrefix(t, "word:")] {
-				n--
-			}
-		}
-		if n < minTerms {
+		if m.Repo == "" {
 			continue
 		}
-		out = append(out, MetaMatch{Subject: c.meta.Subject, Terms: n, Distinctive: c.nd})
+		covered, ok := repoCover(words, repoParts(m.Repo), shared)
+		if !ok || len(covered) < minTerms {
+			continue
+		}
+		out = append(out, MetaMatch{Subject: m.Subject, Terms: len(covered)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		switch {
-		case a.Distinctive != b.Distinctive:
-			return a.Distinctive > b.Distinctive
 		case a.Terms != b.Terms:
 			return a.Terms > b.Terms
 		case a.Subject.Kind != b.Subject.Kind:
@@ -257,35 +205,7 @@ func (s *PGStore) MatchMeta(ctx context.Context, text string, metas []SessionMet
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	if out == nil {
-		out = []MetaMatch{}
-	}
-	return out, nil
-}
-
-// sharedLexemes is, for each of docs in order, the english lexemes it shares
-// with text (stop words dropped), sorted.
-func (s *PGStore) sharedLexemes(ctx context.Context, text string, docs []string) ([][]string, error) {
-	rows, err := s.pool.Query(ctx, `WITH terms AS (
-			SELECT DISTINCT t FROM unnest(tsvector_to_array(to_tsvector('english', $1))) t)
-		SELECT u.i, ARRAY(SELECT t FROM terms WHERE t = ANY(tsvector_to_array(to_tsvector('english', u.d))) ORDER BY t)
-		FROM unnest($2::text[]) WITH ORDINALITY u(d, i) ORDER BY u.i`, text, docs)
-	if err != nil {
-		return nil, errf("match meta: %w", err)
-	}
-	defer rows.Close()
-	out := make([][]string, len(docs))
-	for rows.Next() {
-		var i int64
-		var shared []string
-		if err := rows.Scan(&i, &shared); err != nil {
-			return nil, errf("match meta: %w", err)
-		}
-		if i >= 1 && int(i) <= len(out) {
-			out[i-1] = shared
-		}
-	}
-	return out, rows.Err()
+	return out
 }
 
 // metaDoc is the text a session's repository name and label are searched as:

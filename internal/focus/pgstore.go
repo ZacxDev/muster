@@ -53,9 +53,8 @@ type Store interface {
 	// SearchTitles is the command palette's whole-window title search: a
 	// substring of the title, newest matching title per session.
 	SearchTitles(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error)
-	// MatchMeta and SearchMeta match live sessions by their repository name
-	// and window label rather than their focus (session_meta.go).
-	MatchMeta(ctx context.Context, text string, metas []SessionMeta, minTerms, limit int) ([]MetaMatch, error)
+	// SearchMeta matches live sessions by their repository name and window
+	// label rather than their focus (session_meta.go).
 	SearchMeta(ctx context.Context, query string, metas []SessionMeta, limit int) ([]Subject, error)
 	// WindowHistory reads the caller's sessions with focus activity in
 	// [since, until], live or not (history_window.go).
