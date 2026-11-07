@@ -306,7 +306,8 @@ for (const vp of [
     test("a long title keeps one line on its row, whole in its tooltip; a tap opens the agent", async ({ page }) => {
       await openList(page);
       const r = row(page, freshAgent);
-      await expect(r).toHaveAttribute('title', LONG);
+      // Its tooltip: the whole name, then the slug the row no longer spells.
+      await expect(r).toHaveAttribute('title', LONG + ' · ' + freshAgent);
       await expect(r).toContainText(LONG);
       const box = (await r.boundingBox())!;
       expect(box.height, 'one 44px row').toBeLessThan(60);
