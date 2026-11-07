@@ -17,7 +17,7 @@ func TestASessionHintAndAnOnlineAuthorCarryTheirWhere(t *testing.T) {
 	}
 	a := &AuthorHint{ID: "mirror:7d1e5b2a-0000-4000-8000-0000000b4a5e", Host: "box-1", Kind: "git-push",
 		Repo: "acme-labs/widget-api", HeadRef: "feat/gizmo-route", LastSeen: authorSeen, Online: true, Where: "tmux build:7 @ box-1"}
-	if got := renderAuthor(a, hintNonce); !strings.Contains(got, "|   window: online, where: tmux build:7 @ box-1\n") {
+	if got := renderAuthor(a, hintNonce, nil); !strings.Contains(got, "|   window: online, where: tmux build:7 @ box-1\n") {
 		t.Fatalf("author block lacks the where:\n%s", got)
 	}
 }

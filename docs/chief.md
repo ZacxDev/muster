@@ -159,11 +159,31 @@ permission prompt in its container (there is no approval gate and no terminal
 muster can reach), so:
 
 - these run **without a prompt**: `sessions_overview`, `fleet_list`,
-  `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list` and,
-  with session routing on, `route_to_session`;
-- **every other prompt is denied at once**, not left hanging: another muster tool
-  (`task_comment`, `reply_draft`, `task_create_gated`, …), Bash, a file edit. The
-  chief is told it was denied and carries on.
+  `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list`,
+  `ask_owner` and, with session routing on, `route_to_session`;
+- **they are the only muster tools it is offered.** muster's MCP server lists
+  the chief nothing else (not `task_comment`, `task_set_status`,
+  `task_create_gated`, `reply_draft`, `agent_dispatch`, `attention_ask`,
+  `connectors_list` or `muster_help`), and refuses a call to one by name. Its
+  instructions name the same tools and say plainly that filing or commenting on
+  a task, changing a task's status, raising or answering an ask in the
+  Attention queue, dispatching an agent, drafting a plugin reply, connectors
+  and HQ are not available on this install. All three (what it may run, what it is offered, what it is told) come
+  from one list in muster's code;
+- **the turns muster sends it name only those tools too.** A plugin message's
+  turn, its session hints and a route's hand-back are rendered from the tools
+  it is offered: no "draft a reply with `reply_draft`" or "raise an
+  `attention_ask`". With plugins and session routing on, it is told the one
+  thing it can do with a plugin message is route it to a session; without
+  routing, that it cannot act on one. A mirrored session's `chief_ask` is
+  refused (the chief cannot answer it) and the session is told to ask you with
+  `attention_ask` instead;
+- **task routing is refused beside it.** `MUSTER_TASK_ROUTING=1` with
+  `MUSTER_CHIEF_RUNTIME=compose` refuses to boot: a task event asks the chief to
+  decide with `agent_dispatch`, `task_forward` or `task_route_attention`, none of
+  which it is offered, and nothing else would put the event in front of you;
+- **every other prompt is denied at once**, not left hanging: Bash, a file edit.
+  The chief is told it was denied and carries on.
 
 ⚠ **Not every tool prompts.** In its default permission mode Claude Code itself
 runs some tools without asking, so they run here too, beside the eight above
@@ -257,6 +277,10 @@ The other way round, the chief is the one agent **not** offered
 `connector_request`, `connector_status`, `browser_flow_request` or
 `browser_flow_status`: its connectors are the standing grants you give it
 (`connectors_list` shows them), and it does not ask for browser flows.
+
+On the docker compose install the chief is offered far less: only the tools
+it can run there, the ones pre-allowed in its container ([its
+tools](#on-the-docker-compose-install)).
 
 When the chief needs you to choose something, it asks with `ask_owner`: the
 question appears in its chat as a card with a button per option and an
