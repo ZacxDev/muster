@@ -358,6 +358,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			g.If(strings.HasPrefix(href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 			identityAttrs(color),
 			g.Attr("title", it.Tip),
+			g.Attr("data-switcher-name", label),
 			// What the command palette finds the row by (palette.go), as a
 			// switcher pill's (switcherEntry).
 			g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),

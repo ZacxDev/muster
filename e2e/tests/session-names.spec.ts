@@ -145,6 +145,15 @@ for (const vp of [
       await openSidebar(page);
       await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText(`Payments ${vp.key}`);
       await expect(rowOf(page, w).locator('[data-nav-focus]')).toContainText('Shipping the invoice exporter');
+
+      // 5. The palette still finds it by its codename, and calls it by its name.
+      await page.goto(origin + '/tasks');
+      await openSidebar(page);
+      await page.locator('#sidebar-search').click();
+      const options = page.locator('#switcher-search-results [role="option"]');
+      await page.locator('#switcher-search-input').fill(`walnut:${w}`);
+      await expect(options).toHaveCount(1);
+      await expect(options.first().locator('span').first()).toHaveText(`Payments ${vp.key}`);
     });
   });
 }

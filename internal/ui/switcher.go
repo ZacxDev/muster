@@ -901,6 +901,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 			g.Attr("title", it.Tip+" (this session)"),
 			search,
 			Class(box),
+			// The entry's NAME, for the palette (its title is the tooltip, Tip).
+			g.Attr("data-switcher-name", it.Label),
 			Span(Class(pill+"bg-accent/15 text-accent ring-accent/40"), inner),
 		)
 	}
@@ -915,6 +917,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.Attr("title", it.Tip),
 		search,
 		Class("press group "+box),
+		g.Attr("data-switcher-name", it.Label),
 		Span(Class(pill+"bg-s1/70 text-fg ring-line transition group-hover:bg-s2"), inner),
 	)
 }
