@@ -391,6 +391,15 @@ func (g *Gateway) ChatWithTools(ctx context.Context, a agents.Agent, sessionKey,
 	if err != nil {
 		return "", err
 	}
+	return g.SendWithTools(ctx, t, sessionKey, instructions, message, tools, dispatch, emit)
+}
+
+// SendWithTools runs the turn half of [Gateway.ChatWithTools] against a [Target]
+// from [Gateway.Resolve], for a caller that must resolve before its point of no
+// return (internal/agentkickoff's first turn, as [Gateway.Send] is for a
+// toolless one). It does NOT fall back on a 404: ErrResponsesUnsupported comes
+// back for the caller to decide.
+func (g *Gateway) SendWithTools(ctx context.Context, t Target, sessionKey, instructions, message string, tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error) {
 	reply, err := agents.RunToolLoop(ctx, g.clientFor(t.kind), agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, instructions, message, tools, dispatch, emit)
 	return reply, g.noteFailure(ctx, t, err)

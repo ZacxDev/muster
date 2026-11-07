@@ -117,11 +117,12 @@ func isToolErr(text string) bool {
 	// `refused` (session_routes.go's routeRefusal), `budget`
 	// (agent_dispatch's dispatchRefusal) and `candidates`
 	// (plugin_message_route's subject refusals), `retryable` (an officer
-	// tool's HQ failure HQ says to retry, officerToolResult), and
-	// `current_definition` (serveMCP's, on any of them) — nothing else.
+	// tool's HQ failure HQ says to retry, officerToolResult),
+	// `model_suggestions` (the model check's closest ids, dispatchModelRefusal)
+	// and `current_definition` (serveMCP's, on any of them) — nothing else.
 	for k := range m {
 		switch k {
-		case "error", "refused", "budget", "candidates", "retryable", "current_definition":
+		case "error", "refused", "budget", "candidates", "retryable", "model_suggestions", "current_definition":
 		default:
 			return false
 		}

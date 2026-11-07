@@ -15,6 +15,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -51,6 +52,9 @@
 //	    draft cascade), leaving the owner's other plugins alone.
 //	  - rmchiefs: deletes every agent of the owner's that would be its chief
 //	    (labelled chief, or the reserved slug), for a spec about having none.
+//	  - agentinfo: one agent's kind, model, task and first message, read back
+//	    for a spec that started it through a real door (mcp-dispatch.spec.ts):
+//	    note_text is the first message as the agent was created with it.
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
 //
@@ -61,6 +65,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -84,7 +89,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|rmchiefs|cleanup|ask|rmask|draft|rmplugin|chiefpref …")
+		return fmt.Errorf("usage: pluginfix chief|agent|agentinfo|delivering|unconfirmed|lapse|label|linknote|rmagent|rmchiefs|cleanup|ask|rmask|draft|rmplugin|chiefpref …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -220,6 +225,33 @@ func run(args []string) error {
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("no agent %d", agent)
 		}
+	case "agentinfo":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: agentinfo <owner-id> <agent-id>")
+		}
+		id, err := num(2)
+		if err != nil {
+			return err
+		}
+		var out struct {
+			Name        string `json:"name"`
+			Kind        string `json:"kind"`
+			Model       string `json:"model"`
+			NoteID      *int64 `json:"note_id"`
+			NoteText    string `json:"note_text"`
+			PendingNote string `json:"pending_note"`
+		}
+		if err := conn.QueryRow(ctx, `SELECT name, kind, coalesce(model, ''), note_id, coalesce(note_text, ''), coalesce(pending_note, '')
+			FROM agents WHERE owner_id = $1 AND id = $2`, owner, id).Scan(&out.Name, &out.Kind, &out.Model, &out.NoteID, &out.NoteText,
+			&out.PendingNote); err != nil {
+			return err
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
 	case "rmagent":
 		// Deletes ONE agent and nothing else (cleanup also clears the owner's
 		// plugins, which a spec on the shared server must not do).

@@ -141,6 +141,16 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	if err != nil {
 		return refuse(http.StatusConflict, "%v", err)
 	}
+	// The catalogue check (model_validate.go) is part of the pre-flight too:
+	// createAndDispatchAgent would refuse an unknown model AFTER the old chief
+	// is gone.
+	if req.Model != "" {
+		m, err := s.checkAgentModel(ctx, req.Model)
+		if err != nil {
+			return refuse(http.StatusBadRequest, "%v", err)
+		}
+		req.Model = m
+	}
 	if err := agents.ValidateModelCredential(req.Model); err != nil {
 		return refuse(http.StatusBadRequest, "%v", err)
 	}

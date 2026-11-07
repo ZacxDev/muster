@@ -34,7 +34,7 @@ import (
 var featureIDs = []string{
 	"mirror", "password-sign-in", "push", "dictation", "attachments",
 	"suggested-replies", "focus", "accounts", "connectors", "github-app", "dispatch", "agent-gateway",
-	"claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "plugins",
+	"claude-code-agents", "chief", "chief-session-runtimes", "chief-nudges", "session-state", "ask-log", "plugins",
 	"plugin-tasks", "session-routing", "task-routing", "pr-mail-routing", "fleet-reports", "mail-resume",
 	"memo-relay", "approval-router", "browser-flows", "agent-ask-tool", "service-token", "android",
 	"telemetry", "officers",
@@ -64,6 +64,9 @@ var featureLedgerExempt = map[string]string{
 	envTaskReapAfter:          "a housekeeping interval of the task board, which is always on",
 	envAgentReapStoppedAfter:  "a housekeeping interval; the dispatch entry is what makes agents exist at all",
 	envAgentsIdleAfter:        "a sidebar display threshold, on by default, announced on its own banner line",
+	envAgentStuckNoReply:      "an outcome-watchdog threshold, on whenever there is a database, announced on its own banner line",
+	envAgentStuckSilent:       "an outcome-watchdog threshold, on whenever there is a database, announced on its own banner line",
+	envAgentWatchdogInterval:  "the outcome watchdog's sweep interval, announced on its own banner line",
 	envTagAutoDispatch:        "reserved and inert by design (docs/configuration.md): it turns nothing on",
 	envLiveHeartbeat:          "a transport tuning interval of every live page; no feature is on or off with it",
 	envHostIcons:              "cosmetic: a mirrored host's icon",
@@ -367,7 +370,7 @@ func TestTheBootLogHasOneRegistrySummaryLine(t *testing.T) {
 		}
 	}
 	want := "features: 0 on; off: mirror, push, dictation, attachments, suggested-replies, focus, accounts, connectors, github-app, " +
-		"dispatch, agent-gateway, claude-code-agents, chief, chief-session-runtimes, chief-nudges, session-state, plugins, plugin-tasks, " +
+		"dispatch, agent-gateway, claude-code-agents, chief, chief-session-runtimes, chief-nudges, session-state, ask-log, plugins, plugin-tasks, " +
 		"session-routing, task-routing, pr-mail-routing, fleet-reports, mail-resume, memo-relay, approval-router, browser-flows, " +
 		"agent-ask-tool, service-token, android, telemetry, officers; misconfigured: password-sign-in — see /account/features"
 	if len(lines) != 1 || lines[0] != want {

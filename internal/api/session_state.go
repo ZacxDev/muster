@@ -436,6 +436,13 @@ func (s *Server) sessionStateStep(octx context.Context, sp statePass, c nudgeCan
 			s.logger.Printf("session state: episode %d: classify: %v", ep.ID, err)
 		}
 	}
+	// 🔴 A DISPATCHED AGENT'S WAIT IS PUSHED ONCE, BY THE OUTCOME TRACKER. When
+	// it has already told (or the owner has seen) this agent's current wait
+	// (outcomeOwnsWait), its stop stays an episode — drawn on the Asks page —
+	// but is not pushed again as a stall.
+	if c.Kind == chiefnudge.KindAgent && outcomeOwnsWait(c.agent) {
+		return
+	}
 	// The stop's one push (session_push.go): what this pass saw of it now.
 	ep.State, ep.StreakKey = state, anchor
 	s.settleEpisode(octx, ep, episodeFacts{

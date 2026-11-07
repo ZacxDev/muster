@@ -73,6 +73,12 @@ type AgentCardView struct {
 	// or no App is configured. Composed in internal/api's cardViewIndexed from
 	// githubapp's operator-facing text, which never carries a token.
 	GitHubProblem string
+	// Outcome is how the work this agent was started on ended (agentoutcome:
+	// running|done|failed|stuck, "" untracked) and OutcomeReason why, scrubbed of
+	// the note. A failed or stuck outcome draws a badge on the strip, a notice
+	// above the transcript and a marker on the sidebar row (agent_outcome.go).
+	Outcome       string
+	OutcomeReason string
 	// Namespace is the agent's stored namespace, used only to spell the log command
 	// in the failed-kickoff remedy.
 	Namespace string

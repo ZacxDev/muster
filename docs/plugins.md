@@ -1214,6 +1214,27 @@ turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
 
+A session is also listed by **its repo**, whether or not its focus matches:
+an online mirrored Claude Code window, however long it has been idle, whose
+repository name (as its host reports it, split on `-`, `_` and `.`) the
+message covers in at least two parts. A run counts when the message spells
+parts of the name in a row (`yt-thumbnail` or "YT Thumbnail" for
+`acme-app-yt-thumbnail`) and the run holds a part that is an identifier on
+its own (a word with digits, or one that is not a dictionary word — so
+`new-project` is never named by "a new project") and a part no other live
+repo's name has — so "acme app" names none of a family of `acme-app-*` repos.
+These come after the focus matches, within the three; between two windows
+covering as many parts, the more recently active goes first. The
+window label is not matched here: a Claude window's label is its host's
+codename (`<codename>:<n>`), not a task title. Such a session's line says it
+was listed by its repo, with the repo and when it was last active: a session
+open on a job but idle for days has no focus in the window, and
+`sessions_overview` lists only the last 24 hours. The repo name is the host's
+words, inside the fence like the titles. `focus_search` does the same after
+its focus matches, and there the label counts too (a codename typed on
+purpose): an online mirrored session whose repo or label matches the query
+comes back with `matched: "repo or window label"`.
+
 A **task event** gets the block too, matched on the task's own title and
 body (as muster stores them) and its change line, never on the event's JSON,
 and **leaving out the agents bound to the task** — those the event records and

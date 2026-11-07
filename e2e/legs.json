@@ -61,6 +61,7 @@
     "tests/mirror-ask.spec.ts": 14.1,
     "tests/kickoff-wait.spec.ts": 3.0,
     "tests/attention.spec.ts": 20.0,
+    "tests/mcp-dispatch.spec.ts": 10.0,
     "tests/ask-page.spec.ts": 8.0,
     "tests/bfcache.spec.ts": 4.0,
     "tests/bfcache-restore.spec.ts": 40.0,
@@ -88,7 +89,8 @@
     "tests/open-perf.spec.ts": 45.0,
     "tests/agent-sidebar.spec.ts": 10.0,
     "tests/chief-mobile.spec.ts": 12.0,
-    "tests/dock-fade.spec.ts": 8.0
+    "tests/dock-fade.spec.ts": 8.0,
+    "tests/agent-outcomes.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -136,7 +138,8 @@
       "tests/chief-mobile.spec.ts",
       "tests/dock-fade.spec.ts",
       "tests/features.spec.ts",
-      "tests/optimistic-send.spec.ts"
+      "tests/optimistic-send.spec.ts",
+      "tests/mcp-dispatch.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",
@@ -184,7 +187,8 @@
       "tests/telemetry.spec.ts",
       "tests/open-perf.spec.ts",
       "tests/reconnect.spec.ts",
-      "tests/chief-ux.spec.ts"
+      "tests/chief-ux.spec.ts",
+      "tests/agent-outcomes.spec.ts"
     ]
   }
 }

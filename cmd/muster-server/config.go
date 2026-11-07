@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
@@ -155,6 +156,14 @@ const (
 	// have had no activity to be drawn in the sidebar's collapsed "Idle" group. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
 	// off, refused outside 1h–365d otherwise.
 	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
+	// The outcome watchdog (internal/agentoutcome, internal/api
+	// agent_watchdog.go): a started agent with no first reply and no activity
+	// for NO_REPLY after its kickoff, or no activity for SILENT once it has
+	// replied, is called stuck (one push, a note to the chief that started it).
+	// Go durations, at least 1s; 5m, 30m and 1m when unset.
+	envAgentStuckNoReply     = "MUSTER_AGENT_STUCK_NO_REPLY"
+	envAgentStuckSilent      = "MUSTER_AGENT_STUCK_SILENT"
+	envAgentWatchdogInterval = "MUSTER_AGENT_WATCHDOG_INTERVAL"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -254,6 +263,14 @@ const (
 	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
 	// outside 250ms–5m. A page replaces a stream silent for about two of them.
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
+
+	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
+	// asklog_config.go parses them): its switch (off by default), how long
+	// question and answer text is kept, and whether a kept plain-text question
+	// is classified at capture.
+	envAskLog         = "MUSTER_ASK_LOG"
+	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
+	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
@@ -684,6 +701,11 @@ type config struct {
 	// set ("" unset), for the banner.
 	AgentsIdleAfter    time.Duration
 	AgentsIdleAfterRaw string
+	// AgentStuck is the outcome watchdog's thresholds (MUSTER_AGENT_STUCK_NO_REPLY,
+	// MUSTER_AGENT_STUCK_SILENT) and AgentWatchdogInterval its sweep
+	// (MUSTER_AGENT_WATCHDOG_INTERVAL), defaults filled.
+	AgentStuck            agentoutcome.Thresholds
+	AgentWatchdogInterval time.Duration
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -735,6 +757,10 @@ type config struct {
 	// default): every session's state and its episodes (internal/sessionstate).
 	SessionState           bool
 	ChiefNudgeAskThreshold float64
+
+	// AskLog is the ask log's configuration (asklog_config.go).
+	AskLog askLogConfig
+
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
 	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
@@ -1491,6 +1517,22 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v", envAgentsIdleAfter, err)
 	}
 	c.AgentsIdleAfter = idleAfter
+	def := agentoutcome.DefaultThresholds()
+	for _, v := range []struct {
+		name string
+		dst  *time.Duration
+		def  time.Duration
+	}{
+		{envAgentStuckNoReply, &c.AgentStuck.NoReply, def.NoReply},
+		{envAgentStuckSilent, &c.AgentStuck.Silent, def.Silent},
+		{envAgentWatchdogInterval, &c.AgentWatchdogInterval, agentoutcome.DefaultInterval},
+	} {
+		d, err := agentoutcome.ParseThreshold(getenv(v.name), v.def)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v", v.name, err)
+		}
+		*v.dst = d
+	}
 	c.FocusRetention = focus.DefaultRetention
 	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1572,6 +1614,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefDispatchOwners = owners
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
+	if c.AskLog, err = parseAskLog(getenv); err != nil {
+		return config{}, err
+	}
 	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
 	if v := strings.TrimSpace(getenv(envChiefNudgeIdle)); v != "" {
 		d, err := time.ParseDuration(v)

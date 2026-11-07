@@ -27,7 +27,8 @@ func pgStore(t *testing.T) *PG {
 		t.Fatalf("migrate: %v", err)
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member'), (3, 'member') ON CONFLICT (id) DO NOTHING`)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE session_episodes`)
+	// CASCADE: the ask log's rows (asks, 0089) link an episode.
+	dbtest.OwnerExec(t, dsn, `TRUNCATE session_episodes CASCADE`)
 	return NewPG(pool)
 }
 

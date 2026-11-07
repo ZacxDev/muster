@@ -120,5 +120,8 @@ func (s *Server) handleAgentWork(w http.ResponseWriter, r *http.Request) {
 	if prev.work != work {
 		s.broadcast(r.Context(), EventAgentChanged, a.Name)
 	}
+	// A work report is ccd's heartbeat: activity for the outcome watchdog, and —
+	// when it CLEARS after the agent answered — the end of its work.
+	s.outcomeWorkReported(r.Context(), a, was && !prev.work.IsZero() && work.IsZero())
 	w.WriteHeader(http.StatusNoContent)
 }

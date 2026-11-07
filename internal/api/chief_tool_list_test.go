@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -25,7 +26,7 @@ var chiefMCPToolList = []string{
 
 // notChiefToolList are the registry's notChief tools: offered to every agent
 // but the chief.
-var notChiefToolList = []string{"connector_request", "connector_status", "postgres_query", "browser_flow_request", "browser_flow_status"}
+var notChiefToolList = []string{"agent_report_done", "connector_request", "connector_status", "postgres_query", "browser_flow_request", "browser_flow_status"}
 
 func chiefAndWorkerServer(t *testing.T) (*Server, agents.Agent, agents.Agent) {
 	t.Helper()
@@ -33,6 +34,9 @@ func chiefAndWorkerServer(t *testing.T) (*Server, agents.Agent, agents.Agent) {
 	chief := agents.Agent{ID: 1, Name: "chief", OwnerID: 1}
 	worker := agents.Agent{ID: 2, Name: "a-worker", OwnerID: 1}
 	s.ext.Agents = listAgents{list: []agents.Agent{chief, worker}}
+	// The outcome store, so agent_report_done (a notChief tool gated on it) is
+	// in the registry the axis is measured over.
+	s.ext.Outcomes = agentoutcome.NewPG(nil)
 	return s, chief, worker
 }
 

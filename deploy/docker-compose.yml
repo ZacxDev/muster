@@ -173,6 +173,12 @@ services:
       # (only 1/true/yes/on is on), as does 0 (docs/features.md#session-state).
       MUSTER_SESSION_STATE: ${MUSTER_SESSION_STATE-1}
 
+      # The ask log: every question an agent asks you, with your answer
+      # (docs/features.md#ask-log). Off by default; needs only the database.
+      MUSTER_ASK_LOG: ${MUSTER_ASK_LOG:-}
+      MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
+      MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
+
       # Plugins and what routes through them (docs/features.md#plugins).
       MUSTER_PLUGINS: ${MUSTER_PLUGINS:-}
       MUSTER_PLUGIN_TASK_NAMESPACES: ${MUSTER_PLUGIN_TASK_NAMESPACES:-}
@@ -226,6 +232,9 @@ services:
       MUSTER_SEND_QUEUE_IDLE: ${MUSTER_SEND_QUEUE_IDLE:-}
       MUSTER_TASK_REAP_AFTER: ${MUSTER_TASK_REAP_AFTER:-}
       MUSTER_AGENTS_IDLE_AFTER: ${MUSTER_AGENTS_IDLE_AFTER:-}
+      MUSTER_AGENT_STUCK_NO_REPLY: ${MUSTER_AGENT_STUCK_NO_REPLY:-}
+      MUSTER_AGENT_STUCK_SILENT: ${MUSTER_AGENT_STUCK_SILENT:-}
+      MUSTER_AGENT_WATCHDOG_INTERVAL: ${MUSTER_AGENT_WATCHDOG_INTERVAL:-}
       MUSTER_HOST_ICONS: ${MUSTER_HOST_ICONS:-}
 
       # The chief (docs/features.md#chief), with the `chief` profile:
