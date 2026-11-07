@@ -59,7 +59,7 @@ func TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		changed = append(changed, name)
-	}, logger)
+	}, nil, logger)
 	if err != nil || d == nil {
 		t.Fatalf("buildKickoffDeliverer: deliverer=%v err=%v", d != nil, err)
 	}
@@ -97,9 +97,10 @@ func TestBuildAppPassesTheServersBroadcastToTheDeliverer(t *testing.T) {
 	if n := strings.Count(text, "buildKickoffDeliverer("); n != 1 {
 		t.Fatalf("instrument check FAILED: main.go calls buildKickoffDeliverer %d time(s), want 1", n)
 	}
-	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, logger)"
+	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, logger)"
 	if !strings.Contains(text, want) {
 		t.Errorf("main.go does not contain %q: the deliverer's background card changes would "+
-			"reach no open Agents list", want)
+			"reach no open Agents list, or a fresh_session_per_item officer's kickoff would not "+
+			"start a new conversation (srv.OfficerTurnContext)", want)
 	}
 }

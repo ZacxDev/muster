@@ -51,6 +51,11 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		// owner turn; none for any other), then tells the page "accepted".
 		// TestAcceptedAfterQueuedKeepsTheCallerCallback pins the chaining.
 		"internal/api/chat_busy.go (*Server).acceptedAfterQueued → WithTurnAccepted(ctx)",
+		// Not a marker setter: a fresh_session_per_item officer turn's
+		// acceptance frees the instance's conversation (officers.go
+		// officerConversationAccepted) and writes no owner_turn_ field. Listed
+		// because every WithTurnAccepted is, so a new one is looked at.
+		"internal/api/officers.go (*Server).OfficerTurnContext → WithTurnAccepted(ctx)",
 		// The one caller of markOwnerTurn: the turn's own user row, its typer.
 		"internal/api/agents.go (*Server).runEnteredTurn → markOwnerTurn(typedBy)",
 		// Who passes what into the turn.

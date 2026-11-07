@@ -41,6 +41,11 @@ const (
 	failTurn         = "turn_failed"   // 502: any other API failure
 	failEmptyReply   = "empty_reply"   // 502: the turn ended with no answer text
 	failCapacity     = "capacity"      // 503: every Claude Code session ccd may run at once is mid-turn (lanes.go)
+
+	// 502: ccd typed /clear for a new conversation (server.go
+	// startNewConversation) and the CLI never confirmed it; the turn was not
+	// typed. Deliberately NOT not_ready, which muster re-sends: /clear was typed.
+	failNewConversation = "new_conversation_unconfirmed"
 )
 
 // codeAwaitingApproval is the `code` of a `busy` refusal for a pane showing a
