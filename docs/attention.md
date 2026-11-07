@@ -783,6 +783,12 @@ session-authenticated and same-origin — or through one of their own mirrored
 Claude Code sessions' `attention_answer` ([who can, and how](#the-agent-tools)).
 No dispatched agent's tool answers an ask, the chief's included.
 
+*Proposed, not built:* [design/ask-autoapproval.md](design/ask-autoapproval.md)
+reverses "only the operator answers", by operator decision, for exactly two
+fixed answers ("continue", and "merge when green" once muster has verified the
+PR's CI and audit ladder), given by a deterministic rule the operator promoted.
+Every other ask stays the operator's.
+
 **Or in the session.** Writing to the asker directly answers it too: a message
 you send into a mirrored session's Claude Code pane (the rendered view's Send —
 not the Terminal's, which types into whatever pane is active, possibly a
