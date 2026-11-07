@@ -109,13 +109,20 @@ type PRSessionStore interface {
 	// "<owner>/<repo>#<n>", sorted and distinct (internal/api's fleet_report).
 	SessionPRs(ctx context.Context, claudeSessions []string, since time.Time) (map[string][]string, error)
 	// SessionRefs is the principal's authorship rows of claudeSessions still
-	// inside PRSessionRetention, most recently seen first, at most
-	// MaxSessionRefs: each with its repo, its head branch ("" for none), and
-	// its own pull request number (0 for a push, which names none). Nothing is
-	// inherited from another row: a create matches by its number, a push by
-	// its branch only. The session hint and focus_search match a message's
-	// pull requests and branches against them (internal/api's prHints).
-	SessionRefs(ctx context.Context, claudeSessions []string) ([]PRSession, error)
+	// inside PRSessionRetention that a text CAN name — a row with its own pull
+	// request number one of mentions names (prroute.Mention.Names' rule), or a
+	// row whose head branch is one of branches — most recently seen first, at
+	// most MaxSessionRefs. Each has its repo, its head branch ("" for none) and
+	// its own number (0 for a push, which names none): nothing is inherited
+	// from another row. No mention and no branch is no rows, and no query. The
+	// session hint and focus_search match against them (internal/api's
+	// prHints).
+	//
+	// 🔴 NARROWED IN SQL, BEFORE THE BOUND. Taking the newest rows of every
+	// online session and matching afterwards cut the IDLE author first — its
+	// rows are the oldest — once the busy sessions had MaxSessionRefs newer
+	// ones between them.
+	SessionRefs(ctx context.Context, claudeSessions []string, mentions []prroute.Mention, branches []string) ([]PRSession, error)
 }
 
 // MaxSessionRefs bounds SessionRefs: the hint reads it on every delivery.
@@ -220,14 +227,27 @@ func (s *PGStore) SessionPRs(ctx context.Context, claudeSessions []string, since
 }
 
 // SessionRefs: see PRSessionStore.
-func (s *PGStore) SessionRefs(ctx context.Context, claudeSessions []string) ([]PRSession, error) {
-	if len(claudeSessions) == 0 {
+func (s *PGStore) SessionRefs(ctx context.Context, claudeSessions []string, mentions []prroute.Mention, branches []string) ([]PRSession, error) {
+	if len(claudeSessions) == 0 || (len(mentions) == 0 && len(branches) == 0) {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT claude_session, kind, repo, coalesce(pr, 0), coalesce(head_ref, ''), last_seen
-		FROM session_prs
-		WHERE claude_session = ANY($1::text[]) AND last_seen > now() - make_interval(secs => $2)
-		ORDER BY last_seen DESC, id DESC LIMIT $3`, claudeSessions, PRSessionRetention.Seconds(), MaxSessionRefs)
+	owners, names, prs := make([]string, len(mentions)), make([]string, len(mentions)), make([]int64, len(mentions))
+	for i, m := range mentions {
+		owners[i], names[i], prs[i] = m.Owner, m.Repo, m.PR
+	}
+	if branches == nil {
+		branches = []string{}
+	}
+	// The mention arm is Mention.Names in SQL (repo is stored lower-cased,
+	// "<owner>/<name>"); internal/api's matching checks every row again.
+	rows, err := s.pool.Query(ctx, `SELECT p.claude_session, p.kind, p.repo, coalesce(p.pr, 0), coalesce(p.head_ref, ''), p.last_seen
+		FROM session_prs p
+		WHERE p.claude_session = ANY($1::text[]) AND p.last_seen > now() - make_interval(secs => $2)
+			AND ((p.pr IS NOT NULL AND EXISTS (SELECT 1 FROM unnest($4::text[], $5::text[], $6::bigint[]) AS m(owner, name, pr)
+					WHERE m.pr = p.pr AND split_part(p.repo, '/', 2) = m.name AND (m.owner = '' OR split_part(p.repo, '/', 1) = m.owner)))
+				OR p.head_ref = ANY($7::text[]))
+		ORDER BY p.last_seen DESC, p.id DESC LIMIT $3`, claudeSessions, PRSessionRetention.Seconds(), MaxSessionRefs,
+		owners, names, prs, branches)
 	if err != nil {
 		return nil, err
 	}

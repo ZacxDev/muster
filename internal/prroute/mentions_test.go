@@ -91,6 +91,13 @@ func TestABranchIsNamedAsAWholeToken(t *testing.T) {
 		"nothing here":                           false,
 		"feat/stage-c-jo":                        false,
 		"feat/stage-c-jobfeat/stage-c-job (dup)": false,
+		// A ref path, a tree URL and a compare range spell it too.
+		"git push origin HEAD:refs/heads/feat/stage-c-job":           true,
+		"https://github.com/acme/infra-config/tree/feat/stage-c-job": true,
+		"compare main...feat/stage-c-job":                            true,
+		"compare feat/stage-c-job...main":                            true,
+		"a/tree/feat/stage-c-job-2":                                  false,
+		"refs/heads/feat/stage-c-job.v2":                             false,
 	} {
 		if got := NamesBranch(text, ref); got != want {
 			t.Errorf("NamesBranch(%q, %q) = %v; want %v", text, ref, got, want)
@@ -105,12 +112,16 @@ func TestABranchIsNamedAsAWholeToken(t *testing.T) {
 // 🔴 A bare-word branch — what every trunk-deployed session pushes — is never
 // named, however plainly the text spells it.
 func TestAGenericBranchIsNeverNamed(t *testing.T) {
-	for _, ref := range []string{"main", "master", "develop", "trunk", "a-b", "x_y"} {
+	for _, ref := range []string{"main", "master", "develop", "trunk", "a-b", "x_y",
+		// Hyphenated or underscored dictionary words: prose, not a branch.
+		"follow-up", "read-only", "dark-mode", "gh-pages", "sign_up", "self-hosted",
+		// Too short however it is spelled; one word, however rare.
+		"a/b", "x-9", "kubelet"} {
 		if NamesBranch("merged to "+ref+" today", ref) {
 			t.Errorf("NamesBranch named the generic branch %q", ref)
 		}
 	}
-	for _, ref := range []string{"feat/x", "fix-login", "wip_cache"} {
+	for _, ref := range []string{"feat/x", "fix-oauth-loop", "wip_kubelet", "release-2026", "v2-cache"} {
 		if !NamesBranch("merged "+ref+" today", ref) {
 			t.Errorf("NamesBranch missed the distinctive branch %q", ref)
 		}

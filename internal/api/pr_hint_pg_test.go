@@ -156,6 +156,76 @@ func TestAStalePullRequestRowNamesNoSession(t *testing.T) {
 	}
 }
 
+// 🔴 An idle author is found however many NEWER rows the owner's busy online
+// sessions have: the store narrows to the rows the message can name before its
+// bound, so MaxSessionRefs newer unrelated rows cannot push the author's out.
+func TestAnIdleAuthorIsHintedPastManyNewerRows(t *testing.T) {
+	g := prHintReplay(t)
+	if _, err := g.pool.Exec(authz.System(context.Background()), `INSERT INTO session_prs (owner_id, kind, repo, pr, claude_session)
+		SELECT $1, 'gh-pr-create', 'acme/widget-api', n, $2 FROM generate_series(1, $3::int) AS n`,
+		g.owner, sidPROther, plugins.MaxSessionRefs+20); err != nil {
+		t.Fatal(err)
+	}
+	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 12, Subject: prHintSubject, Body: prHintBody})
+	if ids := hintIDs(h); fmt.Sprint(ids) != "[mirror:"+sidPRAuthor+"]" {
+		t.Fatalf("hint lists %v; want the idle author past %d newer rows", ids, plugins.MaxSessionRefs+20)
+	}
+}
+
+// SessionRefs reads only the rows the text can name: the mentioned repo name,
+// owner and number for a create, a candidate branch for any row — never
+// another owner's repo of the same name, another repo, another number or an
+// unnamed branch, which would spend its bound.
+func TestSessionRefsReadsOnlyRowsTheTextCanName(t *testing.T) {
+	g := prHintReplay(t)
+	for _, sig := range []prroute.Signal{
+		{Kind: prroute.KindPRCreate, Repo: "other/infra-config", PR: prHintN},
+		{Kind: prroute.KindPRCreate, Repo: "acme/widget-api", PR: prHintN},
+		{Kind: prroute.KindPRCreate, Repo: prHintRepo, PR: prHintN + 1},
+		{Kind: prroute.KindPush, Repo: prHintRepo, HeadRef: "feat/other-job"},
+		{Kind: prroute.KindPush, Repo: prHintRepo, HeadRef: "feat/named-job"},
+	} {
+		g.record(t, g.asOwner, sidPROther, sig)
+	}
+	text := "acme/infra-config#2855 and feat/named-job"
+	rows, err := g.plugins.SessionRefs(g.asOwner, []string{sidPRAuthor, sidPROther}, prroute.Mentions(text), prroute.BranchCandidates(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, fmt.Sprintf("%s %s#%d %s", r.ClaudeSession, r.Repo, r.PR, r.HeadRef))
+	}
+	want := "[" + sidPROther + " acme/infra-config#0 feat/named-job " + sidPRAuthor + " acme/infra-config#2855 feat/stage-c-job]"
+	if fmt.Sprint(got) != want {
+		t.Fatalf("SessionRefs = %v; want %s", got, want)
+	}
+	if rows, err := g.plugins.SessionRefs(g.asOwner, []string{sidPRAuthor}, nil, nil); err != nil || len(rows) != 0 {
+		t.Fatalf("no mention, no branch: %v %v", rows, err)
+	}
+}
+
+// matchPRHints checks every row again: a create the mentions do not name (its
+// owner, repo or number differs) and a branch not among branches list nothing.
+func TestMatchPRHintsChecksEveryRowAgain(t *testing.T) {
+	entries := map[string]mirror.SessionView{"s1": {Host: "box-1"}}
+	ms := prroute.Mentions("other/infra-config#2855 and widget-api#7")
+	for _, r := range []plugins.PRSession{
+		{ClaudeSession: "s1", Repo: prHintRepo, PR: prHintN},
+		{ClaudeSession: "s1", Repo: "acme/widget-api", PR: 8},
+		{ClaudeSession: "s1", Repo: "acme/gizmo", PR: 7},
+		{ClaudeSession: "s1", Repo: prHintRepo, HeadRef: "feat/other-job"},
+	} {
+		if got := matchPRHints(ms, []string{"feat/named-job"}, []plugins.PRSession{r}, entries, 3); len(got) != 0 {
+			t.Errorf("row %+v listed %+v", r, got)
+		}
+	}
+	// Control: the row they do name is listed.
+	if got := matchPRHints(ms, nil, []plugins.PRSession{{ClaudeSession: "s1", Repo: "acme/widget-api", PR: 7}}, entries, 3); len(got) != 1 {
+		t.Fatalf("the named row was not listed: %+v", got)
+	}
+}
+
 // matchPRHints lists only a session entries holds, and at most limit.
 func TestMatchPRHintsListsOnlyShownSessionsWithinTheLimit(t *testing.T) {
 	entries := map[string]mirror.SessionView{"s1": {Host: "box-1"}, "s2": {Host: "box-1"}, "s3": {Host: "box-1"}}
@@ -163,7 +233,7 @@ func TestMatchPRHintsListsOnlyShownSessionsWithinTheLimit(t *testing.T) {
 	for _, s := range []string{"ghost", "s1", "s2", "s3"} {
 		rows = append(rows, plugins.PRSession{ClaudeSession: s, Repo: prHintRepo, PR: prHintN})
 	}
-	got := matchPRHints(prHintSubject, rows, entries, 2)
+	got := matchPRHints(prroute.Mentions(prHintSubject), nil, rows, entries, 2)
 	var ids []string
 	for _, h := range got {
 		ids = append(ids, h.ID)

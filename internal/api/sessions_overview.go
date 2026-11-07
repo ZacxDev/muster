@@ -301,6 +301,10 @@ func (s *Server) prHints(ctx context.Context, text string) []plugins.SessionHint
 	if s.ext.PRSessions == nil {
 		return nil
 	}
+	mentions, branches := prroute.Mentions(text), prroute.BranchCandidates(text)
+	if len(mentions) == 0 && len(branches) == 0 {
+		return nil // nothing the text could name: no query
+	}
 	entries := map[string]mirror.SessionView{}
 	var keys []string
 	for _, e := range s.mirrorClaudeEntries(ctx) {
@@ -313,20 +317,23 @@ func (s *Server) prHints(ctx context.Context, text string) []plugins.SessionHint
 	if len(keys) == 0 {
 		return nil
 	}
-	rows, err := s.ext.PRSessions.SessionRefs(ctx, keys)
+	// The store narrows to the rows these can name BEFORE its bound
+	// (SessionRefs), so busy sessions' newer rows cannot push an idle
+	// author's out.
+	rows, err := s.ext.PRSessions.SessionRefs(ctx, keys, mentions, branches)
 	if err != nil {
 		s.logger.Printf("plugins: session hint by pull request: %v", err)
 		return nil
 	}
-	return matchPRHints(text, rows, entries, plugins.MaxHintSessions)
+	return matchPRHints(mentions, branches, rows, entries, plugins.MaxHintSessions)
 }
 
-// matchPRHints is prHints' matching of text over rows (most recently seen
-// first), for the sessions entries holds: each session with a row text names,
-// in the order of its first such row, with what it was listed by (at most
-// plugins.MaxHintPRs), at most limit sessions.
-func matchPRHints(text string, rows []plugins.PRSession, entries map[string]mirror.SessionView, limit int) []plugins.SessionHint {
-	mentions := prroute.Mentions(text)
+// matchPRHints is prHints' matching over rows (most recently seen first) for
+// the sessions entries holds: each session with a row that one of mentions
+// names (a create, by its number) or whose branch is one of branches (a push
+// or a create naming its head), in the order of its first such row, with what
+// it was listed by (at most plugins.MaxHintPRs), at most limit sessions.
+func matchPRHints(mentions []prroute.Mention, branches []string, rows []plugins.PRSession, entries map[string]mirror.SessionView, limit int) []plugins.SessionHint {
 	var out []plugins.SessionHint
 	at := map[string]int{}
 	for _, r := range rows {
@@ -338,7 +345,7 @@ func matchPRHints(text string, rows []plugins.PRSession, entries map[string]mirr
 		switch {
 		case r.PR > 0 && prroute.NamesAny(mentions, r.Repo, r.PR):
 			named = r.Repo + "#" + strconv.FormatInt(r.PR, 10)
-		case r.HeadRef != "" && prroute.NamesBranch(text, r.HeadRef):
+		case r.HeadRef != "" && slices.Contains(branches, r.HeadRef):
 			named = r.Repo + " branch " + r.HeadRef
 		default:
 			continue
