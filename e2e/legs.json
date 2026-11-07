@@ -61,6 +61,7 @@
     "tests/mirror-ask.spec.ts": 14.1,
     "tests/kickoff-wait.spec.ts": 3.0,
     "tests/attention.spec.ts": 20.0,
+    "tests/mcp-dispatch.spec.ts": 10.0,
     "tests/ask-page.spec.ts": 8.0,
     "tests/bfcache.spec.ts": 4.0,
     "tests/bfcache-restore.spec.ts": 40.0,
@@ -137,7 +138,8 @@
       "tests/chief-mobile.spec.ts",
       "tests/dock-fade.spec.ts",
       "tests/features.spec.ts",
-      "tests/optimistic-send.spec.ts"
+      "tests/optimistic-send.spec.ts",
+      "tests/mcp-dispatch.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

@@ -486,6 +486,58 @@ image equals `MUSTER_AGENT_CC_IMAGE`, and `ccd seed --check` passes in the pod.
 `MUSTER_AGENT_CC_IMAGE` (`muster-ops chief-restart` checks it) and the seed check
 are still yours.
 
+## Starting an agent from your own session
+
+The chief starts an agent only on a turn you typed in its chat
+(`agent_dispatch`'s `owner_asked`), so a mirrored Claude Code session cannot get
+the chief to start one for you: `chief_ask` relays a question, and the chief
+refuses a start it did not get from your typing. Your own mirrored sessions
+have their own door instead, in **two verbs, with no tap** (operator decision:
+*"dispatch and then another verb to approve the dispatch so I don't need to
+click anything"*):
+
+1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?,
+   request_key}` checks the start and **holds** it. Nothing runs yet. It answers
+   `{hold_id, summary, expires_at}`.
+2. `dispatch_approve {hold_id}` starts **exactly** what was held, once, within 15
+   minutes. Any of your mirrored sessions may approve, on any of your hosts.
+
+Both are listed only on the mirrored sessions' MCP door, and only while the
+chief's dispatch is on for you (`MUSTER_TASK_ROUTING=1`, which needs the plugin
+interface, and `MUSTER_CHIEF_DISPATCH_OWNERS` naming you). No dispatched agent,
+and not the chief, is offered either verb, and each handler refuses any caller
+that is not one of your mirrored sessions.
+
+The checks are `agent_dispatch`'s, minus the chief's own:
+
+- `target` is required, with no default: `pod/claude-code` (Claude Code, no
+  model) or `pod/gateway` with `model`. `mirrored` and `host/…` are refused, as
+  for `agent_dispatch`.
+- `model` must be an OpenRouter id (`openrouter/<provider>/<model>`). A display
+  name is refused.
+- A task must be open, not gated, and have no live agent.
+- A repository must be one you connected.
+- Your budget must have room.
+
+The start goes through the chief's own reservation and create. So it counts
+toward the chief's live and daily caps, and the budget the chief sees includes
+it. Its first message is your session's prompt, fenced and marked as relayed
+from one of your sessions, then (on a task) the task, then muster's rules, last.
+
+You get one notification: *"&lt;session&gt; dispatched &lt;agent&gt;
+(&lt;target&gt;, &lt;model&gt;)"*. The chief gets the same line as a note in its
+default chat, which costs it no turn, so it knows the agent exists and does not
+start another for the same work. Each request is a `chief.dispatch_held` audit
+row, and each approval a `chief.dispatch_approved` row. Both name the host, the
+session, the target, the model and the SHA-256 of the prompt. The reservation
+row (`task.chief_dispatch`) names the hold it consumed (`detail.held`).
+
+The tools' reference is in
+[attention.md](attention.md#mirrored-claude-code-sessions), with the accepted
+risk: a prompt-injected model in one of your mirrored sessions could call both
+verbs. The design note is in
+[design/chief-dispatch.md](design/chief-dispatch.md#29-held-dispatches-from-the-owners-sessions).
+
 ## Sessions on more than one runtime
 
 With `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, each new chief chat session

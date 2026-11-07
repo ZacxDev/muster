@@ -59,7 +59,12 @@ import (
 // the owner's but the chief, with NO audit row (the server log names the host) — and 🔴
 // through chief_restart (chief_restart_tool.go, operator ask "wire the mcp so this can be
 // done more easily"), a Stop then Start of the owner's OWN chief (refused mid-turn unless
-// force, which cuts the turn off as the browser's Stop does), again with no audit row. Never another task, another host's session, another owner's ask
+// force, which cuts the turn off as the browser's Stop does), again with no audit row — and 🔴
+// through dispatch_request / dispatch_approve (dispatch_hold_tools.go, operator decision
+// "dispatch and then another verb to approve"), with the chief's dispatch on, the START OF A
+// NEW AGENT as the owner with a prompt the caller writes, within the chief's caps (an audit
+// row per request and per approval names the host and session; each start pushes the owner
+// and is noted in the chief's chat). Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
@@ -199,7 +204,9 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // their own session — with the connector store; plugin_drafts_list /
 // plugin_draft_decide — the operator deciding a reply draft — with the plugin
 // store; and agent_destroy — the
-// operator tearing down one of their agents — with the attention tools. No
+// operator tearing down one of their agents — with the attention tools; and
+// dispatch_request / dispatch_approve — the operator starting an agent in two
+// verbs — with the chief's dispatch on. No
 // dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
 // session.
 //
@@ -242,6 +249,12 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	// session routing on.
 	if s.pluginMessageRouteToolsOn() && !s.featureOff(features.SessionRouting) {
 		out = append(out, pluginMessageRouteToolDefs()...)
+	}
+	// dispatch_request / dispatch_approve — the owner starting an agent from
+	// their own session in two verbs (dispatch_hold_tools.go) — with the
+	// chief's dispatch on: the same opt-in, ledger and caps.
+	if s.dispatchHoldToolsOn() && !s.featureOff(features.TaskRouting) {
+		out = append(out, dispatchHoldToolDefs()...)
 	}
 	return out
 }
@@ -291,6 +304,13 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			}
 			// So are plugin_messages_list / plugin_message_route.
 			if text, ok := s.dispatchPluginMessageRouteTool(r.Context(), c, name, args); ok {
+				return text
+			}
+			// And dispatch_request / dispatch_approve (listed only with
+			// dispatchHoldToolsOn): not in dispatchCallerTool, so no dispatched
+			// agent and no chief can name them; each refuses any caller but a
+			// mirrored session again inside.
+			if text, ok := s.dispatchHoldTool(r.Context(), c, name, args); ok {
 				return text
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {

@@ -318,6 +318,13 @@ export const chiefUxFakePort = port + 274;
 export const outcomesPort = port + 290;
 export const outcomesRuntimePort = port + 291;
 export const outcomesCatalogPort = port + 292;
+// tests/mcp-dispatch.spec.ts: the owner's mirrored session starts an agent in
+// two verbs (dispatch_request, dispatch_approve) — its own server (mirror plugin
+// on, chief dispatch on, both pod kinds over the noop driver), its connect
+// listener, and its fake host's loopback MCP endpoint.
+export const mcpDispatchPort = port + 300;
+export const mcpDispatchConnectPort = port + 301;
+export const mcpDispatchMirrorMCPPort = port + 302;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

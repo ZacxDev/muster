@@ -237,6 +237,20 @@ type DispatchStore interface {
 	// and with no routing or start recorded for their task at or after the
 	// event's latest attempt, or its creation if it has had none (chiefActedOn).
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
+	// FileDispatchHold files a held dispatch for the principal (dispatch_hold.go):
+	// one ActionDispatchHeld row whose detail is the request as it will start.
+	// It reserves and spends nothing.
+	FileDispatchHold(ctx context.Context, detail map[string]any) (DispatchHold, error)
+	// DispatchHold reads the principal's hold id as it stands now (expired by
+	// the database's clock, consumed by a reservation naming it), or
+	// ErrHoldNotFound — for a missing hold and another owner's alike.
+	DispatchHold(ctx context.Context, id string) (DispatchHold, error)
+	// DispatchHoldByKey is the principal's newest hold filed with request_key
+	// key in the last ChiefDispatchWindow; ok is false when there is none.
+	DispatchHoldByKey(ctx context.Context, key string) (h DispatchHold, ok bool, err error)
+	// RecordDispatchApproved records an approved hold's start
+	// (ActionDispatchApproved, object the hold id).
+	RecordDispatchApproved(ctx context.Context, holdID string, detail map[string]any) error
 	// ReserveNoticeRoute / CompleteNoticeRoute / ReleaseNoticeRoute: task_events.go.
 	ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error)
 	CompleteNoticeRoute(ctx context.Context, id int64) error

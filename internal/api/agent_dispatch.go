@@ -839,61 +839,30 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		// A claude-code agent has no per-agent model (claudeCodeNoModel).
 		p.Model = ""
 	}
-	// chiefDispatchDeploymentRefusal answered these before the reservation; they
-	// are read again HERE, at the call, because the provisioner-seam walk
-	// (provisioner_seam_test.go) is function-granular — a body that calls the
-	// provisioner and nil-checks it is the barrier.
-	//
-	// Past the reservation, a start that makes no agent and is not released
-	// stays spent (fail-closed) and records so (failSpent): the marker a
-	// request_key replay answers started: false on.
-	//
-	// 🔴 A LEDGER WRITE IS RETRIED ONCE, AND A SECOND FAILURE IS SAID — never
-	// logged into a silent replay "starting" (#428 round 1, option A: no time
-	// window). Without the marker a replay of this key cannot tell the failure.
-	failSpent := func(msg string) string {
-		if ferr := retryOnce(func() error {
-			return s.ext.ChiefDispatch.RecordChiefDispatchFailed(ctx, object, res.ReservationID)
-		}); ferr != nil {
-			s.logger.Printf("task routing: record the failed start (%s), after a retry: %v", object, ferr)
-			return refuse(agentDispatchFailedUnrecorded)
+	st := s.startReserved(ctx, object, res.ReservationID, p)
+	switch {
+	case st.failUnrecorded:
+		return refuse(agentDispatchFailedUnrecorded)
+	case st.failReason != "":
+		return refuse(st.failReason)
+	case st.refused != nil:
+		// A model the agent's one credential cannot reach (a bare provider id):
+		// the start is released, so the chief retries with the OpenRouter form
+		// rather than giving the task up to the owner.
+		if errors.Is(st.refused, agents.ErrModelNotCredentialed) {
+			return refuse("the agent could not be started: " + st.refused.Error() + "; " + agentDispatchModelRetry)
 		}
-		return refuse(msg)
+		return refuse("the agent could not be started: " + st.refused.Error() + "; use task_route_attention")
+	case st.failed:
+		return refuse("the agent could not be started; use task_route_attention")
 	}
-	if !s.dispatchServed() {
-		return failSpent("this deployment cannot start agents")
-	}
-	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return failSpent("this deployment cannot start an agent now: " + reason)
-	}
-	rec, err := s.createAndDispatchAgent(ctx, p)
-	if err != nil {
-		s.logger.Printf("task routing: start an agent (%s): %v", object, err)
-		if errors.Is(err, ErrDispatchRefused) || errors.Is(err, agents.ErrModelNotCredentialed) {
-			// 🔴 A REFUSAL RELEASES THE START IT RESERVED — and frees its
-			// request_key. These come only from createAndDispatchAgent's checks
-			// BEFORE Agents.Create, so no agent exists. THIS reservation is named,
-			// never "the latest". Any other failure stays spent (fail-closed).
-			if _, rerr := s.ext.ChiefDispatch.ReleaseRefusedChiefDispatch(ctx, object, res.ReservationID); rerr != nil {
-				s.logger.Printf("task routing: release the refused start (%s): %v", object, rerr)
-			}
-			// A model the agent's one credential cannot reach (a bare provider id):
-			// the start is released, so the chief retries with the OpenRouter form
-			// rather than giving the task up to the owner.
-			if errors.Is(err, agents.ErrModelNotCredentialed) {
-				return refuse("the agent could not be started: " + err.Error() + "; " + agentDispatchModelRetry)
-			}
-			return refuse("the agent could not be started: " + err.Error() + "; use task_route_attention")
-		}
-		return failSpent("the agent could not be started; use task_route_attention")
-	}
+	rec := st.agent
 	out := map[string]any{"target": in.Target, "agent_id": rec.ID, "agent": rec.Name,
 		"next": "Started. It opens a draft pull request at most and cannot mark a task complete. Do not start another."}
-	if err := retryOnce(func() error { return s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, object, rec.ID) }); err != nil {
+	if st.agentUnrecorded {
 		// The agent exists and runs; the ledger does not name it. Said, as a
 		// failed call: a replay of this key would read "starting", and the
 		// budget's live count may not hold the agent past the pending window.
-		s.logger.Printf("task routing: record agent %d (%s), after a retry: %v", rec.ID, object, err)
 		out["error"] = fmt.Sprintf(agentDispatchAgentUnrecorded, rec.Name)
 		delete(out, "next")
 	}
@@ -919,6 +888,84 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		out["budget"] = b
 	}
 	return toolJSON(out)
+}
+
+// reservedStart is how a start went after its reservation (startReserved).
+// Exactly one of agent (with agentUnrecorded possibly set), refused, or failed
+// describes it.
+type reservedStart struct {
+	// agent is the agent created; agentUnrecorded: it exists and runs, but the
+	// ledger could not be made to name it (retried once).
+	agent           agents.Agent
+	agentUnrecorded bool
+	// refused is createAndDispatchAgent's refusal BEFORE any row existed
+	// (ErrDispatchRefused, agents.ErrModelNotCredentialed): the reservation
+	// was released, and its request_key freed.
+	refused error
+	// failed: no agent, and the unit stays spent (fail-closed), recorded
+	// (RecordChiefDispatchFailed). failReason is the deployment's sentence when
+	// it failed before any create was tried; failUnrecorded: the failure could
+	// not be recorded either (retried once).
+	failed         bool
+	failReason     string
+	failUnrecorded bool
+}
+
+// startReserved is EVERYTHING AFTER A CHIEF-LEDGER RESERVATION, shared by the
+// chief's agent_dispatch and the owner's dispatch_approve
+// (dispatch_hold_tools.go), so the two doors create, record and release
+// exactly alike: the deployment's ability to start is read again, then
+// createAndDispatchAgent with p, then the ledger names the agent (or records
+// the failure, or releases a refused start).
+//
+// Past the reservation, a start that makes no agent and is not released stays
+// spent (fail-closed) and records so: the marker a request_key replay answers
+// started: false on.
+//
+// 🔴 A LEDGER WRITE IS RETRIED ONCE, AND A SECOND FAILURE IS SAID — never
+// logged into a silent replay "starting" (#428 round 1, option A: no time
+// window). Without the marker a replay of this key cannot tell the failure.
+func (s *Server) startReserved(ctx context.Context, object string, reservationID int64, p dispatchParams) reservedStart {
+	failSpent := func(reason string) reservedStart {
+		if ferr := retryOnce(func() error {
+			return s.ext.ChiefDispatch.RecordChiefDispatchFailed(ctx, object, reservationID)
+		}); ferr != nil {
+			s.logger.Printf("task routing: record the failed start (%s), after a retry: %v", object, ferr)
+			return reservedStart{failed: true, failUnrecorded: true}
+		}
+		return reservedStart{failed: true, failReason: reason}
+	}
+	// chiefDispatchDeploymentRefusal answered these before the reservation; they
+	// are read again HERE, at the call, because the provisioner-seam walk
+	// (provisioner_seam_test.go) is function-granular — a body that calls the
+	// provisioner and nil-checks it is the barrier.
+	if !s.dispatchServed() {
+		return failSpent("this deployment cannot start agents")
+	}
+	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
+		return failSpent("this deployment cannot start an agent now: " + reason)
+	}
+	rec, err := s.createAndDispatchAgent(ctx, p)
+	if err != nil {
+		s.logger.Printf("task routing: start an agent (%s): %v", object, err)
+		if errors.Is(err, ErrDispatchRefused) || errors.Is(err, agents.ErrModelNotCredentialed) {
+			// 🔴 A REFUSAL RELEASES THE START IT RESERVED — and frees its
+			// request_key. These come only from createAndDispatchAgent's checks
+			// BEFORE Agents.Create, so no agent exists. THIS reservation is named,
+			// never "the latest". Any other failure stays spent (fail-closed).
+			if _, rerr := s.ext.ChiefDispatch.ReleaseRefusedChiefDispatch(ctx, object, reservationID); rerr != nil {
+				s.logger.Printf("task routing: release the refused start (%s): %v", object, rerr)
+			}
+			return reservedStart{refused: err}
+		}
+		return failSpent("")
+	}
+	out := reservedStart{agent: rec}
+	if err := retryOnce(func() error { return s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, object, rec.ID) }); err != nil {
+		s.logger.Printf("task routing: record agent %d (%s), after a retry: %v", rec.ID, object, err)
+		out.agentUnrecorded = true
+	}
+	return out
 }
 
 // ownersTaskIf is ownersTask when onTask, else no task.
