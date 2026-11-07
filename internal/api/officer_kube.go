@@ -155,8 +155,9 @@ func (s *Server) kubeGrantsDescription(ctx context.Context, g connectors.Grant) 
 		parts = append(parts, c.Name+" as "+c.ServiceAccount)
 	}
 	return "officer_kube_read for this instance only: read-only GETs of the allowlisted resources (never secrets, exec, proxies or " +
-		"tokens) and pod logs on " + strings.Join(parts, "; ") + ", run by muster-server with a token minted per call; ConfigMaps are " +
-		"returned whole"
+		"tokens) and pod logs on " + strings.Join(parts, "; ") + ", run by muster-server with a token minted per call; which resources are " +
+		"readable is the deployment's allowlist, and an allowed object comes back unredacted (only managedFields and the " +
+		"last-applied annotation are dropped)"
 }
 
 // officerKubeRead runs officer_kube_read for instance a of pool o.
