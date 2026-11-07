@@ -466,6 +466,14 @@ test.describe('a dispatched agent', () => {
     // The turn ends: the card says it waits for its owner — no reload.
     gate('kickoff-' + run).release();
     await expect(card).toHaveAttribute('data-dispatch-state', 'waiting', { timeout: 30_000 });
+    // The agent stopped without saying it finished, so muster also notes it in
+    // the chief's chat ("… is WAITING FOR YOUR OWNER", agent_outcome.go), and
+    // that note re-renders this log. Wait for it to land before staging the two
+    // events below: a log re-render inside that window would make the card's
+    // own first fetch the held one, and the check would measure the re-render,
+    // not the card's refresh ordering.
+    await expect(log(page)).toContainText('WAITING FOR YOUR OWNER', { timeout: 30_000 });
+    await expect(card).toHaveAttribute('data-dispatch-state', 'waiting', { timeout: 30_000 });
     // 🔴 TWO OF ITS AGENT'S EVENTS BACK TO BACK: the LATER one decides the card.
     // CI caught the card stuck on "Starting" while the agent worked: the
     // status promoter's agent.changed and the first turn's stamp land in the
