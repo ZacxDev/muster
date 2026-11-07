@@ -343,3 +343,16 @@ func TestTheGenericAskQuestion(t *testing.T) {
 		t.Fatalf("%q", q)
 	}
 }
+
+// TestTheStallPromptNamesTheSessionByItsStableName: a session with a name
+// (internal/sessionname) is named to the chief on the block's first line,
+// fenced like the rest; one with none carries no session line.
+func TestTheStallPromptNamesTheSessionByItsStableName(t *testing.T) {
+	named := Prompt(Session{Name: "Billing migration", Title: "Fix CI"}, Msg{Text: "done"}, nil, 12*time.Minute, Hint{}, "0123456789abcdef")
+	if !strings.Contains(named, "| session: Billing migration\n| focus title: Fix CI") {
+		t.Fatalf("the prompt does not name the session first:\n%s", named)
+	}
+	if plain := Prompt(Session{Title: "Fix CI"}, Msg{Text: "done"}, nil, 12*time.Minute, Hint{}, "0123456789abcdef"); strings.Contains(plain, "session: ") {
+		t.Fatalf("an unnamed session's prompt carries a session line:\n%s", plain)
+	}
+}

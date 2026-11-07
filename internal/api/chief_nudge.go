@@ -470,6 +470,9 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 	owner := requestOwner(octx)
 	now := s.now()
 	asked := s.nudgeOpenAskers(octx)
+	// The stored names, read once: the stall prompt names each session by
+	// its stable name (internal/sessionname), as every surface does.
+	fi := s.focusIndex(octx)
 	var all []nudgeCandidate
 	read := stallRead{}
 	if s.ext.Mirror != nil {
@@ -486,7 +489,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				seen[key] = true
 				st := s.ext.Mirror.AgentState(octx, h.Host, w.Session, w.ID)
 				c := chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: key, Runtime: runtime, Host: h.Host,
-					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Status: st.Status,
+					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Name: fi.humanMirrorName(key), Status: st.Status,
 					Shell:     !h.Work[w.ID].IsZero(),
 					TurnError: st.TurnError != nil || st.HostLimit != nil || st.GuardHeld != "",
 					OpenAsk:   asked["mirror:"+key] || inFlight[chiefnudge.KindMirror+":"+key]}
@@ -518,7 +521,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 			_, _, officer := s.officerOf(a)
 			agentKey := "agent:" + strconv.FormatInt(a.ID, 10)
 			base := chiefnudge.Session{Kind: chiefnudge.KindAgent, Key: chiefnudge.AgentKey(a.ID, 0), AgentID: a.ID,
-				Label: firstNonBlank(a.DisplayName, a.Name), OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
+				Label: fi.agentName(a).Text, Name: fi.agentName(a).Text, OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
 				OpenAsk: asked[agentKey]}
 			if base.OtherUser || base.Chief || base.Officer ||
 				!agentCanBeSent(liveStatusIndexed(a, idx)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {
