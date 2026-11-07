@@ -1092,6 +1092,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			if err == nil && claimed != "" && s.officerRT.fwd != nil {
 				s.officerRT.fwd.Claimed(o, instance, claimed)
 			}
+			if err == nil && claimed != "" {
+				s.llmClaimed(o, instance, claimed)
+			}
 			break
 		}
 		if bad := needItem(); bad != "" {

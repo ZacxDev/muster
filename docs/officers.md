@@ -1814,14 +1814,18 @@ backoff, which on an instance would read as a stall. The message tells the
 model to stop; the item stays queued in HQ.
 
 **The per-item cap and the lease.** The proxy learns which item an instance
-holds from its own `officer_claim` / `officer_complete` / `officer_release`
-calls, and from every wake-loop read of HQ's claims. A new item starts the
-count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
+holds from its own `officer_claim` (with or without `item_id`) /
+`officer_complete` / `officer_release` calls, and from every wake-loop read of
+HQ's claims: when HQ shows an instance holding exactly one item and the proxy
+holds a different one or none, the proxy adopts HQ's (so an instance that
+outlives a muster restart still holding its item is capped again within one
+wake-loop interval); when HQ shows it holding none or several, it holds none.
+A new or adopted item starts the count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
 then hands the item on: a precondition on HQ that muster does not check); the next wake-loop read shows the instance holding
 nothing, which resets its count, so it is not stuck. The cap applies only
 while the instance holds an item: a turn holding none (a kickoff, a
-re-prompt, the turn between items) is never refused by it, and none of its
-tokens count toward the next item. The daily budget, not the item cap, is the
+re-prompt, the turn between items) is never refused by it, and its tokens are
+not counted toward any item. The daily budget, not the item cap, is the
 wall for a turn holding no item. The counts
 are in memory; a restart forgets them (the budget is persisted).
 
