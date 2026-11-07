@@ -94,6 +94,12 @@ func (m *memFocus) SearchTitles(_ context.Context, q string, _ focus.Live, _ tim
 	m.titleQueries = append(m.titleQueries, q)
 	return m.titleHits, nil
 }
+func (m *memFocus) MatchMeta(context.Context, string, []focus.SessionMeta, int, int) ([]focus.MetaMatch, error) {
+	return nil, nil
+}
+func (m *memFocus) SearchMeta(context.Context, string, []focus.SessionMeta, int) ([]focus.Subject, error) {
+	return nil, nil
+}
 func (m *memFocus) WindowHistory(context.Context, time.Time, time.Time, int) (focus.WindowReport, error) {
 	return focus.WindowReport{}, nil
 }
