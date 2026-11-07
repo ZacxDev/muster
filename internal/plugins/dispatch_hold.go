@@ -165,3 +165,16 @@ func (s *PGStore) RecordDispatchApproved(ctx context.Context, holdID string, det
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error { return audit(ctx, tx, ActionDispatchApproved, holdID, detail) })
 }
+
+// CardHoldByKey is the principal's NEWEST held dispatch filed by agent_dispatch
+// for a card (detail.door "card") under request_key key — open or not; the
+// caller reads Open(). A newer hold for the same key supersedes an older one
+// (a host tap that re-files the hold for the model card), so only the newest
+// is ever completed. ErrHoldNotFound when there is none.
+func (s *PGStore) CardHoldByKey(ctx context.Context, key string) (DispatchHold, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return DispatchHold{}, errors.New("plugins: a held dispatch needs a user principal")
+	}
+	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'request_key' = $5`, key)
+}

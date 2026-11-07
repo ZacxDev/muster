@@ -164,6 +164,9 @@ var (
 		// routes are past their deadline (ids and owners only); each is then
 		// timed out as its owner (withPrincipalLedger's routePrincipal).
 		"internal/plugins.(*PGStore).ExpiredRoutes",
+		// The host-dispatch sweep's owners: every owner with an open host
+		// dispatch, then each is acted on as that owner (ViaHostDispatch).
+		"internal/plugins.(*PGStore).HostDispatchOwners",
 		// …and its read of every route still routed with a paste row (ids,
 		// owners, targets, row ids), so a cancelled row or a vanished window
 		// ends the route early; each is read and failed as its owner.
@@ -269,6 +272,10 @@ var (
 		// tool calls run as the agent's owner, through authz.ViaKickoff, after
 		// the deliverer read the agent's row under System.
 		"internal/api.(*Server).kickoffPrincipal",
+		// The host-dispatch reconciler: one owner's host_dispatches rows moved on
+		// a spawn reply, a listing or the not-seen sweep, through
+		// authz.ViaHostDispatch.
+		"internal/api.(*Server).hostDispatchPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -292,7 +299,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

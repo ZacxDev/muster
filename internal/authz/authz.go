@@ -151,6 +151,11 @@ const (
 	// It acts as the device's OWNER, so row-level security confines the device
 	// to that owner's rows.
 	ViaDevice Via = "device"
+	// ViaHostDispatch is the HOST-DISPATCH RECONCILER (internal/api's
+	// host_dispatch_reconcile.go) moving one owner's host_dispatches rows on a
+	// spawn reply, a listing or its sweep: a background job acting as the row's
+	// OWNER only. One site mints it — internal/api's hostDispatchPrincipal.
+	ViaHostDispatch Via = "host-dispatch"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -190,6 +195,9 @@ var requestVias = map[Via]bool{
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,
+	// The host-dispatch reconciler, per owner (internal/api's
+	// hostDispatchPrincipal). Without it the first spawn reply PANICS here.
+	ViaHostDispatch: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

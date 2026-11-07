@@ -125,6 +125,10 @@ type ChiefDispatch struct {
 	// AgentID is the agent the prior start recorded, nil when it recorded none
 	// (it failed before an agent existed).
 	AgentID *int64
+	// HostDispatchID is the host dispatch the prior (or replayed) start made,
+	// when it was a host spawn (docs/design/chief-dispatch.md 2.6); nil for a
+	// pod start. At most one of AgentID and HostDispatchID is set.
+	HostDispatchID *int64
 	// ReservationID is the audit row this call wrote (0 for Prior; the replayed
 	// one for Replayed): what ReleaseRefusedChiefDispatch names, so a release
 	// frees THIS reservation and never a later one.
@@ -176,6 +180,11 @@ type ChiefLiveAgent struct {
 	// reservation's detail for one not recorded yet ("" when a reservation from
 	// before agent_dispatch names none).
 	Target string `json:"target"`
+	// HostDispatch, Host and Window name a host dispatch (source C): its row,
+	// its host and its window ("" until one is known). Zero for a pod.
+	HostDispatch int64  `json:"host_dispatch,omitempty"`
+	Host         string `json:"host,omitempty"`
+	Window       string `json:"window,omitempty"`
 }
 
 // DispatchStore is the chief-dispatch ledger. Every method acts as ctx's
@@ -288,6 +297,16 @@ const ActionTaskRouted = "task.chief_routed"
 // for the gated-task budget. The caller checks everything else before it
 // reserves.
 func (s *PGStore) ReserveChiefDispatch(ctx context.Context, object string, detail map[string]any, check func() error) (ChiefDispatch, error) {
+	return s.reserveChiefDispatch(ctx, object, detail, check, nil)
+}
+
+// reserveChiefDispatch is ReserveChiefDispatch with onReserved: when set, it
+// runs INSIDE the reservation's transaction, after the reservation row is
+// written and before the commit, with that row's id — so a host dispatch's
+// row is inserted in the same commit as its reservation, under the owner's
+// lock (design 2.6: no moment when the reservation counts and the row does
+// not). Its error rolls the whole reservation back.
+func (s *PGStore) reserveChiefDispatch(ctx context.Context, object string, detail map[string]any, check func() error, onReserved func(tx pgx.Tx, reservationID int64) error) (ChiefDispatch, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
 		return ChiefDispatch{}, errors.New("plugins: a chief dispatch needs a user principal")
@@ -326,14 +345,13 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, object string, detai
 			// The agent of THIS (the latest) reservation only — its row is newer
 			// than the reservation. An older agent row is a start that was
 			// released (its agent destroyed), and naming it would answer with an
-			// agent that no longer exists (audit round 2).
-			agentID, ok, err := latestStartAgent(ctx, tx, p.UserID, object, reserved)
+			// agent that no longer exists (audit round 2). Either kind: a pod
+			// agent, or a host dispatch.
+			st, err := latestStartAgent(ctx, tx, p.UserID, object, reserved)
 			if err != nil {
 				return err
 			}
-			if ok {
-				out.AgentID = &agentID
-			}
+			out.AgentID, out.HostDispatchID = st.AgentID, st.HostDispatchID
 			return nil
 		}
 		// The caller's conditions on the task, AFTER the prior check (a repeat
@@ -367,8 +385,14 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, object string, detai
 		// Under the owner's lock: the newest reservation row for the object is
 		// the one just written.
 		written, _, err := chiefStartRows(ctx, tx, p.UserID, object)
+		if err != nil {
+			return err
+		}
 		out.ReservationID = written
-		return err
+		if onReserved != nil {
+			return onReserved(tx, written)
+		}
+		return nil
 	})
 	if err != nil {
 		// Only a cap refusal carries anything: the budget it was decided on.
@@ -422,34 +446,53 @@ func requestKeyMatch(ctx context.Context, tx pgx.Tx, owner int64, key, hash stri
 		return ChiefDispatch{}, ErrRequestKeyReused
 	}
 	out.Replayed = true
-	agentID, ok, err := reservationAgent(ctx, tx, owner, out.Object, out.ReservationID)
+	st, err := reservationAgent(ctx, tx, owner, out.Object, out.ReservationID)
 	if err != nil {
 		return ChiefDispatch{}, err
 	}
-	if ok {
-		out.AgentID = &agentID
+	out.AgentID, out.HostDispatchID = st.AgentID, st.HostDispatchID
+	if out.AgentID == nil && out.HostDispatchID == nil {
+		// A host reservation names its row from the moment it is reserved (its
+		// agent row is written only once the window exists).
+		var hd int64
+		err := tx.QueryRow(ctx, `SELECT id FROM host_dispatches WHERE owner_id = $1 AND reservation_id = $2`, owner, out.ReservationID).Scan(&hd)
+		switch {
+		case err == nil:
+			out.HostDispatchID = &hd
+		case !errors.Is(err, pgx.ErrNoRows):
+			return ChiefDispatch{}, err
+		}
 	}
 	return out, nil
 }
 
+// startAgent is what a chief start made, read from its ActionChiefDispatchAgent
+// row: a pod agent (AgentID) or a host dispatch (HostDispatchID, the row's
+// {host_dispatch_id}), or neither (nil, nil) when it recorded none.
+type startAgent struct {
+	AgentID        *int64
+	HostDispatchID *int64
+}
+
+// any reports whether the start made anything.
+func (a startAgent) any() bool { return a.AgentID != nil || a.HostDispatchID != nil }
+
 // reservationAgent is the agent recorded for owner's reservation row reserved of
 // object: the first ActionChiefDispatchAgent row for object after it and before
-// the object's next reservation. ok is false when it recorded none.
-func reservationAgent(ctx context.Context, tx pgx.Tx, owner int64, object string, reserved int64) (int64, bool, error) {
-	var agentID int64
-	err := tx.QueryRow(ctx, `SELECT (a.detail->>'agent_id')::bigint FROM audit_log a
+// the object's next reservation — a pod agent or a host dispatch, each scanned
+// NULL-safely (a host's row carries no agent_id). Neither when it recorded none.
+func reservationAgent(ctx context.Context, tx pgx.Tx, owner int64, object string, reserved int64) (startAgent, error) {
+	var st startAgent
+	err := tx.QueryRow(ctx, `SELECT (a.detail->>'agent_id')::bigint, (a.detail->>'host_dispatch_id')::bigint FROM audit_log a
 		WHERE a.action = $1 AND a.object = $2 AND a.user_id = $3 AND a.id > $4
 		  AND NOT EXISTS (SELECT 1 FROM audit_log r WHERE r.action = $5 AND r.object = $2 AND r.user_id = $3
 		                   AND r.id > $4 AND r.id < a.id)
 		ORDER BY a.id LIMIT 1`,
-		ActionChiefDispatchAgent, object, owner, reserved, ActionChiefDispatch).Scan(&agentID)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, err
+		ActionChiefDispatchAgent, object, owner, reserved, ActionChiefDispatch).Scan(&st.AgentID, &st.HostDispatchID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return startAgent{}, nil
 	}
-	return agentID, true, nil
+	return st, err
 }
 
 // ChiefDispatchBudget: see DispatchStore. A read: it writes nothing and takes no
@@ -508,9 +551,17 @@ func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, erro
 		  UNION ALL
 		  SELECT 1, NULL, NULL, r.object, coalesce(r.detail->>'target', ''), r.id FROM audit_log r
 		   WHERE r.action = $4 AND r.user_id = $3 AND r.at > now() - make_interval(secs => $5)
+		     -- a HOST reservation is counted by its host_dispatches row (src 2)
+		     -- only, never here: no double count while this window is open
+		     AND coalesce(r.detail->>'target', '') NOT LIKE 'host/%' 
 		     AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $3 AND g.object = r.object AND g.id > r.id)
 		     -- a start released after a refused create made no agent: it holds no slot
 		     AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $6 AND x.user_id = $3 AND x.object = r.object AND x.id > r.id)
+		  UNION ALL
+		  -- src 2: every host dispatch, and nothing else, while it is pending or
+		  -- running (status alone decides it, design 2.6 source C)
+		  SELECT 2, h.id, h.tmux_window, coalesce('note:' || h.task_id, 'dispatch:'), 'host/' || h.host || '/' || h.runtime, h.id
+		    FROM host_dispatches h WHERE h.owner_id = $3 AND h.status IN ('pending', 'running')
 		) live ORDER BY src, ord`,
 		ActionChiefDispatchAgent, liveAgentStatuses, owner, ActionChiefDispatch, pendingAgentWindow.Seconds(), ActionChiefDispatchReleased)
 	if err != nil {
@@ -528,10 +579,22 @@ func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, erro
 			rows.Close()
 			return ChiefBudget{}, err
 		}
-		if src == 0 {
+		switch src {
+		case 0:
 			// A recorded agent: its target is its kind's.
 			b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{ID: id, Name: name, Task: noteObjectID(object), Target: PodTarget(kt)})
-		} else {
+		case 2:
+			// A host dispatch: its row, host and window.
+			host, _, _ := strings.Cut(strings.TrimPrefix(kt, "host/"), "/")
+			la := ChiefLiveAgent{Task: noteObjectID(object), Target: kt, Host: host}
+			if id != nil {
+				la.HostDispatch = *id
+			}
+			if name != nil {
+				la.Window = *name
+			}
+			b.LiveAgents = append(b.LiveAgents, la)
+		default:
 			// A reservation whose agent is not recorded yet: its detail's target.
 			b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{Task: noteObjectID(object), Target: kt})
 		}
@@ -578,28 +641,27 @@ func chiefStartRows(ctx context.Context, tx pgx.Tx, owner int64, object string) 
 	return reserved, released, err
 }
 
-// latestStartAgent is the agent recorded for owner's reservation row reserved
-// on task taskID: the newest ActionChiefDispatchAgent row for the task that is
-// newer than that reservation. ok is false when that start recorded no agent
-// (it failed before one existed). An agent row OLDER than the reservation
-// belongs to an earlier, released start and is never answered.
+// latestStartAgent is what owner's reservation row reserved on object made:
+// the newest ActionChiefDispatchAgent row for the object that is newer than
+// that reservation — a pod agent or a host dispatch, scanned NULL-safely (a
+// host's row is {host_dispatch_id}, with no agent_id, and a NULL scanned into
+// an int64 fails the transaction). Neither when that start recorded nothing
+// (it failed before one existed). A row OLDER than the reservation belongs to
+// an earlier, released start and is never answered.
 //
 // The one reading of "the agent the chief's start made", shared by
 // ReserveChiefDispatch (the already_dispatched answer), ReleaseChiefDispatch
-// (whose destroy frees the start) and ChiefStartedAgent (whose agent a
-// completed task stops).
-func latestStartAgent(ctx context.Context, tx pgx.Tx, owner int64, object string, reserved int64) (int64, bool, error) {
-	var agentID int64
-	err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
+// (whose destroy frees the start), ReleaseRefusedChiefDispatch and
+// ChiefStartedAgent — each of which branches on the kind.
+func latestStartAgent(ctx context.Context, tx pgx.Tx, owner int64, object string, reserved int64) (startAgent, error) {
+	var st startAgent
+	err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint, (detail->>'host_dispatch_id')::bigint FROM audit_log
 		WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
-		ActionChiefDispatchAgent, object, owner, reserved).Scan(&agentID)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, err
+		ActionChiefDispatchAgent, object, owner, reserved).Scan(&st.AgentID, &st.HostDispatchID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return startAgent{}, nil
 	}
-	return agentID, true, nil
+	return st, err
 }
 
 // ChiefStartedAgent: see DispatchStore. A read: it writes nothing, and it takes
@@ -623,8 +685,16 @@ func (s *PGStore) ChiefStartedAgent(ctx context.Context, taskID int64) (int64, b
 		if reserved == 0 || released > reserved {
 			return nil // no chief start on the task, or its latest is released
 		}
-		agentID, found, err = latestStartAgent(ctx, tx, p.UserID, NoteObject(taskID), reserved)
-		return err
+		st, err := latestStartAgent(ctx, tx, p.UserID, NoteObject(taskID), reserved)
+		if err != nil {
+			return err
+		}
+		// A host start is never stopped by a completed task (its window is on
+		// the owner's workstation): ok is false for it.
+		if st.AgentID != nil {
+			agentID, found = *st.AgentID, true
+		}
+		return nil
 	})
 	if err != nil || !found {
 		return 0, false, err
@@ -649,14 +719,17 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 			return nil // no chief start on the task, or its latest is released already
 		}
 		// The agent the LATEST reservation started: its agent row is newer.
-		started, ok, err := latestStartAgent(ctx, tx, p.UserID, NoteObject(taskID), reserved)
+		st, err := latestStartAgent(ctx, tx, p.UserID, NoteObject(taskID), reserved)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return nil // that start made no agent, so the owner destroyed someone else's
+		if st.AgentID == nil {
+			// That start made no pod agent — nothing, or a HOST dispatch, which
+			// only ending that dispatch releases (EndHostDispatch): destroying
+			// some pod on the task does not.
+			return nil
 		}
-		if started != agentID {
+		if *st.AgentID != agentID {
 			return nil // another agent on the task: the chief's start is still in use
 		}
 		wrote = true
@@ -684,8 +757,8 @@ func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, object string
 		if reserved != reservationID || released > reserved {
 			return nil // not this object's latest unreleased reservation
 		}
-		if _, ok, err := latestStartAgent(ctx, tx, p.UserID, object, reserved); err != nil || ok {
-			return err // an agent was started: only the owner's destroy releases it
+		if st, err := latestStartAgent(ctx, tx, p.UserID, object, reserved); err != nil || st.any() {
+			return err // an agent (or a host dispatch's window) was started: only its end releases it
 		}
 		wrote = true
 		// 🔴 refused_reservation IS ALSO WHAT FREES THE RESERVATION'S
