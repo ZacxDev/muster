@@ -318,13 +318,27 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 // (agentkickoff.Config.TurnContext): buildApp passes api.Server.
 // OfficerTurnContext, so an officer instance of a fresh_session_per_item pool
 // gets its kickoff in a NEW conversation. outcome hears each first turn's
-// course (agentkickoff.Config.Outcome; nil: nothing is tracked).
+// course (agentkickoff.Config.Outcome; nil: nothing is tracked). tools gives a
+// first turn the agent's muster tools (agentkickoff.Config.TurnTools): buildApp
+// passes api.Server.KickoffTurnTools, without which a dispatched gateway agent
+// is offered none of them — agent_report_done included — in the one turn it
+// does its work in.
 func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
-	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter, logger *log.Logger) (*agentkickoff.Deliverer, error) {
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter,
+	tools func(context.Context, agents.Agent) (context.Context, agentkickoff.TurnTools, bool), logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
-	return agentkickoff.New(agentkickoff.Config{
+	return agentkickoff.New(kickoffConfig(cfg, store, prov, gw, onChange, turnCtx, outcome, tools, logger))
+}
+
+// kickoffConfig is the deliverer's configuration buildKickoffDeliverer builds:
+// separate so a test can read what each argument became
+// (TestKickoffConfigCarriesEveryHook) — Deliverer's fields are unexported.
+func kickoffConfig(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter,
+	tools func(context.Context, agents.Agent) (context.Context, agentkickoff.TurnTools, bool), logger *log.Logger) agentkickoff.Config {
+	return agentkickoff.Config{
 		Store:           store,
 		Instances:       prov,
 		Gateway:         gw,
@@ -333,7 +347,8 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		OnChange:        onChange,
 		TurnContext:     turnCtx,
 		Outcome:         outcome,
-	})
+		TurnTools:       tools,
+	}
 }
 
 // kickoffOutcomes is the server's outcome tracker as the deliverer's reporter,

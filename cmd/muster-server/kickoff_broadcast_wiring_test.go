@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -59,7 +60,7 @@ func TestTheDelivererBuiltForTheServerBroadcastsItsCardChanges(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		changed = append(changed, name)
-	}, nil, nil, logger)
+	}, nil, nil, nil, logger)
 	if err != nil || d == nil {
 		t.Fatalf("buildKickoffDeliverer: deliverer=%v err=%v", d != nil, err)
 	}
@@ -100,10 +101,46 @@ func TestBuildAppPassesTheServersBroadcastToTheDeliverer(t *testing.T) {
 	// srv.OfficerTurnContext (#497) and kickoffOutcomes(srv): a fresh officer
 	// pool's kickoff starts a new conversation, and the server's outcome tracker
 	// hears every first turn's course (internal/api agent_outcome.go).
-	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), logger)"
+	const want = "buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), srv.KickoffTurnTools, logger)"
 	if !strings.Contains(text, want) {
 		t.Errorf("main.go does not contain %q: the deliverer's background card changes would "+
 			"reach no open Agents list, or a fresh_session_per_item officer's kickoff would not "+
-			"start a new conversation (srv.OfficerTurnContext)", want)
+			"start a new conversation (srv.OfficerTurnContext), or a gateway agent's first turn would carry "+
+			"no muster tool (srv.KickoffTurnTools)", want)
+	}
+}
+
+// TestKickoffConfigCarriesEveryHook: what buildKickoffDeliverer is handed
+// reaches the deliverer's configuration — above all the first turn's tools
+// (TurnTools), without which a dispatched gateway agent is offered no muster
+// tool, agent_report_done included, in the one turn it does its work in. The
+// main.go guard above pins that buildApp PASSES srv.KickoffTurnTools; this pins
+// that it is not dropped on the way in. Each hook is a distinct value, so a
+// swapped or dropped field is told apart from a set one.
+func TestKickoffConfigCarriesEveryHook(t *testing.T) {
+	logger := log.New(io.Discard, "", 0)
+	cfg := gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)
+	toolsAsked := 0
+	tools := func(ctx context.Context, _ agents.Agent) (context.Context, agentkickoff.TurnTools, bool) {
+		toolsAsked++
+		return ctx, agentkickoff.TurnTools{}, false
+	}
+	turnAsked := 0
+	turnCtx := func(ctx context.Context, _ agents.Agent) context.Context { turnAsked++; return ctx }
+	c := kickoffConfig(cfg, nil, nil, nil, nil, turnCtx, nil, tools, logger)
+	if c.TurnTools == nil {
+		t.Fatal("kickoffConfig dropped TurnTools: every gateway agent's first turn would go out with no muster tool")
+	}
+	if _, _, _ = c.TurnTools(context.Background(), agents.Agent{}); toolsAsked != 1 {
+		t.Errorf("Config.TurnTools is not the function handed in (asked %d time(s))", toolsAsked)
+	}
+	if c.TurnContext == nil {
+		t.Fatal("kickoffConfig dropped TurnContext")
+	}
+	if _ = c.TurnContext(context.Background(), agents.Agent{}); turnAsked != 1 || toolsAsked != 1 {
+		t.Errorf("Config.TurnContext is not the function handed in (turn %d, tools %d)", turnAsked, toolsAsked)
+	}
+	if c.NamespacePrefix != cfg.AgentNamespacePrefix || c.Logger != logger {
+		t.Errorf("prefix %q logger-set=%t; want %q and the logger handed in", c.NamespacePrefix, c.Logger == logger, cfg.AgentNamespacePrefix)
 	}
 }

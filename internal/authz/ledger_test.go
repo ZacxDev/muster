@@ -260,6 +260,10 @@ var (
 		// started and stopped as the officer's configured owner, through
 		// authz.ViaOfficer.
 		"internal/api.(*Server).officerPrincipal",
+		// The kickoff deliverer's tool-enabled first turn: a gateway agent's
+		// tool calls run as the agent's owner, through authz.ViaKickoff, after
+		// the deliverer read the agent's row under System.
+		"internal/api.(*Server).kickoffPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -283,7 +287,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

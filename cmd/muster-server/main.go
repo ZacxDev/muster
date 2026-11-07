@@ -789,7 +789,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// deliverability was computed from, so "a dispatch is accepted" and "something
 	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
 	// srv so its changes reach open agent pages and sidebars through srv's broadcast.
-	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), logger); err != nil {
+	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, srv.OfficerTurnContext, kickoffOutcomes(srv), srv.KickoffTurnTools, logger); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("kickoff deliverer: %w", err)
 	}

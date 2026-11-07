@@ -133,6 +133,14 @@ const (
 	// as the officer's configured OWNER only. One site mints it —
 	// internal/api's officerPrincipal — handed the owner from MUSTER_OFFICERS.
 	ViaOfficer Via = "officer"
+	// ViaKickoff is the KICKOFF DELIVERER (internal/agentkickoff) running a
+	// gateway agent's FIRST TURN with its tools in muster's process: each tool
+	// call that turn makes acts as the agent's OWNER only, as the same call in
+	// one of its chat turns does (the owner's session). One site mints it —
+	// internal/api's kickoffPrincipal, called only by KickoffTurnTools, handed
+	// the agent row the deliverer read under System. 🔴 Never System itself:
+	// that would run an agent's tools across every owner's rows.
+	ViaKickoff Via = "kickoff"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -176,6 +184,9 @@ var requestVias = map[Via]bool{
 	// The officer wake loop, per officer owner (internal/api's
 	// officerPrincipal). Without it the first wake PANICS here.
 	ViaOfficer: true,
+	// A gateway agent's first turn's tools, as its owner (internal/api's
+	// kickoffPrincipal). Without it the first tool-enabled kickoff PANICS here.
+	ViaKickoff: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,
