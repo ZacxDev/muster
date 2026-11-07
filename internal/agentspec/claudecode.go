@@ -421,6 +421,14 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 	return slices.Contains(cc.BypassPools, a.WorkerPool)
 }
 
+// ccImage is the image a claude-code pod runs: the session's own (an officer's
+// runner image) when set, else the deployment's.
+func ccImage(cc *ClaudeCodeConfig, sess ClaudeCodeSession) string {
+	// STUB (red-first commit): the session's image is not honoured yet.
+	_ = sess
+	return cc.Image
+}
+
 // buildClaudeCode is Build for a claude-code row. Pure, like Build.
 //
 // 🔴 EVERY MISSING INPUT IS A REFUSAL, NAMING IT. A claude-code pod with no
@@ -520,7 +528,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// `ccd seed` creates the workspace as uid 1000, the entrypoint then cd's
 		// into CCD_WORKSPACE, and ccd starts the CLI there
 		// (images/claude-code-agent/entrypoint.sh).
-		Runtime: provision.Runtime{Image: cc.Image},
+		Runtime: provision.Runtime{Image: ccImage(cc, opts.ClaudeCodeSession)},
 		Env:     claudeCodeEnv(cfg, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN (claudeCodeSecrets).
 		//

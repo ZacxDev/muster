@@ -74,6 +74,16 @@ got="$(claude --version 2>/dev/null || true)"
 [[ "$got" == "$want "* ]] || fail "claude --version is '$got', expected '$want …'"
 echo "cc-smoke: claude $got ok"
 
+# The read-only gh shim (cmd/ccd/ghshim.go): `gh` is ccd under that name, it
+# answers its version, and a write is refused (exit 1) without sending anything
+# (no proxy environment is set here, so a write that tried would fail
+# differently: the refusal text is what is checked).
+ghv="$(gh --version 2>&1 || true)"
+[[ "$ghv" == *"read-only shim"* ]] || fail "gh --version is '$ghv', expected muster's read-only shim"
+if ghw="$(gh pr merge 1 --repo example-org/example 2>&1)"; then fail "gh pr merge exited 0: $ghw"; fi
+[[ "$ghw" == *"refused, nothing was sent"* ]] || fail "gh pr merge said '$ghw', expected the shim's refusal"
+echo "cc-smoke: gh shim (read-only) ok"
+
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-sk-ant-oat01-SMOKE-DELIBERATELY-INVALID}"
 export HOOKS_TOKEN="${HOOKS_TOKEN:-smoke-hooks-token}"
 

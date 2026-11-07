@@ -876,6 +876,8 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// whatever fresh_session_per_item says: what an officer remembers of
 	// earlier items is HQ's (the claim-time history), never a file on its
 	// volume.
+	// Image: the pool's own runner image when it declares one (checked against
+	// MUSTER_OFFICER_IMAGE_REGISTRIES at boot), else the deployment's.
 	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true}
 	if officers.RoutineAgent(o, a.Name) {
 		sess.LLMRoute = true
