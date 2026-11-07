@@ -557,6 +557,37 @@ func TestConcurrentApprovalsStartOneAgent(t *testing.T) {
 	}
 }
 
+// TestAnApprovalThatLosesTheRaceIsRefusedUnderTheLock: a second approval of the
+// same hold lands between this approval's early read (which saw the hold open)
+// and its reservation. The check under the reservation's lock is what refuses
+// this one — deterministically, with no timing — and one agent exists.
+func TestAnApprovalThatLosesTheRaceIsRefusedUnderTheLock(t *testing.T) {
+	h := newHoldFixture(t)
+	held := h.request(t, gatewayRequest("rk-window"))
+	args, _ := json.Marshal(map[string]any{"hold_id": held.HoldID})
+	var inner string
+	// The hook unsets itself before the inner approval runs, so the inner call
+	// (which passes the same point) does not recurse into it.
+	dispatchApproveBeforeReserve = func() {
+		dispatchApproveBeforeReserve = nil
+		inner = h.srv.toolDispatchApprove(h.mirrorCtx(), h.mirrorCaller(secondSID), string(args))
+	}
+	t.Cleanup(func() { dispatchApproveBeforeReserve = nil })
+	outer := h.srv.toolDispatchApprove(h.mirrorCtx(), h.mirrorCaller(focusSID), string(args))
+	if strings.Contains(inner, `"error"`) {
+		t.Fatalf("the approval inside the window was refused: %s", inner)
+	}
+	if want := "hold " + held.HoldID + " was already approved: a hold starts one agent, once. Nothing new was started"; errorText(t, outer) != want {
+		t.Fatalf("the approval that lost the race answered %s\nwant %q", outer, want)
+	}
+	if got := h.ownersAgents(t); len(got) != 1 {
+		t.Errorf("%d agents, want 1", len(got))
+	}
+	if n := h.allReservations(t); n != 1 {
+		t.Errorf("%d reservations, want 1", n)
+	}
+}
+
 // mirrorCtx / mirrorCaller are the owner's "ws" session as handleMirrorMCP
 // makes it, for a direct handler call.
 func (h *holdFixture) mirrorCtx() context.Context {

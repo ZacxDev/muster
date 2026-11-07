@@ -482,6 +482,11 @@ func (s *Server) holdAnswer(ctx context.Context, hold plugins.DispatchHold, h he
 	return toolJSON(out)
 }
 
+// dispatchApproveBeforeReserve, when set (tests only), runs between the early
+// read of the hold and the reservation: the window in which another approval
+// can consume it, which only the check under the reservation's lock closes.
+var dispatchApproveBeforeReserve func()
+
 // openHoldRefusal is the refusal for a hold that cannot be approved now
 // (!plugins.DispatchHold.Open), "" when it can. It is read before the
 // reservation, as an early answer, and again under the reservation's lock,
@@ -607,6 +612,9 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 		}
 		task = n
 		return nil
+	}
+	if dispatchApproveBeforeReserve != nil {
+		dispatchApproveBeforeReserve()
 	}
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, object, detail, check)
 	var refusal errTaskDispatch
