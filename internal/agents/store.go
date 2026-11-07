@@ -93,8 +93,8 @@ type Agent struct {
 	// DisplayNameSource is who set DisplayName (migration 0088): NameDefault
 	// (the slug, copied), NameDispatch (derived from the source task),
 	// NameSystem (a role muster pinned: the chief, an officer) or NameManual
-	// (the person renamed it). "" reads as NameDefault. Only NameManual and
-	// NameSystem outrank a session's auto name (internal/sessionname).
+	// (the person renamed it). "" reads as NameDefault. NameManual, NameSystem
+	// and NameDispatch all outrank a session's auto name (internal/sessionname).
 	DisplayNameSource string `json:"displayNameSource,omitempty"`
 	Repo              string `json:"repo"` // owner/name
 	RepoBranch        string `json:"repoBranch"`

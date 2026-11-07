@@ -940,9 +940,9 @@ type dispatchParams struct {
 	DisplayName string
 	// DisplayNameSource is who chose DisplayName (agents.NameDispatch for a
 	// task's, agents.NameSystem for a role's: the chief, an officer). It
-	// decides whether the session's auto name may head the agent
-	// (internal/sessionname): a system name is never replaced, a dispatch
-	// one is. "" with a DisplayName is agents.NameDispatch.
+	// ranks the name (internal/sessionname): both outrank the session's auto
+	// name, so neither changes on its own. "" with a DisplayName is
+	// agents.NameDispatch.
 	DisplayNameSource string
 	Repo              string
 	RepoBranch        string // explicit branch; empty → resolved to the repo's GitHub default (fallback "main")
