@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "c8dd7244f5c8f35864896c2320e30afdbde66a61d63f26ccfb1e588d2e5e25fb",
+			want: "bd1d82b8d6235182371e742c0e067c3b3335ef2b7a1b52f607009dbabd476b4d",
 			min:  1000,
 		},
 		{
@@ -370,8 +370,20 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "6be6d7969ab3f577d5b8c6f5837329a521ae51668f6d96afd05c99de2eb70947",
+			want: "cd7db3098eab43daf2127360966de6b79365d46b440f1b6e621adbbd1be554d5",
 			min:  1000,
+		},
+		{
+			name: "chiefAskOwnerSection",
+			text: chiefAskOwnerSection,
+			want: "691f90f9a52f672226cb67dc5da98ee8853303581e4720a185fc5eecd43483ea",
+			min:  400,
+		},
+		{
+			name: "chiefAskOwnerSectionClaudeCode",
+			text: chiefAskOwnerSectionClaudeCode,
+			want: "273ea07f51c02c9a062a669155567e4fa9d61e6da57d35ac4545921f30a6e273",
+			min:  400,
 		},
 		{
 			name: "chiefHQSectionClaudeCode",
@@ -415,42 +427,42 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "configured",
 			got:  ChiefInstructions(true, false),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefCairnSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection,
 		},
 		{
 			name: "unconfigured",
 			got:  ChiefInstructions(false, false),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection,
 		},
 		{
 			name: "configured, plugins on",
 			got:  ChiefInstructions(true, true),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefCairnSection + "\n" + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection + "\n" + chiefPluginSection,
 		},
 		{
 			name: "unconfigured, plugins on",
 			got:  ChiefInstructions(false, true),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefPluginSection,
 		},
 		{
 			name: "claude-code",
 			got:  ChiefInstructionsClaudeCode(false, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins on",
 			got:  ChiefInstructionsClaudeCode(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
 		},
 		{
 			name: "claude-code, routing on",
 			got:  ChiefInstructionsClaudeCode(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
@@ -692,8 +704,14 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		// The owner's typed word releases the gate (agent_dispatch owner_asked);
 		// the chief is never to send them to another screen.
 		"then call `agent_dispatch` with its task id, the target your owner named, and `owner_asked: true`.",
-		// The target has no default: the chief asks, and never picks one.
-		"Its target has no default:",
+		// The target has no default: the chief maps the owner's words to one, and
+		// when they named no model it ASKS with ask_owner, never picking one.
+		"Its target has no default; map your owner's words to one:",
+		"\"with Claude\", or any Claude model → `pod/claude-code` (no model);",
+		"any other model they name → `pod/gateway` with that model, as `openrouter/<provider>/<model>`;",
+		"\"mirrored\" → `mirrored`, which is refused until mirrored dispatch ships (say so; never start a cluster agent instead).",
+		"If they named no model, call it without a target:",
+		"Ask them which with `ask_owner`",
 		"never pick one for them.",
 		"Never tell your owner to go and approve it on another screen;",
 		"goes to that plugin's data scope only",
@@ -716,10 +734,12 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`task_create_gated`", "`mcp__muster__task_create_gated`",
 		"`reply_draft`", "`mcp__muster__reply_draft`",
 		"`sessions_overview`", "`mcp__muster__sessions_overview`",
+		"`focus_search`", "`mcp__muster__focus_search`",
 		"`route_to_session`", "`mcp__muster__route_to_session`",
 		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 		"`agent_dispatch`", "`mcp__muster__agent_dispatch`",
 		"`task_route_attention`", "`mcp__muster__task_route_attention`",
+		"`ask_owner`", "`mcp__muster__ask_owner`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -796,6 +816,50 @@ func TestTheChiefTriagesFeedback(t *testing.T) {
 	}
 }
 
+// TestTheChiefRoutesFeedbackAndTasksFirst pins the route-first paragraph WHOLE,
+// normalised, against an independently typed literal (a guard on keywords is
+// walkable by rewording), in each runtime's spelling, and only with plugins on.
+// It comes BEFORE the feedback paragraph, which files what no session is on.
+//
+// What it promises is the server's, not the prose's: a no_reply message can be
+// routed one-way (plugins.PGStore.CreateRouteFrom, its answer only ever the
+// chief's), a task event's task by task_id, and the owner's notice of a route is
+// sent by muster on the route's creation (internal/api notifyChiefRouted) — so
+// the paragraph tells the chief it need not tell the owner itself.
+func TestTheChiefRoutesFeedbackAndTasksFirst(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	para := func(p string) string {
+		return "Feedback and incoming tasks: route first. Before you file feedback, or decide what happens to a task event, " +
+			"look for the live session already on it: the block headed \"Sessions that may already be on this\" when the turn " +
+			"has one, and `" + p + "focus_search` with the subject's most distinctive words (when your tool list has it) when " +
+			"that does not settle it. When exactly one live session is clearly on it and you have `" + p + "route_to_session`, " +
+			"hand it to that session: a message by its message_id, a task event's task by its task_id. A message that cannot " +
+			"be answered goes too, as a one-way heads-up: the session's answer comes back to you, never to the sender. muster " +
+			"tells your owner which session got it; you need not. When no session is, or more than one might be, do not " +
+			"guess: put it in front of your owner — feedback as below, a task event's task with `" + p + "task_route_attention`."
+	}
+	for _, c := range []struct {
+		name, on, off, para string
+	}{
+		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), para("")},
+		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), para("")},
+		{"claude-code", ChiefInstructionsClaudeCode(true, false), ChiefInstructionsClaudeCode(false, false), para("mcp__muster__")},
+	} {
+		on := norm(c.on)
+		i, j := strings.Index(on, c.para), strings.Index(on, "Some plugin messages are feedback")
+		if i < 0 {
+			t.Errorf("%s: the chief prompt does not carry the route-first paragraph:\n%s", c.name, c.para)
+			continue
+		}
+		if j < 0 || i > j {
+			t.Errorf("%s: the route-first paragraph is not before the feedback paragraph (%d, %d)", c.name, i, j)
+		}
+		if strings.Contains(norm(c.off), "route first") {
+			t.Errorf("%s: plugins OFF, but the prompt carries the route-first paragraph", c.name)
+		}
+	}
+}
+
 // TestThePluginSectionHasNoAskFallback: the old PROSE FALLBACK — raise an
 // attention_ask for a message no session is on — is gone from every variant's
 // plugin section (muster raises that ask itself: internal/api unrouted.go), and
@@ -866,5 +930,54 @@ func TestTheClaudeCodeChiefIsToldHQRequestsGoToTheHQServer(t *testing.T) {
 				t.Errorf("cairn=%v plugins=%v: the GATEWAY chief prompt names mcp__hq__ tools it is never given", cairn, plugins)
 			}
 		}
+	}
+}
+
+// TestTheAskOwnerSectionIsInBothChiefsProse pins the ask_owner paragraph as a
+// RELATIONSHIP and as a presence: the claude-code one is the gateway one with the
+// tool's MCP name, and it is in EVERY chief prompt of both runtimes (the tool is
+// offered to every chief, internal/api owner_ask.go). The claims are spelled here,
+// not read from the constant.
+func TestTheAskOwnerSectionIsInBothChiefsProse(t *testing.T) {
+	if got := strings.ReplaceAll(chiefAskOwnerSection, "`ask_owner`", "`mcp__muster__ask_owner`"); got != chiefAskOwnerSectionClaudeCode {
+		t.Fatalf("the claude-code ask_owner section is not the gateway's with the MCP name:\n--- derived\n%s\n--- actual\n%s", got, chiefAskOwnerSectionClaudeCode)
+	}
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	claims := func(tool string) []string {
+		return []string{
+			"Whenever you need your owner to choose",
+			"call `" + tool + "` with the question and its options.",
+			"Never write the options out in your reply and ask them to type one.",
+			"Calling it ends your turn",
+		}
+	}
+	n := 0
+	for _, cairn := range []bool{false, true} {
+		for _, plugins := range []bool{false, true} {
+			p := norm(ChiefInstructions(cairn, plugins))
+			for _, c := range claims("ask_owner") {
+				n++
+				if !strings.Contains(p, c) {
+					t.Errorf("gateway chief (cairn=%v plugins=%v) prose lacks %q", cairn, plugins, c)
+				}
+			}
+		}
+	}
+	for _, plugins := range []bool{false, true} {
+		for _, routing := range []bool{false, true} {
+			p := norm(ChiefInstructionsClaudeCode(plugins, routing))
+			for _, c := range claims("mcp__muster__ask_owner") {
+				n++
+				if !strings.Contains(p, c) {
+					t.Errorf("claude-code chief (plugins=%v routing=%v) prose lacks %q", plugins, routing, c)
+				}
+			}
+			if strings.Contains(p, "call `ask_owner`") {
+				t.Errorf("claude-code chief prose names the bare tool, which that session does not have")
+			}
+		}
+	}
+	if n != 8*4 {
+		t.Fatalf("checked %d claims, want 32", n)
 	}
 }

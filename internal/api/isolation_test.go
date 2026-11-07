@@ -289,6 +289,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/focus/history":                    classParam,
 	"GET /ui/agents/{id}/status":               classParam,
 	"GET /ui/agents/{name}/chat-log":           classParam,
+	"GET /ui/dispatch-card":                    classParam,
 	"GET /ui/agents/{name}/task":               classParam,
 	"GET /ui/connectors/{name}/rotate":         classParam,
 	"GET /ui/tasks/{id}/card":                  classParam,

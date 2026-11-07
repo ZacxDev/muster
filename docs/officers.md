@@ -1604,6 +1604,15 @@ An officer may split its instances into two **pools**, one per HQ item tier
     it back when HQ claimed nothing.
   - The wake loop does not wake or re-prompt the judgement pool for new work.
     It still does so for items the pool holds or already counted today.
+  - It is **visible**. The first pass of a UTC day that sees the cap with
+    claimable judgement items waiting logs one line naming the officer,
+    used/cap, the waiting count and when the cap resets (`judgement cap
+    reached (30/30 until 00:00 UTC): 7 claimable judgement item(s) wait in
+    HQ …`). Later polls that day log nothing more, and a restarted process
+    logs it once again. `muster_officer_judgement_cap_reached` counts the
+    officers in that state at their last pass; a pass that fails (HQ or the
+    fleet unreadable) clears it. HQ is not told: muster has no officer-level
+    status call to HQ that could carry the reason.
   - Nothing else changes. The routine pool is not capped by it (its bound is
     the [`llm`](#the-llm-proxy) budget), and neither is an untiered officer.
 

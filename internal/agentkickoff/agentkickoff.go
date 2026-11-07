@@ -176,8 +176,9 @@ type Config struct {
 	TurnTimeout time.Duration
 	// OnChange, when set, is called with an agent's name after this package changes
 	// what that agent's page shows: the stamp (the "kickoff owed" badge goes), a
-	// recorded post-stamp failure (the "kickoff failed" badge comes), and a stuck
-	// verdict (the status goes red). cmd/muster-server passes
+	// recorded post-stamp failure (the "kickoff failed" badge comes), a stuck
+	// verdict (the status goes red), and a delivered reply once the claim is
+	// released (the chief's card for the agent stops reading "working"). cmd/muster-server passes
 	// api.Server.BroadcastAgentChanged, which the agent page's strip (ui's
 	// agentStripTrigger), the sidebar and the Tasks board re-fetch on. (The retired
 	// Agents list heard it only once its hx-trigger gained `sse:agent.changed`;
@@ -707,6 +708,11 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	d.log.Printf("agentkickoff: agent %d (%s): first turn delivered to %s (%d-byte reply)",
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
+	// The first turn is over: tell open pages — the agent's own transcript, and
+	// the chief's card for it, which reads "working" while the claim is held.
+	// 🔴 AFTER THE RELEASE (after runs once the claim is released), or a page
+	// re-fetching on this would still read the claim and draw "working".
+	after = func() { d.notify(fresh.Name) }
 }
 
 // preStampFailure records a failure that happened before the stamp (nothing was
