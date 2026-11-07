@@ -1244,9 +1244,9 @@ pull request is named as `<repo>#N`, `<owner>/<repo>#N` or its
 `github.com/<owner>/<repo>/pull/N` URL, compared case-insensitively — **a bare
 `#N` names none**, nor does `PR 2855` — and only one muster recorded for that
 very repository and number counts, so `issue#12` names nothing unless a
-recorded repository is called `issue`. A session that only pushed the
-pull request's branch is credited with its number when a create row of the
-owner's names that repository and branch. A branch counts when the message
+recorded repository is called `issue`. A `gh pr create` row matches by its
+number; a `git push` row names no number and matches by its branch only. A
+branch counts when the message
 spells it as a whole word (`feat/stage-c-job`, not inside `feat/stage-c-job-2`
 or `origin/feat/stage-c-job`) and it holds a `/`, `-` or `_` and is at least
 five characters: `main`, `master` or `develop` — what a trunk-deployed session

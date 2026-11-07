@@ -173,10 +173,9 @@ func TestMatchPRHintsListsOnlyShownSessionsWithinTheLimit(t *testing.T) {
 	}
 }
 
-// A session that only PUSHED the pull request's branch is named by its
-// number (the create row of another session resolves it) and by the branch;
-// a generic branch it pushed ("main") names nothing.
-func TestAPusherIsHintedByThePullRequestAndItsBranch(t *testing.T) {
+// A session that PUSHED a branch is named by that branch (a push row names
+// no pull request number); a generic branch it pushed ("main") names nothing.
+func TestAPusherIsHintedByItsBranch(t *testing.T) {
 	g := prHintReplay(t)
 	h1 := g.srv.ext.Mirror.(scopedMirror)
 	w := mirror.Window{Session: "work", ID: "@10", Index: 5, Claude: true, ClaudeSession: sidPRPusher, Label: "Juno:5", Activity: time.Now().Unix()}
@@ -185,11 +184,7 @@ func TestAPusherIsHintedByThePullRequestAndItsBranch(t *testing.T) {
 	g.srv.ext.Mirror = h1
 	g.record(t, g.asOwner, sidPRPusher, prroute.Signal{Kind: prroute.KindPush, Repo: prHintRepo, HeadRef: prHintRef})
 	g.record(t, g.asOwner, sidPRPusher, prroute.Signal{Kind: prroute.KindPush, Repo: "acme/widget-api", HeadRef: "main"})
-	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 7, Subject: prHintSubject, Body: prHintBody})
-	if ids := hintIDs(h); fmt.Sprint(ids) != "[mirror:"+sidPRPusher+" mirror:"+sidPRAuthor+"]" {
-		t.Fatalf("hint lists %v; want the pusher (newest row) then the author", ids)
-	}
-	h = g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 8, Subject: "x", Body: "CI is red on feat/stage-c-job."})
+	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 8, Subject: "x", Body: "CI is red on feat/stage-c-job."})
 	if ids := hintIDs(h); fmt.Sprint(ids) != "[mirror:"+sidPRPusher+" mirror:"+sidPRAuthor+"]" ||
 		fmt.Sprint(h.Sessions[0].PRs) != "[acme/infra-config branch feat/stage-c-job]" {
 		t.Fatalf("by branch: %v %+v", ids, h.Sessions)

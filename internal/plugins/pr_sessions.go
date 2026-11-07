@@ -111,10 +111,10 @@ type PRSessionStore interface {
 	// SessionRefs is the principal's authorship rows of claudeSessions still
 	// inside PRSessionRetention, most recently seen first, at most
 	// MaxSessionRefs: each with its repo, its head branch ("" for none), and
-	// its pull request — a push's resolved as SessionPRs resolves it, 0 when
-	// no create names one. The session hint and focus_search match a
-	// message's pull requests and branches against them (internal/api's
-	// prHints).
+	// its own pull request number (0 for a push, which names none). Nothing is
+	// inherited from another row: a create matches by its number, a push by
+	// its branch only. The session hint and focus_search match a message's
+	// pull requests and branches against them (internal/api's prHints).
 	SessionRefs(ctx context.Context, claudeSessions []string) ([]PRSession, error)
 }
 
@@ -224,14 +224,10 @@ func (s *PGStore) SessionRefs(ctx context.Context, claudeSessions []string) ([]P
 	if len(claudeSessions) == 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT p.claude_session, p.kind, p.repo, coalesce(p.pr, c.pr, 0), coalesce(p.head_ref, ''), p.last_seen
-		FROM session_prs p
-		LEFT JOIN LATERAL (SELECT c.pr FROM session_prs c
-			WHERE p.pr IS NULL AND c.kind = 'gh-pr-create' AND c.repo = p.repo AND c.head_ref = p.head_ref AND c.pr IS NOT NULL
-				AND c.last_seen > now() - make_interval(secs => $2)
-			ORDER BY c.last_seen DESC, c.id DESC LIMIT 1) c ON true
-		WHERE p.claude_session = ANY($1::text[]) AND p.last_seen > now() - make_interval(secs => $2)
-		ORDER BY p.last_seen DESC, p.id DESC LIMIT $3`, claudeSessions, PRSessionRetention.Seconds(), MaxSessionRefs)
+	rows, err := s.pool.Query(ctx, `SELECT claude_session, kind, repo, coalesce(pr, 0), coalesce(head_ref, ''), last_seen
+		FROM session_prs
+		WHERE claude_session = ANY($1::text[]) AND last_seen > now() - make_interval(secs => $2)
+		ORDER BY last_seen DESC, id DESC LIMIT $3`, claudeSessions, PRSessionRetention.Seconds(), MaxSessionRefs)
 	if err != nil {
 		return nil, err
 	}
