@@ -420,8 +420,10 @@ for (const vp of [
       await send(page, `Start it MIRRORED-PLEASE (${vp.name})`);
       const refused = log(page).locator('[data-dispatch-card][data-dispatch-state="refused"]').last();
       await expect(refused).toBeVisible({ timeout: 20_000 });
-      await expect(refused.locator('[data-dispatch-refused]')).toContainText('mirrored dispatch');
-      await expect(refused.locator('[data-dispatch-refused]')).toContainText('no cluster agent was started in its place');
+      // No host here runs -agent-spawn, so a mirrored start is refused before
+      // anything is asked (agentDispatchNoHost); no cluster agent stands in.
+      await expect(refused.locator('[data-dispatch-refused]')).toContainText('no host can start agents now');
+      await expect(refused.locator('[data-dispatch-refused]')).toContainText('nothing was asked or queued');
       await expect(refused.locator('a')).toHaveCount(0);
       // Stored, so a reload draws it the same.
       await expect(log(page)).toContainText('It was refused.', { timeout: 20_000 });

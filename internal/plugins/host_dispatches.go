@@ -3,7 +3,6 @@ package plugins
 import (
 	"context"
 	"errors"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -258,11 +257,10 @@ func (s *PGStore) EndHostDispatch(ctx context.Context, id int64, why string, ref
 		why = why[:200]
 	}
 	var out HostDispatch
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
-			strconv.FormatInt(owner, 10)); err != nil {
-			return err
-		}
+	// inChiefDispatchLock: the owner's reservation lock, waited for without
+	// holding a pool connection (the reconciler ends rows concurrently with
+	// agent_dispatch starts).
+	err = s.inChiefDispatchLock(ctx, owner, func(tx pgx.Tx) error {
 		cur, err := scanHostDispatch(tx.QueryRow(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches WHERE id = $1 AND owner_id = $2 FOR UPDATE`, id, owner))
 		if err != nil {
 			return err
