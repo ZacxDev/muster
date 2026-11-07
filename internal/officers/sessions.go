@@ -229,20 +229,33 @@ func (l *JudgementLedger) ReserveNext(ctx context.Context, o Officer, now time.T
 	}, nil
 }
 
-// Capped reports whether pool o has spent its cap for now's UTC day, and the
-// items it counted today (still work for it at the cap), by CountSessions. An
-// uncapped pool is never capped. A store failure is returned.
-func (l *JudgementLedger) Capped(ctx context.Context, o Officer, now time.Time) (bool, map[ItemID]bool, error) {
-	limit := o.SessionCap()
-	if l == nil || limit == 0 {
-		return false, nil, nil
+// Usage is how many sessions pool o has used on now's UTC day, by
+// CountSessions, and the items it counted (still work for it at the cap). The
+// pool is capped when that is at least o.SessionCap(). An uncapped pool (or a nil ledger)
+// reads 0 and reads no store. A store failure is returned.
+func (l *JudgementLedger) Usage(ctx context.Context, o Officer, now time.Time) (int, map[ItemID]bool, error) {
+	if l == nil || o.SessionCap() == 0 {
+		return 0, nil, nil
 	}
 	entries, err := l.store.Sessions(l.scope(ctx, o), o.ID, utcDay(now))
 	if err != nil {
-		return false, nil, fmt.Errorf("officers: read %s's judgement sessions: %w", o.ID, err)
+		return 0, nil, fmt.Errorf("officers: read %s's judgement sessions: %w", o.ID, err)
 	}
 	n, items := CountSessions(entries, now)
-	return n >= limit, items, nil
+	return n, items, nil
+}
+
+// CapResetAt is when the daily session cap in force at now resets: the next
+// UTC midnight.
+func CapResetAt(now time.Time) time.Time {
+	y, m, d := now.UTC().Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
+}
+
+// CapReason is the one-line reason a judgement pool at its cap is not woken:
+// "judgement cap reached (used/limit until HH:MM UTC)", resetting at reset.
+func CapReason(used, limit int, reset time.Time) string {
+	return fmt.Sprintf("judgement cap reached (%d/%d until %s UTC)", used, limit, reset.UTC().Format("15:04"))
 }
 
 // capRefusal is the cap's refusal: what was not claimed, and that the item
