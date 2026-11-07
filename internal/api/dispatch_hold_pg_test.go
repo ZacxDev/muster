@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // dispatch_request + dispatch_approve (dispatch_hold_tools.go) over a real
@@ -814,5 +816,117 @@ func TestAModelRefusalWithSuggestionsIsAToolError(t *testing.T) {
 	}
 	if isToolErr(`{"error":"x","model_suggestions":[],"agent_id":1}`) {
 		t.Fatal("control: an answer with a key outside the refusal set reads as an error")
+	}
+}
+
+// TestATasksOwnModelIsResolvedAtTheRequestAndUnderTheLock: a gateway start on
+// a task, naming no model, runs the TASK's model — resolved like any model.
+//   - at the request: the task's display name is held (and reported) as the
+//     catalogue id, with model_input, and the agent runs that id; an unknown
+//     task model is refused before anything is held;
+//   - under the lock: a task that gained a model after the request has it
+//     resolved there, and an unknown one is refused there — nothing reserved,
+//     so the hold is not spent and starts once the task is fixed.
+func TestATasksOwnModelIsResolvedAtTheRequestAndUnderTheLock(t *testing.T) {
+	h := newHoldFixture(t)
+	named, err := h.notes.Create(h.asOwner, notes.Note{Title: "model by name", Body: "Do it.", Model: "Coder 7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := h.request(t, map[string]any{"target": "pod/gateway", "task_id": named.ID})
+	if held.Model != "openrouter/vendor-a/coder-7" || !strings.Contains(held.Summary, "openrouter/vendor-a/coder-7") {
+		t.Fatalf("the task's model held as %q (summary %q); want openrouter/vendor-a/coder-7", held.Model, held.Summary)
+	}
+	d, _ := h.auditDetail(t, plugins.ActionDispatchHeld, held.HoldID)
+	if d["model"] != "openrouter/vendor-a/coder-7" || d["model_input"] != "Coder 7" || d["model_from_task"] != true {
+		t.Errorf("hold row %v: want the resolved task model, its input and model_from_task", d)
+	}
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if isErr || !strings.Contains(text, `"model":"openrouter/vendor-a/coder-7"`) {
+		t.Fatalf("approval: %s", text)
+	}
+	if a := h.startedOne(t, text, named.ID); a.Model != "openrouter/vendor-a/coder-7" {
+		t.Errorf("agent runs %q; want openrouter/vendor-a/coder-7", a.Model)
+	}
+
+	unknown, err := h.notes.Create(h.asOwner, notes.Note{Title: "unknown model", Body: "Do it.", Model: "Acme v4.1 flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, isErr, _ = h.tool(t, h.ws, focusSID, dispatchRequestTool, map[string]any{"target": "pod/gateway", "task_id": unknown.ID})
+	if want := "task " + strconv.FormatInt(unknown.ID, 10) + `'s model: model "Acme v4.1 flash" is not in the model catalogue`; !isErr ||
+		!strings.HasPrefix(errorText(t, text), want) {
+		t.Fatalf("an unknown task model answered %s\nwant a refusal starting %q", text, want)
+	}
+
+	// Under the lock: no model at the request, then an unknown one, then a name.
+	later, err := h.notes.Create(h.asOwner, notes.Note{Title: "model later", Body: "Do it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held = h.request(t, map[string]any{"target": "pod/gateway", "task_id": later.ID})
+	setModel := func(m string) {
+		if _, err := h.pool.Exec(authz.System(context.Background()), `UPDATE notes SET model = $2 WHERE id = $1`, later.ID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setModel("Acme v4.1 flash")
+	text, isErr, _ = h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if !isErr || !strings.Contains(errorText(t, text), `the task's model: model "Acme v4.1 flash" is not in the model catalogue`) {
+		t.Fatalf("an unknown task model under the lock answered %s", text)
+	}
+	if n := h.reservations(t, later.ID); n != 0 || len(h.agentsOn(t, later.ID)) != 0 {
+		t.Fatalf("a refused task model reserved %d / started %d", n, len(h.agentsOn(t, later.ID)))
+	}
+	setModel("Coder 7")
+	text, isErr, _ = h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if isErr {
+		t.Fatalf("the same hold, task model fixed: %s", text)
+	}
+	// The answer, the approval row and the push name the id the agent runs,
+	// never the raw name the task holds.
+	if !strings.Contains(text, `"model":"openrouter/vendor-a/coder-7"`) {
+		t.Errorf("approval answer %s: want the resolved model", text)
+	}
+	if ad, _ := h.auditDetail(t, plugins.ActionDispatchApproved, held.HoldID); ad["model"] != "openrouter/vendor-a/coder-7" {
+		t.Errorf("approval row %v: want the resolved model", ad)
+	}
+	if a := h.startedOne(t, text, later.ID); a.Model != "openrouter/vendor-a/coder-7" {
+		t.Errorf("agent runs %q; want the task's model resolved under the lock", a.Model)
+	}
+}
+
+// TestATaskRepositoryThatMovesDuringTheApprovalIsRefused: a hold naming no
+// repository runs on its task's. The task's repository is checked before the
+// lock and re-read under it; one rewritten in between (here, while the owner's
+// repositories are listed) is refused — not started on the unchecked one —
+// and the hold is not spent.
+func TestATaskRepositoryThatMovesDuringTheApprovalIsRefused(t *testing.T) {
+	h := newHoldFixture(t)
+	h.withConnectedRepos(t, "example/app")
+	// The mirror door reads the owner's role from the users store: an admin's
+	// repositories come from the GitHub App connectRepos wires.
+	h.srv.ext.Users = users.NewPG(h.pool)
+	n, err := h.notes.Create(h.asOwner, notes.Note{Title: "moving repo", Body: "Do it.", Repo: "example/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := h.request(t, map[string]any{"target": "pod/gateway", "model": "openrouter/vendor-a/coder-7", "task_id": n.ID})
+	h.srv.ext.GitHubApp = &changingApp{list: func() []string {
+		if _, err := h.pool.Exec(authz.System(context.Background()), `UPDATE notes SET repo = 'stranger/x' WHERE id = $1`, n.ID); err != nil {
+			t.Error(err)
+		}
+		return []string{"example/app"}
+	}}
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if want := "task " + strconv.FormatInt(n.ID, 10) + "'s repository changed while it was being checked: call dispatch_approve again"; !isErr ||
+		errorText(t, text) != want {
+		t.Fatalf("a moved repository answered %s\nwant %q", text, want)
+	}
+	if got := h.agentsOn(t, n.ID); len(got) != 0 {
+		t.Fatalf("started %+v on a repository that moved", got)
+	}
+	if hold, err := h.plugins.DispatchHold(h.asOwner, held.HoldID); err != nil || !hold.Open() {
+		t.Errorf("the hold after the refusal: %+v %v; want still open", hold, err)
 	}
 }

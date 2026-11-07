@@ -92,10 +92,11 @@ const (
 	dispatchRequestDailyCap = "muster has started the most agents allowed for your owner in a day (budget: today has reached " +
 		"daily_cap): nothing was held"
 
-	dispatchApproveNoHold   = "no held dispatch %q of your owner's: dispatch_approve takes the hold_id dispatch_request returned"
-	dispatchApproveExpired  = "hold %s expired unapproved at %s (a hold can be approved for 15 minutes): call dispatch_request again"
-	dispatchApproveConsumed = "hold %s was already approved: a hold starts one agent, once. Nothing new was started"
-	dispatchApproveChanged  = "hold %s can no longer start as it was held: %s. Nothing was started"
+	dispatchApproveNoHold    = "no held dispatch %q of your owner's: dispatch_approve takes the hold_id dispatch_request returned"
+	dispatchApproveExpired   = "hold %s expired unapproved at %s (a hold can be approved for 15 minutes): call dispatch_request again"
+	dispatchApproveConsumed  = "hold %s was already approved: a hold starts one agent, once. Nothing new was started"
+	dispatchApproveChanged   = "hold %s can no longer start as it was held: %s. Nothing was started"
+	dispatchApproveRepoMoved = "task %d's repository changed while it was being checked: call dispatch_approve again"
 )
 
 // dispatchRequestToolDef / dispatchApproveToolDef are the two verbs' listings.
@@ -188,9 +189,11 @@ type heldDispatch struct {
 	Kind         string `json:"kind"`
 	Model        string `json:"model,omitempty"`
 	ModelInput   string `json:"model_input,omitempty"`
-	Repo         string `json:"repo,omitempty"`
-	Base         string `json:"base,omitempty"`
-	TaskID       int64  `json:"task_id,omitempty"`
+	// ModelFromTask: Model is the task's own, resolved at the request.
+	ModelFromTask bool   `json:"model_from_task,omitempty"`
+	Repo          string `json:"repo,omitempty"`
+	Base          string `json:"base,omitempty"`
+	TaskID        int64  `json:"task_id,omitempty"`
 	// Prompt is the cleaned prompt, in full: what the agent will be told.
 	Prompt       string `json:"prompt,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256"`
@@ -338,6 +341,7 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 		return refuse(err.Error())
 	}
 	effective := in.Repo
+	fromTask := false
 	if in.TaskID > 0 {
 		n, why, err := s.holdTask(ctx, owner, in.TaskID)
 		switch {
@@ -350,6 +354,16 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 			return refuse(fmt.Sprintf(dispatchRequestTaskRepo, in.TaskID, n.Repo))
 		case effective == "":
 			effective = n.Repo
+		}
+		// A gateway start naming no model runs the TASK's: resolved by the same
+		// check, refused before anything is held when it is unknown, and held
+		// (and reported) as the id the agent will run.
+		if tm, ok := s.taskModelResolution(ctx, kind, model, n.Model); ok {
+			if tm.Refusal != "" {
+				tm.Refusal = fmt.Sprintf("task %d's model: %s", in.TaskID, tm.Refusal)
+				return dispatchModelRefusal(tm, s.chiefBudgetNow(ctx))
+			}
+			mr, model, fromTask = tm, tm.Model, true
 		}
 	}
 	if effective != "" {
@@ -373,6 +387,7 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 	if mr.Resolved {
 		h.ModelInput = mr.Input // the value as given, beside the id it resolved to
 	}
+	h.ModelFromTask = fromTask
 	hold, err := s.ext.ChiefDispatch.FileDispatchHold(ctx, h.detail())
 	if err != nil {
 		s.logger.Printf("dispatch_request: file the hold: %v", err)
@@ -479,6 +494,9 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	}
 	onTask := h.TaskID > 0
 	effective := h.Repo
+	// earlyRepo is the task's repository as checked here, before the lock: a
+	// hold naming no repository runs on the task's, which is re-read under the
+	// lock and must still be this one (agent_dispatch's rule).
 	if onTask {
 		if n, why, err := s.holdTask(ctx, owner, h.TaskID); err == nil && why == "" && effective == "" {
 			effective = n.Repo
@@ -489,6 +507,10 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 			return changed(why)
 		}
 	}
+	earlyRepo := effective
+	// Warm the model catalogue for a gateway start that may run its task's
+	// model, so the check under the lock reads no network (resolveDispatchModel).
+	s.resolveDispatchModel(ctx, kind, "")
 	object := plugins.NoteObject(h.TaskID)
 	if !onTask {
 		if object, err = plugins.NewDispatchObject(); err != nil {
@@ -505,7 +527,10 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if h.Prompt != "" {
 		detail["instructions"] = h.Prompt
 	}
-	var task notes.Note
+	var (
+		task      notes.Note
+		taskModel string
+	)
 	// 🔴 UNDER THE OWNER'S RESERVATION LOCK: the hold is still open (single use,
 	// expiry — the decision, not the sentence above), and the task still takes
 	// a start. Only then is the reservation, naming the hold, written: that row
@@ -529,6 +554,18 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 			return errTaskDispatch(fmt.Sprintf(dispatchApproveChanged, id, why))
 		case h.Repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, h.Repo):
 			return errTaskDispatch(fmt.Sprintf(dispatchApproveChanged, id, fmt.Sprintf(dispatchRequestTaskRepo, h.TaskID, n.Repo)))
+		case h.Repo == "" && !strings.EqualFold(n.Repo, earlyRepo):
+			return errTaskDispatch(fmt.Sprintf(dispatchApproveRepoMoved, h.TaskID))
+		}
+		// The task's model, when the hold names none (it had none at the
+		// request): resolved like any model, an unknown one refused here, under
+		// the lock, before the reservation — so the hold is not spent on it.
+		if tm, ok := s.taskModelResolution(ctx, kind, h.Model, n.Model); ok {
+			if tm.Refusal != "" {
+				return errTaskDispatch(fmt.Sprintf(dispatchApproveChanged, id, "the task's model: "+tm.Refusal))
+			}
+			taskModel = tm.Model
+			recordDispatchModel(detail, tm)
 		}
 		task = n
 		return nil
@@ -570,7 +607,7 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 			p.RepoBranch = h.Base
 		}
 		if h.Model == "" {
-			p.Model = task.Model
+			p.Model = taskModel
 		}
 		p.NoteText = task.Body + sessionDispatchRules
 		if h.Prompt != "" {
@@ -636,6 +673,17 @@ func toolErrSentence(text string) string {
 		return text
 	}
 	return out.Error
+}
+
+// taskModelResolution is the model check of a TASK's own model for a start
+// that names none (given ""), on the gateway kind only (a claude-code agent
+// has no per-agent model) — recordTaskModel's predicate. ok is false when the
+// task's model does not apply.
+func (s *Server) taskModelResolution(ctx context.Context, kind, given, taskModel string) (modelResolution, bool) {
+	if given != "" || strings.TrimSpace(taskModel) == "" || kind != agents.KindGateway {
+		return modelResolution{}, false
+	}
+	return s.resolveAgentModel(ctx, taskModel), true
 }
 
 // ownersChiefID is the id of the caller's owner's chief when they have one
