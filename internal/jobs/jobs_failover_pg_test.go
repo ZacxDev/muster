@@ -75,8 +75,10 @@ func TestActiveCountsSeesEveryOwnersJobs(t *testing.T) {
 		}
 		ids = append(ids, j.ID)
 	}
-	if ok, err := s.Start(ctx, ids[0], "north", 0); err != nil || !ok {
-		t.Fatalf("start = %v, %v", ok, err)
+	for _, id := range []int64{ids[0], ids[2]} {
+		if ok, err := s.Start(ctx, id, "north", 0); err != nil || !ok {
+			t.Fatalf("start %d = %v, %v", id, ok, err)
+		}
 	}
 	if ok, err := s.Finish(ctx, ids[2], Outcome{Status: StatusSucceeded, Result: "done"}); err != nil || !ok {
 		t.Fatalf("finish = %v, %v", ok, err)
