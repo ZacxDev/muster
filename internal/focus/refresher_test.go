@@ -66,6 +66,12 @@ func (m *memStore) SetManualName(_ context.Context, s Subject, name string) (Nam
 	m.rows[s] = f
 	return f.Name, nil
 }
+func (m *memStore) DismissDrift(_ context.Context, s Subject, title string) error {
+	f := m.rows[s]
+	f.Name.DriftDismissed = title
+	m.rows[s] = f
+	return nil
+}
 func (m *memStore) Owners(context.Context) ([]int64, error) { return m.owners, nil }
 func (m *memStore) Touch(_ context.Context, subs []Subject) error {
 	m.touched = append(m.touched, subs...)

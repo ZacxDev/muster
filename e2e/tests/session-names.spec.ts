@@ -37,6 +37,9 @@ const labelsFile = path.join(rig.dir, 'labels.json');
 const now = Math.floor(Date.now() / 1000);
 const sids = { phone: 'names-phone-' + stamp, desktop: 'names-desktop-' + stamp };
 const windows = { phone: 1, desktop: 2 };
+// A second window per viewport for the drift offer (5.), its own conversation.
+const driftSids = { phone: 'drift-phone-' + stamp, desktop: 'drift-desktop-' + stamp };
+const driftWindows = { phone: 3, desktop: 4 };
 const view = (w: number) => `/mirror/view?host=${host}&session=namesx&window=%40${w}`;
 
 const REAL_TAIL = [
@@ -48,7 +51,14 @@ const GREETING_TAIL = [
   { role: 'assistant', text: 'Hello! How can I help?' },
 ];
 
-type FocusSpec = { subject: string; title: string; description?: string; tail?: { role: string; text: string }[] };
+type FocusSpec = {
+  subject: string;
+  title: string;
+  description?: string;
+  tail?: { role: string; text: string }[];
+  historyTitles?: string[];
+  historyAgeMinutes?: number;
+};
 
 function mkchat(env: NodeJS.ProcessEnv, input = '') {
   execFileSync('go', ['run', './e2e/mkchat'], { cwd: repoRoot, input, env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: agentName, ...env } });
@@ -60,9 +70,11 @@ test.beforeAll(async () => {
   mkchat({}, JSON.stringify([{ role: 'user', content: 'Hold the fixtures.' }]));
   const rows: string[] = [];
   for (const k of ['phone', 'desktop'] as const) {
-    const tr = path.join(rig.dir, sids[k] + '.jsonl');
-    fs.writeFileSync(tr, cc.prompt('Migrate the billing tables') + cc.reply('Reading the schema.'));
-    rows.push(`namesx|@${windows[k]}|${windows[k]}|${k === 'phone' ? 1 : 0}|claude|${now - 60 * windows[k]}|${tr}`);
+    for (const [sid, w] of [[sids[k], windows[k]], [driftSids[k], driftWindows[k]]] as const) {
+      const tr = path.join(rig.dir, sid + '.jsonl');
+      fs.writeFileSync(tr, cc.prompt('Migrate the billing tables') + cc.reply('Reading the schema.'));
+      rows.push(`namesx|@${w}|${w}|${w === 1 ? 1 : 0}|claude|${now - 60 * w}|${tr}`);
+    }
   }
   writeFileAtomic(windowsFile, rows.join('\n') + '\n');
   fs.writeFileSync(labelsFile, JSON.stringify({ namesx: 'walnut' }));
@@ -71,7 +83,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await rig.stop();
-  mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify(Object.values(sids).map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
+  mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify([...Object.values(sids), ...Object.values(driftSids)].map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
 });
 
 // rowOf is the sidebar row of window w (its <a>), from the live sidebar.
@@ -154,6 +166,44 @@ for (const vp of [
       await page.locator('#switcher-search-input').fill(`walnut:${w}`);
       await expect(options).toHaveCount(1);
       await expect(options.first().locator('span').first()).toHaveText(`Payments ${vp.key}`);
+    });
+
+    // DRIFT: the focus has been elsewhere for a while — a rename is OFFERED,
+    // never made; "Keep the name" holds until the focus changes; accepting
+    // renames it (a manual name), and the offer is gone.
+    test('a session whose work moved on is offered a rename, which it can keep or accept', async ({ page }) => {
+      const dw = driftWindows[vp.key];
+      const dsub = 'mirror:' + driftSids[vp.key];
+      await signIn(page, origin);
+      await rig.waitListed(page, `walnut:${dw}`);
+      writeFocus([{ subject: dsub, title: 'Billing migration', tail: REAL_TAIL }]);
+      const banner = page.locator('#session-drift');
+      // CONTROL: named, on-topic — no offer.
+      await page.goto(origin + view(dw));
+      await expect(page.locator('header [data-session-name="auto"]')).toHaveText('Billing migration');
+      await expect(banner).toHaveCount(0);
+      // Three changes about something else, the oldest an hour ago.
+      writeFocus([{ subject: dsub, title: 'Fixing the Stripe webhook retry', tail: REAL_TAIL,
+        historyTitles: ['Tracing the webhook retry queue', 'Reading the Stripe webhook docs'], historyAgeMinutes: 60 }]);
+      await page.goto(origin + view(dw));
+      await expect(banner).toHaveAttribute('data-session-drift', 'Fixing the Stripe webhook retry');
+      await expect(page.locator('header [data-session-name="auto"]'), 'offered, not renamed').toHaveText('Billing migration');
+      const keep = banner.locator('[data-session-drift-dismiss]');
+      const accept = banner.locator('[data-session-drift-accept]');
+      for (const b of [keep, accept]) expect((await b.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      // Keep the name: gone, and still gone after a reload.
+      await Promise.all([page.waitForEvent('load'), keep.click()]);
+      await expect(banner).toHaveCount(0);
+      await page.reload();
+      await expect(banner).toHaveCount(0);
+      // A new focus title releases the dismissal.
+      writeFocus([{ subject: dsub, title: 'Wiring the Stripe refund flow', tail: REAL_TAIL }]);
+      await page.goto(origin + view(dw));
+      await expect(banner).toHaveAttribute('data-session-drift', 'Wiring the Stripe refund flow');
+      // Accept: one tap renames it; the name is the person's now.
+      await Promise.all([page.waitForEvent('load'), accept.click()]);
+      await expect(page.locator('header [data-session-name="manual"]')).toHaveText('Wiring the Stripe refund flow');
+      await expect(banner).toHaveCount(0);
     });
   });
 }
