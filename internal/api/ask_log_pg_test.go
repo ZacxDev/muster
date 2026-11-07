@@ -269,11 +269,12 @@ func askLogAskServer(t *testing.T, store asklog.Store) (*askMirror, *Server, *ht
 // TestAnAskUserQuestionIsLoggedWhenOpenedAndWhenAnswered: the hook's
 // registration (handleMirrorAskOpen) is one row — the questions, each one's
 // header, options and multi-select flag, the host, session and window, the
-// question store's id as the source; the owner's answer typed from the card
-// (AnswerWindow) and confirmed by the CLI's record resolves it: answered, by
-// the owner, with the chosen labels. Registering the same call again (the
-// open-question scan's Restore) writes no second row. A second question
-// dismissed in the terminal ends declined.
+// question store's id as the source. The question expiring and being
+// restored (the open-question scan reopens it under the same id) captures it
+// again and writes no second row (nor a second count); the owner's answer typed
+// from the card (AnswerWindow) and confirmed by the CLI's record then replaces
+// the expiry: answered, by the owner, with the chosen labels. A second
+// question dismissed in the terminal ends declined.
 func TestAnAskUserQuestionIsLoggedWhenOpenedAndWhenAnswered(t *testing.T) {
 	pool := askLogPool(t)
 	am, s, ts := askLogAskServer(t, asklog.NewPG(pool))
@@ -284,9 +285,6 @@ func TestAnAskUserQuestionIsLoggedWhenOpenedAndWhenAnswered(t *testing.T) {
 	if len(open) != 1 {
 		t.Fatalf("%d open questions", len(open))
 	}
-	if _, _, err := s.Questions().Restore(open[0].Key, gateQs(t)); err != nil {
-		t.Fatal(err)
-	}
 	a := one(t, asksOf(t, s, 1), asklog.KindAskUserQuestion)
 	if a.Runtime != asklog.RuntimeClaudeCode || a.Host != "ws" || a.ClaudeSession != "sess-1" || a.TmuxSession != "main" || a.Window != "@1" ||
 		a.SourceRef != open[0].ID || a.Question != "Which color do you prefer?\n\nWhich pets do you have?" ||
@@ -295,6 +293,20 @@ func TestAnAskUserQuestionIsLoggedWhenOpenedAndWhenAnswered(t *testing.T) {
 		a.Outcome != "" {
 		t.Fatalf("the opened question's row: %+v\n%s", a, a.Options)
 	}
+	// The session looked gone (the question expired), then its transcript
+	// showed the call open again (the open-question scan's Restore reopens it
+	// under the same id): the capture runs again for the same source, and
+	// writes no second row; the row reads expired until the answer replaces it.
+	if n := s.Questions().Gone(1, askSourceMirror, "ws", "sess-1", "gone for a moment"); n != 1 {
+		t.Fatalf("expired %d", n)
+	}
+	if a := one(t, asksOf(t, s, 1), asklog.KindAskUserQuestion); a.Outcome != asklog.OutcomeExpired {
+		t.Fatalf("the expired question's row: %+v", a)
+	}
+	if _, changed, err := s.Questions().Restore(open[0].Key, gateQs(t)); err != nil || !changed {
+		t.Fatalf("restore: changed=%v err=%v", changed, err)
+	}
+	region(t, s, ts, `data-ask-state="pending"`)
 	resp, body := answerReq(t, s, ts, answerForm(gateTool, "a0", "Red", "a1", "Fish", "a1", "Dog"), "", "")
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
 		t.Fatalf("answer: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
@@ -358,7 +370,8 @@ func askLogOpenCodeServer(t *testing.T, store asklog.Store) (*openCodeAskMirror,
 // TestAnOpenCodeAskIsLoggedWhenItArrivesAndWhenAnswered: the status hook sees
 // two named asks — a form (opencode_question, its options) and a permission
 // request (opencode_permission, its description and choices) — and logs each
-// once, keyed by its prompt id (a second sight writes nothing); a form with no
+// once, keyed by its prompt id (a second sight, or a restart's re-capture,
+// writes nothing and counts nothing); a form with no
 // prompt id names no ask and writes nothing. The owner's answer relayed from
 // the queue resolves the permission: answered, by the owner, "reject". The
 // form, left in the terminal (the window stops waiting), ends moved_on.
@@ -381,6 +394,15 @@ func TestAnOpenCodeAskIsLoggedWhenItArrivesAndWhenAnswered(t *testing.T) {
 	if p.Window != "@2" || p.SourceRef != "per_1a2aa6345001HPvxtQP9FD941m" || p.Question != "bash: rm -rf build" ||
 		string(p.Options) != `["once", "reject"]` {
 		t.Fatalf("the permission's row: %+v", p)
+	}
+	// A restart: nothing seen, so both asks are captured again — keyed by
+	// their prompt ids, they are the same two rows, and counted once.
+	s.askLog.mu.Lock()
+	s.askLog.seen = map[askWinKey]askSeen{}
+	s.askLog.mu.Unlock()
+	s.AskLogMirrorChanged(1)
+	if rows := asksOf(t, s, 1); len(rows) != 2 {
+		t.Fatalf("after a restart's re-capture: %d rows, want the same 2: %+v", len(rows), rows)
 	}
 	if d := testutil.ToFloat64(metrics.AsksTotal.WithLabelValues(asklog.KindOpenCodeQuestion)) - nq; d != 1 {
 		t.Fatalf("muster_asks_total{opencode_question} moved %v, want 1", d)

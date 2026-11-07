@@ -31,18 +31,24 @@ func TestTheRecorderRunsCapturesInOrderOffTheCallersGoroutine(t *testing.T) {
 	release := make(chan struct{})
 	var mu sync.Mutex
 	var order []int
-	r.Do(context.Background(), KindPlainText, func(context.Context) error { <-release; return nil })
-	start := time.Now()
-	for i := 1; i <= 50; i++ {
-		r.Do(context.Background(), KindPlainText, func(context.Context) error {
-			mu.Lock()
-			order = append(order, i)
-			mu.Unlock()
-			return nil
-		})
-	}
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("Do blocked for %s behind a stuck capture", d)
+	queued := make(chan struct{})
+	go func() {
+		r.Do(context.Background(), KindPlainText, func(context.Context) error { <-release; return nil })
+		for i := 1; i <= 50; i++ {
+			r.Do(context.Background(), KindPlainText, func(context.Context) error {
+				mu.Lock()
+				order = append(order, i)
+				mu.Unlock()
+				return nil
+			})
+		}
+		close(queued)
+	}()
+	select {
+	case <-queued:
+	case <-time.After(2 * time.Second):
+		close(release) // let a caller stuck behind the capture go, then fail
+		t.Fatal("Do blocked behind a stuck capture: it ran on the caller's goroutine")
 	}
 	close(release)
 	flush(t, r)
