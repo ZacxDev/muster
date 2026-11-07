@@ -203,8 +203,9 @@ type focusSpec struct {
 	// would.
 	Tail []focus.Entry `json:"tail"`
 	// HistoryAgeMinutes, when > 0, backdates EVERY history row of the
-	// subject that many minutes after this entry is written (a session whose
-	// focus has been elsewhere for a while: focus.DriftOffer's age).
+	// subject — and the moment its name took effect — that many minutes
+	// after this entry is written (a session whose focus has been elsewhere
+	// for a while: focus.DriftOffer's age).
 	HistoryAgeMinutes int `json:"historyAgeMinutes"`
 }
 
@@ -263,6 +264,14 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 			if _, err := pool.Exec(ctx, `UPDATE agent_focus_history SET created_at = created_at - make_interval(mins => $1)
 				WHERE subject_kind = $2 AND subject_key = $3`, sp.HistoryAgeMinutes, string(sub.Kind), sub.Key); err != nil {
 				return fmt.Errorf("backdate history %s: %w", sub, err)
+			}
+			// The session's name moves back with its history: it took effect
+			// before the changes it is measured against (focus.DriftOffer
+			// counts only changes after it).
+			if _, err := pool.Exec(ctx, `UPDATE agent_focus SET name_auto_at = name_auto_at - make_interval(mins => $1),
+				name_manual_at = name_manual_at - make_interval(mins => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.HistoryAgeMinutes, string(sub.Kind), sub.Key); err != nil {
+				return fmt.Errorf("backdate name %s: %w", sub, err)
 			}
 		}
 		if sp.AgeHours > 0 {

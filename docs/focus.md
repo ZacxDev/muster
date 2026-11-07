@@ -177,12 +177,18 @@ with **Rename to "…"** and **Keep the name**. muster never renames a session
 on its own. The offer is decided by `focus.DriftOffer`, from the session's
 focus history:
 
-- the **newest three** focus changes (`DriftMinTitles`) have all **diverged**
-  from the name: fewer than half of the name's content words appear in the
-  title (`DriftMaxOverlap`; filler and opener words do not count, and words
-  are compared by their first four letters, so "migrating" meets
-  "migration"). One off-topic detour is two changes at most; three in a row is
-  a new job;
+- the **newest three** focus changes (`DriftMinTitles`) written **after the
+  name took effect** (a manual mirrored name's `name_manual_at`, an auto
+  name's `name_auto_at`, an agent's `display_name_at`, migration `0091`) have
+  all **diverged** from the name: the words they share are fewer than half of
+  the name's content words AND fewer than half of the title's
+  (`DriftMaxOverlap`; filler and opener words do not count, a task name's
+  `#<id> · ` lead does not either, and words are compared by their first four
+  letters, so "migrating" meets "migration"). Measuring both sides keeps a
+  long task name from "diverging" from a short title on the same job. One
+  off-topic detour is two changes at most; three in a row is a new job. A
+  session renamed a moment ago is not offered a rename on the history it was
+  renamed over;
 - the **oldest of those three** was written at least **30 minutes** ago
   (`DriftMinAge`, two default refresh intervals): the divergence is sustained,
   not one busy minute;

@@ -137,8 +137,45 @@ func TestATaskNameDriftsLikeAnyStableName(t *testing.T) {
 		sessionname.SourceFallback: "",
 	} {
 		n := sessionname.Name{Text: "#42 · Billing migration", Source: src}
-		if got := s.driftOffer(r, sub, n); got != want {
+		if got := s.driftOffer(r, sub, n, time.Time{}); got != want {
 			t.Errorf("a %s name: offer %q, want %q", src, got, want)
 		}
+	}
+}
+
+// TestARenameRestartsTheDriftClock: right after a person renames a drifted
+// session, nothing is offered — the history it was renamed over does not
+// count; three drifted changes AFTER the rename, the oldest DriftMinAge old,
+// are offered again.
+func TestARenameRestartsTheDriftClock(t *testing.T) {
+	now := time.Now()
+	store := driftedStore(now)
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	s, ts := focusMirrorServer(t, fm, store, nil)
+	view := ref("main", "@1").ViewPath()
+	if _, page := mirrorGet(t, s, ts, view); !strings.Contains(page, "data-session-drift=") {
+		t.Fatal("control: the drifted session is offered a rename before it is renamed")
+	}
+	if rec := pinPost(t, s, s.Handler(), ui.SessionNamePath, url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"},
+		"name": {"Payments refactor"}}, true); rec.Code != http.StatusOK {
+		t.Fatalf("rename = %d", rec.Code)
+	}
+	if _, page := mirrorGet(t, s, ts, view); strings.Contains(page, "data-session-drift=") {
+		t.Fatal("a session renamed a moment ago is offered a rename on the history it was renamed over")
+	}
+	// Three drifted changes after the rename, the oldest 40 minutes before
+	// "now" (the server's clock moved on).
+	sub := focus.MirrorSubject(focusSID)
+	store.mu.Lock()
+	renamed := store.rows[sub].Name.ManualAt
+	store.history[sub] = append([]focus.HistoryEntry{
+		{ID: 7, Title: "Wiring the Stripe refund flow", CreatedAt: renamed.Add(90 * time.Minute)},
+		{ID: 6, Title: "Reading the Stripe refund docs", CreatedAt: renamed.Add(70 * time.Minute)},
+		{ID: 5, Title: "Tracing the Stripe refund queue", CreatedAt: renamed.Add(60 * time.Minute)},
+	}, store.history[sub]...)
+	store.mu.Unlock()
+	s.now = func() time.Time { return renamed.Add(100 * time.Minute) }
+	if _, page := mirrorGet(t, s, ts, view); !strings.Contains(page, `data-session-drift="Wiring the Stripe refund flow"`) {
+		t.Fatal("three drifted changes after the rename, the oldest 40 minutes old, offer nothing")
 	}
 }

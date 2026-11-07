@@ -2,6 +2,7 @@ package focus
 
 import (
 	"context"
+	"regexp"
 	"time"
 	"unicode/utf8"
 )
@@ -63,23 +64,31 @@ func driftStem(w string) string {
 // driftStemRunes is driftStem's prefix length.
 const driftStemRunes = 4
 
-// Diverged reports whether title is no longer about name: fewer than
-// DriftMaxOverlap of name's content words are in title. A name with no
-// content word never diverges (there is nothing to measure against).
+// Diverged reports whether title is no longer about name: the words they
+// share are fewer than DriftMaxOverlap of the name's content words AND fewer
+// than DriftMaxOverlap of the title's (driftWords). Measured from both sides,
+// so a long name (a task's whole first line) is not "diverged" from a short
+// on-topic title that names only part of it, nor a short name from a longer
+// title that names all of it. A task name's "#<id> · " prefix is not a word
+// of the job (taskPrefix): stripped first. A name or title with no content
+// word never diverges (there is nothing to measure).
 func Diverged(name, title string) bool {
-	nw := driftWords(name)
-	if len(nw) == 0 {
+	nw, tw := driftWords(taskPrefix.ReplaceAllString(name, "")), driftWords(taskPrefix.ReplaceAllString(title, ""))
+	if len(nw) == 0 || len(tw) == 0 {
 		return false
 	}
-	tw := driftWords(title)
 	shared := 0
 	for w := range nw {
 		if tw[w] {
 			shared++
 		}
 	}
-	return float64(shared) < DriftMaxOverlap*float64(len(nw))
+	return float64(shared) < DriftMaxOverlap*float64(len(nw)) && float64(shared) < DriftMaxOverlap*float64(len(tw))
 }
+
+// taskPrefix is a task-dispatched name's "#<task id> · " lead
+// (dispatchDisplayName's shape): an id, not a word of the job.
+var taskPrefix = regexp.MustCompile(`^\s*#[0-9]+(\s*·\s*|\s*$)`)
 
 // DriftOffer is the rename a session's drift offers: the title to rename it
 // to (its current focus title), "" for no offer. history is the session's
@@ -93,11 +102,22 @@ func Diverged(name, title string) bool {
 //     (NameableTitle) and is not name itself;
 //   - and the owner has not dismissed an offer at this very title — a
 //     dismissal holds until the focus title changes again.
-func DriftOffer(name string, history []HistoryEntry, dismissed string, now time.Time) string {
-	if name == "" || len(history) < DriftMinTitles {
+func DriftOffer(name string, history []HistoryEntry, dismissed string, since, now time.Time) string {
+	if name == "" {
 		return ""
 	}
-	recent := history[:DriftMinTitles]
+	// Only changes written AFTER the name took effect count: the history a
+	// session was renamed over says nothing about the new name.
+	var after []HistoryEntry
+	for _, e := range history {
+		if e.CreatedAt.After(since) {
+			after = append(after, e)
+		}
+	}
+	if len(after) < DriftMinTitles {
+		return ""
+	}
+	recent := after[:DriftMinTitles]
 	for _, e := range recent {
 		if !Diverged(name, e.Title) {
 			return ""

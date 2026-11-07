@@ -52,9 +52,18 @@ func TestDisplayNameSourceIsStoredAndARenameIsManual(t *testing.T) {
 	if plain.DisplayNameSource != NameDefault {
 		t.Errorf("unset: stored %q, want %q", plain.DisplayNameSource, NameDefault)
 	}
+	if plain.DisplayNameAt.IsZero() {
+		t.Fatal("a created agent has no display_name_at")
+	}
+	time.Sleep(10 * time.Millisecond)
 	a, err := store.SetDisplayName(ctx, plain.ID, "Billing")
 	if err != nil || a.DisplayName != "Billing" || a.DisplayNameSource != NameManual {
 		t.Fatalf("rename: %q %q (%v), want Billing / manual", a.DisplayName, a.DisplayNameSource, err)
+	}
+	// The drift offer's clock for an agent's name (migration 0091): a rename
+	// moves it.
+	if !a.DisplayNameAt.After(plain.DisplayNameAt) {
+		t.Fatalf("rename: display_name_at %v not after creation's %v", a.DisplayNameAt, plain.DisplayNameAt)
 	}
 	if got, _ := store.Get(ctx, plain.ID); got.DisplayNameSource != NameManual {
 		t.Fatalf("rename read back: %q", got.DisplayNameSource)

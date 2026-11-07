@@ -252,6 +252,7 @@ func driftBanner(d *SessionDrift) g.Node {
 			Button(Type("submit"), g.Attr("data-session-drift-dismiss", ""), Class(btn+"text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"),
 				g.Text("Keep the name"))),
 	)
+}
 
 // rawManual is raw — a manual name as typed — when n is a manual name, ""
 // otherwise.

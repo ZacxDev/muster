@@ -36,6 +36,7 @@ func TestMigrationSessionNameDriftAddsABoundedDismissal(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_session_name_drift", prev)
 	mustExec(ctx, t, pool, `INSERT INTO agent_focus (owner_id, subject_kind, subject_key, title) VALUES (1, 'mirror', 'drift-old', 'A focus')`)
+	mustExec(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, status, created_at) VALUES (1, 'drift-agent', 'ns-drift-agent', 'stopped', '2000-01-02T03:04:05Z')`)
 	if _, err := pool.Exec(ctx, `SELECT drift_dismissed FROM agent_focus`); err == nil {
 		t.Fatal("control: agent_focus has drift_dismissed before the migration")
 	}
@@ -47,6 +48,11 @@ func TestMigrationSessionNameDriftAddsABoundedDismissal(t *testing.T) {
 		t.Fatalf("a row from before: %q (%v), want ''", got, err)
 	}
 	mustExec(ctx, t, pool, `UPDATE agent_focus SET drift_dismissed = 'Fixing the webhook' WHERE subject_key = 'drift-old'`)
+	// An agent from before reads its creation as when its name took effect.
+	var same bool
+	if err := pool.QueryRow(ctx, `SELECT display_name_at = created_at FROM agents WHERE name = 'drift-agent'`).Scan(&same); err != nil || !same {
+		t.Fatalf("an agent from before: display_name_at = created_at is %v (%v), want true", same, err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE agent_focus SET drift_dismissed = repeat('x', 81)`); err == nil ||
 		!strings.Contains(err.Error(), "agent_focus_drift_dismissed_cap") {
 		t.Fatalf("an over-long title: %v; want refused by agent_focus_drift_dismissed_cap", err)

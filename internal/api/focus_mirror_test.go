@@ -93,7 +93,10 @@ func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	f := m.rows[s]
-	f.Subject, f.Name.Manual = s, name
+	f.Subject, f.Name.Manual, f.Name.ManualAt = s, name, time.Now()
+	if name == "" {
+		f.Name.ManualAt = time.Time{}
+	}
 	m.rows[s] = f
 	return f.Name, nil
 }

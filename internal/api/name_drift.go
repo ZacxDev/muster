@@ -1,6 +1,10 @@
 package api
 
 import (
+	"github.com/ZacxDev/muster/internal/agents"
+
+	"time"
+
 	"errors"
 	"net/http"
 	"strconv"
@@ -30,8 +34,16 @@ import (
 // ---------------------------------------------------------------------------
 
 // driftOffer is the rename sub's page offers, "" for none: n is the name the
-// page shows (resolved by the page's own adapter call).
-func (s *Server) driftOffer(r *http.Request, sub focus.Subject, n sessionname.Name) string {
+// page shows (resolved by the page's own adapter call); displayNameAt is when
+// an agent's display name was set (agents.Agent.DisplayNameAt), zero for a
+// mirrored session.
+//
+// 🔴 ONLY FOCUS CHANGES AFTER THE NAME TOOK EFFECT COUNT (round 1 of #508):
+// the moment is the name's own — a manual mirrored name's name_manual_at, an
+// auto name's name_auto_at, an agent's manual or task name's display_name_at
+// — so a session renamed a minute ago is not offered a rename on the history
+// it was renamed over.
+func (s *Server) driftOffer(r *http.Request, sub focus.Subject, n sessionname.Name, displayNameAt time.Time) string {
 	if s.ext.Focus == nil || !driftable(n.Source) {
 		return ""
 	}
@@ -41,7 +53,17 @@ func (s *Server) driftOffer(r *http.Request, sub focus.Subject, n sessionname.Na
 		s.logger.Printf("names: drift of %s: %v", sub, err)
 		return ""
 	}
-	return focus.DriftOffer(n.Text, page.Entries, s.storedName(ctx, sub).DriftDismissed, s.now())
+	stored := s.storedName(ctx, sub)
+	var since time.Time
+	switch {
+	case n.Source == sessionname.SourceAuto:
+		since = stored.AutoAt
+	case sub.Kind == focus.KindMirror:
+		since = stored.ManualAt
+	default:
+		since = displayNameAt
+	}
+	return focus.DriftOffer(n.Text, page.Entries, stored.DriftDismissed, since, s.now())
 }
 
 // driftable reports whether a name of source src may be offered a rename on
@@ -55,8 +77,9 @@ func driftable(src sessionname.Source) bool {
 }
 
 // agentDrift is the offer banner for agent id's page, nil for no offer.
-func (s *Server) agentDrift(r *http.Request, id int64, n sessionname.Name) *ui.SessionDrift {
-	offer := s.driftOffer(r, focus.AgentSubject(id), n)
+func (s *Server) agentDrift(r *http.Request, a agents.Agent, n sessionname.Name) *ui.SessionDrift {
+	id := a.ID
+	offer := s.driftOffer(r, focus.AgentSubject(id), n, a.DisplayNameAt)
 	if offer == "" {
 		return nil
 	}
@@ -71,7 +94,7 @@ func (s *Server) mirrorDrift(r *http.Request, e mirror.SessionView, n sessionnam
 	if key == "" {
 		return nil
 	}
-	offer := s.driftOffer(r, focus.MirrorSubject(key), n)
+	offer := s.driftOffer(r, focus.MirrorSubject(key), n, time.Time{})
 	if offer == "" {
 		return nil
 	}
