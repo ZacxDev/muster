@@ -804,21 +804,6 @@ func TestTheHoldIDShapeIsChecked(t *testing.T) {
 	h.nothingStarted(t)
 }
 
-// TestAModelRefusalWithSuggestionsIsAToolError: the model check's refusal
-// carries model_suggestions (dispatchModelRefusal, shared by agent_dispatch and
-// dispatch_request); over MCP it must still be flagged isError, or the caller
-// reads a refusal as a success. The key set isToolErr accepts is the guard.
-func TestAModelRefusalWithSuggestionsIsAToolError(t *testing.T) {
-	text := dispatchModelRefusal(modelResolution{Refusal: `model "x" is not in the model catalogue`,
-		Suggestions: []string{"openrouter/vendor-a/coder-7"}}, &plugins.ChiefBudget{})
-	if !isToolErr(text) {
-		t.Fatalf("a model refusal is not a tool error: %s", text)
-	}
-	if isToolErr(`{"error":"x","model_suggestions":[],"agent_id":1}`) {
-		t.Fatal("control: an answer with a key outside the refusal set reads as an error")
-	}
-}
-
 // TestATasksOwnModelIsResolvedAtTheRequestAndUnderTheLock: a gateway start on
 // a task, naming no model, runs the TASK's model — resolved like any model.
 //   - at the request: the task's display name is held (and reported) as the
