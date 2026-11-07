@@ -1146,17 +1146,23 @@ human merges. It is offered `officer_shepherd_mark_ready` and none of
    "repos": [{"repo": "example-org/example-infra", "base": "trunk",
               "github_app": {"id": 222222, "account": "example-org:7654321"},
               "forbidden_paths": [".github/**"]}],
-   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"},
-                            "example-other-bot[bot]"]},
+   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"}],
+                "auditors": ["example-auditor"]},
    "required_checks": ["ci / gate"],
    "notice": {"channel": "ch/example-alerts"}
  }}
 ```
 
 **`ship.shepherd.authors`** (required, 1–16): whose pull requests it may act
-on. Each entry is a login (an App's bot is `<slug>[bot]`), or `{"login",
-"officer"?}`, where `officer` is the id of an officer declared on the same
-muster whose App the login is.
+on. Each entry is `{"login", "officer"}`: the login (an App's bot is
+`<slug>[bot]`) and — **required** — the id of the officer declared on the
+same muster whose App it is. A bare login is refused at boot: a shepherd acts
+on officers' pull requests only, and the author's own wall always applies.
+
+**`ship.shepherd.auditors`** (optional, up to 16 logins): whose audit blocks
+`officer_shepherd_mark_ready` reads (below). None listed: mark ready is always
+refused. An author is never an auditor (refused at boot), and the shepherd's
+own App and the pull request's author are never read as one.
 
 **The pull request rule** (`officership.Shepherd.Admit`, one rule every write
 below asks, read fresh at every call). A pull request is the shepherd's to act
@@ -1167,23 +1173,36 @@ on only when it is:
 | `pull_request` | open (not merged) |
 | `base` | into the `base` of one of the shepherd's `repos` (the repository's default branch, as configured), in that repository |
 | `head_branch` | from a branch under that entry's `branch_prefix` (default `officer/`), in that repository — not a fork |
-| `author` | by a login in `authors`; typed `Bot` when the login is a `[bot]`; **not** the shepherd's own App's bot; and, for an entry that names an `officer`, that officer's App's bot as muster reads it at call time |
+| `author` | by a login in `authors`; typed `Bot` when the login is a `[bot]`; **not** the shepherd's own App's bot; and that entry's `officer`'s App's bot as muster reads it at call time |
 | `item` | the subject of an HQ item the **requesting instance** holds under a live lease: the item's `subject_key` is `<owner>/<name>#<number>` (the repository compared without case). No item, another holder, an expired lease or HQ unreadable is a refusal |
 
 **What it may do** on such a pull request, and nothing else:
 
 | write | rule | answer |
 |---|---|---|
-| `git push` to its branch | every ref an **update** — a branch create or delete is refused — from the pull request's **current** head (`old` must be the head; anything else is refused before forwarding) | 403 |
-| (after the push lands) | GitHub's `compare/{old}...{new}` must be a fast-forward (`ahead`, 0 behind), and `compare/{base}...{new}` must pass the wall below and the draft stage's content rules (forbidden paths, removed volume/database/canary manifests, secret shapes) | a push that fails, or cannot be checked, is **reverted** to `old` and HQ is told |
-| `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value | 403, or 409 and a notice |
+| `git push` to its branch | **one** ref per push, an **update** — a branch create or delete is refused — from the pull request's **current** head (`old` must be the head; anything else is refused before forwarding), while no other push to that branch is being verified | 403, or 409 (busy: push again) |
+| (before the branch moves) | the push is stored at a scratch ref first (below); then the pull request is admitted again and still at `old`, GitHub's `compare/{old}...{new}` is a fast-forward (`ahead`, 0 behind) of at most 50 commits and 100 files, and `compare/{base}...{new}` passes the wall below and the draft stage's content rules (forbidden paths, removed volume/database/canary manifests, secret shapes) | only then does the branch move; otherwise `git push` reports the ref **rejected** with the reason, nothing lands, and HQ is told |
+| `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value, and no line whose first non-space character (after any `>` quote marks) is `/` or `@` — such a line reads as a slash command or a bot comment command (`@<bot> merge`), which automation in the repository could act on | 403, or 409 and a notice |
 | `PUT /repos/{repo}/pulls/{n}/update-branch` | the body is exactly `{"expected_head_sha": <the head>}` and it is the current head (GitHub merges the base into the head; never a rebase) | 403 |
-| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**, the rule above, and every `required_checks` entry `success` on the head (none listed: nothing to wait for); then GraphQL `markPullRequestReadyForReview` | a refusal naming the gate |
+| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**; the rule above; `checks`: `required_checks` is not empty and every entry is `success` on the head (none listed: refused — CI green cannot be confirmed); `wall`: `compare/{base}...{head}` passes the wall and the content rules; `audit`: the audit ladder stopped with no 🔴 at the head (below); then GraphQL `markPullRequestReadyForReview` | a refusal naming the gate |
 
 Refused **always**: `POST pulls` (it opens nothing), every `PATCH pulls/{n}`
 (so no title or body edit, no close, no reopen), the merge endpoint, the refs,
 tags, contents and merges APIs, GraphQL, every `DELETE`, a branch create or
-delete, and a non-fast-forward push (reverted).
+delete, and a non-fast-forward push (never lands).
+
+**The audit gate** reads the pull request's comments, deterministically: of
+the fenced blocks `` ```audit-round-<n> `` in comments by a listed `auditor`
+(GitHub's author of the comment; never the shepherd's own App, never the pull
+request's author), it takes the one with the **highest round number** that
+carries a findings ledger (`findings 🔴<count>`; a round with no ledger, such
+as a requirements round, is skipped; a later comment wins a tie). That block
+must say `findings 🔴0` — the ladder stopped with no 🔴 — and name the head:
+contain a hex token of 7 to 40 characters the head's sha starts with. An
+audit of an older head, a 🔴 count above 0, or no such block is a refusal.
+The verdict lives on the pull request, not in HQ, because a comment's author
+is GitHub's record: only a listed auditor can write it, and the shepherd can
+neither forge it (its own login is excluded) nor clear it.
 
 **The wall** (`officers.ShepherdRules`, the one place it is decided): for each
 (repository, author), the union of
@@ -1199,13 +1218,32 @@ delete, and a non-fast-forward push (reverted).
 An author officer that does not ship to a repository has no rule there: the
 shepherd acts on none of its pull requests in it.
 
-🔴 **The revert is the one ref rewrite muster makes.** A pack cannot be
-checked before GitHub has it, so a push is admitted on its commands and
-checked once it lands; one that is not a fast-forward, or touches the wall, or
-whose comparison cannot be read, is moved back to the head the gate checked
-before forwarding (`PATCH git/refs` with `force`, only while the branch is
-still at the pushed commit), and the notice says whether it could. Between the
-push landing and the revert, the pull request shows it.
+🔴 **A bad push never lands, and muster never forces a ref.** A pack cannot be
+checked before GitHub has it, so muster **rewrites the push**: its one command
+`old new refs/heads/<branch>` is forwarded as the create of a fresh scratch
+ref, `refs/muster/shepherd/<random>` — outside `refs/heads`, so it is no
+branch, heads no pull request (no `pull_request` CI runs it) and matches no
+`on: push` branch filter. When GitHub answers — and before the client hears
+anything — muster verifies the stored commit (the table above) and only then
+moves the pull request's branch with ONE compare-and-swap that is also
+fast-forward-only: GraphQL `updateRefs` with `beforeOid` = the verified `old`
+and `force: false`. The client is answered for its own ref: `ok` when the
+branch moved, `ng <reason>` (and, on a side band, the reason as progress
+text) when it did not. The scratch ref is deleted when the request ends,
+whatever happened. Pushes to one branch are serialised: a second while one is
+being verified is a 409.
+
+Measured on GitHub (a user token with contents write, 2026-11-07; a GitHub
+App installation token was not measured and is assumed to behave the same
+with Contents write): a push to `refs/<custom>/…` is accepted as a new
+reference; REST `PATCH git/refs` with `force: false` refuses a
+non-fast-forward of a **branch** ("Update is not a fast forward") but
+accepted one on a ref outside `refs/heads`, and it pins no before-sha, so it
+is not used; GraphQL `updateRefs` with a wrong `beforeOid` is refused and the
+branch is unchanged, with `force: false` a non-fast-forward is refused
+("rejecting non-fast forward update"), and with both right the branch
+moves. A scratch ref left behind by a muster crash mid-push is harmless (no
+branch, no pull request) and can be deleted by hand.
 
 **Boot refusals.** muster refuses to start, naming the officer, when a
 shepherd has: no `shepherd` block, or one on another stage; no `authors`, a
@@ -1216,11 +1254,13 @@ ships to none of the shepherd's repositories, or uses the shepherd's own App
 `forbidden_paths` on the entry or name the author's officer); a key only a
 merging or releasing stage reads (`review_check`, `review_app`, `migrations`,
 `sensitive_paths`, `rollout`, `quiet_hours`, `releases_per_day`,
-`min_release_gap`); no `notice` block (a revert is announced); a `ci_logs`
+`min_release_gap`); no `notice` block (a refused push is announced); an
+authors entry with no `officer`; an auditor who is also an author; a `ci_logs`
 block; or the same author in the same repository shepherded by two officers.
 
 **Its App needs** Contents **read and write** (push to the branches it
-shepherds, update-branch), Pull requests **read and write** (comment, mark
+shepherds — the scratch ref and the compare-and-swap update included —
+update-branch), Pull requests **read and write** (comment, mark
 ready, update-branch), Checks and Commit statuses **read**, Metadata read. 🔴
 "Never merges" cannot be an App permission — merging needs only Contents
 write — so it rests on the push gate above; a ruleset on the base branch that

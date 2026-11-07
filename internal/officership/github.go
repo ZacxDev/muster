@@ -133,7 +133,7 @@ type Tagger struct {
 // compare-and-swap against a concurrent tag or branch.
 var ErrRefExists = errors.New("officership: the ref already exists")
 
-// ErrRefMissing (RED-FIRST STUB).
+// ErrRefMissing is a ref GitHub does not have (DeleteRef).
 var ErrRefMissing = errors.New("officership: no such ref")
 
 // ErrMergeConflict is a merge GitHub could not make cleanly (409).
@@ -190,11 +190,16 @@ type GitHub interface {
 	// draft gate's answer to a push that put a refused change into an open
 	// pull request.
 	ClosePR(ctx context.Context, n int) error
-	// RestoreBranch moves refs/heads/<branch> from sha `from` back to `to`
-	// (PATCH git/refs with force): ONLY the shepherd gate's revert of a push it
-	// refused after the fact (officership shepherd.go), to the head it checked
-	// before forwarding. It errs unless the branch is at `from` when read.
-	RestoreBranch(ctx context.Context, branch, from, to string) error
+	// UpdateBranch moves refs/heads/<branch> from `before` to `after` by ONE
+	// compare-and-swap that is also fast-forward-only: GraphQL updateRefs with
+	// beforeOid `before` and force false. GitHub refuses it — and nothing
+	// moves — when the branch is not at `before` or `after` is not a
+	// descendant of it. 🔴 THE ONLY BRANCH MOVE muster makes for a shepherd
+	// (shepherd.go), and never forced.
+	UpdateBranch(ctx context.Context, branch, before, after string) error
+	// DeleteRef deletes ref (a full name under refs/, outside refs/heads and
+	// refs/tags: the shepherd's scratch refs). A missing ref is ErrRefMissing.
+	DeleteRef(ctx context.Context, ref string) error
 }
 
 // REST is [GitHub] over GitHub's REST API for Repo, authenticated by Token
@@ -712,18 +717,65 @@ func (g *REST) ClosePR(ctx context.Context, n int) error {
 		"closing pull request #"+strconv.Itoa(n))
 }
 
-// RestoreBranch implements GitHub. The branch is read first: a branch that is
-// no longer at `from` (moved again since) is not touched, and errs.
-func (g *REST) RestoreBranch(ctx context.Context, branch, from, to string) error {
-	cur, err := g.BranchSHA(ctx, branch)
-	if err != nil {
+// DeleteRef implements GitHub. Only a scratch ref is deleted here.
+func (g *REST) DeleteRef(ctx context.Context, ref string) error {
+	name, ok := strings.CutPrefix(ref, "refs/")
+	if !ok || strings.HasPrefix(name, "heads/") || strings.HasPrefix(name, "tags/") {
+		return fmt.Errorf("DeleteRef deletes a scratch ref, never %s", ref)
+	}
+	err := g.do(ctx, http.MethodDelete, g.repoPath()+"/git/refs/"+escapeRef(name), "", nil, nil, "deleting "+ref)
+	if s := statusOf(err); s == http.StatusNotFound || s == http.StatusUnprocessableEntity {
+		return fmt.Errorf("%w: %s", ErrRefMissing, ref)
+	}
+	return err
+}
+
+const updateRefsMutation = `mutation($repo: ID!, $updates: [RefUpdate!]!) { updateRefs(input: {repositoryId: $repo, refUpdates: $updates}) { clientMutationId } }`
+
+// UpdateBranch implements GitHub. MEASURED (a user token, 2026-11-07): with
+// beforeOid not the branch's sha, GitHub answers an error and the branch is
+// unchanged; with force false, a non-fast-forward is "rejecting non-fast
+// forward update" and unchanged; with both right, the branch moves. REST
+// PATCH git/refs with force false refuses a non-fast-forward of a branch but
+// pins no before sha, so it is not used.
+func (g *REST) UpdateBranch(ctx context.Context, branch, before, after string) error {
+	op := "moving branch " + branch + " from " + short(before) + " to " + short(after)
+	var repo struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := g.do(ctx, http.MethodGet, g.repoPath(), "", nil, &repo, "reading the repository's node id"); err != nil {
 		return err
 	}
-	if cur != from {
-		return fmt.Errorf("branch %s is at %s, not %s: it moved again, so it is not restored", branch, short(cur), short(from))
+	if repo.NodeID == "" {
+		return errors.New("GitHub gave no node id for " + g.Repo)
 	}
-	return g.do(ctx, http.MethodPatch, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", map[string]any{"sha": to, "force": true}, nil,
-		"restoring branch "+branch)
+	var r struct {
+		Data struct {
+			UpdateRefs *struct {
+				ClientMutationID *string `json:"clientMutationId"`
+			} `json:"updateRefs"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := g.doURL(ctx, http.MethodPost, g.graphqlURL(), "", map[string]any{"query": updateRefsMutation,
+		"variables": map[string]any{"repo": repo.NodeID, "updates": []map[string]any{{
+			"name": "refs/heads/" + branch, "beforeOid": before, "afterOid": after, "force": false}}}}, &r, op); err != nil {
+		return err
+	}
+	// GraphQL answers 200 with an errors array.
+	if len(r.Errors) > 0 {
+		msgs := make([]string, 0, len(r.Errors))
+		for _, e := range r.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return fmt.Errorf("GitHub refused %s: %s", op, truncate(strings.Join(msgs, "; "), 300))
+	}
+	if r.Data.UpdateRefs == nil {
+		return fmt.Errorf("GitHub did not confirm %s", op)
+	}
+	return nil
 }
 
 // graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a
@@ -866,12 +918,3 @@ func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error
 func (g *REST) DeleteBranch(ctx context.Context, branch string) error {
 	return g.do(ctx, http.MethodDelete, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", nil, nil, "deleting branch "+branch)
 }
-
-// UpdateBranch (RED-FIRST STUB: the pre-fix forced ref write).
-func (g *REST) UpdateBranch(ctx context.Context, branch, before, after string) error {
-	return g.do(ctx, http.MethodPatch, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", map[string]any{"sha": after, "force": true}, nil,
-		"moving branch "+branch)
-}
-
-// DeleteRef (RED-FIRST STUB: deletes nothing, refuses nothing).
-func (g *REST) DeleteRef(ctx context.Context, ref string) error { return nil }

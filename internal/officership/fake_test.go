@@ -273,14 +273,6 @@ func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
 	return nil
 }
 
-// RestoreBranch (RED-FIRST: the pre-fix interface still has it).
-func (f *fakeGH) RestoreBranch(_ context.Context, branch, from, to string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.branches[branch] = to
-	return nil
-}
-
 func (f *fakeGH) UpdateBranch(_ context.Context, branch, before, after string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

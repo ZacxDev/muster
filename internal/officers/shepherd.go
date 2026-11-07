@@ -20,14 +20,17 @@ import (
 //   - open, into the configured base of one of its `ship.repos`;
 //   - from a branch under that repository's branch_prefix (default
 //     `officer/`), in that repository (not a fork);
-//   - authored by a login in `ship.shepherd.authors` (never its own App's);
+//   - authored by a login in `ship.shepherd.authors`, each entry naming the
+//     officer whose App the login is (never the shepherd's own App);
 //   - the subject of an HQ item THIS instance holds under a live lease: the
 //     item's subject_key is exactly ShepherdSubject(repo, n).
 //
 // On such a pull request it may push (fast-forward only, through the
-// AUTHORING officer's forbidden paths — ShepherdRules), comment, bring the
-// branch up to date with its base (GitHub's update-branch, a merge) and mark
-// it ready for review (officer_shepherd_mark_ready). It never opens, edits,
+// AUTHORING officer's forbidden paths — ShepherdRules — verified BEFORE the
+// pull request's branch moves), comment, bring the branch up to date with its
+// base (GitHub's update-branch, a merge) and mark it ready for review
+// (officer_shepherd_mark_ready, once an auditor's ladder stopped with no 🔴 at
+// the head). It never opens, edits,
 // closes, reopens or merges a pull request, never creates or deletes a
 // branch, never force-pushes and never tags (internal/officership's push gate
 // and ShepherdGates).
@@ -41,28 +44,23 @@ const StageShepherd = "shepherd"
 // review on a pull request it shepherds (officership.ShepherdGates.MarkReady).
 const ToolShepherdReady = "officer_shepherd_mark_ready"
 
-// maxShepherdAuthors bounds ship.shepherd.authors.
-const maxShepherdAuthors = 16
+// maxShepherdAuthors bounds ship.shepherd.authors, maxShepherdAuditors
+// ship.shepherd.auditors.
+const (
+	maxShepherdAuthors  = 16
+	maxShepherdAuditors = 16
+)
 
 // Shepherd is a shepherd-stage officer's `ship.shepherd` block.
 type Shepherd struct {
 	// Authors are whose pull requests the shepherd may act on.
 	Authors []ShepherdAuthor
-	// Auditors (RED-FIRST STUB: read, never checked).
+	// Auditors are the GitHub logins whose `audit-round-<n>` comment blocks
+	// officer_shepherd_mark_ready reads (officership's auditLadderClear): the
+	// latest one must report no 🔴 and name the head. None: mark ready is
+	// refused (fail closed). Never an author, never the shepherd's own App
+	// (checked at call time).
 	Auditors []string
-}
-
-// Auditor (RED-FIRST STUB).
-func (sh *Shepherd) Auditor(login string) bool {
-	if sh == nil {
-		return false
-	}
-	for _, a := range sh.Auditors {
-		if strings.EqualFold(a, login) {
-			return true
-		}
-	}
-	return false
 }
 
 // ShepherdAuthor is one entry of ship.shepherd.authors.
@@ -70,11 +68,11 @@ type ShepherdAuthor struct {
 	// Login is the pull request author's GitHub login (an App's bot is
 	// `<slug>[bot]`), compared without case.
 	Login string
-	// Officer, when set, is the id of an officer declared on THIS muster whose
-	// App the login is: its ship.repos entry for a repository is where the
-	// forbidden paths a shepherd push there must pass are looked up
-	// (ShepherdRules), and the gates check, at call time, that its App's bot
-	// login is Login.
+	// Officer is the id of an officer declared on THIS muster whose App the
+	// login is (required: a shepherd acts on officers' pull requests only):
+	// its ship.repos entry for a repository is where the forbidden paths a
+	// shepherd push there must pass are looked up (ShepherdRules), and the
+	// gates check, at call time, that its App's bot login is Login.
 	Officer string
 }
 
@@ -98,8 +96,8 @@ func SameShepherdSubject(subject, repo string, n int) bool {
 // botLoginRE is a GitHub login, optionally an App's `[bot]` account.
 var botLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$`)
 
-// declaredShepherdAuthor is an authors entry: a login string, or
-// {"login", "officer"?}.
+// declaredShepherdAuthor is an authors entry: {"login", "officer"}. A bare
+// login string is refused: every entry names its officer.
 type declaredShepherdAuthor struct {
 	Login   string `json:"login"`
 	Officer string `json:"officer"`
@@ -107,7 +105,7 @@ type declaredShepherdAuthor struct {
 
 func (d *declaredShepherdAuthor) UnmarshalJSON(b []byte) error {
 	if s := bytes.TrimSpace(b); len(s) > 0 && s[0] == '"' {
-		return json.Unmarshal(s, &d.Login)
+		return fmt.Errorf(`the entry %s is a bare login: each entry is {"login", "officer"}, naming the officer whose App the login is (a shepherd acts on officers' pull requests only)`, s)
 	}
 	type plain declaredShepherdAuthor
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -132,7 +130,7 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 	dec.DisallowUnknownFields()
 	var d declaredShepherd
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf(`ship: shepherd must be {"authors": [<login> | {"login", "officer"?}, …]}: %v`, err)
+		return nil, fmt.Errorf(`ship: shepherd must be {"authors": [{"login", "officer"}, …], "auditors"?: [<login>, …]}: %v`, err)
 	}
 	if len(d.Authors) == 0 {
 		return nil, fmt.Errorf("ship: shepherd.authors is empty: a shepherd acts only on pull requests authored by a listed login, so with none it could act on nothing — there is no default")
@@ -140,7 +138,7 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 	if len(d.Authors) > maxShepherdAuthors {
 		return nil, fmt.Errorf("ship: shepherd.authors lists %d logins, over the cap of %d", len(d.Authors), maxShepherdAuthors)
 	}
-	sh := &Shepherd{Auditors: d.Auditors}
+	sh := &Shepherd{}
 	seen := map[string]bool{}
 	for i, a := range d.Authors {
 		login, off := strings.TrimSpace(a.Login), strings.TrimSpace(a.Officer)
@@ -151,7 +149,10 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 			return nil, fmt.Errorf("ship: shepherd.authors lists %q twice", login)
 		}
 		seen[strings.ToLower(login)] = true
-		if off != "" && !idRE.MatchString(off) {
+		if off == "" {
+			return nil, fmt.Errorf("ship: shepherd.authors[%d] (%s) names no officer: every entry names the officer declared on this muster whose App the login is, so its wall always applies and a login that is not an officer's is never acted on", i, login)
+		}
+		if !idRE.MatchString(off) {
 			return nil, fmt.Errorf("ship: shepherd.authors[%d] officer %q is not an officer id (<type>:<area>)", i, a.Officer)
 		}
 		if off == id {
@@ -159,7 +160,39 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 		}
 		sh.Authors = append(sh.Authors, ShepherdAuthor{Login: login, Officer: off})
 	}
+	if len(d.Auditors) > maxShepherdAuditors {
+		return nil, fmt.Errorf("ship: shepherd.auditors lists %d logins, over the cap of %d", len(d.Auditors), maxShepherdAuditors)
+	}
+	seenAud := map[string]bool{}
+	for i, a := range d.Auditors {
+		login := strings.TrimSpace(a)
+		if !botLoginRE.MatchString(login) {
+			return nil, fmt.Errorf("ship: shepherd.auditors[%d] %q is not a GitHub login", i, a)
+		}
+		if seen[strings.ToLower(login)] {
+			return nil, fmt.Errorf("ship: shepherd.auditors[%d] %s is also an author: an author never audits its own pull requests", i, login)
+		}
+		if seenAud[strings.ToLower(login)] {
+			return nil, fmt.Errorf("ship: shepherd.auditors lists %q twice", login)
+		}
+		seenAud[strings.ToLower(login)] = true
+		sh.Auditors = append(sh.Auditors, login)
+	}
 	return sh, nil
+}
+
+// Auditor reports whether login is one of the shepherd's auditors (compared
+// without case).
+func (sh *Shepherd) Auditor(login string) bool {
+	if sh == nil {
+		return false
+	}
+	for _, a := range sh.Auditors {
+		if strings.EqualFold(a, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // Author is the authors entry for login (compared without case).
@@ -180,8 +213,8 @@ func (sh *Shepherd) Author(login string) (ShepherdAuthor, bool) {
 type ShepherdRule struct {
 	// Repo is the shepherd's ship repository; Login the author.
 	Repo, Login string
-	// AuthorOfficer is the authoring officer's id ("" for a login with no
-	// officer on this muster).
+	// AuthorOfficer is the authoring officer's id (always set: every authors
+	// entry names one; Admit refuses a rule without it).
 	AuthorOfficer string
 	// ForbiddenPaths are the globs (MatchForbidden) no shepherd push may touch;
 	// ForbiddenPathsFiles the repository files listing more, each read from the
@@ -202,7 +235,8 @@ func (r ShepherdRule) Empty() bool {
 // that names an officer — that officer's own forbidden paths for the same
 // repository, LOOKED UP from its ship block, never copied. An author officer
 // that does not ship to a repository has no rule there (its App opens no pull
-// request there, so the shepherd acts on none). all is every declared officer.
+// request there, so the shepherd acts on none). An entry with no officer
+// (Parse refuses one) has no rule. all is every declared officer.
 // Boot refuses a rule whose wall is empty (validateShepherds).
 func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 	if !o.Ship.IsShepherd() || o.Ship.Shepherd == nil {
@@ -220,19 +254,20 @@ func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 			if r.ForbiddenPathsFile != "" {
 				rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, r.ForbiddenPathsFile)
 			}
-			if a.Officer != "" {
-				ao, ok := byID[a.Officer]
-				if !ok || ao.Ship == nil {
-					continue
-				}
-				ar, ok := ao.Ship.RepoFor(ao.Repo, r.Repo)
-				if !ok {
-					continue
-				}
-				rule.ForbiddenPaths = append(rule.ForbiddenPaths, ar.ForbiddenPaths...)
-				if ar.ForbiddenPathsFile != "" {
-					rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, ar.ForbiddenPathsFile)
-				}
+			if a.Officer == "" {
+				continue
+			}
+			ao, ok := byID[a.Officer]
+			if !ok || ao.Ship == nil {
+				continue
+			}
+			ar, ok := ao.Ship.RepoFor(ao.Repo, r.Repo)
+			if !ok {
+				continue
+			}
+			rule.ForbiddenPaths = append(rule.ForbiddenPaths, ar.ForbiddenPaths...)
+			if ar.ForbiddenPathsFile != "" {
+				rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, ar.ForbiddenPathsFile)
 			}
 			rule.ForbiddenPaths = sortedUniqueStrings(rule.ForbiddenPaths)
 			rule.ForbiddenPathsFiles = sortedUniqueStrings(rule.ForbiddenPathsFiles)
@@ -281,11 +316,10 @@ func validateShepherds(all []Officer) error {
 			continue
 		}
 		for _, a := range o.Ship.Shepherd.Authors {
-			if a.Officer == "" {
-				continue
-			}
 			ao, ok := byID[a.Officer]
 			switch {
+			case a.Officer == "":
+				return fmt.Errorf("officer %s: ship.shepherd.authors entry %s names no officer", o.ID, a.Login)
 			case !ok:
 				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, which is not declared in MUSTER_OFFICERS (its forbidden paths cannot be looked up)", o.ID, a.Officer)
 			case ao.Ship == nil:

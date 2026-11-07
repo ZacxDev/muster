@@ -97,10 +97,13 @@ type PushGate struct {
 	// from the rate-limit read until afterCreate); built once by createOnce.
 	createOnce sync.Once
 	createSem  chan struct{}
-	// mu guards checked and misses, the re-check state (draftgate.go).
-	mu      sync.Mutex
-	checked map[string]string
-	misses  map[string]int
+	// mu guards checked and misses, the re-check state (draftgate.go), and
+	// shepherdBusy, the shepherd's per-(repository, branch) push lock
+	// (shepherd.go lockBranch).
+	mu           sync.Mutex
+	checked      map[string]string
+	misses       map[string]int
+	shepherdBusy map[string]bool
 }
 
 // ghFor is the GitHub of ship repository repo.
@@ -320,24 +323,34 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 			return nil, refused("deleting %s: a draft officer never deletes a branch (the daily orphan report lists abandoned ones for a human)", c.ref)
 		}
 	}
-	var shepherdChecks []shepherdPushCheck
+	head := pre.Bytes()
+	var shep *shepherdPush
 	if g.Ship.IsShepherd() && len(cmds) > 0 {
 		if g.Shepherd == nil {
 			return nil, shepherdRefused("this shepherd's rules are not loaded")
 		}
-		if shepherdChecks, err = g.admitShepherdPush(r.Context(), sr, cmds); err != nil {
+		if shep, head, err = g.admitShepherdPush(r.Context(), sr, cmds, pre.Bytes()); err != nil {
 			return nil, err
 		}
+		// The command section changed length: the body is sent chunked.
+		out.Header.Del("Content-Length")
+		out.ContentLength = -1
 	}
 	out.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(pre.Bytes()), br), body}
-	if len(shepherdChecks) > 0 {
-		// 🔴 THE SHEPHERD'S PUSH RE-CHECK (shepherd.go): fast-forward and the
-		// author's wall, read once GitHub has the push; a miss is reverted.
-		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) {
-			g.afterShepherdPush(ctx, sr, shepherdChecks, res)
+	}{io.MultiReader(bytes.NewReader(head), br), body}
+	if shep != nil {
+		// 🔴 A SHEPHERD'S PUSH LANDS ONLY VERIFIED (shepherd.go): GitHub stores
+		// it at a scratch ref; on GitHub's answer, before the client hears
+		// anything, it is verified and the branch moved by compare-and-swap.
+		// The after-forward hook deletes the scratch ref and releases the
+		// branch lock on every path out of the proxy.
+		out = connectors.WithResponseRewrite(out, func(ctx context.Context, resp *http.Response) error {
+			return g.landShepherdPush(ctx, sr, shep, resp)
+		})
+		out = connectors.WithAfterForward(out, func(ctx context.Context, _ connectors.ForwardResult) {
+			g.endShepherdPush(ctx, sr, shep)
 		})
 	}
 	if g.Ship.IsDraft() && len(cmds) > 0 {

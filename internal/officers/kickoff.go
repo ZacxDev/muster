@@ -359,12 +359,15 @@ func shepherdShipNote(o Officer) string {
 		"Reach the repositories through muster's %[3]q connector — %[4]s. Ask once with connector_request{name: %[3]q, reason}; the operator decides it by hand, "+
 		"so then wait with connector_status{name: %[3]q, wait_seconds: 50}, repeated while it says pending. Once approved:\n"+
 		"- git: run `ccd connect-git %[3]s` once, clone, check out the pull request's branch and push FAST-FORWARD commits to it (`git push origin <branch>`). "+
-		"muster refuses a push unless it updates the pull request's CURRENT head, and reverts — and reports to HQ — one that is not a fast-forward or that touches a path "+
-		"the authoring officer may not change. Never force-push, create or delete a branch.\n"+
+		"Push ONE branch per push. muster refuses a push unless it updates the pull request's CURRENT head, and checks it BEFORE the branch moves: "+
+		"a push that is not a fast-forward, is over 50 commits or 100 files, or touches a path the authoring officer may not change never lands — "+
+		"`git push` reports it rejected with the reason, and HQ is told. Never force-push, create or delete a branch.\n"+
 		"- the REST API: `curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[3]s/api.github.com/repos/<owner>/<name>/<path>\"`. "+
 		"The writes muster forwards: POST issues/<n>/comments, and PUT pulls/<n>/update-branch with {\"expected_head_sha\": <the head>} to bring the branch up to date "+
-		"with its base (a merge, never a rebase). Everything else — opening, editing, closing or merging a pull request — is refused.\n"+
-		"- ready for review: %[5]s{repo, pr} converts the draft once its checks are green.\n"+
+		"with its base (a merge, never a rebase). A comment with a line starting with / or @ is refused (it reads as a bot or slash command). "+
+		"Everything else — opening, editing, closing or merging a pull request — is refused.\n"+
+		"- ready for review: %[5]s{repo, pr} converts the draft only once CI is green on the head, the head passes the forbidden paths, and an auditor's "+
+		"latest audit round reports no 🔴 and names the head.\n"+
 		"You never merge, close or tag: a human merges.",
 		strings.Join(repos, "; "), strings.Join(authors, ", "), GitHubConnector, onlyConnector(o), ToolShepherdReady)
 }

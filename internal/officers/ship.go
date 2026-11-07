@@ -331,8 +331,8 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	primary, _ := s.RepoFor(repo, repo)
 	s.Base, s.BranchPrefix, s.AppID, s.AppAccount = primary.Base, primary.BranchPrefix, primary.AppID, primary.AppAccount
 	// 🔴 A DRAFT OFFICER NEEDS NO CHECKS: nothing it can call reads them. A
-	// shepherd's are optional (officer_shepherd_mark_ready requires the ones
-	// listed). Every other stage still needs at least one (a merge reads them).
+	// shepherd's are optional (with none, officer_shepherd_mark_ready refuses:
+	// CI green cannot be confirmed). Every other stage still needs at least one (a merge reads them).
 	minChecks := 1
 	if s.Stage == StageDraft || s.Stage == StageShepherd {
 		minChecks = 0
@@ -470,7 +470,7 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a refused pull request is announced to someone", StageDraft)
 	}
 	if s.Stage == StageShepherd && d.Notice == nil {
-		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a push muster reverts is announced to someone", StageShepherd)
+		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a push muster refuses is announced to someone", StageShepherd)
 	}
 	if s.Stage == StageRelease && s.Rollout == nil {
 		return nil, fmt.Errorf("ship: stage %s needs a rollout block: a release nobody watches cannot be rolled back", StageRelease)

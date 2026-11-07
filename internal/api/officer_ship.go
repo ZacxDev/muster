@@ -594,8 +594,8 @@ func shipStageGrants(o officers.Officer) string {
 			authors = append(authors, a.Login)
 		}
 		return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), behind muster's push gate, stage %s: reads; on OTHER officers' pull requests only (authored by %s) in %s, "+
-			"and only one whose HQ item the instance holds: fast-forward pushes checked against the authoring officer's forbidden paths (a push that fails is reverted), "+
-			"comments, update-branch, and marking ready (%s). It never opens, edits, closes or merges a pull request, never creates or deletes a branch and never force-pushes",
+			"and only one whose HQ item the instance holds: fast-forward pushes verified against the authoring officer's forbidden paths BEFORE the branch moves (a push that fails never lands), "+
+			"comments, update-branch, and marking ready once an auditor's ladder stopped with no 🔴 at the head (%s). It never opens, edits, closes or merges a pull request, never creates or deletes a branch and never force-pushes",
 			o.ID, sp.AppID, sp.Stage, strings.Join(authors, ", "), strings.Join(repos, "; "), officers.ToolShepherdReady)
 	}
 	if sp.IsDraft() {

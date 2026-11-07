@@ -1,10 +1,16 @@
 package officership
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,21 +34,31 @@ import (
 //
 // The writes it admits (PushGate, shepherd branch):
 //
-//   - git push to that pull request's branch, every ref an UPDATE (never a
-//     create or a delete) from the pull request's CURRENT head. The pack is
-//     forwarded unread (it may be thin), so once GitHub has it the push is
-//     checked again (afterShepherdPush): GitHub's comparison old...new must be
-//     a fast-forward, and base...new must pass the AUTHORING officer's wall
-//     (officers.ShepherdRules) and the draft rules (removed volume/database/
-//     canary manifests, secret shapes). A push that fails either — or that
-//     cannot be checked — is REVERTED to the head checked before forwarding
-//     (RestoreBranch) and HQ is told. That revert is the one ref rewrite
-//     muster makes, and only ever back to that head.
-//   - POST issues/<n>/comments (no credential-shaped value);
+//   - git push to that pull request's branch: ONE ref, an UPDATE (never a
+//     create or a delete) from the pull request's CURRENT head. 🔴 A BAD PUSH
+//     NEVER LANDS. The pack is forwarded unread (it may be thin), so muster
+//     REWRITES the push to a fresh scratch ref outside refs/heads
+//     (ShepherdScratchPrefix: no branch, no pull request, no `on: push`
+//     branch filter matches it), and only once GitHub has it — before the
+//     client is answered (connectors.WithResponseRewrite) — verifies it
+//     (landShepherdPush): the pull request is re-admitted and still at old;
+//     old...new is a fast-forward within the size caps; base...new passes the
+//     AUTHORING officer's wall (officers.ShepherdRules) and the draft rules
+//     (removed volume/database/canary manifests, secret shapes). Only then is
+//     the pull request's branch moved, by a compare-and-swap that is also
+//     fast-forward-only (GitHub.UpdateBranch: GraphQL updateRefs, beforeOid
+//     old, force false). The client is told "ok" only when that landed, else
+//     "ng" with the reason, and HQ hears of a refusal. muster makes NO forced
+//     ref write anywhere. One push per (repository, branch) at a time
+//     (lockBranch); the scratch ref is deleted once the request ends.
+//   - POST issues/<n>/comments (no credential-shaped value, no line that
+//     reads as a command: commandLine);
 //   - PUT pulls/<n>/update-branch with expected_head_sha = the current head
 //     (GitHub merges the base into the head; never a rebase).
 //
-// And one tool, ShepherdGates.MarkReady (officer_shepherd_mark_ready).
+// And one tool, ShepherdGates.MarkReady (officer_shepherd_mark_ready): only
+// once an auditor's latest audit block reports no 🔴 at the head, CI is green
+// at the head and the head passes the wall.
 //
 // Everything else is refused: opening, editing (title, body, state — so
 // closing and reopening), merging, the merge and refs APIs, GraphQL, every
@@ -51,14 +67,25 @@ import (
 // ---------------------------------------------------------------------------
 
 // GateItem is the shepherd's item gate: the instance holds the HQ item for
-// the pull request.
-const GateItem = "item"
-
-// RED-FIRST STUBS: names the tests use, with the pre-fix behaviour.
+// the pull request. GateWall is mark-ready's forbidden-path re-check at the
+// head; GateAudit its audit-ladder check.
 const (
-	GateWall              = "wall"
-	GateAudit             = "audit"
-	ShepherdScratchPrefix = "refs/muster/shepherd/"
+	GateItem  = "item"
+	GateWall  = "wall"
+	GateAudit = "audit"
+)
+
+// ShepherdScratchPrefix is where a shepherd's push lands first: a ref outside
+// refs/heads (so no branch, no pull request and no branch-filtered workflow
+// sees it), named per push, deleted when the request ends. GitHub accepts a
+// push to such a ref (measured with a user token; see docs/officers.md).
+const ShepherdScratchPrefix = "refs/muster/shepherd/"
+
+// The size caps of one shepherd push (old...new): beyond them it is refused
+// unverified-as-too-large, never landed.
+const (
+	maxShepherdPushCommits = 50
+	maxShepherdPushFiles   = 100
 )
 
 // Shepherd is a shepherd-stage officer's rules, shared by its push gate and
@@ -126,7 +153,10 @@ func (s *Shepherd) Admit(ctx context.Context, sr officers.ShipRepo, gh GitHub, p
 	if strings.EqualFold(pr.Author, BotLogin(slug)) {
 		return rule, refuse(GateAuthor, "pull request #%d is authored by the shepherd's own App (%s); a shepherd never acts on its own work", n, pr.Author)
 	}
-	if rule.AuthorOfficer != "" {
+	if rule.AuthorOfficer == "" {
+		return rule, refuse(GateAuthor, "the listed author %s names no officer: a shepherd acts only on an officer's pull requests", rule.Login)
+	}
+	{
 		if s.AuthorLogin == nil {
 			return rule, refuse(GateAuthor, "the App of officer %s (the listed author %s) cannot be read here", rule.AuthorOfficer, rule.Login)
 		}
@@ -155,7 +185,7 @@ func (s *Shepherd) Admit(ctx context.Context, sr officers.ShipRepo, gh GitHub, p
 // shepherdRefused is a shepherd write refused (403), saying what a shepherd
 // never does.
 func shepherdRefused(format string, args ...any) error {
-	return fmt.Errorf("%w: %s (a shepherd only pushes fast-forward commits to, comments on, updates the branch of and marks ready a pull request it holds the item for; "+
+	return fmt.Errorf("%w: %s (a shepherd only pushes verified fast-forward commits to, comments on, updates the branch of and marks ready a pull request it holds the item for; "+
 		"it never opens, edits, closes or merges one, never creates or deletes a branch and never force-pushes)", connectors.ErrGateRefused, fmt.Sprintf(format, args...))
 }
 
@@ -178,120 +208,430 @@ func callerInstance(ctx context.Context) string {
 
 func zeroOID(s string) bool { return strings.Trim(s, "0") == "" }
 
-// shepherdPushCheck is one admitted ref update of a shepherd push: the pull
-// request its branch is the head of, and that pull request's rule.
-type shepherdPushCheck struct {
-	cmd  pushCommand
-	pr   PR
-	rule officers.ShepherdRule
+// shepherdPush is an admitted shepherd push: the one ref update the agent
+// asked for, the pull request its branch is the head of and that pull
+// request's rule, the scratch ref the push was rewritten to, and what the
+// client asked to be told (its report-status and side-band capabilities).
+type shepherdPush struct {
+	// instance is the agent that pushed (the caller Admit read): the one
+	// whose item hold is checked again before the push lands.
+	instance string
+	cmd      pushCommand
+	branch   string
+	pr       PR
+	rule     officers.ShepherdRule
+	scratch  string
+	report   bool
+	sideband bool
 }
 
-// admitShepherdPush is the push half of the shepherd gate: every command is an
-// update (never a create or a delete) of the branch of exactly one open pull
-// request Admit admits, from that pull request's current head.
-func (g *PushGate) admitShepherdPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand) ([]shepherdPushCheck, error) {
+// branchKey is lockBranch's key.
+func branchKey(repo, branch string) string { return strings.ToLower(repo) + " " + branch }
+
+// lockBranch takes the one-push-at-a-time lock of (repo, branch), false when a
+// push to it is being verified now. unlockBranch releases it.
+func (g *PushGate) lockBranch(repo, branch string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.shepherdBusy == nil {
+		g.shepherdBusy = map[string]bool{}
+	}
+	k := branchKey(repo, branch)
+	if g.shepherdBusy[k] {
+		return false
+	}
+	g.shepherdBusy[k] = true
+	return true
+}
+
+func (g *PushGate) unlockBranch(repo, branch string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.shepherdBusy, branchKey(repo, branch))
+}
+
+// admitShepherdPush is the push half of the shepherd gate: exactly one
+// command, an update (never a create or a delete) of the branch of exactly one
+// open pull request Admit admits, from that pull request's current head, while
+// no other push to that branch is being verified. It returns the push and the
+// command section to forward instead of pre: the same command aimed at a new
+// scratch ref (ShepherdScratchPrefix). The branch lock it takes is released by
+// the caller's after-forward hook (or here, on a refusal).
+func (g *PushGate) admitShepherdPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand, pre []byte) (*shepherdPush, []byte, error) {
 	gh := g.ghFor(sr.Repo)
 	if gh == nil {
-		return nil, fmt.Errorf("no GitHub reader for %s", sr.Repo)
+		return nil, nil, fmt.Errorf("no GitHub reader for %s", sr.Repo)
+	}
+	if len(cmds) != 1 {
+		return nil, nil, shepherdRefused("a push of %d refs: a shepherd pushes one pull request's branch at a time", len(cmds))
+	}
+	c := cmds[0]
+	branch := strings.TrimPrefix(c.ref, "refs/heads/")
+	switch {
+	case zeroOID(c.oldOID):
+		return nil, nil, shepherdRefused("creating %s: a shepherd pushes only to an existing pull request's branch", c.ref)
+	case zeroOID(c.newOID):
+		return nil, nil, shepherdRefused("deleting %s: a shepherd never deletes a branch", c.ref)
+	}
+	// 🔴 ONE PUSH PER BRANCH AT A TIME (R1, R6): from the head read below to
+	// the branch moving, nothing else muster forwards writes this branch.
+	if !g.lockBranch(sr.Repo, branch) {
+		return nil, nil, conflict("a push to %s in %s is being verified now: wait for it to finish, fetch, and push again", branch, sr.Repo)
+	}
+	sp, out, err := g.admitShepherdPushLocked(ctx, sr, gh, c, branch, pre)
+	if err != nil {
+		g.unlockBranch(sr.Repo, branch)
+		return nil, nil, err
+	}
+	return sp, out, nil
+}
+
+func (g *PushGate) admitShepherdPushLocked(ctx context.Context, sr officers.ShipRepo, gh GitHub, c pushCommand, branch string, pre []byte) (*shepherdPush, []byte, error) {
+	prs, err := g.openPRsFrom(ctx, sr, gh, branch)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not look up the pull requests from %s in %s: %v", branch, sr.Repo, err)
+	}
+	if len(prs) != 1 {
+		return nil, nil, shepherdRefused("a push to %s, which is the head of %d open pull requests in %s; a shepherd pushes only to the branch of exactly one", branch, len(prs), sr.Repo)
+	}
+	pr, err := gh.PR(ctx, prs[0].Number)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not read pull request #%d: %v", prs[0].Number, err)
 	}
 	instance := callerInstance(ctx)
-	var out []shepherdPushCheck
-	for _, c := range cmds {
-		branch := strings.TrimPrefix(c.ref, "refs/heads/")
-		switch {
-		case zeroOID(c.oldOID):
-			return nil, shepherdRefused("creating %s: a shepherd pushes only to an existing pull request's branch", c.ref)
-		case zeroOID(c.newOID):
-			return nil, shepherdRefused("deleting %s: a shepherd never deletes a branch", c.ref)
-		}
-		prs, err := g.openPRsFrom(ctx, sr, gh, branch)
-		if err != nil {
-			return nil, fmt.Errorf("could not look up the pull requests from %s in %s: %v", branch, sr.Repo, err)
-		}
-		if len(prs) != 1 {
-			return nil, shepherdRefused("a push to %s, which is the head of %d open pull requests in %s; a shepherd pushes only to the branch of exactly one", branch, len(prs), sr.Repo)
-		}
-		pr, err := gh.PR(ctx, prs[0].Number)
-		if err != nil {
-			return nil, fmt.Errorf("could not read pull request #%d: %v", prs[0].Number, err)
-		}
-		rule, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, func(string) {})
-		if err != nil {
-			return nil, asShepherdRefusal(pr.Number, err)
-		}
-		if pr.HeadSHA != c.oldOID {
-			return nil, shepherdRefused("a push to %s from %s, which is not pull request #%d's head %s: only a fast-forward of the current head is pushed — fetch, and build on it",
-				branch, shortSHA(c.oldOID), pr.Number, shortSHA(pr.HeadSHA))
-		}
-		out = append(out, shepherdPushCheck{cmd: c, pr: pr, rule: rule})
+	rule, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, func(string) {})
+	if err != nil {
+		return nil, nil, asShepherdRefusal(pr.Number, err)
 	}
-	return out, nil
+	if pr.HeadSHA != c.oldOID {
+		return nil, nil, shepherdRefused("a push to %s from %s, which is not pull request #%d's head %s: only a fast-forward of the current head is pushed — fetch, and build on it",
+			branch, shortSHA(c.oldOID), pr.Number, shortSHA(pr.HeadSHA))
+	}
+	var nonce [12]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, nil, fmt.Errorf("could not name a scratch ref: %v", err)
+	}
+	sp := &shepherdPush{instance: instance, cmd: c, branch: branch, pr: pr, rule: rule, scratch: ShepherdScratchPrefix + hex.EncodeToString(nonce[:])}
+	out, err := rewriteShepherdPreamble(pre, sp)
+	if err != nil {
+		return nil, nil, shepherdRefused("%v", err)
+	}
+	return sp, out, nil
 }
 
-// afterShepherdPush is the shepherd's push re-check, run by the connector
-// proxy once GitHub answered the push. Per admitted ref GitHub applied (its
-// report says "ok", or names nothing and the branch is now at the pushed
-// commit): the push must be a fast-forward of the head checked before
-// forwarding, and base...new must pass the pull request's wall. A failure,
-// or a check that cannot be made, REVERTS the branch to that head (FAIL
-// CLOSED) and tells HQ — paths, never content.
-func (g *PushGate) afterShepherdPush(ctx context.Context, sr officers.ShipRepo, checks []shepherdPushCheck, res connectors.ForwardResult) {
-	if !res.Forwarded || len(checks) == 0 || (res.Status != 0 && res.Status != http.StatusOK) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recheckTimeout)
-	defer cancel()
-	gh := g.ghFor(sr.Repo)
-	if gh == nil {
-		g.logf("officers: %s: a push to %s cannot be re-checked: no GitHub reader", g.OfficerID, sr.Repo)
-		return
-	}
-	report := parseReportStatus(res.Body)
-	for _, c := range checks {
-		branch := strings.TrimPrefix(c.cmd.ref, "refs/heads/")
-		applied, known := report[c.cmd.ref]
-		if known && !applied {
+// upstreamDropCaps are the client's capabilities muster does not pass on for
+// a shepherd push: it reads GitHub's report-status itself, plain (no side
+// band), and answers the client in the form the client asked for.
+var upstreamDropCaps = map[string]bool{"side-band": true, "side-band-64k": true, "report-status-v2": true}
+
+// rewriteShepherdPreamble is pre (a receive-pack command section, up to and
+// including its flush-pkt) with its one command `old new refs/heads/<b>`
+// replaced by the create `0… new <scratch>`, the capabilities rewritten for
+// the upstream (upstreamDropCaps dropped, report-status added), and
+// shallow lines kept. It records on sp what the client asked to be told.
+func rewriteShepherdPreamble(pre []byte, sp *shepherdPush) ([]byte, error) {
+	var out bytes.Buffer
+	b := pre
+	seen := false
+	for {
+		if len(b) < 4 {
+			return nil, errors.New("a push command section that ends early")
+		}
+		n, err := strconv.ParseUint(string(b[:4]), 16, 16)
+		if err != nil || (n != 0 && (n < 4 || int(n) > len(b))) {
+			return nil, errors.New("a push with a malformed pkt-line")
+		}
+		if n == 0 {
+			out.WriteString("0000")
+			break
+		}
+		line := string(b[4:n])
+		b = b[n:]
+		if strings.HasPrefix(line, "shallow ") {
+			out.WriteString(pktLine(line))
 			continue
 		}
-		if !known {
-			if cur, err := gh.BranchSHA(ctx, branch); err == nil && cur != c.cmd.newOID {
-				g.logf("officers: %s: the push of %s to %s in %s did not land (the branch is at %s): not re-checked", g.OfficerID,
-					shortSHA(c.cmd.newOID), branch, sr.Repo, shortSHA(cur))
-				continue
+		if seen {
+			return nil, errors.New("a shepherd push carries one command")
+		}
+		seen = true
+		cmd, caps, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\x00")
+		if f := strings.Split(cmd, " "); len(f) != 3 || f[0] != sp.cmd.oldOID || f[1] != sp.cmd.newOID || f[2] != sp.cmd.ref {
+			return nil, errors.New("the push command changed while it was read")
+		}
+		var up []string
+		hasReport := false
+		for _, cp := range strings.Fields(caps) {
+			switch cp {
+			case "report-status", "report-status-v2":
+				sp.report = true
+			case "side-band", "side-band-64k":
+				sp.sideband = true
+			}
+			if cp == "report-status" {
+				hasReport = true
+			}
+			if !upstreamDropCaps[cp] {
+				up = append(up, cp)
 			}
 		}
-		var why string
-		var paths []string
-		cmp, err := gh.Compare(ctx, c.cmd.oldOID, c.cmd.newOID)
+		if !hasReport {
+			up = append(up, "report-status")
+		}
+		out.WriteString(pktLine(strings.Repeat("0", len(sp.cmd.newOID)) + " " + sp.cmd.newOID + " " + sp.scratch + "\x00" + strings.Join(up, " ") + "\n"))
+	}
+	if !seen {
+		return nil, errors.New("a shepherd push with no command")
+	}
+	return out.Bytes(), nil
+}
+
+// pktLine is s as one pkt-line.
+func pktLine(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
+
+// landShepherdPush is the shepherd push's verification and landing, run by
+// the connector proxy on GitHub's answer BEFORE the client sees any of it
+// (connectors.WithResponseRewrite). GitHub has stored the push at sp.scratch
+// only; nothing of the pull request moved. The push lands — the pull
+// request's branch is moved from old to new by a compare-and-swap,
+// fast-forward-only update — only when verifyShepherdPush finds nothing.
+// Either way the client is answered for ITS ref: "ok" when the branch moved,
+// "ng <why>" when it did not, and HQ is told of a refusal.
+func (g *PushGate) landShepherdPush(ctx context.Context, sr officers.ShipRepo, sp *shepherdPush, resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		return nil // GitHub's own error, relayed as it is: nothing landed
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, connectors.MaxAfterForwardBody+1))
+	resp.Body.Close()
+	unpack, why := "unpack ok", ""
+	switch {
+	case err != nil:
+		why = fmt.Sprintf("GitHub's answer could not be read (%v); nothing landed", err)
+	case len(raw) > connectors.MaxAfterForwardBody:
+		why = "GitHub's answer was larger than muster reads; nothing landed"
+	default:
+		unpack, why = g.verifyAndLand(ctx, sr, sp, raw)
+	}
+	body := shepherdAnswer(sp, unpack, why)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Del("Content-Length")
+	return nil
+}
+
+// verifyAndLand reads GitHub's report of the scratch push and, when it was
+// stored, verifies and lands it. It returns the unpack line to tell the
+// client and why the push did not land ("" when it did).
+func (g *PushGate) verifyAndLand(ctx context.Context, sr officers.ShipRepo, sp *shepherdPush, raw []byte) (string, string) {
+	lines := reportStatusLines(raw)
+	unpack := ""
+	stored, storedKnown := false, false
+	for _, l := range lines {
 		switch {
-		case err != nil:
-			why = fmt.Sprintf("its fast-forward could not be checked (%v)", err)
-		case cmp.Status != "ahead" || cmp.BehindBy != 0:
-			why = fmt.Sprintf("it is not a fast-forward of %s (GitHub compares the push %q, %d behind): a shepherd never rewrites a branch", shortSHA(c.cmd.oldOID), cmp.Status, cmp.BehindBy)
-		default:
-			v := g.checkWall(ctx, sr.Repo, gh, c.rule.ForbiddenPaths, c.rule.ForbiddenPathsFiles, baseOf(sr, c.pr), c.cmd.newOID)
-			switch {
-			case v.Err != nil:
-				why = v.Err.Error() + ", so the change could not be checked"
-			case len(v.Paths) > 0:
-				why, paths = v.Why, v.Paths
-			}
+		case strings.HasPrefix(l, "unpack "):
+			unpack = l
+		case l == "ok "+sp.scratch:
+			stored, storedKnown = true, true
+		case strings.HasPrefix(l, "ng "+sp.scratch+" ") || l == "ng "+sp.scratch:
+			storedKnown = true
 		}
-		if why == "" {
-			continue
+	}
+	if unpack == "" {
+		return "unpack error: no report from GitHub", "GitHub sent no report of the push; nothing landed"
+	}
+	if unpack != "unpack ok" || !storedKnown || !stored {
+		return unpack, "GitHub did not store the push; nothing landed"
+	}
+	ctx, cancel := context.WithTimeout(ctx, recheckTimeout)
+	defer cancel()
+	why, paths, tell := g.verifyShepherdPush(ctx, sr, sp)
+	if why == "" {
+		gh := g.ghFor(sr.Repo)
+		if err := gh.UpdateBranch(ctx, sp.branch, sp.cmd.oldOID, sp.cmd.newOID); err != nil {
+			why, tell = fmt.Sprintf("GitHub did not move the branch from %s to %s (%v)", shortSHA(sp.cmd.oldOID), shortSHA(sp.cmd.newOID), err), true
+		} else {
+			return unpack, ""
 		}
-		what := fmt.Sprintf("reverted a push to %s (#%d) in %s from %s back to %s", branch, c.pr.Number, sr.Repo, shortSHA(c.cmd.newOID), shortSHA(c.cmd.oldOID))
-		if err := gh.RestoreBranch(ctx, branch, c.cmd.newOID, c.cmd.oldOID); err != nil {
-			what = fmt.Sprintf("could NOT revert a push to %s (#%d) in %s from %s back to %s (%v); a human must", branch, c.pr.Number, sr.Repo,
-				shortSHA(c.cmd.newOID), shortSHA(c.cmd.oldOID), err)
-		}
-		summary := fmt.Sprintf("officer %s: muster %s: %s", g.OfficerID, what, why)
+	}
+	if tell {
+		summary := fmt.Sprintf("officer %s: muster refused a push to %s (#%d) in %s, %s -> %s, before it landed: %s; the branch was not moved",
+			g.OfficerID, sp.branch, sp.pr.Number, sr.Repo, shortSHA(sp.cmd.oldOID), shortSHA(sp.cmd.newOID), why)
 		if len(paths) > officers.MaxNoticePaths {
 			summary += fmt.Sprintf(" (+%d more paths)", len(paths)-officers.MaxNoticePaths)
 			paths = paths[:officers.MaxNoticePaths]
 		}
-		g.announce(ctx, officers.Notice{PR: c.pr.Number, HeadSHA: c.cmd.newOID, Paths: paths, Summary: summary, Channel: g.Ship.NoticeChannel})
+		g.announce(ctx, officers.Notice{PR: sp.pr.Number, HeadSHA: sp.cmd.newOID, Paths: paths, Summary: summary, Channel: g.Ship.NoticeChannel})
 	}
+	return unpack, why + "; nothing landed"
+}
+
+// verifyShepherdPush is THE pre-landing check of a stored shepherd push, read
+// fresh: the pull request is admitted again (its item still held, its author
+// still the officer's) and still at old; old...new is a fast-forward of at
+// most maxShepherdPushCommits commits and maxShepherdPushFiles files; and
+// base...new passes the rule's wall and the draft rules. FAIL CLOSED: what
+// cannot be read is a refusal. It returns why it refused ("" when it did
+// not), the paths at fault, and whether HQ should hear of it.
+func (g *PushGate) verifyShepherdPush(ctx context.Context, sr officers.ShipRepo, sp *shepherdPush) (string, []string, bool) {
+	gh := g.ghFor(sr.Repo)
+	if gh == nil {
+		return "no GitHub reader for " + sr.Repo, nil, true
+	}
+	pr, err := gh.PR(ctx, sp.pr.Number)
+	if err != nil {
+		return fmt.Sprintf("pull request #%d could not be read again (%v)", sp.pr.Number, err), nil, true
+	}
+	if _, err := g.Shepherd.Admit(ctx, sr, gh, pr, sp.instance, func(string) {}); err != nil {
+		return asShepherdRefusal(pr.Number, err).Error(), nil, true
+	}
+	if pr.HeadSHA != sp.cmd.oldOID || pr.HeadRef != sp.branch {
+		return fmt.Sprintf("pull request #%d moved to %s:%s while the push was checked", pr.Number, pr.HeadRef, shortSHA(pr.HeadSHA)), nil, true
+	}
+	cmp, err := gh.Compare(ctx, sp.cmd.oldOID, sp.cmd.newOID)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("its fast-forward could not be checked (%v)", err), nil, true
+	case cmp.Status != "ahead" || cmp.BehindBy != 0:
+		return fmt.Sprintf("it is not a fast-forward of %s (GitHub compares the push %q, %d behind): a shepherd never rewrites a branch", shortSHA(sp.cmd.oldOID), cmp.Status, cmp.BehindBy), nil, true
+	case cmp.AheadBy > maxShepherdPushCommits || len(cmp.Commits) > maxShepherdPushCommits:
+		return fmt.Sprintf("it adds %d commits, over the cap of %d for one shepherd push", max(cmp.AheadBy, len(cmp.Commits)), maxShepherdPushCommits), nil, true
+	case len(cmp.Files) > maxShepherdPushFiles:
+		return fmt.Sprintf("it changes %d files, over the cap of %d for one shepherd push", len(cmp.Files), maxShepherdPushFiles), nil, true
+	}
+	v := g.checkWall(ctx, sr.Repo, gh, sp.rule.ForbiddenPaths, sp.rule.ForbiddenPathsFiles, baseOf(sr, pr), sp.cmd.newOID)
+	switch {
+	case v.Err != nil:
+		return v.Err.Error() + ", so the change could not be checked", nil, true
+	case len(v.Paths) > 0:
+		return v.Why, v.Paths, true
+	}
+	return "", nil, false
+}
+
+// shepherdAnswer is the receive-pack answer the client gets for its ref: the
+// report-status it asked for (when it asked: "ok", or "ng" with why), on side
+// band 1 when it asked for a side band — with why on band 2, its progress
+// channel, so `git push` prints it.
+func shepherdAnswer(sp *shepherdPush, unpack, why string) []byte {
+	var rep bytes.Buffer
+	if sp.report {
+		rep.WriteString(pktLine(unpack + "\n"))
+		if why == "" {
+			rep.WriteString(pktLine("ok " + sp.cmd.ref + "\n"))
+		} else {
+			rep.WriteString(pktLine("ng " + sp.cmd.ref + " " + oneLine(why, 900) + "\n"))
+		}
+		rep.WriteString("0000")
+	}
+	if !sp.sideband {
+		return rep.Bytes()
+	}
+	var out bytes.Buffer
+	if why != "" {
+		out.WriteString(pktLine("\x02muster: " + oneLine(why, 900) + "\n"))
+	}
+	for b := rep.Bytes(); len(b) > 0; {
+		n := min(len(b), 65515)
+		out.WriteString(pktLine("\x01" + string(b[:n])))
+		b = b[n:]
+	}
+	out.WriteString("0000")
+	return out.Bytes()
+}
+
+// oneLine is s on one line, at most n bytes.
+func oneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		s = s[:n] + "…"
+	}
+	return s
+}
+
+// endShepherdPush is a shepherd push's after-forward hook, run on every path
+// out of the proxy once the push was admitted: the scratch ref is deleted
+// (whether or not GitHub stored it — a delete of a missing ref is harmless)
+// and the branch lock released.
+func (g *PushGate) endShepherdPush(ctx context.Context, sr officers.ShipRepo, sp *shepherdPush) {
+	defer g.unlockBranch(sr.Repo, sp.branch)
+	ctx, cancel := context.WithTimeout(ctx, recheckTimeout)
+	defer cancel()
+	if gh := g.ghFor(sr.Repo); gh != nil {
+		if err := gh.DeleteRef(ctx, sp.scratch); err != nil && !errors.Is(err, ErrRefMissing) {
+			g.logf("officers: %s: the scratch ref %s in %s was not deleted: %v", g.OfficerID, sp.scratch, sr.Repo, err)
+		}
+	}
+}
+
+// commandLine is the first line of a comment body that reads as a command —
+// its first non-space character is '/' (a slash command) or '@' (a mention
+// that bot comment commands answer: "@<bot> merge") — ok false when none
+// does. A shepherd's comment never carries one: comment automation in the
+// target repository could act on it.
+func commandLine(body string) (string, bool) {
+	for _, l := range strings.Split(body, "\n") {
+		t := strings.TrimLeft(l, " \t\r >")
+		if strings.HasPrefix(t, "/") || strings.HasPrefix(t, "@") {
+			return strings.TrimSpace(l), true
+		}
+	}
+	return "", false
+}
+
+// auditBlockRE is one audit block in a comment: a fenced `audit-round-<n>`
+// block (docs/officers.md "The shepherd stage").
+var auditBlockRE = regexp.MustCompile("(?s)```audit-round-([0-9]+)[^\\n]*\\n(.*?)```")
+
+// auditFindingsRE is a block's ledger of its 🔴 findings.
+var auditFindingsRE = regexp.MustCompile(`findings 🔴([0-9]+)`)
+
+// shaTokenRE is a hex token that may name a commit.
+var shaTokenRE = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+
+// auditLadderClear is mark-ready's audit gate: among the pull request's
+// comments by one of the shepherd's auditors (never its own App's bot, never
+// the pull request's author), the audit block with the highest round number
+// that carries a findings ledger (`findings 🔴<n>`) must report 🔴0 — the
+// ladder stopped with no 🔴 — and name the pull request's head (a hex token of
+// 7 to 40 characters that the head starts with). A comment's author is
+// GitHub's, so only a listed auditor can write the verdict.
+func (s *Shepherd) auditLadderClear(ctx context.Context, gh GitHub, pr PR) error {
+	if s.Ship.Shepherd == nil || len(s.Ship.Shepherd.Auditors) == 0 {
+		return refuse(GateAudit, "this shepherd lists no ship.shepherd.auditors, so no audit verdict can be read: a pull request is marked ready only after an auditor's ladder stopped with no 🔴")
+	}
+	slug, err := gh.AppSlug(ctx)
+	if err != nil {
+		return refuse(GateAudit, "could not read the shepherd App's identity: %v", err)
+	}
+	comments, err := gh.PRComments(ctx, pr.Number)
+	if err != nil {
+		return refuse(GateAudit, "could not read #%d's comments: %v", pr.Number, err)
+	}
+	round, found := -1, ""
+	for _, c := range comments {
+		if !s.Ship.Shepherd.Auditor(c.Author) || strings.EqualFold(c.Author, BotLogin(slug)) || strings.EqualFold(c.Author, pr.Author) {
+			continue
+		}
+		for _, m := range auditBlockRE.FindAllStringSubmatch(c.Body, -1) {
+			n, err := strconv.Atoi(m[1])
+			if err != nil || !auditFindingsRE.MatchString(m[2]) || n < round {
+				continue
+			}
+			round, found = n, m[2]
+		}
+	}
+	if round < 0 {
+		return refuse(GateAudit, "no audit block with a findings ledger by an auditor (%s) on #%d", strings.Join(s.Ship.Shepherd.Auditors, ", "), pr.Number)
+	}
+	if red := auditFindingsRE.FindStringSubmatch(found)[1]; red != "0" {
+		return refuse(GateAudit, "the latest audit round (%d) on #%d reports %s 🔴: the ladder has not stopped", round, pr.Number, red)
+	}
+	for _, tok := range shaTokenRE.FindAllString(found, -1) {
+		if strings.HasPrefix(pr.HeadSHA, tok) {
+			return nil
+		}
+	}
+	return refuse(GateAudit, "the latest audit round (%d) on #%d does not name its head %s: it audited another commit", round, pr.Number, short(pr.HeadSHA))
 }
 
 // admitShepherdAPI is the REST half of the shepherd gate: a comment, or
@@ -318,8 +658,13 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if _, err := g.Shepherd.Admit(r.Context(), sr, gh, pr, callerInstance(r.Context()), func(string) {}); err != nil {
 				return asShepherdRefusal(n, err)
 			}
-			if redact.HasSecretValue(jsonString(m["body"])) {
+			body := jsonString(m["body"])
+			if redact.HasSecretValue(body) {
 				return g.contentRefusal(r.Context(), sr, n, pr.HeadSHA, pr.HeadRef, nil, "the comment has a credential-shaped value")
+			}
+			if line, ok := commandLine(body); ok {
+				return shepherdRefused("a comment on #%d with the line %q, which reads as a command to a bot or a slash command (a line starting with / or @): "+
+					"comment automation in the repository could act on it; reword it so no line starts with / or @", n, truncate(line, 80))
 			}
 			return nil
 		})
@@ -370,9 +715,13 @@ type ShepherdReadyOutcome struct {
 //  2. base — repo is one of its ship repositories;
 //  3. pull_request / base / head_branch / author / item — Shepherd.Admit, and
 //     the pull request is still a draft with a node id;
-//  4. checks — every ship.required_checks entry is success on the head (none
-//     listed: nothing to wait for);
-//  5. ready — GitHub's GraphQL markPullRequestReadyForReview.
+//  4. checks — ship.required_checks is not empty and every entry is success on
+//     the head (none listed: refused — CI green cannot be confirmed);
+//  5. wall — base...head passes the authoring officer's wall and the draft
+//     rules (the same check a push passes before it lands);
+//  6. audit — auditLadderClear: an auditor's latest audit block reports no 🔴
+//     and names the head;
+//  7. ready — GitHub's GraphQL markPullRequestReadyForReview.
 func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n int) (ShepherdReadyOutcome, error) {
 	out := ShepherdReadyOutcome{Repo: repo, PR: n}
 	pass := func(name string) { out.Passed = append(out.Passed, name) }
@@ -399,15 +748,31 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 	if !pr.Draft || pr.NodeID == "" {
 		return out, refuse(GatePR, "pull request #%d is not a draft (or GitHub gave no node id); only a draft is marked ready", n)
 	}
-	if _, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, pass); err != nil {
+	rule, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, pass)
+	if err != nil {
 		return out, err
 	}
-	if len(sp.RequiredChecks) > 0 {
-		if err := (&Gates{Ship: sp, GH: gh}).checksGreen(ctx, pr.HeadSHA); err != nil {
-			return out, err
-		}
-		pass(GateChecks)
+	if len(sp.RequiredChecks) == 0 {
+		return out, refuse(GateChecks, "this shepherd lists no required_checks, so CI green on #%d's head cannot be confirmed: a pull request is marked ready only with CI green", n)
 	}
+	if err := (&Gates{Ship: sp, GH: gh}).checksGreen(ctx, pr.HeadSHA); err != nil {
+		return out, err
+	}
+	pass(GateChecks)
+	// checkWall reads only gh (no PushGate state): the same wall a push passes
+	// before it lands, now at the head being marked ready.
+	v := (&PushGate{Repo: sr.Repo}).checkWall(ctx, sr.Repo, gh, rule.ForbiddenPaths, rule.ForbiddenPathsFiles, baseOf(sr, pr), pr.HeadSHA)
+	switch {
+	case v.Err != nil:
+		return out, refuse(GateWall, "%v, so #%d's head %s cannot be checked against the wall", v.Err, n, short(pr.HeadSHA))
+	case len(v.Paths) > 0:
+		return out, refuse(GateWall, "#%d's head %s touches the wall: %s (%s)", n, short(pr.HeadSHA), strings.Join(v.Paths, ", "), v.Why)
+	}
+	pass(GateWall)
+	if err := g.Shepherd.auditLadderClear(ctx, gh, pr); err != nil {
+		return out, err
+	}
+	pass(GateAudit)
 	if err := gh.MarkReady(ctx, n, pr.NodeID); err != nil {
 		return out, refuse(GateReady, "GitHub did not confirm #%d ready for review (%v); it may still have been converted — re-read the pull request before calling again", n, err)
 	}
