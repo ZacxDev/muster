@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -51,5 +53,29 @@ func TestTheBannerSaysWhetherTheAskLogIsOn(t *testing.T) {
 	if !strings.Contains(on, "ask log: ON ("+envAskLog+"=1)") || !strings.Contains(on, "cleared after 72h0m0s ("+envAskLogTextTTL+")") ||
 		!strings.Contains(on, "classification at capture off ("+envAskLogClassify+" is unset)") {
 		t.Fatalf("on:\n%s", on)
+	}
+}
+
+// TestTheBinaryWiresTheAskLogFromItsConfig: the server buildApp builds over a
+// real database has the ask log exactly when MUSTER_ASK_LOG says so, with the
+// configured text TTL — read off the banner it prints from the extensions it
+// actually wired, so a config that never reached the server shows as OFF.
+func TestTheBinaryWiresTheAskLogFromItsConfig(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		cfg := dbConfig(t)
+		cfg.AskLog = askLogConfig{On: on, TextTTL: 48 * time.Hour}
+		var buf strings.Builder
+		app, err := buildApp(context.Background(), cfg, log.New(&buf, "", 0))
+		if err != nil {
+			t.Fatalf("buildApp: %v", err)
+		}
+		app.Close()
+		want := "ask log: OFF — " + envAskLog + " is unset"
+		if on {
+			want = "ask log: ON (" + envAskLog + "=1)"
+		}
+		if !strings.Contains(buf.String(), want) || (on && !strings.Contains(buf.String(), "cleared after 48h0m0s")) {
+			t.Fatalf("on=%v: the binary's banner lacks %q:\n%s", on, want, buf.String())
+		}
 	}
 }
