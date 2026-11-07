@@ -29,6 +29,13 @@ import (
 // (internal/api's relayRoute writes it, then FinishTaskRoute ends the route
 // relayed), never a draft.
 //
+// A route carrying a plugin message its plugin marked no_reply is ONE-WAY
+// (one_way, migration 0087): the chief's heads-up to the session already on
+// what it is about. Its answer is owed to the chief, exactly as a request
+// route's is (FinishAnswerToChiefRoute), and never becomes a reply draft —
+// RelayRoute still refuses a no_reply message, and 0087 forbids a draft on the
+// row — so the sender is never contacted.
+//
 // A route carries the OWNER'S OWN REQUEST instead (request_text, migration
 // 0084): the chief's relay of a message the owner typed in its chat, checked by
 // internal/api's owner_asked (ownerTurnFor) before the route is made. Its relay
@@ -67,10 +74,12 @@ type RouteStore interface {
 	// instead: the same row, audit and target, one open route per owner message
 	// and target.
 	CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID int64, req RouteRequest, target RouteTarget, timeout time.Duration) (Route, error)
-	// FinishRequestRoute ends an answered request route relayed, owing the
-	// chief the answer's delivery (RouteRequestAnswerOwed) in the same
-	// transaction; the sweep delivers it, at least once.
-	FinishRequestRoute(ctx context.Context, routeID string) (Route, error)
+	// FinishAnswerToChiefRoute ends an answered route whose answer goes to the
+	// chief — a request route or a one-way route (Route.AnswersToChief) —
+	// relayed, owing the chief the answer's delivery (RouteRequestAnswerOwed,
+	// RouteOneWayAnswerOwed) in the same transaction; the sweep delivers it,
+	// at least once.
+	FinishAnswerToChiefRoute(ctx context.Context, routeID string) (Route, error)
 	// FinishTaskRoute ends an answered task route relayed, once its answer is
 	// on the task as a comment.
 	FinishTaskRoute(ctx context.Context, routeID string) (Route, error)
@@ -177,6 +186,9 @@ type Route struct {
 	// review carries (RouteOrigin.HeadSHA; migration 0070): "" on every other
 	// route, and on a review route made before 0070.
 	PRHeadSHA string
+	// OneWay marks a route carrying a no_reply plugin message (migration
+	// 0087): a heads-up whose answer goes to the chief only.
+	OneWay bool
 }
 
 // IsPRReview reports whether muster made r for a pull-request review: the one
@@ -199,6 +211,12 @@ func (r Route) IsTask() bool { return r.TaskID != 0 }
 // IsRequest reports whether r carries the owner's own request (0084).
 func (r Route) IsRequest() bool { return r.RequestMessageID != 0 }
 
+// AnswersToChief reports whether r's answer goes to its chief rather than out
+// of muster: a request route's (the owner's own request) and a one-way route's
+// (a no_reply message's heads-up). The ONE predicate for it — the relay, the
+// answer's screen, the hand-back and the answer's delivery all branch on it.
+func (r Route) AnswersToChief() bool { return r.IsRequest() || r.OneWay }
+
 // RouteRequest is the owner's request a route carries: Text, the chief's relay
 // of it (what is pasted), MessageID, the owner's chat row whose turn passed the
 // owner_asked check, and SessionID, the chief chat session that row is in.
@@ -215,8 +233,12 @@ const MaxRouteRequestBytes = 16384
 // chief (FinishRequestRoute): not a route that ended without an answer, but
 // its answer, which the sweep delivers AT LEAST ONCE to the chief session the
 // owner asked in, taking this hand-back only once the answer is on record
-// (internal/api's deliverRequestAnswer, which reads OwesHandBack first).
+// (internal/api's deliverRouteAnswer, which reads OwesHandBack first).
 const RouteRequestAnswerOwed = "the session answered your owner's request"
+
+// RouteOneWayAnswerOwed is RouteRequestAnswerOwed for a one-way route: its
+// answer, owed to the chief, never to the message's sender.
+const RouteOneWayAnswerOwed = "the session answered the heads-up"
 
 // SentToMirrorSession reports whether r was routed to the mirrored Claude Code
 // session sid: route_reply's binding of an answer to the route's target.
@@ -307,14 +329,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, '')`
+	coalesce(pr_head_sha, ''), one_way`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA)
+		&r.PRHeadSHA, &r.OneWay)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -328,9 +350,10 @@ func clampRouteError(msg string) string {
 
 // CreateRoute opens a route for message messageID, by chief agent chiefID of
 // owner ownerID, to target, answerable until timeout from now. The message
-// must be one delivered (or being delivered) to that chief (DeliveredTo), not
-// marked no_reply, with no reply already approved and in flight, and not
-// already routed (ErrAlreadyRouted).
+// must be one delivered (or being delivered) to that chief (DeliveredTo), with
+// no reply already approved and in flight, and not already routed
+// (ErrAlreadyRouted). A message marked no_reply makes a ONE-WAY route
+// (Route.OneWay); CreateRouteFrom says when it is refused instead.
 func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error) {
 	return s.CreateRouteFrom(ctx, chiefID, ownerID, messageID, target, timeout, RouteOrigin{})
 }
@@ -344,6 +367,12 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 // A route muster makes (RouteOrigin.ByMuster: by thread or by pull request)
 // takes a queued message, handing it to the chief in the same transaction:
 // docs/plugins.md#a-reply-on-a-thread-a-session-started.
+//
+// 🔴 A no_reply MESSAGE IS ROUTED ONE-WAY BY THE CHIEF ONLY (origin zero). Every
+// other origin — the owner's door, a route by thread or pull request — still
+// refuses it (ErrNoReply), as does a TASK EVENT (IsTaskEvent: its task is
+// routed with task_id instead). The route is marked one_way in its row, so its
+// answer can only ever go to the chief.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -372,14 +401,14 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound
 		}
-		if m.NoReply {
+		if m.NoReply && (origin.Via != "" || IsTaskEvent(m)) {
 			return ErrNoReply
 		}
 		if inFlight != nil {
 			return inFlight
 		}
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil, m.NoReply)
 		return err
 	})
 	return r, err
@@ -394,7 +423,7 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin, nil)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin, nil, false)
 		var pg *pgconn.PgError
 		// Another owner's task (the trigger) and a missing one (the key) alike.
 		if errors.As(err, &pg) && ((pg.Code == "23514" && strings.HasPrefix(pg.Message, "session_routes: owner")) ||
@@ -412,8 +441,9 @@ func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, tas
 // writer of a route row for every kind.
 //
 // Only a RouteViaPR origin records its round (pr_head_sha): every other route
-// has none, whatever its origin carries.
-func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin, req *RouteRequest) (Route, error) {
+// has none, whatever its origin carries. oneWay marks a no_reply message's
+// route (0087), and its audit row says so.
+func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin, req *RouteRequest, oneWay bool) (Route, error) {
 	round := ""
 	if origin.Via == RouteViaPR {
 		round = origin.HeadSHA
@@ -424,9 +454,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 		text, sess = &req.Text, &req.SessionID
 	}
 	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
-			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11) RETURNING `+routeCols,
-		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess))
+			target_kind, target_key, target_label, timeout_at, pr_head_sha, request_text, chief_session_id, one_way)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), nullif($9, ''), $10, $11, $12) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds(), round, text, sess, oneWay))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" ||
 		pg.ConstraintName == "session_routes_one_open_task" || pg.ConstraintName == "session_routes_one_open_request") {
@@ -443,6 +473,9 @@ func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, 
 	}
 	if r.PRHeadSHA != "" {
 		detail["pr_head_sha"] = r.PRHeadSHA
+	}
+	if r.OneWay {
+		detail["one_way"] = true
 	}
 	return r, audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
 }
@@ -464,16 +497,17 @@ func (s *PGStore) CreateRequestRouteFrom(ctx context.Context, chiefID, ownerID i
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "request_message_id", "owner_message_id", req.MessageID, target, timeout, RouteOrigin{}, &req)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "request_message_id", "owner_message_id", req.MessageID, target, timeout, RouteOrigin{}, &req, false)
 		return err
 	})
 	return r, err
 }
 
-// FinishRequestRoute: see RouteStore. internal/api's relayRoute calls it once a
-// request route is answered; a route already relayed is returned as it is (its
-// answer already owed, or delivered), one not answered is ErrRouteNotAnswered.
-func (s *PGStore) FinishRequestRoute(ctx context.Context, routeID string) (Route, error) {
+// FinishAnswerToChiefRoute: see RouteStore. internal/api's relayRoute calls it
+// once a request or one-way route is answered; a route already relayed is
+// returned as it is (its answer already owed, or delivered), one not answered
+// is ErrRouteNotAnswered, and any other route ErrRouteNotFound.
+func (s *PGStore) FinishAnswerToChiefRoute(ctx context.Context, routeID string) (Route, error) {
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRoute(ctx, tx, routeID)
@@ -482,19 +516,23 @@ func (s *PGStore) FinishRequestRoute(ctx context.Context, routeID string) (Route
 		}
 		r = cur
 		switch {
-		case !cur.IsRequest():
+		case !cur.AnswersToChief():
 			return ErrRouteNotFound
 		case cur.State == RouteRelayed:
 			return nil
 		case cur.State != RouteAnswered:
 			return ErrRouteNotAnswered
 		}
+		owed, detail := RouteRequestAnswerOwed, map[string]any{
+			"owner_message_id": cur.RequestMessageID, "chief_session_id": cur.ChiefSessionID}
+		if cur.OneWay {
+			owed, detail = RouteOneWayAnswerOwed, map[string]any{"message_id": cur.MessageID, "one_way": true}
+		}
 		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'relayed', finished_at = now(), handback = $2
-			WHERE route_id = $1 RETURNING `+routeCols, routeID, RouteRequestAnswerOwed)); err != nil {
+			WHERE route_id = $1 RETURNING `+routeCols, routeID, owed)); err != nil {
 			return err
 		}
-		return audit(ctx, tx, "session_route.relayed", RouteObject(routeID), map[string]any{
-			"owner_message_id": cur.RequestMessageID, "chief_session_id": cur.ChiefSessionID})
+		return audit(ctx, tx, "session_route.relayed", RouteObject(routeID), detail)
 	})
 	return r, err
 }
@@ -703,11 +741,11 @@ func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Rout
 // answerDenyWords is the deny words route r's answer is screened against: the
 // deployment's own names for a route whose answer may leave muster (a message
 // route's reply draft; a task route's comment, which a task reference may queue
-// to its upstream), none for a request route, whose answer reaches only the
-// owner's chief. The rest of ScreenDraft (hidden characters, the agent-text
+// to its upstream), none for a route whose answer reaches only the owner's
+// chief (Route.AnswersToChief: a request route, a one-way route). The rest of ScreenDraft (hidden characters, the agent-text
 // patterns such as a credential, the size cap) applies to every route.
 func (s *PGStore) answerDenyWords(r Route) []string {
-	if r.IsRequest() {
+	if r.AnswersToChief() {
 		return nil
 	}
 	return s.denyWords

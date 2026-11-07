@@ -206,15 +206,28 @@ func TestARealRefusedConnectionIsRecordedAsNeverConnected(t *testing.T) {
 func TestEveryCardChangeIsBroadcastAndNothingElseIs(t *testing.T) {
 	ready := []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}
 
-	t.Run("a delivered turn: once, after the stamp", func(t *testing.T) {
+	t.Run("a delivered turn: after the stamp, and again once the claim is released", func(t *testing.T) {
 		h := newHarness(t, ready, ownedRow())
 		h.withNotify(t)
 		log := h.tick(t)
-		if n := countPrefix(log, "OnChange(lively-newt)"); n != 1 {
-			t.Fatalf("OnChange ran %d time(s), want 1.%s", n, transcript(log))
+		if n := countPrefix(log, "OnChange(lively-newt)"); n != 2 {
+			t.Fatalf("OnChange ran %d time(s), want 2 (the stamp; the reply, after the release).%s", n, transcript(log))
 		}
 		if !(indexOf(log, "SetKickedOff(7301,true)") < indexOf(log, "OnChange(lively-newt)")) {
 			t.Errorf("OnChange ran before the stamp it announces.%s", transcript(log))
+		}
+		// 🔴 THE SECOND ONE IS AFTER THE RELEASE: the chief's card for this agent
+		// reads the claim to say "working", so an announcement made while it is
+		// still held would redraw the card as working, and nothing would redraw it
+		// again (ui/dispatch_card.go).
+		last := -1
+		for i, l := range log {
+			if l == "OnChange(lively-newt)" {
+				last = i
+			}
+		}
+		if rel := indexOf(log, "ReleaseKickoffClaim(7301,test-host/abc123)"); rel < 0 || last < rel {
+			t.Errorf("the reply's OnChange ran before the claim was released.%s", transcript(log))
 		}
 	})
 

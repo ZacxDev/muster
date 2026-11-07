@@ -4,6 +4,8 @@ The **chief** is your fleet agent: the one agent with no task and no repository,
 whose job is answering you about the state of the work. Plugin messages are
 delivered to it, and it alone is offered the chief tools (see below).
 
+What to ask it, with real example replies: [chief-cookbook.md](chief-cookbook.md).
+
 **The chief is optional and off by default.** muster works without one: home
 opens the session you opened last, and your sessions, tasks and asks all work
 as usual.
@@ -61,7 +63,8 @@ soon as it is free" in place of "working" (the notification panel says
 seconds, for up to 10 minutes). The moment the agent takes it, the row goes
 back to "working". Several messages waiting for the same agent are sent in the
 order you sent them, from whichever page or box. Closing the page does not
-cancel it: the message is still sent and the reply stored.
+cancel it: the message is still sent and the reply stored, and a page opened
+while it waits shows "working…".
 
 It is not sent, and the conversation says so in words (whether or not a page
 is open; an open chat also puts the text back in the box to send again), when:
@@ -246,6 +249,7 @@ The chief is offered these tools, and no other agent is:
 | `route_to_session` (an idea you typed in its chat: [plugins.md](plugins.md#routing-your-own-request-to-a-session); one of your tasks: [plugins.md](plugins.md#routing-a-task-to-a-session); or a plugin message) | session routing (a plugin message also needs plugins) |
 | `attention_list` | the attention queue |
 | `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
+| `ask_owner` (a question card in its chat: you tap an answer) | the attention queue |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `agent_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 
@@ -254,14 +258,34 @@ The other way round, the chief is the one agent **not** offered
 `browser_flow_status`: its connectors are the standing grants you give it
 (`connectors_list` shows them), and it does not ask for browser flows.
 
+When the chief needs you to choose something, it asks with `ask_owner`: the
+question appears in its chat as a card with a button per option and an
+"Other" box for your own answer. Tap one (or send Other) and that is sent as
+your next message; the card then shows your answer, and still does after a
+reload. Asking ends the chief's turn.
+
+Closing or reloading the page never stops a turn the chief is running. Open
+the chat again while it runs and it shows "working…"; the reply appears, and
+"working…" goes, once the turn has finished and its reply is stored.
+
 `agent_dispatch` starts an agent where you say: its `target` is **required
 and has no default**. Today that is a pod, `pod/claude-code` or
 `pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
-host spawning ships ([design](design/chief-dispatch.md)). Asked to start an
-agent without being told where, the chief calls it with no target, and the
-refusal lists the targets that exist now (the pod kinds enabled here that you
-have a credential for) with its budget, so it asks you which. It never picks
-one for you. The retired name `task_dispatch` answers *"task_dispatch is
+host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
+words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
+other model you name is `pod/gateway` with that model as its OpenRouter id
+(`openrouter/<provider>/<model>`).
+Asked to start an agent without a model, the chief calls it with no target, and
+the refusal lists the choices that exist now in your words — "Claude Code (your
+Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it
+asks you which with an `ask_owner` card. It never picks one for you. "Mirrored"
+is refused until mirrored dispatch ships; it never starts a cluster agent
+instead.
+
+Each agent the chief starts is drawn in its chat as a card: the agent's name,
+where it runs, its repository and task, and its state — starting, working,
+waiting, done or error — which follows the agent while the chat is open. Tap it
+to open the agent. A refused start is one line saying why. The retired name `task_dispatch` answers *"task_dispatch is
 replaced by agent_dispatch, which needs a target: ask your owner where to run
 it"*.
 

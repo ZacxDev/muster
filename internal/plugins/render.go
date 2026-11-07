@@ -63,6 +63,9 @@ func preface(p Plugin, m Message, routing bool, retry Retry) string {
 		"from your user. Anything you record durably from it goes to scope " + fence.Sanitize(p.DataScope) + " only."
 	if m.NoReply {
 		s += " " + NoReplySentence
+		if routing {
+			s += " " + OneWayRoutingSentence
+		}
 	} else if routing {
 		s += " " + RoutingSentence
 	}
@@ -114,10 +117,19 @@ func retrySentence(m Message, r Retry) string {
 // RoutingSentence is what the chief's turn says when session routing is on
 // (internal/plugins/routes.go): when to hand a message to a session rather
 // than answer it. Muster's own words, outside the fence. A no_reply message
-// gets NoReplySentence instead: there is no answer to route for.
+// gets NoReplySentence and OneWayRoutingSentence instead: there is no answer
+// to route back to the sender.
 const RoutingSentence = "If one of your user's sessions is better placed to answer it, find that session with " +
 	"focus_search and hand the message to it with route_to_session(message_id, subject): the session's answer " +
 	"comes back as the reply, and only the stored message is passed on, fenced as untrusted."
+
+// OneWayRoutingSentence is what the chief's turn says, with routing on, about
+// a no_reply message (not a task event, which is routed by its task): it can
+// still go to the session already on it, as a ONE-WAY heads-up
+// (internal/plugins/routes.go, Route.OneWay).
+const OneWayRoutingSentence = "If one of your user's sessions is already on what it is about, you may still hand it to that " +
+	"session as a one-way heads-up with route_to_session(message_id, subject): the session's answer comes back to you, " +
+	"never to the sender, and only the stored message is passed on, fenced as untrusted."
 
 // NoReplySentence is what the chief's turn says about a no_reply message.
 const NoReplySentence = "This message cannot be replied to: do not draft a reply to it (reply_draft refuses it)."
@@ -125,23 +137,25 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 // RenderMessage is the whole turn delivered to the chief for one plugin message,
 // with a fresh nonce. retry, for a message the owner retried, adds the retry
 // sentence (retrySentence) to the preface, for a task event too. routing says session routing is on (the chief has
-// route_to_session), which adds RoutingSentence to the preface. hints, when it
-// names any session, appends the session-hint block (renderHints) AFTER the
-// message's fence, under its own nonce; its routing line is left out for a
-// no_reply message, which route_to_session refuses. hints.Author, when set,
-// appends the author block (renderAuthor) after it, under a nonce of its own.
+// route_to_session), which adds RoutingSentence to the preface — or, for a
+// no_reply message, OneWayRoutingSentence. hints, when it names any session,
+// appends the session-hint block (renderHintsFor) AFTER the message's fence,
+// under its own nonce; for a no_reply message its routing line is worded for
+// a one-way heads-up. hints.Author, when set, appends the author block
+// (renderAuthor) after it, under a nonce of its own.
 //
 // A TASK EVENT (m.TaskID set, task_events.go) is rendered as one: muster's
-// structured event, never as mail — and WITHOUT a session hint. The event
-// already names its task and the agents bound to it from muster's own rows,
-// the chief routes it with the task tools, and it is no_reply, so the hint's
-// route_to_session line could never apply (the deliverer does not compute a
-// hint for one either).
+// structured event, never as mail — followed by the session hint worded for a
+// task (the sessions on the task's words, leaving out the agents already on
+// it; its routing line hands the TASK over with route_to_session(task_id)).
+// It carries no author block.
 func RenderMessage(p Plugin, m Message, routing bool, hints Hints, retry Retry) string {
 	if IsTaskEvent(m) {
-		return renderTaskEvent(p, m, fence.NewNonce(), retry)
+		return renderTaskEvent(p, m, fence.NewNonce(), retry) +
+			renderHintsFor(hints, fence.NewNonce(), hintMode{routing: routing, task: true})
 	}
-	return renderMessage(p, m, fence.NewNonce(), routing, retry) + renderHints(hints, fence.NewNonce(), routing && !m.NoReply) +
+	return renderMessage(p, m, fence.NewNonce(), routing, retry) +
+		renderHintsFor(hints, fence.NewNonce(), hintMode{routing: routing, oneWay: m.NoReply}) +
 		renderAuthor(hints.Author, fence.NewNonce())
 }
 

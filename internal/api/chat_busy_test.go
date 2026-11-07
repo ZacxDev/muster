@@ -452,3 +452,32 @@ func TestABusyForADialogSaysSo(t *testing.T) {
 		t.Fatalf("first socket message = %v; want the dialog notice", msgs[0])
 	}
 }
+
+// TestAQueuedMessageKeepsItsConversationWorking is the seam between the busy
+// wait (this file's subject) and the per-conversation "working…" count
+// (session_turns.go, #496): a page reloaded while a message from the chat socket
+// waits for the turn in flight draws #chat-working from sessionTurns.inFlight,
+// so the count must hold for the WHOLE wait, not only while an ask is open.
+//
+// 🔴 REGRESSION (the merge of #494 with #496): the count was taken only inside
+// chatTurn, i.e. per ask; between two asks — almost all of a wait — it was zero,
+// so a reload drew no "working…" and the reply arrived from nowhere, the very
+// thing #496 fixed. The composer POST did not show it (startAgentTurn counts
+// before the wait); the socket and the route hand-back did.
+func TestAQueuedMessageKeepsItsConversationWorking(t *testing.T) {
+	f := newBusyCCD()
+	s, ts, store := busyServer(t, f, time.Minute)
+	s.chatBusyPoll = 40 * time.Millisecond // asks are short; the wait between them is not
+	c, ctx := dialChat(t, s, ts)
+	sendChat(t, ctx, c, "waiting on the kickoff")
+	waitRefusals(t, f, 1)
+	for i := 0; i < 20; i++ {
+		if !s.sessionTurns.inFlight("key-41") {
+			t.Fatalf("sample %d: the conversation is not in flight while its message waits for the session (a reload would draw no \"working…\")", i)
+		}
+		time.Sleep(7 * time.Millisecond)
+	}
+	f.free()
+	eventuallyAPI(t, "the queued message answered", func() bool { return len(store.transcript(41)) == 2 })
+	eventuallyAPI(t, "the count to drop once the turn ends", func() bool { return !s.sessionTurns.inFlight("key-41") })
+}

@@ -168,6 +168,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
+	// One dispatched agent's card in the chief's chat (chat_log_live.go): the
+	// card's own refresh, and the live stream's.
+	mux.HandleFunc("GET /ui/dispatch-card", s.requireSession(s.handleDispatchCard))
 	mux.HandleFunc("GET /agents/{name}/logs/stream", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentLogsStream)))
 	mux.HandleFunc("GET /agents/{name}/ws", s.requireSession(s.requireGatewayProvisioner(s.handleAgentWS)))
 	// The claude-code agent's live terminal (terminal.go): the page, and the
@@ -1540,10 +1543,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	ctx = op.begin("messages")
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
 	op.set("messages", strconv.Itoa(len(msgs)))
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(op.begin("task"), a)
 	ctx = op.begin("view")
 	view := ui.AgentDetailView{
@@ -1561,6 +1561,9 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// "working…" while a turn runs in this conversation, and the cards of the
+	// agents started in it (chat_log_live.go).
+	s.withChatLogLive(ctx, &view, active)
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
 	// The session switcher below the chat form (ui/switcher.go).
@@ -1623,12 +1626,9 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	status := s.liveStatus(ctx, a)
 	active, _ := s.resolveSession(ctx, a, r.URL.Query().Get("session"))
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
-	body, version, err := ui.ChatLogBody(ui.AgentDetailView{
+	lv := ui.AgentDetailView{
 		Name: a.Name, Status: status, Messages: lines, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
 		// The surface the refetch is FOR. #chat-log inside the chief panel asks with
@@ -1637,7 +1637,10 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 		// moment the thread has content, on the server's own count. An unknown or
 		// absent value is the page surface, i.e. every existing caller is unchanged.
 		Surface: chatSurfaceFromRequest(r),
-	})
+	}
+	// "working…" and the dispatched agents' cards, as the page draws them.
+	s.withChatLogLive(ctx, &lv, active)
+	body, version, err := ui.ChatLogBody(lv)
 	if err != nil {
 		s.logger.Printf("agents: render chat-log: %v", err)
 		http.Error(w, "could not render the transcript", http.StatusInternalServerError)
@@ -2003,11 +2006,31 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		}
 		// The operator wrote to the agent: its open asks are answered here.
 		s.askerAddressed(ctx, attention.Asker{AgentID: a.ID}, in.Text)
-		parts, err := s.runEnteredTurn(ctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
+		// 🔴 THE TURN RUNS ON ITS OWN CONTEXT, NOT THE SOCKET'S. Closing the tab or
+		// reloading the page closes this socket; the turn the operator started must
+		// still run to its end and be stored, so a reload shows the reply (and, while
+		// it runs, "working…" — sessionTurnCount). The socket's context is used only
+		// to write to the socket, which fails harmlessly once it is gone. Bounded
+		// like the composer's background turn (startAgentTurn), by the kind's budget.
+		// ⚠ MEASURED: the socket's own context is not cancelled by a client close
+		// either (the connection is hijacked), so before this line a reload already
+		// left the turn running. This makes that a stated property rather than a
+		// side effect. TestAChiefTurnSurvivesTheSocketClosing is therefore an
+		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
+		// (c.CloseRead's context, measured), not for the line this replaced.
+		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
+		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
 		s.turns.leave(a.ID)
 		if err != nil {
+			tcancel()
 			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
+			// A busy give-up is stored (chat_busy.go); every other failure is not.
 			s.storeChatBusyGiveUp(ctx, a, session, err)
+			// Nothing is stored for a failed turn, so nothing else would tell a page
+			// opened during it that it is over: its "working…" (drawn from the
+			// session's count) would stay up. The refetch this asks for redraws it
+			// from the count, which is zero now.
+			s.broadcast(ctx, EventChatReply, a.Name)
 			continue
 		}
 		// 🔴 "done" BEFORE the turn is persisted and chat.reply broadcast: the page
@@ -2015,7 +2038,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// refresh that chat.reply asks for is the one that swaps the streamed
 		// bubbles for the stored ones.
 		_ = wsWriteJSON(ctx, c, map[string]string{"type": "done"})
-		s.persistTurn(ctx, a, session, parts)
+		tcancel()
+		// Stored on a short context of its own: a reply that arrived in the turn
+		// budget's last moments must not be lost to that budget's expiry.
+		pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), persistTurnTimeout)
+		s.persistTurn(pctx, a, session, parts)
+		pcancel()
 	}
 }
 
@@ -2030,6 +2058,10 @@ func wsTurnError(err error, text string) map[string]any {
 	}
 	return map[string]any{"type": "error", "content": err.Error()}
 }
+
+// persistTurnTimeout bounds storing a finished turn's reply, on a context
+// detached from the turn's own budget (handleAgentWS).
+const persistTurnTimeout = 15 * time.Second
 
 // runUserTurn stores the user's message and runs the turn it starts against
 // a's gateway, with every stream event passed to emit (nil-safe). It returns
@@ -2212,6 +2244,11 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
+	// "working…" for any page that opens this conversation while the turn runs.
+	defer s.sessionTurns.begin(sessionKey)()
+	// ask_owner ends the turn it is called in (owner_ask.go): the tool loop reads
+	// this mark after each round of calls.
+	ctx = agents.WithTurnEnd(ctx)
 	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A

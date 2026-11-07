@@ -115,32 +115,34 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 		s.logger.Printf("chief: mark session %d read: %v", active.ID, err)
 	}
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
-	lines := make([]ui.ChatLine, 0, len(msgs))
-	for _, m := range msgs {
-		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
-	}
+	lines := chatLinesOf(msgs)
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 
+	chat := ui.AgentDetailView{
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
+		Repo: a.Repo, Model: a.Model,
+		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
+		NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
+		// 🔴 THE SURFACE IS WHAT ROUTES AROUND THE CONTAINING-BLOCK HAZARD.
+		// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
+		// transform makes the panel its containing block — so inside the panel it
+		// would render at the panel's own right edge and go off-screen and inert
+		// with it. This field is what makes the panel render chiefThreadList (an
+		// absolutely-positioned sub-view of its own column) instead, and it is
+		// also what puts the zero-message intro on screen. See ui.ChatSurface.
+		Surface: ui.ChatSurfaceChiefPanel,
+		// The panel's message box has the microphone too (transcribe.go).
+		Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
+	}
+	// 🔴 "working…" IS DRAWN FROM THE SERVER'S COUNT: the panel opened (or the page
+	// reloaded) while the chief's turn runs shows it, and the chat.reply refetch
+	// hides it once the reply is stored (chat_log_live.go).
+	s.withChatLogLive(ctx, &chat, active)
 	write(ui.ChiefPanelView{
 		Configured:      true,
 		ThreadsFailed:   listErr != nil,
 		SessionRuntimes: s.pickerRuntimes(ctx, a),
 		ClaudeModels:    agents.ClaudeCodeModels,
-		Chat: ui.AgentDetailView{
-			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
-			Repo: a.Repo, Model: a.Model,
-			Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
-			NoteID: noteID, TaskStatus: taskStatus, DraftUser: draftUser(ctx),
-			// 🔴 THE SURFACE IS WHAT ROUTES AROUND THE CONTAINING-BLOCK HAZARD.
-			// agentChatPane's sessionDrawer is `position: fixed`, and ChiefPanel's
-			// transform makes the panel its containing block — so inside the panel it
-			// would render at the panel's own right edge and go off-screen and inert
-			// with it. This field is what makes the panel render chiefThreadList (an
-			// absolutely-positioned sub-view of its own column) instead, and it is
-			// also what puts the zero-message intro on screen. See ui.ChatSurface.
-			Surface: ui.ChatSurfaceChiefPanel,
-			// The panel's message box has the microphone too (transcribe.go).
-			Dictate: s.dictatePath(), DictateOff: s.dictateOff(),
-		},
+		Chat:            chat,
 	})
 }

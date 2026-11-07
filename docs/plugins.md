@@ -93,6 +93,9 @@ from an address that does not take replies. Then:
 
 - the chief's turn says that no reply is possible;
 - `reply_draft` refuses that message;
+- your chief can still hand it to the session already on what it is about, as
+  a [one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered):
+  the session's answer goes to the chief, never to the sender;
 - the database refuses any reply draft for it, whatever writes it;
 - the mark cannot be changed once the message is stored.
 
@@ -584,7 +587,10 @@ it. The flow:
    (`assigned` or `update`), the task's id, key,
    status, gate, the agents already working it, and two fields from outside
    (the task's title and the change line) on fenced lines. muster's preface
-   names the three tools below and says the block is data.
+   names the three tools below and says the block is data. Like a message's
+   turn, it may end with a [session hint](#sessions-that-may-already-be-on-it),
+   matched on the task's own title and body and leaving out the agents already
+   on the task.
 5. The chief calls **one** of them, or, with session routing on, hands the
    task to a mirrored session already on it
    ([routing a task to a session](#routing-a-task-to-a-session)):
@@ -1129,6 +1135,13 @@ turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
 
+A **task event** gets the block too, matched on the task's own title and
+body (as muster stores them) and its change line, never on the event's JSON,
+and **leaving out the agents bound to the task** — those the event records and
+those bound since. Its routing line hands the task over with
+`route_to_session(task_id, subject)`. A `no_reply` message's routing line says
+it goes as a [one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered).
+
 The block is muster's own, not the message's. It follows the message's
 closing marker and is fenced under its own nonce, and every message line sits
 behind the message fence's content prefix, so a message that spells the
@@ -1170,6 +1183,19 @@ on the message (`settle_reason`, at most 2000 characters) and in the
 (`settleReason`). A second settle keeps the first reason. Only the chief is
 offered the tool, and only for a message delivered to it: another owner's
 message, or one still queued, is *"not a plugin message delivered to you"*.
+
+**Route first.** Before the chief files feedback, or decides what happens to
+a [task event](#routing-a-task-to-the-chief), its standing instructions say to
+look for the live session already on it: the
+[session hint](#sessions-that-may-already-be-on-it) on the turn, and
+`focus_search` when that does not settle it. When exactly one live session is
+clearly on it, the chief hands it to that session with `route_to_session` — a
+message by its `message_id` (one that cannot be answered goes as a
+[one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered)),
+a task event's task by its `task_id` — and muster
+[tells you where it went](#you-are-told-where-the-chief-routed-it). When no
+session is, or several might be, it puts the item in front of you instead, as
+below.
 
 **Feedback** gets a decision every time. A provisioned chief's standing
 instructions say that a plugin message which is feedback (someone using your
@@ -1237,8 +1263,9 @@ turn for each message says when to do this.
    [your own typed request](#routing-your-own-request-to-a-session); every other
    route, the chief's, yours and a route by thread, has 30 minutes). A still-queued paste has no deadline of its own: it waits as long
    as its route does. The
-   message must be one delivered to that chief, replyable, not already routed,
-   and with no reply already approved and on its way.
+   message must be one delivered to that chief, not already routed, and with
+   no reply already approved and on its way. A message its plugin marked
+   `no_reply` is routed [one-way](#a-one-way-heads-up-for-a-message-that-cannot-be-answered).
 2. **Into the session.** Only a **mirrored Claude Code window** can take a
    routed message (`mirror:<claude session id>`). muster queues it through the
    window's [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle),
@@ -1363,6 +1390,61 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+
+### A one-way heads-up for a message that cannot be answered
+
+A message its plugin marked [`no_reply`](#no_reply) — feedback a relay posts,
+a notification — has no sender to answer, but the session already on what it
+is about may well want it. So the chief's `route_to_session(message_id,
+subject)` takes it too, as a **one-way** route (`session_routes.one_way`,
+migration `0087`): the same target checks, paste, `route_reply`, deadline,
+hand-back and audit rows as any message route. What differs:
+
+- **The paste says NO REPLY POSSIBLE** before anything else: the sender cannot
+  be answered and nothing the session writes reaches them; it is a heads-up,
+  still an UNTRUSTED external message, and the session reports back to the
+  chief, not the sender — what it did about it, or why it does not bear on its
+  work.
+- **The answer goes to the chief only.** `route_reply` records it and ends the
+  route `relayed`, owing the chief the answer, which the route sweep delivers —
+  at least once, in the plugin's chief session (the chief's default session
+  when that one is gone) — exactly as a
+  [request route's](#routing-your-own-request-to-a-session) answer is. It is
+  never a reply draft, whatever the allowlist says: the relay refuses a
+  `no_reply` message, the database refuses a draft for one, and `0087` refuses
+  a draft on a one-way route's row. Since it never leaves muster, the answer is
+  not screened against the deployment's own names.
+- **A hand-back offers no reply.** A one-way route that times out or fails
+  comes back to the chief with what it can do with a message nobody can
+  answer: route it to another session, file the work
+  (`task_create_gated` and `task_route_attention`), or settle it.
+- **Only the chief's own route.** Your own door
+  ([`plugin_message_route`](#routing-a-message-from-your-own-session)), a route
+  by thread and a pull-request route still refuse a `no_reply` message; and a
+  **task event**, though `no_reply`, is refused by `message_id` with a pointer
+  to its task: route the task with `task_id` instead.
+
+The chief's turn for a `no_reply` message says it can be routed this way (with
+session routing on), and its session hint's routing line is worded for it.
+**The trust boundary is unchanged:** the message's text never chooses the
+session (the chief picks from muster's hint and its own tools), only the
+stored message is pasted, fenced, and nothing on this path can reach the
+sender.
+
+### You are told where the chief routed it
+
+Every route the chief makes **on its own** — a plugin message's (two-way or
+one-way) or a task's — sends you one notification when the route is made:
+*"Chief routed it to `<tmux place>`"*, its body the plugin's label and the
+message's subject (*"(no reply possible: a heads-up)"* for a one-way route),
+or the task's number and title. A tap opens the session (or the task). It is
+sent by muster on the route's creation, not left to the chief's prose: never
+for a refused route, and never for
+[your own request](#routing-your-own-request-to-a-session), which you asked for.
+It is information, with nothing to answer, on the `plugin` notification toggle
+on `/account` ([push.md](push.md)) — muting that toggle silences it. The body
+quotes the message's subject: outside text, shown on one line and never acted
+on.
 
 ### When the owner answers it directly
 
@@ -1895,8 +1977,10 @@ store's own one-open-route check); a message not yet delivered to your chief
 (`not_delivered` — route it once the chief has it); a subject that is not
 `mirror:<claude session id>` of an online session (`subject_not_found`, with the
 `candidates`); another owner's message and a
-missing id (both *"no such plugin message: N"*); and everything the chief's
-route refuses — a `no_reply` message (every task event is one), a message with
+missing id (both *"no such plugin message: N"*); a `no_reply` message (every
+task event is one: only the chief's own route takes one, as a
+[one-way heads-up](#a-one-way-heads-up-for-a-message-that-cannot-be-answered));
+and everything the chief's route refuses — a message with
 a reply already on its way, and a target that cannot take one now (an offline
 or read-only host, a window that does not report Claude Code's status — the
 session must be the active pane of its window).

@@ -346,6 +346,10 @@ func (s *Server) runDeliveredTurn(ctx context.Context, a agents.Agent, session a
 	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, pc.Observe)
 	s.markAgentIdle(a.Name)
 	if agentgateway.Unsent(err) != "" {
+		// Nothing is stored for a turn the runtime took nothing of, so nothing
+		// else tells a page opened during it that it is over: its "working…"
+		// (session_turns.go) would stay up. This refetch draws it from the count.
+		s.broadcastTo(a.OwnerID, EventChatReply, a.Name)
 		return nil, err
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

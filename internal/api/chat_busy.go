@@ -135,6 +135,12 @@ func (s *Server) chatBusyBounds() (wait, poll time.Duration) {
 func (s *Server) chatTurnWhenFree(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
 	wait, poll := s.chatBusyBounds()
 	start := time.Now()
+	// 🔴 THE CONVERSATION IS WORKING FOR THE WHOLE WAIT, not only while an ask
+	// is open: chatTurn counts its own ask (session_turns.go), and between two
+	// asks that count is zero — a page reloaded then would draw no "working…"
+	// though a reply is coming. The count nests (one per turn), so this and
+	// chatTurn's own are one turn's two holds of the same rule, not two rules.
+	defer s.sessionTurns.begin(sessionKey)()
 	w := s.turns.join(a.ID)
 	defer s.turns.quit(a.ID, w)
 	told := ""

@@ -49,13 +49,14 @@ func routeReplyToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeReplyToolName,
 		Description: "Answer a plugin message or a task your owner's chief ROUTED to this session (the pasted block names its route_id). " +
 			"For a message, body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
-			"at once when your owner allowlisted the sender, otherwise after your owner approves it. For a task, body is your " +
+			"at once when your owner allowlisted the sender, otherwise after your owner approves it — unless the block says NO " +
+			"REPLY POSSIBLE: then body is your report to the chief, which never reaches the sender. For a task, body is your " +
 			"answer, added to the task as a comment. Only the session the " +
 			"route was sent to may answer it, only once, and only while the route is still waiting (not after it timed out " +
 			"back to the chief). Never put credentials in it.",
 		Parameters: objSchema(map[string]any{
 			"route_id": strProp("The route_id from the routed block (rt_…)."),
-			"body":     strProp("Your answer, as it should reach the sender."),
+			"body":     strProp("Your answer, as it should reach the sender (for a NO REPLY POSSIBLE block: your report to the chief)."),
 		}, "route_id", "body")}
 }
 

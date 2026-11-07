@@ -32,8 +32,9 @@ import (
 // the only instructions in the turn are muster's preface. The chief acts by
 // calling a tool with the task id; no text in the block can call one.
 //
-// 🔴 A TASK EVENT IS NO_REPLY. There is nobody to answer: reply_draft and
-// route_to_session refuse it exactly as they refuse any no_reply message.
+// 🔴 A TASK EVENT IS NO_REPLY. There is nobody to answer: reply_draft refuses
+// it, and route_to_session refuses it by message_id (its task is routed by
+// task_id instead) — the one no_reply message the chief cannot route one-way.
 
 // TaskEventSender is the sender a task event is stored with: muster itself.
 const TaskEventSender = "muster"

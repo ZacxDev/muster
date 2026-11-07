@@ -558,20 +558,30 @@ func RunToolLoop(
 ) (string, error) {
 	input := []inputItem{{Type: "message", Role: "user", Content: userMessage}}
 
+	ending := false
 	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
 			return "", laterRequest(i, ctx.Err())
 		}
-		resp, err := streamResponses(ctx, client, url, token, sessionKey, responsesRequest{
+		req := responsesRequest{
 			Model:        model,
 			Input:        input,
 			Instructions: instructions,
 			Tools:        tools,
-		}, emit)
+		}
+		resp, err := streamResponses(ctx, client, url, token, sessionKey, req, emit)
 		if err != nil {
 			return "", laterRequest(i, err)
 		}
 		calls := resp.functionCalls()
+		// 🔴 AN ENDED TURN RUNS NO FURTHER TOOL, whatever this answer asks for.
+		// The request above carried the round's outputs back (the runtime's
+		// session must hold an output for every call it made) and nothing else:
+		// no tool_choice, which no runtime this ships against has been shown to
+		// accept. This return is the whole gate.
+		if ending {
+			return resp.messageText(), nil
+		}
 		if len(calls) == 0 {
 			// Terminal text turn: the text already streamed live via emit during
 			// streamResponses, so just return the assembled text (don't re-emit).
@@ -585,7 +595,15 @@ func RunToolLoop(
 			if emit != nil {
 				emit(StreamEvent{Kind: "tool_call", ToolID: id, ToolName: call.Name, ToolArgs: call.Arguments})
 			}
-			out := dispatch(call.Name, call.Arguments)
+			// 🔴 A CALL AFTER THE TURN ENDED IS ANSWERED, NOT RUN: a model can ask
+			// for ask_owner and agent_dispatch in ONE round, and the dispatch must
+			// not start an agent the owner is being asked about.
+			var out string
+			if TurnEnded(ctx) {
+				out = TurnEndedNotRun
+			} else {
+				out = dispatch(call.Name, call.Arguments)
+			}
 			if emit != nil {
 				emit(StreamEvent{
 					Kind:       "tool_result",
@@ -601,6 +619,7 @@ func RunToolLoop(
 				Output: out,
 			})
 		}
+		ending = TurnEnded(ctx)
 	}
 	// Every request was answered with calls that ran, so this is never "nothing sent".
 	return "", &AfterFirstRequestError{Request: MaxToolLoopIterations,
@@ -647,6 +666,10 @@ func laterRequest(i int, err error) error {
 	}
 	return &AfterFirstRequestError{Request: i + 1, Err: err}
 }
+
+// TurnEndedNotRun is the output of a call made in the same round as, and after,
+// a tool that ended the turn (EndTurn): it was not run.
+const TurnEndedNotRun = `{"error":"not run: your turn ended (you asked your owner a question) before this call; wait for their answer"}`
 
 // RunToollessTurn runs ONE /v1/responses turn carrying NO tools and returns the
 // assembled assistant text, streaming text/thinking deltas to emit (nil-safe).

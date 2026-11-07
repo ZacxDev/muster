@@ -262,6 +262,9 @@ type Server struct {
 	// agent's turn in flight (chat_busy.go); zero = the defaults.
 	chatBusyWait time.Duration
 	chatBusyPoll time.Duration
+	// sessionTurns counts the turns running per chat session, which is what
+	// draws a reloaded page's "working…" (session_turns.go).
+	sessionTurns sessionTurnCount
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
