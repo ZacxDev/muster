@@ -52,9 +52,12 @@ FROM node:22-bookworm-slim
 # through the proxy by routing `ccd serve` keeps in step with the agent's grants
 # (`ccd connect-git` applies it at once). The real `gh` is NOT installed: it only speaks
 # HTTPS to a fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
-# /usr/local/bin/gh is ccd under that name instead: a READ-ONLY subset (`gh pr view
-# --json`, `gh pr diff`, `gh api` GET) answered through the proxy with the pod's own
-# token, refusing every write (cmd/ccd/ghshim.go).
+# 🔴 NOR IS ANY `gh` ON PATH: ccd carries a READ-ONLY gh subset (`gh pr view --json`,
+# `gh pr diff`, `gh api` GET, through the proxy with the pod's own token, every write
+# refused — cmd/ccd/ghshim.go), but it is OPT-IN. An officer that wants it runs its
+# own image built FROM this one with `RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh`
+# (docs/officers.md "Reading pull requests with gh"); every other pod keeps finding
+# no gh, so a script's `command -v gh` fallback to curl is unchanged. cc-smoke checks.
 #
 # openssh-client is for a PRIVATE-repository worker pool's read-only deploy key
 # (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): the pod's KEY HOLDER — this image, run as
@@ -82,7 +85,6 @@ RUN apt-get update \
 COPY --from=hq / /opt/hq/
 RUN if [ -e /opt/hq/hq ]; then chmod 0755 /opt/hq/hq && ln -s /opt/hq/hq /usr/local/bin/hq; fi
 COPY --from=build /ccd /usr/local/bin/ccd
-RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh
 COPY images/claude-code-agent/settings.json /etc/ccd/settings.json
 COPY images/claude-code-agent/credentials.sh /usr/local/lib/cc/credentials.sh
 COPY --chmod=0755 images/claude-code-agent/entrypoint.sh /usr/local/bin/cc-entrypoint

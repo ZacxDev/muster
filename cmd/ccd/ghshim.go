@@ -43,8 +43,9 @@ import (
 // refused before any request is sent (exit 1). An officer's writes go only
 // through muster's gated tools and push gate.
 //
-// It is installed as /usr/local/bin/gh, a link to ccd (run dispatches on the
-// program name), in images/claude-code-agent.
+// 🔴 IT IS OPT-IN. images/claude-code-agent puts no `gh` on PATH; an image
+// built FROM it that wants the shim links /usr/local/bin/gh to ccd (main
+// dispatches on the program name). `ccd gh …` reaches it in any image.
 // ---------------------------------------------------------------------------
 
 const ghShimVersion = "gh version 0.0.0-muster (read-only shim over muster's connector proxy)"
@@ -61,7 +62,11 @@ type ghShim struct {
 // runGH is `gh` (argv after the program name). Exit 0 on success, 1 on any
 // error or refusal (gh's own code for a failed command).
 func runGH(args []string, stdout, stderr io.Writer) int {
-	g := &ghShim{stdout: stdout, stderr: stderr, getenv: os.Getenv, origin: gitOrigin, http: &http.Client{Timeout: 60 * time.Second}}
+	// 🔴 NO REDIRECTS, like every other ccd client (noRedirects): Go's client
+	// resends custom headers — X-Muster-Token — to a redirect's target. A
+	// redirect comes back as the non-2xx it is.
+	g := &ghShim{stdout: stdout, stderr: stderr, getenv: os.Getenv, origin: gitOrigin,
+		http: &http.Client{Timeout: 60 * time.Second, CheckRedirect: noRedirects.CheckRedirect}}
 	return g.run(args)
 }
 
@@ -165,8 +170,8 @@ var (
 )
 
 // repoAndPR resolves a pull request argument (a number, or its URL) and the
-// repository (--repo/-R, else the URL's, else GH_REPO, else the checkout's
-// origin).
+// repository (the URL's — a --repo/-R naming another is refused — else
+// --repo/-R, else GH_REPO, else the checkout's origin).
 func (g *ghShim) repoAndPR(pos []string, vals map[string][]string) (string, int, error) {
 	if len(pos) != 1 {
 		return "", 0, errors.New("name exactly one pull request (its number or URL); the shim does not infer one from the branch")
@@ -174,10 +179,13 @@ func (g *ghShim) repoAndPR(pos []string, vals map[string][]string) (string, int,
 	repo := last(vals, "--repo", "-R")
 	arg := pos[0]
 	if m := ghPRURLRE.FindStringSubmatch(arg); m != nil {
-		if repo == "" {
-			repo = m[1]
+		// 🔴 A --repo NAMING ANOTHER REPOSITORY THAN THE URL'S IS REFUSED,
+		// never a silent read of the other repository's pull request of that
+		// number. The same name in another case is GitHub's same repository.
+		if repo != "" && !strings.EqualFold(repo, m[1]) {
+			return "", 0, fmt.Errorf("--repo %s contradicts the pull request URL's repository %s", repo, m[1])
 		}
-		arg = m[2]
+		repo, arg = m[1], m[2]
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(arg, "#"))
 	if err != nil || n <= 0 {

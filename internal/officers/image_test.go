@@ -145,9 +145,9 @@ func TestImageRegistryHostMustBeARegistry(t *testing.T) {
 		}
 	}
 	for ref, allow := range map[string][]string{
-		"localhost/team/runner" + imgDigest:         {"localhost"},
-		"registry.internal/team/runner" + imgDigest: {"registry.internal"},
-		"registry:5000/team/runner" + imgDigest:     {"registry:5000/team"},
+		"localhost/team/runner" + imgDigest:            {"localhost"},
+		"registry.example.com/team/runner" + imgDigest: {"registry.example.com"},
+		"registry:5000/team/runner" + imgDigest:        {"registry:5000/team"},
 	} {
 		if err := officers.ImageAllowed(ref, allow); err != nil {
 			t.Errorf("%s under %v: refused: %v", ref, allow, err)

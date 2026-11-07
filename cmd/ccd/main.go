@@ -94,8 +94,9 @@ import (
 const defaultListen = ":18789"
 
 func main() {
-	// Linked as /usr/local/bin/gh (images/claude-code-agent), ccd is the
-	// read-only gh shim (ghshim.go).
+	// Run under the name gh — a link an officer's own image makes; the default
+	// image has none (images/claude-code-agent) — ccd is the read-only gh shim
+	// (ghshim.go).
 	if filepath.Base(os.Args[0]) == "gh" {
 		os.Exit(runGH(os.Args[1:], os.Stdout, os.Stderr))
 	}

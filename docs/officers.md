@@ -311,19 +311,26 @@ is). An officer that sets none runs the deployment's image, unchanged.
 
 ```json
 {"id": "review:example-web", "hq_url": "https://hq.example.com/api/v1",
- "image": "ghcr.io/example-org/officer-runner:1.4.0"}
+ "image": "ghcr.io/example-org/officer-runner:1.4.0@sha256:<64 hex digits>"}
 ```
 
 **Boot refuses** an image that is not a full reference
-(`<registry host>/<path>[:<tag>][@sha256:<digest>]`), one that pins neither a
-tag nor a digest, and one whose repository is not allowed by
-`MUSTER_OFFICER_IMAGE_REGISTRIES`: a comma-separated list of
-`<registry host>[/<path>]` prefixes (`ghcr.io/example-org,
-registry.example.com:5000/team/runners`). An image is allowed when its
+(`<registry host>/<path>[:<tag>]@sha256:<digest>`); one **not pinned by
+digest** — 🔴 a tag alone is refused, because anyone who can push to the
+repository can move a tag and the next pod would run that code with every tool
+allowed (a tag beside the digest is allowed, as a label); one whose first
+component is **not a registry host** — it must contain a `.` or a `:` or be
+exactly `localhost`, the rule container runtimes use (`registry/runner` is a
+Docker Hub path to a runtime, not a host called `registry`); and one whose
+repository is not allowed by `MUSTER_OFFICER_IMAGE_REGISTRIES`: a
+comma-separated list of `<registry host>[/<path>]` prefixes (`ghcr.io/example-org,
+registry.example.com:5000/team/runners`), each entry's first component a
+registry host by the same rule. An image is allowed when its
 repository (the reference without tag and digest) **is** an entry or lies
 under one — `ghcr.io/example-org/officer-runner` is under `ghcr.io/example-org`,
 `ghcr.io/example-orgx/…` is not. **With the variable unset, every `image` is
-refused**; a malformed entry (a scheme, a tag, a glob) refuses to boot.
+refused**; a malformed entry (a scheme, a tag, a glob, a bare name such as
+`registry`) refuses to boot.
 Prefer entries that name your organisation's path, not a whole public registry.
 
 🔴 **The image is the pod's whole userland, and the session runs with every
@@ -474,8 +481,20 @@ The App is an admin's: an `owner` who is not an admin is offered the stored
 ### Reading pull requests with `gh`
 
 The real `gh` is not in the image: it only speaks HTTPS to a fixed host and
-cannot reach the in-cluster proxy. `/usr/local/bin/gh` is `ccd` under that name
-(`cmd/ccd/ghshim.go`): a **read-only** subset whose every request is a `GET`
+cannot reach the in-cluster proxy. `ccd` carries a **read-only** subset of it
+(`cmd/ccd/ghshim.go`), and 🔴 **it is opt-in**: the `claude-code-agent` image
+puts **no `gh` on PATH**, so every other pod — and any script that probes
+`command -v gh` and falls back to `curl` — behaves as before. An officer that
+wants it runs its own [runner image](#a-custom-runner-image-image) that links
+it:
+
+```dockerfile
+FROM ghcr.io/example-org/claude-code-agent:<the deployment's tag>
+RUN ln -s /usr/local/bin/ccd /usr/local/bin/gh
+```
+
+(`ccd` run under the name `gh` is the shim; `ccd gh …` reaches it in any
+image.) It is a subset whose every request is a `GET`
 to `$MUSTER_CONNECT_URL/connect/github/api.github.com/…` carrying the pod's own
 token (`X-Muster-Token`) — so it is decided by the proxy exactly as the
 instance's `curl` would be: its grant, its push gate, its read-only or ship
@@ -495,8 +514,10 @@ token. It is enough for a script that reads a pull request and its comments:
 `number`, `state`, `title`, `updatedAt`, `url`, in `gh`'s shapes. Another field
 is an error listing these. A comment's `viewerDidAuthor` is always `false`:
 the shim has no viewer. `--jq`, `--template` and `--web` are not supported.
-With no `--repo` and no pull request URL, the repository is `GH_REPO`, else
-the checkout's `origin`.
+A pull request URL names its repository; a `--repo` naming a different one is
+refused (exit 1, nothing sent). With no `--repo` and no pull request URL, the
+repository is `GH_REPO`, else the checkout's `origin`. The shim follows no
+redirect: a redirect from the proxy is reported as the non-2xx answer it is.
 
 🔴 **It writes nothing.** Every other command (`gh pr comment`, `merge`,
 `close`, `edit`, `ready`, `create`, `review`, `checkout`, `gh issue …`,
