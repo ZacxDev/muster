@@ -459,7 +459,7 @@ and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
 | outcome | when | what happens |
 |---|---|---|
 | `running` | the agent was started with a first turn | — |
-| `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | after 60 seconds, if you have neither replied nor opened the agent's page: one push, `<agent> is waiting for you: <the LAST line of its reply>`, and one note to the chief quoting its last lines (with `MUSTER_SESSION_STATE=1` the conversation's own "needs you" push stands in for this push; the note is still sent). A conversation you are in pushes nothing. Its next turn puts it back to `running` |
+| `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | after 60 seconds, if you have neither replied nor opened the agent's page: one push, `<agent> is waiting for you: <the LAST line of its reply>`, and one note to the chief quoting its last lines (the same with `MUSTER_SESSION_STATE=1`; session state then does not push this wait again as a stalled conversation). A conversation you are in pushes nothing. Its next turn puts it back to `running` |
 | `done` | it **said** it finished: it moved its own task to **ready for review** or **complete** (the chief or a mirrored session moving it does not count), or called `agent_report_done{summary}` (offered to every agent but the chief; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
 | `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say — also when it then completes with no answer), it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
 | `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
@@ -547,7 +547,8 @@ working agent is never flipped. A message the runtime refused before typing
 it (a `busy` session; muster holds it and asks again) is not activity, and does
 not put a waiting agent back to running: only a turn the runtime takes does. A
 job's or a memo's turn keeps the agent working while it runs and is judged as
-nothing (its reply is the job's result). A first turn muster stops waiting for
+nothing (its reply is the job's result); a chat reply that ends during one is
+judged when it ends. A first turn muster stops waiting for
 at its budget is not a failure, but it is no longer open: if the agent then says
 nothing, it goes `stuck`. Before its first turn is delivered, the
 kickoff deliverer owns the verdict: an agent whose instance never became

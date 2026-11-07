@@ -66,11 +66,43 @@ const outcomeActivityEvery = 10 * time.Second
 const outcomePushTitleMax = 120
 
 // outcomeTracker is the tracker's in-process state: when each agent's activity
-// was last written, and how many of its turns are open in this process.
+// was last written, how many of its turns are open in this process, and the
+// reply a judgement put off because another turn was open (deferred).
 type outcomeTracker struct {
 	mu        sync.Mutex
 	written   map[int64]time.Time
 	openTurns map[int64]int
+	deferred  map[int64]string
+}
+
+// putOff keeps reply as agent id's put-off judgement (the newest wins).
+func (t *outcomeTracker) putOff(id int64, reply string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.deferred == nil {
+		t.deferred = map[int64]string{}
+	}
+	t.deferred[id] = reply
+}
+
+// drop forgets agent id's put-off judgement: a later one superseded it.
+func (t *outcomeTracker) drop(id int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.deferred, id)
+}
+
+// takeDeferred takes agent id's put-off reply once nothing of it is open any more;
+// ok false while a turn is still open or when nothing was put off.
+func (t *outcomeTracker) takeDeferred(id int64) (reply string, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.openTurns[id] > 0 {
+		return "", false
+	}
+	reply, ok = t.deferred[id]
+	delete(t.deferred, id)
+	return reply, ok
 }
 
 func (t *outcomeTracker) due(id int64, now time.Time) bool {
@@ -312,9 +344,18 @@ func (s *Server) outcomeAnswered(ctx context.Context, a agents.Agent, reply stri
 	}
 	// A reply while its pod still reports subagents or background shells is a
 	// progress report mid-work: it is not waiting yet (outcomeWorkReported).
-	if s.agentOutcomes.busy(a.ID) || !s.AgentWork(a.ID).IsZero() {
+	if !s.AgentWork(a.ID).IsZero() {
 		return
 	}
+	// 🔴 A REPLY WHILE ANOTHER TURN IS OPEN IS PUT OFF, NOT DROPPED. A scheduled
+	// job's or a memo's turn (OutcomeHold) can be running when a chat reply
+	// ends; the agent is not waiting yet, but once that turn is released this
+	// reply is judged (OutcomeHold's release). A newer judgement supersedes it.
+	if s.agentOutcomes.busy(a.ID) {
+		s.agentOutcomes.putOff(a.ID, reply)
+		return
+	}
+	s.agentOutcomes.drop(a.ID)
 	s.outcomeWaiting(octx, a, agentoutcome.LastLines(agents.ScrubNote(reply, a.PendingNote), 3, outcomePushTitleMax))
 }
 
@@ -347,8 +388,7 @@ func (s *Server) outcomeWaiting(octx context.Context, a agents.Agent, last []str
 }
 
 // outcomeTellWaiting tells a's wait — once, past the waiting hold, if nobody
-// has seen it: the push (unless session state is on: its own episode for the
-// conversation already pushes "needs you", with the same hold) and ONE note in
+// has seen it: the push, whether or not session state is on, and ONE note in
 // the chief's chat for the wait, quoting the last lines of the agent's newest
 // reply in its latest conversation. Claimed by agentoutcome.Store.Told,
 // conditional on the wait that began at a.OutcomeAt, so of two sweeps (two
@@ -374,9 +414,14 @@ func (s *Server) outcomeTellWaiting(octx context.Context, a agents.Agent, now ti
 			}
 		}
 	}
-	if !s.sessionStateOn() {
-		s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", a.OutcomeReason)
-	}
+	// 🔴 PUSHED WHETHER OR NOT SESSION STATE IS ON. Session state's 60 s hold is
+	// for a mirrored window waiting at a prompt; an agent conversation becomes
+	// one of its episodes only once STALLED (the nudge idle, 10 min), its push
+	// does not carry the question, and a chief nudge can settle it unpushed —
+	// so leaving a dispatched agent's wait to it (as this once did) meant a
+	// push ten minutes late or never. THIS tracker owns a tracked agent's wait;
+	// session state stands down for it (outcomeOwnsWait, session_state.go).
+	s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", a.OutcomeReason)
 	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(lines, "\n"))
 }
 
@@ -758,5 +803,25 @@ func (s *Server) OutcomeHold(a agents.Agent) (release func()) {
 	}
 	s.agentOutcomes.open(a.ID, 1)
 	var once sync.Once
-	return func() { once.Do(func() { s.agentOutcomes.open(a.ID, -1) }) }
+	return func() {
+		once.Do(func() {
+			s.agentOutcomes.open(a.ID, -1)
+			// A chat reply that ended while this turn held the agent is judged
+			// now (outcomeAnswered put it off), once nothing else is open.
+			if reply, ok := s.agentOutcomes.takeDeferred(a.ID); ok {
+				s.outcomeAnswered(context.Background(), a, reply)
+			}
+		})
+	}
+}
+
+// outcomeOwnsWait reports whether a's current wait belongs to the outcome
+// tracker and has been dealt with: a tracked agent waiting on its owner whose
+// wait was told (pushed with its question) or seen (its page opened). Session
+// state's pass then does not push the same wait again as a stalled agent
+// conversation (the one owner of a dispatched agent's wait is this tracker:
+// outcomeTellWaiting). A wait not yet told — inside its hold — is not owned
+// yet, and an untracked agent's conversation is session state's as before.
+func outcomeOwnsWait(a agents.Agent) bool {
+	return a.Outcome == agentoutcome.Waiting && a.OutcomeToldAt != nil
 }

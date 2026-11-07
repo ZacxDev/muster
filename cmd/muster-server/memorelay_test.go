@@ -6,15 +6,18 @@ import (
 	"errors"
 	"io"
 	"log"
-	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -211,21 +214,39 @@ func TestATaskThatIsGoneNamesNoRepository(t *testing.T) {
 	}
 }
 
-// TestBuildAppPassesTheOutcomeHoldToTheMemoRelay: buildApp gives the relay the
-// server's outcome hold, so a dispatched agent reading a memo is working to the
-// outcome watchdog (memorelay.Config.TurnHold). A source check, as for the
-// kickoff deliverer's wiring: nothing else would notice a nil here.
-func TestBuildAppPassesTheOutcomeHoldToTheMemoRelay(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+// TestTheAppsMemoRelayHoldsTheServersTurns (round 3, 🟢b): the memo relay
+// buildApp builds holds a memo turn through THE SERVER's outcome hold, so a
+// dispatched agent reading a memo is working to the server's watchdog. Booted
+// for real (the Compose stack, with a memo listener configured): a tracked
+// agent silent for an hour is not called stuck while the relay holds it, and
+// is once the hold is released (the positive control: the same agent, the
+// same sweep). Behaviour, not a reading of main.go: a relay built with nil, or
+// with any hold but the server's, fails it.
+func TestTheAppsMemoRelayHoldsTheServersTurns(t *testing.T) {
+	st := newComposeStack(t, map[string]string{envMemoURL: "http://127.0.0.1:9", envMemoToken: "memo-test-token"})
+	a := st.app
+	if a.memo == nil {
+		t.Fatal("instrument check: the app built no memo relay")
+	}
+	sys := authz.System(context.Background())
+	name := "memo-held-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	ag, err := agents.NewPG(a.pool).Create(authz.Operator(context.Background()), agents.Agent{Name: name, Namespace: "devpod-" + name,
+		Status: agents.StatusRunning})
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatal(err)
 	}
-	text := string(src)
-	if n := strings.Count(text, "buildMemoRelay("); n != 1 {
-		t.Fatalf("instrument check FAILED: main.go calls buildMemoRelay %d time(s), want 1", n)
+	t.Cleanup(func() { _, _ = a.pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, ag.ID) })
+	if _, err := a.pool.Exec(sys, `UPDATE agents SET kicked_off = true, outcome = 'running',
+		outcome_at = now() - interval '1 hour', activity_at = now() - interval '1 hour', updated_at = now() - interval '1 hour'
+		WHERE id = $1`, ag.ID); err != nil {
+		t.Fatal(err)
 	}
-	const want = "buildMemoRelay(cfg, a.pool, ext.Agents, ext.Notes, gw, srv.OutcomeHold, logger)"
-	if !strings.Contains(text, want) {
-		t.Errorf("main.go does not contain %q: a memo turn would be invisible to the outcome watchdog", want)
+	release := a.memo.Hold(ag)
+	if n, err := a.srv.AgentWatchdogPass(context.Background()); err != nil || n != 0 {
+		t.Fatalf("while the relay holds it: %d stuck (%v); want 0 — the hold did not reach the server", n, err)
+	}
+	release()
+	if n, err := a.srv.AgentWatchdogPass(context.Background()); err != nil || n != 1 {
+		t.Fatalf("control: once released, %d stuck (%v); want 1", n, err)
 	}
 }

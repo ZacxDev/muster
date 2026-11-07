@@ -680,11 +680,18 @@ func failureNote(err error) string {
 	}
 }
 
-// send is one memo turn to a, held for its duration by Config.TurnHold (when
-// set) and released on every return.
+// send is one memo turn to a, held for its duration (Hold) and released on
+// every return.
 func (r *Relay) send(ctx context.Context, a agents.Agent, target agentgateway.Target, key, message string) (string, error) {
-	if r.hold != nil {
-		defer r.hold(a)()
-	}
+	defer r.Hold(a)()
 	return r.gw.Send(ctx, target, key, message, nil)
+}
+
+// Hold holds a's turn the way every memo turn to it is held (Config.TurnHold)
+// and returns the release; a no-op without a TurnHold.
+func (r *Relay) Hold(a agents.Agent) (release func()) {
+	if r.hold == nil {
+		return func() {}
+	}
+	return r.hold(a)
 }
