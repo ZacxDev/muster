@@ -11,7 +11,9 @@ and 14-18, the owner's answers to this revision's questions. It also rebuilds ph
 ([3.6](#36-the-commands-and-prompt-delivery)). Everything else on this page is
 the recommended design. The owner answered this revision's five questions as
 decisions 14-18. What is still open is a set of measurements
-([7](#7-what-is-still-unverified)).
+([7](#7-what-is-still-unverified)). Decision 19, starting an agent from one of
+the owner's own sessions in two verbs, is built
+([2.9](#29-held-dispatches-from-the-owners-sessions)).
 
 **What this revision changed, and why it is not a new page.** Mirrored
 dispatch *is* this page's host spawn (section 3, phases 3 and 4): the same
@@ -255,6 +257,15 @@ The owner's answers to this revision's questions:
 18. **"Mirrored with Claude `<model>`" uses Claude Code's default model.**
     `model` stays refused on `host/<host>/claude` (defaulted, per the
     recommendation).
+
+The owner's decision on starting an agent from one of their own sessions,
+given after a mirrored session asked to start one and had no way to:
+
+19. **Two verbs over MCP, no tap.** *"Dispatch and then another verb to approve
+    the dispatch so I don't need to click anything."* The owner's mirrored
+    sessions get `dispatch_request` (hold a start) and `dispatch_approve` (start
+    exactly the held one), and nothing else gets them
+    ([2.9](#29-held-dispatches-from-the-owners-sessions)).
 
 ---
 
@@ -1280,6 +1291,63 @@ qwen/qwen3-coder,moonshotai/kimi-k2-0905,z-ai/glm-4.6,deepseek/deepseek-v3.2
 **The phone.** The phone draws at most two options beside Dismiss
 (`AskPush.buttons()`, per #485). A card with more options shows the first two
 there, ordered as above, and every option in muster's chat and Attention view.
+
+---
+
+### 2.9 Held dispatches from the owner's sessions
+
+**Built** (decision 19; `internal/api/dispatch_hold_tools.go`,
+`internal/plugins/dispatch_hold.go`). The gap: a mirrored Claude Code session
+whose owner asked it to start an agent had no path. `chief_ask` only relays,
+and the chief refuses a start that is not from a turn its owner typed
+(`ownerTurnFor`), which is the rule that keeps outside text from starting
+agents.
+
+- **`dispatch_request`** runs `agent_dispatch`'s checks that need no chief,
+  through the same predicates: the opt-in and the deployment
+  (`chiefDispatchDeploymentRefusal`), the target (`podKindOf`; mirrored and host
+  targets refused as there), the prompt cap, the task (`chiefDispatchTaskBlock`),
+  the repository (`connectedRepo`), the kind (`resolveKind`), the budget (the
+  caps' own predicates), and the model. It then files a **hold** and starts
+  nothing. It takes no idempotency key (Round 0 dropped it): a repeated
+  request files a second hold, which starts nothing and lapses in 15 minutes,
+  and approval's single use under the lock already prevents a double start.
+- **The model** goes through `resolveDispatchModel`, the dispatch-outcomes
+  change's one model check: a catalogue id or a display name naming one model
+  resolves to `openrouter/<id>`, and the hold carries the resolved model (and
+  the value as given).
+- **`dispatch_approve`** reserves on the chief's ledger, naming the hold, then
+  runs `startReserved`, the post-reservation path `agent_dispatch` now shares:
+  `createAndDispatchAgent`, the ledger's agent row, and the release of a refused
+  start. Then it writes an approval audit row and pushes the owner once. The
+  chief's chat gets nothing: the reservation already puts the agent in the
+  chief's budget (`live_agents`). The start is outcome-tracked
+  (`TrackOutcome`, with the owner's chief as `DispatchedBy`), so it gets the
+  silence watchdog and the waiting, failed and done notifications.
+- **Who.** Both verbs are listed only on `POST /mirror/mcp`, dispatched there
+  before the tools a gateway agent can name, and each handler refuses any
+  caller that is not a mirrored session acting through a mirror host's token
+  (`authz.ViaMirrorHost`). A hold is read as its owner only, so another owner's
+  session finds nothing to approve.
+- **Single use and expiry** are decided under the owner's reservation lock: a
+  hold is open while it is at most 15 minutes old, by the database's clock, and
+  no reservation names it. The reservation that names it is its consumption, so
+  two approvals of one hold start one agent.
+
+**The store is shared with the card path.** A hold is one `chief.dispatch_held`
+audit row whose detail is the request as it will start, consumed by the
+reservation whose `detail.held` names it. That is the store this page's held
+dispatch for a card tap ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model))
+describes. The MCP door files its holds with `door: "mcp"`. A card hold would
+file the same action with its own door and its blanks, and consume it the same
+way. There is no new table and no migration.
+
+**Residual risk, accepted with the decision.** A prompt-injected model in one
+of the owner's mirrored sessions can call both verbs. What bounds it: the door
+is the owner's own sessions only; each request and approval is an audit row
+naming the host and the session; each start pushes the owner; the chief's caps
+apply; and the started agent opens a draft
+pull request at most.
 
 ---
 
