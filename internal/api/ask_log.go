@@ -95,6 +95,8 @@ type askLogger struct {
 	// conversation's: written by the captures (on the recorder's one worker).
 	plain map[askWinKey]askOpen
 	agent map[askAgentKey]askOpen
+	// turns is each window's last captured turn (askLogTurnQuestion's key).
+	turns map[askWinKey]string
 	// readHook replaces the mirrored transcript read (tests).
 	readHook func(ctx context.Context, c chiefnudge.Session) (askRead, error)
 }
@@ -131,7 +133,7 @@ func newAskLogger(cfg AskLog, s *Server) *askLogger {
 		cfg.TextTTL = asklog.DefaultTextTTL
 	}
 	return &askLogger{cfg: cfg, rec: asklog.NewRecorder(s.logger), seen: map[askWinKey]askSeen{},
-		plain: map[askWinKey]askOpen{}, agent: map[askAgentKey]askOpen{}}
+		plain: map[askWinKey]askOpen{}, agent: map[askAgentKey]askOpen{}, turns: map[askWinKey]string{}}
 }
 
 // askLogOn reports whether the ask log is wired.
@@ -385,9 +387,17 @@ func (s *Server) askLogRead(ctx context.Context, c chiefnudge.Session) (askRead,
 	return out, nil
 }
 
-// askLogTurnEnd queues the capture of window k's turn end: its last assistant
-// message, kept when it passes the pre-filter. A question still open on the
-// window is resolved first from the same read.
+// askLogTurnEnd queues the capture of window k's turn end: the turn's last
+// assistant message, kept when it passes the pre-filter. A question still open
+// on the window is resolved first from the same read.
+//
+// 🔴 THE READ HAPPENS AFTER THE TURN ENDED, AND THE OWNER MAY ALREADY HAVE
+// REPLIED — the quick yes this log exists to count. So the turn's message is
+// not "the last message" but the last assistant message before any trailing
+// user messages (askLogTurnQuestion), and a reply already in the read resolves
+// the new row at once. Each turn is captured once: it is keyed by the prompt
+// that started it and its text (askLogger.turns), so a later read that finds
+// the same turn writes nothing.
 func (s *Server) askLogTurnEnd(owner int64, k askWinKey, w mirror.Window, at time.Time) {
 	c := askLogSession(k.host, w)
 	s.askLogDo(owner, asklog.KindPlainText, func(ctx context.Context) error {
@@ -398,8 +408,15 @@ func (s *Server) askLogTurnEnd(owner int64, k askWinKey, w mirror.Window, at tim
 		if err := s.askLogReplyIn(ctx, k, read.Msgs, at); err != nil {
 			return err
 		}
-		last, ok := chiefnudge.LastIsAssistant(read.Msgs)
-		if !ok || !askLogPrefilter(last.Text) {
+		last, key, ok := askLogTurnQuestion(read.Msgs)
+		if !ok {
+			return nil
+		}
+		s.askLog.mu.Lock()
+		seen := s.askLog.turns[k] == key
+		s.askLog.turns[k] = key
+		s.askLog.mu.Unlock()
+		if seen || !askLogPrefilter(last.Text) {
 			return nil
 		}
 		jev, jerr := s.askLogClassify(ctx, owner, c, last.Text)
@@ -413,8 +430,40 @@ func (s *Server) askLogTurnEnd(owner int64, k askWinKey, w mirror.Window, at tim
 		s.askLog.mu.Lock()
 		s.askLog.plain[k] = askOpen{id: id, question: last.Text, asked: at}
 		s.askLog.mu.Unlock()
+		// A reply the owner gave before this read.
+		if err := s.askLogReplyIn(ctx, k, read.Msgs, at); err != nil {
+			return err
+		}
 		return jerr
 	})
+}
+
+// askLogTurnQuestion is the turn-end message of msgs: the last non-empty
+// assistant message, looking past any user messages after it (replies that
+// arrived before the read). key names that turn: the id of the prompt that
+// started it, and the message's text. ok false when there is none.
+func askLogTurnQuestion(msgs []chiefnudge.Msg) (m chiefnudge.Msg, key string, ok bool) {
+	i := len(msgs) - 1
+	for i >= 0 && msgs[i].Role == "user" {
+		i--
+	}
+	for i >= 0 && msgs[i].Role != "assistant" && msgs[i].Role != "user" {
+		i--
+	}
+	if i < 0 || msgs[i].Role != "assistant" || strings.TrimSpace(msgs[i].Text) == "" {
+		return chiefnudge.Msg{}, "", false
+	}
+	prompt := ""
+	for j := i - 1; j >= 0; j-- {
+		if msgs[j].Role == "user" {
+			prompt = msgs[j].ID + "@" + strconv.Itoa(j)
+			if msgs[j].ID != "" {
+				prompt = msgs[j].ID
+			}
+			break
+		}
+	}
+	return msgs[i], prompt + "\x00" + msgs[i].Text, true
 }
 
 // askLogTurnStart queues the resolution of window k's open question: the
@@ -462,8 +511,10 @@ func (s *Server) askLogReplyIn(ctx context.Context, k askWinKey, msgs []chiefnud
 	var r asklog.Resolution
 	for _, m := range msgs[idx+1:] {
 		if m.Role == "user" && strings.TrimSpace(m.Text) != "" {
+			// The reply's own time, unless the host's clock puts it before
+			// the question (then: when muster read it).
 			when := m.At
-			if when.IsZero() {
+			if when.IsZero() || when.Before(open.asked) {
 				when = at
 			}
 			r = asklog.Resolution{Outcome: asklog.OutcomeAnswered, Answer: m.Text, AnsweredBy: asklog.ByOwner,
