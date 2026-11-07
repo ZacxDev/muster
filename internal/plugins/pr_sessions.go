@@ -108,7 +108,18 @@ type PRSessionStore interface {
 	// it created, or whose head branch it pushed, reported at or after since:
 	// "<owner>/<repo>#<n>", sorted and distinct (internal/api's fleet_report).
 	SessionPRs(ctx context.Context, claudeSessions []string, since time.Time) (map[string][]string, error)
+	// SessionRefs is the principal's authorship rows of claudeSessions still
+	// inside PRSessionRetention, most recently seen first, at most
+	// MaxSessionRefs: each with its repo, its head branch ("" for none), and
+	// its pull request — a push's resolved as SessionPRs resolves it, 0 when
+	// no create names one. The session hint and focus_search match a
+	// message's pull requests and branches against them (internal/api's
+	// prHints).
+	SessionRefs(ctx context.Context, claudeSessions []string) ([]PRSession, error)
 }
+
+// MaxSessionRefs bounds SessionRefs: the hint reads it on every delivery.
+const MaxSessionRefs = 500
 
 // RecordPRSession: see PRSessionStore.
 func (s *PGStore) RecordPRSession(ctx context.Context, claudeSession, host string, sig prroute.Signal) (bool, error) {
@@ -204,6 +215,36 @@ func (s *PGStore) SessionPRs(ctx context.Context, claudeSessions []string, since
 			return nil, err
 		}
 		out[sess] = append(out[sess], repo+"#"+strconv.FormatInt(n, 10))
+	}
+	return out, rows.Err()
+}
+
+// SessionRefs: see PRSessionStore.
+func (s *PGStore) SessionRefs(ctx context.Context, claudeSessions []string) ([]PRSession, error) {
+	if len(claudeSessions) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT p.claude_session, p.kind, p.repo, coalesce(p.pr, c.pr, 0), coalesce(p.head_ref, ''), p.last_seen
+		FROM session_prs p
+		LEFT JOIN LATERAL (SELECT c.pr FROM session_prs c
+			WHERE p.pr IS NULL AND c.kind = 'gh-pr-create' AND c.repo = p.repo AND c.head_ref = p.head_ref AND c.pr IS NOT NULL
+				AND c.last_seen > now() - make_interval(secs => $2)
+			ORDER BY c.last_seen DESC, c.id DESC LIMIT 1) c ON true
+		WHERE p.claude_session = ANY($1::text[]) AND p.last_seen > now() - make_interval(secs => $2)
+		ORDER BY p.last_seen DESC, p.id DESC LIMIT $3`, claudeSessions, PRSessionRetention.Seconds(), MaxSessionRefs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PRSession
+	for rows.Next() {
+		var p PRSession
+		var kind string
+		if err := rows.Scan(&p.ClaudeSession, &kind, &p.Repo, &p.PR, &p.HeadRef, &p.LastSeen); err != nil {
+			return nil, err
+		}
+		p.Kind = prroute.Kind(kind)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
