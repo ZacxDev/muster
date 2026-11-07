@@ -195,9 +195,18 @@ func ParseAgentSpawnRate(s string) ([]spawnRate, error) {
 	return out, nil
 }
 
-// repoNameRE is an <owner>/<repo> GitHub name. The repository part never
-// starts with '.' (so neither "." nor "..", nor a dot-directory).
-var repoNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$`)
+// repoNameRE is the SHAPE of an <owner>/<repo> GitHub name. A repository
+// name may start with '.' (".github", ".dotfiles"); validRepoName is the
+// whole rule, refusing "." and ".." and any "..".
+var repoNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// validRepoName reports whether s is an <owner>/<repo> name this host takes:
+// repoNameRE's shape, no ".." anywhere, and a repository part that is not ".".
+// THE one rule, for the allow-list, a request and an origin URL.
+func validRepoName(s string) bool {
+	_, repo, _ := strings.Cut(s, "/")
+	return repoNameRE.MatchString(s) && !strings.Contains(s, "..") && repo != "."
+}
 
 // repoOwnerRE is an <owner> GitHub name, for an "<owner>/*" entry.
 var repoOwnerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
@@ -216,7 +225,7 @@ func ParseAgentSpawnRepos(s string) ([]string, error) {
 			out = append(out, strings.ToLower(owner)+"/*")
 			continue
 		}
-		if !repoNameRE.MatchString(part) || strings.Contains(part, "..") {
+		if !validRepoName(part) {
 			return nil, fmt.Errorf("-agent-spawn-repos: %q is not <owner>/<repo> or <owner>/*", part)
 		}
 		out = append(out, strings.ToLower(part))
@@ -591,7 +600,7 @@ func githubRepoOf(raw string) string {
 		path = strings.TrimPrefix(u.Path, "/")
 	}
 	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
-	if !repoNameRE.MatchString(path) {
+	if !validRepoName(path) {
 		return ""
 	}
 	return strings.ToLower(path)
@@ -804,7 +813,7 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	if !strings.HasPrefix(req.Prompt, mirror.SpawnPreface) {
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "the prompt does not begin with muster's preface")
 	}
-	if !repoNameRE.MatchString(req.Repo) || strings.Contains(req.Repo, "..") {
+	if !validRepoName(req.Repo) {
 		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "%q is not <owner>/<repo>", req.Repo)
 	}
 	// 4. THE ALLOW-LIST, before any git call.
@@ -1184,7 +1193,8 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 		return bad("the clone does not list it as a worktree")
 	}
 	path := c.claudeStateFile()
-	// 🔴 NEVER THROUGH A SYMLINK, as Claude Code itself will not write one.
+	// 🔴 NEVER THROUGH A SYMLINK. That is muster's own choice and fails closed;
+	// Claude Code 2.1.289 itself does write through one (allowSymlink: true).
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return bad("Claude Code's state file cannot be read")
@@ -1229,7 +1239,8 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 		return bad("encode")
 	}
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid()) + "." + hex.EncodeToString(sumShort(want))
-	// The file's own mode, kept (Claude Code writes it 0644 on some hosts).
+	// The file's own mode, kept, as Claude Code keeps it (Claude Code creates
+	// the file 0600, but an existing file keeps whatever mode it has).
 	if err := os.WriteFile(tmp, want, fi.Mode().Perm()); err != nil {
 		return bad("the temporary file cannot be written")
 	}
@@ -1280,12 +1291,17 @@ func lockClaudeState(path string, wait time.Duration) (func(), error) {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
-		if fi, serr := os.Stat(dir); serr == nil && time.Since(fi.ModTime()) > claudeLockStale {
-			_ = os.Remove(dir)
-			continue
-		}
+		// The deadline is checked on EVERY pass, a stale lock's included.
 		if !time.Now().Before(deadline) {
 			return nil, errClaudeStateLocked
+		}
+		if fi, serr := os.Stat(dir); serr == nil && time.Since(fi.ModTime()) > claudeLockStale {
+			// A stale lock that cannot be removed (not empty, a read-only
+			// file system, denied) is not taken: fail closed, no entry.
+			if rerr := os.Remove(dir); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				return nil, errClaudeStateLocked
+			}
+			continue
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

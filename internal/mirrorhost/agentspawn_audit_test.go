@@ -384,13 +384,13 @@ func TestTheAllowListTakesAnOwnerWildcard(t *testing.T) {
 			t.Errorf("repoAllowed(%q) = %v; want %v", repo, got, want)
 		}
 	}
-	for _, bad := range []string{"Globex/x*", "Globex/**", "*/*", "Globex/.", "Globex/..", "Globex/.git", "-x/*"} {
+	for _, bad := range []string{"Globex/x*", "Globex/**", "*/*", "Globex/.", "Globex/..", "-x/*"} {
 		if _, err := ParseAgentSpawnRepos(bad); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
 	}
-	for _, name := range []string{"acme/.", "acme/.hidden", "acme/..x"} {
-		if repoNameRE.MatchString(name) {
+	for _, name := range []string{"acme/.", "acme/..", "acme/..x"} {
+		if validRepoName(name) {
 			t.Errorf("%q is a repo name", name)
 		}
 	}
@@ -423,4 +423,73 @@ func gitPath(t *testing.T) string {
 func fileExecutable(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
+}
+
+// TestAStaleLockThatCannotBeRemovedFailsClosedWithinTheWait: a stale lock
+// directory holding a file cannot be removed with rmdir. The lock is not had,
+// and the call returns within about its wait instead of spinning. Measured
+// on a 200 ms wait.
+func TestAStaleLockThatCannotBeRemovedFailsClosedWithinTheWait(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".lock", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path+".lock", "pid"), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	_ = os.Chtimes(path+".lock", old, old)
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		unlock, err := lockClaudeState(path, 200*time.Millisecond)
+		if unlock != nil {
+			unlock()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stale lock that cannot be removed was taken")
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("returned after %v; want about the 200 ms wait", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("lockClaudeState did not return within 3 s (it spins on a stale lock it cannot remove)")
+	}
+	if _, err := os.Stat(filepath.Join(path+".lock", "pid")); err != nil {
+		t.Fatalf("another writer's lock was disturbed: %v", err)
+	}
+}
+
+// TestDotRepositoryNamesAreNames: GitHub allows a repository name that starts
+// with '.' (".github", ".dotfiles"). "." and "..", and any "..", are still
+// refused.
+func TestDotRepositoryNamesAreNames(t *testing.T) {
+	for name, want := range map[string]bool{
+		"acme/.github": true, "acme/.dotfiles": true, "acme/widgets": true, "acme/a.b": true,
+		"acme/.": false, "acme/..": false, "acme/..x": false, "acme/x..y": false, "acme/a/../b": false,
+	} {
+		_, err := ParseAgentSpawnRepos(name)
+		if got := err == nil; got != want {
+			t.Errorf("ParseAgentSpawnRepos(%q): accepted %v; want %v", name, got, want)
+		}
+	}
+	u := newSpawnUnit(t)
+	u.c.cfg.AgentSpawn.Repos = []string{"acme/.github"}
+	r := widgets(testPrompt)
+	r.Repo = "acme/.github"
+	if _, e := u.spawn(t, 340, r); e != nil && (strings.Contains(e.detail, "is not <owner>/<repo>") || strings.Contains(e.detail, "allow-list")) {
+		t.Fatalf("acme/.github refused as a name: %+v", e)
+	}
+	r.Repo = "acme/.."
+	if _, e := u.spawn(t, 341, r); e == nil || e.detail != `"acme/.." is not <owner>/<repo>` {
+		t.Fatalf("acme/..: %+v", e)
+	}
 }
