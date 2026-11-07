@@ -83,7 +83,7 @@ func ownerCardState(a attention.Ask) ui.OwnerCardState {
 		st.Status, st.Answer = ui.OwnerCardAnswered, a.Answer
 		st.Phone = a.AnsweredVia.Via == attention.ViaDevice
 	case attention.Expired:
-		st.Status, st.Closed = ui.OwnerCardClosed, "expired"
+		st.Status, st.Closed, st.Expired = ui.OwnerCardClosed, "expired", true
 	case attention.Cancelled:
 		st.Status, st.Closed = ui.OwnerCardClosed, "was withdrawn"
 	default:

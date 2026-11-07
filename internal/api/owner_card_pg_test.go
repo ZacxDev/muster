@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // properties mirrored dispatch needs from it), over a real Postgres:
 //
 //  1. the card is an attention ask: stored options, an id, and the door its
-//     answer came through (0090: browser, device, mcp);
+//     answer came through (0092: browser, device, mcp);
 //  2. muster's own code raises one for the chief (raiseOwnerCard), not only
 //     the chief's tool call;
 //  3. its answer reaches the chief as a turn — delivered from the Attention
@@ -183,9 +184,9 @@ func TestTheOwnersTypedMessageAnswersAStoredCardInTheChat(t *testing.T) {
 // property 2. Server code (no tool call) raises a card for the chief: an ask by
 // the chief, pushed; answered from the owner's PHONE (a ViaDevice principal,
 // as the signed device action runs) it records door 'device' and is delivered
-// to the chief. The CONTROL: the same answer under an API token's principal
-// records no door, so OwnerDoor is false — the door is the principal's, never
-// a constant.
+// to the chief. The CONTROL: the same answer under an API token's principal is
+// REFUSED (ErrNotOwnerDoor) and the card stays open — the door is the
+// principal's, never a constant, and an owner card takes only the owner's own.
 func TestMusterRaisesACardForTheChiefAndThePhoneAnswerIsRecordedAsTheDevice(t *testing.T) {
 	f := newDeliveryFixture(t)
 	for _, c := range []struct {
@@ -203,7 +204,17 @@ func TestMusterRaisesACardForTheChiefAndThePhoneAnswerIsRecordedAsTheDevice(t *t
 			t.Fatalf("the raised card was not pushed: %v", f.pushes())
 		}
 		ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: c.via})
-		if _, err := f.srv.answerAsk(ctx, a.ID, "Claude (Claude Code)"); err != nil {
+		_, err = f.srv.answerAsk(ctx, a.ID, "Claude (Claude Code)")
+		if c.wantDoor == "" {
+			if !errors.Is(err, attention.ErrNotOwnerDoor) {
+				t.Fatalf("answered under %s: %v; want ErrNotOwnerDoor", c.via, err)
+			}
+			if got, _ := f.attn.Get(asUser(1), a.ID); got.Status != attention.Open {
+				t.Fatalf("a refused door moved the card: %+v", got.Status)
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		got := f.delivery(t, a.ID)

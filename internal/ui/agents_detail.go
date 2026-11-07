@@ -1559,23 +1559,12 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 		if result != nil && !result.ToolOK {
 			return nil, false
 		}
-		// A STORED card (its result names its attention ask): its state is the
-		// ask's — answered here, on the Attention view or on the phone — never
-		// the transcript's. Each stored card is its own row, so two of them are
-		// two cards.
-		if result != nil {
-			if id, ok := ReadOwnerCardResult(result.Content); ok {
-				st, have := v.OwnerCards[m.ToolID]
-				if !have {
-					st = OwnerCardState{AskID: id, Status: OwnerCardOpen}
-				}
-				return storedOwnerAskCard(m.ToolID, ask, st), true
-			}
-		}
-		// ONE CARD PER ANSWER: one typed reply answers every question asked
-		// before it, so a second ask_owner since the owner last typed (two in
-		// one turn — a claude-code chief's CLI is not stopped call by call) is
-		// drawn as its plain row, never as a second card the same reply answers.
+		// ONE CARD PER ANSWER (#496), stored or not: one typed reply answers one
+		// card, so a second ask_owner since the owner last typed (two in one
+		// turn — a claude-code chief's CLI is not stopped call by call) is drawn
+		// as its plain row, never as a second card the same reply answers. The
+		// store agrees: that reply settles only the oldest open card
+		// (attention AnswerInSession); the other stays open on the Attention view.
 		for j := i - 1; j >= 0; j-- {
 			p := v.Messages[j]
 			if p.Role == "user" && p.Typed && p.Kind != "tool_result" {
@@ -1583,6 +1572,22 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 			}
 			if p.Kind == "tool_call" && musterToolIs(p.ToolName, OwnerAskTool) && askCallOK(v.Messages, j) {
 				return nil, false
+			}
+		}
+		// A STORED card (its result names its attention ask): its state is the
+		// ask's — answered here, on the Attention view or on the phone — never
+		// the transcript's. One that EXPIRED unanswered is drawn as #496 drew
+		// every card, from the transcript (below): the owner's next typed reply
+		// still answers it in the chat, as it did before cards were stored.
+		if result != nil {
+			if id, ok := ReadOwnerCardResult(result.Content); ok {
+				st, have := v.OwnerCards[m.ToolID]
+				if !have {
+					st = OwnerCardState{AskID: id, Status: OwnerCardOpen}
+				}
+				if !st.Expired {
+					return storedOwnerAskCard(m.ToolID, ask, st), true
+				}
 			}
 		}
 		// Answered by the next line a person TYPED in the conversation, if any: a

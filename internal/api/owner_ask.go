@@ -74,38 +74,35 @@ const askOwnerNext = "Asked: the question is on your owner's screen as a card wi
 
 // toolAskOwner runs ask_owner for chief a (the chief-only gate is
 // dispatchAgentTool's): it checks the question, files it as the owner's STORED
-// card (raiseOwnerCard) when this server has the attention store, and ends the
-// turn.
+// card (raiseOwnerCard), and ends the turn.
 //
 // 🔴 ONE CARD SYSTEM: THE ATTENTION ASK. The card is an attention ask raised by
 // the chief (asker = the chief's agent row), so it is on the owner's Attention
 // view and phone like any ask, its answer is stored with the door it came
 // through (attention.Answer stamps it), and an answer given there is delivered
-// to the chief as a turn (attention_delivery.go). The chat draws the same row
-// (chiefToolCard, by the result's ask_id). A tap in the chat stays what it was
-// in #496 — the owner's next typed message — and that message settles the ask
-// in session (askerAddressed), so every surface reads one state.
+// to the chief as a turn, in the session it asked in (attention_delivery.go).
+// The chat draws the same row (chiefToolCard, by the result's ask_id). A tap in
+// the chat stays what it was in #496 — the owner's next typed message — and
+// that message settles the card in session (askerAddressed: the oldest open
+// card only), so every surface reads one state.
 //
-// Without an attention store (ask_owner is offered with no store gate, round 0
-// D1) the call still asks and ends the turn: the chat then draws the card from
-// the call alone, the transcript's next typed message being its answer.
+// 🔴 A REFUSED RAISE STILL ASKS (the attention store's cap, MaxOpenPerOwner, or
+// a database error): the result then names no ask_id and the chat draws the
+// card from the call alone, its answer the owner's next typed message — the
+// card #496 drew, so the chief's question is never lost to the queue.
 func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments string) string {
 	ask, err := ui.DecodeOwnerAsk(arguments)
 	if err != nil {
 		return toolErr("%s", err.Error())
 	}
 	out := map[string]any{"asked": true, "options": len(ask.Options), "next": askOwnerNext}
-	if s.ext.Attention != nil {
-		labels := make([]string, 0, len(ask.Options))
-		for _, o := range ask.Options {
-			labels = append(labels, o.Label)
-		}
-		stored, err := s.raiseOwnerCard(ctx, a, ask.Question, labels)
-		if err != nil {
-			// Not asked: the turn continues, so the chief can say so.
-			s.logger.Printf("ask_owner: chief %s: %v", a.Name, err)
-			return toolErr("%s", ownerCardRefusal(err))
-		}
+	labels := make([]string, 0, len(ask.Options))
+	for _, o := range ask.Options {
+		labels = append(labels, o.Label)
+	}
+	if stored, err := s.raiseOwnerCard(ctx, a, ask.Question, labels); err != nil {
+		s.logger.Printf("ask_owner: chief %s: not stored (%s), asked in the chat only: %v", a.Name, ownerCardRefusal(err), err)
+	} else {
 		out[ui.OwnerCardAskIDKey] = stored.ID
 	}
 	agents.EndTurn(ctx)
@@ -113,17 +110,23 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 }
 
 // raiseOwnerCard files a question card from chief to its owner: an attention ask
-// whose asker is the chief, with options as its stored options, notified on the
-// owner's Attention view and phone (askFiled). THE one way a card is raised —
-// by the chief's ask_owner, or by muster's own code for the chief (a held
-// mirrored dispatch, docs/design/chief-dispatch.md 2.8) — so both are the same
-// row, answered through the same doors, delivered the same way. ctx is the
-// owner's principal (row-level security makes the row theirs).
+// whose asker is the chief, with options as its stored options, marked an owner
+// card (attention.New.OwnerCard) with the chat session the chief is asking in
+// (turnSessionOf), notified on the owner's Attention view and phone
+// (askFiled). THE one way a card is raised — by the chief's ask_owner, or by
+// muster's own code for the chief (a held mirrored dispatch,
+// docs/design/chief-dispatch.md 2.8) — so both are the same row, answered
+// through the same doors, delivered the same way. ctx is the owner's principal
+// (row-level security makes the row theirs).
 func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
+	// Only a test fixture runs with no attention store (muster-server always
+	// wires one); ask_owner is still offered there (round 0 D1), and the call
+	// then takes the same chat-only path as any refused raise.
 	if s.ext.Attention == nil {
-		return attention.Ask{}, errNoOwnerCardStore
+		return attention.Ask{}, errors.New("no attention store")
 	}
-	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options})
+	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options,
+		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID)})
 	if err != nil {
 		return attention.Ask{}, err
 	}
@@ -131,16 +134,11 @@ func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, questio
 	return a, nil
 }
 
-// errNoOwnerCardStore: raiseOwnerCard on a server with no attention store.
-var errNoOwnerCardStore = errors.New("this muster has no attention store, so it cannot put a card in front of your owner")
-
 // ownerCardRefusal is a failed raise as the chief reads it.
 func ownerCardRefusal(err error) string {
 	switch {
 	case errors.Is(err, attention.ErrInvalid), errors.Is(err, attention.ErrTooMany):
 		return strings.TrimPrefix(strings.TrimPrefix(err.Error(), attention.ErrInvalid.Error()+": "), "attention: ")
-	case errors.Is(err, errNoOwnerCardStore):
-		return err.Error()
 	}
 	return "the question could not be put in front of your owner"
 }

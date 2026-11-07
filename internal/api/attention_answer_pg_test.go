@@ -156,7 +156,7 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 	if b := f.delivery(t, viewed); b.Delivery != attention.DeliveryDelivered {
 		t.Fatalf("control: the view's answer was not delivered: %q", b.Delivery)
 	}
-	// A view answer records its door (0090: the owner's browser), and no
+	// A view answer records its door (0092: the owner's browser), and no
 	// mirror host or session.
 	if via, host, sess := f.provenance(t, viewed); via != attention.ViaBrowser || host != "" || sess != "" {
 		t.Fatalf("control: a view answer's provenance is (%q, %q, %q); want (browser, \"\", \"\")", via, host, sess)

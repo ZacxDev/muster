@@ -1,4 +1,4 @@
--- muster 0090 — AN OWNER'S ANSWER RECORDS ITS DOOR: BROWSER OR PHONE
+-- muster 0092 — AN OWNER'S ANSWER RECORDS ITS DOOR: BROWSER OR PHONE
 -- (internal/attention answerVia; docs/attention.md, "Where an answer came from";
 -- docs/design/chief-dispatch.md 2.8, property 1).
 --
@@ -35,13 +35,34 @@
 -- number was the next free one on main when written; it may need renumbering
 -- at merge.
 --
--- ROLLBACK. An older image never writes 'browser' or 'device', so it runs over
--- this schema unchanged. To restore 0034's CHECK, after rolling the image back
--- (rows with the new doors must be cleared first, or the ADD fails):
+-- AN OWNER CARD IS MARKED, AND REMEMBERS THE CHAT SESSION IT WAS ASKED IN.
+-- ask_owner's stored card is an attention ask raised by the chief (internal/api
+-- raiseOwnerCard), and three rules hold for it that hold for no other ask:
+--
+--   owner_card     true only for that card. answerSQL moves it only through the
+--                  owner's own doors ('browser', 'device'), never attention_answer
+--                  ('mcp'); and a message the owner types to the chief settles
+--                  at most ONE open card (the oldest), never every one, as #496's
+--                  chat drew one card per answer (AnswerInSession).
+--   asked_session  the chat session key the chief asked in, so an answer given
+--                  on the Attention view or the phone is delivered there, not to
+--                  the chief's default session (NULL: unknown, the default).
+--
+-- ROLLBACK. An older image never writes 'browser', 'device', owner_card or
+-- asked_session, so it runs over this schema unchanged. To restore 0034's
+-- CHECK and drop the two columns, after rolling the image back (rows with the
+-- new doors are cleared first, or the ADD fails):
 --   UPDATE attention_asks SET answered_via = NULL WHERE answered_via IN ('browser', 'device');
 --   ALTER TABLE attention_asks DROP CONSTRAINT IF EXISTS attention_asks_answered_via_check;
---   ALTER TABLE attention_asks ADD CONSTRAINT attention_asks_answered_via_check CHECK (<0034's expression>);
---   DELETE FROM schema_migrations WHERE version = 90;
+--   ALTER TABLE attention_asks ADD CONSTRAINT attention_asks_answered_via_check CHECK (
+--     (answered_via IS NULL AND answered_via_host IS NULL AND answered_via_session IS NULL)
+--     OR (answered_via IS NOT NULL AND answered_via = 'mcp' AND status = 'answered'
+--       AND answered_via_host IS NOT NULL AND answered_via_session IS NOT NULL
+--       AND answered_via_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+--       AND answered_via_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'
+--       AND mirror_host IS DISTINCT FROM answered_via_host));
+--   ALTER TABLE attention_asks DROP COLUMN IF EXISTS owner_card, DROP COLUMN IF EXISTS asked_session;
+--   DELETE FROM schema_migrations WHERE version = 92;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -61,3 +82,7 @@ ALTER TABLE public.attention_asks
             AND answered_via_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$'
             -- Never an ask raised on the answering host (any of its sessions).
             AND mirror_host IS DISTINCT FROM answered_via_host));
+
+ALTER TABLE public.attention_asks
+    ADD COLUMN IF NOT EXISTS owner_card boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS asked_session text CHECK (asked_session IS NULL OR length(asked_session) BETWEEN 1 AND 200);

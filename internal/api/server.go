@@ -276,6 +276,9 @@ type Server struct {
 	// sessionTurns counts the turns running per chat session, which is what
 	// draws a reloaded page's "working…" (session_turns.go).
 	sessionTurns sessionTurnCount
+	// turnSessions is the chat session of each agent's running turn
+	// (turn_session.go): where an owner card it raises is answered.
+	turnSessions turnSessionRegistry
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.

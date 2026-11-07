@@ -207,10 +207,14 @@ type OwnerCardState struct {
 	// withdrawn: Closed says which).
 	Status string
 	Answer string
-	// Phone: the answer came from the owner's paired phone (0090's door).
+	// Phone: the answer came from the owner's paired phone (0092's door).
 	Phone bool
 	// Closed is why a closed card closed, in words ("expired", "withdrawn").
 	Closed string
+	// Expired: the ask lapsed unanswered. The chat then draws the card from
+	// the transcript, as #496 did (chiefToolCard), so a later typed reply
+	// still settles it there.
+	Expired bool
 }
 
 // OwnerAskClosed is a stored card that closed unanswered (data-owner-ask-state).

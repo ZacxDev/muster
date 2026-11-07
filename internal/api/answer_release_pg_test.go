@@ -202,7 +202,7 @@ func TestOnlyTheOwnersOwnTapReleases(t *testing.T) {
 
 	// An answer whose SOURCE is attention_answer never releases, whatever the
 	// principal says (defence in depth: today only a mirror-host token reaches
-	// attention_answer, which ownerTapped refuses as well).
+	// attention_answer, which attention.IsOwnerDoor refuses as well).
 	mcp := attention.AnswerSource{Via: attention.ViaMCP, Host: "laptop", Session: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"}
 	if _, err := f.srv.answerAskFrom(f.asOwner, ask.ID, relGateway, mcp); err == nil || !strings.Contains(err.Error(), releaseNotOwnersDoor) {
 		t.Errorf("an MCP-sourced answer under a session principal: %v; want the owner's-door refusal", err)

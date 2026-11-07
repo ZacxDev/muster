@@ -87,9 +87,9 @@ type AnswerSource struct {
 	Session string
 }
 
-// The owner's own doors (migration 0090), stamped by Answer from the answering
+// The owner's own doors (migration 0092), stamped by Answer from the answering
 // principal: the Attention view in a signed-in browser session, and the owner's
-// paired phone. NULL (the zero AnswerSource) is an answer recorded before 0090,
+// paired phone. NULL (the zero AnswerSource) is an answer recorded before 0092,
 // one settled in session, or one whose principal was neither — and no binding
 // reads that as an owner's door.
 const (
@@ -101,12 +101,12 @@ const (
 func (src AnswerSource) ViaSession() bool { return src.Via == ViaMCP }
 
 // OwnerDoor reports whether src is one of the owner's own doors — their
-// browser or their phone (0090) — the doors #485's ownerTapped admits for a
+// browser or their phone (0092) — the doors IsOwnerDoor admits for a
 // release, read back from the row. An MCP answer, an unrecorded door and an
 // answer settled in session are not.
 func (src AnswerSource) OwnerDoor() bool { return src.Via == ViaBrowser || src.Via == ViaDevice }
 
-// answerVia is the door ctx's principal answers through (0090): ViaBrowser for
+// answerVia is the door ctx's principal answers through (0092): ViaBrowser for
 // a signed-in browser session, ViaDevice for the owner's paired phone, "" for
 // anything else. THE one mapping from a principal to a recorded door.
 func answerVia(ctx context.Context) string {
@@ -121,6 +121,15 @@ func answerVia(ctx context.Context) string {
 		return ViaDevice
 	}
 	return ""
+}
+
+// IsOwnerDoor reports whether ctx is owner answering through one of their own
+// doors — a signed-in browser session or their paired phone (answerVia) — and
+// nobody else. THE predicate a binding to the owner's own tap uses (a
+// release); answerSQL holds an owner card to the same doors.
+func IsOwnerDoor(ctx context.Context, owner int64) bool {
+	p, ok := authz.From(ctx)
+	return ok && owner > 0 && p.UserID == owner && answerVia(ctx) != ""
 }
 
 // String is "<host>/<session>", "" for the view.
@@ -274,6 +283,11 @@ type Ask struct {
 	// open (migration 0057, SetSuggestions), at most MaxSuggestions; empty for
 	// none.
 	Suggestions []string `json:"-"`
+	// OwnerCard: ask_owner's stored card (New.OwnerCard, migration 0092).
+	OwnerCard bool `json:"-"`
+	// AskedSession is the chat session key the chief asked an owner card in
+	// (New.AskedSession), "" for unknown.
+	AskedSession string `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -334,6 +348,13 @@ type New struct {
 	// asker), no options, no task, never to the chief — Clean refuses
 	// anything else. It is not counted toward MaxOpenPerOwner.
 	Notice bool
+	// OwnerCard files ask_owner's stored card (internal/api raiseOwnerCard
+	// only): answered only through the owner's own doors (answerSQL), and a
+	// message the owner types to the asker settles at most one open card
+	// (AnswerInSession). AskedSession is the chat session key it was asked in
+	// ("" for unknown), where its answer is delivered.
+	OwnerCard    bool
+	AskedSession string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -476,7 +497,7 @@ type Store interface {
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
-	// before this statement began (created_at < statement_timestamp()), with
+	// (of its owner cards, only the oldest) before this statement began (created_at < statement_timestamp()), with
 	// message (capped at MaxAnswerRunes) as the answer and queueID (0 = none)
 	// as the send-queue row that carried it, and returns them; none for a
 	// blank message.
@@ -567,7 +588,7 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
-	to_chief, coalesce(route_id, ''), suggestions, kind`
+	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, '')`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -577,7 +598,7 @@ func scan(row pgx.Row) (Ask, error) {
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -678,10 +699,10 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		message = n.PluginMessageID
 	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind)))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession)))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -772,13 +793,19 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
 //
 // The same-host clause applies to an MCP answer only ($4 = 'mcp'): a browser
-// or phone answer (0090) names no host, and must not be refused for that.
+// or phone answer (0092) names no host, and must not be refused for that.
+//
+// 🔴 AN OWNER CARD MOVES ONLY THROUGH THE OWNER'S OWN DOORS, IN THE SAME
+// STATEMENT ($4 'browser' or 'device', which answerVia stamps from the
+// principal): attention_answer ('mcp') and any other principal (NULL) leave it
+// open, and the caller names why (ErrNotOwnerDoor).
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
 	WHERE id = $1 AND status = 'open' AND expires_at > now() AND kind = 'ask'
 	  AND ($4::text IS DISTINCT FROM 'mcp' OR mirror_host IS DISTINCT FROM $5::text)
+	  AND (NOT owner_card OR $4::text IN ('browser', 'device'))
 	RETURNING ` + cols
 
 // Answer records the owner's answer from the Attention view or their phone,
@@ -788,7 +815,20 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 	if err != nil {
 		return Ask{}, err
 	}
-	return noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nullable(answerVia(ctx)), nil, nil))
+	return ownerDoorRefused(noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nullable(answerVia(ctx)), nil, nil)))
+}
+
+// ErrNotOwnerDoor: an owner card answered through a door that is not the
+// owner's own (answerSQL); the card stays open.
+var ErrNotOwnerDoor = errors.New("attention: this question is your owner's to answer, in muster or on their phone")
+
+// ownerDoorRefused names a still-open owner card that answerSQL left unmoved:
+// the door was not the owner's.
+func ownerDoorRefused(a Ask, err error) (Ask, error) {
+	if errors.Is(err, ErrNotOpen) && a.OwnerCard && a.Status == Open {
+		return a, ErrNotOwnerDoor
+	}
+	return a, err
 }
 
 // ChosenOption is the index of the stored option a's answer picked: the answer
@@ -834,7 +874,7 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	if !mirror.ValidClaudeSession(session) {
 		return Ask{}, fmt.Errorf("%w: not a Claude session id", ErrInvalid)
 	}
-	a, err := noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session))
+	a, err := ownerDoorRefused(noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)))
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
 	// cancelled or expired says so (ErrNotOpen), whoever asked.
 	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
@@ -1032,6 +1072,11 @@ func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {
 // 🔴 ONLY ASKS RAISED BEFORE THE MESSAGE: the caller runs it as the message is
 // sent (or queued), and an ask is answered only when its created_at is before
 // this UPDATE's statement_timestamp() — the time the statement began.
+//
+// 🔴 ONE OWNER CARD PER MESSAGE (#496's one card per answer): of the asker's
+// open owner cards (OwnerCard), only the OLDEST is settled — the one the chat
+// draws as the card this message answers — and every other stays open for its
+// own answer. Every other ask settles as it always did.
 func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message string, queueID int64) ([]Ask, error) {
 	message = truncateRunes(strings.TrimSpace(message), MaxAnswerRunes)
 	if message == "" || asker.Valid() != nil {
@@ -1049,6 +1094,10 @@ func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message stri
 		  answer_queue_id = $6::bigint
 		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
 		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
+		  AND (NOT owner_card OR id = (SELECT min(c.id) FROM attention_asks c
+		    WHERE c.owner_card AND c.status = 'open' AND c.expires_at > now() AND c.created_at < statement_timestamp()
+		      AND c.agent_id IS NOT DISTINCT FROM $3::bigint AND c.mirror_host IS NOT DISTINCT FROM $4::text
+		      AND c.mirror_session IS NOT DISTINCT FROM $5::text))
 		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession), queue))
 }
 

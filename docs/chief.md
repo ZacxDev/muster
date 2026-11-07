@@ -292,9 +292,14 @@ The card is also an ordinary [attention ask](attention.md) raised by the chief,
 so it is on your Attention view and your phone too, and you can answer it
 there. That answer is recorded with where you gave it (your browser or your
 phone, [attention.md](attention.md#answering)) and delivered to the chief as a
-turn, and the card in the chat shows it. A message you type to the chief
-answers an open card as well, as any message to an asker does. On a muster
-with no attention store the card is drawn from the chat alone, as before.
+turn, in the chat session it asked in, and the card in the chat shows it. Only
+you answer it, in muster or on your phone: a mirrored session's
+`attention_answer` cannot. A message you type to the chief answers one open
+card, the oldest; a second card asked in the same turn stays open for its own
+answer (the chat draws it as a plain line). A card that expired unanswered is
+still answered in the chat by your next message, as before. If the attention
+queue refuses the card (its cap of open asks), the chief still asks: the card is
+drawn from the chat alone.
 
 Closing or reloading the page never stops a turn the chief is running. Open
 the chat again while it runs and it shows "working…"; the reply appears, and

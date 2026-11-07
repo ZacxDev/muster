@@ -1210,7 +1210,7 @@ accepted **in place of `ownerTurnFor`** only when all of these hold:
     signed-in Attention view (`ViaSession`) or the phone (`ViaDevice`). An
     answer through `attention_answer` from a mirrored session, or any other
     principal, does not count. This is the same door rule as #485's
-    `ownerTapped`, and should share its predicate;
+    release, and they share one predicate (`attention.IsOwnerDoor`);
 - a second blank (`host/?/?`) has its own card, raised by the completing call
   for the first blank. That call writes a new `chief.dispatch_held` row with
   the first blank now filled, and the second blank's card. A row is consumed
@@ -1271,8 +1271,8 @@ four hold.** The owner chose to extend `ask_owner` rather than drop the hold.
 
 | property | at #496 | now |
 |---|---|---|
-| 1. an attention ask with stored options, an id, and `AnsweredVia` | **no**: the card was the chief's stored tool call, its answer never stored | **holds.** `ask_owner` files an attention ask raised by the chief (`raiseOwnerCard`, `internal/api/owner_ask.go`), with the option labels as its stored options; its result names it (`ask_id`). An answer records its door: `browser` or `device`, stamped by `attention.Answer` from the answering principal (migration 0090), or `mcp`. `AnswerSource.OwnerDoor()` is the binding's door rule, the same doors as #485's `ownerTapped`. The tap is bound to the exact option by `Ask.ChosenOption()`: the answer is exactly one of the row's stored options. The "Other" box is kept |
-| 2. muster's own code can raise one for the chief | **no** | **holds.** `raiseOwnerCard(ctx, chief, question, options)` is the one raise, for the tool and for server code; it pushes like any ask (`askFiled`), so the card is on the Attention view and the phone |
+| 1. an attention ask with stored options, an id, and `AnsweredVia` | **no**: the card was the chief's stored tool call, its answer never stored | **holds.** `ask_owner` files an attention ask raised by the chief (`raiseOwnerCard`, `internal/api/owner_ask.go`), with the option labels as its stored options; its result names it (`ask_id`). An answer records its door: `browser` or `device`, stamped by `attention.Answer` from the answering principal (migration 0092), or `mcp`. `AnswerSource.OwnerDoor()` is the binding's door rule read back from the row; `attention.IsOwnerDoor` is the same rule for the answering principal (one mapping, `answerVia`), which #485's release uses too. An owner card moves only through those doors: `attention_answer` over MCP is refused (`ErrNotOwnerDoor`). The tap is bound to the exact option by `Ask.ChosenOption()`: the answer is exactly one of the row's stored options. The "Other" box is kept |
+| 2. muster's own code can raise one for the chief | **no** | **holds for the Attention view and the phone; the chat card comes with phase 3.** `raiseOwnerCard(ctx, chief, question, options)` is the one raise, for the tool and for server code; it pushes like any ask (`askFiled`), so the card is on the Attention view and the phone. With this PR alone, a card raised by server code has **no chat card**: the chat draws a card only from an `ask_owner` tool call's result. Phase 3 (#516) adds the chat card for a held dispatch's card |
 | 3. the answer reaches the chief as a turn | yes | **holds, by two paths.** An answer on the Attention view or phone is delivered as a turn (the attention delivery, "your owner answered attention #N"). A tap in the chat is still the owner's next typed message, which also settles the card in session (`askerAddressed`) |
 | 4. the live agent card can be keyed by other than a pod agent row | **no** | **holds.** `ReadDispatchResult` reads `host_dispatch_id`. A card keyed `host-<id>` is served by `/ui/dispatch-card?host_dispatch=<id>` from `Server.hostDispatchCardSource`, which phase 3 wires to `host_dispatches` |
 
