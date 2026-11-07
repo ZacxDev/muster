@@ -328,7 +328,7 @@ func (s *Server) resolveRouteTarget(ctx context.Context, sub focus.Subject) (rou
 		if s.ext.SendQueue == nil {
 			return t, routeRefusal(RefusedQueueUnavailable, "this server has no send queue")
 		}
-		t.window, t.label = e, e.DisplayTitle()+" @ "+e.Host
+		t.window, t.label = e, s.mirrorName(ctx, e).Text
 	case focus.KindAgent:
 		// A dispatched agent is not a routing target YET — a scope cut, not a
 		// technical bar. An agent needs its own reply path (reply_to_chief as an

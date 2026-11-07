@@ -53,6 +53,57 @@ func (s *Server) mirrorName(ctx context.Context, e mirror.SessionView) sessionna
 	return sessionname.Mirror(e, stored)
 }
 
+// subjectName is the stable name of the session sub names, for a chief tool
+// that holds only its subject (focus_search's hits): its agent's, or the
+// online window's showing its conversation, through fi's stored halves; ""
+// when neither is visible to ctx's principal now.
+func (s *Server) subjectName(ctx context.Context, fi focusIndex, sub focus.Subject) string {
+	return s.subjectNameOf(ctx, fi, sub).Text
+}
+
+// subjectNameOf is subjectName as the resolved name.
+func (s *Server) subjectNameOf(ctx context.Context, fi focusIndex, sub focus.Subject) sessionname.Name {
+	switch sub.Kind {
+	case focus.KindAgent:
+		if s.ext.Agents == nil {
+			return sessionname.Name{}
+		}
+		if a, err := s.ext.Agents.Get(ctx, sub.AgentID()); err == nil {
+			return fi.agentName(a)
+		}
+	case focus.KindMirror:
+		if e, ok := s.mirrorFocusEntryFor(ctx, sub.Key); ok {
+			return fi.mirrorName(e)
+		}
+	}
+	return sessionname.Name{}
+}
+
+// storedMirrorName is the name of the mirrored conversation keyed key from
+// its stored halves ALONE — no window read — for a surface that needs only a
+// HUMAN name and shows the session's place itself otherwise (an attention
+// item: its Source already names the window, read once per build). Its
+// fallback and technical id are empty: never draw them from here.
+func (fi focusIndex) storedMirrorName(key string) sessionname.Name {
+	return sessionname.Mirror(mirror.SessionView{}, fi[focus.MirrorSubject(key)].Name)
+}
+
+// humanName is subjectName when it is a HUMAN name (internal/sessionname:
+// anything but the technical fallback), "" otherwise — for a surface that
+// shows the session's place itself when it has no name.
+func (s *Server) humanName(ctx context.Context, fi focusIndex, sub focus.Subject) string {
+	var n sessionname.Name
+	if sub.Kind == focus.KindMirror {
+		n = fi.storedMirrorName(sub.Key)
+	} else {
+		n = s.subjectNameOf(ctx, fi, sub)
+	}
+	if !n.Human() {
+		return ""
+	}
+	return n.Text
+}
+
 // storedName is sub's stored name halves, the zero value for none.
 func (s *Server) storedName(ctx context.Context, sub focus.Subject) focus.Name {
 	if s.ext.Focus == nil {

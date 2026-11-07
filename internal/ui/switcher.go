@@ -228,6 +228,10 @@ type SwitcherItem struct {
 	// the palette draw it beside the title (data-switcher-focus-age,
 	// data-switcher-focus-stale).
 	FocusAge FocusAge
+	// Named: the entry is called by a HUMAN name (internal/sessionname), so
+	// its technical ids — the host the dock writes beside the name — are
+	// left off the main surfaces (they stay in Tip and in Words).
+	Named bool
 	// Tip is the entry's tooltip: its Label, then — when it is called by a
 	// human name (internal/sessionname) — the technical id that name hides
 	// (an agent's slug; a window's codename, tmux address and host).
@@ -409,7 +413,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 	labels := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
 	for i, e := range es {
-		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i])}
+		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i]), Named: entryName(e).Human()}
 		if e.agent != nil {
 			a := e.agent
 			it.Href, it.Kind = a.PageHref(), "agent"
@@ -889,7 +893,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 		// What the dock's row draws beside the label (switcher_dock.go): the
 		// host as its own value (data-switcher-words folds it in lower-cased,
 		// the icon only names it), and the current focus title alone.
-		g.If(it.Host != "", g.Attr("data-switcher-host", it.Host)),
+		// Not for a named entry: the host is a technical id, in its tooltip.
+		g.If(it.Host != "" && !it.Named, g.Attr("data-switcher-host", it.Host)),
 		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
 		focusAgeAttrs(it),
 	}

@@ -339,8 +339,12 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 		s.logger.Printf("fleet_report: focus list: %v", err)
 		c.CwdUnread = true
 	}
+	// names is the same rows as the name rule's index (names.go): every
+	// session in the report is named by its stable name.
+	names := focusIndex{}
 	for _, f := range list {
 		cwds[f.Subject] = f.Cwd
+		names[f.Subject] = f
 	}
 
 	c.Facts = []fleetFact{}
@@ -354,7 +358,7 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 		case focus.KindAgent:
 			id := w.Subject.AgentID()
 			if a, ok := byAgent[id]; ok {
-				f.Name, f.Repo = firstNonBlank(a.DisplayName, a.Name), a.Repo
+				f.Name, f.Repo = names.agentName(a).Text, a.Repo
 				f.Title = f.Name
 			}
 			if running[id] {
@@ -362,7 +366,7 @@ func (s *Server) collectFleet(ctx context.Context, exclude int64, since, until t
 			}
 		case focus.KindMirror:
 			if e, ok := byKey[w.Subject.Key]; ok {
-				f.Name, f.Title, f.Host, f.Repo, f.Where = e.DisplayTitle(), e.Title(), e.Host, e.Repo, e.Where()
+				f.Name, f.Title, f.Host, f.Repo, f.Where = names.mirrorName(e).Text, e.Title(), e.Host, e.Repo, e.Where()
 				if !e.Online {
 					f.Where += whereHostOffline // its last-known window
 				}

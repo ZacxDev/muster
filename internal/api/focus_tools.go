@@ -58,6 +58,10 @@ type fleetListRow struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Name string `json:"name"`
+	// Code is the session's technical name — an agent's slug, a window's
+	// codename or tmux address — which Name (internal/sessionname) no longer
+	// spells: what the owner may still type it as. The ID addresses it.
+	Code string `json:"code,omitempty"`
 	// Host is a mirrored session's host ("" for a dispatched agent).
 	Host string `json:"host,omitempty"`
 	// Where is a mirrored session's window as the owner finds it in a
@@ -87,7 +91,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		for _, a := range list {
 			sub := focus.AgentSubject(a.ID)
 			rows = append(rows, fleetListRow{ID: sub.String(), Kind: agents.ResolveKind(a.Kind),
-				Name: firstNonBlank(a.DisplayName, a.Name), Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
+				Name: fi.agentName(a).Text, Code: a.Name, Status: liveStatusIndexed(a, idx), Focus: fi[sub].Title,
 				focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 		}
 	}
@@ -103,7 +107,7 @@ func (s *Server) toolFleetList(ctx context.Context) string {
 		if status == "" {
 			status = "unknown"
 		}
-		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: e.DisplayTitle() + " @ " + e.Host, Host: e.Host,
+		rows = append(rows, fleetListRow{ID: sub.String(), Kind: "mirror", Name: fi.mirrorName(e).Text, Code: e.DisplayTitle(), Host: e.Host,
 			Where: e.Where(), Status: status, Focus: fi[sub].Title, focusAgeFields: fi.ageFields(sub, now), FocusProblem: fi[sub].Problem()})
 	}
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "sessions": rows})
@@ -141,8 +145,11 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		return toolErr("the search failed")
 	}
 	type row struct {
-		ID      string `json:"id"`
-		Kind    string `json:"kind"`
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+		// Name is the session's stable name (internal/sessionname); Title the
+		// focus title that matched.
+		Name    string `json:"name,omitempty"`
 		Title   string `json:"title"`
 		Snippet string `json:"snippet,omitempty"`
 		// focusAgeFields: how old Title (the session's current focus) is.
@@ -155,7 +162,7 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	now := s.now()
 	out := make([]row, 0, len(hits))
 	for _, h := range hits {
-		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Title: h.Title, Snippet: h.Snippet}
+		r := row{ID: h.Subject.String(), Kind: string(h.Subject.Kind), Name: s.subjectName(ctx, fi, h.Subject), Title: h.Title, Snippet: h.Snippet}
 		// The age is the stored focus's only while it is still this title (a
 		// refresh between the search and the read moved it on: no age).
 		if f, ok := fi[h.Subject]; ok && f.Title == h.Title {

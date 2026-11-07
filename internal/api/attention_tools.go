@@ -143,6 +143,10 @@ type toolCaller struct {
 }
 
 // callerOfAgent is agent a as a tool caller.
+//
+// Its label is the stored fallback, read with no query: it is built for EVERY
+// agent tool call. The surfaces that show an ask name its agent by its stable
+// name (internal/sessionname) when they build the item (withFocus).
 func callerOfAgent(a agents.Agent) toolCaller {
 	return toolCaller{agent: &a, asker: attention.Asker{AgentID: a.ID, Label: firstNonBlank(a.DisplayName, a.Name)}}
 }

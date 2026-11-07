@@ -17,6 +17,7 @@ import (
 var sessionNameAdapters = []string{
 	"names.go focusIndex.agentName",
 	"names.go focusIndex.mirrorName",
+	"names.go focusIndex.storedMirrorName",
 	"names.go Server.agentName",
 	"names.go Server.mirrorName",
 }
@@ -28,14 +29,28 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.cardViewIndexed",            // the sidebar rows, switcher pills and palette (agents)
-	"agents.go Server.handleAgentName",            // a Save of the unchanged prefilled name is not a rename
-	"session_names.go Server.mirrorNameUnchanged", // the same, for a mirrored session
-	"agents.go Server.handleAgentDetail",          // the agent page's header and <title>
-	"mirror.go Server.mirrorCards",                // the sidebar rows, switcher pills and palette (mirrored)
-	"mirror.go Server.handleMirrorTerminalPage",   // a mirrored terminal page's header and <title>
-	"mirror_view.go Server.handleMirrorViewPage",  // the Rendered view's header and <title>
-	"terminal.go Server.handleAgentTerminalPage",  // an agent's terminal page's header and <title>
+	"agents.go Server.activeNotificationRows",                    // the notifications panel's active rows
+	"agents.go Server.cardViewIndexed",                           // the sidebar rows, switcher pills and palette (agents)
+	"agents.go Server.handleAgentDetail",                         // the agent page's header and <title>
+	"agents.go Server.handleAgentName",                           // a Save of the unchanged prefilled name is not a rename
+	"agents.go Server.handleNotifications",                       // the notifications panel's unread rows
+	"chat_log_live.go Server.dispatchCardFor",                    // a dispatch card in the chief's chat
+	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
+	"fleet_report.go Server.collectFleet",                        // the fleet report
+	"focus_tools.go Server.toolFleetList",                        // the chief's fleet_list
+	"mirror.go Server.handleMirrorTerminalPage",                  // a mirrored terminal page's header and <title>
+	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
+	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
+	"mirror_view.go Server.handleMirrorViewPage",                 // the Rendered view's header and <title>
+	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
+	"pr_routes.go Server.prAuthorHint",                           // a plugin message's PR author hint
+	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
+	"session_push.go Server.episodeWho",                          // a stalled / waiting session's push title
+	"session_routes.go Server.resolveRouteTarget",                // route_to_session's text
+	"sessions_overview.go Server.liveSessions",                   // the chief's sessions_overview and the session hints
+	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
+	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
+	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
 }
 
 // TestTheSessionNameCallerLedger pins the SEAM between the name rule and the

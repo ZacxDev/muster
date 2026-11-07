@@ -199,6 +199,11 @@ type attentionItem struct {
 	Detail string `json:"detail,omitempty"`
 	// Focus is a mirrored session's focus title (internal/focus), "" for none.
 	Focus string `json:"focus,omitempty"`
+	// Name is the session's stable name (internal/sessionname) when it has a
+	// HUMAN one, "" otherwise (set by withFocus): what the Asks list and a
+	// push title call the session. Source stays its place — the window's
+	// tmux target — which the item's own page and the push body keep.
+	Name string `json:"name,omitempty"`
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
 	focusAt time.Time
@@ -707,13 +712,17 @@ func sortAttentionItems(items []attentionItem) {
 func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	need := false
 	for _, it := range items {
-		need = need || it.claudeSession != "" || noticeFocus(it)
+		// An agent's item needs the index too: for its stable name.
+		need = need || it.claudeSession != "" || noticeFocus(it) || it.subject.Kind == focus.KindAgent
 	}
 	if !need {
 		return
 	}
 	fi := s.focusIndex(ctx)
 	for i := range items {
+		if items[i].subject != (focus.Subject{}) && items[i].Name == "" {
+			items[i].Name = s.humanName(ctx, fi, items[i].subject)
+		}
 		if noticeFocus(items[i]) {
 			if v, ok := fi[items[i].subject]; ok && v.Title == items[i].Focus {
 				items[i].focusAt = v.UpdatedAt
@@ -822,8 +831,14 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 // (the suggestions arrived): payload v2 says so, so the app replaces it
 // without alerting again.
 func attentionNotification(it attentionItem, update bool) RouterNotification {
+	keep := it.target
+	if it.Name != "" {
+		// The name is plain already (internal/sessionname): kept whole, so
+		// the push's own title rule does not plain it a second time.
+		keep = it.Name
+	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: it.target}
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
 	if it.Kind == attentionKindAsk && it.AskID > 0 {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
@@ -858,10 +873,32 @@ func attentionPushTitle(it attentionItem) string {
 	case attentionKindSession:
 		return sessionPushTitle
 	case attentionKindNotice:
-		// A notice asks nothing: it names where to look (sessionKeyWhere).
-		return it.Source + noticePushTitleSuffix
+		// A notice asks nothing: it names the session (its stable name when
+		// it has one, else where to look: sessionKeyWhere).
+		return itemWho(it) + noticePushTitleSuffix
 	}
-	return it.Source + " is asking"
+	return itemWho(it) + " is asking"
+}
+
+// attentionSourceSpan is an Asks row's who: the session's stable name, its
+// place (Source) as the tooltip — the technical id the main list no longer
+// spells — or, with no human name, the place itself.
+func attentionSourceSpan(it attentionItem) string {
+	esc := html.EscapeString
+	src := esc(textplain.TitleKeeping(it.Source, it.target))
+	if it.Name == "" {
+		return `<span data-attention-source>` + src + `</span>`
+	}
+	return `<span data-attention-source data-attention-name title="` + src + `">` + esc(it.Name) + `</span>`
+}
+
+// itemWho is who an item's push title names: the session's stable name when it
+// has a human one (Name), else its Source.
+func itemWho(it attentionItem) string {
+	if it.Name != "" {
+		return it.Name
+	}
+	return it.Source
 }
 
 // noticePushTitleSuffix follows a notice's place in its notification title.
@@ -1503,7 +1540,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			offline = ` · <span data-attention-offline>host offline</span>`
 		}
 		b.WriteString(`<li id="` + esc(it.Key) + `" class="` + flowsCardClass + `" data-attention-item data-kind="` + esc(it.Kind) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(textplain.TitleKeeping(it.Source, it.target)) + `</span>` + age + offline + `</span>
+<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · ` + attentionSourceSpan(it) + age + offline + `</span>
 `)
 		// Source (an agent's or window's name) and Focus (an LLM summary) are
 		// titles, so they read as their plain text (textplain).

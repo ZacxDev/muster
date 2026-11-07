@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"encoding/json"
 	"io"
 	"net/url"
@@ -10,7 +12,6 @@ import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // THE DISPATCHED-AGENT CARD — agent_dispatch's result in the chief's chat.
@@ -56,6 +57,9 @@ type DispatchCard struct {
 	AgentID     int64
 	Name        string
 	DisplayName string
+	// SessionName is the agent's stable name (internal/sessionname), the
+	// card's title; the zero value draws DisplayName / Name.
+	SessionName sessionname.Name
 	// Href opens the agent's page (AgentCardView.PageHref).
 	Href string
 	// Runtime is where it runs, in the owner's words: "Claude Code" or
@@ -171,10 +175,9 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		)
 	}
 	// The display name is a title (derived from a task's text): plained once.
-	title := textplain.Title(c.DisplayName)
-	if title == "" {
-		title = c.Name
-	}
+	// The agent's stable name (internal/sessionname), as every surface
+	// names it.
+	title := sessionTitle(c.SessionName, c.DisplayName, c.Name)
 	if c.Unreadable {
 		card := Div(
 			g.Attr("data-dispatch-card", ""),
