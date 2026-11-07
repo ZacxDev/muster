@@ -96,6 +96,10 @@ type Agent struct {
 	// (the person renamed it). "" reads as NameDefault. NameManual, NameSystem
 	// and NameDispatch all outrank a session's auto name (internal/sessionname).
 	DisplayNameSource string `json:"displayNameSource,omitempty"`
+	// DisplayNameAt is when DisplayName was last set — the row's creation, or
+	// a rename (migration 0091): the moment a name the drift offer measures
+	// against took effect (internal/focus DriftOffer's since).
+	DisplayNameAt time.Time `json:"-"`
 	Repo              string `json:"repo"` // owner/name
 	RepoBranch        string `json:"repoBranch"`
 	NoteID            *int64 `json:"noteId,omitempty"`

@@ -277,6 +277,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /sessions/tags",
 		"POST /sessions/tags/delete",
 		"POST /sessions/name",
+		"POST /sessions/name/drift-dismiss",
 		"POST /send-queue",
 		"POST /send-queue/{id}/cancel",
 		"POST /send-queue/{id}/delete",

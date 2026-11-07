@@ -274,6 +274,7 @@ POST /send-queue/{id}/retry/confirm
 POST /send-queue/{id}/send-now
 POST /send-queue/{id}/send-now/confirm
 POST /sessions/name
+POST /sessions/name/drift-dismiss
 POST /sessions/tags
 POST /sessions/tags/delete
 POST /tasks

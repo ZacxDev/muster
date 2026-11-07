@@ -36,6 +36,9 @@ type Store interface {
 	// SetManualName stores a MIRRORED session's manual name ("" clears it):
 	// names.go.
 	SetManualName(ctx context.Context, s Subject, name string) (Name, error)
+	// DismissDrift records the owner's "not now" on a rename offer at focus
+	// title title (drift.go, migration 0091).
+	DismissDrift(ctx context.Context, s Subject, title string) error
 	// Touch marks the caller's mirrored subjects seen now; PruneAll deletes
 	// EVERY owner's mirrored rows last seen before before (the retention sweep).
 	Touch(ctx context.Context, subs []Subject) error
@@ -94,13 +97,14 @@ var _ Store = (*PGStore)(nil)
 
 const cols = `subject_kind, subject_key, owner_id, title, description, source, fingerprint, updated_at,
 	last_error, coalesce(error_at, 'epoch'::timestamptz), cwd, name_auto, coalesce(name_auto_at, 'epoch'::timestamptz),
-	name_manual, coalesce(name_manual_at, 'epoch'::timestamptz)`
+	name_manual, coalesce(name_manual_at, 'epoch'::timestamptz), drift_dismissed`
 
 func scan(row pgx.Row) (Focus, error) {
 	var f Focus
 	var kind, src string
 	err := row.Scan(&kind, &f.Subject.Key, &f.Owner, &f.Title, &f.Description, &src, &f.Fingerprint, &f.UpdatedAt,
-		&f.LastError, &f.ErrorAt, &f.Cwd, &f.Name.Auto, &f.Name.AutoAt, &f.Name.Manual, &f.Name.ManualAt)
+		&f.LastError, &f.ErrorAt, &f.Cwd, &f.Name.Auto, &f.Name.AutoAt, &f.Name.Manual, &f.Name.ManualAt,
+		&f.Name.DriftDismissed)
 	f.Subject.Kind, f.Source = Kind(kind), Source(src)
 	for _, t := range []*time.Time{&f.ErrorAt, &f.Name.AutoAt, &f.Name.ManualAt} {
 		if t.Unix() == 0 {

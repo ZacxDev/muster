@@ -168,6 +168,41 @@ A title with one word outside that vocabulary passes (`Greeting the billing
 team`). Until a focus passes, the session keeps the name below it in the
 table.
 
+### When the work moves on
+
+A name is frozen, but the work can move on. When it has, the session's page
+(an agent's page, a window's Rendered view) **offers** a rename under its
+header — "This session has moved on to "Fixing the Stripe webhook retry"",
+with **Rename to "…"** and **Keep the name**. muster never renames a session
+on its own. The offer is decided by `focus.DriftOffer`, from the session's
+focus history:
+
+- the **newest three** focus changes (`DriftMinTitles`) written **after the
+  name took effect** (a manual mirrored name's `name_manual_at`, an auto
+  name's `name_auto_at`, an agent's `display_name_at`, migration `0091`) have
+  all **diverged** from the name: the words they share are fewer than half of
+  the name's content words AND fewer than half of the title's
+  (`DriftMaxOverlap`; filler and opener words do not count, a task name's
+  `#<id> · ` lead does not either, and words are compared by their first four
+  letters, so "migrating" meets "migration"). Measuring both sides keeps a
+  long task name from "diverging" from a short title on the same job. One
+  off-topic detour is two changes at most; three in a row is a new job. A
+  session renamed a moment ago is not offered a rename on the history it was
+  renamed over;
+- the **oldest of those three** was written at least **30 minutes** ago
+  (`DriftMinAge`, two default refresh intervals): the divergence is sustained,
+  not one busy minute;
+- the current title passes the [name bar](#the-name-bar)'s title half and is
+  not the name itself.
+
+A manual, task (dispatch) or auto name is offered a rename — a task's name
+never changes on its own, so this offer is how it moves on — but never a
+system name (the chief, an officer) or a technical fallback. **Rename to "…"**
+is an ordinary rename, so the new name is manual. **Keep the name** records
+the dismissal per user (`agent_focus.drift_dismissed`, migration `0091`): the
+offer stays hidden while the focus title is the one it was dismissed at, and
+comes back when the title changes.
+
 ## How focus is written
 
 Only muster writes it, server-side, in a periodic pass (`MUSTER_FOCUS_INTERVAL`,

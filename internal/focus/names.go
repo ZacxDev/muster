@@ -29,6 +29,9 @@ type Name struct {
 	AutoAt   time.Time
 	Manual   string
 	ManualAt time.Time
+	// DriftDismissed is the focus title the owner dismissed a rename offer
+	// at, "" for none (drift.go, migration 0091).
+	DriftDismissed string
 }
 
 // The name bar's bounds.
