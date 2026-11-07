@@ -295,7 +295,7 @@ func ToolOffered(o Officer, tool string) bool {
 		// 🔴 A DRAFT OFFICER IS OFFERED NONE OF THEM: it opens draft pull
 		// requests and a human takes it from there. Nor is a SHEPHERD: it has
 		// no pull request of its own, and merges and tags nothing.
-		return o.Ship != nil && !o.Ship.IsDraft()
+		return o.Ship != nil && !o.Ship.IsDraft() && !o.Ship.IsShepherd()
 	case ToolShepherdReady:
 		return o.Ship.IsShepherd()
 	case ToolCILogs:

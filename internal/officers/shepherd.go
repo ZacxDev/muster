@@ -112,13 +112,36 @@ type declaredShepherd struct {
 // parseShepherd reads a `ship.shepherd` block. Cross-officer rules (an
 // author's officer exists, ships, is not the shepherd) are validateShepherds'.
 func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
-	// STUB (red-first commit): the guard is not implemented yet.
-	_ = id
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var d declaredShepherd
-	_ = json.Unmarshal(raw, &d)
+	if err := dec.Decode(&d); err != nil {
+		return nil, fmt.Errorf(`ship: shepherd must be {"authors": [<login> | {"login", "officer"?}, …]}: %v`, err)
+	}
+	if len(d.Authors) == 0 {
+		return nil, fmt.Errorf("ship: shepherd.authors is empty: a shepherd acts only on pull requests authored by a listed login, so with none it could act on nothing — there is no default")
+	}
+	if len(d.Authors) > maxShepherdAuthors {
+		return nil, fmt.Errorf("ship: shepherd.authors lists %d logins, over the cap of %d", len(d.Authors), maxShepherdAuthors)
+	}
 	sh := &Shepherd{}
-	for _, a := range d.Authors {
-		sh.Authors = append(sh.Authors, ShepherdAuthor{Login: a.Login, Officer: a.Officer})
+	seen := map[string]bool{}
+	for i, a := range d.Authors {
+		login, off := strings.TrimSpace(a.Login), strings.TrimSpace(a.Officer)
+		if !botLoginRE.MatchString(login) {
+			return nil, fmt.Errorf("ship: shepherd.authors[%d] login %q is not a GitHub login (an App's bot is <slug>[bot])", i, a.Login)
+		}
+		if seen[strings.ToLower(login)] {
+			return nil, fmt.Errorf("ship: shepherd.authors lists %q twice", login)
+		}
+		seen[strings.ToLower(login)] = true
+		if off != "" && !idRE.MatchString(off) {
+			return nil, fmt.Errorf("ship: shepherd.authors[%d] officer %q is not an officer id (<type>:<area>)", i, a.Officer)
+		}
+		if off == id {
+			return nil, fmt.Errorf("ship: shepherd.authors[%d] names this officer itself (%s): a shepherd never acts on its own work", i, id)
+		}
+		sh.Authors = append(sh.Authors, ShepherdAuthor{Login: login, Officer: off})
 	}
 	return sh, nil
 }
@@ -181,7 +204,7 @@ func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 			if r.ForbiddenPathsFile != "" {
 				rule.ForbiddenPathsFiles = append(rule.ForbiddenPathsFiles, r.ForbiddenPathsFile)
 			}
-			if false {
+			if a.Officer != "" {
 				ao, ok := byID[a.Officer]
 				if !ok || ao.Ship == nil {
 					continue
@@ -202,8 +225,6 @@ func ShepherdRules(o Officer, all []Officer) []ShepherdRule {
 	}
 	return out
 }
-
-var _ = fmt.Sprintf
 
 func sortedUniqueStrings(in []string) []string {
 	if len(in) == 0 {
@@ -234,7 +255,50 @@ func sortedUniqueStrings(in []string) []string {
 //   - two shepherds covering the same author in the same repository: two
 //     writers racing on one branch.
 func validateShepherds(all []Officer) error {
-	// STUB (red-first commit): the guard is not implemented yet.
-	_ = all
+	byID := map[string]Officer{}
+	for _, o := range all {
+		byID[o.ID] = o
+	}
+	covered := map[string]string{}
+	for _, o := range all {
+		if !o.Ship.IsShepherd() {
+			continue
+		}
+		for _, a := range o.Ship.Shepherd.Authors {
+			if a.Officer == "" {
+				continue
+			}
+			ao, ok := byID[a.Officer]
+			switch {
+			case !ok:
+				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, which is not declared in MUSTER_OFFICERS (its forbidden paths cannot be looked up)", o.ID, a.Officer)
+			case ao.Ship == nil:
+				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, which has no ship block: it opens no pull request", o.ID, a.Officer)
+			case ao.Ship.IsShepherd():
+				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, which is itself a shepherd: it opens no pull request", o.ID, a.Officer)
+			case ao.Ship.AppID == o.Ship.AppID:
+				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, whose GitHub App (%d) is the shepherd's own: a shepherd fixes pull requests with its OWN App, never the author's", o.ID, a.Officer, o.Ship.AppID)
+			}
+			shared := false
+			for _, r := range o.Ship.RepoList(o.Repo) {
+				if _, ok := ao.Ship.RepoFor(ao.Repo, r.Repo); ok {
+					shared = true
+				}
+			}
+			if !shared {
+				return fmt.Errorf("officer %s: ship.shepherd.authors names officer %q, which ships to none of the shepherd's repositories", o.ID, a.Officer)
+			}
+		}
+		for _, rule := range ShepherdRules(o, all) {
+			if rule.Empty() {
+				return fmt.Errorf("officer %s: a push to %s on a pull request by %s would pass no forbidden-path check: set forbidden_paths (or forbidden_paths_file) on that ship.repos entry, or name the authoring officer whose own list applies", o.ID, rule.Repo, rule.Login)
+			}
+			key := strings.ToLower(rule.Repo) + " " + strings.ToLower(rule.Login)
+			if other, dup := covered[key]; dup {
+				return fmt.Errorf("officers %s and %s both shepherd %s's pull requests in %s: two writers would race on one branch", other, o.ID, rule.Login, rule.Repo)
+			}
+			covered[key] = o.ID
+		}
+	}
 	return nil
 }

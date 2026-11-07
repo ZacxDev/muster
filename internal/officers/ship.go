@@ -304,18 +304,24 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	}
 	var err error
 	hasShepherd := len(d.Shepherd) > 0 && string(d.Shepherd) != "null"
-	_ = hasShepherd
 	if s.Stage == StageShepherd {
+		if !hasShepherd {
+			return nil, fmt.Errorf("ship: stage %s needs a shepherd block ({\"authors\": [...]}): whose pull requests it may act on has no default", StageShepherd)
+		}
 		// 🔴 A SHEPHERD MERGES, TAGS AND REVIEWS NOTHING, so every key only those
 		// read is refused rather than accepted and ignored.
 		for name, set := range map[string]bool{"review_check": strings.TrimSpace(d.ReviewCheck) != "", "review_app": strings.TrimSpace(d.ReviewApp) != "",
 			"migrations": strings.TrimSpace(d.Migrations) != "", "sensitive_paths": len(d.SensitivePaths) > 0, "rollout": d.Rollout != nil,
 			"quiet_hours": d.QuietHours != nil, "releases_per_day": d.ReleasesPerDay != 0, "min_release_gap": strings.TrimSpace(d.MinReleaseGap) != ""} {
-			_, _ = name, set
+			if set {
+				return nil, fmt.Errorf("ship: stage %s never merges or tags, so it would ignore %s — remove it", StageShepherd, name)
+			}
 		}
 		if s.Shepherd, err = parseShepherd(id, d.Shepherd); err != nil {
 			return nil, err
 		}
+	} else if hasShepherd {
+		return nil, fmt.Errorf("ship: a shepherd block is read by stage %s only; stage %s would ignore it — remove it", StageShepherd, s.Stage)
 	}
 	repos, err := shipRepos(s.Stage, repo, d)
 	if err != nil {
@@ -462,6 +468,9 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	}
 	if s.Stage == StageDraft && d.Notice == nil {
 		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a refused pull request is announced to someone", StageDraft)
+	}
+	if s.Stage == StageShepherd && d.Notice == nil {
+		return nil, fmt.Errorf("ship: stage %s needs a notice block (channel): a push muster reverts is announced to someone", StageShepherd)
 	}
 	if s.Stage == StageRelease && s.Rollout == nil {
 		return nil, fmt.Errorf("ship: stage %s needs a rollout block: a release nobody watches cannot be rolled back", StageRelease)
