@@ -14,7 +14,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // A MODEL IS CHECKED AGAINST THE CATALOGUE BEFORE ANY POD STARTS
-// (docs/agents.md, "Models"; operator decision 1 of the dispatch-outcomes change).
+// (docs/provisioner.md, "Models are checked before a pod starts"; operator decision 1 of the dispatch-outcomes change).
 //
 // 🔴 THE INCIDENT. The chief dispatched a gateway agent with model
 // "Acme v4.1 flash" — a model's DISPLAY NAME. Nothing checked it:

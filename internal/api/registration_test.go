@@ -84,7 +84,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Gateway: stubGateway{},
 		Kinds:   stubKinds{},
 		// The outcome tracker and the model catalogue: registration must not
-		// branch on them (GET /agents/{id}/outcome is registered either way).
+		// branch on them.
 		ModelCatalog:  stubModelCatalog{},
 		Outcomes:      agentoutcome.NewPG(nil),
 		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},

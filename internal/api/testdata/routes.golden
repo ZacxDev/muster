@@ -55,7 +55,6 @@ GET /agent/connectors/{name}
 GET /agent/muster
 GET /agent/task
 GET /agents
-GET /agents/{id}/outcome
 GET /agents/{name}
 GET /agents/{name}/logs/stream
 GET /agents/{name}/send

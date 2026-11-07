@@ -453,9 +453,8 @@ Every agent started with a first turn — from the dispatch form, a task's
 **Dispatch**, or the chief's `agent_dispatch` — ends in an **outcome** you can
 see: never silently "running". The outcome is shown on the agent's page (a
 **failed** or **stuck** badge beside the status, and a notice above the
-transcript saying why), on its sidebar row, in `GET /api/agents`
-(`outcome`, `outcomeReason`, `outcomeAt`) and in `GET /agents/{id}/outcome`
-(below).
+transcript saying why), on its sidebar row, on the chief panel's card for it,
+and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
 
 | outcome | when | what happens |
 |---|---|---|
@@ -539,21 +538,12 @@ ready is failed after 15 minutes, as before, and that is now pushed too.
 
 ### Reading an outcome
 
-`GET /agents/{id}/outcome` (a signed-in session; your own agents only)
-answers:
-
-```json
-{"agentId": 42, "name": "keen-wren", "displayName": "#7 · fix the build",
- "status": "error", "outcome": "failed",
- "reason": "first turn failed: runtime turn failed (server_error): …",
- "since": "…", "lastActivityAt": "…", "dispatchedBy": 3}
-```
-
-`outcome` is `running`, `done`, `failed`, `stuck`, `starting` (an untracked
-agent whose first turn is still owed), or `""` (nobody started it with a first
-turn). In Go, the same projection is `api.Server.AgentOutcome` (by id) and
-`api.Server.AgentOutcomeOf` (a row you already hold), which is what a live
-card in the chief panel reads.
+`GET /api/agents` (the machine roster) carries `outcome` — `running`, `done`,
+`failed`, `stuck`, or `""` for an agent nobody started with a first turn —
+with `outcomeReason` and `outcomeAt`. The chief panel's card for an agent it
+started reads the same recorded outcome as the agent's page (`failed` and
+`stuck` with the reason, `done`), through one projection,
+`api.Server.AgentOutcomeOf`, so the two cannot disagree.
 
 ## Destroying an agent
 

@@ -11,7 +11,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE SILENCE WATCHDOG (operator decision 3 of the dispatch-outcomes change;
-// docs/agents.md, "Outcomes").
+// docs/provisioner.md, "How an agent's work ends").
 //
 // A sweep over every agent whose outcome is still open (running or stuck),
 // applying THE stuck predicate, agentoutcome.Decide:

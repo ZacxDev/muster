@@ -1060,27 +1060,38 @@ func TestAgentDispatchRefusesMirroredUntilItShips(t *testing.T) {
 	}
 }
 
-// TestAgentDispatchOfABareModelIdSaysToRetryWithTheOpenRouterForm (#496 round
-// 1): a gateway start with a bare provider id ("deepseek/…") is refused — the
-// agent's one credential is OpenRouter's — and the refusal tells the chief to
-// call again with openrouter/<provider>/<model>, not to give the task up to
-// its owner (task_route_attention). No agent is made, the start is released,
-// and the retry with the OpenRouter form starts the agent.
-func TestAgentDispatchOfABareModelIdSaysToRetryWithTheOpenRouterForm(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
+// TestABareModelIDIsResolvedNotRefused (#496 round 1, superseded by the
+// model check): a gateway start with a bare catalogue id ("deepseek/…") is
+// RESOLVED to the route form a gateway agent's one OpenRouter credential runs
+// (openrouter/<id>) and the agent starts — the refusal #496 answered it with is
+// gone wherever the catalogue can say what the id is. With the catalogue
+// unreachable nothing can, so the bare id is still refused, and the refusal tells
+// the chief to call again with the route form (not to give the task to its owner).
+func TestABareModelIDIsResolvedNotRefused(t *testing.T) {
+	cat := listCatalog{{ID: "deepseek/deepseek-v3", Name: "DeepSeek: DeepSeek V3"}}
+	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
+		ext.Kinds, ext.ModelCatalog = stubKinds{pick: "pool-acct-a"}, cat
+	})
 	n := f.task(t, "bare model id")
-	text := f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": n.ID, "model": "deepseek/deepseek-v3"})
-	// Refused after the reservation and released (createAndDispatchAgent's
-	// check): no agent exists.
-	if n := len(f.ownersAgents(t)); n != 0 {
-		t.Fatalf("a refused start created %d agents", n)
+	got := f.startedOne(t, f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": n.ID,
+		"model": "deepseek/deepseek-v3"}), n.ID)
+	if got.Model != "openrouter/deepseek/deepseek-v3" {
+		t.Fatalf("a bare catalogue id was stored as %q; want openrouter/deepseek/deepseek-v3", got.Model)
+	}
+
+	down := newTaskRouteFixture(t, true, true, func(ext *Extensions) { ext.Kinds = stubKinds{pick: "pool-acct-a"} })
+	m := down.task(t, "bare model id, no catalogue")
+	text := down.callRaw(down.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": m.ID, "model": "deepseek/deepseek-v3"})
+	if len(down.agentsOn(t, m.ID)) != 0 {
+		t.Fatal("with no catalogue a bare id started an agent")
 	}
 	why := errorText(t, text)
 	if !strings.HasSuffix(why, "; "+agentDispatchModelRetry) || strings.Contains(why, "task_route_attention") {
-		t.Fatalf("refusal %q\nwant it to end in the retry sentence %q, and not to send the task to the owner", why, agentDispatchModelRetry)
-	}
-	ok := f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "pod/gateway", "task_id": n.ID, "model": "openrouter/deepseek/deepseek-v3"})
-	if !strings.Contains(ok, `"agent_id"`) {
-		t.Fatalf("the retry with the OpenRouter form: %s", ok)
+		t.Fatalf("refusal %q\nwant it to end in the retry sentence %q", why, agentDispatchModelRetry)
 	}
 }
+
+// listCatalog is a fixed model catalogue.
+type listCatalog []CatalogModel
+
+func (c listCatalog) Models(context.Context) ([]CatalogModel, error) { return c, nil }

@@ -45,6 +45,12 @@ const (
 	DispatchWaiting  = "waiting"
 	DispatchDone     = "done"
 	DispatchError    = "error"
+	// DispatchFailed and DispatchStuck are a RECORDED outcome
+	// (internal/agentoutcome, the agent page's own "failed" / "stuck"): a turn of
+	// the agent failed, or the silence watchdog saw nothing of it. The detail
+	// says why.
+	DispatchFailed = "failed"
+	DispatchStuck  = "stuck"
 )
 
 // DispatchCard is one agent_dispatch outcome as the card draws it, composed in
@@ -136,6 +142,10 @@ func dispatchStateLabel(state string) string {
 		return "Done"
 	case DispatchError:
 		return "Error"
+	case DispatchFailed:
+		return "Failed"
+	case DispatchStuck:
+		return "Stuck"
 	}
 	return state
 }
@@ -147,7 +157,7 @@ func dispatchStateTone(state string) string {
 		return "bg-st-open-bg text-st-open-fg"
 	case DispatchWorking:
 		return "bg-st-progress-bg text-st-progress-fg"
-	case DispatchWaiting:
+	case DispatchWaiting, DispatchStuck:
 		return "bg-st-warning-bg text-st-warning-fg"
 	case DispatchDone:
 		return "bg-st-complete-bg text-st-complete-fg"
@@ -207,7 +217,11 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		Span(g.Attr("data-dispatch-name", ""), Class("min-w-0 truncate text-sm font-semibold text-fg"), g.Text(title)),
 		pill)
 	meta := Div(Class("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted"), g.Group(lines))
-	detail := g.If(c.Detail != "", P(g.Attr("data-dispatch-detail", ""), Class("break-words text-xs text-st-error-fg"), g.Text(c.Detail)))
+	detailTone := "text-st-error-fg"
+	if state == DispatchStuck {
+		detailTone = "text-st-warning-fg"
+	}
+	detail := g.If(c.Detail != "", P(g.Attr("data-dispatch-detail", ""), Class("break-words text-xs "+detailTone), g.Text(c.Detail)))
 
 	// The card links to the agent; its task link sits BESIDE that link, never
 	// inside it (an <a> in an <a> is invalid and the browser splits it).

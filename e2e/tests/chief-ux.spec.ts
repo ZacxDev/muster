@@ -175,6 +175,12 @@ test.beforeAll(async () => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', async () => {
+      // The model catalogue every model is checked against (internal/api
+      // model_validate.go): the spec's own models, never the real OpenRouter.
+      if (req.method === 'GET' && (req.url || '') === '/models') {
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify({ data: MODELS.map((id) => ({ id, name: id })) }));
+      }
       if (req.method !== 'POST' || !(req.url || '').endsWith('/v1/responses')) {
         res.statusCode = 404;
         return res.end();
@@ -209,6 +215,7 @@ test.beforeAll(async () => {
     MUSTER_TASK_ROUTING: '1',
     MUSTER_CHIEF_DISPATCH_OWNERS: '1',
     MUSTER_E2E_AGENT_ENDPOINT: `http://127.0.0.1:${chiefUxFakePort}`,
+    MUSTER_E2E_OPENROUTER_MODELS: `http://127.0.0.1:${chiefUxFakePort}/models`,
   });
   fix('chief', '1', chiefName, chiefToken);
   chiefMade = true;

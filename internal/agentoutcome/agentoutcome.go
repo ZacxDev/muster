@@ -1,5 +1,5 @@
 // Package agentoutcome decides how a started agent's work ENDED: done, failed
-// or stuck — never silently "running" (docs/agents.md, "Outcomes").
+// or stuck — never silently "running" (docs/provisioner.md, "How an agent's work ends").
 //
 // 🔴 THE DEFECT IT CLOSES, MEASURED. The chief dispatched a gateway agent with a
 // model DISPLAY NAME where an id belonged. The runtime's first turn failed

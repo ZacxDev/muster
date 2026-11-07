@@ -356,10 +356,10 @@ func TestAFailedKickoffTurnIsAnErrorAPushAndANoteToTheChief(t *testing.T) {
 		t.Errorf("a repeated failure noted again: %d notes", n)
 	}
 	// The outcome API says it.
-	out, err := o.srv.AgentOutcome(o.asOwner, a.ID)
-	if err != nil || out.Status != agents.StatusError || out.Outcome != agentoutcome.Failed || !strings.Contains(out.Reason, "Unknown model") ||
+	out := o.srv.AgentOutcomeOf(o.agent(t, a.ID), time.Time{})
+	if out.Status != agents.StatusError || out.Outcome != agentoutcome.Failed || !strings.Contains(out.Reason, "Unknown model") ||
 		out.DispatchedBy == nil || *out.DispatchedBy != o.chief.ID {
-		t.Errorf("AgentOutcome = %+v, %v", out, err)
+		t.Errorf("AgentOutcomeOf = %+v", out)
 	}
 }
 
@@ -629,36 +629,5 @@ func TestTheWatchdogCallsAQuietAgentStuckOncePerChange(t *testing.T) {
 	}
 	if ps := o.outcomePushes(a.ID); len(ps) != 2 || ps[1].Title != agentLabel(a)+" is stuck: silent for 30 min" {
 		t.Fatalf("pushes %+v; want the second stuck push", ps)
-	}
-}
-
-// TestTheOutcomeHandlerAnswersTheOwnersAgent: GET /agents/{id}/outcome is the
-// AgentOutcome JSON for the signed-in owner; an agent the principal cannot see is
-// 404 (row-level security scopes the read).
-func TestTheOutcomeHandlerAnswersTheOwnersAgent(t *testing.T) {
-	o := newOutcomeFixture(t, stubModelCatalog{})
-	a := o.dispatchGateway(t, "outcome api", "openrouter/acme/acme-v4.1-pro")
-	get := func(ctx context.Context, id int64) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodGet, "/agents/"+strconv.FormatInt(id, 10)+"/outcome", nil)
-		r.SetPathValue("id", strconv.FormatInt(id, 10))
-		w := httptest.NewRecorder()
-		o.srv.handleAgentOutcome(w, r.WithContext(ctx))
-		return w
-	}
-	w := get(o.asOwner, a.ID)
-	var out AgentOutcome
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
-		t.Fatalf("GET outcome: %d %s", w.Code, w.Body)
-	}
-	if out.AgentID != a.ID || out.Name != a.Name || out.Outcome != agentoutcome.Running || out.Since == nil ||
-		out.DispatchedBy == nil || *out.DispatchedBy != o.chief.ID || w.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("outcome %+v (cache %q)", out, w.Header().Get("Cache-Control"))
-	}
-	if !strings.Contains(w.Body.String(), `"outcome":"running"`) || !strings.Contains(w.Body.String(), `"reason":""`) {
-		t.Errorf("wire shape %s", w.Body)
-	}
-	other := o.newMember(t)
-	if w := get(o.as(other), a.ID); w.Code != http.StatusNotFound {
-		t.Errorf("another member read the outcome: %d", w.Code)
 	}
 }

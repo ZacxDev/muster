@@ -200,13 +200,6 @@ for (const vp of [
         // The display name was resolved to the catalogue's id.
         expect(row.model).toBe('openrouter/acme/acme-v4.1-flash');
 
-        // The outcome API, as a signed-in browser reads it.
-        const api = await page.request.get(origin + `/agents/${a.id}/outcome`);
-        expect(api.status()).toBe(200);
-        const outcome = (await api.json()) as { status: string; outcome: string; reason: string };
-        expect([outcome.status, outcome.outcome]).toEqual(['error', 'failed']);
-        expect(outcome.reason).toContain('Unknown model');
-
         // The agent's page: the status is error, and the reason is on the page.
         await page.goto(origin + '/agents/' + a.name);
         await expect(page.locator('#agent-status')).toHaveAttribute('data-agent-status', 'error');

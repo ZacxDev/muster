@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -22,7 +20,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // EVERY STARTED AGENT ENDS IN AN OUTCOME YOU CAN SEE (internal/agentoutcome's
-// package doc has the incident and the states; docs/agents.md, "Outcomes").
+// package doc has the incident and the states; docs/provisioner.md, "How an agent's work ends").
 //
 // This file is the tracker: what each event an agent produces does to its
 // outcome, and the three things a changed outcome does —
@@ -397,7 +395,7 @@ func turnFailureCounts(ctx context.Context, err error) (string, bool) {
 
 // ---------------------------------------------------------------------------
 // THE OUTCOME API — what a live card reads (the chief panel's dispatched-agent
-// cards; GET /agents/{id}/outcome; agentJSON's outcome fields).
+// cards through outcomeCardState; agentJSON's outcome fields on GET /api/agents).
 // ---------------------------------------------------------------------------
 
 // AgentOutcome is an agent's status and the outcome of what it was started on.
@@ -445,42 +443,6 @@ func (s *Server) AgentOutcomeOf(a agents.Agent, lastMessage time.Time) AgentOutc
 		out.DispatchedBy = &id
 	}
 	return out
-}
-
-// AgentOutcome reads agent id as ctx's principal and answers its outcome.
-func (s *Server) AgentOutcome(ctx context.Context, id int64) (AgentOutcome, error) {
-	a, err := s.ext.Agents.Get(ctx, id)
-	if err != nil {
-		return AgentOutcome{}, err
-	}
-	last := s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID]
-	return s.AgentOutcomeOf(a, last), nil
-}
-
-// handleAgentOutcome serves GET /agents/{id}/outcome: the agent's AgentOutcome
-// as JSON, for the signed-in owner (row-level security scopes the read).
-func (s *Server) handleAgentOutcome(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	if s.ext.Agents == nil {
-		http.NotFound(w, r)
-		return
-	}
-	out, err := s.AgentOutcome(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-			return
-		}
-		s.logger.Printf("outcomes: read agent %d: %v", id, err)
-		http.Error(w, "could not load agent", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	s.writeJSON(w, http.StatusOK, out)
 }
 
 // outcomeWorkReported: a's pod posted a work report — a heartbeat, so activity.

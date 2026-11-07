@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -126,41 +127,59 @@ func dispatchRuntimeLabel(kind, model string) string {
 // second rule beside it. Only an agent with no recorded outcome is derived
 // (derivedCardState).
 func (s *Server) dispatchCardState(ctx context.Context, a agents.Agent, status string) (string, string) {
-	if state, detail, ok := outcomeCardState(a); ok {
+	if state, detail, ok := s.outcomeCardState(a); ok {
 		return state, detail
 	}
 	return s.derivedCardState(ctx, a, status)
 }
 
 // outcomeCardState is the card state of agent a's RECORDED outcome; ok false
-// when it has none. No outcome is recorded in this tree yet, so it is always
-// false: the outcome work replaces this body to map agents.Agent.Outcome
-// (adding its failed and stuck states to ui's Dispatch* set).
-func outcomeCardState(agents.Agent) (state, detail string, ok bool) { return "", "", false }
+// when it has none. It reads the outcome API's own projection (AgentOutcomeOf,
+// agent_outcome.go) — what the agent page's badge and notice draw from the same
+// row — so the card and the page cannot disagree:
+//
+//	failed → failed, its reason      stuck → stuck, its reason
+//	done   → done                    running / untracked → derived below
+//
+// A running agent is left to derivedCardState on purpose: "working" and
+// "waiting for you" are finer than "running", and nothing is recorded to say
+// which.
+func (s *Server) outcomeCardState(a agents.Agent) (state, detail string, ok bool) {
+	o := s.AgentOutcomeOf(a, time.Time{})
+	switch o.Outcome {
+	case agentoutcome.Failed:
+		return ui.DispatchFailed, o.Reason, true
+	case agentoutcome.Stuck:
+		return ui.DispatchStuck, o.Reason, true
+	case agentoutcome.Done:
+		return ui.DispatchDone, "", true
+	}
+	return "", "", false
+}
 
 // derivedCardState derives a card state from what the agent's row and this
-// process can see, for an agent with no recorded outcome:
+// process can see, for an agent with no recorded END (outcomeCardState answered
+// nothing):
 //
-//   - error: the agent's status is error, or its first turn failed;
-//   - done: it is stopped, or its task is ready for review or complete;
+//   - error: the agent's status is error;
+//   - done: it is stopped;
 //   - starting: it is pending or provisioning, or its first turn is still owed;
 //   - working: a turn of its is running — a chat turn here (turnGate) or its
 //     first turn (the kickoff claim is held);
 //   - waiting: it runs and no turn is running: its turn ended, and it waits for
 //     its owner.
+//
+// 🔴 A FAILED FIRST TURN AND A TASK THE AGENT MOVED TO REVIEW ARE NOT DERIVED
+// HERE. They were (#496), as rules of this function's own; they are now the
+// recorded outcome's (failed, done — internal/api agent_outcome.go), which the
+// agent page reads too, so there is ONE rule and the card cannot say "done"
+// while the page says "running". TestTheCardAndThePageAgreeOnEveryOutcome pins it.
 func (s *Server) derivedCardState(ctx context.Context, a agents.Agent, status string) (string, string) {
 	switch {
 	case status == agents.StatusError:
 		return ui.DispatchError, firstNonEmptyLine(a.KickoffError)
-	case agents.KickoffFailed(a):
-		return ui.DispatchError, "Its first turn failed."
 	case status == agents.StatusStopped:
 		return ui.DispatchDone, ""
-	}
-	if a.NoteID != nil && s.ext.Notes != nil {
-		if n, err := s.ext.Notes.Get(ctx, *a.NoteID); err == nil && (n.Status == notes.StatusReadyForReview || n.Status == notes.StatusComplete) {
-			return ui.DispatchDone, ""
-		}
 	}
 	switch {
 	case status == agents.StatusPending || status == agents.StatusProvisioning || agents.KickoffOwed(a):

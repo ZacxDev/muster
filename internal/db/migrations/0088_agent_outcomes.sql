@@ -1,5 +1,5 @@
 -- muster 0088 — AN AGENT'S OUTCOME: every started agent ends in one you can see
--- (docs/agents.md, "Outcomes"; internal/agentoutcome; internal/api
+-- (docs/provisioner.md, "How an agent's work ends"; internal/agentoutcome; internal/api
 -- agent_outcome.go and agent_watchdog.go).
 --
 --   agents.outcome         '' (not tracked: an agent nobody started with a first

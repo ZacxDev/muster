@@ -46,10 +46,6 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// The agent page's status strip, ⋯ menu and notices (ui/agent_actions.go):
 	// what the retired Agents list's card showed, re-fetched on a change.
 	mux.HandleFunc("GET /ui/agents/{id}/header", s.requireSession(s.handleAgentHeader))
-	// The agent's status and the OUTCOME of what it was started on
-	// (agent_outcome.go): what a live card reads. A pure DB read, so it is
-	// registered without a provisioner.
-	mux.HandleFunc("GET /agents/{id}/outcome", s.requireSession(s.handleAgentOutcome))
 	// Agent-reply notifications: the FAB's panel + OOB badge, and the per-session
 	// mark-read used by the chat client when a turn finishes. Both are pure DB
 	// reads/writes, so they're registered without a provisioner.
