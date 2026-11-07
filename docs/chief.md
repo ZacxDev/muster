@@ -330,7 +330,7 @@ no per-agent model; `model` is taken only by `pod/gateway`, and it is
 [checked against the model catalogue](provisioner.md#models-are-checked-before-a-pod-starts)
 before anything is reserved: a display name that matches one model is resolved
 to its id, and anything else is refused with up to five of the closest ids in
-`model_suggestions`, so the chief asks you which you meant. It works in the
+`model_suggestions` (a tool error on both transports, MCP included), so the chief asks you which you meant. It works in the
 task's repository (or the `repo` the chief passes, one of your connected
 repositories; `base` picks the branch): its session starts inside a checkout,
 so the repository's `CLAUDE.md` and project skills load. Its optional `prompt`
