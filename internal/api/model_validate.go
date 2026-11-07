@@ -17,11 +17,11 @@ import (
 // (docs/agents.md, "Models"; operator decision 1 of the dispatch-outcomes change).
 //
 // 🔴 THE INCIDENT. The chief dispatched a gateway agent with model
-// "DeepSeek v4.1 flash" — a model's DISPLAY NAME. Nothing checked it:
+// "Acme v4.1 flash" — a model's DISPLAY NAME. Nothing checked it:
 // agents.ValidateModelCredential decides a slug's provider from its prefix and
 // deliberately passes a slug with no "/", so the agent was created, its runtime
 // read the bare name as a model of its default provider, and every turn failed
-// "Unknown model: openai/DeepSeek v4.1 flash" while muster showed it running.
+// "Unknown model: openai/Acme v4.1 flash" while muster showed it running.
 //
 // resolveAgentModel is THE one model check, at every door that sets an agent's
 // model — createAndDispatchAgent (the dispatch form, the chief's agent_dispatch,
@@ -276,7 +276,7 @@ func slugs(ids []string, slug func(string) string) []string {
 }
 
 // modelKey is a name or id compared on its letters and digits alone, lower case:
-// "DeepSeek v4.1 flash", "deepseek-v4.1-flash" and "DeepSeek V4.1 Flash" are one key.
+// "Acme v4.1 flash", "acme-v4.1-flash" and "Acme V4.1 Flash" are one key.
 func modelKey(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
