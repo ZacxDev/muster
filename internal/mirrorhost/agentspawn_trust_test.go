@@ -27,9 +27,9 @@ const trustStateFixture = `{
   "tipsHistory": {"shift-enter": 3, "memory-command": 1},
   "someFutureKey": [1, "two", {"three": null}],
   "projects": {
-    "/home/someone/src/alpha": {"allowedTools": [], "hasTrustDialogAccepted": true, "history": [{"display": "if a < b && c > d"}]},
-    "/home/someone/src/beta": {"hasTrustDialogAccepted": false, "mcpContextUris": ["<none>"]},
-    "/home/someone/src/gamma & delta": {"hasTrustDialogAccepted": true, "lastCost": 0.25}
+    "/srv/projects/alpha": {"allowedTools": [], "hasTrustDialogAccepted": true, "history": [{"display": "if a < b && c > d"}]},
+    "/srv/projects/beta": {"hasTrustDialogAccepted": false, "mcpContextUris": ["<none>"]},
+    "/srv/projects/gamma & delta": {"hasTrustDialogAccepted": true, "lastCost": 0.25}
   },
   "oauthAccount": {"emailAddress": "nobody@example.invalid", "organizationName": "R&D <test>"}
 }
