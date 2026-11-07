@@ -1476,7 +1476,7 @@ The flags follow the mirror's naming convention, `-kebab` plus
 | **`-agent-spawn`** | `MUSTER_MIRROR_AGENT_SPAWN` | **false** | let the chief start agents on this host. It has no effect without `-interactive`, and the mirror logs that it has none, as it does for `-resume-spawn` (`:380-385`) |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are the clones worktrees may be cut from |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where the worktrees go ([3.3](#33-worktrees)) |
-| **`-agent-spawn-repos`** | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: no repository** | comma-separated `<owner>/<repo>` names this host will cut a worktree of. A repository not listed is refused `no_repo` (detail `not on this host's allow-list`) whatever muster sends ([5.5](#55-a-compromised-server)). Empty means `-agent-spawn` is on but nothing can be spawned, and the mirror logs that at startup |
+| **`-agent-spawn-repos`** | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: no repository** | comma-separated `<owner>/<repo>` names this host will cut a worktree of, or `<owner>/*` for every repository of that owner (the repository part exactly `*`; owners and names compare case-insensitively). With a wildcard, `connectedRepo` (server) and the clones under the roots (host) are the per-repository bound within that owner; the host is sent the connected repository's own name. A repository not listed is refused `no_repo` (detail `not on this host's allow-list`) whatever muster sends ([5.5](#55-a-compromised-server)). Empty means `-agent-spawn` is on but nothing can be spawned, and the mirror logs that at startup |
 | `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | the host's own spawn rate limit ([5.5](#55-a-compromised-server)) |
 | `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log ([5.5](#55-a-compromised-server)) |
 
@@ -2705,7 +2705,7 @@ test of that option through the tool, with the same refusals.
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
 | host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
-| host | the repository is on `-agent-spawn-repos`; the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
+| host | the repository is on `-agent-spawn-repos` (by its exact name, or `<owner>/*` for its owner; case-insensitive); the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
 **`ownerTurnFor` is the gate, and there is no extra step-up for host spawns**
@@ -2938,7 +2938,7 @@ increment below is measured against it, not against zero.
 | bound | what it limits | where |
 |---|---|---|
 | **opt-in** | `-agent-spawn` is off by default, needs `-interactive`, and works only on the default tmux server. The owner's host configuration turns it on for the default mirror unit only | [3.2](#32-the-flag), [3.8](#38-read-only-and-tenant-hosts) |
-| **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. `connectedRepo` is a server check, so under this threat it bounds nothing; this list is the bound that replaces it | [3.2](#32-the-flag), [3.3](#33-worktrees) |
+| **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. An entry `<owner>/*` (the operator's choice, Q1) admits every repository of that owner, matched by equality on the owner, never a prefix. Under this threat a wildcard bounds the OWNER only: within that owner, the bound is which repositories have a clone directly under a root, and `connectedRepo` is a server check that bounds nothing here. List exact names on a host whose roots hold clones you would not spawn in | [3.2](#32-the-flag), [3.3](#33-worktrees) |
 | **directory allow-list** | worktrees go only under `-agent-spawn-dir`, the trust entry is written only for a directory exactly two levels below it that this spawn created, and the prompt file only under `$XDG_RUNTIME_DIR` | [3.3](#33-worktrees), [3.6.1](#361-claude-codes-folder-trust-entry) |
 | **fixed programs and argv** | the runtime is one of two constants; the host builds every argv word from constants and values it validated; no flag, path or binary comes from the server; the model travels as a JSON field, never an argument, and must be in the host's own OpenRouter catalog | [3.6](#36-the-commands-and-prompt-delivery) |
 | **no permission flags** | neither runtime is ever started with a permission-skipping flag. (A repository's own settings can still allow more; the repository allow-list limits which repositories those are) | [3.6](#36-the-commands-and-prompt-delivery), [5.1](#51-who-can-trigger-a-spawn) |
@@ -3563,6 +3563,20 @@ Where the build differs from the plan above, and what it leaves for later:
 - **The sweep's dirty-tree check is defence in depth**: removing a worktree
   without force refuses a dirty tree too (its mutant survives).
 
+
+**Delta audit of #516.** The trust write takes Claude Code's own lock, a
+`<file>.lock` directory (proper-lockfile, with its 10-second stale rule),
+around the read-modify-rename. It waits at most 5 s; on failure no entry is
+written and the window shows the trust dialog. It keeps the file's mode and
+refuses a symlink. The rate limit counts `admit` lines, written under the
+spawner's lock. Every audit field is capped, and the reader skips an oversize
+or corrupt line. `git` is resolved once at startup, and no git means nothing is
+offered. A clone's worktrees count as the clone (by `--git-common-dir`). Each
+held blank is filled only by its own card's tap. A tap-completed start's retry
+with the same `request_key` replays it. The spawn prompt's preface and rules
+are never cut. A host-spawned window's spawn prompt is never the owner's
+authority for a chief nudge. A chief forward is muster's own message for the
+nudge, the send queue and the ask log, and `send_queue_one_origin` covers it.
 ### Phase 4: host spawn for opencode with an OpenRouter model, and forwarding through its API
 
 **Rebuilt on #486.** The earlier phase 4 measured `--session`, `--prompt` and

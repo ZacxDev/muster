@@ -15,7 +15,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
-	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -354,9 +353,12 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t hostTar
 	if errors.Is(err, plugins.ErrHoldNotFound) {
 		return heldCompletion{}
 	}
-	if err == nil && !h.Open() {
-		// Expired, or consumed by the start it made: nothing waits on it. (A
-		// typed owner turn — owner_asked — still starts as usual.)
+	// Expired and never used: nothing waits on it. (A typed owner turn —
+	// owner_asked — still starts as usual.) A hold CONSUMED by the start it
+	// made is judged as before, so that call's retry reaches the reservation,
+	// whose request_key replays the start (and whose check refuses anything
+	// else: the hold is no longer open).
+	if err == nil && !h.Open() && h.ConsumedBy == 0 {
 		return heldCompletion{refusal: fmt.Sprintf(agentDispatchHeldNone, in.RequestKey)}
 	}
 	if err != nil {
@@ -499,9 +501,14 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	}
 	// 🔴 connectedRepo FOR EVERY HOST TARGET, BEFORE ANYTHING IS RESERVED: the
 	// worktree is pre-trusted, so the repository's own settings apply.
-	if why := s.connectedRepo(ctx, effective); why != "" {
+	// The host is sent the CONNECTED repository's own name (its FullName), not
+	// the chief's casing: with "<owner>/*" on a host, connectedRepo and the
+	// roots are what bound a spawn to one repository of that owner.
+	canonical, why := s.connectedRepoName(ctx, effective)
+	if why != "" {
 		return refuse(why)
 	}
+	effective = canonical
 	// The owner's gate: a held card's tap, or owner_asked in their typed turn.
 	comp := s.completeHeld(ctx, in, t, prompt)
 	switch {
@@ -518,6 +525,15 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	byTap := comp.accepted
 	if !byTap && !in.OwnerAsked {
 		return refuse(agentDispatchHostOwnerAsk)
+	}
+	// 🔴 EACH BLANK FROM ITS OWN TAP. A tap fills the hold's FIRST blank only:
+	// a hold with a second blank is re-filed with that blank still blank — its
+	// own card is raised — whatever the call put there, even when one runtime
+	// is all there is to choose.
+	if byTap && len(comp.detail.Blanks) > 1 {
+		t = t.withBlanks(comp.detail.Blanks[1:])
+		in.Target = t.String()
+		held = true
 	}
 	// A call that still has a blank files (or, after a tap on the host card,
 	// re-files) a hold: in the owner's typed turn, or on the tap it completes.
@@ -624,34 +640,45 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 // claude subcommand name would run that subcommand), then the chief's relayed
 // instructions, the task (cut to fit), and muster's rules last, so they win.
 // At most mirror.MaxSpawnPrompt bytes.
+//
+// 🔴 THE PREFACE AND THE RULES ARE NEVER CUT. Only the owner's part — the
+// relayed instructions, then the task — is cut to what is left between them;
+// the relay is cut BEFORE it is fenced, so its fence always closes.
 func spawnPrompt(host, repo, prompt string, task notes.Note, onTask bool) string {
 	head := mirror.SpawnPreface + " on " + host + ", in a fresh git worktree of " + repo +
 		" (a branch of its own, cut from the remote). You run in normal permission mode: your owner answers your asks on muster."
 	rules := chiefDispatchRulesNoTask
-	var body string
 	if onTask {
 		rules = chiefDispatchRules
-		body = "Task #" + strconv.FormatInt(task.ID, 10) + " (read it in full with task_get if it is cut short below):\n\n" + task.Body
 	}
+	room := mirror.MaxSpawnPrompt - len(head) - len("\n\n") - len(rules)
 	var relay string
 	if prompt != "" {
-		relay = renderChiefRelay(prompt, onTask) + "\n"
-	}
-	room := mirror.MaxSpawnPrompt - len(head) - len("\n\n") - len(relay) - len(rules) - 64
-	if room < 0 {
-		room = 0
-	}
-	if len(body) > room {
-		body = fence.Cut(body, room/4) + "\n[cut: read the whole task with task_get]"
-		for len(body) > room && room > 0 {
-			body = body[:len(body)/2]
+		const cutNote = "\n[cut: the rest of these instructions did not fit]"
+		p := prompt
+		relay = renderChiefRelay(p, onTask) + "\n"
+		for len(relay) > room && p != "" {
+			p = cutBytes(p, len(p)/2)
+			relay = renderChiefRelay(p+cutNote, onTask) + "\n"
+		}
+		if len(relay) > room {
+			relay = ""
 		}
 	}
-	out := head + "\n\n" + relay + body + rules
-	if len(out) > mirror.MaxSpawnPrompt {
-		out = out[:mirror.MaxSpawnPrompt]
+	var body string
+	if onTask {
+		body = "Task #" + strconv.FormatInt(task.ID, 10) + " (read it in full with task_get if it is cut short below):\n\n" + task.Body
+		left := room - len(relay)
+		const taskCut = "\n[cut: read the whole task with task_get]"
+		if len(body) > left {
+			if left > len(taskCut) {
+				body = cutBytes(body, left-len(taskCut)) + taskCut
+			} else {
+				body = ""
+			}
+		}
 	}
-	return out
+	return head + "\n\n" + relay + body + rules
 }
 
 // spawnName is the window's display name: "#<task> <title>", or the prompt's

@@ -1,4 +1,4 @@
--- muster 0091 — HOST DISPATCHES: an agent the chief started in a tmux window on
+-- muster 0093 — HOST DISPATCHES: an agent the chief started in a tmux window on
 -- one of its owner's hosts (docs/design/chief-dispatch.md 3.7; the store is
 -- internal/plugins/host_dispatches.go, the reconciler
 -- internal/api/host_dispatch_reconcile.go).
@@ -25,7 +25,8 @@
 --
 -- send_queue gains chief_forward_dispatch: a row the chief's task_forward
 -- queued for a host-spawned window (design 3.10), its gate re-reading this
--- table at delivery.
+-- table at delivery. 0064's one-origin CHECK is widened to it: a row carries
+-- at most ONE of route_id, chief_nudge_id and chief_forward_dispatch.
 --
 -- 🔴 IT IS RE-APPLIED BY db.RLSOn (rollback.go) WHEN THE TABLE EXISTS, SO EVERY
 -- STATEMENT IS IDEMPOTENT.
@@ -36,8 +37,10 @@
 --
 -- ROLLBACK (after rolling the image back; an older image never reads either):
 --   ALTER TABLE public.send_queue DROP COLUMN IF EXISTS chief_forward_dispatch;
+--   ALTER TABLE public.send_queue DROP CONSTRAINT IF EXISTS send_queue_one_origin;
+--   ALTER TABLE public.send_queue ADD CONSTRAINT send_queue_one_origin CHECK (route_id IS NULL OR chief_nudge_id IS NULL);
 --   DROP TABLE IF EXISTS public.host_dispatches;
---   DELETE FROM schema_migrations WHERE version = 91;
+--   DELETE FROM schema_migrations WHERE version = 93;
 
 SET LOCAL lock_timeout = '3s';
 
@@ -101,3 +104,8 @@ CREATE POLICY owner_isolation ON public.host_dispatches
 GRANT SELECT, INSERT, UPDATE ON public.host_dispatches TO muster_app;
 
 ALTER TABLE public.send_queue ADD COLUMN IF NOT EXISTS chief_forward_dispatch BIGINT;
+
+-- 0064's one-origin rule, widened to the chief forward.
+ALTER TABLE public.send_queue DROP CONSTRAINT IF EXISTS send_queue_one_origin;
+ALTER TABLE public.send_queue ADD CONSTRAINT send_queue_one_origin
+    CHECK (num_nonnulls(route_id, chief_nudge_id, chief_forward_dispatch) <= 1);

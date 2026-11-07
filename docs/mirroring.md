@@ -1220,7 +1220,7 @@ nothing until you also list repositories:
 | flag | env | default | |
 |---|---|---|---|
 | `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses) |
-| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in. Empty means nothing spawns |
+| `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means nothing spawns |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
 | `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | this host's own rate limit, counted from the audit log |
@@ -1231,12 +1231,22 @@ repository, a base branch, the prompt and a display name. The host:
 
 - writes the request to its audit log (JSON lines, `0600`) **before anything
   else**, prompt included, and refuses the spawn if it cannot; a second line
-  records the result. `muster-mirror agent-spawn-log [-n N]` prints the last
-  lines. A copy of each request goes to the mirror's own log;
+  records the result. Every field is capped before it is written, so no line
+  passes 64 KiB, and a log over 64 MB refuses every spawn until you rotate it.
+  `muster-mirror agent-spawn-log [-n N]` prints the last lines. A copy of each
+  request goes to the mirror's own log;
+- offers nothing when there is no `git` on its `PATH` at startup (it resolves
+  `git` once, to an absolute path);
 - refuses a repository not on `-agent-spawn-repos` before any git command, and
   needs exactly one clone of it directly under a root (matched by its configured
-  `origin` URL);
-- counts its rate limit from the audit log, so a restart does not reset it;
+  `origin` URL). A worktree of that clone counts as the clone, and the new
+  worktree is cut from the clone itself;
+- counts its rate limit from the audit log (an `admit` line, written before the
+  next request is checked), so a restart does not reset it and concurrent
+  requests cannot pass it;
+- writes the trust entry in Claude Code's state file under Claude Code's own
+  lock (`<file>.lock`), keeping the file's mode and never through a symlink; if
+  the lock is not had within 5 seconds the window shows the trust dialog;
 - refuses a prompt that does not begin with muster's fixed preface (Claude Code
   reads a first word that names one of its subcommands as that subcommand, even
   after `--`);

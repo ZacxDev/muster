@@ -599,23 +599,31 @@ func (s *Server) ownerAnswer(ctx context.Context, owner, taskID int64, text stri
 // connectedRepo is "" when repo is one of the owner's connected GitHub
 // repositories (compared without case), else the refusal.
 func (s *Server) connectedRepo(ctx context.Context, repo string) string {
+	_, why := s.connectedRepoName(ctx, repo)
+	return why
+}
+
+// connectedRepoName is connectedRepo, also returning the connected
+// repository's CANONICAL name (its FullName, as GitHub spells it) when it
+// passes: what a host is sent, whatever casing the chief wrote.
+func (s *Server) connectedRepoName(ctx context.Context, repo string) (string, string) {
 	if !github.ValidRepoName(repo) {
-		return "repo " + strconv.Quote(repo) + " is not owner/name"
+		return "", "repo " + strconv.Quote(repo) + " is not owner/name"
 	}
 	list, err := s.githubRepos(ctx)
 	if errors.Is(err, errNoGitHub) {
-		return chiefDispatchNoGitHub
+		return "", chiefDispatchNoGitHub
 	}
 	if err != nil {
 		s.logger.Printf("task routing: list the owner's repositories: %v", err)
-		return "your owner's repositories could not be listed; try again later or use task_route_attention"
+		return "", "your owner's repositories could not be listed; try again later or use task_route_attention"
 	}
 	for _, r := range list {
 		if strings.EqualFold(r.FullName, repo) {
-			return ""
+			return r.FullName, ""
 		}
 	}
-	return "repo " + repo + " " + chiefDispatchRepo
+	return "", "repo " + repo + " " + chiefDispatchRepo
 }
 
 // --- the plugin's hand-off -----------------------------------------------------

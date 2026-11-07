@@ -165,6 +165,10 @@ type Session struct {
 	// runtime window is VIEW ONLY: it is never nudged (the sweep raises the
 	// notice instead).
 	Runtime string
+	// Dispatched (KindMirror): the window is an agent muster spawned for the
+	// chief (mirror.Window.Dispatch): its first message is muster's spawn
+	// prompt, not the owner's, as a KindAgent's first message is its kickoff.
+	Dispatched bool
 	// Mirror address (KindMirror).
 	Host, TmuxSession, Window, Label string
 	// Name is the session's stable name (internal/sessionname) as the stall

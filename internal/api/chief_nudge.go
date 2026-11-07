@@ -489,7 +489,7 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 				seen[key] = true
 				st := s.ext.Mirror.AgentState(octx, h.Host, w.Session, w.ID)
 				c := chiefnudge.Session{Kind: chiefnudge.KindMirror, Key: key, Runtime: runtime, Host: h.Host,
-					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Name: fi.humanMirrorName(key), Status: st.Status,
+					TmuxSession: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Name: fi.humanMirrorName(key), Status: st.Status, Dispatched: w.Dispatch > 0,
 					Shell:     !h.Work[w.ID].IsZero(),
 					TurnError: st.TurnError != nil || st.HostLimit != nil || st.GuardHeld != "",
 					OpenAsk:   asked["mirror:"+key] || inFlight[chiefnudge.KindMirror+":"+key]}
@@ -690,7 +690,7 @@ func (s *Server) decideNudge(octx context.Context, o chiefnudge.Owner, chief age
 		return false, false, ""
 	}
 	owner := chiefnudge.OwnerMessages(msgs, injected, nudgeInjectedPrefixes, s.now().Add(-chiefnudge.OwnerWindow),
-		c.Kind == chiefnudge.KindAgent && full)
+		(c.Kind == chiefnudge.KindAgent || c.Dispatched) && full)
 	untimed := chiefnudge.Untimed(msgs)
 	// notify: session state is on, so the chief answers nudge, leave or notify
 	// (step 3a) and the session's episode carries the push. Only then may a
@@ -948,7 +948,10 @@ func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudg
 
 // nudgeInjectedPrefixes are the openings of muster's own pastes, from the
 // constants their senders write them with (one rule, one place).
-var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel}
+// mirror.SpawnPreface opens a host-spawned agent's first message (its spawn
+// prompt: the chief's relay and the task, never the owner's own words), so it
+// is never the owner's authority, however the transcript was read.
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface}
 
 // injectedBodyReader is the send queue's read of what muster itself queued
 // (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.

@@ -175,8 +175,10 @@ func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) 
 		t.Fatalf("the listing reads %d tagged windows, want %d", tagged, len(prompts))
 	}
 	lines := r.auditLines(t)
-	if len(lines) != 2*len(prompts) || lines[1]["result"] != "spawned" || lines[1]["admitted"] != true {
-		t.Fatalf("audit: %d lines (%v)", len(lines), lines[:2])
+	// Three lines per spawn: the request, the admission (written under the
+	// spawner's lock, what the rate limit counts) and the result.
+	if len(lines) != 3*len(prompts) || lines[1]["kind"] != "admit" || lines[2]["result"] != "spawned" || lines[2]["admitted"] != true {
+		t.Fatalf("audit: %d lines (%v)", len(lines), lines[:3])
 	}
 }
 

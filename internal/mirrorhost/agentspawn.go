@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -93,12 +94,15 @@ type AgentSpawnConfig struct {
 	// ClaudeState, when set, is Claude Code's state file; otherwise
 	// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
 	ClaudeState string
-	// Git is the git binary ("" = "git" on PATH).
+	// Git is the git binary, absolute: New resolves "git" on PATH into it
+	// when it is unset ("" after that: no git, nothing is offered).
 	Git string
 	// Now is the clock (nil = time.Now).
 	Now func() time.Time
 	// Deadline replaces AgentSpawnDeadline (tests).
 	Deadline time.Duration
+	// TrustLockWait replaces claudeLockWait (tests).
+	TrustLockWait time.Duration
 	// beforeTrustRead, when set (tests), runs between the trust entry's rename
 	// and its read-back: where a concurrent Claude Code write would land.
 	beforeTrustRead func(path string)
@@ -114,12 +118,9 @@ func (c AgentSpawnConfig) now() time.Time {
 	return time.Now()
 }
 
-func (c AgentSpawnConfig) git() string {
-	if c.Git != "" {
-		return c.Git
-	}
-	return "git"
-}
+// git is the git binary: Git, which New resolves to an absolute path at
+// startup ("" when there is none: agentSpawnUnavailable says "git not found").
+func (c AgentSpawnConfig) git() string { return c.Git }
 
 func (c AgentSpawnConfig) deadline() time.Duration {
 	if c.Deadline > 0 {
@@ -194,10 +195,16 @@ func ParseAgentSpawnRate(s string) ([]spawnRate, error) {
 	return out, nil
 }
 
-// repoNameRE is an <owner>/<repo> GitHub name.
-var repoNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+// repoNameRE is an <owner>/<repo> GitHub name. The repository part never
+// starts with '.' (so neither "." nor "..", nor a dot-directory).
+var repoNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$`)
 
-// ParseAgentSpawnRepos reads -agent-spawn-repos: comma-separated <owner>/<repo>.
+// repoOwnerRE is an <owner> GitHub name, for an "<owner>/*" entry.
+var repoOwnerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// ParseAgentSpawnRepos reads -agent-spawn-repos: comma-separated <owner>/<repo>
+// or <owner>/* (every repository of that owner: the repository part is exactly
+// the literal "*"), lower-cased.
 func ParseAgentSpawnRepos(s string) ([]string, error) {
 	var out []string
 	for _, part := range strings.Split(s, ",") {
@@ -205,12 +212,26 @@ func ParseAgentSpawnRepos(s string) ([]string, error) {
 		if part == "" {
 			continue
 		}
+		if owner, ok := strings.CutSuffix(part, "/*"); ok && repoOwnerRE.MatchString(owner) {
+			out = append(out, strings.ToLower(owner)+"/*")
+			continue
+		}
 		if !repoNameRE.MatchString(part) || strings.Contains(part, "..") {
-			return nil, fmt.Errorf("-agent-spawn-repos: %q is not <owner>/<repo>", part)
+			return nil, fmt.Errorf("-agent-spawn-repos: %q is not <owner>/<repo> or <owner>/*", part)
 		}
 		out = append(out, strings.ToLower(part))
 	}
 	return out, nil
+}
+
+// repoAllowed reports whether repo (already a valid <owner>/<repo>) is on the
+// allow-list: its exact lower-cased name, or the entry "<its owner>/*" — built
+// from repo's own owner and compared for EQUALITY, never as a prefix, so
+// "acme-evil/x" does not match "acme/*".
+func repoAllowed(list []string, repo string) bool {
+	r := strings.ToLower(repo)
+	owner, _, _ := strings.Cut(r, "/")
+	return slices.Contains(list, r) || slices.Contains(list, owner+"/*")
 }
 
 // --- the startup and per-spawn preconditions ---------------------------------
@@ -231,6 +252,9 @@ func agentSpawnUnavailable(cfg Config) string {
 	}
 	if sc.RuntimeDir == "" {
 		return "no XDG_RUNTIME_DIR for prompt files"
+	}
+	if sc.Git == "" || !filepath.IsAbs(sc.Git) {
+		return "git not found"
 	}
 	if sc.Dir == "" || !filepath.IsAbs(sc.Dir) || sc.Log == "" {
 		return "the agents directory and the audit log must be absolute paths"
@@ -377,6 +401,38 @@ type spawnAuditRequest struct {
 	Prompt       string    `json:"prompt"`
 }
 
+// spawnAuditAdmit is the line the rate limit counts: written UNDER the
+// spawner's lock the moment a request passes the rate check, before the next
+// request can count (a result line is written after the lock is released).
+type spawnAuditAdmit struct {
+	At       time.Time `json:"at"`
+	Kind     string    `json:"kind"` // "admit"
+	Dispatch int64     `json:"dispatch"`
+}
+
+// The audit log's bounds. Every string field is cut to auditFieldMax bytes
+// (the prompt to mirror.MaxSpawnPrompt) before the line is marshalled, so no
+// line is longer than auditLineMax; a line read back longer than that (written
+// by hand, or by an older build) is skipped, never an error. A log past
+// auditLogMax refuses every spawn until it is rotated.
+const (
+	auditFieldMax = 512
+	auditLineMax  = 64 << 10
+	auditLogMax   = 64 << 20
+)
+
+// capField is s cut to max bytes on a rune boundary, marked when cut.
+func capField(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len("…[cut]")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…[cut]"
+}
+
 // spawnAuditResult is a request's SECOND line, its outcome. Admitted marks a
 // request that passed the rate check: what the rate limit counts.
 type spawnAuditResult struct {
@@ -418,9 +474,11 @@ func appendAudit(path string, v any) error {
 	return f.Close()
 }
 
-// admittedSince counts the audit log's admitted spawns at or after since. A log
-// that cannot be read is an error (the caller refuses: the limit is never
-// skipped because its record failed).
+// admittedSince counts the audit log's admissions ("admit" lines) at or after
+// since. A log that cannot be read is an error (the caller refuses: the limit
+// is never skipped because its record failed); a line that is corrupt or
+// longer than auditLineMax is skipped, so one bad line cannot disable every
+// later check.
 func admittedSince(path string, since time.Time) (int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -431,18 +489,26 @@ func admittedSince(path string, since time.Time) (int, error) {
 	}
 	defer f.Close()
 	n := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		var r spawnAuditResult
-		if json.Unmarshal(sc.Bytes(), &r) != nil || r.Kind != "result" || !r.Admitted {
-			continue
+	r := bufio.NewReaderSize(f, auditLineMax)
+	for {
+		line, err := r.ReadSlice('\n')
+		long := errors.Is(err, bufio.ErrBufferFull)
+		for errors.Is(err, bufio.ErrBufferFull) { // skip the rest of an oversize line
+			_, err = r.ReadSlice('\n')
 		}
-		if !r.At.Before(since) {
-			n++
+		if !long && len(line) > 0 {
+			var a spawnAuditAdmit
+			if json.Unmarshal(line, &a) == nil && a.Kind == "admit" && !a.At.Before(since) {
+				n++
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
 		}
 	}
-	return n, sc.Err()
 }
 
 // rateRefusal is the rate limit's refusal, "" when spawn admitted now passes
@@ -531,12 +597,25 @@ func githubRepoOf(raw string) string {
 	return strings.ToLower(path)
 }
 
-// resolveClone is the ONE clone of repo directly under a root: its origin URL
-// names repo, and its real path is still under a root. none or more than one
-// is no_repo, naming the repository.
+// resolveClone is the ONE repository of repo directly under a root: its origin
+// URL names repo. Entries are counted by the repository they belong to —
+// realpath of `git rev-parse --git-common-dir` — so a worktree of a clone is
+// that clone, not a second one; an entry whose rev-parse fails (a prunable
+// worktree) is skipped. The repository's MAIN working tree (the common dir's
+// parent) must itself be under a root, and is what the spawn's worktree is cut
+// from. None, or two genuinely separate clones, is no_repo, naming the
+// repository.
 func resolveClone(ctx context.Context, git string, roots []string, repo string) (string, error) {
 	want := strings.ToLower(repo)
-	var found []string
+	underARoot := func(p string) bool {
+		for _, r := range roots {
+			if pathWithin(p, realOrClean(r)) {
+				return true
+			}
+		}
+		return false
+	}
+	var found []string // main working trees, one per common dir
 	for _, r := range roots {
 		root := realOrClean(r)
 		entries, err := os.ReadDir(root)
@@ -554,15 +633,17 @@ func resolveClone(ctx context.Context, git string, roots []string, repo string) 
 			if err != nil || githubRepoOf(string(out)) != want {
 				continue
 			}
-			real := realOrClean(dir)
-			under := false
-			for _, r2 := range roots {
-				if pathWithin(real, realOrClean(r2)) {
-					under = true
-				}
+			common, err := exec.CommandContext(ctx, git, "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+			if err != nil {
+				continue // a prunable worktree: its repository is gone
 			}
-			if under && !slices.Contains(found, real) {
-				found = append(found, real)
+			cd, err := filepath.EvalSymlinks(strings.TrimSpace(string(common)))
+			if err != nil || filepath.Base(cd) != ".git" {
+				continue // a bare repository has no working tree to cut from
+			}
+			main := filepath.Dir(cd)
+			if underARoot(main) && !slices.Contains(found, main) {
+				found = append(found, main)
 			}
 		}
 	}
@@ -653,6 +734,9 @@ func (c *Client) spawnAgent(ctx context.Context, h *hostSide, m mirror.Msg, rece
 	}
 	if logged {
 		result.At = c.cfg.AgentSpawn.now()
+		result.Detail = capField(result.Detail, auditFieldMax)
+		result.Window, result.Session = capField(result.Window, auditFieldMax), capField(result.Session, auditFieldMax)
+		result.Worktree, result.Branch = capField(result.Worktree, auditFieldMax), capField(result.Branch, auditFieldMax)
 		if aerr := appendAudit(c.cfg.AgentSpawn.Log, result); aerr != nil {
 			c.log.Printf("muster-mirror: spawn audit log: the result line for dispatch %d could not be written: %v", m.Dispatch, aerr)
 		}
@@ -676,10 +760,18 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	// 1. THE AUDIT LOG'S FIRST LINE, before the rate check and any git or tmux
 	// call. Fail closed.
 	sum := sha256.Sum256([]byte(req.Prompt))
-	line := spawnAuditRequest{At: received, Kind: "request", Dispatch: m.Dispatch, Server: sc.Server, Runtime: req.Runtime,
-		Repo: req.Repo, Base: req.Base, Model: req.Model, Name: req.Name, PromptSHA256: hex.EncodeToString(sum[:]),
-		PromptBytes: len(req.Prompt), Prompt: req.Prompt}
-	if sc.Log == "" || appendAudit(sc.Log, line) != nil {
+	f := func(v string) string { return capField(v, auditFieldMax) }
+	line := spawnAuditRequest{At: received, Kind: "request", Dispatch: m.Dispatch, Server: f(sc.Server), Runtime: f(req.Runtime),
+		Repo: f(req.Repo), Base: f(req.Base), Model: f(req.Model), Name: f(req.Name), PromptSHA256: hex.EncodeToString(sum[:]),
+		PromptBytes: len(req.Prompt), Prompt: capField(req.Prompt, mirror.MaxSpawnPrompt)}
+	if sc.Log == "" {
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
+	}
+	if fi, err := os.Stat(sc.Log); err == nil && fi.Size() > auditLogMax {
+		c.log.Printf("muster-mirror: spawn for dispatch %d refused: the audit log %s is over %d MB; rotate it", m.Dispatch, sc.Log, auditLogMax>>20)
+		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log full (over %d MB): rotate it on the host", auditLogMax>>20)
+	}
+	if appendAudit(sc.Log, line) != nil {
 		c.log.Printf("muster-mirror: spawn for dispatch %d refused: the audit log cannot be written", m.Dispatch)
 		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
@@ -716,7 +808,7 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "%q is not <owner>/<repo>", req.Repo)
 	}
 	// 4. THE ALLOW-LIST, before any git call.
-	if !slices.Contains(sc.Repos, strings.ToLower(req.Repo)) {
+	if !repoAllowed(sc.Repos, req.Repo) {
 		return w, false, true, refuseSpawn(mirror.SpawnNoRepo, "repo %s is not on this host's allow-list", req.Repo)
 	}
 	if err := checkBase(ctx, sc.git(), req.Base); err != nil {
@@ -740,6 +832,12 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	}
 	if why != "" {
 		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+	}
+	// 🔴 THE ADMISSION IS RECORDED HERE, UNDER spawner.mu: the next request
+	// waiting on the lock counts it. (The result line is written after the
+	// lock is released, so counting it let concurrent requests past the limit.)
+	if err := appendAudit(sc.Log, spawnAuditAdmit{At: sc.now(), Kind: "admit", Dispatch: m.Dispatch}); err != nil {
+		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
 	admitted = true
 	w, err = c.spawnClaude(dctx, h, m.Dispatch, req, deadline)
@@ -1086,6 +1184,23 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 		return bad("the clone does not list it as a worktree")
 	}
 	path := c.claudeStateFile()
+	// 🔴 NEVER THROUGH A SYMLINK, as Claude Code itself will not write one.
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return bad("Claude Code's state file cannot be read")
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return bad("Claude Code's state file is a symlink or not a regular file")
+	}
+	// 🔴 CLAUDE CODE'S OWN LOCK around the read-modify-rename (lockClaudeState):
+	// without it a write of Claude Code's landing between this read and the
+	// rename is lost. Not had within the bound: no entry, and the window
+	// simply shows the trust dialog (fail closed).
+	unlock, err := lockClaudeState(path, sc.trustLockWait())
+	if err != nil {
+		return bad("Claude Code's state file is locked by another writer")
+	}
+	defer unlock()
 	orig, err := os.ReadFile(path)
 	if err != nil {
 		return bad("Claude Code's state file cannot be read")
@@ -1114,7 +1229,12 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 		return bad("encode")
 	}
 	tmp := path + ".tmp." + strconv.Itoa(os.Getpid()) + "." + hex.EncodeToString(sumShort(want))
-	if err := os.WriteFile(tmp, want, 0o600); err != nil {
+	// The file's own mode, kept (Claude Code writes it 0644 on some hosts).
+	if err := os.WriteFile(tmp, want, fi.Mode().Perm()); err != nil {
+		return bad("the temporary file cannot be written")
+	}
+	if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
+		_ = os.Remove(tmp)
 		return bad("the temporary file cannot be written")
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -1131,6 +1251,51 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 		return bad("the file read back differs (another writer?)")
 	}
 	return nil
+}
+
+// Claude Code's state-file lock (proper-lockfile, as Claude Code 2.1.289 uses
+// it): a DIRECTORY at <realpath of the file>.lock, made with mkdir (atomic),
+// removed to release; one whose mtime is older than claudeLockStale is stale
+// and taken over, as proper-lockfile does.
+const (
+	claudeLockStale = 10 * time.Second
+	claudeLockWait  = 5 * time.Second
+)
+
+var errClaudeStateLocked = errors.New("Claude Code's state file is locked")
+
+// lockClaudeState takes path's lock, waiting at most wait.
+func lockClaudeState(path string, wait time.Duration) (func(), error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	dir := real + ".lock"
+	deadline := time.Now().Add(wait)
+	for {
+		err := os.Mkdir(dir, 0o755)
+		if err == nil {
+			return func() { _ = os.Remove(dir) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if fi, serr := os.Stat(dir); serr == nil && time.Since(fi.ModTime()) > claudeLockStale {
+			_ = os.Remove(dir)
+			continue
+		}
+		if !time.Now().Before(deadline) {
+			return nil, errClaudeStateLocked
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func (c AgentSpawnConfig) trustLockWait() time.Duration {
+	if c.TrustLockWait > 0 {
+		return c.TrustLockWait
+	}
+	return claudeLockWait
 }
 
 // encodeJSON is v as Claude Code-style JSON: two-space indent, NO HTML

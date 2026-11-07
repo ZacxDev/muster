@@ -19,6 +19,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -261,6 +263,16 @@ func New(cfg Config) (*Client, error) {
 	cat := cfg.Catalog
 	if cat == nil {
 		cat = &CatalogScanner{}
+	}
+	// -agent-spawn's git, resolved ONCE to an absolute path: a spawn never
+	// looks it up again, and with none the host offers nothing ("git not
+	// found", agentSpawnUnavailable).
+	if cfg.AgentSpawn.Git == "" {
+		if g, err := exec.LookPath("git"); err == nil {
+			if abs, err := filepath.Abs(g); err == nil {
+				cfg.AgentSpawn.Git = abs
+			}
+		}
 	}
 	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
 	c.tunnelTr = tunnelTransport(&c.wire)

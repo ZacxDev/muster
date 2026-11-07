@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -534,7 +535,7 @@ func (f *hostFixture) heldCard(t *testing.T, key string) attention.Ask {
 // type — start the dispatch, with held_id set and one unit spent. Each refusal
 // is its own sentence: a different host than tapped, a changed prompt, repo or
 // base, an unanswered card, an answer through attention_answer (a mirrored
-// session), and a second completion (the hold is consumed: one tap, one agent).
+// session), and a second completion replays the first start (one tap, one agent).
 func TestTheOwnersTapCompletesTheHeldDispatchExactly(t *testing.T) {
 	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice} {
 		t.Run(string(via), func(t *testing.T) {
@@ -568,9 +569,14 @@ func TestTheOwnersTapCompletesTheHeldDispatchExactly(t *testing.T) {
 			if after := f.budget(t).Today; after != before+1 {
 				t.Fatalf("today %d → %d; want exactly one unit", before, after)
 			}
-			// The hold is consumed by the start it made: one tap, one agent.
-			if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, complete)); got != `request_key "tap-1" holds no dispatch waiting for your owner's answer (or it is more than 15 minutes old): ask them again in the chat` {
-				t.Fatalf("a second completion: %q", got)
+			// The hold is consumed by the start it made: one tap, one agent. The
+			// same completing call again (a retry) REPLAYS that start.
+			again := f.callRaw(f.chief, agentDispatchTool, complete)
+			if !strings.Contains(again, `"replayed":true`) || hostDispatchIDOf(t, again) != id {
+				t.Fatalf("a retry of the completing call: %s", again)
+			}
+			if after := f.budget(t).Today; after != before+1 {
+				t.Fatalf("the retry spent a unit: %d → %d", before, after)
 			}
 			if n := len(f.m.spawnCalls()); n != 1 {
 				t.Fatalf("%d spawns for one tap", n)
@@ -579,17 +585,17 @@ func TestTheOwnersTapCompletesTheHeldDispatchExactly(t *testing.T) {
 	}
 }
 
-// TestATapThroughAMirroredSessionDoesNotBind: the card answered through
-// attention_answer (a mirrored session's door, recorded mcp) is not the
-// owner's tap: refused with the door sentence, nothing starts.
+// TestATapThroughAMirroredSessionDoesNotBind: attention_answer (a mirrored
+// session's door) cannot answer the held card at all (an owner card,
+// ErrNotOwnerDoor): it stays open, the completing call waits, nothing starts.
 func TestATapThroughAMirroredSessionDoesNotBind(t *testing.T) {
 	f := newHostFixture(t)
 	card := f.heldCard(t, "tap-2")
-	if _, err := f.srv.answerAskFrom(f.asOwner, card.ID, "host-charlie", attention.AnswerSource{Via: attention.ViaMCP, Host: "laptop", Session: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"}); err != nil {
-		t.Fatal(err)
+	if _, err := f.srv.answerAskFrom(f.asOwner, card.ID, "host-charlie", attention.AnswerSource{Via: attention.ViaMCP, Host: "laptop", Session: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"}); !errors.Is(err, attention.ErrNotOwnerDoor) {
+		t.Fatalf("an MCP answer to the held card: %v; want ErrNotOwnerDoor", err)
 	}
-	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-charlie/claude", "tap-2", false))); got != agentDispatchHeldDoor {
-		t.Fatalf("an MCP answer: %q", got)
+	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-charlie/claude", "tap-2", false))); got != agentDispatchHeldWaiting {
+		t.Fatalf("after a refused MCP answer: %q", got)
 	}
 	if len(f.m.spawnCalls()) != 0 {
 		t.Fatal("an MCP answer started a dispatch")

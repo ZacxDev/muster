@@ -10,7 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// HOST DISPATCHES (migration 0091; docs/design/chief-dispatch.md 2.6 and 3.7): an
+// HOST DISPATCHES (migration 0093; docs/design/chief-dispatch.md 2.6 and 3.7): an
 // agent the chief started in a tmux window on one of its owner's hosts.
 //
 // 🔴 ONE SEAM LEDGER, FOUR WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts

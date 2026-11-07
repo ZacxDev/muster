@@ -36,6 +36,11 @@ func newSpawnUnit(t *testing.T) *spawnUnit {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+	// HERMETIC: tmux's default server is a private, absent one under tmp, so
+	// a spawn that gets as far as tmux finds no server there — never the
+	// operator's ($TMUX would point a client at theirs).
+	t.Setenv("TMUX_TMPDIR", tmp)
+	t.Setenv("TMUX", "")
 	u := &spawnUnit{tmp: tmp, dir: filepath.Join(tmp, "agents"), log: filepath.Join(tmp, "state", "spawn.jsonl"), gitLog: filepath.Join(tmp, "git.calls")}
 	real, err := exec.LookPath("git")
 	if err != nil {
@@ -221,7 +226,7 @@ func TestTheRateLimitIsCountedFromTheAuditLogAndSurvivesARestart(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			u := newSpawnUnit(t)
 			for _, a := range c.ago {
-				if err := appendAudit(u.log, spawnAuditResult{At: now.Add(-a), Kind: "result", Dispatch: 1, Result: "spawned", Admitted: true}); err != nil {
+				if err := appendAudit(u.log, spawnAuditAdmit{At: now.Add(-a), Kind: "admit", Dispatch: 1}); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -115,7 +115,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
 //   - session_tags (0086, the per-owner session tags).
 //   - asks (0089, the ask log: every question an agent put to its owner).
-//   - host_dispatches (0091, the chief's host spawns).
+//   - host_dispatches (0093, the chief's host spawns).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
@@ -191,7 +191,7 @@ var wantForeignKeys = []string{
 	"session_episodes|session_episodes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0089: the ask log; an ask's episode is the SAME owner's.
 	"asks|asks_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	// 0091: a host dispatch is its owner's; its task is unlinked when deleted.
+	// 0093: a host dispatch is its owner's; its task is unlinked when deleted.
 	"host_dispatches|host_dispatches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
 	"asks|asks_episode_owner_fkey|FOREIGN KEY (episode_id, owner_id) REFERENCES session_episodes(id, owner_id) ON DELETE SET NULL (episode_id)",

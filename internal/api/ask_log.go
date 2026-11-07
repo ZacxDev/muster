@@ -619,6 +619,10 @@ func askLogProvenanceOf(reply string, sent []sendqueue.SentBody) string {
 			return asklog.ProvRoute
 		case b.ChiefNudgeID > 0:
 			return asklog.ProvNudge
+		case b.ChiefForwardDispatch > 0:
+			// The chief's task_forward: the chief routing a message, never the
+			// person's own send (0089's provenance has no other word for it).
+			return asklog.ProvRoute
 		default:
 			return asklog.ProvMusterSend
 		}

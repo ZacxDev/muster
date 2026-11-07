@@ -161,7 +161,7 @@ type Item struct {
 	// never carries both (0064's send_queue_one_origin).
 	ChiefNudgeID int64
 	// ChiefForwardDispatch marks a CHIEF FORWARD into a host-spawned window
-	// (migration 0091; internal/api's toolTaskForward, its only writer): the
+	// (migration 0093; internal/api's toolTaskForward, its only writer): the
 	// host dispatch it is for, 0 for any other row. Gated on that dispatch at
 	// delivery (sendQueueChiefForwardGate), pasted with mirror.ForDispatch so the
 	// host checks the window's own tag, and never edited or retried.
@@ -436,7 +436,7 @@ func (s *PGStore) List(ctx context.Context, t Target) ([]Item, error) {
 	rows, err := s.pool.Query(ctx, `(SELECT `+cols+`, 0 AS part FROM send_queue WHERE state IN ('queued', 'sending') AND `+where+`)
 		UNION ALL
 		(SELECT `+cols+`, 1 AS part FROM send_queue WHERE state = 'failed' AND retried_as IS NULL
-			AND route_id IS NULL AND chief_nudge_id IS NULL AND `+where+`
+			AND NOT `+musterOriginSQL+` AND `+where+`
 			ORDER BY finished_at DESC, id DESC LIMIT `+fmt.Sprint(FailedShown)+`)
 		ORDER BY part, id`, args...)
 	if err != nil {
@@ -581,6 +581,8 @@ type SentBody struct {
 	Body         string
 	RouteID      string
 	ChiefNudgeID int64
+	// ChiefForwardDispatch is the host dispatch a chief forward was for.
+	ChiefForwardDispatch int64
 }
 
 // SentBodies is every message the caller's send queue SENT into window t (or
@@ -592,7 +594,7 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 	if err := t.Valid(); err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0) FROM send_queue
+	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0) FROM send_queue
 		WHERE state = 'sent' AND mirror_host = $1 AND mirror_session = $2 AND (mirror_window = $3 OR mirror_window = '')
 		AND created_at >= $4 ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit)
 	if err != nil {
@@ -602,7 +604,7 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 	var out []SentBody
 	for rows.Next() {
 		var b SentBody
-		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID); err != nil {
+		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID, &b.ChiefForwardDispatch); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -611,13 +613,14 @@ func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, lim
 }
 
 // InjectedBodies is the text of every message muster itself queued for the
-// caller's windows since since — a routed message (RouteID) or a chief nudge
-// or relayed answer (ChiefNudgeID), whatever became of it — newest first, at
+// caller's windows since since — a routed message (RouteID), a chief nudge
+// or relayed answer (ChiefNudgeID), or a chief forward into a host-spawned
+// window (ChiefForwardDispatch), whatever became of it — newest first, at
 // most limit. A queued message lands in Claude Code's transcript as an
 // ordinary user prompt; the chief nudge sweep reads this to tell those apart
 // from the owner's own words.
 func (s *PGStore) InjectedBodies(ctx context.Context, since time.Time, limit int) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT body FROM send_queue WHERE (route_id IS NOT NULL OR chief_nudge_id IS NOT NULL)
+	rows, err := s.pool.Query(ctx, `SELECT body FROM send_queue WHERE `+musterOriginSQL+`
 		AND created_at >= $1 ORDER BY id DESC LIMIT $2`, since, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sendqueue: injected bodies: %w", err)
@@ -945,6 +948,11 @@ func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// musterOriginSQL is MusterOrigin in SQL: a row of muster's own (a route, a
+// chief nudge, a chief forward). THE one SQL statement of it, for every query
+// that tells muster's messages from a person's.
+const musterOriginSQL = `(route_id IS NOT NULL OR chief_nudge_id IS NOT NULL OR chief_forward_dispatch IS NOT NULL)`
 
 // MusterOrigins is how many of muster's own origins it carries (a route, a
 // chief nudge, a chief forward): 0 for a person's message. THE predicate every
