@@ -2352,6 +2352,10 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	ctx = s.sessionRoute(ctx, a, sessionKey)
 	// "working…" for any page that opens this conversation while the turn runs.
 	defer s.sessionTurns.begin(sessionKey)()
+	// The session an owner card raised in this turn is answered in (both doors:
+	// the in-process dispatch reads ctx, a CLI's /mcp call the registry).
+	defer s.turnSessions.begin(a.ID, sessionKey)()
+	ctx = withTurnSession(ctx, sessionKey)
 	ctx, tt := s.turnTools(ctx, a)
 	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A

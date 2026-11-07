@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -35,7 +34,7 @@ import (
 // it to exactly the target the owner tapped. "Release only" binds the other
 // way: agent_dispatch without owner_asked is refused on that task.
 //
-// 🔴 WHO MAY RELEASE: ONLY THE OWNER'S OWN DOORS (ownerTapped). The answer
+// 🔴 WHO MAY RELEASE: ONLY THE OWNER'S OWN DOORS (attention.IsOwnerDoor). The answer
 // must come through a signed-in browser session (authz.ViaSession — the
 // Attention view's form, requireOperatorWrite) or the owner's paired phone
 // (authz.ViaDevice — a signed challenge), as the ask's owner. attention_answer
@@ -128,13 +127,6 @@ func isReleaseOption(a attention.Ask, answer string) bool {
 	return false
 }
 
-// ownerTapped reports whether ctx is owner's own tap: a signed-in browser
-// session or their paired phone, and nobody else.
-func ownerTapped(ctx context.Context, owner int64) bool {
-	p, ok := authz.From(ctx)
-	return ok && !p.All() && owner > 0 && p.UserID == owner && (p.Via == authz.ViaSession || p.Via == authz.ViaDevice)
-}
-
 // answerRelease is a verified Release answer, to apply once it is recorded.
 type answerRelease struct {
 	task  notes.Note
@@ -152,7 +144,7 @@ func (s *Server) releaseForAnswer(ctx context.Context, id int64, answer string, 
 	if err != nil || a.Status != attention.Open || !isReleaseOption(a, answer) {
 		return nil, nil // the store's Answer says what is wrong with the ask itself
 	}
-	if src.ViaSession() || !ownerTapped(ctx, a.Owner) {
+	if src.ViaSession() || !attention.IsOwnerDoor(ctx, a.Owner) {
 		return nil, errReleaseRefused(releaseNotOwnersDoor)
 	}
 	n, err := s.ext.Notes.Get(ctx, a.TaskID)

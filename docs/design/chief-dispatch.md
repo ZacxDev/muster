@@ -1210,7 +1210,7 @@ accepted **in place of `ownerTurnFor`** only when all of these hold:
     signed-in Attention view (`ViaSession`) or the phone (`ViaDevice`). An
     answer through `attention_answer` from a mirrored session, or any other
     principal, does not count. This is the same door rule as #485's
-    `ownerTapped`, and should share its predicate;
+    release, and they share one predicate (`attention.IsOwnerDoor`);
 - a second blank (`host/?/?`) has its own card, raised by the completing call
   for the first blank. That call writes a new `chief.dispatch_held` row with
   the first blank now filled, and the second blank's card. A row is consumed
@@ -1264,6 +1264,23 @@ If PR A's `ask_owner` instead keeps the chief waiting **inside** the owner's
 typed turn (an `attention_wait` loop), `ownerTurnFor` already passes on the
 completing call, and the hold is only a record. The binding rules above still
 apply, so neither shape opens anything the other closes.
+
+**Checked against PR A's merged code (#496, at `91a52662`): properties 1, 2
+and 4 did not hold; the stored-card change (the PR before phase 3) makes all
+four hold.** The owner chose to extend `ask_owner` rather than drop the hold.
+
+| property | at #496 | now |
+|---|---|---|
+| 1. an attention ask with stored options, an id, and `AnsweredVia` | **no**: the card was the chief's stored tool call, its answer never stored | **holds.** `ask_owner` files an attention ask raised by the chief (`raiseOwnerCard`, `internal/api/owner_ask.go`), with the option labels as its stored options; its result names it (`ask_id`). An answer records its door: `browser` or `device`, stamped by `attention.Answer` from the answering principal (migration 0092), or `mcp`. `AnswerSource.OwnerDoor()` is the binding's door rule read back from the row; `attention.IsOwnerDoor` is the same rule for the answering principal (one mapping, `answerVia`), which #485's release uses too. An owner card moves only through those doors: `attention_answer` over MCP is refused (`ErrNotOwnerDoor`). The tap is bound to the exact option by `Ask.ChosenOption()`: the answer is exactly one of the row's stored options. The "Other" box is kept |
+| 2. muster's own code can raise one for the chief | **no** | **holds for the Attention view and the phone; the chat card comes with phase 3.** `raiseOwnerCard(ctx, chief, question, options)` is the one raise, for the tool and for server code; it pushes like any ask (`askFiled`), so the card is on the Attention view and the phone. With this PR alone, a card raised by server code has **no chat card**: the chat draws a card only from an `ask_owner` tool call's result. Phase 3 (#516) adds the chat card for a held dispatch's card |
+| 3. the answer reaches the chief as a turn | yes | **holds, by two paths.** An answer on the Attention view or phone is delivered as a turn (the attention delivery, "your owner answered attention #N"). A tap in the chat is still the owner's next typed message, which also settles the card in session (`askerAddressed`) |
+| 4. the live agent card can be keyed by other than a pod agent row | **no** | **holds.** `ReadDispatchResult` reads `host_dispatch_id`. A card keyed `host-<id>` is served by `/ui/dispatch-card?host_dispatch=<id>` from `Server.hostDispatchCardSource`, which phase 3 wires to `host_dispatches` |
+
+Two consequences for the binding below. A tap in the chat is the owner's typed
+turn, so a completing call made in that turn passes `ownerTurnFor` and needs no
+hold (the "owner types instead" path). An answer settled in session therefore
+never counts as `OwnerDoor()`. Only an answer recorded through the Attention
+view or the phone completes a hold from a turn the owner did not type.
 
 **The model list** (decision 15). `MUSTER_CHIEF_DISPATCH_MODELS` is a
 comma-separated list of OpenRouter model ids, read at server start, each
@@ -1702,8 +1719,9 @@ below.)
 - **The subcommand hazard.** Claude's usage puts `[command]` before
   `[prompt]`, so a prompt equal to a subcommand name (`update`, `mcp`,
   `doctor`, …) could be parsed as that subcommand. Two guards close it:
-  - `--`. Whether Claude's parser treats the word after `--` as the prompt is
-    **UNVERIFIED**, and phase 3 measures it.
+  - `--`. **Measured: it does not close it.** `claude --session-id <uuid> --
+    update` runs the `update` subcommand on 2.1.289 ([7](#7-what-is-still-unverified)).
+    `--` stays in the argv, but it is not a guard.
   - Structurally, **muster's prompt always begins with its own fixed
     preface**, `muster: your owner's chief started you …`. That is never a
     subcommand name and never starts with `-`, so this guard holds whatever
@@ -3658,10 +3676,12 @@ through the API).
 
 | claim | where | measured in |
 |---|---|---|
-| `projects[<path>].hasTrustDialogAccepted` alone suppresses the dialog, and how the path is spelled | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
-| the file is `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
-| claude treats the word after `--` as the prompt, not a subcommand (the fixed preface holds either way) | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
-| PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
+| ~~`projects[<path>].hasTrustDialogAccepted` alone suppresses the dialog, and how the path is spelled~~ **MEASURED** (Claude Code 2.1.289, real binary, no stubs, scratch `HOME` and `CLAUDE_CONFIG_DIR`, on a dedicated `tmux -L` server, with onboarding marked done): the key **alone** suppresses it (prompt reached, no dialog); with no entry the dialog appears (the control). The key must be the **real path, with no trailing slash**: a trailing slash shows the dialog; a key spelled through a symlink shows it whether claude is started through the symlink or the real path; a real-path key with claude started through a symlink passes, because claude resolves its cwd. **A trusted parent directory does not cover a child** (the dialog appears) | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
+| ~~the file is `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set~~ **MEASURED**, same setup: with `CLAUDE_CONFIG_DIR` set, claude wrote `$CLAUDE_CONFIG_DIR/.claude.json` (plus `backups/`, `sessions/`) and nothing under `$HOME` | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
+| ~~claude treats the word after `--` as the prompt, not a subcommand~~ **MEASURED FALSE**: `claude --session-id <uuid> -- update` **ran the `update` subcommand** and installed a new native build (into the scratch `HOME`). So `--` is **not** a guard against the subcommand hazard; **only the fixed preface is**, and it must stay load-bearing and tested (a prompt that does not start with it must be refused on the host, not merely never sent). A non-subcommand prompt after `--`, with `;`, `$(id)` and both quote kinds, arrived byte-identical as the first user message | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
+| **MEASURED:** `--session-id <uuid>` is written to `<config>/sessions/<pid>.json` as `sessionId`, which is the mirror's second lookup (before the transcript guess), and names the transcript file `<uuid>.jsonl`. The mirror's own code path reading it was not run | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
+| **MEASURED:** the spawn's own time. On two of the owner's repositories (about 2.5k and 3.2k tracked files, neither with `.gitmodules`), from scratch clones: a cold full clone took 2.5 s and 2.9 s, a warm `fetch --no-tags origin <base>` 0.7 s each, and `worktree add` 0.1-0.2 s. That is far below half the 120 s deadline, so the three deadlines stay. Submodule time was not measurable: neither repository has submodules | [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task) | phase 3 |
+| ~~PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on~~ **CHECKED: 1, 2 and 4 did not hold; the stored-card change makes all four hold** (table in [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
 | `POST /api/session` with `model` runs the session's turns on that OpenRouter model; the provider id the hosts' configuration uses; how `GET /api/model` lists OpenRouter models, including just after a service restart | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
 | the shared service runs a session's tools in its `location.directory` | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
 | `muster-mirror opencode -s <id>` binds a pane on a session the host created a moment before | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |

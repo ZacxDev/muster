@@ -400,13 +400,13 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefAskOwnerSection",
 			text: chiefAskOwnerSection,
-			want: "691f90f9a52f672226cb67dc5da98ee8853303581e4720a185fc5eecd43483ea",
+			want: "87f90057e3a0fd859a7639b1bc2b1874847c051ad2ee40f8bd21d29eb1ccb199",
 			min:  400,
 		},
 		{
 			name: "chiefAskOwnerSectionClaudeCode",
 			text: chiefAskOwnerSectionClaudeCode,
-			want: "273ea07f51c02c9a062a669155567e4fa9d61e6da57d35ac4545921f30a6e273",
+			want: "9846f06486aae1cd2a231949f1b0f8701746a7a448798cc416941b88d5478f2b",
 			min:  400,
 		},
 		{

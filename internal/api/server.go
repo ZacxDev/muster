@@ -105,6 +105,10 @@ type Server struct {
 	auth    AuthConfig
 	router  RouterPort
 
+	// hostDispatchCardSource reads a host dispatch's live card (chat_log_live.go
+	// hostDispatchCard); nil until host dispatches are recorded.
+	hostDispatchCardSource func(ctx context.Context, id int64) (ui.DispatchCard, error)
+
 	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
@@ -272,6 +276,9 @@ type Server struct {
 	// sessionTurns counts the turns running per chat session, which is what
 	// draws a reloaded page's "working…" (session_turns.go).
 	sessionTurns sessionTurnCount
+	// turnSessions is the chat session of each agent's running turn
+	// (turn_session.go): where an owner card it raises is answered.
+	turnSessions turnSessionRegistry
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.

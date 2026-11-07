@@ -288,6 +288,19 @@ question appears in its chat as a card with a button per option and an
 your next message; the card then shows your answer, and still does after a
 reload. Asking ends the chief's turn.
 
+The card is also an ordinary [attention ask](attention.md) raised by the chief,
+so it is on your Attention view and your phone too, and you can answer it
+there. That answer is recorded with where you gave it (your browser or your
+phone, [attention.md](attention.md#answering)) and delivered to the chief as a
+turn, in the chat session it asked in, and the card in the chat shows it. Only
+you answer it, in muster or on your phone: a mirrored session's
+`attention_answer` cannot. A message you type to the chief answers one open
+card, the oldest; a second card asked in the same turn stays open for its own
+answer (the chat draws it as a plain line). A card that expired unanswered is
+still answered in the chat by your next message, as before. If the attention
+queue refuses the card (its cap of open asks), the chief still asks: the card is
+drawn from the chat alone.
+
 Closing or reloading the page never stops a turn the chief is running. Open
 the chat again while it runs and it shows "working…"; the reply appears, and
 "working…" goes, once the turn has finished and its reply is stored.

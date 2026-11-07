@@ -170,10 +170,20 @@ func mcpAnswerFrom(src attention.AnswerSource) string {
 	return "a mirrored Claude Code session"
 }
 
-// answerSession is the session an answer to agent a goes to: its default
-// session (agents.SessionRuntimeStore), else — a store without 0030's half —
-// its latest.
-func (s *Server) answerSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+// answerSession is the session an answer to agent a goes to: the session an
+// owner card was asked in (asked, attention.Ask.AskedSession) while it is still
+// one of a's; else its default session (agents.SessionRuntimeStore), else — a
+// store without 0030's half — its latest.
+func (s *Server) answerSession(ctx context.Context, a agents.Agent, asked string) (agents.ChatSession, error) {
+	if asked != "" {
+		if list, err := s.ext.Agents.ListSessions(ctx, a.ID); err == nil {
+			for _, sess := range list {
+				if sess.SessionKey == asked {
+					return sess, nil
+				}
+			}
+		}
+	}
 	if st, ok := s.ext.Agents.(agents.SessionRuntimeStore); ok {
 		return st.DefaultSession(ctx, a.ID, a.Name)
 	}
@@ -292,7 +302,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	case s.answerTurn == nil:
 		return leave("this muster has no agent gateway")
 	}
-	sess, err := s.answerSession(ctx, ag)
+	sess, err := s.answerSession(ctx, ag, a.AskedSession)
 	if err != nil {
 		return leave("the agent's session could not be opened")
 	}
