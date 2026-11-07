@@ -87,10 +87,9 @@ func TestAMirroredSessionsLabelIsAFallback(t *testing.T) {
 	if got := Mirror(e, focus.Name{Auto: "Stripe webhooks", Manual: "Payments"}); got != (Name{"Payments", SourceManual, tech}) {
 		t.Errorf("manual over auto: %+v", got)
 	}
-	// No label: the tmux address — never with the list's qualifier, which
-	// the surfaces add to a fallback name themselves.
+	// No label: the tmux address, qualified when the list needed it.
 	e.Label, e.Qualifier = "", "hosta"
-	if got := Mirror(e, focus.Name{}); got.Text != "work:2" || got.Source != SourceFallback {
+	if got := Mirror(e, focus.Name{}); got.Text != "work:2 · hosta" || got.Source != SourceFallback {
 		t.Errorf("no label: %+v", got)
 	}
 	if !Mirror(e, focus.Name{Auto: "x y"}).Human() || Mirror(e, focus.Name{}).Human() {

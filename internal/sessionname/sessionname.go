@@ -129,10 +129,11 @@ func Agent(a agents.Agent, stored focus.Name) Name {
 // below the conversation's own auto name, and is shown only while the
 // conversation has no human name (decision recorded in docs/focus.md).
 //
-// The fallback is e.Title() WITHOUT the list's qualifier: a surface that
-// draws a fallback name adds the qualifier the way it always has (it is how
-// two "mango:1" windows on two hosts are told apart); a human name carries
-// none.
+// The fallback is e.DisplayTitle(): the title WITH the list's qualifier when
+// it needs one — how two "mango:1" windows on two hosts are told apart. A
+// human name carries none (its tooltip has the place). The ui draws a
+// fallback name from the view's own fields (Label, Title, Qualifier), never
+// from this text, so it is not qualified twice.
 func Mirror(e mirror.SessionView, stored focus.Name) Name {
-	return Resolve(Parts{Manual: stored.Manual, Auto: stored.Auto, Fallback: e.Title(), Technical: e.Where()})
+	return Resolve(Parts{Manual: stored.Manual, Auto: stored.Auto, Fallback: e.DisplayTitle(), Technical: e.Where()})
 }

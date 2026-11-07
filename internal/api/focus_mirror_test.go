@@ -155,8 +155,11 @@ func TestAMirrorCardShowsTheFocusOfItsClaudeSession(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, nil)
 	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
-	if n := strings.Count(body, "Porting the importer"); n != 1 {
-		t.Fatalf("the focus is on %d rows, want exactly 1 (only @1 reports a session id):\n%s", n, body)
+	// @1's row carries it twice — what the palette finds it by
+	// (data-switcher-title) and its live line (data-nav-focus) — and @2's,
+	// whose host reports no session id, not at all.
+	if strings.Contains(cardFor(t, body, ref("main", "@2").ViewPath()), "Porting the importer") {
+		t.Fatalf("the focus is on @2's row too (only @1 reports a session id):\n%s", body)
 	}
 	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Porting the importer"`) {
 		t.Fatalf("the focus is not @1's row's title:\n%s", row)
