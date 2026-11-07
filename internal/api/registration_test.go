@@ -153,10 +153,11 @@ func fullyWiredServer(t *testing.T) *Server {
 }
 
 // stubAccountFailover satisfies AccountFailover for registration only; any
-// method but UseHooks (which UseExtensions calls) panics.
+// method but UseHooks and UseHold (which UseExtensions calls) panics.
 type stubAccountFailover struct{ AccountFailover }
 
 func (stubAccountFailover) UseHooks(ccfailover.Policy, ccfailover.Prepare) {}
+func (stubAccountFailover) UseHold(ccfailover.Hold)                        {}
 
 // stubMirror satisfies Mirror for registration only; any method call panics.
 type stubMirror struct{ Mirror }

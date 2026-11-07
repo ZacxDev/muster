@@ -193,7 +193,9 @@ var (
 		"internal/plugins.(*PGStore).UnroutedAsksToClose",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
-		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
+		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count),
+		// and the account failover's idle check (jobs.PGStore.ActiveCounts —
+		// queued and running counts per agent, whoever submitted them; no row).
 		"internal/jobs.sys",
 		// The ask log (migration 0089): the retention sweep's one helper. It
 		// clears question and answer text past the TTL and deletes rows past

@@ -525,11 +525,13 @@ idle workers are spread over both rather than sent to one until its limit
 refuses them.
 
 **The cooldown.** After a turn on an account answers `rate_limited`, the
-account rests: no pool job is placed on any worker using it until the reset
-time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9, 9am (UTC)`), or,
-when the message states none muster can read (no zone, for one),
-`MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It is
-usable again at exactly that time.
+account rests: no pool job is placed on any worker while it uses that account,
+until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
+9am (UTC)`), or, when the message states none muster can read (no zone, for
+one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
+is usable again at exactly that time. While another account is usable the
+pool does not wait for that: its workers are moved off the resting account
+(see [Account failover](#account-failover)).
 
 **The per-account cap** is opt-in (`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS`;
 unset, there is none). Jobs on one worker run one after another, so the jobs
@@ -546,11 +548,13 @@ later, and one worker still runs its jobs one at a time.
 
 ### Account failover
 
-A worker is not stuck on an exhausted account. When a turn on any
-`claude-code` agent — a pool worker, a named agent, an officer instance, the
-chief — fails `rate_limited` or `auth_failed`, muster marks the account as
-above and then, unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to
-another of its owner's accounts**:
+A worker is not stuck on an exhausted account, and a pool is not refused for
+one while another account is usable. When a turn on any `claude-code` agent —
+a pool worker, a named agent, an officer instance, the chief — fails
+`rate_limited` or `auth_failed`, muster marks the account as above and then,
+unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to another of its
+owner's accounts, and with it every other idle agent of the owner's on the
+failed account**:
 
 - **Which account.** One that is usable: not cooling down after a
   `rate_limited`, and not marked `auth_failed` for its current token. Of those,
@@ -581,6 +585,31 @@ another of its owner's accounts**:
 - **No fail-back.** The agent stays on its new account when the old one resets
   (moving back would restart its pod again for nothing); it moves again only if
   the new account fails in turn.
+- **Every idle agent on the account, not only the one that failed.** The
+  limit is the account's, so every agent on it would fail at its next model
+  call. Right after the failing agent, muster sweeps the account in the
+  background: every other live `claude-code` agent of the same owner on it
+  that may be moved (the pin rule above) and is **idle** — no job queued or
+  running on it, on any server — is moved the same way, one at a time, each
+  move conditional on the account it leaves. One sweep runs per account at a
+  time. Without this, a pool whose workers all sat on the failed account
+  refused every submission until the account reset, because a refused
+  submission runs no turn and so moves no worker.
+- **A busy agent moves at its own next failed turn.** Its job's turn fails
+  `rate_limited` at its next model call, the agent moves then, and the job is
+  re-queued on the new account (below). Moving it during the job instead would
+  restart its pod under the turn, which fails with an error that is not an
+  account failure — the job would fail rather than be re-queued.
+- **A pool submission moves a worker itself when it has to.** When no worker
+  of a pool can take a job and some were skipped only because their account is
+  cooling down or failed authentication — a mark no sweep followed: one written
+  before a restart or by another server, or a sweep that found the workers
+  busy — the submission moves one such idle worker (the first by name) to a
+  usable account and places the job on it, instead of answering 429.
+- **A job on a just-moved worker waits for its new pod.** The worker's row
+  reads `running` at once, so a job placed on it waits (up to 5 minutes) for
+  the restarted pod before its turn, rather than sending the turn into the
+  restart; a pod not ready by then fails the job `agent_unavailable`.
 
 **The job that hit the limit is re-queued, not failed.** A job whose turn
 failed `rate_limited` or `auth_failed`, on an agent the failover moved off that
@@ -781,7 +810,14 @@ step 6 has its own bound.
 - **The account failover is per process.** A move is idempotent across
   servers (it is conditional on the account it leaves), but serialising a move
   against a Stop or Delete of the same agent holds only within one server; a
-  rolling update's two servers can still interleave them.
+  rolling update's two servers can still interleave them. Likewise, a job waits
+  for a worker's new pod only when its own server made the move: a job placed
+  on a worker another server has just moved can reach the restarting pod and
+  fail. A sweep moves only the agents the triggering turn's principal can list.
+- **A pinned worker is never moved for the pool.** A pool whose every worker
+  is pinned to a cooling account (and has not opted in with `cc_failover`)
+  still answers 429 until the reset, though another account is usable: the pin
+  is the operator's choice of account.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the worktree (or the working directory) is followed,
   so the file read can be outside it.

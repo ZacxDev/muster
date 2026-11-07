@@ -56,3 +56,36 @@ func TestRequeueIsOncePerAccountAndOnlyFromRunning(t *testing.T) {
 		t.Fatal("Tried disagrees with the recorded failovers")
 	}
 }
+
+// TestActiveCountsSeesEveryOwnersJobs: the account failover's idle check. A
+// job user 1 submitted to user 1's agent counts when user 2 asks — under the
+// caller's row-level security it would read as absent, and the agent as idle
+// enough to restart under it. Queued and running count apart; a finished job
+// and an agent with none are absent.
+func TestActiveCountsSeesEveryOwnersJobs(t *testing.T) {
+	s, pool := pgStore(t)
+	busy := mustAgent(t, pool, 1, "job-active-busy")
+	idle := mustAgent(t, pool, 1, "job-active-idle")
+	ctx := as(1)
+	var ids []int64
+	for i := 0; i < 3; i++ {
+		j, _, err := s.Create(ctx, NewJob{AgentID: busy.ID, Agent: busy.Name, Prompt: "review", TimeoutSeconds: 60})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, j.ID)
+	}
+	if ok, err := s.Start(ctx, ids[0], "north", 0); err != nil || !ok {
+		t.Fatalf("start = %v, %v", ok, err)
+	}
+	if ok, err := s.Finish(ctx, ids[2], Outcome{Status: StatusSucceeded, Result: "done"}); err != nil || !ok {
+		t.Fatalf("finish = %v, %v", ok, err)
+	}
+	got, err := s.ActiveCounts(as(2), []int64{busy.ID, idle.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[busy.ID] != (ActiveCount{Queued: 1, Running: 1}) {
+		t.Fatalf("counts as user 2 = %+v, want only agent %d: 1 queued, 1 running", got, busy.ID)
+	}
+}
