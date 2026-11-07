@@ -2023,7 +2023,9 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		s.turns.leave(a.ID)
 		if err != nil {
 			tcancel()
-			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": err.Error()})
+			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
+			// A busy give-up is stored (chat_busy.go); every other failure is not.
+			s.storeChatBusyGiveUp(ctx, a, session, err)
 			// Nothing is stored for a failed turn, so nothing else would tell a page
 			// opened during it that it is over: its "working…" (drawn from the
 			// session's count) would stay up. The refetch this asks for redraws it
@@ -2043,6 +2045,18 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		s.persistTurn(pctx, a, session, parts)
 		pcancel()
 	}
+}
+
+// wsTurnError is the socket's message for a turn that failed. A message that
+// waited out the turn in flight and was never sent (chat_busy.go) says so in
+// words, marked `unsent` and carrying the text, so the page shows it as a notice
+// rather than an "[error]" and gives the text back to the composer.
+func wsTurnError(err error, text string) map[string]any {
+	var busy *chatBusyError
+	if errors.As(err, &busy) {
+		return map[string]any{"type": "error", "content": err.Error(), "unsent": true, "text": text}
+	}
+	return map[string]any{"type": "error", "content": err.Error()}
 }
 
 // persistTurnTimeout bounds storing a finished turn's reply, on a context
@@ -2109,7 +2123,9 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 			emit(ev)
 		}
 	}
-	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, collect)
+	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
+	// waits for that turn and sends again, rather than failing (chat_busy.go).
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, text, collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)
@@ -2283,6 +2299,13 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 				"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
 		case "tool_result":
 			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
+		case "queued":
+			// The message waits for the session's turn in flight (chat_busy.go):
+			// the page says so in place of "working".
+			_ = wsWriteJSON(ctx, c, map[string]any{"type": "queued", "content": ev.Text})
+		case "accepted":
+			// The runtime took a message that was queued: "working" again.
+			_ = wsWriteJSON(ctx, c, map[string]any{"type": "accepted"})
 		}
 	}
 }

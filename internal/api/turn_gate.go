@@ -22,6 +22,81 @@ type turnGate struct {
 	mu      sync.Mutex
 	running map[int64]int
 	closed  map[int64]bool
+	// waiters are the turns of id's waiting out the runtime's `busy` refusal
+	// (chat_busy.go), oldest first: only the head may ask the runtime, so the
+	// messages are sent in the order they were typed, whatever door each came by.
+	waiters map[int64][]*gateWaiter
+	// wake[id] is closed by a successful closeFor: every waiter asleep on it
+	// gives up at once instead of sleeping out its poll.
+	wake map[int64]chan struct{}
+}
+
+// gateWaiter is one turn in id's waiter queue. asleep: between two asks of the
+// runtime — a turn closeFor need not wait for (see closeFor).
+type gateWaiter struct{ asleep bool }
+
+// join puts a turn of id's (already entered) at the back of id's waiter queue.
+func (g *turnGate) join(id int64) *gateWaiter {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.waiters == nil {
+		g.waiters = map[int64][]*gateWaiter{}
+	}
+	w := &gateWaiter{}
+	g.waiters[id] = append(g.waiters[id], w)
+	return w
+}
+
+// quit takes w out of id's waiter queue.
+func (g *turnGate) quit(id int64, w *gateWaiter) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	q := g.waiters[id]
+	for i, x := range q {
+		if x == w {
+			q = append(q[:i:i], q[i+1:]...)
+			break
+		}
+	}
+	if len(q) == 0 {
+		delete(g.waiters, id)
+		return
+	}
+	g.waiters[id] = q
+}
+
+// first reports whether w is the oldest of id's waiters: the one that may ask.
+func (g *turnGate) first(id int64, w *gateWaiter) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	q := g.waiters[id]
+	return len(q) > 0 && q[0] == w
+}
+
+// sleep marks w asleep and returns the channel a closeFor of id closes.
+func (g *turnGate) sleep(id int64, w *gateWaiter) <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	w.asleep = true
+	if g.wake == nil {
+		g.wake = map[int64]chan struct{}{}
+	}
+	ch, ok := g.wake[id]
+	if !ok {
+		ch = make(chan struct{})
+		g.wake[id] = ch
+	}
+	return ch
+}
+
+// wakeUp marks w awake and reports whether id was closed meanwhile — in ONE
+// lock, so a closeFor either saw w asleep and closed (w must not ask again), or
+// sees it awake and refuses.
+func (g *turnGate) wakeUp(id int64, w *gateWaiter) (closed bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	w.asleep = false
+	return g.closed[id]
 }
 
 // ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement
@@ -108,14 +183,35 @@ func (g *turnGate) closeFor(id int64) (ok bool, why string) {
 	if g.closed[id] {
 		return false, gateClosed
 	}
-	if g.running[id] > 0 {
+	// 🔴 A TURN ASLEEP IN THE WAITER QUEUE DOES NOT HOLD THE GATE. It is
+	// counted in running (its door entered), but between two asks it has sent
+	// nothing and is waiting on the runtime's `busy` — often a session stuck on
+	// a dialog, the very case a restart or replacement fixes. Counting it would
+	// refuse those for up to chatBusyWait. Closing wakes it, and it gives up
+	// with its "not sent" line stored (chat_busy.go).
+	if g.running[id]-g.asleepLocked(id) > 0 {
 		return false, gateBusy
 	}
 	if g.closed == nil {
 		g.closed = map[int64]bool{}
 	}
 	g.closed[id] = true
+	if ch, ok := g.wake[id]; ok {
+		close(ch)
+		delete(g.wake, id)
+	}
 	return true, ""
+}
+
+// asleepLocked counts id's waiters asleep; g.mu is held.
+func (g *turnGate) asleepLocked(id int64) int {
+	n := 0
+	for _, w := range g.waiters[id] {
+		if w.asleep {
+			n++
+		}
+	}
+	return n
 }
 
 // close is closeFor without the why.

@@ -128,6 +128,9 @@ func markerAfter(t *testing.T, pool *pgxpool.Pool, a agents.Agent) agents.OwnerT
 func TestTheOwnersChatDoorsMarkOnlyAnAcceptedOwnerTurn(t *testing.T) {
 	gw := &markerGateway{mode: runtimeAccepts}
 	f := newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) { gw.pool = pool; ext.Gateway = gw })
+	// A refused line now WAITS for the turn in flight (chat_busy.go); this fake
+	// refuses forever, so the wait is cut short to keep the test about the marker.
+	f.srv.chatBusyWait, f.srv.chatBusyPoll = 50*time.Millisecond, 10*time.Millisecond
 	rowOf := func(text string) int64 {
 		var id int64
 		if err := f.pool.QueryRow(authz.System(context.Background()),

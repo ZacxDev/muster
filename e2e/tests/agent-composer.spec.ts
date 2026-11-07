@@ -318,6 +318,102 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
+    // 🔴 A MESSAGE HELD FOR THE TURN IN FLIGHT (internal/api chat_busy.go). A
+    // chief just turned on runs its kickoff in its default session, and ccd
+    // refuses a second turn there with a 409 `busy`; the page showed that as
+    // "[error] responses HTTP 409 …". Now the server holds the message and says
+    // so ("queued"), then streams the reply once the turn ends — or, if it
+    // waited too long, says so in words ("unsent") and gives the text back.
+    // The socket is played here, so what is pinned is how the PAGE draws those
+    // messages; the server's side is internal/api/chat_busy_test.go.
+    test('a message held for the turn in flight says so, then answers; one never sent comes back to the box', async ({ page }) => {
+      await signIn(page, origin);
+      const agent = await saveAgent(page, 'gateway');
+      const held = `e2e: held for the turn in flight (${vp.name})`;
+      const gaveUp = `e2e: never sent, send it again (${vp.name})`;
+      // Each step of the fake runtime waits for the test to let it go, so the
+      // page can be read BETWEEN two socket messages.
+      const gates: Array<() => void> = [];
+      const step = () => new Promise<void>((r) => gates.push(r));
+      const go = async () => {
+        await expect.poll(() => gates.length, 'the fake is waiting for the test').toBeGreaterThan(0);
+        gates.shift()!();
+      };
+      const got: string[] = [];
+      await page.routeWebSocket(/\/agents\/[^/]+\/ws(\?|$)/, (ws) => {
+        ws.onMessage(async (raw) => {
+          const m = JSON.parse(String(raw));
+          if (m.type !== 'message') return;
+          got.push(m.text);
+          ws.send(JSON.stringify({ type: 'queued', content: held }));
+          if (got.length === 1) {
+            // Taken, as the first part of the reply shows (no "accepted").
+            await step();
+            ws.send(JSON.stringify({ type: 'delta', content: 'answer to: ' + m.text }));
+            await step();
+            ws.send(JSON.stringify({ type: 'done' }));
+          } else if (got.length === 2) {
+            // Taken, as the server's "accepted" says, before any reply.
+            await step();
+            ws.send(JSON.stringify({ type: 'accepted' }));
+            await step();
+            ws.send(JSON.stringify({ type: 'delta', content: 'answer to: ' + m.text }));
+            ws.send(JSON.stringify({ type: 'done' }));
+          } else {
+            ws.send(JSON.stringify({ type: 'error', content: gaveUp, unsent: true, text: m.text }));
+          }
+        });
+      });
+      await page.goto(`${origin}/agents/${agent.name}`);
+      const input = page.locator('#chat-input');
+      const working = page.locator('#chat-working');
+      const log = page.locator('#chat-log');
+
+      const first = `first, while it is busy (${vp.name})`;
+      await input.fill(first);
+      await page.locator('#chat-send').click();
+      await expect.poll(() => got, 'the page sent it over the socket').toEqual([first]);
+      // Held: the working row says why, in words, and nothing reads as an error.
+      await expect(working).toBeVisible();
+      await expect(working).toContainText(held);
+      await expect(working).toHaveAttribute('data-queued', '');
+      await expect(log).not.toContainText('[error]');
+      await expect(input).toHaveValue('');
+      await noHorizontalScroll(page);
+
+      // 🔴 TAKEN, BEFORE "done": the first part of the reply streams and the
+      // row drops its "queued" words while the turn still runs (round 1 of
+      // #494: they stayed up for the whole reply, inviting a second send).
+      await go();
+      await expect(log).toContainText('answer to: ' + first);
+      await expect(working, 'no longer queued once the reply streams').not.toHaveAttribute('data-queued', '');
+      await expect(working).not.toContainText(held);
+      await expect(working).toContainText('working');
+      await go(); // done
+      await expect(working).toBeHidden();
+
+      const accepted = `accepted before its reply (${vp.name})`;
+      await input.fill(accepted);
+      await page.locator('#chat-send').click();
+      await expect(working).toContainText(held);
+      await go(); // "accepted", nothing of the reply yet
+      await expect(working, 'no longer queued once accepted').not.toHaveAttribute('data-queued', '');
+      await expect(working).not.toContainText(held);
+      await expect(working).toContainText('working');
+      await expect(working, 'still working: the turn has not ended').toBeVisible();
+      await go(); // the reply and done
+      await expect(log).toContainText('answer to: ' + accepted);
+      await expect(working).toBeHidden();
+
+      const second = `second, the agent stays busy (${vp.name})`;
+      await input.fill(second);
+      await page.locator('#chat-send').click();
+      await expect(log).toContainText(gaveUp);
+      await expect(log, 'an unsent message is told in words, not as an error').not.toContainText('[error]');
+      await expect(input, 'the text is back in the box to send again').toHaveValue(second);
+      await expect(working).toBeHidden();
+    });
+
     // 🔴 A REPLY THAT LANDS BEFORE THE PAGE'S EVENT STREAM IS CONNECTED IS
     // STILL SHOWN. The conversation re-fetches on `chat.reply`, which the server
     // broadcasts once, when the turn is stored; a page whose /events was not

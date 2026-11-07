@@ -295,7 +295,7 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 			return
 		}
 		if err != nil {
-			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}
+			parts = turnFailedParts(err)
 		}
 		s.persistTurn(bctx, chief, sess, parts)
 	})

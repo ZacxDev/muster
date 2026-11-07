@@ -1477,7 +1477,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 			Class(workingClass(v.TurnInFlight)+" max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
-			Span(Class("animate-pulse"), g.Text("working")),
+			Span(Class("animate-pulse"), g.Attr("data-working-label", ""), g.Text("working")),
 			Span(
 				g.Attr("aria-hidden", "true"),
 				Class("inline-flex gap-1"),
@@ -2178,6 +2178,18 @@ func agentChatScript(name string) g.Node {
     if (!working) return;
     working.classList.add('hidden');
     working.classList.remove('flex');
+    workingLabel(null);
+  }
+  // workingLabel sets the working row's words: a "queued" notice while the
+  // message waits for the agent's turn in flight (internal/api chat_busy.go),
+  // or back to its own "working" (null).
+  function workingLabel(notice) {
+    var working = workingEl();
+    var lab = working && working.querySelector('[data-working-label]');
+    if (!lab) return;
+    if (lab._orig == null) lab._orig = lab.textContent;
+    lab.textContent = notice || lab._orig;
+    if (notice) working.setAttribute('data-queued', ''); else working.removeAttribute('data-queued');
   }
 
   // A standalone bubble (user messages, and assistant text when there's no turn
@@ -2334,6 +2346,11 @@ func agentChatScript(name string) g.Node {
   // every event of the owner's bus for a listener that never fired; it is gone. A
   // kickoff turn shows once it persists, by the chat.reply refetch of #chat-log.
   function renderStreamMsg(msg) {
+    // 🔴 A QUEUED MESSAGE IS SENT THE MOMENT ANY OF ITS TURN ARRIVES: the
+    // "queued" words must not sit under a reply that is already streaming (an
+    // owner reading them would send it again). "accepted" says so first; any
+    // part of the reply says so too, for a server that sends no "accepted".
+    if (msg.type !== 'queued' && msg.type !== 'error' && msg.type !== 'done') workingLabel(null);
     switch (msg.type) {
       case 'user': {
         // His kickoff message, streamed first so the chat shows the prompt before
@@ -2382,8 +2399,26 @@ func agentChatScript(name string) g.Node {
         scroll();
         break;
       }
+      case 'queued':
+        // The message is held for the agent's turn in flight; it will be sent.
+        showWorking();
+        workingLabel(msg.content || '');
+        break;
+      case 'accepted':
+        // The runtime took the queued message (reset above): working on it.
+        break;
       case 'error':
-        var et = ensureText(); et._raw = (et._raw ? et._raw + '\n' : '') + '[error] ' + (msg.content || ''); et.innerHTML = mdRender(et._raw);
+        var et = ensureText();
+        if (msg.unsent) {
+          // Never sent (the agent stayed busy): a notice in words, and the
+          // text back in the composer unless something new was typed there.
+          et.setAttribute('data-unsent', '');
+          et._raw = (et._raw ? et._raw + '\n' : '') + (msg.content || '');
+          if (msg.text && !input.value.trim()) { input.value = msg.text; if (window.musterComposerFit) window.musterComposerFit(input); }
+        } else {
+          et._raw = (et._raw ? et._raw + '\n' : '') + '[error] ' + (msg.content || '');
+        }
+        et.innerHTML = mdRender(et._raw);
         hideWorking();
         resetTurn();
         session.streaming = false;
