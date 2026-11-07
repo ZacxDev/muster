@@ -38,6 +38,13 @@ const MaxSSOOrigins = 8
 // ssoHostLabel is one DNS label: letters, digits and inner hyphens.
 var ssoHostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// ssoNumericLabel is a label a browser's host parser reads as a number: all
+// decimal digits, or `0x` and hex digits (lower case: the host is lower-cased first).
+var ssoNumericLabel = regexp.MustCompile(`^([0-9]+|0x[0-9a-f]*)$`)
+
+// ssoHasLetter: the last label of a host name must contain a letter.
+var ssoHasLetter = regexp.MustCompile(`[a-z]`)
+
 // ParseSSOOrigins parses MUSTER_ANDROID_SSO_ORIGINS: a comma-separated list of
 // exact origins, each `https://host` or `https://host:port`. Empty (or only
 // spaces) is "none": an empty, non-nil list and no error.
@@ -114,10 +121,23 @@ func parseSSOOrigin(s string) (string, error) {
 			return refuse("the port must be 1-65535, with no leading zero")
 		}
 	}
+	// Only hosts a browser serves exactly as written, so the origin the app
+	// compares is the one the WebView reports: a canonical dotted-quad IPv4
+	// address, a bracketed IPv6 address, or a DNS name (validSSOHostName).
+	bracketed := strings.HasPrefix(u.Host, "[")
 	if ip := net.ParseIP(host); ip != nil {
-		if ip.To4() == nil {
-			host = "[" + host + "]"
+		switch {
+		case bracketed && ip.To4() != nil:
+			// [::ffff:1.2.3.4]: a browser rewrites it, and it names an IPv4 host.
+			return refuse("an IPv4-mapped IPv6 address; write the IPv4 address itself")
+		case bracketed:
+			// ip.String() is RFC 5952's compressed lower-case form, a browser's too.
+			host = "[" + ip.String() + "]"
+		case ip.To4() == nil || ip.String() != host:
+			return refuse("an IPv4 address must be a canonical dotted quad")
 		}
+	} else if bracketed {
+		return refuse("the bracketed host is not an IPv6 address")
 	} else if !validSSOHostName(host) {
 		return refuse("the host is not a host name")
 	}
@@ -129,14 +149,23 @@ func parseSSOOrigin(s string) (string, error) {
 
 // validSSOHostName reports whether h is a DNS name: dot-separated labels, no
 // empty label (so no leading, trailing or doubled dot), at most 253 bytes.
+//
+// It must not LOOK numeric either: a browser reads `127.1`, `0x7f.0.0.1` or
+// `2130706433` as an IPv4 address and rewrites it (`127.0.0.1`), so the origin
+// the app would compare is not the one written. So no label may be all digits
+// or `0x` hex, and the last label must contain a letter.
 func validSSOHostName(h string) bool {
 	if h == "" || len(h) > 253 {
 		return false
 	}
-	for _, label := range strings.Split(h, ".") {
-		if !ssoHostLabel.MatchString(label) {
+	labels := strings.Split(h, ".")
+	for _, label := range labels {
+		if !ssoHostLabel.MatchString(label) || ssoNumericLabel.MatchString(label) {
 			return false
 		}
+	}
+	if !ssoHasLetter.MatchString(labels[len(labels)-1]) {
+		return false
 	}
 	return true
 }
