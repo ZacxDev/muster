@@ -118,6 +118,17 @@ func (r *shepRig) pushAs(instance, old, nw, ref string) (*http.Request, error) {
 	return r.g.Admit(rq, "github.com", sRepo+".git/git-receive-pack")
 }
 
+// mustAfter is the re-check the gate attached to an admitted push, failing
+// the test (never panicking the package) when there is none.
+func mustAfter(t *testing.T, out *http.Request) func(context.Context, connectors.ForwardResult) {
+	t.Helper()
+	after := connectors.AfterForwardOf(out)
+	if after == nil {
+		t.Fatal("the shepherd's push carries no re-check")
+	}
+	return after
+}
+
 func (r *shepRig) push() (*http.Request, error) {
 	return r.pushAs(sInstance, oidA, oidB, "refs/heads/"+sBranch)
 }
@@ -304,7 +315,7 @@ func TestANonFastForwardShepherdPushIsReverted(t *testing.T) {
 			} else {
 				r.gh.compares[oidA+"..."+oidB] = *cmp
 			}
-			connectors.AfterForwardOf(out)(context.Background(), applied("refs/heads/"+sBranch))
+			mustAfter(t, out)(context.Background(), applied("refs/heads/"+sBranch))
 			if want := sBranch + " " + oidB + "->" + oidA; len(r.gh.restored) != 1 || r.gh.restored[0] != want {
 				t.Fatalf("restored %v, want [%s]", r.gh.restored, want)
 			}
@@ -339,7 +350,7 @@ func TestAShepherdPushIntoTheAuthorsWallIsReverted(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			connectors.AfterForwardOf(out)(context.Background(), applied("refs/heads/"+sBranch))
+			mustAfter(t, out)(context.Background(), applied("refs/heads/"+sBranch))
 			if !c.revert {
 				if len(r.gh.restored) != 0 || len(r.notices) != 0 {
 					t.Fatalf("a clean push was reverted %v / announced %v", r.gh.restored, r.notices)
@@ -370,7 +381,7 @@ func TestARevertNeverMovesABranchThatMovedAgain(t *testing.T) {
 	}
 	r.gh.compares[oidA+"..."+oidB] = Compare{Status: "diverged", AheadBy: 1, BehindBy: 1}
 	r.gh.branches[sBranch] = fxHead // moved again after the push
-	connectors.AfterForwardOf(out)(context.Background(), applied("refs/heads/"+sBranch))
+	mustAfter(t, out)(context.Background(), applied("refs/heads/"+sBranch))
 	if len(r.gh.restored) != 0 || r.gh.branches[sBranch] != fxHead {
 		t.Fatalf("a branch that moved again was restored: %v, now %s", r.gh.restored, r.gh.branches[sBranch])
 	}
@@ -380,7 +391,7 @@ func TestARevertNeverMovesABranchThatMovedAgain(t *testing.T) {
 	// A push GitHub did not apply is not checked at all.
 	r = newShepRig()
 	out, _ = r.push()
-	connectors.AfterForwardOf(out)(context.Background(), connectors.ForwardResult{Forwarded: true, Status: http.StatusOK,
+	mustAfter(t, out)(context.Background(), connectors.ForwardResult{Forwarded: true, Status: http.StatusOK,
 		Body: report("unpack ok", "ng refs/heads/"+sBranch+" non-fast-forward"), Complete: true})
 	if len(r.gh.restored) != 0 || len(r.notices) != 0 {
 		t.Fatalf("a push GitHub refused was acted on: %v %v", r.gh.restored, r.notices)

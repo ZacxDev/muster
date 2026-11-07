@@ -193,7 +193,7 @@ func TestTheV2KeysAreRefusedOutsideTheDraftStage(t *testing.T) {
 	}
 	m := fullShip()
 	m["forbidden_paths"] = []string{".sops.yaml"}
-	if _, err := parseShip(t, m, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "forbidden_paths is enforced by the draft stage only") {
+	if _, err := parseShip(t, m, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "forbidden_paths is enforced by the draft and shepherd stages only") {
 		t.Errorf("forbidden_paths on a release officer: %v", err)
 	}
 	m = fullShip()
@@ -204,7 +204,7 @@ func TestTheV2KeysAreRefusedOutsideTheDraftStage(t *testing.T) {
 		map[string]any{"repo": v2Web, "github_app": map[string]any{"id": 9001, "account": "example-org:4242"}},
 		map[string]any{"repo": v2Infra, "github_app": map[string]any{"id": 9001, "account": "example-org:4242"}},
 	}
-	if _, err := parseShip(t, m, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "several repos are supported on the draft stage only") {
+	if _, err := parseShip(t, m, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "several repos are supported on the draft and shepherd stages only") {
 		t.Errorf("two repos on a release officer: %v", err)
 	}
 }
@@ -391,7 +391,7 @@ func TestParseReadsAForbiddenPathsFile(t *testing.T) {
 	}
 	rel := fullShip()
 	rel["forbidden_paths_file"] = "scripts/ci/list.txt"
-	if _, err := parseShip(t, rel, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "draft stage only") {
+	if _, err := parseShip(t, rel, shipEnv(t)); err == nil || !strings.Contains(err.Error(), "draft and shepherd stages only") {
 		t.Errorf("forbidden_paths_file on a release officer: %v", err)
 	}
 }
