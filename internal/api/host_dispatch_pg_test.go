@@ -265,6 +265,11 @@ func TestALateReplyIsAppliedOnlyFromItsOwnHostAndOwner(t *testing.T) {
 	if !strings.Contains(text, `"status":"starting"`) {
 		t.Fatalf("an unconfirmed start: %s", text)
 	}
+	// Unconfirmed: no agent row, so ONLY its host_dispatches row may count it
+	// (source C), never also the reservation's 10-minute window (source B).
+	if b := f.budget(t); b.Live != 1 || len(b.LiveAgents) != 1 || b.LiveAgents[0].HostDispatch != id {
+		t.Fatalf("an unconfirmed host start is counted %d times: %+v", b.Live, b)
+	}
 	frame := mirror.Msg{Type: mirror.TypeAgentSpawned, Dispatch: id, Spawned: &mirror.AgentSpawned{Session: "agents", Window: "@9", Worktree: "/w", Branch: "b", AgentSession: "s"}}
 	f.srv.HostDispatchSpawnReply(f.owner, "host-charlie", frame)
 	f.srv.HostDispatchSpawnReply(f.owner+1, "host-bravo", frame)
@@ -282,6 +287,12 @@ func TestALateReplyIsAppliedOnlyFromItsOwnHostAndOwner(t *testing.T) {
 	f.srv.HostDispatchSpawnReply(f.owner, "host-bravo", mirror.Msg{Type: mirror.TypeAgentSpawned, Dispatch: id, Refusal: mirror.SpawnFailed, Error: "deadline passed"})
 	if r := f.row(t, id); r.Status != plugins.HostDispatchEnded {
 		t.Fatalf("a late refusal: %+v", r)
+	}
+	// A reply after the end revives nothing (UpdateHostDispatch writes no ended row).
+	f.srv.HostDispatchSpawnReply(f.owner, "host-bravo", mirror.Msg{Type: mirror.TypeAgentSpawned, Dispatch: id,
+		Spawned: &mirror.AgentSpawned{Session: "agents", Window: "@10", Worktree: "/w2", Branch: "b2", AgentSession: "s2"}})
+	if r := f.row(t, id); r.Status != plugins.HostDispatchEnded || r.Window != "@9" {
+		t.Fatalf("a reply after the end changed the row: %+v", r)
 	}
 }
 
@@ -326,8 +337,14 @@ func TestAnOrphanWindowRaisesOneNoticeAndIsNeverAdopted(t *testing.T) {
 		t.Fatalf("row %+v, notices %+v", r, ns)
 	}
 	f.srv.reconcileListing(context.Background(), f.owner, "host-bravo", []mirror.Window{win}, time.Now())
-	if len(notices()) != 1 {
-		t.Fatal("a second listing raised a second notice")
+	// Counted over EVERY notice row, withdrawn ones included: a second notice
+	// raised and then withdrawn is still a second notice raised.
+	var raised int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM attention_asks WHERE owner_id = $1 AND kind = 'notice'`, f.owner).Scan(&raised); err != nil {
+		t.Fatal(err)
+	}
+	if len(notices()) != 1 || raised != 1 {
+		t.Fatalf("a second listing raised a second notice (%d open, %d raised)", len(notices()), raised)
 	}
 	f.srv.reconcileListing(context.Background(), f.owner, "host-bravo", nil, time.Now())
 	if len(notices()) != 0 {
