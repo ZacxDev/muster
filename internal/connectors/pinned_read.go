@@ -73,14 +73,74 @@ func ValidPinSHA(s string) bool { return fullSHA.MatchString(s) }
 // request's host, rest its escaped path (no leading slash), rawQuery its
 // query.
 func CheckPinnedRead(method, apiHost, host, rest, rawQuery string, pins []RepoPin) error {
-	// RED-FIRST SKELETON: the guard is inert in this commit, so the tests
-	// that pin its refusals must fail; the next commit implements it.
-	_, _ = url.PathUnescape(rest)
-	_ = http.MethodGet
-	_ = strings.EqualFold
-	_ = fmt.Sprintf
-	_ = pinnedAllowed
-	return nil
+	refuse := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s. %s", ErrPinnedRead, fmt.Sprintf(format, args...), pinnedAllowed(pins))
+	}
+	if len(pins) == 0 {
+		return refuse("the item you hold pins no repository")
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return refuse("method %s is not a read", method)
+	}
+	if !strings.EqualFold(host, apiHost) {
+		return refuse("host %s is not served (git and every other host are refused; only the REST API at %s)", host, apiHost)
+	}
+	p, err := url.PathUnescape(rest)
+	if err != nil || strings.ContainsAny(p, "%\\") {
+		return refuse("the request path does not decode once")
+	}
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if s == "." || s == ".." || (s == "" && i < len(segs)-1) {
+			return refuse("the request path has an empty, '.' or '..' segment")
+		}
+	}
+	if len(segs) < 4 || segs[0] != "repos" {
+		return refuse("only /repos/<owner>/<name>/contents and /repos/<owner>/<name>/git/trees are served")
+	}
+	repo := segs[1] + "/" + segs[2]
+	sha := ""
+	for _, pin := range pins {
+		if strings.EqualFold(pin.Repo, repo) {
+			sha = pin.SHA
+		}
+	}
+	if sha == "" {
+		return refuse("repository %s is not pinned by the item you hold", repo)
+	}
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return refuse("the query does not parse")
+	}
+	switch {
+	case segs[3] == "contents":
+		for k, v := range q {
+			if k != "ref" {
+				return refuse("query key %q is not served on contents (only ref)", k)
+			}
+			if len(v) != 1 {
+				return refuse("ref is given %d times", len(v))
+			}
+		}
+		if ref := q.Get("ref"); !strings.EqualFold(ref, sha) {
+			if ref == "" {
+				return refuse("a contents read must name ref=<the pinned commit>; without it GitHub reads the default branch")
+			}
+			return refuse("ref %q is not the pinned commit of %s", ref, repo)
+		}
+		return nil
+	case segs[3] == "git" && len(segs) == 6 && segs[4] == "trees":
+		for k, v := range q {
+			if k != "recursive" || len(v) != 1 {
+				return refuse("query key %q is not served on git/trees (only recursive, once)", k)
+			}
+		}
+		if !strings.EqualFold(segs[5], sha) {
+			return refuse("tree %q is not the pinned commit of %s", segs[5], repo)
+		}
+		return nil
+	}
+	return refuse("/repos/%s/%s is not served", repo, strings.Join(segs[3:], "/"))
 }
 
 // pinnedAllowed is the refusal's second sentence: what IS served, with the
