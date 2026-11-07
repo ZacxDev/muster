@@ -118,7 +118,9 @@ func (f *fakeFailover) Events(context.Context, int64, int) ([]ccfailover.Event, 
 	return nil, nil
 }
 func (f *fakeFailover) UseHooks(ccfailover.Policy, ccfailover.Prepare) {}
-func (f *fakeFailover) UseHold(ccfailover.Hold)                        {}
+func (f *fakeFailover) AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result {
+	return f.AccountFailed(ctx, agentID, account, failure, detail)
+}
 func (f *fakeFailover) Rebinding(id int64) (ccfailover.Result, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -452,13 +452,13 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 // ACCOUNT IS USABLE. When no worker is eligible and some idle worker was
 // skipped only because its Claude account is cooling down or failed
 // authentication, one such worker is failed over (failoverBlockedWorker: the
-// account failover's own move, to a usable account) and the choice is made
+// account failover's own move, to a usable account — a pool worker's PIN does
+// not stop it: ccfailover.Service.AccountFailedForPool) and the choice is made
 // again — so the job runs on it instead of being refused until the account
-// resets. The account sweep (internal/ccfailover) normally moves those
-// workers when the account is marked; this covers a mark it did not follow (a
-// server start, another server, a sweep that found the worker busy). With no
-// usable account nothing moves and the refusal stands: the 429 naming each
-// worker's reset.
+// resets. A failover moves only the agent whose own turn failed, and a pool
+// that refuses upfront runs no turn on its workers, so without this it stayed
+// refused (2026-11-07). With no usable account nothing moves and the refusal
+// stands: the 429 naming each worker's reset.
 func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
 	j, created, blocked, err := s.createPoolJobOnce(ctx, n)
 	var refused *jobRefusal
@@ -482,7 +482,7 @@ func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked
 		if !idle {
 			continue
 		}
-		res := s.ext.AccountFailover.AccountFailed(ctx, b.a.ID, b.a.CCAccount, b.failure,
+		res := s.ext.AccountFailover.AccountFailedForPool(ctx, b.a.ID, b.a.CCAccount, b.failure,
 			"a submission to worker pool "+strconv.Quote(pool)+" found every worker's Claude account unusable")
 		release()
 		if res.Moved {
@@ -494,7 +494,7 @@ func (s *Server) failoverBlockedWorker(ctx context.Context, pool string, blocked
 	return false
 }
 
-// holdIdleAgent is the account failover's idle check (ccfailover.Hold): a is
+// holdIdleAgent is the pool submission failover's idle check: a is
 // idle when no job holds its lane in this process and the job store counts
 // none queued or running on it, in any process. When idle, a's lane is held
 // until release, so no job of this process starts a turn on it while its pod
@@ -1081,7 +1081,7 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		return
 	}
 	// 🔴 A WORKER THIS PROCESS JUST MOVED TO ANOTHER ACCOUNT IS RESTARTING ITS
-	// POD (the account sweep, or a pool submission's failover): its row reads
+	// POD (a pool submission's failover, or another job's): its row reads
 	// running at once, so a job placed on it must wait for the replacement pod
 	// rather than send its turn into the restart, which would fail it with an
 	// error that is not an account failure, and so is never re-queued.

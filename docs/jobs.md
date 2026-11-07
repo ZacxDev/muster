@@ -529,9 +529,9 @@ account rests: no pool job is placed on any worker while it uses that account,
 until the reset time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9,
 9am (UTC)`), or, when the message states none muster can read (no zone, for
 one), `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It
-is usable again at exactly that time. While another account is usable the
-pool does not wait for that: its workers are moved off the resting account
-(see [Account failover](#account-failover)).
+is usable again at exactly that time. While another account is usable a pool
+does not wait for that: a submission that finds no worker it can use moves one
+off the resting account (see [Account failover](#account-failover)).
 
 **The per-account cap** is opt-in (`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS`;
 unset, there is none). Jobs on one worker run one after another, so the jobs
@@ -553,8 +553,7 @@ one while another account is usable. When a turn on any `claude-code` agent —
 a pool worker, a named agent, an officer instance, the chief — fails
 `rate_limited` or `auth_failed`, muster marks the account as above and then,
 unless `MUSTER_AGENT_CC_FAILOVER=off`, **moves the agent to another of its
-owner's accounts, and with it every other idle agent of the owner's on the
-failed account**:
+owner's accounts**:
 
 - **Which account.** One that is usable: not cooling down after a
   `rate_limited`, and not marked `auth_failed` for its current token. Of those,
@@ -575,7 +574,8 @@ failed account**:
   control for it), `"cc_failover": true` on `POST /api/chief/replace`, or the
   officer's `cc_failover`.
   Agents created before this existed read as not pinned (an officer instance
-  reads its officer's current configuration).
+  reads its officer's current configuration). The one exception is a pool
+  submission's move of a pool worker (below).
 - **Once per failure.** Two turns on one agent failing at once move it once:
   the move is conditional on the account it is leaving, and in one process the
   failovers of one agent run one at a time. A move never races a Stop or a
@@ -585,27 +585,24 @@ failed account**:
 - **No fail-back.** The agent stays on its new account when the old one resets
   (moving back would restart its pod again for nothing); it moves again only if
   the new account fails in turn.
-- **Every idle agent on the account, not only the one that failed.** The
-  limit is the account's, so every agent on it would fail at its next model
-  call. Right after the failing agent, muster sweeps the account in the
-  background: every other live `claude-code` agent of the same owner on it
-  that may be moved (the pin rule above) and is **idle** — no job queued or
-  running on it, on any server — is moved the same way, one at a time, each
-  move conditional on the account it leaves. One sweep runs per account at a
-  time. Without this, a pool whose workers all sat on the failed account
-  refused every submission until the account reset, because a refused
-  submission runs no turn and so moves no worker.
-- **A busy agent moves at its own next failed turn.** Its job's turn fails
-  `rate_limited` at its next model call, the agent moves then, and the job is
-  re-queued on the new account (below). Moving it during the job instead would
-  restart its pod under the turn, which fails with an error that is not an
-  account failure — the job would fail rather than be re-queued.
-- **A pool submission moves a worker itself when it has to.** When no worker
-  of a pool can take a job and some were skipped only because their account is
-  cooling down or failed authentication — a mark no sweep followed: one written
-  before a restart or by another server, or a sweep that found the workers
-  busy — the submission moves one such idle worker (the first by name) to a
-  usable account and places the job on it, instead of answering 429.
+- **A pool submission moves a worker itself.** A failover moves only the agent
+  whose own turn failed, and a pool that refuses a job runs no turn on its
+  workers — so a pool whose every worker sat on a cooling account used to
+  refuse every submission until that account reset, even with another account
+  usable (the 2026-11-07 incident). Now, when no worker of a pool can take a
+  job and some were skipped only because their account is cooling down or
+  failed authentication, the submission moves one of them that is **idle** —
+  no job queued or running on it, on any server — to a usable account (the
+  first by name), and places the job on it instead of answering 429. **A pool
+  overrides a pin:** a worker in a pool is moved this way even when its
+  account was pinned at creation and it did not opt in to `cc_failover`.
+  Nothing else does: a pinned named agent, officer instance or chief is moved
+  by nothing new, and failover off still moves nothing. A busy worker is not
+  moved here: its job's turn fails at its next model call, the failover moves
+  it then and re-queues the job (below), whereas restarting its pod under the
+  turn would fail the job with an error that is not an account failure. The
+  other workers on the cooling account stay there until a submission needs
+  one, or their own turn fails.
 - **A job on a just-moved worker waits for its new pod.** The worker's row
   reads `running` at once, so a job placed on it waits (up to 5 minutes) for
   the restarted pod before its turn, rather than sending the turn into the
@@ -813,11 +810,7 @@ step 6 has its own bound.
   rolling update's two servers can still interleave them. Likewise, a job waits
   for a worker's new pod only when its own server made the move: a job placed
   on a worker another server has just moved can reach the restarting pod and
-  fail. A sweep moves only the agents the triggering turn's principal can list.
-- **A pinned worker is never moved for the pool.** A pool whose every worker
-  is pinned to a cooling account (and has not opted in with `cc_failover`)
-  still answers 429 until the reset, though another account is usable: the pin
-  is the operator's choice of account.
+  fail.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the worktree (or the working directory) is followed,
   so the file read can be outside it.

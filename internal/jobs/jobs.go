@@ -625,7 +625,7 @@ type ActiveCount struct {
 func (c ActiveCount) Active() int { return c.Queued + c.Running }
 
 // ActiveCounter counts the jobs queued and running on agents, whoever
-// submitted them. The account failover's sweep asks it whether an agent is
+// submitted them. A pool submission's account failover asks it whether a worker is
 // idle before restarting its pod (internal/api holdIdleAgent); asserted rather
 // than added to Store, like Requeuer.
 type ActiveCounter interface {

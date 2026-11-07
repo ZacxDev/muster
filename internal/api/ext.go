@@ -392,15 +392,14 @@ type Extensions struct {
 
 // AccountFailover is the part of internal/ccfailover.Service this package uses:
 // the job runner's re-queue (AccountFailed + AwaitRebound), the pool
-// submission's failover of a worker (AccountFailed), a job's wait for its
-// worker's replacement pod (Rebinding + AwaitRebound), the agent page's
-// history (Events), the officer runtime's hooks (UseHooks) and the account
-// sweep's idle check (UseHold).
+// submission's failover of a worker (AccountFailedForPool), a job's wait for
+// its worker's replacement pod (Rebinding + AwaitRebound), the agent page's
+// history (Events) and the officer runtime's hooks (UseHooks).
 type AccountFailover interface {
 	AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
+	AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) ccfailover.Result
 	AwaitRebound(ctx context.Context, r ccfailover.Result) error
 	Rebinding(agentID int64) (ccfailover.Result, bool)
-	UseHold(h ccfailover.Hold)
 	Events(ctx context.Context, agentID int64, limit int) ([]ccfailover.Event, error)
 	UseHooks(policy ccfailover.Policy, prepare ccfailover.Prepare)
 	Allowed(a agents.Agent) (bool, string)
@@ -569,7 +568,6 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.ext = ext
 	if ext.AccountFailover != nil {
 		ext.AccountFailover.UseHooks(s.failoverPolicy, s.failoverPrepare)
-		ext.AccountFailover.UseHold(s.holdIdleAgent)
 	}
 	if ext.Mirror != nil {
 		s.wireAsks(ext.Mirror)

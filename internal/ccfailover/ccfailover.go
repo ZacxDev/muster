@@ -30,32 +30,19 @@
 //  5. records an event (cc_account_failovers) and logs one line — account
 //     NAMES, the reason and the reset time, never a token.
 //
-// # Every idle agent on the account, not only the one that failed
+// # A pool submission overrides a pin (AccountFailedForPool)
 //
-// An account's limit is the ACCOUNT's: once one turn on it answers
-// rate_limited (or its token fails authentication), every other agent on it
-// fails too, at its next model call. Moving only the agent whose turn failed
-// left the rest sitting on the exhausted account — and a worker pool whose
-// every worker sat there refused every submission upfront (a 429 per worker's
-// reset), so no turn ever ran on them, no failover ever fired, and the pool
-// stayed refused until the account reset (2026-11-07: ~2.5 days ahead, with a
-// second account usable the whole time).
-//
-// So every [Service.AccountFailed] that is an account failure also starts an
-// ACCOUNT SWEEP ([Service.SweepAccount], once at a time per owner and account,
-// in the background): each other live, claude-code agent of the owner's on
-// that account, that failover may move (not pinned, or opted in), and that is
-// IDLE, is moved exactly as the failing one was — same target choice, same
-// conditional move, same per-agent lane, same Stop/Delete serialisation.
-//
-// 🔴 A BUSY AGENT IS LEFT FOR ITS OWN NEXT FAILED TURN. Busy is the job
-// runner's answer ([Hold]: a job queued or running on it, in this process or
-// any). Its job's turn will fail rate_limited at its next model call, the
-// failover then moves it and the job runner RE-QUEUES that job on the new
-// account. Restarting its pod now would instead cut the turn with a connection
-// error, which is not a typed account failure — the job would fail rather than
-// be re-queued. The hold also keeps a job from STARTING on the agent while it
-// is moved. No hold installed: the sweep moves nothing (fail closed).
+// A worker pool refuses a job upfront when every worker's account is cooling
+// down or failed authentication; a refused submission runs no turn, so no
+// failover fires and the pool stays refused until the account resets
+// (2026-11-07: ~2.5 days, with a second account usable the whole time). So the
+// job API fails one such worker over itself (internal/api createPoolJob)
+// through [Service.AccountFailedForPool], which is AccountFailed except that a
+// pool worker's PIN does not stop the move: for a pool, nothing being stuck
+// wins over the account it was created on (operator, 2026-11-07). It applies
+// to agents in a worker pool only; a named agent, an officer instance and the
+// chief keep their pin as before, and failover off
+// (MUSTER_AGENT_CC_FAILOVER=off) still moves nothing.
 //
 // # Idempotent on (agent, from account)
 //
@@ -91,8 +78,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -143,30 +128,6 @@ type Result struct {
 	Event Event
 	// Why is why the agent was not moved ("" when it was).
 	Why string
-	// OwnerID is the agent's owner (0 when it could not be read).
-	OwnerID int64
-}
-
-// Lister lists agents (agents.Store.List). The account sweep needs it: an
-// Agents store without it sweeps nothing.
-type Lister interface {
-	List(ctx context.Context) ([]agents.Agent, error)
-}
-
-// Hold is the job runner's half of the account sweep (internal/api
-// holdIdleAgent): it reports whether agent a is idle — no job queued or
-// running on it — and, when it is, HOLDS it so no job starts on it until
-// release is called. why says why it is not idle.
-type Hold func(ctx context.Context, a agents.Agent) (release func(), idle bool, why string)
-
-// SweepResult is what [Service.SweepAccount] did.
-type SweepResult struct {
-	// Moved names each agent the sweep moved off the account.
-	Moved []string
-	// Busy names each agent left on it because it was not idle ([Hold]).
-	Busy []string
-	// Why is why nothing was tried ("" when the agents were looked at).
-	Why string
 }
 
 // Pool is the part of ccpool.Pool a failover reads.
@@ -208,11 +169,6 @@ type Config struct {
 	Now func() time.Time
 	// ReadyPoll and ReadyWait bound AwaitRebound (defaults 3s and 5m).
 	ReadyPoll, ReadyWait time.Duration
-	// Spawn runs an account sweep in the background (nil: a goroutine). A
-	// test seam: a test passes one that runs it at once.
-	Spawn func(func())
-	// SweepTimeout bounds one account sweep (default 10m).
-	SweepTimeout time.Duration
 }
 
 // Policy reports, for an agent, whether its account is pinned and whether
@@ -231,20 +187,12 @@ type Service struct {
 	hookMu  sync.RWMutex
 	policy  Policy
 	prepare Prepare
-	hold    Hold
 
 	mu    sync.Mutex
 	lanes map[int64]*sync.Mutex
 	memo  map[memoKey]memoEntry
 	// recent is each agent's latest rebind made by this process (Rebinding).
 	recent map[int64]memoEntry
-	// sweeping is the (owner, account) sweeps running now: one at a time each.
-	sweeping map[sweepKey]bool
-}
-
-type sweepKey struct {
-	owner   int64
-	account string
 }
 
 type memoKey struct {
@@ -276,32 +224,12 @@ func New(cfg Config) (*Service, error) {
 	if cfg.ReadyWait <= 0 {
 		cfg.ReadyWait = 5 * time.Minute
 	}
-	if cfg.SweepTimeout <= 0 {
-		cfg.SweepTimeout = 10 * time.Minute
-	}
-	if cfg.Spawn == nil {
-		cfg.Spawn = func(f func()) { go f() }
-	}
 	lg := cfg.Logger
 	if lg == nil {
 		lg = log.New(io.Discard, "", 0)
 	}
 	return &Service{cfg: cfg, log: lg, lanes: map[int64]*sync.Mutex{}, memo: map[memoKey]memoEntry{},
-		recent: map[int64]memoEntry{}, sweeping: map[sweepKey]bool{}}, nil
-}
-
-// UseHold installs the job runner's idle check and hold (internal/api). Until
-// one is installed the account sweep moves nothing.
-func (s *Service) UseHold(h Hold) {
-	s.hookMu.Lock()
-	defer s.hookMu.Unlock()
-	s.hold = h
-}
-
-func (s *Service) holdHook() Hold {
-	s.hookMu.RLock()
-	defer s.hookMu.RUnlock()
-	return s.hold
+		recent: map[int64]memoEntry{}}, nil
 }
 
 // Rebinding is agentID's latest move made by THIS process within the last
@@ -366,21 +294,21 @@ func (s *Service) Allowed(ag agents.Agent) (bool, string) {
 // AccountFailed is the failover's entry point: a turn on agentID, running on
 // account, failed with failure (ccd's typed error) and detail (its message).
 // It never returns an error: what it could not do is in Result.Why and the log.
-//
-// After its own agent, it starts the ACCOUNT SWEEP (see the package doc) of
-// every other idle agent of the owner's on account, in the background: the
-// account is unusable for all of them, not only for the agent whose turn said so.
 func (s *Service) AccountFailed(ctx context.Context, agentID int64, account, failure, detail string) Result {
-	res := s.accountFailed(ctx, agentID, account, failure, detail)
-	if res.OwnerID > 0 && s.cfg.Enabled {
-		s.startSweep(ctx, res.OwnerID, account, failure, detail, agentID)
-	}
-	return res
+	return s.accountFailed(ctx, agentID, account, failure, detail, false)
 }
 
-// accountFailed is AccountFailed for ONE agent: no sweep (the sweep's own
-// moves come through here).
-func (s *Service) accountFailed(ctx context.Context, agentID int64, account, failure, detail string) Result {
+// AccountFailedForPool is AccountFailed for a WORKER POOL's member, called by
+// a pool submission that found no worker it could use: the member's pin does
+// not stop the move (see the package doc). An agent in no pool is treated
+// exactly as AccountFailed treats it, pin included.
+func (s *Service) AccountFailedForPool(ctx context.Context, agentID int64, account, failure, detail string) Result {
+	return s.accountFailed(ctx, agentID, account, failure, detail, true)
+}
+
+// accountFailed is AccountFailed; forPool lets a pool member's pin be
+// overridden.
+func (s *Service) accountFailed(ctx context.Context, agentID int64, account, failure, detail string, forPool bool) Result {
 	res := Result{From: account}
 	if failure != ccpool.FailureRateLimited && failure != ccpool.FailureAuthFailed {
 		res.Why = "not an account failure"
@@ -399,7 +327,7 @@ func (s *Service) accountFailed(ctx context.Context, agentID int64, account, fai
 		res.Why = "the agent could not be read: " + err.Error()
 		return res
 	}
-	res.AgentName, res.OwnerID = ag.Name, ag.OwnerID
+	res.AgentName = ag.Name
 	if agents.ResolveKind(ag.Kind) != agents.KindClaudeCode || ag.CCAccount == "" {
 		res.Why = "not a claude-code agent"
 		return res
@@ -419,7 +347,9 @@ func (s *Service) accountFailed(ctx context.Context, agentID int64, account, fai
 		}
 		return res
 	}
-	if ok, why := s.Allowed(ag); !ok {
+	// 🔴 A POOL SUBMISSION OVERRIDES A POOL WORKER'S PIN, AND ONLY THAT. Off is
+	// still off, and an agent in no pool keeps its pin whoever asks.
+	if ok, why := s.Allowed(ag); !ok && !(forPool && s.cfg.Enabled && ag.WorkerPool != "") {
 		res.Why = why
 		return res
 	}
@@ -472,122 +402,6 @@ func (s *Service) accountFailed(ctx context.Context, agentID int64, account, fai
 	s.recent[agentID] = memoEntry{res: res, at: now}
 	s.mu.Unlock()
 	return res
-}
-
-// startSweep runs SweepAccount for (owner, account) in the background, on a
-// context detached from the caller's (a turn's, a request's) but keeping its
-// principal, unless one is already running for that pair.
-func (s *Service) startSweep(ctx context.Context, owner int64, account, failure, detail string, except int64) {
-	if failure != ccpool.FailureRateLimited && failure != ccpool.FailureAuthFailed {
-		return
-	}
-	// The wiring SweepAccount needs, checked here so a deployment without it
-	// starts nothing in the background (SweepAccount says why when asked).
-	if _, ok := s.cfg.Agents.(Lister); !ok || s.holdHook() == nil {
-		return
-	}
-	key := sweepKey{owner, account}
-	s.mu.Lock()
-	if s.sweeping[key] {
-		s.mu.Unlock()
-		return
-	}
-	s.sweeping[key] = true
-	s.mu.Unlock()
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.SweepTimeout)
-	s.cfg.Spawn(func() {
-		defer cancel()
-		defer func() {
-			s.mu.Lock()
-			delete(s.sweeping, key)
-			s.mu.Unlock()
-		}()
-		s.SweepAccount(sctx, owner, account, failure, detail, except)
-	})
-}
-
-// SweepAccount moves every IDLE agent of owner's on account — other than
-// except — off it, as [Service.AccountFailed] moves one: live claude-code
-// agents only, pinned ones only when opted in, each conditional on still being
-// on account. An agent [Hold] reports busy is left, to move at its own next
-// failed turn (see the package doc for why that is the safer of the two).
-// Nothing is tried when failover is off, no hold is installed, the agents
-// store cannot list, or no other account is usable.
-func (s *Service) SweepAccount(ctx context.Context, owner int64, account, failure, detail string, except int64) SweepResult {
-	var out SweepResult
-	switch {
-	case !s.cfg.Enabled:
-		out.Why = "account failover is off"
-	case failure != ccpool.FailureRateLimited && failure != ccpool.FailureAuthFailed:
-		out.Why = "not an account failure"
-	case owner <= 0 || account == "":
-		out.Why = "no owner or account"
-	}
-	if out.Why != "" {
-		return out
-	}
-	hold := s.holdHook()
-	lister, ok := s.cfg.Agents.(Lister)
-	switch {
-	case hold == nil:
-		out.Why = "no job runner to tell an idle agent from a busy one"
-	case !ok:
-		out.Why = "the agents store cannot list agents"
-	}
-	if out.Why != "" {
-		s.log.Printf("ccfailover: account %s of user %d is %s: no sweep: %s", account, owner, failure, out.Why)
-		return out
-	}
-	if _, usable, err := s.cfg.Pool.FailoverTarget(ctx, owner, account); err != nil || !usable {
-		out.Why = "no other Claude account is usable"
-		if err != nil {
-			out.Why = "the accounts could not be read: " + err.Error()
-		}
-		return out
-	}
-	list, err := lister.List(ctx)
-	if err != nil {
-		out.Why = "the agents could not be listed: " + err.Error()
-		s.log.Printf("ccfailover: account %s of user %d: sweep: %s", account, owner, out.Why)
-		return out
-	}
-	var cands []agents.Agent
-	for _, ag := range list {
-		if ag.ID == except || ag.OwnerID != owner || ag.CCAccount != account ||
-			agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
-			continue
-		}
-		switch ag.Status {
-		case agents.StatusRunning, agents.StatusProvisioning, agents.StatusPending:
-		default:
-			continue
-		}
-		if ok, _ := s.Allowed(ag); !ok {
-			continue
-		}
-		cands = append(cands, ag)
-	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].Name < cands[j].Name })
-	for _, ag := range cands {
-		if ctx.Err() != nil {
-			break
-		}
-		release, idle, why := hold(ctx, ag)
-		if !idle {
-			out.Busy = append(out.Busy, ag.Name+" ("+why+")")
-			continue
-		}
-		res := s.accountFailed(ctx, ag.ID, account, failure, detail)
-		release()
-		if res.Moved {
-			out.Moved = append(out.Moved, ag.Name)
-		}
-	}
-	if len(out.Moved) > 0 || len(out.Busy) > 0 {
-		s.log.Printf("ccfailover: account %s of user %d is %s: moved %d idle agent(s) off it [%s]; left %d busy one(s) to move at their next failed turn [%s]",
-			account, owner, failure, len(out.Moved), strings.Join(out.Moved, ", "), len(out.Busy), strings.Join(out.Busy, "; "))
-	}
-	return out
 }
 
 // NoteAccountFailure is AccountFailed for a caller that needs no answer

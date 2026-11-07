@@ -292,6 +292,51 @@ func TestAPoolWhoseWorkersAllSitOnARateLimitedAccountRunsTheJobOnTheUsableOne(t 
 	}
 }
 
+// pin pins each named agent to its current account, without opting in to
+// failover, as a dispatch with an explicit cc_account does.
+func (r *incidentRig) pin(names ...string) {
+	r.ags.rowMu.Lock()
+	defer r.ags.rowMu.Unlock()
+	for _, n := range names {
+		for id, a := range r.ags.rows {
+			if a.Name == n {
+				a.CCAccountPinned, a.CCFailover = true, false
+				r.ags.rows[id] = a
+			}
+		}
+	}
+}
+
+// TestAPoolWhosePinnedWorkersAllSitOnARateLimitedAccountRunsTheJobOnTheUsableOne:
+// the incident with every agent PINNED to devin (cc_account given at creation,
+// no cc_failover). For a pool submission the pin does not hold the pool
+// hostage (operator, 2026-11-07: "pool overrides pin"): one worker is moved to
+// sara and the job runs there. Nothing else moves: the pinned clever-heron,
+// which is in no pool, stays on devin although its own turn failed there, and
+// so does the second worker, which the job did not need.
+func TestAPoolWhosePinnedWorkersAllSitOnARateLimitedAccountRunsTheJobOnTheUsableOne(t *testing.T) {
+	r := newIncidentRig(t)
+	ctx := context.Background()
+	r.pin("clever-heron", "keen-fox", "mellow-claw")
+	r.markLimited(t, "devin")
+	if res := r.svc.AccountFailed(ctx, cleverHeronID, "devin", ccpool.FailureRateLimited, "You've hit your limit"); res.Moved {
+		t.Fatalf("the pinned clever-heron was moved to %q by its own failed turn; a pin outside a pool holds", res.To)
+	}
+	code, out := r.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": incidentPool, "prompt": "review"}, true)
+	if code != http.StatusAccepted {
+		t.Fatalf("POST /api/jobs to a pool of pinned workers = %d %v, want 202: sara is usable, and a pool overrides a pin", code, out)
+	}
+	done := r.await(t, int64(out["job_id"].(float64)))
+	if done["status"] != jobs.StatusSucceeded || done["agent"] != "keen-fox" || done["cc_account"] != "sara" {
+		t.Fatalf("job = %v on %v/%v (%v), want succeeded on keen-fox/sara", done["status"], done["agent"], done["cc_account"], done["error"])
+	}
+	for name, want := range map[string]string{"keen-fox": "sara", "mellow-claw": "devin", "clever-heron": "devin"} {
+		if got := r.ags.account(name); got != want {
+			t.Errorf("%s is on %q, want %q", name, got, want)
+		}
+	}
+}
+
 // TestAPoolSubmissionFailsOverAWorkerWhenNoFailoverFollowedTheMark: devin was
 // marked by a path that moved nobody (a server start, another server: here,
 // the mark alone), so both workers still sit on it when the job arrives. The
