@@ -326,3 +326,62 @@ func TestNextPageFollowsGitHubsLinkHeader(t *testing.T) {
 		t.Fatalf("field names are not sorted: %v", prFieldNames()[:3])
 	}
 }
+
+// TestTheShimRefusesARepoThatContradictsTheURL (audit S5): a pull request
+// URL names its own repository, so a --repo/-R naming ANOTHER one is a
+// contradiction, refused (exit 1) before anything is sent — never a silent
+// read of the other repository's pull request of that number. The same
+// repository in another letter case is not a contradiction (GitHub names are
+// case-insensitive) and reads the URL's.
+func TestTheShimRefusesARepoThatContradictsTheURL(t *testing.T) {
+	p := newFakeProxy(t)
+	url := "https://github.com/" + ghRepo + "/pull/900"
+	for _, args := range [][]string{
+		{"pr", "view", url, "--repo", "other-org/other-infra", "--json", "number"},
+		{"pr", "view", url, "-R", ghFork, "--json", "number"},
+		{"pr", "diff", url, "--repo=other-org/other-infra"},
+	} {
+		rc, out, errs := p.run(t, args...)
+		if rc != 1 || out != "" || !strings.Contains(errs, "contradicts the pull request URL") {
+			t.Errorf("%v: rc %d, stdout %q, stderr %q; want exit 1 naming the contradiction", args, rc, out, errs)
+		}
+	}
+	if seen := p.requests(); len(seen) != 0 {
+		t.Fatalf("a contradicted --repo still sent: %v", seen)
+	}
+	if rc, out, errs := p.run(t, "pr", "view", url, "--repo", strings.ToUpper(ghRepo), "--json", "number"); rc != 0 || !strings.Contains(out, "900") {
+		t.Fatalf("the URL's own repository in upper case: rc %d %s %s", rc, out, errs)
+	}
+}
+
+// TestTheShimFollowsNoRedirect (audit S4): the client runGH builds never
+// follows a redirect (Go's client would resend X-Muster-Token to the
+// target). A 302 from the proxy is an error the shim reports (exit 1), and
+// its target is never requested.
+func TestTheShimFollowsNoRedirect(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.URL.Path+"|"+r.Header.Get("X-Muster-Token"))
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/redirect-target") {
+			_, _ = fmt.Fprint(w, `{"followed":"yes-7d1c"}`)
+			return
+		}
+		http.Redirect(w, r, "/connect/github/api.github.com/redirect-target", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MUSTER_CONNECT_URL", srv.URL)
+	t.Setenv("MUSTER_HOOK_TOKEN", ghTok)
+	var out, errb bytes.Buffer
+	rc := runGH([]string{"api", "repos/" + ghRepo}, &out, &errb)
+	mu.Lock()
+	defer mu.Unlock()
+	if rc != 1 || strings.Contains(out.String(), "yes-7d1c") || !strings.Contains(errb.String(), "HTTP 302") {
+		t.Errorf("rc %d, stdout %q, stderr %q; want exit 1 reporting the 302", rc, out.String(), errb.String())
+	}
+	if len(hits) != 1 || strings.Contains(hits[0], "redirect-target") {
+		t.Fatalf("requests %v: want exactly the one GET, the redirect not followed", hits)
+	}
+}

@@ -74,15 +74,23 @@ got="$(claude --version 2>/dev/null || true)"
 [[ "$got" == "$want "* ]] || fail "claude --version is '$got', expected '$want …'"
 echo "cc-smoke: claude $got ok"
 
-# The read-only gh shim (cmd/ccd/ghshim.go): `gh` is ccd under that name, it
-# answers its version, and a write is refused (exit 1) without sending anything
-# (no proxy environment is set here, so a write that tried would fail
+# The read-only gh shim (cmd/ccd/ghshim.go) is OPT-IN: 🔴 this image puts NO
+# `gh` on PATH (a script that probes `command -v gh` must keep finding none).
+# An officer that wants it runs its own image that links ccd as gh
+# (docs/officers.md "Reading pull requests with gh"); that link is made here in
+# a scratch directory, exactly as such an image makes it, and checked: it
+# answers its version, and a write is refused (exit 1) without sending
+# anything (no proxy environment is set here, so a write that tried would fail
 # differently: the refusal text is what is checked).
-ghv="$(gh --version 2>&1 || true)"
-[[ "$ghv" == *"read-only shim"* ]] || fail "gh --version is '$ghv', expected muster's read-only shim"
-if ghw="$(gh pr merge 1 --repo example-org/example 2>&1)"; then fail "gh pr merge exited 0: $ghw"; fi
+if command -v gh >/dev/null 2>&1; then fail "gh is on PATH ($(command -v gh)): the shim must be opt-in, not in every image"; fi
+mkdir -p /tmp/smoke-gh-bin
+ln -s /usr/local/bin/ccd /tmp/smoke-gh-bin/gh
+ghv="$(/tmp/smoke-gh-bin/gh --version 2>&1 || true)"
+[[ "$ghv" == *"read-only shim"* ]] || fail "a gh link to ccd: --version is '$ghv', expected muster's read-only shim"
+if ghw="$(/tmp/smoke-gh-bin/gh pr merge 1 --repo example-org/example 2>&1)"; then fail "gh pr merge exited 0: $ghw"; fi
 [[ "$ghw" == *"refused, nothing was sent"* ]] || fail "gh pr merge said '$ghw', expected the shim's refusal"
-echo "cc-smoke: gh shim (read-only) ok"
+rm -rf /tmp/smoke-gh-bin
+echo "cc-smoke: no gh on PATH by default; a gh link to ccd is the read-only shim"
 
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-sk-ant-oat01-SMOKE-DELIBERATELY-INVALID}"
 export HOOKS_TOKEN="${HOOKS_TOKEN:-smoke-hooks-token}"
