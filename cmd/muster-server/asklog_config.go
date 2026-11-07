@@ -8,14 +8,8 @@ import (
 	"github.com/ZacxDev/muster/internal/asklog"
 )
 
-// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md): its
-// switch (off by default), how long question and answer text is kept, and
-// whether a kept plain-text question is classified at capture.
-const (
-	envAskLog         = "MUSTER_ASK_LOG"
-	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
-	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
-)
+// The ask log's variables (envAskLog, envAskLogTextTTL, envAskLogClassify) are
+// spelled in config.go's const block, as every variable this binary reads.
 
 // askLogConfig is the ask log's configuration.
 type askLogConfig struct {

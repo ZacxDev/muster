@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -321,9 +322,11 @@ func (s *Server) AskLogMirrorChanged(owner int64) {
 			listed[k] = true
 			prev, had := l.seen[k]
 			cur := askSeen{status: w.Status}
-			isOpenCode := w.AgentRuntime() == mirror.RuntimeOpenCode && w.AgentSession != ""
-			if isOpenCode && w.Status == mirror.StatusWaiting && w.Pending != nil && w.Pending.PromptID != "" &&
-				(w.Pending.Kind == mirror.PendingQuestion || w.Pending.Kind == mirror.PendingPermission) {
+			// A window of a runtime that names its asks (opencode; the
+			// runtime's own spec says so, as for the attention queue) waiting on
+			// one it names.
+			if rt, ok := w.Spec(); ok && rt.PendingNamesAsk && w.AgentSession != "" && w.Status == mirror.StatusWaiting &&
+				w.Pending != nil && w.Pending.PromptID != "" && slices.Contains(rt.AskKinds, w.Pending.Kind) {
 				cur.prompt = w.Pending.PromptID
 			}
 			l.seen[k] = cur
@@ -946,8 +949,12 @@ func (s *Server) askLogAttentionOpened(a attention.Ask) {
 			}
 		case a.Asker.MirrorSession != "":
 			row.Runtime = asklog.RuntimeClaudeCode
-			if strings.HasPrefix(a.Asker.MirrorSession, mirror.RuntimeOpenCode+":") {
-				row.Runtime = asklog.RuntimeOpenCode
+			// A runtime-qualified session key ("<runtime>:<id>") names its
+			// runtime (an opencode session's ask).
+			for _, r := range mirror.Runtimes() {
+				if r.KeyPrefix != "" && strings.HasPrefix(a.Asker.MirrorSession, r.KeyPrefix) {
+					row.Runtime = r.Name
+				}
 			}
 			row.Host, row.ClaudeSession = a.Asker.MirrorHost, a.Asker.MirrorSession
 			row.TmuxSession, row.Window = s.askLogWindowOf(ctx, a.Asker.MirrorHost, a.Asker.MirrorSession)

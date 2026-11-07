@@ -264,6 +264,14 @@ const (
 	// outside 250ms–5m. A page replaces a stream silent for about two of them.
 	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
 
+	// THE ASK LOG (internal/asklog, internal/api/ask_log.go, docs/asks.md;
+	// asklog_config.go parses them): its switch (off by default), how long
+	// question and answer text is kept, and whether a kept plain-text question
+	// is classified at capture.
+	envAskLog         = "MUSTER_ASK_LOG"
+	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
+	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
+
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
 	// AgentTextRefusal). Configuration, not source: this repository is public.

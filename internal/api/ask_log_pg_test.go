@@ -201,12 +201,21 @@ func TestAnAttentionAskIsLoggedWhenRaisedAndWhenAnswered(t *testing.T) {
 	if _, err := f.srv.ext.Attention.Cancel(ctx, cancelled.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.srv.ext.Attention.Create(ctx, attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "muster's own?"}); err != nil {
+	sysAsk, err := f.srv.ext.Attention.Create(ctx, attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "muster's own?"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.srv.ext.Attention.Create(ctx, attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "look here", Notice: true}); err != nil {
+	notice, err := f.srv.ext.Attention.Create(ctx, attention.New{Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "look here", Notice: true})
+	if err != nil {
 		t.Fatal(err)
 	}
+	// These are user 1's and outlive the fixture's own cleanup (which knows
+	// only its agents' asks): the package's other attention tests count user
+	// 1's queue.
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE id = ANY($1)`,
+			[]int64{toChief.ID, cancelled.ID, sysAsk.ID, notice.ID})
+	})
 	byRef := map[string]asklog.Ask{}
 	for _, r := range asksOf(t, f.srv, 1) {
 		byRef[r.SourceRef] = r
