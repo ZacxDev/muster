@@ -21,8 +21,8 @@ func TestDivergedIsWordOverlapWithTheName(t *testing.T) {
 		// A task's name: its "#<id> · " prefix is not a word of the job, and
 		// a long first line is measured from the title's side too — an
 		// on-topic title has not drifted (round 1 of #508).
-		{"#1187 · Investigate why the nightly clawgate backup CronJob fails on restore after the volume snapshot", "Debugging clawgate backup CronJob", false},
-		{"#1187 · Investigate why the nightly clawgate backup CronJob fails on restore", "Fixing the Stripe webhook retry", true},
+		{"#1187 · Investigate why the nightly widgetd backup CronJob fails on restore after the volume snapshot", "Debugging widgetd backup CronJob", false},
+		{"#1187 · Investigate why the nightly widgetd backup CronJob fails on restore", "Fixing the Stripe webhook retry", true},
 		{"Billing migration", "Migrating the billing tables to the v2 schema", false},
 		// The "#<id> · " prefix counts for nothing: without it, one of the
 		// name's two words is in the title — not drifted.
