@@ -187,6 +187,11 @@ type GitHub interface {
 	// draft gate's answer to a push that put a refused change into an open
 	// pull request.
 	ClosePR(ctx context.Context, n int) error
+	// RestoreBranch moves refs/heads/<branch> from sha `from` back to `to`
+	// (PATCH git/refs with force): ONLY the shepherd gate's revert of a push it
+	// refused after the fact (officership shepherd.go), to the head it checked
+	// before forwarding. It errs unless the branch is at `from` when read.
+	RestoreBranch(ctx context.Context, branch, from, to string) error
 }
 
 // REST is [GitHub] over GitHub's REST API for Repo, authenticated by Token
@@ -702,6 +707,20 @@ func (g *REST) OpenPR(ctx context.Context, title, head, base, body string) (int,
 func (g *REST) ClosePR(ctx context.Context, n int) error {
 	return g.do(ctx, http.MethodPatch, g.repoPath()+"/pulls/"+strconv.Itoa(n), "", map[string]string{"state": "closed"}, nil,
 		"closing pull request #"+strconv.Itoa(n))
+}
+
+// RestoreBranch implements GitHub. The branch is read first: a branch that is
+// no longer at `from` (moved again since) is not touched, and errs.
+func (g *REST) RestoreBranch(ctx context.Context, branch, from, to string) error {
+	cur, err := g.BranchSHA(ctx, branch)
+	if err != nil {
+		return err
+	}
+	if cur != from {
+		return fmt.Errorf("branch %s is at %s, not %s: it moved again, so it is not restored", branch, short(cur), short(from))
+	}
+	return g.do(ctx, http.MethodPatch, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", map[string]any{"sha": to, "force": true}, nil,
+		"restoring branch "+branch)
 }
 
 // graphqlURL is the GraphQL endpoint beside Base (api.github.com/graphql; a

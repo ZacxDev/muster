@@ -129,6 +129,9 @@ type Ship struct {
 	// every stage but draft, one to MaxShipRepos for draft. Base,
 	// BranchPrefix, AppID and AppAccount above are the officer `repo`'s entry.
 	Repos []ShipRepo
+	// Shepherd is a StageShepherd officer's `shepherd` block (shepherd.go):
+	// whose pull requests it acts on. nil on every other stage.
+	Shepherd *Shepherd
 
 	appKey          *rsa.PrivateKey
 	escalateWebhook string
@@ -246,7 +249,9 @@ type declaredShip struct {
 		End      string `json:"end"`
 		Weekends *bool  `json:"weekends"`
 	} `json:"quiet_hours"`
-	Rollout *struct {
+	// Shepherd is parsed by parseShepherd (shepherd.go).
+	Shepherd json.RawMessage `json:"shepherd"`
+	Rollout  *struct {
 		HealthURL      string `json:"health_url"`
 		VersionField   string `json:"version_field"`
 		OKField        string `json:"ok_field"`
@@ -291,11 +296,26 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		NoticePath:     DefaultNoticePath,
 	}
 	switch s.Stage {
-	case StageShadow, StageMerge, StageRelease, StageDraft:
+	case StageShadow, StageMerge, StageRelease, StageDraft, StageShepherd:
 	case "":
-		return nil, fmt.Errorf("ship: stage is required (%s, %s, %s or %s) — there is no default", StageDraft, StageShadow, StageMerge, StageRelease)
+		return nil, fmt.Errorf("ship: stage is required (%s, %s, %s, %s or %s) — there is no default", StageDraft, StageShadow, StageMerge, StageRelease, StageShepherd)
 	default:
-		return nil, fmt.Errorf("ship: stage %q is not %s, %s, %s or %s", d.Stage, StageDraft, StageShadow, StageMerge, StageRelease)
+		return nil, fmt.Errorf("ship: stage %q is not %s, %s, %s, %s or %s", d.Stage, StageDraft, StageShadow, StageMerge, StageRelease, StageShepherd)
+	}
+	var err error
+	hasShepherd := len(d.Shepherd) > 0 && string(d.Shepherd) != "null"
+	_ = hasShepherd
+	if s.Stage == StageShepherd {
+		// 🔴 A SHEPHERD MERGES, TAGS AND REVIEWS NOTHING, so every key only those
+		// read is refused rather than accepted and ignored.
+		for name, set := range map[string]bool{"review_check": strings.TrimSpace(d.ReviewCheck) != "", "review_app": strings.TrimSpace(d.ReviewApp) != "",
+			"migrations": strings.TrimSpace(d.Migrations) != "", "sensitive_paths": len(d.SensitivePaths) > 0, "rollout": d.Rollout != nil,
+			"quiet_hours": d.QuietHours != nil, "releases_per_day": d.ReleasesPerDay != 0, "min_release_gap": strings.TrimSpace(d.MinReleaseGap) != ""} {
+			_, _ = name, set
+		}
+		if s.Shepherd, err = parseShepherd(id, d.Shepherd); err != nil {
+			return nil, err
+		}
 	}
 	repos, err := shipRepos(s.Stage, repo, d)
 	if err != nil {
@@ -304,10 +324,11 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 	s.Repos = repos
 	primary, _ := s.RepoFor(repo, repo)
 	s.Base, s.BranchPrefix, s.AppID, s.AppAccount = primary.Base, primary.BranchPrefix, primary.AppID, primary.AppAccount
-	// 🔴 A DRAFT OFFICER NEEDS NO CHECKS: nothing it can call reads them. Every
-	// other stage still needs at least one (a merge reads them).
+	// 🔴 A DRAFT OFFICER NEEDS NO CHECKS: nothing it can call reads them. A
+	// shepherd's are optional (officer_shepherd_mark_ready requires the ones
+	// listed). Every other stage still needs at least one (a merge reads them).
 	minChecks := 1
-	if s.Stage == StageDraft {
+	if s.Stage == StageDraft || s.Stage == StageShepherd {
 		minChecks = 0
 	}
 	if n := len(d.RequiredChecks); n < minChecks || n > maxRequiredChecks {
@@ -322,7 +343,7 @@ func parseShip(id, repo string, raw json.RawMessage, getenv func(string) string)
 		seen[c] = true
 		s.RequiredChecks = append(s.RequiredChecks, c)
 	}
-	if s.ReviewCheck == "" && s.Stage != StageDraft {
+	if s.ReviewCheck == "" && s.Stage != StageDraft && s.Stage != StageShepherd {
 		return nil, fmt.Errorf("ship: review_check is required (the check run whose success a merge needs)")
 	}
 	if s.ReviewApp != "" && !slugRE.MatchString(s.ReviewApp) {

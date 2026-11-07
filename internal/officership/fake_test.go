@@ -61,6 +61,10 @@ type fakeGH struct {
 	// creatorBlind makes OfficerPRs answer an empty list, as GitHub's issues
 	// list does (200 []) for a creator login it does not match (measured).
 	creatorBlind bool
+	// restored is every RestoreBranch call ("branch from->to"); restoreErr
+	// fails it.
+	restored   []string
+	restoreErr error
 }
 
 type commitInfo struct {
@@ -262,6 +266,20 @@ func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
 	}
 	f.deleted = append(f.deleted, branch)
 	delete(f.branches, branch)
+	return nil
+}
+
+func (f *fakeGH) RestoreBranch(_ context.Context, branch, from, to string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.restoreErr != nil {
+		return f.restoreErr
+	}
+	if cur := f.branches[branch]; cur != from {
+		return fmt.Errorf("fake: branch %s is at %s, not %s", branch, cur, from)
+	}
+	f.restored = append(f.restored, branch+" "+from+"->"+to)
+	f.branches[branch] = to
 	return nil
 }
 

@@ -948,15 +948,15 @@ A `ship` block in the officer's `MUSTER_OFFICERS` entry, which must also have
 
 | field | default | |
 |---|---|---|
-| `stage` | **required** | `draft` (open DRAFT pull requests only, in one to three repositories — [The draft stage](#the-draft-stage)), `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
-| `repos` | none | `draft` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
-| `forbidden_paths` | none | `draft` only (refused on another stage, which would ignore it): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
-| `forbidden_paths_file` | none | `draft` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
+| `stage` | **required** | `draft` (open DRAFT pull requests only, in one to three repositories — [The draft stage](#the-draft-stage)), `shepherd` (act on OTHER officers' pull requests only: fast-forward pushes, comments, update-branch, mark ready — [The shepherd stage](#the-shepherd-stage)), `shadow` (push and open pull requests; both gated tools refuse), `merge` (also `officer_merge_pr`), `release` (also `officer_tag_release`; needs `rollout`). There is no default. |
+| `repos` | none | `draft` and `shepherd` only with more than one: a list of 1–3 `{repo, base?, branch_prefix?, github_app, forbidden_paths?, forbidden_paths_file?}`, which must list the officer's `repo` and replaces the top-level `base`, `branch_prefix`, `github_app` and `forbidden_paths` (each is then refused at the top). Every entry names the same App `id` (one key per officer); each `account` is that repository's owner. |
+| `forbidden_paths` | none | `draft` and `shepherd` only (refused on another stage, which would ignore it; on `shepherd` it is added to each author's own list — [The shepherd stage](#the-shepherd-stage)): globs no pull request may change, add, remove or rename from. `*` and `?` stay within a segment, `{a,b}` is either, `**` as a whole segment is any number of segments, `dir/` is everything under it, and a pattern with no `/` matches any segment (`.sops.yaml` anywhere). Character classes are refused. |
+| `forbidden_paths_file` | none | `draft` and `shepherd` only: a repository file (`scripts/ci/officer-forbidden-paths.txt`) listing more globs, one per line (blank lines and `#` comments skipped), for a repository that publishes its list in-repo. The gate reads it from the pull request's **target** branch at every check and keeps no copy. A file it cannot read, or a line that is not a glob, **refuses** the pull request (409 and a notice). The file itself is forbidden, so no pull request may edit it. With `forbidden_paths` too, both apply. |
 | `base` | `main` | The branch merges land on and releases are cut from. |
 | `branch_prefix` | `officer/` | The only branches the instance may push and the only heads a merge may come from. Must end in `/` and must not overlap `base`. On the `draft` stage it is **pinned**: any value but `officer/` is refused at boot, because the target repositories' own checks select officer pull requests by that prefix. |
 | `github_app` | **required** | The officer's OWN App: `id`, and `account` as `<login>:<numeric id>` (matched by id; the login must be the repository's owner). Never the deployment's App, so suspending it stops this officer and nothing else. |
-| `required_checks` | **required** (not on `draft`) | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
-| `review_check` | **required** (not on `draft`) | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
+| `required_checks` | **required** (not on `draft`; optional on `shepherd`, where `officer_shepherd_mark_ready` requires the ones listed) | 1–20 commit-status contexts (or check-run names) that must be `success` on the head commit. A status's `success` counts whatever its description says (a CI job that reports "success: skipped" passes). Missing is not passed. |
+| `review_check` | **required** (not on `draft`; refused on `shepherd`) | The check run that must be `completed`/`success` on the head. `neutral` does not pass. |
 | `review_app` | none | When set, only that App's check run of that name counts. |
 | `migrations` | none | The directory whose files are linted for destructive DDL, and whose added files make a release need HQ's backup preflight. |
 | `sensitive_paths` | none | Patterns whose change makes `officer_merge_pr` post a notice to HQ first (never a block by itself). `dir/` is a prefix, a pattern with `/` matches the whole path, one without matches any path segment. Needs `notice`. |
@@ -1126,6 +1126,105 @@ each draft officer's branches, older than 7 days by their head commit, that no
 pull request (in any state, found by the branch) was opened from — a refused
 proposal leaves one — logs them and posts them to HQ's notices route. The
 report deletes nothing.
+
+### The shepherd stage
+
+A `shepherd` officer **shepherds other officers' pull requests**: it opens none
+of its own, and acts — with its **own** GitHub App, never the author's — only
+on a pull request another officer opened, to fix what an audit or CI found and
+take it to "ready for review". It never merges, closes or force-pushes: a
+human merges. It is offered `officer_shepherd_mark_ready` and none of
+`officer_mark_ready`, `officer_merge_pr`, `officer_tag_release`,
+`officer_rollout_status` and `officer_ci_logs` (a `ci_logs` block is refused).
+**Off by default**: nothing is a shepherd unless a `ship` block says
+`"stage": "shepherd"`.
+
+```json
+{"id": "shepherd:example-infra", "hq_url": "https://hq.example.com/api/v1", "repo": "example-org/example-infra",
+ "ship": {
+   "stage": "shepherd",
+   "repos": [{"repo": "example-org/example-infra", "base": "trunk",
+              "github_app": {"id": 222222, "account": "example-org:7654321"},
+              "forbidden_paths": [".github/**"]}],
+   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"},
+                            "example-other-bot[bot]"]},
+   "required_checks": ["ci / gate"],
+   "notice": {"channel": "ch/example-alerts"}
+ }}
+```
+
+**`ship.shepherd.authors`** (required, 1–16): whose pull requests it may act
+on. Each entry is a login (an App's bot is `<slug>[bot]`), or `{"login",
+"officer"?}`, where `officer` is the id of an officer declared on the same
+muster whose App the login is.
+
+**The pull request rule** (`officership.Shepherd.Admit`, one rule every write
+below asks, read fresh at every call). A pull request is the shepherd's to act
+on only when it is:
+
+| gate | rule |
+|---|---|
+| `pull_request` | open (not merged) |
+| `base` | into the `base` of one of the shepherd's `repos` (the repository's default branch, as configured), in that repository |
+| `head_branch` | from a branch under that entry's `branch_prefix` (default `officer/`), in that repository — not a fork |
+| `author` | by a login in `authors`; typed `Bot` when the login is a `[bot]`; **not** the shepherd's own App's bot; and, for an entry that names an `officer`, that officer's App's bot as muster reads it at call time |
+| `item` | the subject of an HQ item the **requesting instance** holds under a live lease: the item's `subject_key` is `<owner>/<name>#<number>` (the repository compared without case). No item, another holder, an expired lease or HQ unreadable is a refusal |
+
+**What it may do** on such a pull request, and nothing else:
+
+| write | rule | answer |
+|---|---|---|
+| `git push` to its branch | every ref an **update** — a branch create or delete is refused — from the pull request's **current** head (`old` must be the head; anything else is refused before forwarding) | 403 |
+| (after the push lands) | GitHub's `compare/{old}...{new}` must be a fast-forward (`ahead`, 0 behind), and `compare/{base}...{new}` must pass the wall below and the draft stage's content rules (forbidden paths, removed volume/database/canary manifests, secret shapes) | a push that fails, or cannot be checked, is **reverted** to `old` and HQ is told |
+| `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value | 403, or 409 and a notice |
+| `PUT /repos/{repo}/pulls/{n}/update-branch` | the body is exactly `{"expected_head_sha": <the head>}` and it is the current head (GitHub merges the base into the head; never a rebase) | 403 |
+| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**, the rule above, and every `required_checks` entry `success` on the head (none listed: nothing to wait for); then GraphQL `markPullRequestReadyForReview` | a refusal naming the gate |
+
+Refused **always**: `POST pulls` (it opens nothing), every `PATCH pulls/{n}`
+(so no title or body edit, no close, no reopen), the merge endpoint, the refs,
+tags, contents and merges APIs, GraphQL, every `DELETE`, a branch create or
+delete, and a non-fast-forward push (reverted).
+
+**The wall** (`officers.ShepherdRules`, the one place it is decided): for each
+(repository, author), the union of
+
+- the shepherd's own `forbidden_paths` / `forbidden_paths_file` for that
+  `repos` entry, and
+- for an author that names an `officer`: **that officer's own** `forbidden_paths`
+  and `forbidden_paths_file` for the same repository, looked up from its `ship`
+  block — never copied — so a fix the author may not make, the shepherd may
+  not make either. A `forbidden_paths_file` is read from the pull request's
+  target branch at every check, as on the draft stage.
+
+An author officer that does not ship to a repository has no rule there: the
+shepherd acts on none of its pull requests in it.
+
+🔴 **The revert is the one ref rewrite muster makes.** A pack cannot be
+checked before GitHub has it, so a push is admitted on its commands and
+checked once it lands; one that is not a fast-forward, or touches the wall, or
+whose comparison cannot be read, is moved back to the head the gate checked
+before forwarding (`PATCH git/refs` with `force`, only while the branch is
+still at the pushed commit), and the notice says whether it could. Between the
+push landing and the revert, the pull request shows it.
+
+**Boot refusals.** muster refuses to start, naming the officer, when a
+shepherd has: no `shepherd` block, or one on another stage; no `authors`, a
+login twice, or a login that is not one; an author `officer` that is the
+shepherd itself, is not declared, has no `ship` block, is itself a shepherd,
+ships to none of the shepherd's repositories, or uses the shepherd's own App
+(`github_app.id`); a (repository, author) whose wall forbids nothing (set
+`forbidden_paths` on the entry or name the author's officer); a key only a
+merging or releasing stage reads (`review_check`, `review_app`, `migrations`,
+`sensitive_paths`, `rollout`, `quiet_hours`, `releases_per_day`,
+`min_release_gap`); no `notice` block (a revert is announced); a `ci_logs`
+block; or the same author in the same repository shepherded by two officers.
+
+**Its App needs** Contents **read and write** (push to the branches it
+shepherds, update-branch), Pull requests **read and write** (comment, mark
+ready, update-branch), Checks and Commit statuses **read**, Metadata read. 🔴
+"Never merges" cannot be an App permission — merging needs only Contents
+write — so it rests on the push gate above; a ruleset on the base branch that
+no officer App may bypass is the repository-side wall.
 
 ### `officer_merge_pr {pr}`
 

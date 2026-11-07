@@ -89,6 +89,9 @@ type PushGate struct {
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
+	// Shepherd is a shepherd-stage officer's rules (shepherd.go). nil on a
+	// shepherd: every write is refused (fail closed).
+	Shepherd *Shepherd
 
 	// createSem serialises a draft officer's creates (draftCreate holds it
 	// from the rate-limit read until afterCreate); built once by createOnce.
@@ -317,10 +320,26 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 			return nil, refused("deleting %s: a draft officer never deletes a branch (the daily orphan report lists abandoned ones for a human)", c.ref)
 		}
 	}
+	var shepherdChecks []shepherdPushCheck
+	if g.Ship.IsShepherd() && len(cmds) > 0 {
+		if g.Shepherd == nil {
+			return nil, shepherdRefused("this shepherd's rules are not loaded")
+		}
+		if shepherdChecks, err = g.admitShepherdPush(r.Context(), sr, cmds); err != nil {
+			return nil, err
+		}
+	}
 	out.Body = struct {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(pre.Bytes()), br), body}
+	if len(shepherdChecks) > 0 {
+		// 🔴 THE SHEPHERD'S PUSH RE-CHECK (shepherd.go): fast-forward and the
+		// author's wall, read once GitHub has the push; a miss is reverted.
+		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) {
+			g.afterShepherdPush(ctx, sr, shepherdChecks, res)
+		})
+	}
 	if g.Ship.IsDraft() && len(cmds) > 0 {
 		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
 		// open pull request from a pushed branch is checked again.
@@ -437,6 +456,16 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 	tail := make([]string, len(segs)-3)
 	for i, s := range segs[3:] {
 		tail[i] = strings.ToLower(s)
+	}
+	if g.Ship.IsShepherd() {
+		// 🔴 A SHEPHERD'S REST WRITES ARE ITS OWN ALLOWLIST (shepherd.go): a
+		// comment and update-branch, on a pull request it shepherds. None of
+		// the cases below — create, edit (so close and reopen), own-PR comment —
+		// is reachable for it.
+		if g.Shepherd == nil {
+			return nil, shepherdRefused("this shepherd's rules are not loaded")
+		}
+		return g.admitShepherdAPI(r, sr, gh, tail, path)
 	}
 	switch {
 	case r.Method == http.MethodPost && len(tail) == 1 && tail[0] == "pulls":
