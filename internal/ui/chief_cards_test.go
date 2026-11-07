@@ -332,10 +332,14 @@ func TestADispatchedAgentIsACardThatOpensIt(t *testing.T) {
 				t.Errorf("the task link is inside the card's link")
 			}
 		}
-		if g, _ := ccAttr(card, "hx-get"); g != DispatchCardSrc(7) {
+		live := card.Parent
+		if _, ok := ccAttr(live, DispatchLiveAttr); !ok {
+			t.Fatalf("%s: the card is not inside its refreshing wrapper", state)
+		}
+		if g, _ := ccAttr(live, "hx-get"); g != DispatchCardSrc(7) {
 			t.Errorf("the card refreshes from %q", g)
 		}
-		if tr, _ := ccAttr(card, "hx-trigger"); !strings.Contains(tr, `id==="brisk-otter"`) || !strings.Contains(tr, "sse:agent.changed") {
+		if tr, _ := ccAttr(live, "hx-trigger"); !strings.Contains(tr, `id==="brisk-otter"`) || !strings.Contains(tr, "sse:agent.changed") {
 			t.Errorf("the card's trigger %q is not its own agent's events", tr)
 		}
 	}
@@ -436,7 +440,40 @@ func TestAnUnreadableDispatchedAgentStaysRefreshable(t *testing.T) {
 	if strings.Contains(ccText(c), "Removed") || len(ccWithAttr(c, "href", "")) != 0 {
 		t.Errorf("an unreadable agent is drawn removed or linked: %s", ccText(c))
 	}
-	if g, _ := ccAttr(c, "hx-get"); g != DispatchCardSrc(9) {
-		t.Errorf("an unreadable card does not refresh itself (hx-get %q)", g)
+	if g, _ := ccAttr(c.Parent, "hx-get"); g != DispatchCardSrc(9) {
+		t.Errorf("an unreadable card does not refresh itself (hx-get %q on its wrapper)", g)
+	}
+}
+
+// TestADispatchCardsNewestRefreshWins: every self-refreshing dispatch card is
+// refreshed by a wrapper that never replaces itself — it swaps the answer's
+// card INTO itself (hx-select, innerHTML) and queues the newest request
+// behind one in flight. The card used to refresh itself with outerHTML, and a
+// request queued behind the first fired from the REMOVED card: the newer state
+// was never drawn (CI: a card stuck on "Starting"). The browser case "a
+// dispatched agent" plays that race.
+func TestADispatchCardsNewestRefreshWins(t *testing.T) {
+	for _, c := range []DispatchCard{
+		{AgentID: 7, Name: "brisk-otter", Href: "/agents/brisk-otter", State: DispatchWorking},
+		{AgentID: 9, Name: "Agent #9", Unreadable: true},
+	} {
+		doc := ccRenderLog(t, AgentDetailView{Name: "chief", Messages: dispatchRows(`{"agent_id":1}`),
+			DispatchCards: map[string]DispatchCard{"d1": c}})
+		live := ccWithAttr(doc, DispatchLiveAttr, "")
+		if len(live) != 1 {
+			t.Fatalf("card %+v: %d refreshing wrappers, want 1", c, len(live))
+		}
+		for k, want := range map[string]string{"hx-swap": "innerHTML", "hx-select": "[data-dispatch-card]", "hx-target": "this", "hx-sync": "this:queue last"} {
+			if v, _ := ccAttr(live[0], k); v != want {
+				t.Errorf("card %+v: wrapper %s %q, want %q", c, k, v, want)
+			}
+		}
+		cards := ccWithAttr(live[0], "data-dispatch-card", "")
+		if len(cards) != 1 {
+			t.Fatalf("card %+v: the wrapper holds %d cards", c, len(cards))
+		}
+		if _, ok := ccAttr(cards[0], "hx-get"); ok {
+			t.Errorf("card %+v: the card refreshes itself (it would replace the element that queued its refresh)", c)
+		}
 	}
 }
