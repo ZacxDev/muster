@@ -39,10 +39,10 @@ const (
 	// MaxNameRunes bounds a manual name: a title's display cap
 	// (TitleCapRunes), so a name the person typed draws like an auto one.
 	MaxNameRunes = TitleCapRunes
-	// ManualNameRetention is how much longer than the focus retention a
-	// mirrored session's row is kept when it carries a manual name
+	// NameRetention is how much longer than the focus retention a mirrored
+	// session's row is kept when it carries a name, auto or manual
 	// (PGStore.PruneAll).
-	ManualNameRetention = 90 * 24 * time.Hour
+	NameRetention = 90 * 24 * time.Hour
 )
 
 // openerWords are the words a session's OPENING says nothing with: a greeting,
@@ -57,18 +57,16 @@ const (
 var openerWords = setOf(
 	// greetings and acknowledgements
 	"hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "greeting", "greetings", "greet", "greeted", "greets",
-	"welcome", "welcoming", "thanks", "thank", "ok", "okay", "yes", "yep", "sure", "cool", "great", "good",
+	"welcome", "welcoming", "thanks", "thank", "ok", "okay", "yes", "yep", "sure", "cool",
 	"morning", "afternoon", "evening",
 	// "carry on"
-	"continue", "continued", "continuing", "continuation", "resume", "resumed", "resuming", "go", "going",
-	"proceed", "proceeding", "keep", "on", "again", "next", "more",
+	"continue", "continued", "continuing", "continuation", "resume", "resumed", "resuming", "go", "proceed",
+	"proceeding", "on", "again",
 	// the summarizer's words for an opening that named no work
 	"session", "sessions", "conversation", "chat", "new", "start", "started", "starting", "begin", "beginning",
 	"waiting", "awaiting", "await", "wait", "instructions", "instruction", "input", "request", "requests",
-	"task", "tasks", "idle", "ready", "standby", "nothing", "help", "helping", "assist", "assisting",
-	"assistance", "initial", "first", "message", "messages", "user", "users", "prompt", "prompts",
-	"question", "questions", "unknown", "untitled", "general", "small", "talk", "introduction", "intro",
-	"check", "checking", "in", "previous", "prior", "earlier", "work", "working",
+	"task", "tasks", "idle", "ready", "standby", "nothing", "help", "assist", "assisting", "assistance",
+	"initial", "user", "users", "unknown", "untitled", "introduction", "intro", "previous", "prior",
 )
 
 // fillerWords may appear around opener words without making a title a name

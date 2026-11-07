@@ -93,6 +93,32 @@ func TestAMirroredSessionsManualNameIsNeverOverwritten(t *testing.T) {
 	}
 }
 
+// TestSavingTheShownAutoNameIsNotARename: the dialog is prefilled with the
+// session's auto name; a Save of it unchanged stores no manual name (so a
+// later clear is not needed to hand it back), while a changed one does.
+func TestSavingTheShownAutoNameIsNotARename(t *testing.T) {
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{
+		focus.MirrorSubject(focusSID): {Subject: focus.MirrorSubject(focusSID), Title: "Fixing it", UpdatedAt: time.Now(),
+			Name: focus.Name{Auto: "Billing migration"}},
+	}}
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "name": {" Billing migration "}}
+	if rec := pinPost(t, s, s.Handler(), ui.SessionNamePath, form, true); rec.Code != http.StatusOK {
+		t.Fatalf("save unchanged = %d", rec.Code)
+	}
+	if got := store.rows[focus.MirrorSubject(focusSID)].Name.Manual; got != "" {
+		t.Fatalf("saving the shown auto name stored a manual name %q", got)
+	}
+	form.Set("name", "Billing migration v2")
+	if rec := pinPost(t, s, s.Handler(), ui.SessionNamePath, form, true); rec.Code != http.StatusOK {
+		t.Fatalf("save changed = %d", rec.Code)
+	}
+	if got := store.rows[focus.MirrorSubject(focusSID)].Name.Manual; got != "Billing migration v2" {
+		t.Fatalf("a changed name stored %q", got)
+	}
+}
+
 // TestARenameOfAWindowWithNoConversationIsRefused: a window whose host
 // reports no conversation (@2) has nothing a name could follow: 409, and
 // nothing is stored. A window the host does not list is a 404.

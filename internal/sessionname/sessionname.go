@@ -100,7 +100,9 @@ func Resolve(p Parts) Name {
 // (migration 0088), as DISPATCH when it was derived from a task, and is
 // otherwise the slug copied — the fallback, as a.Name is.
 func Agent(a agents.Agent, stored focus.Name) Name {
-	p := Parts{Auto: stored.Auto, Fallback: a.Name, Technical: a.Name}
+	// The fallback is the display name as stored — for a default source,
+	// the slug copied — else the slug.
+	p := Parts{Auto: stored.Auto, Fallback: a.DisplayName, Technical: a.Name}
 	switch agents.ResolveDisplayNameSource(a.DisplayNameSource) {
 	case agents.NameManual:
 		p.Manual = a.DisplayName
@@ -108,17 +110,9 @@ func Agent(a agents.Agent, stored focus.Name) Name {
 		p.System = a.DisplayName
 	case agents.NameDispatch:
 		p.Dispatch = a.DisplayName
-	default:
-		// A default-sourced display name is the slug copied — the fallback.
-		// One that is NOT the slug was set by a writer other than the
-		// dispatch path (a seed, a script): it heads the agent like a task's
-		// name until the auto name freezes, plained as it always was.
-		if a.DisplayName != a.Name {
-			p.Dispatch = a.DisplayName
-		}
 	}
 	if p.Fallback == "" {
-		p.Fallback = a.DisplayName
+		p.Fallback = a.Name
 	}
 	return Resolve(p)
 }

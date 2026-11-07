@@ -29,7 +29,7 @@
 -- is not a name: it moves. These columns are on the per-subject row, which
 -- lives as long as its session (an agent's dies with it; a mirrored one is
 -- pruned a retention after it was last seen — focus.PGStore.PruneAll keeps a
--- row carrying a manual name for focus.ManualNameRetention instead).
+-- row carrying a name, auto or manual, for focus.NameRetention longer).
 --
 -- 🔴 THE BACKFILL OF display_name_source IS A DECISION, STATED: an existing
 -- display name equal to the slug is 'default'; one spelled "#<task id>" or

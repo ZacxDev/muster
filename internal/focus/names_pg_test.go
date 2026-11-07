@@ -83,15 +83,19 @@ func TestAManualNameIsAMirrorsOwnAndNeverMovedByAFocus(t *testing.T) {
 }
 
 // TestPruneKeepsANamedMirrorLonger: a mirrored row unseen past the retention
-// is pruned — unless it carries a manual name, which is kept for
-// ManualNameRetention more.
+// is pruned — unless it carries a name, manual or auto, which is kept for
+// NameRetention more.
 func TestPruneKeepsANamedMirrorLonger(t *testing.T) {
 	s, pool := pgStore(t)
 	plain, named := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000aa02"), MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000aa03")
+	auto := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000aa04")
 	for _, sub := range []Subject{plain, named} {
 		if _, err := s.Upsert(as(2), sub, Write{Title: "Some work here", Source: SourceSummarizer}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := s.Upsert(as(2), auto, Write{Title: "Billing migration", Source: SourceSummarizer, Nameable: true}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.SetManualName(as(2), named, "Kept"); err != nil {
 		t.Fatal(err)
@@ -104,7 +108,10 @@ func TestPruneKeepsANamedMirrorLonger(t *testing.T) {
 		t.Fatalf("prune: %d (%v), want 1 (the unnamed one)", n, err)
 	}
 	if _, ok, _ := s.Get(as(2), named); !ok {
-		t.Fatal("the named row was pruned with the retention")
+		t.Fatal("the manually named row was pruned with the retention")
+	}
+	if _, ok, _ := s.Get(as(2), auto); !ok {
+		t.Fatal("the auto-named row was pruned with the retention")
 	}
 	if _, ok, _ := s.Get(as(2), plain); ok {
 		t.Fatal("the unnamed row survived the retention")
@@ -112,7 +119,7 @@ func TestPruneKeepsANamedMirrorLonger(t *testing.T) {
 	if _, err := pool.Exec(sys(as(2)), `UPDATE agent_focus SET seen_at = now() - interval '200 days'`); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.PruneAll(as(2), time.Now().Add(-DefaultRetention)); err != nil || n != 1 {
-		t.Fatalf("prune past the manual retention: %d (%v), want 1", n, err)
+	if n, err := s.PruneAll(as(2), time.Now().Add(-DefaultRetention)); err != nil || n != 2 {
+		t.Fatalf("prune past the name retention: %d (%v), want 2", n, err)
 	}
 }

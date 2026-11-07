@@ -28,12 +28,14 @@ var sessionNameAdapters = []string{
 // is a decision: add it here, with what it is) or SHRINKS (a surface that
 // stopped asking the rule now names sessions some other way, or not at all).
 var sessionNameCallers = []string{
-	"agents.go Server.cardViewIndexed",           // the sidebar rows, switcher pills and palette (agents)
-	"agents.go Server.handleAgentDetail",         // the agent page's header and <title>
-	"mirror.go Server.mirrorCards",               // the sidebar rows, switcher pills and palette (mirrored)
-	"mirror.go Server.handleMirrorTerminalPage",  // a mirrored terminal page's header and <title>
-	"mirror_view.go Server.handleMirrorViewPage", // the Rendered view's header and <title>
-	"terminal.go Server.handleAgentTerminalPage", // an agent's terminal page's header and <title>
+	"agents.go Server.cardViewIndexed",            // the sidebar rows, switcher pills and palette (agents)
+	"agents.go Server.handleAgentName",            // a Save of the unchanged prefilled name is not a rename
+	"session_names.go Server.mirrorNameUnchanged", // the same, for a mirrored session
+	"agents.go Server.handleAgentDetail",          // the agent page's header and <title>
+	"mirror.go Server.mirrorCards",                // the sidebar rows, switcher pills and palette (mirrored)
+	"mirror.go Server.handleMirrorTerminalPage",   // a mirrored terminal page's header and <title>
+	"mirror_view.go Server.handleMirrorViewPage",  // the Rendered view's header and <title>
+	"terminal.go Server.handleAgentTerminalPage",  // an agent's terminal page's header and <title>
 }
 
 // TestTheSessionNameCallerLedger pins the SEAM between the name rule and the

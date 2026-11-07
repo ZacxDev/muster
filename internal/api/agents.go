@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -693,6 +695,16 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	ctx := r.Context()
+	// 🔴 SAVING THE NAME IT ALREADY HAS CHANGES NOTHING: the dialog is
+	// prefilled with what the agent is called now, and a Save that kept an
+	// automatic (auto or task) name must not make it the person's.
+	if a, gerr := s.ext.Agents.Get(ctx, id); gerr == nil && name != "" {
+		if n := s.agentName(ctx, a); n.Source != sessionname.SourceManual && n.Human() && n.Text == name {
+			w.Header().Set("HX-Refresh", "true")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
 	_, err = s.ext.Agents.SetDisplayName(ctx, id, name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

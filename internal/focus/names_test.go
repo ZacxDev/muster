@@ -18,6 +18,10 @@ func TestNameableTitleIsTheBar(t *testing.T) {
 		{"Billing migration", true},
 		{"Greeting the billing team", true}, // one word outside the vocabularies
 		{"C# build fix", true},
+		// Words that open a session in one phrase name work in another: not
+		// openers ("check", "first", "work" are not in the vocabulary).
+		{"Check the first work item", true},
+		{"Help with first task", true},
 		{"Debugging", false},                  // one word
 		{"Greeting the user", false},          // an opener
 		{"Continue previous session", false},  // an opener

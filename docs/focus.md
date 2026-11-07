@@ -109,7 +109,7 @@ The name is **stored**, not derived: focus history is pruned after 30 days, so
 session's focus row (`agent_focus.name_auto`, `name_manual`, migration
 `0088`), which lives as long as the session: an agent's dies with the agent; a
 mirrored one is pruned with its focus a retention after it was last seen, but a
-row carrying a **manual** name is kept 90 days longer. A mirrored session's
+row carrying a name (auto or manual) is kept 90 days longer. A mirrored session's
 manual name follows its **conversation** (the key its focus has), so it moves
 with the conversation to another window, and a window that later holds a
 different conversation is not called by it. A window with no conversation

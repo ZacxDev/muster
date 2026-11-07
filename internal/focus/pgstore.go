@@ -307,12 +307,13 @@ func (s *PGStore) Touch(ctx context.Context, subs []Subject) error {
 // a disabled owner's rows — or any owner no pass reaches — age out too. An
 // agent's row is never pruned: it dies with its agent.
 //
-// 🔴 A ROW CARRYING A MANUAL NAME IS KEPT ManualNameRetention LONGER (migration
-// 0088): the person named that conversation, and a laptop closed for a few
-// weeks must not come back to find the name gone.
+// 🔴 A ROW CARRYING A NAME — auto or manual — IS KEPT NameRetention LONGER
+// (migration 0088): a laptop closed for a few weeks must not come back to a
+// conversation whose name is gone (a manual one lost, or an auto one frozen
+// again from a later, different title).
 func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {
 	tag, err := s.pool.Exec(sys(ctx), `DELETE FROM agent_focus WHERE subject_kind = 'mirror' AND seen_at < $1
-		AND (name_manual = '' OR seen_at < $2)`, before, before.Add(-ManualNameRetention))
+		AND ((name_manual = '' AND name_auto = '') OR seen_at < $2)`, before, before.Add(-NameRetention))
 	if err != nil {
 		return 0, errf("prune: %w", err)
 	}

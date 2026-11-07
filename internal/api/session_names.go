@@ -6,6 +6,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessionname"
 )
 
 // registerSessionNameRoutes wires the rename of a MIRRORED session
@@ -35,6 +36,14 @@ func (s *Server) registerSessionNameRoutes(mux Mux) {
 	mux.HandleFunc("POST /sessions/name", s.requireOperatorWrite(s.handleSessionName))
 }
 
+// mirrorNameUnchanged reports whether typed, cleaned, is exactly the
+// automatic name e is called by now (a Save of the prefilled dialog).
+func (s *Server) mirrorNameUnchanged(r *http.Request, e mirror.SessionView, typed string) bool {
+	n := s.mirrorName(r.Context(), e)
+	clean, err := focus.CleanName(typed)
+	return err == nil && n.Source != sessionname.SourceManual && n.Human() && clean == n.Text
+}
+
 func (s *Server) handleSessionName(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Focus == nil || s.ext.Mirror == nil {
 		http.NotFound(w, r)
@@ -59,7 +68,15 @@ func (s *Server) handleSessionName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "This window has no conversation muster can name yet.", http.StatusConflict)
 		return
 	}
-	_, err := s.ext.Focus.SetManualName(r.Context(), focus.MirrorSubject(key), r.PostFormValue("name"))
+	// 🔴 SAVING THE NAME IT ALREADY HAS CHANGES NOTHING. The dialog is
+	// prefilled with what the session is called now; a Save that kept an
+	// automatic name must not turn it into a manual one (which would stop
+	// it ever being handed back, and every later rule treating it as the
+	// person's). Only a name that differs from the shown one is stored.
+	var err error
+	if name := r.PostFormValue("name"); !s.mirrorNameUnchanged(r, e, name) {
+		_, err = s.ext.Focus.SetManualName(r.Context(), focus.MirrorSubject(key), name)
+	}
 	switch {
 	case errors.Is(err, focus.ErrBadName):
 		http.Error(w, "A name is 1 to 60 characters.", http.StatusBadRequest)
