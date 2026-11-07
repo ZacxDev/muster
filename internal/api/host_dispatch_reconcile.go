@@ -142,7 +142,7 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 	for _, r := range rows {
 		known[r.ID] = true
 		w, present := tagged[r.ID]
-		if present && w.AgentRuntime() != spawnRuntimeWire(r.Runtime) {
+		if present && !spawnRuntimeRuns(r.Runtime, w) {
 			present = false // the tag, on a window running something else
 		}
 		if r.Status == plugins.HostDispatchEnded {
@@ -182,12 +182,15 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 	}
 }
 
-// spawnRuntimeWire is a host runtime as a listed window names it.
-func spawnRuntimeWire(runtime string) string {
+// spawnRuntimeRuns reports whether listed window w runs host runtime runtime:
+// a claude spawn is a window the host reports running Claude Code (w.Claude);
+// any other is the window's runtime by name. (A per-runtime decision is read
+// off the window, so this names no wire runtime: the mirror runtime ledger.)
+func spawnRuntimeRuns(runtime string, w mirror.Window) bool {
 	if runtime == mirror.SpawnRuntimeClaude {
-		return mirror.RuntimeClaude
+		return w.Claude
 	}
-	return runtime
+	return w.Runtime == runtime
 }
 
 // orphanWindowNotice is the orphan notice's text (design 3.7).

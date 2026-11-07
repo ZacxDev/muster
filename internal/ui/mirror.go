@@ -123,6 +123,10 @@ type MirrorCardView struct {
 	// internal/api from the host's registration rank); "" draws the hash
 	// fallback.
 	HostIcon string
+	// ChiefDispatch is the host dispatch the window was started for — an agent
+	// the chief started (mirror.SessionView.Dispatch) — 0 for none: its row
+	// carries the "chief" chip (navChiefChip).
+	ChiefDispatch int64
 	// Idle: in the Idle section (idle_section.go), composed by MarkIdle; the
 	// sidebar draws it in its Idle group (navIdleGroup).
 	Idle bool

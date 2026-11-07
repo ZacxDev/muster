@@ -147,6 +147,33 @@ func TestASpawnRefusedBeforeGitRunsNoGitAndLogsBothLines(t *testing.T) {
 	}
 }
 
+// TestAHostWithAgentSpawnOffRefusesAndTouchesNothing: -agent-spawn off (the
+// default), or no -interactive: refused unavailable with its own detail,
+// whatever the request — no git call, and no audit file is even created (a
+// host that never opted in writes nothing). Its hello offers no runtime.
+func TestAHostWithAgentSpawnOffRefusesAndTouchesNothing(t *testing.T) {
+	for _, c := range []struct {
+		name, why string
+		mod       func(*Config)
+	}{
+		{"off", "agent spawn is off", func(c *Config) { c.AgentSpawn.Enabled = false }},
+		{"read-only", "not interactive", func(c *Config) { c.Interactive = false }},
+	} {
+		u := newSpawnUnit(t)
+		c.mod(&u.c.cfg)
+		if _, e := u.spawn(t, 51, widgets(testPrompt)); e == nil || e.code != mirror.SpawnUnavailable || e.detail != c.why {
+			t.Fatalf("%s: %+v", c.name, e)
+		}
+		if _, err := os.Stat(u.log); !os.IsNotExist(err) || u.gitCalls() != 0 {
+			t.Fatalf("%s: the audit log exists (%v) or git ran (%d)", c.name, err, u.gitCalls())
+		}
+		h := &hostSide{c: u.c, version: 2, ctx: context.Background()}
+		if rs := h.agentSpawnRuntimes(); len(rs) != 0 {
+			t.Fatalf("%s: the hello offers %v", c.name, rs)
+		}
+	}
+}
+
 // TestAnUnwritableAuditLogRefusesTheSpawnBeforeAnythingRuns: the first audit
 // line cannot be written (its directory is read-only) → unavailable, "audit log
 // unwritable", and git never runs. The CONTROL: the same request with a

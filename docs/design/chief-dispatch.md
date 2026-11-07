@@ -1,7 +1,10 @@
 # Design: the chief dispatches every agent
 
 **Status: phase 1 is built** (`agent_dispatch` for pods, #428,
-`internal/api/agent_dispatch.go`). **Phases 2-4 are proposed.** The owner made
+`internal/api/agent_dispatch.go`). **Phase 3 is built for claude** (host spawn,
+the trust entry, held targets and their cards, forwarding; #513 then #516: see
+"As built" under [Phase 3](#phase-3-host-spawn-for-claude-with-the-trust-entry-and-forwarding)).
+**Phases 2 and 4 are proposed.** The owner made
 the nine decisions in [Owner decisions](#owner-decisions): four up front, and
 five more in answer to this page's first draft. This revision adds nine more:
 10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
@@ -3521,6 +3524,44 @@ live run to find what the tests could not.
     rules), and no host card appears;
   - `muster-mirror agent-spawn-log` on the host shows both lines of each
     request.
+
+#### As built (#513, #516)
+
+Where the build differs from the plan above, and what it leaves for later:
+
+- **The card is #513's stored `ask_owner`** (an attention ask raised by the
+  chief, `raiseOwnerCard`). The owner's tap in the CHAT is their typed message,
+  which `ownerTurnFor` already admits; a tap on the Attention view or the phone
+  is recorded with its door (`browser`, `device`, migration 0090) and binds the
+  completing call (`completeHeld`). `held_id` stores the hold's id
+  (`held:<hex>`), not an audit row number.
+- **`held_hash` is computed with `owner_asked` written as false**: the
+  completing call is, by design, made in a turn the owner did not type.
+- **A gated task is refused for a host target** ("a host target does not
+  release a gate"), instead of releasing the chief's gate as the pod path
+  does. Releasing on a host start is not built.
+- **`ownersOwnSession` covers 12 tools**: the ten above plus #501's
+  `dispatch_request` and `dispatch_approve`, which also act with the owner's
+  authority. Its window is the one the MCP door bound the call to
+  (`toolCaller.mirrorWindow`); a per-session host (no windows) cannot be tagged.
+- **`task_forward` tries a pod first**, as before, and reaches a host-spawned
+  window only when no pod on the task is reachable: not one "newest across both
+  kinds" order.
+- **The chip** is on the sidebar row only, and says "chief": the listing
+  carries the dispatch, not the task. The window page and the task number are
+  not built.
+- **Ending a host dispatch reopens its task** (as a pod's destroy does) when
+  nobody else works it, so the released start can be used.
+- **A mention on a task only a host agent works is not handed to the chief as a
+  task notice.** Read in the code (`routeTaskNoticeEvent` → `actOnMention`):
+  with no reachable pod it takes the existing no-agent path, an attention ask
+  about the task raised as the chief. It is never pasted into the window, which
+  is the safety property; the chief-notice route is not built, and no test pins
+  either.
+- **Not built in phase 3:** the e2e browser spec; the host-side "listing before
+  reply" step is built, but its tests call the spawner without a connection.
+- **The sweep's dirty-tree check is defence in depth**: removing a worktree
+  without force refuses a dirty tree too (its mutant survives).
 
 ### Phase 4: host spawn for opencode with an OpenRouter model, and forwarding through its API
 

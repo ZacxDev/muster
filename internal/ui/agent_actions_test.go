@@ -259,6 +259,27 @@ func TestASidebarRowSaysOfflineAndWhatRuns(t *testing.T) {
 	}
 }
 
+// TestASidebarRowMarksAWindowTheChiefStarted: a window carrying a host dispatch
+// has the "chief" chip naming it; the same window without one has none.
+func TestASidebarRowMarksAWindowTheChiefStarted(t *testing.T) {
+	now := time.Now()
+	mirrors := []MirrorCardView{
+		{Host: "tower", Session: "agents", Window: "@4", Label: "cc-417-fix", Online: true, ActiveAt: now, ChiefDispatch: 417},
+		{Host: "tower", Session: "w", Window: "@5", Label: "mine", Online: true, ActiveAt: now.Add(-time.Minute)},
+	}
+	out := renderString(t, NavAgentsList(nil, mirrors, "", now))
+	row := func(id string) string {
+		r := out[strings.Index(out, `<a id="`+id+`"`):]
+		return r[:strings.Index(r, "</a>")]
+	}
+	if r := row("nav-" + mirrorCardID(mirrors[0])); !strings.Contains(r, `data-nav-chief-dispatch="417"`) || !strings.Contains(r, ">chief<") {
+		t.Errorf("the chief's window lacks its chip:\n%s", r)
+	}
+	if r := row("nav-" + mirrorCardID(mirrors[1])); strings.Contains(r, "data-nav-chief-dispatch") {
+		t.Errorf("the owner's own window carries the chief chip:\n%s", r)
+	}
+}
+
 // TestHomeOpensTheLastSessionStillListed: with no chief, home is the session
 // the viewer opened last that is still listed (refs newest first, a gone one
 // skipped), else the sidebar's first row (whoever waits first), else nothing.

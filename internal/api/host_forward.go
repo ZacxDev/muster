@@ -51,7 +51,7 @@ func (s *Server) hostForwardReachable(ctx context.Context, r plugins.HostDispatc
 			continue
 		}
 		for _, w := range v.Windows {
-			if w.ID == r.Window && w.Dispatch == r.ID && w.AgentRuntime() == spawnRuntimeWire(r.Runtime) &&
+			if w.ID == r.Window && w.Dispatch == r.ID && spawnRuntimeRuns(r.Runtime, w) &&
 				(w.ClaudeSession == r.AgentSession || w.AgentSession == r.AgentSession) {
 				return true
 			}
