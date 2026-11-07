@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/db"
@@ -135,5 +137,78 @@ func TestAWaitPastTheBoundIsBusyAndWritesNothing(t *testing.T) {
 	}
 	if n := reservationsOf(t, pool, NoteObject(task+1)); n != 0 {
 		t.Errorf("the busy reservation wrote %d rows", n)
+	}
+}
+
+// TestALongWaiterIsNotStarvedBySustainedContention: lockers callers of one
+// owner each take the owner's lock, hold it hold, and at once take it again,
+// for run. A caller that has waited longer must not lose to newcomers polling
+// faster than it: a backoff that GREW with the wait did exactly that (red on
+// it: p99 1.6-2.2 s, max up to the bound). No call may be refused busy, the
+// 99th-percentile wait must stay under p99Max and the longest under maxWait —
+// both far under the bound; a FIFO queue's longest is about lockers × hold.
+func TestALongWaiterIsNotStarvedBySustainedContention(t *testing.T) {
+	s, _, _ := pgStore(t)
+	const (
+		lockers = 8
+		hold    = 20 * time.Millisecond
+		run     = 6 * time.Second
+		bound   = 4 * time.Second // chiefDispatchLockWait for this test
+		p99Max  = 1200 * time.Millisecond
+		maxWait = 2500 * time.Millisecond
+	)
+	old := chiefDispatchLockWait
+	chiefDispatchLockWait = bound
+	t.Cleanup(func() { chiefDispatchLockWait = old })
+	ctx := session(2)
+	stop := time.Now().Add(run)
+	var (
+		mu    sync.Mutex
+		waits []time.Duration
+		busy  int
+		other []error
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < lockers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stop) {
+				began := time.Now()
+				var waited time.Duration
+				err := s.inChiefDispatchLock(ctx, 2, func(pgx.Tx) error {
+					waited = time.Since(began)
+					time.Sleep(hold)
+					return nil
+				})
+				mu.Lock()
+				switch {
+				case errors.Is(err, ErrChiefDispatchBusy):
+					busy++
+					waited = time.Since(began)
+				case err != nil:
+					other = append(other, err)
+				}
+				waits = append(waits, waited)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(other) > 0 {
+		t.Fatalf("calls failed: %v", other)
+	}
+	slices.Sort(waits)
+	p50, p99, longest := waits[len(waits)/2], waits[len(waits)*99/100], waits[len(waits)-1]
+	t.Logf("%d lockers, %s holds, %s: %d calls, %d refused busy; wait p50 %s, p99 %s, max %s",
+		lockers, hold, run, len(waits), busy, p50, p99, longest)
+	if busy > 0 {
+		t.Errorf("%d of %d calls refused busy under contention a fair wait serves", busy, len(waits))
+	}
+	if p99 > p99Max {
+		t.Errorf("p99 wait %s, want under %s", p99, p99Max)
+	}
+	if longest > maxWait {
+		t.Errorf("longest wait %s, want under %s (the bound is %s)", longest, maxWait, bound)
 	}
 }

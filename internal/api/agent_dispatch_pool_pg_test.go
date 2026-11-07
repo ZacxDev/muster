@@ -104,6 +104,41 @@ func TestConcurrentAgentDispatchesOnASmallPoolDoNotStarve(t *testing.T) {
 	}
 }
 
+// busyReserve is a ledger whose every reservation waited out the owner's lock.
+type busyReserve struct{ plugins.DispatchStore }
+
+func (busyReserve) ReserveChiefDispatch(context.Context, string, map[string]any, func() error) (plugins.ChiefDispatch, error) {
+	return plugins.ChiefDispatch{}, plugins.ErrChiefDispatchBusy
+}
+
+// TestABusyAgentDispatchIsACleanRetry: a reservation that only waited too long
+// answers the chief its own retry sentence — not the logged "could not be
+// reserved" error — and, nothing having been reserved, the same call with the
+// same request_key then starts (a start, not a replay).
+func TestABusyAgentDispatchIsACleanRetry(t *testing.T) {
+	f := newReleaseFixture(t)
+	f.ownerTurn(t, f.chief, f.owner, "Start it.")
+	logs := &syncBuffer{}
+	f.srv.logger = log.New(logs, "", 0)
+	real := f.srv.ext.ChiefDispatch
+	f.srv.ext.ChiefDispatch = busyReserve{real}
+	text := f.callRaw(f.chief, agentDispatchTool, noTask("busy-1", "busy work"))
+	if got := errorText(t, text); got != agentDispatchBusy {
+		t.Fatalf("a busy reservation answered %s\nwant %q", text, agentDispatchBusy)
+	}
+	if l := logs.String(); l != "" {
+		t.Errorf("a busy reservation logged:\n%s", l)
+	}
+	if got := len(f.ownersAgents(t)); got != 0 {
+		t.Fatalf("%d agents after a busy reservation, want 0", got)
+	}
+	f.srv.ext.ChiefDispatch = real
+	text = f.callRaw(f.chief, agentDispatchTool, noTask("busy-1", "busy work"))
+	if strings.Contains(text, `"error"`) || strings.Contains(text, `"replayed"`) || !strings.Contains(text, `"agent_id"`) {
+		t.Fatalf("the retry after a busy reservation answered %s; want a start", text)
+	}
+}
+
 // TestReservationBusyNamesEveryWaitOnly: the owner's lock waited out (alone or
 // with the context's own error), a statement or lock timeout and a deadline
 // are a clean retry; any other failure is not.

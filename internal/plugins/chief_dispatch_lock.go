@@ -22,12 +22,35 @@ var ErrChiefDispatchBusy = errors.New("plugins: the owner's chief-dispatch lock 
 // this replaced. A variable for tests only.
 var chiefDispatchLockWait = db.StatementTimeout
 
-// chiefDispatchLockPoll is the first and the longest pause between attempts
-// (doubling from the first, with jitter so waiters do not retry in step).
-const (
-	chiefDispatchLockPollMin = 2 * time.Millisecond
-	chiefDispatchLockPollMax = 50 * time.Millisecond
-)
+// chiefDispatchPause is the jittered pause before a waiter's next attempt,
+// having waited waited: uniform in [0.5 ms, hi], where hi starts at 5 ms and
+// SHRINKS by 1 ms per 20 ms waited, to 1 ms — so the longer a caller has
+// waited, the more often it polls, and a release goes preferentially to the
+// oldest waiters.
+//
+// 🔴 THE PAUSE MUST NEVER GROW WITH THE WAIT. A doubling backoff (2 ms up to
+// 50 ms, before this) made the callers that had waited longest poll the
+// slowest, so under sustained contention newcomers took each released lock
+// and a long waiter could run out its whole bound (ErrChiefDispatchBusy).
+// Measured with TestALongWaiterIsNotStarvedBySustainedContention (8 callers,
+// 20 ms holds, 6 s, a 4 s bound): doubling p99 1.6-1.8 s, max 1.7 s up to the
+// bound (5/5 runs, GOMAXPROCS=2); this, p99 0.54-0.83 s, max 0.63-1.07 s
+// (15/15, 2 and 8 CPUs). A constant 1-5 ms range sat between (max up to
+// 1.8 s): a caller arriving as the lock is released tries at once, a waiter
+// only every few ms, so the old waiter must poll faster than that.
+//
+// The cost is churn: one attempt is about five round trips (BEGIN, the try,
+// ROLLBACK, plus the pool's per-acquire role/principal setup and reset), every
+// 0.5-5 ms per waiter while the lock is held. Contention on ONE owner's
+// dispatch lock is rare and short (a reservation is a few reads and one
+// insert), so that is at most a few thousand cheap statements a second per
+// contended owner, only while a holder holds — against a start refused busy
+// after waiting out the bound.
+func chiefDispatchPause(waited time.Duration) time.Duration {
+	const lo, top, floor = 500 * time.Microsecond, 5 * time.Millisecond, time.Millisecond
+	hi := max(floor, top-waited/20)
+	return lo + rand.N(hi-lo+1)
+}
 
 // errChiefDispatchLockHeld is the attempt's own signal that the lock was held:
 // the transaction is rolled back (returning its connection) and retried.
@@ -55,8 +78,8 @@ var errChiefDispatchLockHeld = errors.New("plugins: chief-dispatch lock held")
 // (wrapping ctx's error when that is why): fn did not run.
 func (s *PGStore) inChiefDispatchLock(ctx context.Context, owner int64, fn func(pgx.Tx) error) error {
 	key := strconv.FormatInt(owner, 10)
-	deadline := time.Now().Add(chiefDispatchLockWait)
-	pause := chiefDispatchLockPollMin
+	start := time.Now()
+	deadline := start.Add(chiefDispatchLockWait)
 	for {
 		err := s.inTx(ctx, func(tx pgx.Tx) error {
 			var locked bool
@@ -75,14 +98,12 @@ func (s *PGStore) inChiefDispatchLock(ctx context.Context, owner int64, fn func(
 		if time.Now().After(deadline) {
 			return ErrChiefDispatchBusy
 		}
-		wait := pause/2 + rand.N(pause/2+1)
-		t := time.NewTimer(wait)
+		t := time.NewTimer(chiefDispatchPause(time.Since(start)))
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return errors.Join(ErrChiefDispatchBusy, ctx.Err())
 		case <-t.C:
 		}
-		pause = min(2*pause, chiefDispatchLockPollMax)
 	}
 }
