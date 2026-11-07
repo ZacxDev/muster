@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -66,14 +68,14 @@ func TestAReplysProvenanceIsWhatMusterCanProve(t *testing.T) {
 func TestTheTurnEndMessageLooksPastRepliesThatArrivedFirst(t *testing.T) {
 	msgs := []chiefnudge.Msg{{Role: "user", Text: "go", ID: "line:10"}, {Role: "assistant", Text: "Shall I continue?"}}
 	m, k1, ok := askLogTurnQuestion(msgs)
-	if !ok || m.Text != "Shall I continue?" || k1 != "line:10\x00Shall I continue?" {
+	if !ok || m.Text != "Shall I continue?" || k1 != "line:10\x00"+askLogTextHash("Shall I continue?") {
 		t.Fatalf("the turn's message: %+v %q %v", m, k1, ok)
 	}
 	if m, k, ok := askLogTurnQuestion(append(msgs, chiefnudge.Msg{Role: "user", Text: "yes", ID: "line:20"})); !ok || m.Text != "Shall I continue?" || k != k1 {
 		t.Fatalf("past a reply: %+v %q %v", m, k, ok)
 	}
 	again := append(append([]chiefnudge.Msg(nil), msgs...), chiefnudge.Msg{Role: "user", Text: "yes", ID: "line:20"}, chiefnudge.Msg{Role: "assistant", Text: "Shall I continue?"})
-	if _, k, ok := askLogTurnQuestion(again); !ok || k == k1 || k != "line:20\x00Shall I continue?" {
+	if _, k, ok := askLogTurnQuestion(again); !ok || k == k1 || k != "line:20\x00"+askLogTextHash("Shall I continue?") {
 		t.Fatalf("the same words in the next turn: %q %v", k, ok)
 	}
 	if _, _, ok := askLogTurnQuestion([]chiefnudge.Msg{{Role: "user", Text: "hello"}}); ok {
@@ -82,4 +84,11 @@ func TestTheTurnEndMessageLooksPastRepliesThatArrivedFirst(t *testing.T) {
 	if _, _, ok := askLogTurnQuestion(nil); ok {
 		t.Fatal("an empty transcript has a turn-end message")
 	}
+}
+
+// askLogTextHash is the turn key's text part, spelled here from its
+// definition (sha256, first 8 bytes, hex) rather than called.
+func askLogTextHash(t string) string {
+	sum := sha256.Sum256([]byte(t))
+	return hex.EncodeToString(sum[:8])
 }

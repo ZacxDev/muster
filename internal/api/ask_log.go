@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -466,7 +468,9 @@ func askLogTurnQuestion(msgs []chiefnudge.Msg) (m chiefnudge.Msg, key string, ok
 			break
 		}
 	}
-	return msgs[i], prompt + "\x00" + msgs[i].Text, true
+	// The text as a hash: the key is kept per window for the process's life.
+	sum := sha256.Sum256([]byte(msgs[i].Text))
+	return msgs[i], prompt + "\x00" + hex.EncodeToString(sum[:8]), true
 }
 
 // askLogTurnStart queues the resolution of window k's open question: the
@@ -545,6 +549,7 @@ func (s *Server) askLogWindowGone(owner int64, k askWinKey, at time.Time) {
 		s.askLog.mu.Lock()
 		open, ok := s.askLog.plain[k]
 		delete(s.askLog.plain, k)
+		delete(s.askLog.turns, k)
 		s.askLog.mu.Unlock()
 		if !ok {
 			return nil
