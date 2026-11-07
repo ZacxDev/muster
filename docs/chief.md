@@ -496,9 +496,10 @@ have their own door instead, in **two verbs, with no tap** (operator decision:
 *"dispatch and then another verb to approve the dispatch so I don't need to
 click anything"*):
 
-1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?,
-   request_key}` checks the start and **holds** it. Nothing runs yet. It answers
-   `{hold_id, summary, expires_at}`.
+1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?}` checks
+   the start and **holds** it. Nothing runs yet. It answers `{hold_id, summary,
+   expires_at}`. It takes no idempotency key: a repeated request files a second
+   hold, which starts nothing and lapses after 15 minutes.
 2. `dispatch_approve {hold_id}` starts **exactly** what was held, once, within 15
    minutes. Any of your mirrored sessions may approve, on any of your hosts.
 
@@ -525,9 +526,9 @@ it. Its first message is your session's prompt, fenced and marked as relayed
 from one of your sessions, then (on a task) the task, then muster's rules, last.
 
 You get one notification: *"&lt;session&gt; dispatched &lt;agent&gt;
-(&lt;target&gt;, &lt;model&gt;)"*. The chief gets the same line as a note in its
-default chat, which costs it no turn, so it knows the agent exists and does not
-start another for the same work. Each request is a `chief.dispatch_held` audit
+(&lt;target&gt;, &lt;model&gt;)"*. The chief's chat gets nothing; the chief sees
+the agent in its own budget (`live_agents`), since the start is a reservation
+on its ledger. Each request is a `chief.dispatch_held` audit
 row, and each approval a `chief.dispatch_approved` row. Both name the host, the
 session, the target, the model and the SHA-256 of the prompt. The reservation
 row (`task.chief_dispatch`) names the hold it consumed (`detail.held`).

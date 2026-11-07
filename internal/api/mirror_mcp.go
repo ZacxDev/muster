@@ -63,8 +63,8 @@ import (
 // through dispatch_request / dispatch_approve (dispatch_hold_tools.go, operator decision
 // "dispatch and then another verb to approve"), with the chief's dispatch on, the START OF A
 // NEW AGENT as the owner with a prompt the caller writes, within the chief's caps (an audit
-// row per request and per approval names the host and session; each start pushes the owner
-// and is noted in the chief's chat). Never another task, another host's session, another owner's ask
+// row per request and per approval names the host and session; each start pushes the owner).
+// Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
@@ -252,7 +252,13 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	}
 	// dispatch_request / dispatch_approve — the owner starting an agent from
 	// their own session in two verbs (dispatch_hold_tools.go) — with the
-	// chief's dispatch on: the same opt-in, ledger and caps.
+	// chief's dispatch on: the same opt-in, ledger and caps. Gated on
+	// features.TaskRouting, as agent_dispatch is on the agent door, and NOT on
+	// features.Dispatch as chief_restart is: chief_restart needs only a
+	// provisioner (features.Dispatch is "a provisioner is wired"), while these
+	// need the chief's dispatch ledger and owner list, which exist only with
+	// task routing on (chiefDispatchOn). A missing provisioner is refused at the
+	// call (chiefDispatchDeploymentRefusal), with its own sentence.
 	if s.dispatchHoldToolsOn() && !s.featureOff(features.TaskRouting) {
 		out = append(out, dispatchHoldToolDefs()...)
 	}

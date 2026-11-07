@@ -131,20 +131,6 @@ func (s *PGStore) DispatchHold(ctx context.Context, id string) (DispatchHold, er
 	return s.readHold(ctx, p.UserID, `h.object = $5`, id)
 }
 
-// DispatchHoldByKey: see DispatchStore.
-func (s *PGStore) DispatchHoldByKey(ctx context.Context, key string) (DispatchHold, bool, error) {
-	p, ok := authz.From(ctx)
-	if !ok || p.UserID <= 0 {
-		return DispatchHold{}, false, errors.New("plugins: a held dispatch needs a user principal")
-	}
-	h, err := s.readHold(ctx, p.UserID, `h.detail->>'request_key' = $5 AND h.at > now() - make_interval(secs => $6)`,
-		key, ChiefDispatchWindow.Seconds())
-	if errors.Is(err, ErrHoldNotFound) {
-		return DispatchHold{}, false, nil
-	}
-	return h, err == nil, err
-}
-
 // readHold is the newest hold of owner's matching where (whose own arguments
 // start at $5).
 func (s *PGStore) readHold(ctx context.Context, owner int64, where string, args ...any) (DispatchHold, error) {

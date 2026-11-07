@@ -150,7 +150,6 @@ type holdAnswerOut struct {
 	Summary   string `json:"summary"`
 	ExpiresAt string `json:"expires_at"`
 	Model     string `json:"model"`
-	Replayed  bool   `json:"replayed"`
 	Next      string `json:"next"`
 }
 
@@ -194,9 +193,8 @@ func (h *holdFixture) nothingStarted(t *testing.T) {
 	}
 }
 
-func gatewayRequest(key string) map[string]any {
-	return map[string]any{"target": "pod/gateway", "model": "openrouter/vendor-a/coder-7", "prompt": "Profile the nightly export and open a draft PR.",
-		"request_key": key}
+func gatewayRequest() map[string]any {
+	return map[string]any{"target": "pod/gateway", "model": "openrouter/vendor-a/coder-7", "prompt": "Profile the nightly export and open a draft PR."}
 }
 
 // --- the request ----------------------------------------------------------------
@@ -204,13 +202,13 @@ func gatewayRequest(key string) map[string]any {
 // TestDispatchRequestHoldsAndStartsNothing: a valid request files ONE hold —
 // its audit row names the host, the session, the target, the model and the
 // prompt's digest — answers {hold_id, summary, expires_at 15 minutes on}, and
-// reserves, creates and provisions nothing. The same key and arguments answer
-// the same hold (replayed, no second row); the same key with a changed prompt
-// is refused.
+// reserves, creates and provisions nothing. The same request again files a
+// SECOND hold — there is no idempotency key: a duplicate hold starts nothing,
+// lapses in 15 minutes, and each hold starts at most once.
 func TestDispatchRequestHoldsAndStartsNothing(t *testing.T) {
 	h := newHoldFixture(t)
 	before := time.Now()
-	out := h.request(t, gatewayRequest("rk-1"))
+	out := h.request(t, gatewayRequest())
 	if !strings.Contains(out.Summary, "pod/gateway") || !strings.Contains(out.Summary, "openrouter/vendor-a/coder-7") ||
 		!strings.Contains(out.Summary, "Profile the nightly export") || out.Model != "openrouter/vendor-a/coder-7" {
 		t.Errorf("answer %+v: want a summary naming the target, the model and the prompt", out)
@@ -233,25 +231,19 @@ func TestDispatchRequestHoldsAndStartsNothing(t *testing.T) {
 		t.Errorf("hold row via=%s detail=%v: want the host, the session, the target, the model and the prompt digest", via, d)
 	}
 
-	again := h.request(t, gatewayRequest("rk-1"))
-	if again.HoldID != out.HoldID || !again.Replayed {
-		t.Errorf("the same request again: %+v; want the same hold, replayed", again)
+	again := h.request(t, gatewayRequest())
+	if again.HoldID == out.HoldID {
+		t.Errorf("the same request again answered the same hold %s, want a new one", again.HoldID)
 	}
-	if n := h.auditRows(t, plugins.ActionDispatchHeld); n != 1 {
-		t.Errorf("%d hold rows after the replay, want 1", n)
-	}
-	changed := gatewayRequest("rk-1")
-	changed["prompt"] = "Something else."
-	text, _, _ := h.tool(t, h.ws, focusSID, dispatchRequestTool, changed)
-	if got := errorText(t, text); got != `request_key "rk-1" was used in the last 24 hours for a different request: use a new key for a new request` {
-		t.Errorf("the key with a changed prompt: %q", got)
+	if n := h.auditRows(t, plugins.ActionDispatchHeld); n != 2 {
+		t.Errorf("%d hold rows after the second request, want 2", n)
 	}
 	h.nothingStarted(t)
 }
 
 // TestDispatchRequestValidatesLikeAgentDispatch: each guard refuses with its
 // own sentence and holds nothing — the target (none, mirrored, a host, a
-// malformed one), the request_key, model on claude-code, a display name as
+// malformed one), an argument outside the table, model on claude-code, a display name as
 // model, a bare provider id, the prompt, a repository the owner did not
 // connect, a gated task, another owner's task.
 func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
@@ -266,7 +258,7 @@ func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
 		return n.ID
 	}()
 	base := func(over map[string]any) map[string]any {
-		args := map[string]any{"target": "pod/claude-code", "prompt": "do the thing", "request_key": "rk-v"}
+		args := map[string]any{"target": "pod/claude-code", "prompt": "do the thing"}
 		for k, v := range over {
 			if v == nil {
 				delete(args, k)
@@ -285,8 +277,7 @@ func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
 		{"mirrored", base(map[string]any{"target": "mirrored"}), dispatchRequestMirrored},
 		{"a host target", base(map[string]any{"target": "host/box-a/claude"}), `host "box-a" cannot start agents now`},
 		{"unknown target", base(map[string]any{"target": "pod/robot"}), `target "pod/robot" is not one of:`},
-		{"no request_key", base(map[string]any{"request_key": nil}), dispatchRequestKeyNeeded},
-		{"bad request_key", base(map[string]any{"request_key": "has space"}), agentDispatchKeyShape},
+		{"a request_key (the request has none)", base(map[string]any{"request_key": "k-1"}), dispatchRequestArgs},
 		{"model on claude-code", base(map[string]any{"model": "openrouter/vendor-a/coder-7"}), dispatchRequestModel},
 		{"a display name as model", base(map[string]any{"target": "pod/gateway", "model": "Acme v4.1 flash"}),
 			`model "Acme v4.1 flash" is not a model id (a display name is not one)`},
@@ -314,7 +305,7 @@ func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
 func TestDispatchRequestRefusesAnOwnerWhoDidNotOptIn(t *testing.T) {
 	h := newHoldFixture(t)
 	delete(h.tr.DispatchOwners, h.owner)
-	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest("rk-opt"))
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest())
 	if !isErr || errorText(t, text) != dispatchRequestOptOut {
 		t.Fatalf("answer %s; want %q", text, dispatchRequestOptOut)
 	}
@@ -330,11 +321,11 @@ func TestDispatchRequestRefusesAnOwnerWhoDidNotOptIn(t *testing.T) {
 // prompt fenced as relayed from the owner's session, with muster's rules last;
 // its reservation names the hold; an approval audit row names who approved and
 // the agent; the owner is pushed once ("<session> dispatched <agent> (<target>,
-// <model>)") and the chief's chat gets the same line. A second approval of the
-// same hold is refused and starts, pushes and notes nothing more.
+// <model>)"). A second approval of the same hold is refused and starts and
+// pushes nothing more.
 func TestDispatchApproveStartsExactlyTheHeldRequestOnce(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-ok"))
+	held := h.request(t, gatewayRequest())
 	before := h.budget(t)
 	text, isErr, rpc := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
 	if rpc != nil || isErr {
@@ -390,10 +381,6 @@ func TestDispatchApproveStartsExactlyTheHeldRequestOnce(t *testing.T) {
 	if len(pushes) != 1 || pushes[0].Body != line || pushes[0].Tag != "dispatch-approved-"+a.Name || pushes[0].Data["url"] != "/agents/"+a.Name {
 		t.Errorf("pushes %+v: want exactly one, %q", pushes, line)
 	}
-	note := h.chiefNotes(t)
-	if len(note) != 1 || note[0] != sessionDispatchChiefNote(line) {
-		t.Errorf("chief notes %q: want exactly %q", note, sessionDispatchChiefNote(line))
-	}
 
 	// The replay: refused, and nothing more happens.
 	text, isErr, _ = h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
@@ -413,34 +400,11 @@ func TestDispatchApproveStartsExactlyTheHeldRequestOnce(t *testing.T) {
 	if n := len(h.pusher.to(ep("hold-owner"))); n != 1 {
 		t.Errorf("pushes after the replay: %d, want 1", n)
 	}
-	if n := len(h.chiefNotes(t)); n != 1 {
-		t.Errorf("chief notes after the replay: %d, want 1", n)
+	// The chief's chat gets nothing: the push and the ledger reservation cover it.
+	var notes int
+	if err := h.pool.QueryRow(h.asOwner, `SELECT count(*) FROM chat_messages WHERE agent_id = $1`, h.chief.ID).Scan(&notes); err != nil || notes != 0 {
+		t.Errorf("the chief's chat has %d message(s) (%v), want none", notes, err)
 	}
-	// And a new request on the used key says so.
-	text, _, _ = h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest("rk-ok"))
-	if !strings.Contains(errorText(t, text), "already held a dispatch that was approved") {
-		t.Errorf("a request on the approved key: %s", text)
-	}
-}
-
-// chiefNotes is every [muster] note of a session dispatch in the chief's chats.
-func (h *holdFixture) chiefNotes(t *testing.T) []string {
-	t.Helper()
-	rows, err := h.pool.Query(h.asOwner, `SELECT content FROM chat_messages WHERE agent_id = $1 AND content LIKE '[muster] Your owner started an agent%' ORDER BY id`,
-		h.chief.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var c string
-		if err := rows.Scan(&c); err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 // TestDispatchApproveOnATaskStartsItThere: a held start on an open task
@@ -449,7 +413,7 @@ func (h *holdFixture) chiefNotes(t *testing.T) []string {
 func TestDispatchApproveOnATaskStartsItThere(t *testing.T) {
 	h := newHoldFixture(t)
 	n := h.task(t, "nightly export")
-	held := h.request(t, map[string]any{"target": "pod/claude-code", "task_id": n.ID, "prompt": "Start with the slow query.", "request_key": "rk-task"})
+	held := h.request(t, map[string]any{"target": "pod/claude-code", "task_id": n.ID, "prompt": "Start with the slow query."})
 	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
 	if isErr {
 		t.Fatalf("approval: %s", text)
@@ -474,7 +438,7 @@ func TestDispatchApproveOnATaskStartsItThere(t *testing.T) {
 // approval row names both.
 func TestAnotherSessionOfTheOwnerMayApprove(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-laptop"))
+	held := h.request(t, gatewayRequest())
 	text, isErr, _ := h.tool(t, h.laptop, holdLaptopSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
 	if isErr {
 		t.Fatalf("approval from the laptop: %s", text)
@@ -493,7 +457,7 @@ func TestAnotherSessionOfTheOwnerMayApprove(t *testing.T) {
 // can still approve it.
 func TestAnotherOwnersSessionCannotApprove(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-theirs"))
+	held := h.request(t, gatewayRequest())
 	text, isErr, _ := h.tool(t, h.theirWS, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
 	if want := `no held dispatch "` + held.HoldID + `" of your owner's: dispatch_approve takes the hold_id dispatch_request returned`; !isErr ||
 		errorText(t, text) != want {
@@ -513,7 +477,7 @@ func TestAnotherOwnersSessionCannotApprove(t *testing.T) {
 // sentence and starts nothing.
 func TestAnExpiredHoldIsRefused(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-old"))
+	held := h.request(t, gatewayRequest())
 	if _, err := h.pool.Exec(authz.System(context.Background()), `UPDATE audit_log SET at = at - interval '16 minutes' WHERE object = $1`, held.HoldID); err != nil {
 		t.Fatal(err)
 	}
@@ -522,17 +486,13 @@ func TestAnExpiredHoldIsRefused(t *testing.T) {
 		t.Fatalf("an expired hold answered %s", text)
 	}
 	h.nothingStarted(t)
-	text, _, _ = h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest("rk-old"))
-	if !strings.Contains(errorText(t, text), "already held a dispatch that expired unapproved") {
-		t.Errorf("a request on the expired key: %s", text)
-	}
 }
 
 // TestConcurrentApprovalsStartOneAgent: eight approvals of one hold at once
 // start exactly one agent; the rest are refused as already approved.
 func TestConcurrentApprovalsStartOneAgent(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-race"))
+	held := h.request(t, gatewayRequest())
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -563,7 +523,7 @@ func TestConcurrentApprovalsStartOneAgent(t *testing.T) {
 // this one — deterministically, with no timing — and one agent exists.
 func TestAnApprovalThatLosesTheRaceIsRefusedUnderTheLock(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-window"))
+	held := h.request(t, gatewayRequest())
 	args, _ := json.Marshal(map[string]any{"hold_id": held.HoldID})
 	var inner string
 	// The hook unsets itself before the inner approval runs, so the inner call
@@ -609,7 +569,7 @@ func (h *holdFixture) mirrorCaller(sid string) toolCaller {
 // of it holds or starts anything.
 func TestOnlyTheOwnersMirroredSessionsMayRequestOrApprove(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-who"))
+	held := h.request(t, gatewayRequest())
 	for _, tok := range []string{h.chiefTok, h.workerTok} {
 		listed := h.listedFor(t, tok)
 		if listed[dispatchRequestTool] || listed[dispatchApproveTool] {
@@ -628,7 +588,7 @@ func TestOnlyTheOwnersMirroredSessionsMayRequestOrApprove(t *testing.T) {
 			t.Errorf("%s named by a gateway chief: %s; want unknown tool", name, text)
 		}
 	}
-	reqArgs, _ := json.Marshal(gatewayRequest("rk-who-2"))
+	reqArgs, _ := json.Marshal(gatewayRequest())
 	appArgs, _ := json.Marshal(map[string]any{"hold_id": held.HoldID})
 	sessionCtx := h.as(h.owner) // a signed-in browser principal, not a mirror host's token
 	for _, c := range []struct {
@@ -705,7 +665,7 @@ func TestTheVerbsAreListedOnTheMirrorDoorOnly(t *testing.T) {
 	if !listed[attentionAnswerTool] {
 		t.Fatalf("dispatch off: mirror door tools %v — positive control: attention_answer must be listed", listed)
 	}
-	_, _, rpc := off.tool(t, off.ws, focusSID, dispatchRequestTool, gatewayRequest("rk-off"))
+	_, _, rpc := off.tool(t, off.ws, focusSID, dispatchRequestTool, gatewayRequest())
 	if rpc == nil || rpc.Code != -32602 {
 		t.Errorf("dispatch off: a call by name answered %+v; want unknown tool (-32602)", rpc)
 	}
@@ -730,7 +690,7 @@ func newHoldFixtureOff(t *testing.T) *holdFixture {
 // sentence, and stays open (nothing names it).
 func TestTheBudgetRefusesARequestAndAnApproval(t *testing.T) {
 	h := newHoldFixture(t)
-	held := h.request(t, gatewayRequest("rk-budget-early"))
+	held := h.request(t, gatewayRequest())
 	for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
 		obj, _ := plugins.NewDispatchObject()
 		if _, err := h.plugins.ReserveChiefDispatch(h.asOwner, obj, map[string]any{"target": "pod/claude-code"}, nil); err != nil {
@@ -738,7 +698,7 @@ func TestTheBudgetRefusesARequestAndAnApproval(t *testing.T) {
 		}
 	}
 	reserved := h.allReservations(t)
-	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest("rk-budget"))
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchRequestTool, gatewayRequest())
 	var out struct {
 		Error  string               `json:"error"`
 		Budget *plugins.ChiefBudget `json:"budget"`

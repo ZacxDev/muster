@@ -14,7 +14,7 @@ import (
 
 func fileHold(t *testing.T, s *PGStore, uid int64, key string) DispatchHold {
 	t.Helper()
-	h, err := s.FileDispatchHold(session(uid), map[string]any{"request_key": key, "target": "pod/claude-code", "prompt": "p-" + key})
+	h, err := s.FileDispatchHold(session(uid), map[string]any{"label": key, "target": "pod/claude-code", "prompt": "p-" + key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,19 +72,16 @@ func TestAHoldExpiresByTheDatabasesClock(t *testing.T) {
 	}
 }
 
-// TestAHoldIsItsOwnersOnly: another owner reads it as missing, and by key
-// finds nothing; a malformed id is missing without a query.
+// TestAHoldIsItsOwnersOnly: another owner reads it as missing, its owner
+// reads it; a malformed id is missing without a query.
 func TestAHoldIsItsOwnersOnly(t *testing.T) {
 	s, _, _ := pgStore(t)
 	h := fileHold(t, s, 2, "k-mine")
 	if _, err := s.DispatchHold(session(3), h.ID); !errors.Is(err, ErrHoldNotFound) {
 		t.Errorf("owner 3 reading owner 2's hold: %v; want ErrHoldNotFound", err)
 	}
-	if _, ok, err := s.DispatchHoldByKey(session(3), "k-mine"); ok || err != nil {
-		t.Errorf("owner 3 by owner 2's key: ok=%v %v; want nothing", ok, err)
-	}
-	if got, ok, err := s.DispatchHoldByKey(session(2), "k-mine"); !ok || err != nil || got.ID != h.ID {
-		t.Errorf("owner 2 by its key: %+v ok=%v %v; want hold %s", got, ok, err, h.ID)
+	if got, err := s.DispatchHold(session(2), h.ID); err != nil || got.ID != h.ID {
+		t.Errorf("owner 2 reading its own hold: %+v %v", got, err)
 	}
 	for _, bad := range []string{"", "held:", "held:XYZ", "dispatch:" + h.ID[5:], h.ID + "0"} {
 		if _, err := s.DispatchHold(session(2), bad); !errors.Is(err, ErrHoldNotFound) {

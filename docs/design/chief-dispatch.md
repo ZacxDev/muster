@@ -1309,7 +1309,9 @@ agents.
   targets refused as there), the prompt cap, the task (`chiefDispatchTaskBlock`),
   the repository (`connectedRepo`), the kind (`resolveKind`), the budget (the
   caps' own predicates), and the model. It then files a **hold** and starts
-  nothing.
+  nothing. It takes no idempotency key (Round 0 dropped it): a repeated
+  request files a second hold, which starts nothing and lapses in 15 minutes,
+  and approval's single use under the lock already prevents a double start.
 - **The model** goes through one function, `dispatchRequestModelCheck`. Today it
   refuses a value that is not an id (a display name) and an id the agent's
   credential cannot reach. It is the seam for the dispatch-outcomes change's
@@ -1318,8 +1320,9 @@ agents.
 - **`dispatch_approve`** reserves on the chief's ledger, naming the hold, then
   runs `startReserved`, the post-reservation path `agent_dispatch` now shares:
   `createAndDispatchAgent`, the ledger's agent row, and the release of a refused
-  start. Then it writes an approval audit row, pushes the owner once, and notes
-  the start in the chief's chat. The outcome tracking of the dispatch-outcomes
+  start. Then it writes an approval audit row and pushes the owner once. The
+  chief's chat gets nothing: the reservation already puts the agent in the
+  chief's budget (`live_agents`). The outcome tracking of the dispatch-outcomes
   change attaches at the same `dispatchParams`, marked as a seam.
 - **Who.** Both verbs are listed only on `POST /mirror/mcp`, dispatched there
   before the tools a gateway agent can name, and each handler refuses any
@@ -1342,8 +1345,8 @@ way. There is no new table and no migration.
 **Residual risk, accepted with the decision.** A prompt-injected model in one
 of the owner's mirrored sessions can call both verbs. What bounds it: the door
 is the owner's own sessions only; each request and approval is an audit row
-naming the host and the session; each start pushes the owner and is noted in
-the chief's chat; the chief's caps apply; and the started agent opens a draft
+naming the host and the session; each start pushes the owner; the chief's caps
+apply; and the started agent opens a draft
 pull request at most.
 
 ---

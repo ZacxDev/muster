@@ -245,9 +245,6 @@ type DispatchStore interface {
 	// the database's clock, consumed by a reservation naming it), or
 	// ErrHoldNotFound — for a missing hold and another owner's alike.
 	DispatchHold(ctx context.Context, id string) (DispatchHold, error)
-	// DispatchHoldByKey is the principal's newest hold filed with request_key
-	// key in the last ChiefDispatchWindow; ok is false when there is none.
-	DispatchHoldByKey(ctx context.Context, key string) (h DispatchHold, ok bool, err error)
 	// RecordDispatchApproved records an approved hold's start
 	// (ActionDispatchApproved, object the hold id).
 	RecordDispatchApproved(ctx context.Context, holdID string, detail map[string]any) error

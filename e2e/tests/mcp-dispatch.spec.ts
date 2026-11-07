@@ -146,7 +146,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
 
 test('a mirrored session holds a start, approves it, and exactly that agent appears', async ({ page }) => {
   test.setTimeout(120_000);
-  const held = await call('dispatch_request', { target: 'pod/gateway', model, prompt, request_key: 'e2e-' + stamp });
+  const held = await call('dispatch_request', { target: 'pod/gateway', model, prompt });
   expect(held.isError, JSON.stringify(held.body)).toBe(false);
   const holdID = held.body.hold_id as string;
   expect(holdID).toMatch(/^held:[0-9a-f]{32}$/);

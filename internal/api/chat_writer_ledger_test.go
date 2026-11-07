@@ -70,8 +70,6 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		`internal/api/session_routes.go (*Server).noteToChief → AddChatMessage(role "user", TypedBy -)`: chatAgentSent,
 		// muster's note to a chief about an agent it started (agent_outcome.go).
 		`internal/api/agent_outcome.go (*Server).noteOutcomeToChief → AddChatMessage(role "user", TypedBy -)`: chatAgentSent,
-		// dispatch_approve's note to the chief: an agent the owner started from one of their sessions.
-		`internal/api/dispatch_hold_tools.go (*Server).noteSessionDispatchToChief → AddChatMessage(role "user", TypedBy -)`: chatAgentSent,
 		// A request route's answer, recorded when no turn stored it (muster's words around the session's answer).
 		`internal/api/session_routes.go (*Server).deliverRouteAnswer → AddChatMessage(role "user", TypedBy -)`:     chatAgentSent,
 		`internal/api/jobs.go (*Server).runJobTurn → AddChatMessage(role "user", TypedBy -)`:                       chatAgentSent,
