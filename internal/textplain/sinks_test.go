@@ -117,8 +117,8 @@ var uiExempt = map[string]exemption{
 	// owner's answer, so it is shown verbatim; the decoder's reads only check it.
 	"owner_ask.go ownerAskForm o.Label":                  {4, whyOption},
 	"owner_ask.go ownerAskForm o.Description":            {4, whyOption},
-	"owner_ask.go ownerAskCard o.Label":                  {2, whyOption},
-	"owner_ask.go ownerAskCard o.Description":            {2, whyOption},
+	"owner_ask.go ownerAskCardAs o.Label":                {2, whyOption},
+	"owner_ask.go ownerAskCardAs o.Description":          {2, whyOption},
 	"owner_ask.go DecodeOwnerAsk o.Label":                {6, "validating ask_owner's arguments (trim, length, uniqueness); never drawn here"},
 	"owner_ask.go DecodeOwnerAsk o.Description":          {2, "validating ask_owner's arguments (trim, length); never drawn here"},
 	"mirror_ask.go askReadOnly o.Description":            {2, whyOption},
