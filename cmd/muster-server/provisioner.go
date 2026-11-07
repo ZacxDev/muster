@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -311,7 +312,13 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 // onChange is called with an agent's name whenever the deliverer changes what that
 // agent's page shows; buildApp passes api.Server.BroadcastAgentChanged so an open
 // agent page's strip and the sidebar re-fetch (agentkickoff.Config.OnChange).
-func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string), logger *log.Logger) (*agentkickoff.Deliverer, error) {
+//
+// turnCtx is the context each first turn is sent under, for the agent
+// (agentkickoff.Config.TurnContext): buildApp passes api.Server.
+// OfficerTurnContext, so an officer instance of a fresh_session_per_item pool
+// gets its kickoff in a NEW conversation.
+func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
+	turnCtx func(context.Context, agents.Agent) context.Context, logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
@@ -322,6 +329,7 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
 		OnChange:        onChange,
+		TurnContext:     turnCtx,
 	})
 }
 

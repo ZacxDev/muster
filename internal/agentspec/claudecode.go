@@ -141,11 +141,12 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 
 // ComposeChiefAllowedMCPTools are the muster MCP tools the Compose chief runs
 // without a prompt (operator decision): reading the fleet and the board, and
-// routing work to a session. Every other prompt is denied in its container.
-// Pinned by TestTheComposeChiefsAllowedToolsArePinned.
+// routing work to a session — and asking its owner a question in its own chat
+// (ask_owner: it only draws a card, operator decision). Every other prompt is
+// denied in its container. Pinned by TestTheComposeChiefsAllowedToolsArePinned.
 var ComposeChiefAllowedMCPTools = []string{
 	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
-	"tasks_list", "task_get", "attention_list", "route_to_session",
+	"tasks_list", "task_get", "attention_list", "route_to_session", "ask_owner",
 }
 
 // claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose
@@ -170,6 +171,28 @@ func claudeCodeResourcesFor(cfg Config) provision.Resources {
 // which it does not) are separate switches. Neither is needed for the pod to
 // work: the first succeeds, the second fails closed.
 const EnvClaudeDisableNonessentialTraffic = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
+// EnvClaudeDisableAutoMemory is the Claude Code CLI's switch for its
+// auto-memory (ClaudeCodeSession.DisableAutoMemory). Read from the CLI's own
+// bundle — 2.1.289, and statically the image's 2.1.296, where the function
+// has the same shape: a truthy value turns auto-memory "off" BEFORE any
+// setting is consulted, and the setting's own description is "When false,
+// Claude will not read from or write to the auto-memory directory" (settings
+// key autoMemoryEnabled). The variable is used rather than the setting
+// because it is the pod's, set at provision time: a session can write its
+// own settings.json, but not its CLI's environment. It reaches the CLI as
+// every pod variable does (ccd's environment is the tmux server's, which the
+// pane inherits). Read, not run: no officer pod has been measured with it.
+const EnvClaudeDisableAutoMemory = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+
+// EnvClaudeDisableOrgMemory is the Claude Code CLI's separate switch for its
+// org memory, set beside EnvClaudeDisableAutoMemory
+// (ClaudeCodeSession.DisableAutoMemory). Its gate (2.1.289 and 2.1.296, read
+// statically) checks this variable, a server-side feature flag and claude.ai
+// authentication — and NOT the auto-memory variable — so an instance on a
+// subscription token would otherwise keep that channel between items whenever
+// the flag is on. Whether the flag is ever on for these accounts is not known.
+const EnvClaudeDisableOrgMemory = "CLAUDE_CODE_DISABLE_ORG_MEMORY"
 
 // ClaudeCodeMCPOffered reports whether a claude-code agent built from this
 // Config can reach muster's MCP server — its ONLY route to muster's tools (the
@@ -564,6 +587,10 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if route {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvLLMRoute, Value: LLMRouteMuster})
+	}
+	if opts.ClaudeCodeSession.DisableAutoMemory {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvClaudeDisableAutoMemory, Value: "1"},
+			provision.EnvVar{Name: EnvClaudeDisableOrgMemory, Value: "1"})
 	}
 	if opts.ClaudeCodeSession.EgressLocked() || poolLocked {
 		// An egress-locked pool's worker too: the CLI's optional hosts

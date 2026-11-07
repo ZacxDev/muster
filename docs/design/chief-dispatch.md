@@ -1,10 +1,40 @@
 # Design: the chief dispatches every agent
 
-**Status: proposed. Nothing here is implemented.** The owner made the nine
-decisions in [Owner decisions](#owner-decisions): four up front, and five more in
-answer to this page's first draft. Everything else on this page is the
-recommended design. No owner question remains open. What is still open is a set
-of measurements, listed in [7](#7-what-is-still-unverified).
+**Status: phase 1 is built** (`agent_dispatch` for pods, #428,
+`internal/api/agent_dispatch.go`). **Phases 2-4 are proposed.** The owner made
+the nine decisions in [Owner decisions](#owner-decisions): four up front, and
+five more in answer to this page's first draft. This revision adds nine more:
+10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
+host, which runtime runs there, and what the chief asks when a host or a model
+is missing ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model));
+and 14-18, the owner's answers to this revision's questions. It also rebuilds phase 4 on the opencode launcher that #486 shipped
+([3.6](#36-the-commands-and-prompt-delivery)). Everything else on this page is
+the recommended design. The owner answered this revision's five questions as
+decisions 14-18. What is still open is a set of measurements
+([7](#7-what-is-still-unverified)).
+
+**What this revision changed, and why it is not a new page.** Mirrored
+dispatch *is* this page's host spawn (section 3, phases 3 and 4): the same
+target strings, the same flag, the same `host_dispatches` row. A parallel page
+would restate that protocol and drift from it, so the changes are made in
+place:
+
+- decisions 10-18, and [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)
+  (the routing rules and the two ask cards, reusing PR A's `ask_owner` card);
+- `model` is now accepted for `host/<host>/opencode`, as an OpenRouter model
+  ([2.2](#22-parameters));
+- the opencode spawn uses `muster-mirror opencode` (#486) and an API send, in
+  place of the wrapper and `--prompt` ([3.6](#36-the-commands-and-prompt-delivery));
+- the live agent card from PR A shows host dispatches ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task));
+- host-side controls that hold **against a compromised server**: a repository
+  allow-list, a spawn rate limit and an append-only audit log
+  ([5.5](#55-a-compromised-server)). This reopens round-0 disposition D3 (no
+  host spawn cap), and says why.
+
+**PR A** is the separate, in-flight change that adds the chief's `ask_owner`
+question card, the cluster target rules and the live dispatched-agent card.
+This page assumes it has merged, and names the contract it relies on from it in
+[2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model).
 
 **What changes.** Today an agent is started in one of two ways: by clicking
 through the dispatch form in the web UI, or by the chief calling `task_dispatch`
@@ -53,7 +83,10 @@ at commit `4ec696cf`, and the code is the authority
   - `pod/claude-code` and `pod/gateway` are today's two pod kinds
     (`internal/agents/kind.go:20-21`);
   - `host/<host>/claude` and `host/<host>/opencode` are tmux spawns on a host
-    whose mirror advertises spawning.
+    whose mirror advertises spawning ("mirrored", decision 10). opencode takes
+    an OpenRouter `model` (decision 11). A host or a model the owner did not
+    name is asked for with an `ask_owner` card, and the start is bound to the
+    owner's tap ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)).
 - **Budget: unchanged, and it now covers host spawns too.** The ledger, the
   caps (5 live and 10 a day) and the "every answer carries the budget" rule all
   stay. A reservation for a dispatch without a task names a fresh ledger
@@ -77,9 +110,14 @@ at commit `4ec696cf`, and the code is the authority
   - creates a **fresh git worktree** of the named repository from
     `origin/<base>`, never touching any checkout the owner has open;
   - opens a **window in the `agents` session** on its own tmux server;
-  - starts plain `claude` or `opencode` in their normal permission modes, with
-    the prompt handed over in a `0600` file that a constant wrapper reads, so
-    neither tmux nor a shell ever parses it;
+  - starts plain `claude` or `opencode` in their normal permission modes. For
+    claude the prompt is handed over in a `0600` file that a constant wrapper
+    reads, so neither tmux nor a shell ever parses it. For opencode the window
+    runs `muster-mirror opencode` (#486) on a session the host created with the
+    chosen OpenRouter model, and the prompt is posted through opencode's API
+    once the pane is bound;
+  - enforces its own repository allow-list, spawn rate limit and audit log,
+    which hold even against a compromised server ([5.5](#55-a-compromised-server));
   - picks the session id itself, so muster can link the mirrored window to the
     dispatch record without guessing;
   - for claude, writes the folder-trust entry for the worktree it just created,
@@ -100,8 +138,10 @@ at commit `4ec696cf`, and the code is the authority
   1. chief pod dispatch, with or without a task, the required target,
      `worker_pool` and `request_key`;
   2. **delete the UI**;
-  3. host spawn for claude, with the trust entry and forwarding;
-  4. host spawn for opencode, with forwarding through its API.
+  3. host spawn for claude, with the trust entry and forwarding, and
+     mirrored dispatch (the routing rules and the two cards);
+  4. host spawn for opencode with an OpenRouter model, through #486's
+     launcher and API send, with forwarding through the same API.
 
   The reason is in [Phases](#6-phases).
 
@@ -114,6 +154,25 @@ These are binding, and this page does not reopen them.
    plus a runtime of `claude` or `opencode`. The tool refuses a call without a
    target, so the chief has to ask. The refusal is structural, not a prompt
    instruction.
+
+   **Amended by a later owner decision.** The chief resolves the target from
+   what the owner said, and the tool still never invents one:
+   - "with Claude", or any Claude model → `pod/claude-code` (no model);
+   - any other model the owner names → `pod/gateway`, with that model as its
+     OpenRouter id (`openrouter/<provider>/<model>`);
+   - no model named → the chief **asks** with an `ask_owner` question card:
+     Claude, or an OpenRouter model (a few sensible ones, plus the card's own
+     "Other" box). It never picks one;
+   - "mirrored" → `mirrored`, which is **refused** until mirrored dispatch
+     ships, with a sentence saying so. It never falls back to the cluster;
+   - not mirrored → the cluster.
+
+   The no-target refusal says to ask with `ask_owner`, and lists each target as
+   a choice in the owner's words — "Claude Code (your Claude account)",
+   "Gateway (OpenRouter model: <model>)" — not as a raw `pod/` name alone. The
+   mapping is stated in the tool's description and in the chief's standing
+   instructions (both runtimes); the description still names no target string,
+   for the same reason it carries no cap number.
 2. **tmux spawn.** The agent opens as a new window in a dedicated `agents` tmux
    session on that host's default tmux server. It runs in a fresh git worktree
    of the named repository, never in a checkout the owner has open. The
@@ -151,6 +210,51 @@ The owner's answers to the first draft's open questions:
    reaches a host-spawned claude window through the existing paste relay, in
    phase 3, and a host-spawned opencode window through opencode's API, in phase
    4. Addressing and gating are in [3.10](#310-forwarding-into-a-host-spawned-agent).
+
+The owner's rules for mirrored dispatch, given after phase 1 shipped:
+
+10. **"Mirrored" picks a host; its absence picks the cluster.** A request that
+    says "mirrored" starts the agent on one of the owner's hosts
+    (`host/<host>/<runtime>`). A request that does not say it starts a cluster
+    agent (`pod/…`, under PR A's cluster target rules).
+11. **The runtime follows the model named.** "Mirrored … with Claude" runs
+    **Claude Code** (`host/<host>/claude`). "Mirrored … with" any other model
+    runs **opencode with that model through OpenRouter**
+    (`host/<host>/opencode`, `model: <openrouter model id>`). OpenRouter is
+    already configured as a provider in opencode on the hosts, so muster passes
+    only the model ([3.6](#36-the-commands-and-prompt-delivery)).
+12. **No host named: ask with a card.** The chief asks with an `ask_owner`
+    card whose options are the hosts that are online now and accept dispatch
+    (`hostSpawnable`, [3.8](#38-read-only-and-tenant-hosts)).
+13. **No model named: ask with a card.** The options are Claude (Claude Code)
+    or an OpenRouter model (opencode).
+
+Decisions 12 and 13 are decision 1 applied to the two parts of a host target:
+muster never chooses one the owner did not name.
+
+The owner's answers to this revision's questions:
+
+14. **"Mirrored" is the chief's reading, with no word check.** Mapping the
+    request to a host target is a prose rule in the chief's instructions.
+    muster does not refuse a host target for lacking the word "mirror"; the
+    card and the live agent card show where an agent goes before and after it
+    starts ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)).
+15. **The model card offers a configured list plus a typed id.** The list is
+    muster configuration, `MUSTER_CHIEF_DISPATCH_MODELS`, which the owner edits.
+    Its default is a small list of OpenRouter ids, and the card always also
+    takes a typed OpenRouter model id
+    ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model), "The model
+    list").
+16. **The host repository allow-list is empty by default.**
+    `-agent-spawn-repos` names nothing until the owner lists repositories for
+    each host in that host's configuration (their dotfiles), so a host spawns
+    nothing until then ([3.2](#32-the-flag), [5.5](#55-a-compromised-server)).
+17. **No Stop button in phases 3-4.** The live agent card tells the owner to
+    close the window on `<host>`. There is no kill message (D7)
+    ([3.7](#the-live-agent-card)).
+18. **"Mirrored with Claude `<model>`" uses Claude Code's default model.**
+    `model` stays refused on `host/<host>/claude` (defaulted, per the
+    recommendation).
 
 ---
 
@@ -542,7 +646,7 @@ guard keeps its order and its sentence.
 | `task_id` | no | an existing task of the owner's. Without it, the dispatch has no task |
 | `repo` | yes for a host target; otherwise as today | `<owner>/<repo>`. **For every target, pod or host, the server checks it with `connectedRepo` before it reserves anything** ([5.1](#51-who-can-trigger-a-spawn)). For a host, the host then resolves it to one of its own clones when the spawn runs, and its refusal names the repository |
 | `base` | no | for a host: the branch the worktree is cut from. The default is the remote's default branch (`origin/HEAD`). For a pod: today's `repo_branch` |
-| `model` | no | **only** for `pod/gateway`, which takes a model today (`buildRuntimeConfig`, `internal/agentspec/agentspec.go:1078`). Refused for every other target ("this target takes its model from its own configuration"): claude-code has no per-agent model (`claudeCodeNoModel`, `internal/api/agents.go:933`), and the host runtimes take theirs from the owner's own settings |
+| `model` | for `host/<host>/opencode`: **yes** (or the card asks, [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)); `pod/gateway`: optional; otherwise refused | `pod/gateway` takes a model today (`buildRuntimeConfig`, `internal/agentspec/agentspec.go:1078`). **`host/<host>/opencode` takes an OpenRouter model id** (decision 11), such as `<vendor>/<model>`, which muster sends as `openrouter/<vendor>/<model>`. Its shape is `^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*$`, at most 128 bytes, otherwise `"model %q is not an OpenRouter model id (<vendor>/<model>)"`; whether the host's opencode knows it is the host's check (`bad_model`, [3.1](#31-wire-messages-and-capability)). Refused for `pod/claude-code` and `host/<host>/claude` with today's sentence ("this target takes its model from its own configuration"): claude-code has no per-agent model (`claudeCodeNoModel`, `internal/api/agents.go:933`), and a host's `claude` uses the owner's own settings |
 | `owner_asked` | see [gating](#25-gating-when-there-is-no-task-to-hang-it-on) | **`true` always runs `ownerTurnFor`, whatever the target and whether or not there is a task**. It is required for a dispatch with no task and for every host target |
 | `worker_pool` | no | decision 5: make the agent a machine-job worker in the named pool. See [below](#worker-pool-agents) |
 | `request_key` | **yes without `task_id`**; optional with one | decision 8: the call's idempotency key. See [2.6.1](#261-request_key-idempotency) |
@@ -635,6 +739,13 @@ fill in half of an object. Its whole grammar is two regular expressions:
 
 The host-name part uses the hub's existing host-name validation.
 
+**A held target.** For mirrored dispatch, the host part and the runtime part
+may each be `?`: `host/?/claude`, `host/?/opencode`, `host/<host>/?`,
+`host/?/?`. `?` is never a valid host name, so it cannot collide with one. A
+held target never starts anything: it records the request and asks the owner
+for the blank ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)).
+`host/<host>/opencode` without a `model` is held the same way.
+
 **Why the tool listing has no enum.** The set of hosts changes from minute to
 minute, so an enum written into the listing goes stale. The chief would also
 remember it, which is exactly the failure that took cap numbers out of the
@@ -649,10 +760,14 @@ budget:
 
 ```json
 {
-  "error": "target is required and has no default: ask your owner where to run this, offering the targets below. Never choose one they did not name.",
+  "error": "target is required and has no default, and your owner named no model: ask them with ask_owner which to use — Claude, or an OpenRouter model (offer two or three sensible ones) — using the labels in choices below, then call again with the target and model their answer names. Never choose one they did not name.",
   "targets": {
-    "pods": ["pod/claude-code"],
-    "hosts": [{"host": "<host>", "targets": ["host/<host>/claude", "host/<host>/opencode"]}]
+    "pods": ["pod/claude-code", "pod/gateway"],
+    "hosts": [{"host": "<host>", "targets": ["host/<host>/claude", "host/<host>/opencode"]}],
+    "choices": [
+      {"target": "pod/claude-code", "label": "Claude Code (your Claude account)", "when": "your owner said Claude, or named a Claude model; pass no model"},
+      {"target": "pod/gateway", "label": "Gateway (OpenRouter model: <model>)", "when": "your owner named any other model; pass it as model, as its OpenRouter id: openrouter/<provider>/<model>"}
+    ]
   },
   "budget": {"live": 1, "live_cap": 5, "today": 3, "daily_cap": 10, "live_agents": ["…"]}
 }
@@ -986,7 +1101,185 @@ tell its owner where the agent is running.
 
 `next` for a host spawn reads: *"Started in a new window of the agents session
 on `<host>`. It asks your owner before using tools, and those asks reach them
-on muster. Do not start another."*
+on muster. Do not start another."* For opencode the result also carries
+`model`.
+
+### 2.8 Mirrored dispatch: choosing host, runtime and model
+
+Decisions 10-13 say how the owner's words map to a target. The mapping itself
+is the chief's reading of a sentence, so it lives in the chief's instructions
+and `agent_dispatch`'s description. That part is **prose**, and it is stated
+as prose here. The owner chose this over a deterministic word check
+(decision 14). What muster enforces **structurally** is the rest:
+a host target only ever starts in a turn the owner typed, or on the owner's own
+tap on a card that such a turn raised, and it starts **exactly** what the owner
+named or tapped.
+
+**The mapping.**
+
+| the owner says | target | `model` |
+|---|---|---|
+| no "mirrored" | `pod/…`, under PR A's cluster target rules | as for pods |
+| "mirrored on `<host>` with Claude" | `host/<host>/claude` | none |
+| "mirrored on `<host>` with `<model>`" | `host/<host>/opencode` | the OpenRouter id of `<model>` |
+| "mirrored with Claude", no host | `host/?/claude` (held: host card) | none |
+| "mirrored with `<model>`", no host | `host/?/opencode` (held: host card) | the id |
+| "mirrored on `<host>`", no model | `host/<host>/?` (held: model card) | none |
+| "mirrored", nothing else | `host/?/?` (held: host card, then model card) | none |
+
+- **"Claude" always means Claude Code**, even when a Claude model is also
+  reachable through OpenRouter. The owner's rule is about the word, so a
+  request to run a Claude model under opencode has to name the OpenRouter id
+  in full (`anthropic/…`).
+- **Turning a model's name into an OpenRouter id** is the chief's job. When
+  the chief is not sure of the exact id, it holds the model as blank and lets
+  the card ask, rather than guessing. A wrong id is refused by the host
+  (`bad_model`) before anything starts.
+- **`repo` is not carded.** A host target still needs `repo`
+  ([2.2](#22-parameters)). When the owner did not name one and the request
+  has no task, the chief asks in the chat, as today.
+
+**The held dispatch.** A call with a held target runs every guard a host
+dispatch runs up to the reservation, in the same order: the opt-in, the
+target's shape, `request_key` (required for a held call, with a task or
+without, because it is what ties the completing call to the hold), the
+prompt, `connectedRepo`, and **`ownerTurnFor`** (`owner_asked: true` is
+required). Then, instead of reserving, it:
+
+1. computes the options:
+   - **host card:** the owner's `hostSpawnable` hosts, filtered to those whose
+     hello offers the runtime when the runtime is known, most recently
+     dispatched-to first;
+   - **model card:** `Claude (Claude Code)` when the host offers `claude`,
+     then the models of `MUSTER_CHIEF_DISPATCH_MODELS` when the host offers
+     `opencode`, then "another OpenRouter model (type its id)" (decision 15,
+     "The model list" below);
+2. refuses, with no card, when a blank has **no** option: `"no host can start
+   agents now (none of your hosts is online with -agent-spawn); nothing was
+   asked or queued"`, or `"host %q offers neither claude nor opencode now"`;
+3. writes an audit row, `chief.dispatch_held`, as the owner. Its detail is
+   `{request_key, held_hash, blanks: ["host"|"runtime"|"model"], options,
+   ask_id, owner_message}`:
+   - `held_hash` is `request_hash` ([2.6.1](#261-request_key-idempotency))
+     computed with each blank written as `?`, so the prompt, the repository,
+     the base and the task are fixed **now**, in the owner's turn;
+   - `owner_message` is the id of the owner's typed message that
+     `ownerTurnFor` returned;
+4. raises **one** `ask_owner` card (PR A) for the first blank: the host card
+   when the host is blank, otherwise the model card. Its stored options are
+   the labels above;
+5. answers `{held: true, ask_id, blanks, next}`, where `next` is: *"muster
+   asked your owner which host to run this on. When their answer arrives,
+   call agent_dispatch again with the same request_key, the same arguments,
+   and the target they chose; do not choose one yourself."* A held call spends
+   nothing and holds no live slot.
+
+A held row is not a reservation, so [2.6.1](#261-request_key-idempotency)'s
+reuse rule does not see it. A second held call with the same key and the same
+`held_hash` answers the first card again (`replayed: true`) and raises no
+second card. The same key with a different `held_hash` is refused with the
+reuse sentence.
+
+**Completing it.** The answer reaches the chief as a turn its owner did not
+type, so `ownerTurnFor` refuses it. That is why the hold exists. The chief
+calls `agent_dispatch` again with the same `request_key`, the same arguments
+and the blank filled in. Under the owner's reservation lock, where the key is
+already looked up ([2.6.1](#261-request_key-idempotency)), the call is
+accepted **in place of `ownerTurnFor`** only when all of these hold:
+
+- a `chief.dispatch_held` row of this owner's has this key, is at most **15
+  minutes** old, and is not yet consumed (no reservation names it);
+- the call's `request_hash`, with the held blanks written as `?`, equals the
+  row's `held_hash`. So the chief can change nothing but the blanks;
+- each filled blank equals the owner's answer to that blank's card. The answer
+  must be:
+  - one of the card's stored options, or, for the model card's free-text
+    option, an id that passes `model`'s shape;
+  - recorded through a door that proves the owner tapped or typed it: the
+    signed-in Attention view (`ViaSession`) or the phone (`ViaDevice`). An
+    answer through `attention_answer` from a mirrored session, or any other
+    principal, does not count. This is the same door rule as #485's
+    `ownerTapped`, and should share its predicate;
+- a second blank (`host/?/?`) has its own card, raised by the completing call
+  for the first blank. That call writes a new `chief.dispatch_held` row with
+  the first blank now filled, and the second blank's card. A row is consumed
+  by the reservation that names it, so the same tap can never start two
+  agents.
+
+When any of these fails, the call is refused with its own sentence, so the
+chief and a test can tell them apart:
+
+| refusal | sentence |
+|---|---|
+| no held row, or older than 15 minutes | `"request_key %q holds no dispatch waiting for your owner's answer (or it is more than 15 minutes old): ask them again in the chat"` |
+| arguments changed | `"request_key %q was held with different arguments: only the blank your owner answered may change"` |
+| filled blank is not the owner's answer | `"your owner chose %s for this dispatch: call agent_dispatch with exactly that"` (the sibling of `agentDispatchNotTheOwnersTarget`) |
+| answer not through an owner door | `"your owner's answer to that card did not come from muster's Attention view or their phone, so muster cannot take it as theirs"` |
+| card not answered yet | `"your owner has not answered the card yet: wait for their answer"` |
+
+Once accepted, the call continues as a host dispatch: the reservation, with
+`detail.held = <row id>` (which consumes the row), `onReserved`, and the spawn
+([3](#3-the-host-spawn-protocol)). Every `agent_dispatch` guard after the
+owner's turn still runs, the caps included.
+
+**If the owner answers by typing** in the chat instead ("on `<host>`"), that
+turn **is** an owner's typed turn. The chief can then call `agent_dispatch`
+with the full target and `owner_asked: true`, and `ownerTurnFor` passes as
+usual. The held row then simply expires.
+
+**Why muster raises the card, and not the chief.** The chief could call
+`ask_owner` itself. But then nothing would tie the answer to the request it
+belongs to, and the chief's next turn could not show muster that the owner
+asked for the start. The hold ties three things together, under one key: the
+owner's typed request, the card it raised, and the owner's tap. That is the
+same reason #485 binds a "Release & dispatch" tap to the target
+(`ownersChosenTarget`, `internal/api/agent_dispatch.go:371`).
+
+**What this needs from PR A.** The design relies on these properties of
+`ask_owner`, and the phase 3 PR checks each one against PR A's merged code
+before it builds on it:
+
+1. a card is an attention ask with **stored options** (and, for the model
+   card, a free-text answer, decision 15) and an id, and its
+   answer is recorded with the door it came through (`AnsweredVia`, as for
+   today's asks);
+2. muster's own code can raise one for the chief (not only the chief's tool
+   call), linked to the chief's chat;
+3. the answer is delivered to the chief as a turn, so the chief can act on it;
+4. the live dispatched-agent card can be keyed by something other than a pod
+   agent row ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)).
+
+If PR A's `ask_owner` instead keeps the chief waiting **inside** the owner's
+typed turn (an `attention_wait` loop), `ownerTurnFor` already passes on the
+completing call, and the hold is only a record. The binding rules above still
+apply, so neither shape opens anything the other closes.
+
+**The model list** (decision 15). `MUSTER_CHIEF_DISPATCH_MODELS` is a
+comma-separated list of OpenRouter model ids, read at server start, each
+checked against `model`'s shape ([2.2](#22-parameters)); a malformed entry
+stops the server with its name, as other `MUSTER_*` settings do. It is **editable
+configuration**, not a recommendation baked into code. Its default is four
+coding models, each confirmed present in OpenRouter's public model list
+(`GET https://openrouter.ai/api/v1/models`) when this was written:
+
+```text
+qwen/qwen3-coder,moonshotai/kimi-k2-0905,z-ai/glm-4.6,deepseek/deepseek-v3.2
+```
+
+- An empty value offers no listed models, only Claude and the typed id.
+- The list says nothing about whether a **host's** opencode can run a model:
+  the host still checks each one against its own catalog when the spawn runs
+  (`bad_model`, [3.6](#36-the-commands-and-prompt-delivery)), so a stale entry
+  costs a refusal, never a wrong start.
+- **The typed id is always offered.** It needs PR A's card to take a free-text
+  answer. If PR A's card does not, phase 4 adds a free-text option to it, so
+  this becomes a fifth property checked against PR A before building. A typed
+  id binds a completing call like a tapped option does: the owner typed it
+  through an owner door, and it must pass `model`'s shape.
+
+**The phone.** The phone draws at most two options beside Dismiss
+(`AskPush.buttons()`, per #485). A card with more options shows the first two
+there, ordered as above, and every option in muster's chat and Attention view.
 
 ---
 
@@ -1002,11 +1295,16 @@ message type it does not know (host-sessions, "The wire";
 
 - **`hello.agentSpawn: ["claude", "opencode"]`**: the runtimes this host can
   start. These are the runtimes whose binaries resolve on the tmux server's
-  PATH when the mirror starts. The hub stores the list only for a v2 host with
-  `interactive` set, as `hub.go:717` does for `resumeSpawn`. Nothing else is
-  advertised (D6): there is no separate offer message and no repository list.
+  PATH when the mirror starts. **`opencode` is listed only when the host also
+  sends to opencode** (`hello.openCodeSend`: `-opencode-send` and a token,
+  #486), because the spawn posts the first prompt through that same API
+  ([3.6](#36-the-commands-and-prompt-delivery)). The hub stores the list only
+  for a v2 host with `interactive` set, as `hub.go:717` does for
+  `resumeSpawn`. Nothing else is advertised (D6): there is no separate offer
+  message, no repository list and no model list.
 - **`agent-spawn`** (muster → host): `{id, dispatch, runtime, repo, base,
-  prompt, name}`.
+  prompt, name, model}`. `model` is set only for `opencode`, as
+  `openrouter/<vendor>/<model>`; the host refuses it on `claude`.
   - `id` comes from the connection's id space (`hc.next`).
   - `dispatch` is the `host_dispatches` row id.
   - `runtime` is `claude` or `opencode`.
@@ -1054,15 +1352,19 @@ paste (`pasteTo`, `internal/mirror/transcript.go:705-740`).
 - If neither arrives, the reconciler counts the row down once it is more than
   180 s old.
 
-**Refusal codes.** Four codes cover everything the host can refuse. Each code
+**Refusal codes.** Five codes cover everything the host can refuse
+(`bad_model`, the `no_repo` cause `not on this host's allow-list`, and the
+`unavailable` causes `rate limited` and `audit log unwritable` are this
+revision's; [5.5](#55-a-compromised-server)). Each code
 names the one thing the chief can do about it. `detail` is a fixed sentence
 for the owner and the logs; the chief acts only on the code.
 
 | code | covers | the chief's sentence, and what it can do |
 |---|---|---|
-| `unavailable` | the host's own preconditions: no `-agent-spawn`, no `-interactive`, not the default tmux server, no tmux server running, the runtime binary not found | `"host %q cannot start %s agents now: <detail>"`. Offer your owner another target |
-| `no_repo` | no clone of `<owner>/<repo>` under the host's roots, or more than one | `"repo %s has no single clone on host %q: <detail>"`. Ask your owner which repository, or which host |
+| `unavailable` | the host's own preconditions: no `-agent-spawn`, no `-interactive`, not the default tmux server, no tmux server running, the runtime binary not found; for opencode, no `-opencode-send`, no token, the service unreachable, or the TUI's version differs from the service's (the launcher's own refusal, #486); the host's spawn rate limit; the audit log cannot be written | `"host %q cannot start %s agents now: <detail>"`. Offer your owner another target |
+| `no_repo` | no clone of `<owner>/<repo>` under the host's roots, or more than one; or the repository is not on the host's `-agent-spawn-repos` allow-list | `"repo %s has no single clone on host %q: <detail>"`. Ask your owner which repository, or which host |
 | `bad_base` | `base` is not a valid branch name, or does not exist on the remote | `"branch %q does not exist on %s's remote"`. Ask your owner which branch |
+| `bad_model` | opencode only: `model` is not `openrouter/<vendor>/<model>`, the host's opencode has no `openrouter` provider, or that provider does not list the model (`GET /api/model`) | `"host %q's opencode has no OpenRouter model %q"`. Ask your owner which model |
 | `failed` | anything after work started: the fetch, the worktree, tmux, the tag, the landing check, the trust entry ([3.6.1](#361-claude-codes-folder-trust-entry)), or opencode's prompt. The host removes whatever it created | `"the agent could not be started on %q: <detail>; tell your owner"`. Do not retry with the same `request_key` |
 
 `not_listed` is not a refusal. It means the window exists but has not yet
@@ -1086,9 +1388,20 @@ The flags follow the mirror's naming convention, `-kebab` plus
 | **`-agent-spawn`** | `MUSTER_MIRROR_AGENT_SPAWN` | **false** | let the chief start agents on this host. It has no effect without `-interactive`, and the mirror logs that it has none, as it does for `-resume-spawn` (`:380-385`) |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are the clones worktrees may be cut from |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where the worktrees go ([3.3](#33-worktrees)) |
+| **`-agent-spawn-repos`** | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: no repository** | comma-separated `<owner>/<repo>` names this host will cut a worktree of. A repository not listed is refused `no_repo` (detail `not on this host's allow-list`) whatever muster sends ([5.5](#55-a-compromised-server)). Empty means `-agent-spawn` is on but nothing can be spawned, and the mirror logs that at startup |
+| `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | the host's own spawn rate limit ([5.5](#55-a-compromised-server)) |
+| `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log ([5.5](#55-a-compromised-server)) |
 
-The host has **no spawn cap of its own** (D3). The server's budget, 5 live and
-10 a day, is the only limit on spawns ([5.3](#53-caps)).
+**Revised: the host now keeps a spawn rate limit of its own.** Round-0
+disposition D3 said the server's budget, 5 live and 10 a day, was the only
+limit on spawns, and that still holds for a server working as designed
+([5.3](#53-caps)). But a server's budget is no limit at all once the server is
+the thing that misbehaves, which is the threat [5.5](#55-a-compromised-server)
+is about. Its daily part equals the server's daily cap, so a server that keeps
+its budget never meets that part. Its 10-minute part can refuse a burst the
+server would allow (a fourth spawn within ten minutes); that is the price of
+bounding a burst, and the refusal says so (`unavailable`, detail `rate
+limited: 3 spawns in the last 10 minutes`).
 
 The owner's host configuration sets `-agent-spawn` on the owner's default
 mirror unit **only**. It never sets it on a `muster-mirror@<tenant>` unit
@@ -1270,26 +1583,30 @@ rely on escaping: the prompt never becomes a word tmux parses. Instead:
      `-agent-spawn` as `unavailable` (detail `a spawn path has characters tmux
      would parse`).
    - **Constant words** are fixed in the source and never built from input.
-     They are the two wrapper scripts, the flags (`--session-id`, `--`,
-     `--session`), and tmux's own options (`-d`, `-P`, `-F '#{window_id}'`,
-     `-n`, `-c`, `-t`). The rule for them is that **none may end in `;`**. A
-     unit test enumerates every constant word the spawn uses and asserts that.
-     The wrapper scripts contain `;` inside them, but each ends in `"$p"` or
-     `"--prompt=$p"`.
+     They are claude's wrapper script, opencode's `exec "$@"` wrapper, the
+     words `opencode` and `-s`, the flags (`--session-id`, `--`), and tmux's
+     own options (`-d`, `-P`, `-F '#{window_id}'`, `-n`, `-c`, `-t`). The rule
+     for them is that **none may end in `;`**. A unit test enumerates every
+     constant word the spawn uses and asserts that. claude's wrapper contains
+     `;` inside it, but ends in `"$p"`.
 3. A **constant** wrapper script reads the file, deletes it, and execs the
    runtime with the prompt as one final argument. The prompt reaches the shell
    only as the value of a variable inside double quotes, so the shell never
    parses it.
 
-The two wrapper scripts are constants in the source, one per runtime. Each is
-passed as the `-c` argument:
+The prompt file and its wrapper are **claude's only**. opencode's prompt never
+goes through argv at all: it is posted through opencode's API once the window
+is bound (below). The claude wrapper is a constant in the source, passed as the
+`-c` argument:
 
 ```sh
 # claude
 p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f -- "$1"; shift; exec "$@" "$p"
-# opencode
-p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f -- "$1"; shift; exec "$@" "--prompt=$p"
 ```
+
+(An earlier draft of this page had a second wrapper that appended
+`--prompt=$p` for opencode. It is gone, with the reasons under **opencode**
+below.)
 
 - The `printf x` sentinel keeps trailing newlines, which `$(…)` would
   otherwise strip.
@@ -1326,44 +1643,139 @@ p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f -- "$1"; shift; exec "$
 
 **opencode:**
 
-```text
-<shell> -l -c <opencode wrapper> <shell> <prompt-file> <opencode-abs> --session <id>
-```
+**This revision replaces the earlier opencode design** (a wrapper appending
+`--prompt=<prompt>` to `opencode --session <id>`). Since then #486 shipped
+`muster-mirror opencode`, the launcher that binds a pane to an opencode session
+deterministically, and the API send behind `-opencode-send`. Three of that
+draft's UNVERIFIED items are now settled by #486, in source and against a real
+`opencode serve` (v2.0.32+6ec5682, `internal/opencodehost/send.go:18-31`):
 
-The wrapper appends `--prompt=<prompt>` as one argument. The working directory
-is the worktree, set by tmux's `-c`, so the positional `[<directory>]` is not
-passed.
+- a session id the caller chooses is accepted, in upstream's own `ses_` format
+  (`opencodehost.NewSessionID`), and `POST /api/session {id, location:
+  {directory}}` creates it;
+- the send route is `POST /api/session/{id}/prompt {id, text, delivery}`, and
+  a retry with the same message id lands at most once;
+- a pane started by the launcher is bound to its session through the launcher
+  record (`SourceLauncher`), so no title heuristic is involved.
 
-- `--session <id>`: "Session ID to continue, or to create if it does not
-  exist" (`opencode --help`, v2.0.32). The host mints the id, so the mirror
-  links the window **deterministically**. That is the "launcher record that
-  names the session deterministically" which the title heuristic says a send
-  needs (`internal/opencodehost/title.go:10-34`).
-  - **UNVERIFIED:** which id formats opencode accepts for a session that does
-    not exist yet.
-  - Phase 4's first item measures it. The fallback is to omit `--session`,
-    link through the pane title against the server's newest root session
-    created after the spawn, and say so.
-- `--prompt=<prompt>` is one word, so a prompt can never be taken for a flag.
-  - **UNVERIFIED:** whether it submits on launch or only fills the input
-    (host-sessions noted the same).
-  - If it only fills the input, the prompt goes through opencode's own HTTP
-    API instead, which the mirror already holds a token for. It uses the
-    session's send route, through the same `openCodeSend` that forwarding uses
-    ([3.10](#310-forwarding-into-a-host-spawned-agent)).
-    - **UNVERIFIED:** that route's path and body. Today the mirror only reads
-      `GET /api/session/{id}/message` (`internal/opencodehost/client.go:259-268`).
-    - **Never through keystrokes.** The host refuses to paste into opencode
-      (`docs/mirroring.md`, "muster does not send to opencode yet").
-- **The shared background service.** Bare `opencode` attaches to a running
-  `opencode serve --service` if one exists, and its tools then run in that
-  service's environment (host-sessions, "The opencode profile"). The spawn
-  keeps that default, to match a hand-started opencode.
-  - Whether the service then runs the session's tools in the worktree is
-    **UNVERIFIED**, and is measured in phase 4 before shipping.
-  - If it does not, the spawn adds `--standalone`.
+So the opencode spawn reuses all of that and adds only the model.
 
-**Why a file read by a constant wrapper, and not an argv word or a paste.**
+**How opencode takes a model, at the pinned commit.** muster's opencode pin is
+upstream <https://github.com/anomalyco/opencode> at `6ec5682`
+([opencode-first-class.md](opencode-first-class.md)). There,
+`packages/cli/src/commands/commands.ts` gives:
+
+- **the TUI, bare `opencode`, has no model flag.** Its parameters are the
+  server flags (`--standalone`, `--server`), the permission flags (`--auto`),
+  `[directory]`, `-c/--continue`, `-s/--session` and `--prompt`, and nothing
+  else (`commands.ts:38-58`);
+- **`-m, --model` exists only on `opencode run`** ("Model to use in the format
+  provider/model#variant", `:398-402`) **and `opencode mini`** ("Model to use
+  in the format provider/model", `:366-370`). Neither is the TUI the mirror
+  views;
+- **the API takes it on the session instead.** `POST /api/session` accepts
+  `model: Model.Ref` (`packages/protocol/src/groups/session.ts:142-152`),
+  which is `{id, providerID, variant?}`
+  (`packages/schema/src/model.ts:19-23`). `Model.Ref.parse` splits a string
+  at its **first** `/` (`model.ts:27-36`), so `openrouter/<vendor>/<model>`
+  is `{providerID: "openrouter", id: "<vendor>/<model>"}`. `POST
+  /api/session/{id}/model` switches it later (`session.ts:267-269`).
+
+So muster passes the model **in the session create**, not as a flag. A flag
+would have needed `opencode run`, which is not the TUI and would leave nothing
+for the mirror to view or send to.
+
+**The provider id.** opencode's OpenRouter plugin keys on its package
+(`@opencode/ai/providers/openrouter`, `packages/core/src/plugin/provider/openrouter.ts`),
+not on a fixed id. The id a host's configuration gives it is, by models.dev's
+convention, `openrouter`. The host checks rather than assumes: before creating
+the session, it reads `GET /api/model` (`packages/protocol/src/groups/model.ts:10-24`)
+and requires an entry whose `providerID` is `openrouter` and whose `id` is the
+model. Otherwise it refuses `bad_model`. ⚠ That route describes its answer as
+a snapshot that "may precede initial plugin settlement". So a list with **no
+`openrouter` models at all** is refused as `unavailable` (detail `opencode's
+model list is not ready`), never as `bad_model`, so the chief does not tell the
+owner a model is wrong when the list is merely early.
+
+**The steps** (the host, inside its spawn deadline,
+[3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)):
+
+1. the worktree, as for claude ([3.3](#33-worktrees));
+2. the model check above;
+3. **create the session**: `Client.CreateSession(ctx, id, worktree, model)`,
+   with `id = opencodehost.NewSessionID(now)`. `CreateSession` gains its
+   `model` argument. Its doc comment names the launcher as its only caller
+   (`internal/opencodehost/send.go:88-90`); the spawn becomes the second, and a
+   caller ledger pins exactly those two;
+4. **open the window**, running the launcher on that session:
+
+   ```text
+   <shell> -l -c 'exec "$@"' <shell> <muster-mirror-abs> opencode -s <id>
+   ```
+
+   - `<muster-mirror-abs>` is the running mirror's own binary
+     (`os.Executable()`, resolved with `EvalSymlinks`), so the launcher and
+     the daemon are always the same build.
+   - The launcher finds the session already exists as a root session, binds
+     the pane to it, writes its record and execs `opencode --session <id>`
+     (`cmd/muster-mirror/opencode_launch.go:263-298`). Its version check runs
+     too: a TUI whose version differs from the service's is refused there,
+     and the window ends. The host turns that into `unavailable` (detail
+     `opencode TUI and service versions differ`) by checking the same versions
+     itself before step 3, so the refusal comes before any window.
+   - The working directory is the worktree, through tmux's `-c`. No
+     positional directory is passed: the session's `location.directory`
+     already is the worktree.
+   - **There is no prompt in this argv**, and no prompt file. Every word is a
+     constant or a host-built value under the character rule above;
+5. **wait for the bind**: the listing must carry the window with its
+   `@muster-dispatch` tag, `AgentSend` set, and `AgentSession` equal to `id`;
+6. **post the prompt**: `Client.Prompt(ctx, id, messageID, prompt)`, with
+   `delivery: "queue"`. `messageID` is derived from the dispatch id (`msg_`,
+   the dispatch row's creation time, and an HMAC of the dispatch id), so a
+   retry of the post, by this host or after a mirror restart, lands at most
+   once ([opencode-first-class.md](opencode-first-class.md), "Delivery
+   confirmation"). An answer that is lost after the request was written is
+   retried **once** with the same id: the stored record coming back is the
+   confirmation;
+7. reply `agent-spawned`.
+
+**Why the prompt goes after the bind, not in the create.** Posting first would
+start the agent's run in the shared service before any window exists. If the
+window then failed, an agent would be working, and spending OpenRouter credit,
+with nothing for the owner to see or close. Posting last means a spawn that
+fails at any step before 6 has run nothing: the host deletes the session it
+created (`DELETE /api/session/:sessionID`, `session.remove`,
+`packages/protocol/src/groups/session.ts:221-227`, through a new
+`Client.RemoveSession`, which joins the package's write ledger in
+`ledger_test.go`) and removes the worktree.
+
+**A post that fails after the window exists.** The window is kept, with its
+empty session, and the spawn is refused `failed`, detail `prompt not
+accepted`. The reconciler ends the dispatch on the refusal, and the window is
+then an orphan, which raises the owner's notice
+([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)). The host
+does not kill it: the owner may already be typing in it.
+
+**The gates on this send.** It is not a browser send, so the step-up check that
+gates the Rendered view's composer does not apply. What authorises it is the
+same as what authorises the spawn: `ownerTurnFor`, or the owner's tap on a held
+dispatch's card ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)),
+on the server; and on the host, `-interactive`, `-agent-spawn`,
+`-opencode-send`, the token, and the window's own tag. The host's other send
+checks ([opencode-first-class.md](opencode-first-class.md), "Host side") hold
+trivially for a session created a moment ago: it is launcher-bound, idle, and
+has no ask.
+
+**The shared background service.** The launcher attaches the TUI to the host's
+running `opencode serve --service`, as every launcher-bound pane does. Whether
+that service runs the session's tools in the session's `location.directory`
+(the worktree) is **UNVERIFIED**, and phase 4 measures it first. If it does
+not, the spawn is not shipped for opencode until it does: `--standalone` would
+leave the pane unbound (`opencode_launch.go:245-246`), and an unbound pane can
+be neither forwarded to nor sent to.
+
+**Why, for claude, a file read by a constant wrapper, and not an argv word or a paste.**
 
 | delivery | tmux parses it | shell parses it | verdict |
 |---|---|---|---|
@@ -1371,7 +1783,7 @@ passed.
 | one argv word to tmux | **yes**: a trailing `;` ends the tmux command | no | ✗ |
 | an `-e VAR=…` environment value | **yes**: it is a tmux argument too | no | ✗, for the same reason |
 | a paste through the send queue, after `idle` | no | no | ✗ for claude, because it races the CLI's startup; impossible for opencode, because the host refuses pastes into it |
-| opencode's HTTP API | no | no | the fallback for opencode only |
+| opencode's HTTP API, after the bind | no | no | **opencode's delivery** (above); claude has no such API |
 
 **Cost: other processes can read it.** Once the runtime has started, the
 prompt is one of its arguments, readable at `/proc/<pid>/cmdline` by every
@@ -1515,7 +1927,7 @@ scratch directories):
 
 ### 3.7 Linking the spawned window to the dispatch and the task
 
-**A new table, `host_dispatches`** (migration `0073_host_dispatches.sql`),
+**A new table, `host_dispatches`** (migration `00NN_host_dispatches.sql`: the next free number when phase 3 is built; `0073`, which an earlier draft named, has since been taken),
 under row-level security on `owner_id`:
 
 | column | type | |
@@ -1524,6 +1936,8 @@ under row-level security on `owner_id`:
 | `owner_id` | bigint | RLS |
 | `host` | text | |
 | `runtime` | text | `claude` or `opencode` |
+| `model` | text, null | opencode's `openrouter/<vendor>/<model>`; null for claude |
+| `held_id` | bigint, null | the `chief.dispatch_held` audit row this dispatch completed, when the owner's tap chose a blank ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) |
 | `repo`, `base`, `branch`, `worktree` | text | `branch` and `worktree` come from the reply |
 | `task_id` | bigint, null | `REFERENCES notes ON DELETE SET NULL`, as `agents.note_id` does |
 | `reservation_id` | bigint, not null | the id of the `task.chief_dispatch` audit row that reserved this dispatch, written by the `onReserved` hook. Ending the dispatch releases the task's start by this id (`releaseHostDispatchTx`, [2.6](#26-budget-and-accounting-for-a-dispatch-with-no-task)) |
@@ -1717,7 +2131,7 @@ is `ended`:
   `KindNotice`, because 0071's CHECK allows only `ask` and `notice`
   (`internal/attention/attention.go:142-157`), and a notice is what muster
   raises on its own, with no answer. Each dispatch gets **at most one**:
-  migration 0073 gives `host_dispatches` a column `orphan_notice_id bigint
+  migration `00NN` gives `host_dispatches` a column `orphan_notice_id bigint
   null`, and the notice is raised only while that column is empty. Raising it
   writes the notice's id into the column, in the same transaction. The notice
   names the host, the window and the dispatch: *"an agent window on `<host>` (`agents:<window>`,
@@ -1760,7 +2174,39 @@ addition:
   **"chief"** with no task), read from the row through `dispatch`;
 - the task page lists it among the agents working the task, through
   `liveOnTask`;
-- the chief's `live_agents` names it as `{host, window, task}`.
+- the chief's `live_agents` names it as `{host, window, task}`;
+- **the live dispatched-agent card (PR A)** shows it in the chief's chat, as
+  for a pod ([below](#the-live-agent-card)).
+
+#### The live agent card
+
+PR A adds a live card for each agent the chief dispatched. A host dispatch
+gets one too, keyed by the **`host_dispatches` row id**, not by an agent row,
+because a host dispatch has none until the window exists, and possibly never.
+The card reads the row, and the hub's listing for the row's window:
+
+| row state | the card shows |
+|---|---|
+| `pending`, no reply yet | "Starting on `<host>`…", the runtime, and for opencode the model |
+| `pending`, reply timed out | "Started on `<host>`? muster has not seen the window yet" |
+| `running` | the window `agents:<window>` on `<host>`, the runtime and model, the agent's status from the listing (`busy`, `idle`, `waiting`), and a link to the window page |
+| `ended`, refused | the refusal's sentence ([3.1](#31-wire-messages-and-capability)) |
+| `ended`, otherwise | "Ended (`<why>`)"; for a kept worktree, its path and branch |
+
+- **How the card finds the window.** Through the row's `host`, `tmux_window`
+  and `agent_session`, exactly as forwarding does
+  ([3.10](#310-forwarding-into-a-host-spawned-agent)), so the card and the
+  forward cannot disagree about which window is the agent.
+- **The session key.** Once the reply lands, the row holds `agent_session`,
+  which the host minted. The window's session key
+  (`Window.SessionKey`, `internal/mirror/wire.go:681-690`) follows from it:
+  the UUID itself for claude, and `opencode:<ses_…>` for opencode. Anything
+  muster keys by session (a focus, a route, an ask) therefore links to the
+  card's row from the moment the reply lands, without a transcript guess.
+- **The card has no Stop button** for a host dispatch (D7, below). It shows
+  "close the window on `<host>` to stop it" instead (decision 17).
+- The card updates on the same events that redraw the sidebar's window rows,
+  so it adds no polling.
 
 **Ending it.** There is **no Kill button and no kill message** (D7). The owner
 closes the tmux window, from a terminal or through Live keys, and the listing
@@ -1828,9 +2274,12 @@ and the refusal cannot disagree.
 
 ### 3.9 Host-side limits
 
-There are none for spawning (D3). The server's budget is the only limit on
-spawns. The one limit the host keeps is on forwards
-([3.10](#310-forwarding-into-a-host-spawned-agent)).
+**Revised.** Round-0 disposition D3 kept no host spawn limit. This revision
+adds one, `-agent-spawn-rate` (3 per 10 minutes, 10 per 24 hours), together
+with the repository allow-list and the audit log, because they are the only
+limits that hold if the server itself misbehaves
+([3.2](#32-the-flag), [5.5](#55-a-compromised-server)). The host also keeps its
+limit on forwards ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 
 ### 3.10 Forwarding into a host-spawned agent
 
@@ -1929,25 +2378,29 @@ new paste path.
   `ChiefForwardDispatch`, and asserts that `toolTaskForward` is the only one.
   It fails if that set grows or shrinks.
 
-**opencode: its own API, never keystrokes** (phase 4).
-- A new wire pair, `opencode-send {id, dispatch, session, text}` /
-  `opencode-sent {id}` or `{id, error}`.
-- The host checks, in order:
-  - the window's `@muster-dispatch` equals `dispatch`;
-  - the pane's opencode session is `session`;
-  - the session has **no pending ask**: `GET /api/session/{id}/permission` and
-    `/form` both return nothing (`docs/design/opencode.md`, "Asks"), for the
-    same reason as `waiting` above;
-  - the session is not active (`/api/session/active`,
-    `internal/opencodehost/client.go`).
-- Then it posts the text to the session's send route with the token the mirror
-  already holds. **UNVERIFIED:** that route's path and body at the pinned
-  opencode commit. Today the mirror only *reads* `GET
-  /api/session/{id}/message` (`client.go:259-268`). The route is read from
-  upstream before phase 4, and it is the same call that 3.6's prompt fallback
-  needs, so there is one implementation, `openCodeSend`.
-- The host's paste guard refusing opencode panes stays as it is. This path
-  does not go near it.
+**opencode: the same queue row, delivered through #486's API send** (phase 4).
+An earlier draft of this page proposed a separate wire pair,
+`opencode-send`/`opencode-sent`, and left the send route UNVERIFIED. #486
+removed the need for both: a paste whose `Msg.Runtime` is `opencode` already
+goes to the host's gated API send instead of the keyboard
+(`gatedSend`, [opencode-first-class.md](opencode-first-class.md), "Host
+side"), as `POST /api/session/{id}/prompt` with `delivery: "queue"`. So a
+forward to an opencode window is **the same chief-forward send-queue row** as
+for claude, delivered through `PasteWindow` with `mirror.ForDispatch`, and:
+- `lookupAgent` admits the window because it is `AgentSend` (launcher-bound)
+  on a host that advertised `openCodeSend`; a spawned window always is
+  ([3.6](#36-the-commands-and-prompt-delivery));
+- the host runs its tag check (`@muster-dispatch` equals `dispatch`) **before**
+  `gatedSend`, exactly as before `typeInto` for claude. One check, placed
+  ahead of both delivery paths in `hostSide.paste`;
+- `gatedSend`'s own checks then apply unchanged: the window is bound to the
+  session muster named, it is idle with the status time muster decided on, and
+  no permission or question ask is pending under it;
+- the message id comes from the queue row's nonce, as for every queued
+  opencode send, so a retried delivery lands at most once.
+
+There is no new wire message and no second implementation. The host's paste
+guard, which refuses keystrokes into opencode panes, is untouched.
 
 **Gating, all together.**
 
@@ -1972,6 +2425,25 @@ into still asks the owner.
 
 The answer is today's, with `forwarded_to` becoming `{host, window,
 dispatch}` for a host target.
+
+### 3.11 Failure and cleanup, at a glance
+
+Every case below is designed in the sections it links to. This table is the
+index.
+
+| what goes wrong | what the chief hears | slot and task start | what is left on the host |
+|---|---|---|---|
+| the host is offline, or lacks `-agent-spawn` | refused at the call, with the target list; **nothing is queued** ([2.4](#24-discovery-the-refusal-is-the-list)) | nothing spent | nothing |
+| no host can spawn, on a held `host/?/…` | `"no host can start agents now …"`; **no card** ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | nothing spent | nothing |
+| the owner never answers the card | nothing; a later call with the key answers "holds no dispatch … more than 15 minutes old" | nothing spent | nothing |
+| the host refuses before the window (`unavailable`, `no_repo`, `bad_base`, `bad_model`, or `failed` before `new-window`) | the code's sentence ([3.1](#31-wire-messages-and-capability)) | released with the refusal; the `request_key` is freed | the worktree and the opencode session it created are removed |
+| the window opens, then a later step fails (tag, landing check, trust write) | `failed` | released | the window is killed, the worktree removed |
+| opencode: the first prompt is not accepted | `failed`, `prompt not accepted` | released | the window **stays** (the owner may be typing); muster raises the orphan notice ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)) |
+| the reply never arrives | nothing more; the row stays `pending` | held until 180 s plus two listings without the window, then released ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)) | whatever was made; a window that does exist raises the orphan notice |
+| the window never reports (exists, but never appears in a listing) | the same as above | the same | the window, flagged by the orphan notice once its tag shows up; the hourly sweep keeps its worktree if it holds work |
+| the host goes offline mid-run | `live_agents` still lists it | held (fail-closed) until the 24-hour sweep | the agent keeps running on the host |
+| the agent exits, or the owner closes the window | the card shows "Ended" | released after two listings | a clean worktree is removed; one with work is kept ([3.3](#33-worktrees)) |
+| the owner wants it stopped from muster | — | `agent_destroy` with `host_dispatch` ends the record and frees the slot at once | **the window keeps running**: no kill message (D7, decision 17) |
 
 ### Relation to host-sessions.md
 
@@ -2139,10 +2611,12 @@ test of that option through the tool, with the same refusals.
 | server | the caller is the owner's chief, and the chief is on (`agent.go:627-634`) |
 | server | `MUSTER_CHIEF_DISPATCH_OWNERS` names the owner (the existing opt-in) |
 | server | `owner_asked: true`, **verified by `ownerTurnFor`**. The turn is a message the owner typed in a signed-in browser session, and no other turn of the chief's is running. It is re-checked under the reservation's lock |
+| server | **or**, for a held mirrored dispatch, the owner's own tap on the card that such a turn raised: same arguments (`held_hash`), the tapped option, an owner door (`ViaSession` or `ViaDevice`), at most 15 minutes old, used once ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) |
 | server | the host is the owner's, connected, v2, `interactive`, and its hello lists the runtime (`hostSpawnable`) |
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
-| host | `-interactive`, `-agent-spawn`, and the default tmux server |
+| host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
+| host | the repository is on `-agent-spawn-repos`; the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
 **`ownerTurnFor` is the gate, and there is no extra step-up for host spawns**
@@ -2284,10 +2758,12 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 ### 5.2 argv and prompt injection
 
 - **Shell.** Every call is an argv. The only shell code is two constant
-  wrapper scripts, one per runtime ([3.6](#36-the-commands-and-prompt-delivery)).
-  Each reads the prompt from its `0600` file into a variable, deletes the
+  wrapper scripts: claude's prompt-file reader, and opencode's bare
+  `exec "$@"` ([3.6](#36-the-commands-and-prompt-delivery)).
+  claude's reads the prompt from its `0600` file into a variable, deletes the
   file, and execs the runtime with that variable, in double quotes, as the
-  last argument. The shell never parses the prompt.
+  last argument. opencode's sees no prompt at all. The shell never parses the
+  prompt.
 - **tmux.** The prompt never reaches tmux. tmux would split a command at any
   argument ending in `;`, so the prompt travels in a `0600` file instead, and
   a constant wrapper reads it ([3.6](#36-the-commands-and-prompt-delivery)).
@@ -2298,7 +2774,8 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
   its own roots, and the paths are built by the host.
 - **The CLIs' own flag parsing.** For claude, `--` plus the fixed preface mean
   the prompt can never be a flag or a subcommand ([3.6](#36-the-commands-and-prompt-delivery)).
-  For opencode, the prompt is one word, `--prompt=<prompt>`.
+  For opencode, the prompt is never an argument: it is the `text` of an API
+  post ([3.6](#36-the-commands-and-prompt-delivery)).
 - **Prompt injection into the agent** is the real surface. The chief reads
   outside text (plugin messages, task bodies), and its prompt becomes the
   agent's first message. The bounds:
@@ -2316,9 +2793,11 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 
 ### 5.3 Caps
 
-**The server's budget is the only spawn limit** (D3): the chief's 5 live and
-10 per day. Host spawns count against both, and an offline host's spawns stay
-counted. The host keeps no spawn cap of its own.
+**The server's budget is the spawn limit for a server working as designed**:
+the chief's 5 live and 10 per day. Host spawns count against both, and an
+offline host's spawns stay counted. **The host now keeps a rate limit of its
+own** as well (revising D3), for the case where the server is not working as
+designed ([5.5](#55-a-compromised-server)).
 
 **The one host-side limit is 12 forwards per window per hour**
 ([3.10](#310-forwarding-into-a-host-spawned-agent)). It exists because a paste
@@ -2338,6 +2817,80 @@ separate server switch for host targets (D4).
 | drop `-agent-spawn` (or `-interactive`) on the host | that host refuses every spawn | unit restart |
 | revoke the host's mirror token | the connection ends, and every spawn and forward path to that host with it | ≤ 30 s (`internal/mirror/service.go:22-25`) |
 | close the tmux window | ends that agent; its worktree stays if it holds work | immediate |
+| empty `-agent-spawn-repos` on the host | that host refuses every spawn as `no_repo`, while `-interactive` keeps working | unit restart |
+
+### 5.5 A compromised server
+
+Sections 5.1-5.3 bound what the **chief** can do through a server that works as
+designed. This section asks what bounds a **server that does not**: one whose
+process, database or deploy an attacker controls. Such a server can send any
+`agent-spawn` frame it likes to every host connected with the owner's token.
+Every server-side check above (`ownerTurnFor`, the held-card binding,
+`connectedRepo`, the budget, the caps) is then gone. Only what the host
+enforces itself remains.
+
+**What such a server can already do today, without this feature.** With
+`-interactive` on, the server can type into an idle Claude Code pane (step-up
+is checked on the server, `transcript.go:435`), and it can answer the asks in
+those panes, which includes approving a tool use. So "normal permission mode"
+is **not** a bound against a compromised server: the server is the one that
+relays the owner's answers. This is the baseline, and it is stated so that the
+increment below is measured against it, not against zero.
+
+**What `-agent-spawn` adds to that.** The server can start new processes:
+
+- in repositories where no session is open, at any hour;
+- running opencode against an OpenRouter account, which costs money;
+- with Claude Code's trust entry written for each new worktree, so the
+  repository's own `.claude/settings.json` applies.
+
+**The host-side bounds.** Each holds whatever the server sends:
+
+| bound | what it limits | where |
+|---|---|---|
+| **opt-in** | `-agent-spawn` is off by default, needs `-interactive`, and works only on the default tmux server. The owner's host configuration turns it on for the default mirror unit only | [3.2](#32-the-flag), [3.8](#38-read-only-and-tenant-hosts) |
+| **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. `connectedRepo` is a server check, so under this threat it bounds nothing; this list is the bound that replaces it | [3.2](#32-the-flag), [3.3](#33-worktrees) |
+| **directory allow-list** | worktrees go only under `-agent-spawn-dir`, the trust entry is written only for a directory exactly two levels below it that this spawn created, and the prompt file only under `$XDG_RUNTIME_DIR` | [3.3](#33-worktrees), [3.6.1](#361-claude-codes-folder-trust-entry) |
+| **fixed programs and argv** | the runtime is one of two constants; the host builds every argv word from constants and values it validated; no flag, path or binary comes from the server; the model travels as a JSON field, never an argument, and must be in the host's own OpenRouter catalog | [3.6](#36-the-commands-and-prompt-delivery) |
+| **no permission flags** | neither runtime is ever started with a permission-skipping flag. (A repository's own settings can still allow more; the repository allow-list limits which repositories those are) | [3.6](#36-the-commands-and-prompt-delivery), [5.1](#51-who-can-trigger-a-spawn) |
+| **rate limit** | `-agent-spawn-rate`, default 3 per 10 minutes and 10 per 24 hours, counted from the audit log below, so a mirror restart does not reset it | [3.2](#32-the-flag) |
+| **audit log** | every spawn request, refused or not, is recorded on the host before any work starts | below |
+| **forward limit** | 12 forwards per window per hour, and only into windows whose own tag matches | [3.10](#310-forwarding-into-a-host-spawned-agent) |
+
+**The audit log.** `-agent-spawn-log`, a JSON-lines file, mode `0600`, opened
+with `O_APPEND`:
+
+- **Two lines per request.** One when the request arrives, **before** the
+  rate check and before any git or tmux call: `{at, dispatch, server,
+  runtime, repo, base, model, name, prompt_sha256, prompt_bytes, prompt}`.
+  One when the request ends: `{at, dispatch, result, detail, window, session,
+  worktree, branch}`.
+  - The prompt is logged in full. It is at most 8 KiB, it is not a secret on
+    these hosts ([3.6](#36-the-commands-and-prompt-delivery), "Cost"), and
+    it is the one thing the owner needs to see to judge what a server asked
+    for.
+  - `server` is the muster URL the mirror is connected to, so a log shared by
+    two tenants' mirrors could still be told apart. (Only the default mirror
+    spawns, [3.8](#38-read-only-and-tenant-hosts).)
+- **Fail closed.** If the first line cannot be written, the spawn is refused
+  `unavailable` (detail `audit log unwritable`) and nothing runs. The rate
+  limit is counted from the same file, so it cannot be bypassed by a log
+  that is failing.
+- **A copy goes to the mirror's own log** (stderr, which the user's service
+  manager keeps), one line per request. The file is the record the owner
+  reads; the service log is the copy that a process running as the owner
+  cannot quietly rewrite.
+- **It is evidence against the server, not against the agent.** A spawned
+  agent runs as the same Unix user, so it can edit the file. The service log
+  copy is what survives that.
+- `muster-mirror agent-spawn-log [-n N]` prints the last entries, so the
+  owner can check without knowing the path.
+
+**What is still open to a compromised server, stated.** Up to 10 spawns a
+day, each in a repository the owner allow-listed on that host, each
+self-approving its own asks through the server, each logged. That is the
+blast radius this design accepts for the feature. An owner who does not accept
+it leaves `-agent-spawn` off on that host, which is the default.
 
 ## 6. Phases
 
@@ -2350,14 +2903,16 @@ The order is changed from the owner's list: **the UI deletion moves to phase
   with different guards (no caps, no budget, `connectedRepo` only for some
   kinds). Removing it early leaves one predicate sooner.
 - **Host spawn is the longest and riskiest work.** It has several UNVERIFIED
-  items (the trust entry's exact effect, and opencode's `--session`,
-  `--prompt` and send route). It also copies a pattern, `-resume-spawn`, that
+  items (the trust entry's exact effect, and opencode's model selection and
+  working directory, [7](#7-what-is-still-unverified)). It also copies a pattern, `-resume-spawn`, that
   has never run on the owner's hosts. The deletion should not wait behind it.
 
 If the owner wants the form kept until host spawning works, the original order
 still works: every phase ships on its own.
 
 ### Phase 1: `agent_dispatch` for pods, with or without a task, the required target, `worker_pool` and `request_key`
+
+**Shipped in #428.** The text below is the design it was built from, kept for its tests and reasoning.
 
 **What ships:**
 - `agent_dispatch`, whose no-target refusal carries the targets and the budget
@@ -2449,7 +3004,11 @@ still works: every phase ships on its own.
 **Mutation checks.** Rebuild and re-run for each mutant, and keep one mutant
 known to be caught in the batch as a positive control:
 - Default the target to `pod/claude-code`: the no-target test goes red **with
-  the target refusal**, not with another error.
+  the target refusal**, not with another error — and so do the no-model test
+  (`TestAgentDispatchWithNoModelAsksTheOwnerInTheirWords`: the refusal must
+  tell the chief to ask with `ask_owner` and list the choices in the owner's
+  words) and the browser case where "dispatch" with no model must draw an
+  `ask_owner` card offering Claude and OpenRouter models.
 - Drop the `hostSpawnable` filter from the list: the read-only-host case goes
   red.
 - Drop the `ownerTurnFor` call for task-less dispatches: the plugin-turn case
@@ -2534,7 +3093,7 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 - `hello.agentSpawn`, `agent-spawn`, `agent-spawned`;
 - worktrees, the `agents` session, `@muster-dispatch`;
 - **`trustSpawnedWorktree`** ([3.6.1](#361-claude-codes-folder-trust-entry));
-- the prompt file and the two constant wrappers ([3.6](#36-the-commands-and-prompt-delivery));
+- the prompt file and claude's constant wrapper ([3.6](#36-the-commands-and-prompt-delivery));
 - `connectedRepo` for every host target ([5.1](#51-who-can-trigger-a-spawn));
 - the host-dispatch reconciler, with `Hub.SetListingNotify`,
   `Hub.SetSpawnReplyNotify` (the late-reply path), the countdown for `pending`
@@ -2554,7 +3113,7 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
 - the 10-minute age limit on chief-forward rows;
 - mentions on tasks that only a host agent works, handed to the chief as a
   notice;
-- `host_dispatches` (migration 0073);
+- `host_dispatches` (migration `00NN`);
 - `Hub.SpawnAgent`;
 - the `host/<host>/claude` target;
 - the chip on the window page;
@@ -2563,7 +3122,29 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   chief-forward send-queue row with `sendQueueChiefForwardGate`; `PasteWindow`
   with `ExpectTurn` and `mirror.ForDispatch`; the host's tag check; and the
   12-per-hour limit
-  ([3.10](#310-forwarding-into-a-host-spawned-agent)).
+  ([3.10](#310-forwarding-into-a-host-spawned-agent));
+- **mirrored dispatch** (decisions 10-18,
+  [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)), for claude:
+  - the held targets `host/?/claude`, `host/?/?` and `host/<host>/?`, the
+    `chief.dispatch_held` audit row, the host card and the model card through
+    PR A's `ask_owner`, and the completing call's binding to the owner's tap;
+  - `host_dispatches.held_id`;
+  - the mapping table in the chief's instructions and in `agent_dispatch`'s
+    description, with the whole-paragraph pin and section digests updated as
+    for #482;
+  - the model card offers only `Claude (Claude Code)` until phase 4 ships, when
+  the configured list and the typed id join it;
+- **the live agent card for host dispatches**, keyed by the row id
+  ([3.7](#the-live-agent-card));
+- **the host-side controls of [5.5](#55-a-compromised-server)**:
+  `-agent-spawn-repos` (empty by default), `-agent-spawn-rate`, the audit log
+  with its fail-closed first line, and `muster-mirror agent-spawn-log`.
+
+**Prerequisite: PR A merged.** Before building on it, the phase 3 PR checks
+each of the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)
+needs from `ask_owner` against PR A's merged code, and records the answer in
+the PR. A property that does not hold is a design change here first, not a
+workaround in code.
 
 **This is the first real run of the spawn pattern.** `-resume-spawn` has never
 been enabled on the owner's hosts, so nothing in production has yet exercised
@@ -2726,7 +3307,7 @@ live run to find what the tests could not.
     - a reservation for a host target is counted once in `live`: in source C
       and not in B, during the 10-minute window and after it;
   - with 5 live dispatches, a host spawn is refused with the live-cap
-    sentence. The server's budget is the only spawn limit (D3);
+    sentence, before anything reaches the host;
   - `liveOnTask` blocks a pod beside a host agent on the same task;
   - a mention on a task that only a host agent works reaches the chief as a
     task notice, and is not pasted;
@@ -2758,6 +3339,65 @@ live run to find what the tests could not.
       `status <> 'ended'` condition).
   - `mirroredSession()`'s only caller is `ownersOwnSession()`.
   - `TestEveryServerPasteGoesThroughPasteWindow` is **unchanged and green**.
+- **Mirrored dispatch: the held card and its binding** (PG suite, with a fake
+  hub and PR A's `ask_owner` store; [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)).
+  Fixtures use two spawnable hosts and one offline host with pairwise distinct
+  names, so a mutant that picks "the first host" or "the only host" is seen:
+  - `host/?/claude` in the owner's typed turn writes one `chief.dispatch_held`
+    row, raises one card whose options are exactly the two spawnable hosts
+    that offer `claude`, reserves nothing, and answers `held: true`. The
+    offline host is absent. The same call again answers `replayed` and raises
+    no second card;
+  - with **no** spawnable host, the call is refused with the no-host sentence,
+    and **no card is raised and no row written** (counted: 0 cards, 0 rows,
+    with the one-host case as the positive control: 1 card, 1 row);
+  - the same held call on a **plugin-message turn** is refused by
+    `ownerTurnFor`: no row, no card;
+  - **completing**: the owner taps host B through `ViaSession`, then through
+    `ViaDevice` (two cases). The completing call with `host/B/claude`, the
+    same key and the same arguments starts the dispatch; `held_id` is set;
+    `today` goes up by exactly 1;
+  - each completion refusal is its own case with its own sentence: target
+    host A after a tap on B; the prompt, the repo, the base or the task
+    changed (four cases); the card not yet answered; the answer recorded
+    through `attention_answer` from a mirrored session; the row 16 minutes
+    old; a second completion after the first (the row is consumed, so one
+    tap starts one agent);
+  - `host/?/?`: the host tap writes a second held row with the host filled and
+    raises the model card, whose options in phase 3 are exactly `Claude
+    (Claude Code)`; tapping it completes as `host/B/claude`;
+  - **the owner types instead of tapping**: a full target with `owner_asked`
+    in that typed turn starts the dispatch through `ownerTurnFor`, and the
+    held row is left unconsumed.
+- **Browser (e2e), claude**: the claude half of phase 4's browser spec
+  ships here, on `cmd/muster-mirror/e2emirror.go`'s fake host: a held
+  `host/?/claude` call, the host card tapped in the Attention view, the window
+  in the sidebar with the chief chip, the live agent card `running`, and the
+  fake Claude pane's first prompt record byte-identical to the prompt.
+- **Mutation checks for the binding**: accept the completing call without
+  comparing `held_hash` (the changed-prompt case goes red with a started
+  dispatch); accept any door (the mirrored-session case goes red); skip the
+  consumed check (the second-completion case goes red with two dispatches);
+  build the host options without `hostSpawnable` (the offline host appears).
+- **Host-side controls** ([5.5](#55-a-compromised-server); mirrorhost suite,
+  real tmux, stub runtimes):
+  - with `-agent-spawn-repos` empty, every spawn is refused `no_repo`, detail
+    `not on this host's allow-list`, before any git call (a stub `git`
+    records zero invocations). With the repository listed, the same request
+    spawns (the positive control);
+  - the fourth spawn within 10 minutes is refused `unavailable`, detail `rate
+    limited: …`, and so is the eleventh in 24 hours. **The limit survives a
+    mirror restart**: a fresh host process reading the same audit log refuses
+    the fourth;
+  - every request writes its first audit line **before** the rate check and
+    any git or tmux call, and its second line with the result; a refused
+    request has both lines. The lines are counted, not grepped;
+  - with the audit log unwritable (a read-only directory), the spawn is
+    refused `unavailable`, detail `audit log unwritable`, and the stub `git`
+    and stub runtime record zero invocations;
+  - each of these runs with a **server that sends anything**: the request is
+    built by the test, not by muster's server, so the host's checks are what
+    is under test.
 - **Mutation checks for forwarding:**
   - drop the host's tag check: the mismatched-tag case goes red **with a
     delivered paste**, not with another error;
@@ -2787,67 +3427,178 @@ live run to find what the tests could not.
     that window as muster's fenced forward;
   - closing the window in tmux ends the dispatch in muster. A clean worktree
     is removed and an edited one is kept.
+  - **"start a mirrored agent with Claude to fix the typo in the README of
+    `<owner>/<repo>`"**, naming no host → a host card listing the hosts that
+    can spawn now → a tap on the phone → the window appears on that host, and
+    the live agent card in the chief's chat shows it `running`;
+  - the same request **without** "mirrored" starts a cluster agent (PR A's
+    rules), and no host card appears;
+  - `muster-mirror agent-spawn-log` on the host shows both lines of each
+    request.
 
-### Phase 4: host spawn for opencode, with forwarding through its API
+### Phase 4: host spawn for opencode with an OpenRouter model, and forwarding through its API
+
+**Rebuilt on #486.** The earlier phase 4 measured `--session`, `--prompt` and
+the send route first. #486 settled all three, so this phase reuses the
+launcher and the API send, and adds the model
+([3.6](#36-the-commands-and-prompt-delivery)).
 
 **What ships:**
-- the `host/<host>/opencode` target;
-- the opencode argv;
-- the session-id link;
-- the prompt delivery decided by the measurement;
-- `openCodeSend`;
-- the `opencode-send` wire pair, and forwarding to opencode windows
-  ([3.10](#310-forwarding-into-a-host-spawned-agent)).
+- the `host/<host>/opencode` target, with `model` required
+  ([2.2](#22-parameters)) and its shape check;
+- `hello.agentSpawn` listing `opencode` only with `openCodeSend`
+  ([3.1](#31-wire-messages-and-capability));
+- `agent-spawn.model`, the `bad_model` refusal, and the host's model check
+  against `GET /api/model`;
+- `Client.CreateSession` taking a `model` (`Model.Ref`), and
+  `Client.RemoveSession` for a spawn that fails before its prompt;
+- the spawn's steps: create the session, open the window on `muster-mirror
+  opencode -s <id>`, wait for the bind, post the prompt with a message id
+  derived from the dispatch;
+- forwarding to opencode windows through the same chief-forward row and #486's
+  `gatedSend`, with the host's tag check placed before it
+  ([3.10](#310-forwarding-into-a-host-spawned-agent));
+- the model card's OpenRouter options
+  ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)), from the
+  `MUSTER_CHIEF_DISPATCH_MODELS` and a typed id (decision 15);
+- the live agent card showing the model.
 
-**First, measure:**
-- `--session <id>` with a host-minted id for a session that does not exist;
-- whether `--prompt=<prompt>` submits;
-- whether the shared service runs the session's tools in `<worktree>`;
-- **the send route's path and body**, read from upstream at the pinned
-  commit, then exercised against a real `opencode serve`, as
-  `docs/design/opencode.md` did for asks.
-
-Each answer picks a branch already written in
-[3.6](#36-the-commands-and-prompt-delivery).
+**First, measure** (against a real `opencode serve`, v2.0.32+6ec5682, in a
+scratch home with an OpenRouter provider configured, as #486 did for the
+send):
+- `POST /api/session {id, location, model: {providerID: "openrouter", id}}`
+  creates a session whose first turn runs on that model (read back from the
+  assistant message's `model`, [opencode-first-class.md](opencode-first-class.md),
+  "Model, tokens and cost");
+- the provider id the host's configuration gives OpenRouter, and how
+  `GET /api/model` lists its models, including right after a service restart
+  (the "snapshot may precede plugin settlement" case);
+- that the shared service runs the session's tools in its
+  `location.directory`, the worktree. If it does not, opencode spawning does
+  not ship ([3.6](#36-the-commands-and-prompt-delivery));
+- that `muster-mirror opencode -s <id>` on a session the host just created
+  binds the pane (`SourceLauncher`) on the first listing after it starts.
 
 **Tests:**
-- The opencode prompt arrives verbatim, as one word `--prompt=<prompt>`,
-  through the file and the wrapper, with the same cases as phase 3 (`;`,
-  `tail;`, `\;`, newlines, quotes, a leading `-`).
-- A host target on opencode with an unconnected `repo` is refused by
-  `connectedRepo` ([5.1](#51-who-can-trigger-a-spawn)). opencode has no trust
-  step, so this check is the only bound on the repository's own
-  `opencode.json`.
-- The window's `agentSession` equals the minted id.
-- `openCodeSend`, against the recorded fixture server:
-  - it delivers once;
-  - it refuses while a permission or form ask is pending, and while the
-    session is active;
-  - it refuses a window whose tag differs;
-  - an HTTP failure reports `failed` for a spawn (detail `prompt not
-    accepted`), with the window kept,
-    or a "not delivered" sentence for a forward.
-- **Mutation check:** drop the pending-ask check, and the pending-permission
-  case goes red with a delivered message.
+- **Host, against the fake opencode server** (`internal/opencodehost/opencodetest`).
+  The fake gains: the `model` field of `POST /api/session` recorded per
+  session; a `GET /api/model` answer set by the test; and `DELETE
+  /api/session/{id}`. Each is its own case:
+  - the create body carries `{providerID: "openrouter", id: "<vendor>/<model>"}`
+    exactly, for a model id containing a second `/` (`a/b/c` stays
+    `providerID: "a"`, `id: "b/c"`, as `Model.Ref.parse` reads it);
+  - a model the fake's list lacks is refused `bad_model`, and **no session is
+    created and no window opened** (the fake's create count is 0, with the
+    listed-model case as the positive control: 1);
+  - a list with no `openrouter` models at all is refused `unavailable`,
+    detail `opencode's model list is not ready`, not `bad_model`;
+  - **the prompt is posted after the bind, never before**: the fake records
+    the order of create, the bind (the launcher record appearing) and the
+    prompt post. Mutation check: post before waiting for the bind, and this
+    case goes red on the order;
+  - the prompt arrives byte-identical, through the API, for the same cases as
+    phase 3 (`;`, `tail;`, `\;`, newlines, quotes, `$(id)`, a leading `-`,
+    8 KiB). The window's argv holds no prompt word (the stub records argv);
+  - a post whose answer is lost (`DelayPromptAnswers` past the client
+    timeout) is retried once with the **same** message id, and the fake
+    holds exactly one user message;
+  - a spawn that fails before the post deletes the session it created (the
+    fake's session count returns to its start) and removes the worktree;
+  - a post refused with 400 reports `failed`, detail `prompt not accepted`,
+    and the window is kept;
+  - the launcher's version mismatch (`SetVersion`) is refused `unavailable`
+    before any session is created.
+- **Forwarding**: a chief-forward row to a spawned opencode window is
+  delivered once through `gatedSend`; it is held while a permission or
+  question ask is pending and while the session is busy; a row whose
+  `dispatch` differs from the window's tag is refused by the host before
+  `gatedSend` runs (the fake's prompt count stays 0). Mutation check: move the
+  tag check after `gatedSend`, and the mismatched case goes red with a
+  delivered message.
+- **Server (PG suite)**: `model` is required for `host/<host>/opencode`
+  (or held for the card), refused for `host/<host>/claude` and
+  `pod/claude-code` with today's sentence, and part of `request_hash`; a
+  model outside the shape is refused before anything is reserved; the model
+  card offers `Claude (Claude Code)` only when the host offers `claude`, and
+  `MUSTER_CHIEF_DISPATCH_MODELS` and the typed id only when it offers
+  `opencode`; a malformed list entry stops the server at start, naming it.
+- **Browser (e2e), both runtimes.** The fake host binary gains `agent-spawn`:
+  - `cmd/muster-mirror/e2emirror.go` (the fake tmux) answers an `agent-spawn`
+    for `claude` by adding a window in an `agents` session, tagged with the
+    dispatch, whose pane is a fake Claude pane (the existing
+    `MUSTER_MIRROR_E2E_CLAUDE` transcript mechanism) with the delivered
+    prompt as its first prompt record;
+  - `cmd/muster-mirror/e2eopencode.go` answers one for `opencode` by creating
+    the session on its fake server with the model, binding the window through
+    its existing `bind` op, and posting the prompt to the fake, which records
+    it;
+  - a spec drives `agent_dispatch` over the chief's MCP route (no model in the
+    loop), with a held `host/?/opencode` call, taps the host card in the
+    Attention view, and asserts: the window appears in the sidebar with the
+    chief chip; the live agent card shows `running` and the model; the fake
+    recorded exactly one prompt, byte-identical. The same spec with no
+    spawnable host asserts that **no** card is drawn (the positive control is
+    the first case's card).
 
 **Acceptance:**
-- **Live:** the same click path as phase 3, with opencode.
-- Its permission ask appears in muster's Attention view (#416), and an answer
-  from there continues the session.
-- A routed task comment reaches it through the API.
+- **Live:** "start a mirrored agent with `<model>` to fix the typo in the
+  README of `<owner>/<repo>`" → the host card → a tap → an `oc-<n>-…` window
+  on that host, running `<model>` through OpenRouter, with the prompt as its
+  first message;
+- "start a mirrored agent on `<host>`", naming no model → the model card,
+  offering Claude, the configured list, and a typed id;
+- its permission ask appears in muster's Attention view (#416), and an answer
+  from there continues the session;
+- a routed task comment reaches it through the API.
+
+### Rollout
+
+Each phase ships off. Nothing a host does changes until the owner turns it on,
+on that host.
+
+1. **Server first.** A server with phase 3 or 4 lists no host target until a
+   host's hello advertises `agentSpawn`, and an older host never does. So the
+   server can ship any time; the chief's answers are unchanged until a host
+   opts in.
+2. **The host binary second.** The owner's host configuration (the flake that
+   pins `muster-mirror` on each host) moves its pin to the release that holds
+   the phase. With `-agent-spawn` unset, which is the default, the new binary
+   behaves exactly as the old one: the hello carries no `agentSpawn`.
+3. **Opt in, one host, one repository.** On one host's **default** mirror unit
+   only: `-agent-spawn`, plus `-agent-spawn-repos` naming one repository.
+   Run the phase's live acceptance there. For phase 4 the unit also needs
+   `-opencode-send` (from #486) and opencode's OpenRouter provider configured,
+   which the hosts already have.
+4. **Widen** the allow-list, then the hosts, one change at a time, each
+   through the host configuration and its own unit restart.
+
+**Rolling back** is the same switch in reverse, and needs no server change:
+drop `-agent-spawn` (or empty `-agent-spawn-repos`) and restart the unit. A
+spawned window that is still running is unaffected and keeps its worktree; the
+server ends its dispatch through the usual listing path once it closes
+([5.4](#54-kill-switches)).
 
 ---
 
 ## 7. What is still UNVERIFIED
 
-No owner question is open. The owner answered the first draft's five as
-decisions 5-9. What remains are measurements, each scheduled as the first item
-of its phase, with the branch to take already written:
+What remains are measurements, each scheduled as the first item of its phase,
+with the branch to take already written. #486 settled the three opencode items
+an earlier draft listed here (the session-id format, the send route, and
+whether `--prompt` submits, which no longer matters because the prompt goes
+through the API).
 
 | claim | where | measured in |
 |---|---|---|
 | `projects[<path>].hasTrustDialogAccepted` alone suppresses the dialog, and how the path is spelled | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
 | the file is `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set | [3.6.1](#361-claude-codes-folder-trust-entry) | phase 3 |
 | claude treats the word after `--` as the prompt, not a subcommand (the fixed preface holds either way) | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
-| opencode's `--session <id>` id format; whether `--prompt=<prompt>` is accepted and submits; the shared service's working directory | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
-| opencode's session send route, its path and body | [3.10](#310-forwarding-into-a-host-spawned-agent) | phase 4 |
+| PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
+| `POST /api/session` with `model` runs the session's turns on that OpenRouter model; the provider id the hosts' configuration uses; how `GET /api/model` lists OpenRouter models, including just after a service restart | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| the shared service runs a session's tools in its `location.directory` | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| `muster-mirror opencode -s <id>` binds a pane on a session the host created a moment before | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+
+**Read in source, not measured:** at the pinned `6ec5682`, the opencode TUI
+has no `-m/--model` flag; only `opencode run` and `opencode mini` have one
+(`packages/cli/src/commands/commands.ts:38-58, 366-370, 398-402`). That is why
+the model goes in the session create.

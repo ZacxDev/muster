@@ -525,6 +525,16 @@ type ClaudeCodeSession struct {
 	// only (internal/api OfficerClaudeCodeSession). Needs Config.ConnectURL,
 	// and refuses a Model: the proxy pins the model.
 	LLMRoute bool
+	// DisableAutoMemory turns the CLI's memory OFF in every session the pod
+	// runs: its auto-memory ([EnvClaudeDisableAutoMemory]=1 — the CLI then
+	// neither reads nor writes its memory directory, <config dir>/projects/
+	// <cwd>/memory) and its org memory ([EnvClaudeDisableOrgMemory]=1, a
+	// separate gate the first variable does not reach).
+	// Set for an officer instance only (internal/api OfficerClaudeCodeSession):
+	// what an officer remembers of earlier items is HQ's to give, and a memory
+	// file on the instance's volume would be a second, hidden channel outside
+	// it — one a fresh conversation per item would still read.
+	DisableAutoMemory bool
 }
 
 // EgressLocked reports whether the pod's network policy drops the public-443

@@ -176,8 +176,9 @@ type Config struct {
 	TurnTimeout time.Duration
 	// OnChange, when set, is called with an agent's name after this package changes
 	// what that agent's page shows: the stamp (the "kickoff owed" badge goes), a
-	// recorded post-stamp failure (the "kickoff failed" badge comes), and a stuck
-	// verdict (the status goes red). cmd/muster-server passes
+	// recorded post-stamp failure (the "kickoff failed" badge comes), a stuck
+	// verdict (the status goes red), and a delivered reply once the claim is
+	// released (the chief's card for the agent stops reading "working"). cmd/muster-server passes
 	// api.Server.BroadcastAgentChanged, which the agent page's strip (ui's
 	// agentStripTrigger), the sidebar and the Tasks board re-fetch on. (The retired
 	// Agents list heard it only once its hx-trigger gained `sse:agent.changed`;
@@ -187,6 +188,13 @@ type Config struct {
 	// still reads "kickoff owed"), and it recurs every tick while the pod boots, so
 	// calling it there would re-fetch every open sidebar every 10 s.
 	OnChange func(name string)
+	// TurnContext, when set, derives the context a first turn is sent under
+	// from the agent being kicked off (the row read under the claim):
+	// cmd/muster-server passes api.Server.OfficerTurnContext, which routes an
+	// officer instance of a fresh_session_per_item pool into a NEW
+	// conversation (agents.HeaderCCNewConversation). nil: the delivery's own
+	// context, unchanged.
+	TurnContext func(ctx context.Context, a agents.Agent) context.Context
 }
 
 // Deliverer delivers owed first turns. Build it with [New].
@@ -202,7 +210,9 @@ type Deliverer struct {
 	// notReadyWait / notReadyPoll: see deliver's not_ready re-send.
 	notReadyWait, notReadyPoll time.Duration
 	notify                     func(name string)
-	wg                         sync.WaitGroup
+	// turnCtx is Config.TurnContext (nil: none).
+	turnCtx func(ctx context.Context, a agents.Agent) context.Context
+	wg      sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
 	done     chan struct{}
@@ -222,16 +232,17 @@ func New(cfg Config) (*Deliverer, error) {
 			"gateway delivers nothing, which is the defect this package exists to close)")
 	}
 	d := &Deliverer{
-		store:  cfg.Store,
-		insts:  cfg.Instances,
-		gw:     cfg.Gateway,
-		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
-		owner:  cfg.Owner,
-		log:    cfg.Logger,
-		now:    cfg.Now,
-		turn:   cfg.TurnTimeout,
-		notify: cfg.OnChange,
-		done:   make(chan struct{}),
+		store:   cfg.Store,
+		insts:   cfg.Instances,
+		gw:      cfg.Gateway,
+		prefix:  agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
+		owner:   cfg.Owner,
+		log:     cfg.Logger,
+		now:     cfg.Now,
+		turn:    cfg.TurnTimeout,
+		notify:  cfg.OnChange,
+		turnCtx: cfg.TurnContext,
+		done:    make(chan struct{}),
 	}
 	if d.owner == "" {
 		d.owner = defaultOwner()
@@ -637,7 +648,14 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// its pane shows a dialog a paste would answer (cmd/ccd/dialog.go). Before,
 	// it fell through to turnFailure's "failed after it was handed to the
 	// gateway", which tells the operator a turn may be running when none is.
-	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+	// The turn is sent under Config.TurnContext's context for the agent (its
+	// route: an officer instance's new conversation); waits and deadlines stay
+	// on ctx.
+	sendCtx := ctx
+	if d.turnCtx != nil {
+		sendCtx = d.turnCtx(ctx, fresh)
+	}
+	reply, err := d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
 	for waited := time.Duration(0); err != nil && runtimeRefusedUnsent(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
 		select {
 		case <-ctx.Done():
@@ -646,7 +664,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		if ctx.Err() != nil {
 			break
 		}
-		reply, err = d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+		reply, err = d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
 	}
 	if err != nil && runtimeRefusedUnsent(err) {
 		// Still refused when the delivery ended — the bound, or a shutdown
@@ -690,6 +708,11 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	d.log.Printf("agentkickoff: agent %d (%s): first turn delivered to %s (%d-byte reply)",
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
+	// The first turn is over: tell open pages — the agent's own transcript, and
+	// the chief's card for it, which reads "working" while the claim is held.
+	// 🔴 AFTER THE RELEASE (after runs once the claim is released), or a page
+	// re-fetching on this would still read the claim and draw "working".
+	after = func() { d.notify(fresh.Name) }
 }
 
 // preStampFailure records a failure that happened before the stamp (nothing was
