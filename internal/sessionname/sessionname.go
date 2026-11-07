@@ -110,6 +110,17 @@ func Agent(a agents.Agent, stored focus.Name) Name {
 		p.System = a.DisplayName
 	case agents.NameDispatch:
 		p.Dispatch = a.DisplayName
+	default:
+		// A default-sourced display name is the slug copied — the fallback.
+		// One that is NOT the slug came from a writer that sets no source
+		// (the e2e seed, a fixture, any future insert path): it is a title
+		// like a task's, so it heads the agent PLAINED until the auto name
+		// freezes. (Round 0 of #504 proposed deleting this arm as
+		// unreachable; CI's e2e reached it at once — a markdown task name
+		// drawn raw.)
+		if a.DisplayName != a.Name {
+			p.Dispatch = a.DisplayName
+		}
 	}
 	if p.Fallback == "" {
 		p.Fallback = a.Name
