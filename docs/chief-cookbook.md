@@ -202,8 +202,8 @@ Task 1 went across as the task itself, not a paraphrase, so lynx gets the title,
 
 On the Compose install the chief is offered, and runs without a prompt,
 exactly these tools: `sessions_overview`, `fleet_list`, `focus_search`,
-`fleet_report`, `tasks_list`, `task_get`, `attention_list` and, with session
-routing on, `route_to_session`; **every other prompt is denied at once**
+`fleet_report`, `tasks_list`, `task_get`, `attention_list`, `ask_owner` and,
+with session routing on, `route_to_session`; **every other prompt is denied at once**
 ([chief.md](chief.md#on-the-docker-compose-install)). So it reports and
 routes; it does not:
 

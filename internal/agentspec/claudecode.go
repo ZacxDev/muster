@@ -141,11 +141,12 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 
 // ComposeChiefAllowedMCPTools are the muster MCP tools the Compose chief runs
 // without a prompt (operator decision): reading the fleet and the board, and
-// routing work to a session. Every other prompt is denied in its container.
-// Pinned by TestTheComposeChiefsAllowedToolsArePinned.
+// routing work to a session — and asking its owner a question in its own chat
+// (ask_owner: it only draws a card, operator decision). Every other prompt is
+// denied in its container. Pinned by TestTheComposeChiefsAllowedToolsArePinned.
 var ComposeChiefAllowedMCPTools = []string{
 	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
-	"tasks_list", "task_get", "attention_list", composeChiefRouteTool,
+	"tasks_list", "task_get", "attention_list", composeChiefRouteTool, "ask_owner",
 }
 
 // composeChiefRouteTool is the one ComposeChiefAllowedMCPTools entry muster

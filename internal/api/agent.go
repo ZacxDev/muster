@@ -352,6 +352,13 @@ func (s *Server) agentTools() []agentTool {
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
 	}
+	// ask_owner (owner_ask.go): the chief's question card in its own chat.
+	// Chief-only, and on MCP so a claude-code chief has it too. OFFERED WITH NO
+	// GATE: it needs no store (the card is drawn from the stored call), every
+	// chief has a chat, and both chiefs' standing instructions name it
+	// unconditionally. ⚠ The cost: with a chief-only tool always in the
+	// registry, toolsFor reads the agent list on every turn of every agent.
+	tools = append(tools, agentTool{def: askOwnerToolDef(), mcp: true, chiefOnly: true})
 	// 🔴 EACH GATE BELOW ALSO READS THE FEATURE REGISTRY (featureOff): a
 	// feature it calls off has no tool offered, and a call to one explains
 	// instead (features.go's toolFeatures, mcpDisabledTool). The two agree by
@@ -457,7 +464,8 @@ func (s *Server) agentTools() []agentTool {
 // toolsFor is the registry as agent a may see it: every tool, minus the
 // chief-only ones unless a is its owner's chief, and minus the not-chief ones if
 // it is. It reads the agent list only when the registry HAS a tool on either
-// axis, so a deployment without one pays nothing per turn.
+// axis. ⚠ Since ask_owner (offered with no gate) that is every registry, so the
+// read is paid on every turn.
 //
 // 🔴 THE CHIEF-ONLY AXIS FAILS CLOSED: an agent list that cannot be read offers
 // no chief-only tool, the same direction agentIsChief's other callers take for
@@ -800,6 +808,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return toolJSON(n)
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
+	case askOwnerTool:
+		return s.toolAskOwner(ctx, arguments)
 	case "connectors_list":
 		return s.toolConnectorsList(ctx, a)
 	case "connector_request":

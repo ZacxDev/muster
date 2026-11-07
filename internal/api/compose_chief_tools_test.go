@@ -20,7 +20,7 @@ import (
 // purpose, typed independently of agentspec.ComposeChiefAllowedMCPTools: the
 // test below holds the served list, the spec's allow list and this literal
 // equal, so a tool joining or leaving any one of them is red.
-var composeChiefToolLedger = []string{"attention_list", "fleet_list", "fleet_report", "focus_search",
+var composeChiefToolLedger = []string{"ask_owner", "attention_list", "fleet_list", "fleet_report", "focus_search",
 	"route_to_session", "sessions_overview", "task_get", "tasks_list"}
 
 // mcpAs drives POST /mcp as agent a on s, returning the JSON-RPC reply.

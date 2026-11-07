@@ -182,10 +182,15 @@ func agentCanBeSent(status string) bool { return status == agents.StatusRunning 
 // composer (handleAgentSend), notTyped from every other caller.
 func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
+	// Counted NOW, before this request answers: the page this send redirects back
+	// to is drawn next, and must already show "working…" (session_turns.go).
+	endCount := s.sessionTurns.begin(session.SessionKey)
 	safeGo(s.logger, "agent turn (send)", func() {
 		defer cancel()
 		defer s.turns.leave(a.ID)
+		defer endCount() // a panic must not leave the count up (end is idempotent)
 		parts, err := s.runEnteredTurn(tctx, a, session, text, typedBy, nil)
+		endCount()
 		if err != nil {
 			s.logger.Printf("agents: a turn sent to %s failed: %v", a.Name, err)
 			parts = []agents.TurnPart{{Kind: "text", Content: AgentTurnFailedPrefix + err.Error()}}

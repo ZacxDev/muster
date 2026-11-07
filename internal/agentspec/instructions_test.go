@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "fe38f8c559f4859aba3378e60b6794eebd082f6704cdad0641011bfed8ca1e60",
+			want: "bd1d82b8d6235182371e742c0e067c3b3335ef2b7a1b52f607009dbabd476b4d",
 			min:  1000,
 		},
 		{
@@ -370,19 +370,19 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "0d814b5064ad457ccad76e541a3cf8662c46d1deced32dda39b232379cbe064c",
+			want: "cd7db3098eab43daf2127360966de6b79365d46b440f1b6e621adbbd1be554d5",
 			min:  1000,
 		},
 		{
 			name: "chiefComposeToolsSection, routing on",
 			text: chiefComposeToolsSection(ComposeChiefTools(true)),
-			want: "54963f3c57e5ae5418c7ea3f42dceeec0a13ebb191f8de0ac3bcc40637f410dd",
+			want: "4afdf4480931fb1a49bed7037c1e58607f532945cb609ebb580a7352d4002873",
 			min:  600,
 		},
 		{
 			name: "chiefComposeToolsSection, routing off",
 			text: chiefComposeToolsSection(ComposeChiefTools(false)),
-			want: "633690ff215b13bc414b6b45e47add96faa7865ee416ea207e82e61fe213c823",
+			want: "6c5c21bdc09016b69acda41bca48047951ecc5bd1281f071d0f3c3e2c31a4897",
 			min:  600,
 		},
 		{
@@ -396,6 +396,18 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			text: chiefComposePluginSection(ComposeChiefTools(false)),
 			want: "08d30ff61841bcdc6c618ff7deaabff053f526555fa02b8283c18ca66d42c826",
 			min:  500,
+		},
+		{
+			name: "chiefAskOwnerSection",
+			text: chiefAskOwnerSection,
+			want: "691f90f9a52f672226cb67dc5da98ee8853303581e4720a185fc5eecd43483ea",
+			min:  400,
+		},
+		{
+			name: "chiefAskOwnerSectionClaudeCode",
+			text: chiefAskOwnerSectionClaudeCode,
+			want: "273ea07f51c02c9a062a669155567e4fa9d61e6da57d35ac4545921f30a6e273",
+			min:  400,
 		},
 		{
 			name: "chiefHQSectionClaudeCode",
@@ -439,62 +451,62 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "configured",
 			got:  ChiefInstructions(true, false),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefCairnSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection,
 		},
 		{
 			name: "unconfigured",
 			got:  ChiefInstructions(false, false),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection,
 		},
 		{
 			name: "configured, plugins on",
 			got:  ChiefInstructions(true, true),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefCairnSection + "\n" + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection + "\n" + chiefPluginSection,
 		},
 		{
 			name: "unconfigured, plugins on",
 			got:  ChiefInstructions(false, true),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefPluginSection,
 		},
 		{
 			name: "claude-code",
 			got:  ChiefInstructionsClaudeCode(false, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins on",
 			got:  ChiefInstructionsClaudeCode(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
 		},
 		{
 			name: "claude-code, routing on",
 			got:  ChiefInstructionsClaudeCode(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "compose, plugins off, routing off",
 			got:  ChiefInstructionsCompose(false, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)),
 		},
 		{
 			name: "compose, plugins off, routing on",
 			got:  ChiefInstructionsCompose(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "compose, plugins on, routing off",
 			got:  ChiefInstructionsCompose(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
 		},
 		{
 			name: "compose, plugins on, routing on",
 			got:  ChiefInstructionsCompose(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
@@ -736,8 +748,14 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		// The owner's typed word releases the gate (agent_dispatch owner_asked);
 		// the chief is never to send them to another screen.
 		"then call `agent_dispatch` with its task id, the target your owner named, and `owner_asked: true`.",
-		// The target has no default: the chief asks, and never picks one.
-		"Its target has no default:",
+		// The target has no default: the chief maps the owner's words to one, and
+		// when they named no model it ASKS with ask_owner, never picking one.
+		"Its target has no default; map your owner's words to one:",
+		"\"with Claude\", or any Claude model → `pod/claude-code` (no model);",
+		"any other model they name → `pod/gateway` with that model, as `openrouter/<provider>/<model>`;",
+		"\"mirrored\" → `mirrored`, which is refused until mirrored dispatch ships (say so; never start a cluster agent instead).",
+		"If they named no model, call it without a target:",
+		"Ask them which with `ask_owner`",
 		"never pick one for them.",
 		"Never tell your owner to go and approve it on another screen;",
 		"goes to that plugin's data scope only",
@@ -765,6 +783,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 		"`agent_dispatch`", "`mcp__muster__agent_dispatch`",
 		"`task_route_attention`", "`mcp__muster__task_route_attention`",
+		"`ask_owner`", "`mcp__muster__ask_owner`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -955,5 +974,54 @@ func TestTheClaudeCodeChiefIsToldHQRequestsGoToTheHQServer(t *testing.T) {
 				t.Errorf("cairn=%v plugins=%v: the GATEWAY chief prompt names mcp__hq__ tools it is never given", cairn, plugins)
 			}
 		}
+	}
+}
+
+// TestTheAskOwnerSectionIsInBothChiefsProse pins the ask_owner paragraph as a
+// RELATIONSHIP and as a presence: the claude-code one is the gateway one with the
+// tool's MCP name, and it is in EVERY chief prompt of both runtimes (the tool is
+// offered to every chief, internal/api owner_ask.go). The claims are spelled here,
+// not read from the constant.
+func TestTheAskOwnerSectionIsInBothChiefsProse(t *testing.T) {
+	if got := strings.ReplaceAll(chiefAskOwnerSection, "`ask_owner`", "`mcp__muster__ask_owner`"); got != chiefAskOwnerSectionClaudeCode {
+		t.Fatalf("the claude-code ask_owner section is not the gateway's with the MCP name:\n--- derived\n%s\n--- actual\n%s", got, chiefAskOwnerSectionClaudeCode)
+	}
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	claims := func(tool string) []string {
+		return []string{
+			"Whenever you need your owner to choose",
+			"call `" + tool + "` with the question and its options.",
+			"Never write the options out in your reply and ask them to type one.",
+			"Calling it ends your turn",
+		}
+	}
+	n := 0
+	for _, cairn := range []bool{false, true} {
+		for _, plugins := range []bool{false, true} {
+			p := norm(ChiefInstructions(cairn, plugins))
+			for _, c := range claims("ask_owner") {
+				n++
+				if !strings.Contains(p, c) {
+					t.Errorf("gateway chief (cairn=%v plugins=%v) prose lacks %q", cairn, plugins, c)
+				}
+			}
+		}
+	}
+	for _, plugins := range []bool{false, true} {
+		for _, routing := range []bool{false, true} {
+			p := norm(ChiefInstructionsClaudeCode(plugins, routing))
+			for _, c := range claims("mcp__muster__ask_owner") {
+				n++
+				if !strings.Contains(p, c) {
+					t.Errorf("claude-code chief (plugins=%v routing=%v) prose lacks %q", plugins, routing, c)
+				}
+			}
+			if strings.Contains(p, "call `ask_owner`") {
+				t.Errorf("claude-code chief prose names the bare tool, which that session does not have")
+			}
+		}
+	}
+	if n != 8*4 {
+		t.Fatalf("checked %d claims, want 32", n)
 	}
 }

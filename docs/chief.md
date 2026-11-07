@@ -134,16 +134,16 @@ permission prompt in its container (there is no approval gate and no terminal
 muster can reach), so:
 
 - these run **without a prompt**: `sessions_overview`, `fleet_list`,
-  `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list` and,
-  with session routing on, `route_to_session`;
+  `focus_search`, `fleet_report`, `tasks_list`, `task_get`, `attention_list`,
+  `ask_owner` and, with session routing on, `route_to_session`;
 - **they are the only muster tools it is offered.** muster's MCP server lists
   the chief nothing else (not `task_comment`, `task_set_status`,
   `task_create_gated`, `reply_draft`, `agent_dispatch`, `attention_ask`,
   `connectors_list` or `muster_help`), and refuses a call to one by name. Its
   instructions name the same tools and say plainly that filing or commenting on
-  a task, changing a task's status, asking or answering an ask, dispatching an
-  agent, drafting a plugin reply, connectors and HQ are not available on this
-  install. All three (what it may run, what it is offered, what it is told) come
+  a task, changing a task's status, raising or answering an ask in the
+  Attention queue, dispatching an agent, drafting a plugin reply, connectors
+  and HQ are not available on this install. All three (what it may run, what it is offered, what it is told) come
   from one list in muster's code;
 - **the turns muster sends it name only those tools too.** A plugin message's
   turn, its session hints and a route's hand-back are rendered from the tools
@@ -244,6 +244,7 @@ The chief is offered these tools, and no other agent is:
 | `route_to_session` (an idea you typed in its chat: [plugins.md](plugins.md#routing-your-own-request-to-a-session); one of your tasks: [plugins.md](plugins.md#routing-a-task-to-a-session); or a plugin message) | session routing (a plugin message also needs plugins) |
 | `attention_list` | the attention queue |
 | `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
+| `ask_owner` (a question card in its chat: you tap an answer) | the attention queue |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `agent_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 
@@ -256,14 +257,34 @@ On the docker compose install the chief is offered far less: only the tools
 it can run there, the ones pre-allowed in its container ([its
 tools](#on-the-docker-compose-install)).
 
+When the chief needs you to choose something, it asks with `ask_owner`: the
+question appears in its chat as a card with a button per option and an
+"Other" box for your own answer. Tap one (or send Other) and that is sent as
+your next message; the card then shows your answer, and still does after a
+reload. Asking ends the chief's turn.
+
+Closing or reloading the page never stops a turn the chief is running. Open
+the chat again while it runs and it shows "working…"; the reply appears, and
+"working…" goes, once the turn has finished and its reply is stored.
+
 `agent_dispatch` starts an agent where you say: its `target` is **required
 and has no default**. Today that is a pod, `pod/claude-code` or
 `pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
-host spawning ships ([design](design/chief-dispatch.md)). Asked to start an
-agent without being told where, the chief calls it with no target, and the
-refusal lists the targets that exist now (the pod kinds enabled here that you
-have a credential for) with its budget, so it asks you which. It never picks
-one for you. The retired name `task_dispatch` answers *"task_dispatch is
+host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
+words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
+other model you name is `pod/gateway` with that model as its OpenRouter id
+(`openrouter/<provider>/<model>`).
+Asked to start an agent without a model, the chief calls it with no target, and
+the refusal lists the choices that exist now in your words — "Claude Code (your
+Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it
+asks you which with an `ask_owner` card. It never picks one for you. "Mirrored"
+is refused until mirrored dispatch ships; it never starts a cluster agent
+instead.
+
+Each agent the chief starts is drawn in its chat as a card: the agent's name,
+where it runs, its repository and task, and its state — starting, working,
+waiting, done or error — which follows the agent while the chat is open. Tap it
+to open the agent. A refused start is one line saying why. The retired name `task_dispatch` answers *"task_dispatch is
 replaced by agent_dispatch, which needs a target: ask your owner where to run
 it"*.
 

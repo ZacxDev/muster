@@ -10,15 +10,17 @@ import (
 )
 
 // TestTheComposeChiefsAllowedToolsArePinned is the ledger of the tools the
-// Compose chief runs without a prompt (operator decision: exactly these eight,
-// reading the fleet and the board and routing to a session). It fails if the
+// Compose chief runs without a prompt (operator decision: exactly these nine,
+// reading the fleet and the board, routing to a session, and ask_owner — which
+// only draws a question card in the chief's chat, so the chief's own way of
+// asking its owner is never itself a prompt the container denies). It fails if the
 // set GROWS or SHRINKS: a change is a change to the chief's permission posture
 // and needs the same decision. The spec carries exactly that set and no HQ
 // server (no blanket HQ approval on Compose); a pod spec carries no such list;
 // and a session asking for its own list, or for the HQ server, is refused, so
 // the ledger is the one source.
 func TestTheComposeChiefsAllowedToolsArePinned(t *testing.T) {
-	want := []string{"attention_list", "fleet_list", "fleet_report", "focus_search",
+	want := []string{"ask_owner", "attention_list", "fleet_list", "fleet_report", "focus_search",
 		"route_to_session", "sessions_overview", "task_get", "tasks_list"}
 	if got := slices.Sorted(slices.Values(ComposeChiefAllowedMCPTools)); !slices.Equal(got, want) {
 		t.Fatalf("the Compose chief's pre-allowed tools are %v, want exactly %v", got, want)
@@ -82,13 +84,13 @@ func TestTheComposeChiefIsToldExactlyItsTools(t *testing.T) {
 		return slices.Sorted(slices.Values(out))
 	}
 	unavailable := "Anything else is not available on this install (the Docker Compose one): " +
-		"filing a task, commenting on a task or changing its status, asking your owner or answering an ask, " +
+		"filing a task, commenting on a task or changing its status, raising or answering an ask in the Attention queue, " +
 		"dispatching an agent, drafting a reply to a plugin message, connectors and HQ. When your owner asks for " +
 		"one of them, say plainly that it is not available on this install — not that it failed, and not that you " +
 		"can do some other one of them instead — and do not offer it."
 	for _, plugins := range []bool{true, false} {
 		for _, routing := range []bool{true, false} {
-			want := []string{"attention_list", "fleet_list", "fleet_report", "focus_search", "sessions_overview", "task_get", "tasks_list"}
+			want := []string{"ask_owner", "attention_list", "fleet_list", "fleet_report", "focus_search", "sessions_overview", "task_get", "tasks_list"}
 			if routing {
 				want = slices.Sorted(slices.Values(append(want, "route_to_session")))
 			}

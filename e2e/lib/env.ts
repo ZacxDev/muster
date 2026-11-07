@@ -305,6 +305,13 @@ export const sessionTagsPort = port + 270;
 // idle) and two fake hosts (one opted in to the send, one not), each with a
 // fake opencode server in its own process.
 export const openCodeSendPort = port + 271;
+// tests/chief-ux.spec.ts: the chief's working indicator across a reload, its
+// ask_owner question cards and its dispatched-agent cards — its own server (the
+// e2eterm binary, task routing and chief dispatch on, every agent endpoint
+// pointed at the spec's FAKE runtime), its /mcp door, and that fake runtime.
+export const chiefUxPort = port + 272;
+export const chiefUxConnectPort = port + 273;
+export const chiefUxFakePort = port + 274;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

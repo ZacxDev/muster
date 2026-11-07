@@ -448,7 +448,8 @@ phase_chief() {
   grep -qx 'MUSTER_SESSION_ROUTING=1' "$tmp/env" && routing=1
   python3 - "$led" "$routing" <<'PY' || fail "[chief] the chief's offered muster tools are not exactly its pre-allowed set: $led"
 import json, sys
-expected = {"sessions_overview", "fleet_list", "focus_search", "fleet_report", "tasks_list", "task_get", "attention_list"}
+expected = {"sessions_overview", "fleet_list", "focus_search", "fleet_report", "tasks_list", "task_get", "attention_list",
+            "ask_owner"}
 if sys.argv[2] == "1":
     expected.add("route_to_session")
 offered = {n[len("mcp__muster__"):] for r in json.loads(sys.argv[1]) for n in r.get("tool_names") or []

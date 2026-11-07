@@ -380,8 +380,10 @@ func TestTheComposeChiefIsWrittenWhereItsContainerReadsIt(t *testing.T) {
 	if _, ok := secretOf["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 		t.Fatal("the chief on the OpenRouter key carries a subscription token")
 	}
-	// Exactly its eight read and route tools pre-allowed, and no HQ server.
-	if envOf["CCD_ALLOW_MCP_TOOLS"] != "sessions_overview,fleet_list,focus_search,fleet_report,tasks_list,task_get,attention_list,route_to_session" {
+	// Exactly its nine pre-allowed tools — the eight read and route tools, and
+	// ask_owner (operator decision: it only draws a question card) — and no HQ
+	// server. The whole list, in order: a dropped or added tool fails here.
+	if envOf["CCD_ALLOW_MCP_TOOLS"] != "sessions_overview,fleet_list,focus_search,fleet_report,tasks_list,task_get,attention_list,route_to_session,ask_owner" {
 		t.Fatalf("the chief's pre-allowed tools: %q", envOf["CCD_ALLOW_MCP_TOOLS"])
 	}
 	if _, ok := envOf["CCD_HQ_MCP"]; ok {
