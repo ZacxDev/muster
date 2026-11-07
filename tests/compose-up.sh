@@ -460,8 +460,21 @@ PY
 
   # task_comment, which it is not offered, named anyway (the fake does): the
   # CLI refuses it, the turn ends, and it does not run.
-  reply="$(curl -sS -m 150 -H "Authorization: Bearer $(hook)" -H 'Content-Type: application/json' \
-    -d "{\"message\":\"Now comment on it, please. TASK-${task_id:-0}\"}" "$base/api/agents/chief/messages")" || {
+  # chief_say sends one chat turn and prints the reply. A "busy" answer means
+  # the session was still finishing the previous turn and this one never ran
+  # (nothing was sent to the model), so it is sent again, for up to 60s; any
+  # other answer is returned as it is.
+  chief_say() {
+    local out n=0
+    while :; do
+      out="$(curl -sS -m 150 -H "Authorization: Bearer $(hook)" -H 'Content-Type: application/json' \
+        -d "$1" "$base/api/agents/chief/messages")" || { printf '%s' "$out"; return 1; }
+      grep -q '"type\\":\\"busy\\"\|another turn is already being driven' <<<"$out" || { printf '%s' "$out"; return 0; }
+      n=$((n + 1)); [ "$n" -lt 12 ] || { printf '%s' "$out"; return 0; }
+      sleep 5
+    done
+  }
+  reply="$(chief_say "{\"message\":\"Now comment on it, please. TASK-${task_id:-0}\"}")" || {
     chief_diagnostics
     fail "[chief] a turn naming an unoffered tool did not end within 150s: ${reply:-no reply}"
   }
@@ -478,8 +491,7 @@ PY
   # An offered tool the chief does NOT pre-allow: its prompt is denied at once
   # (nobody can answer one in this container), so the turn ends, saying so,
   # instead of hanging. The reply is the fake's report of the error tool result.
-  reply="$(curl -sS -m 150 -H "Authorization: Bearer $(hook)" -H 'Content-Type: application/json' \
-    -d '{"message":"Now touch the file, please."}' "$base/api/agents/chief/messages")" || {
+  reply="$(chief_say '{"message":"Now touch the file, please."}')" || {
     chief_diagnostics
     fail "[chief] an un-allowed tool's turn did not end within 150s (a prompt left hanging?): ${reply:-no reply}"
   }
