@@ -1833,7 +1833,7 @@ One source for each value:
 | `llm` field | default | |
 |---|---|---|
 | `daily_budget_usd` | required | The officer's spend cap per UTC day, over all its routine instances, (0, 1000]. Metered from the cost **the provider reports in the stream** (`usage.cost`), never from a price list: billed prices have run well above list. A request is refused once the day's booked spend reaches the cap; requests in flight together can take the day slightly over it (the key's OpenRouter credit limit is the backstop). |
-| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds: uncached input, cache writes and output together. **Cache reads are not counted** (Claude Code resends its whole context on every request, mostly as cache reads); they are still metered and charged against `daily_budget_usd`. Past the cap, its next request is refused. |
+| `max_tokens_per_item` | `400000` | 1000–20000000. Tokens a routine instance may use on the item it holds: uncached input, cache writes and output together. **Cache reads are not counted** (Claude Code resends its whole context on every request, mostly as cache reads); they are still metered and charged against `daily_budget_usd`. Past the cap, its next request is refused. It does not apply while the instance holds no item (`daily_budget_usd` bounds that). |
 
 The key is the officer's own `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`
 (`<NAME>` as for the HQ token), and it is **required**: unset or blank is a
@@ -1937,13 +1937,19 @@ backoff, which on an instance would read as a stall. The message tells the
 model to stop; the item stays queued in HQ.
 
 **The per-item cap and the lease.** The proxy learns which item an instance
-holds from its own `officer_claim` / `officer_complete` / `officer_release`
-calls, and from every wake-loop read of HQ's claims. A new item starts the
-count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
+holds from its own `officer_claim` (with or without `item_id`) /
+`officer_complete` / `officer_release` calls, and from every wake-loop read of
+HQ's claims: when HQ shows an instance holding exactly one item and the proxy
+holds a different one or none, the proxy adopts HQ's (so an instance that
+outlives a muster restart still holding its item is capped again within one
+wake-loop interval); when HQ shows it holding none or several, it holds none.
+A new or adopted item starts the count at zero. A capped instance cannot heartbeat, so its lease lapses (HQ
 then hands the item on: a precondition on HQ that muster does not check); the next wake-loop read shows the instance holding
-nothing, which resets its count, so it is not stuck. Tokens used before any
-claim are counted under no item and reset on each such read: the daily budget,
-not the item cap, is the wall for an instance that never claims. The counts
+nothing, which resets its count, so it is not stuck. The cap applies only
+while the instance holds an item: a turn holding none (a kickoff, a
+re-prompt, the turn between items) is never refused by it, and its tokens are
+not counted toward any item. The daily budget, not the item cap, is the
+wall for a turn holding no item. The counts
 are in memory; a restart forgets them (the budget is persisted).
 
 **A refused key is not a stall.** When OpenRouter refuses the key (401/403),

@@ -436,6 +436,24 @@ func TestAnOfficerToolClaimStartsTheItemMeter(t *testing.T) {
 	}
 }
 
+// TestAnOfficerToolClaimNextStartsTheItemMeter is the claim-next seam: an
+// officer_claim with no item_id (HQ picks the item; the kickoff tells every
+// instance to claim this way) holds the item HQ handed over, so the cap binds
+// it. Without the seam the meter shows no item, and a turn holding no item is
+// never refused by the cap.
+func TestAnOfficerToolClaimNextStartsTheItemMeter(t *testing.T) {
+	const id = "routine:llm-claimnext"
+	r := newLLMItemsRig(t, id, "llm-claimnext-agent-token-0123456")
+	r.hq.ClaimNext = true
+	itemA := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
+
+	r.call(officers.ToolClaim, `{}`)
+	r.expect(t, "on item "+itemA+", claimed by claim-next", http.StatusOK, http.StatusOK, http.StatusBadRequest)
+	if n := r.up.calls(); n != 2 {
+		t.Fatalf("the provider got %d, want 2", n)
+	}
+}
+
 // TestAnOfficerToolCompleteEndsTheItemMeter and
 // TestAnOfficerToolReleaseEndsTheItemMeter are the end seams: officer_complete
 // and officer_release (dispatchAgentTool → llmEnded) end the held item, so the

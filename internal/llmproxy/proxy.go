@@ -426,14 +426,14 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		var used int64
 		used, item = p.items.used(k)
 		rec.Item = item
-		if used >= c.MaxTokensPerItem {
-			what := "item " + item
-			if item == "" {
-				what = "the work before any claimed item"
-			}
+		// 🔴 THE ITEM CAP BINDS A HELD ITEM ONLY. A turn holding none (a
+		// kickoff, a re-prompt, the turn between items) is no item's work: the
+		// daily budget above is its wall. Capping it killed kickoffs whose first
+		// request re-read, uncached, a resumed context larger than the cap.
+		if item != "" && used >= c.MaxTokensPerItem {
 			Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
-				"this instance has used %d tokens on %s, the cap is %d; nothing was sent. Stop here: the item will be "+
-					"handed on when its lease lapses.", used, what, c.MaxTokensPerItem))
+				"this instance has used %d tokens on item %s, the cap is %d; nothing was sent. Stop here: the item will be "+
+					"handed on when its lease lapses.", used, item, c.MaxTokensPerItem))
 			finish("refused_item_cap", http.StatusBadRequest)
 			return
 		}

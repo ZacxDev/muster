@@ -493,6 +493,47 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	}
 }
 
+// TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding: the meter learns a
+// held item from HQ too, not only from muster's own claim calls. After a
+// restart (a new proxy, nothing in memory) an instance that survived it still
+// holds its item in HQ; the next wake-loop read adopts that item, from zero,
+// and the cap binds it. Only a single held item is adopted: two are ambiguous.
+func TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding(t *testing.T) {
+	const officer = "items:adopt"
+	r := newRig(t, officer, streamOK(0.0001))
+	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request counts 1007 tokens: the cap admits two
+
+	r.p.Sync(officer, map[int][]string{1: {"item-x"}, 2: {"item-y", "item-z"}}, time.Now())
+	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
+		resp, body := r.post(t)
+		if resp.StatusCode != want {
+			t.Fatalf("request %d after the read showed item-x held: %d %s, want %d", i+1, resp.StatusCode, body, want)
+		}
+		if want == http.StatusBadRequest && !strings.Contains(body, "item item-x") {
+			t.Fatalf("the cap refusal does not name the adopted item: %s", body)
+		}
+	}
+	if _, item := r.p.items.used(instanceKey{officer, 2}); item != "" {
+		t.Fatalf("instance 2, shown holding two items, adopted %q; want none", item)
+	}
+
+	// HQ shows the instance holding a different single item: the meter
+	// follows it, from zero.
+	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, time.Now())
+	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-w" || used != 0 {
+		t.Fatalf("after a read showing item-w held: %d on %q, want 0 on item-w", used, item)
+	}
+
+	// A read made BEFORE an end does not re-adopt the ended item.
+	readAt := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	r.p.Ended(officer, 1, "item-w")
+	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, readAt)
+	if _, item := r.p.items.used(instanceKey{officer, 1}); item != "" {
+		t.Fatalf("a read predating the end re-adopted %q", item)
+	}
+}
+
 // TestAnUpstream401IsSurfacedAsAKeyFaultAndLoggedOncePerChange: a provider
 // refusal of the key is counted per status, holds the failing gauge at 1, is
 // logged loudly ONCE however many requests hit it, answers the instance with a
@@ -800,5 +841,80 @@ func TestCacheReadsDoNotCountTowardTheItemCap(t *testing.T) {
 	}
 	if spent, _ := r.store.SpentToday(context.Background(), officer, Day(time.Now())); spent < 0.0299 || spent > 0.0301 {
 		t.Fatalf("spent today = %v, want 0.03: cache reads are still charged", spent)
+	}
+}
+
+// TestATurnHoldingNoItemIsNotRefusedByTheItemCap: max_tokens_per_item bounds
+// the work on ONE held item. A turn holding no item (the kickoff, a re-prompt,
+// the turn between items) is not an item's work, so it is never refused by
+// that cap; the officer's daily USD budget is its wall, and still refuses it.
+//
+// The numbers are a measured kickoff: an instance whose resumed context was
+// no longer in the provider's cache sent its first request with 743661
+// uncached input tokens, which alone passed a 400000-token cap, so every
+// later request of that turn was refused (refused_item_cap, item=-) and the
+// kickoff turn failed.
+func TestATurnHoldingNoItemIsNotRefusedByTheItemCap(t *testing.T) {
+	const officer = "items:noitem"
+	r := newRig(t, officer, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range []string{
+			sse("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+				"id": "msg_cold", "model": "example/pinned-model", "provider": "ExampleProvider",
+				"usage": map[string]any{"input_tokens": 743_661, "cache_read_input_tokens": 19_200, "cache_creation_input_tokens": nil, "output_tokens": 1}}}),
+			sse("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use"},
+				"usage": map[string]any{"output_tokens": 127, "cost": 0.06}}),
+			sse("message_stop", map[string]any{"type": "message_stop"}),
+		} {
+			_, _ = io.WriteString(w, e)
+			w.(http.Flusher).Flush()
+		}
+	})
+	r.set(func(c *Caller) { c.MaxTokensPerItem = 400_000; c.DailyBudgetUSD = 0.20 })
+
+	// No claim: three requests of 743788 counted tokens each, every one past
+	// the 400000 cap on its own, all go through.
+	for i := 1; i <= 3; i++ {
+		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("no-item request %d: %d %s; a turn holding no item was refused", i, resp.StatusCode, body)
+		}
+	}
+	if n := r.up.count(); n != 3 {
+		t.Fatalf("the provider got %d requests, want 3", n)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "refused_item_cap")); got != 0 {
+		t.Fatalf("refused_item_cap = %v, want 0", got)
+	}
+
+	// The daily budget still walls the no-item turn: $0.18 spent of $0.20
+	// admits one more request, which brings it to $0.24; the next is refused
+	// as refused_budget and not sent.
+	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+		t.Fatalf("fourth no-item request, under the budget: %d %s", resp.StatusCode, body)
+	}
+	resp, body := r.post(t)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "daily LLM budget") {
+		t.Fatalf("no-item request past the budget: %d %s, want 400 naming the budget", resp.StatusCode, body)
+	}
+	if n := r.up.count(); n != 4 {
+		t.Fatalf("the provider got %d requests, want 4 (the budget refusal must not be sent)", n)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "refused_budget")); got != 1 {
+		t.Fatalf("refused_budget = %v, want 1", got)
+	}
+
+	// The cap still binds a HELD item, from zero: none of the no-item tokens
+	// are charged to it, its first request goes through, and its second is
+	// refused naming the item.
+	r.set(func(c *Caller) { c.DailyBudgetUSD = 5 })
+	r.p.Claimed(officer, 1, "item-a")
+	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first request on item-a: %d %s; the no-item tokens were charged to the item", resp.StatusCode, body)
+	}
+	if resp, body := r.post(t); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "item item-a") {
+		t.Fatalf("second request on item-a: %d %s, want the item cap naming item-a", resp.StatusCode, body)
+	}
+	if got := testutil.ToFloat64(metrics.OfficerLLMRequests.WithLabelValues(officer, "r1", "refused_item_cap")); got != 1 {
+		t.Fatalf("refused_item_cap = %v, want 1", got)
 	}
 }
