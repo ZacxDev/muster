@@ -39,6 +39,10 @@ type MirrorCardView struct {
 	// internal/api: its conversation's manual or auto name, else its Label or
 	// Title (a fallback, Human false). The zero value draws Label / Title.
 	SessionName sessionname.Name
+	// ManualName is the conversation's manual name AS TYPED (stored, never
+	// plained), "" for none: what the rename dialog prefills, so a markdown
+	// name is edited as it was written, not as it draws.
+	ManualName string
 	// Qualifier is what tells this entry apart from another listed entry with
 	// the same title — its host, and/or its tmux address — "" when the title is
 	// already unique. Decided in ONE place over the whole list

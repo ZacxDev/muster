@@ -21,8 +21,8 @@
 --   agents.display_name_source   WHO set agents.display_name: 'default' (the
 --       slug, copied), 'dispatch' (derived from the source task at dispatch),
 --       'system' (a role muster pinned: the chief, an officer) or 'manual'
---       (the person renamed it). Only 'manual' and 'system' outrank the auto
---       name.
+--       (the person renamed it). 'manual', 'system' and 'dispatch' all
+--       outrank the auto name; only 'default' (the slug) does not.
 --
 -- 🔴 THE NAME IS STORED, NEVER DERIVED FROM HISTORY. Focus history is pruned
 -- after 30 days (focus.DefaultHistoryRetention), so "the oldest history row"
@@ -31,12 +31,16 @@
 -- pruned a retention after it was last seen — focus.PGStore.PruneAll keeps a
 -- row carrying a name, auto or manual, for focus.NameRetention longer).
 --
--- 🔴 THE BACKFILL OF display_name_source IS A DECISION, STATED: an existing
+-- 🔴 THE BACKFILL OF display_name_source IS A DECISION, STATED: a CHIEF —
+-- slug "chief" or "chief-<owner id>" (agents.IsChiefName) — is 'system',
+-- whatever its display name: the operator's chief has slug AND display name
+-- "chief", equal, so the slug-copy rule below would call it 'default' and its
+-- first good focus title would rename it (round 1 of #504). Then: an existing
 -- display name equal to the slug is 'default'; one spelled "#<task id>" or
 -- "#<task id> · …" is 'dispatch' (dispatchDisplayName's shape); "officer <id>
--- #<n>" is 'system' (officerFleet.Start's shape); ANY OTHER is 'manual' —
--- the operator's rule "an existing agent DisplayName set by a user counts as
--- manual", and the chief's "chief" is one of them (it was set by a person).
+-- #<n>" is 'system' (officerFleet.Start's shape); ANY OTHER is 'manual' — the
+-- operator's rule "an existing agent DisplayName set by a user counts as
+-- manual".
 --
 -- agent_focus is owned and under FORCE row-level security (0020); new columns
 -- inherit both, so nothing here touches a policy, grant or default and
@@ -81,7 +85,9 @@ ALTER TABLE public.agents ADD CONSTRAINT agents_display_name_source_check
 -- The backfill (see the header). Only rows still at 'default' are touched, so
 -- a re-application cannot undo a later write.
 UPDATE public.agents SET display_name_source = CASE
+        WHEN name = 'chief' OR name ~ '^chief-[1-9][0-9]*$' THEN 'system'
         WHEN display_name ~ '^#[0-9]+( · .*)?$' THEN 'dispatch'
         WHEN display_name ~ '^officer \S+ #\S+$' THEN 'system'
         ELSE 'manual' END
- WHERE display_name_source = 'default' AND display_name <> '' AND display_name <> name;
+ WHERE display_name_source = 'default' AND display_name <> ''
+   AND (display_name <> name OR name = 'chief' OR name ~ '^chief-[1-9][0-9]*$');

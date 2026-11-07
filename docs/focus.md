@@ -99,8 +99,8 @@ window ever holds. Once the conversation has an auto or manual name, the label
 moves to the row's tooltip and the search palette (it is still what the
 palette matches first). An agent's display name ranks by who set it
 (`agents.display_name_source`, migration `0090`): `manual`, `system` and
-`dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: the slug
-copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
+`dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: a chief
+(slug `chief` or `chief-<owner id>`) is `system`, the slug copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
 is `system`, and any other display name is `manual`, since a person set it.
 
 The name is **stored**, not derived: focus history is pruned after 30 days, so
