@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -373,4 +374,41 @@ func TestAFirstTurnsToolsActAsTheAgentsOwner(t *testing.T) {
 		t.Errorf("the ask is owner %d's; want the agent's owner %d", owner, o.owner)
 	}
 	o.assertReportedDone(t, a)
+}
+
+// TestAFirstTurnForARowWithNoOwnerIsToolless: a gateway row that names no owner
+// gets a toolless first turn (KickoffTurnTools answers not ok) — its tools would
+// act as the owner, and there is none. It must never PANIC: authz.WithPrincipal
+// panics on a principal with no user, and the kickoff deliverer has no recover,
+// so one such row would take muster down. The control: the same row with its
+// owner is given the tools.
+//
+// 🔴 RED with kickoffPrincipal building the principal unconditionally (the
+// first draft of this PR): authz: request principal with no user (UserID 0).
+func TestAFirstTurnForARowWithNoOwnerIsToolless(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	row := agents.Agent{ID: 1 << 40, Name: "ownerless-wren", Kind: agents.KindGateway}
+	var (
+		tt agentkickoff.TurnTools
+		ok bool
+	)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("KickoffTurnTools panicked for a row with no owner: %v", p)
+			}
+		}()
+		_, tt, ok = o.srv.KickoffTurnTools(context.Background(), row)
+	}()
+	if ok || tt.Tools != nil || tt.Dispatch != nil {
+		t.Fatalf("a row with no owner was given %d tool(s) (ok=%t); want a toolless first turn", len(tt.Tools), ok)
+	}
+	row.OwnerID = o.owner
+	ctx, tt, ok := o.srv.KickoffTurnTools(context.Background(), row)
+	if !ok || !slices.ContainsFunc(tt.Tools, func(d agents.ToolDef) bool { return d.Name == agentReportDoneTool }) {
+		t.Fatalf("control: the owned row was given ok=%t, %d tool(s); want agent_report_done among them", ok, len(tt.Tools))
+	}
+	if p, _ := authz.From(ctx); p.UserID != o.owner || p.Via != authz.ViaKickoff {
+		t.Errorf("control: the turn's principal is %+v; want the owner %d via kickoff", p, o.owner)
+	}
 }

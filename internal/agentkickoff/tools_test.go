@@ -186,18 +186,3 @@ func TestAToolTurnFallsBackToolessOnlyOnAFirstRequest404(t *testing.T) {
 		t.Fatal("later-request 404: not recorded as a failed kickoff")
 	}
 }
-
-// TestTurnToolsNeedAGatewayThatCanSendThem: New refuses TurnTools over a gateway
-// with no SendWithTools — the tools would otherwise be configured and silently
-// never sent, the incident's observable.
-func TestTurnToolsNeedAGatewayThatCanSendThem(t *testing.T) {
-	tf := &toolsFor{}
-	_, err := New(Config{Store: newFakeStore(&recorder{}), Instances: &fakeInstances{}, Gateway: &fakeGateway{log: &recorder{}},
-		TurnTools: tf.turnTools})
-	if err == nil || !strings.Contains(err.Error(), "SendWithTools") {
-		t.Fatalf("New = %v; want a refusal naming SendWithTools", err)
-	}
-	if _, err := New(Config{Store: newFakeStore(&recorder{}), Instances: &fakeInstances{}, Gateway: &fakeGateway{log: &recorder{}}}); err != nil {
-		t.Fatalf("control: no TurnTools: %v", err)
-	}
-}

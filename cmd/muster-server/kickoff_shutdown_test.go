@@ -91,6 +91,13 @@ func (g *heldGateway) Send(ctx context.Context, _ agentgateway.Target, _, _ stri
 	return "", fmt.Errorf("post responses: %w", ctx.Err())
 }
 
+// SendWithTools is never reached: this fake's deliverer is built with no
+// Config.TurnTools, so every first turn is the toolless Send. An error, so a
+// call reads as a failure rather than a delivered turn.
+func (g *heldGateway) SendWithTools(context.Context, agentgateway.Target, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", errors.New("heldGateway: SendWithTools is not expected (no TurnTools configured)")
+}
+
 type readyLister struct{ inst provision.Instance }
 
 func (l readyLister) Instances(context.Context) ([]provision.Instance, error) {

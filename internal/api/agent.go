@@ -760,15 +760,29 @@ func (s *Server) KickoffTurnTools(ctx context.Context, a agents.Agent) (context.
 	if agents.ResolveKind(a.Kind) != agents.KindGateway {
 		return ctx, agentkickoff.TurnTools{}, false
 	}
-	ctx, tt := s.turnTools(s.kickoffPrincipal(ctx, agentOwnerID(a)), a)
+	pctx, ok := s.kickoffPrincipal(ctx, a)
+	if !ok {
+		s.logger.Printf("agents: %s names no owner; its first turn goes out WITHOUT tools (they act as the owner)", a.Name)
+		return ctx, agentkickoff.TurnTools{}, false
+	}
+	ctx, tt := s.turnTools(pctx, a)
 	return ctx, tt, true
 }
 
-// kickoffPrincipal is ctx acting as owner, through authz.ViaKickoff: how a
-// gateway agent's first turn runs its tools, so row-level security confines
-// them to that owner's rows.
-func (s *Server) kickoffPrincipal(ctx context.Context, owner int64) context.Context {
-	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaKickoff))
+// kickoffPrincipal is ctx acting as agent a's owner, through authz.ViaKickoff:
+// how a gateway agent's first turn runs its tools, so row-level security
+// confines them to that owner's rows.
+//
+// 🔴 FALSE FOR A ROW THAT NAMES NO OWNER (agentPrincipal's refusal), NEVER A
+// PANIC: authz.WithPrincipal panics on a principal with no user, and the kickoff
+// deliverer has no recover, so one such row would crash muster. The caller sends
+// that agent's first turn toolless instead.
+func (s *Server) kickoffPrincipal(ctx context.Context, a agents.Agent) (context.Context, bool) {
+	p, ok := s.agentPrincipal(ctx, a, authz.ViaKickoff)
+	if !ok {
+		return ctx, false
+	}
+	return authz.WithPrincipal(ctx, p), true
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls

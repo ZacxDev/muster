@@ -329,7 +329,16 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
-	return agentkickoff.New(agentkickoff.Config{
+	return agentkickoff.New(kickoffConfig(cfg, store, prov, gw, onChange, turnCtx, outcome, tools, logger))
+}
+
+// kickoffConfig is the deliverer's configuration buildKickoffDeliverer builds:
+// separate so a test can read what each argument became
+// (TestKickoffConfigCarriesEveryHook) — Deliverer's fields are unexported.
+func kickoffConfig(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string),
+	turnCtx func(context.Context, agents.Agent) context.Context, outcome agentkickoff.OutcomeReporter,
+	tools func(context.Context, agents.Agent) (context.Context, agentkickoff.TurnTools, bool), logger *log.Logger) agentkickoff.Config {
+	return agentkickoff.Config{
 		Store:           store,
 		Instances:       prov,
 		Gateway:         gw,
@@ -339,7 +348,7 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		TurnContext:     turnCtx,
 		Outcome:         outcome,
 		TurnTools:       tools,
-	})
+	}
 }
 
 // kickoffOutcomes is the server's outcome tracker as the deliverer's reporter,
