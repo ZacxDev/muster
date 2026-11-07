@@ -117,7 +117,15 @@ func TestTheTrustEntryChangesExactlyOneValue(t *testing.T) {
 // case and detail, and the file's bytes are unchanged (compared byte for byte).
 func TestTheTrustEntryRefusesEverythingElseAndLeavesTheFile(t *testing.T) {
 	r := newTrustRig(t)
+	// home, by its real path; the nix sandbox's HOME (/homeless-shelter) does
+	// not exist, so there the case is the directory ABOVE the agents directory
+	// (another real directory that is not a worktree of this spawn).
 	home, _ := os.UserHomeDir()
+	if h, err := filepath.EvalSymlinks(home); err == nil && home != "" {
+		home = h
+	} else {
+		home = realOrClean(r.u.tmp)
+	}
 	link := filepath.Join(r.u.tmp, "link-to-worktree")
 	if err := os.Symlink(r.dir, link); err != nil {
 		t.Fatal(err)
