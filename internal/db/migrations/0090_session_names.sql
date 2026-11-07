@@ -1,4 +1,4 @@
--- muster 0088 — A SESSION'S STABLE NAME (docs/focus.md#a-sessions-name).
+-- muster 0090 — A SESSION'S STABLE NAME (docs/focus.md#a-sessions-name).
 --
 -- Every session — a dispatched agent or a mirrored Claude Code / opencode
 -- conversation — is headed by a NAME that does not move, with its live focus
@@ -53,7 +53,7 @@
 --       DROP COLUMN IF EXISTS name_manual, DROP COLUMN IF EXISTS name_manual_at;
 --   ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_display_name_source_check;
 --   ALTER TABLE agents DROP COLUMN IF EXISTS display_name_source;
---   DELETE FROM schema_migrations WHERE version = 88;
+--   DELETE FROM schema_migrations WHERE version = 90;
 
 SET LOCAL lock_timeout = '3s';
 

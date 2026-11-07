@@ -173,6 +173,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.SessionRouting, routeReplyToolDef())
 		add(features.SessionRouting, pluginMessageRouteToolDefs()...)
 		add(features.Dispatch, chiefRestartToolDef())
+		add(features.TaskRouting, dispatchHoldToolDefs()...)
 	}
 	return m
 }

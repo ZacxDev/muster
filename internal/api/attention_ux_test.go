@@ -302,7 +302,11 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		}
 	}
 	for name, want := range map[string][]site{
-		"AnswerInSession":  {{"askerAddressedBy", ""}},
+		// The ask log's wrapper of the attention store (ask_log.go,
+		// askLoggingAttention.AnswerInSession) delegates to the store it wraps:
+		// a pass-through, not a second caller — askerAddressedBy is still the
+		// only path that reaches it.
+		"AnswerInSession":  {{"AnswerInSession", ""}, {"askerAddressedBy", ""}},
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
 		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
 		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},

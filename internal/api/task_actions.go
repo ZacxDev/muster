@@ -34,6 +34,11 @@ import (
 //     chief's budget not Full (plugins.ChiefBudget, the predicates the
 //     reservation refuses on). The tool's argument checks (kind, repo,
 //     instructions) are the chief's to satisfy.
+//   - on a task whose only gate is the one the chief filed (releasableGates):
+//     agent_dispatch is judged on the task AS IF released, each per-target
+//     option becomes "Release & dispatch on <target>", and "Release only" is
+//     added — the owner's tap releases the gate (answer_release.go), and only
+//     then does the chief's agent_dispatch run, on the ungated task.
 //   - route_to_session is NEVER offered for a task: it routes a plugin message
 //     to a session for a REPLY, and a task event is no_reply, so the tool refuses
 //     it (RefusedNoReply). Offering it would be exactly the action the chief
@@ -176,13 +181,21 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 	if chiefMayDispatch(s.ext, owner) {
 		budget = s.chiefBudgetNow(ctx)
 	}
+	// 🔴 A GATE THE CHIEF FILED IS THE OWNER'S TO RELEASE FROM THE ASK
+	// (releaseFromAnswer): the dispatch offer is then judged on the task AS IF
+	// released — exactly what agent_dispatch will see once the owner's tap has
+	// released it — and each per-target option becomes "Release & dispatch".
+	judged, releasable := n, false
+	if gates, ok := s.releasableGates(ctx, n); ok {
+		judged.Tags, releasable = withoutTags(n.Tags, gates), true
+	}
 	switch {
 	case !chiefMayDispatch(s.ext, owner):
 		withheld = withheldNotEnabled
 	case s.chiefDispatchDeploymentRefusal(owner) != "":
 		withheld = withheldDeployment
 	default:
-		blk, err := s.chiefDispatchTaskBlock(ctx, owner, n)
+		blk, err := s.chiefDispatchTaskBlock(ctx, owner, judged)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -204,11 +217,48 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 				withheld = withheldDeployment
 			}
 			for _, target := range targets {
-				out = append(out, chiefTaskAction{Tool: agentDispatchTool, Label: dispatchOptionLabel(target)})
+				label := dispatchOptionLabel(target)
+				if releasable {
+					label = releaseDispatchLabel(target, n.Repo)
+				}
+				out = append(out, chiefTaskAction{Tool: agentDispatchTool, Label: label})
 			}
 		}
 	}
+	if releasable {
+		// The release options FIRST — Release & dispatch on the first target,
+		// then Release only, then the other targets, then task_forward: a phone
+		// notification draws at most two options beside Dismiss
+		// (muster-android AskPush.MAX_BUTTONS), so Release only must be one.
+		var rel, rest []chiefTaskAction
+		for _, x := range out {
+			if x.Tool == agentDispatchTool {
+				rel = append(rel, x)
+			} else {
+				rest = append(rest, x)
+			}
+		}
+		only := chiefTaskAction{Tool: releaseOnlyAction, Label: releaseOnlyLabel}
+		if len(rel) > 0 {
+			rel = append(rel[:1], append([]chiefTaskAction{only}, rel[1:]...)...)
+		} else {
+			rel = []chiefTaskAction{only}
+		}
+		out = append(rel, rest...)
+	}
 	return out, budget, withheld, nil
+}
+
+// releasableGates is task n's gates when the owner may release them from a
+// routed-attention ask: n is open and its only gate is the one the chief filed
+// with task_create_gated (chiefsGate — an owner's own hold is never offered).
+// ok false otherwise, including when the ledger could not be read.
+func (s *Server) releasableGates(ctx context.Context, n notes.Note) ([]string, bool) {
+	if !notes.IsGated(n.Tags) || n.Status != notes.StatusOpen || s.ext.Plugins == nil {
+		return nil, false
+	}
+	gates, why := s.chiefsGate(ctx, n)
+	return gates, why == ""
 }
 
 // Why chiefTaskActions withheld agent_dispatch, in the owner's words (the
@@ -224,6 +274,17 @@ const (
 // words, after the chief's note. withheld is chiefTaskActions's reason
 // agent_dispatch was not offered.
 func chiefTaskActionsLine(acts []chiefTaskAction, withheld string) string {
+	for _, x := range acts {
+		if x.Tool != releaseOnlyAction {
+			continue
+		}
+		if withheld == "" {
+			return "Your chief filed this task gated, so only you can release it: Release & dispatch releases the gate and your " +
+				"chief starts a new agent on it where you pick; Release only releases it and starts nothing."
+		}
+		return "Your chief filed this task gated, so only you can release it: Release only releases the gate and starts nothing " +
+			"(your chief cannot start an agent on it now: " + withheld + ")."
+	}
 	if len(acts) == 0 {
 		return "Your chief cannot forward or dispatch this task now (no agent is working it, and " + withheld + "): it is yours to handle."
 	}

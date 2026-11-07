@@ -447,6 +447,123 @@ from its page.
 
 ![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
 
+## How an agent's work ends
+
+Every agent started with a first turn — from the dispatch form, a task's
+**Dispatch**, or the chief's `agent_dispatch` — ends in an **outcome** you can
+see: never silently "running". The outcome is shown on the agent's page (a
+**failed** or **stuck** badge beside the status, and a notice above the
+transcript saying why), on its sidebar row, on the chief panel's card for it,
+and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
+
+| outcome | when | what happens |
+|---|---|---|
+| `running` | the agent was started with a first turn | — |
+| `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | after 60 seconds, if you have neither replied nor opened the agent's page: one push, `<agent> is waiting for you: <the LAST line of its reply>`, and one note to the chief quoting its last lines (the same with `MUSTER_SESSION_STATE=1`; session state then does not push this wait again as a stalled conversation). A conversation you are in pushes nothing. Its next turn puts it back to `running` |
+| `done` | it **said** it finished: it moved its own task to **ready for review** or **complete** (the chief or a mirrored session moving it does not count), or called `agent_report_done{summary}` (offered to every agent but the chief — a gateway agent from its first turn on, which carries its muster tools as its chat turns do; a claude-code agent over its `/mcp`; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
+| `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say — also when it then completes with no answer), it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
+| `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
+
+🔴 **A reply is never "done".** A turn that ends is as often the agent's
+question ("Which repository should I work in?") as its result, so only an
+explicit signal finishes it; every other idle end is `waiting` on you.
+
+**What does not count as a failure:** you closing the chat while a turn runs,
+a runtime that refused a turn before it typed anything (busy, not ready, rate
+limited — the sender is told), a connection to a pod that is restarting, a
+turn that outlived its budget and a first turn cut off by muster itself
+shutting down (in both the runtime may still be running it; the watchdog
+judges what it does next), and an `error` event the runtime followed with a
+completed turn. **Only a dispatched agent is set to `error`** (one started from
+the dispatch form or by the chief's `agent_dispatch`); an officer's instance or
+a saved agent you Started keeps its status. **The chief is never set to
+`error` by a failed turn**: its status gates every delivery muster makes to
+it, so its failure is pushed and shown, and its next good turn clears it.
+
+**One push per change.** Every change of outcome is a database write
+conditional on the outcome it leaves, so of two writers (two replicas, a turn
+ending while the watchdog runs) exactly one applies it, and only that one
+pushes. A second failure of an agent already `failed` updates the reason and
+pushes nothing. The push is the `agent_outcome` event on **Account →
+Notifications**, under the same per-owner cap as every push
+([push.md](push.md)).
+
+**Starting it again.** **Start** from the ⋯ menu clears a `failed` or
+`stuck` outcome; the agent is then not watched until it is given new work.
+Fix the cause first: for a model the runtime did not know, change the agent's
+model (it is checked, below), then Start it.
+
+### Models are checked before a pod starts
+
+Every door that sets an agent's model — the dispatch form, a task's own model
+when it is dispatched, `POST /agents/{id}/model` on the agent page, replacing
+the chief (before the old one is removed), and the chief's `agent_dispatch`
+(before it reserves anything) — checks the value
+against the OpenRouter model catalogue (the list the dispatch form's model
+picker reads, cached for an hour):
+
+- an exact id passes (`openrouter/<id>`, or a bare `<id>`, stored as
+  `openrouter/<id>`);
+- a display name, or a case or spacing variant, that matches **exactly one**
+  model (its name, its name without the `Vendor: ` prefix, or its id's model
+  half) is resolved to that model's id, and both are recorded;
+- anything else is **refused** before any pod starts, with up to five of the
+  closest ids, so the chief can ask you which you meant.
+
+**What is stored is always the route form, `openrouter/<catalogue id>`**: a
+gateway agent holds one credential, OpenRouter's, and its runtime reads the
+provider from the model's prefix. (An id OpenRouter itself owns, such as
+`openrouter/auto`, is already in that form.)
+
+When the catalogue cannot be read, a value with the id shape passes unchecked
+(logged as a warning) — but a bare `vendor/model` is then still refused by the
+credential check, which names the route form (`did you mean
+"openrouter/vendor/model"`), so only `openrouter/<vendor>/<model>` gets through;
+a display name is refused.
+muster's own suggested models always pass. The chief's `task.chief_dispatch`
+audit row records the `model` the agent runs on, and `model_input` when the
+value given was resolved.
+
+### The silence watchdog
+
+A sweep, every `MUSTER_AGENT_WATCHDOG_INTERVAL` (`1m`), over every agent whose
+outcome is `running` or `stuck`:
+
+- **no first reply** and no activity for `MUSTER_AGENT_STUCK_NO_REPLY`
+  (`5m`) after its first turn was delivered → `stuck`, *no reply since
+  kickoff*;
+- **replied, still working**, and no activity for `MUSTER_AGENT_STUCK_SILENT`
+  (`30m`) → `stuck`, *silent for 30 min*;
+- `stuck`, and then any activity → `running` again (no push).
+
+"Activity" is everything muster can see the agent do: a turn **open** in
+muster — a chat turn, its first turn, a scheduled job's turn or a memo turn
+(a claude-code turn streams nothing until it ends, so an open turn is
+never "no reply since kickoff"), the runtime taking a turn or a turn ending, every read of a
+turn's stream (text, thinking, tool calls), its pod's work reports (sent every minute
+while it has subagents or background shells running), and the agent's row and
+transcript (the same "last active" the sidebar orders by). So a genuinely
+working agent is never flipped. A message the runtime refused before typing
+it (a `busy` session; muster holds it and asks again) is not activity, and does
+not put a waiting agent back to running: only a turn the runtime takes does. A
+job's or a memo's turn keeps the agent working while it runs and is judged as
+nothing (its reply is the job's result); a chat reply that ends during one is
+judged when it ends. A first turn muster stops waiting for
+at its budget is not a failure, but it is no longer open: if the agent then says
+nothing, it goes `stuck`. Before its first turn is delivered, the
+kickoff deliverer owns the verdict: an agent whose instance never became
+ready is failed after 15 minutes, as before, and that is now pushed too.
+
+### Reading an outcome
+
+`GET /api/agents` (the machine roster) carries `outcome` — `running`,
+`waiting`, `done`, `failed`, `stuck`, or `""` for an agent nobody dispatched —
+with `outcomeReason` and `outcomeAt`. The chief panel's card for an agent it
+started reads the same recorded outcome as the agent's page (`failed` and
+`stuck` with the reason, `waiting for you` with the last line, `done`),
+through one projection,
+`api.Server.AgentOutcomeOf`, so the two cannot disagree.
+
 ## Destroying an agent
 
 Two doors take the same teardown (`destroyAgent` in `internal/api/agents.go`):

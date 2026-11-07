@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/html"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -299,12 +300,19 @@ func TestTheChiefsChatDrawsEachDispatchedAgentWithItsLiveState(t *testing.T) {
 			want: want{ui.DispatchWaiting, "Gateway · default model", 0}},
 		"done, stopped": {a: agents.Agent{Name: "dc-stop", Status: agents.StatusStopped, Kind: agents.KindGateway, KickedOff: true},
 			want: want{ui.DispatchDone, "Gateway · default model", 0}},
+		// The agent moved its task to review: its recorded outcome is done (the
+		// outcome tracker's rule — agent_outcome.go — not one of the card's own).
 		"done, task in review": {a: agents.Agent{Name: "dc-rev", Status: agents.StatusRunning, Kind: agents.KindGateway, KickedOff: true, NoteID: &review.ID},
-			want: want{ui.DispatchDone, "Gateway · default model", review.ID}},
+			setup: func(a agents.Agent) { recordOutcome(t, f.pool, a.ID, agentoutcome.Done, "") },
+			want:  want{ui.DispatchDone, "Gateway · default model", review.ID}},
+		"stuck": {a: agents.Agent{Name: "dc-stuck", Status: agents.StatusRunning, Kind: agents.KindGateway, KickedOff: true},
+			setup: func(a agents.Agent) { recordOutcome(t, f.pool, a.ID, agentoutcome.Stuck, agentoutcome.ReasonNoReply) },
+			want:  want{ui.DispatchStuck, "Gateway · default model", 0}},
 		"error": {a: agents.Agent{Name: "dc-err", Status: agents.StatusError, Kind: agents.KindGateway, KickoffError: "the pod never came up"},
 			want: want{ui.DispatchError, "Gateway · default model", 0}},
-		"error, first turn failed": {a: agents.Agent{Name: "dc-kfail", Status: agents.StatusRunning, Kind: agents.KindGateway, KickedOff: true},
-			// Create stores neither; the deliverer writes both after the stamp.
+		// A failed first turn: the deliverer stamps and records the error, and the
+		// outcome tracker records the failure — the card reads that.
+		"failed, first turn failed": {a: agents.Agent{Name: "dc-kfail", Status: agents.StatusRunning, Kind: agents.KindGateway, KickedOff: true},
 			setup: func(a agents.Agent) {
 				st := agents.NewPG(f.pool)
 				if err := st.SetKickedOff(ctx, a.ID, true); err != nil {
@@ -313,8 +321,9 @@ func TestTheChiefsChatDrawsEachDispatchedAgentWithItsLiveState(t *testing.T) {
 				if err := st.SetKickoffError(ctx, a.ID, "turn failed"); err != nil {
 					t.Fatal(err)
 				}
+				recordOutcome(t, f.pool, a.ID, agentoutcome.Failed, "first turn failed: turn failed")
 			},
-			want: want{ui.DispatchError, "Gateway · default model", 0}},
+			want: want{ui.DispatchFailed, "Gateway · default model", 0}},
 	}
 	type made struct {
 		a    agents.Agent

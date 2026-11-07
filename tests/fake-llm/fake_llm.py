@@ -9,12 +9,16 @@ key. It is scripted, and it answers only what the script names:
     turn holds no tool_result, but asks "who is on what": a tool_use of
     mcp__muster__tasks_list {}. That tool is muster's own, served over MCP from
     muster's connect port, so its result is real board data;
-  * the same with "comment on it" and mcp__muster__task_comment offered: a
-    tool_use of mcp__muster__task_comment, a tool the Compose chief does NOT
-    pre-allow, so its prompt must be DENIED (not left hanging);
-  * a tool_result for that task_comment call: the text "COMMENT-RESULT:", then
+  * "comment on it": a tool_use of mcp__muster__task_comment, WHETHER OR NOT it
+    was offered. The Compose chief is not offered it (muster serves it only the
+    tools it pre-allows), so this is a model naming a tool it was never given:
+    the CLI must refuse it, and it must not run;
+  * "touch the file": a tool_use of Bash running `touch` (BASH_TOUCH), a tool
+    the chief IS offered but does not pre-allow, so its prompt must be DENIED
+    (not left hanging);
+  * a tool_result for either call: "COMMENT-RESULT:" / "BASH-RESULT:", then
     "error:" when the result is an error, then its first words — the test reads
-    whether the tool was denied or ran;
+    whether the tool was refused or ran;
   * a request whose last user turn holds a tool_result: the text
     "SEEN:<every MARK-… token in that tool result>", or "SEEN:none" when it
     holds none. A reply naming a marker therefore proves the marker came back
@@ -25,7 +29,7 @@ It never errors on purpose: an unrecognised path is 404 and logged, so the test
 can fail on it.
 
 GET /ledger returns every request it was sent, as JSON: the model, whether it
-carried tools, whether it held a tool_result, the x-api-key and authorization
+carried tools (how many, and their names), whether it held a tool_result, the x-api-key and authorization
 headers' presence and value (fake values only; the test sets them), and what it
 answered. The smoke test reads it to check the pinned model and that the
 owner's key, and nothing else, reached the provider.
@@ -74,6 +78,11 @@ def tool_input_for_comment(text):
     return {"id": int(m.group(1)), "body": "fake-llm comment that must never land"} if m else {}
 
 
+# The file BASH_TOUCH's command would create: the test checks it does not exist.
+BASH_TOUCH_PATH = "/tmp/fake-llm-touch-must-never-land"
+BASH_TOUCH = {"command": "touch " + BASH_TOUCH_PATH, "description": "fake-llm: a command that needs a prompt"}
+
+
 def tool_uses(msgs):
     """Every tool_use id the model was answered with in this conversation."""
     return {b.get("id", "") for m in msgs if m.get("role") == "assistant"
@@ -86,29 +95,44 @@ def decide(body):
     turn a block sits: the CLI may send a new prompt in the same user turn as an
     earlier tool result, and the CLI and muster's proxy add text after results.
 
-      1. a tool_result for our task_comment call anywhere → report it
-         (COMMENT-RESULT:, "error:" when it is one, its first words);
-      2. "comment on it" in the last user turn and task_comment not yet asked
-         for → ask for task_comment (a valid call on the TASK-<id> it names);
-      3. a tool_result for our tasks_list call in the last user turn → SEEN: and
+      1. a tool_result for our Bash call anywhere → report it (BASH-RESULT:,
+         "error:" when it is one, its first words);
+      2. "touch the file" in the last user turn, Bash offered and not yet
+         asked for → ask for BASH_TOUCH;
+      3. a tool_result for our task_comment call anywhere → report it
+         (COMMENT-RESULT:, likewise);
+      4. "comment on it" in the last user turn and task_comment not yet asked
+         for → ask for task_comment (a valid call on the TASK-<id> it names),
+         offered or not;
+      5. a tool_result for our tasks_list call in the last user turn → SEEN: and
          the MARK-… tokens in it, or "none";
-      4. "who is on what" in the last user turn and tasks_list not yet asked
+      6. "who is on what" in the last user turn and tasks_list not yet asked
          for → ask for tasks_list;
-      5. anything else → "ok".
+      7. anything else → "ok".
     """
     msgs = body.get("messages") or []
     last = blocks(last_user(msgs).get("content"))
     tools = [t.get("name") for t in body.get("tools") or []]
     used = tool_uses(msgs)
     results = [b for m in msgs if m.get("role") == "user" for b in blocks(m.get("content")) if b.get("type") == "tool_result"]
-    comment = [b for b in results if str(b.get("tool_use_id", "")).startswith("toolu_comment_")]
-    if comment:
-        b = comment[-1]
-        return ("text", "COMMENT-RESULT:" + ("error:" if b.get("is_error") else "") + text_of(b)[:200])
+    def report(prefix, label):
+        found = [b for b in results if str(b.get("tool_use_id", "")).startswith(prefix)]
+        if found:
+            b = found[-1]
+            return ("text", label + ("error:" if b.get("is_error") else "") + text_of(b)[:200])
+        return None
+
     texts = [b.get("text", "") for b in last if b.get("type") == "text"]
     asked = " ".join(texts).lower()
-    if ("mcp__muster__task_comment" in tools and "comment on it" in asked
-            and not any(u.startswith("toolu_comment_") for u in used)):
+    # Newest step first: the Bash step comes after the comment step, so its
+    # request wins over a comment result still in the history.
+    if (r := report("toolu_bash_", "BASH-RESULT:")):
+        return r
+    if "Bash" in tools and "touch the file" in asked and not any(u.startswith("toolu_bash_") for u in used):
+        return ("tool", "Bash", dict(BASH_TOUCH))
+    if (r := report("toolu_comment_", "COMMENT-RESULT:")):
+        return r
+    if "comment on it" in asked and not any(u.startswith("toolu_comment_") for u in used):
         return ("tool", "mcp__muster__task_comment", tool_input_for_comment(" ".join(texts)))
     tasks = [b for b in last if b.get("type") == "tool_result" and str(b.get("tool_use_id", "")).startswith("toolu_tasks_")]
     if tasks:
@@ -162,13 +186,15 @@ class Handler(BaseHTTPRequestHandler):
         tool_input = decided[2] if len(decided) > 2 else {}
         tool_id = ""
         if kind == "tool":
-            tool_id = ("toolu_comment_" if value.endswith("task_comment") else "toolu_tasks_") + str(next(COUNTER))
+            prefix = "toolu_comment_" if value.endswith("task_comment") else "toolu_bash_" if value == "Bash" else "toolu_tasks_"
+            tool_id = prefix + str(next(COUNTER))
         last = blocks(last_user(body.get("messages")).get("content"))
         with LOCK:
             LEDGER.append({
                 "path": self.path,
                 "model": body.get("model"),
                 "tools": len(body.get("tools") or []),
+                "tool_names": sorted(t.get("name", "") for t in body.get("tools") or []),
                 "tool_result": any(b.get("type") == "tool_result" for b in last),
                 "x_api_key": self.headers.get("x-api-key"),
                 "authorization": self.headers.get("authorization"),

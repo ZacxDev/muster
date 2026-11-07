@@ -801,3 +801,25 @@ func TestTheComposeBootLineNamesTheChiefsOwnPort(t *testing.T) {
 		t.Fatalf("boot line %q; want %q and not the gateway kind's 19999", logs.String(), want)
 	}
 }
+
+// TestTheComposeChiefRefusesTaskRoutingBesideIt: a task event asks the chief to
+// decide with agent_dispatch, task_forward or task_route_attention, none of
+// which the Compose chief is offered, so MUSTER_TASK_ROUTING is refused at boot.
+func TestTheComposeChiefRefusesTaskRoutingBesideIt(t *testing.T) {
+	e := composeEnv("/run/muster-spec")
+	e[envTaskRouting] = "1"
+	if _, err := loadEnv(t, e); err == nil || !strings.Contains(err.Error(), "but "+envTaskRouting+" is also set") {
+		t.Fatalf("%s beside the Compose chief: %v, want a refusal naming it", envTaskRouting, err)
+	}
+	// Control: the same environment without it loads, so the refusal is task routing's.
+	delete(e, envTaskRouting)
+	if _, err := loadEnv(t, e); err != nil {
+		t.Fatalf("control: the Compose chief without task routing was refused: %v", err)
+	}
+	// Control: task routing without the Compose chief is not refused by this rule.
+	k := map[string]string{envDatabase: "postgres://unused", envUIPassword: "a-synthetic-operator-password",
+		envHookToken: "a-synthetic-hook-token-0123456789", envStandalone: "1", envTaskRouting: "1"}
+	if _, err := loadEnv(t, k); err != nil && strings.Contains(err.Error(), "Compose container") {
+		t.Fatalf("control: task routing without the Compose chief hit the Compose refusal: %v", err)
+	}
+}

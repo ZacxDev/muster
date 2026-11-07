@@ -56,6 +56,9 @@ type Store interface {
 	// SearchTitles is the command palette's whole-window title search: a
 	// substring of the title, newest matching title per session.
 	SearchTitles(ctx context.Context, query string, live Live, since time.Time, limit int) ([]HistoryHit, error)
+	// SearchMeta matches live sessions by their repository name and window
+	// label rather than their focus (session_meta.go).
+	SearchMeta(ctx context.Context, query string, metas []SessionMeta, limit int) ([]Subject, error)
 	// WindowHistory reads the caller's sessions with focus activity in
 	// [since, until], live or not (history_window.go).
 	WindowHistory(ctx context.Context, since, until time.Time, limit int) (WindowReport, error)
@@ -233,7 +236,7 @@ func (s *PGStore) Upsert(ctx context.Context, sub Subject, w Write) (Focus, erro
 // write whose tail named no working directory keeps the stored one (migration
 // 0065).
 //
-// 🔴 THE AUTO NAME FREEZES ONCE, HERE (migration 0088). A nameable write sets
+// 🔴 THE AUTO NAME FREEZES ONCE, HERE (migration 0090). A nameable write sets
 // name_auto only while it is empty; once set, no write — nameable or not —
 // changes it: the CASE keeps the stored one. Doing it in this statement means
 // the name is exactly a title this row held, and two writers of one subject
@@ -308,7 +311,7 @@ func (s *PGStore) Touch(ctx context.Context, subs []Subject) error {
 // agent's row is never pruned: it dies with its agent.
 //
 // 🔴 A ROW CARRYING A NAME — auto or manual — IS KEPT NameRetention LONGER
-// (migration 0088): a laptop closed for a few weeks must not come back to a
+// (migration 0090): a laptop closed for a few weeks must not come back to a
 // conversation whose name is gone (a manual one lost, or an auto one frozen
 // again from a later, different title).
 func (s *PGStore) PruneAll(ctx context.Context, before time.Time) (int, error) {

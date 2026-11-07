@@ -273,6 +273,13 @@ func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKe
 	return reply, err
 }
 
+// SendWithTools is never reached: this fake's deliverer is built with no
+// Config.TurnTools, so every first turn is the toolless Send. An error, so a
+// call reads as a failure rather than a delivered turn.
+func (g *fakeGateway) SendWithTools(context.Context, agentgateway.Target, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", errors.New("fakeGateway: SendWithTools is not expected (no TurnTools configured)")
+}
+
 func (g *fakeGateway) callCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()

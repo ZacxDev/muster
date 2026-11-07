@@ -562,6 +562,42 @@ func (s *PGStore) NotePaste(ctx context.Context, t Target, since int64) error {
 	return nil
 }
 
+// SentBody is one message muster pasted into a window (SentBodies): its text
+// and its origin — a routed message (RouteID), a chief nudge or relayed answer
+// (ChiefNudgeID), or neither: the person's own, from their send queue.
+type SentBody struct {
+	Body         string
+	RouteID      string
+	ChiefNudgeID int64
+}
+
+// SentBodies is every message the caller's send queue SENT into window t (or
+// into its session's active window, a row with no window) since since, newest
+// first, at most limit. The ask log reads it to say what muster can prove of a
+// reply in a transcript: a body muster pasted, and for whom (internal/api
+// askLogProvenance).
+func (s *PGStore) SentBodies(ctx context.Context, t Target, since time.Time, limit int) ([]SentBody, error) {
+	if err := t.Valid(); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT body, coalesce(route_id, ''), coalesce(chief_nudge_id, 0) FROM send_queue
+		WHERE state = 'sent' AND mirror_host = $1 AND mirror_session = $2 AND (mirror_window = $3 OR mirror_window = '')
+		AND created_at >= $4 ORDER BY id DESC LIMIT $5`, t.Host, t.Session, t.Window, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: sent bodies: %w", err)
+	}
+	defer rows.Close()
+	var out []SentBody
+	for rows.Next() {
+		var b SentBody
+		if err := rows.Scan(&b.Body, &b.RouteID, &b.ChiefNudgeID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // InjectedBodies is the text of every message muster itself queued for the
 // caller's windows since since — a routed message (RouteID) or a chief nudge
 // or relayed answer (ChiefNudgeID), whatever became of it — newest first, at

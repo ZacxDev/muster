@@ -151,6 +151,12 @@ type InstanceLister interface {
 type Gateway interface {
 	Resolve(ctx context.Context, a agents.Agent) (agentgateway.Target, error)
 	Send(ctx context.Context, t agentgateway.Target, sessionKey, message string, emit func(string)) (string, error)
+	// SendWithTools is Send carrying the agent's system prompt, native function
+	// tools and in-process dispatch: a first turn Config.TurnTools answers ok
+	// for (agentgateway.Gateway.SendWithTools). Part of the interface, so a
+	// gateway that cannot carry the tools does not compile as one.
+	SendWithTools(ctx context.Context, t agentgateway.Target, sessionKey, instructions, message string,
+		tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error)
 	Checkout(ctx context.Context, t agentgateway.Target) (agents.CheckoutStatus, error)
 }
 
@@ -195,6 +201,62 @@ type Config struct {
 	// conversation (agents.HeaderCCNewConversation). nil: the delivery's own
 	// context, unchanged.
 	TurnContext func(ctx context.Context, a agents.Agent) context.Context
+	// Outcome, when set, hears how a first turn went (internal/agentoutcome):
+	// that it started, that its stream showed life, that it answered, or that it
+	// FAILED — and, for a first turn that was never delivered, the stuck verdict.
+	// cmd/muster-server passes api.Server's outcome tracker, which turns a
+	// failure into status `error`, one push and a note in the chief's chat.
+	//
+	// 🔴 A FIRST TURN CUT OFF BY THIS PROCESS SHUTTING DOWN IS NOT REPORTED AS
+	// FAILED. The runtime may still be running it (ShutdownCancelledReason); the
+	// watchdog judges the agent by what it does next instead.
+	Outcome OutcomeReporter
+	// TurnTools, when set, gives a first turn the agent's muster tools: for an
+	// agent it answers ok for, the turn is sent through the gateway's
+	// SendWithTools with the returned context, system prompt, native function
+	// tools and in-process dispatch, exactly as a chat turn is. cmd/muster-server
+	// passes api.Server.KickoffTurnTools, which answers ok for a GATEWAY-kind
+	// agent only (a claude-code agent reaches its tools over MCP from inside its
+	// pod; ccd ignores a request's tools). nil, or not ok: the toolless turn.
+	//
+	// 🔴 WITHOUT IT A GATEWAY AGENT'S FIRST TURN HAS NO MUSTER TOOL AT ALL. A
+	// dispatched gateway agent does its whole job in that turn, so it was told
+	// to call agent_report_done (and, on a task, agent_set_task_status) and was
+	// never offered either: its outcome could only ever end `waiting`.
+	TurnTools func(ctx context.Context, a agents.Agent) (context.Context, TurnTools, bool)
+}
+
+// TurnTools is what a tool-enabled first turn carries (Config.TurnTools).
+type TurnTools struct {
+	// Instructions is the agent's system prompt.
+	Instructions string
+	// Tools are the native function tools the model is offered.
+	Tools []agents.ToolDef
+	// Dispatch runs each call in muster's process. REQUIRED with Tools.
+	Dispatch agents.ToolDispatch
+}
+
+// OutcomeReporter hears a first turn's course. Every method must be cheap and
+// must not block the delivery (it is called on the delivery's goroutine).
+type OutcomeReporter interface {
+	// TurnStarted: the first turn was stamped and is about to be sent. Every
+	// TurnStarted is followed by exactly one TurnEnded.
+	TurnStarted(ctx context.Context, a agents.Agent)
+	// TurnEnded: the first turn is no longer open in this process, HOWEVER it
+	// ended — answered, failed, outlived its budget, cut off by shutdown.
+	// Deferred right after TurnStarted, so it runs once on every return path,
+	// and BEFORE TurnAnswered / TurnFailed (those run after the claim's
+	// release). It judges nothing: an abandoned turn is closed, not failed.
+	TurnEnded(ctx context.Context, a agents.Agent)
+	// TurnActivity: the turn's stream returned bytes (called per read; throttle).
+	TurnActivity(ctx context.Context, a agents.Agent)
+	// TurnAnswered: the turn completed with reply (non-empty).
+	TurnAnswered(ctx context.Context, a agents.Agent, reply string)
+	// TurnFailed: the first turn failed — after the stamp (the runtime's error,
+	// an empty reply, a turn the runtime never accepted) or before it, once the
+	// dwell bound gave up on it (the row was just marked `error`). reason is
+	// muster's sentence for the owner.
+	TurnFailed(ctx context.Context, a agents.Agent, reason string)
 }
 
 // Deliverer delivers owed first turns. Build it with [New].
@@ -212,7 +274,10 @@ type Deliverer struct {
 	notify                     func(name string)
 	// turnCtx is Config.TurnContext (nil: none).
 	turnCtx func(ctx context.Context, a agents.Agent) context.Context
-	wg      sync.WaitGroup
+	outcome OutcomeReporter
+	// tools is Config.TurnTools (nil: every first turn is toolless).
+	tools func(ctx context.Context, a agents.Agent) (context.Context, TurnTools, bool)
+	wg    sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
 	done     chan struct{}
@@ -242,6 +307,8 @@ func New(cfg Config) (*Deliverer, error) {
 		turn:    cfg.TurnTimeout,
 		notify:  cfg.OnChange,
 		turnCtx: cfg.TurnContext,
+		outcome: cfg.Outcome,
+		tools:   cfg.TurnTools,
 		done:    make(chan struct{}),
 	}
 	if d.owner == "" {
@@ -466,6 +533,9 @@ func (d *Deliverer) markStuck(parent context.Context, a agents.Agent, msg string
 	}
 	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, shown)
 	d.notify(a.Name)
+	if d.outcome != nil {
+		d.outcome.TurnFailed(parent, a, shown)
+	}
 }
 
 // turnFor is the budget for one agent's first turn: the configured turn, or —
@@ -632,6 +702,20 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
 	})
+	if d.outcome != nil {
+		d.outcome.TurnStarted(parent, fresh)
+		// 🔴 CLOSED ON EVERY PATH, HERE, NOT PER RETURN. A turn left open reads
+		// as "working" to the watchdog for the life of the process: the budget
+		// path (not reported failed, rightly) once returned without closing it,
+		// so that agent could never be called stuck and its next idle reply
+		// never read as waiting. One deferred close covers the budget, shutdown,
+		// never-connected and every later return.
+		defer d.outcome.TurnEnded(parent, fresh)
+		// Every read of the turn's stream is evidence of life (agents.WithTurnActivity):
+		// a first turn running a long tool sequence streams for minutes and must
+		// never be called stuck by the watchdog.
+		ctx = agents.WithTurnActivity(ctx, func() { d.outcome.TurnActivity(parent, fresh) })
+	}
 	// 🔴 A TYPED `not_ready` IS RE-SENT HERE, WITHIN THIS ONE DELIVERY, AND ONLY
 	// UNTIL notReadyWait. A claude-code pod is Ready (its `/` answers) as soon as
 	// ccd and tmux are up, which can be seconds before the CLI's SessionStart;
@@ -655,7 +739,8 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	if d.turnCtx != nil {
 		sendCtx = d.turnCtx(ctx, fresh)
 	}
-	reply, err := d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
+	send := d.firstTurnSender(sendCtx, target, sess.SessionKey, fresh)
+	reply, err := send()
 	for waited := time.Duration(0); err != nil && runtimeRefusedUnsent(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
 		select {
 		case <-ctx.Done():
@@ -664,7 +749,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		if ctx.Err() != nil {
 			break
 		}
-		reply, err = d.gw.Send(sendCtx, target, sess.SessionKey, fresh.PendingNote, nil)
+		reply, err = send()
 	}
 	if err != nil && runtimeRefusedUnsent(err) {
 		// Still refused when the delivery ended — the bound, or a shutdown
@@ -677,16 +762,29 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		}
 		d.recordError(parent, fresh, reason+": "+err.Error())
 		d.notify(fresh.Name)
+		// Reported after the claim's release (as the answer is): the chief's
+		// card re-fetches on it and must not read the claim as "working".
+		msg := reason + ": " + err.Error()
+		after = func() { d.reportFailed(parent, fresh, msg) }
 		return
 	}
 	if err != nil {
 		d.recordError(parent, fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
+		// Not reported as failed: muster shutting down, or the turn outliving its
+		// budget — the runtime may still be running it either way, so the
+		// watchdog judges what the agent does next. A connection never opened
+		// sent nothing, and is reported.
+		if neverConnected(err) || parent.Err() == nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			msg := firstTurnFailed(err)
+			after = func() { d.reportFailed(parent, fresh, msg) }
+		}
 		return
 	}
 	if strings.TrimSpace(reply) == "" {
 		d.recordError(parent, fresh, EmptyReplyReason)
 		d.notify(fresh.Name)
+		after = func() { d.reportFailed(parent, fresh, "first turn failed: "+EmptyReplyReason) }
 		return
 	}
 	actx, acancel := bookkeeping(parent)
@@ -712,7 +810,29 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	// the chief's card for it, which reads "working" while the claim is held.
 	// 🔴 AFTER THE RELEASE (after runs once the claim is released), or a page
 	// re-fetching on this would still read the claim and draw "working".
-	after = func() { d.notify(fresh.Name) }
+	// The outcome tracker hears the answer after the release too, so the card's
+	// re-fetch on the outcome change cannot read the claim either.
+	after = func() {
+		d.notify(fresh.Name)
+		if d.outcome != nil {
+			d.outcome.TurnAnswered(parent, fresh, reply)
+		}
+	}
+}
+
+// reportFailed tells the outcome reporter a delivered first turn failed, with
+// the reason scrubbed of the note (the runtime may echo its request).
+func (d *Deliverer) reportFailed(parent context.Context, a agents.Agent, reason string) {
+	if d.outcome != nil {
+		d.outcome.TurnFailed(parent, a, agents.ScrubNote(reason, a.PendingNote))
+	}
+}
+
+// firstTurnFailed is the owner's sentence for a first turn that failed after it
+// was sent: the runtime's own words when it gave some (agents.StreamError,
+// agents.RuntimeError), else the transport's error.
+func firstTurnFailed(err error) string {
+	return "first turn failed: " + err.Error()
 }
 
 // preStampFailure records a failure that happened before the stamp (nothing was
@@ -805,10 +925,49 @@ func runtimeNotReady(err error) bool {
 // (its pane shows the CLI's usage-limit menu; the gateway has marked the
 // account and failed the agent over by the time Send returns). Typed bodies
 // only, as runtimeNotReady.
+//
+// 🔴 A REFUSAL AFTER THE FIRST REQUEST IS NEVER "UNSENT". A tool-enabled first
+// turn (Config.TurnTools) is several requests; by request 2 the runtime has the
+// message and its tools have run, so re-sending would paste the kickoff twice
+// (agents.AfterFirstRequestError). A toolless turn is one request and never
+// carries that wrapper, so this changes nothing for it.
 func runtimeRefusedUnsent(err error) bool {
+	if agents.PastFirstRequest(err) {
+		return false
+	}
 	var rt *agents.RuntimeError
 	return runtimeNotReady(err) || errors.As(err, &rt) && rt.Status == http.StatusConflict &&
 		(rt.Type == "busy" || rt.Type == "rate_limited")
+}
+
+// firstTurnSender is the one send of agent a's first turn: tool-enabled when
+// Config.TurnTools answers ok for a (its context, system prompt, tools and
+// dispatch), toolless otherwise. Built once per delivery, so a not_ready re-send
+// repeats the same request.
+//
+// 🔴 THE TOOLLESS FALLBACK IS TAKEN ONLY FOR A 404 ON THE FIRST REQUEST — a
+// runtime image that predates /v1/responses, where the tool turn cannot run at
+// all — which is api.Server.chatTurn's rule for a chat turn. A 404 on a later
+// request comes after the runtime took the message and ran its tools; sending it
+// again toolless would deliver the kickoff twice.
+func (d *Deliverer) firstTurnSender(ctx context.Context, target agentgateway.Target, sessionKey string, a agents.Agent) func() (string, error) {
+	toolless := func() (string, error) { return d.gw.Send(ctx, target, sessionKey, a.PendingNote, nil) }
+	if d.tools == nil {
+		return toolless
+	}
+	tctx, tt, ok := d.tools(ctx, a)
+	if !ok {
+		return toolless
+	}
+	return func() (string, error) {
+		reply, err := d.gw.SendWithTools(tctx, target, sessionKey, tt.Instructions, a.PendingNote, tt.Tools, tt.Dispatch, nil)
+		if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
+			d.log.Printf("agentkickoff: agent %d (%s): runtime lacks /v1/responses; sending the first turn WITHOUT tools",
+				a.ID, a.Name)
+			return toolless()
+		}
+		return reply, err
+	}
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

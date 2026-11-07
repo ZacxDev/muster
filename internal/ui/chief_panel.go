@@ -402,6 +402,7 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// lines including a markdown renderer; putting it in the shell would charge
 			// every page load in the app for a panel most of them never open.
 			agentChatScript(v.Chat.Name),
+			DispatchCardGuard(),
 			// ⚠ NO bubbleClampScript HERE, deliberately: the panel's bubbles are
 			// never clamped (bubble_clamp.go).
 		),
