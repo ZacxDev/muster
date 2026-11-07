@@ -175,7 +175,7 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 	}
 	if t != nil {
 		out = append(out, chiefTaskAction{Tool: taskForwardTool,
-			Label: "task_forward: pass it to " + mirror.OneLine(firstNonBlank(t.DisplayName, t.Name), 80) + ", already working it"})
+			Label: "task_forward: pass it to " + mirror.OneLine(s.agentName(ctx, *t).Text, 80) + ", already working it"})
 	}
 	owner := agentOwnerID(chief)
 	if chiefMayDispatch(s.ext, owner) {

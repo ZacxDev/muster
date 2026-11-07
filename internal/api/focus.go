@@ -500,8 +500,10 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 	out := focusIndex{}
 	for _, f := range list {
 		// A row with no focus is kept when it says WHY (its last error): the
-		// card shows the reason instead of nothing.
-		if f.Has() || f.Problem() != "" {
+		// card shows the reason instead of nothing. And when it carries a
+		// NAME (a manual one set before any focus): the name reads it here
+		// (names.go), and view skips it.
+		if f.Has() || f.Problem() != "" || f.Name != (focus.Name{}) {
 			out[f.Subject] = f
 		}
 	}
@@ -509,10 +511,11 @@ func (s *Server) focusIndex(ctx context.Context) focusIndex {
 }
 
 // view is sub's focus as a card shows it — with why it is missing or stale,
-// when the latest refresh failed — nil for neither.
+// when the latest refresh failed — nil for neither (a row kept only for its
+// name).
 func (fi focusIndex) view(sub focus.Subject) *ui.FocusView {
 	f, ok := fi[sub]
-	if !ok {
+	if !ok || (!f.Has() && f.Problem() == "") {
 		return nil
 	}
 	v := &ui.FocusView{Title: f.Title, Description: f.Description, UpdatedAt: f.UpdatedAt}

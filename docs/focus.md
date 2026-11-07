@@ -77,6 +77,132 @@ The transcript **path** is not sent to the server. The window list is one
 WebSocket message, and its largest case already fills 96% of a frame; muster
 reads a transcript through the host's own transcript stream instead (below).
 
+## A session's name
+
+A session is headed by a **name** that does not move, with its focus as the
+line under it. The focus changes with the work; the name is how you find the
+same session tomorrow. One rule decides it (`internal/sessionname`), and the
+first of these that a session has wins:
+
+| rank | name | where it comes from |
+|---|---|---|
+| 1 | **manual** | the name you gave it: **Rename…** in the session's ⋯ menu (the bar on every session page), or an agent's own ⋯ menu. Nothing automatic ever replaces it. An empty name hands the session back to the rows below. |
+| 2 | **system** | a name muster pinned for a role: the chief, an officer's instance. The rest of muster finds the role by it, so the automatic name never replaces it. |
+| 3 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`. It is the agent's stable name: it never changes on its own, and only a manual rename replaces it. |
+| 4 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. (A task-dispatched agent's auto name is frozen too, but never shown: its task name ranks above it.) |
+| 5 | fallback | the session's technical id: an agent's slug, a mirrored window's host label (`mango:1`) or tmux address. |
+
+A mirrored window's **host label** (`muster-mirror -labels-file`, drawn as
+`<codename>:<window index>`) ranks as a fallback, not a name: it is the
+operator's codename for a tmux session, shared by every conversation that
+window ever holds. Once the conversation has an auto or manual name, the label
+moves to the row's tooltip and the search palette (it is still what the
+palette matches first). An agent's display name ranks by who set it
+(`agents.display_name_source`, migration `0090`): `manual`, `system` and
+`dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: a chief
+(slug `chief` or `chief-<owner id>`) is `system`, the slug copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
+is `system`, and any other display name is `manual`, since a person set it.
+
+The name is **stored**, not derived: focus history is pruned after 30 days, so
+"the oldest title" would move. The auto and manual names are columns of the
+session's focus row (`agent_focus.name_auto`, `name_manual`, migration
+`0090`), which lives as long as the session: an agent's dies with the agent; a
+mirrored one is pruned with its focus a retention after it was last seen, but a
+row carrying a name (auto or manual) is kept 90 days longer. A mirrored session's
+manual name follows its **conversation** (the key its focus has), so it moves
+with the conversation to another window, and a window that later holds a
+different conversation is not called by it. A window with no conversation
+muster can see (a shell, an older `muster-mirror`) cannot be renamed. An
+agent's manual name stays its display name, so the chief is still found by its
+display name.
+
+### Where the name is used
+
+Every surface that names a session asks the same rule (`internal/api/names.go`
+holds its only callers; `TestTheSessionNameCallerLedger` lists every surface):
+
+- **the owner's views**: the sidebar row (the name, then the live focus and
+  its age), the switcher's pills and dock, the search palette, the agent page,
+  the Rendered view and the terminal page (header and `<title>`), the
+  notifications panel, a dispatch card in the chief's chat, and the Asks list;
+- **pushes and attention**: an ask's title (`<name> is asking`), a chief
+  notice's, a stalled or waiting session's, the Asks row, `attention_list`'s
+  `name` and the attention summary's `title`;
+- **the chief's tools**: `fleet_list` and `sessions_overview` rows (`name`),
+  `focus_search` hits (`name`), `fleet_report`, the route candidates and
+  `route_to_session`'s text, `task_forward`'s label, the connector requests it
+  decides, a mirrored session's ask label, and the [stall check](chief-nudges.md)'s
+  prompt, which names the session (`session: <name>`) above its focus title.
+  (An agent's ask is stored with the display name it had when it was filed —
+  a record, not a live name — and is named by the rule when the item is
+  shown.)
+
+A named session's **technical ids** — an agent's slug, a window's codename,
+tmux address and host — are off those main surfaces: they are the row's,
+pill's and header's tooltip, the Asks row's tooltip, the Rendered view's full
+title, and still what the palette finds the session by (its codename first).
+The chief keeps them where it needs an address: every row's `id`
+(`agent:<id>`, `mirror:<session key>`), a mirrored row's `where`, and
+`fleet_list`'s `code` (an agent's slug). A waiting session's push
+**body** still says where it waits. A session with no human name yet is
+called by its technical id everywhere, as before.
+
+### The name bar
+
+The auto name freezes from the first focus that passes this bar, in the same
+database write that stores that focus (`focus.Nameable`, checked in code, not
+asked of the model):
+
+- the conversation has had a **real turn**: a prompt from the person that is
+  not an opener, answered by a reply. An opener is a prompt made only of
+  greeting, "carry on" and acknowledgement words (`hi`, `continue`, `ok go
+  on`): a closed vocabulary in `internal/focus/names.go`, matched word for
+  word;
+- the title is one the summarizer may keep (`FeedableTitle`: within 60
+  characters, plain, no markdown);
+- it has at least **two words**;
+- it is not itself an opener (`Greeting the user`, `Continue previous
+  session`, `Awaiting user instructions`).
+
+A title with one word outside that vocabulary passes (`Greeting the billing
+team`). Until a focus passes, the session keeps the name below it in the
+table.
+
+### When the work moves on
+
+A name is frozen, but the work can move on. When it has, the session's page
+(an agent's page, a window's Rendered view) **offers** a rename under its
+header — "This session has moved on to "Fixing the Stripe webhook retry"",
+with **Rename to "…"** and **Keep the name**. muster never renames a session
+on its own. The offer is decided by `focus.DriftOffer`, from the session's
+focus history:
+
+- the **newest three** focus changes (`DriftMinTitles`) written **after the
+  name took effect** (a manual mirrored name's `name_manual_at`, an auto
+  name's `name_auto_at`, an agent's `display_name_at`, migration `0091`) have
+  all **diverged** from the name: the words they share are fewer than half of
+  the name's content words AND fewer than half of the title's
+  (`DriftMaxOverlap`; filler and opener words do not count, a task name's
+  `#<id> · ` lead does not either, and words are compared by their first four
+  letters, so "migrating" meets "migration"). Measuring both sides keeps a
+  long task name from "diverging" from a short title on the same job. One
+  off-topic detour is two changes at most; three in a row is a new job. A
+  session renamed a moment ago is not offered a rename on the history it was
+  renamed over;
+- the **oldest of those three** was written at least **30 minutes** ago
+  (`DriftMinAge`, two default refresh intervals): the divergence is sustained,
+  not one busy minute;
+- the current title passes the [name bar](#the-name-bar)'s title half and is
+  not the name itself.
+
+A manual, task (dispatch) or auto name is offered a rename — a task's name
+never changes on its own, so this offer is how it moves on — but never a
+system name (the chief, an officer) or a technical fallback. **Rename to "…"**
+is an ordinary rename, so the new name is manual. **Keep the name** records
+the dismissal per user (`agent_focus.drift_dismissed`, migration `0091`): the
+offer stays hidden while the focus title is the one it was dismissed at, and
+comes back when the title changes.
+
 ## How focus is written
 
 Only muster writes it, server-side, in a periodic pass (`MUSTER_FOCUS_INTERVAL`,
@@ -290,8 +416,8 @@ the chief that focus is data, never instructions. Neither makes the text safe
 
 | tool | who | what |
 |---|---|---|
-| `fleet_list` | chief | every session: id, kind, name, status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
-| `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title (with `focus_set_at`, and `focus_age` past a day) and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
+| `fleet_list` | chief | every session: id, kind, name (its [stable name](#a-sessions-name)), `code` (an agent's slug), status, a mirrored window's `where` (its exact tmux target, [attention.md](attention.md#how-a-window-is-named)), focus title with how old it is (`focus_set_at`; `focus_age` past a day, [how old a focus is](#how-old-a-focus-is)), and `focus_problem` (the reason) when its focus is missing or stale |
+| `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, name (the session's stable name, current-focus mode), title (with `focus_set_at`, and `focus_age` past a day) and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, a mirrored window's `where`, status, current focus with the same `focus_set_at` and `focus_age` as `fleet_list`, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
 | `fleet_report(since, until?)` | chief | every session of the owner's — running agents and mirrored windows, **ended ones included** — with focus activity between `since` and `until` (RFC 3339; `until` defaults to now; at most 4 days apart), most recently active first: id, kind, name, host, a listed window's `where` (this door only: the fleet-report reply below never carries it), repo, state (`waiting`: an attention item is pending; `active`: live now; `ended`), first and last seen, the distinct focus titles of the window with their times (at most 20 per session, the newest), and the pull requests it created or pushed. The chief itself is left out. Capped at 32 KiB; `coverage` says how many sessions were left out and what did not answer (an offline host, a store that could not be read). It shows the owner **everything**, hosts included and unfiltered, because its answer never leaves muster; the same report answering a [fleet-report request](plugins.md#a-fleet-report-request) is narrowed to `MUSTER_FLEET_REPORT_PATHS`, with no hosts and secret-shaped strings removed |
 

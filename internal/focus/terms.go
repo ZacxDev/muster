@@ -101,6 +101,11 @@ func isDictWord(w string) bool {
 	return ok
 }
 
+// IsDictWord is isDictWord for another package: the ONE dictionary, so a
+// branch name (internal/prroute's DistinctiveRef) is read against the same
+// words as a hyphenated term.
+func IsDictWord(w string) bool { return isDictWord(w) }
+
 // tokenKey is the key a single token normalises to, or "" when the token is
 // not distinctive. Versions and references are found before tokens, so they
 // never reach here.

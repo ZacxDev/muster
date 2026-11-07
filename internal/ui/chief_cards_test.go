@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"bytes"
 	"strings"
 	"testing"
@@ -292,7 +294,7 @@ func dispatchRows(result string) []ChatLine {
 func TestADispatchedAgentIsACardThatOpensIt(t *testing.T) {
 	href := AgentCardView{Name: "brisk-otter", SessionID: 41}.PageHref()
 	for _, state := range []string{DispatchStarting, DispatchWorking, DispatchWaiting, DispatchDone, DispatchError, DispatchFailed, DispatchStuck} {
-		c := DispatchCard{AgentID: 7, Name: "brisk-otter", DisplayName: "Fix the flaky test", Href: href,
+		c := DispatchCard{AgentID: 7, Name: "brisk-otter", SessionName: sessionname.Name{Text: "Fix the flaky test", Source: sessionname.SourceDispatch}, Href: href,
 			Runtime: "Gateway · deepseek/deepseek-v3", Repo: "example-org/widgets", TaskID: 12, State: state}
 		doc := ccRenderLog(t, AgentDetailView{Name: "chief", Messages: dispatchRows(`{"agent_id":7,"agent":"brisk-otter"}`),
 			DispatchCards: map[string]DispatchCard{"d1": c}})

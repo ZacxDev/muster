@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"io"
 	"strconv"
 
@@ -53,6 +55,12 @@ type switcherPin struct {
 	// menu's tag editor (session_tags.go) posts them for.
 	tags      []string
 	tagTarget SessionTagTarget
+	// name is the session's name (internal/sessionname), which the ⋯ menu's
+	// rename dialog (session_name.go) prefills.
+	name sessionname.Name
+	// rawManual is the session's manual name as typed (an agent's display
+	// name, a window's ManualName), "" when its name is not manual.
+	rawManual string
 }
 
 // newSwitcherPin is e's pin item: its subject's fields (pins.go) and the page
@@ -60,10 +68,11 @@ type switcherPin struct {
 func newSwitcherPin(e listEntry) *switcherPin {
 	if e.agent != nil {
 		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref(),
-			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}}
+			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}, name: entryName(e), rawManual: rawManual(entryName(e), e.agent.DisplayName)}
 	}
 	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror),
-		tags: e.mirror.Tags, tagTarget: SessionTagTarget{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window}}
+		tags: e.mirror.Tags, tagTarget: SessionTagTarget{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window},
+		name: entryName(e), rawManual: rawManual(entryName(e), e.mirror.ManualName)}
 }
 
 // switcherMoreButton is the bar's ⋯ button, at its right end, opening
@@ -112,6 +121,9 @@ func switcherMoreMenu(s *Switcher) g.Node {
 		g.Attr("aria-label", "This session"),
 		Class("m-0 min-w-[12rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
 		SwitcherPinToggle(s.pin.pinned, s.pin.fields, s.pin.back),
+		// The page's session's name (session_name.go): the dialog is its own
+		// popover, drawn beside this one (switcherTagsEditor).
+		sessionRenameMenuItem(),
 		// The page's session's tags (session_tags.go): the editor is its own
 		// popover, drawn beside this one (switcherTagsEditor).
 		sessionTagsMenuItem(),
@@ -124,7 +136,7 @@ func switcherTagsEditor(s *Switcher) g.Node {
 	if s == nil || s.pin == nil {
 		return nil
 	}
-	return g.Group{sessionTagsEditor(s.pin.tagTarget, s.pin.tags, s.pin.back), sessionTagsScript()}
+	return g.Group{sessionTagsEditor(s.pin.tagTarget, s.pin.tags, s.pin.back), sessionTagsScript(), switcherRenameDialog(s.pin)}
 }
 
 // SwitcherPinToggle is the ⋯ menu's pin item: a form posting fields (the

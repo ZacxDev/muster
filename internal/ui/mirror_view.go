@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -57,6 +59,12 @@ type MirrorViewView struct {
 	// Label is the host's display name for the session ("mango:1"), "" for
 	// none: the page's title. Session stays the address.
 	Label string
+	// SessionName is the window's conversation's name (internal/sessionname):
+	// the header and the <title> draw it when it is a human one
+	// (mirrorDisplayName). The zero value draws Label / Title.
+	SessionName sessionname.Name
+	// Drift is the page's rename offer (driftBanner), nil for none.
+	Drift *SessionDrift
 	// Qualifier is what tells this entry apart from another listed entry of the
 	// same name ("" = none) — the SAME qualifier its Agents card shows
 	// (mirror.Qualified): part of the header's title and of <title>.
@@ -238,6 +246,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
+				// The rename offer, when the conversation has moved on from its
+				// name (session_name.go).
+				driftBanner(v.Drift),
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
 				Div(
 					ID("mv-error"),
@@ -400,7 +411,7 @@ func mirrorViewTitle(v MirrorViewView) g.Node {
 				g.Attr("aria-controls", mirrorTitlePopoverID),
 				g.Attr("aria-expanded", "false"),
 				Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
-				mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
+				mirrorViewEntryTitle(v),
 				Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
 			),
 		),
@@ -423,9 +434,25 @@ func mirrorViewTitleRow(v MirrorViewView) g.Node {
 // mirrorViewName is the window's name as the rendered view's header and
 // <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
 // qualifier.
+//
+// A HUMAN name (internal/sessionname) is the name alone: no qualifier, which
+// is the window's technical id (the heading spells it).
 func mirrorViewName(v MirrorViewView) string {
+	if v.SessionName.Human() {
+		return v.SessionName.Text
+	}
 	name, _ := mirrorDisplayName(v.Label, v.Title, v.Session)
 	return mirrorQualified(name, v.Qualifier)
+}
+
+// mirrorViewEntryTitle is the header's name node: the human name with its
+// technical id as the tooltip (sessionNameTitle), else the entry's label or
+// title as its card draws it (mirrorEntryTitle).
+func mirrorViewEntryTitle(v MirrorViewView) g.Node {
+	if v.SessionName.Human() {
+		return sessionNameTitle(v.SessionName, "")
+	}
+	return mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, "")
 }
 
 // mirrorViewHeading is the header line as text: the name, then its badge's
@@ -437,6 +464,11 @@ func mirrorViewName(v MirrorViewView) string {
 // label (it made room for the tags), and it is what `tmux attach` takes.
 func mirrorViewHeading(v MirrorViewView) string {
 	h := mirrorViewName(v) + " · Mirrored · " + v.Host
+	if v.SessionName.Human() {
+		// The technical id the human name hides: the tmux address on its
+		// host (mirror.Where).
+		return h + " · " + v.SessionName.Technical
+	}
 	if _, labelled := mirrorDisplayName(v.Label, v.Title, v.Session); labelled {
 		h += " · tmux session " + v.Session
 	}
