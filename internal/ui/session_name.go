@@ -164,6 +164,11 @@ func sessionRenameMenuItem() g.Node {
 func switcherRenameDialog(p *switcherPin) g.Node {
 	d := renameDialog{id: SessionRenameID, heading: "Rename session", current: p.name.Text,
 		note: renameNote(p.name.Technical)}
+	if p.rawManual != "" {
+		// A manual name is edited as it was TYPED, not as it draws (the
+		// agent page's own dialog does the same).
+		d.current = p.rawManual
+	}
 	if !p.name.Human() {
 		// A technical name is not prefilled: typing over "mango:1" is not
 		// naming the session.
@@ -197,4 +202,13 @@ func sessionNameTitle(n sessionname.Name, class string) g.Node {
 		g.If(n.Technical != "", g.Attr("title", n.Technical)),
 		g.Text(n.Text),
 	)
+}
+
+// rawManual is raw — a manual name as typed — when n is a manual name, ""
+// otherwise.
+func rawManual(n sessionname.Name, raw string) string {
+	if n.Source != sessionname.SourceManual {
+		return ""
+	}
+	return raw
 }

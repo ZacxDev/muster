@@ -58,6 +58,9 @@ type switcherPin struct {
 	// name is the session's name (internal/sessionname), which the ⋯ menu's
 	// rename dialog (session_name.go) prefills.
 	name sessionname.Name
+	// rawManual is the session's manual name as typed (an agent's display
+	// name, a window's ManualName), "" when its name is not manual.
+	rawManual string
 }
 
 // newSwitcherPin is e's pin item: its subject's fields (pins.go) and the page
@@ -65,11 +68,11 @@ type switcherPin struct {
 func newSwitcherPin(e listEntry) *switcherPin {
 	if e.agent != nil {
 		return &switcherPin{pinned: e.agent.Pinned, fields: agentPinFields(*e.agent), back: e.agent.PageHref(),
-			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}, name: entryName(e)}
+			tags: e.agent.Tags, tagTarget: SessionTagTarget{AgentID: e.agent.ID}, name: entryName(e), rawManual: rawManual(entryName(e), e.agent.DisplayName)}
 	}
 	return &switcherPin{pinned: e.mirror.Pinned, fields: mirrorPinFields(*e.mirror), back: MirrorCardHref(*e.mirror),
 		tags: e.mirror.Tags, tagTarget: SessionTagTarget{Host: e.mirror.Host, Session: e.mirror.Session, Window: e.mirror.Window},
-		name: entryName(e)}
+		name: entryName(e), rawManual: rawManual(entryName(e), e.mirror.ManualName)}
 }
 
 // switcherMoreButton is the bar's ⋯ button, at its right end, opening
