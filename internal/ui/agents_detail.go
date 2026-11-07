@@ -1899,6 +1899,45 @@ func agentChatScript(name string) g.Node {
       .replace(/\uE000/g, '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // mdUnderEm applies _x_ italics under CommonMark's rule for '_': emphasis can
+  // neither open nor close INSIDE A WORD, so snake_case, route_id rt_8f51… and
+  // file_path stay as written. The old /(^|[^_])_([^_\n]+)_/ paired any two
+  // underscores on a line. Same rule, same shape as mdItalicUnderscore in
+  // internal/ui/markdown.go (a closer index computed once, right to left, so a
+  // run of unclosed openers stays linear); TestJSUnderscoreEmphasisMatchesGo
+  // runs mdInline under node against the Go renderer's cases.
+  // Same classes as the Go side (mdIsWordRune, mdIsUnderSpace in markdown.go):
+  // letters, marks (a decomposed é, Devanagari vowel signs), numbers (x²) and
+  // '_' are word characters; whitespace is /\s/ plus U+0085, Go's IsSpace plus
+  // U+FEFF — the union. TestUnderscoreRenderersAgree holds the two together.
+  function mdUnderWord(c) { return c === '_' || /[\p{L}\p{M}\p{N}]/u.test(c); }
+  function mdUnderSpace(c) { return /\s/.test(c) || c === '\u0085'; }
+  function mdUnderEm(s) {
+    if (s.indexOf('_') < 0) return s;
+    var cs = Array.from(s), n = cs.length, next = new Array(n + 1);
+    var sp = mdUnderSpace;
+    var closes = function (j) {
+      if (j === 0 || cs[j - 1] === '_' || sp(cs[j - 1])) return false;
+      return !(j + 1 < n && mdUnderWord(cs[j + 1]));
+    };
+    var opens = function (i) {
+      if ((i > 0 && mdUnderWord(cs[i - 1])) || i + 1 >= n) return false;
+      return cs[i + 1] !== '_' && !sp(cs[i + 1]);
+    };
+    next[n] = -1;
+    for (var k = n - 1; k >= 0; k--) {
+      next[k] = cs[k] === '\n' ? -1 : (cs[k] === '_' && closes(k)) ? k : next[k + 1];
+    }
+    var out = '', i = 0;
+    while (i < n) {
+      if (cs[i] === '_' && opens(i)) {
+        var j = next[i + 1];
+        if (j > 0) { out += '<em>' + cs.slice(i + 1, j).join('') + '</em>'; i = j + 1; continue; }
+      }
+      out += cs[i]; i++;
+    }
+    return out;
+  } // end mdUnderEm
   function mdInline(s) { // s is ALREADY escaped
     // Tokenize FIRST: pull inline code spans (and markdown links) OUT of the
     // string into placeholder tokens before any other inline transform runs, so
@@ -1928,15 +1967,20 @@ func agentChatScript(name string) g.Node {
     // OUT of the href. Code + markdown-link URLs are already tokenized out above;
     // the \uE000 sentinel is excluded from the URL so a URL directly abutting a
     // token can't swallow the placeholder into the href.
+    // The WHOLE anchor is stashed, like the [text](url) branch above and the Go
+    // renderer's mdAutolink: emitted markup must never reach the emphasis passes
+    // below. Unstashed, a '*' or '_' in the URL paired with emphasis \u2014 inside the
+    // href, or with the '_' of target="_blank" ("https://example.com/foo_ then
+    // x_" drew target="<em>blank"). The trail stays outside, as plain text.
     s = s.replace(/https?:\/\/[^\s<\uE000]+/g, function (m) {
       var trail = '';
       var mm = m.match(/[.,)\]!?:;"']+$/);
       if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
-      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>' + trail;
+      return stash('<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>') + trail;
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+    s = mdUnderEm(s);
     // Restore tokens verbatim (their content was already escaped before stashing).
     s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return toks[+i]; });
     return s;

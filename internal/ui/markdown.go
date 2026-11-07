@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	g "maragu.dev/gomponents"
@@ -21,7 +22,7 @@ import (
 // than pulling a markdown library (blackfriday is only an indirect dep) to keep
 // the surface tiny and the escaping guarantee auditable.
 //
-// Supported: bold (**x**), italic (*x* / _x_), inline code (`x`), fenced code
+// Supported: bold (**x**), italic (*x* / _x_, the `_` form never intra-word), inline code (`x`), fenced code
 // blocks (```lang … ```), blockquotes (> …), bullet lists (- / *), ordered
 // lists (1.), ATX headings (# … ######), thematic breaks (--- / *** / ___),
 // bare-URL autolinks, GFM pipe tables, and paragraphs.
@@ -53,7 +54,9 @@ var (
 	mdThematicBreak = regexp.MustCompile(`^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$`)
 	mdBold          = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 	mdItalicStar    = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
-	mdItalicUnder   = regexp.MustCompile(`(^|[^_])_([^_\n]+)_`)
+	// Underscore emphasis is NOT a regex: see mdItalicUnderscore. RE2 has no
+	// lookaround, and the rule it needs is about the characters on BOTH sides of
+	// each delimiter.
 	// Link: [text](url). Matched on the ALREADY-ESCAPED string, so the captured
 	// groups contain escaped text/url (e.g. & → &amp;); the URL scheme is then
 	// re-checked against http(s) and anything else (javascript:, data:, …) is left
@@ -259,8 +262,117 @@ func mdAutolink(escaped string, v *mdVault) string {
 func mdEmphasis(s string) string {
 	s = mdBold.ReplaceAllString(s, `<strong>$1</strong>`)
 	s = mdItalicStar.ReplaceAllString(s, `$1<em>$2</em>`)
-	s = mdItalicUnder.ReplaceAllString(s, `$1<em>$2</em>`)
+	s = mdItalicUnderscore(s)
 	return s
+}
+
+// mdIsWordRune is the "alphanumeric" side of CommonMark's intra-word `_` rule:
+// a letter (L), a combining mark (M), a number (N), or another `_` (so `__x__`,
+// which this renderer does not support as bold, stays literal exactly as it
+// did before).
+//
+// Marks count because a word can END in one: a decomposed é is e + U+0301, and
+// Devanagari vowel signs (सूची) are marks, so `café_x_` must not open there.
+// Numbers are N, not just decimal digits, so `x²_y_` stays literal.
+//
+// 🔴 THE JS RENDERER'S mdUnderWord (agentChatScript) USES THE SAME CLASSES —
+// \p{L}\p{M}\p{N} — and TestUnderscoreRenderersAgree holds the two to one
+// output on a fixed list of such inputs. Change both or neither.
+func mdIsWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r)
+}
+
+// mdIsUnderSpace is the whitespace side of the rule: Go's unicode.IsSpace plus
+// U+FEFF. The JS renderer's /\s/ is IsSpace minus U+0085 plus U+FEFF, so its
+// side adds U+0085 — the two renderers use the UNION, and agree on both.
+func mdIsUnderSpace(r rune) bool {
+	return unicode.IsSpace(r) || r == '\uFEFF'
+}
+
+// mdItalicUnderscore applies `_x_` italics under CommonMark's rule for `_`:
+// emphasis can neither OPEN nor CLOSE inside a word.
+//
+//   - an opener `_` is not preceded by a word rune and is followed by a
+//     non-space, non-`_` character;
+//   - a closer `_` is preceded by a non-space, non-`_` character and is not
+//     followed by a word rune.
+//
+// 🔴 THE PREVIOUS RULE, `(^|[^_])_([^_\n]+)_`, IGNORED BOTH SIDES. Any two
+// underscores on a line paired, so a snake_case identifier was emphasis:
+// `route_id rt_8f51…` rendered as route<em>id rt</em>8f51…, and every routed
+// block, tool name (route_to_session) and file_path an agent wrote was mangled
+// on the mirrored chat view. The closer may now sit past an intra-word `_`
+// (`_use file_path_` is one emphasis), which is also what CommonMark does.
+//
+// Emphasis never crosses a "\n" (same as before). The input is already escaped
+// and may hold vault placeholders; \x00 is not a word rune, and a placeholder's
+// digits are bounded by \x00 on both sides, so no `_` can pair into one.
+func mdItalicUnderscore(s string) string {
+	if !strings.Contains(s, "_") {
+		return s
+	}
+	// next[k] is the first closing `_` at or after k on k's line, or -1. Whether a
+	// `_` can close does not depend on the opener, so this is computed once, right
+	// to left. ⚡ Scanning forward from every opener instead is quadratic: a
+	// paragraph is ONE line here (markdownHTML joins it with <br>), and a body of
+	// unclosed `_x` openers inside maxTaskBodyLen would cost seconds per render —
+	// the hazard mdVault.restore's comment measured for the same page.
+	next := make([]int, len(s)+1)
+	next[len(s)] = -1
+	for k := len(s) - 1; k >= 0; k-- {
+		switch {
+		case s[k] == '\n':
+			next[k] = -1
+		case s[k] == '_' && mdUnderCloses(s, k):
+			next[k] = k
+		default:
+			next[k] = next[k+1]
+		}
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '_' && mdUnderOpens(s, i) {
+			if j := next[i+1]; j > 0 {
+				b.WriteString("<em>" + s[i+1:j] + "</em>")
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// mdUnderOpens reports whether the `_` at s[i] can open emphasis.
+func mdUnderOpens(s string, i int) bool {
+	if i > 0 {
+		if r, _ := utf8.DecodeLastRuneInString(s[:i]); mdIsWordRune(r) {
+			return false
+		}
+	}
+	if i+1 >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[i+1:])
+	return r != '_' && !mdIsUnderSpace(r)
+}
+
+// mdUnderCloses reports whether the `_` at s[j] can close emphasis.
+func mdUnderCloses(s string, j int) bool {
+	if j == 0 {
+		return false
+	}
+	if r, _ := utf8.DecodeLastRuneInString(s[:j]); r == '_' || mdIsUnderSpace(r) {
+		return false
+	}
+	if j+1 < len(s) {
+		if r, _ := utf8.DecodeRuneInString(s[j+1:]); mdIsWordRune(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // mdLinkify turns `[text](url)` into an anchor — but ONLY for http(s) URLs. The
