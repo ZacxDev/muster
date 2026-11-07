@@ -172,3 +172,30 @@ func TestARepoHintIsBounded(t *testing.T) {
 		t.Fatalf("%d sessions hinted; want %d", len(got.Sessions), plugins.MaxHintSessions)
 	}
 }
+
+// 🔴 At the hint's seam: four windows in one repo, one active now and three
+// idle for 7–10 days (whose session ids sort before the active one's) — the
+// active one is hinted, first.
+func TestTheActiveWindowInARepoIsHintedOverIdleOnes(t *testing.T) {
+	g := newGatedFixture(t)
+	now := time.Now()
+	var ws []mirror.Window
+	repos := map[string]string{}
+	for i, idle := range []time.Duration{7 * 24 * time.Hour, 8 * 24 * time.Hour, 10 * 24 * time.Hour, 0} {
+		id := fmt.Sprintf("@%d", 40+i)
+		ws = append(ws, mirror.Window{Session: "work", ID: id, Index: i, Claude: true,
+			ClaudeSession: fmt.Sprintf("0b2c3d4e-tie-%c", 'a'+i), Activity: now.Add(-idle).Unix()})
+		repos[id] = "x-app-yt-thumbnail"
+	}
+	h := overviewHost("box-1", true, ws...)
+	h.Repos = repos
+	g.srv.ext.Mirror = overviewMirror{hosts: []mirror.HostView{h}}
+	got := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 1, Subject: "YT Thumbnail", Body: metaMessage})
+	var ids []string
+	for _, s := range got.Sessions {
+		ids = append(ids, s.ID)
+	}
+	if want := "[mirror:0b2c3d4e-tie-d mirror:0b2c3d4e-tie-a mirror:0b2c3d4e-tie-b]"; fmt.Sprint(ids) != want {
+		t.Fatalf("hint lists %v; want %s", ids, want)
+	}
+}

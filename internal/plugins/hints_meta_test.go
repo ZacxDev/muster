@@ -64,3 +64,38 @@ func TestAHostsLabelAndRepoCannotForgeTheHint(t *testing.T) {
 		t.Fatalf("%d end markers, %d session lines; want 1 and 1:\n%s", ends, strings.Count(got, "\n| mirror:"), got)
 	}
 }
+
+// 🔴 One session alone, at every field's bound in 3-byte characters (and in
+// newlines, which Sanitize widens to five bytes), stays within MaxHintBytes
+// under every preface — the replyable, the one-way and the task one, the
+// longest — and a session listed by its repo keeps its repo line.
+func TestOneOversizedSessionStaysWithinTheCapInEveryMode(t *testing.T) {
+	for _, wide := range []string{"語", "\n"} {
+		big := func(n int) string { return strings.Repeat(wide, n) }
+		for _, byRepo := range []bool{true, false} {
+			sh := SessionHint{ID: "mirror:" + strings.Repeat("0", 64), Name: big(maxHintNameRunes + 5), Host: big(maxHintNameRunes + 5),
+				Where: big(maxHintWhereRunes + 5)}
+			if byRepo {
+				sh.Repo, sh.ByRepo, sh.LastActive = strings.Repeat("語", maxHintRepoRunes+5), true, hintAt
+			} else {
+				sh.Titles = []HintTitle{{Title: big(maxHintTitleRunes + 5), At: hintAt}}
+			}
+			for name, mode := range map[string]hintMode{"reply": {routing: true}, "one-way": {routing: true, oneWay: true},
+				"task": {routing: true, task: true}, "no routing": {}} {
+				got := renderHintsFor(Hints{Window: 6 * time.Hour, Sessions: []SessionHint{sh}}, hintNonce, mode)
+				if len(got) > MaxHintBytes {
+					t.Errorf("%q byRepo=%v %s: %d bytes; cap %d", wide, byRepo, name, len(got), MaxHintBytes)
+				}
+				if !strings.Contains(got, "| mirror:"+strings.Repeat("0", 64)) {
+					t.Errorf("%q byRepo=%v %s: the id was cut:\n%s", wide, byRepo, name, got)
+				}
+				if byRepo && !strings.Contains(got, "|   listed by its repo, repo: ") {
+					t.Errorf("%q %s: the repo line was dropped:\n%s", wide, name, got)
+				}
+				if hintLineCount(got) != 1 {
+					t.Errorf("%q byRepo=%v %s: %d headers", wide, byRepo, name, hintLineCount(got))
+				}
+			}
+		}
+	}
+}

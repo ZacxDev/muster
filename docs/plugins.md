@@ -1218,11 +1218,13 @@ A session is also listed by **its repo**, whether or not its focus matches:
 an online mirrored Claude Code window, however long it has been idle, whose
 repository name (as its host reports it, split on `-`, `_` and `.`) the
 message covers in at least two parts. A run counts when the message spells
-two or more of the name's parts in a row (`yt-thumbnail` or "YT Thumbnail" for
-`acme-app-yt-thumbnail`), or one part that is an identifier on its own (a
-word with digits, or one that is not a dictionary word), and the run holds a
-part no other live repo's name has — so "acme app" names none of a family of
-`acme-app-*` repos. These come after the focus matches, within the three. The
+parts of the name in a row (`yt-thumbnail` or "YT Thumbnail" for
+`acme-app-yt-thumbnail`) and the run holds a part that is an identifier on
+its own (a word with digits, or one that is not a dictionary word — so
+`new-project` is never named by "a new project") and a part no other live
+repo's name has — so "acme app" names none of a family of `acme-app-*` repos.
+These come after the focus matches, within the three; between two windows
+covering as many parts, the more recently active goes first. The
 window label is not matched here: a Claude window's label is its host's
 codename (`<codename>:<n>`), not a task title. Such a session's line says it
 was listed by its repo, with the repo and when it was last active: a session

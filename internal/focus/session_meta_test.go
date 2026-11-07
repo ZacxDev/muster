@@ -3,6 +3,7 @@ package focus
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 // The repository-run rule of session_meta.go, without a database. Synthetic
@@ -116,5 +117,49 @@ func TestMatchReposFindsASessionByItsRepo(t *testing.T) {
 	}
 	if ms := MatchRepos("the yt-thumbnail app", many, 2, 3); len(ms) != 3 {
 		t.Errorf("limit 3: %d matches", len(ms))
+	}
+}
+
+// 🔴 Four windows in one repo, one active now and three idle for 7–10 days:
+// the active one is listed, first, within a limit of three — whatever their
+// session ids, which here sort the active one LAST.
+func TestATieInRepoPartsGoesToTheMostRecentlyActive(t *testing.T) {
+	now := time.Now()
+	var metas []SessionMeta
+	for i, idle := range []time.Duration{7 * 24 * time.Hour, 8 * 24 * time.Hour, 10 * 24 * time.Hour, 0} {
+		metas = append(metas, SessionMeta{Subject: MirrorSubject(fmt.Sprintf("0b2c3d4e-tie-%c", 'a'+i)), Repo: "x-app-yt-thumbnail",
+			ActiveAt: now.Add(-idle)})
+	}
+	got := MatchRepos("the yt-thumbnail app", metas, 2, 3)
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.Subject.Key)
+	}
+	if want := "[0b2c3d4e-tie-d 0b2c3d4e-tie-a 0b2c3d4e-tie-b]"; fmt.Sprint(ids) != want {
+		t.Fatalf("listed %v; want %s (newest first, the 10-day-idle one dropped)", ids, want)
+	}
+}
+
+// 🔴 A run made only of dictionary words names no repo, however long: prose
+// spells them all the time.
+func TestARunOfDictionaryWordsNamesNoRepo(t *testing.T) {
+	none := func(string) bool { return false }
+	for repo, text := range map[string]string{
+		"new-project":    "I want to start a new project next week.",
+		"home-assistant": "My home assistant is down again.",
+		"dot-files":      "Where do the dot files go?",
+		"the-algorithm":  "Apply the algorithm to the queue.",
+		"go-tools":       "Which go tools do you use?",
+	} {
+		if cov, ok := repoCover(repoParts(text), repoParts(repo), none); ok {
+			t.Errorf("%s named by %q (covered %v)", repo, text, cov)
+		}
+		if ms := MatchRepos(text, []SessionMeta{{Subject: MirrorSubject("0b2c3d4e-dict"), Repo: repo}}, 2, 5); len(ms) != 0 {
+			t.Errorf("%s hinted for %q", repo, text)
+		}
+	}
+	// Control: one distinctive part in the run is enough.
+	if _, ok := repoCover(repoParts("the YT Thumbnail page"), repoParts("x-app-yt-thumbnail"), none); !ok {
+		t.Error("control: yt-thumbnail no longer named")
 	}
 }

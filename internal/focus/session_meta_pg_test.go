@@ -32,6 +32,8 @@ func TestSearchMetaFindsASessionByAWordOfItsRepoOrItsCodename(t *testing.T) {
 		"thumbnail invoice":  "[]", // websearch: every word
 		"zeppelin":           "[]",
 		"   ":                "[]",
+		"-thumbnail":         "[]", // no positive term: matches nothing, not every other window
+		"-thumbnail -cache":  "[]",
 	} {
 		subs, err := s.SearchMeta(as(2), q, metaFixture(), 5)
 		if err != nil || fmt.Sprint(subs) != want {

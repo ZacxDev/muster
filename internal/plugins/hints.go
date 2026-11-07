@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/fence"
@@ -212,7 +213,7 @@ func renderHintsFor(h Hints, nonce string, mode hintMode) string {
 	if len(sessions) == 0 {
 		return ""
 	}
-	var blocks [][]string
+	var blocks, fallback [][]string
 	for _, s := range sessions {
 		head := fence.Sanitize(s.ID) + " — " + fence.Sanitize(fence.Cut(s.Name, maxHintNameRunes))
 		if s.Host != "" {
@@ -228,6 +229,12 @@ func renderHintsFor(h Hints, nonce string, mode hintMode) string {
 			}
 			lines = append(lines, "  "+t.At.UTC().Format(time.RFC3339)+"  "+fence.Sanitize(fence.Cut(t.Title, maxHintTitleRunes)))
 		}
+		// The lines this session keeps when it alone is over the cap: its id,
+		// and its repo line — what it was listed by — when it has one.
+		alone := []string{head}
+		if !s.ByRepo || len(s.Titles) > 0 {
+			alone = append(alone, "(titles not shown)")
+		}
 		if s.ByRepo {
 			m := "  listed by its repo"
 			if s.Repo != "" {
@@ -237,8 +244,10 @@ func renderHintsFor(h Hints, nonce string, mode hintMode) string {
 				m += ", last active " + s.LastActive.UTC().Format(time.RFC3339)
 			}
 			lines = append(lines, m)
+			alone = append(alone, m)
 		}
 		blocks = append(blocks, lines)
+		fallback = append(fallback, alone)
 	}
 	preface := hintPreface(h.Window, mode)
 	for n := len(blocks); n > 0; n-- {
@@ -252,14 +261,54 @@ func renderHintsFor(h Hints, nonce string, mode hintMode) string {
 		out := "\n" + fence.Block{Preface: preface, Marker: hintMarker, Count: n, Lines: lines}.Render(nonce)
 		if len(out) <= MaxHintBytes || n == 1 {
 			if len(out) > MaxHintBytes {
-				// One session alone over the cap: its titles go, its id stays.
-				out = "\n" + fence.Block{Preface: preface, Marker: hintMarker, Count: 1,
-					Lines: []string{blocks[0][0], "(titles not shown)"}}.Render(nonce)
+				// One session alone over the cap: its titles go, its id (and
+				// repo line) stay, cut further if even they do not fit.
+				out = fitHintBlock(preface, fallback[0], nonce)
 			}
 			return out
 		}
 	}
 	return ""
+}
+
+// fitHintBlock is a one-session hint block of lines, preceded by a blank line,
+// within MaxHintBytes in every mode: while it is over, its longest line is cut
+// (on a rune boundary, ending "…") by what is over. The preface is muster's and
+// never cut; every preface is far inside the cap.
+func fitHintBlock(preface string, lines []string, nonce string) string {
+	lines = append([]string(nil), lines...)
+	for {
+		out := "\n" + fence.Block{Preface: preface, Marker: hintMarker, Count: 1, Lines: lines}.Render(nonce)
+		over := len(out) - MaxHintBytes
+		if over <= 0 {
+			return out
+		}
+		i := 0
+		for j := range lines {
+			if len(lines[j]) > len(lines[i]) {
+				i = j
+			}
+		}
+		if len(lines[i]) <= len("…") {
+			return out // nothing left to cut: the preface alone is over the cap
+		}
+		lines[i] = cutBytes(lines[i], len(lines[i])-over-len("…"))
+	}
+}
+
+// cutBytes is s cut to at most n bytes on a rune boundary, then "…" ("…" alone
+// for n <= 0).
+func cutBytes(s string, n int) string {
+	if n <= 0 {
+		return "…"
+	}
+	if n >= len(s) {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // authorMarker is the author block's fence marker.

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // MATCHING A LIVE SESSION BY WHAT ITS WINDOW SAYS, NOT ONLY BY ITS FOCUS: the
@@ -35,11 +36,13 @@ import (
 //
 //   - a RUN of the repository name's parts (split on anything not a letter
 //     or digit) that the text spells consecutively in any case and with any
-//     separators — two or more parts ("yt-thumbnail", "YT Thumbnail" for
-//     "acme-app-yt-thumbnail"), or one part that is distinctive on its own
-//     (repoPartDistinctive: a word with a digit, or of 3+ letters that is not
-//     a dictionary word — "acme", "thumbnail", never "layout" alone) — that
-//     holds a part NO OTHER live repository's name has. So a family of repos
+//     separators ("yt-thumbnail", "YT Thumbnail" for "acme-app-yt-thumbnail")
+//     that holds a part distinctive on its own (repoPartDistinctive: a word
+//     with a digit, or of 3+ letters that is not a dictionary word —
+//     "acme", "thumbnail", never "layout") — so a repo named only with
+//     dictionary words ("new-project", "home-assistant", "go-tools") is never
+//     named by prose that says "a new project" or "my home assistant" — and a
+//     part NO OTHER live repository's name has. So a family of repos
 //     sharing a prefix ("acme-app-one", "acme-app-two") is not all named by a
 //     message that says "acme app": only one whose own part it spells. The
 //     names are counted distinct, so two windows in ONE repository share
@@ -58,10 +61,13 @@ const MaxMetaSessions = 1024
 
 // SessionMeta is what muster knows of one live session besides its focus: the
 // short name of the repository its window works in and its window label ("" for
-// either when its host did not say).
+// either when its host did not say), and when its window was last active (zero
+// when its host did not say) — what breaks a tie between two windows in one
+// repo (MatchRepos).
 type SessionMeta struct {
 	Subject     Subject
 	Repo, Label string
+	ActiveAt    time.Time
 }
 
 // MetaMatch is one session whose repository name shares terms with a text:
@@ -107,8 +113,9 @@ func repoPartDistinctive(p string) bool {
 }
 
 // repoCover is which of parts the text's words (words, lower-cased) spell in a
-// qualifying run (see the top of this file) — one holding a part shared
-// reports false for — and whether any run qualified.
+// qualifying run (see the top of this file) — one holding a part that names
+// something (repoPartDistinctive) and a part shared reports false for — and
+// whether any run qualified.
 func repoCover(words, parts []string, shared func(string) bool) (covered map[string]bool, distinctive bool) {
 	covered = map[string]bool{}
 	for i := range words {
@@ -117,14 +124,15 @@ func repoCover(words, parts []string, shared func(string) bool) (covered map[str
 			for i+n < len(words) && j+n < len(parts) && words[i+n] == parts[j+n] {
 				n++
 			}
-			if n == 0 || (n == 1 && !repoPartDistinctive(parts[j])) {
+			if n == 0 {
 				continue
 			}
-			run, own := parts[j:j+n], false
+			run, own, names := parts[j:j+n], false, false
 			for _, p := range run {
 				own = own || !shared(p)
+				names = names || repoPartDistinctive(p)
 			}
-			if !own {
+			if !own || !names {
 				continue
 			}
 			distinctive = true
@@ -160,7 +168,8 @@ func sharedParts(metas []SessionMeta) func(string) bool {
 
 // MatchRepos is the sessions of metas whose repository name the text covers
 // in at least minTerms parts, from qualifying runs (see the top of this file):
-// most parts first, then the subject; at most limit (bounded by
+// most parts first, then the most recently active (a zero ActiveAt last),
+// then the subject; at most limit (bounded by
 // MaxSearchResults). minTerms < 1 is 1. The text is cut as MatchHistory's is.
 // Labels are not read. Pure: scoping is the caller's (metas are sessions it
 // holds).
@@ -182,6 +191,7 @@ func MatchRepos(text string, metas []SessionMeta, minTerms, limit int) []MetaMat
 		limit = MaxSearchResults
 	}
 	words, shared := repoParts(text), sharedParts(metas)
+	var at []time.Time
 	for _, m := range metas {
 		if m.Repo == "" {
 			continue
@@ -191,21 +201,34 @@ func MatchRepos(text string, metas []SessionMeta, minTerms, limit int) []MetaMat
 			continue
 		}
 		out = append(out, MetaMatch{Subject: m.Subject, Terms: len(covered)})
+		at = append(at, m.ActiveAt)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+	idx := make([]int, len(out))
+	for i := range idx {
+		idx[i] = i
+	}
+	// Sorted through idx so each match keeps its ActiveAt.
+	sort.Slice(idx, func(i, j int) bool {
+		a, b := out[idx[i]], out[idx[j]]
+		ta, tb := at[idx[i]], at[idx[j]]
 		switch {
 		case a.Terms != b.Terms:
 			return a.Terms > b.Terms
+		case !ta.Equal(tb):
+			return ta.After(tb)
 		case a.Subject.Kind != b.Subject.Kind:
 			return a.Subject.Kind < b.Subject.Kind
 		}
 		return a.Subject.Key < b.Subject.Key
 	})
-	if len(out) > limit {
-		out = out[:limit]
+	sorted := make([]MetaMatch, 0, len(out))
+	for _, i := range idx {
+		sorted = append(sorted, out[i])
 	}
-	return out
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+	return sorted
 }
 
 // metaDoc is the text a session's repository name and label are searched as:
@@ -236,7 +259,9 @@ func metaQuery(query string) string {
 // SearchMeta is focus_search over the sessions of metas by repository name and
 // window label (metaDoc): the sessions whose text matches query (websearch
 // syntax, as Search), best first, at most limit (bounded by
-// MaxSearchResults). It reads no table; scoping is the caller's.
+// MaxSearchResults). It reads no table; scoping is the caller's. A query with
+// no positive term ("-thumbnail": querytree 'T') matches nothing here — "every
+// window but these" is not a match on anything a window says.
 func (s *PGStore) SearchMeta(ctx context.Context, query string, metas []SessionMeta, limit int) ([]Subject, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || len(metas) == 0 {
@@ -254,7 +279,7 @@ func (s *PGStore) SearchMeta(ctx context.Context, query string, metas []SessionM
 	}
 	rows, err := s.pool.Query(ctx, `SELECT u.i FROM unnest($2::text[]) WITH ORDINALITY u(d, i),
 			websearch_to_tsquery('english', $1) q
-		WHERE to_tsvector('english', u.d) @@ q
+		WHERE querytree(q) <> 'T' AND to_tsvector('english', u.d) @@ q
 		ORDER BY ts_rank(to_tsvector('english', u.d), q) DESC, u.i LIMIT $3`, metaQuery(query), docs, limit)
 	if err != nil {
 		return nil, errf("search meta: %w", err)

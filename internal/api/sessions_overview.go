@@ -278,7 +278,7 @@ func (s *Server) repoHints(ctx context.Context, text string) []plugins.SessionHi
 		}
 		entries[sub] = e
 		if e.Repo != "" {
-			metas = append(metas, focus.SessionMeta{Subject: sub, Repo: e.Repo})
+			metas = append(metas, focus.SessionMeta{Subject: sub, Repo: e.Repo, ActiveAt: e.ActiveAt()})
 		}
 	}
 	var out []plugins.SessionHint
