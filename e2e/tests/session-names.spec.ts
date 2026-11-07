@@ -77,6 +77,17 @@ test.afterAll(async () => {
 // rowOf is the sidebar row of window w (its <a>), from the live sidebar.
 const rowOf = (page: Page, w: number): Locator => page.locator(`#sidebar-agents-list a[href*="window=%40${w}"]`);
 
+// closeSidebar closes an overlay sidebar and WAITS for it to be closed: its
+// backdrop takes taps while it is open (measured: a ⋯ tap right after the
+// close landed on the backdrop).
+async function closeSidebar(page: Page) {
+  const root = page.locator('#sidebar-root');
+  if ((await root.getAttribute('data-open')) !== 'true') return;
+  if (await page.locator('#sidebar-close').isVisible()) await page.locator('#sidebar-close').click();
+  else await page.keyboard.press('Escape');
+  await expect(root).not.toHaveAttribute('data-open', 'true');
+}
+
 async function openSidebar(page: Page) {
   const open = page.locator('#sidebar-open');
   if (await open.isVisible()) await open.click();
@@ -123,7 +134,7 @@ for (const vp of [
       await openSidebar(page);
       await expect(rowOf(page, w).locator('[data-nav-name]')).toHaveText('Billing migration');
       await expect(rowOf(page, w).locator('[data-nav-focus]')).toContainText('Fixing the Stripe webhook retry');
-      if (await page.locator('#sidebar-close').isVisible()) await page.locator('#sidebar-close').click();
+      await closeSidebar(page);
 
       // 4. Rename… in the session's ⋯ menu.
       await page.locator('#switcher-more-btn').first().click();
