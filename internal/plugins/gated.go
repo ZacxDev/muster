@@ -136,3 +136,18 @@ func (s *PGStore) GatedTaskFiled(ctx context.Context, taskID int64) (gate string
 	}
 	return gate, gate != "", nil
 }
+
+// ActionGateReleasedByAnswer records that a task's gate was released by its
+// OWNER's answer to a routed-attention ask (internal/api answer_release.go):
+// object NoteObject(task), detail {ask_id, gates, answer}. The row's actor is
+// ctx's principal — the owner, and the door (session or device) they answered
+// through.
+const ActionGateReleasedByAnswer = "task.gate_released_by_answer"
+
+// RecordGateReleasedByAnswer appends ActionGateReleasedByAnswer for taskID.
+func (s *PGStore) RecordGateReleasedByAnswer(ctx context.Context, taskID, askID int64, gates []string, answer string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return audit(ctx, tx, ActionGateReleasedByAnswer, NoteObject(taskID),
+			map[string]any{"ask_id": askID, "gates": gates, "answer": answer})
+	})
+}
