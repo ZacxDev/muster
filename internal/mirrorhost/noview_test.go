@@ -227,9 +227,9 @@ func TestTmuxListingSaysWhyAClaudeWindowHasNoView(t *testing.T) {
 	proc.add(300, 1, "zsh", "/work/shell", "-zsh")
 
 	bin := filepath.Join(t.TempDir(), "tmux")
-	out := "1\t@1\t1\t1\t%1\t100\t1791903000\t1791903000\tclaude\t/dev/pts/1\t\t\twork\n" +
-		"1\t@2\t2\t0\t%2\t200\t1791903000\t1791903000\tclaude\t/dev/pts/2\t\t\twork\n" +
-		"1\t@3\t3\t0\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\t\t\twork\n"
+	out := "1\t@1\t1\t1\t%1\t100\t1791903000\t1791903000\tclaude\t/dev/pts/1\t\t\t\twork\n" +
+		"1\t@2\t2\t0\t%2\t200\t1791903000\t1791903000\tclaude\t/dev/pts/2\t\t\t\twork\n" +
+		"1\t@3\t3\t0\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\t\t\t\twork\n"
 	listing := filepath.Join(t.TempDir(), "listing")
 	must(t, os.WriteFile(listing, []byte(out), 0o644))
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))

@@ -656,6 +656,19 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
+	// 🔴 A PASTE NAMING A DISPATCH (a chief's forward) lands only in the window
+	// whose OWN @muster-dispatch equals it: the real bound on forwarding,
+	// ahead of BOTH delivery paths (docs/design/chief-dispatch.md 3.10).
+	if m.Dispatch != 0 {
+		cctx, ccancel := context.WithTimeout(h.ctx, 5*time.Second)
+		err := h.checkDispatchPaste(cctx, m)
+		ccancel()
+		if err != nil {
+			h.c.log.Printf("muster-mirror: paste for dispatch %d into %q%s refused: %v", m.Dispatch, m.Session, windowSuffix(m.Window), err)
+			_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: err.Error(), Refusal: mirror.PasteRefusalNotMusterWindow})
+			return
+		}
+	}
 	if r, ok := runtimeNamed(m.Runtime); ok && !m.AnyPane {
 		if gs, ok := r.(gatedSender); ok {
 			// The runtime's gated send (opencode's, opencode_send.go): its own

@@ -137,6 +137,9 @@ type HostView struct {
 	// an older or read-only muster-mirror, one without -resume-spawn, and an
 	// offline host.
 	ResumeSpawn bool
+	// AgentSpawn is the runtimes the host advertised it starts for the chief
+	// (Msg.AgentSpawn), for an -interactive host only; nil otherwise.
+	AgentSpawn []string
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -185,6 +188,10 @@ type Hub struct {
 	// waitingNotify is called with a host's owner whenever the set of its
 	// windows whose Claude Code waits on the person changes (SetWaitingNotify).
 	waitingNotify func(owner int64)
+	// spawnReplyNotify and listingNotify are the host-dispatch reconciler's
+	// inputs (agentspawn.go).
+	spawnReplyNotify func(owner int64, host string, m Msg)
+	listingNotify    func(owner int64, host string, windows []Window)
 	// statusNotify is called with a host's owner whenever any of its agent
 	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
 	statusNotify func(owner int64)
@@ -401,6 +408,9 @@ type hostConn struct {
 	// resumeSpawn: the host advertised Msg.ResumeSpawn, speaks v2 and is
 	// -interactive.
 	resumeSpawn bool
+	// agentSpawn: the runtimes the host advertised it spawns (Msg.AgentSpawn),
+	// for a v2 -interactive host only (agentspawn.go).
+	agentSpawn []string
 	// runtimeAnswers: per runtime that answers its own asks (RuntimeSpec.Answers),
 	// whether the host advertised that it does (Msg.OpenCodeAnswer), speaks
 	// v2 and is -interactive.
@@ -442,7 +452,10 @@ type hostConn struct {
 	// resumes are the spawn-resume requests waiting for the host's
 	// resume-spawned, by id (the same id space; resume.go).
 	resumes map[uint32]chan resumeAnswer
-	next    uint32
+	// spawns are the agent-spawn requests waiting for the host's
+	// agent-spawned, by id (the same id space; agentspawn.go).
+	spawns map[uint32]chan spawnAnswer
+	next   uint32
 }
 
 type stream struct {
@@ -471,7 +484,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn,
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn),
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode]})
 		hc.mu.Unlock()
 	}
@@ -716,7 +729,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{},
-		resumes: map[uint32]chan resumeAnswer{}}
+		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
@@ -741,6 +754,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Starting a process on the host is more than a write into a pane:
 		// -interactive hosts only, and only those that opted in (resume.go).
 		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
+		// Starting an agent likewise, and only the runtimes this muster knows.
+		hc.agentSpawn = spawnRuntimesOf(hello)
 		// Each runtime's answer switch: answering its ask is a write into
 		// the session (it can let a command run): -interactive hosts only,
 		// like the rest.
@@ -824,6 +839,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		h.logger.Printf("mirror: host %s (owner %d) connected, %s, tunnel v%d, with %d session(s) (per session: its muster-mirror predates per-window registration)", host, owner, mode, hc.version, len(hc.sessions))
 	}
 	h.changed(owner)
+	// The hello's listing is the reconciler's first input from this host.
+	h.listingApplied(hc)
 
 	// firstHandled closes once the read loop has handled the host's first
 	// message after the welcome (its repos, work or a sessions update): the
@@ -932,6 +949,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 					}
 				}
 				h.observe(hc.key.owner, hc.key.host, windows, h.now())
+				h.listingApplied(hc)
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges
 				// at once. A time that moved with nothing else (a busy window that
@@ -1018,6 +1036,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			case TypeResumeSpawned:
 				if hc.version >= 2 {
 					hc.resumeSpawned(m)
+				}
+			case TypeAgentSpawned:
+				if hc.version >= 2 {
+					h.agentSpawned(hc, m)
 				}
 			case TypeClosed:
 				var why error
@@ -1129,6 +1151,12 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.resumes {
 		ch <- resumeAnswer{err: ErrHostDisconnected}
 		delete(hc.resumes, id)
+	}
+	// A spawn written before the disconnect may have started: unconfirmed,
+	// never failed (the reconciler's listings settle it).
+	for id, ch := range hc.spawns {
+		ch <- spawnAnswer{err: ErrSpawnUnconfirmed}
+		delete(hc.spawns, id)
 	}
 	hc.mu.Unlock()
 	if current {

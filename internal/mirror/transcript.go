@@ -487,7 +487,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err != nil {
 		return err
 	}
-	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, messageID: OpenCodeMessageID(owner, o.Key)})
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, messageID: OpenCodeMessageID(owner, o.Key), dispatch: o.Dispatch})
 	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
 	// next message would be pasted after it and submitted with it as one turn,
 	// so it is recorded like a paste that may have reached the window.
@@ -559,6 +559,8 @@ type PasteOptions struct {
 	Window *string
 	// Key is what a gated send's message id is derived from (MessageKey).
 	Key string
+	// Dispatch is the host dispatch the paste is for (ForDispatch), 0 none.
+	Dispatch int64
 }
 
 // PasteOptionsOf applies opts. A PasteWindow implementation reads its options
@@ -634,6 +636,9 @@ type gatedPaste struct {
 	runtime   string
 	since     int64
 	messageID string
+	// dispatch is the paste's host dispatch (ForDispatch), stamped on the
+	// message for the host's tag check; 0 for none.
+	dispatch int64
 }
 
 // GatedNotIdleRefusal reports whether err is a host's refusal of a gated send
@@ -658,7 +663,7 @@ func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text
 		delete(hc.pastes, id)
 		hc.mu.Unlock()
 	}()
-	m := Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}
+	m := Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane, Dispatch: g.dispatch}
 	wait := pasteTimeout
 	if r, ok := LookupRuntime(g.runtime); ok && r.GatedSend {
 		m.Runtime, m.Since, m.MessageID, wait = r.Name, g.since, g.messageID, r.PasteTimeout
