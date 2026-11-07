@@ -750,7 +750,10 @@ func (s *Server) endHostDispatch(ctx context.Context, owner, id int64, why strin
 		return h, nil
 	}
 	if err == nil {
-		s.broadcast(ctx, EventAgentChanged, "host-dispatch-"+strconv.FormatInt(id, 10))
+		// To the OWNER, never requestOwner(ctx): the reconciler and the host's
+		// late reply end rows from a principal-less context, whose event would
+		// otherwise go to nobody and leave the owner's page showing it running.
+		s.broadcastTo(owner, EventAgentChanged, "host-dispatch-"+strconv.FormatInt(id, 10))
 		// Its task, when nobody else works it, goes back to open: the start is
 		// released, and a new one needs an open task (as a pod's destroy does).
 		if h.TaskID > 0 {

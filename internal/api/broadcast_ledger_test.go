@@ -66,6 +66,15 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// is the answer's — the owner's browser session or paired phone — and
 		// the ask's owner owns the task.
 		"(*Server).applyAnswerRelease → broadcast(ctx)",
+		// A host dispatch's late spawn reply (host_dispatch_reconcile.go): pctx
+		// is hostDispatchPrincipal(ctx, owner), the row's owner.
+		"(*Server).applySpawnReply → broadcast(pctx)",
+		// A host dispatch ended (host_dispatch.go): its owner, named explicitly
+		// because the reconciler's context carries no principal.
+		"(*Server).endHostDispatch → broadcastTo(owner)",
+		// A host's window listing moved a host dispatch (host_dispatch_reconcile.go):
+		// pctx is hostDispatchPrincipal(ctx, owner), the host's owner.
+		"(*Server).reconcileListing → broadcast(pctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sse"
 )
 
 // MIRRORED DISPATCH, SERVER HALF (host_dispatch.go, host_dispatch_reconcile.go)
@@ -319,6 +320,32 @@ func (f *hostFixture) agentRowsFor(t *testing.T, id int64) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// TestAnEndFromTheReconcilerReachesTheOwnersStream: the reconciler ends a row
+// from a context with no principal ("window gone"); the owner's stream must
+// still get agent.changed naming it, or their page keeps showing it running.
+func TestAnEndFromTheReconcilerReachesTheOwnersStream(t *testing.T) {
+	f := newHostFixture(t)
+	f.ownerTurn(t, f.chief, f.owner, "Start it mirrored on host-bravo.")
+	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "h-9", true)))
+	bus := sse.New(64)
+	f.srv.bus = bus
+	_, stream := bus.Subscribe(f.owner)
+	if _, err := f.srv.endHostDispatch(context.Background(), f.owner, id, "window gone", false); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"id":"host-dispatch-` + strconv.FormatInt(id, 10) + `"}`
+	for {
+		select {
+		case ev := <-stream:
+			if ev.Name == EventAgentChanged && ev.Data == want {
+				return
+			}
+		default:
+			t.Fatalf("the owner's stream got no %s %s", EventAgentChanged, want)
+		}
+	}
 }
 
 // TestAnOrphanWindowRaisesOneNoticeAndIsNeverAdopted: an ENDED dispatch whose

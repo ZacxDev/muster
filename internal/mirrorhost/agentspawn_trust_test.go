@@ -143,7 +143,7 @@ func TestTheTrustEntryRefusesEverythingElseAndLeavesTheFile(t *testing.T) {
 		// git LISTS this one, so only the created check can refuse it.
 		{"a listed worktree this spawn did not create", r.dir, 17, false, nil, "this spawn did not create it"},
 		{"a sibling git does not list", sibling, 18, true, nil, "the clone does not list it as a worktree"},
-		{"the clone, under a root", r.clone, 17, true, nil, "not a worktree of this spawn under the agents directory"},
+		{"the clone, under a root", realOrClean(r.clone), 17, true, nil, "not a worktree of this spawn under the agents directory"},
 		{"home", home, 17, true, nil, "not a worktree of this spawn under the agents directory"},
 		{"a relative path", "acme__widgets/17", 17, true, nil, "not an absolute, clean path"},
 		{"a missing state file", r.dir, 17, true, func() { _ = os.Remove(r.state) }, "Claude Code's state file cannot be read"},

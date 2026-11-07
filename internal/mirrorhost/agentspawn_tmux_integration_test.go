@@ -241,8 +241,11 @@ func TestTmuxASpawnPastItsDeadlineNeverOpensAWindow(t *testing.T) {
 	calls := r.gitCalls()
 	r.c.spawner.mu.Lock()
 	done := make(chan error, 1)
+	mu.Lock()
+	received := clock // the moment the queued request arrived
+	mu.Unlock()
 	go func() {
-		_, err := r.c.spawnAgent(context.Background(), nil, mirror.Msg{Dispatch: 22, Spawn: ptr(widgets(testPrompt))}, clock)
+		_, err := r.c.spawnAgent(context.Background(), nil, mirror.Msg{Dispatch: 22, Spawn: ptr(widgets(testPrompt))}, received)
 		done <- err
 	}()
 	time.Sleep(200 * time.Millisecond)
