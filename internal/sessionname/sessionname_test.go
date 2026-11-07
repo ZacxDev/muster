@@ -22,8 +22,10 @@ func TestResolveIsThePrecedence(t *testing.T) {
 	}{
 		{"manual wins", func(*Parts) {}, Name{"Manual one", SourceManual, "tech-one"}},
 		{"system next", func(p *Parts) { p.Manual = "" }, Name{"System one", SourceSystem, "tech-one"}},
-		{"auto next", func(p *Parts) { p.Manual, p.System = "", "" }, Name{"Auto one", SourceAuto, "tech-one"}},
-		{"dispatch next", func(p *Parts) { p.Manual, p.System, p.Auto = "", "", "" }, Name{"Dispatch one", SourceDispatch, "tech-one"}},
+		// A task's name is the stable name: above the auto name (operator
+		// decision on #504, Q1).
+		{"dispatch next", func(p *Parts) { p.Manual, p.System = "", "" }, Name{"Dispatch one", SourceDispatch, "tech-one"}},
+		{"auto next", func(p *Parts) { p.Manual, p.System, p.Dispatch = "", "", "" }, Name{"Auto one", SourceAuto, "tech-one"}},
 		{"fallback last", func(p *Parts) { p.Manual, p.System, p.Auto, p.Dispatch = "", "", "", "" }, Name{"slug-one", SourceFallback, "tech-one"}},
 		// A manual name that plains to "" (only white space) falls through.
 		{"empty after plaining falls through", func(p *Parts) { p.Manual = " \t " }, Name{"System one", SourceSystem, "tech-one"}},
@@ -41,8 +43,9 @@ func TestResolveIsThePrecedence(t *testing.T) {
 }
 
 // TestAnAgentsDisplayNameRanksByItsSource: the same display name is manual,
-// system, dispatch or the slug's copy according to who set it — and only a
-// manual or system one outranks the auto name.
+// system, dispatch or the slug's copy according to who set it — and a manual,
+// system or dispatch (task) one outranks the auto name: a task's name never
+// changes on its own.
 func TestAnAgentsDisplayNameRanksByItsSource(t *testing.T) {
 	stored := focus.Name{Auto: "Billing migration"}
 	for _, c := range []struct {
@@ -51,7 +54,7 @@ func TestAnAgentsDisplayNameRanksByItsSource(t *testing.T) {
 	}{
 		{agents.NameManual, "My billing work", Name{"My billing work", SourceManual, "brave-otter"}},
 		{agents.NameSystem, "chief", Name{"chief", SourceSystem, "brave-otter"}},
-		{agents.NameDispatch, "#42 · Fix the login bug", Name{"Billing migration", SourceAuto, "brave-otter"}},
+		{agents.NameDispatch, "#42 · Fix the login bug", Name{"#42 · Fix the login bug", SourceDispatch, "brave-otter"}},
 		{agents.NameDefault, "brave-otter", Name{"Billing migration", SourceAuto, "brave-otter"}},
 		// A row from before the column: "" reads as default.
 		{"", "brave-otter", Name{"Billing migration", SourceAuto, "brave-otter"}},
@@ -61,8 +64,8 @@ func TestAnAgentsDisplayNameRanksByItsSource(t *testing.T) {
 			t.Errorf("source %q: %+v, want %+v", c.src, got, c.want)
 		}
 	}
-	// Before the auto name freezes: a dispatch name heads the agent, a slug
-	// copy is the fallback.
+	// With no auto name at all: a dispatch name heads the agent, a slug copy
+	// is the fallback.
 	if got := Agent(agents.Agent{Name: "brave-otter", DisplayName: "#42 · Fix it", DisplayNameSource: agents.NameDispatch}, focus.Name{}); got.Source != SourceDispatch || got.Text != "#42 · Fix it" {
 		t.Errorf("dispatch before freeze: %+v", got)
 	}
@@ -70,13 +73,14 @@ func TestAnAgentsDisplayNameRanksByItsSource(t *testing.T) {
 		t.Errorf("slug before freeze: %+v", got)
 	}
 	// A default-sourced display name that is not the slug (a writer that set
-	// no source) heads the agent PLAINED until the auto name freezes.
+	// no source) heads the agent PLAINED, as a task's name does — and, like
+	// one, the auto name never replaces it.
 	odd := agents.Agent{Name: "brave-otter", DisplayName: "#41 · **Fix** the login"}
 	if got := Agent(odd, focus.Name{}); got != (Name{"#41 · Fix the login", SourceDispatch, "brave-otter"}) {
 		t.Errorf("default-sourced custom name: %+v", got)
 	}
-	if got := Agent(odd, stored); got.Source != SourceAuto {
-		t.Errorf("default-sourced custom name after the freeze: %+v, want the auto name", got)
+	if got := Agent(odd, stored); got.Source != SourceDispatch {
+		t.Errorf("default-sourced custom name after the freeze: %+v, want it kept", got)
 	}
 
 }

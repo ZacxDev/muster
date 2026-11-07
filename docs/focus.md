@@ -88,8 +88,8 @@ first of these that a session has wins:
 |---|---|---|
 | 1 | **manual** | the name you gave it: **Rename…** in the session's ⋯ menu (the bar on every session page), or an agent's own ⋯ menu. Nothing automatic ever replaces it. An empty name hands the session back to the rows below. |
 | 2 | **system** | a name muster pinned for a role: the chief, an officer's instance. The rest of muster finds the role by it, so the automatic name never replaces it. |
-| 3 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. |
-| 4 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`, until its auto name freezes. |
+| 3 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`. It is the agent's stable name: it never changes on its own, and only a manual rename replaces it. |
+| 4 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. (A task-dispatched agent's auto name is frozen too, but never shown: its task name ranks above it.) |
 | 5 | fallback | the session's technical id: an agent's slug, a mirrored window's host label (`mango:1`) or tmux address. |
 
 A mirrored window's **host label** (`muster-mirror -labels-file`, drawn as
@@ -98,9 +98,8 @@ operator's codename for a tmux session, shared by every conversation that
 window ever holds. Once the conversation has an auto or manual name, the label
 moves to the row's tooltip and the search palette (it is still what the
 palette matches first). An agent's display name ranks by who set it
-(`agents.display_name_source`, migration `0088`): `manual` and `system` above
-the auto name, `dispatch` below it, `default` (the slug, copied) as the
-fallback. Existing rows were classified once by the migration: the slug
+(`agents.display_name_source`, migration `0088`): `manual`, `system` and
+`dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: the slug
 copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
 is `system`, and any other display name is `manual`, since a person set it.
 

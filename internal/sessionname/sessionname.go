@@ -20,10 +20,14 @@
 //  2. SYSTEM — a name muster pinned for a role (the chief, an officer:
 //     agents.NameSystem). It is what the rest of muster finds the role by, so
 //     the auto name never replaces it.
-//  3. AUTO — the name frozen from the session's first good focus title
+//  3. DISPATCH — the name an agent was dispatched with from a task
+//     ("#42 · Fix the login bug"). It IS the agent's stable name (operator
+//     decision, #504 round 0 Q1): it never changes on its own — the auto name
+//     never replaces it — and only a manual rename does.
+//  4. AUTO — the name frozen from the session's first good focus title
 //     (internal/focus names.go). Frozen once, never moved by a later title.
-//  4. DISPATCH — the name an agent was dispatched with from a task
-//     ("#42 · Fix the login bug"): what heads it until its auto name freezes.
+//     A task-dispatched agent's auto name is still frozen and stored; it is
+//     simply never shown while the dispatch name ranks above it.
 //  5. FALLBACK — the session's technical id: an agent's slug, a mirrored
 //     window's host label or tmux address. Only a session with nothing above
 //     is called by it.
@@ -85,7 +89,7 @@ func Resolve(p Parts) Name {
 	for _, l := range []struct {
 		text string
 		src  Source
-	}{{p.Manual, SourceManual}, {p.System, SourceSystem}, {p.Auto, SourceAuto}, {p.Dispatch, SourceDispatch}} {
+	}{{p.Manual, SourceManual}, {p.System, SourceSystem}, {p.Dispatch, SourceDispatch}, {p.Auto, SourceAuto}} {
 		if t := textplain.Title(l.text); t != "" {
 			return Name{Text: t, Source: l.src, Technical: p.Technical}
 		}
@@ -114,8 +118,8 @@ func Agent(a agents.Agent, stored focus.Name) Name {
 		// A default-sourced display name is the slug copied — the fallback.
 		// One that is NOT the slug came from a writer that sets no source
 		// (the e2e seed, a fixture, any future insert path): it is a title
-		// like a task's, so it heads the agent PLAINED until the auto name
-		// freezes. (Round 0 of #504 proposed deleting this arm as
+		// like a task's, so it ranks as one: it heads the agent PLAINED, and
+		// the auto name never replaces it. (Round 0 of #504 proposed deleting this arm as
 		// unreachable; CI's e2e reached it at once — a markdown task name
 		// drawn raw.)
 		if a.DisplayName != a.Name {
