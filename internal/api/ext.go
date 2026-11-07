@@ -85,6 +85,10 @@ type Extensions struct {
 	// from MUSTER_ANDROID_PACKAGE and MUSTER_ANDROID_CERT_SHA256): the
 	// Android app's claim on this site's passkeys. Nil: the route answers 404.
 	AssetLinks []byte
+	// SSOOrigins is MUSTER_ANDROID_SSO_ORIGINS as ParseSSOOrigins returned it:
+	// the sign-in origins the Android app may load in its WebView, served open
+	// at GET /api/device/web (device_web.go). Nil or empty: `[]`.
+	SSOOrigins []string
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

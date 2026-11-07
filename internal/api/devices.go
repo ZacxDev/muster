@@ -113,6 +113,9 @@ func (s *Server) registerDeviceRoutes(mux Mux) {
 	mux.HandleFunc("GET "+accountDevicesLivePath, s.requireSession(s.handleAccountDevicesLive))
 	// The public pairing route.
 	mux.HandleFunc("POST "+devicePairPath, s.handleDevicePair)
+	// The shell's sign-in origins (device_web.go): OPEN, configuration only, read
+	// before the first sign-in and so before pairing.
+	mux.HandleFunc("GET "+DeviceWebPath, s.handleDeviceWeb)
 	// The device tier.
 	mux.HandleFunc("DELETE "+deviceAPIPrefix, s.requireDeviceToken(s.handleDeviceUnpair))
 	mux.HandleFunc("GET "+deviceConfigPath, s.requireDeviceToken(s.handleDeviceConfig))

@@ -568,6 +568,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, err
 	}
 	ext.AssetLinks = assetLinks
+	// The Android shell's sign-in origins (MUSTER_ANDROID_SSO_ORIGINS): empty,
+	// GET /api/device/web answers `[]`. validate has already refused a bad one.
+	ssoOrigins, err := cfg.ssoOrigins()
+	if err != nil {
+		return nil, err
+	}
+	ext.SSOOrigins = ssoOrigins
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -1490,6 +1497,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("android passkeys: OFF — %s and %s are unset, so %s is 404 and Android refuses the app's passkeys for this site",
 			envAndroidPackage, envAndroidCertSHA256, api.AssetLinksPath)
+	}
+	// The Android shell's sign-in origins, in both directions: off, a sign-on
+	// proxy's redirect leaves the app's WebView and its sign-in never returns.
+	if len(ext.SSOOrigins) > 0 {
+		l.Printf("android sign-in origins: ON — %s serves %d origin(s) from %s that the app may load in its "+
+			"WebView: %s", api.DeviceWebPath, len(ext.SSOOrigins), envAndroidSSOOrigins, strings.Join(ext.SSOOrigins, ", "))
+	} else {
+		l.Printf("android sign-in origins: OFF — %s is unset, so %s answers none and the app opens every other "+
+			"origin outside its WebView", envAndroidSSOOrigins, api.DeviceWebPath)
 	}
 
 	if ext.Connectors != nil {

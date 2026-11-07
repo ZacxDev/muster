@@ -66,6 +66,7 @@ GET /api/agents/{name}/account-failovers
 GET /api/agents/{name}/messages
 GET /api/attention/summary
 GET /api/device/config
+GET /api/device/web
 GET /api/directories
 GET /api/doctor
 GET /api/flows/jobs

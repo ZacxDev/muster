@@ -338,6 +338,9 @@ var bannerLedger = []string{
 	// directions — serving (the package and certificates) / OFF (the path is 404).
 	envAndroidPackage,
 	envAndroidCertSHA256,
+	// The Android shell's sign-in origins: a line in both directions — ON (the
+	// origins served) / OFF (the route answers none).
+	envAndroidSSOOrigins,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
 	// both variables, the CHAT arm names this one in each direction. It is ledgered
@@ -878,6 +881,13 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// by the real config.assetLinks over these values.
 		AndroidPackage:    "app.example.passkeys",
 		AndroidCertSHA256: "0123456789abcdef00112233445566778899aabbccddeeff0f1e2d3c4b5a6978",
+		// The shell's sign-in origins: the banner branches on ext.SSOOrigins
+		// (below), parsed by the real config.ssoOrigins over this value.
+		AndroidSSOOrigins: "https://auth.example.test",
+	}
+	ssoOrigins, err := on.ssoOrigins()
+	if err != nil || len(ssoOrigins) == 0 {
+		t.Fatalf("banner fixture: ssoOrigins = %q, %v", ssoOrigins, err)
 	}
 	assetLinks, err := on.assetLinks()
 	if err != nil || assetLinks == nil {
@@ -886,6 +896,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		DialGuard:   on.dialGuard(),
 		AssetLinks:  assetLinks,
+		SSOOrigins:  ssoOrigins,
 		Outcomes:    agentoutcome.NewPG(nil),
 		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),

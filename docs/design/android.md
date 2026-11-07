@@ -944,6 +944,13 @@ free ones when each phase lands.
     package and fingerprints; HTTP 200, `application/json`, no redirect. The
     deployment's edge must serve it without a redirect too.
 
+Added after this list was written, for a deployment behind a single sign-on
+proxy: `GET /api/device/web`, open (it is read before the first sign-in, so
+before pairing), answers `{"sso_origins": [...]}` from
+`MUSTER_ANDROID_SSO_ORIGINS` with `Cache-Control: no-store`. The shell lets
+those origins load in the server's WebView, and nothing more. See
+[auth.md](../auth.md#sign-in-origins-for-a-single-sign-on-proxy).
+
 **Push and UI**
 
 21. `AllowedPushService` also admits the operator hosts (item 1), by exact

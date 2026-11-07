@@ -58,6 +58,7 @@ var noStoreLiterals = map[string]string{
 	"writeDocumentHeaders":     "the header set of both document writers",
 	"handleAccountDevicesLive": "the paired devices, live",
 	"handleDeviceConfig":       "a paired phone's config",
+	"handleDeviceWeb":          "the Android shell's sign-in origins, re-read on every shell open",
 	"handleDeviceChallenge":    "a signed action's one-time nonce",
 	"handleDoctor":             "`muster doctor`'s report: live state (which hosts are connected now)",
 	"handleDispatchCard":       "a started agent's card: its live state",

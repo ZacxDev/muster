@@ -78,6 +78,9 @@ var publicRoutes = []string{
 	// The Android app's Digital Asset Links: fetched by Android's verifier
 	// with no session; configuration only, nothing per-user (assetlinks.go).
 	"GET /.well-known/assetlinks.json",
+	// The Android shell's sign-in origins: read before the first sign-in (so
+	// before pairing) with no credential; configuration only (device_web.go).
+	"GET /api/device/web",
 	"GET /metrics",
 	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
 	// admits it and no request Principal is attached — internal/mirror

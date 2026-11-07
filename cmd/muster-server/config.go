@@ -359,6 +359,11 @@ const (
 	// without the other refuses boot.
 	envAndroidPackage    = "MUSTER_ANDROID_PACKAGE"
 	envAndroidCertSHA256 = "MUSTER_ANDROID_CERT_SHA256"
+	// The Android shell's sign-in origins (internal/api/device_web.go), for a
+	// deployment behind a single sign-on proxy: comma-separated exact https
+	// origins the app may load in its WebView, served open at
+	// GET /api/device/web. Empty: none. A malformed entry refuses boot.
+	envAndroidSSOOrigins = "MUSTER_ANDROID_SSO_ORIGINS"
 
 	// --- the chief on the docker compose install (see composechief.go) ---
 	envChiefRuntime     = "MUSTER_CHIEF_RUNTIME"
@@ -875,6 +880,9 @@ type config struct {
 	// (api.BuildAssetLinks) and assetLinks returns the body.
 	AndroidPackage    string
 	AndroidCertSHA256 string
+	// AndroidSSOOrigins is MUSTER_ANDROID_SSO_ORIGINS as read; validate parses
+	// it (api.ParseSSOOrigins) and ssoOrigins returns the clean list.
+	AndroidSSOOrigins string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -1344,6 +1352,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
 		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
 		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
+		AndroidSSOOrigins:    strings.TrimSpace(getenv(envAndroidSSOOrigins)),
 
 		LegacyProvenancePrefix: strings.TrimSpace(getenv(envLegacyProvenancePrefix)),
 
@@ -2076,6 +2085,9 @@ func (c config) validate() error {
 	if _, err := c.assetLinks(); err != nil {
 		return err
 	}
+	if _, err := c.ssoOrigins(); err != nil {
+		return err
+	}
 	if err := c.validateSTT(); err != nil {
 		return err
 	}
@@ -2160,6 +2172,18 @@ func (c config) assetLinks() ([]byte, error) {
 		return nil, fmt.Errorf("%s / %s: %v", envAndroidPackage, envAndroidCertSHA256, err)
 	}
 	return body, nil
+}
+
+// ssoOrigins is MUSTER_ANDROID_SSO_ORIGINS parsed: the exact https origins
+// GET /api/device/web serves, empty (never nil) when unset. A malformed value
+// is an error naming the variable, and validate refuses boot on it: a typo
+// would otherwise ship as a sign-in that silently leaves the app.
+func (c config) ssoOrigins() ([]string, error) {
+	origins, err := api.ParseSSOOrigins(c.AndroidSSOOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v. Fix or unset it", envAndroidSSOOrigins, err)
+	}
+	return origins, nil
 }
 
 // validateVAPID refuses a partial VAPID triple, and a complete one that is not

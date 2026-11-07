@@ -511,8 +511,9 @@ using this site's passkeys, and push through your own ntfy. ⚠ The app is at an
 early stage and does little yet.
 
 - **`.env`:** `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256`
-  (together), optionally `MUSTER_ANDROID_ALLOW_PIN_KEYS=1` and
-  `MUSTER_PUSH_EXTRA_HOSTS`. [configuration.md](configuration.md#muster-server-optional-features).
+  (together), optionally `MUSTER_ANDROID_ALLOW_PIN_KEYS=1`,
+  `MUSTER_PUSH_EXTRA_HOSTS` and, behind a single sign-on proxy,
+  `MUSTER_ANDROID_SSO_ORIGINS`. [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `android passkeys: /.well-known/assetlinks.json serves …`.
 
 ### Service token
