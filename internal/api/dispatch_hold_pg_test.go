@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
@@ -558,27 +561,33 @@ func TestAnExpiredHoldIsRefused(t *testing.T) {
 func TestConcurrentApprovalsStartOneAgent(t *testing.T) {
 	h := newHoldFixture(t)
 	held := h.request(t, gatewayRequest())
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		refused int
-	)
-	for i := 0; i < 8; i++ {
+	const approvals = 8
+	texts := make([]string, approvals)
+	var wg sync.WaitGroup
+	for i := 0; i < approvals; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
 			args, _ := json.Marshal(map[string]any{"hold_id": held.HoldID})
-			text := h.srv.toolDispatchApprove(h.mirrorCtx(), h.mirrorCaller(focusSID), string(args))
-			if strings.Contains(text, "was already approved") {
-				mu.Lock()
-				refused++
-				mu.Unlock()
-			}
-		}()
+			texts[i] = h.srv.toolDispatchApprove(h.mirrorCtx(), h.mirrorCaller(focusSID), string(args))
+		}(i)
 	}
 	wg.Wait()
-	if got := h.ownersAgents(t); len(got) != 1 || refused != 7 {
-		t.Fatalf("%d agents and %d refusals from 8 concurrent approvals; want 1 and 7", len(got), refused)
+	// EVERY outcome is classified: exactly one start, and every other answer
+	// the hold's own "already approved" refusal — never an unclassified error.
+	started, refused := 0, 0
+	for i, text := range texts {
+		switch {
+		case !strings.Contains(text, `"error"`) && strings.Contains(text, `"agent_id"`):
+			started++
+		case errorText(t, text) == "hold "+held.HoldID+" was already approved: a hold starts one agent, once. Nothing new was started":
+			refused++
+		default:
+			t.Errorf("approval %d answered neither a start nor the already-approved refusal: %s", i, text)
+		}
+	}
+	if got := h.ownersAgents(t); len(got) != 1 || started != 1 || refused != approvals-1 {
+		t.Fatalf("%d agents, %d starts and %d refusals from %d concurrent approvals; want 1, 1 and %d", len(got), started, refused, approvals, approvals-1)
 	}
 }
 
@@ -913,5 +922,36 @@ func TestATaskRepositoryThatMovesDuringTheApprovalIsRefused(t *testing.T) {
 	}
 	if hold, err := h.plugins.DispatchHold(h.asOwner, held.HoldID); err != nil || !hold.Open() {
 		t.Errorf("the hold after the refusal: %+v %v; want still open", hold, err)
+	}
+}
+
+// timeoutReserve is the chief-dispatch ledger with ReserveChiefDispatch failing
+// as Postgres does when a statement outlives statement_timeout.
+type timeoutReserve struct{ plugins.DispatchStore }
+
+func (timeoutReserve) ReserveChiefDispatch(context.Context, string, map[string]any, func() error) (plugins.ChiefDispatch, error) {
+	return plugins.ChiefDispatch{}, &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}
+}
+
+// TestAnApprovalThatTimesOutWaitingIsACleanRetry: a reservation that fails
+// only for waiting (statement_timeout on the owner's lock) answers a retryable
+// refusal naming the hold — never a raw error — and the hold is not used: the
+// next approval starts it.
+func TestAnApprovalThatTimesOutWaitingIsACleanRetry(t *testing.T) {
+	h := newHoldFixture(t)
+	held := h.request(t, gatewayRequest())
+	real := h.srv.ext.ChiefDispatch
+	h.srv.ext.ChiefDispatch = timeoutReserve{real}
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if want := fmt.Sprintf(dispatchApproveBusy, held.HoldID); !isErr || errorText(t, text) != want {
+		t.Fatalf("a timed-out reservation answered %s\nwant %q", text, want)
+	}
+	h.nothingStarted(t)
+	h.srv.ext.ChiefDispatch = real
+	if text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID}); isErr {
+		t.Fatalf("the retry after a timeout was refused: %s", text)
+	}
+	if got := h.ownersAgents(t); len(got) != 1 {
+		t.Errorf("agents after the retry: %d, want 1", len(got))
 	}
 }

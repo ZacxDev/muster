@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -96,6 +99,7 @@ const (
 	dispatchApproveExpired   = "hold %s expired unapproved at %s (a hold can be approved for 15 minutes): call dispatch_request again"
 	dispatchApproveConsumed  = "hold %s was already approved: a hold starts one agent, once. Nothing new was started"
 	dispatchApproveChanged   = "hold %s can no longer start as it was held: %s. Nothing was started"
+	dispatchApproveBusy      = "hold %s could not be approved now: another start of your owner's held the reservation too long. Nothing was started and the hold is not used: call dispatch_approve again"
 	dispatchApproveRepoMoved = "task %d's repository changed while it was being checked: call dispatch_approve again"
 )
 
@@ -573,12 +577,30 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if dispatchApproveBeforeReserve != nil {
 		dispatchApproveBeforeReserve()
 	}
+	// 🔴 ONE APPROVAL OF AN OWNER'S AT A TIME REACHES THE RESERVATION, in this
+	// process. The reservation's transaction holds a pool connection while it
+	// waits on the owner's advisory lock, and the holder's check reads through
+	// OTHER connections (the hold, the task). With approvals of one owner piled
+	// up past the pool's size, every connection was a transaction waiting on
+	// the lock while the holder waited for a connection: nothing moved until
+	// statement_timeout (10 s) cancelled the waiters, which then answered a raw
+	// "could not be reserved" (measured: 8 concurrent approvals on 2 CPUs, a
+	// 4-connection pool, 20 s, 6 such answers). Serialised here, the holder's
+	// reads always find a connection, and the next approval reads the hold
+	// the first one consumed.
+	mu := s.approveLock(owner)
+	mu.Lock()
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, object, detail, check)
+	mu.Unlock()
 	var refusal errTaskDispatch
 	switch {
 	case err == nil:
 	case errors.As(err, &refusal):
 		return refuse(string(refusal))
+	case reservationBusy(err):
+		// Nothing was reserved, so the hold is not used: a clean retry.
+		s.logger.Printf("dispatch_approve: reserve a start (%s, %s), busy: %v", object, id, err)
+		return refuse(fmt.Sprintf(dispatchApproveBusy, id))
 	case errors.Is(err, plugins.ErrChiefLiveCap):
 		return dispatchRefusal(dispatchRequestLiveCap, res.Budget)
 	case errors.Is(err, plugins.ErrChiefDailyCap):
@@ -684,6 +706,23 @@ func (s *Server) taskModelResolution(ctx context.Context, kind, given, taskModel
 		return modelResolution{}, false
 	}
 	return s.resolveAgentModel(ctx, taskModel), true
+}
+
+// approveLock is owner's dispatch_approve lock (see toolDispatchApprove).
+func (s *Server) approveLock(owner int64) *sync.Mutex {
+	m, _ := s.approveLocks.LoadOrStore(owner, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// reservationBusy reports whether a reservation failed only for waiting: the
+// database cancelled a statement past its timeout (SQLSTATE 57014), or a lock
+// wait or the request's own deadline ran out. Nothing was written.
+func reservationBusy(err error) bool {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && (pg.Code == "57014" || pg.Code == "55P03") {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 // ownersChiefID is the id of the caller's owner's chief when they have one
