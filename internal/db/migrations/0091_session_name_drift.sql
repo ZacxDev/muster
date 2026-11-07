@@ -1,4 +1,4 @@
--- muster 0089 — A DISMISSED RENAME OFFER (docs/focus.md#when-the-work-moves-on).
+-- muster 0091 — A DISMISSED RENAME OFFER (docs/focus.md#when-the-work-moves-on).
 --
 -- When a session's focus has stopped being about its name for long enough,
 -- muster OFFERS a rename to the current focus title (focus.DriftOffer); it
@@ -20,7 +20,7 @@
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   ALTER TABLE agent_focus DROP CONSTRAINT IF EXISTS agent_focus_drift_dismissed_cap;
 --   ALTER TABLE agent_focus DROP COLUMN IF EXISTS drift_dismissed;
---   DELETE FROM schema_migrations WHERE version = 89;
+--   DELETE FROM schema_migrations WHERE version = 91;
 
 SET LOCAL lock_timeout = '3s';
 

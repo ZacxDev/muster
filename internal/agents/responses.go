@@ -327,7 +327,7 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		}
 		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
-	return parseResponsesSSE(resp.Body, emit)
+	return parseResponsesSSE(activityBody(ctx, resp.Body), emit)
 }
 
 // RuntimeError is a non-200, non-404 answer from an agent runtime's
@@ -388,6 +388,9 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	var ev sseEvent
+	// failed is the runtime's own report that the turn FAILED (streamFailure):
+	// set, the turn is an error whatever else the stream carried.
+	var failed *StreamError
 	// lastTextIndex is the output_index of the most recent text delta emitted this
 	// turn (-1 = none yet). A text delta whose index is higher belongs to a NEW
 	// message item, so handleResponsesEvent injects a paragraph break before it —
@@ -397,6 +400,9 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 		if ev.data == "" {
 			ev = sseEvent{}
 			return
+		}
+		if f := streamFailure(ev); f != nil && failed == nil {
+			failed = f
 		}
 		handleResponsesEvent(ev, emit, &final, &lastTextIndex)
 		ev = sseEvent{}
@@ -428,6 +434,15 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	flush()
 	if err := sc.Err(); err != nil {
 		return nil, err
+	}
+	// 🔴 A FAILURE ONLY WHEN NO ANSWER FOLLOWED. A runtime can report an
+	// `error` event mid-stream (a failover attempt) and then complete the turn
+	// on its fallback; a completed response that answers (text, or tool calls)
+	// is the answer, not the error. A completion that answers NOTHING after an
+	// error is the error: read as an empty answer it lost the runtime's own
+	// sentence, and the agent's outcome said "no reply text" instead.
+	if failed != nil && (final == nil || final.answersNothing()) {
+		return nil, failed
 	}
 	if final == nil {
 		// No response.completed seen (defensive): return an empty response rather
@@ -760,3 +775,9 @@ func toolOutputIsError(out string) bool {
 // green. The httptest-server tests in this package and in agentgateway remain
 // necessary and remain insufficient on their own.
 // ---------------------------------------------------------------------------
+
+// answersNothing reports whether a completed response carries no answer: no
+// message text and no tool call.
+func (r *responsesResponse) answersNothing() bool {
+	return strings.TrimSpace(r.messageText()) == "" && len(r.functionCalls()) == 0
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/redact"
 )
@@ -172,9 +173,11 @@ func liveOf(sessions []liveSession) focus.Live {
 
 // pluginSessionHints is plugins.HintFunc: the live sessions (not the chief)
 // whose focus history over the last focus.HistoryWindow shares at least
-// hintMinTerms words with message m's subject and body, best first — and, for
-// a pull-request review muster could not route, the session that authored it
-// (prAuthorHint). Any failure is no hint — logged, never a failed delivery.
+// hintMinTerms words with message m's subject and body, best first, then the
+// online mirrored windows whose repo name does (repoHints, no activity cutoff),
+// up to plugins.MaxHintSessions in all (mergeHints) — and, for a pull-request
+// review muster could not route, the session that authored it (prAuthorHint).
+// Any failure is no hint — logged, never a failed delivery.
 //
 // A TASK EVENT is matched on the TASK's words instead (taskEventHintText: its
 // title and body as stored, and the event's change line), never on the event's
@@ -203,31 +206,91 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 		}
 		live = kept
 	}
-	if len(live) == 0 {
-		return h
-	}
-	matches, err := s.ext.Focus.MatchHistory(ctx, text, liveOf(live), s.now().Add(-focus.HistoryWindow),
-		hintMinTerms, plugins.MaxHintSessions)
-	if err != nil {
-		s.logger.Printf("plugins: message %d: session hint: %v", m.ID, err)
-		return h
-	}
-	by := map[focus.Subject]liveSession{}
-	for _, ls := range live {
-		by[ls.sub] = ls
-	}
-	for _, mt := range matches {
-		ls, ok := by[mt.Subject]
-		if !ok {
-			continue // the store filtered on liveness already; belt and braces
+	var byFocus []plugins.SessionHint
+	if len(live) > 0 {
+		matches, err := s.ext.Focus.MatchHistory(ctx, text, liveOf(live), s.now().Add(-focus.HistoryWindow),
+			hintMinTerms, plugins.MaxHintSessions)
+		if err != nil {
+			s.logger.Printf("plugins: message %d: session hint: %v", m.ID, err)
 		}
-		sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where}
-		for _, t := range mt.Titles {
-			sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
+		by := map[focus.Subject]liveSession{}
+		for _, ls := range live {
+			by[ls.sub] = ls
 		}
-		h.Sessions = append(h.Sessions, sh)
+		for _, mt := range matches {
+			ls, ok := by[mt.Subject]
+			if !ok {
+				continue // the store filtered on liveness already; belt and braces
+			}
+			sh := plugins.SessionHint{ID: mt.Subject.String(), Name: ls.name, Host: ls.host, Where: ls.where}
+			for _, t := range mt.Titles {
+				sh.Titles = append(sh.Titles, plugins.HintTitle{Title: t.Title, At: t.At})
+			}
+			byFocus = append(byFocus, sh)
+		}
 	}
+	h.Sessions = mergeHints(byFocus, s.repoHints(ctx, text), plugins.MaxHintSessions)
 	return h
+}
+
+// mergeHints is the focus matches, then the repo matches not among them, at
+// most limit in all — focus_search's order (focusSearchAnswer). A session in
+// both is listed once, at its focus match's place, with its repo line.
+func mergeHints(byFocus, byRepo []plugins.SessionHint, limit int) []plugins.SessionHint {
+	repo := map[string]plugins.SessionHint{}
+	for _, x := range byRepo {
+		repo[x.ID] = x
+	}
+	out := make([]plugins.SessionHint, 0, len(byFocus)+len(byRepo))
+	listed := map[string]bool{}
+	for _, x := range byFocus {
+		if r, ok := repo[x.ID]; ok {
+			x.ByRepo, x.Repo, x.LastActive = true, r.Repo, r.LastActive
+		}
+		out = append(out, x)
+		listed[x.ID] = true
+	}
+	for _, x := range byRepo {
+		if !listed[x.ID] {
+			out = append(out, x)
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// repoHints is the hint's repo matches for text: the online mirrored Claude
+// Code windows of ctx's principal — every one, idle or not, the windows
+// route_to_session takes (mirrorClaudeEntries, the most recently active window
+// per conversation) — whose repo name the text covers in hintMinTerms parts
+// (focus.MatchRepos), best first. The window LABEL is not matched: it is a
+// host codename, not a task title (session_meta.go).
+//
+// 🔴 NO ACTIVITY CUTOFF, UNLIKE liveSessions. The session this exists for had
+// been open on its job for ten days without a turn: liveSessions' 24 h cutoff
+// left it out before any matching ran. Its line says when it was last active.
+func (s *Server) repoHints(ctx context.Context, text string) []plugins.SessionHint {
+	var metas []focus.SessionMeta
+	entries := map[focus.Subject]mirror.SessionView{}
+	for _, e := range s.mirrorClaudeEntries(ctx) {
+		sub := focus.MirrorSubject(e.ClaudeSession)
+		if _, seen := entries[sub]; seen {
+			continue
+		}
+		entries[sub] = e
+		if e.Repo != "" {
+			metas = append(metas, focus.SessionMeta{Subject: sub, Repo: e.Repo, ActiveAt: e.ActiveAt()})
+		}
+	}
+	var out []plugins.SessionHint
+	for _, mt := range focus.MatchRepos(text, metas, hintMinTerms, plugins.MaxHintSessions) {
+		e := entries[mt.Subject]
+		out = append(out, plugins.SessionHint{ID: mt.Subject.String(), Name: s.mirrorName(ctx, e).Text, Host: e.Host,
+			Where: e.Where(), Repo: e.Repo, ByRepo: true, LastActive: e.ActiveAt()})
+	}
+	return out
 }
 
 // taskEventHintText is what task event m's session hint is matched on — the

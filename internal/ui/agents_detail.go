@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -272,6 +273,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// agentChatScript's start() still waits for DOMContentLoaded.
 				bubbleClampScript(),
 				agentChatScript(v.Name),
+				DispatchCardGuard(),
 				// The detail page IS the chat: a single full-height chat pane between the
 				// header and the input bar at its bottom (flex-1 + min-h-0 so it fills + scrolls).
 				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
@@ -965,7 +967,17 @@ func agentChatPane(v AgentDetailView) g.Node {
 			hx("hx-get", "/ui/agents/"+v.Name+"/chat-log?session="+strconv.FormatInt(v.ActiveSessionID, 10)+chatLogSurfaceQuery(v.Surface)),
 			hx("hx-trigger", chatLogTrigger(v.Name)),
 			hx("hx-target", "this"),
-			hx("hx-swap", "innerHTML"),
+			// 🔴 settle:0ms IS LOAD-BEARING: IT IS WHAT KEEPS A LIVE CARD LISTENING
+			// ACROSS A RE-RENDER. htmx attaches a swapped-in element's listeners at
+			// SETTLE, 20ms after the swap by default, and the swap has already cleaned
+			// up the old elements, so for those 20ms a dispatch card this log draws
+			// (ui.liveCard) hears nothing: an agent.changed landing in the gap was
+			// dropped and the card kept the state the log rendered (measured: after
+			// the chief note's re-render, an agent.changed landing 2ms and 1ms
+			// before the new card's htmx:load, in 2 runs of 6, each lost; the card
+			// ended on a stale state). At 0 htmx settles in the same task as the swap, so
+			// there is no gap for an event to land in. Pinned by TestTheChatLogSettlesInTheSwap.
+			hx("hx-swap", "innerHTML "+ChatLogSettle),
 			// The version of the transcript drawn here (ChatLogBody): every refetch
 			// above sends it back, and the server answers 204 — no body, no swap —
 			// when what it would draw is still exactly this.
@@ -1112,6 +1124,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 	)
 }
 
+// ChatLogSettle is #chat-log's swap modifier: settle in the swap's own task (see there).
+const ChatLogSettle = "settle:0ms"
+
 // chatLogTrigger is #chat-log's hx-trigger: the events on which the transcript
 // re-fetches its partial from the server.
 //
@@ -1182,8 +1197,19 @@ func ChatLogBody(v AgentDetailView) ([]byte, string, error) {
 	if err := chatLogInner(v).Render(&b); err != nil {
 		return nil, "", err
 	}
-	sum := sha256.Sum256(b.Bytes())
-	return b.Bytes(), hex.EncodeToString(sum[:12]), nil
+	return b.Bytes(), chatLogVersionOf(b.Bytes()), nil
+}
+
+// dispatchVersionInLog matches a card's version attribute inside the log.
+var dispatchVersionInLog = regexp.MustCompile(` data-dispatch-version="[0-9]+"`)
+
+// chatLogVersionOf is the log's version: its bytes' digest, with every card's
+// data-dispatch-version left out. 🔴 A card's version changes on every render
+// (it is the render's clock), so hashing it made every refetch a 200 and a
+// re-render; it orders card swaps (dispatchCardGuardJS), it is not content.
+func chatLogVersionOf(body []byte) string {
+	sum := sha256.Sum256(dispatchVersionInLog.ReplaceAll(body, nil))
+	return hex.EncodeToString(sum[:12])
 }
 
 // chatLogVersioned is #chat-log's content plus its data-chat-version, which

@@ -8,7 +8,7 @@ import (
 )
 
 // TestTheAutoNameFreezesOnceInTheStore: against Postgres (the upsert's own
-// SQL, migration 0088). A write not marked nameable freezes nothing; the first
+// SQL, migration 0090). A write not marked nameable freezes nothing; the first
 // nameable write freezes its title; a later nameable write with another title
 // does not move it; and the history is untouched by any of it.
 func TestTheAutoNameFreezesOnceInTheStore(t *testing.T) {

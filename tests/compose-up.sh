@@ -56,8 +56,11 @@
 #     carries a marker that only a task on the board held — so the CLI called
 #     the model, the model called muster's tool over MCP, and the REAL tool
 #     result came back (the check is first shown to refuse a marker nobody
-#     wrote); a tool the chief does not pre-allow (task_comment) is DENIED and
-#     the turn ends instead of hanging; every model request is pinned to deepseek/deepseek-v4.1-flash and
+#     wrote); the model is offered exactly the chief's pre-allowed muster
+#     tools (no task_comment); a call to task_comment anyway is refused and
+#     leaves no comment; an offered tool the chief does not pre-allow (Bash
+#     `touch`) is DENIED, the file is not created, and the turn ends instead of
+#     hanging; every model request is pinned to deepseek/deepseek-v4.1-flash and
 #     carries the owner's key and nothing else; turned off, the supervisor
 #     reads off, no claude process runs, the model hears nothing for 15s, and
 #     the container stays up; then it is removed exactly as docs/chief.md says
@@ -433,25 +436,69 @@ phase_chief() {
   reply_names "$reply" "$marker" || fail "[chief] the chief's reply does not carry the marker from the real tool result: $reply"
   echo "ok   [chief] the chief's reply carries $marker, which only the board held: muster's tool result went through"
 
-  # A tool the chief does NOT pre-allow: its prompt is denied at once (nobody
-  # can answer one in this container), so the turn ends, saying so, instead of
-  # hanging. The reply is the fake's report of the error tool result.
-  reply="$(curl -sS -m 150 -H "Authorization: Bearer $(hook)" -H 'Content-Type: application/json' \
-    -d "{\"message\":\"Now comment on it, please. TASK-${task_id:-0}\"}" "$base/api/agents/chief/messages")" || {
-    chief_diagnostics
-    fail "[chief] an un-allowed tool's turn did not end within 150s (a prompt left hanging?): ${reply:-no reply}"
+  # The muster tools the model is offered are exactly the chief's pre-allowed
+  # ones (agentspec.ComposeChiefAllowedMCPTools, as muster serves them here):
+  # never task_comment, task_set_status, … — tools it could not run.
+  local led
+  led="$(fake_ledger)" || fail "[chief] could not read the fake model's ledger"
+  # EQUAL, not a subset: an allowed tool that stopped being served is red too.
+  # This stack sets no MUSTER_SESSION_ROUTING, so route_to_session is not
+  # served; it is expected exactly when the env file turns routing on.
+  local routing=0
+  grep -qx 'MUSTER_SESSION_ROUTING=1' "$tmp/env" && routing=1
+  python3 - "$led" "$routing" <<'PY' || fail "[chief] the chief's offered muster tools are not exactly its pre-allowed set: $led"
+import json, sys
+expected = {"sessions_overview", "fleet_list", "focus_search", "fleet_report", "tasks_list", "task_get", "attention_list",
+            "ask_owner"}
+if sys.argv[2] == "1":
+    expected.add("route_to_session")
+offered = {n[len("mcp__muster__"):] for r in json.loads(sys.argv[1]) for n in r.get("tool_names") or []
+           if n.startswith("mcp__muster__")}
+assert offered == expected, f"offered {sorted(offered)}, want exactly {sorted(expected)} (extra {sorted(offered - expected)}, missing {sorted(expected - offered)})"
+print(f"ok   [chief] the model is offered exactly the pre-allowed muster tools this stack serves: {sorted(offered)}")
+PY
+
+  # task_comment, which it is not offered, named anyway (the fake does): the
+  # CLI refuses it, the turn ends, and it does not run.
+  # chief_say sends one chat turn and prints the reply. A "busy" answer means
+  # the session was still finishing the previous turn and this one never ran
+  # (nothing was sent to the model), so it is sent again, for up to 60s; any
+  # other answer is returned as it is.
+  chief_say() {
+    local out n=0
+    while :; do
+      out="$(curl -sS -m 150 -H "Authorization: Bearer $(hook)" -H 'Content-Type: application/json' \
+        -d "$1" "$base/api/agents/chief/messages")" || { printf '%s' "$out"; return 1; }
+      grep -q '"type\\":\\"busy\\"\|another turn is already being driven' <<<"$out" || { printf '%s' "$out"; return 0; }
+      n=$((n + 1)); [ "$n" -lt 12 ] || { printf '%s' "$out"; return 0; }
+      sleep 5
+    done
   }
-  # Denied, not run: the tool result the model got is the denial (an error,
-  # naming denial), never task_comment's own answer.
-  python3 -c 'import json,sys; r=json.loads(sys.argv[1]).get("reply",""); sys.exit(0 if r.startswith("COMMENT-RESULT:") and "deni" in r.lower() else 1)' "$reply" ||
-    fail "[chief] an un-allowed tool's turn did not end denied: $reply"
+  reply="$(chief_say "{\"message\":\"Now comment on it, please. TASK-${task_id:-0}\"}")" || {
+    chief_diagnostics
+    fail "[chief] a turn naming an unoffered tool did not end within 150s: ${reply:-no reply}"
+  }
+  python3 -c 'import json,sys; r=json.loads(sys.argv[1]).get("reply",""); sys.exit(0 if r.startswith("COMMENT-RESULT:error:") else 1)' "$reply" ||
+    fail "[chief] a call to the unoffered task_comment did not end in an error: $reply"
   # And it did not run: the task holds no comment from it. (The call was a
   # valid task_comment on the marker task, so a run would have left one.)
   if [ -n "${task_id:-}" ]; then
     got="$(curl -fsS -H "Authorization: Bearer $(hook)" "$base/api/tasks/$task_id")" || fail "[chief] GET /api/tasks/$task_id"
-    if grep -q 'fake-llm comment that must never land' <<<"$got"; then fail "[chief] the denied task_comment ran: $got"; fi
+    if grep -q 'fake-llm comment that must never land' <<<"$got"; then fail "[chief] the unoffered task_comment ran: $got"; fi
   fi
-  echo "ok   [chief] an un-allowed tool (task_comment) is denied and the turn ends, not hangs"
+  echo "ok   [chief] the unoffered task_comment, called anyway, is refused and leaves no comment"
+
+  # An offered tool the chief does NOT pre-allow: its prompt is denied at once
+  # (nobody can answer one in this container), so the turn ends, saying so,
+  # instead of hanging. The reply is the fake's report of the error tool result.
+  reply="$(chief_say '{"message":"Now touch the file, please."}')" || {
+    chief_diagnostics
+    fail "[chief] an un-allowed tool's turn did not end within 150s (a prompt left hanging?): ${reply:-no reply}"
+  }
+  python3 -c 'import json,sys; r=json.loads(sys.argv[1]).get("reply",""); sys.exit(0 if r.startswith("BASH-RESULT:error:") and "deni" in r.lower() else 1)' "$reply" ||
+    fail "[chief] an un-allowed tool's turn did not end denied: $reply"
+  if dcc exec -T chief test -e /tmp/fake-llm-touch-must-never-land; then fail "[chief] the denied Bash touch ran"; fi
+  echo "ok   [chief] an un-allowed tool (Bash touch) is denied and the turn ends, not hangs"
 
   # The provider saw only the pinned model and the owner's key.
   led="$(fake_ledger)" || fail "[chief] could not read the fake model's ledger"

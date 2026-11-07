@@ -102,6 +102,7 @@ func agentStripBody(a AgentCardView) g.Node {
 		),
 		g.If(a.KickoffOwed, kickoffOwedBadge()),
 		g.If(a.KickoffFailed, kickoffFailedBadge()),
+		outcomeBadge(a),
 		workChip(a.Work),
 	}
 }
@@ -243,6 +244,7 @@ func agentNoticesBody(a AgentCardView) g.Node {
 		g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 			KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
 		g.If(a.KickoffAwaitingGrant, kickoffAwaitingGrantNotice()),
+		outcomeNotice(a),
 		g.If(a.GitHubProblem != "", githubProblemDetail(a.GitHubProblem)),
 	}
 }

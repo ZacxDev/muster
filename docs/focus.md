@@ -98,7 +98,7 @@ operator's codename for a tmux session, shared by every conversation that
 window ever holds. Once the conversation has an auto or manual name, the label
 moves to the row's tooltip and the search palette (it is still what the
 palette matches first). An agent's display name ranks by who set it
-(`agents.display_name_source`, migration `0088`): `manual`, `system` and
+(`agents.display_name_source`, migration `0090`): `manual`, `system` and
 `dispatch` above the auto name, `default` (the slug, copied) as the fallback. Existing rows were classified once by the migration: the slug
 copied is `default`, `#<id>` or `#<id> · …` is `dispatch`, `officer <id> #<n>`
 is `system`, and any other display name is `manual`, since a person set it.
@@ -106,7 +106,7 @@ is `system`, and any other display name is `manual`, since a person set it.
 The name is **stored**, not derived: focus history is pruned after 30 days, so
 "the oldest title" would move. The auto and manual names are columns of the
 session's focus row (`agent_focus.name_auto`, `name_manual`, migration
-`0088`), which lives as long as the session: an agent's dies with the agent; a
+`0090`), which lives as long as the session: an agent's dies with the agent; a
 mirrored one is pruned with its focus a retention after it was last seen, but a
 row carrying a name (auto or manual) is kept 90 days longer. A mirrored session's
 manual name follows its **conversation** (the key its focus has), so it moves
@@ -193,7 +193,7 @@ A manual, task (dispatch) or auto name is offered a rename — a task's name
 never changes on its own, so this offer is how it moves on — but never a
 system name (the chief, an officer) or a technical fallback. **Rename to "…"**
 is an ordinary rename, so the new name is manual. **Keep the name** records
-the dismissal per user (`agent_focus.drift_dismissed`, migration `0089`): the
+the dismissal per user (`agent_focus.drift_dismissed`, migration `0091`): the
 offer stays hidden while the focus title is the one it was dismissed at, and
 comes back when the title changes.
 

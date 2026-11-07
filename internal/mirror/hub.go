@@ -185,7 +185,10 @@ type Hub struct {
 	// waitingNotify is called with a host's owner whenever the set of its
 	// windows whose Claude Code waits on the person changes (SetWaitingNotify).
 	waitingNotify func(owner int64)
-	now           func() time.Time
+	// statusNotify is called with a host's owner whenever any of its agent
+	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
+	statusNotify func(owner int64)
+	now          func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
 	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
@@ -279,6 +282,31 @@ func (h *Hub) SetWaitingNotify(fn func(owner int64)) {
 	h.mu.Lock()
 	h.waitingNotify = fn
 	h.mu.Unlock()
+}
+
+// SetStatusNotify installs the hook called (on its own goroutine) with a
+// host's owner whenever the status of any of that host's agent windows changes
+// — busy, idle or waiting, or a window arriving or leaving with a status. The
+// waiting-set hook (SetWaitingNotify) does not fire for a window going from
+// busy to idle, which is exactly where a turn ends: the ask log
+// (internal/api's askLogMirrorChanged) reads a plain-text question there.
+func (h *Hub) SetStatusNotify(fn func(owner int64)) {
+	h.mu.Lock()
+	h.statusNotify = fn
+	h.mu.Unlock()
+}
+
+// statusWindows is the sorted (address, status) pairs of ws's agent windows
+// that report a status.
+func statusWindows(ws []Window) []string {
+	var out []string
+	for _, w := range ws {
+		if w.AgentRuntime() != "" && w.Status != "" {
+			out = append(out, w.Session+"\x00"+w.ID+"\x00"+w.Status)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // waitingWindows is the sorted addresses of ws's windows whose agent session
@@ -880,6 +908,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				hc.mu.Lock()
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				waitingMoved := !slices.Equal(waitingWindows(hc.windows), waitingWindows(windows))
+				statusMoved := !slices.Equal(statusWindows(hc.windows), statusWindows(windows))
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
 				hc.hostLimit = CleanHostLimit(m.HostLimit)
 				hc.mu.Unlock()
@@ -889,6 +918,14 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if waitingMoved {
 					h.mu.Lock()
 					fn := h.waitingNotify
+					h.mu.Unlock()
+					if fn != nil {
+						go fn(hc.key.owner)
+					}
+				}
+				if statusMoved {
+					h.mu.Lock()
+					fn := h.statusNotify
 					h.mu.Unlock()
 					if fn != nil {
 						go fn(hc.key.owner)

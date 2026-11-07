@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 )
@@ -123,5 +124,19 @@ func TestTheStallPromptCarriesTheSessionsStableName(t *testing.T) {
 	f.gw.mu.Unlock()
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "session: Release prep") {
 		t.Fatalf("the stall prompt does not name the session by its stable name: %q", prompts)
+	}
+}
+
+// TestAnAgentsOutcomePushNamesItByItsStableName: an outcome's push and chief
+// note label (agentLabel) is the agent's stable name — here its auto name over
+// a slug-only display name — not its slug.
+func TestAnAgentsOutcomePushNamesItByItsStableName(t *testing.T) {
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{
+		focus.AgentSubject(7): {Subject: focus.AgentSubject(7), Title: "Fixing it", Name: focus.Name{Auto: "Billing migration"}},
+	}}
+	s, _ := focusMirrorServer(t, &fakeMirror{online: true}, store, nil)
+	a := agents.Agent{ID: 7, Name: "brave-otter", DisplayName: "brave-otter"}
+	if got := s.agentLabel(operatorCtx(), a); got != "Billing migration" {
+		t.Fatalf("agentLabel = %q, want the stable name", got)
 	}
 }

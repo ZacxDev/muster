@@ -100,6 +100,9 @@ func (m *memStore) RecentTitles(context.Context, Live, time.Time, int) (map[Subj
 func (m *memStore) SearchTitles(context.Context, string, Live, time.Time, int) ([]HistoryHit, error) {
 	return nil, nil
 }
+func (m *memStore) SearchMeta(context.Context, string, []SessionMeta, int) ([]Subject, error) {
+	return nil, nil
+}
 func (m *memStore) WindowHistory(context.Context, time.Time, time.Time, int) (WindowReport, error) {
 	return WindowReport{}, nil
 }

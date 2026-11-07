@@ -169,6 +169,12 @@ type Config struct {
 	ScopeMap ScopeMap
 	// Logger is optional. No line it is given ever carries memo text.
 	Logger *log.Logger
+	// TurnHold, when set, is called with the agent as a memo turn is sent and
+	// returns the function that ends it: cmd/muster-server passes
+	// api.Server.OutcomeHold, so a dispatched agent reading a memo (a claude-code
+	// turn streams nothing until it ends) is working to the outcome watchdog,
+	// never "silent", and the memo turn's reply is judged as nothing. Optional.
+	TurnHold func(a agents.Agent) (release func())
 }
 
 // Relay delivers memos. Build it with [New].
@@ -184,6 +190,7 @@ type Relay struct {
 	owner string
 	log   *log.Logger
 	turn  time.Duration
+	hold  func(a agents.Agent) (release func())
 
 	wg       sync.WaitGroup
 	done     chan struct{}
@@ -218,7 +225,7 @@ func New(cfg Config) (*Relay, error) {
 		agents: cfg.Agents, taskRepo: cfg.TaskRepo, gw: cfg.Gateway, src: cfg.Source, ledger: cfg.Ledger,
 		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
 		scopes: cfg.ScopeMap,
-		log:    cfg.Logger, turn: DefaultTurnTimeout,
+		log:    cfg.Logger, turn: DefaultTurnTimeout, hold: cfg.TurnHold,
 		done: make(chan struct{}),
 		sent: map[int64]map[Key]bool{}, said: map[int64]string{},
 		counts: map[string]int{},
@@ -608,7 +615,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 	}
 
 	message := Render(scope, batch)
-	reply, err := r.gw.Send(ctx, target, sess.SessionKey, message, nil)
+	reply, err := r.send(ctx, a, target, sess.SessionKey, message)
 	if result := unsent(err); result != "" {
 		r.count(familyDelivery, result)
 		return
@@ -671,4 +678,20 @@ func failureNote(err error) string {
 	default:
 		return fmt.Sprintf(" (the send failed: %T)", err)
 	}
+}
+
+// send is one memo turn to a, held for its duration (Hold) and released on
+// every return.
+func (r *Relay) send(ctx context.Context, a agents.Agent, target agentgateway.Target, key, message string) (string, error) {
+	defer r.Hold(a)()
+	return r.gw.Send(ctx, target, key, message, nil)
+}
+
+// Hold holds a's turn the way every memo turn to it is held (Config.TurnHold)
+// and returns the release; a no-op without a TurnHold.
+func (r *Relay) Hold(a agents.Agent) (release func()) {
+	if r.hold == nil {
+		return func() {}
+	}
+	return r.hold(a)
 }

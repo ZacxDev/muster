@@ -1271,7 +1271,13 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	// every tool allowed (internal/podagent/hqmcp.go) — except the Compose
 	// chief, whose pre-allowed tools are exactly agentspec.ComposeChiefAllowedMCPTools
 	// (operator decision): no blanket HQ approval there.
-	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting),
+	// The Compose chief's prose names exactly the tools it can run there
+	// (agentspec.ChiefInstructionsCompose).
+	instructions := agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting)
+	if cfg.ComposeContainer {
+		instructions = agentspec.ChiefInstructionsCompose(cfg.Plugins, cfg.SessionRouting)
+	}
+	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: instructions,
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, LLMRoute: route}})
 }
 

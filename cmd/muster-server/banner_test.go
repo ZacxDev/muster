@@ -15,7 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -274,6 +276,8 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The outcome watchdog: `agent watchdog: ON — …` with all three, or OFF.
+	envAgentStuckNoReply, envAgentStuckSilent, envAgentWatchdogInterval,
 	// The officer runtime: `officers: ON — n declared …` or `officers: OFF`.
 	envOfficers,
 	// The Agents list's Idle section: one line in both directions (ON with the
@@ -431,6 +435,10 @@ var bannerLedger = []string{
 	// 30 s and, where the chief's nudges classify, the same classifier runs on
 	// it — so the log must say which state this is.
 	envSessionState,
+	// THE ASK LOG IS LEDGERED: ON, every question an agent asks is recorded
+	// with its answer — transcript text, kept for the text TTL — so the log
+	// must say whether it is.
+	envAskLog,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -451,6 +459,9 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
+	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
+		"log off, whose OFF line names " + envAskLog,
 	envChiefRuntime: "set, the compose driver logs `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` at boot " +
 		"(buildComposeDriver, pinned by TestTheComposeChiefIsWrittenWhereItsContainerReadsIt); unset there is no Compose " +
 		"chief, and the Features page and `muster doctor` report the chief's state with its reason. It is not on the " +
@@ -843,6 +854,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// Session state: the banner branches on ext.Episodes (below).
 		SessionState: true,
+		// The ask log: the banner branches on ext.AskLog (below).
+		AskLog: askLogConfig{On: true, TextTTL: 72 * time.Hour},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -851,6 +864,10 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The Agents list's Idle section, at a value that is not the default.
 		AgentsIdleAfter:    72 * time.Hour,
 		AgentsIdleAfterRaw: "3d",
+		// The outcome watchdog: the banner branches on ext.Outcomes (below),
+		// and reports these, at values that are not the defaults.
+		AgentStuck:            agentoutcome.Thresholds{NoReply: 7 * time.Minute, Silent: 45 * time.Minute},
+		AgentWatchdogInterval: 2 * time.Minute,
 		// Android passkeys: the banner branches on ext.AssetLinks (below), built
 		// by the real config.assetLinks over these values.
 		AndroidPackage:    "app.example.passkeys",
@@ -862,6 +879,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		AssetLinks:  assetLinks,
+		Outcomes:    agentoutcome.NewPG(nil),
 		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),
@@ -882,6 +900,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionRuntimes: []string{"claude-code"},
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
+		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

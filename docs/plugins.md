@@ -597,7 +597,7 @@ it. The flow:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `agent_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent — **one button per target**, *"agent_dispatch on pod/claude-code: start a new agent on it"*, since the tool has no default target), returned to the chief as `actions_offered`. Your click reaches the chief as a turn you did not type, so it cannot pass `owner_asked`; instead `agent_dispatch` on that task then takes **exactly the target you clicked** (any other is refused, naming yours). `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). On a task the chief filed **gated** (its only gate is the one `task_create_gated` set), the buttons [release the gate from the ask](#releasing-the-chiefs-gate-from-the-ask): *"Release & dispatch on <target>, repo <owner/name>"* (or *", no repository"*) once per target `agent_dispatch` would accept on the released task, and *"Release only: …"*. `agent_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
 | `agent_dispatch {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}` | Starts a new agent: on the task, or — without `task_id` — from a prompt alone ([below](#agent_dispatch-the-guards)). `target` is **required and has no default**: today `pod/claude-code` or `pod/gateway` (a `host/<host>/claude` or `host/<host>/opencode` target is refused until host spawning ships, [design](design/chief-dispatch.md)). A call without one is refused with the targets that exist now and the budget, so the chief asks you which. On a task the chief filed **gated** it starts only with `owner_asked: true`, during a turn in which you told the chief, typing in its chat, to do the work ([guard 13](#agent_dispatch-the-guards)). Either pod kind gets the task's repository and branch (`base` picks another branch); a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent gets the task's model, or `model`. `prompt` (at most 8 KiB) opens the agent's first message. `worker_pool` makes a claude-code agent a [machine-job worker](jobs.md). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. The retired name `task_dispatch` answers *"task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"*. | see below |
 
@@ -618,6 +618,80 @@ delivery attempt, successful or not, or from when it was stored if it has had
 none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
+
+### Releasing the chief's gate from the ask
+
+A task the chief files with `task_create_gated` — typically feedback a plugin
+message brought — stays gated until you release it. When the chief routes it
+to you (`task_route_attention`), the ask on `/attention` and on your phone
+offers, beside Dismiss:
+
+- **Release & dispatch on `<target>`, repo `<owner/name>`** (or *no
+  repository*) — one per target `agent_dispatch` would start on the task once
+  released (the same predicate as the ungated offer: your opt-in, the
+  deployment, the task, the budget), naming the task's repository. muster
+  removes the gate as it records your answer; the answer then reaches the
+  chief like any other, and the chief calls `agent_dispatch` on the task with
+  **exactly that target and that repository** (guard 12a refuses any other
+  target, and any `repo` that would put the agent somewhere else than the
+  button said). If the chief cannot start it
+  after all (the budget filled in between, say), the task is simply an
+  ungated task and the chief comes back to you with `task_route_attention`.
+- **Release only** — muster removes the gate and nothing is started: a
+  dispatch without `owner_asked` on that task is refused.
+
+When a start would not be possible even once released (you have not opted in
+to the chief starting agents, or its budget is full), only Release only is
+offered, and the ask says why. The release options come first — Release &
+dispatch on the first target, then Release only — because a phone
+notification draws at most two options beside Dismiss. A repository name long
+enough to push its button past the phone's 140-character chip leaves that
+button off the notification (it stays on the Attention view).
+
+**Your Release answer stands.** Once you tap Release only (or Release &
+dispatch), a newer answer about the same task given through
+`attention_answer` does not undo it: only another answer of yours on the
+Attention view or your phone replaces it.
+
+**Who can release.** Only your own tap: an answer on the Attention view from
+your signed-in browser, or from your paired phone (a signed device action).
+The same option given through a mirrored session's `attention_answer` is
+refused before it is recorded, with *"only your owner can release a gate,
+tapping it on muster's Attention view or their phone …"*; and the answer path
+itself refuses any principal that is not you through one of those two doors
+(an agent's, a plugin's, a personal API token's, the hook's), so a door added
+later does not inherit the power. The chief has
+no way to answer its own ask (its `chief_ask` answers reach only questions put
+to it). The release keys on structure, never on words: the ask must be one
+muster linked to the task (`task_route_attention`'s, never an agent's
+`attention_ask`) and the answer one of the options stored with it, so the same
+words typed as free text, or offered on any other ask, release nothing.
+
+**A stale ask fails closed.** If the task changed after the ask was filed —
+its gate was already released on the board, a gate of yours was added, it is
+no longer open, or it is gone — the tap is refused with a sentence saying
+which (*"Not released: …"*), nothing is recorded or released, and the ask
+stays open for Dismiss.
+
+**What is recorded.** An `audit_log` row `task.gate_released_by_answer` on
+`note:<id>`, whose actor is you and the door you used (`session` or
+`device`), with the ask's id, the gates and your answer; and a comment on the
+task by muster naming the ask. The audit row is written **before** the gate
+is removed: if it cannot be written, the gate stays on and the comment says
+so. These writes run without the answer request's cancellation, so closing
+the page right after tapping does not leave the gate half-released. The
+checks, the answer and the removal are separate statements: a gate added
+between them stays on (only the verified tag is removed), so the start is
+still refused.
+
+**The trust boundary.** The feedback's text never chooses where an agent runs:
+the targets on the buttons are the deployment's (`agent_dispatch`'s own target
+list), and the start is held to the one you tapped and to the repository the
+button showed. The task's repository may itself have been written while the
+chief read the feedback; that is why the button shows it before you tap (and
+it must still be one of your connected repositories, guard 12b). The task's
+body is the one thing the text still shapes: the started agent reads it as
+data under muster's rules.
 
 ### `agent_dispatch`: the guards
 
@@ -697,6 +771,11 @@ Each refusal has its own sentence, in this order:
    12a. On a task whose newest answer of yours to an ask about it is one of
    `task_route_attention`'s per-target buttons, a call without `owner_asked`
    names another target (*"your owner chose pod/gateway for this task …"*).
+   A *"Release & dispatch on <target>, …"* answer binds the target and the
+   repository it names, an owner's Release answer is not undone by a newer
+   `attention_answer` one, and a
+   *"Release only"* answer refuses any start without `owner_asked`
+   (*"your owner released this task's gate and chose to start nothing …"*).
    This only narrows: it lets nothing through the other guards refuse.
 
    12a′. The pod kind is one you have no credential for.
@@ -1135,6 +1214,27 @@ turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
 
+A session is also listed by **its repo**, whether or not its focus matches:
+an online mirrored Claude Code window, however long it has been idle, whose
+repository name (as its host reports it, split on `-`, `_` and `.`) the
+message covers in at least two parts. A run counts when the message spells
+parts of the name in a row (`yt-thumbnail` or "YT Thumbnail" for
+`acme-app-yt-thumbnail`) and the run holds a part that is an identifier on
+its own (a word with digits, or one that is not a dictionary word — so
+`new-project` is never named by "a new project") and a part no other live
+repo's name has — so "acme app" names none of a family of `acme-app-*` repos.
+These come after the focus matches, within the three; between two windows
+covering as many parts, the more recently active goes first. The
+window label is not matched here: a Claude window's label is its host's
+codename (`<codename>:<n>`), not a task title. Such a session's line says it
+was listed by its repo, with the repo and when it was last active: a session
+open on a job but idle for days has no focus in the window, and
+`sessions_overview` lists only the last 24 hours. The repo name is the host's
+words, inside the fence like the titles. `focus_search` does the same after
+its focus matches, and there the label counts too (a codename typed on
+purpose): an online mirrored session whose repo or label matches the query
+comes back with `matched: "repo or window label"`.
+
 A **task event** gets the block too, matched on the task's own title and
 body (as muster stores them) and its change line, never on the event's JSON,
 and **leaving out the agents bound to the task** — those the event records and
@@ -1200,13 +1300,15 @@ below.
 **Feedback** gets a decision every time. A provisioned chief's standing
 instructions say that a plugin message which is feedback (someone using your
 work reports a bug, asks for a feature or says something confused them),
-whichever plugin brought it, is either filed or settled. When it can be acted
-on, the chief files it with `task_create_gated`, then, when
+whichever plugin brought it, is routed, filed or settled. When it can be acted
+on and no live session took it (route first, above), the chief files it with `task_create_gated`, then, when
 [task routing](#routing-a-task-to-the-chief) is on, calls
 `task_route_attention` with the new task's id and a one-line note, so the
-task reaches your phone with that note. The ask has no `agent_dispatch`
-buttons, because the task is gated and only you can release it: approve it on
-the board, or tell the chief in its chat. Thanks, a +1, chatter, or a duplicate
+task reaches your phone with that note. The task is gated, so the ask's
+buttons are yours to [release it from the ask](#releasing-the-chiefs-gate-from-the-ask):
+**Release & dispatch** (muster releases the gate, then the chief starts the
+agent on the target you tapped) and **Release only**, beside Dismiss. You can
+also approve it on the board, or tell the chief in its chat. Thanks, a +1, chatter, or a duplicate
 of a task already open is settled with a short reason instead. This is the
 chief's judgement under its instructions. muster does not check it: the
 15-minute ask below covers only agent-mail and ClankMail.

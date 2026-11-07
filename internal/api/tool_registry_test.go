@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -189,6 +190,8 @@ func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
 		}
 		return out
 	}
+	// The outcome store, so agent_report_done (gated on it) is in the registry.
+	g.srv.ext.Outcomes = agentoutcome.NewPG(nil)
 	if got := chiefOnly(g.srv); !reflect.DeepEqual(got, chiefOnlyLedger) {
 		t.Errorf("chief-only tools = %v, want exactly %v", got, chiefOnlyLedger)
 	}

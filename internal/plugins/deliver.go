@@ -81,6 +81,9 @@ type DelivererConfig struct {
 	// subject; the turn then lists them after the message (hints.go). Nil: no
 	// hint block, ever.
 	Hints HintFunc
+	// Tools, when set, is the chief's restricted tool set (ChiefTools); the
+	// turn names only tools in it. Nil, or nil for a chief: unrestricted.
+	Tools func(ctx context.Context, chief agents.Agent) ChiefTools
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
@@ -102,6 +105,8 @@ type Deliverer struct {
 	routing bool
 	// hints: DelivererConfig.Hints.
 	hints HintFunc
+	// tools: DelivererConfig.Tools.
+	tools func(ctx context.Context, chief agents.Agent) ChiefTools
 	// owner names this process in an agent's session claim.
 	owner string
 }
@@ -119,7 +124,7 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
 	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout,
-		routing: cfg.Routing, hints: cfg.Hints}
+		routing: cfg.Routing, hints: cfg.Hints, tools: cfg.Tools}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -249,7 +254,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return Result{Outcome: OutcomeSettled}
 	}
 
-	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()})
+	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()}, d.ToolsFor(ctx, fresh))
 	pc := &agents.PartCollector{}
 	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
 
@@ -301,8 +306,16 @@ func (d *Deliverer) Handed(ctx context.Context, p Plugin, chief agents.Agent, m 
 		return err
 	}
 	_, err = d.agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user",
-		Content: RenderMessage(p, m, d.routing, Hints{}, Retry{Now: time.Now()}) + "\n\n" + note})
+		Content: RenderMessage(p, m, d.routing, Hints{}, Retry{Now: time.Now()}, d.ToolsFor(ctx, chief)) + "\n\n" + note})
 	return err
+}
+
+// ToolsFor is chief's restricted tool set (DelivererConfig.Tools), or nil.
+func (d *Deliverer) ToolsFor(ctx context.Context, chief agents.Agent) ChiefTools {
+	if d.tools == nil {
+		return nil
+	}
+	return d.tools(ctx, chief)
 }
 
 // attempted counts a pending attempt on the message and returns it.

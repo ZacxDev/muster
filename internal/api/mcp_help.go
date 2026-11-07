@@ -68,13 +68,17 @@ type mcpCatalog struct {
 	served []map[string]any // what tools/list answers, in base's order
 }
 
-// newMCPCatalog builds the catalog of a surface offering tools. A surface
-// offering none gets an empty catalog: no muster_help.
-func newMCPCatalog(tools []agents.ToolDef) mcpCatalog {
+// newMCPCatalog builds the catalog of a surface offering tools, with
+// muster_help when help is set. A surface offering none gets an empty
+// catalog: no muster_help.
+func newMCPCatalog(tools []agents.ToolDef, help bool) mcpCatalog {
 	if len(tools) == 0 {
 		return mcpCatalog{}
 	}
-	base := append(append([]agents.ToolDef(nil), tools...), mcpHelpToolDef())
+	base := append([]agents.ToolDef(nil), tools...)
+	if help {
+		base = append(base, mcpHelpToolDef())
+	}
 	c := mcpCatalog{base: base}
 	for _, d := range base {
 		c.served = append(c.served, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})

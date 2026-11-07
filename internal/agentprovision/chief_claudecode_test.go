@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -170,6 +173,50 @@ func TestOnlyTheClaudeCodeChiefIsOfferedTheHQServer(t *testing.T) {
 		for _, s := range spec.Secrets {
 			if s.Name == "CCD_HQ_MCP" {
 				t.Errorf("%s: CCD_HQ_MCP is a secret; it is a flag", name)
+			}
+		}
+	}
+}
+
+// TestTheComposeChiefsProseNamesOnlyTheToolsItsSpecAllows is the seam between
+// the two halves of the Compose chief's built spec: every muster tool its
+// CLAUDE.md names is in the spec's own pre-allow list (the env the supervisor
+// turns into permissions.allow), in every plugins/routing state — every other
+// prompt is denied in that container. Control: the Kubernetes chief's spec
+// carries no allow list and keeps the claude-code chief prose.
+func TestTheComposeChiefsProseNamesOnlyTheToolsItsSpecAllows(t *testing.T) {
+	re := regexp.MustCompile(`mcp__muster__([a-z_]+)`)
+	for _, compose := range []bool{true, false} {
+		for _, combo := range []struct{ plugins, routing bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+			cfg := ccSpecConfig()
+			cfg.ComposeContainer = compose
+			cfg.Plugins, cfg.SessionRouting = combo.plugins, combo.routing
+			row := ccRow(agents.ChiefName)
+			spec, err := adapterWith(t, cfg, row).buildSpec(context.Background(), row)
+			if err != nil {
+				t.Fatalf("compose=%v %+v: %v", compose, combo, err)
+			}
+			prose := string(spec.Files[0].Content)
+			var allow string
+			for _, e := range spec.Env {
+				if e.Name == podagent.EnvAllowMCPTools {
+					allow = e.Value
+				}
+			}
+			if !compose {
+				if allow != "" || prose != agentspec.ChiefInstructionsClaudeCode(combo.plugins, combo.routing) {
+					t.Errorf("control %+v: the Kubernetes chief's allow list = %q, or its prose changed", combo, allow)
+				}
+				continue
+			}
+			if prose != agentspec.ChiefInstructionsCompose(combo.plugins, combo.routing) {
+				t.Errorf("%+v: the Compose chief's CLAUDE.md is not ChiefInstructionsCompose", combo)
+			}
+			allowed := strings.Split(allow, ",")
+			for _, m := range re.FindAllStringSubmatch(prose, -1) {
+				if !slices.Contains(allowed, m[1]) {
+					t.Errorf("%+v: the Compose chief's prose names %s, which its spec does not pre-allow (%s)", combo, m[1], allow)
+				}
 			}
 		}
 	}

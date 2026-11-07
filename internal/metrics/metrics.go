@@ -107,6 +107,49 @@ var (
 		Help: "Answers typed into a mirrored session's AskUserQuestion picker, by outcome.",
 	}, []string{"result"})
 
+	// THE ASK LOG (internal/asklog; docs/asks.md). Every label is a closed
+	// vocabulary: kind is one of asklog.Kinds, answered_by one of owner,
+	// chief, auto, none, stage one of read, classify, write. 🔴 No text, host,
+	// repository, session or rule id is ever a label (the design's privacy
+	// rule: the metrics outlive the text and are less protected than the
+	// table).
+	//
+	// AsksTotal counts asks recorded, one per new row (a capture that ran
+	// twice counts once).
+	AsksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_asks_total",
+		Help: "Asks an agent put to its owner, recorded in the ask log, by kind.",
+	}, []string{"kind"})
+	// AskPlainTextPrefilter counts turn ends whose last assistant message was
+	// read for a plain-text question, by whether the pre-filter kept it (a row
+	// is written) or dropped it (none is). What the classifier at capture
+	// would cost is read off kept before MUSTER_ASK_LOG_CLASSIFY is turned on.
+	AskPlainTextPrefilter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_ask_plain_text_prefilter_total",
+		Help: "Turn ends read for a plain-text question, by pre-filter result (kept|dropped).",
+	}, []string{"result"})
+	// AskAnswerSeconds is how long an ask waited, from asked to how it ended:
+	// answered_by owner, chief (its answer, or a nudge it queued) or other (a
+	// routed message) for an answer, none for an ask that ended unanswered
+	// (expired, cancelled, moved on, superseded, gone). A row a restart closed
+	// unknown is NOT observed (the close is one UPDATE across rows, and its
+	// time says nothing about the ask). auto is the later phases' (an
+	// auto-answer); nothing observes it yet.
+	AskAnswerSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "muster_ask_answer_seconds",
+		Help:    "Time from an ask to its end, by kind and who answered (owner|chief|other|auto|none).",
+		Buckets: []float64{5, 15, 30, 60, 120, 300, 900, 1800, 3600, 4 * 3600, 24 * 3600},
+	}, []string{"kind", "answered_by"})
+	// AskCaptureErrors counts captures that failed — the transcript could not
+	// be read (read), the classifier failed (classify), or the row could not
+	// be written or the capture queue was full (write). 🔴 A failure is
+	// counted and logged, never surfaced: the ask itself went to the owner as
+	// before. Any sustained rate means the log is missing asks.
+	AskCaptureErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_ask_capture_errors_total",
+		Help: "Ask log captures that failed, by kind and stage (read|classify|write).",
+	}, []string{"kind", "stage"})
+
 	// AgentProvision counts agent provisioning attempts.
 	AgentProvision = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_agent_provision_total",

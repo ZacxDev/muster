@@ -1054,7 +1054,12 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// still belongs in the session it was sent to.
 	store := context.WithoutCancel(ctx)
 	_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: j.Prompt})
-	reply, err := s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
+	// Held open for the outcome watchdog while it runs (a long job is working,
+	// not silent), and judged as nothing: a job's reply is its result.
+	reply, err := func() (string, error) {
+		defer s.OutcomeHold(a)()
+		return s.ext.Gateway.Chat(turnCtx, a, sess.SessionKey, j.Prompt, nil)
+	}()
 	if reply != "" {
 		_, _ = s.ext.Agents.AddChatMessage(store, agents.ChatMessage{AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 	}

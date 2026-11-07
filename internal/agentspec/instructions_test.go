@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "bd1d82b8d6235182371e742c0e067c3b3335ef2b7a1b52f607009dbabd476b4d",
+			want: "9eb631622b47331e9a4a503ffcbac1e33f9860a5d4cdf7d834b1059c97f30ffd",
 			min:  1000,
 		},
 		{
@@ -370,8 +370,32 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "cd7db3098eab43daf2127360966de6b79365d46b440f1b6e621adbbd1be554d5",
+			want: "e210d97b53896ae1a68cf36ca1a76981b4b7590b44200ebc26fa0796074f4b90",
 			min:  1000,
+		},
+		{
+			name: "chiefComposeToolsSection, routing on",
+			text: chiefComposeToolsSection(ComposeChiefTools(true)),
+			want: "4afdf4480931fb1a49bed7037c1e58607f532945cb609ebb580a7352d4002873",
+			min:  600,
+		},
+		{
+			name: "chiefComposeToolsSection, routing off",
+			text: chiefComposeToolsSection(ComposeChiefTools(false)),
+			want: "6c5c21bdc09016b69acda41bca48047951ecc5bd1281f071d0f3c3e2c31a4897",
+			min:  600,
+		},
+		{
+			name: "chiefComposePluginSection, routing on",
+			text: chiefComposePluginSection(ComposeChiefTools(true)),
+			want: "a2999ed946fa26578ff46d5260a04fee6eab70063e4e8a8585c9614593e926b5",
+			min:  500,
+		},
+		{
+			name: "chiefComposePluginSection, routing off",
+			text: chiefComposePluginSection(ComposeChiefTools(false)),
+			want: "08d30ff61841bcdc6c618ff7deaabff053f526555fa02b8283c18ca66d42c826",
+			min:  500,
 		},
 		{
 			name: "chiefAskOwnerSection",
@@ -463,6 +487,26 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
 			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+		},
+		{
+			name: "compose, plugins off, routing off",
+			got:  ChiefInstructionsCompose(false, false),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)),
+		},
+		{
+			name: "compose, plugins off, routing on",
+			got:  ChiefInstructionsCompose(false, true),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+		},
+		{
+			name: "compose, plugins on, routing off",
+			got:  ChiefInstructionsCompose(true, false),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
+		},
+		{
+			name: "compose, plugins on, routing on",
+			got:  ChiefInstructionsCompose(true, true),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
@@ -708,7 +752,7 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		// when they named no model it ASKS with ask_owner, never picking one.
 		"Its target has no default; map your owner's words to one:",
 		"\"with Claude\", or any Claude model → `pod/claude-code` (no model);",
-		"any other model they name → `pod/gateway` with that model, as `openrouter/<provider>/<model>`;",
+		"any other model they name → `pod/gateway` with that model (its OpenRouter model id or name; muster resolves it);",
 		"\"mirrored\" → `mirrored`, which is refused until mirrored dispatch ships (say so; never start a cluster agent instead).",
 		"If they named no model, call it without a target:",
 		"Ask them which with `ask_owner`",
@@ -786,17 +830,21 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 // generic on purpose: it keys on what a message SAYS (a bug report, a feature
 // request, confusion), never on which plugin brought it.
 //
-// ⚠ IT PROMISES NO DISPATCH BUTTONS. The task is gated, and task_route_attention
-// offers agent_dispatch only on an ungated task (internal/api
-// chiefDispatchTaskBlock), so the paragraph says the task stays gated.
+// ⚠ ITS BUTTONS ARE THE OWNER'S RELEASE. The task is gated, so
+// task_route_attention offers "Release & dispatch on <target>" and "Release
+// only" (internal/api answer_release.go): the owner's tap releases the gate,
+// and only then does the chief call agent_dispatch, on the target they tapped.
 func TestTheChiefTriagesFeedback(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	para := func(p string) string {
 		return "Some plugin messages are feedback: someone using your owner's work reports a bug, " +
 			"asks for a feature or says something confused them. Never leave one without a decision. " +
-			"When it is something to act on, file it with `" + p + "task_create_gated` and, when your tool list has `" +
+			"When it is something to act on and no session took it (above), file it with `" + p + "task_create_gated` and, when your tool list has `" +
 			p + "task_route_attention`, call it with the new task's id and a one-line note saying what the feedback is: " +
-			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above. " +
+			"it puts the task on your owner's phone with your note. The task stays gated until your owner releases it, as above, " +
+			"or from that ask: it offers them Release & dispatch and Release only. On a \"Release & dispatch on <target>\" answer " +
+			"muster has already released the gate, so call `" + p + "agent_dispatch` with the task's id, exactly that target and no repo; " +
+			"on \"Release only\", start nothing. " +
 			"When it is not something to act on — thanks, a +1, chatter, or the same thing as a task already open — call `" +
 			p + "plugin_message_settle` with its message_id and a short reason (for a duplicate, the open task's id)."
 	}

@@ -109,6 +109,10 @@ type Server struct {
 	// chiefSwitchLock): owner id → *sync.Mutex.
 	chiefSwitch sync.Map
 
+	// approveLocks is each owner's dispatch_approve lock (dispatch_hold_tools.go
+	// approveLock): owner id → *sync.Mutex.
+	approveLocks sync.Map
+
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 
@@ -134,6 +138,10 @@ type Server struct {
 	// (session_push.go): EpisodeWaitingGrace, set by New; a test may set
 	// another, 0 for none.
 	waitingGrace time.Duration
+
+	// askLog is the ask log's capture state (ask_log.go), nil when
+	// Extensions.AskLog is unset; set by UseExtensions.
+	askLog *askLogger
 
 	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
 	// transcript read (chief_nudge.go nudgeTranscript).
@@ -295,6 +303,10 @@ type Server struct {
 
 	taskProvisionedMu       sync.Mutex
 	taskProvisionedNotified map[int64]bool
+
+	// agentOutcomes is the outcome tracker's in-process state (agent_outcome.go):
+	// activity-write throttling and the turns open in this process.
+	agentOutcomes outcomeTracker
 
 	taskDoneMu       sync.Mutex
 	taskDoneNotified map[int64]bool

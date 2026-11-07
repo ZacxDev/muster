@@ -146,7 +146,34 @@ func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
 // denied in its container. Pinned by TestTheComposeChiefsAllowedToolsArePinned.
 var ComposeChiefAllowedMCPTools = []string{
 	"sessions_overview", "fleet_list", "focus_search", "fleet_report",
-	"tasks_list", "task_get", "attention_list", "route_to_session", "ask_owner",
+	"tasks_list", "task_get", "attention_list", composeChiefRouteTool, "ask_owner",
+}
+
+// composeChiefRouteTool is the one ComposeChiefAllowedMCPTools entry muster
+// serves only with session routing on (MUSTER_SESSION_ROUTING).
+const composeChiefRouteTool = "route_to_session"
+
+// ComposeChiefTools is what the Compose chief is told it can run
+// ([ChiefInstructionsCompose]): ComposeChiefAllowedMCPTools, less
+// route_to_session when session routing is off (muster does not serve it
+// then). It is derived from the allow list, never a second list: the spec
+// pre-allows ComposeChiefAllowedMCPTools, muster's MCP server offers the chief
+// no tool outside it (internal/api toolsFor), and the prose names these.
+func ComposeChiefTools(routing bool) []string {
+	out := make([]string, 0, len(ComposeChiefAllowedMCPTools))
+	for _, t := range ComposeChiefAllowedMCPTools {
+		if t == composeChiefRouteTool && !routing {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// ComposeChiefAllowed reports whether name is one of the Compose chief's
+// pre-allowed muster tools (ComposeChiefAllowedMCPTools).
+func ComposeChiefAllowed(name string) bool {
+	return slices.Contains(ComposeChiefAllowedMCPTools, name)
 }
 
 // claudeCodeResourcesFor is ClaudeCodeResources, or none for the Compose

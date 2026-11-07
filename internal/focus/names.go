@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// A SESSION'S STABLE NAME (migration 0088; docs/focus.md#a-sessions-name).
+// A SESSION'S STABLE NAME (migration 0090; docs/focus.md#a-sessions-name).
 //
 // A session is headed by a name that does not move, with its live focus as the
 // line under it. This file owns the two STORED halves of that name — the AUTO
@@ -30,7 +30,7 @@ type Name struct {
 	Manual   string
 	ManualAt time.Time
 	// DriftDismissed is the focus title the owner dismissed a rename offer
-	// at, "" for none (drift.go, migration 0089).
+	// at, "" for none (drift.go, migration 0091).
 	DriftDismissed string
 }
 
