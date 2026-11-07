@@ -507,6 +507,12 @@ func (s *Server) toolTaskForward(ctx context.Context, a agents.Agent, taskID int
 		return toolErr("the agents working the task could not be read")
 	}
 	if target == nil {
+		// No pod reachable: a host-spawned agent the chief started on the task
+		// (host_forward.go), as a chief-forward send-queue row the host's tag
+		// check bounds.
+		if r, ok := s.hostForwardTarget(ctx, taskID); ok {
+			return s.forwardToHostDispatch(ctx, n, r, renderTaskForward(n, note, forwardByChief))
+		}
 		return toolErr("no running agent works task %d: use agent_dispatch or task_route_attention", taskID)
 	}
 	// 🔴 NOT askerAddressed: only the OWNER's own message answers an agent's

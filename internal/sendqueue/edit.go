@@ -98,7 +98,7 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 		return Item{}, err
 	}
 	it, err := scanItem(s.pool.QueryRow(ctx, `UPDATE send_queue SET held_until = now() + $2 * interval '1 microsecond', hold_token = $3,
-		hold_lapsed_at = NULL WHERE id = $1 AND state = 'queued' AND route_id IS NULL AND chief_nudge_id IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
+		hold_lapsed_at = NULL WHERE id = $1 AND state = 'queued' AND route_id IS NULL AND chief_nudge_id IS NULL AND chief_forward_dispatch IS NULL RETURNING `+cols, id, leaseMicros(s.editHold()), tok))
 	if err == nil {
 		return it, nil
 	}
@@ -111,7 +111,7 @@ func (s *PGStore) Hold(ctx context.Context, id int64) (Item, error) {
 		return Item{}, gerr
 	case cur.RouteID != "":
 		return cur, ErrRoutedNotEditable
-	case cur.ChiefNudgeID != 0:
+	case cur.ChiefNudgeID != 0 || cur.ChiefForwardDispatch != 0:
 		return cur, ErrNudgeNotEditable
 	case cur.State == Sending:
 		return cur, ErrEditSending

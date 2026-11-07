@@ -160,6 +160,12 @@ type Item struct {
 	// (internal/api's sendQueueNudgeGate), and is never edited or retried. A row
 	// never carries both (0064's send_queue_one_origin).
 	ChiefNudgeID int64
+	// ChiefForwardDispatch marks a CHIEF FORWARD into a host-spawned window
+	// (migration 0091; internal/api's toolTaskForward, its only writer): the
+	// host dispatch it is for, 0 for any other row. Gated on that dispatch at
+	// delivery (sendQueueChiefForwardGate), pasted with mirror.ForDispatch so the
+	// host checks the window's own tag, and never edited or retried.
+	ChiefForwardDispatch int64
 	// RetriedAs is, on a failed row that was retried, the row its Retry queued
 	// (0: not retried). A row is retried at most once (Retry).
 	RetriedAs int64
@@ -257,14 +263,14 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
-	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0)`
+	coalesce(edit_stepup_at, 'epoch'::timestamptz), coalesce(chief_nudge_id, 0), coalesce(chief_forward_dispatch, 0)`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
-		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID}
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.ChiefNudgeID, &it.ChiefForwardDispatch}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -336,13 +342,19 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 		coalesce(nullif(current_setting('muster.uid', true), '')::int, 0))`); err != nil {
 		return Item{}, fmt.Errorf("sendqueue: lock: %w", err)
 	}
-	var nudge any
+	var nudge, forward any
 	if it.ChiefNudgeID > 0 {
 		nudge = it.ChiefNudgeID
 	}
-	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id)
-		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, ''), $8) RETURNING `+cols,
-		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge))
+	if it.ChiefForwardDispatch > 0 {
+		forward = it.ChiefForwardDispatch
+	}
+	if it.MusterOrigins() > 1 {
+		return Item{}, errors.New("sendqueue: a row has at most one origin (a route, a chief nudge or a chief forward)")
+	}
+	out, err := scanItem(tx.QueryRow(ctx, `INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at, after_since, route_id, chief_nudge_id, chief_forward_dispatch)
+		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, ''), $8, $9) RETURNING `+cols,
+		it.Target.Host, it.Target.Session, it.Target.Window, text, it.StepUpAt, max(it.AfterSince, 0), it.RouteID, nudge, forward))
 	if err != nil {
 		return Item{}, fmt.Errorf("sendqueue: enqueue: %w", err)
 	}
@@ -389,7 +401,7 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		if old.RouteID != "" {
 			return ErrRoutedNotRetryable
 		}
-		if old.ChiefNudgeID != 0 {
+		if old.ChiefNudgeID != 0 || old.ChiefForwardDispatch != 0 {
 			return ErrNudgeNotRetryable
 		}
 		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
@@ -933,3 +945,25 @@ func (s *PGStore) Prune(ctx context.Context, before time.Time) (int, error) {
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// MusterOrigins is how many of muster's own origins it carries (a route, a
+// chief nudge, a chief forward): 0 for a person's message. THE predicate every
+// "a person's own message" check reads (MusterOrigin), so a new origin cannot
+// be missed at one of them.
+func (it Item) MusterOrigins() int {
+	n := 0
+	if it.RouteID != "" {
+		n++
+	}
+	if it.ChiefNudgeID != 0 {
+		n++
+	}
+	if it.ChiefForwardDispatch != 0 {
+		n++
+	}
+	return n
+}
+
+// MusterOrigin reports whether it is muster's own message (routed, a nudge, a
+// forward), never the person's: never edited and never retried.
+func (it Item) MusterOrigin() bool { return it.MusterOrigins() > 0 }

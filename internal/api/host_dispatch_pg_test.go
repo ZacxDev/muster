@@ -29,6 +29,21 @@ type spawnMirror struct {
 	hosts []mirror.HostView
 	calls []spawnCall
 	reply func(host string, dispatch int64, req mirror.AgentSpawnReq) (mirror.AgentSpawned, error)
+	// pastes is every PasteWindow, with the dispatch it carried (ForDispatch).
+	pastes []spawnPaste
+}
+
+type spawnPaste struct {
+	host, session, window, text string
+	dispatch                    int64
+}
+
+func (m *spawnMirror) PasteWindow(ctx context.Context, host, session, window, text string, target mirror.PasteTarget, opts ...mirror.PasteOption) error {
+	o := mirror.PasteOptionsOf(opts...)
+	m.mu.Lock()
+	m.pastes = append(m.pastes, spawnPaste{host, session, window, text, o.Dispatch})
+	m.mu.Unlock()
+	return nil
 }
 
 type spawnCall struct {

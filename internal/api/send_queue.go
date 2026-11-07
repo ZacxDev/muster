@@ -397,7 +397,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 		row := ui.SendQueueItem{ID: it.ID, State: string(it.State), Preview: preview, Body: it.Body,
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
-			Editable: it.State == sendqueue.Queued && it.RouteID == "" && it.ChiefNudgeID == 0, Held: it.State == sendqueue.Queued && it.Held,
+			Editable: it.State == sendqueue.Queued && !it.MusterOrigin(), Held: it.State == sendqueue.Queued && it.Held,
 			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
 		if row.Held && it.ID == editing.id {
 			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
@@ -551,7 +551,7 @@ func (s *Server) handleSendQueueDelete(w http.ResponseWriter, r *http.Request) {
 // route goes back to the chief, and never a chief nudge's, whose decision
 // gates it (sendqueue.PGStore.Retry refuses both otherwise).
 func sendQueueRetryable(it sendqueue.Item) bool {
-	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == "" && it.ChiefNudgeID == 0
+	return it.State == sendqueue.Failed && it.RetriedAs == 0 && !it.MusterOrigin()
 }
 
 // SendQueueRetryConfirmField is the form field that says the person confirmed
@@ -864,6 +864,15 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 		return sendqueue.Outcome{Detail: why}
 	}
 	switch {
+	case it.ChiefForwardDispatch != 0:
+		// A chief's forward into a host-spawned window: its dispatch gates it
+		// (host_forward.go), not a sign-in; the host then checks the window's
+		// own tag (ForDispatch, below).
+		if why := s.sendQueueChiefForwardGate(ctx, it); why != "" {
+			return sendqueue.Outcome{Detail: why}
+		}
+		ctx = s.withForwardAuth(ctx)
+		opts = append(opts, mirror.ForDispatch(it.ChiefForwardDispatch))
 	case it.ChiefNudgeID != 0:
 		// A chief nudge or a relayed answer: its decision gates it
 		// (chief_nudge.go), not a sign-in — the feature must still be on, the
