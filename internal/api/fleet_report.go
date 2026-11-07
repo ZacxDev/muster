@@ -206,7 +206,8 @@ type fleetMail struct {
 // narrows or encodes it. Free text is RAW: not normalised, not screened.
 type fleetFact struct {
 	Subject focus.Subject
-	// Name is what the owner's own views call it: an agent's display name, a
+	// Name is the session's stable name (internal/sessionname), as the
+	// owner's own views call it — with no human name, an agent's slug or a
 	// window's DisplayTitle (which appends " · <host>" when two listed
 	// entries share a title). Title is a window's UNQUALIFIED title (an
 	// agent's: its Name). Both "" when the hub or agent list no longer knows

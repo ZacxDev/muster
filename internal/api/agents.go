@@ -498,7 +498,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	rows := make([]ui.NotificationRow, 0, len(unread))
 	for _, u := range unread {
 		rows = append(rows, ui.NotificationRow{
-			Name: u.AgentName, DisplayName: u.DisplayName, SessionID: u.SessionID, Count: u.Count,
+			Name: u.AgentName, SessionID: u.SessionID, Count: u.Count,
 			SessionName: s.agentName(ctx, agents.Agent{ID: u.AgentID, Name: u.AgentName, DisplayName: u.DisplayName, DisplayNameSource: u.DisplayNameSource}),
 		})
 	}
@@ -540,7 +540,7 @@ func (s *Server) activeNotificationRows(ctx context.Context) []ui.ActiveRow {
 		if err != nil {
 			continue
 		}
-		row.DisplayName, row.SessionName = a.DisplayName, s.agentName(ctx, a)
+		row.SessionName = s.agentName(ctx, a)
 		if sess, serr := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name); serr == nil {
 			row.SessionID = sess.ID
 		}
@@ -702,10 +702,24 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	// 🔴 SAVING THE NAME IT ALREADY HAS CHANGES NOTHING: the dialog is
 	// prefilled with what the agent is called now, and a Save that kept an
 	// automatic (auto or task) name must not make it the person's.
-	if a, gerr := s.ext.Agents.Get(ctx, id); gerr == nil && name != "" {
+	a, gerr := s.ext.Agents.Get(ctx, id)
+	// done answers the rename: htmx reloads the page (HX-Refresh); a plain
+	// form post (no script) is sent back to the agent's page with a 303, as
+	// the mirrored session's rename route does.
+	done := func(changed bool) {
+		if r.Header.Get("HX-Request") == "" && gerr == nil {
+			http.Redirect(w, r, ui.AgentPath(a.Name), http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("HX-Refresh", "true")
+		if changed {
+			w.Header().Set("HX-Trigger", "agents:changed")
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+	if gerr == nil && name != "" {
 		if n := s.agentName(ctx, a); n.Source != sessionname.SourceManual && n.Human() && n.Text == name {
-			w.Header().Set("HX-Refresh", "true")
-			w.WriteHeader(http.StatusOK)
+			done(false)
 			return
 		}
 	}
@@ -719,9 +733,7 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update name", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("HX-Refresh", "true")
-	w.Header().Set("HX-Trigger", "agents:changed")
-	w.WriteHeader(http.StatusOK)
+	done(true)
 }
 
 // handleAgentCreate handles POST /agents: build the record, then provision only when

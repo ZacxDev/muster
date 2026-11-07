@@ -7,17 +7,15 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
-
 )
 
 // NotificationRow is one agent's unread-replies entry in the notifications
-// panel: the link target session, the agent's name/display name, and the unread
-// count.
+// panel: the link target session, the agent's name, and the unread count.
 type NotificationRow struct {
-	Name        string // the agent slug (the route key)
-	DisplayName string // human-facing label ("" → falls back to Name)
+	Name string // the agent slug (the route key)
 	// SessionName is the agent's stable name (internal/sessionname), what
-	// the row is called; the zero value draws DisplayName / Name.
+	// the row is called; the zero value draws the slug. (No DisplayName: the
+	// name rule is the row's only naming input.)
 	SessionName sessionname.Name
 	SessionID   int64 // the session to deep-link to
 	Count       int   // unread assistant messages for this agent
@@ -27,8 +25,7 @@ type NotificationRow struct {
 // within the recency window. Distinct from NotificationRow: it carries a live
 // phase + a "since" label instead of an unread count.
 type ActiveRow struct {
-	Name        string // the agent slug (the route key)
-	DisplayName string // human-facing label ("" → falls back to Name)
+	Name string // the agent slug (the route key)
 	// SessionName: as NotificationRow's.
 	SessionName sessionname.Name
 	SessionID   int64  // the session to deep-link to (0 → link to bare /agents/{name})
@@ -133,7 +130,7 @@ func notifSectionLabel(text string) g.Node {
 // Task #633 deleted that page, so the panel links every agent the same way.
 
 func activeRow(it ActiveRow) g.Node {
-	label := sessionTitle(it.SessionName, it.DisplayName, it.Name)
+	label := sessionTitle(it.SessionName, "", it.Name)
 	return A(
 		Href(AgentSessionHref(it.Name, it.SessionID)),
 		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-fg transition-colors hover:bg-s2/60"),
@@ -172,7 +169,7 @@ func activePill(it ActiveRow) g.Node {
 }
 
 func notifRow(it NotificationRow) g.Node {
-	label := sessionTitle(it.SessionName, it.DisplayName, it.Name)
+	label := sessionTitle(it.SessionName, "", it.Name)
 	// The operator lives at /operator (not /agents/operator); everything else at
 	// /agents/{name}. Boosted SPA nav: the detail/operator page is now a full shell
 	// document, so a boosted body-swap

@@ -38,9 +38,9 @@ func sessionNamesMigration(t *testing.T) (name string, v, prev int) {
 
 // TestMigrationSessionNamesBackfillsWhoSetEachDisplayName: before the
 // migration agents have no display_name_source (the control); after it each
-// existing row is classified by the header's stated rule — the slug copied is
-// default, "#<id> · …" dispatch, "officer <id> #<n>" system, anything else
-// manual — and agent_focus carries the name columns with their bounds: an
+// existing row is classified by the header's stated rule — a chief slug
+// ("chief", "chief-<id>") system, the slug copied default, "#<id> · …"
+// dispatch, "officer <id> #<n>" system, anything else manual — and agent_focus carries the name columns with their bounds: an
 // agent row refuses a manual name, and an over-long one is refused. Applying
 // it twice changes nothing.
 func TestMigrationSessionNamesBackfillsWhoSetEachDisplayName(t *testing.T) {
@@ -52,13 +52,26 @@ func TestMigrationSessionNamesBackfillsWhoSetEachDisplayName(t *testing.T) {
 		"from-task":    "#42 · Fix the login bug",
 		"from-task-id": "#7",
 		"an-officer":   "officer triage #2",
-		"the-chief":    "chief",
+		// The REAL chief slugs (agents.ChiefName, agents.ChiefNameFor): the
+		// operator's chief is slug "chief" with display name "chief" (slug
+		// and display name EQUAL), a member's is "chief-<id>".
+		"chief":        "chief",
+		"chief-7":      "chief",
+		"a-renamed-ch": "chief",
 		"renamed":      "My billing work",
 		// "#42 fix" is not dispatchDisplayName's shape: a person typed it.
 		"hash-typed": "#42 fix",
 	}
+	// One chief per owner (agents_one_chief_per_owner): each "chief"-named
+	// row has an owner of its own.
+	mustExec(ctx, t, pool, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (7, 'member'), (8, 'member') ON CONFLICT (id) DO NOTHING`)
+	owners := map[string]int{"chief-7": 7, "a-renamed-ch": 8}
 	for slug, display := range rows {
-		mustExec(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, status, display_name) VALUES (1, $1, 'ns-'||$1, 'stopped', $2)`, slug, display)
+		owner := owners[slug]
+		if owner == 0 {
+			owner = 1
+		}
+		mustExec(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, status, display_name) VALUES ($3, $1, 'ns-'||$1, 'stopped', $2)`, slug, display, owner)
 	}
 	if _, err := pool.Exec(ctx, `SELECT display_name_source FROM agents`); err == nil {
 		t.Fatalf("control: before %s agents has display_name_source", name)
@@ -67,7 +80,7 @@ func TestMigrationSessionNamesBackfillsWhoSetEachDisplayName(t *testing.T) {
 	applyThroughFrom(ctx, t, pool, v)
 
 	want := map[string]string{"slug-copied": "default", "from-task": "dispatch", "from-task-id": "dispatch", "an-officer": "system",
-		"the-chief": "manual", "renamed": "manual", "hash-typed": "manual"}
+		"chief": "system", "chief-7": "system", "a-renamed-ch": "manual", "renamed": "manual", "hash-typed": "manual"}
 	check := func(when string) {
 		t.Helper()
 		for slug, w := range want {

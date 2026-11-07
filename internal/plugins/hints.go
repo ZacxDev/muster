@@ -85,7 +85,9 @@ const AuthorHeader = "Session that authored this pull request"
 type AuthorHint struct {
 	// ID is the session as the chief's tools name it ("mirror:<sid>").
 	ID string
-	// Name is its focus title or window title ("" for none); Host its host.
+	// Name is its stable name when it has a human one (internal/sessionname),
+	// else its focus title, else its window title ("" for none); Host its
+	// host.
 	Name, Host string
 	// Kind, Repo, PR and HeadRef are what muster saw it do.
 	Kind    string

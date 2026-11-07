@@ -35,7 +35,7 @@ var sessionNameCallers = []string{
 	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
 	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
 	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
-	"attention.go Server.withFocus",           // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"attention.go Server.withNamesFrom",           // every attention item's name: the Asks list, pushes, attention_list, the summary
 	"chat_log_live.go Server.dispatchCardFor",
 	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides

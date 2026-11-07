@@ -298,6 +298,10 @@ var agentHrefCallLedger = map[string]int{
 	// dispatch_approve's push: the BARE page, as notifyAgentRunning's (#237) —
 	// the agent was just created, so it has no session to name yet.
 	"AgentPath ← internal/api/dispatch_hold_tools.go:Server.pushSessionDispatch": 1,
+	// A rename posted without script (POST /agents/{id}/name) is sent back to
+	// the agent's BARE page, which opens its latest session — as the push
+	// targets above.
+	"AgentPath ← internal/api/agents.go:Server.handleAgentName": 1,
 	// The server's own targets: the terminal's Rendered switch (agentPageHref
 	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the

@@ -520,8 +520,16 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 		for _, a := range list {
 			_, _, officer := s.officerOf(a)
 			agentKey := "agent:" + strconv.FormatInt(a.ID, 10)
+			// Label is what a notice records ("agent <name>"): the resolved
+			// name, the slug when it has no human one. Name is the prompt's
+			// line, and only a HUMAN name (chiefnudge.Session.Name).
+			an := fi.agentName(a)
+			human := ""
+			if an.Human() {
+				human = an.Text
+			}
 			base := chiefnudge.Session{Kind: chiefnudge.KindAgent, Key: chiefnudge.AgentKey(a.ID, 0), AgentID: a.ID,
-				Label: fi.agentName(a).Text, Name: fi.agentName(a).Text, OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
+				Label: an.Text, Name: human, OtherUser: a.OwnerID != owner, Chief: isChief(a), Officer: officer,
 				OpenAsk: asked[agentKey]}
 			if base.OtherUser || base.Chief || base.Officer ||
 				!agentCanBeSent(liveStatusIndexed(a, idx)) || agents.KickoffOwed(a) || s.turns.busy(a.ID) {

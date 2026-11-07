@@ -99,7 +99,7 @@ func (s *Server) dispatchCardFor(ctx context.Context, id int64, idx map[string]*
 		return ui.DispatchCard{AgentID: id, Unreadable: true, Name: "Agent #" + strconv.FormatInt(id, 10)}
 	}
 	c = ui.DispatchCard{
-		AgentID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(ctx, a), Repo: a.Repo,
+		AgentID: a.ID, Name: a.Name, SessionName: s.agentName(ctx, a), Repo: a.Repo,
 		Href:    ui.AgentCardView{Name: a.Name, SessionID: s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]}.PageHref(),
 		Runtime: dispatchRuntimeLabel(a.Kind, a.Model),
 	}
