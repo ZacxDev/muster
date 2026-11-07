@@ -53,6 +53,7 @@ const (
 	ChiefSessionRuntimes = "chief-session-runtimes"
 	ChiefNudges          = "chief-nudges"
 	SessionState         = "session-state"
+	AskLog               = "ask-log"
 	Plugins              = "plugins"
 	PluginTasks          = "plugin-tasks"
 	SessionRouting       = "session-routing"

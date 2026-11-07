@@ -353,6 +353,11 @@ type Extensions struct {
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
+	// AskLog is the ask log (internal/asklog, migration 0089; MUSTER_ASK_LOG):
+	// every question an agent puts to its owner, with its answer, recorded
+	// (ask_log.go). nil (the default, or no database): nothing is recorded,
+	// and every capture point is a no-op.
+	AskLog *AskLog
 	// MirrorTokens authenticates a mirror host's token for the mirrored
 	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table
 	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.
@@ -547,6 +552,15 @@ type GitHubApp interface {
 func (s *Server) UseExtensions(ext Extensions) {
 	s.extDefects = ext.defects()
 	ext.Notes = withSessionLiveness(ext.Notes, ext.SessionLiveness)
+	// The ask log (ask_log.go): its capture of attention asks is the store,
+	// wrapped, so every path that creates or settles one is seen.
+	s.askLog = nil
+	if ext.AskLog != nil && ext.AskLog.Store != nil {
+		s.askLog = newAskLogger(*ext.AskLog, s)
+		if ext.Attention != nil {
+			ext.Attention = askLoggingAttention{Store: ext.Attention, s: s}
+		}
+	}
 	s.ext = ext
 	if ext.AccountFailover != nil {
 		ext.AccountFailover.UseHooks(s.failoverPolicy, s.failoverPrepare)

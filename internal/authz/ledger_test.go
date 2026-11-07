@@ -195,6 +195,11 @@ var (
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
 		"internal/jobs.sys",
+		// The ask log (migration 0089): the retention sweep's one helper. It
+		// clears question and answer text past the TTL and deletes rows past
+		// 180 days, by age only, across every owner (asklog.PG.Purge), and
+		// returns only counts.
+		"internal/asklog.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

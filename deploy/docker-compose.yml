@@ -173,6 +173,12 @@ services:
       # (only 1/true/yes/on is on), as does 0 (docs/features.md#session-state).
       MUSTER_SESSION_STATE: ${MUSTER_SESSION_STATE-1}
 
+      # The ask log: every question an agent asks you, with your answer
+      # (docs/features.md#ask-log). Off by default; needs only the database.
+      MUSTER_ASK_LOG: ${MUSTER_ASK_LOG:-}
+      MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
+      MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
+
       # Plugins and what routes through them (docs/features.md#plugins).
       MUSTER_PLUGINS: ${MUSTER_PLUGINS:-}
       MUSTER_PLUGIN_TASK_NAMESPACES: ${MUSTER_PLUGIN_TASK_NAMESPACES:-}

@@ -135,6 +135,10 @@ type Server struct {
 	// another, 0 for none.
 	waitingGrace time.Duration
 
+	// askLog is the ask log's capture state (ask_log.go), nil when
+	// Extensions.AskLog is unset; set by UseExtensions.
+	askLog *askLogger
+
 	// nudgeReadHook, when set (a test), replaces the chief nudge sweep's
 	// transcript read (chief_nudge.go nudgeTranscript).
 	nudgeReadHook func(ctx context.Context, c chiefnudge.Session) (nudgeRead, error)

@@ -268,6 +268,12 @@ BEGIN
         ALTER TABLE public.session_tags DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.session_tags ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0089 (asks), when this schema has it; same reason as 0011.
+    IF to_regclass('public.asks') IS NOT NULL THEN
+        ALTER TABLE public.asks NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.asks DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.asks ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

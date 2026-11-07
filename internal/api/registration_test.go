@@ -18,6 +18,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccfailover"
@@ -114,6 +115,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		ChiefNudge:      &ChiefNudges{},
 		ChiefNudges:     chiefnudge.NewPG(nil),
 		Episodes:        sessionstate.NewPG(nil),
+		AskLog:          &AskLog{Store: asklog.NewPG(nil)},
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},

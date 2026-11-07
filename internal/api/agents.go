@@ -2195,11 +2195,15 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 // persistTurn stores a finished turn's parts and tells open pages a reply was
 // persisted.
 func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, parts []agents.TurnPart) {
+	var lastID int64 // the turn's last stored message (the ask log's anchor)
 	for _, part := range parts {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		m, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: session.ID, Role: "assistant",
 			Kind: part.Kind, Content: part.Content, ToolID: part.ToolID, ToolName: part.ToolName, ToolOK: part.ToolOK,
 		})
+		if err == nil && m.ID > lastID {
+			lastID = m.ID
+		}
 	}
 	if len(parts) > 0 {
 		// Nudge the shell's notification FAB to refetch its panel + badge: one
@@ -2207,6 +2211,8 @@ func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents
 		// needs the nudge).
 		s.broadcast(ctx, EventChatReply, a.Name)
 	}
+	// The ask log (ask_log.go): a turn ended; was its last word a question?
+	s.askLogAgentTurn(ctx, a, session, parts, lastID)
 }
 
 // resolveSession picks the chat session for a request: the ?session=<id> one
