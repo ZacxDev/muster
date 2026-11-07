@@ -724,7 +724,11 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	if err != nil {
 		d.recordError(parent, fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
-		if parent.Err() == nil || neverConnected(err) {
+		// Not reported as failed: muster shutting down, or the turn outliving its
+		// budget — the runtime may still be running it either way, so the
+		// watchdog judges what the agent does next. A connection never opened
+		// sent nothing, and is reported.
+		if neverConnected(err) || parent.Err() == nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			msg := firstTurnFailed(err)
 			after = func() { d.reportFailed(parent, fresh, msg) }
 		}

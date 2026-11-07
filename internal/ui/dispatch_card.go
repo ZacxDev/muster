@@ -218,7 +218,7 @@ func DispatchAgentCard(c DispatchCard) g.Node {
 		pill)
 	meta := Div(Class("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted"), g.Group(lines))
 	detailTone := "text-st-error-fg"
-	if state == DispatchStuck {
+	if state == DispatchStuck || state == DispatchWaiting {
 		detailTone = "text-st-warning-fg"
 	}
 	detail := g.If(c.Detail != "", P(g.Attr("data-dispatch-detail", ""), Class("break-words text-xs "+detailTone), g.Text(c.Detail)))

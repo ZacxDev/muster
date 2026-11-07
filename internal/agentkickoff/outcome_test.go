@@ -130,3 +130,18 @@ func TestANeverDeliveredFirstTurnIsReportedFailed(t *testing.T) {
 	}
 
 }
+
+// TestATurnThatOutlivesItsBudgetIsNotReportedFailed (round 1, 🟡2): the runtime
+// may still be running a turn muster stopped waiting for, as with a shutdown,
+// so the reporter hears it started and nothing more (the watchdog judges what
+// the agent does next).
+func TestATurnThatOutlivesItsBudgetIsNotReportedFailed(t *testing.T) {
+	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, ownedRow())
+	rep := withReporter(t, h)
+	h.d.turn = 50 * time.Millisecond
+	h.gw.hold = make(chan struct{})
+	h.tick(t)
+	if ev := rep.snapshot(); len(ev) != 1 || ev[0] != "started(7301)" {
+		t.Fatalf("a turn past its budget reported %q; want only started", ev)
+	}
+}

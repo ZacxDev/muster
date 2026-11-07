@@ -4,8 +4,10 @@
 --
 --   agents.outcome         '' (not tracked: an agent nobody started with a first
 --       turn, and every row from before this migration), 'running' (a started
---       agent working on what it was given), 'done' (it answered and is idle, or
---       it moved its task to review/complete), 'failed' (a turn of it failed:
+--       agent working on what it was given), 'waiting' (its turn ended and it is
+--       idle WITHOUT saying it finished — a question, a progress report: the
+--       owner's move), 'done' (it SAID it finished: it moved its task to
+--       review/complete, or called agent_report_done), 'failed' (a turn of it failed:
 --       the reason is in outcome_reason and error_message, and its status is
 --       `error`) or 'stuck' (it went quiet: no first reply since its kickoff, or
 --       no activity for the silence threshold). The CHECK below is the closed set.
@@ -62,7 +64,7 @@ ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS dispatched_by BIGINT;
 
 ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_outcome_check;
 ALTER TABLE public.agents ADD CONSTRAINT agents_outcome_check
-    CHECK (outcome IN ('', 'running', 'done', 'failed', 'stuck'));
+    CHECK (outcome IN ('', 'running', 'waiting', 'done', 'failed', 'stuck'));
 
 -- The watchdog's one read: the tracked agents still working.
 CREATE INDEX IF NOT EXISTS agents_outcome_open ON public.agents (id) WHERE outcome IN ('running', 'stuck');

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // EVERY DISPATCHED AGENT ENDS IN A VISIBLE OUTCOME (agent_outcome.go,
@@ -390,7 +392,10 @@ func TestAFailedChatTurnIsAnErrorAndAPush(t *testing.T) {
 	}{
 		{"busy", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy"}},
 		{"not ready", &agents.RuntimeError{Status: http.StatusServiceUnavailable, Type: "not_ready"}},
+		{"rate limited", &agents.RuntimeError{Status: http.StatusConflict, Type: "rate_limited"}},
 		{"dial", &net.OpError{Op: "dial", Err: errors.New("connection refused")}},
+		// The turn outlived its budget: the runtime may still be running it.
+		{"budget exceeded", fmt.Errorf("post responses: %w", context.DeadlineExceeded)},
 	} {
 		o.srv.ext.Gateway = failingGateway{err: c.err}
 		_, _ = o.srv.chatTurn(o.asOwner, o.agent(t, a.ID), sess.SessionKey, "hello", nil)
@@ -447,72 +452,145 @@ func TestTheChiefIsNotSetToErrorByAFailedTurn(t *testing.T) {
 
 // --- 4. a finished agent reports back -------------------------------------------
 
-// TestAFinishedAgentReportsBackOnce: a first turn that answers (the real kickoff
-// over the real transport) and leaves the agent idle ends `done`, pushes
-// "<agent> finished: <first line of the reply>" once, and notes it to the
-// chief. An agent whose pod still reports work is NOT done until the work
-// clears. Moving its task to review finishes another.
-func TestAFinishedAgentReportsBackOnce(t *testing.T) {
+// TestAnIdleReplyIsWaitingNeverDone (round 1's 🔴, reproduced): a first turn
+// that ends with a QUESTION — the real kickoff over the real transport — leaves
+// the agent WAITING on its owner: one push "<agent> is waiting for you: <the
+// reply's LAST line>" and one chief note quoting its last lines; never done,
+// never "finished". A turn that ends on attention_ask with no reply text is
+// waiting too. A reply while its pod still reports work is neither (mid-work),
+// and its work report clearing makes it waiting.
+//
+// 🔴 RED AT THE PREVIOUS HEAD: the question read as done, pushed "finished:
+// <first line>", told the chief "Tell your owner it is done", and the agent was
+// never watched again.
+func TestAnIdleReplyIsWaitingNeverDone(t *testing.T) {
 	o := newOutcomeFixture(t, stubModelCatalog{})
-	a := o.dispatchGateway(t, "finishes", "openrouter/acme/acme-v4.1-pro")
-	const reply = "Opened draft PR #12 with the fix.\nDetails follow."
+	a := o.dispatchGateway(t, "asks a question", "openrouter/acme/acme-v4.1-pro")
+	const reply = "I looked at the task.\nThere are two repositories that could hold it.\nWhich repository should I work in?"
 	runtime := fakeRuntime(t, func() string {
-		return sseEvent("response.output_text.delta", map[string]any{"delta": "Opened", "output_index": 0}) +
-			sseEvent("response.completed", map[string]any{"response": map[string]any{"status": "completed",
-				"output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": reply}}}}}})
+		return sseEvent("response.completed", map[string]any{"response": map[string]any{"status": "completed",
+			"output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": reply}}}}}})
 	})
 	o.kickoff(t, runtime, a)
 	got := o.agent(t, a.ID)
-	if got.Outcome != agentoutcome.Done || got.FirstReplyAt == nil || got.Status == agents.StatusError {
-		t.Fatalf("after an answered first turn: outcome %q first_reply %v status %q", got.Outcome, got.FirstReplyAt, got.Status)
+	if got.Outcome != agentoutcome.Waiting || got.OutcomeReason != "Which repository should I work in?" {
+		t.Fatalf("a question: outcome %q reason %q; want waiting with its LAST line", got.Outcome, got.OutcomeReason)
 	}
 	ps := o.outcomePushes(a.ID)
-	if len(ps) != 1 || ps[0].Title != agentLabel(a)+" finished: Opened draft PR #12 with the fix." {
-		t.Fatalf("pushes %+v; want one \"<agent> finished: <first line>\"", ps)
+	if len(ps) != 1 || ps[0].Title != agentLabel(a)+" is waiting for you: Which repository should I work in?" {
+		t.Fatalf("pushes %+v; want one \"<agent> is waiting for you: <last line>\"", ps)
 	}
-	if n := o.chiefNotes(t, a.Name); len(n) != 1 || !strings.Contains(n[0], "finished: Opened draft PR #12") {
-		t.Fatalf("chief notes %q", n)
+	notes := o.chiefNotes(t, a.Name)
+	if len(notes) != 1 || !strings.Contains(notes[0], "WAITING FOR YOUR OWNER") || !strings.Contains(notes[0], "Which repository should I work in?") ||
+		!strings.Contains(notes[0], "There are two repositories") || strings.Contains(notes[0], "it is done") {
+		t.Fatalf("chief notes %q; want one waiting note quoting the last lines, never 'done'", notes)
 	}
-	o.srv.outcomeAnswered(o.asOwner, o.agent(t, a.ID), "another reply")
-	if n := len(o.outcomePushes(a.ID)); n != 1 {
-		t.Errorf("a second reply pushed again: %d", n)
+	// The card says "waiting for you", from the same outcome.
+	if state, _, ok := o.srv.outcomeCardState(got); !ok || state != ui.DispatchWaiting {
+		t.Errorf("card state %q (%v); want waiting", state, ok)
 	}
 
-	// Still working when it answers: not done until the work report clears.
-	b := o.dispatchGateway(t, "keeps working", "openrouter/acme/acme-v4.1-pro")
+	// attention_ask, then the turn ends with no text: waiting, not done.
+	b := o.dispatchGateway(t, "asks on attention", "openrouter/acme/acme-v4.1-pro")
+	sess, err := agents.NewPG(o.pool).LatestOrCreateSession(o.asOwner, b.ID, b.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.srv.ext.Gateway = askingGateway{}
+	if _, err := o.srv.chatTurn(o.asOwner, o.agent(t, b.ID), sess.SessionKey, "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.agent(t, b.ID); got.Outcome != agentoutcome.Waiting {
+		t.Fatalf("after attention_ask and an empty end: outcome %q; want waiting", got.Outcome)
+	}
+
+	// Still working when it replies: running, until the work report clears.
+	c := o.dispatchGateway(t, "keeps working", "openrouter/acme/acme-v4.1-pro")
 	o.srv.agentWork.mu.Lock()
 	if o.srv.agentWork.m == nil {
 		o.srv.agentWork.m = map[int64]agentWorkReport{}
 	}
-	o.srv.agentWork.m[b.ID] = agentWorkReport{work: mirror.WindowWork{Subagents: 2}, seen: o.clock.Now()}
+	o.srv.agentWork.m[c.ID] = agentWorkReport{work: mirror.WindowWork{Subagents: 2}, seen: o.clock.Now()}
 	o.srv.agentWork.mu.Unlock()
-	o.srv.outcomeAnswered(o.asOwner, o.agent(t, b.ID), "Started two subagents.")
-	if got := o.agent(t, b.ID); got.Outcome != agentoutcome.Running {
+	o.srv.outcomeAnswered(o.asOwner, o.agent(t, c.ID), "Started two subagents.")
+	if got := o.agent(t, c.ID); got.Outcome != agentoutcome.Running {
 		t.Fatalf("answered while working: outcome %q; want still running", got.Outcome)
 	}
 	o.srv.agentWork.mu.Lock()
-	delete(o.srv.agentWork.m, b.ID)
+	delete(o.srv.agentWork.m, c.ID)
 	o.srv.agentWork.mu.Unlock()
-	o.srv.outcomeWorkReported(o.asOwner, o.agent(t, b.ID), true)
-	if got := o.agent(t, b.ID); got.Outcome != agentoutcome.Done {
-		t.Fatalf("after its work cleared: outcome %q; want done", got.Outcome)
+	o.srv.outcomeWorkReported(o.asOwner, o.agent(t, c.ID), true)
+	if got := o.agent(t, c.ID); got.Outcome != agentoutcome.Waiting {
+		t.Fatalf("after its work cleared: outcome %q; want waiting", got.Outcome)
 	}
-	if n := len(o.outcomePushes(b.ID)); n != 1 {
-		t.Errorf("work-cleared completion pushed %d times", n)
+}
+
+// askingGateway plays a turn that calls attention_ask through the real tool
+// dispatch and then ends with no reply text.
+type askingGateway struct{ stubGateway }
+
+func (askingGateway) ChatWithTools(ctx context.Context, _ agents.Agent, _, _, _ string, _ []agents.ToolDef, dispatch agents.ToolDispatch, _ agents.StreamEmit) (string, error) {
+	_ = dispatch("attention_ask", `{"question":"Which repository should I work in?"}`)
+	return "", nil
+}
+
+// TestDoneIsOnlyAnExplicitSignal: an agent's work is done only when it says so —
+// agent_report_done (one push "<agent> finished: <summary>", a chief note), or
+// moving its task to review (the review push already says it: no second push)
+// or complete (pushed). The owner moving the card finishes nothing. A new turn
+// on a done (or waiting) agent puts it back to running, so it is watched again.
+func TestDoneIsOnlyAnExplicitSignal(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	a := o.dispatchGateway(t, "reports done", "openrouter/acme/acme-v4.1-pro")
+	out := o.srv.toolAgentReportDone(o.asOwner, o.agent(t, a.ID), `{"summary":"Opened draft PR #12 with the fix.\nmore"}`)
+	if !strings.Contains(out, `"outcome":"done"`) {
+		t.Fatalf("agent_report_done answered %s", out)
+	}
+	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Done {
+		t.Fatalf("after agent_report_done: outcome %q", got.Outcome)
+	}
+	if ps := o.outcomePushes(a.ID); len(ps) != 1 || ps[0].Title != agentLabel(a)+" finished: Opened draft PR #12 with the fix." {
+		t.Fatalf("pushes %+v; want one finished push with the summary", ps)
+	}
+	if n := o.chiefNotes(t, a.Name); len(n) != 1 || !strings.Contains(n[0], "finished: Opened draft PR #12") {
+		t.Fatalf("chief notes %q", n)
+	}
+	if out := o.srv.toolAgentReportDone(o.asOwner, o.agent(t, a.ID), `{"summary":"again"}`); !strings.Contains(out, "Already") ||
+		len(o.outcomePushes(a.ID)) != 1 {
+		t.Errorf("a second report pushed again or said otherwise: %s", out)
+	}
+	if out := o.srv.toolAgentReportDone(o.asOwner, o.agent(t, a.ID), `{}`); !strings.Contains(out, `"error"`) {
+		t.Errorf("no summary: %s", out)
 	}
 
-	// Its task moved to review by the agent: done.
-	c := o.dispatchGateway(t, "to review", "openrouter/acme/acme-v4.1-pro")
-	if _, err := o.srv.setNoteStatus(o.asOwner, writerAgentTool, *c.NoteID, notes.StatusReadyForReview); err != nil {
+	// Done → a new turn → running (watched again).
+	o.srv.outcomeTurnStarted(o.asOwner, o.agent(t, a.ID))
+	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Running {
+		t.Fatalf("a new turn on a done agent: outcome %q; want running", got.Outcome)
+	}
+	o.srv.agentOutcomes.open(a.ID, -1)
+
+	// Its task to review: done, and the review push is the only one.
+	r := o.dispatchGateway(t, "to review", "openrouter/acme/acme-v4.1-pro")
+	if _, err := o.srv.setNoteStatus(o.asOwner, writerAgentTool, *r.NoteID, notes.StatusReadyForReview); err != nil {
 		t.Fatal(err)
 	}
-	if got := o.agent(t, c.ID); got.Outcome != agentoutcome.Done {
+	if got := o.agent(t, r.ID); got.Outcome != agentoutcome.Done {
 		t.Fatalf("after the agent moved its task to review: outcome %q", got.Outcome)
 	}
-	if ps := o.outcomePushes(c.ID); len(ps) != 1 || !strings.Contains(ps[0].Title, "moved its task to ready for review") {
-		t.Errorf("review completion pushes %+v", ps)
+	if n := len(o.outcomePushes(r.ID)); n != 0 {
+		t.Errorf("review: %d agent_outcome pushes beside the review push; want 0", n)
 	}
-	// Control: the OWNER moving a card does not finish the agent.
+	// To complete (no review push): done, pushed.
+	c := o.dispatchGateway(t, "to complete", "openrouter/acme/acme-v4.1-pro")
+	if _, err := o.srv.setNoteStatus(o.asOwner, writerTaskTool, *c.NoteID, notes.StatusComplete); err != nil {
+		t.Fatal(err)
+	}
+	if ps := o.outcomePushes(c.ID); o.agent(t, c.ID).Outcome != agentoutcome.Done || len(ps) != 1 ||
+		!strings.Contains(ps[0].Title, "moved its task to complete") {
+		t.Errorf("complete: outcome %q pushes %+v", o.agent(t, c.ID).Outcome, ps)
+	}
+	// Control: the OWNER moving a card finishes nothing.
 	d := o.dispatchGateway(t, "owner moves it", "openrouter/acme/acme-v4.1-pro")
 	if _, err := o.srv.setNoteStatus(o.asOwner, writerHumanUI, *d.NoteID, notes.StatusReadyForReview); err != nil {
 		t.Fatal(err)
@@ -522,11 +600,41 @@ func TestAFinishedAgentReportsBackOnce(t *testing.T) {
 	}
 }
 
+// TestOnlyADispatchedAgentIsSetToError (round 1, 🟡2): a failed turn of an
+// agent nobody dispatched (a saved agent Started by hand, an officer's
+// instance) changes nothing; and an agent list that cannot be read makes the
+// failure "maybe the chief" — pushed, never an error status (fail safe).
+func TestOnlyADispatchedAgentIsSetToError(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	saved, err := agents.NewPG(o.pool).Create(o.asOwner, agents.Agent{Name: "saved-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Namespace: "ns-saved", Status: agents.StatusRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.srv.outcomeFailed(o.asOwner, saved, "a turn failed: boom")
+	if got := o.agent(t, saved.ID); got.Status != agents.StatusRunning || got.Outcome != "" || len(o.outcomePushes(saved.ID)) != 0 {
+		t.Fatalf("an untracked agent's failure: status %q outcome %q pushes %d; want nothing", got.Status, got.Outcome, len(o.outcomePushes(saved.ID)))
+	}
+	a := o.dispatchGateway(t, "list unreadable", "openrouter/acme/acme-v4.1-pro")
+	real := o.srv.ext.Agents
+	o.srv.ext.Agents = listFails{real}
+	o.srv.outcomeFailed(o.asOwner, o.agent(t, a.ID), "a turn failed: boom")
+	o.srv.ext.Agents = real
+	if got := o.agent(t, a.ID); got.Status == agents.StatusError || got.Outcome != agentoutcome.Failed {
+		t.Fatalf("unreadable list: status %q outcome %q; want no error status, failure recorded", got.Status, got.Outcome)
+	}
+}
+
+// listFails is an agents store whose List fails.
+type listFails struct{ agents.Store }
+
+func (listFails) List(context.Context) ([]agents.Agent, error) { return nil, errors.New("list down") }
+
 // --- 3. the silence watchdog ------------------------------------------------------
 
 // kickedOff marks a's first turn delivered at the clock's now, as the deliverer
 // does (the stamp, then TurnStarted).
-func (o *outcomeFixture) kickedOff(t *testing.T, a agents.Agent) agents.Agent {
+func (o *outcomeFixture) kickedOff(t *testing.T, a agents.Agent, inFlight bool) agents.Agent {
 	t.Helper()
 	if err := agents.NewPG(o.pool).SetKickedOff(authz.System(context.Background()), a.ID, true); err != nil {
 		t.Fatal(err)
@@ -537,6 +645,11 @@ func (o *outcomeFixture) kickedOff(t *testing.T, a agents.Agent) agents.Agent {
 	fresh := o.agent(t, a.ID)
 	rep, _ := o.srv.KickoffOutcomes()
 	rep.TurnStarted(o.asOwner, fresh)
+	if !inFlight {
+		// The first turn is no longer open in this process — it ended without a
+		// reply, or muster restarted under it: only then can the agent go quiet.
+		o.srv.agentOutcomes.open(a.ID, -1)
+	}
 	return o.agent(t, a.ID)
 }
 
@@ -560,7 +673,7 @@ func (o *outcomeFixture) sweep(t *testing.T) int {
 func TestTheWatchdogCallsAQuietAgentStuckOncePerChange(t *testing.T) {
 	o := newOutcomeFixture(t, stubModelCatalog{})
 	th := agentoutcome.DefaultThresholds()
-	a := o.kickedOff(t, o.dispatchGateway(t, "goes quiet", "openrouter/acme/acme-v4.1-pro"))
+	a := o.kickedOff(t, o.dispatchGateway(t, "goes quiet", "openrouter/acme/acme-v4.1-pro"), false)
 	start := o.clock.Now()
 
 	o.clock.Set(start.Add(th.NoReply - time.Second))
@@ -629,5 +742,24 @@ func TestTheWatchdogCallsAQuietAgentStuckOncePerChange(t *testing.T) {
 	}
 	if ps := o.outcomePushes(a.ID); len(ps) != 2 || ps[1].Title != agentLabel(a)+" is stuck: silent for 30 min" {
 		t.Fatalf("pushes %+v; want the second stuck push", ps)
+	}
+}
+
+// TestAnInFlightTurnIsNeverNoReplySinceKickoff (round 1, 🟡1): a claude-code
+// first turn streams nothing until it ends (ccd answers at turn end), so a turn
+// OPEN in this process is activity — ten minutes in, no "no reply since
+// kickoff". Once it is no longer open, the threshold applies.
+func TestAnInFlightTurnIsNeverNoReplySinceKickoff(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	a := o.kickedOff(t, o.dispatchGateway(t, "long first turn", "openrouter/acme/acme-v4.1-pro"), true)
+	start := o.clock.Now()
+	o.clock.Set(start.Add(10 * time.Minute))
+	if n := o.sweep(t); n != 0 {
+		t.Fatalf("a first turn in flight for 10 min was called stuck")
+	}
+	o.srv.agentOutcomes.open(a.ID, -1) // the turn is no longer open
+	o.clock.Set(o.clock.Now().Add(agentoutcome.DefaultNoReplyAfter + time.Second))
+	if n := o.sweep(t); n != 1 {
+		t.Fatalf("control: with no turn open, %d stuck; want 1", n)
 	}
 }

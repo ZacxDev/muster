@@ -94,8 +94,13 @@ func (s *Server) AgentWatchdogPass(ctx context.Context) (int, error) {
 	now := s.now()
 	stuck := 0
 	for _, a := range open {
+		// 🔴 A TURN IN FLIGHT IS ACTIVITY. ccd answers /v1/responses only when its
+		// CLI's turn is over, so a claude-code first turn streams NOTHING for as
+		// long as it runs; without this a ten-minute first turn would read "no
+		// reply since kickoff" at five. The open-turn counter (this process's
+		// kickoff and chat turns) and the pod's work reports are what muster sees.
 		v := agentoutcome.Decide(agentoutcome.Input{Agent: a, LastMessage: last[a.ID],
-			Working: !s.AgentWork(a.ID).IsZero()}, now, th)
+			Working: !s.AgentWork(a.ID).IsZero() || s.agentOutcomes.busy(a.ID)}, now, th)
 		switch v.Action {
 		case agentoutcome.MarkStuck:
 			applied, err := s.ext.Outcomes.MarkStuck(ctx, a.ID, v.Reason, now, a.ActivityAt)

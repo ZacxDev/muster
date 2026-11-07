@@ -669,7 +669,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	s.outcomeTurnStarted(ctx, a, false)
+	s.outcomeTurnStarted(ctx, a)
 	reply, err := s.ext.Gateway.Chat(agents.WithTurnActivity(withSessionRoute(ctx, a, sess), func() { s.outcomeActivity(ctx, a) }),
 		a, sess.SessionKey, body.Message, nil)
 	s.outcomeTurnEnded(ctx, a, reply, err)

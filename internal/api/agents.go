@@ -790,8 +790,8 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
-		Kickoff: action == "dispatch",
-		Kind:    kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
+		Kickoff: action == "dispatch", TrackOutcome: true,
+		Kind: kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
 	})
 	if err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
@@ -963,6 +963,10 @@ type dispatchParams struct {
 	// every other door: its outcome is then also said in that chief's chat
 	// (agent_outcome.go).
 	DispatchedBy int64
+	// TrackOutcome: this start is a DISPATCH whose work must end in an outcome
+	// (agent_outcome.go) — the dispatch form and the chief's agent_dispatch. An
+	// officer's instance and the chief's own provisioning are not tracked.
+	TrackOutcome bool
 }
 
 // claudeCodeNoModel is the one sentence both model writes refuse with.
@@ -1174,7 +1178,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	}
 	// A first turn is owed: the agent's work now has an outcome to end in
 	// (agent_outcome.go) — running until it answers, fails or goes quiet.
-	if p.Kickoff {
+	if p.Kickoff && p.TrackOutcome {
 		s.outcomeDispatched(ctx, rec, p.DispatchedBy)
 	}
 	// The agent was just created (provisioning): nudge open pages so a task's
@@ -2292,7 +2296,7 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// answer, or a failure — is recorded, pushed once when it changes the outcome,
 	// and told to the chief that started it. Wrapped here, the one function every
 	// chat door's turn passes.
-	s.outcomeTurnStarted(ctx, a, false)
+	s.outcomeTurnStarted(ctx, a)
 	defer func() { s.outcomeTurnEnded(ctx, a, reply, err) }()
 	ctx = agents.WithTurnActivity(ctx, func() { s.outcomeActivity(ctx, a) })
 	// The session's runtime and model ride on the requests (session_runtime.go);

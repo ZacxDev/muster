@@ -15,13 +15,18 @@
 //     internal/agentkickoff for the first turn and by chatTurn for the rest);
 //   - an agent that goes quiet is called stuck by a sweep ([Decide], run by
 //     internal/api agent_watchdog.go);
-//   - an agent that finishes says so ([Done]).
+//   - an agent that finishes says so ([Done]) — only on an explicit signal —
+//     and one that stops without saying so is [Waiting] on its owner.
 //
 // THE STATES (agents.outcome, migration 0088). "" is UNTRACKED — an agent
 // nobody started with a first turn, and every row from before 0088.
 //
 //	running  started with a first turn; working (or about to)
-//	done     answered and idle, or moved its task to review/complete
+//	waiting  its turn ended, idle, with no completion signal (a question, a
+//	         progress report): the owner's move — pushed once, with its last line
+//	done     it SAID it finished: moved its task to review/complete, or called
+//	         agent_report_done. 🔴 NEVER inferred from an idle reply: a question
+//	         read as "done" is the lost-agent failure this package exists to end
 //	failed   a turn failed; the reason is in outcome_reason and error_message
 //	stuck    no reply since its kickoff, or silent past the threshold
 //
@@ -49,6 +54,10 @@ import (
 // The outcomes (the agents_outcome_check constraint's closed set, minus "").
 const (
 	Running = "running"
+	// Waiting: the agent's turn ended and it is idle WITHOUT an explicit
+	// completion signal — it asked something, or reported progress. The owner's
+	// move; the watchdog does not judge it, and its next turn re-arms running.
+	Waiting = "waiting"
 	Done    = "done"
 	Failed  = "failed"
 	Stuck   = "stuck"
@@ -145,8 +154,9 @@ type Input struct {
 	// LastMessage is the agent's newest transcript row (zero when none):
 	// agents.LastActivity's second half.
 	LastMessage time.Time
-	// Working is whether the agent's pod reports work running now (subagents or
-	// background shells, refreshed every minute while non-zero).
+	// Working is whether the agent is visibly working NOW: a turn of it is in
+	// flight (a claude-code turn streams nothing until it ends), or its pod
+	// reports subagents or background shells (refreshed every minute).
 	Working bool
 }
 
@@ -225,4 +235,21 @@ func FirstLine(s string, max int) string {
 		}
 	}
 	return ""
+}
+
+// LastLines is a reply's last n non-empty lines, each cut to max runes: what a
+// "waiting for you" push and note quote — the end of a turn is where its
+// question is, not its first line.
+func LastLines(s string, n, max int) []string {
+	var out []string
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			if r := []rune(t); max > 0 && len(r) > max {
+				t = string(r[:max-1]) + "…"
+			}
+			out = append([]string{t}, out...)
+		}
+	}
+	return out
 }

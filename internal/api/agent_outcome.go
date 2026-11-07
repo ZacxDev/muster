@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -133,7 +134,7 @@ func (s *Server) outcomeDispatched(ctx context.Context, a agents.Agent, chief in
 // outcomeTurnStarted: a turn of a is starting. Activity now (unthrottled), and —
 // for a first turn of an agent nobody tracked (a saved agent Started later) —
 // the start of its tracking.
-func (s *Server) outcomeTurnStarted(ctx context.Context, a agents.Agent, first bool) {
+func (s *Server) outcomeTurnStarted(ctx context.Context, a agents.Agent) {
 	if !s.outcomesOn() {
 		return
 	}
@@ -141,13 +142,16 @@ func (s *Server) outcomeTurnStarted(ctx context.Context, a agents.Agent, first b
 	octx, cancel := outcomeCtx(ctx)
 	defer cancel()
 	now := s.now()
-	if first && a.Outcome == "" {
-		if err := s.ext.Outcomes.Start(octx, a.ID, nil, now); err != nil {
-			s.logger.Printf("outcomes: agent %d: mark started: %v", a.ID, err)
-		}
-		return
-	}
 	s.recordActivity(octx, a, now)
+	// 🔴 A NEW TURN RE-ARMS A DISPATCHED AGENT THAT HAD STOPPED: done or waiting
+	// back to running, so its new work is watched (and ends in an outcome)
+	// again. An untracked agent (saved, an officer's, the chief) stays untracked.
+	if applied, err := s.ext.Outcomes.Transition(octx, a.ID, []string{agentoutcome.Done, agentoutcome.Waiting},
+		agentoutcome.Running, "", now); err != nil {
+		s.logger.Printf("outcomes: agent %d: re-arm: %v", a.ID, err)
+	} else if applied {
+		s.outcomeChanged(a)
+	}
 }
 
 // outcomeActivity: a's turn showed life (a stream event, a work report). Written
@@ -194,16 +198,27 @@ func (s *Server) outcomeTurnEnded(ctx context.Context, a agents.Agent, reply str
 	s.outcomeAnswered(ctx, a, reply)
 }
 
-// outcomeAnswered: a answered with reply.
+// outcomeAnswered: a's turn ended with reply (possibly empty: a tool loop can
+// end on a tool call, attention_ask among them).
+//
+// 🔴 AN IDLE REPLY IS NEVER "DONE". A turn that ends is the agent's question as
+// often as its result — "Which repository should I work in?" — and reading it as
+// finished stops watching an agent that is waiting on its owner: the lost-agent
+// failure this tracker exists to end. Done is an EXPLICIT signal only (its task
+// moved to review/complete, or agent_report_done). Every other idle end is
+// WAITING: one push quoting the reply's LAST line (where a question is) and a
+// chief note quoting its last lines.
 func (s *Server) outcomeAnswered(ctx context.Context, a agents.Agent, reply string) {
-	if !s.outcomesOn() || strings.TrimSpace(reply) == "" {
+	if !s.outcomesOn() {
 		return
 	}
 	octx, cancel := outcomeCtx(ctx)
 	defer cancel()
 	now := s.now()
-	if err := s.ext.Outcomes.Replied(octx, a.ID, now); err != nil {
-		s.logger.Printf("outcomes: agent %d: record reply: %v", a.ID, err)
+	if strings.TrimSpace(reply) != "" {
+		if err := s.ext.Outcomes.Replied(octx, a.ID, now); err != nil {
+			s.logger.Printf("outcomes: agent %d: record reply: %v", a.ID, err)
+		}
 	}
 	// A failure is cleared by the next good turn (only the chief, whose status a
 	// failure leaves alone, can have one).
@@ -211,18 +226,42 @@ func (s *Server) outcomeAnswered(ctx context.Context, a agents.Agent, reply stri
 		s.outcomeChanged(a)
 		return
 	}
-	// 🔴 "FINISHED" NEEDS THE AGENT IDLE: a reply while its pod still reports
-	// subagents or background shells is a progress report, not the end. Its work
-	// report clearing finishes it instead (outcomeWorkReported).
+	// A reply while its pod still reports subagents or background shells is a
+	// progress report mid-work: it is not waiting yet (outcomeWorkReported).
 	if s.agentOutcomes.busy(a.ID) || !s.AgentWork(a.ID).IsZero() {
 		return
 	}
-	s.outcomeDone(octx, a, "finished", agentoutcome.FirstLine(reply, outcomePushTitleMax))
+	s.outcomeWaiting(octx, a, agentoutcome.LastLines(agents.ScrubNote(reply, a.PendingNote), 3, outcomePushTitleMax))
+}
+
+// outcomeWaiting moves a running (or stuck) agent to waiting on its owner, with
+// the reply's last lines, and — once — says so.
+func (s *Server) outcomeWaiting(octx context.Context, a agents.Agent, last []string) {
+	reason := "its turn ended with no reply text"
+	if len(last) > 0 {
+		reason = last[len(last)-1]
+	}
+	applied, err := s.ext.Outcomes.Transition(octx, a.ID, []string{agentoutcome.Running, agentoutcome.Stuck},
+		agentoutcome.Waiting, reason, s.now())
+	if err != nil {
+		s.logger.Printf("outcomes: agent %d: mark waiting: %v", a.ID, err)
+		return
+	}
+	if !applied {
+		return
+	}
+	s.logger.Printf("outcomes: agent %d (%s) is waiting for its owner", a.ID, a.Name)
+	s.outcomeChanged(a)
+	s.pushOutcome(a, agentoutcome.Waiting, "is waiting for you", reason)
+	s.noteOutcomeToChief(octx, a, agentoutcome.Waiting, "is waiting for your owner", strings.Join(last, "\n"))
 }
 
 // outcomeDone moves a running (or stuck) agent to done, and — once — says so.
-func (s *Server) outcomeDone(octx context.Context, a agents.Agent, verb, detail string) {
-	applied, err := s.ext.Outcomes.Transition(octx, a.ID, []string{agentoutcome.Running, agentoutcome.Stuck},
+//
+// push is false when another push already says it for the same transition (the
+// task's ready-for-review push).
+func (s *Server) outcomeDone(octx context.Context, a agents.Agent, verb, detail string, push bool) {
+	applied, err := s.ext.Outcomes.Transition(octx, a.ID, []string{agentoutcome.Running, agentoutcome.Waiting, agentoutcome.Stuck},
 		agentoutcome.Done, "", s.now())
 	if err != nil {
 		s.logger.Printf("outcomes: agent %d: mark done: %v", a.ID, err)
@@ -233,7 +272,10 @@ func (s *Server) outcomeDone(octx context.Context, a agents.Agent, verb, detail 
 	}
 	s.logger.Printf("outcomes: agent %d (%s) %s", a.ID, a.Name, verb)
 	s.outcomeChanged(a)
-	s.announceOutcome(octx, a, agentoutcome.Done, verb, detail)
+	if push {
+		s.pushOutcome(a, agentoutcome.Done, verb, detail)
+	}
+	s.noteOutcomeToChief(octx, a, agentoutcome.Done, verb, detail)
 }
 
 // outcomeFailed: a turn of a failed, for reason. Status `error` with the reason
@@ -247,6 +289,13 @@ func (s *Server) outcomeFailed(ctx context.Context, a agents.Agent, reason strin
 	defer cancel()
 	reason = agents.ScrubNote(strings.TrimSpace(reason), a.PendingNote)
 	chief := s.outcomeIsChief(octx, a)
+	// 🔴 ONLY A DISPATCHED AGENT (one whose work is tracked) IS SET TO `error`.
+	// An officer's instance, a saved agent Started by hand and other untracked
+	// rows keep their status (their own subsystems judge them); the chief is
+	// pushed but never set to error (the header).
+	if a.Outcome == "" && !chief {
+		return
+	}
 	applied, err := s.ext.Outcomes.Fail(octx, a.ID, reason, !chief, s.now())
 	if err != nil {
 		s.logger.Printf("outcomes: agent %d: record failure: %v", a.ID, err)
@@ -279,8 +328,10 @@ func (s *Server) outcomeIsChief(octx context.Context, a agents.Agent) bool {
 	}
 	list, err := s.ext.Agents.List(octx)
 	if err != nil {
-		s.logger.Printf("outcomes: agent %d: could not decide whether it is the chief: %v", a.ID, err)
-		return false
+		// FAIL SAFE: an unreadable list answers "maybe the chief", so a failed
+		// turn sets no `error` that could cut the chief off.
+		s.logger.Printf("outcomes: agent %d: could not decide whether it is the chief (treated as maybe): %v", a.ID, err)
+		return true
 	}
 	return chiefPredicate(list)(a)
 }
@@ -296,6 +347,12 @@ func agentLabel(a agents.Agent) string {
 // announceOutcome pushes a's new outcome to its owner and notes it in the chat
 // of the chief that started it.
 func (s *Server) announceOutcome(octx context.Context, a agents.Agent, outcome, verb, detail string) {
+	s.pushOutcome(a, outcome, verb, detail)
+	s.noteOutcomeToChief(octx, a, outcome, verb, detail)
+}
+
+// pushOutcome is the one push an outcome change sends: "<agent> <verb>: <detail>".
+func (s *Server) pushOutcome(a agents.Agent, outcome, verb, detail string) {
 	label := agentLabel(a)
 	title := label + " " + verb
 	if detail != "" {
@@ -305,7 +362,7 @@ func (s *Server) announceOutcome(octx context.Context, a agents.Agent, outcome, 
 	if body == "" {
 		body = "Open the agent to see what it did."
 	}
-	if outcome != agentoutcome.Done && a.DispatchedBy != nil {
+	if outcome != agentoutcome.Done && outcome != agentoutcome.Waiting && a.DispatchedBy != nil {
 		body += " Your chief has been told."
 	}
 	s.pushTask(a.OwnerID, push.EventAgentOutcome, RouterNotification{
@@ -316,7 +373,6 @@ func (s *Server) announceOutcome(octx context.Context, a agents.Agent, outcome, 
 		// The bare page: it resolves the agent's latest session at tap time.
 		Data: map[string]string{"url": ui.AgentPath(a.Name)},
 	})
-	s.noteOutcomeToChief(octx, a, outcome, verb, detail)
 }
 
 // outcomeChiefNote is the note a chief reads about an agent it started.
@@ -328,6 +384,9 @@ func outcomeChiefNote(a agents.Agent, outcome, verb, detail string) string {
 			"and offer to start it again with that fixed (agent_dispatch, with a new request_key)."
 	case agentoutcome.Stuck:
 		return "[muster] " + who + " looks STUCK: " + detail + ". Tell your owner, and offer to look at it or start it again."
+	case agentoutcome.Waiting:
+		return "[muster] " + who + " stopped and is WAITING FOR YOUR OWNER — it did not say it finished. Its last words:\n" +
+			detail + "\nTell your owner it is waiting on them (its question, if it asked one, is above)."
 	}
 	line := "[muster] " + who + " " + verb
 	if detail != "" {
@@ -364,7 +423,8 @@ func (s *Server) noteOutcomeToChief(octx context.Context, a agents.Agent, outcom
 //
 // It does NOT count:
 //   - the caller going away (its context cancelled: a closed chat socket, a
-//     shutdown) — the runtime may still be running the turn;
+//     shutdown) or the turn outliving its budget — the runtime may still be
+//     running it, so it is the watchdog's to judge, as a shutdown is;
 //   - a typed refusal ccd gives BEFORE it types anything (`503 not_ready`,
 //     `409 busy`, `409 rate_limited`): nothing was sent, the agent is busy or
 //     starting, and the sender is told;
@@ -372,13 +432,13 @@ func (s *Server) noteOutcomeToChief(octx context.Context, a agents.Agent, outcom
 //     sent, and the instance's own state says why;
 //   - a turn the gate refused (ErrAgentBeingReplaced).
 //
-// Everything else — the runtime's own failure (agents.StreamError, a non-200),
-// a turn that outlived its budget, an empty answer — counts.
+// Everything else — the runtime's own failure (agents.StreamError, a non-200)
+// — counts.
 func turnFailureCounts(ctx context.Context, err error) (string, bool) {
-	if err == nil || ctx.Err() != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || ctx.Err() != nil {
 		return "", false
 	}
-	if errors.Is(err, ErrAgentBeingReplaced) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, ErrAgentBeingReplaced) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
 	}
 	var rt *agents.RuntimeError
@@ -447,7 +507,7 @@ func (s *Server) AgentOutcomeOf(a agents.Agent, lastMessage time.Time) AgentOutc
 
 // outcomeWorkReported: a's pod posted a work report — a heartbeat, so activity.
 // cleared is a report that took its work to none: an agent that already
-// answered and has no turn open is then done.
+// answered and has no turn open is then waiting on its owner.
 func (s *Server) outcomeWorkReported(ctx context.Context, a agents.Agent, cleared bool) {
 	if !s.outcomesOn() {
 		return
@@ -462,7 +522,9 @@ func (s *Server) outcomeWorkReported(ctx context.Context, a agents.Agent, cleare
 	if err != nil || fresh.FirstReplyAt == nil {
 		return
 	}
-	s.outcomeDone(octx, fresh, "finished", "")
+	// Its background work ended and no turn is open: idle, and it did not say it
+	// finished — waiting on its owner (never done: outcomeAnswered's rule).
+	s.outcomeWaiting(octx, fresh, []string{"its background work ended"})
 }
 
 // outcomeTaskDone: an agent moved its task to review or complete — its work is
@@ -480,7 +542,9 @@ func (s *Server) outcomeTaskDone(ctx context.Context, taskID int64, status strin
 		return
 	}
 	if a, ok := byNote[taskID]; ok {
-		s.outcomeDone(octx, a, "moved its task to "+strings.ReplaceAll(status, "_", " "), "")
+		// A move to ready_for_review already pushes the owner (notifyTaskDone,
+		// the same funnel): no second push for one transition. complete pushes.
+		s.outcomeDone(octx, a, "moved its task to "+strings.ReplaceAll(status, "_", " "), "", status != notes.StatusReadyForReview)
 	}
 }
 
@@ -511,7 +575,7 @@ type KickoffOutcomeReporter struct{ s *Server }
 
 // TurnStarted: the first turn is about to be sent.
 func (k *KickoffOutcomeReporter) TurnStarted(ctx context.Context, a agents.Agent) {
-	k.s.outcomeTurnStarted(ctx, a, true)
+	k.s.outcomeTurnStarted(ctx, a)
 }
 
 // TurnActivity: the first turn's stream showed life.

@@ -138,8 +138,9 @@ func (s *Server) dispatchCardState(ctx context.Context, a agents.Agent, status s
 // agent_outcome.go) — what the agent page's badge and notice draw from the same
 // row — so the card and the page cannot disagree:
 //
-//	failed → failed, its reason      stuck → stuck, its reason
-//	done   → done                    running / untracked → derived below
+//	failed  → failed, its reason      stuck → stuck, its reason
+//	waiting → waiting for you, the reply's last line
+//	done    → done                    running / untracked → derived below
 //
 // A running agent is left to derivedCardState on purpose: "working" and
 // "waiting for you" are finer than "running", and nothing is recorded to say
@@ -151,6 +152,8 @@ func (s *Server) outcomeCardState(a agents.Agent) (state, detail string, ok bool
 		return ui.DispatchFailed, o.Reason, true
 	case agentoutcome.Stuck:
 		return ui.DispatchStuck, o.Reason, true
+	case agentoutcome.Waiting:
+		return ui.DispatchWaiting, o.Reason, true
 	case agentoutcome.Done:
 		return ui.DispatchDone, "", true
 	}

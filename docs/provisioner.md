@@ -459,17 +459,26 @@ and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
 | outcome | when | what happens |
 |---|---|---|
 | `running` | the agent was started with a first turn | — |
-| `done` | its turn answered and it is idle (its pod reports no subagents or background shells), or it moved its own task to **ready for review** or **complete** | one push, `<agent> finished: <first line of its reply>`, and a note to the chief that started it |
+| `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | one push, `<agent> is waiting for you: <the LAST line of its reply>`, and a note to the chief quoting its last lines; its next turn puts it back to `running` |
+| `done` | it **said** it finished: it moved its own task to **ready for review** or **complete**, or called `agent_report_done{summary}` (offered to every agent but the chief; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
 | `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say), the turn outlived its budget, it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
 | `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
 
+🔴 **A reply is never "done".** A turn that ends is as often the agent's
+question ("Which repository should I work in?") as its result, so only an
+explicit signal finishes it; every other idle end is `waiting` on you.
+
 **What does not count as a failure:** you closing the chat while a turn runs,
 a runtime that refused a turn before it typed anything (busy, not ready, rate
-limited — the sender is told), a connection to a pod that is restarting, and
-a first turn cut off by muster itself shutting down (the runtime may still be
-running it; the watchdog judges what it does next). **The chief is never set
-to `error` by a failed turn**: its status gates every delivery muster makes
-to it, so its failure is pushed and shown, and its next good turn clears it.
+limited — the sender is told), a connection to a pod that is restarting, a
+turn that outlived its budget and a first turn cut off by muster itself
+shutting down (in both the runtime may still be running it; the watchdog
+judges what it does next), and an `error` event the runtime followed with a
+completed turn. **Only a dispatched agent is set to `error`** (one started from
+the dispatch form or by the chief's `agent_dispatch`); an officer's instance or
+a saved agent you Started keeps its status. **The chief is never set to
+`error` by a failed turn**: its status gates every delivery muster makes to
+it, so its failure is pushed and shown, and its next good turn clears it.
 
 **One push per change.** Every change of outcome is a database write
 conditional on the outcome it leaves, so of two writers (two replicas, a turn
@@ -527,9 +536,10 @@ outcome is `running` or `stuck`:
   (`30m`) → `stuck`, *silent for 30 min*;
 - `stuck`, and then any activity → `running` again (no push).
 
-"Activity" is everything muster can see the agent do: a turn starting or
-ending, every read of a turn's stream (text, thinking, tool calls — a long
-tool run streams the whole time), its pod's work reports (sent every minute
+"Activity" is everything muster can see the agent do: a turn **open** in
+muster (a claude-code turn streams nothing until it ends, so an open turn is
+never "no reply since kickoff"), a turn starting or ending, every read of a
+turn's stream (text, thinking, tool calls), its pod's work reports (sent every minute
 while it has subagents or background shells running), and the agent's row and
 transcript (the same "last active" the sidebar orders by). So a genuinely
 working agent is never flipped. Before its first turn is delivered, the
@@ -538,11 +548,12 @@ ready is failed after 15 minutes, as before, and that is now pushed too.
 
 ### Reading an outcome
 
-`GET /api/agents` (the machine roster) carries `outcome` — `running`, `done`,
-`failed`, `stuck`, or `""` for an agent nobody started with a first turn —
+`GET /api/agents` (the machine roster) carries `outcome` — `running`,
+`waiting`, `done`, `failed`, `stuck`, or `""` for an agent nobody dispatched —
 with `outcomeReason` and `outcomeAt`. The chief panel's card for an agent it
 started reads the same recorded outcome as the agent's page (`failed` and
-`stuck` with the reason, `done`), through one projection,
+`stuck` with the reason, `waiting for you` with the last line, `done`),
+through one projection,
 `api.Server.AgentOutcomeOf`, so the two cannot disagree.
 
 ## Destroying an agent

@@ -103,3 +103,20 @@ func TestATurnsStreamReadsAreActivity(t *testing.T) {
 		t.Fatal("a turn with no activity callback moved the count")
 	}
 }
+
+// TestAnErrorFollowedByACompletionIsNotAFailure (round 1, 🟡3): a runtime may
+// report an `error` event mid-stream (a failover attempt) and then complete the
+// turn on its fallback. The completion is the answer: no error, its text. Only
+// a stream with NO completion after the error fails.
+func TestAnErrorFollowedByACompletionIsNotAFailure(t *testing.T) {
+	stream := "data: {\"type\":\"error\",\"message\":\"" + incidentFailure + "\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":" +
+		"[{\"type\":\"output_text\",\"text\":\"answered on the fallback\"}]}]}}\n\n"
+	resp, err := parseResponsesSSE(strings.NewReader(stream), nil)
+	if err != nil || resp.messageText() != "answered on the fallback" {
+		t.Fatalf("error then completed = (%q, %v); want the completion's text and no error", resp.messageText(), err)
+	}
+	if _, err := parseResponsesSSE(strings.NewReader("data: {\"type\":\"error\",\"message\":\"x\"}\n\n"), nil); err == nil {
+		t.Fatal("control: an error with no completion after it did not fail")
+	}
+}

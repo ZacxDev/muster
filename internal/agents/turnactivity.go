@@ -8,13 +8,18 @@ import (
 // A TURN'S BYTES ARE EVIDENCE THAT THE AGENT IS ALIVE.
 //
 // The outcome watchdog (internal/agentoutcome) must never call a working agent
-// stuck. The only thing muster can SEE of a long turn in flight is its stream —
-// text, thinking, tool calls and, from a claude-code runtime, every tool the CLI
-// runs — and the turn's caller does not always read it: the kickoff passes no
-// stream callback at all. So the transport reports activity itself, for every
-// turn whose context asks: each read of the runtime's stream that returns bytes
-// runs the callback WithTurnActivity put on ctx. The callback throttles (it runs
-// per read).
+// stuck. Where a runtime STREAMS a turn — text, thinking, tool calls — that
+// stream is evidence of life, and the turn's caller does not always read it (the
+// kickoff passes no stream callback at all). So the transport reports activity
+// itself, for every turn whose context asks: each read of the runtime's stream
+// that returns bytes runs the callback WithTurnActivity put on ctx. The callback
+// throttles (it runs per read).
+//
+// ⚠ A CLAUDE-CODE RUNTIME DOES NOT STREAM A TURN IN FLIGHT: ccd writes its whole
+// answer when the CLI's turn is over (cmd/ccd/server.go), so this hook sees
+// nothing until then. That case is covered by the turn being OPEN — the
+// watchdog counts an in-flight turn as activity (internal/api agent_watchdog.go)
+// — not by this hook.
 
 type turnActivityKey struct{}
 

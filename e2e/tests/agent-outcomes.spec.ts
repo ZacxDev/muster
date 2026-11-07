@@ -31,6 +31,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 const origin = `http://localhost:${outcomesPort}`;
 const FAILURE = 'FailoverError: Unknown model: openai/Acme v9 ultra';
 let server: Running | undefined;
+let serverEnv: Record<string, string> = {};
 let runtime: http.Server | undefined;
 let catalog: http.Server | undefined;
 const held: http.ServerResponse[] = [];
@@ -76,7 +77,7 @@ test.beforeAll(async () => {
     const i = line.indexOf('=');
     vapid[line.slice(0, i)] = line.slice(i + 1);
   }
-  server = await startServer(versionTerm, outcomesPort, {
+  serverEnv = {
     ...vapid,
     MUSTER_FOCUS_INTERVAL: '0',
     MUSTER_AGENT_PROVISIONER: 'noop',
@@ -92,7 +93,8 @@ test.beforeAll(async () => {
     // Seconds, not the 5 min default, so a browser test can watch it fire.
     MUSTER_AGENT_STUCK_NO_REPLY: '3s',
     MUSTER_AGENT_WATCHDOG_INTERVAL: '1s',
-  });
+  };
+  server = await startServer(versionTerm, outcomesPort, serverEnv);
 });
 
 test.afterAll(async () => {
@@ -221,7 +223,17 @@ for (const vp of [
       test.setTimeout(90_000);
       await signIn(page, origin);
       await withDevice(page, async () => {
+        const heldBefore = held.length;
         const a = await dispatch(page, 'openrouter/acme/acme-v4.1-pro', `OUTCOME-HANG ${vp.label}: think about it`);
+        // The runtime took the first turn and holds it: while the turn is open
+        // in muster it is activity, never "no reply since kickoff".
+        await expect.poll(() => held.length, { timeout: 30_000 }).toBe(heldBefore + 1);
+        await page.waitForTimeout(4500); // past the 3 s threshold, sweeps every 1 s
+        expect((await agentRows()).find((x) => x.id === a.id)?.outcome, 'an open turn is not stuck').toBe('running');
+        // muster restarts under the held turn: the turn is no longer open in any
+        // muster, nothing shows the agent alive, and it never replied — stuck.
+        await server!.stop();
+        server = await startServer(versionTerm, outcomesPort, serverEnv);
         await page.goto(origin + '/agents/' + a.name);
         await expect.poll(async () => (await agentRows()).find((x) => x.id === a.id)?.outcome, { timeout: 30_000 }).toBe('stuck');
         // Live: the open page redraws its strip and notices on agent.changed.

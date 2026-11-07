@@ -435,7 +435,10 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if failed != nil {
+	// 🔴 A FAILURE ONLY WHEN NO COMPLETION FOLLOWED. A runtime can report an
+	// `error` event mid-stream (a failover attempt) and then complete the turn
+	// on its fallback; the completed response is the answer, not the error.
+	if failed != nil && final == nil {
 		return nil, failed
 	}
 	if final == nil {

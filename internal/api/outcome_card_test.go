@@ -65,6 +65,7 @@ func TestADispatchedAgentsCardReadsItsRecordedOutcome(t *testing.T) {
 		{agentoutcome.Stuck, agentoutcome.ReasonNoReply, ui.DispatchStuck},
 		{agentoutcome.Failed, "first turn failed: runtime turn failed: FailoverError: Unknown model: openai/Acme v9 ultra", ui.DispatchFailed},
 		{agentoutcome.Done, "", ui.DispatchDone},
+		{agentoutcome.Waiting, "Which repository should I work in?", ui.DispatchWaiting},
 	} {
 		state, detail, ok := s.outcomeCardState(outcomeRow(c.outcome, c.reason))
 		if !ok || state != c.state || detail != c.reason {
@@ -98,7 +99,7 @@ func TestTheCardAndThePageAgreeOnEveryOutcome(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: noClaimAgents{}})
 	never := func(agents.Agent) bool { return false }
-	for _, o := range []string{"", agentoutcome.Running, agentoutcome.Done, agentoutcome.Failed, agentoutcome.Stuck} {
+	for _, o := range []string{"", agentoutcome.Running, agentoutcome.Waiting, agentoutcome.Done, agentoutcome.Failed, agentoutcome.Stuck} {
 		a := outcomeRow(o, "the reason for "+o)
 		page := s.cardViewIndexed(a, nil, time.Time{}, 0, never, pins.Set{}, nil)
 		card, detail, ok := s.outcomeCardState(a)
@@ -110,6 +111,10 @@ func TestTheCardAndThePageAgreeOnEveryOutcome(t *testing.T) {
 		case agentoutcome.Done:
 			if !ok || card != ui.DispatchDone || page.Outcome != agentoutcome.Done {
 				t.Errorf("done: card %q page %q", card, page.Outcome)
+			}
+		case agentoutcome.Waiting:
+			if !ok || card != ui.DispatchWaiting || page.Outcome != agentoutcome.Waiting || detail != page.OutcomeReason {
+				t.Errorf("waiting: card %q (%q) page %q (%q)", card, detail, page.Outcome, page.OutcomeReason)
 			}
 		default:
 			if ok || page.Outcome == agentoutcome.Failed || page.Outcome == agentoutcome.Stuck {
