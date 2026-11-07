@@ -202,6 +202,10 @@ type focusSpec struct {
 	// makes), so the session's auto name freezes exactly when a refresh's
 	// would.
 	Tail []focus.Entry `json:"tail"`
+	// HistoryAgeMinutes, when > 0, backdates EVERY history row of the
+	// subject that many minutes after this entry is written (a session whose
+	// focus has been elsewhere for a while: focus.DriftOffer's age).
+	HistoryAgeMinutes int `json:"historyAgeMinutes"`
 }
 
 func focusSpecs() ([]focusSpec, error) {
@@ -254,6 +258,12 @@ func writeFocus(ctx context.Context, pool *pgxpool.Pool, as *agents.PGStore, nam
 		if _, err := fs.Upsert(ctx, sub, focus.Write{Title: sp.Title, Description: sp.Description, Source: focus.SourceSummarizer,
 			Nameable: len(sp.Tail) > 0 && focus.Nameable(sp.Title, sp.Tail)}); err != nil {
 			return fmt.Errorf("focus %s: %w", sub, err)
+		}
+		if sp.HistoryAgeMinutes > 0 {
+			if _, err := pool.Exec(ctx, `UPDATE agent_focus_history SET created_at = created_at - make_interval(mins => $1)
+				WHERE subject_kind = $2 AND subject_key = $3`, sp.HistoryAgeMinutes, string(sub.Kind), sub.Key); err != nil {
+				return fmt.Errorf("backdate history %s: %w", sub, err)
+			}
 		}
 		if sp.AgeHours > 0 {
 			// Exactly one row moves, or the spec would test a fresh focus and

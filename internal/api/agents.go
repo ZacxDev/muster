@@ -1584,6 +1584,10 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// The rename offer, when the agent's work has moved on from its name.
+	if view.Drift = s.agentDrift(r, a.ID, view.SessionName); view.Drift != nil {
+		view.Drift.Back = r.URL.RequestURI()
+	}
 	// "working…" while a turn runs in this conversation, and the cards of the
 	// agents started in it (chat_log_live.go).
 	s.withChatLogLive(ctx, &view, active)

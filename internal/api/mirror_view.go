@@ -111,6 +111,9 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 			v.Agent = rt.Kind
 		}
 	}
+	// The rename offer, when the conversation has moved on from its name.
+	v.Drift = s.mirrorDrift(r, e, v.SessionName)
+
 	if v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
 	}

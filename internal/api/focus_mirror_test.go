@@ -33,6 +33,8 @@ type memFocus struct {
 	// titleHits is what SearchTitles answers; titleQueries what it was asked.
 	titleHits    []focus.HistoryHit
 	titleQueries []string
+	// history is what History answers per subject, newest first.
+	history map[focus.Subject][]focus.HistoryEntry
 }
 
 func (m *memFocus) Get(_ context.Context, s focus.Subject) (focus.Focus, bool, error) {
@@ -69,6 +71,15 @@ func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (fo
 	m.rows[s] = f
 	return f, nil
 }
+func (m *memFocus) DismissDrift(_ context.Context, s focus.Subject, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if f, ok := m.rows[s]; ok {
+		f.Name.DriftDismissed = title
+		m.rows[s] = f
+	}
+	return nil
+}
 func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string) (focus.Name, error) {
 	if s.Kind != focus.KindMirror {
 		return focus.Name{}, focus.ErrAgentManualName
@@ -98,8 +109,14 @@ func (m *memFocus) Owners(context.Context) ([]int64, error)              { retur
 func (m *memFocus) Touch(context.Context, []focus.Subject) error         { return nil }
 func (m *memFocus) PruneAll(context.Context, time.Time) (int, error)     { return 0, nil }
 func (m *memFocus) PruneHistory(context.Context, time.Time) (int, error) { return 0, nil }
-func (m *memFocus) History(context.Context, focus.Subject, string, int) (focus.HistoryPage, error) {
-	return focus.HistoryPage{}, nil
+func (m *memFocus) History(_ context.Context, s focus.Subject, _ string, limit int) (focus.HistoryPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h := m.history[s]
+	if limit > 0 && len(h) > limit {
+		h = h[:limit]
+	}
+	return focus.HistoryPage{Entries: append([]focus.HistoryEntry{}, h...)}, nil
 }
 func (m *memFocus) SearchHistory(context.Context, string, focus.Live, time.Time, int) ([]focus.HistoryHit, error) {
 	return nil, nil

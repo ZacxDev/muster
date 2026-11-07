@@ -2,6 +2,7 @@ package focus
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,5 +122,40 @@ func TestPruneKeepsANamedMirrorLonger(t *testing.T) {
 	}
 	if n, err := s.PruneAll(as(2), time.Now().Add(-DefaultRetention)); err != nil || n != 2 {
 		t.Fatalf("prune past the name retention: %d (%v), want 2", n, err)
+	}
+}
+
+// TestADismissedOfferIsTheOwnersAndBounded: DismissDrift stores the title on
+// the caller's row (Get reads it back), never on another owner's, writes
+// nothing for a subject with no row, and refuses an empty or over-long title.
+func TestADismissedOfferIsTheOwnersAndBounded(t *testing.T) {
+	s, _ := pgStore(t)
+	sub := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000aa05")
+	if _, err := s.Upsert(as(2), sub, Write{Title: "Fixing the Stripe webhook retry", Source: SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DismissDrift(as(3), sub, "Fixing the Stripe webhook retry"); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, _ := s.Get(as(2), sub); f.Name.DriftDismissed != "" {
+		t.Fatalf("another owner's dismissal landed on the row: %q", f.Name.DriftDismissed)
+	}
+	if err := s.DismissDrift(as(2), sub, "Fixing the Stripe webhook retry"); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, _ := s.Get(as(2), sub); f.Name.DriftDismissed != "Fixing the Stripe webhook retry" {
+		t.Fatalf("dismissed %q", f.Name.DriftDismissed)
+	}
+	none := MirrorSubject("0b2c3d4e-5f60-4718-8a9b-00000000aa06")
+	if err := s.DismissDrift(as(2), none, "X y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Get(as(2), none); ok {
+		t.Fatal("a dismissal created a row")
+	}
+	for _, bad := range []string{"", strings.Repeat("x", MaxDriftTitleRunes+1)} {
+		if err := s.DismissDrift(as(2), sub, bad); !errors.Is(err, ErrBadName) {
+			t.Errorf("title %.8q…: %v, want ErrBadName", bad, err)
+		}
 	}
 }

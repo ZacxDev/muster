@@ -63,6 +63,8 @@ type MirrorViewView struct {
 	// the header and the <title> draw it when it is a human one
 	// (mirrorDisplayName). The zero value draws Label / Title.
 	SessionName sessionname.Name
+	// Drift is the page's rename offer (driftBanner), nil for none.
+	Drift *SessionDrift
 	// Qualifier is what tells this entry apart from another listed entry of the
 	// same name ("" = none) — the SAME qualifier its Agents card shows
 	// (mirror.Qualified): part of the header's title and of <title>.
@@ -244,6 +246,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
+				// The rename offer, when the conversation has moved on from its
+				// name (session_name.go).
+				driftBanner(v.Drift),
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
 				Div(
 					ID("mv-error"),
