@@ -254,7 +254,10 @@ for (const vp of [
         const form = page.locator('#agent-rename');
         await expect(form).toBeVisible();
         const input = form.locator('input[name="name"]');
-        await expect(input).toHaveValue(name);
+        // An agent called only by its slug has no name to prefill: the slug
+        // is the placeholder (a technical id, not a name to edit).
+        await expect(input).toHaveValue('');
+        await expect(input).toHaveAttribute('placeholder', name);
         await input.fill('Renamed by the menu ' + stamp);
         await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
         const posted = page.waitForResponse((r) => r.url().endsWith(`/agents/${id}/name`) && r.request().method() === 'POST');
@@ -265,7 +268,8 @@ for (const vp of [
         await reloaded;
         await page.waitForLoadState('load');
         expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload ?? 0), 'the page reloaded').toBe(0);
-        await expect(page.locator('[data-agent-title] h1')).toHaveAttribute('title', 'Renamed by the menu ' + stamp);
+        // The tooltip carries the slug the header no longer spells.
+        await expect(page.locator('[data-agent-title] h1')).toHaveAttribute('title', 'Renamed by the menu ' + stamp + ' · ' + name);
         await expect(page).toHaveTitle('Renamed by the menu ' + stamp + ' · muster');
       } finally {
         fix('rmagent', '1', name);

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"io"
 	"strconv"
 	"strings"
@@ -33,6 +35,9 @@ type AgentCardView struct {
 	WorkerPool  string
 	Name        string
 	DisplayName string
+	// SessionName is the agent's name (internal/sessionname), resolved by
+	// internal/api; every surface draws it through sessionTitle.
+	SessionName sessionname.Name
 	Repo        string
 	Status      string // pending|provisioning|running|stopped|error
 	KickedOff   bool

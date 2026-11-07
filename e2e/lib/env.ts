@@ -312,6 +312,10 @@ export const openCodeSendPort = port + 271;
 export const chiefUxPort = port + 272;
 export const chiefUxConnectPort = port + 273;
 export const chiefUxFakePort = port + 274;
+// tests/session-names.spec.ts: a session's stable name, its rename and its
+// live line — its own server (mirror plugin on, the focus pass off) and its
+// own fake host. (+290: clear of the block other open branches are taking.)
+export const sessionNamesPort = port + 290;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

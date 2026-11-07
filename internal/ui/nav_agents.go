@@ -357,7 +357,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			// switcher pill's does (mirror-snap.js reads a[data-snap-warm]).
 			g.If(strings.HasPrefix(href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 			identityAttrs(color),
-			g.Attr("title", label),
+			g.Attr("title", it.Tip),
 			// What the command palette finds the row by (palette.go), as a
 			// switcher pill's (switcherEntry).
 			g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
@@ -372,7 +372,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			// names line up.
 			Span(Class("inline-flex w-2 shrink-0 justify-center"), recencyDot(now, e.activeAt())),
 			hostMarkDecorative(host, icon),
-			Span(Class("min-w-0 flex-1 truncate"), g.Text(label)),
+			navRowName(label, it),
 			g.If(e.mirror != nil && !e.mirror.Online, navOffline()),
 			navWork(e.work()),
 			navAttentionPill(att, e.waiting()),
@@ -490,6 +490,28 @@ func navMore(feat Features, body ...g.Node) g.Node {
 			ID(navMoreID+"-body"),
 			Class("flex max-h-[60dvh] flex-col gap-1 overflow-y-auto overscroll-contain p-2"),
 			g.Group(body),
+		),
+	)
+}
+
+// navRowName is a row's text: the session's NAME, and under it — when it has
+// one — its live focus title with its age (FocusAgeSuffix: shown past a day,
+// the one focus-age rule), each one line, cut to the row's width. The name is
+// stable (internal/sessionname); the line under it is what the session is
+// doing now. Two lines of text-sm and text-xs fit the row's 44px.
+func navRowName(label string, it SwitcherItem) g.Node {
+	if it.Focus == "" {
+		return Span(Class("min-w-0 flex-1 truncate"), g.Text(label))
+	}
+	age := FocusAgeSuffix(it.FocusAge)
+	return Span(
+		Class("flex min-w-0 flex-1 flex-col leading-tight"),
+		Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(label)),
+		Span(
+			g.Attr("data-nav-focus", ""),
+			Class("flex min-w-0 items-baseline gap-1 text-xs font-normal text-muted"+classIf(it.FocusAge.Stale, " "+FocusStaleClass)),
+			Span(Class("min-w-0 truncate"), g.Text(it.Focus)),
+			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeLabel(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
 		),
 	)
 }

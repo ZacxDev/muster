@@ -60,9 +60,31 @@ func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (fo
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now(),
+		Name: m.rows[s].Name}
+	// focus.PGStore.Upsert's name rule: the auto name freezes once.
+	if f.Name.Auto == "" && w.Nameable && focus.NameableTitle(t) {
+		f.Name.Auto, f.Name.AutoAt = t, f.UpdatedAt
+	}
 	m.rows[s] = f
 	return f, nil
+}
+func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string) (focus.Name, error) {
+	if s.Kind != focus.KindMirror {
+		return focus.Name{}, focus.ErrAgentManualName
+	}
+	if name != "" {
+		var err error
+		if name, err = focus.CleanName(name); err != nil {
+			return focus.Name{}, err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	f.Subject, f.Name.Manual = s, name
+	m.rows[s] = f
+	return f.Name, nil
 }
 func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) error {
 	m.mu.Lock()

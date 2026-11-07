@@ -38,7 +38,13 @@ func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) 
 	if err != nil {
 		return Focus{}, err
 	}
-	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	f := Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now(),
+		Name: m.rows[s].Name}
+	// PGStore.Upsert's name rule: the auto name freezes once, from a nameable
+	// write.
+	if f.Name.Auto == "" && w.Nameable && NameableTitle(t) {
+		f.Name.Auto, f.Name.AutoAt = t, f.UpdatedAt
+	}
 	// PGStore.Upsert's rule: a tail naming no directory keeps the stored one;
 	// a named one replaces it, malformed ones with "" (unknown).
 	if w.CwdNamed {
@@ -53,6 +59,12 @@ func (m *memStore) Upsert(_ context.Context, s Subject, w Write) (Focus, error) 
 func (m *memStore) RecordError(_ context.Context, s Subject, msg string) error {
 	m.errs[s] = msg
 	return nil
+}
+func (m *memStore) SetManualName(_ context.Context, s Subject, name string) (Name, error) {
+	f := m.rows[s]
+	f.Subject, f.Name.Manual = s, name
+	m.rows[s] = f
+	return f.Name, nil
 }
 func (m *memStore) Owners(context.Context) ([]int64, error) { return m.owners, nil }
 func (m *memStore) Touch(_ context.Context, subs []Subject) error {

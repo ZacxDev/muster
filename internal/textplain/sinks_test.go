@@ -78,6 +78,9 @@ var plainingHelpers = map[string]bool{
 	"mirrorDisplayName":   true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
+	// A session's name (session_name.go): its resolved name is already plain;
+	// the displayName it falls back to goes through plainOr.
+	"sessionTitle": true,
 }
 
 // helperNameArgs are, per plaining helper, the argument positions that carry a
@@ -88,6 +91,7 @@ var helperNameArgs = map[string][]int{
 	"mirrorDisplayName":   {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
+	"sessionTitle":        {1},    // displayName (the resolved name is plain already; name is the slug fallback)
 	"plainOr":             {0},    // s (the fallback is drawn as written)
 }
 
@@ -121,7 +125,7 @@ var uiExempt = map[string]exemption{
 	"subagent_cards.go subagentCallOf in.Description":   {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":   {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go AgentTerminalPage v.DisplayName":       {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
-	"switcher.go switcherName m.Label":                  {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
+	"switcher.go mirrorCodeName m.Label":                {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
 	"agent_actions.go agentRenamePopover a.DisplayName": {1, whyForm},
 	"agents.go comboOption o.Label":                     {2, whyStatic},
 	"agents.go seededComboOption o.Label":               {2, whyStatic},

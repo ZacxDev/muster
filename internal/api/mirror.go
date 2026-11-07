@@ -111,7 +111,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	ranks := s.ext.Mirror.HostRanks(ctx)
 	for _, m := range mirror.Ordered(hosts) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
+			SessionName: focused.mirrorName(m), Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
 			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), FocusKey: m.SessionKey(), Repo: m.Repo, Work: m.Work, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
 			HostIcon: ui.HostIconFor(ranks, m.Host)})
@@ -213,6 +213,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	v := ui.AgentTerminalView{
 		Name: session,
+		// The conversation's name (internal/sessionname), when it has a human
+		// one: the header and <title> are called by it instead of the label.
+		SessionName: s.mirrorName(r.Context(), e),
 		// The host's display label ("mango:1") — or, for a window with none,
 		// "<session>:<index>" — titles the page; the session NAME and the
 		// window ID stay the address (WSPath).

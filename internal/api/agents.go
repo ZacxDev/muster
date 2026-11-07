@@ -596,7 +596,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 	return ui.AgentCardView{
 		// SessionID: the latest session, read once per render by the caller — what
 		// every link to this agent names (ui.AgentCardView.PageHref).
-		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionID: sessionID,
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: focused.agentName(a), SessionID: sessionID,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
 		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
@@ -926,12 +926,18 @@ type dispatchParams struct {
 	// derives a task-labelled name ("#<id> · <title>"); otherwise it falls back to
 	// the slug Name.
 	DisplayName string
-	Repo        string
-	RepoBranch  string // explicit branch; empty → resolved to the repo's GitHub default (fallback "main")
-	Model       string
-	NoteText    string
-	NoteID      *int64
-	Kickoff     bool
+	// DisplayNameSource is who chose DisplayName (agents.NameDispatch for a
+	// task's, agents.NameSystem for a role's: the chief, an officer). It
+	// decides whether the session's auto name may head the agent
+	// (internal/sessionname): a system name is never replaced, a dispatch
+	// one is. "" with a DisplayName is agents.NameDispatch.
+	DisplayNameSource string
+	Repo              string
+	RepoBranch        string // explicit branch; empty → resolved to the repo's GitHub default (fallback "main")
+	Model             string
+	NoteText          string
+	NoteID            *int64
+	Kickoff           bool
 	// Kind is the agent kind to create ("" = agents.KindGateway). It must be one
 	// Extensions.Kinds enables.
 	Kind string
@@ -1120,11 +1126,14 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// reads "#42 · fix the login bug" rather than the opaque slug. The k8s-safe
 	// slug Name is left untouched (the pod/namespace key stays stable). An explicit
 	// p.DisplayName wins; a task-less dispatch keeps the slug as the display name.
-	displayName := name
+	displayName, nameSource := name, agents.NameDefault
 	if p.DisplayName != "" {
-		displayName = p.DisplayName
+		displayName, nameSource = p.DisplayName, agents.NameDispatch
+		if p.DisplayNameSource != "" {
+			nameSource = p.DisplayNameSource
+		}
 	} else if p.NoteID != nil {
-		displayName = dispatchDisplayName(*p.NoteID, p.NoteText)
+		displayName, nameSource = dispatchDisplayName(*p.NoteID, p.NoteText), agents.NameDispatch
 	}
 	// 🔴 Namespace BELOW IS THE DEPLOYMENT'S PREFIX, NOT THIS PACKAGE'S CONSTANT.
 	// It read agents.NamespaceFor(name) — the package default — while the driver
@@ -1133,18 +1142,19 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// anything with this value, so the disagreement failed nowhere. See
 	// Extensions.AgentNamespacePrefix and Extensions.AgentNamespace.
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
-		Name:        name,
-		Namespace:   s.ext.AgentNamespace(name),
-		DisplayName: displayName,
-		Repo:        p.Repo,
-		RepoBranch:  s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),
-		Model:       p.Model,
-		NoteID:      p.NoteID,
-		NoteText:    p.NoteText,
-		PendingNote: p.NoteText,
-		Status:      agents.StatusProvisioning,
-		Kind:        kind,
-		CCAccount:   account,
+		Name:              name,
+		Namespace:         s.ext.AgentNamespace(name),
+		DisplayName:       displayName,
+		DisplayNameSource: nameSource,
+		Repo:              p.Repo,
+		RepoBranch:        s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),
+		Model:             p.Model,
+		NoteID:            p.NoteID,
+		NoteText:          p.NoteText,
+		PendingNote:       p.NoteText,
+		Status:            agents.StatusProvisioning,
+		Kind:              kind,
+		CCAccount:         account,
 		// A pin is an account the CALLER named; the pool's own choice is not.
 		CCAccountPinned: account != "" && p.CCAccount != "" && !p.CCAccountChosen,
 		CCFailover:      account != "" && p.CCFailover,
@@ -1547,7 +1557,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	noteID, taskStatus := s.agentTaskStatus(op.begin("task"), a)
 	ctx = op.begin("view")
 	view := ui.AgentDetailView{
-		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(ctx, a), Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		LastFailover: s.lastFailoverLine(ctx, a),
 		Messages:     lines, Sessions: sessions, ActiveSessionID: active.ID,

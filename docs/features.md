@@ -240,7 +240,9 @@ a tap fills the box, never sends. [suggested-replies.md](suggested-replies.md).
 ### Focus
 
 A short title and a sentence or three per session saying what it is doing now;
-search finds a session by it, and the chief reads it. [focus.md](focus.md).
+search finds a session by it, and the chief reads it. A session's first good
+focus title also becomes its stable [name](focus.md#a-sessions-name), which you
+can change with **Rename…**. [focus.md](focus.md).
 
 - **Needs:** the same OpenRouter key as [suggested replies](#suggested-replies).
   Off until you set `MUSTER_AGENT_OPENROUTER_KEY` in `.env`; muster then

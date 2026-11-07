@@ -73,7 +73,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("agent %q is a %s agent, which has no terminal", a.Name, agents.KindLabel(a.Kind)), http.StatusNotFound)
 		return
 	}
-	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName,
+	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName, SessionName: s.agentName(r.Context(), a),
 		// The Rendered | Terminal switch: the agent's chat is its rendered view.
 		RenderedHref: s.agentPageHref(r.Context(), a)}
 	if s.ext.Provisioner == nil {
