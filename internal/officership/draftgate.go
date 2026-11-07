@@ -335,19 +335,30 @@ type comparisonVerdict struct {
 // kustomization rule (removedKustomizeEntries). It decides; each caller
 // answers the verdict its own way (a 409, or a close).
 func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh GitHub, base, head string) comparisonVerdict {
+	var files []string
+	if sr.ForbiddenPathsFile != "" {
+		files = []string{sr.ForbiddenPathsFile}
+	}
+	return g.checkWall(ctx, sr.Repo, gh, sr.ForbiddenPaths, files, base, head)
+}
+
+// checkWall is checkComparison with the wall spelled out: the globs, and the
+// forbidden-path list files read fresh from base (a shepherd's wall has one
+// per source: officers.ShepherdRules).
+func (g *PushGate) checkWall(ctx context.Context, repo string, gh GitHub, globs, files []string, base, head string) comparisonVerdict {
 	if gh == nil {
-		return comparisonVerdict{Err: fmt.Errorf("no GitHub reader for %s", sr.Repo)}
+		return comparisonVerdict{Err: fmt.Errorf("no GitHub reader for %s", repo)}
 	}
 	cmp, err := gh.Compare(ctx, base, head)
 	if err != nil {
-		return comparisonVerdict{Err: fmt.Errorf("could not compare %s...%s in %s: %v", base, head, sr.Repo, err)}
+		return comparisonVerdict{Err: fmt.Errorf("could not compare %s...%s in %s: %v", base, head, repo, err)}
 	}
 	v := comparisonVerdict{}
 	if len(cmp.Commits) > 0 {
 		v.HeadSHA = cmp.Commits[len(cmp.Commits)-1]
 	}
-	forbidden := sr.ForbiddenPaths
-	if f := sr.ForbiddenPathsFile; f != "" {
+	forbidden := append([]string(nil), globs...)
+	for _, f := range files {
 		// 🔴 ONE SOURCE, READ FRESH, FAIL CLOSED: the list is read from the
 		// TARGET branch at every check (never the head, which the officer
 		// writes), muster keeps no copy, and a list it cannot read or parse
@@ -365,7 +376,7 @@ func (g *PushGate) checkComparison(ctx context.Context, sr officers.ShipRepo, gh
 			v.Why = fmt.Sprintf("its forbidden-path list %s at %s does not parse (%v), so nothing can be checked", f, base, err)
 			return v
 		}
-		forbidden = append(append(append([]string(nil), forbidden...), list...), f)
+		forbidden = append(append(forbidden, list...), f)
 	}
 	var whys []string
 	v.Paths, v.Why = ForbiddenFiles(forbidden, cmp.Files)

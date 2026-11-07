@@ -361,6 +361,9 @@ func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Of
 		out = append(out, o)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if err := validateShepherds(out); err != nil {
+		return nil, fmt.Errorf("MUSTER_OFFICERS: %w", err)
+	}
 	return out, nil
 }
 

@@ -92,6 +92,9 @@ func parseCILogs(ship *Ship, raw json.RawMessage) (*CILogs, error) {
 	if ship == nil {
 		return nil, fmt.Errorf("ci_logs: needs a ship block: officer_ci_logs reads only the officer's OWN pull requests, known by its App")
 	}
+	if ship.IsShepherd() {
+		return nil, fmt.Errorf("ci_logs: stage %s has no pull request of its own, and officer_ci_logs reads only the officer's OWN — remove it", StageShepherd)
+	}
 	c := &CILogs{
 		Namespace:      strings.TrimSpace(d.Namespace),
 		Pipeline:       strings.TrimSpace(d.Pipeline),

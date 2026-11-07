@@ -89,15 +89,21 @@ type PushGate struct {
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
+	// Shepherd is a shepherd-stage officer's rules (shepherd.go). nil on a
+	// shepherd: every write is refused (fail closed).
+	Shepherd *Shepherd
 
 	// createSem serialises a draft officer's creates (draftCreate holds it
 	// from the rate-limit read until afterCreate); built once by createOnce.
 	createOnce sync.Once
 	createSem  chan struct{}
-	// mu guards checked and misses, the re-check state (draftgate.go).
-	mu      sync.Mutex
-	checked map[string]string
-	misses  map[string]int
+	// mu guards checked and misses, the re-check state (draftgate.go), and
+	// shepherdBusy, the shepherd's per-(repository, branch) push lock
+	// (shepherd.go lockBranch).
+	mu           sync.Mutex
+	checked      map[string]string
+	misses       map[string]int
+	shepherdBusy map[string]bool
 }
 
 // ghFor is the GitHub of ship repository repo.
@@ -317,10 +323,36 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 			return nil, refused("deleting %s: a draft officer never deletes a branch (the daily orphan report lists abandoned ones for a human)", c.ref)
 		}
 	}
+	head := pre.Bytes()
+	var shep *shepherdPush
+	if g.Ship.IsShepherd() && len(cmds) > 0 {
+		if g.Shepherd == nil {
+			return nil, shepherdRefused("this shepherd's rules are not loaded")
+		}
+		if shep, head, err = g.admitShepherdPush(r.Context(), sr, cmds, pre.Bytes()); err != nil {
+			return nil, err
+		}
+		// The command section changed length: the body is sent chunked.
+		out.Header.Del("Content-Length")
+		out.ContentLength = -1
+	}
 	out.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(pre.Bytes()), br), body}
+	}{io.MultiReader(bytes.NewReader(head), br), body}
+	if shep != nil {
+		// 🔴 A SHEPHERD'S PUSH LANDS ONLY VERIFIED (shepherd.go): GitHub stores
+		// it at a scratch ref; on GitHub's answer, before the client hears
+		// anything, it is verified and the branch moved by compare-and-swap.
+		// The after-forward hook deletes the scratch ref and releases the
+		// branch lock on every path out of the proxy.
+		out = connectors.WithResponseRewrite(out, func(ctx context.Context, resp *http.Response) error {
+			return g.landShepherdPush(ctx, sr, shep, resp)
+		})
+		out = connectors.WithAfterForward(out, func(ctx context.Context, _ connectors.ForwardResult) {
+			g.endShepherdPush(ctx, sr, shep)
+		})
+	}
 	if g.Ship.IsDraft() && len(cmds) > 0 {
 		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
 		// open pull request from a pushed branch is checked again.
@@ -437,6 +469,16 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 	tail := make([]string, len(segs)-3)
 	for i, s := range segs[3:] {
 		tail[i] = strings.ToLower(s)
+	}
+	if g.Ship.IsShepherd() {
+		// 🔴 A SHEPHERD'S REST WRITES ARE ITS OWN ALLOWLIST (shepherd.go): a
+		// comment and update-branch, on a pull request it shepherds. None of
+		// the cases below — create, edit (so close and reopen), own-PR comment —
+		// is reachable for it.
+		if g.Shepherd == nil {
+			return nil, shepherdRefused("this shepherd's rules are not loaded")
+		}
+		return g.admitShepherdAPI(r, sr, gh, tail, path)
 	}
 	switch {
 	case r.Method == http.MethodPost && len(tail) == 1 && tail[0] == "pulls":

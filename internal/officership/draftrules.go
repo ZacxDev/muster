@@ -354,6 +354,21 @@ func removedKustomizeEntries(f File) []string {
 // A ref it does not name — no report, a truncated body — is absent: unknown.
 func parseReportStatus(body []byte) map[string]bool {
 	out := map[string]bool{}
+	for _, line := range reportStatusLines(body) {
+		if ref, ok := strings.CutPrefix(line, "ok "); ok {
+			out[ref] = true
+		} else if rest, ok := strings.CutPrefix(line, "ng "); ok {
+			ref, _, _ := strings.Cut(rest, " ")
+			out[ref] = false
+		}
+	}
+	return out
+}
+
+// reportStatusLines is a receive-pack response body's report-status lines
+// (plain, or multiplexed on side band 1), newline trimmed.
+func reportStatusLines(body []byte) []string {
+	var out []string
 	pkts := readPkts(body)
 	if len(pkts) > 0 && len(pkts[0]) > 0 && pkts[0][0] >= 1 && pkts[0][0] <= 3 {
 		var inner []byte
@@ -365,13 +380,7 @@ func parseReportStatus(body []byte) map[string]bool {
 		pkts = readPkts(inner)
 	}
 	for _, p := range pkts {
-		line := strings.TrimSuffix(string(p), "\n")
-		if ref, ok := strings.CutPrefix(line, "ok "); ok {
-			out[ref] = true
-		} else if rest, ok := strings.CutPrefix(line, "ng "); ok {
-			ref, _, _ := strings.Cut(rest, " ")
-			out[ref] = false
-		}
+		out = append(out, strings.TrimSuffix(string(p), "\n"))
 	}
 	return out
 }

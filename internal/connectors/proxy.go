@@ -282,6 +282,31 @@ func WithAfterForward(r *http.Request, f func(ctx context.Context, res ForwardRe
 	return r.WithContext(context.WithValue(r.Context(), afterForwardKey{}, &afterForward{f: f}))
 }
 
+// responseRewriteKey carries a gate's response rewrite in an admitted
+// request's context.
+type responseRewriteKey struct{}
+
+// WithResponseRewrite returns r carrying f: a [Gate]'s Admit returns it so that
+// the proxy calls f with the upstream's answer BEFORE any of it is relayed to
+// the client. f may read resp.Body and replace it (and resp.Header); the
+// proxy's own handling (redaction, the Location rewrite, the after-forward
+// tee, which sees the upstream's bytes) still applies around it. An error
+// from f is answered 502 and nothing of the upstream's answer is relayed.
+//
+// It is for a gate that must act on the upstream's answer before the client
+// learns it: the shepherd's push lands a commit only after it is verified, and
+// tells the client what landed (internal/officership shepherd.go).
+func WithResponseRewrite(r *http.Request, f func(ctx context.Context, resp *http.Response) error) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), responseRewriteKey{}, f))
+}
+
+// ResponseRewriteOf is the function WithResponseRewrite attached to r, nil when
+// none.
+func ResponseRewriteOf(r *http.Request) func(ctx context.Context, resp *http.Response) error {
+	f, _ := r.Context().Value(responseRewriteKey{}).(func(ctx context.Context, resp *http.Response) error)
+	return f
+}
+
 // AfterForwardOf is the function WithAfterForward attached to r, nil when none.
 func AfterForwardOf(r *http.Request) func(ctx context.Context, res ForwardResult) {
 	if af := afterForwardOf(r); af != nil {
@@ -528,6 +553,7 @@ var (
 	errEncodedResponse   = errors.New("connectors: the upstream sent an encoded (compressed) body it was asked not to")
 	errOffHostRedirect   = errors.New("connectors: the upstream redirected outside the connector's allowlist")
 	errSwitchedProtocols = errors.New("connectors: the upstream tried to switch protocols")
+	errGateRewrite       = errors.New("connectors: the write policy could not finish the request")
 )
 
 // Serve proxies one request. connector and host are the path's first two
@@ -776,6 +802,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 	prefix := "/connect/" + connector + "/"
 	// A gate's after-forward hook sees what the upstream answered (WithAfterForward).
 	af := afterForwardOf(r)
+	// A gate's response rewrite acts on the answer before the client sees it.
+	rw := ResponseRewriteOf(r)
 	if af != nil {
 		af.mu.Lock()
 		af.res.Forwarded = true
@@ -830,6 +858,14 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return errSwitchedProtocols
 			}
+			if rw != nil {
+				// Inside the tee (the hook sees the upstream's bytes), outside
+				// everything below (the client's bytes are redacted as ever).
+				if err := rw(context.WithoutCancel(ctx), resp); err != nil {
+					p.logf("connectors: a gate's response rewrite for agent %q: %v", caller.AgentName, err)
+					return errGateRewrite
+				}
+			}
 			// The redactor scans bytes. A body compressed despite
 			// `Accept-Encoding: identity` would be scanned compressed, so it is
 			// refused rather than forwarded unread.
@@ -877,6 +913,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 					strings.Join(c.Hosts, ", ") + "); muster neither follows nor forwards such a redirect"
 			case errors.Is(err, errSwitchedProtocols):
 				why = "the upstream tried to switch protocols; refused"
+			case errors.Is(err, errGateRewrite):
+				why = "this agent's write policy could not finish the request after the upstream answered"
 			}
 			p.logf("connectors: proxy agent=%q connector=%q host=%q: %s", caller.AgentName, connector, host, why)
 			refuse(http.StatusBadGateway, RefusalBody{Error: why}, why)
