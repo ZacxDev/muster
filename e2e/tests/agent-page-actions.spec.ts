@@ -223,7 +223,8 @@ for (const [label, viewport] of sizes) {
       await expect(page).toHaveTitle(new RegExp(`^${name} · muster$`));
       expect((await agentRows()).find((r) => r.id === a.id)?.displayName).toBe(name);
       await sidebarShown(page);
-      await expect(page.locator(`#nav-agent-${a.id}`)).toHaveAttribute('title', name);
+      // The row's tooltip: the name, then the slug the row no longer spells.
+      await expect(page.locator(`#nav-agent-${a.id}`)).toHaveAttribute('title', `${name} · ${a.name}`);
       if (label === 'phone') await page.locator('#sidebar-close').click();
 
       // Start: the status strip and the menu follow, with no reload.

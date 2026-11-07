@@ -49,7 +49,7 @@ const agentCols = `id, name, namespace, display_name, repo, repo_branch, note_id
 	pending_note, model, status, hooks_token, kicked_off, last_output, error_message, created_at, updated_at,
 	kickoff_pod, kickoff_restarts, kickoff_attempts, kickoff_error, kind, cc_account, owner_id, worker_pool, gateway_secret,
 	cc_account_pinned, cc_failover,
-	outcome, outcome_reason, outcome_at, activity_at, first_reply_at, dispatched_by, outcome_told_at`
+	outcome, outcome_reason, outcome_at, activity_at, first_reply_at, dispatched_by, outcome_told_at, display_name_source`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -60,7 +60,8 @@ func scanAgent(row interface {
 		&a.LastOutput, &a.ErrorMessage, &a.CreatedAt, &a.UpdatedAt,
 		&a.KickoffPod, &a.KickoffRestarts, &a.KickoffAttempts, &a.KickoffError, &a.Kind, &a.CCAccount, &a.OwnerID, &a.WorkerPool,
 		&a.GatewaySecret, &a.CCAccountPinned, &a.CCFailover,
-		&a.Outcome, &a.OutcomeReason, &a.OutcomeAt, &a.ActivityAt, &a.FirstReplyAt, &a.DispatchedBy, &a.OutcomeToldAt)
+		&a.Outcome, &a.OutcomeReason, &a.OutcomeAt, &a.ActivityAt, &a.FirstReplyAt, &a.DispatchedBy, &a.OutcomeToldAt,
+		&a.DisplayNameSource)
 	return a, err
 }
 
@@ -68,12 +69,12 @@ func scanAgent(row interface {
 func (s *PGStore) Create(ctx context.Context, a Agent) (Agent, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO agents (name, namespace, display_name, repo, repo_branch, note_id, note_text, pending_note, model, status, hooks_token, kind, cc_account, worker_pool,
-			cc_account_pinned, cc_failover)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			cc_account_pinned, cc_failover, display_name_source)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		RETURNING `+agentCols,
 		a.Name, a.Namespace, a.DisplayName, a.Repo, a.RepoBranch, a.NoteID, a.NoteText,
 		a.PendingNote, a.Model, nonEmptyStatus(a.Status), a.HooksToken, ResolveKind(a.Kind), a.CCAccount, a.WorkerPool,
-		a.CCAccountPinned, a.CCFailover)
+		a.CCAccountPinned, a.CCFailover, ResolveDisplayNameSource(a.DisplayNameSource))
 	return scanAgent(row)
 }
 
@@ -218,11 +219,15 @@ func (s *PGStore) SetModel(ctx context.Context, id int64, model string) (Agent, 
 		`UPDATE agents SET model=$2, updated_at=now() WHERE id=$1 RETURNING `+agentCols, id, model))
 }
 
-// SetDisplayName updates an agent's display name. A blank name falls back to the
-// agent's immutable slug (the `name` column) so the card is never label-less.
+// SetDisplayName updates an agent's display name — the person's own name for it,
+// so its source becomes NameManual (migration 0090), which nothing automatic
+// overwrites. A blank name falls back to the agent's immutable slug (the `name`
+// column), source NameDefault, so the card is never label-less and the auto name
+// may head it again.
 func (s *PGStore) SetDisplayName(ctx context.Context, id int64, name string) (Agent, error) {
 	return scanAgent(s.pool.QueryRow(ctx,
-		`UPDATE agents SET display_name=COALESCE(NULLIF($2,''), name), updated_at=now()
+		`UPDATE agents SET display_name=COALESCE(NULLIF($2,''), name),
+			display_name_source=CASE WHEN $2 = '' THEN 'default' ELSE 'manual' END, updated_at=now()
 		 WHERE id=$1 RETURNING `+agentCols, id, name))
 }
 

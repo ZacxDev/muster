@@ -90,10 +90,16 @@ type Agent struct {
 	Name        string `json:"name"`      // short slug; also the provision.Ref.Name
 	Namespace   string `json:"namespace"` // the driver's scoping unit (provision.Instance.Group)
 	DisplayName string `json:"displayName"`
-	Repo        string `json:"repo"` // owner/name
-	RepoBranch  string `json:"repoBranch"`
-	NoteID      *int64 `json:"noteId,omitempty"`
-	NoteText    string `json:"noteText,omitempty"`
+	// DisplayNameSource is who set DisplayName (migration 0090): NameDefault
+	// (the slug, copied), NameDispatch (derived from the source task),
+	// NameSystem (a role muster pinned: the chief, an officer) or NameManual
+	// (the person renamed it). "" reads as NameDefault. NameManual, NameSystem
+	// and NameDispatch all outrank a session's auto name (internal/sessionname).
+	DisplayNameSource string `json:"displayNameSource,omitempty"`
+	Repo              string `json:"repo"` // owner/name
+	RepoBranch        string `json:"repoBranch"`
+	NoteID            *int64 `json:"noteId,omitempty"`
+	NoteText          string `json:"noteText,omitempty"`
 
 	// PendingNote is the first message an agent was created WITH: the text a
 	// dispatch asked to be delivered as its opening turn. It is written once, by
@@ -608,4 +614,23 @@ func reverseChatChronological(msgs []ChatMessage) {
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
+}
+
+// Who set an agent's DisplayName (Agent.DisplayNameSource; migration 0090's
+// agents_display_name_source_check holds the same four).
+const (
+	NameDefault  = "default"
+	NameDispatch = "dispatch"
+	NameSystem   = "system"
+	NameManual   = "manual"
+)
+
+// ResolveDisplayNameSource is src as stored: one of the four, "" (or anything
+// else) as NameDefault.
+func ResolveDisplayNameSource(src string) string {
+	switch src {
+	case NameDispatch, NameSystem, NameManual:
+		return src
+	}
+	return NameDefault
 }

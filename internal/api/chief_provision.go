@@ -137,7 +137,7 @@ func (s *Server) provisionChief(ctx context.Context, owner int64, model string) 
 		// `chief` — but a member's `chief-<id>` would never resolve, so the
 		// member's panel said "no agent carries the chief display name" over a
 		// chief that existed (accounts PR 3b audit). Same value for user 1.
-		Name: chiefName, DisplayName: ChiefDisplayName, Model: model, NoteText: intro, Kickoff: true,
+		Name: chiefName, DisplayName: ChiefDisplayName, DisplayNameSource: agents.NameSystem, Model: model, NoteText: intro, Kickoff: true,
 	})
 	if err != nil {
 		s.logger.Printf("chief: provision: %v", err)

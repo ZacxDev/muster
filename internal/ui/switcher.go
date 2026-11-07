@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
@@ -226,6 +228,10 @@ type SwitcherItem struct {
 	// the palette draw it beside the title (data-switcher-focus-age,
 	// data-switcher-focus-stale).
 	FocusAge FocusAge
+	// Tip is the entry's tooltip: its Label, then — when it is called by a
+	// human name (internal/sessionname) — the technical id that name hides
+	// (an agent's slug; a window's codename, tmux address and host).
+	Tip string
 }
 
 // switcherName is an entry's WHOLE name, what its pill shows:
@@ -242,15 +248,52 @@ type SwitcherItem struct {
 // without its ":<index>" — drawn whenever no other entry of the view shared
 // it, so a pill read "mango" for "mango:8" (operator report: "it's missing
 // the number after the colon").
+//
+// 🔴 A SESSION WITH A HUMAN NAME IS CALLED BY IT (internal/sessionname: its
+// manual or auto name, an agent's task name), never by the codename: that
+// stays its search Code and its pill's tooltip.
 func switcherName(e listEntry) string {
 	if e.agent != nil {
-		return plainOr(e.agent.DisplayName, e.agent.Name)
+		return sessionTitle(e.agent.SessionName, e.agent.DisplayName, e.agent.Name)
 	}
 	m := e.mirror
+	if m.SessionName.Human() {
+		return m.SessionName.Text
+	}
+	return mirrorCodeName(*m)
+}
+
+// mirrorCodeName is a window's technical name: its codename (Label, unless it
+// only repeats the session) — "mango:1" — else its "<session>:<window index>"
+// title, else its session name. What the palette finds it by first (Code),
+// and what it is called while it has no human name.
+func mirrorCodeName(m MirrorCardView) string {
 	if m.Label != "" && m.Label != m.Session {
 		return plainOr(m.Label, m.Session)
 	}
 	return plainOr(m.Title, m.Session)
+}
+
+// entryTip is e's tooltip (SwitcherItem.Tip): label, then the technical id a
+// human name hides, when it is one and says something label does not.
+func entryTip(e listEntry, label string) string {
+	n := entryName(e)
+	if n.Human() && n.Technical != "" && n.Technical != label {
+		return label + " · " + n.Technical
+	}
+	return label
+}
+
+// entryName is e's resolved name as the server sent it (sessionname.Name),
+// or — for a view built without one — what switcherName draws, as a fallback.
+func entryName(e listEntry) sessionname.Name {
+	if e.agent != nil && e.agent.SessionName.Text != "" {
+		return e.agent.SessionName
+	}
+	if e.mirror != nil && e.mirror.SessionName.Text != "" {
+		return e.mirror.SessionName
+	}
+	return sessionname.Name{Text: switcherName(e), Source: sessionname.SourceFallback}
 }
 
 // sessionSwitcherLabels is what each entry of one view says, in the entries'
@@ -270,7 +313,9 @@ func sessionSwitcherLabels(es []listEntry) []string {
 		n[out[i]]++
 	}
 	for i, e := range es {
-		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
+		// A human name is never qualified with the window's address or host:
+		// those are what it hides (its tooltip and the detail page show them).
+		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" && !e.mirror.SessionName.Human() {
 			out[i] = mirrorQualified(out[i], e.mirror.Qualifier)
 		}
 	}
@@ -364,13 +409,13 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 	labels := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
 	for i, e := range es {
-		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting()}
+		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i])}
 		if e.agent != nil {
 			a := e.agent
 			it.Href, it.Kind = a.PageHref(), "agent"
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
-			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
+			it.Title = switcherSearchTitle(a.Name, sessionTitle(a.SessionName, a.DisplayName, ""), plainOr(a.DisplayName, ""), focusTitle(a.Focus))
 			// The host is a word too (the retired Agents list's host tabs): a
 			// dispatched agent's is the cluster.
 			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind), podHost, sessionTagWords(a.Tags))
@@ -382,8 +427,10 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
 			it.Host, it.HostIcon = m.Host, m.HostIcon
 			it.HostNamed = labelNamesHost(*m, labels[i])
-			it.Code = switcherName(e)
-			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
+			// The palette finds a window by its codename FIRST, whatever it is
+			// called (its human name is the Title, after it).
+			it.Code = mirrorCodeName(*m)
+			it.Title = switcherSearchTitle(it.Code, nameIfHuman(m.SessionName), focusTitle(m.Focus))
 			it.Words = switcherSearchWords(m.Repo, mirrorKind(*m), m.Session, m.Host, sessionTagWords(m.Tags))
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
@@ -851,9 +898,11 @@ func switcherEntry(it SwitcherItem) g.Node {
 			g.Attr("data-switcher-entry", it.Kind),
 			g.Attr("data-switcher-current", ""),
 			g.Attr("aria-current", "page"),
-			g.Attr("title", it.Label+" (this session)"),
+			g.Attr("title", it.Tip+" (this session)"),
 			search,
 			Class(box),
+			// The entry's NAME, for the palette (its title is the tooltip, Tip).
+			g.Attr("data-switcher-name", it.Label),
 			Span(Class(pill+"bg-accent/15 text-accent ring-accent/40"), inner),
 		)
 	}
@@ -865,9 +914,10 @@ func switcherEntry(it SwitcherItem) g.Node {
 		// a[data-snap-warm] (at most WARM_MAX a pass).
 		g.If(strings.HasPrefix(it.Href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 		g.Attr("data-switcher-entry", it.Kind),
-		g.Attr("title", it.Label),
+		g.Attr("title", it.Tip),
 		search,
 		Class("press group "+box),
+		g.Attr("data-switcher-name", it.Label),
 		Span(Class(pill+"bg-s1/70 text-fg ring-line transition group-hover:bg-s2"), inner),
 	)
 }

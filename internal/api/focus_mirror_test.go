@@ -60,9 +60,31 @@ func (m *memFocus) Upsert(_ context.Context, s focus.Subject, w focus.Write) (fo
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now()}
+	f := focus.Focus{Subject: s, Title: t, Description: d, Source: w.Source, Fingerprint: w.Fingerprint, UpdatedAt: time.Now(),
+		Name: m.rows[s].Name}
+	// focus.PGStore.Upsert's name rule: the auto name freezes once.
+	if f.Name.Auto == "" && w.Nameable && focus.NameableTitle(t) {
+		f.Name.Auto, f.Name.AutoAt = t, f.UpdatedAt
+	}
 	m.rows[s] = f
 	return f, nil
+}
+func (m *memFocus) SetManualName(_ context.Context, s focus.Subject, name string) (focus.Name, error) {
+	if s.Kind != focus.KindMirror {
+		return focus.Name{}, focus.ErrAgentManualName
+	}
+	if name != "" {
+		var err error
+		if name, err = focus.CleanName(name); err != nil {
+			return focus.Name{}, err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f := m.rows[s]
+	f.Subject, f.Name.Manual = s, name
+	m.rows[s] = f
+	return f.Name, nil
 }
 func (m *memFocus) RecordError(_ context.Context, s focus.Subject, msg string) error {
 	m.mu.Lock()
@@ -136,8 +158,11 @@ func TestAMirrorCardShowsTheFocusOfItsClaudeSession(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: claudeWindows()}
 	s, ts := focusMirrorServer(t, fm, store, nil)
 	_, body := mirrorGet(t, s, ts, ui.NavAgentsPath)
-	if n := strings.Count(body, "Porting the importer"); n != 1 {
-		t.Fatalf("the focus is on %d rows, want exactly 1 (only @1 reports a session id):\n%s", n, body)
+	// @1's row carries it twice — what the palette finds it by
+	// (data-switcher-title) and its live line (data-nav-focus) — and @2's,
+	// whose host reports no session id, not at all.
+	if strings.Contains(cardFor(t, body, ref("main", "@2").ViewPath()), "Porting the importer") {
+		t.Fatalf("the focus is on @2's row too (only @1 reports a session id):\n%s", body)
 	}
 	if row := cardFor(t, body, ref("main", "@1").ViewPath()); !strings.Contains(row, `data-switcher-title="Porting the importer"`) {
 		t.Fatalf("the focus is not @1's row's title:\n%s", row)

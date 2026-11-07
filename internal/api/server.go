@@ -666,6 +666,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPinRoutes(mux)
 	// Session tags (internal/sessiontags): the ⋯ menu's tag editor, 404 without a store.
 	s.registerSessionTagRoutes(mux)
+	s.registerSessionNameRoutes(mux)
 	// The send queue (internal/sendqueue): Queue, its list, Cancel; 404 without a store.
 	s.registerSendQueueRoutes(mux)
 	// Focus history (internal/focus): one page of a session's past focus; 404 without a store.

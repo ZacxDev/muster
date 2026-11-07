@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"github.com/ZacxDev/muster/internal/sessionname"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
@@ -33,6 +35,10 @@ type MirrorCardView struct {
 	// none. DISPLAY ONLY: the real name stays findable, as the palette finds an
 	// entry by its raw session name too (switcherItems' Words).
 	Label string
+	// SessionName is the entry's name (internal/sessionname), resolved by
+	// internal/api: its conversation's manual or auto name, else its Label or
+	// Title (a fallback, Human false). The zero value draws Label / Title.
+	SessionName sessionname.Name
 	// Qualifier is what tells this entry apart from another listed entry with
 	// the same title — its host, and/or its tmux address — "" when the title is
 	// already unique. Decided in ONE place over the whole list
