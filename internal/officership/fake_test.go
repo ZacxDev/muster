@@ -61,10 +61,14 @@ type fakeGH struct {
 	// creatorBlind makes OfficerPRs answer an empty list, as GitHub's issues
 	// list does (200 []) for a creator login it does not match (measured).
 	creatorBlind bool
-	// restored is every RestoreBranch call ("branch from->to"); restoreErr
-	// fails it.
-	restored   []string
-	restoreErr error
+	// updated is every UpdateBranch that moved a branch ("branch
+	// before->after"); updateErr fails every call. UpdateBranch is a
+	// compare-and-swap here as on GitHub: a branch not at before is an error.
+	updated   []string
+	updateErr error
+	// deletedRefs is every DeleteRef call; refsDeleteErr fails it.
+	deletedRefs   []string
+	refsDeleteErr error
 }
 
 type commitInfo struct {
@@ -269,18 +273,33 @@ func (f *fakeGH) DeleteBranch(_ context.Context, branch string) error {
 	return nil
 }
 
+// RestoreBranch (RED-FIRST: the pre-fix interface still has it).
 func (f *fakeGH) RestoreBranch(_ context.Context, branch, from, to string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.restoreErr != nil {
-		return f.restoreErr
-	}
-	if cur := f.branches[branch]; cur != from {
-		return fmt.Errorf("fake: branch %s is at %s, not %s", branch, cur, from)
-	}
-	f.restored = append(f.restored, branch+" "+from+"->"+to)
 	f.branches[branch] = to
 	return nil
+}
+
+func (f *fakeGH) UpdateBranch(_ context.Context, branch, before, after string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	if cur := f.branches[branch]; cur != before {
+		return fmt.Errorf("fake: branch %s is at %s, not %s", branch, cur, before)
+	}
+	f.updated = append(f.updated, branch+" "+before+"->"+after)
+	f.branches[branch] = after
+	return nil
+}
+
+func (f *fakeGH) DeleteRef(_ context.Context, ref string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedRefs = append(f.deletedRefs, ref)
+	return f.refsDeleteErr
 }
 
 func (f *fakeGH) Branches(_ context.Context, prefix string) ([]Branch, error) {

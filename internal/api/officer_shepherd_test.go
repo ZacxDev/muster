@@ -42,6 +42,8 @@ type shepFakeGH struct {
 	// author is the fixture pull request's author.
 	author  string
 	readied []int
+	// auditBody, when set, is the auditor's comment instead of the clean one.
+	auditBody string
 }
 
 func (f *shepFakeGH) AppSlug(context.Context) (string, error) { return f.slug, nil }
@@ -53,6 +55,25 @@ func (f *shepFakeGH) PR(_ context.Context, n int) (officership.PR, error) {
 }
 func (f *shepFakeGH) Statuses(context.Context, string) (map[string]string, error) {
 	return map[string]string{"ci / gate": "success"}, nil
+}
+
+// Compare answers the head's comparison against the base: clean (the
+// mark-ready wall gate).
+func (f *shepFakeGH) Compare(_ context.Context, base, head string) (officership.Compare, error) {
+	return officership.Compare{Status: "ahead", AheadBy: 1, Commits: []string{head},
+		Files: []officership.File{{Path: "apps/x/deploy.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+a: 2"}}}, nil
+}
+
+// PRComments is the auditor's verdict at the head (the mark-ready audit
+// gate), unless auditBody replaces it.
+func (f *shepFakeGH) PRComments(context.Context, int) ([]officership.Comment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body := f.auditBody
+	if body == "" {
+		body = "```audit-round-1\nGate: run 1 on " + shepHeadAPI[:8] + "\nLedger: round 1 · findings 🔴0 🟡1 🟢0\n```"
+	}
+	return []officership.Comment{{Author: "delta-auditor", AuthorType: "User", Body: body}}, nil
 }
 func (f *shepFakeGH) MarkReady(_ context.Context, n int, _ string) error {
 	f.mu.Lock()
@@ -88,8 +109,9 @@ func newShepAPIRig(t *testing.T) *shepAPIRig {
 	shep := officers.Officer{ID: offShep, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1,
 		Repo: shepRepoAPI, Ship: &officers.Ship{Stage: officers.StageShepherd, Base: "trunk", BranchPrefix: "officer/", AppID: 7102,
 			RequiredChecks: []string{"ci / gate"}, NoticePath: officers.DefaultNoticePath, NoticeChannel: "ch/example-alerts",
-			Repos:    []officers.ShipRepo{{Repo: shepRepoAPI, Base: "trunk", BranchPrefix: "officer/", AppID: 7102, ForbiddenPaths: []string{".github/**"}}},
-			Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: "delta-investigator[bot]", Officer: offShepAuth}}}}}.WithToken(offShepTok)
+			Repos: []officers.ShipRepo{{Repo: shepRepoAPI, Base: "trunk", BranchPrefix: "officer/", AppID: 7102, ForbiddenPaths: []string{".github/**"}}},
+			Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: "delta-investigator[bot]", Officer: offShepAuth}},
+				Auditors: []string{"delta-auditor"}}}}.WithToken(offShepTok)
 	r := &shepAPIRig{s: s, hq: hq, shepGH: &shepFakeGH{slug: "delta-shepherd", author: "delta-investigator[bot]"},
 		authGH: &shepFakeGH{slug: "delta-investigator"}}
 	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{author, shep}, InstallSession: discardSession, NoShipResume: true,
@@ -182,6 +204,31 @@ func TestTheShepherdMarksReadyOnlyWhileItHoldsTheItem(t *testing.T) {
 	}
 	if got := r.shepGH.readiedPRs(); len(got) != 1 || got[0] != 5 {
 		t.Fatalf("readied %v, want [5]", got)
+	}
+}
+
+// TestTheShepherdReadsTheAuditorsThroughItsRuntime: the auditors of the
+// officer's ship block reach the mark-ready audit gate through the runtime
+// muster builds — an auditor's verdict with a 🔴 open is refused by the audit
+// gate with the item held; the clean verdict converts (control).
+func TestTheShepherdReadsTheAuditorsThroughItsRuntime(t *testing.T) {
+	r := newShepAPIRig(t)
+	id := r.hq.AddItem(offShep, "pr-shepherd.opened", officers.ShepherdSubject(shepRepoAPI, 5))
+	r.hq.SetClaim(id, r.inst.Name, time.Now().Add(time.Hour))
+	r.shepGH.mu.Lock()
+	r.shepGH.auditBody = "```audit-round-1\nGate: run 1 on " + shepHeadAPI[:8] + "\nLedger: round 1 · findings 🔴1 🟡0 🟢0\n```"
+	r.shepGH.mu.Unlock()
+	if out := r.ready(t); !strings.Contains(out, `"gate":"audit"`) {
+		t.Fatalf("an open 🔴: %s, want an audit refusal", out)
+	}
+	if n := len(r.shepGH.readiedPRs()); n != 0 {
+		t.Fatalf("an audit refusal converted %d pull request(s)", n)
+	}
+	r.shepGH.mu.Lock()
+	r.shepGH.auditBody = ""
+	r.shepGH.mu.Unlock()
+	if out := r.ready(t); !strings.Contains(out, `"ready":true`) {
+		t.Fatalf("control: %s", out)
 	}
 }
 

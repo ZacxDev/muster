@@ -48,6 +48,21 @@ const maxShepherdAuthors = 16
 type Shepherd struct {
 	// Authors are whose pull requests the shepherd may act on.
 	Authors []ShepherdAuthor
+	// Auditors (RED-FIRST STUB: read, never checked).
+	Auditors []string
+}
+
+// Auditor (RED-FIRST STUB).
+func (sh *Shepherd) Auditor(login string) bool {
+	if sh == nil {
+		return false
+	}
+	for _, a := range sh.Auditors {
+		if strings.EqualFold(a, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // ShepherdAuthor is one entry of ship.shepherd.authors.
@@ -106,7 +121,8 @@ func (d *declaredShepherdAuthor) UnmarshalJSON(b []byte) error {
 }
 
 type declaredShepherd struct {
-	Authors []declaredShepherdAuthor `json:"authors"`
+	Authors  []declaredShepherdAuthor `json:"authors"`
+	Auditors []string                 `json:"auditors"`
 }
 
 // parseShepherd reads a `ship.shepherd` block. Cross-officer rules (an
@@ -124,7 +140,7 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 	if len(d.Authors) > maxShepherdAuthors {
 		return nil, fmt.Errorf("ship: shepherd.authors lists %d logins, over the cap of %d", len(d.Authors), maxShepherdAuthors)
 	}
-	sh := &Shepherd{}
+	sh := &Shepherd{Auditors: d.Auditors}
 	seen := map[string]bool{}
 	for i, a := range d.Authors {
 		login, off := strings.TrimSpace(a.Login), strings.TrimSpace(a.Officer)

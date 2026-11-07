@@ -23,6 +23,7 @@ const (
 	shepRepo   = "example-org/example-infra"
 	shepLogin  = "example-investigator[bot]"
 	shepOther  = "example-other-bot[bot]"
+	shepAudit  = "example-auditor"
 )
 
 func shepEnv(t *testing.T) map[string]string {
@@ -49,7 +50,7 @@ func shepShip() map[string]any {
 		"stage": "shepherd",
 		"repos": []any{map[string]any{"repo": shepRepo, "base": "trunk", "github_app": map[string]any{"id": 7002, "account": "example-org:4242"},
 			"forbidden_paths": []string{".github/**"}}},
-		"shepherd": map[string]any{"authors": []any{map[string]any{"login": shepLogin, "officer": shepAuthor}, shepOther}},
+		"shepherd": map[string]any{"authors": []any{map[string]any{"login": shepLogin, "officer": shepAuthor}}, "auditors": []any{shepAudit}},
 		"notice":   map[string]any{"channel": "ch/example-alerts"},
 	}
 }
@@ -79,10 +80,9 @@ func byID(t *testing.T, list []officers.Officer, id string) officers.Officer {
 	return officers.Officer{}
 }
 
-// TestParseReadsAShepherd is the allow half: the stage, both author forms
-// (an object naming an officer, a bare login), no required_checks or
-// review_check needed, nothing merged, tagged or marked ready through the
-// own-PR tool.
+// TestParseReadsAShepherd is the allow half: the stage, an author naming its
+// officer, an auditor, no required_checks or review_check needed, nothing
+// merged, tagged or marked ready through the own-PR tool.
 func TestParseReadsAShepherd(t *testing.T) {
 	list, err := parseShep(t, shepAuthorDecl(), shepDecl(shepShip()))
 	if err != nil {
@@ -92,9 +92,12 @@ func TestParseReadsAShepherd(t *testing.T) {
 	if !s.IsShepherd() || s.IsDraft() || s.MayMerge() || s.MayRelease() || s.MayMarkReady() {
 		t.Fatalf("parsed %v (shepherd %v draft %v merge %v release %v ready %v)", s, s.IsShepherd(), s.IsDraft(), s.MayMerge(), s.MayRelease(), s.MayMarkReady())
 	}
-	want := []officers.ShepherdAuthor{{Login: shepLogin, Officer: shepAuthor}, {Login: shepOther}}
+	want := []officers.ShepherdAuthor{{Login: shepLogin, Officer: shepAuthor}}
 	if s.Shepherd == nil || !reflect.DeepEqual(s.Shepherd.Authors, want) {
 		t.Fatalf("authors = %+v, want %+v", s.Shepherd, want)
+	}
+	if !reflect.DeepEqual(s.Shepherd.Auditors, []string{shepAudit}) || !s.Shepherd.Auditor("EXAMPLE-AUDITOR") || s.Shepherd.Auditor(shepLogin) {
+		t.Fatalf("auditors = %v", s.Shepherd.Auditors)
 	}
 	if a, ok := s.Shepherd.Author("EXAMPLE-INVESTIGATOR[BOT]"); !ok || a.Officer != shepAuthor {
 		t.Fatalf("Author (case-folded) = %+v, %v", a, ok)
@@ -109,8 +112,8 @@ func TestParseReadsAShepherd(t *testing.T) {
 
 // TestTheShepherdsWallIsTheAuthorsLookedUpPlusItsOwn pins the one rule: for
 // the author naming an officer, the wall is the author officer's own globs and
-// list file for the repository PLUS the shepherd's; for a bare login, the
-// shepherd's alone. Literal expectations, not derived from the code.
+// list file for the repository PLUS the shepherd's. Literal expectations, not
+// derived from the code.
 func TestTheShepherdsWallIsTheAuthorsLookedUpPlusItsOwn(t *testing.T) {
 	list, err := parseShep(t, shepAuthorDecl(), shepDecl(shepShip()))
 	if err != nil {
@@ -120,7 +123,6 @@ func TestTheShepherdsWallIsTheAuthorsLookedUpPlusItsOwn(t *testing.T) {
 	want := []officers.ShepherdRule{
 		{Repo: shepRepo, Login: shepLogin, AuthorOfficer: shepAuthor, ForbiddenPaths: []string{".github/**", ".sops.yaml", "nodes/**"},
 			ForbiddenPathsFiles: []string{"scripts/ci/officer-forbidden.txt"}},
-		{Repo: shepRepo, Login: shepOther, ForbiddenPaths: []string{".github/**"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rules =\n%+v\nwant\n%+v", got, want)
@@ -151,9 +153,24 @@ func TestParseRefusesABadShepherd(t *testing.T) {
 	}{
 		"no shepherd block": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) { delete(m, "shepherd") }))},
 			"needs a shepherd block"},
-		"no authors":    {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors()))}, "shepherd.authors is empty"},
-		"a login twice": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(shepOther, "Example-Other-Bot[bot]")))}, "twice"},
-		"not a login":   {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors("not a login")))}, "is not a GitHub login"},
+		"no authors": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors()))}, "shepherd.authors is empty"},
+		"a login twice": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepLogin, "officer": shepAuthor},
+			map[string]any{"login": "Example-Investigator[bot]", "officer": shepAuthor})))}, "twice"},
+		"not a login": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": "not a login", "officer": shepAuthor})))},
+			"is not a GitHub login"},
+		// D2: every authors entry names its officer.
+		"a bare login": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(shepOther)))}, "is a bare login"},
+		"an entry with no officer": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther})))},
+			"names no officer"},
+		"an auditor that is not a login": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+			m["shepherd"].(map[string]any)["auditors"] = []any{"not a login"}
+		}))}, "auditors[0] \"not a login\" is not a GitHub login"},
+		"an auditor who is an author": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+			m["shepherd"].(map[string]any)["auditors"] = []any{"Example-Investigator[bot]"}
+		}))}, "is also an author"},
+		"an auditor twice": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+			m["shepherd"].(map[string]any)["auditors"] = []any{shepAudit, "Example-Auditor"}
+		}))}, "auditors lists"},
 		"an unknown author key": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther, "role": "x"})))},
 			"unknown field"},
 		"itself as an author": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther, "officer": shepID})))},
@@ -164,7 +181,8 @@ func TestParseRefusesABadShepherd(t *testing.T) {
 		"an author officer that is a shepherd": {[]map[string]any{func() map[string]any {
 			d := shepAuthorDecl()
 			d["ship"] = map[string]any{"stage": "shepherd", "repos": []any{map[string]any{"repo": shepRepo, "github_app": map[string]any{"id": 7001, "account": "example-org:4242"},
-				"forbidden_paths": []string{"x/**"}}}, "shepherd": map[string]any{"authors": []any{"someone[bot]"}}, "notice": map[string]any{"channel": "ch/example-alerts"}}
+				"forbidden_paths": []string{"x/**"}}}, "shepherd": map[string]any{"authors": []any{map[string]any{"login": "someone[bot]", "officer": shepID}}},
+				"notice": map[string]any{"channel": "ch/example-alerts"}}
 			return d
 		}(), shepDecl(shepShip())}, "is itself a shepherd"},
 		"the author's App is the shepherd's": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
@@ -176,7 +194,13 @@ func TestParseRefusesABadShepherd(t *testing.T) {
 			d["ship"].(map[string]any)["repos"].([]any)[0].(map[string]any)["repo"] = "example-org/elsewhere"
 			return d
 		}(), shepDecl(shepShip())}, "ships to none of the shepherd's repositories"},
-		"a bare login with no wall": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+		"an author with no wall": {[]map[string]any{func() map[string]any {
+			d := shepAuthorDecl()
+			r := d["ship"].(map[string]any)["repos"].([]any)[0].(map[string]any)
+			delete(r, "forbidden_paths")
+			delete(r, "forbidden_paths_file")
+			return d
+		}(), shepDecl(ship(func(m map[string]any) {
 			delete(m["repos"].([]any)[0].(map[string]any), "forbidden_paths")
 		}))}, "would pass no forbidden-path check"},
 		"review_check":     {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) { m["review_check"] = "pr-review" }))}, "would ignore review_check"},

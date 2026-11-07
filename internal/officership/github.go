@@ -133,6 +133,9 @@ type Tagger struct {
 // compare-and-swap against a concurrent tag or branch.
 var ErrRefExists = errors.New("officership: the ref already exists")
 
+// ErrRefMissing (RED-FIRST STUB).
+var ErrRefMissing = errors.New("officership: no such ref")
+
 // ErrMergeConflict is a merge GitHub could not make cleanly (409).
 var ErrMergeConflict = errors.New("officership: merge conflict")
 
@@ -863,3 +866,12 @@ func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error
 func (g *REST) DeleteBranch(ctx context.Context, branch string) error {
 	return g.do(ctx, http.MethodDelete, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", nil, nil, "deleting branch "+branch)
 }
+
+// UpdateBranch (RED-FIRST STUB: the pre-fix forced ref write).
+func (g *REST) UpdateBranch(ctx context.Context, branch, before, after string) error {
+	return g.do(ctx, http.MethodPatch, g.repoPath()+"/git/refs/heads/"+escapeRef(branch), "", map[string]any{"sha": after, "force": true}, nil,
+		"moving branch "+branch)
+}
+
+// DeleteRef (RED-FIRST STUB: deletes nothing, refuses nothing).
+func (g *REST) DeleteRef(ctx context.Context, ref string) error { return nil }

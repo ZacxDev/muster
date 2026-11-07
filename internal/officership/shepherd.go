@@ -54,6 +54,13 @@ import (
 // the pull request.
 const GateItem = "item"
 
+// RED-FIRST STUBS: names the tests use, with the pre-fix behaviour.
+const (
+	GateWall              = "wall"
+	GateAudit             = "audit"
+	ShepherdScratchPrefix = "refs/muster/shepherd/"
+)
+
 // Shepherd is a shepherd-stage officer's rules, shared by its push gate and
 // its gated tool.
 type Shepherd struct {

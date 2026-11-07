@@ -282,6 +282,20 @@ func WithAfterForward(r *http.Request, f func(ctx context.Context, res ForwardRe
 	return r.WithContext(context.WithValue(r.Context(), afterForwardKey{}, &afterForward{f: f}))
 }
 
+// responseRewriteKey (RED-FIRST STUB: the proxy never calls it).
+type responseRewriteKey struct{}
+
+// WithResponseRewrite (RED-FIRST STUB).
+func WithResponseRewrite(r *http.Request, f func(ctx context.Context, resp *http.Response) error) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), responseRewriteKey{}, f))
+}
+
+// ResponseRewriteOf (RED-FIRST STUB).
+func ResponseRewriteOf(r *http.Request) func(ctx context.Context, resp *http.Response) error {
+	f, _ := r.Context().Value(responseRewriteKey{}).(func(ctx context.Context, resp *http.Response) error)
+	return f
+}
+
 // AfterForwardOf is the function WithAfterForward attached to r, nil when none.
 func AfterForwardOf(r *http.Request) func(ctx context.Context, res ForwardResult) {
 	if af := afterForwardOf(r); af != nil {
