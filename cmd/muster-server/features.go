@@ -122,6 +122,10 @@ func featureCatalog() []features.Feature {
 		{ID: features.SessionState, Name: "Session state",
 			Description: "One push per stop, and the Asks page's Stalled / waiting section.",
 			Enable:      []features.Var{is(envSessionState, "1")}},
+		{ID: features.AskLog, Name: "Ask log",
+			Description: "Every question an agent asks you, with your answer and how long it took, recorded for review.",
+			Enable:      []features.Var{is(envAskLog, "1")},
+			Settings:    []string{envAskLogTextTTL, envAskLogClassify}},
 		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			Description: "External bots post messages to your chief; it drafts replies you approve.",
 			Enable:      []features.Var{is(envPlugins, "1")}},
@@ -373,6 +377,7 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		st[features.ChiefNudges] = off(envChiefNudges + " is unset")
 	}
 	st[features.SessionState] = pick(ext.Episodes != nil, c.SessionState, "", envSessionState+"=1 but "+noDB, envSessionState+" is unset")
+	st[features.AskLog] = pick(ext.AskLog != nil, c.AskLog.On, "", envAskLog+"=1 but "+noDB, envAskLog+" is unset")
 
 	switch {
 	case ext.Plugins != nil && ext.PluginGateway != nil:

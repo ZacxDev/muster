@@ -297,8 +297,9 @@ and has no default**. Today that is a pod, `pod/claude-code` or
 `pod/gateway`; `host/<host>/claude` and `host/<host>/opencode` are refused until
 host spawning ships ([design](design/chief-dispatch.md)). The chief maps your
 words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
-other model you name is `pod/gateway` with that model as its OpenRouter id
-(`openrouter/<provider>/<model>`).
+other model you name is `pod/gateway` with that model: the chief gives its
+OpenRouter model id or name, and muster resolves it to the id
+([checked against the catalogue](provisioner.md#models-are-checked-before-a-pod-starts)).
 Asked to start an agent without a model, the chief calls it with no target, and
 the refusal lists the choices that exist now in your words — "Claude Code (your
 Claude account)", "Gateway (OpenRouter model: <model>)" — with its budget, so it
@@ -325,7 +326,11 @@ creates a claude-code [machine-job worker](jobs.md) (no task), holding one of
 the chief's live slots for as long as it runs.
 
 A claude-code agent runs on an account from your Claude account pool and has
-no per-agent model; `model` is taken only by `pod/gateway`. It works in the
+no per-agent model; `model` is taken only by `pod/gateway`, and it is
+[checked against the model catalogue](provisioner.md#models-are-checked-before-a-pod-starts)
+before anything is reserved: a display name that matches one model is resolved
+to its id, and anything else is refused with up to five of the closest ids in
+`model_suggestions` (a tool error on both transports, MCP included), so the chief asks you which you meant. It works in the
 task's repository (or the `repo` the chief passes, one of your connected
 repositories; `base` picks the branch): its session starts inside a checkout,
 so the repository's `CLAUDE.md` and project skills load. Its optional `prompt`
@@ -343,12 +348,20 @@ MCP answer says so: the agent's first message names it as your answer given
 over MCP from `<host>`/`<session>`, and the audit row records
 `instructions_via` / `instructions_from`. Anything else is refused, and the
 chief is told to ask you with `task_route_attention`. The `task.chief_dispatch`
-audit row records the kind, the target, the prompt (`instructions`), the ask it
+audit row records the kind, the target, the `model` (and `model_input` when it
+was resolved from a name), the prompt (`instructions`), the ask it
 came from (and, for an MCP answer, where), and any `request_key`. No muster
 page reads that row back yet: query it
 (`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`;
 a start with no task has the object `dispatch:<32 hex>`).
 What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#agent_dispatch-the-guards).
+
+**Every agent the chief starts reports back.** When it finishes, fails or goes
+quiet ([outcomes](provisioner.md#how-an-agents-work-ends)), you get one push,
+and muster writes a note in the chief's chat — `[muster] Agent <name> … that
+you started with agent_dispatch FAILED: <reason>. … offer to start it again …`
+— so the chief can tell you, and offer to start it again with the cause fixed.
+The note costs the chief no turn: it reads it on its next one.
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own
@@ -472,6 +485,63 @@ image equals `MUSTER_AGENT_CC_IMAGE`, and `ccd seed --check` passes in the pod.
 `chief_restart` covers the new pod and reports the image; that the image equals
 `MUSTER_AGENT_CC_IMAGE` (`muster-ops chief-restart` checks it) and the seed check
 are still yours.
+
+## Starting an agent from your own session
+
+The chief starts an agent only on a turn you typed in its chat
+(`agent_dispatch`'s `owner_asked`), so a mirrored Claude Code session cannot get
+the chief to start one for you: `chief_ask` relays a question, and the chief
+refuses a start it did not get from your typing. Your own mirrored sessions
+have their own door instead, in **two verbs, with no tap** (operator decision:
+*"dispatch and then another verb to approve the dispatch so I don't need to
+click anything"*):
+
+1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?}` checks
+   the start and **holds** it. Nothing runs yet. It answers `{hold_id, summary,
+   expires_at}`. It takes no idempotency key: a repeated request files a second
+   hold, which starts nothing and lapses after 15 minutes.
+2. `dispatch_approve {hold_id}` starts **exactly** what was held, once, within 15
+   minutes. Any of your mirrored sessions may approve, on any of your hosts.
+
+Both are listed only on the mirrored sessions' MCP door, and only while the
+chief's dispatch is on for you (`MUSTER_TASK_ROUTING=1`, which needs the plugin
+interface, and `MUSTER_CHIEF_DISPATCH_OWNERS` naming you). No dispatched agent,
+and not the chief, is offered either verb, and each handler refuses any caller
+that is not one of your mirrored sessions.
+
+The checks are `agent_dispatch`'s, minus the chief's own:
+
+- `target` is required, with no default: `pod/claude-code` (Claude Code, no
+  model) or `pod/gateway` with `model`. `mirrored` and `host/…` are refused, as
+  for `agent_dispatch`.
+- `model` goes through the same model check as `agent_dispatch`: a catalogue
+  id or a display name naming exactly one model resolves to
+  `openrouter/<id>`, and anything else is refused with the closest ids.
+- A task must be open, not gated, and have no live agent.
+- A repository must be one you connected.
+- Your budget must have room.
+
+The start goes through the chief's own reservation and create. So it counts
+toward the chief's live and daily caps, and the budget the chief sees includes
+it. Its first message is your session's prompt, fenced and marked as relayed
+from one of your sessions, then (on a task) the task, then muster's rules, last.
+
+You get one notification: *"&lt;session&gt; dispatched &lt;agent&gt;
+(&lt;target&gt;, &lt;model&gt;)"*. The chief's chat gets no note at the start; the
+chief sees the agent in its own budget (`live_agents`), since the start is a
+reservation on its ledger. The agent's work is outcome-tracked like any
+dispatch: the silence watchdog, the waiting, failed and done notifications,
+and, with the owner's chief as its dispatcher, the outcome noted in the
+chief's chat. Each request is a `chief.dispatch_held` audit
+row, and each approval a `chief.dispatch_approved` row. Both name the host, the
+session, the target, the model and the SHA-256 of the prompt. The reservation
+row (`task.chief_dispatch`) names the hold it consumed (`detail.held`).
+
+The tools' reference is in
+[attention.md](attention.md#mirrored-claude-code-sessions), with the accepted
+risk: a prompt-injected model in one of your mirrored sessions could call both
+verbs. The design note is in
+[design/chief-dispatch.md](design/chief-dispatch.md#29-held-dispatches-from-the-owners-sessions).
 
 ## Sessions on more than one runtime
 

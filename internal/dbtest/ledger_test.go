@@ -108,6 +108,11 @@ var pgBackedPackages = []string{
 	// agents.DecideReconcile's retry branch — so only the real store can show the
 	// escalation firing at the dwell boundary.
 	"internal/agentkickoff",
+	// Added by the outcome tracker. Its "one push per change" IS the SQL: every
+	// transition is a write conditional on the outcome it leaves (and a stuck
+	// verdict on the activity it was read with), so only the real store can show
+	// a second writer of one change seeing applied=false.
+	"internal/agentoutcome",
 	// Added by the status promoter. Its guard IS the SQL: MarkRunning promotes
 	// only a row still `provisioning` at the updated_at the tick read, and only a
 	// real store can show a Stop or a Start landing mid-tick winning that race.
@@ -180,6 +185,11 @@ var pgBackedPackages = []string{
 	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
 	// read or flip your toggle" is a claim about row-level security.
 	"internal/suggest",
+	// The ask log (asks, migration 0089). "Another owner cannot read your
+	// asks", "a capture that runs twice is one row" and "the sweep clears
+	// exactly the text past the TTL" are claims about row-level security, a
+	// unique index and an UPDATE's predicate.
+	"internal/asklog",
 	// The attention queue (migration 0023). "Another user cannot read, answer or
 	// cancel your asks", "an answer and a cancel cannot both land" and "an
 	// agent names only its owner's agent" are claims about row-level security, a

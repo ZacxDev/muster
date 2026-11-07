@@ -127,7 +127,7 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	}
 
 	var full strings.Builder
-	sc := bufio.NewScanner(resp.Body)
+	sc := bufio.NewScanner(activityBody(ctx, resp.Body))
 	// The cap matches responses.go's deliberately: an SSE "line" here is one delta and
 	// is normally tiny, but a runtime is free to emit a large one, and a line over the
 	// cap is a SCANNER ERROR rather than a skipped line — it ends the stream and is

@@ -233,7 +233,10 @@ func TestTheCollectorAndStallLedger(t *testing.T) {
 		// and its two callers are the nudge sweep and session state. A third
 		// caller of Classify — an unredacted one — fails here. (jobs.Classify,
 		// a different function of the same name, is runJobTurn's.)
-		"classifyStall": "api.decideNudge,api.sessionStateClassify",
+		// The ask log (ask_log.go) is the third: a kept plain-text question is
+		// classified at capture when MUSTER_ASK_LOG_CLASSIFY is on, reusing the
+		// streak's answer when the sweep already has one.
+		"classifyStall": "api.askLogClassify,api.decideNudge,api.sessionStateClassify",
 		"Classify":      "api.classifyStall,api.runJobTurn",
 	}
 	got := map[string][]string{}
