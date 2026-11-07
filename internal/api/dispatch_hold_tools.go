@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -99,41 +98,6 @@ const (
 	dispatchApproveChanged  = "hold %s can no longer start as it was held: %s. Nothing was started"
 )
 
-// dispatchModelIDRE is a model id's SHAPE (vendor/model, optionally behind
-// "openrouter/"): no white space, at least one "/". It is the shape #498's
-// resolver passes unchecked when the catalogue cannot be read (modelIDShape).
-var dispatchModelIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:~+-]*(/[A-Za-z0-9][A-Za-z0-9._:~+-]*)+$`)
-
-// dispatchRequestModelCheck is dispatch_request's model check: the model to
-// hold, or the refusal.
-//
-// 🔴 SEAM(#498): when the dispatch-outcomes change (resolveAgentModel,
-// model_validate.go) is on main, this body becomes
-//
-//	r := s.resolveDispatchModel(ctx, kind, raw)
-//	return r.Model, r.Refusal
-//
-// so a display name RESOLVES to its catalogue id (and the held model is the
-// resolved one) instead of being refused here. Until then it refuses what
-// would otherwise pass to the runtime unread: a value that is not a model id
-// (a display name such as "Acme v4.1 flash"), and — through the credential
-// predicate createAndDispatchAgent applies — an id the agent's one credential
-// cannot reach.
-func (s *Server) dispatchRequestModelCheck(_ context.Context, _ string, raw string) (string, string) {
-	m := strings.TrimSpace(raw)
-	if m == "" {
-		return "", ""
-	}
-	if !dispatchModelIDRE.MatchString(m) {
-		return "", fmt.Sprintf("model %q is not a model id (a display name is not one): give its OpenRouter id, "+
-			"openrouter/<provider>/<model>", m)
-	}
-	if err := agents.ValidateModelCredential(m); err != nil {
-		return "", "model " + strconv.Quote(m) + ": " + err.Error()
-	}
-	return m, ""
-}
-
 // dispatchRequestToolDef / dispatchApproveToolDef are the two verbs' listings.
 func dispatchRequestToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: dispatchRequestTool,
@@ -141,14 +105,15 @@ func dispatchRequestToolDef() agents.ToolDef {
 			"(the target, the model, the prompt, the task, the repository, your owner's agent budget) and HOLDS the start: nothing runs " +
 			"until dispatch_approve is called with the returned hold_id, within 15 minutes, once. target: pod/claude-code (Claude " +
 			"Code; when your owner said Claude or named a Claude model; no model) or pod/gateway (any other model your owner named, " +
-			"as model: its OpenRouter id openrouter/<provider>/<model>). Never choose a target or model your owner did not name. " +
+			"as model: its OpenRouter model id or name, which muster resolves). Never choose a target or model your owner did not name. " +
 			"The agent opens a draft pull request at most. Your owner is notified when it starts.",
 		Parameters: objSchema(map[string]any{
 			"target": strProp("pod/claude-code or pod/gateway, from what your owner said. Required; there is no default."),
 			"prompt": map[string]any{"type": "string", "maxLength": chiefPromptMax,
 				"description": "The work, in your owner's words, at most 8 KiB. Required without task_id. The agent receives it marked as " +
 					"relayed from your owner's session."},
-			"model": strProp("For pod/gateway only: the model your owner named, as its OpenRouter id openrouter/<provider>/<model>."),
+			"model": strProp("For pod/gateway only: the model your owner named — its OpenRouter model id or name; muster resolves it " +
+				"(an unknown one is refused with the closest ids)."),
 			"repo": strProp("The repository to work in (owner/name): one of your owner's connected GitHub repositories. On a task, " +
 				"only when the task names none."),
 			"base":    strProp("The branch to start from. Omit it for the repository's default branch."),
@@ -352,10 +317,15 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 	if in.Model != "" && kindArg != agents.KindGateway {
 		return refuse(dispatchRequestModel)
 	}
-	model, why := s.dispatchRequestModelCheck(ctx, kindArg, in.Model)
-	if why != "" {
-		return refuse(why)
+	// THE model check every dispatch door shares (resolveDispatchModel,
+	// model_validate.go): a catalogue id or a display name naming exactly one
+	// model resolves to its route form, openrouter/<id>; anything else is
+	// refused with the closest ids, and nothing is held.
+	mr := s.resolveDispatchModel(ctx, kindArg, in.Model)
+	if mr.Refusal != "" {
+		return dispatchModelRefusal(mr, s.chiefBudgetNow(ctx))
 	}
+	model := mr.Model
 	if in.TaskID == 0 && strings.TrimSpace(in.Prompt) == "" {
 		return refuse(dispatchRequestPrompt)
 	}
@@ -397,12 +367,11 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 			return dispatchRefusal(dispatchRequestDailyCap, b)
 		}
 	}
-	in.Model = model
 	h := heldDispatch{Door: heldDoorMCP, Host: c.asker.MirrorHost, Session: c.asker.MirrorSession, SessionLabel: sessionLabel(c),
 		Target: in.Target, Kind: kind, Model: model, Repo: in.Repo, Base: in.Base, TaskID: in.TaskID, Prompt: prompt,
 		PromptSHA256: promptDigest(prompt), PromptBytes: len(prompt)}
-	if m := strings.TrimSpace(in.Model); m != "" && m != model {
-		h.ModelInput = m
+	if mr.Resolved {
+		h.ModelInput = mr.Input // the value as given, beside the id it resolved to
 	}
 	hold, err := s.ext.ChiefDispatch.FileDispatchHold(ctx, h.detail())
 	if err != nil {
@@ -584,11 +553,13 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if res.Prior {
 		return refuse(fmt.Sprintf(dispatchApproveChanged, id, "an agent was already started for task "+strconv.FormatInt(h.TaskID, 10)))
 	}
-	p := dispatchParams{Kind: kind, Repo: h.Repo, RepoBranch: h.Base, Model: h.Model, Kickoff: true}
-	// SEAM(#498): with the dispatch-outcomes change on main, also set
-	// TrackOutcome: true (and DispatchedBy: the owner's chief, when it has one),
-	// so this start ends in a visible outcome under the watchdog exactly as the
-	// chief's agent_dispatch does.
+	// TrackOutcome: the start's work must end in a visible outcome, under the
+	// silence watchdog, with the waiting/failed/done pushes (agent_outcome.go),
+	// exactly as the chief's agent_dispatch. DispatchedBy is the owner's chief,
+	// when they have one that is on: its budget already counts this start, and
+	// its chat is told the outcome as for an agent it started.
+	p := dispatchParams{Kind: kind, Repo: h.Repo, RepoBranch: h.Base, Model: h.Model, Kickoff: true, TrackOutcome: true,
+		DispatchedBy: s.ownersChiefID(ctx)}
 	from := "a session on host " + h.Host
 	if onTask {
 		if task.Repo == "" {
@@ -665,6 +636,19 @@ func toolErrSentence(text string) string {
 		return text
 	}
 	return out.Error
+}
+
+// ownersChiefID is the id of the caller's owner's chief when they have one
+// that is on, else 0 (no chief to tell).
+func (s *Server) ownersChiefID(ctx context.Context) int64 {
+	chief, err := s.chiefAgent(ctx)
+	if err != nil {
+		if !errors.Is(err, ErrNoChief) {
+			s.logger.Printf("dispatch_approve: find the chief: %v", err)
+		}
+		return 0
+	}
+	return chief.ID
 }
 
 // sessionModelLabel is the model a started agent runs, in the owner's words.

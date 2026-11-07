@@ -514,8 +514,9 @@ The checks are `agent_dispatch`'s, minus the chief's own:
 - `target` is required, with no default: `pod/claude-code` (Claude Code, no
   model) or `pod/gateway` with `model`. `mirrored` and `host/…` are refused, as
   for `agent_dispatch`.
-- `model` must be an OpenRouter id (`openrouter/<provider>/<model>`). A display
-  name is refused.
+- `model` goes through the same model check as `agent_dispatch`: a catalogue
+  id or a display name naming exactly one model resolves to
+  `openrouter/<id>`, and anything else is refused with the closest ids.
 - A task must be open, not gated, and have no live agent.
 - A repository must be one you connected.
 - Your budget must have room.
@@ -526,9 +527,12 @@ it. Its first message is your session's prompt, fenced and marked as relayed
 from one of your sessions, then (on a task) the task, then muster's rules, last.
 
 You get one notification: *"&lt;session&gt; dispatched &lt;agent&gt;
-(&lt;target&gt;, &lt;model&gt;)"*. The chief's chat gets nothing; the chief sees
-the agent in its own budget (`live_agents`), since the start is a reservation
-on its ledger. Each request is a `chief.dispatch_held` audit
+(&lt;target&gt;, &lt;model&gt;)"*. The chief's chat gets no note at the start; the
+chief sees the agent in its own budget (`live_agents`), since the start is a
+reservation on its ledger. The agent's work is outcome-tracked like any
+dispatch: the silence watchdog, the waiting, failed and done notifications,
+and, with the owner's chief as its dispatcher, the outcome noted in the
+chief's chat. Each request is a `chief.dispatch_held` audit
 row, and each approval a `chief.dispatch_approved` row. Both name the host, the
 session, the target, the model and the SHA-256 of the prompt. The reservation
 row (`task.chief_dispatch`) names the hold it consumed (`detail.held`).

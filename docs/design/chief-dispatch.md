@@ -1312,18 +1312,18 @@ agents.
   nothing. It takes no idempotency key (Round 0 dropped it): a repeated
   request files a second hold, which starts nothing and lapses in 15 minutes,
   and approval's single use under the lock already prevents a double start.
-- **The model** goes through one function, `dispatchRequestModelCheck`. Today it
-  refuses a value that is not an id (a display name) and an id the agent's
-  credential cannot reach. It is the seam for the dispatch-outcomes change's
-  `resolveAgentModel`, which resolves a display name to its id: once that is on
-  `main`, this function calls it.
+- **The model** goes through `resolveDispatchModel`, the dispatch-outcomes
+  change's one model check: a catalogue id or a display name naming one model
+  resolves to `openrouter/<id>`, and the hold carries the resolved model (and
+  the value as given).
 - **`dispatch_approve`** reserves on the chief's ledger, naming the hold, then
   runs `startReserved`, the post-reservation path `agent_dispatch` now shares:
   `createAndDispatchAgent`, the ledger's agent row, and the release of a refused
   start. Then it writes an approval audit row and pushes the owner once. The
   chief's chat gets nothing: the reservation already puts the agent in the
-  chief's budget (`live_agents`). The outcome tracking of the dispatch-outcomes
-  change attaches at the same `dispatchParams`, marked as a seam.
+  chief's budget (`live_agents`). The start is outcome-tracked
+  (`TrackOutcome`, with the owner's chief as `DispatchedBy`), so it gets the
+  silence watchdog and the waiting, failed and done notifications.
 - **Who.** Both verbs are listed only on `POST /mirror/mcp`, dispatched there
   before the tools a gateway agent can name, and each handler refuses any
   caller that is not a mirrored session acting through a mirror host's token

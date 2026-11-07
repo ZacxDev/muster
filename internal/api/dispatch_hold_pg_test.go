@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -70,6 +71,9 @@ func newHoldFixture(t *testing.T, extra ...func(ext *Extensions)) *holdFixture {
 	store := &memPush{}
 	h.taskRouteFixture = newTaskRouteFixture(t, true, true, append([]func(ext *Extensions){withKinds("pool-acct-a"), func(ext *Extensions) {
 		ext.Mirror, ext.MirrorTokens = h.hub, h.tokens
+		// The model catalogue the model check reads: one model, two models'
+		// worth of names would be ambiguous, one is enough to resolve a name.
+		ext.ModelCatalog = listCatalog{{ID: "vendor-a/coder-7", Name: "Vendor A: Coder 7"}}
 		ext.Push = push.NewService(store, h.pusher, push.VAPIDConfig{PublicKey: "k"}, nil)
 	}}, extra...)...)
 	claim(t, store, h.owner, ep("hold-owner"))
@@ -279,9 +283,8 @@ func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
 		{"unknown target", base(map[string]any{"target": "pod/robot"}), `target "pod/robot" is not one of:`},
 		{"a request_key (the request has none)", base(map[string]any{"request_key": "k-1"}), dispatchRequestArgs},
 		{"model on claude-code", base(map[string]any{"model": "openrouter/vendor-a/coder-7"}), dispatchRequestModel},
-		{"a display name as model", base(map[string]any{"target": "pod/gateway", "model": "Acme v4.1 flash"}),
-			`model "Acme v4.1 flash" is not a model id (a display name is not one)`},
-		{"a bare provider id", base(map[string]any{"target": "pod/gateway", "model": "vendor-a/coder-7"}), `Did you mean "openrouter/vendor-a/coder-7"?`},
+		{"a display name no model has", base(map[string]any{"target": "pod/gateway", "model": "Acme v4.1 flash"}),
+			`model "Acme v4.1 flash" is not in the model catalogue (by id or by name)`},
 		{"no prompt and no task", base(map[string]any{"prompt": nil}), dispatchRequestPrompt},
 		{"a repo not connected", base(map[string]any{"repo": "example-org/example-repo"}), chiefDispatchNoGitHub},
 		{"a gated task", base(map[string]any{"task_id": gated.ID}), "this task is gated (needs-owner-ok), so only you can release it"},
@@ -299,6 +302,66 @@ func TestDispatchRequestValidatesLikeAgentDispatch(t *testing.T) {
 		t.Errorf("%d hold rows after refusals, want none", n)
 	}
 	h.nothingStarted(t)
+}
+
+// TestDispatchRequestResolvesAModelByName: a gateway request naming the model
+// by its display name, or by its bare catalogue id, is held with the route form
+// openrouter/<id> (and the value as given), and the approved agent runs it.
+func TestDispatchRequestResolvesAModelByName(t *testing.T) {
+	h := newHoldFixture(t)
+	for _, given := range []string{"Coder 7", "vendor-a/coder-7"} {
+		args := gatewayRequest()
+		args["model"] = given
+		held := h.request(t, args)
+		if held.Model != "openrouter/vendor-a/coder-7" {
+			t.Fatalf("model %q held as %q; want openrouter/vendor-a/coder-7", given, held.Model)
+		}
+		d, _ := h.auditDetail(t, plugins.ActionDispatchHeld, held.HoldID)
+		if d["model"] != "openrouter/vendor-a/coder-7" || d["model_input"] != given {
+			t.Errorf("hold row %v: want the resolved model and model_input %q", d, given)
+		}
+		text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+		if isErr {
+			t.Fatalf("approval: %s", text)
+		}
+	}
+	list := h.ownersAgents(t)
+	if len(list) != 2 {
+		t.Fatalf("agents %d, want 2", len(list))
+	}
+	for _, a := range list {
+		if a.Model != "openrouter/vendor-a/coder-7" {
+			t.Errorf("agent %s runs %q; want openrouter/vendor-a/coder-7", a.Name, a.Model)
+		}
+	}
+}
+
+// TestAnApprovedSessionDispatchIsOutcomeTracked: with outcomes on, the agent
+// an approval starts is marked running and names the owner's chief as its
+// dispatcher — so the silence watchdog, the outcome pushes and the live card
+// follow it, as for the chief's own agent_dispatch.
+func TestAnApprovedSessionDispatchIsOutcomeTracked(t *testing.T) {
+	h := newHoldFixture(t)
+	h.srv.ext.Outcomes = agentoutcome.NewPG(h.pool)
+	held := h.request(t, gatewayRequest())
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if isErr {
+		t.Fatalf("approval: %s", text)
+	}
+	list := h.ownersAgents(t)
+	if len(list) != 1 {
+		t.Fatalf("agents %d, want 1", len(list))
+	}
+	var (
+		outcome string
+		by      *int64
+	)
+	if err := h.pool.QueryRow(h.asOwner, `SELECT outcome, dispatched_by FROM agents WHERE id = $1`, list[0].ID).Scan(&outcome, &by); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "running" || by == nil || *by != h.chief.ID {
+		t.Fatalf("outcome %q, dispatched_by %v; want running, dispatched by the chief %d", outcome, by, h.chief.ID)
+	}
 }
 
 // TestDispatchRequestRefusesAnOwnerWhoDidNotOptIn: the opt-in's own sentence.
@@ -737,4 +800,19 @@ func TestTheHoldIDShapeIsChecked(t *testing.T) {
 		}
 	}
 	h.nothingStarted(t)
+}
+
+// TestAModelRefusalWithSuggestionsIsAToolError: the model check's refusal
+// carries model_suggestions (dispatchModelRefusal, shared by agent_dispatch and
+// dispatch_request); over MCP it must still be flagged isError, or the caller
+// reads a refusal as a success. The key set isToolErr accepts is the guard.
+func TestAModelRefusalWithSuggestionsIsAToolError(t *testing.T) {
+	text := dispatchModelRefusal(modelResolution{Refusal: `model "x" is not in the model catalogue`,
+		Suggestions: []string{"openrouter/vendor-a/coder-7"}}, &plugins.ChiefBudget{})
+	if !isToolErr(text) {
+		t.Fatalf("a model refusal is not a tool error: %s", text)
+	}
+	if isToolErr(`{"error":"x","model_suggestions":[],"agent_id":1}`) {
+		t.Fatal("control: an answer with a key outside the refusal set reads as an error")
+	}
 }
