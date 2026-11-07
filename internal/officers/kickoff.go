@@ -30,7 +30,24 @@ Start now:
 
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ToolAskPerson) + tierNote(o) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o) + releaseNote(o) + freshNote(o)
+}
+
+// freshNote is the last paragraph of a fresh_session_per_item pool's
+// kickoff (Officer.FreshSessionPerItem): this conversation is for ONE item,
+// and when it is done the instance ends its turn. It overrides step 2's
+// "work the queue": officer_claim refuses a second item in the conversation
+// (internal/api), and muster starts a new one, with this same text, for the
+// next item. Nothing for every other pool.
+func freshNote(o Officer) string {
+	if !o.FreshSessionPerItem() {
+		return ""
+	}
+	return fmt.Sprintf("\n\nOne item per conversation (tiers.%[1]s.fresh_session_per_item): muster starts every item you work in a NEW conversation, "+
+		"so nothing from an earlier item is in this one — judge this item only on what you read now. Take ONE item. "+
+		"Once you have completed, released or handed it on, or asked a person about it, stop and end your turn: do not claim another "+
+		"(%[2]s refuses a second item in this conversation). muster starts a new conversation, with this same first message, for the next item.",
+		o.Tier, ToolClaim)
 }
 
 // kubeNote tells a judgement instance of an officer with a `kube` block how to

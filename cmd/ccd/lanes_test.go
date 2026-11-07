@@ -24,6 +24,12 @@ func TestTheLaneHeadersAreMustersHeaders(t *testing.T) {
 	if headerCCEphemeral != agents.HeaderCCEphemeral {
 		t.Fatalf("ccd reads a throwaway check as %q, muster marks it %q", headerCCEphemeral, agents.HeaderCCEphemeral)
 	}
+	if headerCCNewConversation != agents.HeaderCCNewConversation {
+		t.Fatalf("ccd reads a new conversation as %q, muster asks for one with %q", headerCCNewConversation, agents.HeaderCCNewConversation)
+	}
+	if headerCCNewConversationSession != agents.HeaderCCNewConversationSession {
+		t.Fatalf("ccd names a new conversation in %q, muster reads %q", headerCCNewConversationSession, agents.HeaderCCNewConversationSession)
+	}
 }
 
 // TestTheCapacityFailureIsMusters: the type of ccd's lanes-full refusal is the

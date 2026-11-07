@@ -230,6 +230,8 @@ type fakeGateway struct {
 	// checkout / checkoutErr are what Checkout answers (ccd's /healthz repo).
 	checkout    agents.CheckoutStatus
 	checkoutErr error
+	// sendCtxs is the context of every Send, in order (Config.TurnContext).
+	sendCtxs []context.Context
 }
 
 func (g *fakeGateway) Checkout(context.Context, agentgateway.Target) (agents.CheckoutStatus, error) {
@@ -259,6 +261,7 @@ func (g *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.T
 func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKey, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
 	g.calls++
+	g.sendCtxs = append(g.sendCtxs, ctx)
 	g.log.add(fmt.Sprintf("Chat(%s,%s,%s)", g.resolved, sessionKey, message))
 	hold, reply, err := g.hold, g.reply, g.err
 	g.mu.Unlock()
