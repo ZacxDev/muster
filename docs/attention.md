@@ -822,6 +822,17 @@ your signed-in browser or your paired phone: `attention_answer` cannot give
 them, and a task that changed since the ask (already released, closed, a gate
 of yours added) refuses the tap and leaves the ask open.
 
+**Where an answer came from** (migration 0090). An answer records the door it
+came through: `answered_via = 'browser'` for the Attention view in a signed-in
+browser, `'device'` for your paired phone, `'mcp'` (with the host and session)
+for `attention_answer`. The store stamps `browser` and `device` from the
+answering principal itself; any other principal, an answer from before 0090,
+and an answer settled in session leave it empty. Only `browser` and `device`
+count as **your own tap** where muster binds something to it (a held
+mirrored dispatch, [design](design/chief-dispatch.md#28-mirrored-dispatch-choosing-host-runtime-and-model)).
+Whether an answer picked one of the ask's options is read from the row: the
+answer must be exactly one of its stored options (`attention.Ask.ChosenOption`).
+
 **Or in the session.** Writing to the asker directly answers it too: a message
 you send into a mirrored session's Claude Code pane (the rendered view's Send —
 not the Terminal's, which types into whatever pane is active, possibly a

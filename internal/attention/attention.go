@@ -87,8 +87,41 @@ type AnswerSource struct {
 	Session string
 }
 
+// The owner's own doors (migration 0090), stamped by Answer from the answering
+// principal: the Attention view in a signed-in browser session, and the owner's
+// paired phone. NULL (the zero AnswerSource) is an answer recorded before 0090,
+// one settled in session, or one whose principal was neither — and no binding
+// reads that as an owner's door.
+const (
+	ViaBrowser = "browser"
+	ViaDevice  = "device"
+)
+
 // ViaSession reports whether src names a mirrored session (an MCP answer).
 func (src AnswerSource) ViaSession() bool { return src.Via == ViaMCP }
+
+// OwnerDoor reports whether src is one of the owner's own doors — their
+// browser or their phone (0090) — the doors #485's ownerTapped admits for a
+// release, read back from the row. An MCP answer, an unrecorded door and an
+// answer settled in session are not.
+func (src AnswerSource) OwnerDoor() bool { return src.Via == ViaBrowser || src.Via == ViaDevice }
+
+// answerVia is the door ctx's principal answers through (0090): ViaBrowser for
+// a signed-in browser session, ViaDevice for the owner's paired phone, "" for
+// anything else. THE one mapping from a principal to a recorded door.
+func answerVia(ctx context.Context) string {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.UserID <= 0 {
+		return ""
+	}
+	switch p.Via {
+	case authz.ViaSession:
+		return ViaBrowser
+	case authz.ViaDevice:
+		return ViaDevice
+	}
+	return ""
+}
 
 // String is "<host>/<session>", "" for the view.
 func (src AnswerSource) String() string {
@@ -737,20 +770,44 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // (ErrSameHost says why the host, not the session). An agent's, the chief's
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
+//
+// The same-host clause applies to an MCP answer only ($4 = 'mcp'): a browser
+// or phone answer (0090) names no host, and must not be refused for that.
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
 	WHERE id = $1 AND status = 'open' AND expires_at > now() AND kind = 'ask'
-	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
+	  AND ($4::text IS DISTINCT FROM 'mcp' OR mirror_host IS DISTINCT FROM $5::text)
 	RETURNING ` + cols
 
+// Answer records the owner's answer from the Attention view or their phone,
+// stamping the door from ctx's principal (answerVia; NULL for any other).
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
 	answer, err := CleanAnswer(answer)
 	if err != nil {
 		return Ask{}, err
 	}
-	return noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nil, nil, nil))
+	return noticeRefused(s.settle(ctx, id, answerSQL, id, answer, ByOperator, nullable(answerVia(ctx)), nil, nil))
+}
+
+// ChosenOption is the index of the stored option a's answer picked: the answer
+// is exactly one of a's OWN stored options (the label a button sends), and ok is
+// false for a free-text answer, an unanswered ask, or a notice. It binds a tap
+// to the option tapped by the row muster stored, never by text the asker wrote
+// afterwards. Whether the door was the owner's is a separate question
+// (AnsweredVia.OwnerDoor).
+func (a Ask) ChosenOption() (int, bool) {
+	if a.Kind == KindNotice || (a.Status != Answered && a.Status != AnsweredInSession) {
+		return 0, false
+	}
+	ans := strings.TrimSpace(a.Answer)
+	for i, o := range a.Options {
+		if o == ans {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // noticeRefused is an answer's outcome with a refusal of an open notice named
