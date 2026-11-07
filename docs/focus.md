@@ -189,8 +189,9 @@ focus history:
 - the current title passes the [name bar](#the-name-bar)'s title half and is
   not the name itself.
 
-Only a manual or auto name is offered a rename: never a system name (the
-chief, an officer), a task's name or a technical fallback. **Rename to "…"**
+A manual, task (dispatch) or auto name is offered a rename — a task's name
+never changes on its own, so this offer is how it moves on — but never a
+system name (the chief, an officer) or a technical fallback. **Rename to "…"**
 is an ordinary rename, so the new name is manual. **Keep the name** records
 the dismissal per user (`agent_focus.drift_dismissed`, migration `0089`): the
 offer stays hidden while the focus title is the one it was dismissed at, and

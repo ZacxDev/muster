@@ -2,12 +2,14 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/sessionname"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -111,6 +113,32 @@ func TestNoOfferWithoutSustainedDrift(t *testing.T) {
 		s, ts := focusMirrorServer(t, fm, store, nil)
 		if _, page := mirrorGet(t, s, ts, ref("main", "@1").ViewPath()); strings.Contains(page, "data-session-drift=") {
 			t.Errorf("%s: an offer is drawn", name)
+		}
+	}
+}
+
+// TestATaskNameDriftsLikeAnyStableName: a task-dispatched name is the agent's
+// stable name (operator, #504 Q1), so it is offered a rename on drift like an
+// auto or manual one; a system name (the chief, an officer) and a technical
+// fallback never are.
+func TestATaskNameDriftsLikeAnyStableName(t *testing.T) {
+	now := time.Now()
+	sub := focus.AgentSubject(7)
+	store := driftedStore(now)
+	store.history[sub] = store.history[focus.MirrorSubject(focusSID)]
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(operatorCtx())
+	for src, want := range map[sessionname.Source]string{
+		sessionname.SourceDispatch: "Fixing the Stripe webhook retry",
+		sessionname.SourceAuto:     "Fixing the Stripe webhook retry",
+		sessionname.SourceManual:   "Fixing the Stripe webhook retry",
+		sessionname.SourceSystem:   "",
+		sessionname.SourceFallback: "",
+	} {
+		n := sessionname.Name{Text: "#42 · Billing migration", Source: src}
+		if got := s.driftOffer(r, sub, n); got != want {
+			t.Errorf("a %s name: offer %q, want %q", src, got, want)
 		}
 	}
 }

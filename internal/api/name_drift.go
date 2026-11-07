@@ -22,16 +22,17 @@ import (
 // "Keep the name" records a dismissal at that focus title (POST
 // /sessions/name/drift-dismiss), which holds until the title changes.
 //
-// 🔴 ONLY A NAME A PERSON OR THE BAR CHOSE DRIFTS. A manual or auto name can
-// be offered a rename; a system name (the chief, an officer) never — it is
-// how muster finds the role — nor a task's name or a technical fallback,
-// which the auto name replaces on its own.
+// 🔴 EVERY STABLE NAME DRIFTS BUT A ROLE'S. A manual, task (dispatch) or auto
+// name can be offered a rename — a task's name is the agent's stable name and
+// never changes on its own (operator, #504 Q1), so the offer is how it moves
+// on. A system name (the chief, an officer) never is — it is how muster finds
+// the role — nor a technical fallback, which is no name to drift from.
 // ---------------------------------------------------------------------------
 
 // driftOffer is the rename sub's page offers, "" for none: n is the name the
 // page shows (resolved by the page's own adapter call).
 func (s *Server) driftOffer(r *http.Request, sub focus.Subject, n sessionname.Name) string {
-	if s.ext.Focus == nil || (n.Source != sessionname.SourceManual && n.Source != sessionname.SourceAuto) {
+	if s.ext.Focus == nil || !driftable(n.Source) {
 		return ""
 	}
 	ctx := r.Context()
@@ -41,6 +42,16 @@ func (s *Server) driftOffer(r *http.Request, sub focus.Subject, n sessionname.Na
 		return ""
 	}
 	return focus.DriftOffer(n.Text, page.Entries, s.storedName(ctx, sub).DriftDismissed, s.now())
+}
+
+// driftable reports whether a name of source src may be offered a rename on
+// drift: manual, dispatch and auto names; never a system name or a fallback.
+func driftable(src sessionname.Source) bool {
+	switch src {
+	case sessionname.SourceManual, sessionname.SourceDispatch, sessionname.SourceAuto:
+		return true
+	}
+	return false
 }
 
 // agentDrift is the offer banner for agent id's page, nil for no offer.
