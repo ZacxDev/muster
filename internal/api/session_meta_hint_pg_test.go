@@ -110,6 +110,21 @@ func TestFocusSearchFindsAnIdleSessionByItsRepo(t *testing.T) {
 	}
 }
 
+// At the hint's seam: a session whose focus matches is listed before one whose
+// repo does.
+func TestAFocusHitIsHintedBeforeARepoHit(t *testing.T) {
+	g := metaReplay(t)
+	g.setFocus(t, focus.MirrorSubject(sidMetaOther), "Porting the yt-thumbnail generator", "")
+	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 1, Subject: "[app feedback] YT Thumbnail #198", Body: metaMessage})
+	var ids []string
+	for _, s := range h.Sessions {
+		ids = append(ids, s.ID)
+	}
+	if want := []string{"mirror:" + sidMetaOther, "mirror:" + sidMetaIdle}; fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("hint lists %v; want %v (the focus hit first)", ids, want)
+	}
+}
+
 // mergeHints: focus hits first, then repo hits not among them, up to the
 // limit; a session in both keeps its focus place and gains its repo line.
 func TestTheHintListsFocusHitsBeforeRepoHits(t *testing.T) {
