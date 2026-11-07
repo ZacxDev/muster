@@ -508,6 +508,12 @@ type ClaudeCodeSession struct {
 	AllowMCPTools []string
 	// Model is the session's model; "" leaves the account default.
 	Model string
+	// Image, when set, is the image the pod runs instead of
+	// ClaudeCodeConfig.Image: an officer instance's own runner image
+	// (internal/api OfficerClaudeCodeSession), already checked against the
+	// deployment's allowlist at boot (officers.ImageAllowed). "" runs the
+	// deployment's.
+	Image string
 	// BypassPermissions starts every session in the pod with every tool
 	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
 	// prompt at all. Set for an officer instance only.

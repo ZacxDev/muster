@@ -182,7 +182,7 @@ func featureCatalog() []features.Feature {
 			Enable:      []features.Var{v(envOfficers, "JSON array"), v(officers.TokenEnvPrefix+"<NAME>", "HQ token")},
 			Settings: []string{officers.AppKeyEnvPrefix + "<NAME>", officers.EscalateWebhookEnvPrefix + "<NAME>", officers.LLMKeyEnvPrefix + "<NAME>",
 				officers.KubeEndpointEnvPrefix + "<CLUSTER>", officers.KubeCAEnvPrefix + "<CLUSTER>", officers.KubeMinterEnvPrefix + "<CLUSTER>",
-				officers.KubeAllowlistEnvPrefix + "<CLUSTER>"}},
+				officers.KubeAllowlistEnvPrefix + "<CLUSTER>", officers.ImageRegistriesEnv}},
 	}
 }
 

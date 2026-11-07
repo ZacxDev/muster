@@ -94,6 +94,11 @@ import (
 const defaultListen = ":18789"
 
 func main() {
+	// Linked as /usr/local/bin/gh (images/claude-code-agent), ccd is the
+	// read-only gh shim (ghshim.go).
+	if filepath.Base(os.Args[0]) == "gh" {
+		os.Exit(runGH(os.Args[1:], os.Stdout, os.Stderr))
+	}
 	os.Exit(run(os.Args[1:]))
 }
 
@@ -123,8 +128,10 @@ func run(args []string) int {
 		return runCompose(args, os.Stderr)
 	case "compose-epoch":
 		return runComposeEpoch(args, os.Stderr)
+	case "gh":
+		return runGH(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | compose | compose-epoch <dir> <epoch>)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector] | approve | ask-image <path> | compose | compose-epoch <dir> <epoch> | gh <read-only gh>)\n", cmd)
 		return 2
 	}
 }

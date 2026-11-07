@@ -80,6 +80,11 @@ type Officer struct {
 	// Model is the model the instances' Claude Code sessions run ("opus", a
 	// full model id); "" leaves the account's default.
 	Model string `json:"model,omitempty"`
+	// Image, when set, is the runner image the instances' pods run instead of
+	// the deployment's claude-code image (image.go): pinned, and in a
+	// repository ImageRegistriesEnv allows. For a tiered officer it is the
+	// pool's (tiers.<pool>.image), as Model is. "" runs the deployment's.
+	Image string `json:"image,omitempty"`
 	// Repo is the GitHub repository (owner/name) the officer's instances act
 	// on as their OWN repository for connectors; "" for none. It is what the
 	// GitHub App connector mints a token for (internal/api Server.agentRepo
@@ -171,6 +176,7 @@ type declared struct {
 	CCAccount    string   `json:"cc_account"`
 	CCFailover   bool     `json:"cc_failover"`
 	Model        string   `json:"model"`
+	Image        string   `json:"image"`
 	Repo         string   `json:"repo"`
 	ReadRepos    []string `json:"read_repos"`
 	Connectors   []string `json:"connectors"`
@@ -327,12 +333,16 @@ func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Of
 	if err := dec.Decode(&in); err != nil {
 		return nil, fmt.Errorf("MUSTER_OFFICERS: not a JSON array of officers: %w", err)
 	}
+	images, err := parseImageRegistries(getenv(ImageRegistriesEnv))
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Officer, 0, len(in))
 	seenID := map[string]bool{}
 	seenSlug := map[string]string{}
 	seenSuffix := map[string]string{}
 	for i, d := range in {
-		o, err := d.officer(getenv, MaxInstanceNameLen(namespacePrefix))
+		o, err := d.officer(getenv, MaxInstanceNameLen(namespacePrefix), images)
 		if err != nil {
 			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: %w", i, err)
 		}
@@ -354,7 +364,7 @@ func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Of
 	return out, nil
 }
 
-func (d declared) officer(getenv func(string) string, maxName int) (Officer, error) {
+func (d declared) officer(getenv func(string) string, maxName int, images []string) (Officer, error) {
 	o := Officer{
 		ID:           strings.TrimSpace(d.ID),
 		HQURL:        strings.TrimRight(strings.TrimSpace(d.HQURL), "/"),
@@ -363,6 +373,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		CCAccount:    strings.TrimSpace(d.CCAccount),
 		CCFailover:   d.CCFailover,
 		Model:        strings.TrimSpace(d.Model),
+		Image:        strings.TrimSpace(d.Image),
 		Repo:         strings.TrimSpace(d.Repo),
 		IdleAfter:    DefaultIdleAfter,
 		PollInterval: DefaultPollInterval,
@@ -396,6 +407,9 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		if d.MaxInstances != 0 {
 			return Officer{}, fmt.Errorf("officer %s: with tiers, set the judgement pool's size as tiers.judgement.max_instances; remove the top-level max_instances", o.ID)
 		}
+		if o.Image != "" {
+			return Officer{}, fmt.Errorf("officer %s: with tiers, set each pool's image as tiers.<pool>.image; remove the top-level image", o.ID)
+		}
 		// 🔴 A TIERED SHIPPING OFFICER SHIPS FROM ITS JUDGEMENT POOL ONLY.
 		// Officer.Pool(TierRoutine) has no Ship and no CILogs, so a routine
 		// instance gets no ship tool, no push gate and no officer App token:
@@ -405,7 +419,21 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Tiers, o.Tier = t, TierJudgement
-		o.Model, o.MaxInstances = t.Judgement.Model, t.Judgement.MaxInstances
+		o.Model, o.MaxInstances, o.Image = t.Judgement.Model, t.Judgement.MaxInstances, t.Judgement.Image
+	}
+	// 🔴 EVERY IMAGE AN INSTANCE OF THIS OFFICER COULD RUN IS CHECKED HERE, AT
+	// BOOT: the officer's own (untiered) or each pool's.
+	for _, p := range o.Pools() {
+		if p.Image == "" {
+			continue
+		}
+		if err := ImageAllowed(p.Image, images); err != nil {
+			where := "image"
+			if p.Tier != "" {
+				where = "tiers." + p.Tier + ".image"
+			}
+			return Officer{}, fmt.Errorf("officer %s: %s: %w", o.ID, where, err)
+		}
 	}
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
