@@ -749,6 +749,10 @@ type config struct {
 	// default): every session's state and its episodes (internal/sessionstate).
 	SessionState           bool
 	ChiefNudgeAskThreshold float64
+
+	// AskLog is the ask log's configuration (asklog_config.go).
+	AskLog askLogConfig
+
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
 	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
@@ -1602,6 +1606,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefDispatchOwners = owners
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
+	if c.AskLog, err = parseAskLog(getenv); err != nil {
+		return config{}, err
+	}
 	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
 	if v := strings.TrimSpace(getenv(envChiefNudgeIdle)); v != "" {
 		d, err := time.ParseDuration(v)

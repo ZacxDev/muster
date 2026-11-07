@@ -57,6 +57,10 @@ var wantMetrics = map[string][]string{
 	"muster_officer_llm_budget_usd":                   {"officer"},
 	"muster_officer_llm_book_failures_total":          {"officer"},
 	"muster_build_info":                               {"version"},
+	"muster_asks_total":                               {"kind"},
+	"muster_ask_plain_text_prefilter_total":           {"result"},
+	"muster_ask_answer_seconds":                       {"answered_by", "kind"},
+	"muster_ask_capture_errors_total":                 {"kind", "stage"},
 	"muster_http_requests_total":                      {"code", "method", "route"},
 	"muster_http_request_duration_seconds":            {"method", "route"},
 	"muster_panics_total":                             {"source"},
@@ -94,6 +98,10 @@ func gather(t *testing.T) map[string][]string {
 
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
+	AsksTotal.WithLabelValues("plain_text")
+	AskPlainTextPrefilter.WithLabelValues("kept")
+	AskAnswerSeconds.WithLabelValues("plain_text", "owner")
+	AskCaptureErrors.WithLabelValues("plain_text", "write")
 	AgentProvision.WithLabelValues("ok")
 	PushDelivery.WithLabelValues("ok")
 	PushSuppressed.WithLabelValues("muted")

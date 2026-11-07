@@ -59,6 +59,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -360,6 +361,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
+		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
+		if cfg.AskLog.On {
+			ext.AskLog = &api.AskLog{Store: asklog.NewPG(pool), TextTTL: cfg.AskLog.TextTTL, JevAtCapture: cfg.AskLog.JevAtCapture}
+		}
 		// The machine job API (migration 0037). A job runs inside the process
 		// that accepted it; what a dead process left unfinished is failed by
 		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is
@@ -701,6 +706,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// A window starting (or stopping) to wait on the person changes no
 		// card, so the attention queue hears it through its own hook.
 		mirrorSvc.SetWaitingNotify(srv.AttentionMirrorChanged)
+		// A turn ending (busy → idle) changes no card and no waiting set: the
+		// ask log hears every status change through its own hook.
+		mirrorSvc.SetStatusNotify(srv.AskLogMirrorChanged)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -1093,6 +1101,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
 	// The attention queue: lapsed asks expire and leave the owner's devices.
 	go a.srv.RunAttentionSweep(ctx, 0)
+	// The ask log's retention (MUSTER_ASK_LOG=1; returns at once when off).
+	go a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
 	// The outcome watchdog: a started agent gone quiet is called stuck, once
@@ -1611,6 +1621,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
 		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.AskLog != nil:
+		classify := "off (" + envAskLogClassify + " is unset): the classifier's columns stay empty"
+		if ext.AskLog.JevAtCapture {
+			classify = "ON (" + envAskLogClassify + "=1): a kept plain-text question is classified, one call per turn end the stall sweep has not classified"
+		}
+		l.Printf("ask log: ON (%s=1) — every question an agent asks its owner is recorded with its answer (asks), redacted, "+
+			"owner-only; question and answer text cleared after %s (%s), rows deleted after %s; classification at capture %s",
+			envAskLog, ext.AskLog.TextTTL, envAskLogTextTTL, asklog.RowTTL, classify)
+	case a.cfg.AskLog.On:
+		l.Printf("ask log: INERT — %s=1 but there is no database", envAskLog)
+	default:
+		l.Printf("ask log: OFF — %s is unset; nothing agents ask is recorded", envAskLog)
 	}
 	switch {
 	case ext.Episodes != nil:

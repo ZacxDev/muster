@@ -107,6 +107,9 @@ func (s *Service) SetNotify(fn func(owner int64)) { s.hub.SetNotify(fn) }
 // SetWaitingNotify installs the hub's waiting-set hook (Hub.SetWaitingNotify).
 func (s *Service) SetWaitingNotify(fn func(owner int64)) { s.hub.SetWaitingNotify(fn) }
 
+// SetStatusNotify installs the hub's status hook (Hub.SetStatusNotify).
+func (s *Service) SetStatusNotify(fn func(owner int64)) { s.hub.SetStatusNotify(fn) }
+
 // SetNotifyDebounce overrides the nudge coalescing window (tests).
 func (s *Service) SetNotifyDebounce(d time.Duration) {
 	s.hub.mu.Lock()

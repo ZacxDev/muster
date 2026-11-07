@@ -2207,6 +2207,8 @@ func (s *Server) persistTurn(ctx context.Context, a agents.Agent, session agents
 		// needs the nudge).
 		s.broadcast(ctx, EventChatReply, a.Name)
 	}
+	// The ask log (ask_log.go): a turn ended; was its last word a question?
+	s.askLogAgentTurn(ctx, a, session, parts)
 }
 
 // resolveSession picks the chat session for a request: the ?session=<id> one
