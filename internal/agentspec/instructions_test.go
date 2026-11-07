@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "fccd66cd76ba45b8fc607a5dc20b79e30cd2f2681030cf8e36a721200be400f5",
+			want: "bd1d82b8d6235182371e742c0e067c3b3335ef2b7a1b52f607009dbabd476b4d",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "a45992d1986b17b107ed587923f1533cbffeb55a427319cf01678960f1648570",
+			want: "cd7db3098eab43daf2127360966de6b79365d46b440f1b6e621adbbd1be554d5",
 			min:  1000,
 		},
 		{
