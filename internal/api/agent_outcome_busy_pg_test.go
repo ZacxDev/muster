@@ -114,3 +114,30 @@ func TestARefusedAskIsNeitherActivityNorARearm(t *testing.T) {
 			got.OutcomeReason, len(o.outcomePushes(a.ID)))
 	}
 }
+
+// TestOutcomeTurnKeepsTheCallerCallback: the outcome bracket's 103 callback
+// CHAINS to the one the caller's context carries (markOwnerTurn's owner-turn
+// marker, acceptedAfterQueued's "accepted"), and takes the turn: the 103 of an
+// ask is its activity and its re-arm.
+func TestOutcomeTurnKeepsTheCallerCallback(t *testing.T) {
+	o := newOutcomeFixture(t, stubModelCatalog{})
+	a := o.dispatchGateway(t, "accepted by its runtime", "openrouter/acme/acme-v4.1-pro")
+	o.srv.outcomeAnswered(o.asOwner, o.agent(t, a.ID), "Which repository should I work in?")
+	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Waiting {
+		t.Fatalf("instrument check: outcome %q; want waiting", got.Outcome)
+	}
+	var outer []string
+	ctx := agents.WithTurnAccepted(o.asOwner, func(acc agents.TurnAcceptance) { outer = append(outer, acc.Lane) })
+	tctx, ended := o.srv.outcomeTurn(ctx, o.agent(t, a.ID))
+	agents.MarkTurnAccepted(tctx, agents.TurnAcceptance{Lane: "lane-q7"})
+	if len(outer) != 1 || outer[0] != "lane-q7" {
+		t.Fatalf("the caller's own 103 callback saw %q; want it called once with the lane", outer)
+	}
+	if got := o.agent(t, a.ID); got.Outcome != agentoutcome.Running {
+		t.Errorf("after the runtime's 103: outcome %q; want re-armed to running", got.Outcome)
+	}
+	ended("", context.Canceled)
+	if o.srv.agentOutcomes.busy(a.ID) {
+		t.Error("the bracket left its turn open")
+	}
+}
