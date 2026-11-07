@@ -160,6 +160,9 @@ services:
 
       # The connector store, and members' own credentials (docs/features.md#connectors).
       MUSTER_CONNECTOR_ENCRYPTION_KEY: ${MUSTER_CONNECTOR_ENCRYPTION_KEY:-}
+      # 1: postgres connectors and push sends refuse loopback and private
+      # addresses (docs/connectors.md#refusing-private-addresses). Off by default.
+      MUSTER_DIAL_DENY_PRIVATE: ${MUSTER_DIAL_DENY_PRIVATE:-}
 
       # The GitHub App (docs/features.md#github-app).
       MUSTER_GITHUB_APP_ID: ${MUSTER_GITHUB_APP_ID:-}
