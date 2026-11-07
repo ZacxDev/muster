@@ -131,9 +131,16 @@ func (s *Ship) ForRepo(r ShipRepo) *Ship {
 // IsDraft reports whether the stage is StageDraft.
 func (s *Ship) IsDraft() bool { return s != nil && s.Stage == StageDraft }
 
-// MayMarkReady reports whether officer_mark_ready is the officer's: every
-// stage but draft.
-func (s *Ship) MayMarkReady() bool { return s != nil && s.Stage != StageDraft }
+// wallStage reports whether stage enforces forbidden_paths and may ship to
+// several repositories: draft and shepherd.
+func wallStage(stage string) bool { return stage == StageDraft || stage == StageShepherd }
+
+// MayMarkReady reports whether officer_mark_ready (the officer's OWN draft) is
+// the officer's: every stage but draft and shepherd (a shepherd marks ready
+// with officer_shepherd_mark_ready, on pull requests it shepherds).
+func (s *Ship) MayMarkReady() bool {
+	return s != nil && s.Stage != StageDraft && s.Stage != StageShepherd
+}
 
 // declaredShipRepo is one entry of `ship.repos`.
 type declaredShipRepo struct {
@@ -216,8 +223,8 @@ func parseShipRepo(what string, d declaredShipRepo) (ShipRepo, error) {
 // no entry first: the Ship's own fields are filled from the one named repo.
 func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 	if len(d.Repos) == 0 || string(d.Repos) == "null" {
-		if (len(d.ForbiddenPaths) > 0 || d.ForbiddenPathsFile != "") && stage != StageDraft {
-			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, stage)
+		if (len(d.ForbiddenPaths) > 0 || d.ForbiddenPathsFile != "") && !wallStage(stage) {
+			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s and %s stages only; stage %s would ignore it — remove it", StageDraft, StageShepherd, stage)
 		}
 		r, err := parseShipRepo("", declaredShipRepo{Repo: repo, Base: d.Base, BranchPrefix: d.BranchPrefix, GitHubApp: d.GitHubApp,
 			ForbiddenPaths: d.ForbiddenPaths, ForbiddenPathsFile: d.ForbiddenPathsFile})
@@ -244,8 +251,8 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 	if n := len(list); n < 1 || n > MaxShipRepos {
 		return nil, fmt.Errorf("ship: repos lists %d repositories; 1..%d", n, MaxShipRepos)
 	}
-	if len(list) > 1 && stage != StageDraft {
-		return nil, fmt.Errorf("ship: several repos are supported on the %s stage only (stage %s merges and tags in one repository)", StageDraft, stage)
+	if len(list) > 1 && !wallStage(stage) {
+		return nil, fmt.Errorf("ship: several repos are supported on the %s and %s stages only (stage %s merges and tags in one repository)", StageDraft, StageShepherd, stage)
 	}
 	seen := map[string]bool{}
 	var out []ShipRepo
@@ -258,8 +265,8 @@ func shipRepos(stage, repo string, d declaredShip) ([]ShipRepo, error) {
 		if err := draftPrefixPinned(stage, fmt.Sprintf("repos[%d].", i), r); err != nil {
 			return nil, err
 		}
-		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && stage != StageDraft {
-			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s stage only; stage %s would ignore it — remove it", StageDraft, stage)
+		if (len(r.ForbiddenPaths) > 0 || r.ForbiddenPathsFile != "") && !wallStage(stage) {
+			return nil, fmt.Errorf("ship: forbidden_paths is enforced by the %s and %s stages only; stage %s would ignore it — remove it", StageDraft, StageShepherd, stage)
 		}
 		lr := strings.ToLower(r.Repo)
 		if seen[lr] {
