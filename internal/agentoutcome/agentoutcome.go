@@ -17,8 +17,8 @@
 //     internal/api agent_watchdog.go);
 //   - an agent that finishes says so ([Done]).
 //
-// THE STATES (agents.outcome, migration 0087). "" is UNTRACKED — an agent
-// nobody started with a first turn, and every row from before 0087.
+// THE STATES (agents.outcome, migration 0088). "" is UNTRACKED — an agent
+// nobody started with a first turn, and every row from before 0088.
 //
 //	running  started with a first turn; working (or about to)
 //	done     answered and idle, or moved its task to review/complete

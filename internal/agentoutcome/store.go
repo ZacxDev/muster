@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Store writes an agent's outcome columns (migration 0087). Reads come with the
+// Store writes an agent's outcome columns (migration 0088). Reads come with the
 // row itself (agents.Agent's Outcome fields, scanned by agents.PGStore).
 //
 // Every method acts as ctx's principal: agents is under row-level security, so a

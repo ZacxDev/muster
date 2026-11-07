@@ -329,7 +329,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
-		// A started agent's outcome (migration 0087, internal/agentoutcome):
+		// A started agent's outcome (migration 0088, internal/agentoutcome):
 		// done / failed / stuck, pushed once per change; RunAgentWatchdog sweeps it.
 		ext.Outcomes = agentoutcome.NewPG(pool)
 		ext.AgentWatchdog = cfg.AgentStuck

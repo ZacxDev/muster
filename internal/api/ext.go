@@ -161,7 +161,7 @@ type Extensions struct {
 	ModelCatalog ModelCatalog
 
 	// Outcomes writes a started agent's outcome (internal/agentoutcome,
-	// migration 0087): agent_outcome.go and the watchdog. nil (no database):
+	// migration 0088): agent_outcome.go and the watchdog. nil (no database):
 	// nothing is tracked, a failed turn changes no status, and the watchdog
 	// does nothing.
 	Outcomes agentoutcome.Store

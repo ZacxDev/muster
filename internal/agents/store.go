@@ -210,7 +210,7 @@ type Agent struct {
 	// because that failure used to be a log line and nothing else.
 	KickoffError string `json:"kickoffError,omitempty"`
 
-	// --- the agent's OUTCOME (migration 0087, internal/agentoutcome) ---
+	// --- the agent's OUTCOME (migration 0088, internal/agentoutcome) ---
 	//
 	// Every agent started with a first turn ends in one of done / failed / stuck,
 	// visible on its row: see internal/agentoutcome's package doc for the states

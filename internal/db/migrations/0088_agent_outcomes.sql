@@ -1,4 +1,4 @@
--- muster 0087 — AN AGENT'S OUTCOME: every started agent ends in one you can see
+-- muster 0088 — AN AGENT'S OUTCOME: every started agent ends in one you can see
 -- (docs/agents.md, "Outcomes"; internal/agentoutcome; internal/api
 -- agent_outcome.go and agent_watchdog.go).
 --
@@ -43,13 +43,13 @@
 -- re-applied by db.RLSOn (it changes no policy, grant or default); the columns
 -- inherit agents' row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0087 never reads or writes these columns and
+-- ROLLBACK. An image from before 0088 never reads or writes these columns and
 -- runs against this schema unchanged. To remove them:
 --   ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_outcome_check;
 --   ALTER TABLE agents DROP COLUMN IF EXISTS outcome, DROP COLUMN IF EXISTS outcome_reason,
 --     DROP COLUMN IF EXISTS outcome_at, DROP COLUMN IF EXISTS activity_at,
 --     DROP COLUMN IF EXISTS first_reply_at, DROP COLUMN IF EXISTS dispatched_by;
---   DELETE FROM schema_migrations WHERE version = 87;
+--   DELETE FROM schema_migrations WHERE version = 88;
 
 SET LOCAL lock_timeout = '3s';
 
