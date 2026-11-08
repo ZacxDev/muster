@@ -288,9 +288,34 @@ var errNoStore = errors.New("llmproxy: this proxy has no budget store")
 func (noStore) SpentToday(context.Context, string, time.Time) (float64, error) { return 0, errNoStore }
 func (noStore) Book(context.Context, Usage) error                              { return errNoStore }
 
-// Claimed tells the per-item meter that instance of officer now holds item.
+// Claimed tells the per-item meter that instance of officer now holds item,
+// by a claim whose HQ attempts are not known (its cost is then unknown).
 func (p *Proxy) Claimed(officer string, instance int, item string) {
-	p.items.claimed(instanceKey{officer, instance}, item, p.now())
+	p.ClaimedAttempt(officer, instance, item, 0)
+}
+
+// ClaimedAttempt is Claimed by the claim HQ answered with attempts (its
+// item's `attempts`; 0 when not known): HQ's first claim (1) is the one whose
+// hold can know the item's cost (ItemCost).
+func (p *Proxy) ClaimedAttempt(officer string, instance int, item string, attempts int) {
+	p.items.claimed(instanceKey{officer, instance}, item, p.now(), attempts)
+}
+
+// ItemCost is the USD instance of officer's hold on item has booked through
+// this proxy (the provider's reported cost of each request, as the budget
+// books it), and whether that is KNOWN to be the item's whole proxy spend:
+// the hold is HQ's first claim of the item, claimed through muster, has
+// booked at least one request, none from the proxy's estimate, and none
+// still unbooked (items). Read it while the hold lasts: Ended clears it.
+func (p *Proxy) ItemCost(officer string, instance int, item string) (float64, bool) {
+	usd, why := p.ItemCostWhy(officer, instance, item)
+	return usd, why == ""
+}
+
+// ItemCostWhy is ItemCost, with why the cost is not known instead of a bool:
+// "" when it is known, else one of the Cost* reasons.
+func (p *Proxy) ItemCostWhy(officer string, instance int, item string) (float64, string) {
+	return p.items.cost(instanceKey{officer, instance}, item)
 }
 
 // Ended tells the per-item meter that instance of officer no longer holds item.
@@ -404,6 +429,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 
 	day := Day(start)
 	item := ""
+	var fl *flight // the request's count in flight on its hold (nil: none)
 	// An Unbudgeted caller (the chief) skips the budget and the item cap
 	// entirely: the key's own credit limit is its cap (Caller.Unbudgeted).
 	if !c.Unbudgeted {
@@ -424,7 +450,13 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 			return
 		}
 		var used int64
-		used, item = p.items.used(k)
+		used, item, fl = p.items.admit(k)
+		// 🔴 IN FLIGHT ON THE HOLD UNTIL ITS COST IS IN THE METER: book
+		// releases it right after charging it (before the store write and the
+		// stream's tail, which officer_complete may well overtake). This
+		// deferred release is only the safety net for a request never booked
+		// (a refusal, an error, a disconnect); done is idempotent.
+		defer p.items.done(fl)
 		rec.Item = item
 		// 🔴 THE ITEM CAP BINDS A HELD ITEM ONLY. A turn holding none (a
 		// kickoff, a re-prompt, the turn between items) is no item's work: the
@@ -481,7 +513,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 		if sent {
 			// Written, then no response: the provider may have billed it, so it
 			// is booked from the pessimistic estimate.
-			p.book(r.Context(), c, k, item, day, m, len(body), &rec)
+			p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec)
 		} else {
 			p.log.Printf("llm proxy: officer %s: the provider could not be reached (nothing sent, nothing booked): %v", c.Officer, err)
 		}
@@ -576,7 +608,7 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	}
 	// Booked BEFORE the response ends (this handler returning ends it), so the
 	// instance's next request is checked against it.
-	p.book(r.Context(), c, k, item, day, m, len(body), &rec)
+	p.book(r.Context(), c, k, item, fl, day, m, len(body), &rec)
 	if streamErr != nil || m.ErrorType != "" {
 		finish("upstream_error", resp.StatusCode)
 		return
@@ -629,7 +661,7 @@ func redactError(b []byte, key string) []byte {
 }
 
 // book meters one request's usage: metrics, the per-item count, the store.
-func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, day time.Time, m *meter, reqBytes int, rec *Record) {
+func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, fl *flight, day time.Time, m *meter, reqBytes int, rec *Record) {
 	u := m.Usage
 	rec.Provider, rec.MessageID, rec.StopReason = m.Provider, m.MessageID, m.StopReason
 	if m.Model != "" {
@@ -669,7 +701,8 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 		// audit record (Record.Detail), which is where it is read.
 		return
 	}
-	p.items.add(k, item, u.tokens())
+	p.items.add(k, item, u.tokens(), cost, estimated)
+	p.items.done(fl) // charged: no longer in flight (ItemCost)
 	err := p.store.Book(context.WithoutCancel(ctx), Usage{Officer: c.Officer, Instance: c.Instance, Day: day,
 		Input: rec.Input, Output: rec.Output, CacheRead: rec.CacheRead, CacheWrite: rec.CacheWrite, CostUSD: cost, Estimated: estimated})
 	if err != nil {
