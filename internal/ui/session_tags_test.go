@@ -236,8 +236,8 @@ func TestEveryWriterOfTheBoxReveals(t *testing.T) {
 }
 
 // TestTheMoreButtonIsInTheRenderedViewsInputRow: on the Rendered view the
-// session's ⋯ is in the composer's input row, before Send — and not in the
-// bar; the menu it opens (Pin, Tags…) and the editor are still drawn, once.
+// session's ⋯ is in the composer's input row, AFTER Send (operator ask:
+// "[input][mic][send][⋯]") — the row's last control — and not in the bar; the menu it opens (Pin, Tags…) and the editor are still drawn, once.
 // On a Terminal view it stays in the bar.
 func TestTheMoreButtonIsInTheRenderedViewsInputRow(t *testing.T) {
 	list, mirrors := taggedFixture()
@@ -247,8 +247,14 @@ func TestTheMoreButtonIsInTheRenderedViewsInputRow(t *testing.T) {
 	form := view[strings.Index(view, `<form id="mv-form"`):]
 	form = form[:strings.Index(form, "</form>")]
 	more, send := strings.Index(form, `<button id="switcher-more-btn"`), strings.Index(form, `id="mv-send"`)
-	if more < 0 || send < 0 || more > send {
-		t.Errorf("the ⋯ is not in the input row before Send (⋯ at %d, Send at %d):\n%s", more, send, form)
+	if more < 0 || send < 0 || more < send {
+		t.Errorf("the ⋯ is not in the input row after Send (⋯ at %d, Send at %d):\n%s", more, send, form)
+	}
+	if more >= 0 {
+		tail := form[more:]
+		if after := tail[strings.Index(tail, "</button>"):]; strings.Contains(after, "<button") {
+			t.Errorf("a control follows the ⋯ in the input row:\n%s", after)
+		}
 	}
 	nav := view[strings.Index(view, `<nav id="session-switcher"`):]
 	nav = nav[:strings.Index(nav, "</nav>")]
