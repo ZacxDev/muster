@@ -21,7 +21,6 @@ import (
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/textplain"
-	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -290,9 +289,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				agentDetailHeader(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
 				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
-				// the transcript is converted, clamped and scrolled to its end before
-				// its first paint. The clamp script's MutationObserver must already be
-				// watching when the bubbles are parsed and converted. Neither script
+				// the (server-rendered) transcript is clamped and scrolled to its end
+				// before its first paint. The clamp script's MutationObserver must
+				// already be watching when the bubbles are parsed. Neither script
 				// needs anything later in the document:
 				// agentChatScript's start() still waits for DOMContentLoaded.
 				bubbleClampScript(),
@@ -1858,30 +1857,49 @@ func relayRow(m ChatLine) g.Node {
 }
 
 func chatBubble(role, content string, id int64) g.Node {
-	// A message carrying an attachment line (attach.go) is drawn on the server,
-	// its line as a chip: the raw signed URL is never what the bubble shows.
-	if role == "user" && len(uploads.FindRefs(content)) > 0 {
-		return chatBubbleOf(role,
-			g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
-			g.Attr("data-md-rendered", ""),
-			promptBody(content),
-		)
-	}
 	return chatBubbleOf(role,
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
 		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
-		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
-		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
-		g.Attr("data-md", ""),
-		g.Text(content),
+		g.Attr("data-md-rendered", ""),
+		chatMessageBody(role, content),
 	)
 }
 
+// chatMessageBody is one chat message's text as the agent chat draws it: the
+// Go markdown renderer (markdown.go), and for a user's message every
+// attachment line (attach.go) as its chip, never the raw signed URL.
+//
+// 🔴 THE ONE RENDERER FOR /agents/{name}. The page used to carry a second, JS
+// copy of the markdown renderer (mdRender / mdInline / mdUnderEm in
+// agentChatScript) that drew the transcript bubbles and the streamed reply in
+// the browser; every inline fix had to land twice and the two drifted (a `_`
+// in a bare URL corrupted the JS anchor's target attribute; combining marks
+// were word runes in neither). It is gone: the transcript is drawn here, the
+// streamed reply's HTML is drawn by ChatMessageHTML on the server (the chat
+// socket's delta "html", internal/api wsChatStream), and so is the echo of the
+// owner's own sent message. TestAgentChatHTMLComesOnlyFromTheServer holds the
+// page to that.
+func chatMessageBody(role, content string) g.Node {
+	if role == "user" {
+		return promptBody(content)
+	}
+	return renderMarkdown(content)
+}
+
+// ChatMessageHTML is chatMessageBody as an HTML string: what the chat socket
+// sends the page for a streamed reply's text so far and for the echo of a
+// sent message. Escape-first (markdownHTML), so it is safe to assign to
+// innerHTML.
+func ChatMessageHTML(role, content string) string {
+	var b strings.Builder
+	_ = chatMessageBody(role, content).Render(&b)
+	return b.String()
+}
+
 // chatBubbleOf is the chat bubble's frame — a user's on the right, an
-// assistant's on the left — around body. The agent chat fills it with raw text
-// its script renders as markdown; the mirrored view with server-rendered
-// markdown (it has no chat script).
+// assistant's on the left — around body. Both the agent chat and the mirrored
+// view fill it with server-rendered markdown.
 func chatBubbleOf(role string, body ...g.Node) g.Node {
 	mine := role == "user"
 	tone := "bg-s2 text-fg self-start"
@@ -1985,182 +2003,14 @@ func agentChatScript(name string) g.Node {
 (function () {
   var AGENT = '` + name + `';
 
-  // --- Minimal, XSS-safe markdown renderer (escape-first, dependency-free) ---
-  // HTML is escaped BEFORE any markdown transform, so raw HTML / <script> /
-  // onerror in agent or user text can never execute. Covers the common chat
-  // cases: fenced + inline code, bold/italic, headings, ordered/unordered lists,
-  // http(s) links, paragraphs/line breaks. Used for both the streamed messages
-  // and the server-rendered transcript bubbles ([data-md], converted in start()).
-  function mdEsc(s) {
-    // Strip the private-use sentinel (\uE000) used by mdInline's tokenizer so a
-    // crafted message can't collide with / spoof a placeholder token.
-    return String(s == null ? '' : s)
-      .replace(/\uE000/g, '')
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-  // mdUnderEm applies _x_ italics under CommonMark's rule for '_': emphasis can
-  // neither open nor close INSIDE A WORD, so snake_case, route_id rt_8f51… and
-  // file_path stay as written. The old /(^|[^_])_([^_\n]+)_/ paired any two
-  // underscores on a line. Same rule, same shape as mdItalicUnderscore in
-  // internal/ui/markdown.go (a closer index computed once, right to left, so a
-  // run of unclosed openers stays linear); TestJSUnderscoreEmphasisMatchesGo
-  // runs mdInline under node against the Go renderer's cases.
-  // Same classes as the Go side (mdIsWordRune, mdIsUnderSpace in markdown.go):
-  // letters, marks (a decomposed é, Devanagari vowel signs), numbers (x²) and
-  // '_' are word characters; whitespace is /\s/ plus U+0085, Go's IsSpace plus
-  // U+FEFF — the union. TestUnderscoreRenderersAgree holds the two together.
-  function mdUnderWord(c) { return c === '_' || /[\p{L}\p{M}\p{N}]/u.test(c); }
-  function mdUnderSpace(c) { return /\s/.test(c) || c === '\u0085'; }
-  function mdUnderEm(s) {
-    if (s.indexOf('_') < 0) return s;
-    var cs = Array.from(s), n = cs.length, next = new Array(n + 1);
-    var sp = mdUnderSpace;
-    var closes = function (j) {
-      if (j === 0 || cs[j - 1] === '_' || sp(cs[j - 1])) return false;
-      return !(j + 1 < n && mdUnderWord(cs[j + 1]));
-    };
-    var opens = function (i) {
-      if ((i > 0 && mdUnderWord(cs[i - 1])) || i + 1 >= n) return false;
-      return cs[i + 1] !== '_' && !sp(cs[i + 1]);
-    };
-    next[n] = -1;
-    for (var k = n - 1; k >= 0; k--) {
-      next[k] = cs[k] === '\n' ? -1 : (cs[k] === '_' && closes(k)) ? k : next[k + 1];
-    }
-    var out = '', i = 0;
-    while (i < n) {
-      if (cs[i] === '_' && opens(i)) {
-        var j = next[i + 1];
-        if (j > 0) { out += '<em>' + cs.slice(i + 1, j).join('') + '</em>'; i = j + 1; continue; }
-      }
-      out += cs[i]; i++;
-    }
-    return out;
-  } // end mdUnderEm
-  function mdInline(s) { // s is ALREADY escaped
-    // Tokenize FIRST: pull inline code spans (and markdown links) OUT of the
-    // string into placeholder tokens before any other inline transform runs, so
-    // md chars / bare URLs INSIDE code — and a URL already inside a [text](url)
-    // link — are never re-processed (bold/italic/autolink run only on the rest).
-    // Tokens are restored verbatim at the end. \uE000 is a private-use sentinel
-    // that mdEsc strips from the raw input, so it can't appear in user text.
-    var toks = [];
-    function stash(html) { toks.push(html); return '\uE000' + (toks.length - 1) + '\uE000'; }
-    // Inline ` + "`" + `code` + "`" + ` → token (verbatim; no further markdown/autolink).
-    s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function (_, c) {
-      return stash('<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">' + c + '</code>');
-    });
-    // [text](url) markdown links → token, so the bare-URL autolinker below can't
-    // double-link the href.
-    // Both groups exclude the \uE000 sentinel for the same reason the autolink below does: a
-    // code span inside a link (label OR url) has already been stashed, so without
-    // the exclusion its PLACEHOLDER is captured — the code span is restored first
-    // (lower index) and the raw sentinel ends up inside the emitted href, or the
-    // code text vanishes from the label. Excluding it leaves such input literal,
-    // which is what it was before the tokenizer existed. Same fix as the Go
-    // renderer's mdLink (internal/ui/markdown.go).
-    s = s.replace(/\[([^\]\uE000]+)\]\((https?:\/\/[^\s)\uE000]+)\)/g, function (_, t, u) {
-      return stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + t + '</a>');
-    });
-    // Autolink bare http(s) URLs. Trailing punctuation (. , ) ] ! ? : ; ") stays
-    // OUT of the href. Code + markdown-link URLs are already tokenized out above;
-    // the \uE000 sentinel is excluded from the URL so a URL directly abutting a
-    // token can't swallow the placeholder into the href.
-    // The WHOLE anchor is stashed, like the [text](url) branch above and the Go
-    // renderer's mdAutolink: emitted markup must never reach the emphasis passes
-    // below. Unstashed, a '*' or '_' in the URL paired with emphasis \u2014 inside the
-    // href, or with the '_' of target="_blank" ("https://example.com/foo_ then
-    // x_" drew target="<em>blank"). The trail stays outside, as plain text.
-    s = s.replace(/https?:\/\/[^\s<\uE000]+/g, function (m) {
-      var trail = '';
-      var mm = m.match(/[.,)\]!?:;"']+$/);
-      if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
-      return stash('<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>') + trail;
-    });
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    s = mdUnderEm(s);
-    // Restore tokens verbatim (their content was already escaped before stashing).
-    s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return toks[+i]; });
-    return s;
-  }
-  // mdTableCells splits one pipe-table row into trimmed cells, dropping the
-  // optional leading/trailing pipe (so both "| a | b |" and "a | b" work).
-  function mdTableCells(line) {
-    var s = line.trim();
-    if (s.charAt(0) === '|') s = s.slice(1);
-    if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
-    return s.split('|').map(function (c) { return c.trim(); });
-  }
-  // mdIsTableSep matches a GFM separator row: every cell is dashes with optional
-  // surrounding colons (e.g. "| --- | :--: |" or "---|:--").
-  function mdIsTableSep(line) {
-    if (line.indexOf('|') < 0) return false;
-    return mdTableCells(line).every(function (c) { return /^:?-+:?$/.test(c); });
-  }
-  function mdRender(src) {
-    var lines = mdEsc(src).split('\n'), out = [], i = 0;
-    while (i < lines.length) {
-      var line = lines[i];
-      if (/^` + "```" + `/.test(line)) { // fenced code block
-        var code = []; i++;
-        while (i < lines.length && !/^` + "```" + `\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
-        i++;
-        out.push('<pre class="overflow-auto rounded-lg bg-bg/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
-        continue;
-      }
-      // Thematic break (--- / *** / ___ alone on a line). Checked before the
-      // list branches and excluded from the paragraph gather below, for the same
-      // reason the Go renderer does both (internal/ui/markdown.go): the gather
-      // runs last and would otherwise emit the rule as literal text.
-      if (/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) { out.push('<hr class="my-2 border-line">'); i++; continue; }
-      var h = line.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { out.push('<div class="mt-1 font-semibold text-fg ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
-      if (/^\s*[-*]\s+/.test(line)) {
-        var ul = [];
-        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { ul.push('<li>' + mdInline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>'); i++; }
-        out.push('<ul class="my-1 list-disc space-y-0.5 pl-5">' + ul.join('') + '</ul>'); continue;
-      }
-      if (/^\s*\d+\.\s+/.test(line)) {
-        var ol = [];
-        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { ol.push('<li>' + mdInline(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>'); i++; }
-        out.push('<ol class="my-1 list-decimal space-y-0.5 pl-5">' + ol.join('') + '</ol>'); continue;
-      }
-      // Pipe table: a header row containing '|' immediately followed by a
-      // separator row (dashes + optional colons). Checked before the '|' line is
-      // treated as a paragraph. Cells run through the inline-md pass (escape-first,
-      // so still XSS-safe). Wrapped in overflow-x-auto so it scrolls on mobile.
-      if (line.indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1])) {
-        var headCells = mdTableCells(line);
-        i += 2; // consume header + separator
-        var head = '<thead><tr>' + headCells.map(function (c) {
-          return '<th class="border border-line px-2 py-1 text-left">' + mdInline(c) + '</th>';
-        }).join('') + '</tr></thead>';
-        var rows = [];
-        while (i < lines.length && lines[i].indexOf('|') >= 0 && !/^\s*$/.test(lines[i])) {
-          var cells = mdTableCells(lines[i]);
-          rows.push('<tr>' + cells.map(function (c) {
-            return '<td class="border border-line px-2 py-1">' + mdInline(c) + '</td>';
-          }).join('') + '</tr>');
-          i++;
-        }
-        out.push('<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs">' + head + '<tbody>' + rows.join('') + '</tbody></table></div>');
-        continue;
-      }
-      if (/^\s*$/.test(line)) { i++; continue; }
-      var para = [];
-      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^` + "```" + `/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1]))) { para.push(lines[i]); i++; }
-      out.push('<p class="my-1">' + mdInline(para.join('<br>')) + '</p>');
-    }
-    return out.join('');
-  }
-  // Convert any server-rendered transcript bubbles ([data-md]) once.
-  function mdConvert(root) {
-    (root || document).querySelectorAll('[data-md]:not([data-md-done])').forEach(function (el) {
-      el.innerHTML = mdRender(el.textContent);
-      el.setAttribute('data-md-done', '');
-    });
-  }
+  // 🔴 NO MARKDOWN RENDERER LIVES HERE. Every message's HTML is drawn by the
+  // server's one renderer (ui.ChatMessageHTML, internal/ui/markdown.go): the
+  // transcript bubbles arrive rendered, a streamed reply's delta carries the
+  // reply so far as "html", and a sent message is echoed back as "sent" with
+  // its html. What this script draws itself is plain text (textContent): the
+  // optimistic bubble of a message until its echo lands, a delta's tail until
+  // the next html, an error's words. TestAgentChatHTMLComesOnlyFromTheServer
+  // (agent_chat_md_test.go) holds every HTML sink in this script to a ledger.
 
   // Boost-safe init: this page's body may be swapped in via hx-boost (no
   // DOMContentLoaded), and the prior page's WebSocket must be torn down so it
@@ -2195,8 +2045,6 @@ func agentChatScript(name string) g.Node {
     if (p) p.classList.add('hidden');
   }
   if (!form || !input || !logEl) return;
-  // Render any server-rendered transcript bubbles as markdown (idempotent).
-  mdConvert(logEl);
   // Laid out now, if window.__cgLayoutLog did not run (see #chat-log's data-cg-unlaid).
   logEl.removeAttribute('data-cg-unlaid');
   form.removeAttribute('data-cg-unlaid');
@@ -2240,6 +2088,11 @@ func agentChatScript(name string) g.Node {
   // text = the current text bubble (created lazily on first delta after any
   // chip/thinking); think = the thinking <details>'s body; tools = id->chip map.
   var turn = null, text = null, think = null, tools = {};
+  // pendingSent: the bubbles of messages sent over THIS socket whose 'sent'
+  // echo (their server-rendered html) has not arrived yet, oldest first. The
+  // server reads a socket's messages in order and echoes each, so the next
+  // echo is always the oldest's. A new socket starts empty (connect).
+  var pendingSent = [];
 
   // Sticky autoscroll: follow new content ONLY while the user is pinned near the
   // bottom. If they scroll up (to read back) session.stick goes false and new
@@ -2451,17 +2304,28 @@ func agentChatScript(name string) g.Node {
     // part of the reply says so too, for a server that sends no "accepted".
     if (msg.type !== 'queued' && msg.type !== 'error' && msg.type !== 'done') workingLabel(null);
     switch (msg.type) {
-      case 'user': {
-        // His kickoff message, streamed first so the chat shows the prompt before
-        // the model runs (mdRender is escape-first, so it's XSS-safe). Force the
-        // view to the bottom: once provisioning ends and his message renders, it
-        // should be in view (req: scroll to bottom after my message renders).
-        var ub = bubble('user'); ub.innerHTML = mdRender(msg.content || '');
-        forceScroll();
+      // ⚠ A 'user' case used to draw a streamed kickoff prompt here. Nothing on
+      // the server sends that type (the kickoff shows once it persists, by the
+      // chat.reply refetch), so it went with the client renderer it called.
+      case 'sent': {
+        // The server's echo of a message this page sent (handleAgentWS): its
+        // html replaces the plain text of the oldest bubble still waiting.
+        var sb = pendingSent.shift();
+        if (sb && msg.html != null) { sb.innerHTML = msg.html; sb.classList.remove('whitespace-pre-wrap'); }
         break;
       }
       case 'delta': {
-        var dt = ensureText(); dt._raw = (dt._raw || '') + (msg.content || ''); dt.innerHTML = mdRender(dt._raw);
+        // The server renders the reply: "html" is this bubble's whole text so
+        // far, drawn by ui.ChatMessageHTML. A delta without it (the socket
+        // renders at most every so often, internal/api wsChatStream) is shown
+        // as plain text after it, until the next html replaces both.
+        var dt = ensureText();
+        if (msg.html != null) {
+          dt.innerHTML = msg.html; dt._tail = null;
+        } else if (msg.content) {
+          if (!dt._tail) { dt._tail = document.createElement('span'); dt._tail.className = 'whitespace-pre-wrap'; dt.appendChild(dt._tail); }
+          dt._tail.textContent += msg.content;
+        }
         scroll();
         break;
       }
@@ -2508,16 +2372,20 @@ func agentChatScript(name string) g.Node {
         break;
       case 'error':
         var et = ensureText();
+        // The words go in as plain text, on a line of their own after whatever
+        // the reply had streamed (the server flushed its html first).
+        var note = document.createElement('p');
+        note.className = 'my-1 whitespace-pre-wrap';
         if (msg.unsent) {
           // Never sent (the agent stayed busy): a notice in words, and the
           // text back in the composer unless something new was typed there.
           et.setAttribute('data-unsent', '');
-          et._raw = (et._raw ? et._raw + '\n' : '') + (msg.content || '');
+          note.textContent = msg.content || '';
           if (msg.text && !input.value.trim()) { input.value = msg.text; if (window.musterComposerFit) window.musterComposerFit(input); }
         } else {
-          et._raw = (et._raw ? et._raw + '\n' : '') + '[error] ' + (msg.content || '');
+          note.textContent = '[error] ' + (msg.content || '');
         }
-        et.innerHTML = mdRender(et._raw);
+        et.appendChild(note);
         hideWorking();
         resetTurn();
         session.streaming = false;
@@ -2561,6 +2429,10 @@ func agentChatScript(name string) g.Node {
     if (session.disposed) return;
     // 🔴 ONE SOCKET: the one before is detached and closed first.
     drop();
+    // Its echoes will never come: a bubble it left waiting keeps its plain
+    // text (the chat log's refetch redraws it), and no echo on this socket may
+    // land in it.
+    pendingSent = [];
     var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
     if (sessionId) url += '?session=' + encodeURIComponent(sessionId);
     if (window.musterOpen) {
@@ -2648,7 +2520,7 @@ func agentChatScript(name string) g.Node {
     interim.log.removeEventListener('scroll', interim.onScroll);
     if (interim.log !== logEl) interim = null;
   }
-  // Open scrolled to the latest message: the transcript is converted + laid out
+  // Open scrolled to the latest message: the transcript is laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
   if (interim && interim.away) session.stick = false; else forceScroll();
 
@@ -2674,11 +2546,21 @@ func agentChatScript(name string) g.Node {
     for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
     n.value = s;
   }
+  // sentBubble draws the owner's own message the moment it is sent, as plain
+  // text (its line breaks kept), and queues it for the server's 'sent' echo,
+  // which replaces the text with the message's rendered html.
+  function sentBubble(t) {
+    var ub = bubble('user');
+    ub.classList.add('whitespace-pre-wrap');
+    ub.textContent = t;
+    pendingSent.push(ub);
+    return ub;
+  }
   function send() {
     var t = input.value.trim();
     if (!t) return;
     if (!ws || ws.readyState !== 1 || silent()) { nativeSend(); return; }
-    var ub = bubble('user'); ub.innerHTML = mdRender(t);
+    sentBubble(t);
     forceScroll(); // his own send always brings the latest into view
     ws.send(JSON.stringify({ type: 'message', text: t }));
     try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
@@ -2709,7 +2591,7 @@ func agentChatScript(name string) g.Node {
       HTMLFormElement.prototype.submit.call(f);
       return;
     }
-    var ub = bubble('user'); ub.innerHTML = mdRender(t);
+    sentBubble(t);
     forceScroll();
     ws.send(JSON.stringify({ type: 'message', text: t }));
     renewNonce();
@@ -2797,13 +2679,16 @@ func agentChatScript(name string) g.Node {
   // shift each, the bubbles as its sources. A frame log of a cold-browser
   // open that shifted showed two frames painted with 0 of 200 bubbles
   // converted and scrollTop 0 before start() ran.
+  // (The bubbles have since come from the server already rendered — there is
+  // no conversion left to wait for — but the scroll to the end and the clamp
+  // still are, so this still runs before the first paint.)
   //
   // So agentChatPane emits a call to this right after #chat-form and the
   // composer's fit and draft scripts, while the parser is still blocked on that
-  // inline script: the markdown and the scroll to the end are applied in the
-  // same task that inserted the bubbles, before anything can paint them, and the clamp
-  // follows at the microtask checkpoint that ends the script (its
-  // MutationObserver sees the conversion), still before the parser goes on.
+  // inline script: the scroll to the end is applied in the same task that
+  // inserted the bubbles, before anything can paint them, and the clamp
+  // follows at the microtask checkpoint that ends the script, still before the
+  // parser goes on.
   // A clamp that shrinks the log after the scroll leaves it at its end: the
   // scroll position is clamped to the new height. It needs nothing htmx
   // provides. start() later runs the same steps again, as no-ops.
@@ -2829,7 +2714,6 @@ func agentChatScript(name string) g.Node {
   window.__cgLayoutLog = function () {
     var log = document.getElementById('chat-log');
     if (!log) return;
-    mdConvert(log);
     log.scrollTop = log.scrollHeight;
     log.removeAttribute('data-cg-unlaid');
     var cf = document.getElementById('chat-form');
@@ -2896,16 +2780,15 @@ func agentChatScript(name string) g.Node {
       var ver = elt && elt.id === 'chat-log' && elt.getAttribute('data-chat-version');
       if (ver && !elt.querySelector('[data-chat-local]')) e.detail.headers['` + ChatLogVersionHeader + `'] = ver;
     });
-    // After a #chat-log refresh swap: convert the fresh transcript bubbles to
-    // markdown and pin to the bottom (the WS client only runs mdConvert/scroll on
-    // its own events, so a server-driven refresh needs this).
+    // After a #chat-log refresh swap: pin to the bottom (the WS client only
+    // scrolls on its own events, so a server-driven refresh needs this). The
+    // fresh bubbles arrive rendered by the server (chatBubble).
     document.body.addEventListener('htmx:afterSwap', function (e) {
       var t = e.detail && e.detail.target;
       if (t && t.id === 'chat-log') {
         var xhr = e.detail.xhr;
         var ver = xhr && xhr.getResponseHeader('` + ChatLogVersionHeader + `');
         if (ver) t.setAttribute('data-chat-version', ver); else t.removeAttribute('data-chat-version');
-        mdConvert(t);
         // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
         // (stick !== false). Default to pinning when there's no live chat session.
         if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;

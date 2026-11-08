@@ -448,8 +448,13 @@ func TestABusyForADialogSaysSo(t *testing.T) {
 	waitRefusals(t, f, 2)
 	f.free()
 	msgs := readUntilEnd(t, ctx, c)
-	if msgs[0]["type"] != "queued" || msgs[0]["content"] != ChatQueuedForDialogNotice {
-		t.Fatalf("first socket message = %v; want the dialog notice", msgs[0])
+	// The message's own echo (chat_stream.go wsSentEcho) comes first; the turn's
+	// first word after it is the notice.
+	if len(msgs) < 2 || msgs[0]["type"] != "sent" {
+		t.Fatalf("socket messages = %v; want the sent echo first", msgs)
+	}
+	if msgs[1]["type"] != "queued" || msgs[1]["content"] != ChatQueuedForDialogNotice {
+		t.Fatalf("first message of the turn = %v; want the dialog notice", msgs[1])
 	}
 }
 

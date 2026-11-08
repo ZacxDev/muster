@@ -346,6 +346,12 @@ export const notifyTmuxPort = port + 340;
 // kind over the noop driver) and one fake host, for the session it is compared
 // with. (+345: it was +340 until notify-tmux took that on main.)
 export const chiefFoldInPort = port + 345;
+// tests/agent-chat-markdown.spec.ts: the agent chat's messages drawn by the
+// server's one markdown renderer, live and stored — its own server (the
+// e2eterm build, every agent endpoint pointed at the spec's FAKE runtime) and
+// that runtime. (+350: clear of the blocks other branches took.)
+export const chatMarkdownPort = port + 350;
+export const chatMarkdownRuntimePort = port + 351;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
