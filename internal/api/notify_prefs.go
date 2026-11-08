@@ -10,9 +10,10 @@ import (
 // (internal/notifypref, notify_preferences, migration 0094; docs/push.md).
 //
 // A notification names a mirrored session by its human name (the name rule,
-// internal/sessionname). With this on, it adds where the session is — its tmux
-// session, window index and host — so its owner knows which tmux window to
-// jump to: "Billing migration · work:1 @ host-alpha". notifyName (names.go) is
+// internal/sessionname). With this on, it adds where the session is, as muster
+// named the window before sessions had names — the host's label for it, else
+// its tmux address, and the host — so its owner knows which tmux window to
+// jump to: "Billing migration · mango:1 @ atlas". notifyName (names.go) is
 // the one place that adds it; this file holds the switch and its read.
 //
 // 🔴 OFF FOR EVERY USER UNTIL THEY TURN IT ON — no row, no database, no

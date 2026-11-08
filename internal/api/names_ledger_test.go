@@ -61,9 +61,9 @@ var sessionNameCallers = []string{
 // tmuxAddressSurfaces are the ledgered surfaces that name a mirrored session
 // in a NOTIFICATION — a push, the Asks list, the attention summary — and so
 // call notifyName, the one place "Show tmux session in notifications" adds the
-// window's tmux address (notify_prefs.go).
+// window's codename and host (notify_prefs.go).
 var tmuxAddressSurfaces = []string{
-	"attention.go Server.withNamesFrom", // every attention item's Name: its push title, the Asks list, the summary (and attention_list)
+	"attention.go Server.withNamesFrom", // every attention item's Name — a mirrored session's ask included: its push title, the Asks list, the summary (and attention_list)
 	"session_push.go Server.episodeWho", // a stalled / waiting session's push title and its "Stalled / waiting" row
 }
 

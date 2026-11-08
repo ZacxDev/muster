@@ -159,22 +159,16 @@ func Where(host, session, window string, index int, label string) string {
 // keep VERBATIM (textplain.TitleKeeping) — a tmux session named "_scratch_"
 // is typed as "_scratch_", never as the "scratch" a markdown stripper reads.
 func WhereTarget(host, session, window string, index int) string {
-	return whereTargetPrefix + tmuxAddress(session, window, index) + " @ " + host
+	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
 }
 
-// whereTargetPrefix leads every WhereTarget.
-const whereTargetPrefix = "tmux "
-
-// AddressAt is WhereTarget's text without its leading "tmux ":
-// "<session>:<index> @ <host>" — what a notification that names a session by
-// its human name adds after it when its owner asked for the tmux session
-// (internal/api notifyName). "" for a text that is not a WhereTarget.
-func AddressAt(target string) string {
-	at, ok := strings.CutPrefix(target, whereTargetPrefix)
-	if !ok {
-		return ""
-	}
-	return at
+// TitleAt is how muster named the entry before sessions had names: its Title
+// — the host's label for the window ("mango:1"), else its tmux address
+// ("scratch3:5") — and its host: "mango:1 @ atlas". It is what a notification
+// that names a session by its human name adds after it when its owner turned
+// on "Show tmux session in notifications" (internal/api notifyName).
+func (s SessionView) TitleAt() string {
+	return s.Title() + " @ " + s.Host
 }
 
 // WhereTarget is the entry's WhereTarget.

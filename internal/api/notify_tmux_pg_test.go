@@ -61,7 +61,7 @@ func TestAWaitingEpisodesPushAndRowAddTheTmuxAddressWhenAsked(t *testing.T) {
 	for _, c := range []struct {
 		on   bool
 		want string
-	}{{false, "Release prep"}, {true, "Release prep · main:1 @ ws"}} {
+	}{{false, "Release prep"}, {true, "Release prep · Gold:1 @ ws"}} {
 		t.Run(map[bool]string{true: "on", false: "off"}[c.on], func(t *testing.T) {
 			f := newStateFixture(t, false)
 			nameNudgeSession(t, f, "Release prep")
@@ -89,7 +89,7 @@ func TestAHeldQuestionsEpisodePushAddsTheTmuxAddressWhenAsked(t *testing.T) {
 	for _, c := range []struct {
 		on   bool
 		want string
-	}{{false, "Release prep is asking"}, {true, "Release prep · main:1 @ ws is asking"}} {
+	}{{false, "Release prep is asking"}, {true, "Release prep · Gold:1 @ ws is asking"}} {
 		t.Run(map[bool]string{true: "on", false: "off"}[c.on], func(t *testing.T) {
 			f := newStateFixture(t, false)
 			nameNudgeSession(t, f, "Release prep")
@@ -189,6 +189,55 @@ func TestAWaitingSessionsListRowAndSummaryAddTheTmuxAddressWhenAsked(t *testing.
 		if len(titles) != 1 || titles[0] != c.want {
 			t.Fatalf("on=%v: the summary's waiting sessions %q, want one titled %q", c.on, titles, c.want)
 		}
+	}
+}
+
+// TestAMirroredAsksPushAndRowAreTitledByTheSessionsName (regression): an
+// agent question from a NAMED mirrored session, filed through the real path
+// (askFiled: its push) and drawn on the Asks list (GET /attention), is titled
+// by the session's stable name like every other notification — "Ledger
+// cleanup is asking", its place in the row's tooltip — and with the switch on
+// it is followed by the window's codename and host, "Ledger cleanup · Gold:1
+// @ ws". Before, both named the window's place whatever its name.
+func TestAMirroredAsksPushAndRowAreTitledByTheSessionsName(t *testing.T) {
+	f := newAttnFixture(t)
+	if _, err := focus.NewPG(f.pool).SetManualName(asUser(1), focus.MirrorSubject(focusSID), "Ledger cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, focusSID)
+	})
+	ws := attnWindows(mirror.StatusIdle)
+	ws[0].Label = "Gold:1"
+	f.mirror.mu.Lock()
+	f.mirror.windows = ws
+	f.mirror.mu.Unlock()
+	for _, c := range []struct {
+		on   bool
+		want string
+	}{{false, "Ledger cleanup"}, {true, "Ledger cleanup · Gold:1 @ ws"}} {
+		t.Run(map[bool]string{true: "on", false: "off"}[c.on], func(t *testing.T) {
+			f.tmuxPref(t, c.on)
+			f.pusher.reset()
+			a := f.mirrorAsk(t, "Ship the ledger fix?")
+			f.srv.askFiled(a)
+			f.srv.WaitForPushes()
+			var titles []string
+			for _, p := range f.pusher.to(ep("attn-operator")) {
+				if p.Type == "attention" && p.Tag == attentionTag(attentionAskKey(a.ID)) {
+					titles = append(titles, p.Title)
+				}
+			}
+			if len(titles) != 1 || titles[0] != c.want+" is asking" {
+				t.Fatalf("the ask's push titles %q, want one %q", titles, c.want+" is asking")
+			}
+			page := f.page(t, "/attention")
+			row := `<span data-attention-source data-attention-name title="Gold:1 · tmux main:1 @ ws">` + c.want + `</span>`
+			if !strings.Contains(page, row) {
+				i := strings.Index(page, "data-attention-source")
+				t.Fatalf("the Asks list does not title the ask %q:\n%s", c.want, page[max(0, i-100):min(len(page), max(0, i)+300)])
+			}
+		})
 	}
 }
 

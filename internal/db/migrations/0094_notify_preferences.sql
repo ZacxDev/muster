@@ -3,8 +3,9 @@
 -- One row per owner who has flipped a notification preference on the Account
 -- page. Today it holds one: `tmux_address`, "Show tmux session in
 -- notifications" — a notification that names a mirrored session by its human
--- name (internal/sessionname) adds the session's tmux address and host after
--- it ("Billing migration · work:1 @ host-alpha"); see docs/focus.md.
+-- name (internal/sessionname) adds the window's codename (its tmux address
+-- when its host sent none) and host after it ("Billing migration · mango:1 @
+-- atlas"); see docs/focus.md.
 --
 -- 🔴 OFF FOR EVERY USER, NEW AND EXISTING, AND NOTHING IS BACKFILLED. No row
 -- reads as off (notifypref.PG.TmuxAddress), and the column's own default is

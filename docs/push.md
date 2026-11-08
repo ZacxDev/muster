@@ -68,8 +68,8 @@ what it already carried.
 
 The same section has **Show tmux session in notifications** (off unless you
 turn it on): a notification that names a mirrored session by its human name
-then adds its tmux session and host after it, `Billing migration · work:1 @
-host-alpha` ([focus.md](focus.md#show-tmux-session-in-notifications)). It is
+then adds the window's codename (its tmux address when the host sent none)
+and host after it, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-session-in-notifications)). It is
 drawn with or without Web Push, since it names sessions on the Asks list and
 in the attention summary too; its POST is `/account/notifications/tmux`
 (`on=1|0`).

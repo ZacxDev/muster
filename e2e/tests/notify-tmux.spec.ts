@@ -22,7 +22,8 @@ import { writeFileAtomic } from '../lib/atomic';
 //   1. the switch is OFF for the signed-in user who never chose, and the Asks
 //      row is exactly the name;
 //   2. turned ON, it survives a reload, and the Asks row reads
-//      "<name> · <tmux session>:<index> @ <host>";
+//      "<name> · <codename>:<index> @ <host>" — the window as muster named it
+//      before sessions had names;
 //   3. turned OFF again, the row is exactly the name again.
 //
 // 🔴 REGRESSION TEST: on origin/main the Account page has no such switch and
@@ -36,6 +37,7 @@ const host = rig.host;
 const stamp = Date.now().toString(36);
 const agentName = 'e2e-ntmux-' + stamp;
 const windowsFile = path.join(rig.dir, 'windows');
+const labelsFile = path.join(rig.dir, 'labels.json');
 const now = Math.floor(Date.now() / 1000);
 const sids = { phone: 'ntmux-phone-' + stamp, desktop: 'ntmux-desktop-' + stamp };
 const windows = { phone: 1, desktop: 2 };
@@ -69,7 +71,10 @@ test.beforeAll(async () => {
     MUSTER_E2E_FOCUS_ONLY: '1',
     MUSTER_E2E_FOCUS: JSON.stringify((['phone', 'desktop'] as const).map((k) => ({ subject: 'mirror:' + sids[k], title: names[k], tail: TAIL }))),
   });
-  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_INTERACTIVE: '1' });
+  // The host labels the tmux session with the SYNTHETIC codename "cobalt":
+  // its windows are "cobalt:1", "cobalt:2" — what the switch adds.
+  fs.writeFileSync(labelsFile, JSON.stringify({ tnotify: 'cobalt' }));
+  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile, MUSTER_MIRROR_LABELS_FILE: labelsFile, MUSTER_MIRROR_INTERACTIVE: '1' });
 });
 
 test.afterAll(async () => {
@@ -106,7 +111,7 @@ for (const vp of [
 
     test('the switch is off by default, turns on and persists, and the Asks row gains and loses the tmux address', async ({ page }) => {
       await signIn(page, origin);
-      await rig.waitListed(page, `tnotify:${w}`);
+      await rig.waitListed(page, `cobalt:${w}`);
 
       // 1. Off by default: exactly the name.
       await page.goto(origin + '/account');
@@ -118,7 +123,7 @@ for (const vp of [
       // 2. On: persists, and the row names where the session is.
       await setSwitch(page, true);
       await page.goto(origin + '/attention');
-      await expect(askRow(page, w)).toHaveText(`${name} · tnotify:${w} @ ${host}`);
+      await expect(askRow(page, w)).toHaveText(`${name} · cobalt:${w} @ ${host}`);
 
       // 3. Off again: exactly the name again.
       await setSwitch(page, false);

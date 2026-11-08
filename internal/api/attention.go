@@ -188,6 +188,10 @@ type attentionItem struct {
 	// textplain.TitleKeeping(Source, target), so the target reaches the
 	// reader verbatim and only the label around it is plained.
 	target string
+	// at is the window as muster named it before sessions had names
+	// (mirror.SessionView.TitleAt: "mango:1 @ atlas"), set with target from
+	// the same window; "" for none. notifyName adds it after a human name.
+	at string
 	// Text is the item's SUBSTANCE in one line or a few: the question; what a
 	// waiting session waits on (its pending action, mirror.Pending.Summary —
 	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
@@ -204,7 +208,7 @@ type attentionItem struct {
 	// push title call the session. Source stays its place — the window's
 	// tmux target — which the item's own page and the push body keep. With its
 	// owner's "Show tmux session in notifications" on, a mirrored session's
-	// name is followed by its window's tmux address (notifyName).
+	// name is followed by its window's codename and host (notifyName).
 	Name string `json:"name,omitempty"`
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
@@ -355,13 +359,20 @@ func askSource(a attention.Ask, hosts []mirror.HostView) string {
 // target (mirror.WhereTarget) — the part a display keeps verbatim
 // (textplain.TitleKeeping); "" otherwise.
 func askSourceParts(a attention.Ask, hosts []mirror.HostView) (src, target string) {
+	src, target, _ = askSourceAt(a, hosts)
+	return src, target
+}
+
+// askSourceAt is askSourceParts and the window's TitleAt (attentionItem.at),
+// "" when it names no window.
+func askSourceAt(a attention.Ask, hosts []mirror.HostView) (src, target, at string) {
 	if a.Asker.MirrorSession == "" || a.Asker.AgentID > 0 || a.Asker.System {
-		return askerLabel(a), ""
+		return askerLabel(a), "", ""
 	}
 	if e, ok := claudeSessionEntry(hosts, a.Asker.MirrorHost, a.Asker.MirrorSession); ok {
-		return entryWhere(e), e.WhereTarget()
+		return entryWhere(e), e.WhereTarget(), e.TitleAt()
 	}
-	return askerLabel(a) + askNotShown, ""
+	return askerLabel(a) + askNotShown, "", ""
 }
 
 // askNeedsHosts reports whether askItem needs the owner's windows for a
@@ -392,8 +403,8 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 // a mirrored session's ask names its source from (askSource) — none given, it
 // is named as no window showing it.
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
-	src, target := askSourceParts(a, hosts)
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, Text: a.Question,
+	src, target, at := askSourceAt(a, hosts)
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	if a.Asker.System {
 		it.systemAsk = true
@@ -514,7 +525,7 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.TitleAt(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)
@@ -719,8 +730,11 @@ func sortAttentionItems(items []attentionItem) {
 func (s *Server) withFocus(ctx context.Context, items []attentionItem) {
 	need := false
 	for _, it := range items {
-		// An agent's item needs the index too: for its stable name.
-		need = need || it.claudeSession != "" || noticeFocus(it) || it.subject.Kind == focus.KindAgent
+		// Any item about a session needs the index too: for its stable name —
+		// an agent's, and a mirrored session's own ask, which carries no
+		// claudeSession of its own (its card does) and so was once titled by
+		// its window's place whatever the session was called.
+		need = need || it.claudeSession != "" || noticeFocus(it) || it.subject != (focus.Subject{})
 	}
 	if !need {
 		return
@@ -753,7 +767,7 @@ func (s *Server) withNames(ctx context.Context, items []attentionItem) {
 }
 
 // withNamesFrom is withNames over an index the caller already read. A mirrored
-// item's name carries its window's tmux address when ctx's principal turned
+// item's name carries its window's codename and host when ctx's principal turned
 // on "Show tmux session in notifications" (notifyName; the preference read
 // once, and only when an item has a human name to add it to).
 func (s *Server) withNamesFrom(ctx context.Context, fi focusIndex, items []attentionItem) {
@@ -764,7 +778,7 @@ func (s *Server) withNamesFrom(ctx context.Context, fi focusIndex, items []atten
 			if n != "" && !read {
 				tmux, read = s.notifyTmuxOn(ctx, requestOwner(ctx)), true
 			}
-			items[i].Name = notifyName(n, items[i].target, tmux)
+			items[i].Name = notifyName(n, items[i].at, tmux)
 		}
 	}
 }

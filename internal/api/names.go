@@ -130,25 +130,24 @@ func (fi focusIndex) humanMirrorName(key string) string {
 // attention summary; an episode's push title and "Stalled / waiting" row):
 // name alone — byte for byte what it was before the preference existed —
 // unless tmux is on, its owner's "Show tmux session in notifications"
-// (notifyTmuxOn), and target is the window's mirror.WhereTarget; then name,
-// " · ", and the window's tmux address on its host (mirror.AddressAt):
+// (notifyTmuxOn), and at names the window as muster did before sessions had
+// names (mirror.SessionView.TitleAt: the host's label for it, else its tmux
+// address, and its host); then name, " · ", and that:
 //
-//	Billing migration · work:1 @ host-alpha
+//	Billing migration · mango:1 @ atlas
+//	Billing migration · scratch3:5 @ atlas   (a host that sent no label)
 //
 // A session with no human name is already called by its place, so name is ""
 // there and stays "" (the caller shows the place: no address twice). An agent
-// has no tmux window, so no target, and is never changed.
+// has no tmux window, so no at, and is never changed; nor is a session no
+// window shows now (muster names no place it cannot see).
 //
 // 🔴 THE ONE PLACE THE ADDRESS IS ADDED. Its callers are a ledger
 // (TestTheSessionNameCallerLedger's tmuxAddressSurfaces): every surface on the
 // name ledger is either one of them or says why a notification's address does
 // not apply to it, so a new notification surface cannot skip the preference.
-func notifyName(name, target string, tmux bool) string {
-	if !tmux || name == "" {
-		return name
-	}
-	at := mirror.AddressAt(target)
-	if at == "" {
+func notifyName(name, at string, tmux bool) string {
+	if !tmux || name == "" || at == "" {
 		return name
 	}
 	return name + mirror.QualifierSep + at
