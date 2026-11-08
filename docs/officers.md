@@ -2216,6 +2216,33 @@ no `spent_today`, `budget` or `book_failures` series (it is never booked):
 
 The durable copy is `officer_llm_usage`: one row per officer, routine instance
 number and UTC day with requests, tokens by direction, USD and estimated requests.
+It has no item column: an item's cost is the per-item meter's (below).
+
+#### Item cost
+
+A routine instance's `officer_complete` (outcome `done`, `escalated` or
+`no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
+its hold on the item booked through the proxy (each request's provider-reported
+cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
+`muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
+with no later `PATCH`, because it is final by then: every request is booked
+before its response ends, and the complete is the hold's last act.
+
+🔴 **An unknown cost is omitted, never sent as 0.** The cost is known only when
+the hold is the item's whole proxy spend: HQ's first claim of the item
+(`attempts` 1 in HQ's claim answer), claimed through muster (not adopted from
+HQ's claimed list after a restart, and not muster's already-yours answer for a
+hold it did not meter), at least one request booked, and none booked from the
+proxy's pessimistic estimate (a response that reported no cost). A second or later
+claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
+send none. The meter is in memory (`internal/llmproxy/items.go`).
+
+A judgement or untiered instance's Claude Code session has **no cost source
+muster reads**, so its complete sends none.
+
+The cost never fails a complete: when HQ refuses the complete that carries it
+with a 400 (an HQ from before item cost refuses the unknown fields), muster
+sends it again without the cost, and logs `completed item … without its cost`.
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image

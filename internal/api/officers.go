@@ -1276,7 +1276,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				s.officerRT.fwd.Claimed(o, instance, claimed)
 			}
 			if err == nil && claimed != "" {
-				s.llmClaimed(o, instance, claimed)
+				s.llmClaimed(o, instance, claimed, body)
 				s.officerRT.claimedInConversation(o, instance, claimed)
 			}
 			break
@@ -1302,7 +1302,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			s.officerRT.fwd.Claimed(o, instance, in.ItemID)
 		}
 		if err == nil {
-			s.llmClaimed(o, instance, in.ItemID)
+			s.llmClaimed(o, instance, in.ItemID, body)
 			s.officerRT.claimedInConversation(o, instance, in.ItemID)
 		}
 	case officers.ToolHeartbeat:
@@ -1336,7 +1336,19 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
-		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv})
+		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
+		// one HQ refuses is dropped and the complete sent again without it
+		// (CompleteDroppingCost). It is read here, before officerItemEnded
+		// clears the hold: every request the hold made was booked before its
+		// response ended, so the figure is final, and it rides this one call.
+		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv,
+			Cost: s.llmItemCost(o, instance, in.ItemID, in.Outcome)}
+		var refused *officers.HQError
+		body, refused, err = c.CompleteDroppingCost(ctx, in.ItemID, instance, done)
+		if refused != nil {
+			s.logger.Printf("officers: %s completed item %s without its cost: HQ refused cost_usd %.6f from %s: %s",
+				instance, in.ItemID, done.Cost.USD, done.Cost.From, refused.Error())
+		}
 		if err == nil {
 			s.officerItemEnded(o, instance, in.ItemID)
 		}

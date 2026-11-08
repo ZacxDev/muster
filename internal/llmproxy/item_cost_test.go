@@ -77,6 +77,32 @@ func TestAnItemsCostIsTheSumOfItsOwnRequestsOnly(t *testing.T) {
 	}
 }
 
+// TestAnItemsCostIsNotChargedARequestAdmittedUnderAnotherHold: a request
+// admitted while instance 1 held item-a (0.0613) is still streaming when the
+// hold changes — item-a ends and item-b is claimed. Its cost is charged to
+// neither: not to item-b, whose cost is its own one request (0.0419).
+func TestAnItemsCostIsNotChargedARequestAdmittedUnderAnotherHold(t *testing.T) {
+	const officer = "items:cost-handover"
+	var r *rig
+	costs := []float64{0.0613, 0.0419}
+	r = newRig(t, officer, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n == 1 { // mid-request: the hold changes under it
+			r.p.Ended(officer, 1, "item-a")
+			r.p.ClaimedAttempt(officer, 1, "item-b", 1)
+		}
+		costsInOrder(costs...)(w, req, n)
+	})
+	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	for i := 0; i < 2; i++ {
+		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: %d %s", i+1, resp.StatusCode, body)
+		}
+	}
+	if got, ok := r.p.ItemCost(officer, 1, "item-b"); !ok || !near(got, 0.0419) {
+		t.Errorf("item-b's cost = %v (known %v), want 0.0419: not the request admitted under item-a", got, ok)
+	}
+}
+
 // TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt: each case is a hold
 // whose booked requests are not provably the item's whole proxy spend — so
 // its cost is unknown, never 0 and never the partial sum.
@@ -129,6 +155,17 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 	post(6)
 	r.p.Ended(officer, 6, "item-ended")
 	unknown("an ended hold", 6, "item-ended")
+
+	// A request the provider reported no cost for is booked from the proxy's
+	// pessimistic estimate: not a measured cost, so the item's is unknown.
+	est := newRig(t, officer, streamOK(nil))
+	est.p.ClaimedAttempt(officer, 1, "item-estimated", 1)
+	if resp, body := est.post(t); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the estimated request: %d %s", resp.StatusCode, body)
+	}
+	if got, ok := est.p.ItemCost(officer, 1, "item-estimated"); ok {
+		t.Errorf("a hold with a request booked from the estimate: cost %v reported known, want unknown", got)
+	}
 
 	// The positive control, with the same requests: a first claim, metered
 	// whole, is known — and stays known through muster's already-yours

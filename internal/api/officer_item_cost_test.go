@@ -249,6 +249,28 @@ func TestAnUnknownItemCostIsOmittedNotZero(t *testing.T) {
 	}
 }
 
+// TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost: r1 claims an item
+// (HQ's first claim) and books a request; the meter then forgets the hold, as
+// a restart of muster does. r1's claim of its own live item is muster's
+// already-yours answer — a heartbeat whose item still reads attempts 1 — so
+// the meter holds it again, but not whole: the request before the restart is
+// not in it. The complete sends no cost, not the partial sum.
+func TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost(t *testing.T) {
+	r := newItemCostRig(t)
+	r1 := r.agent(t, costRoutine+"1")
+	item := r.hq.AddTieredItem(costOff, "web.check", "node-restart", officers.TierRoutine)
+	r.claim(t, r1, item)
+	r.llm(t, r1, 0.0233)
+	r.s.officerRT.llm.Ended(costOff, 1, item) // the meter forgets the hold (a restart)
+	if out := r.tool(t, r1, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) || !strings.Contains(out, "already_yours") {
+		t.Fatalf("r1 re-claims its own live item: %s, want muster's already-yours answer", out)
+	}
+	r.llm(t, r1, 0.0389)
+	if got, want := r.complete(t, r1, item, "done"), bodyWith("", r1.Name, "done"); len(got) != 1 || got[0] != want {
+		t.Errorf("complete bodies\n got %q\nwant [%s]", got, want)
+	}
+}
+
 // TestACompleteHQRefusesForItsCostStillCompletes: against an HQ from before
 // item cost (it refuses the unknown fields, 400), the complete is sent again
 // without the cost and the item is done; the instance sees success, and the

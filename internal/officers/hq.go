@@ -485,15 +485,45 @@ const MaxSummaryChars = 24576
 // MaxLinks is HQ's bound on a completion's links (civ-hq docs/OFFICERS.md).
 const MaxLinks = 10
 
-// Complete is POST …/items/{item}/complete.
+// MaxItemCostUSD is HQ's bound on an item's cost_usd (civ-hq
+// store/officer_cost.go): anything above it is a reporting error HQ refuses.
+const MaxItemCostUSD = 10000
+
+// Complete is POST …/items/{item}/complete. A done.Cost is sent as HQ's
+// cost_usd + cost_from; nil sends neither (an HQ from before item cost
+// refuses the fields: the caller retries without them, CompleteDroppingCost).
 func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {
 	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
+	if done.Cost != nil {
+		body["cost_usd"], body["cost_from"] = done.Cost.USD, done.Cost.From
+	}
 	if done.Investigation != nil {
 		body["investigation"] = done.Investigation
 	} else if raw := bytes.TrimSpace(done.InvestigationJSON); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		body["investigation"] = json.RawMessage(raw)
 	}
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "complete"), body)
+}
+
+// CompleteDroppingCost is Complete, sent once more WITHOUT done.Cost when HQ
+// refuses the complete that carried it with a 400 — an HQ from before item
+// cost refuses the unknown fields, and one with it a cost it will not store —
+// so a cost never fails a complete. refused is HQ's refusal of the costed
+// complete when the cost-free one then succeeded (the caller says the cost
+// was dropped); when that one is refused too, its answer is returned, as a
+// complete without a cost always was.
+func (c *Client) CompleteDroppingCost(ctx context.Context, item ItemID, instance string, done Completion) (body []byte, refused *HQError, err error) {
+	body, err = c.Complete(ctx, item, instance, done)
+	var hqErr *HQError
+	if done.Cost == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusBadRequest {
+		return body, nil, err
+	}
+	done.Cost = nil
+	body, err = c.Complete(ctx, item, instance, done)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, hqErr, nil
 }
 
 // Release is POST …/items/{item}/release.
