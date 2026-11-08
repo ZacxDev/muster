@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -27,11 +28,12 @@ import (
 // 🔴 ONLY THE DISPATCH'S OWN SESSION. The row is found by the CALLER'S Claude
 // session on the CALLER'S host (HostDispatchForSession: agent_session is the id
 // the host minted for the spawn, recorded from its reply), and then must be
-// bound to the caller (hostDispatchBoundTo): same host, same session, same tmux
-// window as the host lists the caller in now. The window's @muster-dispatch tag
-// is NOT used to find the row: an agent with a shell can set that tag to any id.
-// The store write repeats host and session in its WHERE, so a caller that is not
-// the row's session writes nothing even past this check.
+// bound to the caller's tmux window as the host lists it now
+// (hostDispatchBoundTo; callerHostDispatch is the one resolver, also used by
+// taskScopeOf to admit the dispatch's own task). The window's @muster-dispatch
+// tag is NOT used to find the row: an agent with a shell can set that tag to any
+// id. The store write repeats host and session in its WHERE, so a caller that is
+// not the row's session writes nothing even past this check.
 //
 // 🔴 DONE IS NOT ENDED (migration 0097). The row stays `running` and holds its
 // slot until its window closes, as 3.7 says ("Its slot is freed only when the
@@ -44,12 +46,40 @@ import (
 // session (the pod path's own sentence, toolAgentReportDone).
 const hostReportDoneNotDispatched = "You were not started as a dispatched agent, so there is nothing to report done; tell your owner in your reply."
 
-// hostDispatchBoundTo is THE binding rule: h is the dispatch of the session
-// sid running in window `window` on host `host`. Every field must match, and an
-// empty session or window binds nothing.
-func hostDispatchBoundTo(h plugins.HostDispatch, host, sid, window string) bool {
-	return sid != "" && window != "" &&
-		h.Host == host && h.AgentSession == sid && h.Window == window
+// hostDispatchBoundTo is the window half of THE binding rule: h, found by the
+// caller's own host and session (HostDispatchForSession, which compares both
+// in SQL), is bound to the caller only when the caller runs in h's own tmux
+// window as its host lists it now. An empty window binds nothing.
+func hostDispatchBoundTo(h plugins.HostDispatch, window string) bool {
+	return window != "" && h.Window == window
+}
+
+// callerHostDispatch is THE ONE place a mirrored caller is resolved to the host
+// dispatch it IS: the row of the caller's session on the caller's host, bound
+// to the caller's window. ErrHostDispatchNotFound when the caller is no
+// dispatch's session (or runs elsewhere). Its callers: agent_report_done here,
+// and taskScopeOf's admit of that dispatch's own task.
+func (s *Server) callerHostDispatch(ctx context.Context, host, sid, window string) (plugins.HostDispatch, error) {
+	st := s.hostDispatches()
+	if st == nil || sid == "" {
+		return plugins.HostDispatch{}, plugins.ErrHostDispatchNotFound
+	}
+	h, err := st.HostDispatchForSession(ctx, host, sid)
+	if err != nil {
+		return plugins.HostDispatch{}, err
+	}
+	if !hostDispatchBoundTo(h, window) {
+		return plugins.HostDispatch{}, plugins.ErrHostDispatchNotFound
+	}
+	return h, nil
+}
+
+// hostDoneSummary is the summary as recorded and pushed: its first line, cut
+// to the push title's length, with every control, format and invisible code
+// point made visible (fence.Sanitize, as a relayed prompt is). A host dispatch
+// has no pending note, so the pod path's ScrubNote has nothing to scrub here.
+func hostDoneSummary(summary string) string {
+	return fence.Sanitize(agentoutcome.FirstLine(summary, outcomePushTitleMax))
 }
 
 // toolHostReportDone is agent_report_done for a mirrored session: host and sid
@@ -62,12 +92,17 @@ func (s *Server) toolHostReportDone(ctx context.Context, host, sid, window, argu
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil || strings.TrimSpace(in.Summary) == "" {
 		return toolErr("arguments are {summary}: one line saying what you finished")
 	}
+	// As the pod path (toolAgentReportDone): a deployment that records no
+	// outcomes records none here either.
+	if !s.outcomesOn() {
+		return toolErr("this deployment records no outcomes")
+	}
 	st := s.hostDispatches()
 	if st == nil {
 		return toolErr("this deployment records no host dispatches")
 	}
-	h, err := st.HostDispatchForSession(ctx, host, sid)
-	if errors.Is(err, plugins.ErrHostDispatchNotFound) || (err == nil && !hostDispatchBoundTo(h, host, sid, window)) {
+	h, err := s.callerHostDispatch(ctx, host, sid, window)
+	if errors.Is(err, plugins.ErrHostDispatchNotFound) {
 		return toolJSON(map[string]any{"ok": false, "next": hostReportDoneNotDispatched})
 	}
 	if err != nil {
@@ -82,7 +117,7 @@ func (s *Server) toolHostReportDone(ctx context.Context, host, sid, window, argu
 	case h.Status != plugins.HostDispatchRunning:
 		return toolErr("muster has not seen your window in your host's listing yet; try again in a minute")
 	}
-	summary := agentoutcome.FirstLine(in.Summary, outcomePushTitleMax)
+	summary := hostDoneSummary(in.Summary)
 	wrote, err := st.MarkHostDispatchDone(ctx, h.ID, host, sid, summary)
 	if err != nil {
 		s.logger.Printf("host dispatch %d: report done: %v", h.ID, err)

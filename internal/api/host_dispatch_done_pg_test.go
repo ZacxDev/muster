@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -33,20 +35,40 @@ const (
 // row is running). It returns the dispatch id and its window.
 func (f *hostFixture) startRunningHostDispatch(t *testing.T) (int64, string) {
 	t.Helper()
+	return f.startRunningHostDispatchOn(t, 0)
+}
+
+// startRunningHostDispatchOn is startRunningHostDispatch on task taskID (0: none).
+func (f *hostFixture) startRunningHostDispatchOn(t *testing.T, taskID int64) (int64, string) {
+	t.Helper()
 	f.m.reply = func(_ string, dispatch int64, _ mirror.AgentSpawnReq) (mirror.AgentSpawned, error) {
 		return mirror.AgentSpawned{Session: "agents", Window: "@" + strconv.FormatInt(dispatch, 10), Worktree: "/w/x", Branch: "muster/x",
 			AgentSession: doneAgentSID}, nil
 	}
 	f.ownerTurn(t, f.chief, f.owner, "Fix the README typo mirrored on host-bravo.")
-	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "done-1", true)))
+	args := hostCall("host/host-bravo/claude", "done-1", true)
+	if taskID > 0 {
+		args["task_id"] = taskID
+		delete(args, "request_key")
+	}
+	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, args))
 	win := "@" + strconv.FormatInt(id, 10)
 	agent := mirror.Window{Session: "agents", ID: win, Claude: true, ClaudeSession: doneAgentSID, Dispatch: id, Status: mirror.StatusIdle}
 	f.setBravoWindows(agent)
 	f.srv.reconcileListing(context.Background(), f.owner, "host-bravo", []mirror.Window{agent}, f.srv.now())
-	if r := f.row(t, id); r.Status != plugins.HostDispatchRunning || r.AgentSession != doneAgentSID || r.Window != win {
+	if r := f.row(t, id); r.Status != plugins.HostDispatchRunning || r.AgentSession != doneAgentSID || r.Window != win || r.TaskID != taskID {
 		t.Fatalf("not running as its session: %+v", r)
 	}
 	return id, win
+}
+
+// newDoneFixture is newHostFixture on a deployment that records outcomes (the
+// pod path's outcomesOn, which agent_report_done respects on both doors).
+func newDoneFixture(t *testing.T) *hostFixture {
+	t.Helper()
+	f := newHostFixture(t)
+	f.srv.ext.Outcomes = agentoutcome.NewPG(f.pool)
+	return f
 }
 
 // setBravoWindows is host-bravo's listing in the hub's view.
@@ -94,7 +116,7 @@ func (f *hostFixture) reportDone(t *testing.T, owner int64, host, sid, summary s
 // nothing. When the window then goes, the row ends and the card keeps saying it
 // finished.
 func TestAHostDispatchsOwnSessionReportsItDone(t *testing.T) {
-	f := newHostFixture(t)
+	f := newDoneFixture(t)
 	id, _ := f.startRunningHostDispatch(t)
 
 	if list := f.mirrorDoor(t, f.owner, "host-bravo", doneAgentSID, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); !strings.Contains(list, `"name":"`+agentReportDoneTool+`"`) {
@@ -152,7 +174,7 @@ func TestAHostDispatchsOwnSessionReportsItDone(t *testing.T) {
 //
 // Then the dispatch's own session still can.
 func TestAnotherSessionCannotReportAHostDispatchDone(t *testing.T) {
-	f := newHostFixture(t)
+	f := newDoneFixture(t)
 	id, win := f.startRunningHostDispatch(t)
 	agent := mirror.Window{Session: "agents", ID: win, Claude: true, ClaudeSession: doneAgentSID, Dispatch: id, Status: mirror.StatusIdle}
 	forged := mirror.Window{Session: "main", ID: "@901", Claude: true, ClaudeSession: doneOtherSID, Dispatch: id, Status: mirror.StatusIdle}
@@ -205,7 +227,7 @@ func TestAnotherSessionCannotReportAHostDispatchDone(t *testing.T) {
 // WHERE is a second binding, below the tool's: a wrong session, a wrong host,
 // an empty session, or a row that is not running writes nothing.
 func TestMarkHostDispatchDoneWritesOnlyItsOwnSessionsRunningRow(t *testing.T) {
-	f := newHostFixture(t)
+	f := newDoneFixture(t)
 	id, _ := f.startRunningHostDispatch(t)
 	for _, c := range []struct{ why, host, sid string }{
 		{"another session", "host-bravo", doneOtherSID},
@@ -227,32 +249,18 @@ func TestMarkHostDispatchDoneWritesOnlyItsOwnSessionsRunningRow(t *testing.T) {
 	}
 }
 
-// TestHostDispatchBoundToNeedsEveryField: the binding rule, field by field —
-// with fixture values pairwise distinct, so a mutant that drops or swaps one
-// comparison is seen.
-func TestHostDispatchBoundToNeedsEveryField(t *testing.T) {
+// TestHostDispatchBoundToNeedsItsOwnWindow: the window half of the binding
+// (host and session are compared in HostDispatchForSession's SQL): another
+// window, or none, does not bind.
+func TestHostDispatchBoundToNeedsItsOwnWindow(t *testing.T) {
 	h := plugins.HostDispatch{Host: "host-bravo", AgentSession: doneAgentSID, Window: "@41"}
-	if !hostDispatchBoundTo(h, "host-bravo", doneAgentSID, "@41") {
-		t.Fatal("its own session, host and window do not bind")
+	if !hostDispatchBoundTo(h, "@41") {
+		t.Fatal("its own window does not bind")
 	}
-	for _, c := range []struct{ why, host, sid, window string }{
-		{"another host", "host-charlie", doneAgentSID, "@41"},
-		{"another session", "host-bravo", doneOtherSID, "@41"},
-		{"another window", "host-bravo", doneAgentSID, "@42"},
-		{"no window", "host-bravo", doneAgentSID, ""},
-	} {
-		if hostDispatchBoundTo(h, c.host, c.sid, c.window) {
-			t.Errorf("%s binds", c.why)
-		}
+	if hostDispatchBoundTo(h, "@42") {
+		t.Error("another window binds")
 	}
-	empty := plugins.HostDispatch{Host: "host-bravo", Window: "@41"}
-	if hostDispatchBoundTo(empty, "host-bravo", "", "@41") {
-		t.Error("an empty session binds a row with no session")
-	}
-	// A row with no window yet, and a caller with none (a per-session host's
-	// entry has no window id): nothing to bind to.
-	noWindow := plugins.HostDispatch{Host: "host-bravo", AgentSession: doneAgentSID}
-	if hostDispatchBoundTo(noWindow, "host-bravo", doneAgentSID, "") {
+	if hostDispatchBoundTo(plugins.HostDispatch{Host: "host-bravo", AgentSession: doneAgentSID}, "") {
 		t.Error("an empty window binds a row with no window")
 	}
 }
@@ -262,7 +270,7 @@ func TestHostDispatchBoundToNeedsEveryField(t *testing.T) {
 // own row is recorded, the newer one's is not. (A lookup that took "the newest
 // row on the host" would refuse it.)
 func TestTheOlderOfTwoHostDispatchesOnOneHostReportsItsOwn(t *testing.T) {
-	f := newHostFixture(t)
+	f := newDoneFixture(t)
 	older, olderWin := f.startRunningHostDispatch(t)
 	const newerSID = "5a718293-a4b5-4c63-9fe0-5b6c7d8e9fa0"
 	f.m.reply = func(_ string, dispatch int64, _ mirror.AgentSpawnReq) (mirror.AgentSpawned, error) {
@@ -285,5 +293,160 @@ func TestTheOlderOfTwoHostDispatchesOnOneHostReportsItsOwn(t *testing.T) {
 	}
 	if r := f.row(t, newer); !r.DoneAt.IsZero() || r.Status != plugins.HostDispatchRunning {
 		t.Fatalf("the newer row was touched: %+v", r)
+	}
+}
+
+// TestAHostDispatchReportsDoneOnlyWithOutcomesOn: as the pod path, a
+// deployment with no outcome store records no done (and says so).
+func TestAHostDispatchReportsDoneOnlyWithOutcomesOn(t *testing.T) {
+	f := newDoneFixture(t)
+	id, _ := f.startRunningHostDispatch(t)
+	if !f.srv.outcomesOn() {
+		t.Fatal("control: the fixture records outcomes")
+	}
+	saved := f.srv.ext.Outcomes
+	f.srv.ext.Outcomes = nil
+	out := f.reportDone(t, f.owner, "host-bravo", doneAgentSID, "Done.")
+	f.srv.ext.Outcomes = saved
+	if !strings.Contains(out, "this deployment records no outcomes") {
+		t.Fatalf("with outcomes off: %s", out)
+	}
+	if r := f.row(t, id); !r.DoneAt.IsZero() {
+		t.Fatalf("recorded with outcomes off: %+v", r)
+	}
+	if out := f.reportDone(t, f.owner, "host-bravo", doneAgentSID, "Done."); !strings.Contains(out, "Recorded") {
+		t.Fatalf("control, outcomes on: %s", out)
+	}
+}
+
+// TestAHostDoneSummaryIsScrubbed: the recorded summary is the first line, with
+// control, format and invisible code points made visible (U+FFFD) — an ANSI
+// escape, a bidi override and a zero-width space never reach the card or push.
+func TestAHostDoneSummaryIsScrubbed(t *testing.T) {
+	f := newDoneFixture(t)
+	id, _ := f.startRunningHostDispatch(t)
+	raw := "Opened \x1b[31mPR\u202e#41\u200b\nsecond line that must not survive"
+	if out := f.reportDone(t, f.owner, "host-bravo", doneAgentSID, raw); !strings.Contains(out, "Recorded") {
+		t.Fatalf("report: %s", out)
+	}
+	const want = "Opened \ufffd[31mPR\ufffd#41\ufffd"
+	if r := f.row(t, id); r.DoneSummary != want {
+		t.Fatalf("recorded %q, want %q", r.DoneSummary, want)
+	}
+}
+
+// TestAHostDispatchsSessionWorksItsOwnTaskOnly: on the mirror door, the
+// dispatch's own session (the same binding as agent_report_done) may read,
+// comment on and set ready_for_review ITS dispatch's task — and nothing else
+// is admitted: another of the owner's tasks; the task from another session
+// (with a forged tag), from the agent's session resumed in another window,
+// through another host's token, or as another owner; and its own task once the
+// dispatch has ended.
+func TestAHostDispatchsSessionWorksItsOwnTaskOnly(t *testing.T) {
+	f := newDoneFixture(t)
+	task := f.task(t, "Fix the README")
+	other := f.task(t, "Someone else's job")
+	id, win := f.startRunningHostDispatchOn(t, task.ID)
+	tid, oid := strconv.FormatInt(task.ID, 10), strconv.FormatInt(other.ID, 10)
+	call := func(owner int64, host, sid, tool string, args map[string]any) string {
+		t.Helper()
+		return f.mirrorDoor(t, owner, host, sid, mcpToolCall(tool, args))
+	}
+	noSuch := func(id string) string { return "no such task: " + id }
+
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); strings.Contains(out, noSuch(tid)) || !strings.Contains(out, "Fix the README") {
+		t.Fatalf("its own task, task_get: %s", out)
+	}
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskCommentTool, map[string]any{"id": task.ID, "body": "Draft PR: acme/widgets#41"}); strings.Contains(out, noSuch(tid)) || strings.Contains(out, `"isError":true`) {
+		t.Fatalf("its own task, task_comment: %s", out)
+	}
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskSetStatusTool, map[string]any{"id": task.ID, "status": "ready_for_review"}); strings.Contains(out, `"isError":true`) {
+		t.Fatalf("its own task, ready_for_review: %s", out)
+	}
+	if n, err := f.srv.ext.Notes.Get(f.asOwner, task.ID); err != nil || n.Status != "ready_for_review" {
+		t.Fatalf("the task after ready_for_review: %v %+v", err, n.Status)
+	}
+	// Another of the owner's tasks: not admitted.
+	for _, tool := range []string{taskGetTool, taskCommentTool, taskSetStatusTool} {
+		if out := call(f.owner, "host-bravo", doneAgentSID, tool, map[string]any{"id": other.ID, "body": "x", "status": "in_progress"}); !strings.Contains(out, noSuch(oid)) {
+			t.Fatalf("another task, %s: %s", tool, out)
+		}
+	}
+	// Another session on the same host, its window tagged with the dispatch.
+	agent := mirror.Window{Session: "agents", ID: win, Claude: true, ClaudeSession: doneAgentSID, Dispatch: id, Status: mirror.StatusIdle}
+	forged := mirror.Window{Session: "main", ID: "@901", Claude: true, ClaudeSession: doneOtherSID, Dispatch: id, Status: mirror.StatusIdle}
+	f.setBravoWindows(agent, forged)
+	if out := call(f.owner, "host-bravo", doneOtherSID, taskGetTool, map[string]any{"id": task.ID}); !strings.Contains(out, noSuch(tid)) {
+		t.Fatalf("another session: %s", out)
+	}
+	// The agent's session resumed in another window.
+	f.setBravoWindows(mirror.Window{Session: "main", ID: "@902", Claude: true, ClaudeSession: doneAgentSID, Status: mirror.StatusIdle})
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); !strings.Contains(out, noSuch(tid)) {
+		t.Fatalf("its session in another window: %s", out)
+	}
+	f.setBravoWindows(agent)
+	// Another host's token, listing the agent's session in a window of its own.
+	f.m.mu.Lock()
+	for i := range f.m.hosts {
+		if f.m.hosts[i].Host == "host-charlie" {
+			f.m.hosts[i].Windows = []mirror.Window{{Session: "agents", ID: win, Claude: true, ClaudeSession: doneAgentSID, Dispatch: id}}
+		}
+	}
+	f.m.mu.Unlock()
+	if out := call(f.owner, "host-charlie", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); !strings.Contains(out, noSuch(tid)) {
+		t.Fatalf("another host's token: %s", out)
+	}
+	// Another owner.
+	if out := call(f.owner+1, "host-bravo", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); strings.Contains(out, "Fix the README") {
+		t.Fatalf("another owner: %s", out)
+	}
+	// Control: still admitted, then ended — no longer.
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); strings.Contains(out, noSuch(tid)) {
+		t.Fatalf("control, before the end: %s", out)
+	}
+	if _, err := f.srv.endHostDispatch(f.asOwner, f.owner, id, "ended by owner", false); err != nil {
+		t.Fatal(err)
+	}
+	if out := call(f.owner, "host-bravo", doneAgentSID, taskGetTool, map[string]any{"id": task.ID}); !strings.Contains(out, noSuch(tid)) {
+		t.Fatalf("its own task after the dispatch ended: %s", out)
+	}
+}
+
+// TestTheSpawnRulesAreRuntimeSpecific: claude's spawn prompt carries the pod
+// rules (agent_report_done with no task, ready_for_review on one); opencode's,
+// which has no muster tool path, names NO muster tool and ends with its own
+// rules, on a task and without one.
+func TestTheSpawnRulesAreRuntimeSpecific(t *testing.T) {
+	task := notes.Note{ID: 77, Body: "Fix the typo."}
+	tools := []string{"agent_report_done", "chief_ask", "attention_", "task_get", "task_comment", "task_set_status", "tasks_list", "route_reply"}
+	for _, onTask := range []bool{false, true} {
+		claude := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Do it.", task, onTask)
+		oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "Do it.", task, onTask)
+		wantClaude, wantOC := chiefDispatchRulesNoTask, spawnRulesOpenCodeNoTask
+		if onTask {
+			wantClaude, wantOC = chiefDispatchRules, spawnRulesOpenCode
+		}
+		if !strings.HasSuffix(claude, wantClaude) {
+			t.Errorf("on task %v: claude's prompt does not end with the pod rules", onTask)
+		}
+		if !strings.HasSuffix(oc, wantOC) {
+			t.Errorf("on task %v: opencode's prompt does not end with its own rules", onTask)
+		}
+		for _, name := range tools {
+			if strings.Contains(oc, name) {
+				t.Errorf("on task %v: opencode's prompt names %q, a tool it cannot call:\n%s", onTask, name, oc)
+			}
+		}
+		if !onTask && !strings.Contains(claude, "agent_report_done") {
+			t.Error("claude's no-task prompt lost agent_report_done")
+		}
+		if onTask && !strings.Contains(claude, "ready_for_review") {
+			t.Error("claude's task prompt lost ready_for_review")
+		}
+	}
+	// A cut task on opencode is not pointed at task_get either.
+	long := notes.Note{ID: 78, Body: strings.Repeat("task body line\n", 800)}
+	if oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "", long, true); strings.Contains(oc, "task_get") || !strings.Contains(oc, "[cut:") {
+		t.Errorf("opencode's cut task: task_get named or not cut")
 	}
 }

@@ -2345,6 +2345,26 @@ on the caller's **own** dispatch only:
   carries the window's tag, raise the orphan notice for a window the owner is
   looking at. The card reads **Done**, with the summary and "close the window
   on `<host>` to end it and free its slot". The owner gets one push.
+- The binding is one resolver, `callerHostDispatch`. The SQL lookup compares
+  host and session; `hostDispatchBoundTo` compares the window.
+- The summary is recorded as its first line, with control, format and
+  invisible code points made visible (`fence.Sanitize`). A host dispatch has no
+  pending note, so the pod path's `ScrubNote` has nothing to scrub. A
+  deployment that records no outcomes (`outcomesOn`) refuses the call, as the
+  pod path does.
+
+**Its own task, and nothing else.** Through the same resolver, `taskScopeOf`
+admits **exactly** the dispatch's `task_id` while the dispatch is `running`, so
+the spawned agent can `task_get`, `task_comment` and `task_set_status`
+(`ready_for_review`) its own task, as [5.1](#51-who-can-trigger-a-spawn) says
+it keeps them. Its owner's other tasks are not admitted, and neither is its
+task from any session but its own, nor after it has ended.
+
+**The spawn rules are per runtime** (`spawnRules`). Claude keeps the pod rules
+unchanged. opencode has no muster tool path, so its rules name no muster tool.
+They tell it to finish, end with a final message that summarises the result,
+and leave the window for the owner to close. A cut task is not pointed at
+`task_get`.
 
 ### 3.8 Read-only and tenant hosts
 
