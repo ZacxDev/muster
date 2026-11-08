@@ -57,6 +57,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/safedial"
 )
 
 // The postgres connector's hard limits and defaults. A connector may lower a
@@ -156,8 +157,10 @@ var pgIdentRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$`)
 // normalizePGHost validates a postgres connector's host[:port] and returns it
 // lowercased with the port made explicit. Unlike an HTTP connector's host
 // (NormalizeHost) a single-label name (an in-namespace Service) and an IP
-// literal are accepted: no private-range rule applies, because the operator
-// who creates it (an admin) names the one database it reaches.
+// literal are accepted: no private-range rule applies to the NAME, because the
+// operator who creates it (an admin) names the one database it reaches. With
+// MUSTER_DIAL_DENY_PRIVATE=1 the rule is applied where it can be checked — to
+// the resolved address, at connect time (PostgresExecutor.Dial).
 func normalizePGHost(h string) (string, error) {
 	h = strings.ToLower(strings.TrimSpace(h))
 	host, port := h, strconv.Itoa(PGDefaultPort)
@@ -335,6 +338,13 @@ type PostgresExecutor struct {
 	RatePerMinute, Burst int
 	// Now is the limiter's clock (tests); nil is time.Now.
 	Now func() time.Time
+	// Dial, when set, is the ONLY way a connection to the database is made:
+	// every connection attempt resolves the connector's host and dials it
+	// through this guard, so a host that is (or resolves to) a loopback,
+	// private, link-local, CGNAT, unspecified or multicast address is refused
+	// at connect time (MUSTER_DIAL_DENY_PRIVATE=1). nil, the default, dials
+	// whatever host the connector names — an admin's own LAN database included.
+	Dial *safedial.Guard
 
 	mu      sync.Mutex
 	pools   map[int64]*pgPoolEntry
@@ -503,7 +513,13 @@ var errNoTLS = errors.New("the database connection is not TLS, and this connecto
 
 // pgPoolConfig builds the connector's pool configuration. The password is set
 // on the parsed config, never written into a connection string.
-func pgPoolConfig(c Connector, secret string) (*pgxpool.Config, error) {
+//
+// With guard set, pgx's own name lookup is replaced by the identity (the host
+// is handed to DialFunc unresolved) and DialFunc is the guard's, so the guard
+// resolves the name itself, checks EVERY answer and connects to a checked
+// address: one resolution, the one that is checked. TLS still verifies against
+// the connector's host name (ParseConfig set ServerName from it).
+func pgPoolConfig(c Connector, secret string, guard *safedial.Guard) (*pgxpool.Config, error) {
 	host, port, err := net.SplitHostPort(c.Hosts[0])
 	if err != nil {
 		return nil, err
@@ -524,6 +540,11 @@ func pgPoolConfig(c Connector, secret string) (*pgxpool.Config, error) {
 	cfg.MaxConnIdleTime = time.Minute
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.HealthCheckPeriod = time.Minute
+	if guard != nil {
+		g := *guard
+		cfg.ConnConfig.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
+		cfg.ConnConfig.DialFunc = g.DialContext
+	}
 	if ps.RequireTLS {
 		// sslmode prefer falls back to plaintext: drop those fallbacks, and
 		// check the live connection whatever was negotiated.
@@ -563,7 +584,7 @@ func (e *PostgresExecutor) poolFor(c Connector, secret string) (*pgxpool.Pool, e
 		go ent.pool.Close() // waits for its in-flight queries
 		delete(e.pools, c.ID)
 	}
-	cfg, err := pgPoolConfig(c, secret)
+	cfg, err := pgPoolConfig(c, secret, e.Dial)
 	if err != nil {
 		return nil, err
 	}

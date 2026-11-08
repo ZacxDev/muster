@@ -98,7 +98,8 @@ applies to every push service. Without it, a listed host could redirect a send t
 a host that is not on the list.
 
 muster does not check which address a listed host resolves to. An in-cluster
-ntfy that resolves to a private address works.
+ntfy that resolves to a private address works. `MUSTER_DIAL_DENY_PRIVATE` does
+not apply to push sends.
 
 ⚠ If your ntfy host is behind a CDN, its bot filter may refuse requests with an
 unusual `User-Agent`. muster sends Go's default one (`Go-http-client/1.1`).

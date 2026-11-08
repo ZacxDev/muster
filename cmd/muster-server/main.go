@@ -575,6 +575,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if e2eConnectorPolicy != nil {
 		ext.ConnectorPolicy = *e2eConnectorPolicy
 	}
+	// MUSTER_DIAL_DENY_PRIVATE: the postgres connector's dial guard (nil: off).
+	ext.DialGuard = cfg.dialGuard()
 
 	// The mirrored-agents plugin: only with MUSTER_MIRROR=1 AND a database (its
 	// tokens and rows live there; config.validate already refuses a deployment
@@ -1290,6 +1292,17 @@ func displayOrDefault(v string) string {
 
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
+
+	// The dial guard (internal/safedial), in both directions. It reads the
+	// WIRED guard (ext.DialGuard, set from config.dialGuard), not the variable.
+	if ext.DialGuard != nil {
+		l.Printf("dial guard: ON (%s=1) — postgres connectors refuse a database that is, or resolves to, a "+
+			"loopback, private, link-local, CGNAT, unspecified or multicast address (checked at connect time); "+
+			"the HTTP connector proxy refuses those always", envDialDenyPrivate)
+	} else {
+		l.Printf("dial guard: OFF — %s is unset, so a postgres connector may name a loopback or private address "+
+			"(the HTTP connector proxy refuses those always)", envDialDenyPrivate)
+	}
 
 	// The Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.

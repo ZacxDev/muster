@@ -31,6 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -340,6 +341,13 @@ const (
 	// the browser push services an endpoint may be on — a self-hosted ntfy for
 	// the Android app (internal/push.Allowlist). Empty: browser hosts only.
 	envPushExtraHosts = "MUSTER_PUSH_EXTRA_HOSTS"
+	// The opt-in dial guard (internal/safedial): with it on, the postgres
+	// connector refuses a database that is, or resolves to, a loopback,
+	// private, link-local, CGNAT, unspecified or multicast address, checked at
+	// connect time. Off by default: a self-hoster's own LAN database stays
+	// reachable. The HTTP connector proxy refuses those ranges always. Web
+	// Push sends are not covered (internal/push.Allowlist).
+	envDialDenyPrivate = "MUSTER_DIAL_DENY_PRIVATE"
 	// The Android app's PIN-key policy (docs/design/android.md, "The step-up
 	// key"): set, a phone with no strong biometric may pair with a
 	// biometric-or-PIN step-up key; unset, it pairs read-only.
@@ -757,6 +765,10 @@ type config struct {
 	// default): every session's state and its episodes (internal/sessionstate).
 	SessionState           bool
 	ChiefNudgeAskThreshold float64
+
+	// DialDenyPrivate is MUSTER_DIAL_DENY_PRIVATE=1 (off by default): the
+	// postgres connector dials its database through safedial (dialGuard).
+	DialDenyPrivate bool
 
 	// AskLog is the ask log's configuration (asklog_config.go).
 	AskLog askLogConfig
@@ -1614,6 +1626,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefDispatchOwners = owners
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
+	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
 		return config{}, err
 	}
@@ -2126,6 +2139,17 @@ func (c config) vapid() push.VAPIDConfig {
 func (c config) pushAllowlist() push.Allowlist {
 	hosts, _ := push.ParseExtraHosts(c.PushExtraHosts)
 	return push.NewAllowlist(hosts)
+}
+
+// dialGuard is the ONE answer to "are configured-address dials guarded": the
+// strict safedial.Guard with MUSTER_DIAL_DENY_PRIVATE=1, nil (no guard) without
+// it. The postgres connector (api.Extensions.DialGuard) and the boot banner
+// read it.
+func (c config) dialGuard() *safedial.Guard {
+	if !c.DialDenyPrivate {
+		return nil
+	}
+	return &safedial.Guard{}
 }
 
 // assetLinks is the body of /.well-known/assetlinks.json, nil when neither

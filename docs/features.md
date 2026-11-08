@@ -421,7 +421,10 @@ member's own Claude token and OpenRouter key. [connectors.md](connectors.md).
 - **Needs:** a 32-byte key. Agents using connectors need [dispatch](#dispatch);
   the store itself and members' credentials do not.
 - **`.env`:** `MUSTER_CONNECTOR_ENCRYPTION_KEY=<head -c32 /dev/urandom | base64>`.
-  Keep it: losing it loses every stored secret.
+  Keep it: losing it loses every stored secret. Optionally
+  `MUSTER_DIAL_DENY_PRIVATE=1` refuses postgres connectors to loopback and
+  private addresses
+  ([connectors.md](connectors.md#refusing-private-addresses)).
 - **Check:** `connector store: ENABLED — …`; the Connectors tab appears.
 
 ### GitHub App

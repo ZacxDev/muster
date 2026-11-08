@@ -71,6 +71,7 @@ var featureLedgerExempt = map[string]string{
 	envLiveHeartbeat:          "a transport tuning interval of every live page; no feature is on or off with it",
 	envHostIcons:              "cosmetic: a mirrored host's icon",
 	envLegacyProvenancePrefix: "a compatibility spelling for older installed clients' headers",
+	envDialDenyPrivate:        "a hardening posture over existing features (postgres connectors), not a feature: nothing turns on or off with it, and it is announced on its own banner line",
 }
 
 var docVarRow = regexp.MustCompile("^\\| `((?:MUSTER_|DATABASE_URL)[A-Z0-9_<>]*)` \\|")

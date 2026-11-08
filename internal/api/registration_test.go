@@ -31,6 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"github.com/ZacxDev/muster/internal/sessiontags"
 	"github.com/ZacxDev/muster/internal/suggest"
@@ -101,6 +102,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose, for AgentNamespacePrefix's reason: the zero policy
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
+		// NON-NIL on purpose: registration must not branch on the dial guard.
+		DialGuard:       &safedial.Guard{AllowLoopback: true},
 		Mirror:          stubMirror{},
 		Flows:           stubFlows{},
 		Plugins:         stubPlugins{},

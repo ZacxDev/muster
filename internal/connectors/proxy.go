@@ -20,10 +20,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/safedial"
 )
 
 // Policy is the proxy's network policy for upstream connections.
@@ -46,107 +46,23 @@ type Policy struct {
 // owner's role could not be read). Retryable.
 var ErrRoleUncertain = errors.New("connectors: the agent's owner's role could not be read; retry shortly")
 
-// ErrForbiddenAddress is the dial refusal for a non-public destination.
-var ErrForbiddenAddress = errors.New("connectors: refusing to connect to a non-public address")
+// ErrForbiddenAddress is the dial refusal for a non-public destination
+// (internal/safedial's, so errors.Is matches whichever dialer refused).
+var ErrForbiddenAddress = safedial.ErrForbiddenAddress
 
-// nonPublic are the ranges no connector may reach, beyond what netip's own
-// predicates (private, loopback, link-local, multicast, unspecified) cover.
-var nonPublic = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
-	netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 shared address space (CGNAT, mesh overlays)
-	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
-	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
-	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and broadcast
-	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64: maps onto IPv4, private ranges included
-	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
-	netip.MustParsePrefix("2002::/16"),      // 6to4: embeds an IPv4 address
-	netip.MustParsePrefix("100::/64"),       // discard-only
-	netip.MustParsePrefix("2001:db8::/32"),  // documentation
-	netip.MustParsePrefix("fec0::/10"),      // deprecated site-local
-	netip.MustParsePrefix("::ffff:0:0/96"),  // IPv4-mapped (unmapped before the check; belt and braces)
+// guard is this policy's dialer. The address rule itself — which ranges are
+// non-public, and checking the RESOLVED address at connect time — lives in
+// internal/safedial, shared with every other guarded dial site.
+func (p Policy) guard() safedial.Guard {
+	return safedial.Guard{AllowLoopback: p.AllowLoopback, Resolve: p.Resolve}
 }
 
-// AllowedAddr reports whether the policy permits connecting to ip.
-func (p Policy) AllowedAddr(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if !ip.IsValid() {
-		return false
-	}
-	if ip.IsLoopback() {
-		return p.AllowLoopback
-	}
-	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	for _, pfx := range nonPublic {
-		if pfx.Contains(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-func (p Policy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
-	if p.Resolve != nil {
-		return p.Resolve(ctx, host)
-	}
-	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-}
-
-// dialContext resolves the host itself, refuses the connection if ANY resolved
-// address is non-public, and dials a checked ADDRESS rather than the name.
-//
-// 🔴 DIALLING THE CHECKED ADDRESS IS WHAT DEFEATS DNS REBINDING. Checking a
-// name's resolution and then handing the NAME to the dialer resolves twice; an
-// attacker-controlled zone can answer public the first time and private the
-// second. The Dialer's Control hook re-checks the socket's actual destination as
-// a backstop for any path that reaches the dialer without coming through here.
+// dialContext is safedial.Guard.DialContext under this policy: resolve, refuse
+// if ANY answer is non-public, dial a checked ADDRESS (which is what defeats DNS
+// rebinding), and re-check the socket's destination in the Dialer's Control
+// hook.
 func (p Policy) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	var ips []netip.Addr
-	if ip, perr := netip.ParseAddr(host); perr == nil {
-		ips = []netip.Addr{ip}
-	} else {
-		ips, err = p.resolve(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("connectors: %s resolved to no address", host)
-	}
-	for _, ip := range ips {
-		if !p.AllowedAddr(ip) {
-			return nil, fmt.Errorf("%w (%s resolves to one)", ErrForbiddenAddress, host)
-		}
-	}
-	d := &net.Dialer{
-		Timeout: 15 * time.Second,
-		Control: func(_, address string, _ syscall.RawConn) error { return p.checkSocketAddr(address) },
-	}
-	var lastErr error
-	for _, ip := range ips {
-		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if err == nil {
-			return c, nil
-		}
-		lastErr = err
-	}
-	return nil, lastErr
-}
-
-// checkSocketAddr is the dialer's last-moment check on the address a socket is
-// about to connect to ("ip:port").
-func (p Policy) checkSocketAddr(address string) error {
-	ap, err := netip.ParseAddrPort(address)
-	if err != nil || !p.AllowedAddr(ap.Addr()) {
-		return fmt.Errorf("%w (socket destination)", ErrForbiddenAddress)
-	}
-	return nil
+	return p.guard().DialContext(ctx, network, addr)
 }
 
 // Transport builds the upstream transport for this policy.

@@ -435,6 +435,10 @@ var bannerLedger = []string{
 	// 30 s and, where the chief's nudges classify, the same classifier runs on
 	// it — so the log must say which state this is.
 	envSessionState,
+	// THE DIAL GUARD IS LEDGERED: ON, postgres connectors refuse non-public
+	// databases; OFF, they reach whatever address they name — so the log must
+	// say which.
+	envDialDenyPrivate,
 	// THE ASK LOG IS LEDGERED: ON, every question an agent asks is recorded
 	// with its answer — transcript text, kept for the text TTL — so the log
 	// must say whether it is.
@@ -854,6 +858,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudgeLiveOwners: map[int64]bool{1: true},
 		// Session state: the banner branches on ext.Episodes (below).
 		SessionState: true,
+		// The dial guard: the banner branches on ext.DialGuard (below).
+		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
 		AskLog: askLogConfig{On: true, TextTTL: 72 * time.Hour},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
@@ -878,6 +884,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		t.Fatalf("banner fixture: assetLinks = %q, %v", assetLinks, err)
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		DialGuard:   on.dialGuard(),
 		AssetLinks:  assetLinks,
 		Outcomes:    agentoutcome.NewPG(nil),
 		GitHubApp:   bannerStubGitHubApp{},
