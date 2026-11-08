@@ -158,19 +158,24 @@ func (r *Recorder) work() {
 	for {
 		r.mu.Lock()
 		if len(r.queue) == 0 {
-			r.running = false
 			// Drained: the drops since the last line (held back by
-			// DropLogEvery) are said now, so none goes unlogged.
-			var line string
+			// DropLogEvery) are said now, so none goes unlogged — and said
+			// BEFORE the worker reports idle, so a Flush that returns has seen
+			// the line written (it once printed after the Broadcast, and a
+			// reader right after Flush could miss it). Printed off the lock,
+			// so the queue is looked at again after.
 			if r.dropped > 0 {
-				line = fmt.Sprintf("ask log: the capture queue drained: %d capture(s) dropped since the last such line", r.dropped)
+				line := fmt.Sprintf("ask log: the capture queue drained: %d capture(s) dropped since the last such line", r.dropped)
 				r.dropped, r.lastDropLog = 0, r.clock()
+				r.mu.Unlock()
+				if r.logger != nil {
+					r.logger.Print(line)
+				}
+				continue
 			}
+			r.running = false
 			r.idle.Broadcast()
 			r.mu.Unlock()
-			if line != "" && r.logger != nil {
-				r.logger.Print(line)
-			}
 			return
 		}
 		j := r.queue[0]
