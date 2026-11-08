@@ -25,6 +25,11 @@ import { signIn } from '../lib/signin';
 //           first question the rest behind one "Show N more" — so the composer
 //           and some of the conversation stay on screen.
 //
+// ⚠ THE AGENT HERE IS NOT THE CHIEF (its display name is its slug), so this is
+// the page a DISPATCHED claude-code agent draws. The chief's own page folds
+// that second row into its ⋯ menu and moves its asks under the transcript —
+// e2e/tests/chief-fold-in.spec.ts pins that page.
+//
 // Every value here is invented fixture data. The agent, its failover and its
 // asks are rows e2e/ccfix and e2e/pluginfix write (a failover needs a real
 // runtime reporting a rate limit, which the noop driver has none of).

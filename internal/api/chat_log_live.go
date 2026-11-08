@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -29,9 +30,26 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName,
-			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0})
+			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0, Relay: relayOf(m)})
 	}
 	return lines
+}
+
+// relayOf is the plugin relay a stored row carries, nil for none: a USER text
+// row that NOBODY TYPED (typed_by 0 — the structural half: chat_messages has no
+// column naming the plugin message a row relayed) whose text begins with
+// muster's own relay preface (plugins.ParseRelayTurn — the textual half, which
+// is muster's words, not the sender's). A typed row is the owner's however it
+// reads: pasting a relay's text into the chat keeps it the owner's bubble.
+func relayOf(m agents.ChatMessage) *ui.ChatRelay {
+	if m.Role != "user" || m.TypedBy > 0 || (m.Kind != "" && m.Kind != "text") {
+		return nil
+	}
+	r, ok := plugins.ParseRelayTurn(m.Content)
+	if !ok {
+		return nil
+	}
+	return &ui.ChatRelay{Source: r.Plugin, Subject: r.Subject, Task: r.TaskID != 0}
 }
 
 // withChatLogLive fills v's live fields for session: TurnInFlight from the

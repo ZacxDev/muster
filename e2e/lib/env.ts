@@ -331,6 +331,11 @@ export const mcpDispatchCatalogPort = port + 303;
 // live line — its own server (mirror plugin on, the focus pass off) and its
 // own fake host. (+320: clear of the blocks other branches took.)
 export const sessionNamesPort = port + 320;
+// tests/chief-fold-in.spec.ts: the chief's page in a mirrored session's layout —
+// its own mirror rig (the e2eterm binary, mirror plugin on, the claude-code
+// kind over the noop driver) and one fake host, for the session it is compared
+// with. (+340: clear of the blocks above.)
+export const chiefFoldInPort = port + 340;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
