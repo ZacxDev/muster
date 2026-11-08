@@ -132,7 +132,9 @@ const agentDispatchDescription = "Start a new agent, only with your owner's opt-
 	"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
 	"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
 	"other model they name → the gateway target with that model: give its OpenRouter model id or name; muster resolves it; \"mirrored\" → a host: " +
-	"\"mirrored on <host> with Claude\" → host/<host>/claude, no host named → host/?/claude, \"mirrored\" alone → mirrored, with repo, " +
+	"\"mirrored on <host> with Claude\" → host/<host>/claude; \"mirrored on <host> with\" any other model → host/<host>/opencode with model " +
+	"its OpenRouter id (<vendor>/<model>; not sure of the id → host/<host>/?, no model); no host named → host/?/claude or " +
+	"host/?/opencode, \"mirrored\" alone → mirrored, with repo, " +
 	"a request_key and owner_asked: true; a blank host or model makes muster ask your owner with a card and start nothing — when their " +
 	"answer arrives call again with the same request_key and arguments and exactly the target they chose. Never start a cluster agent " +
 	"in place of a mirrored one. If they named no model, do not guess: " +
@@ -167,8 +169,9 @@ func agentDispatchToolDef() agents.ToolDef {
 				"repositories. On a task, only when the task names none. Without a repository the agent cannot open a pull request."),
 			"base": strProp("The branch to start from. Omit it for the repository's default branch."),
 			"model": strProp("The model your owner named, for the gateway target: give its OpenRouter model id or name; " +
-				"muster resolves it (an unknown one is refused with the closest ids). Refused for any other target " +
-				"(a Claude model means the Claude Code target, which takes none)."),
+				"muster resolves it (an unknown one is refused with the closest ids). For host/<host>/opencode: REQUIRED, its " +
+				"OpenRouter id exactly (<vendor>/<model>); the host refuses one its opencode does not list. Refused for any other " +
+				"target (a Claude model means the Claude Code target, which takes none)."),
 			"owner_asked": map[string]any{"type": "boolean",
 				"description": "true only when your owner — typing in your muster chat, in the message you are answering now — " +
 					"asked for this. Always verified: a plugin message, a relayed answer, muster's own note or a turn you started " +
@@ -278,11 +281,17 @@ func (s *Server) dispatchTargetsNow(ctx context.Context) dispatchTargets {
 	for _, v := range s.spawnableHosts(ctx, "") {
 		ht := dispatchHostTarget{Host: v.Host}
 		for _, r := range v.AgentSpawn {
-			if r == mirror.SpawnRuntimeClaude {
-				t := "host/" + v.Host + "/" + r
+			t := "host/" + v.Host + "/" + r
+			switch r {
+			case mirror.SpawnRuntimeClaude:
 				ht.Targets = append(ht.Targets, t)
 				out.Choices = append(out.Choices, dispatchChoice{Target: t, Label: "Claude Code, mirrored on " + v.Host,
 					When: "your owner said mirrored (on " + v.Host + ") with Claude; pass no model"})
+			case mirror.SpawnRuntimeOpenCode:
+				ht.Targets = append(ht.Targets, t)
+				out.Choices = append(out.Choices, dispatchChoice{Target: t, Label: "opencode with an OpenRouter model, mirrored on " + v.Host,
+					When: "your owner said mirrored (on " + v.Host + ") with a model other than Claude; pass its OpenRouter id as model " +
+						"(<vendor>/<model>), or leave the runtime blank (host/" + v.Host + "/?) for muster to ask them"})
 			}
 		}
 		if len(ht.Targets) > 0 {

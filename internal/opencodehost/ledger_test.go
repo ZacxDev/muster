@@ -70,19 +70,21 @@ func exprText(fset *token.FileSet, src []byte, e ast.Expr) string {
 
 // TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend: the ONE place
 // a request is built is Client.request; every call of it names
-// http.MethodGet except exactly four: mint's POST to /api/pair, reply's POST
+// http.MethodGet except exactly five: mint's POST to /api/pair, reply's POST
 // (an answer to a permission request or a form), prompt's POST (the API send,
-// docs/design/opencode-first-class.md) and createSession's POST to
-// /api/session (the launcher's); mint is called only by Pair and Renew, reply
-// only by ReplyPermission and ReplyForm, prompt only by Prompt and
-// createSession only by CreateSession; and no file spells another way to send
+// docs/design/opencode-first-class.md), createSession's POST to /api/session
+// (the launcher's and the host spawn's) and removeSession's DELETE (the host
+// spawn's, of the session it created, docs/design/chief-dispatch.md 3.6); mint
+// is called only by Pair and Renew, reply only by ReplyPermission and
+// ReplyForm, prompt only by Prompt, createSession only by CreateSession and
+// removeSession only by RemoveSession; and no file spells another way to send
 // (http.Post, a Client.Post, a raw method string). So muster-mirror cannot
 // interrupt, run a shell, write a file or change anything else on the
 // opencode server — whatever the rest of the code does. An INVARIANT GUARD;
 // mutation-checked in the PRs that added reply and prompt.
 func TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend(t *testing.T) {
 	fset, files := sourceFiles(t)
-	var builders, requests, mints, replies, prompts, creates []string
+	var builders, requests, mints, replies, prompts, creates, removes []string
 	for name, f := range files {
 		src, err := os.ReadFile(name)
 		if err != nil {
@@ -124,8 +126,14 @@ func TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend(t *testing.T) {
 				creates = append(creates, fn)
 			}
 		}
-		// No method spelled as a literal anywhere.
-		for _, m := range []string{`"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, "MethodPut", "MethodPatch", "MethodDelete"} {
+		for fn, calls := range callsIn(f, func(c *ast.CallExpr) bool { return selectorName(c.Fun) == "removeSession" }) {
+			for range calls {
+				removes = append(removes, fn)
+			}
+		}
+		// No method spelled as a literal anywhere; MethodDelete only in
+		// removeSession (counted below, through request).
+		for _, m := range []string{`"POST"`, `"PUT"`, `"PATCH"`, `"DELETE"`, "MethodPut", "MethodPatch"} {
 			if strings.Contains(string(src), m) {
 				t.Errorf("%s spells %s", name, m)
 			}
@@ -144,6 +152,7 @@ func TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend(t *testing.T) {
 		"mint http.MethodGet \"/auth/connect/\"+url.PathEscape(code.Code)",
 		"mint http.MethodPost \"/api/pair\"",
 		"prompt http.MethodPost path",
+		"removeSession http.MethodDelete path",
 		"reply http.MethodPost path",
 	}
 	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
@@ -160,5 +169,8 @@ func TestTheClientMakesOnlyGETsExceptTheMintTheRepliesAndTheSend(t *testing.T) {
 	}
 	if strings.Join(creates, ",") != "CreateSession" {
 		t.Errorf("createSession is called from %q, want CreateSession only", creates)
+	}
+	if strings.Join(removes, ",") != "RemoveSession" {
+		t.Errorf("removeSession is called from %q, want RemoveSession only", removes)
 	}
 }

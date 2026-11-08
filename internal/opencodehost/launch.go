@@ -166,3 +166,14 @@ func RemoveLaunch(dir string, r LaunchRecord) error {
 	}
 	return nil
 }
+
+// NormalizeVersion is v without "opencode " and a leading "v": `opencode
+// --version` says "opencode v2.0.32+6ec5682", GET /api/info "2.0.32+6ec5682"
+// (both measured on that build). THE one rule the launcher (`muster-mirror
+// opencode`) and the host spawn compare a TUI's version and the service's by.
+func NormalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "opencode")
+	v = strings.TrimSpace(v)
+	return strings.TrimPrefix(v, "v")
+}

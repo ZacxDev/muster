@@ -35,7 +35,9 @@ func TestAgentDispatchDescriptionCarriesNoCapNumbers(t *testing.T) {
 		"or from a prompt alone. target is REQUIRED and has no default: you never pick one your owner did not name. Map their " +
 		"words to it: \"with Claude\", or any Claude model (opus, sonnet, haiku) → the Claude Code target, with no model; any " +
 		"other model they name → the gateway target with that model: give its OpenRouter model id or name; muster resolves it; \"mirrored\" → a host: " +
-		"\"mirrored on <host> with Claude\" → host/<host>/claude, no host named → host/?/claude, \"mirrored\" alone → mirrored, with repo, " +
+		"\"mirrored on <host> with Claude\" → host/<host>/claude; \"mirrored on <host> with\" any other model → host/<host>/opencode with model " +
+		"its OpenRouter id (<vendor>/<model>; not sure of the id → host/<host>/?, no model); no host named → host/?/claude or " +
+		"host/?/opencode, \"mirrored\" alone → mirrored, with repo, " +
 		"a request_key and owner_asked: true; a blank host or model makes muster ask your owner with a card and start nothing — when their " +
 		"answer arrives call again with the same request_key and arguments and exactly the target they chose. Never start a cluster agent " +
 		"in place of a mirrored one. If they named no model, do not guess: " +

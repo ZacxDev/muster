@@ -166,11 +166,11 @@ func TestTheFakesSendAnswersHaveTheRealShape(t *testing.T) {
 func TestCreateGetAndCommands(t *testing.T) {
 	_, cl := fakeClient(t)
 	ctx := context.Background()
-	s, err := cl.CreateSession(ctx, "ses_fixtureNew", "/srv/fixture/proj")
+	s, err := cl.CreateSession(ctx, "ses_fixtureNew", "/srv/fixture/proj", nil)
 	if err != nil || s.ID != "ses_fixtureNew" || s.Location.Directory != "/srv/fixture/proj" {
 		t.Fatalf("created %+v, %v", s, err)
 	}
-	if _, err := cl.CreateSession(ctx, "ses_fixtureRel", "relative"); err == nil {
+	if _, err := cl.CreateSession(ctx, "ses_fixtureRel", "relative", nil); err == nil {
 		t.Fatal("a relative directory was sent")
 	}
 	g, err := cl.GetSession(ctx, "ses_fixtureNew")
@@ -312,7 +312,7 @@ func TestTheFakeEmitsTheRealServersFrames(t *testing.T) {
 		})
 	}()
 	<-connected
-	if _, err := cl.CreateSession(ctx, "ses_fixtureNew", "/srv/fixture"); err != nil {
+	if _, err := cl.CreateSession(ctx, "ses_fixtureNew", "/srv/fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cl.Prompt(ctx, "ses_fixtureNew", "msg_fixture1", "hello"); err != nil {
@@ -344,5 +344,65 @@ func TestTheFakeEmitsTheRealServersFrames(t *testing.T) {
 	var e Event
 	if err := json.Unmarshal([]byte(opencodetest.PromptFrame("session.created", 0)), &e); err != nil || e.SessionID() == "" {
 		t.Fatalf("the real session.created names no session: %v", err)
+	}
+}
+
+// TestTheSpawnsCreateModelsAndRemove: the host spawn's three calls against the
+// fake, whose bodies are a real server's (testdata/spawn-v2.0.32.json): a
+// create carrying a model sends EXACTLY {providerID, id} — an id with a '/' in
+// it kept whole — and one without sends none; GET /api/model reads each
+// entry's provider and id; DELETE removes the session (204), and a second
+// DELETE is ErrSessionNotFound (404), as measured. A model naming no provider
+// or no id is refused before a request.
+func TestTheSpawnsCreateModelsAndRemove(t *testing.T) {
+	srv, cl := fakeClient(t)
+	ctx := context.Background()
+	srv.SetModels(opencodetest.Model{ProviderID: "openrouter", ID: "qwen/qwen3-coder"}, opencodetest.Model{ProviderID: "opencode", ID: "big-pickle"})
+	if _, err := cl.CreateSession(ctx, "ses_fixtureM", "/srv/fixture", &ModelRef{ProviderID: "openrouter", ID: "qwen/qwen3-coder"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := srv.SessionModel("ses_fixtureM"); len(m) != 2 || m["providerID"] != "openrouter" || m["id"] != "qwen/qwen3-coder" {
+		t.Fatalf("the create's model %v", m)
+	}
+	if _, err := cl.CreateSession(ctx, "ses_fixtureN", "/srv/fixture", nil); err != nil || srv.SessionModel("ses_fixtureN") != nil {
+		t.Fatalf("a create with no model sent one: %v %v", srv.SessionModel("ses_fixtureN"), err)
+	}
+	creates := srv.Creates()
+	for _, bad := range []ModelRef{{ProviderID: "openrouter"}, {ID: "qwen/qwen3-coder"}} {
+		if _, err := cl.CreateSession(ctx, "ses_fixtureX", "/srv/fixture", &bad); err == nil || srv.Creates() != creates {
+			t.Fatalf("a model %+v was sent: %v", bad, err)
+		}
+	}
+	ms, err := cl.Models(ctx)
+	if err != nil || len(ms) != 2 || ms[0].ProviderID != "openrouter" || ms[0].ID != "qwen/qwen3-coder" || ms[1].ProviderID != "opencode" {
+		t.Fatalf("models %+v, %v", ms, err)
+	}
+	if err := cl.RemoveSession(ctx, "ses_fixtureM"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.GetSession(ctx, "ses_fixtureM"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("after the delete: %v", err)
+	}
+	if err := cl.RemoveSession(ctx, "ses_fixtureM"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a second delete: %v", err)
+	}
+}
+
+// TestTheSpawnCaptureIsWhatTheFakeServes: the real server's create-with-model
+// answered with the model it was sent, and did so for a model NO provider
+// lists (opencode does not check it: the host must) — the fact the host's
+// bad_model check rests on, read from the capture, not assumed.
+func TestTheSpawnCaptureIsWhatTheFakeServes(t *testing.T) {
+	var unknown struct {
+		Data struct {
+			Model ModelRef `json:"model"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(opencodetest.SpawnCaptured("create-unknown-model"), &unknown); err != nil || unknown.Data.Model.ID != "nope/not-a-model" {
+		t.Fatalf("the capture of a create on an unlisted model: %+v %v", unknown, err)
+	}
+	var entry Model
+	if err := json.Unmarshal(opencodetest.SpawnCaptured("model-openrouter"), &entry); err != nil || entry.ProviderID != "openrouter" || entry.ID != "qwen/qwen3-coder" {
+		t.Fatalf("the capture's OpenRouter entry: %+v %v", entry, err)
 	}
 }

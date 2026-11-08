@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -23,12 +24,15 @@ import (
 
 // ---------------------------------------------------------------------------
 // MIRRORED DISPATCH: agent_dispatch on a HOST target (docs/design/
-// chief-dispatch.md 2.8 and section 3, phase 3 — claude only).
+// chief-dispatch.md 2.8 and section 3; phase 3 claude, phase 4 opencode).
 //
 //   - host/<host>/claude starts `claude` in a new window of `agents` on <host>,
 //     in a fresh worktree, through the host's own spawner (mirror.Hub.SpawnAgent
 //     → internal/mirrorhost/agentspawn.go). The host enforces its own
 //     allow-list, rate limit and audit log whatever this server sends.
+//   - host/<host>/opencode does the same with opencode, on the OpenRouter model
+//     `model` names (REQUIRED, an OpenRouter id, sent as openrouter/<id>); the
+//     host checks the model against its own opencode's list (bad_model).
 //   - "mirrored", host/?/claude, host/<host>/? and host/?/? are HELD: nothing
 //     starts. muster files a chief.dispatch_held row (door "card") and raises
 //     ONE stored ask_owner card for the first blank (raiseOwnerCard): the
@@ -89,6 +93,14 @@ const (
 	agentDispatchHostPool = "a host target takes no worker_pool"
 	agentDispatchNoHost   = "no host can start agents now (none of your hosts is online with -agent-spawn); nothing was asked or queued"
 	agentDispatchHostNone = "host %q offers neither claude nor opencode now"
+	// The model of a host target (design 2.2): opencode's is required and an
+	// OpenRouter id; claude's is refused with agentDispatchModel; a runtime
+	// left for the card takes none (the card asks for both).
+	agentDispatchHostModelShape  = "model %q is not an OpenRouter model id (<vendor>/<model>)"
+	agentDispatchHostModelNeeded = "host/%s/opencode needs model: the OpenRouter id of the model your owner named (<vendor>/<model>). If you are " +
+		"not sure of the exact id, call with the runtime left blank (host/%s/?) and muster asks your owner"
+	agentDispatchHostModelHeld = "a target whose runtime your owner still has to choose takes no model: muster's card asks for the runtime " +
+		"and the model together"
 	// agentDispatchHostGated: a host start never releases a gate (phase 3
 	// builds the release on the pod path only).
 	agentDispatchHostGated = "task %d is gated: a host target does not release a gate. Release it first (on the board, or a pod " +
@@ -100,6 +112,10 @@ const (
 	agentDispatchHeldDoor    = "your owner's answer to that card did not come from muster's Attention view or their phone, so muster cannot take it as theirs"
 	agentDispatchHeldWaiting = "your owner has not answered the card yet: wait for their answer"
 	agentDispatchHeldOption  = "your owner's answer to that card (%q) is not one of its options: ask them again"
+	// agentDispatchHeldTypeID: the owner tapped "another OpenRouter model"
+	// without typing its id.
+	agentDispatchHeldTypeID = "your owner wants another OpenRouter model than those listed: ask them for its id in the chat, then call " +
+		"agent_dispatch with host/%s/opencode and that model"
 )
 
 // The spawn refusals as the chief reads them (design 3.1's table): it acts on
@@ -230,11 +246,34 @@ func spawnRuntimeLabel(runtime string) string {
 	return runtime
 }
 
+// The model card's values (heldDetail.Options): "claude", or "opencode:<id>"
+// for an OpenRouter model, or cardTypedModel for "another OpenRouter model
+// (type its id)" — whose answer is the id the owner TYPED (completeHeld).
+const (
+	cardOpenCodePrefix = mirror.SpawnRuntimeOpenCode + ":"
+	cardTypedModel     = cardOpenCodePrefix + "?"
+	// cardTypedLabel is the typed id's option (decision 15: always offered
+	// beside opencode).
+	cardTypedLabel = "another OpenRouter model (type its id)"
+)
+
+// openCodeModelLabel is an OpenRouter model as the model card offers it.
+func openCodeModelLabel(id string) string { return id + " (opencode, OpenRouter)" }
+
+// dispatchModels is MUSTER_CHIEF_DISPATCH_MODELS, as parsed at boot.
+func (s *Server) dispatchModels() []string {
+	if s.ext.TaskRouting == nil {
+		return nil
+	}
+	return s.ext.TaskRouting.DispatchModels
+}
+
 // cardOptions is the card for blank: the host card's options are the spawnable
-// hosts' names (offering runtime when it is known); the model card's are the
-// runtimes host offers — in phase 3 only Claude (Claude Code), the configured
-// OpenRouter list and the typed id joining it in phase 4. Values map each label
-// back to the blank's value.
+// hosts' names (offering runtime when it is known); the model card's are, in
+// order, Claude (Claude Code) when the host offers claude, then each model of
+// MUSTER_CHIEF_DISPATCH_MODELS and "another OpenRouter model (type its id)"
+// when it offers opencode (design 2.8). Values map each label back to the
+// blank's value.
 func (s *Server) cardOptions(ctx context.Context, t hostTarget, blank string) (labels []string, values map[string]string, refusal string) {
 	values = map[string]string{}
 	switch blank {
@@ -248,13 +287,41 @@ func (s *Server) cardOptions(ctx context.Context, t hostTarget, blank string) (l
 		}
 	case "runtime":
 		v, ok := s.hostView(ctx, t.Host)
-		if !ok || !hostSpawnable(v, mirror.SpawnRuntimeClaude) {
+		claude := ok && hostSpawnable(v, mirror.SpawnRuntimeClaude)
+		opencode := ok && hostSpawnable(v, mirror.SpawnRuntimeOpenCode)
+		if !claude && !opencode {
 			return nil, nil, fmt.Sprintf(agentDispatchHostNone, t.Host)
 		}
-		l := spawnRuntimeLabel(mirror.SpawnRuntimeClaude)
-		labels, values[l] = append(labels, l), mirror.SpawnRuntimeClaude
+		if claude {
+			l := spawnRuntimeLabel(mirror.SpawnRuntimeClaude)
+			labels, values[l] = append(labels, l), mirror.SpawnRuntimeClaude
+		}
+		if opencode {
+			for _, id := range s.dispatchModels() {
+				l := openCodeModelLabel(id)
+				labels, values[l] = append(labels, l), cardOpenCodePrefix+id
+			}
+			labels, values[cardTypedLabel] = append(labels, cardTypedLabel), cardTypedModel
+		}
 	}
 	return labels, values, ""
+}
+
+// runtimeChoice is a host target's runtime blank as the model card's values
+// spell it: "claude", or "opencode:<model>".
+func runtimeChoice(t hostTarget, model string) string {
+	if t.Runtime == mirror.SpawnRuntimeOpenCode {
+		return cardOpenCodePrefix + model
+	}
+	return t.Runtime
+}
+
+// choiceCall is a model card's value as the call that completes it.
+func choiceCall(host, value string) string {
+	if id, ok := strings.CutPrefix(value, cardOpenCodePrefix); ok {
+		return "host/" + host + "/opencode with model " + id
+	}
+	return "host/" + host + "/" + value
 }
 
 // cardQuestion is the card's question for blank.
@@ -296,6 +363,15 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	// owner_asked is not part of what is held: the completing call is made in a
 	// turn the owner did not type (that is what the hold is for).
 	held.OwnerAsked = false
+	// 🔴 A HELD RUNTIME HOLDS NO MODEL: the model card chooses both, and
+	// completeHeld hashes the call with the model cleared the same way. A
+	// model the chief sent with a host tap (host/<h>/opencode after the host
+	// card of host/?/?) is DROPPED here, not refused: the tap is the owner's
+	// and must stay completable, and a model the owner did not choose must
+	// not survive into the hold (the card asks them for it).
+	if slices.Contains(blanks, "runtime") {
+		held.Model, in.Model = "", ""
+	}
 	ask, err := s.raiseOwnerCard(ctx, a, cardQuestion(blanks[0], t), labels)
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
@@ -310,13 +386,15 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		_, _ = s.cancelAsk(ctx, ask.ID)
 		return refuse("the dispatch could not be held for your owner's answer; try again")
 	}
-	what := "which host to run this on"
+	what, then := "which host to run this on", "the target they chose"
 	if blanks[0] == "runtime" {
 		what = "which model to run it with"
+		then = "the target they chose: host/" + t.Host + "/claude for Claude, or host/" + t.Host + "/opencode with model set to the " +
+			"OpenRouter id they chose or typed"
 	}
 	out := map[string]any{"held": true, ui.OwnerCardAskIDKey: ask.ID, "blanks": blanks, "options": labels,
 		"next": "muster asked your owner " + what + ". When their answer arrives, call agent_dispatch again with the same " +
-			"request_key, the same arguments, and the target they chose; do not choose one yourself."}
+			"request_key, the same arguments, and " + then + "; do not choose one yourself."}
 	if b := s.chiefBudgetNow(ctx); b != nil {
 		out["budget"] = b
 	}
@@ -373,6 +451,10 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t hostTar
 	asHeld := in
 	asHeld.Target = t.withBlanks(d.Blanks).String()
 	asHeld.OwnerAsked = false
+	// A held runtime was held with NO model: the card chooses both.
+	if slices.Contains(d.Blanks, "runtime") {
+		asHeld.Model = ""
+	}
 	if dispatchRequestHash(asHeld, prompt) != d.HeldHash {
 		c.refusal = fmt.Sprintf(agentDispatchHeldChanged, in.RequestKey)
 		return c
@@ -385,7 +467,10 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t hostTar
 	first := d.Blanks[0]
 	filled := t.Host
 	if first == "runtime" {
-		filled = t.Runtime
+		filled = ""
+		if t.Runtime != "" {
+			filled = runtimeChoice(t, in.Model)
+		}
 	}
 	if filled == "" {
 		c.refusal = fmt.Sprintf(agentDispatchHeldChanged, in.RequestKey)
@@ -411,18 +496,35 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t hostTar
 		c.refusal = agentDispatchHeldDoor
 		return c
 	}
-	i, ok := ask.ChosenOption()
-	if !ok {
-		c.refusal = fmt.Sprintf(agentDispatchHeldOption, ask.Answer)
-		return c
-	}
-	chosen, ok := d.Options[ask.Options[i]]
-	if !ok {
+	chosen, label := "", ""
+	if i, ok := ask.ChosenOption(); ok {
+		if chosen, ok = d.Options[ask.Options[i]]; !ok {
+			c.refusal = fmt.Sprintf(agentDispatchHeldOption, ask.Answer)
+			return c
+		}
+		label = ask.Options[i]
+		if chosen == cardTypedModel {
+			// The typed-id option TAPPED: no id came with it.
+			c.refusal = fmt.Sprintf(agentDispatchHeldTypeID, t.Host)
+			return c
+		}
+	} else if id := strings.TrimSpace(ask.Answer); slices.Contains(slices.Collect(maps.Values(d.Options)), cardTypedModel) &&
+		mirror.ValidSpawnModel(id) {
+		// 🔴 THE TYPED ID (decision 15): an answer that is no stored option
+		// binds only on a card that offered the typed id (only a model card
+		// does), and only in an
+		// OpenRouter id's shape. It came through an owner's door (above), so it
+		// is the owner's as a tap is.
+		chosen = cardOpenCodePrefix + id
+	} else {
 		c.refusal = fmt.Sprintf(agentDispatchHeldOption, ask.Answer)
 		return c
 	}
 	if chosen != filled {
-		c.refusal = fmt.Sprintf(agentDispatchHeldChose, ask.Options[i])
+		if first == "runtime" {
+			label = choiceCall(t.Host, chosen)
+		}
+		c.refusal = fmt.Sprintf(agentDispatchHeldChose, label)
 		return c
 	}
 	c.accepted = true
@@ -464,10 +566,27 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	if in.WorkerPool != "" {
 		return refuse(agentDispatchHostPool)
 	}
-	// "Mirrored with Claude <model>" runs Claude Code's own model (decision 18);
-	// opencode's model is phase 4.
-	if in.Model != "" {
-		return refuse(agentDispatchModel)
+	// THE MODEL (design 2.2): "Mirrored with Claude <model>" runs Claude Code's
+	// own model (decision 18), so claude takes none; opencode needs an
+	// OpenRouter id; a runtime left for the card takes none (the card asks for
+	// the runtime and the model together). Checked before anything is reserved.
+	switch t.Runtime {
+	case mirror.SpawnRuntimeClaude:
+		if in.Model != "" {
+			return refuse(agentDispatchModel)
+		}
+	case mirror.SpawnRuntimeOpenCode:
+		if in.Model == "" {
+			h := firstNonBlank(t.Host, "<host>")
+			return refuse(fmt.Sprintf(agentDispatchHostModelNeeded, h, h))
+		}
+		if !mirror.ValidSpawnModel(in.Model) {
+			return refuse(fmt.Sprintf(agentDispatchHostModelShape, in.Model))
+		}
+	default:
+		if in.Model != "" {
+			return refuse(agentDispatchHostModelHeld)
+		}
 	}
 	onTask := in.TaskID > 0
 	held := len(t.blanks()) > 0
@@ -604,7 +723,11 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 		task = n
 		return nil
 	}
-	row := plugins.HostDispatchNew{Host: t.Host, Runtime: t.Runtime, Repo: effective, Base: in.Base, TaskID: in.TaskID}
+	var wireModel string
+	if t.Runtime == mirror.SpawnRuntimeOpenCode {
+		wireModel = mirror.SpawnModelWire(in.Model)
+	}
+	row := plugins.HostDispatchNew{Host: t.Host, Runtime: t.Runtime, Model: wireModel, Repo: effective, Base: in.Base, TaskID: in.TaskID}
 	if byTap {
 		row.HeldID = comp.hold.ID
 	}
@@ -630,8 +753,8 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	if res.Prior {
 		return s.alreadyDispatchedAnswer(ctx, a, in.TaskID, res)
 	}
-	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: effective, Base: in.Base,
-		Prompt: spawnPrompt(t.Host, effective, prompt, task, onTask), Name: spawnName(task, onTask, prompt)}
+	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: effective, Base: in.Base, Model: wireModel,
+		Prompt: spawnPrompt(t.Runtime, t.Host, effective, prompt, task, onTask), Name: spawnName(task, onTask, prompt)}
 	return s.spawnReserved(ctx, owner, t, hd, req, object, in.TaskID)
 }
 
@@ -644,9 +767,9 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 // 🔴 THE PREFACE AND THE RULES ARE NEVER CUT. Only the owner's part — the
 // relayed instructions, then the task — is cut to what is left between them;
 // the relay is cut BEFORE it is fenced, so its fence always closes.
-func spawnPrompt(host, repo, prompt string, task notes.Note, onTask bool) string {
+func spawnPrompt(runtime, host, repo, prompt string, task notes.Note, onTask bool) string {
 	head := mirror.SpawnPreface + " on " + host + ", in a fresh git worktree of " + repo +
-		" (a branch of its own, cut from the remote). You run in normal permission mode: your owner answers your asks on muster."
+		" (a branch of its own, cut from the remote). " + spawnPermissionSentence(runtime)
 	rules := chiefDispatchRulesNoTask
 	if onTask {
 		rules = chiefDispatchRules
@@ -681,6 +804,35 @@ func spawnPrompt(host, repo, prompt string, task notes.Note, onTask bool) string
 	return head + "\n\n" + relay + body + rules
 }
 
+// What a host-spawned agent is told, and what the chief is told, about asking
+// (operator decision on #522 round 0, Q1 (a)): Claude Code runs in normal
+// permission mode and asks the owner on muster; opencode runs in its
+// allow-by-default mode and DOES NOT ASK — bounded by the owner's opencode deny
+// rules and guard plugin, the host's repository allow-list and connectedRepo.
+// ONE function per text, per runtime: neither may claim the other's behaviour.
+const (
+	spawnPermissionClaude   = "You run in normal permission mode: your owner answers your asks on muster."
+	spawnPermissionOpenCode = "You run without asking before you use tools, inside your owner's opencode deny rules; there is no owner " +
+		"approval step, so stay inside the task."
+	spawnNextClaude   = "It asks your owner before using tools, and those asks reach them on muster. Do not start another."
+	spawnNextOpenCode = "It runs without asking before it uses tools (opencode's own mode), inside your owner's opencode deny rules. " +
+		"Do not start another."
+)
+
+func spawnPermissionSentence(runtime string) string {
+	if runtime == mirror.SpawnRuntimeOpenCode {
+		return spawnPermissionOpenCode
+	}
+	return spawnPermissionClaude
+}
+
+func spawnPermissionNext(runtime string) string {
+	if runtime == mirror.SpawnRuntimeOpenCode {
+		return spawnNextOpenCode
+	}
+	return spawnNextClaude
+}
+
 // spawnName is the window's display name: "#<task> <title>", or the prompt's
 // first words.
 func spawnName(task notes.Note, onTask bool, prompt string) string {
@@ -713,8 +865,7 @@ func (s *Server) spawnReserved(ctx context.Context, owner int64, t hostTarget, h
 		if w.Warning != "" {
 			out["warning"] = w.Warning
 		}
-		out["next"] = "Started in a new window of the agents session on " + t.Host + ". It asks your owner before using tools, and " +
-			"those asks reach them on muster. Do not start another."
+		out["next"] = "Started in a new window of the agents session on " + t.Host + ". " + spawnPermissionNext(t.Runtime)
 	case errors.As(err, &refused) && refused.Code == mirror.SpawnNotListed:
 		out["status"] = "starting"
 		out["next"] = "The host started the window but has not listed it yet; muster tracks it. Do not start another."
