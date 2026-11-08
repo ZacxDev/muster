@@ -170,9 +170,11 @@ type GitHub interface {
 	// never a truncated answer.
 	PRsForBranch(ctx context.Context, branch, state string) ([]PR, error)
 	// OfficerPRs is every pull request login opened in this repository
-	// (GitHub's issues list filtered by creator, every page, newest created
-	// first), in state "open", "closed" or "all", with its Body. More than
-	// maxPages pages is an error, never a truncated answer.
+	// (GitHub's pulls list, every page, newest created first, kept when its
+	// author is login), in state "open", "closed" or "all", with its Body and
+	// head. The pulls list is read whole, so more than maxPages pages of the
+	// repository's pull requests in state (anyone's) is an error, never a
+	// truncated answer.
 	OfficerPRs(ctx context.Context, login, state string) ([]PR, error)
 	// DeleteBranch deletes refs/heads/<branch> (the draft gate, after it
 	// closed a pull request whose branch holds a refused change).
@@ -879,39 +881,31 @@ func (g *REST) PRsForBranch(ctx context.Context, branch, state string) ([]PR, er
 	return nil, fmt.Errorf("more than %d pull requests from %s: too many to vouch for", maxPages*100, branch)
 }
 
-// OfficerPRs implements GitHub.
+// OfficerPRs implements GitHub. It reads the pulls list, never the issues
+// list: an officer App's token carries Pull requests but no Issues
+// permission, so GitHub answers the issues list 403 for it. The pulls list
+// has no author filter, so every pull request of the repository in state is
+// read (newest created first) and only login's are kept, compared
+// case-insensitively.
 func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error) {
-	q := url.Values{"creator": {login}, "state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	q := url.Values{"state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
 	var out []PR
 	for page := 1; page <= maxPages; page++ {
 		q.Set("page", strconv.Itoa(page))
-		var batch []struct {
-			Number    int       `json:"number"`
-			State     string    `json:"state"`
-			Title     string    `json:"title"`
-			Body      string    `json:"body"`
-			CreatedAt time.Time `json:"created_at"`
-			User      struct {
-				Login string `json:"login"`
-				Type  string `json:"type"`
-			} `json:"user"`
-			PullRequest *struct{} `json:"pull_request"`
-		}
-		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/issues?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
+		var batch []restPR
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/pulls?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
 			return nil, err
 		}
 		for _, r := range batch {
-			if r.PullRequest == nil {
-				continue // an issue, not a pull request
+			if strings.EqualFold(r.User.Login, login) {
+				out = append(out, r.pr())
 			}
-			out = append(out, PR{Number: r.Number, State: r.State, Title: r.Title, Body: r.Body, CreatedAt: r.CreatedAt,
-				Author: r.User.Login, AuthorType: r.User.Type})
 		}
 		if len(batch) < 100 {
 			return out, nil
 		}
 	}
-	return nil, fmt.Errorf("more than %d issues and pull requests by %s: too many to vouch for", maxPages*100, login)
+	return nil, fmt.Errorf("more than %d pull requests in %s (anyone's) to find %s's among: too many to vouch for", maxPages*100, g.Repo, login)
 }
 
 // DeleteBranch implements GitHub.

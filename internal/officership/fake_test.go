@@ -58,8 +58,8 @@ type fakeGH struct {
 	// deleted is every branch DeleteBranch deleted; deleteErr fails it.
 	deleted   []string
 	deleteErr error
-	// creatorBlind makes OfficerPRs answer an empty list, as GitHub's issues
-	// list does (200 []) for a creator login it does not match (measured).
+	// creatorBlind makes OfficerPRs answer an empty list, as its author
+	// filter does (not an error) for a login it does not match.
 	creatorBlind bool
 	// updated is every UpdateBranch that moved a branch ("branch
 	// before->after"); updateErr fails every call. UpdateBranch is a
