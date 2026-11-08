@@ -111,9 +111,26 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	}
 	// Each host's icon, by its registration rank (ui.HostIconFor), read once.
 	ranks := s.ext.Mirror.HostRanks(ctx)
+	// "Show tmux sessions" (notify_prefs.go), the viewer's: read once, and
+	// only when an entry has a human name to add it to.
+	tmux, read := false, false
 	for _, m := range mirror.Ordered(hosts) {
+		name := focused.mirrorName(m)
+		// The pill's codename line and the dock row's: the one rule
+		// (tmuxPlace), so a list says exactly what a notification adds.
+		var at, code string
+		if name.Human() {
+			if !read {
+				tmux, read = s.notifyTmuxOn(ctx, requestOwner(ctx)), true
+			}
+			at = tmuxPlace(name.Text, m.TitleAt(), tmux)
+		}
+		if at != "" {
+			code = m.Title()
+		}
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			SessionName: focused.mirrorName(m), ManualName: focused[focus.MirrorSubject(m.SessionKey())].Name.Manual, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
+			TmuxAt: at, TmuxCode: code,
+			SessionName: name, ManualName: focused[focus.MirrorSubject(m.SessionKey())].Name.Manual, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
 			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), FocusKey: m.SessionKey(), Repo: m.Repo, Work: m.Work, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
 			HostIcon: ui.HostIconFor(ranks, m.Host), ChiefDispatch: m.Dispatch})

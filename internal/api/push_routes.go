@@ -339,7 +339,7 @@ func (s *Server) clearPushDeviceCookie(w http.ResponseWriter) {
 }
 
 // accountNotificationsSection renders the account page's Notifications
-// section: "Show tmux session in notifications" (notify_prefs.go — it names
+// section: "Show tmux sessions" (notify_prefs.go — it names
 // sessions on the Asks list too, so it is drawn with or without Web Push), then
 // the caller's devices (row-level security), "send test", remove.
 func (s *Server) accountNotificationsSection(r *http.Request) string {

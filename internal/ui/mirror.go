@@ -39,6 +39,14 @@ type MirrorCardView struct {
 	// internal/api: its conversation's manual or auto name, else its Label or
 	// Title (a fallback, Human false). The zero value draws Label / Title.
 	SessionName sessionname.Name
+	// TmuxAt and TmuxCode are what "Show tmux sessions" (internal/api
+	// notify_prefs.go) adds to the entry's pill and dock row: TmuxAt the
+	// window as muster named it before sessions had names ("mango:1 @ atlas",
+	// mirror.SessionView.TitleAt), TmuxCode its codename alone ("mango:1",
+	// what a pill has room for). Both "" unless the viewer turned the switch on
+	// AND the entry is called by a human name — decided by internal/api's one
+	// rule (names.go tmuxPlace), never here: the ui only draws them.
+	TmuxAt, TmuxCode string
 	// ManualName is the conversation's manual name AS TYPED (stored, never
 	// plained), "" for none: what the rename dialog prefills, so a markdown
 	// name is edited as it was written, not as it draws.

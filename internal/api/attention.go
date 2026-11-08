@@ -207,7 +207,7 @@ type attentionItem struct {
 	// HUMAN one, "" otherwise (set by withFocus): what the Asks list and a
 	// push title call the session. Source stays its place — the window's
 	// tmux target — which the item's own page and the push body keep. With its
-	// owner's "Show tmux session in notifications" on, a mirrored session's
+	// owner's "Show tmux sessions" on, a mirrored session's
 	// name is followed by its window's codename and host (notifyName).
 	Name string `json:"name,omitempty"`
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
@@ -768,7 +768,7 @@ func (s *Server) withNames(ctx context.Context, items []attentionItem) {
 
 // withNamesFrom is withNames over an index the caller already read. A mirrored
 // item's name carries its window's codename and host when ctx's principal turned
-// on "Show tmux session in notifications" (notifyName; the preference read
+// on "Show tmux sessions" (notifyName; the preference read
 // once, and only when an item has a human name to add it to).
 func (s *Server) withNamesFrom(ctx context.Context, fi focusIndex, items []attentionItem) {
 	tmux, read := false, false

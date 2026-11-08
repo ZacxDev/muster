@@ -166,7 +166,7 @@ func WhereTarget(host, session, window string, index int) string {
 // — the host's label for the window ("mango:1"), else its tmux address
 // ("scratch3:5") — and its host: "mango:1 @ atlas". It is what a notification
 // that names a session by its human name adds after it when its owner turned
-// on "Show tmux session in notifications" (internal/api notifyName).
+// on "Show tmux sessions" (internal/api notifyName).
 func (s SessionView) TitleAt() string {
 	return s.Title() + " @ " + s.Host
 }

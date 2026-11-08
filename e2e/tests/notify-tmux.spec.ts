@@ -9,7 +9,7 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 
 // "SHOW TMUX SESSION IN NOTIFICATIONS" (internal/api/notify_prefs.go;
-// docs/focus.md#show-tmux-session-in-notifications), in a real browser against
+// docs/focus.md#show-tmux-sessions), in a real browser against
 // a real muster-server (MUSTER_MIRROR=1, its own port) and a real
 // muster-mirror over the tunnel (the `-tags e2emirror` fake), on a phone
 // (390×844, touch) and a desktop (1280×800).
@@ -42,6 +42,7 @@ const now = Math.floor(Date.now() / 1000);
 const sids = { phone: 'ntmux-phone-' + stamp, desktop: 'ntmux-desktop-' + stamp };
 const windows = { phone: 1, desktop: 2 };
 const names = { phone: 'Billing migration', desktop: 'Ledger cleanup' };
+const unnamed = [3, 4, 5, 6, 7];
 const TAIL = [
   { role: 'user', text: 'Migrate the billing tables to the v2 schema' },
   { role: 'assistant', text: 'Reading the current schema first.' },
@@ -65,6 +66,13 @@ test.beforeAll(async () => {
     fs.writeFileSync(tr, cc.prompt('Migrate the billing tables') + cc.reply('Reading the schema.'));
     fs.writeFileSync(tr + '.waiting', '');
     rows.push(`tnotify|@${w}|${w}|${w === 1 ? 1 : 0}|claude|${now - 60 * w}|${tr}`);
+  }
+  // Five more windows with NO human name (called by their codename): the bar
+  // holds 7 pills, and an unnamed one must never draw its codename twice.
+  for (const w of unnamed) {
+    const tr = path.join(rig.dir, `ntmux-plain-${w}-${stamp}.jsonl`);
+    fs.writeFileSync(tr, cc.prompt('hi') + cc.reply('Hello! How can I help?'));
+    rows.push(`tnotify|@${w}|${w}|0|claude|${now - 60 * w}|${tr}`);
   }
   writeFileAtomic(windowsFile, rows.join('\n') + '\n');
   mkchat({
@@ -109,6 +117,100 @@ for (const vp of [
     const w = windows[vp.key];
     const name = names[vp.key];
 
+    // THE SESSION LISTS: the bar's pills and the dock's rows. The page is
+    // window 7's (unnamed); the bar shows its All view, 7 pills.
+    test('the bar\'s pills and the dock\'s rows gain the codename line only with the switch on, and keep it on a reload and a live refresh', async ({ page }) => {
+      test.setTimeout(120_000);
+      await signIn(page, origin);
+      await rig.waitListed(page, `cobalt:${w}`);
+      const bar = page.locator('#session-switcher');
+      const allRow = bar.locator('[data-switcher-list="all"]');
+      const named = allRow.locator(`a[data-switcher-entry][href*="window=%40${w}"]`);
+      const plain = allRow.locator(`a[data-switcher-entry][href*="window=%403"]`);
+      const open = async () => {
+        await page.goto(origin + `/mirror/view?host=${host}&session=tnotify&window=%407`);
+        await page.evaluate(() => (window as any).musterSwitcherShow('all'));
+        await expect(allRow).toBeVisible();
+        await expect(named).toHaveAttribute('data-switcher-name', name);
+      };
+      const noOverflow = async () => {
+        const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+        expect(o.sw, 'the page does not scroll sideways').toBeLessThanOrEqual(o.cw);
+        const b = (await bar.boundingBox())!;
+        expect(b.x + b.width, 'the bar fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width + 0.5);
+      };
+      const dockRow = async (href: string) => {
+        if (vp.use.hasTouch) await page.locator('#switcher-toggle').tap();
+        else await page.evaluate(() => (window as any).musterDock.open(document.getElementById('session-switcher'), null));
+        await expect.poll(() => page.evaluate(() => (document.getElementById('switcher-dock') as HTMLDialogElement).open)).toBe(true);
+        await page.locator('#switcher-dock [data-dock-tab="all"]').click();
+        return page.locator(`#dock-list a[data-dock-row][href="${href}"]`);
+      };
+      const closeDock = () => page.keyboard.press('Escape');
+
+      // OFF: every pill one line, no codename anywhere; the dock's row two lines.
+      await open();
+      expect(await allRow.locator('a[data-switcher-entry]').count(), '7 pills').toBeGreaterThanOrEqual(7);
+      await expect(bar.locator('[data-switcher-tmux], [data-switcher-tmux-line]')).toHaveCount(0);
+      const offHeight = (await bar.boundingBox())!.height;
+      await noOverflow();
+      const href = (await named.getAttribute('href'))!;
+      let row = await dockRow(href);
+      await expect(row.locator('[data-dock-label]')).toHaveText(name);
+      await expect(row.locator('[data-dock-focus]')).toHaveCount(1);
+      await expect(row.locator('[data-dock-tmux]')).toHaveCount(0);
+      await expect(page.locator('#switcher-dock')).not.toContainText(`cobalt:${w} @`);
+      await closeDock();
+
+      // ON: the named pill's codename line, inside the pill; the dock's third line.
+      await setSwitch(page, true);
+      await open();
+      const line = named.locator('[data-switcher-tmux-line]');
+      await expect(line).toHaveText(`cobalt:${w}`);
+      await expect(line).toBeVisible();
+      await expect(named).toHaveAttribute('data-switcher-tmux', `cobalt:${w} @ ${host}`);
+      await expect(named, 'the codename is part of the pill\'s accessible name').toHaveAccessibleName(new RegExp(`${name} cobalt:${w}$`));
+      const lb = (await line.boundingBox())!, pb = (await named.locator(':scope > span').boundingBox())!;
+      expect(lb.y >= pb.y - 0.5 && lb.y + lb.height <= pb.y + pb.height + 0.5, 'the line is inside the pill').toBe(true);
+      await expect(plain.locator('[data-switcher-tmux-line]'), 'an unnamed pill draws no codename twice').toHaveCount(0);
+      await expect(plain).not.toHaveAttribute('data-switcher-tmux', /.*/);
+      const onHeight = (await bar.boundingBox())!.height;
+      expect(Math.abs(onHeight - offHeight), 'the bar grows at most 4px').toBeLessThanOrEqual(4);
+      await noOverflow();
+      row = await dockRow(href);
+      await expect(row.locator('[data-dock-tmux]')).toHaveText(`cobalt:${w} @ ${host}`);
+      await expect(row, 'the codename is part of the row\'s accessible name').toHaveAccessibleName(new RegExp(`cobalt:${w} @ ${host}`));
+      const fb = (await row.locator('[data-dock-focus]').boundingBox())!, tb = (await row.locator('[data-dock-tmux]').boundingBox())!;
+      expect(tb.y, 'the third line, under the focus').toBeGreaterThanOrEqual(fb.y + fb.height - 0.5);
+      const plainRow = page.locator(`#dock-list a[data-dock-row][href="${(await plain.getAttribute('href'))!}"]`);
+      await expect(plainRow.locator('[data-dock-tmux]')).toHaveCount(0);
+      await closeDock();
+
+      // A reload keeps it; so does a live refresh of the bar (the ⋯ menu's
+      // pin toggle answers with the rows re-rendered out of band).
+      await page.reload();
+      await page.evaluate(() => (window as any).musterSwitcherShow('all'));
+      await expect(named.locator('[data-switcher-tmux-line]')).toHaveText(`cobalt:${w}`);
+      const more = page.locator('#switcher-more-btn');
+      const pin = page.locator('#switcher-pin');
+      await (vp.use.hasTouch ? more.tap() : more.click());
+      await expect(pin).toBeVisible();
+      await page.evaluate(() => { (document.querySelector('#switcher-list-all a[data-switcher-entry]') as HTMLElement).dataset.staleMark = '1'; });
+      await (vp.use.hasTouch ? pin.tap() : pin.click());
+      await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'true');
+      await expect(allRow.locator('[data-stale-mark]'), 'the row was re-rendered').toHaveCount(0);
+      await expect(named.locator('[data-switcher-tmux-line]'), 'kept by the live refresh').toHaveText(`cobalt:${w}`);
+      await (vp.use.hasTouch ? more.tap() : more.click());
+      await (vp.use.hasTouch ? pin.tap() : pin.click());
+      await expect(page.locator('#switcher-pin')).toHaveAttribute('data-pinned', 'false');
+
+      // OFF again: gone.
+      await setSwitch(page, false);
+      await open();
+      await expect(bar.locator('[data-switcher-tmux], [data-switcher-tmux-line]')).toHaveCount(0);
+      expect(Math.abs((await bar.boundingBox())!.height - offHeight)).toBeLessThanOrEqual(0.5);
+    });
+
     test('the switch is off by default, turns on and persists, and the Asks row gains and loses the tmux address', async ({ page }) => {
       await signIn(page, origin);
       await rig.waitListed(page, `cobalt:${w}`);
@@ -116,7 +218,7 @@ for (const vp of [
       // 1. Off by default: exactly the name.
       await page.goto(origin + '/account');
       await expect(page.locator('[data-testid="notify-tmux"]')).toHaveAttribute('data-state', 'off');
-      await expect(page.locator('[data-testid="notify-tmux"]')).toContainText('Show tmux session in notifications');
+      await expect(page.locator('[data-testid="notify-tmux"]')).toContainText('Show tmux sessions');
       await page.goto(origin + '/attention');
       await expect(askRow(page, w)).toHaveText(name);
 

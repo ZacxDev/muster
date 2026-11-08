@@ -60,11 +60,19 @@ var sessionNameCallers = []string{
 
 // tmuxAddressSurfaces are the ledgered surfaces that name a mirrored session
 // in a NOTIFICATION — a push, the Asks list, the attention summary — and so
-// call notifyName, the one place "Show tmux session in notifications" adds the
+// call notifyName, the one place "Show tmux sessions" adds the
 // window's codename and host (notify_prefs.go).
 var tmuxAddressSurfaces = []string{
 	"attention.go Server.withNamesFrom", // every attention item's Name — a mirrored session's ask included: its push title, the Asks list, the summary (and attention_list)
 	"session_push.go Server.episodeWho", // a stalled / waiting session's push title and its "Stalled / waiting" row
+}
+
+// tmuxListSurfaces are the ledgered surfaces that put "Show tmux sessions"'
+// codename on a SESSION LIST's entries — the bar's pills and the dock's rows —
+// through tmuxPlace (the rule notifyName applies too), not through notifyName:
+// a list draws the codename on a line of its own, not after the name.
+var tmuxListSurfaces = []string{
+	"mirror.go Server.mirrorCards", // ui.MirrorCardView.TmuxAt / TmuxCode: the switcher bar's pills, the dock's rows
 }
 
 // noTmuxAddress is every OTHER ledgered surface, with why the preference does
@@ -87,7 +95,6 @@ var noTmuxAddress = map[string]string{
 	"focus_tools.go Server.toolFleetList":                        "a chief tool",
 	"focus_tools.go Server.toolFocusSearch":                      "a chief tool",
 	"mirror.go Server.handleMirrorTerminalPage":                  "a page header, not a notification",
-	"mirror.go Server.mirrorCards":                               "navigation, not a notification",
 	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",
 	"mirror_view.go Server.handleMirrorViewPage":                 "a page header, not a notification",
 	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",
@@ -179,7 +186,7 @@ func TestTheSessionNameCallerLedger(t *testing.T) {
 }
 
 // TestEveryNotificationSurfaceAsksForTheTmuxAddress pins the seam between
-// "Show tmux session in notifications" and the surfaces: (1) every function on
+// "Show tmux sessions" and the surfaces: (1) every function on
 // the name ledger is classified — a tmuxAddressSurfaces entry or a
 // noTmuxAddress one with its reason, never both; (2) in this package, exactly
 // the tmuxAddressSurfaces call notifyName. A positive control proves the walk
@@ -189,6 +196,12 @@ func TestEveryNotificationSurfaceAsksForTheTmuxAddress(t *testing.T) {
 	for _, f := range tmuxAddressSurfaces {
 		if _, both := noTmuxAddress[f]; both {
 			t.Errorf("%s is both a tmux-address surface and not one", f)
+		}
+		classified[f] = true
+	}
+	for _, f := range tmuxListSurfaces {
+		if _, both := noTmuxAddress[f]; both || slicesContains(tmuxAddressSurfaces, f) {
+			t.Errorf("%s is classified twice", f)
 		}
 		classified[f] = true
 	}
@@ -226,6 +239,107 @@ func TestEveryNotificationSurfaceAsksForTheTmuxAddress(t *testing.T) {
 	if got, want := nameLedgerKeys(callers), nameLedgerSorted(tmuxAddressSurfaces); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("functions that call notifyName:\n  got  %v\n  want %v\nA notification surface names a mirrored session through notifyName, and is a tmuxAddressSurfaces entry.", got, want)
 	}
+	// The rule itself: tmuxPlace is called by notifyName and by the list
+	// surfaces, and by nothing else — a list cannot add the codename by a
+	// rule of its own, nor a notification skip notifyName for tmuxPlace.
+	rule := map[string]bool{}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		for _, fn := range nameLedgerCallers(t, path, func(c *ast.CallExpr) bool {
+			id, ok := c.Fun.(*ast.Ident)
+			return ok && id.Name == "tmuxPlace"
+		}) {
+			rule[path+" "+fn] = true
+		}
+	}
+	if !rule["names.go notifyName"] {
+		t.Fatalf("positive control FAILED: the walk did not find notifyName calling tmuxPlace (found %v)", nameLedgerKeys(rule))
+	}
+	if got, want := nameLedgerKeys(rule), nameLedgerSorted(append([]string{"names.go notifyName"}, tmuxListSurfaces...)); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("functions that call tmuxPlace:\n  got  %v\n  want %v\nOnly notifyName and the tmuxListSurfaces apply the rule.", got, want)
+	}
+}
+
+// TestOnlyMirrorCardsSetsTheListsCodename: in the whole module, the only code
+// that writes ui.MirrorCardView's TmuxAt or TmuxCode (a composite-literal key
+// or an assignment) is api's mirrorCards — so the ui, or any other builder of
+// a card, cannot draw a codename the rule did not decide. A positive control
+// proves the walk sees the write.
+func TestOnlyMirrorCardsSetsTheListsCodename(t *testing.T) {
+	writers := map[string]bool{}
+	root := filepath.Join("..", "..")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "node_modules", ".git", "e2e", "web":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				isField := func(e ast.Expr) bool {
+					switch x := e.(type) {
+					case *ast.Ident:
+						return x.Name == "TmuxAt" || x.Name == "TmuxCode"
+					case *ast.SelectorExpr:
+						return x.Sel.Name == "TmuxAt" || x.Sel.Name == "TmuxCode"
+					}
+					return false
+				}
+				switch x := n.(type) {
+				case *ast.KeyValueExpr:
+					if isField(x.Key) {
+						writers[rel+" "+nameLedgerFunc(fn)] = true
+					}
+				case *ast.AssignStmt:
+					for _, l := range x.Lhs {
+						if isField(l) {
+							writers[rel+" "+nameLedgerFunc(fn)] = true
+						}
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join("internal", "api", "mirror.go") + " Server.mirrorCards", filepath.Join("internal", "ui", "switcher.go") + " switcherItems"}
+	if !writers[want[0]] {
+		t.Fatalf("positive control FAILED: the walk did not see mirrorCards write the codename (found %v)", nameLedgerKeys(writers))
+	}
+	if got := nameLedgerKeys(writers); strings.Join(got, "\n") != strings.Join(nameLedgerSorted(want), "\n") {
+		t.Errorf("writers of TmuxAt / TmuxCode:\n  got  %v\n  want %v\nOnly mirrorCards decides them (tmuxPlace); switcherItems only copies the card's onto its item.", got, want)
+	}
+}
+
+func slicesContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // callersOf is the functions of the file at path ("Recv.Name" or "Name")

@@ -511,7 +511,7 @@ var isolationClasses = map[string]routeClass{
 	// The chief's on/off switch (chief_toggle.go): the caller's own row, and
 	// the caller's own chief (list).
 	"POST /account/chief": classList,
-	// "Show tmux session in notifications" (notify_prefs.go): the caller's own
+	// "Show tmux sessions" (notify_prefs.go): the caller's own
 	// row (list).
 	"POST /account/notifications/tmux": classList,
 	// The chip row's reports (numbers only): the window's address in the
@@ -1082,7 +1082,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
 	// The chief's on/off switch (0060): A's choice is A's.
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
-	// "Show tmux session in notifications" (0094): A's switch is A's.
+	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}

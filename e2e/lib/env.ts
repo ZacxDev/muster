@@ -331,7 +331,7 @@ export const mcpDispatchCatalogPort = port + 303;
 // live line — its own server (mirror plugin on, the focus pass off) and its
 // own fake host. (+320: clear of the blocks other branches took.)
 export const sessionNamesPort = port + 320;
-// tests/notify-tmux.spec.ts: "Show tmux session in notifications" — its own
+// tests/notify-tmux.spec.ts: "Show tmux sessions" — its own
 // server (mirror plugin on) and its own fake host. (+340: clear of the blocks
 // other branches took.)
 export const notifyTmuxPort = port + 340;

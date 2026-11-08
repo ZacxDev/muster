@@ -299,10 +299,10 @@ human name, is titled by that name on the Asks list and in its notification,
 its place in the row's tooltip.
 
 Where the queue calls a session by its human [name](focus.md#a-sessions-name)
-instead (its place then in the Asks row's tooltip), **Show tmux session in
-notifications** (Account → Notifications, off by default) follows the name
+instead (its place then in the Asks row's tooltip), **Show tmux sessions**
+(Account → Notifications, off by default) follows the name
 with the window's codename (its tmux address when the host sent none) and
-host, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-session-in-notifications)).
+host, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-sessions)).
 
 The target is shown **verbatim**: a page or notification plains a title's
 markdown, but only the codename around the target, never the

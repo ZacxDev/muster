@@ -26,8 +26,8 @@ const accountNotifyTmuxPath = "/account/notifications/tmux"
 
 // Its words on the Account page.
 const (
-	notifyTmuxLabel = "Show tmux session in notifications"
-	notifyTmuxHelp  = "Adds the tmux session and host (like mango:1 @ atlas) after each session's name."
+	notifyTmuxLabel = "Show tmux sessions"
+	notifyTmuxHelp  = "Adds each session's tmux codename (like mango:1 @ atlas) to notifications and the session lists."
 )
 
 // notifyTmuxOn reports whether owner turned on "Show tmux session in

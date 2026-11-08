@@ -66,12 +66,13 @@ Either part is left out when unknown, and both when neither is known. The
 notification never adds the task's description or a comment's text beyond
 what it already carried.
 
-The same section has **Show tmux session in notifications** (off unless you
+The same section has **Show tmux sessions** (off unless you
 turn it on): a notification that names a mirrored session by its human name
 then adds the window's codename (its tmux address when the host sent none)
-and host after it, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-session-in-notifications)). It is
-drawn with or without Web Push, since it names sessions on the Asks list and
-in the attention summary too; its POST is `/account/notifications/tmux`
+and host after it, `Billing migration · mango:1 @ atlas` ([focus.md](focus.md#show-tmux-sessions)). It is
+drawn with or without Web Push, since it also names sessions on the Asks
+list, in the attention summary and on the session switcher's pills and dock
+rows; its POST is `/account/notifications/tmux`
 (`on=1|0`).
 
 Push routes are session-authenticated and same-origin:

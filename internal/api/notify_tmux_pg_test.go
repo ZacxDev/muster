@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // "SHOW TMUX SESSION IN NOTIFICATIONS", end to end on a real Postgres: the
@@ -238,6 +239,63 @@ func TestAMirroredAsksPushAndRowAreTitledByTheSessionsName(t *testing.T) {
 				t.Fatalf("the Asks list does not title the ask %q:\n%s", c.want, page[max(0, i-100):min(len(page), max(0, i)+300)])
 			}
 		})
+	}
+}
+
+// TestTheBarsPillsCarryTheCodenameByTheViewersOwnSwitch: on real Postgres
+// (row-level security on the switch), an agent page's switcher bar — the pills
+// the dock copies — carries a named window's codename (data-switcher-tmux,
+// and the pill's codename line) exactly when the VIEWER turned the switch on:
+// default off; a member's switch on does not reach the operator; the
+// operator's on does. A window with no human name never carries it.
+func TestTheBarsPillsCarryTheCodenameByTheViewersOwnSwitch(t *testing.T) {
+	f := newAttnFixture(t)
+	if _, err := focus.NewPG(f.pool).SetManualName(asUser(1), focus.MirrorSubject(focusSID), "Ledger cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, focusSID)
+	})
+	ws := attnWindows(mirror.StatusIdle)
+	ws[0].Label = "Gold:1"
+	f.mirror.mu.Lock()
+	f.mirror.windows = ws
+	f.mirror.mu.Unlock()
+	member := f.newMember(t)
+	p := notifypref.NewPG(f.pool)
+	f.srv.ext.NotifyPrefs = p
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notify_preferences WHERE owner_id = ANY($1)`, []int64{1, member})
+	})
+	bar := func() string {
+		t.Helper()
+		page := f.pageFollow(t, "/agents/"+f.op.Name)
+		i := strings.Index(page, `id="switcher-list-all"`)
+		if i < 0 {
+			t.Fatal("the agent page draws no switcher bar")
+		}
+		return page[i:min(len(page), i+20000)]
+	}
+	const on = `data-switcher-tmux="Gold:1 @ ws"`
+	if b := bar(); strings.Contains(b, "data-switcher-tmux") || !strings.Contains(b, `data-switcher-name="Ledger cleanup"`) {
+		t.Fatalf("default: the bar carries a codename (or lost the named pill):\n%s", truncate(b, 1500))
+	}
+	if err := p.SetTmuxAddress(asUser(member), member, true); err != nil {
+		t.Fatal(err)
+	}
+	if b := bar(); strings.Contains(b, "data-switcher-tmux") {
+		t.Fatal("a member's switch reached the operator's bar")
+	}
+	if err := p.SetTmuxAddress(asUser(1), 1, true); err != nil {
+		t.Fatal(err)
+	}
+	b := bar()
+	if !strings.Contains(b, on) || !strings.Contains(b, `data-switcher-tmux-line="" class="`+ui.SwitcherTmuxLineClass+`">Gold:1</span>`) {
+		t.Fatalf("on: the named pill has no codename:\n%s", truncate(b, 2000))
+	}
+	// Window @2 has no human name: called by its place, so never twice.
+	if n := strings.Count(b, "data-switcher-tmux="); n != 1 {
+		t.Fatalf("on: %d pills carry a codename, want only the named one", n)
 	}
 }
 

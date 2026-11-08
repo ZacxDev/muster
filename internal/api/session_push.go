@@ -378,7 +378,7 @@ func (s *Server) episodeAsk(octx context.Context, ep sessionstate.Episode, hosts
 // still labelled that session.
 //
 // A conversation with a human name is called by it — followed by its window's
-// tmux address when its owner turned on "Show tmux session in notifications"
+// tmux address when its owner turned on "Show tmux sessions"
 // (notifyName, over the target episodePlace finds: the window holding it now,
 // else the stored one).
 func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
