@@ -57,6 +57,9 @@ func TestTheMenuBadgeFragmentCannotRetriggerItself(t *testing.T) {
 	if !strings.Contains(zero, " hidden>") || strings.Contains(three, " hidden") || !strings.Contains(three, `data-count="3"`) || !strings.Contains(three, `<span aria-hidden="true">3</span>`) {
 		t.Fatalf("zero %s / three %s", zero, three)
 	}
+	if strings.Contains(zero, "waiting on you") || !strings.Contains(three, ">3 waiting on you<") {
+		t.Fatalf("the description: none at zero, the count otherwise: zero %s / three %s", zero, three)
+	}
 	if b := NavWaitingBadgeHTML(250); !strings.Contains(b, `>99+</span>`) || !strings.Contains(b, `data-count="250"`) {
 		t.Fatalf("a large count: %s", b)
 	}
@@ -129,16 +132,17 @@ func TestThePaletteCopiesTheSidebarsWaitingMark(t *testing.T) {
 
 // TestTheOverlayBadgeIsDrawnWithThePage: on a page with a session switcher
 // (the Rendered view, a Terminal view) the ☰ badge's first count is the
-// switcher's Waiting view — drawn with the page, no load and no minute's poll —
-// and it still refreshes on the events and each open of the drawer. A page with
-// none loads it.
+// switcher's Waiting view — drawn with the page, no load — and it still
+// refreshes on the events and each open of the drawer; with poll (nothing else
+// on the page refreshes it: a Terminal view) also once a minute. A page with
+// no switcher loads it and polls.
 func TestTheOverlayBadgeIsDrawnWithThePage(t *testing.T) {
 	list, mirrors := menuBadgeFixture()
 	sw := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
 	if len(sw.Waiting) != NavWaitingCount(list, mirrors) {
 		t.Fatalf("the switcher's Waiting view holds %d, the badge counts %d", len(sw.Waiting), NavWaitingCount(list, mirrors))
 	}
-	over := renderString(t, overlayNavButton(sw))
+	over := renderString(t, overlayNavButton(sw, false))
 	if !strings.Contains(over, `data-count="3"`) || strings.Contains(over, `data-count="3" class="pointer-events-none absolute right-0 top-0 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none text-on-accent ring-2 ring-bg" hidden`) {
 		t.Fatalf("the overlay ☰ does not draw the switcher's 3: %s", over)
 	}
@@ -152,7 +156,11 @@ func TestTheOverlayBadgeIsDrawnWithThePage(t *testing.T) {
 			t.Errorf("the overlay ☰ badge does not refresh on %s", ev)
 		}
 	}
-	plain := renderString(t, overlayNavButton(nil))
+	polled := renderString(t, overlayNavButton(sw, true))
+	if strings.Contains(polled, "load[") || !strings.Contains(polled, "every 60s") || !strings.Contains(polled, NavOpenEvent) || !strings.Contains(polled, `data-count="3"`) {
+		t.Errorf("a polled overlay ☰ draws its count, polls once a minute and never loads: %s", polled)
+	}
+	plain := renderString(t, overlayNavButton(nil, false))
 	if !strings.Contains(plain, "load[") || !strings.Contains(plain, "every 60s") || !strings.Contains(plain, `data-count="0"`) {
 		t.Errorf("without a switcher the badge must load its count: %s", plain)
 	}

@@ -724,15 +724,15 @@ func header(push bool) g.Node {
 // shared by the home shell header() and the agent-detail / operator headers so
 // every page carries the same #sidebar-open that appScript's initPage binds.
 // Hidden on desktop (lg) where the sidebar is always visible.
-func sidebarOpenButton() g.Node { return navOpenButton(false, nil) }
+func sidebarOpenButton() g.Node { return navOpenButton(false, nil, false) }
 
 // overlayOpenButton is the hamburger of a page whose sidebar is an overlay at
 // every width (sidebarIn's overlay): the same #sidebar-open, never hidden. s is
 // the page's session switcher, whose Waiting view gives the badge its first
-// count (navWaitingSlot); nil for none.
-func overlayOpenButton(s *Switcher) g.Node { return navOpenButton(true, s) }
+// count; poll: nothing else on the page refreshes the badge (navWaitingSlot).
+func overlayOpenButton(s *Switcher, poll bool) g.Node { return navOpenButton(true, s, poll) }
 
-func navOpenButton(overlay bool, s *Switcher) g.Node {
+func navOpenButton(overlay bool, s *Switcher, poll bool) g.Node {
 	display := " lg:hidden"
 	if overlay {
 		display = ""
@@ -753,7 +753,7 @@ func navOpenButton(overlay bool, s *Switcher) g.Node {
 		Class("press relative -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg"+display),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>`),
 		// What waits on the operator in the sidebar (nav_agents.go).
-		navWaitingSlot(s),
+		navWaitingSlot(s, poll),
 	)
 }
 

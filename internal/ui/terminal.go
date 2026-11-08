@@ -324,7 +324,8 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					// on one line, and a header that cannot wrap pushes the
 					// document sideways instead.
 					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
-					overlayNavButton(v.Switcher),
+					// Polled: nothing else on a Terminal view refreshes the badge.
+					overlayNavButton(v.Switcher, true),
 					A(
 						ID("term-back"),
 						Href(back),

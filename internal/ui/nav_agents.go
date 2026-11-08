@@ -320,11 +320,13 @@ var navIdleJS = `(function () {
 // (navAgentsRailTrigger's), each only while the button is on screen (it is
 // hidden beside the desktop rail, which shows the rows themselves); on every
 // open of the drawer, so the badge and the rows just drawn agree; on the asks
-// block's own stream (asks:changed, a session page's AttentionLiveScript);
-// and once a minute while the tab is shown, as the Attention badge's is. A page
-// with a session switcher (the Rendered view, a Terminal view) draws its first
-// count with the page instead, and has neither the load nor the poll
-// (navWaitingSlot).
+// block's own stream (asks:changed, a session page's AttentionLiveScript —
+// which fires on every queue change AND on its own minute's tick); and once a
+// minute while the tab is shown, as the Attention badge's is. A page with a
+// session switcher (the Rendered view, a Terminal view) draws its first count
+// with the page instead, so it has no load-time read; it keeps the minute's
+// poll only where nothing else on the page would refresh the badge (a
+// Terminal view, a Rendered view with no asks block) — see navWaitingSlot.
 
 // NavWaitingPath is the ☰ button's badge partial.
 const NavWaitingPath = "/ui/nav/waiting"
@@ -366,14 +368,19 @@ func NavWaitingBadgeHTML(n int) string {
 	if n > 99 {
 		shown = "99+"
 	}
+	// The words are the button's description: none at zero, so the button
+	// is not described as "0 waiting on you".
+	words := ""
+	if n > 0 {
+		words = c + " waiting on you"
+	}
 	return `<span id="` + NavWaitingBadgeID + `" data-nav-waiting="" data-count="` + c + `"` +
 		` class="pointer-events-none absolute right-0 top-0 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none text-on-accent ring-2 ring-bg"` +
-		hidden + `><span aria-hidden="true">` + shown + `</span><span class="sr-only">` + c + ` waiting on you</span></span>`
+		hidden + `><span aria-hidden="true">` + shown + `</span><span class="sr-only">` + words + `</span></span>`
 }
 
-// navWaitingEventsTrigger is the badge's trigger on a page that draws its
-// first count itself (navWaitingSlot with a switcher): the same refreshes with
-// neither the load nor the minute's poll.
+// navWaitingEventsTrigger is the badge's event refreshes, without the load and
+// without the minute's poll (navWaitingSlot adds the poll where it is needed).
 const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
 	"agents:changed[" + navWaitingShownJS + "] from:body, " +
 	"sse:agent.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
@@ -388,13 +395,22 @@ const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
 // the overlay pages, whose open path the sidebar's list was built to spare) THE
 // FIRST COUNT IS DRAWN WITH THE PAGE, from the switcher's Waiting view: the
 // same entries and the same predicate (NewSwitcher's listEntry.waiting), already
-// read for the bar — so the page costs no extra read on load and no minute's
-// poll; the badge then refreshes on the events and on each open of the drawer
-// (navWaitingEventsTrigger). Without one, it loads its count (navWaitingTrigger).
-func navWaitingSlot(s *Switcher) g.Node {
+// read for the bar — so the page costs no extra read on load. It then refreshes
+// on the events and on each open of the drawer (navWaitingEventsTrigger), and —
+// with poll — once a minute: poll is for a page where nothing else would
+// refresh it (no /events stream, no asks block: a Terminal view, a Rendered
+// view whose window has no asks source). A Rendered view WITH its asks block
+// is refreshed by that block's asks:changed, which fires on every queue change
+// and on the block's own minute's tick, so it reads /ui/nav/waiting about once
+// a minute anyway. Without a switcher, the badge loads its count and polls
+// (navWaitingTrigger).
+func navWaitingSlot(s *Switcher, poll bool) g.Node {
 	n, trigger := 0, navWaitingTrigger
 	if s != nil {
 		n, trigger = len(s.Waiting), navWaitingEventsTrigger
+		if poll {
+			trigger += ", every 60s [(" + navWaitingShownJS + ")&&!document.hidden]"
+		}
 	}
 	return Span(ID("nav-waiting-slot"), hx("hx-get", NavWaitingPath), hx("hx-trigger", trigger),
 		hx("hx-swap", "innerHTML"), hx("hx-target", "this"), g.Raw(NavWaitingBadgeHTML(n)))

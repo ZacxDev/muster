@@ -154,8 +154,8 @@ for (const vp of [
       await rig.waitListed(page, 'kiwi');
       const base = await waitingRows(page);
       // A page whose ☰ is on screen at this size: the shell on a phone (the
-      // rail is a drawer there), the Rendered view on a desktop (its sidebar is
-      // an overlay at every width).
+      // rail is a drawer there), the Rendered view and then a Terminal view on
+      // a desktop (their sidebar is an overlay at every width).
       const reads: string[] = [];
       page.on('request', (r) => {
         if (new URL(r.url()).pathname === '/ui/nav/waiting') reads.push(r.url());
@@ -174,12 +174,21 @@ for (const vp of [
         // The shell holds the /events stream: the badge follows it, no reload.
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
       } else {
-        // The Rendered view holds no stream: its next load draws the count
-        // WITH the page (from the switcher's Waiting view) — no read of its own.
+        // The Rendered view's next load draws the count WITH the page (from
+        // the switcher's Waiting view) — no read of its own. (Afterwards its
+        // asks block's asks:changed refreshes it, on a queue change and on the
+        // block's minute's tick.)
         await page.reload();
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1));
         await page.waitForTimeout(500);
         expect(reads, 'the Rendered view drew the count with the page, no /ui/nav/waiting read').toEqual([]);
+        // A Terminal view: also drawn with the page; nothing else on it
+        // refreshes the badge but the drawer's open and its minute's poll.
+        await page.goto(origin + rig.terminalPath('plum') + '&window=%401');
+        await expect(menuBtn(page)).toBeVisible();
+        await expect(badge(page)).toHaveAttribute('data-count', String(base + 1));
+        await page.waitForTimeout(500);
+        expect(reads, 'the Terminal view drew the count with the page, no /ui/nav/waiting read').toEqual([]);
       }
       await expect(badge(page)).toBeVisible();
       // On the button's corner, inside the screen.
@@ -195,10 +204,15 @@ for (const vp of [
       if (vp.phone) {
         await expect(badge(page), 'answered: the badge follows, live').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
       } else {
-        // Opening the sidebar refreshes it (with the rows it opens on).
+        // CONTROL: on the Terminal view nothing refreshes the badge by itself
+        // within the minute — it still says what the page drew …
+        await page.waitForTimeout(1500);
+        await expect(badge(page), 'nothing but the open refreshes the Terminal view’s badge').toHaveAttribute('data-count', String(base + 1));
+        expect(reads, 'no read before the open').toEqual([]);
+        // … and opening the sidebar refreshes it (with the rows it opens on).
         await tap(page, '#sidebar-open');
         await expect(badge(page), 'answered: the open refreshes it').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
-        expect(reads.length, 'POSITIVE CONTROL: the open is a /ui/nav/waiting read').toBeGreaterThanOrEqual(1);
+        expect(reads.length, 'the open is a /ui/nav/waiting read').toBeGreaterThanOrEqual(1);
       }
       if (base === 0) await expect(badge(page)).toBeHidden();
     });
