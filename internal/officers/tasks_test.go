@@ -15,7 +15,7 @@ func TestTaskToolsAreOfferedToTheTaskReconcilerTypeOnly(t *testing.T) {
 	}{
 		{"task-reconciler:hq", true},
 		{"task-reconciler:other", true},
-		{"release:civitai-web", false},
+		{"release:alpha-web", false},
 		{"engineering:hq", false},
 		{"task-reconciler-x:hq", false},
 		{"x-task-reconciler:hq", false},
@@ -80,7 +80,7 @@ func TestTaskListQueryRefusesWhatItCannotCarry(t *testing.T) {
 }
 
 func TestTaskGetIDIsAnHQTaskIDOnly(t *testing.T) {
-	for _, ok := range []string{"868mgz5ap", "app_blocks_created_yt9b", "agent-asks-to-koen-a-per-xhb3", strings.Repeat("a", 64)} {
+	for _, ok := range []string{"868aaaa01", "fixture_task_ab12", "fixture-task-with-dashes-cd34", strings.Repeat("a", 64)} {
 		if got, err := TaskGetID([]byte(`{"task_id":"` + ok + `"}`)); err != nil || got != ok {
 			t.Errorf("TaskGetID(%s) = %q, %v", ok, got, err)
 		}

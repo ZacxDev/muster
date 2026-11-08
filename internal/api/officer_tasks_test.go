@@ -78,7 +78,7 @@ func TestTaskToolsReadHQWithTheOfficersOwnToken(t *testing.T) {
 	if isToolErr(out) || !strings.Contains(out, `"fixture-task-1"`) || !strings.Contains(out, `"children_done":2`) {
 		t.Fatalf("list: %s", out)
 	}
-	out = r.s.dispatchAgentTool(ctx, a, officerTaskGetTool, `{"task_id":"868mgz5ap"}`)
+	out = r.s.dispatchAgentTool(ctx, a, officerTaskGetTool, `{"task_id":"868aaaa01"}`)
 	if isToolErr(out) || !strings.Contains(out, `"done_statuses":["complete"]`) {
 		t.Fatalf("get: %s", out)
 	}
@@ -89,7 +89,7 @@ func TestTaskToolsReadHQWithTheOfficersOwnToken(t *testing.T) {
 	if q := reqs[0]; q.Method != "GET" || q.Path != "/api/v1/officers/"+offTR+"/tasks" || q.Query != "limit=50&open=true" || q.Auth != "Bearer "+offTRTok {
 		t.Errorf("list went %s %s ?%s with %q", q.Method, q.Path, q.Query, q.Auth)
 	}
-	if q := reqs[1]; q.Method != "GET" || q.Path != "/api/v1/officers/"+offTR+"/tasks/868mgz5ap" || q.Auth != "Bearer "+offTRTok {
+	if q := reqs[1]; q.Method != "GET" || q.Path != "/api/v1/officers/"+offTR+"/tasks/868aaaa01" || q.Auth != "Bearer "+offTRTok {
 		t.Errorf("get went %s %s with %q", q.Method, q.Path, q.Auth)
 	}
 }
