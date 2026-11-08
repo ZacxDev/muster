@@ -170,9 +170,11 @@ type GitHub interface {
 	// never a truncated answer.
 	PRsForBranch(ctx context.Context, branch, state string) ([]PR, error)
 	// OfficerPRs is every pull request login opened in this repository
-	// (GitHub's issues list filtered by creator, every page, newest created
-	// first), in state "open", "closed" or "all", with its Body. More than
-	// maxPages pages is an error, never a truncated answer.
+	// (GitHub's pulls list, every page, newest created first, kept when its
+	// author is login), in state "open", "closed" or "all", with its Body and
+	// head. For the App's own login the read stops at the App's creation;
+	// otherwise the list is read whole. More than maxPages pages read is an
+	// error, never a truncated answer.
 	OfficerPRs(ctx context.Context, login, state string) ([]PR, error)
 	// DeleteBranch deletes refs/heads/<branch> (the draft gate, after it
 	// closed a pull request whose branch holds a refused change).
@@ -210,7 +212,11 @@ type REST struct {
 	Token func(ctx context.Context) (string, error)
 	// Slug reads the App's slug (GET /app, as the App).
 	Slug func(ctx context.Context) (string, error)
-	HTTP *http.Client
+	// Created reads when the App was created (GET /app's created_at, as the
+	// App). OfficerPRs stops reading the App's own pull requests there; nil
+	// reads the whole list.
+	Created func(ctx context.Context) (time.Time, error)
+	HTTP    *http.Client
 }
 
 // maxGitHubBody bounds one response read.
@@ -879,39 +885,65 @@ func (g *REST) PRsForBranch(ctx context.Context, branch, state string) ([]PR, er
 	return nil, fmt.Errorf("more than %d pull requests from %s: too many to vouch for", maxPages*100, branch)
 }
 
-// OfficerPRs implements GitHub.
+// OfficerPRs implements GitHub. It reads the pulls list, never the issues
+// list: an officer App's token carries Pull requests but no Issues
+// permission, so GitHub answers the issues list 403 for it. The pulls list
+// has no author filter, so it is read newest created first and only login's
+// pull requests are kept, compared case-insensitively.
+//
+// 🔴 When login is this App's own bot (Slug) and Created is set, the read
+// stops after the first page that reaches back past the App's creation: the
+// App's bot cannot have opened a pull request before the App existed, so
+// every one of its pull requests is on that page or an earlier one. The cost
+// is then the repository's pull requests since the App was created, not its
+// whole history. Any other login reads the whole list. A list that is not
+// newest-created first is an error (the stop would be a guess), and so is an
+// unreadable slug or creation time, or (when stopping) a listed pull request
+// without a created_at. A pull request created at exactly the App's creation
+// time does not stop the read; the next page is read too.
 func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error) {
-	q := url.Values{"creator": {login}, "state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	var since time.Time
+	if g.Created != nil && g.Slug != nil {
+		slug, err := g.Slug(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(login, BotLogin(slug)) {
+			if since, err = g.Created(ctx); err != nil {
+				return nil, err
+			}
+		}
+	}
+	q := url.Values{"state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
 	var out []PR
+	var prev time.Time
 	for page := 1; page <= maxPages; page++ {
 		q.Set("page", strconv.Itoa(page))
-		var batch []struct {
-			Number    int       `json:"number"`
-			State     string    `json:"state"`
-			Title     string    `json:"title"`
-			Body      string    `json:"body"`
-			CreatedAt time.Time `json:"created_at"`
-			User      struct {
-				Login string `json:"login"`
-				Type  string `json:"type"`
-			} `json:"user"`
-			PullRequest *struct{} `json:"pull_request"`
-		}
-		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/issues?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
+		var batch []restPR
+		if err := g.do(ctx, http.MethodGet, g.repoPath()+"/pulls?"+q.Encode(), "", nil, &batch, "listing "+login+"'s pull requests"); err != nil {
 			return nil, err
 		}
 		for _, r := range batch {
-			if r.PullRequest == nil {
-				continue // an issue, not a pull request
+			if !since.IsZero() && r.CreatedAt.IsZero() {
+				// A missing created_at would read as older than the App and
+				// stop the read early, and would skip the order check below.
+				return nil, fmt.Errorf("GitHub's pulls list for %s carried #%d without a created_at: cannot vouch for %s's pull requests",
+					g.Repo, r.Number, login)
 			}
-			out = append(out, PR{Number: r.Number, State: r.State, Title: r.Title, Body: r.Body, CreatedAt: r.CreatedAt,
-				Author: r.User.Login, AuthorType: r.User.Type})
+			if !prev.IsZero() && r.CreatedAt.After(prev) {
+				return nil, fmt.Errorf("GitHub's pulls list for %s is not newest created first (#%d is newer than the one before it): cannot vouch for %s's pull requests",
+					g.Repo, r.Number, login)
+			}
+			prev = r.CreatedAt
+			if strings.EqualFold(r.User.Login, login) {
+				out = append(out, r.pr())
+			}
 		}
-		if len(batch) < 100 {
+		if len(batch) < 100 || (!since.IsZero() && batch[len(batch)-1].CreatedAt.Before(since)) {
 			return out, nil
 		}
 	}
-	return nil, fmt.Errorf("more than %d issues and pull requests by %s: too many to vouch for", maxPages*100, login)
+	return nil, fmt.Errorf("more than %d pull requests in %s (anyone's) to find %s's among: too many to vouch for", maxPages*100, g.Repo, login)
 }
 
 // DeleteBranch implements GitHub.

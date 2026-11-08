@@ -69,6 +69,8 @@ type fakeGitHub struct {
 	// GitHub's own JSON, not the production struct re-encoded, so a wrong json
 	// tag on that struct cannot agree with itself and pass.
 	rawInstallations string
+	// rawApp, when set, is GET /app's body VERBATIM (GitHub's own JSON).
+	rawApp string
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
@@ -215,6 +217,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case r.Method == http.MethodGet && p == "/app":
+		if err := f.verifyJWT(r.Header.Get("Authorization")); err != nil || f.rawApp == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"message":"A JSON web token could not be decoded"}`)
+			return
+		}
+		_, _ = io.WriteString(w, f.rawApp)
 	case r.Method == http.MethodGet && p == "/app/installations":
 		if f.rawInstallations != "" {
 			_, _ = io.WriteString(w, f.rawInstallations)

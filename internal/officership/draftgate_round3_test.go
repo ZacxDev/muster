@@ -10,7 +10,7 @@ import (
 // The draft gate's third round: a removed file GitHub shows no diff for is
 // judged by its content at the base; .gitattributes (which can make a file's
 // diff disappear) is refused anywhere; a credential's env pair is judged
-// with its unchanged name line as context; and the creator filter the rate
+// with its unchanged name line as context; and the author filter the rate
 // limits and the sweep read is cross-checked by the branch. Every value is
 // synthetic.
 // ---------------------------------------------------------------------------
@@ -124,10 +124,10 @@ func TestAnEnvCredentialPairIsRefused(t *testing.T) {
 	}
 }
 
-// TestACreatorFilterThatListsNothingFailsClosed (Y2): GitHub answers the
-// issues list's creator filter with an EMPTY list (200, not an error) for a
-// login it does not match — measured live. A filter that misses the
-// officer's pull requests would void the rate limits and the sweep, so both
+// TestACreatorFilterThatListsNothingFailsClosed (Y2): an author filter that
+// does not match the officer's App answers an EMPTY list, not an error. A
+// filter that misses the officer's pull requests would void the rate limits
+// and the sweep, so both
 // cross-check it by the officer's branches: a pull request of the officer's
 // App found from one of its branches that the filter did not list is an
 // error. The rate limits refuse; the sweep reports it and still checks the
@@ -142,8 +142,8 @@ func TestACreatorFilterThatListsNothingFailsClosed(t *testing.T) {
 	r := newDraftRig()
 	ownOpen(r)
 	r.infra.creatorBlind = true
-	if err := r.create(goodCreate()); err == nil || !strings.Contains(err.Error(), "creator filter") {
-		t.Fatalf("a blind creator filter: create err = %v, want an error naming the creator filter", err)
+	if err := r.create(goodCreate()); err == nil || !strings.Contains(err.Error(), "author filter") {
+		t.Fatalf("a blind author filter: create err = %v, want an error naming the author filter", err)
 	}
 	// Control: the filter sees it, so the per-item limit refuses as before.
 	r = newDraftRig()
@@ -159,11 +159,11 @@ func TestACreatorFilterThatListsNothingFailsClosed(t *testing.T) {
 	cmp.Files = []File{modified(".sops.yaml")}
 	r.infra.compares["trunk..."+fxHead] = cmp
 	err := r.g.Sweep(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "creator filter") {
-		t.Fatalf("a blind creator filter: Sweep err = %v, want an error naming the creator filter", err)
+	if err == nil || !strings.Contains(err.Error(), "author filter") {
+		t.Fatalf("a blind author filter: Sweep err = %v, want an error naming the author filter", err)
 	}
 	if len(r.infra.closed) != 1 || r.infra.closed[0] != dPR {
-		t.Fatalf("a blind creator filter: closed %v, want #%d (found by its branch) closed", r.infra.closed, dPR)
+		t.Fatalf("a blind author filter: closed %v, want #%d (found by its branch) closed", r.infra.closed, dPR)
 	}
 	// Control: another bot's or a human's pull request from an officer
 	// branch is not the officer's, so the filter not listing it is no error.

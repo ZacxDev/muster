@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +61,38 @@ type Item struct {
 	// outcome needs_judgement (HQ's routine_summary, kept for the judgement
 	// claimer); absent when none.
 	RoutineSummary string `json:"routine_summary,omitempty"`
+	// CostUSD and CostFrom are the item's cost as a complete reported it
+	// (civ-hq docs/OFFICERS.md "Item cost"): both or neither; absent until
+	// reported. A later complete without them keeps them (HQ's coalesce).
+	CostUSD  *float64 `json:"cost_usd,omitempty"`
+	CostFrom *string  `json:"cost_from,omitempty"`
+}
+
+// costFromRe is HQ's cost source id (civ-hq store/officer_cost.go).
+var costFromRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
+
+// costOf is a complete body's cost as HQ checks it (civ-hq api/officers.go
+// officerCostOf, store/officer_cost.go checkOfficerCost): sent false when the
+// body names neither field; a refusal message when only one is, or a value HQ
+// will not store.
+func costOf(body map[string]any) (usd float64, from string, sent bool, refusal string) {
+	rawUSD, hasUSD := body["cost_usd"]
+	rawFrom, hasFrom := body["cost_from"]
+	if !hasUSD && !hasFrom {
+		return 0, "", false, ""
+	}
+	if !hasUSD || !hasFrom {
+		return 0, "", true, "cost_usd and cost_from go together: give both or neither"
+	}
+	usd, okUSD := rawUSD.(float64)
+	from, okFrom := rawFrom.(string)
+	if !okUSD || math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 || usd > 10000 {
+		return 0, "", true, "cost_usd must be 0-10000"
+	}
+	if !okFrom || !costFromRe.MatchString(from) {
+		return 0, "", true, "cost_from must name who computed the cost"
+	}
+	return usd, from, true, ""
 }
 
 // tierOf is the tier item it reads as: its own, or judgement when unset.
@@ -177,7 +211,11 @@ type Server struct {
 	// is answered by every complete instead (RefuseCompletes).
 	Investigating    map[string]bool
 	PreInvestigation bool
-	completeRefusal  *refusal
+	// PreCost is an HQ from before item cost (migration 0126): it refuses
+	// unknown body fields, so a complete carrying cost_usd or cost_from is a
+	// 400 and nothing is written.
+	PreCost         bool
+	completeRefusal *refusal
 }
 
 // RefuseCompletes makes every complete answer status {error, code} (status 0:
@@ -932,6 +970,22 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object {instance, outcome, summary, links?}", "code": "invalid"})
 			return
 		}
+		_, hasUSD := body["cost_usd"]
+		_, hasFrom := body["cost_from"]
+		if (hasUSD || hasFrom) && s.PreCost {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "body must be one JSON object {instance, outcome, summary, links?, investigation?}", "code": "invalid"})
+			return
+		}
+		costUSD, costFrom, costSent, costRefusal := costOf(body)
+		if costRefusal != "" {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": costRefusal, "code": "invalid"})
+			return
+		}
+		setCost := func() {
+			if costSent {
+				it.CostUSD, it.CostFrom = &costUSD, &costFrom
+			}
+		}
 		if s.completeRefusal != nil {
 			s.write(w, s.completeRefusal.status, map[string]any{"error": s.completeRefusal.error, "code": s.completeRefusal.code})
 			return
@@ -969,6 +1023,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			}
 			summary, _ := body["summary"].(string)
 			it.Tier, it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt, it.RoutineSummary = "judgement", "open", "", nil, now, summary
+			setCost()
 			s.write(w, http.StatusOK, map[string]any{"item": *it})
 			return
 		}
@@ -985,6 +1040,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		if sent {
 			it.Investigation = inv
 		}
+		setCost()
 		s.write(w, http.StatusOK, map[string]any{"item": *it})
 	case "transcript":
 		s.transcript(w, officer, it, instance, live, body)

@@ -216,12 +216,12 @@ func (g *PushGate) bodyContract(body string, item int) error {
 
 // rateLimits refuses a new pull request for item in sr over a limit. EVERY
 // pull request the officer's App opened in each ship repository is read
-// (OfficerPRs: GitHub's creator filter, every page). Only the officer's own
-// count (its App's bot, typed Bot), each by its item: the body's first line
-// when it names one for this officer (the gate enforces that line on every
-// create and body edit), else the branch, read from the pull request itself
-// (a human may have edited the body); a pull request whose item resolves
-// neither way is not the officer's shape and is not counted.
+// (OfficerPRs: GitHub's pulls list kept by author, every page). Only the
+// officer's own count (its App's bot, typed Bot), each by its item: the body's
+// first line when it names one for this officer (the gate enforces that line
+// on every create and body edit), else the branch, read from the pull request
+// itself (a human may have edited the body); a pull request whose item
+// resolves neither way is not the officer's shape and is not counted.
 func (g *PushGate) rateLimits(ctx context.Context, sr officers.ShipRepo, item int) error {
 	now := time.Now
 	if g.Now != nil {
@@ -563,12 +563,11 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 }
 
 // officerPRs is OfficerPRs(login, state) of sr, CROSS-CHECKED by the
-// officer's branches. 🔴 GitHub answers the issues list's creator filter with
-// an EMPTY list (200 []), not an error, for a login it does not match
-// (measured live: creator=dependabot[bot] lists dependabot's pull requests;
-// creator=dependabot and an unknown <x>[bot] list nothing, 200), so a filter
-// that stopped matching the officer's App would read as "no pull requests"
-// and void the rate limits and the sweep. Every branch under the officer's
+// officer's branches. 🔴 OfficerPRs keeps the pulls list's entries whose
+// author is login, and an author filter that stopped matching the officer's
+// App (a login spelled otherwise than GitHub reports it) answers an EMPTY
+// list, not an error, which would read as "no pull requests" and void the
+// rate limits and the sweep. Every branch under the officer's
 // prefix in sr is looked up by its branch (PRsForBranch, in state); a pull
 // request of login from this repository that the filter did not list is
 // added to the answer AND makes it an error (fail closed: rateLimits refuses;
@@ -587,7 +586,7 @@ func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitH
 	prefix := sr.BranchPrefix + officers.Slug(g.OfficerID) + "/"
 	branches, err := gh.Branches(ctx, prefix)
 	if err != nil {
-		return prs, fmt.Errorf("could not list the officer's branches to cross-check GitHub's creator filter: %v", err)
+		return prs, fmt.Errorf("could not list the officer's branches to cross-check the author filter: %v", err)
 	}
 	var missed []string
 	for _, b := range branches {
@@ -596,7 +595,7 @@ func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitH
 		}
 		found, err := gh.PRsForBranch(ctx, b.Name, state)
 		if err != nil {
-			return prs, fmt.Errorf("could not look up the pull requests from %s to cross-check GitHub's creator filter: %v", b.Name, err)
+			return prs, fmt.Errorf("could not look up the pull requests from %s to cross-check the author filter: %v", b.Name, err)
 		}
 		for _, p := range found {
 			if listed[p.Number] || !strings.EqualFold(p.Author, login) || (p.HeadRepo != "" && !strings.EqualFold(p.HeadRepo, sr.Repo)) {
@@ -608,7 +607,7 @@ func (g *PushGate) officerPRs(ctx context.Context, sr officers.ShipRepo, gh GitH
 		}
 	}
 	if len(missed) > 0 {
-		return prs, fmt.Errorf("GitHub's creator filter (creator=%s) did not list the officer's pull request(s) %s, found by their branches, "+
+		return prs, fmt.Errorf("the author filter (author %s) did not list the officer's pull request(s) %s, found by their branches, "+
 			"so it cannot be trusted to list them all", login, strings.Join(missed, ", "))
 	}
 	return prs, nil
