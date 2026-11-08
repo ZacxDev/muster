@@ -44,29 +44,33 @@ func (m *memNotifyPrefs) SetTmuxAddress(ctx context.Context, owner int64, on boo
 // names "Billing migration": its place is the label and the tmux target.
 func namedAskItem() attentionItem {
 	return attentionItem{Key: "ask-1", Kind: attentionKindAsk, Source: "mango:1 · tmux main:1 @ ws", target: "tmux main:1 @ ws",
-		at: "mango:1 @ ws", subject: focus.MirrorSubject(focusSID), claudeSession: focusSID}
+		at: mirror.Place{Code: "mango:1", Host: "ws"}, subject: focus.MirrorSubject(focusSID), claudeSession: focusSID}
 }
 
 // TestNotifyNameAddsTheAddressOnlyWhenOnAndNamed pins the one rule with
 // literal strings: off, no human name, or no window, is the name unchanged;
 // on, the name, " · " and the window as muster named it before names.
 func TestNotifyNameAddsTheAddressOnlyWhenOnAndNamed(t *testing.T) {
+	mango := mirror.Place{Code: "mango:1", Host: "atlas"}
 	for _, c := range []struct {
-		name, at string
-		on       bool
-		want     string
+		name string
+		at   mirror.Place
+		on   bool
+		want string
 	}{
-		{"Billing migration", "mango:1 @ atlas", false, "Billing migration"},
-		{"Billing migration", "mango:1 @ atlas", true, "Billing migration · mango:1 @ atlas"},
+		{"Billing migration", mango, false, "Billing migration"},
+		{"Billing migration", mango, true, "Billing migration · mango:1 @ atlas"},
 		// A host that sent no label: its tmux address.
-		{"Billing migration", "scratch3:5 @ atlas", true, "Billing migration · scratch3:5 @ atlas"},
+		{"Billing migration", mirror.Place{Code: "scratch3:5", Host: "atlas"}, true, "Billing migration · scratch3:5 @ atlas"},
 		// No human name: the caller shows the place already.
-		{"", "mango:1 @ atlas", true, ""},
+		{"", mango, true, ""},
+		// A human name that IS the codename: the headline already says it.
+		{"mango:1", mango, true, "mango:1"},
 		// No window to vouch for (an agent, a session no window holds now).
-		{"Billing migration", "", true, "Billing migration"},
+		{"Billing migration", mirror.Place{}, true, "Billing migration"},
 	} {
 		if got := notifyName(c.name, c.at, c.on); got != c.want {
-			t.Errorf("notifyName(%q, %q, %v) = %q, want %q", c.name, c.at, c.on, got, c.want)
+			t.Errorf("notifyName(%q, %+v, %v) = %q, want %q", c.name, c.at, c.on, got, c.want)
 		}
 	}
 }
@@ -135,7 +139,7 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 		t.Fatalf("on: summary title %q", got)
 	}
 	// An unnamed session is already called by its place: no address twice.
-	unnamed := []attentionItem{{Key: "ask-2", Kind: attentionKindAsk, Source: "kiwi:2 · tmux side:2 @ ws", target: "tmux side:2 @ ws", at: "kiwi:2 @ ws",
+	unnamed := []attentionItem{{Key: "ask-2", Kind: attentionKindAsk, Source: "kiwi:2 · tmux side:2 @ ws", target: "tmux side:2 @ ws", at: mirror.Place{Code: "kiwi:2", Host: "ws"},
 		subject: focus.MirrorSubject("sid-unnamed"), claudeSession: "sid-unnamed"}}
 	s.withFocus(operatorCtx(), unnamed)
 	if got := attentionNotification(unnamed[0], false).Title; got != "kiwi:2 · tmux side:2 @ ws is asking" {

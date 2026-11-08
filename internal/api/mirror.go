@@ -123,7 +123,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 			if !read {
 				tmux, read = s.notifyTmuxOn(ctx, requestOwner(ctx)), true
 			}
-			at = tmuxPlace(name.Text, m.TitleAt(), tmux)
+			at = tmuxPlace(name.Text, m.Place(), tmux)
 		}
 		if at != "" {
 			code = m.Title()

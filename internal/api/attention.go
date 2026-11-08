@@ -189,9 +189,10 @@ type attentionItem struct {
 	// reader verbatim and only the label around it is plained.
 	target string
 	// at is the window as muster named it before sessions had names
-	// (mirror.SessionView.TitleAt: "mango:1 @ atlas"), set with target from
-	// the same window; "" for none. notifyName adds it after a human name.
-	at string
+	// (mirror.SessionView.Place, shown "mango:1 @ atlas"), set with target
+	// from the same window; the zero Place for none. notifyName adds it after
+	// a human name.
+	at mirror.Place
 	// Text is the item's SUBSTANCE in one line or a few: the question; what a
 	// waiting session waits on (its pending action, mirror.Pending.Summary —
 	// sessionWaitingText when its host says nothing); a held AskUserQuestion's
@@ -363,16 +364,16 @@ func askSourceParts(a attention.Ask, hosts []mirror.HostView) (src, target strin
 	return src, target
 }
 
-// askSourceAt is askSourceParts and the window's TitleAt (attentionItem.at),
-// "" when it names no window.
-func askSourceAt(a attention.Ask, hosts []mirror.HostView) (src, target, at string) {
+// askSourceAt is askSourceParts and the window's Place (attentionItem.at),
+// the zero Place when it names no window.
+func askSourceAt(a attention.Ask, hosts []mirror.HostView) (src, target string, at mirror.Place) {
 	if a.Asker.MirrorSession == "" || a.Asker.AgentID > 0 || a.Asker.System {
-		return askerLabel(a), "", ""
+		return askerLabel(a), "", mirror.Place{}
 	}
 	if e, ok := claudeSessionEntry(hosts, a.Asker.MirrorHost, a.Asker.MirrorSession); ok {
-		return entryWhere(e), e.WhereTarget(), e.TitleAt()
+		return entryWhere(e), e.WhereTarget(), e.Place()
 	}
-	return askerLabel(a) + askNotShown, "", ""
+	return askerLabel(a) + askNotShown, "", mirror.Place{}
 }
 
 // askNeedsHosts reports whether askItem needs the owner's windows for a
@@ -525,7 +526,7 @@ func (s *Server) waitingSessionsIn(ctx context.Context, hs []mirror.HostView) []
 			continue
 		}
 		ref := ui.MirrorRef{Host: e.Host, Session: e.Session, Window: e.Window}
-		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.TitleAt(), Text: sessionWaitingText, host: e.Host,
+		it := attentionItem{Key: k, Kind: attentionKindSession, Source: e.Where(), target: e.WhereTarget(), at: e.Place(), Text: sessionWaitingText, host: e.Host,
 			claudeSession: e.ClaudeSession, Offline: wt.offline, Link: ref.ViewPath(), card: attentionCard{ref: ref}}
 		if e.ClaudeSession != "" {
 			it.subject = focus.MirrorSubject(e.ClaudeSession)

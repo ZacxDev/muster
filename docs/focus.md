@@ -189,7 +189,9 @@ and `TestOnlyMirrorCardsSetsTheListsCodename` keeps any other code from
 setting the lists' value.
 
 Nothing else changes: a session with no human name is already called by its
-place (nothing twice); an agent has no tmux window and gets nothing; a
+place (nothing twice), and so is one whose human name IS its codename (a
+manual name `mango:1` on the window labelled `mango:1`: no second line, no
+`mango:1 · mango:1 @ atlas`); an agent has no tmux window and gets nothing; a
 session no window shows now gets no address (muster names no place it cannot
 see). Off — or with no database, or when the switch cannot be read — every
 text and every pill is byte for byte what it was before the switch existed.

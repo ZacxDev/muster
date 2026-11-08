@@ -146,7 +146,7 @@ func (fi focusIndex) humanMirrorName(key string) string {
 // (TestTheSessionNameCallerLedger's tmuxAddressSurfaces): every surface on the
 // name ledger is either one of them or says why a notification's address does
 // not apply to it, so a new notification surface cannot skip the preference.
-func notifyName(name, at string, tmux bool) string {
+func notifyName(name string, at mirror.Place, tmux bool) string {
 	if p := tmuxPlace(name, at, tmux); p != "" {
 		return name + mirror.QualifierSep + p
 	}
@@ -154,17 +154,19 @@ func notifyName(name, at string, tmux bool) string {
 }
 
 // tmuxPlace is THE RULE for "Show tmux sessions": the window's place, at
-// (mirror.SessionView.TitleAt: "mango:1 @ atlas"), when tmux is on and the
+// (mirror.SessionView.Place, shown "mango:1 @ atlas"), when tmux is on and the
 // session is called by a human name; "" otherwise — off, a session called by
-// its place already (no codename twice), or no window. notifyName adds it to a
+// its place already (no codename twice), a human name that IS the codename
+// (a manual name "mango:1" on the window labelled "mango:1": the headline
+// already says it, so no "mango:1 · mango:1 @ atlas"), or no window. notifyName adds it to a
 // notification; mirrorCards puts it on the session lists' entries (the bar's
 // pills and the dock's rows, ui.MirrorCardView.TmuxAt). Its callers are a
 // ledger (TestEveryNotificationSurfaceAsksForTheTmuxAddress).
-func tmuxPlace(name, at string, tmux bool) string {
-	if !tmux || name == "" {
+func tmuxPlace(name string, at mirror.Place, tmux bool) string {
+	if !tmux || name == "" || at.Code == "" || name == at.Code {
 		return ""
 	}
-	return at // "" for no window
+	return at.String()
 }
 
 // storedName is sub's stored name halves, the zero value for none.

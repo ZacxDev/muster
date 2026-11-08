@@ -412,20 +412,20 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 // episodePlace is where mirrored episode ep's session is, as episodeWho names
 // a session with no human name: the words, and the part the title rule keeps
 // verbatim (its tmux target when it has one) — and at, the window as muster
-// named it before sessions had names (mirror.SessionView.TitleAt), for
-// notifyName; "" when no tmux place is known.
-func episodePlace(ep sessionstate.Episode, hosts []mirror.HostView) (where, keep, at string) {
+// named it before sessions had names (mirror.SessionView.Place), for
+// notifyName; the zero Place when no tmux place is known.
+func episodePlace(ep sessionstate.Episode, hosts []mirror.HostView) (where, keep string, at mirror.Place) {
 	if ep.Host != "" && ep.Key != "" {
 		if e, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
-			return where, keep, e.TitleAt()
+			return where, keep, e.Place()
 		}
 	}
 	if ep.TmuxSession != "" && ep.Host != "" {
 		if e, ok := episodePlaceEntry(hosts, ep); ok {
-			return entryWhere(e), e.WhereTarget(), e.TitleAt()
+			return entryWhere(e), e.WhereTarget(), e.Place()
 		}
 		where := mirror.WhereTarget(ep.Host, ep.TmuxSession, ep.Window, ep.Index)
-		return where, where, mirror.SessionView{Host: ep.Host, Session: ep.TmuxSession, Window: ep.Window, Index: ep.Index}.TitleAt()
+		return where, where, mirror.SessionView{Host: ep.Host, Session: ep.TmuxSession, Window: ep.Window, Index: ep.Index}.Place()
 	}
 	// No tmux target or no host stored: as much of the place as is known.
 	target := ep.TmuxSession + ":" + strconv.Itoa(ep.Index)
@@ -433,9 +433,9 @@ func episodePlace(ep sessionstate.Episode, hosts []mirror.HostView) (where, keep
 		target = "A session"
 	}
 	if ep.Host == "" {
-		return target, target, ""
+		return target, target, mirror.Place{}
 	}
-	return target + " @ " + ep.Host, target, ""
+	return target + " @ " + ep.Host, target, mirror.Place{}
 }
 
 // episodePlaceEntry is the place stored on ep (its host, tmux session and
