@@ -139,6 +139,7 @@ GET /ui/connectors/{name}/rotate
 GET /ui/dispatch-card
 GET /ui/focus/history
 GET /ui/nav/agents
+GET /ui/nav/waiting
 GET /ui/notifications
 GET /ui/palette/history
 GET /ui/tags

@@ -375,9 +375,11 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.If(collapse, composerTextButton()),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 			g.If(dictateOff, dictateOffControl("mv-dictate-off")),
-			// The session switcher's ⋯, in the row with Send (the Rendered view).
-			g.If(moreInRow, switcherMoreButton(v.Switcher)),
 			sendSplit(v.Queue, off),
+			// The session switcher's ⋯, in the row with Send (the Rendered view):
+			// AFTER Send, the row's last control (operator ask: "[input][mic]
+			// [send][⋯]"), so Send keeps its place beside the box and the mic.
+			g.If(moreInRow, switcherMoreButton(v.Switcher)),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
 		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets

@@ -331,6 +331,12 @@ export const mcpDispatchCatalogPort = port + 303;
 // live line — its own server (mirror plugin on, the focus pass off) and its
 // own fake host. (+320: clear of the blocks other branches took.)
 export const sessionNamesPort = port + 320;
+// tests/waiting-composer.spec.ts: the ☰ button's waiting badge, the palette's
+// waiting mark and the paperclip at rest — its own server (the e2eterm binary,
+// mirror plugin on, attachments configured) and its connect listener (the
+// asking agent's /mcp door).
+export const waitingComposerPort = port + 330;
+export const waitingComposerConnectPort = port + 331;
 // tests/notify-tmux.spec.ts: "Show tmux sessions" — its own
 // server (mirror plugin on) and its own fake host. (+340: clear of the blocks
 // other branches took.)

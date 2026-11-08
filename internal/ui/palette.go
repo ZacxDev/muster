@@ -46,6 +46,9 @@ const (
 	paletteInputID   = "switcher-search-input"
 	paletteResultsID = "switcher-search-results"
 	paletteOpenAttr  = "data-palette-open"
+	// paletteWaitMarkAttr marks a switcher pill's <template> holding the
+	// entry's waiting mark (entryWaitMark), which the palette's row copies.
+	paletteWaitMarkAttr = "data-wait-mark"
 )
 
 // PaletteHistoryRoute is the palette's server search (internal/api's
@@ -181,7 +184,16 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
       title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
       prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
       age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
-      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n };
+      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n, mark: window.musterWaitMark(a) };
+  };
+  // window.musterWaitMark is element a's WAITING MARK — the sidebar's
+  // (entryWaitMark): a switcher pill keeps it inert in a <template>, a sidebar
+  // row draws it — or null when the entry waits on nothing. The server decided
+  // it (listEntry.waiting); nothing here re-derives who is waiting.
+  window.musterWaitMark = function (a) {
+    var t = a.querySelector('template[` + paletteWaitMarkAttr + `]');
+    if (t) return t.content.firstElementChild;
+    return a.querySelector('[data-nav-attention], [data-nav-wait-dot]');
   };
   // window.musterPaletteRank is the palette's whole list for query q: each of
   // entries (in page order) that musterPaletteMatch matches, plus the server
@@ -315,7 +327,7 @@ const paletteJS = `
     list.textContent = '';
     shown.forEach(function (it, i) {
       var e = it.e;
-      var li = el('li', 'flex min-h-[44px] cursor-pointer flex-col justify-center px-4 py-1.5');
+      var li = el('li', 'relative flex min-h-[44px] cursor-pointer flex-col justify-center px-4 py-1.5');
       li.id = 'switcher-opt-' + i;
       li.setAttribute('role', 'option');
       li.setAttribute('data-index', String(i));
@@ -340,6 +352,15 @@ const paletteJS = `
         var isTitle = !!e.title && e.title !== e.label;
         var sub = isTitle ? e.title : (e.code !== e.label ? e.code : '');
         if (sub) li.appendChild(focusAgeLine(isTitle ? e.age : '', e.stale, el('span', 'truncate text-xs text-muted', sub)));
+      }
+      // Waiting on the operator: the sidebar's own mark, copied, at the row's
+      // end (out of flow, so the label stays the row's first child).
+      if (e.mark) {
+        li.classList.add('pr-14');
+        var w = el('span', 'absolute inset-y-0 right-4 flex items-center');
+        w.setAttribute('data-palette-wait', '');
+        w.appendChild(e.mark.cloneNode(true));
+        li.appendChild(w);
       }
       list.appendChild(li);
     });

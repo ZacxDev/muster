@@ -191,7 +191,8 @@
       "tests/open-perf.spec.ts",
       "tests/reconnect.spec.ts",
       "tests/chief-ux.spec.ts",
-      "tests/agent-outcomes.spec.ts"
+      "tests/agent-outcomes.spec.ts",
+      "tests/waiting-composer.spec.ts"
     ]
   }
 }

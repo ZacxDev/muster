@@ -40,6 +40,31 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleNavWaiting serves GET ui.NavWaitingPath: the ☰ button's waiting
+// badge, counted over the entries the sidebar's rows are built from
+// (agentsListEntries, as handleNavAgents) by the rows' own predicate
+// (ui.NavWaitingCount). No agent store: zero, hidden. A failed read is a 500
+// the slot keeps its previous badge through (htmx swaps no error).
+func (s *Server) handleNavWaiting(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	if s.ext.Agents == nil {
+		if err := ui.RenderNavWaiting(w, nil, nil); err != nil {
+			s.logger.Printf("nav waiting: render: %v", err)
+		}
+		return
+	}
+	cards, mirrors, err := s.agentsListEntries(r.Context())
+	if err != nil {
+		s.logger.Printf("nav waiting: list: %v", err)
+		http.Error(w, "could not load agents", http.StatusInternalServerError)
+		return
+	}
+	if err := ui.RenderNavWaiting(w, cards, mirrors); err != nil {
+		s.logger.Printf("nav waiting: render: %v", err)
+	}
+}
+
 // homeTarget is where home — `/`, and GET /agents — sends the viewer, "" for
 // nowhere (the onboarding page, handleAgentsHome):
 //

@@ -253,6 +253,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /share":           classList,
 	"GET /tasks":           classList,
 	"GET /ui/nav/agents":   classList,
+	// The ☰ button's waiting badge: a count over the caller's own entries
+	// (agentsListEntries, as the list above).
+	"GET /ui/nav/waiting": classList,
 	// The palette's server search (palette.go): a session route naming no
 	// object — its live set is the caller's own entries; owner isolation is
 	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's

@@ -200,6 +200,9 @@ type SwitcherItem struct {
 	Current bool
 	// Waiting: the entry waits on the viewer (listEntry.waiting).
 	Waiting bool
+	// Attention is the entry's attention (its card's): with Waiting, what its
+	// waiting mark draws (entryWaitMark).
+	Attention *CardAttention
 	// Host and HostIcon are the entry's host and its icon key — its sidebar row's:
 	// the cluster for an agent, the window's host's otherwise. HostNamed: the
 	// label already spells the host (labelNamesHost), so the icon is
@@ -420,6 +423,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i]), Named: entryName(e).Human()}
 		if e.agent != nil {
 			a := e.agent
+			it.Attention = a.Attention
 			it.Href, it.Kind = a.PageHref(), "agent"
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
@@ -432,6 +436,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.FocusAge = focusAgeOf(a.Focus, now)
 		} else {
 			m := e.mirror
+			it.Attention = m.Attention
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
 			it.Host, it.HostIcon = m.Host, m.HostIcon
 			it.HostNamed = labelNamesHost(*m, labels[i])
@@ -945,7 +950,22 @@ func switcherEntry(it SwitcherItem) g.Node {
 		Class("press group "+box),
 		g.Attr("data-switcher-name", it.Label),
 		Span(Class(pill+"bg-s1/70 text-fg ring-line transition group-hover:bg-s2"), inner),
+		// The entry's waiting mark, for the command palette's row (palette.go),
+		// which draws a copy of it: the SIDEBAR's mark, the same call
+		// (entryWaitMark), inert in a <template> after the pill, so the pill
+		// draws only its own dot.
+		paletteWaitMark(it),
 	)
+}
+
+// paletteWaitMark is entryWaitMark in a <template> (paletteWaitMarkAttr), or
+// nothing when the entry has no mark.
+func paletteWaitMark(it SwitcherItem) g.Node {
+	mark := entryWaitMark(it)
+	if mark == nil {
+		return nil
+	}
+	return Template(g.Attr(paletteWaitMarkAttr, ""), mark)
 }
 
 // switcherLabel is an entry's label as its pill draws it: the name, and —
