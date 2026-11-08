@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
-	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -136,15 +135,13 @@ func (s *Server) toolHostReportDone(ctx context.Context, host, sid, window, argu
 // hostDispatchDone tells the owner host dispatch h finished: the card redraws
 // (the same event an end sends) and one push.
 func (s *Server) hostDispatchDone(ctx context.Context, h plugins.HostDispatch, summary string) {
+	// To the ROW'S owner: h was read under the caller's principal (row-level
+	// security), so h.Owner is the mirror token's owner — as endHostDispatch
+	// names its owner explicitly.
 	owner := h.Owner
-	if owner <= 0 {
-		if p, ok := authz.From(ctx); ok {
-			owner = p.UserID
-		}
-	}
 	id := strconv.FormatInt(h.ID, 10)
 	s.logger.Printf("host dispatch %s on %s finished", id, h.Host)
-	s.broadcastTo(owner, EventAgentChanged, "host-dispatch-"+id)
+	s.broadcastTo(h.Owner, EventAgentChanged, "host-dispatch-"+id)
 	who := hostDispatchRuntimeLabel(h) + " on " + h.Host
 	s.pushTask(owner, push.EventAgentOutcome, RouterNotification{
 		Type:  taskNotificationType,
