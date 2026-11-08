@@ -14,6 +14,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix notifypref <owner-id> clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
 //
@@ -57,6 +58,8 @@
 //	    note_text is the first message as the agent was created with it.
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
+//	  - notifypref: clears the owner's notification preferences
+//	    (notify_preferences), the same way: off, the default, is left behind.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
@@ -136,6 +139,16 @@ func run(args []string) error {
 			return fmt.Errorf("usage: chiefpref <owner-id> clear")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM chief_preferences WHERE owner_id = $1`, owner); err != nil {
+			return err
+		}
+	case "notifypref":
+		// Clears the owner's notification preferences (migration 0094): the
+		// next reader sees the default, off.
+		owner, err := num(1)
+		if err != nil || len(args) != 3 || args[2] != "clear" {
+			return fmt.Errorf("usage: notifypref <owner-id> clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM notify_preferences WHERE owner_id = $1`, owner); err != nil {
 			return err
 		}
 	case "agent":

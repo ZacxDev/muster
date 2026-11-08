@@ -973,7 +973,7 @@ func TestATokensScopeIsStoredAndReadBack(t *testing.T) {
 		WHERE user_id = $1 AND action = 'api_token.create'`, w.a).Scan(&details); err != nil || details != "summary,full" {
 		t.Fatalf("the mints' audit scopes = %q (%v); want \"summary,full\"", details, err)
 	}
-	// Migration 0094: the agent-create scope is stored and read back, and the
+	// Migration 0095: the agent-create scope is stored and read back, and the
 	// widened CHECK still refuses a scope nobody defined.
 	ac, acRec, err := w.s.Create(as(w.a, authz.RoleMember), "create", 0, ScopeAgentCreate)
 	if err != nil || acRec.Scope != ScopeAgentCreate {

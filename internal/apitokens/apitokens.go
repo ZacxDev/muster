@@ -63,7 +63,7 @@ const (
 	// status bar polls (internal/api's tokenScopeRoutes).
 	ScopeSummary = "summary"
 	// ScopeAgentCreate reaches POST /api/agents and nothing else (migration
-	// 0094): the owner creating an agent from a machine, which a full token
+	// 0095): the owner creating an agent from a machine, which a full token
 	// does NOT reach (internal/api's explicitScopeRoutes). It is minted
 	// deliberately, at /account/tokens.
 	ScopeAgentCreate = "agent-create"

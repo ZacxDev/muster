@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -301,6 +302,12 @@ type Extensions struct {
 	// stored choice, so the chief is on exactly when the user has a chief
 	// agent (chiefOn), and the Account page cannot change it.
 	ChiefPrefs chiefpref.Store
+
+	// NotifyPrefs is each user's notification preferences (internal/notifypref,
+	// migration 0094; notify_prefs.go): today "Show tmux session in
+	// notifications". nil (no database): off for everyone, and the Account
+	// page draws no switch.
+	NotifyPrefs notifypref.Store
 
 	// ChiefNudge is the chief's STALL NUDGES' configuration (MUSTER_CHIEF_NUDGES,
 	// chief_nudge.go; docs/chief-nudges.md) and ChiefNudges its decisions

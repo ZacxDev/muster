@@ -164,6 +164,7 @@
       "tests/pins.spec.ts",
       "tests/session-tags.spec.ts",
       "tests/session-names.spec.ts",
+      "tests/notify-tmux.spec.ts",
       "tests/recent-agents.spec.ts",
       "tests/send-queue.spec.ts",
       "tests/composer-autosize.spec.ts",

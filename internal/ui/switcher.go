@@ -232,6 +232,10 @@ type SwitcherItem struct {
 	// its technical ids — the host the dock writes beside the name — are
 	// left off the main surfaces (they stay in Tip and in Words).
 	Named bool
+	// TmuxAt and TmuxCode are the entry's MirrorCardView.TmuxAt / TmuxCode:
+	// the pill's second line (TmuxCode) and the dock row's line under the
+	// focus (TmuxAt, data-switcher-tmux); "" for none, and always for an agent.
+	TmuxAt, TmuxCode string
 	// Tip is the entry's tooltip: its Label, then — when it is called by a
 	// human name (internal/sessionname) — the technical id that name hides
 	// (an agent's slug; a window's codename, tmux address and host).
@@ -439,6 +443,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
 			it.FocusAge = focusAgeOf(m.Focus, now)
+			it.TmuxAt, it.TmuxCode = m.TmuxAt, m.TmuxCode
 		}
 		out[i] = it
 	}
@@ -862,6 +867,20 @@ const switcherPillClass = "inline-flex h-8 items-center gap-1 rounded-full px-2 
 // switcherLabelClass is an entry's label: one line, never truncated.
 const switcherLabelClass = "whitespace-nowrap"
 
+// With "Show tmux sessions" on, a named window's pill stacks its label over a
+// second, smaller line, its codename (SwitcherItem.TmuxCode) — inside the
+// same h-8 pill (15px + 12.5px of line boxes in its 32px), so the bar's
+// height does not change. The codename is capped and cut with an ellipsis
+// (a pill is as wide as its NAME, not its codename), and its host is left
+// off: the pill's host icon names the host, and the dock row spells it.
+const (
+	switcherTwoLineClass  = "flex flex-col items-start leading-tight"
+	switcherTmuxLineClass = "block max-w-[8rem] truncate text-[10px] font-normal text-fg2"
+)
+
+// SwitcherTmuxLineClass is switcherTmuxLineClass, for internal/api's tests.
+const SwitcherTmuxLineClass = switcherTmuxLineClass
+
 // switcherEntry is one entry: a real-load link (hx-boost="false", like a
 // sidebar row's), or — the page's own session — the same chip, not a link.
 func switcherEntry(it SwitcherItem) g.Node {
@@ -882,7 +901,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Waiting, Span(g.Attr("data-switcher-wait", ""), g.Attr("role", "img"), g.Attr("aria-label", "Waiting on you"),
 			Class("h-2 w-2 shrink-0 rounded-full bg-accent"))),
 		g.If(it.Host != "", icon),
-		Span(Class(switcherLabelClass), g.Text(it.Label)),
+		switcherLabel(it),
 	}
 	// What the search finds the entry by (palette.go's paletteBox).
 	search := g.Group{
@@ -897,6 +916,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Host != "" && !it.Named, g.Attr("data-switcher-host", it.Host)),
 		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
 		focusAgeAttrs(it),
+		// The dock row's codename line ("Show tmux sessions").
+		g.If(it.TmuxAt != "", g.Attr("data-switcher-tmux", it.TmuxAt)),
 	}
 	if it.Current {
 		return Span(
@@ -925,6 +946,19 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.Attr("data-switcher-name", it.Label),
 		Span(Class(pill+"bg-s1/70 text-fg ring-line transition group-hover:bg-s2"), inner),
 	)
+}
+
+// switcherLabel is an entry's label as its pill draws it: the name, and —
+// with "Show tmux sessions" on — its codename line under it. The codename is
+// text inside the link, so it is part of the pill's accessible name
+// ("Billing migration mango:1").
+func switcherLabel(it SwitcherItem) g.Node {
+	name := Span(Class(switcherLabelClass), g.Text(it.Label))
+	if it.TmuxCode == "" {
+		return name
+	}
+	return Span(Class(switcherTwoLineClass), name,
+		Span(g.Attr("data-switcher-tmux-line", ""), Class(switcherTmuxLineClass), g.Text(it.TmuxCode)))
 }
 
 // switcherScript applies the viewer's stored view at once (it runs as the bar
