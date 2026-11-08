@@ -126,10 +126,12 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 	if st == nil {
 		return
 	}
-	tagged := map[int64]mirror.Window{}
+	// EVERY window carrying each tag: the tag is the window's own option, which
+	// anything in that window can set, so two windows may carry one id.
+	tagged := map[int64][]mirror.Window{}
 	for _, w := range windows {
 		if w.Dispatch > 0 {
-			tagged[w.Dispatch] = w
+			tagged[w.Dispatch] = append(tagged[w.Dispatch], w)
 		}
 	}
 	pctx := s.hostDispatchPrincipal(ctx, owner)
@@ -141,9 +143,9 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 	known := map[int64]bool{}
 	for _, r := range rows {
 		known[r.ID] = true
-		w, present := tagged[r.ID]
-		if present && !spawnRuntimeRuns(r.Runtime, w) {
-			present = false // the tag, on a window running something else
+		w, present := dispatchWindow(r, tagged[r.ID])
+		if n := len(tagged[r.ID]); n > 1 {
+			s.logger.Printf("host dispatch %d: WARNING: host %s lists %d windows tagged with it; only its own (%s) counts", r.ID, host, n, r.Window)
 		}
 		if r.Status == plugins.HostDispatchEnded {
 			s.orphanWindow(pctx, r, w, present)
@@ -180,6 +182,44 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 			s.logger.Printf("host dispatch: ERROR: host %s (owner %d) lists a window tagged with dispatch %d, which this owner has no row for", host, owner, id)
 		}
 	}
+}
+
+// dispatchWindow is the window of this listing that IS row r's, among cands
+// (every listed window carrying r's tag), and whether there is one.
+//
+// 🔴 A TAG NEVER MOVES A ROW'S WINDOW. The tag is untrusted (any process in a
+// window can set it), so once the spawn reply (or a first listing) has
+// recorded r.Window, only the window with THAT id counts, wherever it sits in
+// the listing; every other window carrying the tag is ignored. With no window
+// recorded yet, the one running r's own session counts; failing that, a lone
+// candidate; several, none (ambiguous: a forgery or a bug, never adopted). A
+// window running another runtime than r's never counts.
+func dispatchWindow(r plugins.HostDispatch, cands []mirror.Window) (mirror.Window, bool) {
+	var ok []mirror.Window
+	for _, w := range cands {
+		if spawnRuntimeRuns(r.Runtime, w) {
+			ok = append(ok, w)
+		}
+	}
+	if r.Window != "" {
+		for _, w := range ok {
+			if w.ID == r.Window {
+				return w, true
+			}
+		}
+		return mirror.Window{}, false
+	}
+	if r.AgentSession != "" {
+		for _, w := range ok {
+			if w.ClaudeSession == r.AgentSession || w.AgentSession == r.AgentSession {
+				return w, true
+			}
+		}
+	}
+	if len(ok) == 1 {
+		return ok[0], true
+	}
+	return mirror.Window{}, false
 }
 
 // spawnRuntimeRuns reports whether listed window w runs host runtime runtime:
@@ -310,6 +350,12 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 		}
 	case plugins.HostDispatchRunning:
 		c.State = ui.DispatchWorking
+		if !r.DoneAt.IsZero() {
+			// Done is not ended (0097): its window is still open and holds the slot.
+			c.State, c.Detail = ui.DispatchDone, "Finished: "+r.DoneSummary
+			c.HostNote = "Close the window on " + r.Host + " to end it and free its slot."
+			break
+		}
 		if s.ext.Mirror != nil {
 			for _, v := range s.ext.Mirror.Hosts(ctx) {
 				if v.Host != r.Host {
@@ -332,6 +378,9 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 			c.State, c.Detail = ui.DispatchError, "The host refused it: "+r.Refusal
 		} else {
 			c.State, c.Detail = ui.DispatchDone, "Ended ("+r.EndedWhy+")."
+			if !r.DoneAt.IsZero() {
+				c.Detail = "Finished: " + r.DoneSummary + " Ended (" + r.EndedWhy + ")."
+			}
 			if r.Worktree != "" {
 				c.Detail += " A worktree with work in it is kept at " + r.Worktree + " (" + r.Branch + ")."
 			}

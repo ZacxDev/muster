@@ -2321,6 +2321,74 @@ becomes complete (`stopChiefAgentOnComplete`). **A host window is not closed
 automatically.** It is a process on the owner's workstation, and the owner may
 be typing into it. Its slot is freed only when the window ends.
 
+**Done is not ended** (added after phase 3 shipped; migration `0097`,
+`internal/api/host_dispatch_done.go`). The spawn prompt's rules
+(`chiefDispatchRulesNoTask`) tell a host-spawned agent to call
+`agent_report_done` when it finishes, but the mirror door did not offer that
+tool, so the agent could not say it was done and its card stayed "Working".
+The mirror door now lists `agent_report_done`. A call records a done outcome
+on the caller's **own** dispatch only:
+- The row is found by the caller's Claude session on the caller's host
+  (`agent_session`, which the host minted and the spawn reply recorded). It is
+  **not** found by the window's `@muster-dispatch` tag, because an agent with a
+  shell can set that tag to any id.
+- The row must then be bound to the caller: the same host, the same session,
+  and the same tmux window as the host lists the caller in now
+  (`hostDispatchBoundTo`). Any other session, another host's token, and
+  another owner are all refused.
+- **What "the caller's window" means.** The host's MCP proxy forwards only
+  the caller's Claude session id. It does not forward the pane or window.
+  muster takes the caller's window to be the window the host's listing shows
+  running that session, and when one session runs in **two** windows (a
+  resume), the window listed **last** decides. So the dispatch's tools are
+  admitted only while that window is the dispatch's own: the same session
+  resumed in another window is refused when that window is listed last, or is
+  the only one listed. Binding to the calling pane itself would need the proxy
+  to forward it, which is a host-side change not made here.
+  `TestOneSessionInTwoWindowsBindsToTheLastListed` pins this.
+- **A tag never moves a row's window** (`dispatchWindow`). Once the spawn
+  reply, or a first listing, has recorded the row's window, a listing counts
+  only the window with that id. Any other window carrying the same
+  `@muster-dispatch` tag is ignored (and logged), wherever it is listed. With
+  no window recorded yet, the row's own session's window counts; failing that,
+  a lone candidate; several unmatched candidates count as none. Before this
+  rule, the last listed tagged window won, so a forged tag listed after the
+  agent's window re-pointed the row and locked the real agent out.
+- **The trust model is unchanged.** Any process running as the same user on
+  the host can present another pane's headers to the proxy, as
+  [5.1](#51-who-can-trigger-a-spawn) says. These rules stop the plain case: a
+  session simply calling as itself.
+- The store's write (`MarkHostDispatchDone`, a fifth writer in the seam
+  ledger) repeats the host and session in its `WHERE` and writes only on a
+  `running` row, and only once. It writes `done_at` and `done_summary` and
+  nothing else.
+- **The row stays `running`, and keeps its slot, until its window closes**, as
+  above. Ending it on the report would make the next listing, which still
+  carries the window's tag, raise the orphan notice for a window the owner is
+  looking at. The card reads **Done**, with the summary and "close the window
+  on `<host>` to end it and free its slot". The owner gets one push.
+- The binding is one resolver, `callerHostDispatch`. The SQL lookup compares
+  host and session; `hostDispatchBoundTo` compares the window.
+- The summary is recorded as its first line, with control, format and
+  invisible code points made visible (`fence.Sanitize`). A host dispatch has no
+  pending note, so the pod path's `ScrubNote` has nothing to scrub. A
+  deployment that records no outcomes (`outcomesOn`) refuses the call, as the
+  pod path does.
+
+**Its own task, and nothing else.** Through the same resolver, `taskScopeOf`
+admits **exactly** the dispatch's `task_id` while the dispatch is `running`.
+That scope feeds every task tool of the door: `tasks_list`, `task_get`,
+`task_comment`, and `task_set_status` to any status an agent may set (never
+`complete`, `agentStatusRefusal`). This matches what
+[5.1](#51-who-can-trigger-a-spawn) says a spawned agent keeps. Its owner's other tasks are not admitted, and neither is its
+task from any session but its own, nor after it has ended.
+
+**The spawn rules are per runtime** (`spawnRules`). Claude keeps the pod rules
+unchanged. opencode has no muster tool path, so its rules name no muster tool.
+They tell it to finish, end with a final message that summarises the result,
+and leave the window for the owner to close. A cut task is not pointed at
+`task_get`.
+
 ### 3.8 Read-only and tenant hosts
 
 **The host refuses** in all of these cases, whatever muster sends. Each is
@@ -2755,6 +2823,11 @@ closed direction.
   muster started for the chief cannot use it; ask your owner"`.
 - A spawned agent keeps the tools that do not act for the owner, such as
   `attention_ask`, `task_get` and `task_comment`.
+  - **As built:** on the mirror door its task tools (`tasks_list`,
+    `task_get`, `task_comment`, `task_set_status`, any agent-settable status,
+    never `complete`) reach exactly its own running dispatch's task
+    (`taskScopeOf` through `callerHostDispatch`,
+    [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)).
 - `route_reply` is included, so a spawned agent cannot answer a route.
   **`route_to_session` excludes such windows as targets, too.** Its target
   check, `resolveRouteTarget` (`internal/api/session_routes.go:190`), refuses

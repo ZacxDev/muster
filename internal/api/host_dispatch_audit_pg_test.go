@@ -73,12 +73,13 @@ func TestTheSpawnPromptNeverLosesItsRules(t *testing.T) {
 	task := notes.Note{ID: 77, Body: strings.Repeat("task body line\n", 400)}
 	for _, n := range []int{7600, 8190} {
 		prompt := strings.Repeat("y", n)
-		for _, onTask := range []bool{false, true} {
-			out := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", prompt, task, onTask)
-			rules := chiefDispatchRulesNoTask
-			if onTask {
-				rules = chiefDispatchRules
-			}
+		for _, c := range []struct {
+			runtime string
+			onTask  bool
+		}{{mirror.SpawnRuntimeClaude, false}, {mirror.SpawnRuntimeClaude, true}, {mirror.SpawnRuntimeOpenCode, false}, {mirror.SpawnRuntimeOpenCode, true}} {
+			onTask := c.onTask
+			out := spawnPrompt(c.runtime, "host-bravo", "acme/widgets", prompt, task, onTask)
+			rules := spawnRules(c.runtime, onTask)
 			if !strings.HasPrefix(out, mirror.SpawnPreface) || !strings.HasSuffix(out, rules) || len(out) > mirror.MaxSpawnPrompt {
 				t.Fatalf("%d bytes, on task %v: %d bytes, preface %v, rules %v", n, onTask, len(out),
 					strings.HasPrefix(out, mirror.SpawnPreface), strings.HasSuffix(out, rules))
