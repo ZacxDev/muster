@@ -45,7 +45,7 @@ func newOCRig(t *testing.T) *ocRig {
 	r.srv = opencodetest.New(ocFixturePassword)
 	t.Cleanup(r.srv.Close)
 	r.srv.SetModels(opencodetest.Model{ProviderID: "openrouter", ID: "qwen/qwen3-coder"}, opencodetest.Model{ProviderID: "openrouter", ID: "z-ai/glm-4.6"},
-		opencodetest.Model{ProviderID: "opencode", ID: "big-pickle"})
+		opencodetest.Model{ProviderID: "opencode", ID: "big-pickle"}, opencodetest.Model{ProviderID: "openrouter", ID: "example/disabled-model", Disabled: true})
 	r.src = r.source(t, r.srv.URL, r.srv.Issue())
 	r.socket = filepath.Join(r.tmp, "x", "tmux-"+strconv.Itoa(os.Getuid()), "default")
 	r.bin = filepath.Join(r.tmp, "bin")
@@ -68,7 +68,7 @@ func newOCRig(t *testing.T) *ocRig {
 		"sock=${TMUX%%,*}\nkey=$(printf %s \"$sock\" | sha256sum | cut -c1-16)\nmkdir -p "+launch+"/$key\n"+
 		"start=$(cut -d' ' -f22 /proc/$$/stat)\n"+
 		"printf '{\"v\":1,\"socket\":\"%s\",\"pane\":\"%s\",\"pid\":%d,\"pidStart\":\"%s\",\"session\":\"%s\",\"server\":\"%s\",\"directory\":\"%s\",\"created\":1}\\n' "+
-		"\"$sock\" \"$TMUX_PANE\" $$ \"$start\" \"$3\" '"+r.srv.URL+"' \"$PWD\" > "+launch+"/$key/${TMUX_PANE#%}.json\n"+
+		"\"$sock\" \"$TMUX_PANE\" $$ \"$start\" \"$5\" '"+r.srv.URL+"' \"$PWD\" > "+launch+"/$key/${TMUX_PANE#%}.json\n"+
 		"date +%s%N > "+r.recs+"/bind-$d\n"+
 		"exec "+filepath.Join(r.bin, "opencode")+"\n")
 	// A launcher that binds nothing (no record): the bind never comes.
@@ -156,8 +156,8 @@ func TestTmuxASpawnedOpenCodeRunsItsModelAndGetsThePromptAfterTheBind(t *testing
 			t.Fatalf("the session's directory %q, want the worktree %q (%v)", s.Location.Directory, w.Worktree, err)
 		}
 		argv := r.recOf(t, "oc-"+strconv.FormatInt(d, 10))
-		if !slices.Equal(argv, []string{"opencode", "-s", sid}) {
-			t.Fatalf("prompt %q: the launcher saw %q; want [opencode -s %s]", tail, argv, sid)
+		if !slices.Equal(argv, []string{"opencode", "--opencode-bin", filepath.Join(r.bin, "opencode"), "-s", sid}) {
+			t.Fatalf("prompt %q: the launcher saw %q; want [opencode --opencode-bin <the checked opencode> -s %s]", tail, argv, sid)
 		}
 		wantName := "oc-" + strconv.FormatInt(d, 10) + "-9-fix-the-typo"
 		if got := r.tmux(t, "display-message", "-p", "-t", w.Window, "#{session_name} #{window_name}"); got != mirror.AgentSpawnSession+" "+wantName {
@@ -215,10 +215,14 @@ func TestTmuxAnOpenCodeSpawnIsRefusedBeforeAnySession(t *testing.T) {
 	}{
 		{"a model the host's opencode does not list", mirror.SpawnBadModel, `this host's opencode lists no OpenRouter model "nope/none"`,
 			func() mirror.AgentSpawnReq { q := ocWidgets(testPrompt); q.Model = "openrouter/nope/none"; return q }(), nil, nil},
+		{"a model the host lists DISABLED", mirror.SpawnBadModel, `this host's opencode lists no OpenRouter model "example/disabled-model"`,
+			func() mirror.AgentSpawnReq { q := ocWidgets(testPrompt); q.Model = "openrouter/example/disabled-model"; return q }(), nil, nil},
 		{"a model of another provider", mirror.SpawnBadModel, `"opencode/big-pickle" is not an OpenRouter model (openrouter/<vendor>/<model>)`,
 			func() mirror.AgentSpawnReq { q := ocWidgets(testPrompt); q.Model = "opencode/big-pickle"; return q }(), nil, nil},
-		{"no OpenRouter model listed at all", mirror.SpawnUnavailable, "opencode's model list is not ready (it lists no OpenRouter model)",
-			ocWidgets(testPrompt), func() { r.srv.SetModels(opencodetest.Model{ProviderID: "opencode", ID: "big-pickle"}) },
+		{"no OpenRouter model listed (one only, disabled)", mirror.SpawnUnavailable, "opencode's model list is not ready (it lists no OpenRouter model)",
+			ocWidgets(testPrompt), func() {
+				r.srv.SetModels(opencodetest.Model{ProviderID: "opencode", ID: "big-pickle"}, opencodetest.Model{ProviderID: "openrouter", ID: "qwen/qwen3-coder", Disabled: true})
+			},
 			func() {
 				r.srv.SetModels(opencodetest.Model{ProviderID: "openrouter", ID: "qwen/qwen3-coder"})
 			}},
@@ -318,6 +322,10 @@ func TestTmuxAPromptNotAcceptedKeepsTheWindow(t *testing.T) {
 	w, e := r.spawn(t, 330, ocWidgets(testPrompt))
 	if e == nil || e.code != mirror.SpawnFailed || e.detail != "prompt not accepted" {
 		t.Fatalf("refusal %+v", e)
+	}
+	// A definite refusal (400) is NOT retried: one post, counted.
+	if n := r.srv.PromptPosts(); n != 1 {
+		t.Fatalf("%d posts for a refused prompt; want 1 (no retry)", n)
 	}
 	if tag, err := r.tm.dispatchTagOf(context.Background(), w.Window); err != nil || tag != 330 {
 		t.Fatalf("the window %q is gone or untagged: %d %v", w.Window, tag, err)
@@ -459,5 +467,28 @@ func TestTheStubLauncherWritesWhereTheResolverReads(t *testing.T) {
 	p, err := opencodehost.LaunchPath("/l", "/s/tmux-1/default", "%3")
 	if err != nil || p != filepath.Join("/l", launchKey("/s/tmux-1/default"), "3.json") {
 		t.Fatalf("LaunchPath %q %v", p, err)
+	}
+}
+
+// TestTmuxAPromptWhoseAnswersNeverComeIsReportedAsMaybeDelivered: both posts
+// time out (each admitted, neither answered in time); the spawn is `failed`
+// (the wire has no unconfirmed result) with a detail that says the prompt may
+// have been delivered, after exactly two posts of one id — and the window,
+// its session and the one admitted message stay.
+func TestTmuxAPromptWhoseAnswersNeverComeIsReportedAsMaybeDelivered(t *testing.T) {
+	r := newOCRig(t)
+	old := openCodeSendTimeout
+	openCodeSendTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { openCodeSendTimeout = old })
+	r.srv.HangPromptAnswers(3 * time.Second)
+	w, e := r.spawn(t, 335, ocWidgets(testPrompt))
+	if e == nil || e.code != mirror.SpawnFailed || e.detail != "prompt not confirmed: opencode did not answer, so it may have been delivered" {
+		t.Fatalf("refusal %+v", e)
+	}
+	if n, ps := r.srv.PromptPosts(), r.promptsTo(w.AgentSession); n != 2 || len(ps) != 1 {
+		t.Fatalf("%d posts, %d admitted; want 2 posts of one id, 1 message", n, len(ps))
+	}
+	if tag, err := r.tm.dispatchTagOf(context.Background(), w.Window); err != nil || tag != 335 {
+		t.Fatalf("the window is gone: %d %v", tag, err)
 	}
 }

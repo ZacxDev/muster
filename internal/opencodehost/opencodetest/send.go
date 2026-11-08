@@ -128,6 +128,15 @@ func (s *Server) DelayFirstPromptAnswer(d time.Duration) {
 	s.promptDelayOnce = d
 }
 
+// HangPromptAnswers is DelayPromptAnswers for EVERY prompt POST, a repeat of an
+// id included (DelayPromptAnswers answers a repeat at once): a server that
+// admits and never answers in time.
+func (s *Server) HangPromptAnswers(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promptHang = d
+}
+
 // RefusePrompts makes every prompt POST answer 400, admitting nothing (on).
 func (s *Server) RefusePrompts(on bool) {
 	s.mu.Lock()
@@ -203,8 +212,12 @@ func SpawnCaptured(name string) json.RawMessage {
 	return b
 }
 
-// Model is a model the fake lists (GET /api/model).
-type Model struct{ ProviderID, ID string }
+// Model is a model the fake lists (GET /api/model); Disabled lists it with
+// "enabled": false.
+type Model struct {
+	ProviderID, ID string
+	Disabled       bool
+}
 
 // SetModels sets what GET /api/model lists, each entry shaped as the real
 // server's OpenRouter entry (SpawnCaptured("model-openrouter")).
@@ -260,7 +273,7 @@ func (s *Server) listModels(w http.ResponseWriter) {
 		for k, v := range tmpl {
 			e[k] = v
 		}
-		e["id"], e["modelID"], e["providerID"], e["name"] = m.ID, m.ID, m.ProviderID, m.ID
+		e["id"], e["modelID"], e["providerID"], e["name"], e["enabled"] = m.ID, m.ID, m.ProviderID, m.ID, !m.Disabled
 		out = append(out, e)
 	}
 	writeJSON(w, map[string]any{"location": map[string]any{"directory": "/srv/fixture"}, "data": out})
@@ -413,6 +426,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 		delay, s.promptDelayOnce = s.promptDelayOnce, 0
 	}
 	refuse := s.refusePrompts
+	if s.promptHang > 0 {
+		delay = s.promptHang
+	}
 	s.mu.Unlock()
 	if err := json.Unmarshal(b, &in); refuse || err != nil || in.Text == "" || (in.ID != "" && !strings.HasPrefix(in.ID, "msg_")) {
 		http.Error(w, `{"_tag":"InvalidRequestError"}`, http.StatusBadRequest)
@@ -443,6 +459,13 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 			return
 		}
 		// The record stored FIRST, whatever this post carries (measured).
+		if s.hangOf() > 0 {
+			select {
+			case <-time.After(s.hangOf()):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		writeJSON(w, map[string]any{"data": inboxUser(p, s.now())})
 		return
 	}
@@ -468,4 +491,10 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 func inboxUser(p Prompt, now time.Time) map[string]any {
 	return map[string]any{"id": p.ID, "sessionID": p.Session, "time": map[string]any{"created": now.UnixMilli()},
 		"type": "user", "payload": map[string]any{"text": p.Text}, "delivery": p.Delivery}
+}
+
+func (s *Server) hangOf() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.promptHang
 }

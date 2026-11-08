@@ -81,6 +81,7 @@ type Server struct {
 	// answers every prompt 400.
 	promptDelayOnce time.Duration
 	refusePrompts   bool
+	promptHang      time.Duration
 }
 
 // FailEvents makes the event stream answer 503 (on) — a server whose stream

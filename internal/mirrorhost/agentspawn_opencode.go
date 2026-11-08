@@ -47,7 +47,11 @@ type openCodeSpawn struct {
 	cl        *opencodehost.Client
 	src       *OpenCodeSource
 	mirrorBin string
-	model     opencodehost.ModelRef
+	// openCodeBin is the opencode binary whose version was checked: the
+	// launcher is told to exec exactly it (--opencode-bin), so the version
+	// compared is the version that runs.
+	openCodeBin string
+	model       opencodehost.ModelRef
 }
 
 // openCodeSourceOf is this host's opencode source, nil when it has none.
@@ -173,7 +177,7 @@ func (c *Client) openCodeSpawnCheck(ctx context.Context, wireModel string) (*ope
 	case !found:
 		return nil, refuseSpawn(mirror.SpawnBadModel, "this host's opencode lists no OpenRouter model %q", id)
 	}
-	return &openCodeSpawn{cl: cl, src: src, mirrorBin: mb, model: opencodehost.ModelRef{ID: id, ProviderID: provider}}, nil
+	return &openCodeSpawn{cl: cl, src: src, mirrorBin: mb, openCodeBin: bin, model: opencodehost.ModelRef{ID: id, ProviderID: provider}}, nil
 }
 
 // createSession creates the spawn's session sid in worktree dir, on the model.

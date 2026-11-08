@@ -161,7 +161,7 @@ const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f 
 // spawnConstantWords is every CONSTANT word the spawn hands tmux (the
 // argv's constants and tmux's own options). TestNoSpawnConstantWordEndsInASemicolon
 // asserts none ends in ';'.
-var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "-s",
+var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
 	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption}
 
@@ -981,7 +981,11 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 		winName += "-" + winSlug
 	}
 	promptFile := filepath.Join(promptDir(sc.RuntimeDir), strconv.FormatInt(dispatch, 10))
-	for _, word := range []string{dir, branch, winName, sid, promptFile, bin} {
+	words := []string{dir, branch, winName, sid, promptFile, bin}
+	if opencode {
+		words = append(words, oc.openCodeBin)
+	}
+	for _, word := range words {
 		if !hostWordRE.MatchString(word) {
 			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnFailed, "a spawn word has characters tmux would parse")
 		}
@@ -1070,7 +1074,7 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	// constant wrapper; opencode's is posted through its API (step 12).
 	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid, "--"}
 	if opencode {
-		argv = []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "-s", sid}
+		argv = []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "--opencode-bin", oc.openCodeBin, "-s", sid}
 	}
 	winID, pane, err := t.newAgentWindow(ctx, winName, dir, argv)
 	if err != nil {
@@ -1116,6 +1120,12 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 		// orphan notice tells the owner about the window.
 		if err := oc.postFirstPrompt(dispatch, sid, req.Prompt); err != nil {
 			c.log.Printf("muster-mirror: spawn for dispatch %d: the first prompt was not accepted: %v", dispatch, err)
+			// The wire has no "unconfirmed" spawn result: a post whose answer
+			// never came is still `failed`, but its detail says it may have
+			// landed, so nobody resends it as if it had not.
+			if promptMayHaveLanded(err) {
+				return w, refuseSpawn(mirror.SpawnFailed, "prompt not confirmed: opencode did not answer, so it may have been delivered")
+			}
 			return w, refuseSpawn(mirror.SpawnFailed, "prompt not accepted")
 		}
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -355,5 +356,82 @@ func TestTaskForwardReachesASpawnedOpenCodeWindow(t *testing.T) {
 	f.m.mu.Unlock()
 	if len(pastes) != 1 || pastes[0].dispatch != id || pastes[0].host != "host-echo" || pastes[0].window != win.ID {
 		t.Fatalf("the paste: %+v", pastes)
+	}
+}
+
+// TestAHostTapThatCameWithAModelStillLetsTheModelCardComplete (audit #522 r1):
+// "mirrored" (host/?/?) is held; the owner taps a host; the chief completes
+// that tap with host/<h>/opencode AND a model of its own choosing. The tap
+// fills the host only, so the hold is re-filed with the runtime blank and the
+// model card raised — and the chief's model is NOT held (the card chooses the
+// model). The owner then taps a model, and the completing call starts EXACTLY
+// one agent, on the model the owner tapped. Before the fix the re-filed hold
+// hashed the chief's model while the completion hashed none: the card could
+// never complete.
+func TestAHostTapThatCameWithAModelStillLetsTheModelCardComplete(t *testing.T) {
+	f := newOCHostFixture(t)
+	f.ownerTurn(t, f.chief, f.owner, "Start a mirrored agent.")
+	if text := f.callRaw(f.chief, agentDispatchTool, hostCall("mirrored", "mm", true)); !strings.Contains(text, `"held":true`) {
+		t.Fatalf("not held: %s", text)
+	}
+	f.say(t, f.chief, "muster: your owner answered")
+	f.tap(t, f.cards(t)[0].ID, "host-echo", authz.ViaSession)
+	if text := f.callRaw(f.chief, agentDispatchTool, ocCall("host/host-echo/opencode", "qwen/qwen3-coder", "mm", false)); !strings.Contains(text, `"held":true`) {
+		t.Fatalf("after the host tap: %s", text)
+	}
+	if n := len(f.m.spawnCalls()); n != 0 {
+		t.Fatalf("%d spawns before the model card was answered", n)
+	}
+	cs := f.cards(t)
+	if len(cs) != 1 || strings.Join(cs[0].Options, "|") != "Claude (Claude Code)|qwen/qwen3-coder (opencode, OpenRouter)|z-ai/glm-4.6 (opencode, OpenRouter)|another OpenRouter model (type its id)" {
+		t.Fatalf("the model card: %+v", cs)
+	}
+	f.say(t, f.chief, "muster: your owner answered")
+	f.tap(t, cs[0].ID, "z-ai/glm-4.6 (opencode, OpenRouter)", authz.ViaSession)
+	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, ocCall("host/host-echo/opencode", "z-ai/glm-4.6", "mm", false)))
+	calls := f.m.spawnCalls()
+	if len(calls) != 1 || calls[0].req.Model != "openrouter/z-ai/glm-4.6" || f.row(t, id).Model != "openrouter/z-ai/glm-4.6" {
+		t.Fatalf("spawns %+v", calls)
+	}
+}
+
+// TestWhatTheAgentAndTheChiefAreToldAboutAskingIsTrueForEachRuntime (operator
+// decision on #522 Q1 (a)): a host-spawned claude is told, and the chief is
+// told, that it asks the owner before using tools; a host-spawned opencode is
+// told — and the chief is told — that it runs WITHOUT asking, inside the
+// owner's opencode deny rules. Each text is pinned whole (literal, never the
+// constants), and neither runtime's text appears in the other's.
+func TestWhatTheAgentAndTheChiefAreToldAboutAskingIsTrueForEachRuntime(t *testing.T) {
+	const (
+		claudeAgent = "You run in normal permission mode: your owner answers your asks on muster."
+		claudeChief = "Started in a new window of the agents session on host-echo. It asks your owner before using tools, and " +
+			"those asks reach them on muster. Do not start another."
+		ocAgent = "You run without asking before you use tools, inside your owner's opencode deny rules; there is no owner " +
+			"approval step, so stay inside the task."
+		ocChief = "Started in a new window of the agents session on host-echo. It runs without asking before it uses tools " +
+			"(opencode's own mode), inside your owner's opencode deny rules. Do not start another."
+	)
+	f := newOCHostFixture(t)
+	run := func(call map[string]any) (prompt, next string) {
+		t.Helper()
+		f.ownerTurn(t, f.chief, f.owner, "Start it mirrored on host-echo.")
+		var out struct {
+			Next string `json:"next"`
+		}
+		text := f.callRaw(f.chief, agentDispatchTool, call)
+		hostDispatchIDOf(t, text)
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		calls := f.m.spawnCalls()
+		return calls[len(calls)-1].req.Prompt, out.Next
+	}
+	cp, cn := run(hostCall("host/host-echo/claude", "ask-cc", true))
+	op, on := run(ocCall("host/host-echo/opencode", "qwen/qwen3-coder", "ask-oc", true))
+	if !strings.Contains(cp, claudeAgent) || strings.Contains(cp, ocAgent) || cn != claudeChief {
+		t.Fatalf("claude: the agent's prompt %q\nthe chief's next %q", cp[:min(len(cp), 400)], cn)
+	}
+	if !strings.Contains(op, ocAgent) || strings.Contains(op, "normal permission mode") || strings.Contains(op, "answers your asks") || on != ocChief {
+		t.Fatalf("opencode: the agent's prompt %q\nthe chief's next %q", op[:min(len(op), 400)], on)
 	}
 }

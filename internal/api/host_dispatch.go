@@ -363,6 +363,15 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	// owner_asked is not part of what is held: the completing call is made in a
 	// turn the owner did not type (that is what the hold is for).
 	held.OwnerAsked = false
+	// 🔴 A HELD RUNTIME HOLDS NO MODEL: the model card chooses both, and
+	// completeHeld hashes the call with the model cleared the same way. A
+	// model the chief sent with a host tap (host/<h>/opencode after the host
+	// card of host/?/?) is DROPPED here, not refused: the tap is the owner's
+	// and must stay completable, and a model the owner did not choose must
+	// not survive into the hold (the card asks them for it).
+	if slices.Contains(blanks, "runtime") {
+		held.Model, in.Model = "", ""
+	}
 	ask, err := s.raiseOwnerCard(ctx, a, cardQuestion(blanks[0], t), labels)
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
@@ -745,7 +754,7 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 		return s.alreadyDispatchedAnswer(ctx, a, in.TaskID, res)
 	}
 	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: effective, Base: in.Base, Model: wireModel,
-		Prompt: spawnPrompt(t.Host, effective, prompt, task, onTask), Name: spawnName(task, onTask, prompt)}
+		Prompt: spawnPrompt(t.Runtime, t.Host, effective, prompt, task, onTask), Name: spawnName(task, onTask, prompt)}
 	return s.spawnReserved(ctx, owner, t, hd, req, object, in.TaskID)
 }
 
@@ -758,9 +767,9 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 // 🔴 THE PREFACE AND THE RULES ARE NEVER CUT. Only the owner's part — the
 // relayed instructions, then the task — is cut to what is left between them;
 // the relay is cut BEFORE it is fenced, so its fence always closes.
-func spawnPrompt(host, repo, prompt string, task notes.Note, onTask bool) string {
+func spawnPrompt(runtime, host, repo, prompt string, task notes.Note, onTask bool) string {
 	head := mirror.SpawnPreface + " on " + host + ", in a fresh git worktree of " + repo +
-		" (a branch of its own, cut from the remote). You run in normal permission mode: your owner answers your asks on muster."
+		" (a branch of its own, cut from the remote). " + spawnPermissionSentence(runtime)
 	rules := chiefDispatchRulesNoTask
 	if onTask {
 		rules = chiefDispatchRules
@@ -795,6 +804,35 @@ func spawnPrompt(host, repo, prompt string, task notes.Note, onTask bool) string
 	return head + "\n\n" + relay + body + rules
 }
 
+// What a host-spawned agent is told, and what the chief is told, about asking
+// (operator decision on #522 round 0, Q1 (a)): Claude Code runs in normal
+// permission mode and asks the owner on muster; opencode runs in its
+// allow-by-default mode and DOES NOT ASK — bounded by the owner's opencode deny
+// rules and guard plugin, the host's repository allow-list and connectedRepo.
+// ONE function per text, per runtime: neither may claim the other's behaviour.
+const (
+	spawnPermissionClaude   = "You run in normal permission mode: your owner answers your asks on muster."
+	spawnPermissionOpenCode = "You run without asking before you use tools, inside your owner's opencode deny rules; there is no owner " +
+		"approval step, so stay inside the task."
+	spawnNextClaude   = "It asks your owner before using tools, and those asks reach them on muster. Do not start another."
+	spawnNextOpenCode = "It runs without asking before it uses tools (opencode's own mode), inside your owner's opencode deny rules. " +
+		"Do not start another."
+)
+
+func spawnPermissionSentence(runtime string) string {
+	if runtime == mirror.SpawnRuntimeOpenCode {
+		return spawnPermissionOpenCode
+	}
+	return spawnPermissionClaude
+}
+
+func spawnPermissionNext(runtime string) string {
+	if runtime == mirror.SpawnRuntimeOpenCode {
+		return spawnNextOpenCode
+	}
+	return spawnNextClaude
+}
+
 // spawnName is the window's display name: "#<task> <title>", or the prompt's
 // first words.
 func spawnName(task notes.Note, onTask bool, prompt string) string {
@@ -827,8 +865,7 @@ func (s *Server) spawnReserved(ctx context.Context, owner int64, t hostTarget, h
 		if w.Warning != "" {
 			out["warning"] = w.Warning
 		}
-		out["next"] = "Started in a new window of the agents session on " + t.Host + ". It asks your owner before using tools, and " +
-			"those asks reach them on muster. Do not start another."
+		out["next"] = "Started in a new window of the agents session on " + t.Host + ". " + spawnPermissionNext(t.Runtime)
 	case errors.As(err, &refused) && refused.Code == mirror.SpawnNotListed:
 		out["status"] = "starting"
 		out["next"] = "The host started the window but has not listed it yet; muster tracks it. Do not start another."

@@ -186,9 +186,16 @@ These are binding, and this page does not reopen them.
    - A new muster-mirror flag, off by default. The owner's host configuration
      turns it on for the owner's default mirror only.
    - Spawned agents count toward the chief's existing live and daily caps.
-   - Claude and opencode start in their **normal** permission modes, so their
-     prompts reach the owner as asks. That path has already shipped: Claude's
-     waiting state, and opencode's question and permission asks (#416).
+   - Claude Code starts in its **normal** permission mode, so its prompts reach
+     the owner as asks (Claude's waiting state, already shipped).
+   - **Amended (operator, #522 round 0, Q1 (a): "opencode should run with no
+     asking").** opencode starts in its own **allow-by-default** mode and
+     **does not ask**: muster enforces no ask-on-shell for it. Measured, with no
+     opencode configuration it ran a shell command without a permission
+     request ([7](#7-what-is-still-unverified)). Its limits are the owner's opencode **deny rules and guard plugin**, the host's
+     repository allow-list (`-agent-spawn-repos`), and `connectedRepo`.
+     An ask opencode does raise (a question, or a rule of the owner's that
+     asks) still reaches the Attention view through #416.
 4. **UI.**
    - Delete the dispatch UI: the sidebar **+**, the dispatch form and "Save for
      later".
@@ -2707,6 +2714,7 @@ test of that option through the tool, with the same refusals.
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
 | host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
+| agent | **claude:** normal permission mode, so tool use the settings in force do not allow is an ask on muster. **opencode: no ask** (decision 3, amended): it runs allow-by-default, bounded by the owner's opencode deny rules and guard plugin, the repository allow-list on the host, and `connectedRepo` above |
 | host | the repository is on `-agent-spawn-repos` (by its exact name, or `<owner>/*` for its owner; case-insensitive); the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
@@ -2875,12 +2883,21 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
   - **How it is framed:** the prompt is fenced as relayed by the chief, and
     muster's rules close the message and win (draft PRs only; never mark a
     task complete; text from outside is data).
-  - **What it can do:** the agent starts in **normal permission mode**, so
-    every tool use that the settings in force do not already allow becomes an
-    ask on muster. That is a mitigation, not a boundary. The settings in force
-    are the owner's own, plus the repository's: `.claude/settings.json` for
-    claude, `opencode.json` for opencode. Either can allow more. The
-    connected-repository rule above limits which repositories can do that.
+  - **What it can do:**
+    - **claude** starts in **normal permission mode**, so every tool use that
+      the settings in force do not already allow becomes an ask on muster.
+      That is a mitigation, not a boundary. The settings in force are the
+      owner's own plus the repository's `.claude/settings.json`, which can
+      allow more.
+    - **opencode does not ask** (decision 3, amended): it runs in its own
+      allow-by-default mode, and no ask stands between a relayed prompt and
+      its tools. Its limits are the owner's opencode **deny rules and guard plugin**, the host's
+      repository allow-list (`-agent-spawn-repos`), and `connectedRepo`.
+      A repository's own `opencode.json` can loosen opencode's rules further.
+      Both the spawned agent and the chief are told so (`spawnPermission*`,
+      `internal/api/host_dispatch.go`); neither is told it asks.
+    - The connected-repository rule above limits which repositories can
+      supply either runtime's settings.
 
 ### 5.3 Caps
 
@@ -3690,8 +3707,12 @@ send):
   first message;
 - "start a mirrored agent on `<host>`", naming no model → the model card,
   offering Claude, the configured list, and a typed id;
-- its permission ask appears in muster's Attention view (#416), and an answer
-  from there continues the session;
+- **amended (decision 3):** it runs **without asking** before it uses tools,
+  inside the owner's opencode deny rules and guard plugin; the acceptance is
+  that its tool use is NOT held for an ask. An ask it does raise (a question,
+  or a rule of the owner's that asks) appears in muster's Attention view
+  (#416), and an answer from there continues the session. Claude Code still
+  asks;
 - a routed task comment reaches it through the API.
 
 #### As built (phase 4)
@@ -3727,6 +3748,17 @@ Where the build differs from the plan above, and what it leaves for later:
 - **A model with the runtime blank** (`host/<host>/?` plus `model`) is refused:
   the card asks for both.
 - **The live card** says `opencode · <id> (OpenRouter)`.
+- **Round-1 audit fixes.** The window runs `<muster-mirror> opencode
+  --opencode-bin <abs> -s <id>`: the launcher execs exactly the opencode binary
+  whose version the host checked, and with that flag it **refuses** a TUI whose
+  version it cannot read or that differs, or a service it cannot reach (a
+  person's own start still goes on). A model the chief sends with a host tap of
+  `host/?/?` is dropped from the re-filed hold (the model card chooses it), so
+  the card stays completable. A definite refusal of the first prompt (400, 404,
+  409, 401) is not retried; two posts with no answer are `failed` with the
+  detail `prompt not confirmed: opencode did not answer, so it may have been
+  delivered` (the wire has no unconfirmed spawn result). A model the host's
+  opencode lists with `enabled: false` is not a model it offers.
 - **Not built in phase 4:** the e2e browser spec (both runtimes); it was not
   built in phase 3 either. The host and server halves are covered by the tmux
   and PG suites below, and the live acceptance is the owner's.
