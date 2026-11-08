@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -90,7 +91,6 @@ func TestParseSSOOrigins(t *testing.T) {
 		// Hosts a browser would rewrite, so the origin it reports is not the one written.
 		"ipv4-mapped ipv6":     {"https://[::ffff:1.2.3.4]", "an IPv4-mapped IPv6 address"},
 		"ipv4-mapped ipv6 hex": {"https://[::ffff:102:304]", "an IPv4-mapped IPv6 address"},
-		"bracketed ipv4":       {"https://[1.2.3.4]", "invalid IP-literal"},
 		"short ipv4":           {"https://127.1", "the host is not a host name"},
 		"hex ipv4":             {"https://0x7f.0.0.1", "the host is not a host name"},
 		"five numeric labels":  {"https://1.2.3.4.5", "the host is not a host name"},
@@ -101,7 +101,6 @@ func TestParseSSOOrigins(t *testing.T) {
 		"digit label inside":   {"https://auth.42.example.test", "the host is not a host name"},
 		"numeric last label":   {"https://auth.example.123", "the host is not a host name"},
 		"last label no letter": {"https://auth.example.1-2", "the host is not a host name"},
-		"bracketed name":       {"https://[auth.example.test]", "invalid"},
 		"one bad among goods":  {"https://auth.example.test,http://idp.example.test", "the scheme must be https"},
 		"nine origins": {"https://a.example.test,https://b.example.test,https://c.example.test,https://d.example.test," +
 			"https://e.example.test,https://f.example.test,https://g.example.test,https://h.example.test,https://i.example.test",
@@ -111,6 +110,22 @@ func TestParseSSOOrigins(t *testing.T) {
 		got, err := ParseSSOOrigins(c[0])
 		if err == nil || !strings.Contains(err.Error(), c[1]) {
 			t.Errorf("%s: ParseSSOOrigins(%q) = %#v, %v; want a refusal saying %q", name, c[0], got, err, c[1])
+		}
+	}
+	// A bracketed host that is not an IPv6 address. Some Go releases refuse it
+	// in url.Parse, others hand it to parseSSOOrigin, whose own guard must then
+	// refuse it: the expected reason is whichever this toolchain produces.
+	for in, ours := range map[string]string{
+		"https://[1.2.3.4]":           "an IPv4-mapped IPv6 address",
+		"https://[auth.example.test]": "the bracketed host is not an IPv6 address",
+	} {
+		want := ours
+		if _, perr := url.Parse(in); perr != nil {
+			want = perr.Error()
+		}
+		got, err := ParseSSOOrigins(in)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParseSSOOrigins(%q) = %#v, %v; want a refusal saying %q", in, got, err, want)
 		}
 	}
 	// A refusal names the entry, so the operator can find it.
