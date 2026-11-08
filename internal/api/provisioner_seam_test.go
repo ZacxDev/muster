@@ -160,6 +160,9 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents/{name}/send",
 			"POST /api/agents/{name}/messages",
 			"POST /api/jobs",
+			// The view's chief mode (view_chief.go): the owner's line runs as a
+			// chief turn (startAgentTurn → chatTurn), as POST /agents/{name}/send.
+			"POST /mirror/view/chief",
 		},
 		callers: []string{
 			"(*Server).gatewayTurn",      // Chat (or runTurnWithTools); reached only from handleAPIAgentSendMessage (POST /api/agents/{name}/messages)

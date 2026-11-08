@@ -1843,7 +1843,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
-		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name))
+		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name), nil)
 		s.turns.leave(a.ID)
 		if err != nil {
 			tcancel()
@@ -1908,15 +1908,16 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 	defer s.turns.leave(a.ID)
 	// 🔴 notTyped: this door's one caller is the route hand-back
 	// (startClaimedChiefTurn), muster's words, never a line the owner typed.
-	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit)
+	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit, nil)
 }
 
 // runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
 //
-// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's two chat doors
-// (handleAgentWS, handleAgentSend) and notTyped from every other caller. When it
+// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's three chat
+// doors (handleAgentWS, handleAgentSend, and the view's chief door
+// handleViewChief) and notTyped from every other caller. When it
 // is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
 // thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
@@ -1927,9 +1928,18 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // Chief-chat turn be quoted as the owner's covering words (step 3b-1,
 // chief_chat_quotes.go). Every other writer of a chat row leaves it unset
 // (TestEveryChatWriterIsClassified).
-func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+//
+// about is the session the owner was viewing when they typed text (the view's
+// chief door, view_chief.go: resolved by the server, never by the page), nil
+// from every other caller. It is stored on the user row (chat_messages.about,
+// migration 0097) beside text, and the runtime is handed text behind a muster
+// header rendered from it (viewChiefTurnText). 🔴 THE ROW'S CONTENT IS ONLY
+// WHAT WAS TYPED: the header is muster's, so the owner's covering words
+// (chief_chat_quotes.go) never include it. TestOnlyTheViewDoorBindsASubject
+// pins who passes what.
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit, about *agents.ChatAbout) ([]agents.TurnPart, error) {
 	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text,
-		TypedBy: typedBy})
+		TypedBy: typedBy, About: about})
 	if err != nil {
 		msg = agents.ChatMessage{} // no row to point at: nothing is marked
 	}
@@ -1949,7 +1959,7 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	}
 	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
 	// waits for that turn and sends again, rather than failing (chat_busy.go).
-	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, text, collect)
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, viewChiefTurnText(about, text), collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)

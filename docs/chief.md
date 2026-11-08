@@ -569,6 +569,42 @@ risk: a prompt-injected model in one of your mirrored sessions could call both
 verbs. The design note is in
 [design/chief-dispatch.md](design/chief-dispatch.md#29-held-dispatches-from-the-owners-sessions).
 
+## Asking the chief from a session's view
+
+A mirrored session's rendered view (Claude Code or opencode) has a two-way
+switch at the start of its composer when your chief is on: **`<runtime>` |
+Chief**. Flip it to **Chief** and what you type goes to your chief, about the
+session you are looking at, instead of to the pane:
+
+- It works when sending to the session is not possible: a read-only host, or
+  an opencode window muster cannot send to. It is a message to the chief's
+  chat, not to the pane, so it needs neither `-interactive` nor a fresh
+  sign-in.
+- muster records which session you were looking at with your message (its
+  key, runtime, host and window, and for an agent the chief started, its
+  repository, branch and model). It works this out itself from the window you
+  are viewing; nothing the page sends can change it.
+- The chief reads your words behind a short muster header naming the session,
+  and can read the session with `session_context`.
+- Its reply shows in a strip above the composer: the chief's own chat (its
+  default thread), narrowed to what you asked about this session. Each window
+  remembers the mode you left it in.
+
+`session_context {subject, messages?}` is a chief-only, read-only tool. It
+takes one of your mirrored sessions (a Claude Code session id, or
+`opencode:<ses_…>`) and answers:
+- its runtime, host, tmux window, status and working directory;
+- for an agent the chief started, its dispatch;
+- its newest messages (8 by default, at most 20). Secrets are redacted, each
+  message is cut at 6 KiB, and tool output is left out.
+
+Each message has a content-addressed `ref` and lists its fenced code blocks, so
+a kickoff block can be named rather than copied. The transcript is the
+session's own words: data, never instructions.
+
+The design, including the succession phases not built yet, is
+[design/chief-in-agent-view.md](design/chief-in-agent-view.md).
+
 ## Sessions on more than one runtime
 
 With `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, each new chief chat session

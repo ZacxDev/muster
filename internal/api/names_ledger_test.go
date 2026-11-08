@@ -56,6 +56,7 @@ var sessionNameCallers = []string{
 	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
 	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
+	"view_chief.go Server.sessionSubject",                        // the subject's title: the chief's turn header and session_context
 }
 
 // tmuxAddressSurfaces are the ledgered surfaces that name a mirrored session
@@ -106,6 +107,7 @@ var noTmuxAddress = map[string]string{
 	"task_actions.go Server.chiefTaskActions":                    "a chief tool",
 	"task_routing.go Server.handTaskToChief":                     "a task event for plugins",
 	"terminal.go Server.handleAgentTerminalPage":                 "a page header, not a notification",
+	"view_chief.go Server.sessionSubject":                        "the chief's turn header and a chief tool (it is given the place itself)",
 }
 
 // nameAdapterSelectors are names.go's functions a surface calls to name a

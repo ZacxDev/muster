@@ -319,7 +319,10 @@ var mirrorComposerJS = `
   };
   function tail() { var t = document.getElementById('` + mirrorAsksID + `'); return t && log && t.parentNode === log ? t : null; }
   // bubbled: p is drawn in the conversation (a Send on the Rendered view).
-  function bubbled(p) { return !p.queued && !!log; }
+  // 🔴 A LINE TO THE CHIEF (view_chief.go) IS NEVER DRAWN IN THE SESSION'S
+  // CONVERSATION: it is not the session's, and no row of it will ever come;
+  // the chief strip shows it. It is settled like a Terminal view's send.
+  function bubbled(p) { return !p.queued && !p.chief && !!log; }
   function draw(p) {
     if (!bubbled(p)) { paint(p); return; }
     var el = document.createElement('div');
@@ -719,7 +722,9 @@ var mirrorComposerJS = `
     // it is not lost; retried later, it goes after these. Only messages
     // pressed BEFORE the refusal came wait for the person's answer to it.
     if (blocker && !first) blocker = null;
+    var chiefPath = form.getAttribute('data-chief-path');
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
+      chief: !!(chiefPath && o.to && o.to.indexOf(chiefPath) === 0),
       seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
     live.push(p);
     hold(p);
@@ -779,6 +784,9 @@ var mirrorComposerJS = `
         // The row may already be here (it can arrive before the answer).
         reconcile();
       }
+      // A line to the chief: the strip refetches (view_chief.go). It is not
+      // the session's, so the suggested replies never hear of it.
+      if (p.chief) { document.dispatchEvent(new Event('mv-chief-sent')); return; }
       // What was sent, for the suggested replies' edit distance
       // (suggest_row.go): it stays on this page.
       document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: p.text, queued: p.queued } }));
@@ -848,7 +856,10 @@ var mirrorComposerJS = `
     clearBox();
     if (att) att.sent();
     renew();
-    try { start({ text: text, typed: typed, queued: queued, to: queued ? sub.getAttribute('formaction') : form.getAttribute('action'), again: again }); }
+    // The route: the submitting button's formaction (the Queue, the chief's
+    // Send), else the form's action.
+    var to = (sub && sub.getAttribute('formaction')) || form.getAttribute('action');
+    try { start({ text: text, typed: typed, queued: queued, to: to, again: again }); }
     catch (err) { input.value = text; shown(); browserSubmit(); }
   });
   input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });

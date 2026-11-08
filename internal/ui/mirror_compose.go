@@ -152,6 +152,12 @@ type ComposerView struct {
 	// Send, instead of in the bar (switcherBarWith's moreElsewhere). Only the
 	// Rendered view sets it; it needs Switcher.
 	MoreInRow bool
+	// Chief, when set, draws the chief mode (view_chief.go): the "<agent> |
+	// Chief" switch, the chief's Send and the chief strip. Only a mirrored
+	// window's Rendered view sets it, and only for an owner whose chief is on;
+	// it is drawn whether or not the agent composer is Disabled — the chief is
+	// a write to the chief's chat, not to the pane.
+	Chief *ComposerChief
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -314,6 +320,10 @@ func mirrorComposer(v ComposerView) g.Node {
 		// script, runs; a <noscript> rule shows it without script.
 		g.If(v.Pinned, g.Attr("data-compose-pending", "")),
 		g.If(v.Pinned, NoScript(StyleEl(g.Raw(`#mv-compose { visibility: visible !important; }`)))),
+		// The chief mode's stylesheet and its strip, above everything else
+		// of the composer (view_chief.go).
+		g.If(v.Chief != nil, StyleEl(g.Raw(viewChiefStyle))),
+		g.If(v.Chief != nil, viewChiefStrip(v.Chief)),
 		// The suggested replies (suggest_row.go): above the composer, out of
 		// flow, drawn hidden — or, auto-paused, one line saying so.
 		suggestRow(suggest),
@@ -335,6 +345,8 @@ func mirrorComposer(v ComposerView) g.Node {
 		composerMenuBox(menu),
 		// The attachments' chips (attach.go): above the input, hidden while empty.
 		attachBox(upload),
+		// "<agent> | Chief": where the box's text goes (view_chief.go).
+		g.If(v.Chief != nil, viewChiefSwitch(v.Chief)),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -376,6 +388,8 @@ func mirrorComposer(v ComposerView) g.Node {
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 			g.If(dictateOff, dictateOffControl("mv-dictate-off")),
 			sendSplit(v.Queue, off),
+			// The chief's Send, shown only in chief mode (view_chief.go).
+			g.If(v.Chief != nil, viewChiefSend(v)),
 			// The session switcher's ⋯, in the row with Send (the Rendered view):
 			// AFTER Send, the row's last control (operator ask: "[input][mic]
 			// [send][⋯]"), so Send keeps its place beside the box and the mic.
@@ -403,6 +417,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		attachScript(upload),
 		composerMenuScript(menu),
 		g.If(suggest != "", suggestRowScript()),
+		g.If(v.Chief != nil, viewChiefScript()),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }

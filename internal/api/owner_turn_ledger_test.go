@@ -71,7 +71,12 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		"internal/api/agent_send.go (*Server).handleAgentSend → startAgentTurn(ownerTypedBy(ctx))",
 		"internal/api/chief_nudge.go (*Server).sendNudgeTurn → startAgentTurn(notTyped)",
 		"internal/api/ext.go (*Server).UseExtensions → startAgentTurn(notTyped)",
-		// ownerTypedBy is called by the two doors and nothing else.
+		// The view's chief mode (view_chief.go): the owner's THIRD chat door. It
+		// reads ownerTypedBy(ctx) once, refuses anything but a signed-in browser
+		// with it (typer <= 0), and passes that same value on.
+		"internal/api/view_chief.go (*Server).handleViewChief → ownerTypedBy(ctx)",
+		"internal/api/view_chief.go (*Server).handleViewChief → startAgentTurn(typer)",
+		// ownerTypedBy is called by the three doors and nothing else.
 		"internal/api/agents.go (*Server).handleAgentWS → ownerTypedBy(ctx)",
 		"internal/api/agent_send.go (*Server).handleAgentSend → ownerTypedBy(ctx)",
 		// The SQL: set, clear, read.

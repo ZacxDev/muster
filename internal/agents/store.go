@@ -292,6 +292,42 @@ type ChatMessage struct {
 	// a row written since carries the link when it is one. false for every
 	// row a store that does not compute it returns.
 	WrittenBeforeRelayLink bool `json:"-"`
+
+	// About is the session the owner was VIEWING when they typed this USER row
+	// to the chief from its rendered view (migration 0097, chat_messages.about),
+	// nil for every other row and for every row written before 0097. 🔴 ONE
+	// WRITER SETS IT: runEnteredTurn, from the view's chief door
+	// (POST /mirror/view/chief), which resolves it on the SERVER from the hub's
+	// owner-scoped state, never from the page. internal/api's
+	// TestEveryChatWriterIsClassified and TestOnlyTheViewDoorBindsASubject pin
+	// the writers. Not serialised: no API reader needs it.
+	About *ChatAbout `json:"-"`
+}
+
+// ChatAbout is a chat row's subject (ChatMessage.About): the mirrored session
+// the owner was viewing, as the server resolved it when the row was written.
+// Stored as JSON in chat_messages.about; the field names are that column's.
+type ChatAbout struct {
+	// SessionKey is the conversation's key (mirror.SessionView.SessionKey):
+	// a Claude Code session id, or "opencode:<ses_…>".
+	SessionKey string `json:"session_key"`
+	// Runtime is the window's runtime ("claude", "opencode").
+	Runtime string `json:"runtime"`
+	// Host, TmuxSession and TmuxWindow address the window; Tmux is its
+	// operator-facing address ("<session>:<index>"), Title its name.
+	Host        string `json:"host"`
+	TmuxSession string `json:"tmux_session"`
+	TmuxWindow  string `json:"tmux_window,omitempty"`
+	Tmux        string `json:"tmux,omitempty"`
+	Title       string `json:"title,omitempty"`
+	// Dispatch is the host dispatch the window was started for (0: a window
+	// the owner opened); Repo, Base, Branch and Model are that dispatch's,
+	// or Repo the window's short repository name without one.
+	Dispatch int64  `json:"dispatch,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	Base     string `json:"base,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

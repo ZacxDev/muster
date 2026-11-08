@@ -308,7 +308,9 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		// only path that reaches it.
 		"AnswerInSession":  {{"AnswerInSession", ""}, {"askerAddressedBy", ""}},
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
-		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
+		// The owner's three chat doors: the chief chat's form and socket, and
+		// the view's chief mode (view_chief.go).
+		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}, {"handleViewChief", ""}},
 		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
 		"queue paste":      {{"sendQueueDeliver", "mirror.PasteClaude"}},
 	} {
