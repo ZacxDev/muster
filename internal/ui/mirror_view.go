@@ -215,7 +215,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				overlayNav(v.Nav, ""),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
-					overlayNavButton(),
+					overlayNavButton(v.Switcher),
 					A(
 						ID("mv-back"),
 						// Home (the chief, or the session opened last): the Agents list

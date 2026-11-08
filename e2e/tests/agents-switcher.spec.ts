@@ -356,14 +356,24 @@ for (const vp of [
       await expect(more).toBeVisible();
       await expect(more).toHaveAccessibleName('More for this session');
       await expect(pin, 'the pin is in the ⋯ menu, not the bar').toBeHidden();
-      // On the Rendered view the ⋯ is in the composer's input row, beside Send
-      // (operator ask: the ⋯ with the message controls), not in the bar.
-      const mb = (await more.boundingBox())!, sb = (await page.locator('#mv-send').boundingBox())!;
+      // On the Rendered view the ⋯ is in the composer's input row, AFTER Send —
+      // the row's last control (operator asks: the ⋯ with the message controls;
+      // then "[input][mic][send][⋯]") — not in the bar. Send is measured whole:
+      // with the queue's caret beside it, the split group.
+      const sendBox = (await page.locator('#mv-send-group').count()) ? page.locator('#mv-send-group') : page.locator('#mv-send');
+      const mb = (await more.boundingBox())!, sb = (await sendBox.boundingBox())!;
       expect([Math.round(mb.width), Math.round(mb.height)], 'a 44px target').toEqual([44, 44]);
       await expect(page.locator('#mv-form #switcher-more-btn'), 'in the input row').toHaveCount(1);
       await expect(bar(page).locator('#switcher-more-btn'), 'not in the bar').toHaveCount(0);
       expect(Math.abs(mb.y + mb.height / 2 - (sb.y + sb.height / 2)), 'on Send\'s row').toBeLessThanOrEqual(2);
-      expect(mb.x + mb.width, 'before Send').toBeLessThanOrEqual(sb.x + 0.5);
+      expect(mb.x, 'after Send').toBeGreaterThanOrEqual(sb.x + sb.width - 0.5);
+      expect(
+        await page.locator('#mv-form').evaluate((f) => {
+          const shown = Array.from(f.querySelectorAll('button, a')).filter((e) => (e as HTMLElement).getClientRects().length > 0 && !e.closest('[popover]'));
+          return shown[shown.length - 1]?.id;
+        }),
+        'the row\'s last control',
+      ).toBe('switcher-more-btn');
       await (vp.use.hasTouch ? more.tap() : more.click());
       await expect(page.locator('#switcher-more')).toBeVisible();
       await expect(more).toHaveAttribute('aria-expanded', 'true');

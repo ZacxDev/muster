@@ -332,12 +332,11 @@ export const mcpDispatchCatalogPort = port + 303;
 // own fake host. (+320: clear of the blocks other branches took.)
 export const sessionNamesPort = port + 320;
 // tests/waiting-composer.spec.ts: the ☰ button's waiting badge, the palette's
-// waiting mark, and the Rendered view's ⋯ and paperclip — its own server (the
-// e2eterm binary, mirror plugin on, uploads to a FAKE S3 this spec runs), its
-// connect listener (the asking agent's /mcp door), and that fake S3.
+// waiting mark and the paperclip at rest — its own server (the e2eterm binary,
+// mirror plugin on, attachments configured) and its connect listener (the
+// asking agent's /mcp door).
 export const waitingComposerPort = port + 330;
 export const waitingComposerConnectPort = port + 331;
-export const waitingComposerS3Port = port + 332;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

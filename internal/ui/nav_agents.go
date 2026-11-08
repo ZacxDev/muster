@@ -321,9 +321,10 @@ var navIdleJS = `(function () {
 // hidden beside the desktop rail, which shows the rows themselves); on every
 // open of the drawer, so the badge and the rows just drawn agree; on the asks
 // block's own stream (asks:changed, a session page's AttentionLiveScript);
-// and once a minute while the tab is shown — the backstop on a page that holds
-// no /events stream (the Rendered view, the terminal), as the Attention
-// badge's is.
+// and once a minute while the tab is shown, as the Attention badge's is. A page
+// with a session switcher (the Rendered view, a Terminal view) draws its first
+// count with the page instead, and has neither the load nor the poll
+// (navWaitingSlot).
 
 // NavWaitingPath is the ☰ button's badge partial.
 const NavWaitingPath = "/ui/nav/waiting"
@@ -337,14 +338,7 @@ const navWaitingShownJS = "this.parentElement&&this.parentElement.getClientRects
 
 // navWaitingTrigger is the badge slot's hx-trigger. The SSE ones are
 // debounced for attentionBadgeTrigger's reason.
-const navWaitingTrigger = "load[" + navWaitingShownJS + "], " +
-	NavOpenEvent + " from:document, " +
-	"agents:changed[" + navWaitingShownJS + "] from:body, " +
-	"sse:agent.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
-	"sse:chat.reply[" + navWaitingShownJS + "] from:body delay:50ms, " +
-	"sse:attention_queue.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
-	"asks:changed[" + navWaitingShownJS + "] from:document delay:50ms, " +
-	"muster:resync[" + navWaitingShownJS + "] from:body, " +
+const navWaitingTrigger = "load[" + navWaitingShownJS + "], " + navWaitingEventsTrigger + ", " +
 	"every 60s [(" + navWaitingShownJS + ")&&!document.hidden]"
 
 // NavWaitingCount is how many entries wait on the viewer (listEntry.waiting).
@@ -377,10 +371,33 @@ func NavWaitingBadgeHTML(n int) string {
 		hidden + `><span aria-hidden="true">` + shown + `</span><span class="sr-only">` + c + ` waiting on you</span></span>`
 }
 
+// navWaitingEventsTrigger is the badge's trigger on a page that draws its
+// first count itself (navWaitingSlot with a switcher): the same refreshes with
+// neither the load nor the minute's poll.
+const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
+	"agents:changed[" + navWaitingShownJS + "] from:body, " +
+	"sse:agent.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"sse:chat.reply[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"sse:attention_queue.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"asks:changed[" + navWaitingShownJS + "] from:document delay:50ms, " +
+	"muster:resync[" + navWaitingShownJS + "] from:body"
+
 // navWaitingSlot is the element inside the ☰ button that refreshes the badge.
-func navWaitingSlot() g.Node {
-	return Span(ID("nav-waiting-slot"), hx("hx-get", NavWaitingPath), hx("hx-trigger", navWaitingTrigger),
-		hx("hx-swap", "innerHTML"), hx("hx-target", "this"), g.Raw(NavWaitingBadgeHTML(0)))
+//
+// 🔴 ON A PAGE WITH A SESSION SWITCHER (s: the Rendered view, a Terminal view —
+// the overlay pages, whose open path the sidebar's list was built to spare) THE
+// FIRST COUNT IS DRAWN WITH THE PAGE, from the switcher's Waiting view: the
+// same entries and the same predicate (NewSwitcher's listEntry.waiting), already
+// read for the bar — so the page costs no extra read on load and no minute's
+// poll; the badge then refreshes on the events and on each open of the drawer
+// (navWaitingEventsTrigger). Without one, it loads its count (navWaitingTrigger).
+func navWaitingSlot(s *Switcher) g.Node {
+	n, trigger := 0, navWaitingTrigger
+	if s != nil {
+		n, trigger = len(s.Waiting), navWaitingEventsTrigger
+	}
+	return Span(ID("nav-waiting-slot"), hx("hx-get", NavWaitingPath), hx("hx-trigger", trigger),
+		hx("hx-swap", "innerHTML"), hx("hx-target", "this"), g.Raw(NavWaitingBadgeHTML(n)))
 }
 
 // RenderNavWaiting writes NavWaitingBadgeHTML for the entries.

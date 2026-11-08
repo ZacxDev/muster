@@ -1,26 +1,26 @@
 import { execFileSync } from 'node:child_process';
-import http from 'node:http';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { dsn, repoRoot, waitingComposerConnectPort, waitingComposerPort, waitingComposerS3Port } from '../lib/env';
+import { dsn, repoRoot, waitingComposerConnectPort, waitingComposerPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
-// FOUR PHONE-FIRST ASKS, on a real muster-server and a real muster-mirror
-// (`-tags e2emirror`, tmux faked by files), an agent asking over the real /mcp
-// door, and uploads to a FAKE S3 this file plays:
+// THREE PHONE-FIRST ASKS, on a real muster-server and a real muster-mirror
+// (`-tags e2emirror`, tmux faked by files) and an agent asking over the real
+// /mcp door:
 //
 //   1. the ☰ button that opens the sidebar carries a badge counting what waits
 //      on the operator — the sidebar rows' own "waiting" (listEntry.waiting) —
-//      shown when an ask arrives and gone when it is answered, live;
-//   2. the Rendered view's ⋯ is AFTER Send, the row's last control
-//      ([input][mic][send][⋯]);
-//   3. the command palette (the bar's magnifier) marks a waiting session with
+//      shown when an ask arrives and gone when it is answered; on the Rendered
+//      view its first count is drawn with the page, with no read of its own;
+//   2. the command palette (the bar's magnifier) marks a waiting session with
 //      the SIDEBAR's own mark, and no other;
-//   4. the paperclip is on screen while the message box is collapsed, and
+//   3. the paperclip is on screen while the message box is collapsed, and
 //      tapping it opens the file chooser without focusing the box (no
-//      keyboard), the upload going the same way as before.
+//      keyboard).
 //
-// Each at a phone (390×844, touch) and a desktop (1440×900).
+// Each at a phone (390×844, touch) and a desktop (1440×900). The ⋯ after Send
+// is agents-switcher.spec's and session-tags.spec's (they own that row); the
+// upload itself is uploads.spec's (the paperclip's change is CSS only).
 //
 // 🔴 FIXTURES ARE PAIRWISE DISTINCT: one agent waits (an open ask), one agent
 // does not (a plain chat), and two mirrored windows do not — so a mark drawn
@@ -33,42 +33,6 @@ const stamp = String(Date.now());
 const ASKER = `e2e-wc-asker-${stamp}`;
 const ASKER_TOKEN = `e2e-wc-asker-token-not-a-real-one-${stamp}`;
 const QUIET = `e2e-wc-quiet-${stamp}`;
-const ACCESS = 'e2e-wc-s3-access-not-real';
-
-// --- a fake S3: path-style, one bucket, what minio-go sends for a small
-// object (internal/uploads; the full fake, with its checks, is uploads.spec's).
-const objects = new Map<string, Buffer>();
-const s3 = http.createServer((req, res) => {
-  const chunks: Buffer[] = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    const [rawPath, query = ''] = (req.url ?? '').split('?');
-    const key = decodeURIComponent(rawPath).replace(/^\/muster-e2e\/?/, '');
-    const err = (status: number, code: string) =>
-      res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code></Error>`);
-    if (key === '') {
-      if (req.method === 'HEAD') return void res.writeHead(200).end();
-      if (query.startsWith('lifecycle')) return err(404, 'NoSuchLifecycleConfiguration');
-      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
-      return err(400, 'NotImplemented');
-    }
-    if (req.method === 'PUT') {
-      objects.set(key, Buffer.concat(chunks));
-      return void res.writeHead(200, { ETag: '"e2e"' }).end();
-    }
-    const b = objects.get(key);
-    if (req.method === 'HEAD' || req.method === 'GET') {
-      if (!b) return err(404, 'NoSuchKey');
-      res.writeHead(200, { 'Content-Length': String(b.length), ETag: '"e2e"', 'Last-Modified': new Date().toUTCString() });
-      return void res.end(req.method === 'GET' ? b : undefined);
-    }
-    if (req.method === 'DELETE') {
-      objects.delete(key);
-      return void res.writeHead(204).end();
-    }
-    res.writeHead(405).end();
-  });
-});
 
 const rig = new MirrorRig(
   waitingComposerPort,
@@ -78,10 +42,13 @@ const rig = new MirrorRig(
     MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x5c).toString('base64'),
     MUSTER_CONNECT_PORT: String(waitingComposerConnectPort),
     MUSTER_AGENT_CONNECT_URL: connectURL,
+    // Attachments ON, so the composer draws the paperclip — against an S3 that
+    // is never reached (port 1 refuses): nothing here uploads, the boot check
+    // only warns (cmd/muster-server's checkUploadBucket).
     MUSTER_PUBLIC_URL: `http://localhost:${waitingComposerPort}`,
-    MUSTER_S3_ENDPOINT: `http://127.0.0.1:${waitingComposerS3Port}`,
+    MUSTER_S3_ENDPOINT: 'http://127.0.0.1:1',
     MUSTER_S3_BUCKET: 'muster-e2e',
-    MUSTER_S3_ACCESS_KEY: ACCESS,
+    MUSTER_S3_ACCESS_KEY: 'e2e-wc-s3-access-not-real',
     MUSTER_S3_SECRET_KEY: 'e2e-wc-s3-secret-not-real',
     MUSTER_UPLOAD_SIGNING_KEY: 'e2e-wc-upload-signing-key-not-a-real-one-0123456789',
   },
@@ -102,7 +69,6 @@ const fix = (...args: string[]) =>
 
 test.beforeAll(async () => {
   test.setTimeout(240_000);
-  await new Promise<void>((r) => s3.listen(waitingComposerS3Port, '127.0.0.1', () => r()));
   await rig.start();
   const now = Math.floor(Date.now() / 1000);
   const lines = WINDOWS.map(([s, w], i) => `${s}|${w}|1|1|claude|${now - 60 * (i + 1)}|${rig.transcript(cc.prompt(`the prompt of ${s}`) + cc.reply(`Answered in ${s}.`), 'w' + i)}`);
@@ -118,7 +84,6 @@ test.afterAll(async () => {
     if (askerMade) fix('cleanup', '1', ASKER);
   } finally {
     await rig.stop();
-    await new Promise((r) => s3.close(r));
   }
 });
 
@@ -191,6 +156,10 @@ for (const vp of [
       // A page whose ☰ is on screen at this size: the shell on a phone (the
       // rail is a drawer there), the Rendered view on a desktop (its sidebar is
       // an overlay at every width).
+      const reads: string[] = [];
+      page.on('request', (r) => {
+        if (new URL(r.url()).pathname === '/ui/nav/waiting') reads.push(r.url());
+      });
       await page.goto(vp.phone ? origin + '/tasks' : viewOf('plum'));
       await expect(menuBtn(page)).toBeVisible();
       const box = (await menuBtn(page).boundingBox())!;
@@ -205,9 +174,12 @@ for (const vp of [
         // The shell holds the /events stream: the badge follows it, no reload.
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
       } else {
-        // The Rendered view holds no stream: on its next load.
+        // The Rendered view holds no stream: its next load draws the count
+        // WITH the page (from the switcher's Waiting view) — no read of its own.
         await page.reload();
-        await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
+        await expect(badge(page)).toHaveAttribute('data-count', String(base + 1));
+        await page.waitForTimeout(500);
+        expect(reads, 'the Rendered view drew the count with the page, no /ui/nav/waiting read').toEqual([]);
       }
       await expect(badge(page)).toBeVisible();
       // On the button's corner, inside the screen.
@@ -226,36 +198,9 @@ for (const vp of [
         // Opening the sidebar refreshes it (with the rows it opens on).
         await tap(page, '#sidebar-open');
         await expect(badge(page), 'answered: the open refreshes it').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
+        expect(reads.length, 'POSITIVE CONTROL: the open is a /ui/nav/waiting read').toBeGreaterThanOrEqual(1);
       }
       if (base === 0) await expect(badge(page)).toBeHidden();
-    });
-
-    test('the Rendered view’s ⋯ is after Send, the row’s last control', async ({ page }) => {
-      test.setTimeout(90_000);
-      await rig.login(page);
-      await rig.waitListed(page, 'kiwi');
-      await page.goto(viewOf('plum'));
-      await expect(page.locator('#mv-compose')).toBeVisible();
-      const order = await page.evaluate(() => {
-        const form = document.getElementById('mv-form')!;
-        const ctl = Array.from(form.querySelectorAll('button, a')).filter((e) => (e as HTMLElement).getClientRects().length > 0 && !e.closest('[popover]'));
-        return ctl.map((e) => e.id || e.getAttribute('aria-label'));
-      });
-      const send = order.indexOf('mv-send'), more = order.indexOf('switcher-more-btn');
-      expect(send, `Send is in the row: ${order}`).toBeGreaterThanOrEqual(0);
-      expect(more, `the ⋯ is after Send, last: ${order}`).toBe(order.length - 1);
-      expect(more).toBeGreaterThan(send);
-      // On screen, too: right of Send, inside the screen.
-      const s = (await page.locator('#mv-send').boundingBox())!;
-      const d = (await page.locator('#switcher-more-btn').boundingBox())!;
-      expect(d.x, 'the ⋯ is drawn right of Send').toBeGreaterThanOrEqual(s.x + s.width);
-      expect(d.x + d.width).toBeLessThanOrEqual(vp.w);
-      expect(d.width).toBeGreaterThanOrEqual(44);
-      expect(d.height).toBeGreaterThanOrEqual(44);
-      await noSidewaysScroll(page, vp.w);
-      // It still opens its menu.
-      await tap(page, '#switcher-more-btn');
-      await expect(page.locator('#switcher-more')).toBeVisible();
     });
 
     test('the palette marks a waiting session with the sidebar’s mark, and no other', async ({ page }) => {
@@ -314,19 +259,10 @@ for (const vp of [
       }
       await expect(clip, 'the paperclip is on screen without opening the box').toBeVisible();
       await expect(input).not.toBeFocused();
-      const uploads: string[] = [];
-      page.on('request', (r) => {
-        if (r.method() === 'POST' && new URL(r.url()).pathname === '/uploads') uploads.push(r.url());
-      });
       const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap(page, '#mv-attach')]);
       expect(chooser.isMultiple()).toBe(true);
       await expect(input, 'the tap does not focus the box (no keyboard)').not.toBeFocused();
       if (vp.phone) await expect(input, 'the box stays collapsed').toBeHidden();
-      await chooser.setFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('attached at rest') });
-      const chip = page.locator('#mv-attachments [data-attachment-chip]');
-      await expect(chip).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
-      expect(uploads, 'the same upload path').toHaveLength(1);
-      await expect(input, 'attaching did not focus the box either').not.toBeFocused();
       await noSidewaysScroll(page, vp.w);
     });
   });

@@ -74,7 +74,9 @@ func overlayNav(n NavChrome, entry string) g.Node {
 	return sidebarIn(entry, entry, false, n.Feat, true)
 }
 
-func overlayNavButton() g.Node { return overlayOpenButton() }
+// overlayNavButton is the hamburger of a full-height view; s is the view's
+// session switcher (the badge's first count), nil for none.
+func overlayNavButton(s *Switcher) g.Node { return overlayOpenButton(s) }
 
 func overlayNavScript(n NavChrome) g.Node { return appScript(n.Feat) }
 

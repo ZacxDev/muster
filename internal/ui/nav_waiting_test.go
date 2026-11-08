@@ -126,3 +126,34 @@ func TestThePaletteCopiesTheSidebarsWaitingMark(t *testing.T) {
 		t.Error("the palette does not read the mark from a pill's template or a sidebar row")
 	}
 }
+
+// TestTheOverlayBadgeIsDrawnWithThePage: on a page with a session switcher
+// (the Rendered view, a Terminal view) the ☰ badge's first count is the
+// switcher's Waiting view — drawn with the page, no load and no minute's poll —
+// and it still refreshes on the events and each open of the drawer. A page with
+// none loads it.
+func TestTheOverlayBadgeIsDrawnWithThePage(t *testing.T) {
+	list, mirrors := menuBadgeFixture()
+	sw := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
+	if len(sw.Waiting) != NavWaitingCount(list, mirrors) {
+		t.Fatalf("the switcher's Waiting view holds %d, the badge counts %d", len(sw.Waiting), NavWaitingCount(list, mirrors))
+	}
+	over := renderString(t, overlayNavButton(sw))
+	if !strings.Contains(over, `data-count="3"`) || strings.Contains(over, `data-count="3" class="pointer-events-none absolute right-0 top-0 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none text-on-accent ring-2 ring-bg" hidden`) {
+		t.Fatalf("the overlay ☰ does not draw the switcher's 3: %s", over)
+	}
+	for _, no := range []string{"load[", "every 60s"} {
+		if strings.Contains(over, no) {
+			t.Errorf("the overlay ☰ badge still has %q in its trigger: %s", no, over)
+		}
+	}
+	for _, ev := range []string{NavOpenEvent, "sse:attention_queue.changed", "asks:changed"} {
+		if !strings.Contains(over, ev) {
+			t.Errorf("the overlay ☰ badge does not refresh on %s", ev)
+		}
+	}
+	plain := renderString(t, overlayNavButton(nil))
+	if !strings.Contains(plain, "load[") || !strings.Contains(plain, "every 60s") || !strings.Contains(plain, `data-count="0"`) {
+		t.Errorf("without a switcher the badge must load its count: %s", plain)
+	}
+}
