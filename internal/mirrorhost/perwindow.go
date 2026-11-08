@@ -68,6 +68,9 @@ type WindowInfo struct {
 	// resolves window, then session, then global — "" when it is unset or not a
 	// colour (windowColor). docs/design/agent-cards.md (b).
 	Color string
+	// Dispatch is the host dispatch the window was started for (its
+	// @muster-dispatch, mirror.DispatchOption), 0 for none.
+	Dispatch int64
 	// Cwd is the working directory of the window's active pane (its
 	// /proc/<pid>/cwd link, " (deleted)" and all): of its Claude Code process
 	// when it runs one, else of the pane's root process (the shell), "" when it
@@ -149,10 +152,19 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // the window. Every byte outside printable ASCII becomes '!', so such a value
 // is simply not a colour, and the line keeps its shape.
 const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t" +
-	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{session_name}"
+	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{s/[^0-9]//:" + mirror.DispatchOption + "}\t#{session_name}"
 
-// windowsFields is how many fields a windowsFormat line has.
-const windowsFields = 13
+// windowsFields is how many fields a windowsFormat line has. The field before
+// the session name is the window's host dispatch (mirror.DispatchOption,
+// digits only, `s/[^0-9]//`), read as Window.Dispatch.
+//
+// ⚠ A FORMAT READS AN OPTION WITH INHERITANCE (window, then session, then
+// global), so a global or session @muster-dispatch would tag every window. The
+// listing is identity for muster's records only; every check that BOUNDS
+// something reads the window's own value with `show-options -w` and no -A
+// (dispatchTagOf), and a spawn refuses while a global or `agents` session
+// value is set (agentspawn.go).
+const windowsFields = 14
 
 // ColorOption is the tmux user option a window's identity colour is read
 // from. A constant on purpose: a host's tmux config sets it (window, session or
@@ -349,14 +361,14 @@ func parseWindows(out string) []WindowInfo {
 		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", windowsFields)
 		if len(f) == windowsFields && f[0] != "1" && strings.HasPrefix(f[4], "%") {
 			if pid, err := strconv.Atoi(f[5]); err == nil && pid > 0 {
-				others[wkey{f[12], f[1]}] = append(others[wkey{f[12], f[1]}], pane{Session: f[12], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
+				others[wkey{f[13], f[1]}] = append(others[wkey{f[13], f[1]}], pane{Session: f[13], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
 			}
 			continue
 		}
 		if len(f) != windowsFields || f[0] != "1" {
 			continue
 		}
-		session := f[12]
+		session := f[13]
 		if mirror.ValidSession(session) != nil || mirror.IsViewSession(session) ||
 			mirror.ValidWindowID(f[1]) != nil || !strings.HasPrefix(f[4], "%") {
 			continue
@@ -371,6 +383,9 @@ func parseWindows(out string) []WindowInfo {
 		}
 		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8], TTY: paneTTY(f[9]),
 			Color: windowColor(f[10], f[11])}
+		if d, err := strconv.ParseInt(f[12], 10, 64); err == nil && d > 0 {
+			w.Dispatch = d
+		}
 		w.Activity, _ = strconv.ParseInt(f[6], 10, 64)
 		if w.Active {
 			if sa, err := strconv.ParseInt(f[7], 10, 64); err == nil && sa > w.Activity {
@@ -424,7 +439,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 	out := make([]mirror.Window, 0, len(windows))
 	for _, w := range windows {
 		m := mirror.Window{Session: w.Session, ID: w.ID, Index: w.Index, Active: w.Active,
-			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
+			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil, Dispatch: w.Dispatch}
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 			m.LastMessage = w.Claude.LastMessage

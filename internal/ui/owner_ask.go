@@ -215,6 +215,20 @@ type OwnerCardState struct {
 	// the transcript, as #496 did (chiefToolCard), so a later typed reply
 	// still settles it there.
 	Expired bool
+	// Question and Options are the ask's own: what a card muster raised itself
+	// (a held mirrored dispatch's) is drawn from, having no ask_owner call.
+	Question string
+	Options  []string
+}
+
+// StoredOwnerCard draws a card from its stored ask alone (a card muster raised
+// for the chief: no ask_owner call holds its question).
+func StoredOwnerCard(toolID string, st OwnerCardState) g.Node {
+	ask := OwnerAsk{Question: st.Question}
+	for _, o := range st.Options {
+		ask.Options = append(ask.Options, OwnerAskOption{Label: o})
+	}
+	return storedOwnerAskCard(toolID, ask, st)
 }
 
 // OwnerAskClosed is a stored card that closed unanswered (data-owner-ask-state).

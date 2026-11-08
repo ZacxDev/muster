@@ -274,6 +274,12 @@ BEGIN
         ALTER TABLE public.asks DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.asks ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0093 (host_dispatches), when this schema has it; same reason as 0011.
+    IF to_regclass('public.host_dispatches') IS NOT NULL THEN
+        ALTER TABLE public.host_dispatches NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_dispatches DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.host_dispatches ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

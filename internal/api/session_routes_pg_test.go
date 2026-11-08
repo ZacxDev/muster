@@ -48,6 +48,9 @@ type routeMirror struct {
 	// state, when set, is the window's Claude Code status (AgentState);
 	// otherwise idle since an unknown time.
 	state *mirror.AgentState
+	// dispatch is the host dispatch window @4 lists (a window muster started
+	// for the chief); 0 for none.
+	dispatch int64
 }
 
 func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
@@ -58,7 +61,7 @@ func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 		sid = routeSID
 	}
 	raw := []mirror.Window{{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true,
-		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1}}
+		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1, Dispatch: m.dispatch}}
 	if m.otherSession != "" {
 		raw = append(raw, mirror.Window{Session: "work", ID: "@5", Index: 2, Claude: true,
 			ClaudeSession: m.otherSession, Status: mirror.StatusIdle, StatusSince: 1})
@@ -315,7 +318,11 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 		{"a dispatched agent", routeArgs(m, "agent:"+strconv.FormatInt(f.worker.ID, 10)), RefusedUnsupported, nil},
 		{"a message not delivered to this chief", routeArgs(notMine, "mirror:"+routeSID), RefusedMessageNotFound, nil},
 		{"a bad subject", routeArgs(m, "pod:1"), RefusedBadArguments, nil},
-		{"a read-only host", routeArgs(m, "mirror:"+routeSID), RefusedHostNotInteractve, func() { f.mirror.interactive = false }},
+		// A window muster started for the chief (its listing carries a
+		// dispatch): task_forward's, never a route's. The same window untagged
+		// takes the route at the end of this test (the control).
+		{"a window the chief's dispatch runs", routeArgs(m, "mirror:"+routeSID), RefusedDispatchedWindow, func() { tagRouteWindow(f, 5) }},
+		{"a read-only host", routeArgs(m, "mirror:"+routeSID), RefusedHostNotInteractve, func() { tagRouteWindow(f, 0); f.mirror.interactive = false }},
 		{"a host that does not report status", routeArgs(m, "mirror:"+routeSID), RefusedQueueUnavailable, func() {
 			f.mirror.interactive, f.mirror.statusReport = true, false
 		}},
@@ -502,3 +509,7 @@ func TestRoutingOffOffersNothing(t *testing.T) {
 		t.Fatalf("the reply door with routing off: %d", code)
 	}
 }
+
+// tagRouteWindow sets the dispatch the route window lists (under f.mirror.mu,
+// which the caller holds).
+func tagRouteWindow(f *routeFixture, dispatch int64) { f.mirror.dispatch = dispatch }

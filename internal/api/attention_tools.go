@@ -140,6 +140,11 @@ type toolCaller struct {
 	agent *agents.Agent
 	// asker is the caller as an ask names it.
 	asker attention.Asker
+	// mirrorWindow is a mirrored session's own tmux window id, as the host
+	// lists it when the call was bound ("" for a per-session host, or a caller
+	// that is not a mirrored session): what ownersOwnSession reads its
+	// dispatch tag from.
+	mirrorWindow string
 }
 
 // callerOfAgent is agent a as a tool caller.
@@ -285,8 +290,11 @@ const attentionAnswerMirrorOnly = "attention_answer is available only to your ow
 // the queue move exactly as for a browser answer. Another owner's ask (row-level
 // security) and a missing one read the same.
 func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr("%s", attentionAnswerMirrorOnly)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr("%s", attentionAnswerMirrorOnly)
+		}
+		return toolErr("%s", why)
 	}
 	var in struct {
 		ID     *int64 `json:"id"`

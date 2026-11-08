@@ -66,8 +66,11 @@ const routeReplyMirrorOnly = "route_reply is available only to the mirrored Clau
 
 // toolRouteReply is route_reply for caller c (handleMirrorMCP's bound session).
 func (s *Server) toolRouteReply(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr(routeReplyMirrorOnly)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(routeReplyMirrorOnly)
+		}
+		return toolErr("%s", why)
 	}
 	if !routesOn(s.ext) {
 		return toolErr("session routing is off on this server")

@@ -163,10 +163,17 @@ func (s *Server) dispatchHoldTool(ctx context.Context, c toolCaller, name, args 
 // session) whose request came through a mirror host's token
 // (authz.ViaMirrorHost) for a real user. 🔴 THE CALLER CHECK: every verb runs
 // it first.
-func dispatchHoldCaller(ctx context.Context, c toolCaller, tool string) (int64, string) {
+func (s *Server) dispatchHoldCaller(ctx context.Context, c toolCaller, tool string) (int64, string) {
 	p, ok := authz.From(ctx)
 	if !c.mirroredSession() || !ok || p.Via != authz.ViaMirrorHost || p.UserID <= 0 || p.All() {
 		return 0, toolErr(dispatchHoldMirrorOnly, tool)
+	}
+	// A session muster started for the chief may not start (or approve) more.
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return 0, toolErr(dispatchHoldMirrorOnly, tool)
+		}
+		return 0, toolErr("%s", why)
 	}
 	return p.UserID, ""
 }
@@ -296,7 +303,7 @@ func (s *Server) holdTask(ctx context.Context, owner, id int64) (notes.Note, str
 
 // toolDispatchRequest is dispatch_request (see the header).
 func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, arguments string) string {
-	owner, bad := dispatchHoldCaller(ctx, c, dispatchRequestTool)
+	owner, bad := s.dispatchHoldCaller(ctx, c, dispatchRequestTool)
 	if bad != "" {
 		return bad
 	}
@@ -443,7 +450,7 @@ func openHoldRefusal(h plugins.DispatchHold) string {
 
 // toolDispatchApprove is dispatch_approve (see the header).
 func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, arguments string) string {
-	owner, bad := dispatchHoldCaller(ctx, c, dispatchApproveTool)
+	owner, bad := s.dispatchHoldCaller(ctx, c, dispatchApproveTool)
 	if bad != "" {
 		return bad
 	}

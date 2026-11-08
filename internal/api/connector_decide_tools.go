@@ -166,8 +166,11 @@ func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k co
 }
 
 func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) string {
-	if !c.mirroredSession() {
-		return toolErr(connectorDecideMirrorOnly, connectorRequestsListTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(connectorDecideMirrorOnly, connectorRequestsListTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.connectorDecideToolsOn() {
 		return toolErr("%s", ConnectorsUnconfigured)
@@ -221,8 +224,11 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 }
 
 func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr(connectorDecideMirrorOnly, connectorRequestDecideTool)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr(connectorDecideMirrorOnly, connectorRequestDecideTool)
+		}
+		return toolErr("%s", why)
 	}
 	if !s.connectorDecideToolsOn() {
 		return toolErr("%s", ConnectorsUnconfigured)

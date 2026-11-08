@@ -709,6 +709,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// A turn ending (busy → idle) changes no card and no waiting set: the
 		// ask log hears every status change through its own hook.
 		mirrorSvc.SetStatusNotify(srv.AskLogMirrorChanged)
+		// The host-dispatch reconciler's two inputs (host_dispatch_reconcile.go):
+		// every agent-spawned frame, late or not, and every applied listing.
+		mirrorSvc.SetSpawnReplyNotify(srv.HostDispatchSpawnReply)
+		mirrorSvc.SetListingNotify(srv.HostDispatchListing)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
@@ -1103,6 +1107,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAttentionSweep(ctx, 0)
 	// The ask log's retention (MUSTER_ASK_LOG=1; returns at once when off).
 	go a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval)
+	// Host dispatches whose host was not seen for a day end (and free their slot).
+	go a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
 	// The outcome watchdog: a started agent gone quiet is called stuck, once

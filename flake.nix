@@ -539,7 +539,11 @@
         doCheck = true;
 
         # The untagged tests only: the real-tmux suite (`-tags tmuxit`) runs in
-        # CI's ccd-tmux job, and the nix sandbox has no tmux.
+        # CI's ccd-tmux job, and the nix sandbox has no tmux. git is a CHECK
+        # input only: the -agent-spawn tests build throwaway repositories (with
+        # their own identity and no global config); at run time spawning uses
+        # the host's own git, like tmux.
+        nativeCheckInputs = [ pkgs.git ];
         checkPhase = goCheckPhase "./cmd/muster-mirror/... ./internal/mirrorhost/...";
 
         meta = with pkgs.lib; {

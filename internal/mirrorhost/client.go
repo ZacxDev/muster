@@ -19,6 +19,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -128,6 +130,9 @@ type Config struct {
 	// ResumeLocator is where a resume finds transcripts (its Home) and live
 	// Claude Code processes (its Proc); the zero value is ~/.claude and /proc.
 	ResumeLocator ClaudeLocator
+	// AgentSpawn is -agent-spawn and its sibling flags (agentspawn.go): the
+	// chief starts agents on this host. OFF by default.
+	AgentSpawn AgentSpawnConfig
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -185,6 +190,9 @@ type Client struct {
 	// resumes is this host's own record of the sessions it resumed
 	// (resume.go): it outlives each connection.
 	resumes resumeLimits
+	// spawner is this host's agent-spawn state (agentspawn.go): it outlives
+	// each connection.
+	spawner agentSpawner
 
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
@@ -256,6 +264,16 @@ func New(cfg Config) (*Client, error) {
 	if cat == nil {
 		cat = &CatalogScanner{}
 	}
+	// -agent-spawn's git, resolved ONCE to an absolute path: a spawn never
+	// looks it up again, and with none the host offers nothing ("git not
+	// found", agentSpawnUnavailable).
+	if cfg.AgentSpawn.Git == "" {
+		if g, err := exec.LookPath("git"); err == nil {
+			if abs, err := filepath.Abs(g); err == nil {
+				cfg.AgentSpawn.Git = abs
+			}
+		}
+	}
 	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
 	c.tunnelTr = tunnelTransport(&c.wire)
 	// 🔴 NO REDIRECTS: the token rides every connect's Authorization header,
@@ -268,6 +286,9 @@ func New(cfg Config) (*Client, error) {
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
 // until ctx ends. A connection that stayed up for a minute resets the backoff.
 func (c *Client) Run(ctx context.Context) error {
+	if c.cfg.AgentSpawn.Enabled {
+		go c.sweepLoop(ctx)
+	}
 	backoff := time.Second
 	for {
 		start := time.Now()
@@ -382,6 +403,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.OpenCodeAnswer = conn.openCodeAnswer()
 	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
+	hello.AgentSpawn = conn.agentSpawnRuntimes()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -498,6 +520,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeSpawnResume:
 				if conn.version >= 2 {
 					go traced(m, conn.spawnResume)
+				}
+			case mirror.TypeAgentSpawn:
+				if conn.version >= 2 {
+					go traced(m, conn.agentSpawn)
 				}
 			}
 		}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -64,29 +65,45 @@ func agentDestroyToolDef() agents.ToolDef {
 			"teardown as Delete on muster's Agents page: the agent's pod and record are removed in the background, its open attention asks " +
 			"go with it, and a turn it is running is cut off. The task it worked is KEPT: once the agent is gone, a task still in_progress " +
 			"with no other live agent goes back to open, and if your owner's chief started this agent, the chief may start one new agent " +
-			"on that task again. Name the agent by EXACTLY ONE of: name (its slug, as `muster agent ls` shows it) or id. The chief cannot " +
-			"be destroyed this way.",
+			"on that task again. Name the agent by EXACTLY ONE of: name (its slug, as `muster agent ls` shows it), id, or host_dispatch " +
+			"(an agent your owner's chief started in a window on one of their hosts: that ENDS its record and frees the chief's slot, " +
+			"but does not close the window — close it on the host). The chief cannot be destroyed this way.",
 		Parameters: objSchema(map[string]any{
 			"name": strProp("The agent's name (slug), as `muster agent ls` shows it. Give this OR id."),
 			"id":   intProp("The agent's id. Give this OR name.", 1, 1<<53),
+			"host_dispatch": intProp("A host dispatch's id (an agent the chief started on one of your owner's hosts): its record "+
+				"ends and its slot is freed; the window keeps running until it is closed on the host.", 1, 1<<53),
 		})}
 }
 
 // toolAgentDestroy is agent_destroy. Another owner's agent and a missing one
 // read the same ("no such agent").
 func (s *Server) toolAgentDestroy(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr("%s", agentDestroyMirrorOnly)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr("%s", agentDestroyMirrorOnly)
+		}
+		return toolErr("%s", why)
 	}
 	var in struct {
-		Name *string `json:"name"`
-		ID   *int64  `json:"id"`
+		Name         *string `json:"name"`
+		ID           *int64  `json:"id"`
+		HostDispatch *int64  `json:"host_dispatch"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {name or id}")
+		return toolErr("arguments are {name or id or host_dispatch}")
 	}
-	if (in.Name == nil) == (in.ID == nil) {
-		return toolErr("name the agent by exactly one of name (its slug) or id, not both and not neither")
+	given := 0
+	for _, set := range []bool{in.Name != nil, in.ID != nil, in.HostDispatch != nil} {
+		if set {
+			given++
+		}
+	}
+	if given != 1 {
+		return toolErr("name the agent by exactly one of name (its slug), id or host_dispatch, not several and not none")
+	}
+	if in.HostDispatch != nil {
+		return s.destroyHostDispatch(ctx, c, *in.HostDispatch)
 	}
 	// 🔴 THE PROVISIONER BARRIER FOR THE MCP DOORS: they are not lifecycle
 	// routes (requireLifecycleProvisioner), so this body — which also reaches
@@ -211,6 +228,19 @@ func (s *Server) reopenTaskAfterDestroy(ctx context.Context, a agents.Agent) {
 			return
 		}
 	}
+	// A host-spawned agent still working the task keeps it in_progress too
+	// (design 2.6: "a live agent on this task" includes a running host
+	// dispatch).
+	if st := s.hostDispatches(); st != nil {
+		hs, err := st.RunningHostDispatchesForTask(ctx, n.ID)
+		if err != nil {
+			s.logger.Printf("agent_destroy: host dispatches on task %d: %v; leaving it in_progress", n.ID, err)
+			return
+		}
+		if len(hs) > 0 {
+			return
+		}
+	}
 	hooks := reopenTestHooks.Load()
 	if hooks != nil && hooks.beforeWrite != nil {
 		hooks.beforeWrite(n.ID)
@@ -243,3 +273,30 @@ type reopenHooks struct {
 // is read by destroyAgent's background goroutine — possibly one a previous
 // test started — while a test stores or clears it.
 var reopenTestHooks atomic.Pointer[reopenHooks]
+
+// destroyHostDispatch is agent_destroy's host_dispatch: the OWNER'S RECOVERY for
+// a host dispatch (design 3.7). A pending or running row of the owner's ends
+// "ended by owner", which frees its live slot and releases its task's start
+// at once. The window is NOT closed (there is no kill message, D7): the answer
+// says so. Another owner's row and a missing one read the same.
+func (s *Server) destroyHostDispatch(ctx context.Context, c toolCaller, id int64) string {
+	p, ok := authz.From(ctx)
+	st := s.hostDispatches()
+	if !ok || p.UserID <= 0 || st == nil {
+		return toolErr("no such host dispatch: %d", id)
+	}
+	r, err := st.HostDispatchByID(ctx, id)
+	if err != nil || r.Owner != p.UserID {
+		return toolErr("no such host dispatch: %d", id)
+	}
+	if r.Status == plugins.HostDispatchEnded {
+		return toolErr("host dispatch %d has already ended (%s)", id, r.EndedWhy)
+	}
+	if _, err := s.endHostDispatch(ctx, p.UserID, id, "ended by owner", false); err != nil {
+		s.logger.Printf("agent_destroy: end host dispatch %d: %v", id, err)
+		return toolErr("host dispatch %d could not be ended; try again", id)
+	}
+	s.logger.Printf("agents: host dispatch %d ended by the operator via MCP from %s/%s", id, c.asker.MirrorHost, c.asker.MirrorSession)
+	return toolJSON(map[string]any{"host_dispatch": id, "ended": true,
+		"next": "ended host dispatch " + strconv.FormatInt(id, 10) + "; its window, if any, is still open on " + r.Host + ": close it there"})
+}

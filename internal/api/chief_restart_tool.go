@@ -151,8 +151,11 @@ func sideOf(a agents.Agent, idx map[string]*provision.Instance) (side chiefResta
 
 // toolChiefRestart is chief_restart.
 func (s *Server) toolChiefRestart(ctx context.Context, c toolCaller, arguments string) string {
-	if !c.mirroredSession() {
-		return toolErr("%s", chiefRestartMirrorOnly)
+	if why := s.ownersOwnSession(ctx, c); why != "" {
+		if why == notAMirroredSession {
+			return toolErr("%s", chiefRestartMirrorOnly)
+		}
+		return toolErr("%s", why)
 	}
 	var in struct {
 		Force bool `json:"force"`

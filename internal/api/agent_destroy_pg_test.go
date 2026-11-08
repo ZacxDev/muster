@@ -611,7 +611,7 @@ func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
 		`{"error":"no such agent: ` + strconv.FormatInt(f.worker.ID, 10) + `"}`:                        {"id": f.worker.ID},
 		`{"error":"no such agent: no-such-agent-xyz"}`:                                                 {"name": "no-such-agent-xyz"},
 		`{"error":"no such agent: 9000000123"}`:                                                        {"id": 9_000_000_123},
-		`{"error":"name the agent by exactly one of name (its slug) or id, not both and not neither"}`: {"name": f.op.Name, "id": f.op.ID},
+		`{"error":"name the agent by exactly one of name (its slug), id or host_dispatch, not several and not none"}`: {"name": f.op.Name, "id": f.op.ID},
 	} {
 		if text, _ := f.destroy(t, f.ws, focusSID, args); text != want {
 			t.Errorf("%v: %s\nwant %s", args, text, want)

@@ -375,6 +375,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			hostMarkDecorative(host, icon),
 			navRowName(label, it),
 			g.If(e.mirror != nil && !e.mirror.Online, navOffline()),
+			navChiefChip(e.mirror),
 			navOutcome(e.agent),
 			navWork(e.work()),
 			navAttentionPill(att, e.waiting()),
@@ -515,5 +516,21 @@ func navRowName(label string, it SwitcherItem) g.Node {
 			Span(Class("min-w-0 truncate"), g.Text(it.Focus)),
 			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeLabel(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
 		),
+	)
+}
+
+// navChiefChip is a mirrored window's "chief" chip: an agent the chief started
+// there (its window carries a dispatch, docs/design/chief-dispatch.md 3.7).
+// The task's number is not on the listing, so the chip names the dispatch in
+// its title and says "chief" alone.
+func navChiefChip(m *MirrorCardView) g.Node {
+	if m == nil || m.ChiefDispatch <= 0 {
+		return g.Group(nil)
+	}
+	return Span(
+		g.Attr("data-nav-chief-dispatch", strconv.FormatInt(m.ChiefDispatch, 10)),
+		g.Attr("title", "An agent your chief started (dispatch "+strconv.FormatInt(m.ChiefDispatch, 10)+"): close its window to stop it"),
+		Class("shrink-0 text-[11px] font-normal text-muted"),
+		g.Text("chief"),
 	)
 }

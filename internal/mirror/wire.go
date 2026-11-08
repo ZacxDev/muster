@@ -390,6 +390,16 @@ type Msg struct {
 	// BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older muster ignores
 	// it; an older host never sets it, so muster never asks it to resume.
 	ResumeSpawn bool `json:"resumeSpawn,omitempty"`
+	// AgentSpawn (hello) is the runtimes this host STARTS for the chief
+	// (TypeAgentSpawn, agentspawn.go): -interactive with -agent-spawn, and
+	// each runtime's binary found. Empty for every other host.
+	AgentSpawn []string `json:"agentSpawn,omitempty"`
+	// Dispatch is the host dispatch an agent-spawn / agent-spawned is for, or
+	// the one a paste is for (ForDispatch: the host checks the window's tag).
+	Dispatch int64 `json:"dispatch,omitempty"`
+	// Spawn is an agent-spawn's request; Spawned an agent-spawned's window.
+	Spawn   *AgentSpawnReq `json:"spawn,omitempty"`
+	Spawned *AgentSpawned  `json:"spawned,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 
@@ -637,6 +647,10 @@ type Window struct {
 	// it as a warning on the card and the views (SessionView.LiveCopyWarning).
 	// Backward-compatible both ways, like ClaudeSession.
 	LiveCopy string `json:"liveCopy,omitempty"`
+	// Dispatch is the host dispatch this window was started for: its own
+	// @muster-dispatch window option (DispatchOption), 0 for every window the
+	// chief did not start. An older muster ignores it.
+	Dispatch int64 `json:"dispatch,omitempty"`
 }
 
 // CardActivity is the window's activity as the sidebar and the switcher use
@@ -1099,6 +1113,10 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !w.Claude || w.ClaudeSession == "" || !ValidClaudeSession(w.LiveCopy) || w.LiveCopy == w.ClaudeSession {
 			w.LiveCopy = ""
 		}
+		// A dispatch id is a positive row id; anything else names none.
+		if w.Dispatch < 0 {
+			w.Dispatch = 0
+		}
 		if w.Activity < 0 {
 			w.Activity = 0
 		}
@@ -1319,7 +1337,7 @@ func (w Window) Equal(o Window) bool {
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession && w.AgentSend == o.AgentSend &&
 		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
-		w.LiveCopy == o.LiveCopy
+		w.LiveCopy == o.LiveCopy && w.Dispatch == o.Dispatch
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

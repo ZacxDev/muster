@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "9eb631622b47331e9a4a503ffcbac1e33f9860a5d4cdf7d834b1059c97f30ffd",
+			want: "a6d8c7025e9f0fc047784c3328c732965125400b1362b23f61c21dff2e86bd62",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "e210d97b53896ae1a68cf36ca1a76981b4b7590b44200ebc26fa0796074f4b90",
+			want: "2ccaa1caf6629825e3133ef77f2b62bf6b3721fad82f139f2a58198600f2a0b2",
 			min:  1000,
 		},
 		{
@@ -753,7 +753,13 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		"Its target has no default; map your owner's words to one:",
 		"\"with Claude\", or any Claude model → `pod/claude-code` (no model);",
 		"any other model they name → `pod/gateway` with that model (its OpenRouter model id or name; muster resolves it);",
-		"\"mirrored\" → `mirrored`, which is refused until mirrored dispatch ships (say so; never start a cluster agent instead).",
+		// Mirrored dispatch (phase 3): the owner's words to a host target, the
+		// card for a blank, and never a cluster agent in its place.
+		"\"mirrored on <host> with Claude\" → `host/<host>/claude` (no model);",
+		"no host named → `host/?/claude`;",
+		"muster asks your owner with a card and starts nothing;",
+		"call again with the same request_key, the same arguments and exactly the target they chose.",
+		"Never start a cluster agent instead of a mirrored one.",
 		"If they named no model, call it without a target:",
 		"Ask them which with `ask_owner`",
 		"never pick one for them.",

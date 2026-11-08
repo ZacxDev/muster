@@ -59,7 +59,8 @@ var errChiefDispatchLockHeld = errors.New("plugins: chief-dispatch lock held")
 // inChiefDispatchLock runs fn in a transaction holding owner's chief-dispatch
 // lock (a transaction advisory lock: released at commit or rollback, in
 // Postgres, so it serialises every muster replica, not one process). It is THE
-// way that lock is taken — by ReserveChiefDispatch and both releases.
+// way that lock is taken — by ReserveChiefDispatch, both releases and
+// EndHostDispatch (whose release of a host dispatch's start is the third).
 //
 // 🔴 A WAITER NEVER HOLDS A POOL CONNECTION WHILE IT WAITS. The lock is TRIED
 // (pg_try_advisory_xact_lock); when another transaction holds it, this one

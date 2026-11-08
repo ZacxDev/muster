@@ -1,7 +1,10 @@
 # Design: the chief dispatches every agent
 
 **Status: phase 1 is built** (`agent_dispatch` for pods, #428,
-`internal/api/agent_dispatch.go`). **Phases 2-4 are proposed.** The owner made
+`internal/api/agent_dispatch.go`). **Phase 3 is built for claude** (host spawn,
+the trust entry, held targets and their cards, forwarding; #513 then #516: see
+"As built" under [Phase 3](#phase-3-host-spawn-for-claude-with-the-trust-entry-and-forwarding)).
+**Phases 2 and 4 are proposed.** The owner made
 the nine decisions in [Owner decisions](#owner-decisions): four up front, and
 five more in answer to this page's first draft. This revision adds nine more:
 10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
@@ -1473,7 +1476,7 @@ The flags follow the mirror's naming convention, `-kebab` plus
 | **`-agent-spawn`** | `MUSTER_MIRROR_AGENT_SPAWN` | **false** | let the chief start agents on this host. It has no effect without `-interactive`, and the mirror logs that it has none, as it does for `-resume-spawn` (`:380-385`) |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are the clones worktrees may be cut from |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where the worktrees go ([3.3](#33-worktrees)) |
-| **`-agent-spawn-repos`** | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: no repository** | comma-separated `<owner>/<repo>` names this host will cut a worktree of. A repository not listed is refused `no_repo` (detail `not on this host's allow-list`) whatever muster sends ([5.5](#55-a-compromised-server)). Empty means `-agent-spawn` is on but nothing can be spawned, and the mirror logs that at startup |
+| **`-agent-spawn-repos`** | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: no repository** | comma-separated `<owner>/<repo>` names this host will cut a worktree of, or `<owner>/*` for every repository of that owner (the repository part exactly `*`; owners and names compare case-insensitively). With a wildcard, `connectedRepo` (server) and the clones under the roots (host) are the per-repository bound within that owner; the host is sent the connected repository's own name. A repository not listed is refused `no_repo` (detail `not on this host's allow-list`) whatever muster sends ([5.5](#55-a-compromised-server)). Empty means `-agent-spawn` is on but nothing can be spawned, and the mirror logs that at startup |
 | `-agent-spawn-rate` | `MUSTER_MIRROR_AGENT_SPAWN_RATE` | `3/10m,10/24h` | the host's own spawn rate limit ([5.5](#55-a-compromised-server)) |
 | `-agent-spawn-log` | `MUSTER_MIRROR_AGENT_SPAWN_LOG` | `$XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl` | the append-only audit log ([5.5](#55-a-compromised-server)) |
 
@@ -2702,7 +2705,7 @@ test of that option through the tool, with the same refusals.
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
 | host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
-| host | the repository is on `-agent-spawn-repos`; the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
+| host | the repository is on `-agent-spawn-repos` (by its exact name, or `<owner>/*` for its owner; case-insensitive); the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
 **`ownerTurnFor` is the gate, and there is no extra step-up for host spawns**
@@ -2935,7 +2938,7 @@ increment below is measured against it, not against zero.
 | bound | what it limits | where |
 |---|---|---|
 | **opt-in** | `-agent-spawn` is off by default, needs `-interactive`, and works only on the default tmux server. The owner's host configuration turns it on for the default mirror unit only | [3.2](#32-the-flag), [3.8](#38-read-only-and-tenant-hosts) |
-| **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. `connectedRepo` is a server check, so under this threat it bounds nothing; this list is the bound that replaces it | [3.2](#32-the-flag), [3.3](#33-worktrees) |
+| **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. An entry `<owner>/*` (the operator's choice, Q1) admits every repository of that owner, matched by equality on the owner, never a prefix. Under this threat a wildcard bounds the OWNER only: within that owner, the bound is which repositories have a clone directly under a root, and `connectedRepo` is a server check that bounds nothing here. List exact names on a host whose roots hold clones you would not spawn in | [3.2](#32-the-flag), [3.3](#33-worktrees) |
 | **directory allow-list** | worktrees go only under `-agent-spawn-dir`, the trust entry is written only for a directory exactly two levels below it that this spawn created, and the prompt file only under `$XDG_RUNTIME_DIR` | [3.3](#33-worktrees), [3.6.1](#361-claude-codes-folder-trust-entry) |
 | **fixed programs and argv** | the runtime is one of two constants; the host builds every argv word from constants and values it validated; no flag, path or binary comes from the server; the model travels as a JSON field, never an argument, and must be in the host's own OpenRouter catalog | [3.6](#36-the-commands-and-prompt-delivery) |
 | **no permission flags** | neither runtime is ever started with a permission-skipping flag. (A repository's own settings can still allow more; the repository allow-list limits which repositories those are) | [3.6](#36-the-commands-and-prompt-delivery), [5.1](#51-who-can-trigger-a-spawn) |
@@ -3522,6 +3525,58 @@ live run to find what the tests could not.
   - `muster-mirror agent-spawn-log` on the host shows both lines of each
     request.
 
+#### As built (#513, #516)
+
+Where the build differs from the plan above, and what it leaves for later:
+
+- **The card is #513's stored `ask_owner`** (an attention ask raised by the
+  chief, `raiseOwnerCard`). The owner's tap in the CHAT is their typed message,
+  which `ownerTurnFor` already admits; a tap on the Attention view or the phone
+  is recorded with its door (`browser`, `device`, migration 0090) and binds the
+  completing call (`completeHeld`). `held_id` stores the hold's id
+  (`held:<hex>`), not an audit row number.
+- **`held_hash` is computed with `owner_asked` written as false**: the
+  completing call is, by design, made in a turn the owner did not type.
+- **A gated task is refused for a host target** ("a host target does not
+  release a gate"), instead of releasing the chief's gate as the pod path
+  does. Releasing on a host start is not built.
+- **`ownersOwnSession` covers 12 tools**: the ten above plus #501's
+  `dispatch_request` and `dispatch_approve`, which also act with the owner's
+  authority. Its window is the one the MCP door bound the call to
+  (`toolCaller.mirrorWindow`); a per-session host (no windows) cannot be tagged.
+- **`task_forward` tries a pod first**, as before, and reaches a host-spawned
+  window only when no pod on the task is reachable: not one "newest across both
+  kinds" order.
+- **The chip** is on the sidebar row only, and says "chief": the listing
+  carries the dispatch, not the task. The window page and the task number are
+  not built.
+- **Ending a host dispatch reopens its task** (as a pod's destroy does) when
+  nobody else works it, so the released start can be used.
+- **A mention on a task only a host agent works is not handed to the chief as a
+  task notice.** Read in the code (`routeTaskNoticeEvent` → `actOnMention`):
+  with no reachable pod it takes the existing no-agent path, an attention ask
+  about the task raised as the chief. It is never pasted into the window, which
+  is the safety property; the chief-notice route is not built, and no test pins
+  either.
+- **Not built in phase 3:** the e2e browser spec; the host-side "listing before
+  reply" step is built, but its tests call the spawner without a connection.
+- **The sweep's dirty-tree check is defence in depth**: removing a worktree
+  without force refuses a dirty tree too (its mutant survives).
+
+
+**Delta audit of #516.** The trust write takes Claude Code's own lock, a
+`<file>.lock` directory (proper-lockfile, with its 10-second stale rule),
+around the read-modify-rename. It waits at most 5 s; on failure no entry is
+written and the window shows the trust dialog. It keeps the file's mode and
+refuses a symlink. The rate limit counts `admit` lines, written under the
+spawner's lock. Every audit field is capped, and the reader skips an oversize
+or corrupt line. `git` is resolved once at startup, and no git means nothing is
+offered. A clone's worktrees count as the clone (by `--git-common-dir`). Each
+held blank is filled only by its own card's tap. A tap-completed start's retry
+with the same `request_key` replays it. The spawn prompt's preface and rules
+are never cut. A host-spawned window's spawn prompt is never the owner's
+authority for a chief nudge. A chief forward is muster's own message for the
+nudge, the send queue and the ask log, and `send_queue_one_origin` covers it.
 ### Phase 4: host spawn for opencode with an OpenRouter model, and forwarding through its API
 
 **Rebuilt on #486.** The earlier phase 4 measured `--session`, `--prompt` and

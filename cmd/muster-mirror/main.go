@@ -102,6 +102,14 @@ const (
 	envResumeSession = "MUSTER_MIRROR_RESUME_SESSION"
 	envResumeClaude  = "MUSTER_MIRROR_RESUME_CLAUDE"
 	envAllowHTTP     = "MUSTER_MIRROR_ALLOW_HTTP"
+	// The chief's host spawn (mirrorhost's agentspawn.go): off by default, and
+	// with an EMPTY repository allow-list by default.
+	envAgentSpawn      = "MUSTER_MIRROR_AGENT_SPAWN"
+	envAgentSpawnRoots = "MUSTER_MIRROR_AGENT_SPAWN_ROOTS"
+	envAgentSpawnDir   = "MUSTER_MIRROR_AGENT_SPAWN_DIR"
+	envAgentSpawnRepos = "MUSTER_MIRROR_AGENT_SPAWN_REPOS"
+	envAgentSpawnRate  = "MUSTER_MIRROR_AGENT_SPAWN_RATE"
+	envAgentSpawnLog   = "MUSTER_MIRROR_AGENT_SPAWN_LOG"
 	envLabelsFile    = "MUSTER_MIRROR_LABELS_FILE"
 	envPaneMapDir    = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
@@ -151,6 +159,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "opencode" {
 		return runOpenCodeLaunch(args[1:], realLaunchDeps(getenv), stderr)
 	}
+	// `muster-mirror agent-spawn-log [-n N]`: the last entries of the host's
+	// spawn audit log, without knowing its path.
+	if len(args) > 0 && args[0] == "agent-spawn-log" {
+		return runAgentSpawnLog(args[1:], getenv, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
@@ -183,6 +196,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	openCodeSend := fs.Bool("opencode-send", envBool(envOpenCodeSend), "with -interactive: let muster SEND messages to opencode sessions on this host through the opencode server's API — only to a pane started with `muster-mirror opencode`, only while its session is idle, behind a fresh sign-in. OFF by default: whatever the agent there may run, a message from muster can ask it to ("+envOpenCodeSend+")")
+	agentSpawn := fs.Bool("agent-spawn", envBool(envAgentSpawn), "with -interactive, on the DEFAULT tmux server only: let your chief START a Claude Code agent on this host — a fresh git worktree of a repository on -agent-spawn-repos, cut from origin, and a window in tmux session `agents`, in normal permission mode. OFF by default: it starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ("+envAgentSpawn+")")
+	agentSpawnRoots := fs.String("agent-spawn-roots", or(getenv(envAgentSpawnRoots), "~/src"), "colon-separated directories whose DIRECT children are the clones a spawned agent's worktree may be cut from ("+envAgentSpawnRoots+")")
+	agentSpawnDir := fs.String("agent-spawn-dir", or(getenv(envAgentSpawnDir), defaultAgentSpawnDir(getenv)), "where spawned agents' worktrees go, <dir>/<owner>__<repo>/<dispatch> ("+envAgentSpawnDir+")")
+	agentSpawnRepos := fs.String("agent-spawn-repos", getenv(envAgentSpawnRepos), "comma-separated <owner>/<repo> this host will spawn agents in. EMPTY BY DEFAULT: with none listed, -agent-spawn starts nothing ("+envAgentSpawnRepos+")")
+	agentSpawnRate := fs.String("agent-spawn-rate", or(getenv(envAgentSpawnRate), mirrorhost.DefaultAgentSpawnRate), "this host's own spawn rate limit, counted from the audit log ("+envAgentSpawnRate+")")
+	agentSpawnLog := fs.String("agent-spawn-log", or(getenv(envAgentSpawnLog), defaultAgentSpawnLog(getenv)), "the append-only spawn audit log (JSON lines, 0600): every request before any work starts, and its result; a spawn whose first line cannot be written is refused ("+envAgentSpawnLog+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -194,7 +213,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// newer or older release had), or a typo: refused, never run as the
 	// daemon it would otherwise start.
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode, opencode-pair; see -h)\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "muster-mirror: unknown command or argument %q (subcommands: ask, opencode, opencode-pair, agent-spawn-log; see -h)\n", fs.Arg(0))
 		return 2
 	}
 	if *version {
@@ -315,10 +334,27 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 
+	spawnRepos, err := mirrorhost.ParseAgentSpawnRepos(*agentSpawnRepos)
+	if err != nil {
+		fmt.Fprintln(stderr, "muster-mirror:", err)
+		return 2
+	}
+	if _, err := mirrorhost.ParseAgentSpawnRate(*agentSpawnRate); err != nil {
+		fmt.Fprintln(stderr, "muster-mirror:", err)
+		return 2
+	}
+	var spawnRoots []string
+	for _, r := range filepath.SplitList(*agentSpawnRoots) {
+		if r = strings.TrimSpace(r); r != "" {
+			spawnRoots = append(spawnRoots, expandHome(r))
+		}
+	}
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
+		AgentSpawn: mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
+			Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR")},
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
@@ -355,6 +391,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		logger.Printf("muster-mirror: -resume-spawn has no effect without -interactive: this host resumes no session")
 	case *resumeSpawn:
 		logger.Printf("muster-mirror: RESUMING ENDED SESSIONS IS ON (-resume-spawn): muster may start `%s --resume <id>` in tmux session %q for a session whose transcript is on this host", *resumeClaude, *resumeSession)
+	}
+	switch {
+	case *agentSpawn && !*interactive:
+		logger.Printf("muster-mirror: -agent-spawn has no effect without -interactive: this host starts no agent")
+	case *agentSpawn:
+		if why := c.AgentSpawnUnavailable(); why != "" {
+			logger.Printf("muster-mirror: -agent-spawn is set but this host starts no agent: %s", why)
+		} else if len(spawnRepos) == 0 {
+			logger.Printf("muster-mirror: -agent-spawn is ON but -agent-spawn-repos names no repository: this host starts no agent until you list one")
+		} else {
+			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude in tmux session %q, in a new worktree of %s, rate %s, audit log %s",
+				"agents", strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog))
+		}
 	}
 	switch {
 	case *openCodeSend && !*interactive:
@@ -546,4 +595,46 @@ func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost
 		}
 	}()
 	return nil
+}
+
+// defaultAgentSpawnDir is $XDG_DATA_HOME/muster-mirror/agents (~/.local/share
+// when XDG_DATA_HOME is unset).
+func defaultAgentSpawnDir(getenv func(string) string) string {
+	if d := getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "muster-mirror", "agents")
+	}
+	return filepath.Join("~", ".local", "share", "muster-mirror", "agents")
+}
+
+// defaultAgentSpawnLog is $XDG_STATE_HOME/muster-mirror/agent-spawn.jsonl
+// (~/.local/state when XDG_STATE_HOME is unset).
+func defaultAgentSpawnLog(getenv func(string) string) string {
+	if d := getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "muster-mirror", "agent-spawn.jsonl")
+	}
+	return filepath.Join("~", ".local", "state", "muster-mirror", "agent-spawn.jsonl")
+}
+
+// runAgentSpawnLog is `muster-mirror agent-spawn-log [-n N] [-log PATH]`: the
+// last N entries of the spawn audit log.
+func runAgentSpawnLog(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("muster-mirror agent-spawn-log", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	n := fs.Int("n", 20, "how many of the last lines to print (two per request)")
+	def := getenv(envAgentSpawnLog)
+	if def == "" {
+		def = defaultAgentSpawnLog(getenv)
+	}
+	path := fs.String("log", def, "the audit log ("+envAgentSpawnLog+")")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if err := mirrorhost.AgentSpawnLogTail(stdout, expandHome(*path), *n); err != nil {
+		fmt.Fprintf(stderr, "muster-mirror agent-spawn-log: %v\n", err)
+		return 1
+	}
+	return 0
 }

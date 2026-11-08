@@ -1599,6 +1599,10 @@ func chiefToolCard(v AgentDetailView, i int, m ChatLine, result *ChatLine) (g.No
 		}
 		return ownerAskCard(m.ToolID, ask, false, ""), true
 	case musterToolIs(m.ToolName, AgentDispatchTool) && result != nil:
+		// A HELD mirrored dispatch: muster raised a card for the owner's answer.
+		if st, ok := v.OwnerCards[m.ToolID]; ok {
+			return StoredOwnerCard(m.ToolID, st), true
+		}
 		if c, ok := v.DispatchCards[m.ToolID]; ok {
 			return DispatchAgentCard(c), true
 		}

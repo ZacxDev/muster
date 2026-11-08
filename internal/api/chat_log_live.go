@@ -53,7 +53,7 @@ func (s *Server) ownerCardsFor(ctx context.Context, lines []ui.ChatLine) map[str
 	}
 	var out map[string]ui.OwnerCardState
 	for _, l := range lines {
-		if l.Kind != "tool_result" || l.ToolID == "" || (l.ToolName != askOwnerTool && l.ToolName != "mcp__muster__"+askOwnerTool) {
+		if l.Kind != "tool_result" || l.ToolID == "" || (l.ToolName != askOwnerTool && l.ToolName != "mcp__muster__"+askOwnerTool && !isAgentDispatchCall(l.ToolName)) {
 			continue
 		}
 		id, ok := ui.ReadOwnerCardResult(l.Content)
@@ -77,7 +77,7 @@ func (s *Server) ownerCardsFor(ctx context.Context, lines []ui.ChatLine) map[str
 
 // ownerCardState is ask a as its card draws it.
 func ownerCardState(a attention.Ask) ui.OwnerCardState {
-	st := ui.OwnerCardState{AskID: a.ID}
+	st := ui.OwnerCardState{AskID: a.ID, Question: a.Question, Options: a.Options}
 	switch a.Status {
 	case attention.Answered, attention.AnsweredInSession:
 		st.Status, st.Answer = ui.OwnerCardAnswered, a.Answer
@@ -300,10 +300,14 @@ func (s *Server) hostDispatchCard(ctx context.Context, id int64) (c ui.DispatchC
 	version := time.Now().UnixMicro() // before any read, as dispatchCardFor
 	defer func() { c.Version = version }()
 	unreadable := ui.DispatchCard{HostDispatchID: id, Unreadable: true, Name: "Host dispatch #" + strconv.FormatInt(id, 10)}
-	if s.hostDispatchCardSource == nil {
+	src := s.hostDispatchCardSource
+	if src == nil && s.hostDispatches() != nil {
+		src = s.hostDispatchCardFromStore
+	}
+	if src == nil {
 		return unreadable
 	}
-	c, err := s.hostDispatchCardSource(ctx, id)
+	c, err := src(ctx, id)
 	if err != nil {
 		s.logger.Printf("agents: dispatch card for host dispatch %d: %v", id, err)
 		return unreadable
