@@ -5,12 +5,12 @@ this is opt-in and off by default.** On a default deployment, every agent-contro
 route is registered but answers **503**, with `"provisionerUnwired": true` in the
 body. The boot banner says `agent provisioning: UNWIRED`.
 
-The web UI offers no dispatch on such a deployment, the docker compose install
-included: the sidebar has no **+** beside **Agents** (it says "Agent dispatch
-not set up" there instead, linking here), task cards have no **Dispatch**
-button, and the dispatch sheet, if an old page still opens it, says that no
-agent runtime is configured and points here. Setting `MUSTER_AGENT_PROVISIONER`
-brings all three back.
+The web UI has no dispatch form on any deployment: the chief starts agents
+(its `agent_dispatch` tool, [chief.md](chief.md)), and
+[`POST /api/agents`](#creating-an-agent-without-the-chief) creates one for a
+deployment, or a user, without a chief that can. The sidebar's **+**, the home
+page's "Dispatch an agent", a task card's **Dispatch** and "Save for later"
+were deleted ([design](design/chief-dispatch.md), phase 2).
 
 Everything else still works without it: the sidebar lists mirrored sessions
 ([mirroring.md](mirroring.md)) and any agent rows already stored.
@@ -37,8 +37,9 @@ What happens when you dispatch:
 
 - **No provisioner:** 503.
 - **A provisioner but no gateway:** a dispatch that asks for a kickoff is refused
-  with **409**, and nothing is created. "Save for later" followed by Start still
-  works, but the agent is never told what to do.
+  with **409**, and nothing is created. Creating it stopped
+  (`muster agent create --start=false`) followed by Start still works, but the
+  agent is never told what to do.
 - **Both:** the agent is created. A background deliverer then sends the task as
   its first turn once the instance is ready, every 10 seconds, at most once per
   agent. A failed kickoff is shown on the card, with the error.
@@ -249,9 +250,9 @@ those agents with a build that still has the kind before upgrading.
   to the admin; members use credentials they stored themselves
   ([auth.md](auth.md)).
 
-  **A worker pool.** The dispatch forms' **Worker pool** field, shown only
-  while Claude Code is picked, makes the new agent a member of that pool of
-  the machine job API ([jobs.md](jobs.md#worker-pools)). Leave it empty for an
+  **A worker pool.** `worker_pool` (on `agent_dispatch`, or `POST /api/agents`
+  with `kind: claude-code`) makes the new agent a member of that pool of the
+  machine job API ([jobs.md](jobs.md#worker-pools)). Leave it empty for an
   ordinary agent.
 
   **The pod.** It runs as uid 1000 with no ServiceAccount token, and has a
@@ -287,7 +288,7 @@ those agents with a build that still has the kind before upgrading.
 ### A claude-code agent's repository
 
 A claude-code agent can be dispatched with a repository (`owner/name`, and a
-branch), from the dispatch forms, the API or the chief's `agent_dispatch`, like a
+branch), from `POST /api/agents` or the chief's `agent_dispatch`, like a
 gateway agent — but only one of your **connected** GitHub repositories, from
 every door (its session starts pre-trusted in the checkout, so the repository's
 own `.claude/` runs beside the subscription token; see below). An agent without
@@ -434,6 +435,47 @@ When a gateway is configured, three routes are live:
 A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
 session.
 
+## Creating an agent without the chief
+
+`POST /api/agents` creates an agent as you, from a machine. It is what replaced
+the web UI's dispatch form, for a deployment or a user the chief cannot start an
+agent for: a user not in `MUSTER_CHIEF_DISPATCH_OWNERS`, a deployment without
+task routing, a chief that runs as a gateway, and one that cannot deliver a
+first turn at all (where creating it stopped, then Start, still works).
+
+- **Only a personal token of scope `agent-create` reaches it.** Mint one at
+  `/account/tokens` (**Create agents**). A full-access token is refused (403),
+  so the CLI's ordinary token cannot create agents; an `agent-create` token
+  reaches nothing else; the shared hook secret is refused too.
+- **The body** is JSON: `kind`, `repo`, `repo_branch`, `model`, `prompt` (the
+  first turn), `note_id` (a task of yours: its body is the first turn), `cc_account`,
+  `cc_failover`, `worker_pool`, and `start` (required: `true` dispatches now,
+  `false` creates it stopped and provisions nothing).
+- **The checks** are the ones every door applies: the kind and Claude account,
+  the worker pool, a connected repository, the model, a task's `gate:` tag (for
+  `start: true`), and whether this deployment can deliver a first turn (for
+  `start: true`, a 409 with the reason). There are no caps or budget: it is you
+  acting with your own credential, not the chief.
+- **The answer** is `201` with `agent` (as `GET /api/agents` shows it),
+  `started` and `href` (its page). A body over **1 MiB** is a `413` naming the
+  limit.
+
+`muster agent create` wraps it, with flags named after the fields
+(`--kind`, `--repo`, `--repo-branch`, `--model`, `--prompt`, `--note-id`,
+`--cc-account`, `--cc-failover`, `--worker-pool`, and the required `--start`).
+It reads its token from `MUSTER_AGENT_CREATE_TOKEN` (in the env file or the
+environment, under the same tenant pair rule as `MUSTER_TOKEN`:
+[cli.md](cli.md#configuration)) and never sends `MUSTER_TOKEN`:
+
+```text
+MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --start=false --prompt "Triage the flaky upload test"
+```
+
+That is a host with one tenant. With more than one, put
+`MUSTER_AGENT_CREATE_TOKEN=mst_…` in the tenant's file
+(`~/.muster/tenants/<name>.env`, or `~/.muster/muster.env` for `default`) and
+run `muster --tenant <name> agent create …`.
+
 ## An agent's page
 
 A dispatched agent's page shows, under its title, the agent's live status (with
@@ -441,16 +483,16 @@ A dispatched agent's page shows, under its title, the agent's live status (with
 **kickoff failed**, and what it has running), and a **⋯** menu: **Rename**,
 **Start** or **Stop**, and **Delete** (two steps; never for the chief). A failed
 kickoff, a first turn held for your GitHub approval, or a GitHub App problem is
-explained above the transcript. To start a new agent, use the **+** beside
-**Agents** in the sidebar: **Dispatch**, or **Save for later** to start it later
-from its page.
+explained above the transcript. To start a new agent, ask the chief, or use
+[`muster agent create`](#creating-an-agent-without-the-chief); an agent created
+stopped is started from its page.
 
 ![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
 
 ## How an agent's work ends
 
-Every agent started with a first turn — from the dispatch form, a task's
-**Dispatch**, or the chief's `agent_dispatch` — ends in an **outcome** you can
+Every agent started with a first turn — from `POST /api/agents` with
+`start: true`, or the chief's `agent_dispatch` — ends in an **outcome** you can
 see: never silently "running". The outcome is shown on the agent's page (a
 **failed** or **stuck** badge beside the status, and a notice above the
 transcript saying why), on its sidebar row, on the chief panel's card for it,
@@ -474,9 +516,9 @@ limited — the sender is told), a connection to a pod that is restarting, a
 turn that outlived its budget and a first turn cut off by muster itself
 shutting down (in both the runtime may still be running it; the watchdog
 judges what it does next), and an `error` event the runtime followed with a
-completed turn. **Only a dispatched agent is set to `error`** (one started from
-the dispatch form or by the chief's `agent_dispatch`); an officer's instance or
-a saved agent you Started keeps its status. **The chief is never set to
+completed turn. **Only a dispatched agent is set to `error`** (one started by
+`POST /api/agents` with `start: true` or by the chief's `agent_dispatch`); an
+officer's instance or a stopped agent you Started keeps its status. **The chief is never set to
 `error` by a failed turn**: its status gates every delivery muster makes to
 it, so its failure is pushed and shown, and its next good turn clears it.
 
@@ -510,12 +552,12 @@ ccd ignores any tools a request carries.
 
 ### Models are checked before a pod starts
 
-Every door that sets an agent's model — the dispatch form, a task's own model
+Every door that sets an agent's model — `POST /api/agents`, a task's own model
 when it is dispatched, `POST /agents/{id}/model` on the agent page, replacing
 the chief (before the old one is removed), and the chief's `agent_dispatch`
 (before it reserves anything) — checks the value
-against the OpenRouter model catalogue (the list the dispatch form's model
-picker reads, cached for an hour):
+against the OpenRouter model catalogue (the list the task forms' model picker
+reads, cached for an hour):
 
 - an exact id passes (`openrouter/<id>`, or a bare `<id>`, stored as
   `openrouter/<id>`);

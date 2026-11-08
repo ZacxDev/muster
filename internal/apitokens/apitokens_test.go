@@ -973,10 +973,36 @@ func TestATokensScopeIsStoredAndReadBack(t *testing.T) {
 		WHERE user_id = $1 AND action = 'api_token.create'`, w.a).Scan(&details); err != nil || details != "summary,full" {
 		t.Fatalf("the mints' audit scopes = %q (%v); want \"summary,full\"", details, err)
 	}
+	// Migration 0095: the agent-create scope is stored and read back, and the
+	// widened CHECK still refuses a scope nobody defined.
+	ac, acRec, err := w.s.Create(as(w.a, authz.RoleMember), "create", 0, ScopeAgentCreate)
+	if err != nil || acRec.Scope != ScopeAgentCreate {
+		t.Fatalf("an agent-create mint: %+v %v", acRec, err)
+	}
+	if got, err := w.s.Authenticate(sysCtx(), ac); err != nil || got.Scope != ScopeAgentCreate {
+		t.Fatalf("Authenticate an agent-create token: %+v %v", got, err)
+	}
+	if _, err := w.pool.Exec(sysCtx(), `UPDATE api_tokens SET scope = 'agent-create-all' WHERE id = $1`, acRec.ID); err == nil {
+		t.Fatal("the database accepted scope 'agent-create-all'; api_tokens_scope_check must refuse it")
+	}
 	// A row written without the column (an older image's INSERT) is full.
 	var dflt string
 	if err := w.pool.QueryRow(sysCtx(), `SELECT column_default || '/' || is_nullable FROM information_schema.columns
 		WHERE table_name = 'api_tokens' AND column_name = 'scope'`).Scan(&dflt); err != nil || dflt != "'full'::text/NO" {
 		t.Fatalf("api_tokens.scope is %q (%v); want NOT NULL DEFAULT 'full'", dflt, err)
+	}
+}
+
+// TestCleanScopeAcceptsAgentCreate: the scope the machine agent-create route
+// takes (docs/design/chief-dispatch.md, phase 2) is a known scope, stored as
+// itself; a near miss is refused.
+func TestCleanScopeAcceptsAgentCreate(t *testing.T) {
+	if got, err := CleanScope("agent-create"); err != nil || got != ScopeAgentCreate {
+		t.Fatalf(`CleanScope("agent-create") = %q, %v; want %q`, got, err, ScopeAgentCreate)
+	}
+	for _, bad := range []string{"agent_create", "Agent-Create", "agents"} {
+		if _, err := CleanScope(bad); !errors.Is(err, ErrBadScope) {
+			t.Errorf("CleanScope(%q): %v; want ErrBadScope", bad, err)
+		}
 	}
 }

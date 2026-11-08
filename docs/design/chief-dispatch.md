@@ -4,7 +4,9 @@
 `internal/api/agent_dispatch.go`). **Phase 3 is built for claude** (host spawn,
 the trust entry, held targets and their cards, forwarding; #513 then #516: see
 "As built" under [Phase 3](#phase-3-host-spawn-for-claude-with-the-trust-entry-and-forwarding)).
-**Phases 2 and 4 are proposed.** The owner made
+**Phase 2 is built** (the machine route `POST /api/agents`, `muster agent
+create`, and the UI deletion: see "As built" under
+[Phase 2](#phase-2-delete-the-dispatch-ui)). **Phase 4 is proposed.** The owner made
 the nine decisions in [Owner decisions](#owner-decisions): four up front, and
 five more in answer to this page's first draft. This revision adds nine more:
 10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
@@ -3193,6 +3195,31 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   agent.
 - A stopped agent that "Save for later" created before the upgrade still
   starts from its page.
+
+#### As built (phase 2)
+
+Built as specified, in one PR. Where it differs from the text above, and why:
+
+- **`POST /agents` answers 405, not 404.** `GET /agents` (home) is still
+  registered on that path, so the mux answers Method Not Allowed with an
+  `Allow` that names no POST. `GET /ui/agents/new` and `GET /ui/agents/notes`
+  answer 404. `internal/api/dispatch_ui_removed_test.go` pins all three (in the
+  api package, where the routes are; `internal/ui/removed_surfaces_test.go`
+  pins the absent elements).
+- **A `note_id` that names no readable task is a 404 (`no such task`).** The
+  form silently dropped such a value and dispatched without the task; for a
+  machine caller that would create an agent on the wrong work.
+- **`muster agent create` with only the ordinary token sends nothing.** It
+  refuses locally (exit 2) with the scope sentence, rather than sending a
+  request that would carry no credential, so the full token never reaches the
+  route.
+- **The acceptance grep** finds, outside `removed_surfaces_test.go`, only
+  absence assertions (the Playwright checks this section asks for, and the
+  api test of the removed routes) and comments naming what was removed.
+- **`e2e/lib/seed.ts`** mints its token with `e2e/mktoken` (through the real
+  token store, as the user) and re-mints once on a 401, because some specs
+  reset the accounts tables. `agent-outcomes.spec.ts` posted to `POST /agents`
+  directly and was moved to the new route as well.
 
 ### Phase 3: host spawn for claude, with the trust entry and forwarding
 

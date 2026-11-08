@@ -5,7 +5,7 @@ import { hookToken, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
 import { clsInit, readCls, settle } from '../lib/cls';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 import { coarse, pickView } from '../lib/switcher';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
@@ -14,7 +14,8 @@ import { coarse, pickView } from '../lib/switcher';
 // only the pod is played, by a fake terminal that prints what reached it
 // (cmd/muster-server/e2eterm.go): `FAKE-TUI mode=ro|rw`, `size=CxR` per
 // resize and `in=<HEX>` per input chunk. The tokens below are obvious fakes and
-// nothing is provisioned ("Save for later").
+// nothing is provisioned (agents are created stopped through POST /api/agents,
+// lib/seed.ts, what "Save for later" made).
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 const origin = `http://localhost:${termPort}`;
@@ -53,24 +54,16 @@ async function login(page: Page) {
   await signIn(page, origin);
 }
 
-// saveAgent creates one agent of the kind through the dispatch sheet's "Save
-// for later" and returns its name (diffed, so an earlier run's rows cannot
-// answer).
+// saveAgent creates one agent of the kind, stopped (what "Save for later"
+// made), through POST /api/agents (lib/seed.ts, which replaced the deleted
+// dispatch sheet), opens its page, and returns its name (diffed, so an earlier
+// run's rows cannot answer).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code', note: string): Promise<string> {
   const before = await agentNames();
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill(note);
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const made = await createAgent(origin, { kind, prompt: note });
   const created = [...(await agentNames())].filter((n) => !before.has(n));
-  expect(created.length, 'exactly one agent created').toBe(1);
-  // The sheet's answer sends the page to the new agent's own page.
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0]);
+  expect(created, 'exactly one agent created').toEqual([made.name]);
+  await page.goto(origin + '/agents/' + created[0]);
   return created[0];
 }
 

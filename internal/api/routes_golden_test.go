@@ -224,6 +224,16 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  76   routeFloor
 //
+// ⚠ AND AGAIN WHEN THE DISPATCH FORM WAS DELETED (docs/design/chief-dispatch.md
+// phase 2): its three rows (GET /ui/agents/new, GET /ui/agents/notes, POST
+// /agents) went and POST /api/agents came, so the projection is 83 (69 + 14),
+// same margin:
+//
+//	  83   manifest projection (69 muster + 14 shared)
+//	-  9   margin
+//	----
+//	  74   routeFloor
+//
 // routeFloorProjection is checked against the MANIFEST, not against the code,
 // by TestRoutePartitionManifestIsATotalPartition.
 //
@@ -235,8 +245,8 @@ const manifestPath = "testdata/routes.partition.tsv"
 // red the gate from the first route to the eightieth.
 // ---------------------------------------------------------------------------
 const (
-	routeFloorProjection = 85
-	routeFloor           = 76
+	routeFloorProjection = 83
+	routeFloor           = 74
 )
 
 // muxRecorder implements Mux and records patterns instead of routing.

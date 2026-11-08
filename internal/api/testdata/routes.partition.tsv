@@ -83,10 +83,14 @@
 #
 # THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
 #
-# counts: muster=71 router=63 shared=14 total=148
+# counts: muster=69 router=63 shared=14 total=146
 #
-#   muster + router + shared = 71 + 63 + 14 = 148
-#   muster's projected post-carve registration count = 71 + 14 = 85
+#   muster + router + shared = 69 + 63 + 14 = 146
+#   muster's projected post-carve registration count = 69 + 14 = 83
+#
+#   ⚠ 71 / 148 / 85 UNTIL THE DISPATCH FORM WAS DELETED (docs/design/chief-dispatch.md
+#   phase 2). GET /ui/agents/new, GET /ui/agents/notes and POST /agents went with
+#   it, and POST /api/agents, the machine route that replaced it, is a new muster row.
 #
 #   ⚠ 70 / 147 / 84 UNTIL THE CHIEF'S DISPATCHED-AGENT CARD. GET
 #   /ui/dispatch-card (chat_log_live.go) is a muster row.
@@ -221,8 +225,6 @@ muster	server.go:registerNotesRoutes	GET /tasks/{id}/attachments/{aid}
 router	server.go:registerRoutes	GET /tmux
 router	newsession.go:registerLaunchRoutes	GET /tmux/launch
 muster	agents.go:registerAgentRoutes	GET /ui/agents
-muster	agents.go:registerAgentRoutes	GET /ui/agents/new
-muster	agents.go:registerAgentRoutes	GET /ui/agents/notes
 muster	agents.go:registerAgentRoutes	GET /ui/agents/repos
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/card
 muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/rename
@@ -257,13 +259,15 @@ muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}
 muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}/status
 muster	server.go:registerNotesRoutes	PATCH /tasks/{id}/status
 muster	server.go:registerAgentSelfServiceRoutes	POST /agent/task/comment
-muster	agents.go:registerAgentRoutes	POST /agents
 muster	agents.go:registerAgentRoutes	POST /agents/sessions/{sid}/read
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/model
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/name
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/sessions
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/start
 muster	agents.go:registerAgentRoutes	POST /agents/{id}/stop
+# NOTE (POST /api/agents): the machine route that creates an agent (agent_create_api.go), which replaced
+# the web UI's dispatch form (docs/design/chief-dispatch.md phase 2) — agents are muster's.
+muster	agents.go:registerAgentRoutes	POST /api/agents
 muster	agents.go:registerAgentRoutes	POST /api/agents/{name}/messages
 router	attention.go:registerAttentionRoutes	POST /api/attention
 router	attention.go:registerAttentionRoutes	POST /api/attention/{id}/resolve

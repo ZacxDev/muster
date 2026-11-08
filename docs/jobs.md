@@ -229,30 +229,35 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 
 ### Creating a pool worker
 
-1. Open the dispatch form (the **+** beside **Agents** in the sidebar, or a
-   task's **Dispatch**).
-2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
-   under the Claude account; it is not shown for any other kind.
-3. Enter the pool's name, for example `reviewers`.
-4. Leave the Claude account on **Auto** unless you want to pin one; the account
-   pool chooses as it does for any agent. Pick the repository the pool's jobs
-   will name (with `repo`), which must be a **public** one (see below), or the
-   one private repository the pool has a
-   [deploy key](#private-repositories-a-pools-deploy-key) for.
-5. **Dispatch** (or **Save for later** and Start it). A pool job can run only on
-   a `running` worker.
+Ask the chief ("start a worker in pool `reviewers`"): its `agent_dispatch`
+with `worker_pool` creates one (target `pod/claude-code`, no task, your typed
+request: [plugins.md](plugins.md#agent_dispatch-the-guards)), and such a worker
+holds one of the chief's live slots for as long as it runs. Without a chief
+that can, use [`muster agent create`](provisioner.md#creating-an-agent-without-the-chief)
+(`POST /api/agents`):
+
+```text
+MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --kind claude-code --worker-pool reviewers --repo example-org/site --start=true
+```
+
+(On a host with more than one tenant, put the token in that tenant's file
+instead: [cli.md](cli.md#configuration).)
+
+Leave the Claude account unset unless you want to pin one (`--cc-account`);
+the account pool chooses as it does for any agent. The repository the pool's
+jobs will name (with `repo`) must be a **public** one (see below), or the one
+private repository the pool has a
+[deploy key](#private-repositories-a-pools-deploy-key) for. A pool job can run
+only on a `running` worker (`--start=false`, then Start it from its page).
 
 The agent's page shows a **pool** chip, and `GET /api/agents` reports
 it as `workerPool`. Repeat with the same name for more workers; each takes its
 own account from the pool unless pinned.
 
-The form posts `worker_pool` to `POST /agents` with `kind=claude-code`. With any
-other kind, or a name outside the pattern, the server refuses the dispatch with
-**409** and the reason, and creates nothing. The chief's `agent_dispatch` with
-`worker_pool` creates one too (target `pod/claude-code`, no task, your typed
-request: [plugins.md](plugins.md#agent_dispatch-the-guards)), with the same
-refusals; such a worker holds one of the chief's live slots for as long as it
-runs. The `muster` CLI cannot create one.
+With any kind but `claude-code`, or a name outside the pattern, both doors
+refuse with **409** (the chief's tool with its own sentence) and the reason,
+and create nothing. (The web UI's dispatch form, which used to be the way to
+create one, was deleted: [design](design/chief-dispatch.md), phase 2.)
 
 **A pool worker holds no GitHub credential.** The one way an agent gets one is
 a grant on a connector that reaches github.com — the `github` connector (the
@@ -570,8 +575,8 @@ owner's accounts**:
 - **Pinned agents stay.** An agent whose account was named explicitly when it
   was created — a dispatch's or `POST /api/chief/replace`'s `cc_account`, an
   officer's `cc_account` — is not moved, unless it opted in: the `cc_failover`
-  field (`on`/`true`) of the dispatch request (`POST /agents`; the form has no
-  control for it), `"cc_failover": true` on `POST /api/chief/replace`, or the
+  field of `POST /api/agents` (`muster agent create --cc-failover`),
+  `"cc_failover": true` on `POST /api/chief/replace`, or the
   officer's `cc_failover`.
   Agents created before this existed read as not pinned (an officer instance
   reads its officer's current configuration). The one exception is a pool

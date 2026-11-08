@@ -24,7 +24,7 @@ func detailFixture() TaskCardView {
 		Status: notes.StatusOpen, CreatedAt: time.Unix(1_700_000_000, 0),
 		Comments: []notes.Comment{{ID: 1, NoteID: 613, Author: "agent-x", Body: "a comment nobody else spells"}},
 		Sessions: []notes.SessionLink{{SessionID: "sess-aaaa1111", Role: notes.RoleWorked, DetailAvailable: true}},
-	}, Dispatch: true}
+	}}
 }
 
 // TestTaskDetailPageRendersTheWholeTask: the page is the ONE place a task's
@@ -43,7 +43,6 @@ func TestTaskDetailPageRendersTheWholeTask(t *testing.T) {
 		"data-task-session",                   // the session thread rows
 		`hx-patch="/tasks/613/status"`,        // the status control still works here
 		`id="task-modal-body"`,                // Edit's swap target must EXIST on this page
-		`id="agent-modal-body"`,               // …and Dispatch's
 		"/static/vendor/idiomorph-ext.min.js", // morph:outerHTML swaps need it loaded
 	} {
 		if !strings.Contains(out, want) {

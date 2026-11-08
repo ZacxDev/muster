@@ -162,6 +162,7 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 				`[{"id":11,"name":"clever-fox","nested":{"a":1}},{"id":12,"name":"chief","nested":{"a":1}}]`)
 			h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
 			h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok","nested":{"a":1}}`)
+			h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":13,"nested":{"a":1}},"started":false}`)
 			h.json("GET /api/tasks", http.StatusOK, `[{"id":1,"nested":{"a":1}}]`)
 			h.json("GET /api/tasks/5", http.StatusOK, `{"id":5,"nested":{"a":1}}`)
 			h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)

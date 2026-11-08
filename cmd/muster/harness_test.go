@@ -158,6 +158,13 @@ func (h *harness) runCLIAs(argv0 string, env map[string]string, stdin io.Reader,
 		"--token", testToken,
 		"--env-file", filepath.Join(h.t.TempDir(), "absent.env"),
 	}, args...)
+	if env == nil {
+		// The ledger-wide sweeps run every verb through here with no env;
+		// `agent create` reads its OWN token from the environment (never
+		// --token), so the default environment carries one. A test asserting
+		// the verb's behaviour WITHOUT it passes an explicit env.
+		env = map[string]string{envAgentCreateToken: testCreateTok}
+	}
 	getenv := func(k string) string { return env[k] }
 	code := run(context.Background(), argv0, full, stdin, &out, &errOut, getenv, h.t.TempDir())
 	return result{code: code, stdout: out.String(), stderr: errOut.String()}

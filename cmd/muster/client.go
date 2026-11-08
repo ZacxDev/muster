@@ -208,17 +208,12 @@ type request struct {
 
 // credential names one of muster's caller-side credentials.
 //
-// 🔴 IT IS AN ENUM WITH TWO VALUES TODAY, AND THE HONEST READING IS THAT THIS
-// COSTS NOTHING RATHER THAN THAT IT ALREADY EARNS ITS KEEP. Every verb in the
-// ledger presents the hook credential; only the /health skew probe presents
-// none. The upstream binary this was extracted from needed three values and the
-// enum was load-bearing there. It is kept in this shape because the server
-// already has a second caller tier — api.requireHookOrServiceToken admits
-// MUSTER_SERVICE_TOKEN plus an asserted actor — so a verb reaching it would add
-// a value rather than convert a bool, and the conversion is the step that gets
-// got wrong: spelled as booleans the states can both be set, both be unset, or
-// disagree, and a request that presented NEITHER credential reads as "the
-// surface is broken" rather than "I sent nothing".
+// 🔴 IT IS AN ENUM, NOT A BOOL, AND THE THIRD VALUE IS WHY. Most verbs present
+// the hook credential; the /health skew probe presents none; `agent create`
+// presents MUSTER_AGENT_CREATE_TOKEN and never the ordinary token. Spelled as
+// booleans the states could both be set, both be unset, or disagree, and a
+// request that presented the WRONG credential reads as "the surface is broken"
+// rather than "I sent the full token to a route that refuses it".
 type credential int
 
 const (
@@ -228,6 +223,10 @@ const (
 	// secret; inside a managed agent pod the same variable carries that pod's
 	// own row token, which is what the /agent/task* routes resolve.
 	credHook
+	// credAgentCreate sends MUSTER_AGENT_CREATE_TOKEN (agent_create.go) and
+	// NEVER the ordinary token: POST /api/agents admits only a token of scope
+	// agent-create, and this keeps the CLI's full token off that route.
+	credAgentCreate
 )
 
 // do performs the call and returns the raw JSON body. The body is returned
@@ -274,6 +273,9 @@ func (c *client) do(ctx context.Context, req request) ([]byte, error) {
 	// a credential complaint.
 	if req.cred == credHook && c.cfg.token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.token)
+	}
+	if req.cred == credAgentCreate && c.cfg.createTok != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.createTok)
 	}
 
 	resp, err := c.http.Do(httpReq)

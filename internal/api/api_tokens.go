@@ -141,27 +141,65 @@ func (s *Server) requireAPIToken(next http.HandlerFunc) http.HandlerFunc {
 // nothing about which.
 const APITokenRefusal = "invalid or revoked API token"
 
-// ScopedTokenRefusal is the 403 body a narrower-scoped token gets on a route
-// its scope does not reach.
+// ScopedTokenRefusal is the 403 body a bar-summary token gets on a route its
+// scope does not reach.
 const ScopedTokenRefusal = "this API token's scope does not reach this route: a bar-summary token can only read GET " +
 	attentionSummaryPath + " (mint a full-access token at " + accountTokensPath + " for anything else)"
+
+// apiAgentCreatePattern is the machine route that creates an agent
+// (handleAPIAgentCreate): what replaced the web UI's dispatch form
+// (docs/design/chief-dispatch.md, phase 2).
+const apiAgentCreatePattern = "POST /api/agents"
+
+// AgentCreateScopeRefusal is the 403 body every token whose scope is not
+// agent-create gets on POST /api/agents — a full token included, which is the
+// point: the CLI's ordinary token must not create agents.
+const AgentCreateScopeRefusal = "creating agents needs a token of scope agent-create: mint one at " + accountTokensPath +
+	" (Create agents). No other token reaches this route, so that the CLI's ordinary token cannot create agents"
+
+// AgentCreateTokenRefusal is the 403 body an agent-create token gets on any
+// route other than POST /api/agents.
+const AgentCreateTokenRefusal = "an agent-create token reaches only " + apiAgentCreatePattern + "; use a full-access token for anything else"
+
+// scopedTokenRefusal is the 403 body for a token of scope refused on the route
+// matched by pattern: ONE function, so each scope's sentence names what that
+// scope actually reaches and what to mint instead.
+func scopedTokenRefusal(scope, pattern string) string {
+	switch {
+	case explicitScopeRoutes[pattern]:
+		return AgentCreateScopeRefusal
+	case scope == apitokens.ScopeAgentCreate:
+		return AgentCreateTokenRefusal
+	}
+	return ScopedTokenRefusal
+}
 
 // tokenScopeRoutes is every mux pattern each narrower token scope may reach:
 // THE one allowlist (see the file header). The key is the pattern the route
 // is registered with (http.Request.Pattern), so a GET pattern also admits
 // HEAD — net/http serves HEAD through it — and nothing else. ScopeFull is not
-// in it: a full token is not limited.
+// in it: a full token is not limited, except on explicitScopeRoutes.
 //
 // ⚠ GET /api/whoami IS DELIBERATELY ABSENT. A bar token does not need to know
 // who it is; the summary's own 200, 401 or 403 says whether the token works.
 var tokenScopeRoutes = map[string]map[string]bool{
-	apitokens.ScopeSummary: {"GET " + attentionSummaryPath: true},
+	apitokens.ScopeSummary:     {"GET " + attentionSummaryPath: true},
+	apitokens.ScopeAgentCreate: {apiAgentCreatePattern: true},
 }
+
+// explicitScopeRoutes are the patterns a FULL token does not reach: each is
+// admitted ONLY to the scope whose tokenScopeRoutes entry names it. Creating
+// an agent from a machine is the one such route, so the owner has to mint an
+// agent-create token deliberately rather than reuse the CLI's full token.
+var explicitScopeRoutes = map[string]bool{apiAgentCreatePattern: true}
 
 // tokenScopeAdmits reports whether scope reaches the route r was matched to.
 // An unknown scope reaches nothing, and a request with no matched pattern (a
 // handler called directly) is refused to every scope but ScopeFull.
 func tokenScopeAdmits(scope string, r *http.Request) bool {
+	if explicitScopeRoutes[r.Pattern] {
+		return scope != apitokens.ScopeFull && tokenScopeRoutes[scope][r.Pattern]
+	}
 	return scope == apitokens.ScopeFull || tokenScopeRoutes[scope][r.Pattern]
 }
 
@@ -195,7 +233,7 @@ func (s *Server) admitAPIToken(w http.ResponseWriter, r *http.Request, next http
 		return
 	}
 	if !tokenScopeAdmits(t.Scope, r) {
-		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": ScopedTokenRefusal})
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": scopedTokenRefusal(t.Scope, r.Pattern)})
 		return
 	}
 	ctx := context.WithValue(r.Context(), apiTokenCtxKey{}, t)
@@ -318,9 +356,22 @@ func (s *Server) handleAccountTokenRevoke(w http.ResponseWriter, r *http.Request
 
 // The scopes as the token page names them.
 const (
-	scopeLabelFull    = "Full access"
-	scopeLabelSummary = "Bar summary only"
+	scopeLabelFull        = "Full access"
+	scopeLabelSummary     = "Bar summary only"
+	scopeLabelAgentCreate = "Create agents"
 )
+
+// scopeLabel is how the token list names a stored scope. An agent-create token
+// is never shown as a bar token.
+func scopeLabel(scope string) string {
+	switch scope {
+	case apitokens.ScopeFull:
+		return scopeLabelFull
+	case apitokens.ScopeAgentCreate:
+		return scopeLabelAgentCreate
+	}
+	return scopeLabelSummary
+}
 
 // renderAccountTokens writes the token page. minted, when set, is the token
 // just created — the only time it is ever rendered.
@@ -358,6 +409,8 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 ` + scopeLabelFull + `</label>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeSummary + `" class="h-5 w-5">
 ` + scopeLabelSummary + ` (can read the Attention summary and nothing else)</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeAgentCreate + `" class="h-5 w-5">
+` + scopeLabelAgentCreate + ` (reaches only POST /api/agents, and nothing else)</label>
 </fieldset>
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create token</button>
 </form>
@@ -371,10 +424,7 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 		if name == "" {
 			name = "(unnamed)"
 		}
-		scope := scopeLabelFull
-		if t.Scope != apitokens.ScopeFull {
-			scope = scopeLabelSummary
-		}
+		scope := scopeLabel(t.Scope)
 		used := "never used"
 		if t.LastUsedAt != nil {
 			used = "last used " + t.LastUsedAt.UTC().Format("2006-01-02 15:04") + " UTC"

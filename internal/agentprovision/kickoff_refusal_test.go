@@ -41,7 +41,9 @@ const (
 	wantRefusalRemedyValue = "hooks-sha256"
 	// wantRefusalSaveEscape is the operation that still works, named in the refusal so
 	// the operator is not left with no next move at all.
-	wantRefusalSaveEscape = "Save for later"
+	// It was "Save for later" until the dispatch form was deleted
+	// (docs/design/chief-dispatch.md phase 2); the stopped create is the CLI's now.
+	wantRefusalSaveEscape = "muster agent create --start=false"
 )
 
 // TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt is the regression test for
@@ -218,8 +220,8 @@ func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T)
 	const golden = "dispatch REFUSED and NOTHING was provisioned: this deployment cannot " +
 		"deliver an agent's first turn, so beginning the work is impossible and creating the " +
 		"instance would only produce a pod that reads healthy and was never told what to do. " +
-		"Use \"Save for later\", then Start the agent — that brings the instance up without " +
-		"claiming a first turn nothing can deliver. CAUSE: this deployment names no agent " +
+		"Create it with `muster agent create --start=false`, then Start it from its page, which brings " +
+		"the instance up without claiming a first turn. CAUSE: this deployment names no agent " +
 		"gateway, and a DELIVERED kickoff is a model turn sent through one. REMEDY: set " +
 		"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL (and the agent " +
 		"runtime-config bundle boot requires with them) and restart muster; the kickoff deliverer " +
@@ -446,8 +448,9 @@ func TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered(t *testing.T) 
 // TestASaveIsNeverRefusedWhenNoKickoffCanBeDelivered guards the operation the
 // refusal must not touch.
 //
-// 🔴 A SAVE ASKS FOR NOTHING THIS CONFIGURATION CANNOT DO. "Save for later" —
-// action=save in the UI, kickoff=false here — deliberately provisions nothing and
+// 🔴 A SAVE ASKS FOR NOTHING THIS CONFIGURATION CANNOT DO. A stopped create —
+// POST /api/agents with start: false (`muster agent create --start=false`, which
+// replaced the UI's "Save for later"), kickoff=false here — deliberately provisions nothing and
 // stores `stopped`; there is no kickoff to deliver, so there is nothing to refuse.
 // Refusing it would remove a working operation to punish a missing gateway, and it
 // is the operation the refusal's own remedy text points the operator at, so the
@@ -460,7 +463,7 @@ func TestASaveIsNeverRefusedWhenNoKickoffCanBeDelivered(t *testing.T) {
 	a, store, driver := newAdapterWithNoKickoffDelivery(t, nil)
 
 	if err := a.Dispatch(context.Background(), fixtureAgentID, false); err != nil {
-		t.Fatalf("Dispatch(kickoff=false) — \"Save for later\" — was refused on a deployment "+
+		t.Fatalf("Dispatch(kickoff=false) — a stopped create — was refused on a deployment "+
 			"with no gateway: %v\n  transcript: %s", err, store.transcript())
 	}
 

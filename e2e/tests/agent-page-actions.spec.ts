@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { agentActionsPort, hookToken, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { createAgent, postAgents } from '../lib/seed';
 
 // THE AGENTS LIST PAGE IS RETIRED, AND WHAT ONLY IT OFFERED MOVED (operator
 // decision: the sidebar and the session switcher's bar are how a person moves
@@ -13,17 +14,20 @@ import { startServer, Running } from '../lib/server';
 //
 //   1. GET /agents — any old link to the list, a `?filter=` one included —
 //      lands home (here, with no chief: the session opened last), never the list;
-//   2. the "+" beside the sidebar's Agents label opens the task-less dispatch
-//      sheet on any page; "Save for later" lands on the new agent's page, which
-//      the sidebar lists, and a refused Dispatch says why (on the agent's page
-//      too) and creates nothing;
+//   2. there is NO "+" beside the sidebar's Agents label, no "not set up" hint
+//      and no task-card Dispatch (docs/design/chief-dispatch.md phase 2 deleted
+//      the dispatch form, D8: nothing replaces them); an agent created stopped
+//      through POST /api/agents (what "Save for later" made) has a page the
+//      sidebar lists, and a dispatch there that this deployment cannot deliver
+//      is refused with the reason and creates nothing;
 //   3. the agent's page carries the card's actions in its header's ⋯ menu:
 //      Rename (the header, the tab title and the sidebar follow), Start / Stop
 //      (the live status strip and the menu follow), Delete (lands home; the
 //      agent is gone) — and its title keeps its room on a phone.
 //
-// REGRESSION TEST: red at dd25e646, where /agents drew the list, the sidebar
-// had no "+", and the agent page had no ⋯ menu or status strip.
+// REGRESSION TEST: red at dd25e646, where /agents drew the list and the agent
+// page had no ⋯ menu or status strip; and red before phase 2, where the sidebar
+// drew the "+" and a task card its Dispatch.
 
 const origin = `http://localhost:${agentActionsPort}`;
 let server: Running | undefined;
@@ -66,37 +70,18 @@ async function signedIn(page: Page): Promise<void> {
 // opened on a phone.
 async function sidebarShown(page: Page): Promise<void> {
   const sb = page.locator('#sidebar');
-  if (!(await page.locator('#sidebar-deploy').isVisible())) await page.locator('#sidebar-open').click();
+  if (!(await page.locator('#sidebar-agents-list').isVisible())) await page.locator('#sidebar-open').click();
   await expect(sb).toBeInViewport();
 }
 
-// dispatchFromSidebar opens the sheet from the sidebar's "+", types an ad-hoc
-// task and presses the button named `action`; it returns the new agent's row
-// and waits until the page is that agent's page.
-async function dispatchFromSidebar(page: Page, action: 'Save for later', task: string): Promise<AgentRow> {
+// createAndOpen creates an agent stopped with an ad-hoc task through POST
+// /api/agents (lib/seed.ts) and opens its page; it returns the new agent's row.
+async function createAndOpen(page: Page, task: string): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.id));
-  await sidebarShown(page);
-  await page.locator('#sidebar-deploy').click();
-  const form = page.locator('#agent-modal form');
-  await expect(form).toBeVisible();
-  await form.locator('textarea[name="note_text"]').fill(task);
-  // The POST's answer, for the failure message.
-  let answered = 'no POST /agents was sent';
-  const onResponse = async (r: import('@playwright/test').Response) => {
-    if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/agents') {
-      answered = `POST /agents → ${r.status()} ${JSON.stringify(r.headers()['hx-redirect'] ?? '')} ${(await r.text().catch(() => '')).slice(0, 200)}`;
-    }
-  };
-  page.on('response', onResponse);
-  await form.getByRole('button', { name: action, exact: true }).click();
-  let made: AgentRow | undefined;
-  await expect
-    .poll(async () => {
-      made = (await agentRows()).find((a) => !before.has(a.id));
-      return made?.name ?? '';
-    }, { message: `${action} made an agent (${answered})` })
-    .not.toBe('');
-  page.off('response', onResponse);
+  const agent = await createAgent(origin, { prompt: task });
+  const made = (await agentRows()).find((a) => !before.has(a.id));
+  expect(made?.name, 'the create made exactly this agent').toBe(agent.name);
+  await page.goto(`${origin}/agents/${made!.name}`);
   await page.waitForURL((u) => u.pathname === `/agents/${made!.name}` && u.searchParams.has('session'));
   await expect(page.locator('#agent-strip')).toBeVisible();
   return made!;
@@ -119,30 +104,34 @@ for (const [label, viewport] of sizes) {
   test.describe(label, () => {
     test.use({ viewport });
 
-    test('the sidebar "+" saves for later onto the new agent\'s page, and says why a dispatch is refused', async ({ page }) => {
+    test('no "+", no hint and no card Dispatch; a stopped agent opens on its page; a refused dispatch creates nothing', async ({ page }) => {
       await signedIn(page);
       await page.goto(origin + '/tasks');
-      const saved = await dispatchFromSidebar(page, 'Save for later', `Saved for later at the ${label} size.`);
-      // A saved agent is not started: its menu offers Start.
+      // The board's cards are drawn (positive control), and none offers a
+      // Dispatch; the sidebar's Agents head has neither "+" nor hint.
+      await expect(page.locator('[id^="task-"][data-task-status]').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Dispatch agent for this task' })).toHaveCount(0);
+      await sidebarShown(page);
+      await expect(page.locator('#sidebar-agents-label')).toBeVisible();
+      await expect(page.locator('#sidebar-deploy')).toHaveCount(0);
+      await expect(page.locator('[data-dispatch-off-hint]')).toHaveCount(0);
+      await expect(page.locator('#agent-modal')).toHaveCount(0);
+
+      const saved = await createAndOpen(page, `Saved for later at the ${label} size.`);
+      // A stopped agent is not started: its menu offers Start.
       const m = await menu(page);
       await expect(m.locator('[data-agent-action="Start"]')).toBeVisible();
       await page.keyboard.press('Escape');
       await sidebarShown(page);
       await expect(page.locator(`#sidebar-agents-list a#nav-agent-${saved.id}`)).toHaveAttribute('aria-current', 'true');
 
-      // From the agent's page, the same "+": this deployment (the noop driver,
-      // no gateway) cannot deliver a first turn, so Dispatch is refused — and
-      // the refusal is SAID, on this page too, with nothing created.
+      // This deployment (the noop driver, no gateway) cannot deliver a first
+      // turn, so a dispatch is refused with the reason, and nothing is created.
       const before = (await agentRows()).length;
-      await page.locator('#sidebar-deploy').click();
-      const form = page.locator('#agent-modal form');
-      await expect(form).toBeVisible();
-      await form.locator('textarea[name="note_text"]').fill(`Dispatched at the ${label} size.`);
-      await form.getByRole('button', { name: 'Dispatch', exact: true }).click();
-      await expect(page.locator('#action-toasts')).toContainText('dispatch REFUSED and NOTHING was provisioned');
-      await expect(form, 'the sheet stays open with the typed task').toBeVisible();
+      const refused = await postAgents(origin, { prompt: `Dispatched at the ${label} size.`, start: true });
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.text).toContain('dispatch REFUSED and NOTHING was provisioned');
       expect((await agentRows()).length, 'nothing was created').toBe(before);
-      expect(new URL(page.url()).pathname).toBe(`/agents/${saved.name}`);
     });
 
     test('/agents, and an old filter link to it, land home — never the list', async ({ page }) => {
@@ -158,7 +147,7 @@ for (const [label, viewport] of sizes) {
     test("an agent's page renames, stops, starts and deletes it from its ⋯ menu", async ({ page }) => {
       await signedIn(page);
       await page.goto(origin + '/tasks');
-      const a = await dispatchFromSidebar(page, 'Save for later', `The menu's agent, ${label}.`);
+      const a = await createAndOpen(page, `The menu's agent, ${label}.`);
 
       // The title keeps its room: the strip and the ⋯ are on the header's
       // second row, never the title's.

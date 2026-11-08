@@ -172,15 +172,22 @@ func TestATokenOfAnUnknownScopeReachesNothing(t *testing.T) {
 	}
 }
 
-// TestTheScopeAllowlistIsExactlyTheSummaryRoute pins the WHOLE allowlist: one
-// narrower scope, one route, and that route registered under exactly that
+// TestTheScopeAllowlistIsExactlyTheSummaryRoute pins the WHOLE allowlist: two
+// narrower scopes, one route each, and each route registered under exactly that
 // pattern (it is in routes.golden). A pattern that drifted from the route's
-// registration would lock the bar out, and a second entry is a decision this
-// line makes visible.
+// registration would lock its token out, and another entry is a decision this
+// line makes visible. explicitScopeRoutes — the routes a FULL token does not
+// reach — is pinned the same way.
 func TestTheScopeAllowlistIsExactlyTheSummaryRoute(t *testing.T) {
-	want := map[string]map[string]bool{"summary": {"GET /api/attention/summary": true}}
+	want := map[string]map[string]bool{
+		"summary":      {"GET /api/attention/summary": true},
+		"agent-create": {"POST /api/agents": true},
+	}
 	if !reflect.DeepEqual(tokenScopeRoutes, want) {
 		t.Fatalf("tokenScopeRoutes = %v; want %v", tokenScopeRoutes, want)
+	}
+	if wantExplicit := map[string]bool{"POST /api/agents": true}; !reflect.DeepEqual(explicitScopeRoutes, wantExplicit) {
+		t.Fatalf("explicitScopeRoutes = %v; want %v", explicitScopeRoutes, wantExplicit)
 	}
 	golden := map[string]bool{}
 	for _, r := range readGolden(t) {

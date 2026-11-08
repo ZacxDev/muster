@@ -53,26 +53,6 @@ func RenderTaskNotFound(w io.Writer, id string, feat Features) error {
 	return TaskNotFoundPage(id, feat).Render(w)
 }
 
-// RenderDispatchModal writes the /ui/agents/new partial (the task-less dispatch form
-// the sidebar's "+" opens
-// body: Model, Repository, Existing task, ad-hoc task).
-func RenderDispatchModal(w io.Writer, k KindChoices) error {
-	return DispatchModalBodyFor(k).Render(w)
-}
-
-// RenderDispatchUnavailable writes the /ui/agents/new partial for a server that
-// cannot dispatch (DispatchUnavailableBody).
-func RenderDispatchUnavailable(w io.Writer) error {
-	return DispatchUnavailableBody().Render(w)
-}
-
-// RenderDispatchModalTask writes the /ui/agents/new?note=<id> partial: the
-// TASK-SCOPED dispatch confirm (fixed Model/Repository rows pre-filled
-// from the task, each with an inline Edit override).
-func RenderDispatchModalTask(w io.Writer, v TaskDispatchView) error {
-	return DispatchModalTaskBody(v).Render(w)
-}
-
 // RenderAgentDetail writes the full agent detail page (logs + chat).
 func RenderAgentDetail(w io.Writer, v AgentDetailView, feat Features) error {
 	return AgentDetailPage(v, feat).Render(w)

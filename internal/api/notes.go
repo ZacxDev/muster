@@ -130,7 +130,7 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 	latest := s.latestSessionIDs(ctx, agentIDs)
 	views := make([]ui.TaskCardView, 0, len(list))
 	for _, n := range list {
-		v := ui.TaskCardView{Note: n, Dispatch: s.dispatchServed()}
+		v := ui.TaskCardView{Note: n}
 		if a, ok := byNote[n.ID]; ok {
 			v.Agent = agentBrief(a, latest[a.ID])
 		}
@@ -141,9 +141,9 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 
 // taskCardView builds the single-card view (task + its latest linked agent) for
 // the outerHTML re-render after a status change / comment. Best-effort agent
-// lookup (nil on miss/failure ⇒ the card falls back to the Dispatch button).
+// lookup (nil on miss/failure ⇒ the card draws no agent chip).
 func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView {
-	v := ui.TaskCardView{Note: n, Dispatch: s.dispatchServed()}
+	v := ui.TaskCardView{Note: n}
 	if n.IsReference() {
 		if ws, err := s.ext.Notes.RefWrites(ctx, n.ID); err == nil {
 			v.RefWrites = ws
@@ -384,8 +384,8 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Optional dispatch config from the create form (mirrors handleAgentCreate's
-	// parse of the same field names): model + repo + repo_branch.
+	// Optional dispatch config from the create form: model + repo + repo_branch
+	// (the field names POST /api/agents takes too).
 	note, err := s.ext.Notes.Create(ctx, notes.Note{
 		// The board's own create: the signed-in owner filed it.
 		CreatedBy:  nilIfEmpty(notes.CreatedByOwner),
