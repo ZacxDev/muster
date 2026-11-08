@@ -154,6 +154,10 @@ var pgBackedPackages = []string{
 	"internal/memorelay",
 	"internal/mirror",
 	"internal/notes",
+	// Notification preferences (migration 0094): "off for every user who never
+	// chose" and "one user's switch is theirs alone" are claims about a table
+	// default and row-level security.
+	"internal/notifypref",
 	// The judgement session cap's ledger (migration 0082). "Two replicas at
 	// cap-1 admit exactly one" and "the count survives a new server" are
 	// claims about one SQL statement's row lock and about the table, not
