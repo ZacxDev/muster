@@ -139,7 +139,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.TaskRouting, NeedsChief: true, Name: "Task routing",
 			Description: "A plugin hands a task to the chief, which routes it (and may start an agent on it).",
 			Enable:      []features.Var{is(envTaskRouting, "1")},
-			Settings:    []string{envChiefDispatchOwners}},
+			Settings:    []string{envChiefDispatchOwners, envChiefDispatchModels}},
 		{ID: features.PRMailRouting, Name: "Pull-request review routing",
 			Description: "Review mail goes to the session that opened the pull request.",
 			Enable:      []features.Var{v(envPRMailSenders, "owner/handle,…")}},
