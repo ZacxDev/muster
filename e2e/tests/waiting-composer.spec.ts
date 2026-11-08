@@ -1,0 +1,333 @@
+import { execFileSync } from 'node:child_process';
+import http from 'node:http';
+import { Page } from '@playwright/test';
+import { test, expect } from '../lib/fixtures';
+import { dsn, repoRoot, waitingComposerConnectPort, waitingComposerPort, waitingComposerS3Port } from '../lib/env';
+import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+
+// FOUR PHONE-FIRST ASKS, on a real muster-server and a real muster-mirror
+// (`-tags e2emirror`, tmux faked by files), an agent asking over the real /mcp
+// door, and uploads to a FAKE S3 this file plays:
+//
+//   1. the ☰ button that opens the sidebar carries a badge counting what waits
+//      on the operator — the sidebar rows' own "waiting" (listEntry.waiting) —
+//      shown when an ask arrives and gone when it is answered, live;
+//   2. the Rendered view's ⋯ is AFTER Send, the row's last control
+//      ([input][mic][send][⋯]);
+//   3. the command palette (the bar's magnifier) marks a waiting session with
+//      the SIDEBAR's own mark, and no other;
+//   4. the paperclip is on screen while the message box is collapsed, and
+//      tapping it opens the file chooser without focusing the box (no
+//      keyboard), the upload going the same way as before.
+//
+// Each at a phone (390×844, touch) and a desktop (1440×900).
+//
+// 🔴 FIXTURES ARE PAIRWISE DISTINCT: one agent waits (an open ask), one agent
+// does not (a plain chat), and two mirrored windows do not — so a mark drawn
+// on every row, on none, or on the wrong kind of entry fails.
+
+test.use({ storageState: { cookies: [], origins: [] } });
+
+const connectURL = `http://127.0.0.1:${waitingComposerConnectPort}`;
+const stamp = String(Date.now());
+const ASKER = `e2e-wc-asker-${stamp}`;
+const ASKER_TOKEN = `e2e-wc-asker-token-not-a-real-one-${stamp}`;
+const QUIET = `e2e-wc-quiet-${stamp}`;
+const ACCESS = 'e2e-wc-s3-access-not-real';
+
+// --- a fake S3: path-style, one bucket, what minio-go sends for a small
+// object (internal/uploads; the full fake, with its checks, is uploads.spec's).
+const objects = new Map<string, Buffer>();
+const s3 = http.createServer((req, res) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const [rawPath, query = ''] = (req.url ?? '').split('?');
+    const key = decodeURIComponent(rawPath).replace(/^\/muster-e2e\/?/, '');
+    const err = (status: number, code: string) =>
+      res.writeHead(status, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code></Error>`);
+    if (key === '') {
+      if (req.method === 'HEAD') return void res.writeHead(200).end();
+      if (query.startsWith('lifecycle')) return err(404, 'NoSuchLifecycleConfiguration');
+      if (query.startsWith('location')) return void res.writeHead(200, { 'Content-Type': 'application/xml' }).end('<LocationConstraint>us-east-1</LocationConstraint>');
+      return err(400, 'NotImplemented');
+    }
+    if (req.method === 'PUT') {
+      objects.set(key, Buffer.concat(chunks));
+      return void res.writeHead(200, { ETag: '"e2e"' }).end();
+    }
+    const b = objects.get(key);
+    if (req.method === 'HEAD' || req.method === 'GET') {
+      if (!b) return err(404, 'NoSuchKey');
+      res.writeHead(200, { 'Content-Length': String(b.length), ETag: '"e2e"', 'Last-Modified': new Date().toUTCString() });
+      return void res.end(req.method === 'GET' ? b : undefined);
+    }
+    if (req.method === 'DELETE') {
+      objects.delete(key);
+      return void res.writeHead(204).end();
+    }
+    res.writeHead(405).end();
+  });
+});
+
+const rig = new MirrorRig(
+  waitingComposerPort,
+  'e2e-wc',
+  {
+    MUSTER_FOCUS_INTERVAL: '0',
+    MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x5c).toString('base64'),
+    MUSTER_CONNECT_PORT: String(waitingComposerConnectPort),
+    MUSTER_AGENT_CONNECT_URL: connectURL,
+    MUSTER_PUBLIC_URL: `http://localhost:${waitingComposerPort}`,
+    MUSTER_S3_ENDPOINT: `http://127.0.0.1:${waitingComposerS3Port}`,
+    MUSTER_S3_BUCKET: 'muster-e2e',
+    MUSTER_S3_ACCESS_KEY: ACCESS,
+    MUSTER_S3_SECRET_KEY: 'e2e-wc-s3-secret-not-real',
+    MUSTER_UPLOAD_SIGNING_KEY: 'e2e-wc-upload-signing-key-not-a-real-one-0123456789',
+  },
+  { decimalHost: true },
+);
+const origin = rig.origin;
+// The windows: plum is the page's own session (never a palette result), kiwi
+// another one that waits on nothing.
+const WINDOWS: [string, string][] = [
+  ['plum', '@1'],
+  ['kiwi', '@2'],
+];
+const viewOf = (s: string) => `${origin}${rig.viewPath(s)}&window=${encodeURIComponent(WINDOWS.find((w) => w[0] === s)![1])}`;
+let askerMade = false;
+
+const fix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+
+test.beforeAll(async () => {
+  test.setTimeout(240_000);
+  await new Promise<void>((r) => s3.listen(waitingComposerS3Port, '127.0.0.1', () => r()));
+  await rig.start();
+  const now = Math.floor(Date.now() / 1000);
+  const lines = WINDOWS.map(([s, w], i) => `${s}|${w}|1|1|claude|${now - 60 * (i + 1)}|${rig.transcript(cc.prompt(`the prompt of ${s}`) + cc.reply(`Answered in ${s}.`), 'w' + i)}`);
+  await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: rig.transcript(lines.join('\n') + '\n', 'windows'), MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  fix('agent', '1', ASKER, ASKER_TOKEN);
+  askerMade = true;
+  mkchat(QUIET, [{ role: 'user', content: 'hello' }]);
+});
+
+test.afterAll(async () => {
+  try {
+    mkchat(QUIET, null);
+    if (askerMade) fix('cleanup', '1', ASKER);
+  } finally {
+    await rig.stop();
+    await new Promise((r) => s3.close(r));
+  }
+});
+
+async function mcp(name: string, args: Record<string, unknown>): Promise<string> {
+  const r = await fetch(connectURL + '/mcp', {
+    method: 'POST',
+    headers: { 'X-Muster-Token': ASKER_TOKEN, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  expect(r.status, 'the /mcp door answered').toBe(200);
+  const j = (await r.json()) as { result?: { content: { text: string }[]; isError?: boolean }; error?: unknown };
+  expect(j.error, JSON.stringify(j.error)).toBeUndefined();
+  expect(j.result!.isError, j.result!.content[0].text).toBeFalsy();
+  return j.result!.content[0].text;
+}
+
+// ask raises an open ask from ASKER (the agent then waits on the operator).
+async function ask(question: string): Promise<number> {
+  const id = (JSON.parse(await mcp('attention_ask', { question, options: ['yes', 'no'] })) as { id: number }).id;
+  expect(id).toBeGreaterThan(0);
+  return id;
+}
+
+// answer answers it the operator's way: the Asks page, its option tapped — in a
+// page of its own, so the page under test sees the change arrive.
+async function answer(page: Page, id: number) {
+  const other = await page.context().newPage();
+  await other.goto(origin + '/attention');
+  await Promise.all([other.waitForURL(origin + '/attention'), other.locator(`#ask-${id}`).getByRole('button', { name: 'no' }).click()]);
+  await expect(other.locator(`#ask-${id}`)).toHaveCount(0);
+  await other.close();
+}
+
+// waitingRows is how many of the sidebar's rows are marked waiting, as the
+// server draws them now (GET /ui/nav/agents): what the badge must count.
+async function waitingRows(page: Page): Promise<number> {
+  const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
+  return (html.match(/data-nav-wait=""/g) || []).length;
+}
+
+// The sidebar's mark for ASKER, as the server draws it on its row.
+async function askerRowMark(page: Page): Promise<string> {
+  const html = await (await page.request.get(origin + '/ui/nav/agents')).text();
+  const row = html.slice(html.indexOf(`href="/agents/${ASKER}`));
+  const m = row.slice(0, row.indexOf('</a>')).match(/<span data-nav-attention=""[\s\S]*?<\/span><\/span>/);
+  return m ? m[0] : '';
+}
+
+const menuBtn = (page: Page) => page.locator('#sidebar-open');
+const badge = (page: Page) => page.locator('#nav-waiting-badge');
+
+async function noSidewaysScroll(page: Page, w: number) {
+  const sw = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(sw, 'no horizontal overflow').toBeLessThanOrEqual(w);
+}
+
+for (const vp of [
+  { name: 'phone 390×844', w: 390, phone: true, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1440×900', w: 1440, phone: false, use: { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(vp.name, () => {
+    test.use(vp.use);
+    const tap = async (page: Page, sel: string) => (vp.phone ? page.locator(sel).tap() : page.locator(sel).click());
+
+    test('the ☰ badge counts what waits: shown when an ask arrives, gone when it is answered, live', async ({ page }) => {
+      test.setTimeout(120_000);
+      await rig.login(page);
+      await rig.waitListed(page, 'kiwi');
+      const base = await waitingRows(page);
+      // A page whose ☰ is on screen at this size: the shell on a phone (the
+      // rail is a drawer there), the Rendered view on a desktop (its sidebar is
+      // an overlay at every width).
+      await page.goto(vp.phone ? origin + '/tasks' : viewOf('plum'));
+      await expect(menuBtn(page)).toBeVisible();
+      const box = (await menuBtn(page).boundingBox())!;
+      expect(box.width, 'the ☰ is a 44px target').toBeGreaterThanOrEqual(44);
+      expect(box.height, 'the ☰ is a 44px target').toBeGreaterThanOrEqual(44);
+      await expect(badge(page)).toHaveAttribute('data-count', String(base));
+      if (base === 0) await expect(badge(page), 'nothing waits: no badge').toBeHidden();
+
+      const id = await ask(`Ship the ${stamp} build?`);
+      expect(await waitingRows(page), 'POSITIVE CONTROL: the sidebar marks one more row waiting').toBe(base + 1);
+      if (vp.phone) {
+        // The shell holds the /events stream: the badge follows it, no reload.
+        await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
+      } else {
+        // The Rendered view holds no stream: on its next load.
+        await page.reload();
+        await expect(badge(page)).toHaveAttribute('data-count', String(base + 1), { timeout: 15_000 });
+      }
+      await expect(badge(page)).toBeVisible();
+      // On the button's corner, inside the screen.
+      const b = (await badge(page).boundingBox())!;
+      const m = (await menuBtn(page).boundingBox())!;
+      expect(b.x + b.width, 'the badge is on the ☰').toBeLessThanOrEqual(m.x + m.width + 1);
+      expect(b.y).toBeGreaterThanOrEqual(m.y - 1);
+      await expect(menuBtn(page), 'the badge describes the button').toHaveAccessibleDescription(`${base + 1} waiting on you`);
+      await noSidewaysScroll(page, vp.w);
+
+      await answer(page, id);
+      expect(await waitingRows(page)).toBe(base);
+      if (vp.phone) {
+        await expect(badge(page), 'answered: the badge follows, live').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
+      } else {
+        // Opening the sidebar refreshes it (with the rows it opens on).
+        await tap(page, '#sidebar-open');
+        await expect(badge(page), 'answered: the open refreshes it').toHaveAttribute('data-count', String(base), { timeout: 15_000 });
+      }
+      if (base === 0) await expect(badge(page)).toBeHidden();
+    });
+
+    test('the Rendered view’s ⋯ is after Send, the row’s last control', async ({ page }) => {
+      test.setTimeout(90_000);
+      await rig.login(page);
+      await rig.waitListed(page, 'kiwi');
+      await page.goto(viewOf('plum'));
+      await expect(page.locator('#mv-compose')).toBeVisible();
+      const order = await page.evaluate(() => {
+        const form = document.getElementById('mv-form')!;
+        const ctl = Array.from(form.querySelectorAll('button, a')).filter((e) => (e as HTMLElement).getClientRects().length > 0 && !e.closest('[popover]'));
+        return ctl.map((e) => e.id || e.getAttribute('aria-label'));
+      });
+      const send = order.indexOf('mv-send'), more = order.indexOf('switcher-more-btn');
+      expect(send, `Send is in the row: ${order}`).toBeGreaterThanOrEqual(0);
+      expect(more, `the ⋯ is after Send, last: ${order}`).toBe(order.length - 1);
+      expect(more).toBeGreaterThan(send);
+      // On screen, too: right of Send, inside the screen.
+      const s = (await page.locator('#mv-send').boundingBox())!;
+      const d = (await page.locator('#switcher-more-btn').boundingBox())!;
+      expect(d.x, 'the ⋯ is drawn right of Send').toBeGreaterThanOrEqual(s.x + s.width);
+      expect(d.x + d.width).toBeLessThanOrEqual(vp.w);
+      expect(d.width).toBeGreaterThanOrEqual(44);
+      expect(d.height).toBeGreaterThanOrEqual(44);
+      await noSidewaysScroll(page, vp.w);
+      // It still opens its menu.
+      await tap(page, '#switcher-more-btn');
+      await expect(page.locator('#switcher-more')).toBeVisible();
+    });
+
+    test('the palette marks a waiting session with the sidebar’s mark, and no other', async ({ page }) => {
+      test.setTimeout(120_000);
+      await rig.login(page);
+      await rig.waitListed(page, 'kiwi');
+      const id = await ask(`Rotate the ${stamp} key?`);
+      try {
+        const want = await askerRowMark(page);
+        expect(want, 'POSITIVE CONTROL: the sidebar draws the asker’s mark').toContain('data-kind="ask"');
+        await page.goto(viewOf('plum'));
+        await tap(page, '#switcher-search-open');
+        await expect(page.locator('#switcher-search')).toBeVisible();
+        const opts = page.locator('#switcher-search-results [role="option"]');
+        const row = (href: string) => page.locator(`#switcher-search-results [role="option"][data-href^="${href}"]`);
+        const asker = row(`/agents/${ASKER}`);
+        const quiet = row(`/agents/${QUIET}`);
+        const kiwi = opts.filter({ hasText: 'kiwi' });
+        await expect(asker).toHaveCount(1);
+        await expect(quiet).toHaveCount(1);
+        await expect(kiwi).toHaveCount(1);
+        // The waiting one: the sidebar's own mark, byte for byte.
+        await expect(asker.locator('[data-palette-wait] [data-nav-attention][data-kind="ask"]')).toBeVisible();
+        // (Both as the browser serialises them: the server escapes ' as &#39;.)
+        const parsed = await page.evaluate((w) => { const t = document.createElement('template'); t.innerHTML = w; return t.innerHTML; }, want);
+        expect(await asker.locator('[data-palette-wait]').innerHTML()).toBe(parsed);
+        // The others: none.
+        await expect(quiet.locator('[data-palette-wait]')).toHaveCount(0);
+        await expect(kiwi.locator('[data-palette-wait]')).toHaveCount(0);
+        // The label is still the row's first line, and the mark inside the box.
+        expect(await asker.evaluate((li) => (li.firstElementChild as HTMLElement).textContent)).toBe(ASKER);
+        const r = (await asker.boundingBox())!;
+        const k = (await asker.locator('[data-palette-wait]').boundingBox())!;
+        expect(k.x + k.width).toBeLessThanOrEqual(r.x + r.width);
+        await noSidewaysScroll(page, vp.w);
+      } finally {
+        await answer(page, id);
+      }
+    });
+
+    test('the paperclip is on screen with the box at rest; a tap opens the file chooser without focusing the box', async ({ page }) => {
+      test.setTimeout(90_000);
+      await rig.login(page);
+      await rig.waitListed(page, 'kiwi');
+      await page.goto(viewOf('plum'));
+      const input = page.locator('#mv-input');
+      const clip = page.locator('#mv-attach');
+      await expect(input).toHaveCount(1);
+      if (vp.phone) {
+        // At rest on a touch screen the box is collapsed behind "Type a message".
+        await expect(page.locator('#mv-text')).toBeVisible();
+        await expect(input).toBeHidden();
+        const c = (await clip.boundingBox())!;
+        expect(c.width, 'a 44px target at rest').toBeGreaterThanOrEqual(44);
+        expect(c.height, 'a 44px target at rest').toBeGreaterThanOrEqual(44);
+      }
+      await expect(clip, 'the paperclip is on screen without opening the box').toBeVisible();
+      await expect(input).not.toBeFocused();
+      const uploads: string[] = [];
+      page.on('request', (r) => {
+        if (r.method() === 'POST' && new URL(r.url()).pathname === '/uploads') uploads.push(r.url());
+      });
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap(page, '#mv-attach')]);
+      expect(chooser.isMultiple()).toBe(true);
+      await expect(input, 'the tap does not focus the box (no keyboard)').not.toBeFocused();
+      if (vp.phone) await expect(input, 'the box stays collapsed').toBeHidden();
+      await chooser.setFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('attached at rest') });
+      const chip = page.locator('#mv-attachments [data-attachment-chip]');
+      await expect(chip).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+      expect(uploads, 'the same upload path').toHaveLength(1);
+      await expect(input, 'attaching did not focus the box either').not.toBeFocused();
+      await noSidewaysScroll(page, vp.w);
+    });
+  });
+}
