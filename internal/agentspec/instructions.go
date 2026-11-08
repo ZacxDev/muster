@@ -495,6 +495,10 @@ message replaces your pending one. Some messages cannot be answered — their tu
 says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
+Settle a message as needing nothing when nothing in it needs your owner: a status post
+that reports no change, a review round that is clean or has only low-severity
+findings, an automated report. Filing a gated task and asking your owner is only for
+something they must decide or act on.
 
 Feedback and incoming tasks: route first. Before you file feedback, or decide what
 happens to a task event, look for the live session already on it: the block headed
@@ -594,6 +598,16 @@ nothing after it, and wait for their answer.
 
 `
 
+// chiefOwnerLanguage is the language the chief writes to its owner in, for
+// every runtime and model: a model that drifts into another language (measured:
+// a replay on a non-Claude model answered its owner in Chinese) is told once,
+// plainly.
+const chiefOwnerLanguage = `## Writing to your owner
+Always write to your owner in English, whatever language a message, a tool result or
+anything else you read is in.
+
+`
+
 // ChiefInstructions is the always-in-context guidance for the SUPERVISOR agent:
 // the one agent with no task and no repository, whose job is answering the
 // operator about state.
@@ -618,13 +632,13 @@ func ChiefInstructions(cairn, plugins bool) string {
 	// a single newline and chiefLiveReads on a blank line, hence the two spellings.
 	switch {
 	case cairn && plugins:
-		return chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection + "\n" + chiefPluginSection
+		return chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefCairnSection + "\n" + chiefPluginSection
 	case cairn:
-		return chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection
+		return chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefCairnSection
 	case plugins:
-		return chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefPluginSection
+		return chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefPluginSection
 	default:
-		return chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection
+		return chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage
 	}
 }
 
@@ -751,6 +765,10 @@ message replaces your pending one. Some messages cannot be answered — their tu
 says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
+Settle a message as needing nothing when nothing in it needs your owner: a status post
+that reports no change, a review round that is clean or has only low-severity
+findings, an automated report. Filing a gated task and asking your owner is only for
+something they must decide or act on.
 
 Feedback and incoming tasks: route first. Before you file feedback, or decide what
 happens to a task event, look for the live session already on it: the block headed
@@ -822,7 +840,7 @@ to in this chat.
 // The caller must also have checked [Config.ClaudeCodeMCPOffered]: every tool
 // this prose names is an MCP tool.
 func ChiefInstructionsClaudeCode(plugins, routing bool) string {
-	out := chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode
+	out := chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefHQSectionClaudeCode
 	if plugins {
 		out += chiefPluginSectionClaudeCode
 	}
@@ -921,7 +939,7 @@ func joinOr(items []string) string {
 // TestTheComposeChiefIsToldExactlyItsTools pins that relationship.
 func ChiefInstructionsCompose(plugins, routing bool) string {
 	tools := ComposeChiefTools(routing)
-	out := chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(tools)
+	out := chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefComposeToolsSection(tools)
 	if plugins {
 		out += chiefComposePluginSection(tools)
 	}
