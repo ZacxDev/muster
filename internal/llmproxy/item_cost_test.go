@@ -103,6 +103,52 @@ func TestAnItemsCostIsNotChargedARequestAdmittedUnderAnotherHold(t *testing.T) {
 	}
 }
 
+// TestAnItemsCostIsUnknownWhileARequestUnderItIsInFlight: instance 1 holds
+// item-a; request 1 (0.0107) is booked, and request 2 (0.4993), admitted
+// under item-a, is still streaming. Read now, the cost is UNKNOWN — not the
+// 0.0107 booked so far, which officer_complete would send as the item's
+// whole cost and HQ would store as known. Once request 2 is booked, it is
+// known: 0.51.
+func TestAnItemsCostIsUnknownWhileARequestUnderItIsInFlight(t *testing.T) {
+	const officer = "items:cost-inflight"
+	midStream, release := make(chan struct{}), make(chan struct{})
+	r := newRig(t, officer, func(w http.ResponseWriter, _ *http.Request, n int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		cost := 0.0107
+		if n == 2 {
+			cost = 0.4993
+		}
+		events := streamEvents(cost)
+		for i, e := range events {
+			_, _ = io.WriteString(w, e)
+			w.(http.Flusher).Flush()
+			if n == 2 && i == 0 { // message_start sent: the request is in flight
+				close(midStream)
+				<-release
+			}
+		}
+	})
+	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+		t.Fatalf("request 1: %d %s", resp.StatusCode, body)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.post(t)
+	}()
+	<-midStream
+	got, ok := r.p.ItemCost(officer, 1, "item-a")
+	close(release)
+	<-done
+	if ok {
+		t.Errorf("with request 2 in flight: cost %v reported known, want unknown (request 2 is not booked yet)", got)
+	}
+	if got, ok := r.p.ItemCost(officer, 1, "item-a"); !ok || !near(got, 0.51) {
+		t.Errorf("after request 2 is booked: cost %v (known %v), want 0.51", got, ok)
+	}
+}
+
 // TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt: each case is a hold
 // whose booked requests are not provably the item's whole proxy spend — so
 // its cost is unknown, never 0 and never the partial sum.
@@ -166,7 +212,6 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 	if got, ok := est.p.ItemCost(officer, 1, "item-estimated"); ok {
 		t.Errorf("a hold with a request booked from the estimate: cost %v reported known, want unknown", got)
 	}
-
 	// The positive control, with the same requests: a first claim, metered
 	// whole, is known — and stays known through muster's already-yours
 	// re-claim of the item it holds (no new HQ claim, attempts unknown).
