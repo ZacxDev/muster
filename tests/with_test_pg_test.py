@@ -51,6 +51,15 @@ def pids_with_marker(marker: str) -> list[int]:
     return found
 
 
+# The helper's ports must stay clear of Kubernetes' NodePort range
+# (30000-32767): a test Postgres there collides with a node's services.
+PORT_LO, PORT_HI = 40000, 59999
+
+
+def assert_port_in_range(tc: unittest.TestCase, port: int) -> None:
+    tc.assertTrue(PORT_LO <= port <= PORT_HI, f"port {port} outside {PORT_LO}-{PORT_HI}")
+
+
 def port_open(port: int) -> bool:
     with socket.socket() as s:
         s.settimeout(1)
@@ -87,6 +96,7 @@ class WithTestPg(unittest.TestCase):
             'psql "$MUSTER_TEST_DATABASE_URL" -tAc "select current_database()" >> ' + str(report))
         self.assertEqual(p.returncode, 0, p.stderr)
         port, require, existed, db = report.read_text().split()
+        assert_port_in_range(self, int(port))
         self.assertEqual(require, "1")
         self.assertTrue(existed.startswith(self.tmp), "positive control: the temp dir existed during the run")
         self.assertEqual(db, "muster_test")
@@ -98,6 +108,7 @@ class WithTestPg(unittest.TestCase):
         p = self.run_helper(f'echo "$MUSTER_TEST_PG_PORT" > {report}; ls -d "$TMPDIR"/muster-test-pg.* >> {report}; exit 7')
         self.assertEqual(p.returncode, 7, p.stderr)
         port, existed = report.read_text().split()
+        assert_port_in_range(self, int(port))
         self.assertTrue(existed.startswith(self.tmp), "positive control")
         self.assertEqual(self.leftovers(), [])
         self.assertFalse(port_open(int(port)))
@@ -116,6 +127,7 @@ class WithTestPg(unittest.TestCase):
                 self.assertLess(time.monotonic(), deadline, "command never started")
                 time.sleep(0.2)
             port = int(ready.read_text())
+            assert_port_in_range(self, port)
             self.assertTrue(port_open(port), "positive control: Postgres was listening before the signal")
             self.assertEqual(len(self.leftovers()), 1, "positive control: one temp dir before the signal")
             t0 = time.monotonic()
