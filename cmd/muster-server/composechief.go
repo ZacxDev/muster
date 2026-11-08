@@ -102,10 +102,14 @@ func (c *config) applyComposeChief(getenv func(string) string) error {
 	c.ChiefLLMModel = strings.TrimSpace(getenv(envChiefLLMModel))
 	switch c.ChiefRuntime {
 	case "":
-		if c.ChiefSpecDir != "" || c.ChiefClaudeToken != "" || c.ChiefLLMModel != "" {
+		if c.ChiefSpecDir != "" || c.ChiefClaudeToken != "" || (c.ChiefLLMModel != "" && !c.chiefLLMOptIn()) {
 			return fmt.Errorf("%s, %s or %s is set but %s is not %s: they configure the chief's Compose "+
-				"container and nothing else would read them. Set %s=%s, or unset them",
-				envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel, envChiefRuntime, chiefRuntimeCompose, envChiefRuntime, chiefRuntimeCompose)
+				"container and nothing else would read them (%s is also read with %s=%s). Set %s=%s, or unset them",
+				envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel, envChiefRuntime, chiefRuntimeCompose,
+				envChiefLLMModel, envChiefLLM, chiefLLMOpenRouter, envChiefRuntime, chiefRuntimeCompose)
+		}
+		if c.chiefLLMOptIn() && c.ChiefLLMModel == "" {
+			c.ChiefLLMModel = api.DefaultChiefLLMModel
 		}
 		return nil
 	case chiefRuntimeCompose:

@@ -14,7 +14,8 @@ import (
 // ---------------------------------------------------------------------------
 // THE CHIEF ON THE LLM PROXY
 //
-// The compose install's chief is a claude-code agent; when it runs on
+// The compose install's chief, or a Kubernetes deployment's admin chief with
+// MUSTER_CHIEF_LLM=openrouter, is a claude-code agent; when it runs on
 // OpenRouter rather than a Claude subscription, its Claude Code points
 // ANTHROPIC_BASE_URL at $MUSTER_CONNECT_URL/llm exactly as an officer's routine
 // instance does, and POST /llm/v1/messages admits it here.
@@ -22,8 +23,8 @@ import (
 // It is admitted exactly when EnableChiefLLM was called, the calling agent is
 // not a routine officer instance but its owner's chief (agentIsChief:
 // chiefPredicate on the agent's current row; a failed read is a 503),
-// that owner is the admin (authz.OperatorUserID — the compose runtime runs one
-// chief, the admin's), and that chief is ON (chiefActing, the gate the
+// that owner is the admin (ChiefLLMOwner — the compose runtime runs one
+// chief, the admin's, and the key is the admin's), and that chief is ON (chiefActing, the gate the
 // chief-only tools use). The agent authenticates as every caller of the route
 // does (requireConnectorAgent: its own token; the shared hook and service
 // tokens refused). On Compose (Extensions.ComposeChief set) it is admitted
@@ -121,11 +122,17 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	return nil
 }
 
+// ChiefLLMOwner reports whether owner's chief may be served by the LLM proxy:
+// the admin's alone (the key is the admin's). The spec builder's rule on
+// Kubernetes (cmd/muster-server chiefllm.go) asks this same predicate, so no
+// chief is put on the route that the proxy would refuse.
+func ChiefLLMOwner(owner int64) bool { return owner == authz.OperatorUserID }
+
 // serveChiefLLM is POST /llm/v1/messages for agent a, which agentIsChief has
 // called its owner's chief (serveLLMMessages).
 func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.Agent) {
 	ctx := r.Context()
-	if agentOwnerID(a) != authz.OperatorUserID {
+	if !ChiefLLMOwner(agentOwnerID(a)) {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "not_admin").Inc()
 		s.logger.Printf("llm proxy: refused agent %d (%q): a chief, but not the admin's", a.ID, a.Name)
 		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", chiefNotAdminRefusal)

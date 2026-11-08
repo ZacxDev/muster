@@ -360,15 +360,16 @@ type Config struct {
 	// point it at a local directory (file://…/).
 	AnonymousGitBase string
 
-	// ComposeChiefRoute is set on the docker compose install's chief runtime
-	// (cmd/muster-server composechief.go) and nowhere else. For the chief (the
-	// reserved slug) it answers whether the chief runs on the LLM route — its
-	// owner's OpenRouter key through muster's proxy — instead of the Claude
-	// subscription token its account holds, or an error naming what to add.
-	// It is the same rule the api's Account page and refusal read
-	// (api.ComposeChief.Credential), so the two cannot disagree. nil: every
-	// agent's credential comes from Credentials, as before.
-	ComposeChiefRoute func(ctx context.Context, owner int64) (route bool, err error)
+	// ChiefLLMRoute is set when a chief may run on the LLM route
+	// (cmd/muster-server chiefllm.go: the docker compose install's chief
+	// runtime, or MUSTER_CHIEF_LLM=openrouter on Kubernetes). For a claude-code
+	// chief (the reserved slug) it answers whether the chief runs on the LLM
+	// route — the server's OpenRouter key through muster's proxy — instead of
+	// the Claude subscription token its account holds, or an error naming what
+	// to add. On Compose it is the same rule the api's Account page and refusal
+	// read (api.ComposeChief.Credential), so the two cannot disagree. nil:
+	// every agent's credential comes from Credentials, as before.
+	ChiefLLMRoute func(ctx context.Context, owner int64) (route bool, err error)
 }
 
 // CredentialResolver answers which credentials an OWNER's agent is built with.
@@ -405,7 +406,7 @@ type Adapter struct {
 	kickoffDeliverable bool
 	creds              CredentialResolver
 	anonGitBase        string
-	composeRoute       func(ctx context.Context, owner int64) (bool, error)
+	chiefRoute         func(ctx context.Context, owner int64) (bool, error)
 	// githubGrant answers whether an agent holds an approved grant reaching
 	// GitHub (connectors.GitHubGrantLookup); set by UseGitHubGrants. nil is
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
@@ -521,7 +522,7 @@ func New(cfg Config) (*Adapter, error) {
 		kickoffDeliverable: cfg.KickoffDeliverable,
 		creds:              cfg.Credentials,
 		anonGitBase:        cfg.AnonymousGitBase,
-		composeRoute:       cfg.ComposeChiefRoute,
+		chiefRoute:         cfg.ChiefLLMRoute,
 	}
 	if a.anonGitBase == "" {
 		a.anonGitBase = DefaultAnonymousGitBase
@@ -1200,7 +1201,7 @@ func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (age
 // note defending a form that carries no invariant is worse than no note: it sends
 // the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spec, error) {
-	route, err := a.composeChiefRoute(ctx, ag)
+	route, err := a.chiefLLMRoute(ctx, ag)
 	if err != nil {
 		return provision.Spec{}, err
 	}
@@ -1281,13 +1282,13 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, LLMRoute: route}})
 }
 
-// composeChiefRoute is Config.ComposeChiefRoute for ag: false for every agent
+// chiefLLMRoute is Config.ChiefLLMRoute for ag: false for every agent
 // but a claude-code chief on a server that set it.
-func (a *Adapter) composeChiefRoute(ctx context.Context, ag agents.Agent) (bool, error) {
-	if a.composeRoute == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
+func (a *Adapter) chiefLLMRoute(ctx context.Context, ag agents.Agent) (bool, error) {
+	if a.chiefRoute == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
 		return false, nil
 	}
-	route, err := a.composeRoute(ctx, ag.OwnerID)
+	route, err := a.chiefRoute(ctx, ag.OwnerID)
 	if err != nil {
 		return false, fmt.Errorf("agentprovision: chief %q: %w", ag.Name, err)
 	}
@@ -1318,7 +1319,7 @@ func (a *Adapter) specFor(ctx context.Context, ag agents.Agent, route bool) (age
 			return cfg, nil // agentspec refuses this row, naming why
 		}
 		// A chief on the LLM route places no subscription token (the Compose
-		// chief without one, composeChiefRoute): its account has none to look up.
+		// chief without one, or MUSTER_CHIEF_LLM=openrouter; chiefLLMRoute): its account has none to look up.
 		if route {
 			return cfg, nil
 		}
