@@ -75,6 +75,12 @@ func realLaunchDeps(getenv func(string) string) launchDeps {
 // launchArgs is the launcher's parsed arguments.
 type launchArgs struct {
 	session, prompt, logLevel, server, dir string
+	// bin is --opencode-bin: the absolute opencode binary the HOST SPAWN
+	// checked (internal/mirrorhost agentspawn_opencode.go). Given, the
+	// launcher execs exactly it — never a PATH lookup — and refuses, rather
+	// than starts, a TUI whose version it cannot read or that differs from
+	// the service's. The launcher's own flag: never passed on to opencode.
+	bin string
 	auto, cont, standalone, printLogs      bool
 }
 
@@ -105,6 +111,8 @@ func parseLaunchArgs(args []string) (launchArgs, error) {
 			a.logLevel, err = value(&i, name, inline, has)
 		case name == "--server":
 			a.server, err = value(&i, name, inline, has)
+		case name == "--opencode-bin":
+			a.bin, err = value(&i, name, inline, has)
 		case arg == "--auto":
 			a.auto = true
 		case arg == "-c" || arg == "--continue":
@@ -114,7 +122,7 @@ func parseLaunchArgs(args []string) (launchArgs, error) {
 		case arg == "--print-logs":
 			a.printLogs = true
 		case strings.HasPrefix(arg, "-"):
-			return a, fmt.Errorf("unknown flag %q (the launcher passes on only -s/--session, --prompt, --auto, -c/--continue, --standalone, --server, --log-level, --print-logs)", arg)
+			return a, fmt.Errorf("unknown flag %q (the launcher passes on only -s/--session, --prompt, --auto, -c/--continue, --standalone, --server, --log-level, --print-logs; --opencode-bin is its own)", arg)
 		case openCodeSubcommandNames[arg]:
 			return a, fmt.Errorf("%q is an opencode subcommand, not the TUI: run `opencode %s` itself", arg, arg)
 		case a.dir != "":
@@ -173,15 +181,9 @@ func (a launchArgs) argv(session string) []string {
 	return out
 }
 
-// normalizeOpenCodeVersion is v without "opencode " and a leading "v":
-// `opencode --version` says "opencode v2.0.32+6ec5682", GET /api/info
-// "2.0.32+6ec5682" (both measured on that build).
-func normalizeOpenCodeVersion(v string) string {
-	v = strings.TrimSpace(v)
-	v = strings.TrimPrefix(v, "opencode")
-	v = strings.TrimSpace(v)
-	return strings.TrimPrefix(v, "v")
-}
+// normalizeOpenCodeVersion is opencodehost.NormalizeVersion: the ONE rule the
+// launcher and the host spawn compare versions by.
+func normalizeOpenCodeVersion(v string) string { return opencodehost.NormalizeVersion(v) }
 
 // errVersionMismatch is the launcher's refusal of a mismatched TUI.
 var errVersionMismatch = errors.New("opencode version mismatch")
@@ -200,8 +202,18 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "muster-mirror opencode: %v\n", err)
 		return 2
 	}
-	bin, err := d.lookPath("opencode")
-	if err != nil {
+	// 🔴 A HOST SPAWN NAMES THE BINARY IT CHECKED (--opencode-bin): exactly
+	// that one runs, so the version the host compared is the version that
+	// starts. Otherwise opencode on PATH.
+	strict := a.bin != ""
+	var bin string
+	if strict {
+		if !filepath.IsAbs(a.bin) {
+			fmt.Fprintf(stderr, "muster-mirror opencode: --opencode-bin %q is not an absolute path\n", a.bin)
+			return 2
+		}
+		bin = a.bin
+	} else if bin, err = d.lookPath("opencode"); err != nil {
 		fmt.Fprintf(stderr, "muster-mirror opencode: no opencode on PATH: %v\n", err)
 		return 1
 	}
@@ -224,9 +236,16 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 			service, serviceErr = cl.Info(ctx)
 		}
 	}
+	if strict && serviceErr != nil {
+		fmt.Fprintf(stderr, "muster-mirror opencode: refused: started for a host spawn, and the opencode service's version cannot be read (%v)\n", serviceErr)
+		return 1
+	}
 	if serviceErr == nil {
 		tuiOut, err := d.version(bin)
 		switch {
+		case err != nil && strict:
+			fmt.Fprintf(stderr, "muster-mirror opencode: refused: started for a host spawn, and `%s --version` failed (%v)\n", bin, err)
+			return 1
 		case err != nil:
 			fmt.Fprintf(stderr, "muster-mirror opencode: warning: `opencode --version` failed (%v), so its version could not be checked against the running service's (%s); starting it anyway\n",
 				err, normalizeOpenCodeVersion(service))
@@ -264,7 +283,7 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 	switch {
 	case session == "":
 		session = opencodehost.NewSessionID(d.now())
-		if _, err := cl.CreateSession(ctx, session, dir); err != nil {
+		if _, err := cl.CreateSession(ctx, session, dir, nil); err != nil {
 			return unbound("the session could not be created: " + err.Error())
 		}
 	case !opencodehost.ValidSessionID(session):
@@ -275,7 +294,7 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 		switch {
 		case errors.Is(err, opencodehost.ErrSessionNotFound):
 			// opencode's own -s creates a session that does not exist.
-			if _, err := cl.CreateSession(ctx, session, dir); err != nil {
+			if _, err := cl.CreateSession(ctx, session, dir, nil); err != nil {
 				return unbound("the session could not be created: " + err.Error())
 			}
 		case err != nil:

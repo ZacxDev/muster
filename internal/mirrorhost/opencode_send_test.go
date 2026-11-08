@@ -401,7 +401,7 @@ func TestASessionCreatedAfterTheStreamOpenedTakesASendAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cl.CreateSession(context.Background(), "ses_fixtureS", "/srv/fixture"); err != nil {
+	if _, err := cl.CreateSession(context.Background(), "ses_fixtureS", "/srv/fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := opencodehost.WriteLaunch(dir, launchRecord(srv, "%7", 70, "100", "ses_fixtureS")); err != nil {

@@ -85,17 +85,36 @@ func (c *Client) prompt(ctx context.Context, path string, body, out any) error {
 	return c.postJSON(req, body, out)
 }
 
+// ModelRef is opencode's Model.Ref (packages/schema/src/model.ts at
+// 6ec5682): a model by its provider and its id within that provider.
+type ModelRef struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+}
+
 // CreateSession creates a root session with id in directory (an absolute
-// path). 🔴 ONE OF THE PACKAGE'S WRITES (ledger_test.go): only the launcher
-// (`muster-mirror opencode`) calls it. It runs nothing.
-func (c *Client) CreateSession(ctx context.Context, id, directory string) (Session, error) {
+// path), on model when it is not nil (the session's first turn runs on it:
+// measured on v2.0.32+6ec5682, an OpenRouter model's assistant messages name
+// it). 🔴 ONE OF THE PACKAGE'S WRITES (ledger_test.go). Its callers are the
+// launcher (`muster-mirror opencode`, no model) and the host spawn
+// (internal/mirrorhost, with one), and no other: a caller ledger pins the two.
+// It runs nothing. 🔴 opencode does NOT check the model (measured: an unknown
+// one is created all the same), so a caller checks it against Models first.
+func (c *Client) CreateSession(ctx context.Context, id, directory string, model *ModelRef) (Session, error) {
 	if !ValidSessionID(id) || !strings.HasPrefix(directory, "/") {
 		return Session{}, fmt.Errorf("%w: not an opencode session id and an absolute directory", ErrPromptRefused)
+	}
+	if model != nil && (model.ID == "" || model.ProviderID == "") {
+		return Session{}, fmt.Errorf("%w: a model names its provider and its id", ErrPromptRefused)
 	}
 	var out struct {
 		Data Session `json:"data"`
 	}
-	if err := c.createSession(ctx, map[string]any{"id": id, "location": map[string]string{"directory": directory}}, &out); err != nil {
+	body := map[string]any{"id": id, "location": map[string]string{"directory": directory}}
+	if model != nil {
+		body["model"] = *model
+	}
+	if err := c.createSession(ctx, body, &out); err != nil {
 		return Session{}, err
 	}
 	if out.Data.ID != id {
@@ -110,6 +129,65 @@ func (c *Client) createSession(ctx context.Context, body, out any) error {
 		return err
 	}
 	return c.postJSON(req, body, out)
+}
+
+// RemoveSession deletes session id (DELETE /api/session/{id}, session.remove):
+// measured, 204, then 404 for the same id again, which is reported as
+// ErrSessionNotFound. 🔴 ONE OF THE PACKAGE'S WRITES (ledger_test.go): only
+// the host spawn calls it, for the session IT created when the spawn fails
+// before its first prompt — nothing has run in it.
+func (c *Client) RemoveSession(ctx context.Context, id string) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("%q is not an opencode session id", id)
+	}
+	return c.removeSession(ctx, "/api/session/"+url.PathEscape(id))
+}
+
+func (c *Client) removeSession(ctx context.Context, path string) error {
+	req, err := c.request(ctx, http.MethodDelete, path, nil, false)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	c.observed(req, resp, err)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusNotFound:
+		return ErrSessionNotFound
+	}
+	return fmt.Errorf("opencode DELETE %s: HTTP %d", req.URL.Path, resp.StatusCode)
+}
+
+// Model is one model the server lists (GET /api/model, Model.Info), as much
+// of it as muster reads.
+type Model struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+	Status     string `json:"status,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+}
+
+// Models is GET /api/model: every model the server can run now. ⚠ Upstream
+// calls the answer a snapshot that "may precede initial plugin settlement";
+// measured on v2.0.32+6ec5682 (three restarts), the first answer after a
+// restart already listed every OpenRouter model, and a server with no
+// OpenRouter credential lists none at all.
+func (c *Client) Models(ctx context.Context) ([]Model, error) {
+	var out struct {
+		Data []Model `json:"data"`
+	}
+	if err := c.get(ctx, "/api/model", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
 }
 
 // postJSON sends body as req's JSON body and decodes a 200's {data} into out.
