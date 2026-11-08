@@ -800,7 +800,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				"request, and the OpenRouter key muster attaches to it, goes there", cfg.LLMTestUpstream, envTestLLMUpstream)
 			upstream = cfg.LLMTestUpstream
 		}
-		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream}); err != nil {
+		// Off Compose the proxy asks the spec builder's own predicate over
+		// the same rule (chiefLLMRoute) on every request, so it serves exactly
+		// the chief whose pod is built on the route.
+		rule := chiefLLMRoute(cfg, plane)
+		routed := func(ctx context.Context, ag agents.Agent) (bool, error) {
+			return agentprovision.ChiefLLMRouted(ctx, ag, rule)
+		}
+		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream,
+			Routed: routed}); err != nil {
 			a.Close()
 			if cfg.chiefCompose() {
 				return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)

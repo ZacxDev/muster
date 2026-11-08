@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -79,14 +80,23 @@ type ChiefLLM struct {
 	// ""), and HTTP its transport: tests.
 	Upstream string
 	HTTP     *http.Client
+	// Routed is the spec builder's own predicate for whether an agent runs
+	// on the LLM route (agentprovision.ChiefLLMRouted over the server's
+	// rule). Off Compose it is asked on every request, and a chief it does
+	// not route — a gateway-kind chief, or a member's — is refused (403,
+	// nothing sent). nil there refuses every chief: the proxy never serves
+	// one no rule put on the route. On Compose the credential rule decides
+	// instead (ComposeChief.Credential).
+	Routed func(ctx context.Context, a agents.Agent) (bool, error)
 }
 
 // chiefLLMRuntime is the chief's proxy and its settings; nil on the Server
 // when EnableChiefLLM was never called.
 type chiefLLMRuntime struct {
-	px    *llmproxy.Proxy
-	model string
-	key   string
+	px     *llmproxy.Proxy
+	model  string
+	key    string
+	routed func(ctx context.Context, a agents.Agent) (bool, error)
 }
 
 // EnableChiefLLM puts the admin's chief on the LLM proxy. Call it after
@@ -111,7 +121,7 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	if err != nil {
 		return err
 	}
-	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, key: strings.TrimSpace(c.Key)}
+	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, key: strings.TrimSpace(c.Key), routed: c.Routed}
 	if s.chiefLLM.key == "" {
 		s.logger.Printf("chief llm: ON for the admin's chief (%s), but MUSTER_AGENT_OPENROUTER_KEY is empty: every request "+
 			"is refused until it is set", model)
@@ -152,6 +162,8 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 		if key, ok = s.composeChiefLLMKey(w, ctx, a); !ok {
 			return
 		}
+	} else if !s.chiefLLMRouted(w, ctx, a) {
+		return
 	}
 	if key == "" {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "no_key").Inc()
@@ -164,4 +176,35 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 	s.chiefLLM.px.ServeMessages(w, r, llmproxy.Caller{Officer: chiefLLMLabel, InstanceLabel: chiefLLMLabel,
 		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: key, Unbudgeted: true,
 		Title: "muster chief", KeyRemedy: chiefKeyRemedy})
+}
+
+// ChiefNotRoutedRefusal is the proxy's answer to a chief the route rule did
+// not put on the LLM route (off Compose): one that is not a claude-code chief.
+const ChiefNotRoutedRefusal = "this chief is not on the LLM route (only the admin's claude-code chief is, with " +
+	"MUSTER_CHIEF_LLM=openrouter): the LLM proxy does not serve it, and nothing was sent"
+
+// chiefLLMRouted asks ChiefLLM.Routed — the spec builder's predicate — whether
+// chief a is on the LLM route, writing the refusal when it is not (403, the
+// Compose subscription refusal's shape) or cannot be decided (503). ok is false
+// when the refusal was written.
+func (s *Server) chiefLLMRouted(w http.ResponseWriter, ctx context.Context, a agents.Agent) bool {
+	routed := false
+	var err error
+	if s.chiefLLM.routed != nil {
+		routed, err = s.chiefLLM.routed(ctx, a)
+	}
+	switch {
+	case err != nil:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "credential_error").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): deciding its route: %v (nothing sent)", a.ID, a.Name, err)
+		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "the chief's route could not be decided; nothing was sent")
+		return false
+	case !routed:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "not_routed").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q, kind %s): not on the LLM route (nothing sent)", a.ID, a.Name,
+			agents.ResolveKind(a.Kind))
+		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", ChiefNotRoutedRefusal)
+		return false
+	}
+	return true
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
@@ -50,11 +51,20 @@ func chiefK8sConfig(t *testing.T, llm string) config {
 // Secret its envFrom names.
 func chiefPod(t *testing.T, cfg config, owner int64) (env map[string]string, secretKeys map[string]string) {
 	t.Helper()
+	return chiefPodWith(t, cfg, owner, nil)
+}
+
+// chiefPodWith is chiefPod on credential plane plane (nil: the environment's).
+func chiefPodWith(t *testing.T, cfg config, owner int64, plane *credentials.Plane) (env map[string]string, secretKeys map[string]string) {
+	t.Helper()
 	client := fake.NewClientset()
 	k8sTestClient = client
 	t.Cleanup(func() { k8sTestClient = nil })
 	logger := log.New(&strings.Builder{}, "", 0)
-	pool, err := buildClaudePool(cfg, envPlane(t, cfg), memMarks{})
+	if plane == nil {
+		plane = envPlane(t, cfg)
+	}
+	pool, err := buildClaudePool(cfg, plane, memMarks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +75,7 @@ func chiefPod(t *testing.T, cfg config, owner int64) (env map[string]string, sec
 	store.agent.Kind, store.agent.CCAccount = agents.KindClaudeCode, "work"
 	store.agent.HooksToken, store.agent.GatewaySecret = "fixture-chief-hooks-token-91f3", "fixture-chief-turn-secret-0b5e"
 	store.agent.PendingNote = ""
-	prov, _, err := buildAgentPlaneWith(cfg, store, pool, nil, logger)
+	prov, _, err := buildAgentPlaneWith(cfg, store, pool, plane, logger)
 	if err != nil || prov == nil {
 		t.Fatalf("buildAgentPlaneWith: %v", err)
 	}
@@ -155,10 +165,42 @@ func TestTheKubernetesChiefOnOpenRouterGetsTheProxyAndNoClaudeToken(t *testing.T
 	if r, err := route(context.Background(), owner); err != nil || !r {
 		t.Errorf("the admin's chief is routed = %v (err %v)", r, err)
 	}
+	// The member's chief as its pod is rendered, with the switch on: its own
+	// account token (from its own credentials), and no route.
+	memberPlane, err := buildCredentialPlane(cfg, memberCreds{owner: member, tok: memberTok}, nil, log.New(&strings.Builder{}, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	menv, msec := chiefPodWith(t, cfg, member, memberPlane)
+	if _, ok := menv[agentspec.EnvLLMRoute]; ok {
+		t.Errorf("on: a member's chief pod carries %s", agentspec.EnvLLMRoute)
+	}
+	if msec[agentspec.EnvClaudeOAuthToken] != memberTok {
+		t.Errorf("on: a member's chief pod does not carry its own account token (keys %v)", keysOf(msec))
+	}
 	if offCfg := chiefK8sConfig(t, ""); chiefLLMRoute(offCfg, envPlane(t, offCfg)) != nil {
 		t.Error("off: a route rule is wired; unset must wire none")
 	}
 }
+
+// memberTok is a member's own (fake) Claude token for account "work".
+const memberTok = "fixture-member-claude-token-4e7d"
+
+// memberCreds is a member's per-owner credential store: a Claude token for
+// account "work", nothing else.
+type memberCreds struct {
+	owner int64
+	tok   string
+}
+
+func (m memberCreds) ClaudeTokens(_ context.Context, owner int64) (map[string]string, error) {
+	if owner == m.owner {
+		return map[string]string{"work": m.tok}, nil
+	}
+	return map[string]string{}, nil
+}
+func (memberCreds) OpenRouterKey(context.Context, int64) (string, bool, error) { return "", false, nil }
+func (memberCreds) HasOpenRouterKey(context.Context, int64) (bool, error)      { return false, nil }
 
 // TestTheChiefLLMSwitchIsReadAndItsRefusalsAreReachedOnTheirOwn: the value
 // is read lower-cased; anything else is refused; on, each missing need is
@@ -255,6 +297,12 @@ func k8sChiefEnv(t *testing.T, llm string) map[string]string {
 // muster token its pod's Secret holds.
 func k8sChiefLLMRequest(t *testing.T, env map[string]string) (*httptest.ResponseRecorder, map[string]string) {
 	t.Helper()
+	return k8sChiefLLMRequestAs(t, env, agents.KindClaudeCode)
+}
+
+// k8sChiefLLMRequestAs is k8sChiefLLMRequest with the admin's chief row of kind.
+func k8sChiefLLMRequestAs(t *testing.T, env map[string]string, kind string) (*httptest.ResponseRecorder, map[string]string) {
+	t.Helper()
 	client := fake.NewClientset()
 	k8sTestClient = client
 	t.Cleanup(func() { k8sTestClient = nil })
@@ -286,7 +334,7 @@ func k8sChiefLLMRequest(t *testing.T, env map[string]string) (*httptest.Response
 	// chief on below starts this row.
 	if _, err := agents.NewPG(a.pool).Create(authz.Operator(context.Background()), agents.Agent{Name: agents.ChiefName,
 		Namespace: agents.NamespaceFor(agents.NamespacePrefix, agents.ChiefName), Status: agents.StatusStopped,
-		Kind: agents.KindClaudeCode, CCAccount: "work", OwnerID: authz.OperatorUserID}); err != nil {
+		Kind: kind, CCAccount: map[bool]string{true: "work"}[kind == agents.KindClaudeCode], OwnerID: authz.OperatorUserID}); err != nil {
 		t.Fatalf("create the chief row: %v", err)
 	}
 	st := &composeStack{env: env, logs: logs, h: a.srv.Handler(), app: a}
@@ -364,5 +412,21 @@ func TestTheKubernetesChiefWithTheSwitchUnsetIsTodaysChief(t *testing.T) {
 	}
 	if secret[agentspec.EnvClaudeOAuthToken] != fakeTokWork {
 		t.Fatalf("off: the chief's pod secret does not carry its account token (keys %v)", keysOf(secret))
+	}
+}
+
+// TestTheKubernetesProxyRefusesAChiefItsRouteRuleDoesNotRoute: with
+// MUSTER_CHIEF_LLM=openrouter, the admin's chief of the GATEWAY kind (never
+// built on the route) is refused by the proxy with its own muster token, and
+// nothing reaches the provider. The claude-code admin chief on the same
+// settings is served (TestTheKubernetesChiefOnOpenRouterIsServedByTheLLMProxy).
+func TestTheKubernetesProxyRefusesAChiefItsRouteRuleDoesNotRoute(t *testing.T) {
+	up := newComposeProvider(t)
+	w, _ := k8sChiefLLMRequestAs(t, k8sChiefEnv(t, chiefLLMOpenRouter), agents.KindGateway)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), api.ChiefNotRoutedRefusal) {
+		t.Fatalf("a gateway-kind admin chief: %d %s, want 403 %q", w.Code, w.Body, api.ChiefNotRoutedRefusal)
+	}
+	if up.calls() != 0 {
+		t.Fatalf("the provider saw %d call(s), want none", up.calls())
 	}
 }

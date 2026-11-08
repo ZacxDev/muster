@@ -27,10 +27,14 @@ import (
 //     is today's behaviour exactly: the chief runs on its Claude account and
 //     the proxy serves no chief.
 //
-// 🔴 ONE RULE: chiefLLMRoute is the only place that decides whether a chief's
-// pod is on the route, and the spec builder (agentprovision.Config.ChiefLLMRoute)
-// and the proxy (chiefOnLLMProxy, which calls api.EnableChiefLLM) are both
-// wired from it here.
+// 🔴 ONE RULE: chiefLLMRoute is the only place that decides which owner's chief
+// is on the route, and agentprovision.ChiefLLMRouted the only predicate that
+// applies it to an agent (a claude-code agent with the reserved chief slug).
+// The spec builder asks that predicate over agentprovision.Config.ChiefLLMRoute
+// (provisioner.go); off Compose the LLM proxy asks the same predicate over the
+// same rule on every request (api.ChiefLLM.Routed, main.go), so it serves
+// exactly the chief whose pod is built on the route. On Compose the proxy asks
+// the credential rule (api.ComposeChief.Credential) that chiefLLMRoute wraps.
 // ---------------------------------------------------------------------------
 
 // chiefLLMOpenRouter is the one value MUSTER_CHIEF_LLM takes.

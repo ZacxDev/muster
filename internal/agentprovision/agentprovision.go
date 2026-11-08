@@ -1287,13 +1287,22 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, LLMRoute: route}})
 }
 
-// chiefLLMRoute is Config.ChiefLLMRoute for ag: false for every agent
-// but a claude-code chief on a server that set it.
-func (a *Adapter) chiefLLMRoute(ctx context.Context, ag agents.Agent) (bool, error) {
-	if a.chiefRoute == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
+// ChiefLLMRouted is THE predicate for whether agent ag runs on the LLM route
+// under rule (Config.ChiefLLMRoute): a claude-code agent with the reserved
+// chief slug whose owner the rule routes; false for every other agent, and
+// for every agent when rule is nil. The spec builder asks it (chiefLLMRoute)
+// and so does the LLM proxy on Kubernetes (api.ChiefLLM.Routed, wired from
+// the same rule), so the proxy serves exactly the chief the pod was built for.
+func ChiefLLMRouted(ctx context.Context, ag agents.Agent, rule func(ctx context.Context, owner int64) (bool, error)) (bool, error) {
+	if rule == nil || !agents.IsChiefName(ag.Name) || agents.ResolveKind(ag.Kind) != agents.KindClaudeCode {
 		return false, nil
 	}
-	route, err := a.chiefRoute(ctx, ag.OwnerID)
+	return rule(ctx, ag.OwnerID)
+}
+
+// chiefLLMRoute is ChiefLLMRouted for ag under Config.ChiefLLMRoute.
+func (a *Adapter) chiefLLMRoute(ctx context.Context, ag agents.Agent) (bool, error) {
+	route, err := ChiefLLMRouted(ctx, ag, a.chiefRoute)
 	if err != nil {
 		return false, fmt.Errorf("agentprovision: chief %q: %w", ag.Name, err)
 	}

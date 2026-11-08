@@ -453,10 +453,13 @@ only where its model calls go changes. Two runtimes turn this on:
   **Turning it on or off** is two steps: set or unset the variable and restart
   muster, then restart the chief (its agent page ⋯ → Stop, then Start, or
   `chief_restart`; [below](#restarting-the-chief)). The pod's credential is
-  built only when the chief starts, so until that restart a chief keeps the
-  one it had — and after turning it **off**, a chief still on the route is
-  refused by the proxy (it is no longer served) until it is restarted onto
-  its account.
+  part of its spec, and muster rebuilds that spec from the current settings
+  only when it starts the chief or re-applies it (a model change on a running
+  chief re-applies it too). Until then a chief keeps the credential it had.
+  After turning it **off**, a chief still on the route is refused by the
+  proxy (it is no longer served) until that rebuild puts it back on its
+  account. The proxy serves only the chief the route rule puts on the route:
+  the admin's `claude-code` chief.
 
 What applies on both:
 
