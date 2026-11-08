@@ -212,7 +212,10 @@ type REST struct {
 	Token func(ctx context.Context) (string, error)
 	// Slug reads the App's slug (GET /app, as the App).
 	Slug func(ctx context.Context) (string, error)
-	HTTP *http.Client
+	// Created reads when the App was created (GET /app's created_at, as the
+	// App).
+	Created func(ctx context.Context) (time.Time, error)
+	HTTP    *http.Client
 }
 
 // maxGitHubBody bounds one response read.

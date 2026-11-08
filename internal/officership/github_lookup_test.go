@@ -3,12 +3,15 @@ package officership
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -147,7 +150,86 @@ func TestOfficerPRsListsPullsAndFiltersByAuthor(t *testing.T) {
 	}
 }
 
-// TestDeleteBranchDeletesTheHeadsRef:DELETE git/refs/heads/<branch>, the
+// TestOfficerPRsStopsAtTheAppsCreation: the pulls list has no author filter,
+// so reading it whole would refuse every repository with more than
+// maxPages*100 pull requests, however few are the officer's. The App's bot
+// cannot have opened a pull request before the App existed, so for the App's
+// own login OfficerPRs stops after the first page that reaches back past the
+// App's creation; every page before it is read, so nothing of the App's is
+// truncated. Another login reads the whole list (the bound is only the
+// App's); an unreadable creation time is an error; a list that is not
+// newest-created first is an error, never a guessed stop.
+func TestOfficerPRsStopsAtTheAppsCreation(t *testing.T) {
+	slug := "fixture-lister-9"
+	login := BotLogin(slug)
+	created := time.Date(2000, 6, 1, 0, 0, 0, 0, time.UTC)
+	total := maxPages*100 + 250 // every one but three by another user
+	at := func(k int) time.Time { return created.Add(time.Duration(150-k) * time.Hour) }
+	ours := map[int]bool{5: true, 120: true, 149: true}
+	var pages atomic.Int32
+	var ascending atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/example-org/example-infra/pulls" {
+			t.Errorf("asked %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		pages.Add(1)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		var out []map[string]any
+		for k := (page - 1) * 100; k < page*100 && k < total; k++ {
+			author := "unrelated-person"
+			if ours[k] {
+				author = login
+			}
+			when := at(k)
+			if ascending.Load() && page == 1 && k == 10 {
+				when = at(0).Add(time.Hour) // newer than the entry before it
+			}
+			out = append(out, map[string]any{"number": 50000 - k, "state": "closed", "created_at": when.Format(time.RFC3339),
+				"user": map[string]any{"login": author, "type": "Bot"}, "head": map[string]any{"ref": fmt.Sprintf("h%d", k)}})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+	rest := func(createdErr error) *REST {
+		g := restFor(srv)
+		g.Slug = func(context.Context) (string, error) { return slug, nil }
+		g.Created = func(context.Context) (time.Time, error) { return created, createdErr }
+		return g
+	}
+	prs, err := rest(nil).OfficerPRs(context.Background(), login, "all")
+	if err != nil {
+		t.Fatalf("%d pull requests, all but three another user's: err = %v; want the App's three, not a refusal", total, err)
+	}
+	var got []int
+	for _, p := range prs {
+		got = append(got, p.Number)
+	}
+	if want := []int{49995, 49880, 49851}; fmt.Sprint(got) != fmt.Sprint(want) || pages.Load() != 2 {
+		t.Fatalf("got %v in %d pages; want exactly %v in 2 (the second page reaches back past the App's creation)", got, pages.Load(), want)
+	}
+	// Control: the bound is the App's own; any other login reads it all.
+	pages.Store(0)
+	if _, err := rest(nil).OfficerPRs(context.Background(), "unrelated-person", "all"); err == nil || !strings.Contains(err.Error(), "too many") {
+		t.Fatalf("another login: err = %v, want the whole list read and refused past %d pages", err, maxPages)
+	}
+	if pages.Load() != maxPages {
+		t.Fatalf("another login read %d pages, want %d", pages.Load(), maxPages)
+	}
+	// The App's creation unreadable: an error, not an unbounded or guessed read.
+	if _, err := rest(errors.New("fixture: GET /app failed")).OfficerPRs(context.Background(), login, "all"); err == nil ||
+		!strings.Contains(err.Error(), "fixture: GET /app failed") {
+		t.Fatalf("creation unreadable: err = %v, want that error", err)
+	}
+	// Not newest-created first: an error, never a stop on a guess.
+	ascending.Store(true)
+	if _, err := rest(nil).OfficerPRs(context.Background(), login, "all"); err == nil || !strings.Contains(err.Error(), "newest") {
+		t.Fatalf("out of order: err = %v, want a refusal naming the order", err)
+	}
+}
+
+// TestDeleteBranchDeletesTheHeadsRef: DELETE git/refs/heads/<branch>, the
 // branch's segments escaped one by one.
 func TestDeleteBranchDeletesTheHeadsRef(t *testing.T) {
 	var got string
