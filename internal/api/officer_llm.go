@@ -201,30 +201,44 @@ func claimAttempts(body []byte) int {
 	return b.Item.Attempts
 }
 
+// Why a complete sends no cost, beside the proxy meter's own reasons
+// (llmproxy.Cost*): the omitted-cost log line's reason.
+const (
+	costNoSource  = "no_source"  // not a routine instance of an `llm` officer: no cost source muster reads
+	costHandedOn  = "handed_on"  // needs_judgement: the item goes on to a judgement session
+	costOverBound = "over_bound" // above HQ's bound (a reporting error HQ refuses)
+)
+
 // llmItemCost is the cost a routine instance's complete of item reports to
 // HQ (civ-hq docs/OFFICERS.md "Item cost"): what its hold booked through the
 // proxy, from muster:llm-proxy, or nil when that is not known to be the
-// item's whole cost — then NOTHING is sent, never a 0. Only a complete that
-// finishes the item carries one: needs_judgement hands it on to a judgement
-// session, whose cost muster has no source for, so the item's total is not
-// known. A judgement or untiered instance's Claude Code session has no cost
-// source muster reads: nil.
-func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.ItemID, outcome string) *officers.ItemCost {
-	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil || outcome == officers.OutcomeNeedsJudgement {
-		return nil
+// item's whole cost — then NOTHING is sent, never a 0 — with why (a short
+// id, for the log line). Only a complete that finishes the item carries one:
+// needs_judgement hands it on to a judgement session, whose cost muster has
+// no source for, so the item's total is not known. A judgement or untiered
+// instance's Claude Code session has no cost source muster reads: nil.
+func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.ItemID, outcome string) (*officers.ItemCost, string) {
+	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
+		return nil, costNoSource
 	}
 	n, ok := s.llmRoutineInstance(o, instance)
 	if !ok {
-		return nil
+		return nil, costNoSource
 	}
-	usd, known := s.officerRT.llm.ItemCost(o.ID, n, string(item))
+	if outcome == officers.OutcomeNeedsJudgement {
+		return nil, costHandedOn
+	}
+	usd, why := s.officerRT.llm.ItemCostWhy(o.ID, n, string(item))
+	if why != "" {
+		return nil, why
+	}
 	// HQ stores 0-10000 USD (above is a reporting error it refuses); muster
 	// books to the micro-dollar (officer_llm_usage's NUMERIC(14,6)).
 	usd = math.Round(usd*1e6) / 1e6
-	if !known || math.IsNaN(usd) || usd < 0 || usd > officers.MaxItemCostUSD {
-		return nil
+	if math.IsNaN(usd) || usd < 0 || usd > officers.MaxItemCostUSD {
+		return nil, costOverBound
 	}
-	return &officers.ItemCost{USD: usd, From: officers.CostFromLLMProxy}
+	return &officers.ItemCost{USD: usd, From: officers.CostFromLLMProxy}, ""
 }
 
 func (s *Server) llmEnded(o officers.Officer, instance string, item officers.ItemID) {

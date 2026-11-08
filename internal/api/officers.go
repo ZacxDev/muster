@@ -1339,15 +1339,22 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it
 		// (CompleteDroppingCost). It is read here, before officerItemEnded
-		// clears the hold: every request the hold made was booked before its
-		// response ended, so the figure is final, and it rides this one call.
-		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv,
-			Cost: s.llmItemCost(o, instance, in.ItemID, in.Outcome)}
+		// clears the hold. It is the hold's cost only when no request admitted
+		// under the hold is still unbooked (the meter says inflight otherwise,
+		// and nothing is sent), so a figure that rides this call is complete.
+		cost, why := s.llmItemCost(o, instance, in.ItemID, in.Outcome)
+		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
 		var refused *officers.HQError
 		body, refused, err = c.CompleteDroppingCost(ctx, in.ItemID, instance, done)
 		if refused != nil {
 			s.logger.Printf("officers: %s completed item %s without its cost: HQ refused cost_usd %.6f from %s: %s",
 				instance, in.ItemID, done.Cost.USD, done.Cost.From, refused.Error())
+		}
+		if err == nil && cost == nil {
+			// One line per complete sent without a cost, with why: the
+			// known-vs-unknown ratio is measured from these. No item content.
+			s.logger.Printf("officers: item cost omitted officer=%s instance=%s item=%s outcome=%s reason=%s",
+				o.ID, instance, in.ItemID, in.Outcome, why)
 		}
 		if err == nil {
 			s.officerItemEnded(o, instance, in.ItemID)

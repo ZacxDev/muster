@@ -1,9 +1,13 @@
 package llmproxy
 
 import (
+	"context"
 	"io"
+	"log"
 	"math"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,14 +142,93 @@ func TestAnItemsCostIsUnknownWhileARequestUnderItIsInFlight(t *testing.T) {
 		r.post(t)
 	}()
 	<-midStream
-	got, ok := r.p.ItemCost(officer, 1, "item-a")
+	got, why := r.p.ItemCostWhy(officer, 1, "item-a")
 	close(release)
 	<-done
-	if ok {
-		t.Errorf("with request 2 in flight: cost %v reported known, want unknown (request 2 is not booked yet)", got)
+	if why != CostInFlight {
+		t.Errorf("with request 2 in flight: cost %v, reason %q; want unknown because %q (request 2 is not booked yet)", got, why, CostInFlight)
 	}
 	if got, ok := r.p.ItemCost(officer, 1, "item-a"); !ok || !near(got, 0.51) {
 		t.Errorf("after request 2 is booked: cost %v (known %v), want 0.51", got, ok)
+	}
+}
+
+// blockingStore is a memStore whose Book signals booked and then waits for
+// release: the request's cost is already in the meter (book charges it
+// before the store write), and its handler has not returned.
+type blockingStore struct {
+	*memStore
+	booked, release chan struct{}
+}
+
+func (b *blockingStore) Book(ctx context.Context, u Usage) error {
+	close(b.booked)
+	<-b.release
+	return b.memStore.Book(ctx, u)
+}
+
+// TestAnItemsCostIsKnownOnceItsRequestIsChargedBeforeTheHandlerReturns:
+// the request's cost (0.0389) is charged into the meter, and its handler is
+// still in the store write (then the stream's tail). officer_complete may
+// well read the cost now — Claude Code can act on the response before the
+// proxy's handler returns — so the cost is KNOWN here: the request is no
+// longer in flight once it is charged. Otherwise every complete reads
+// "inflight" and the cost is never sent.
+func TestAnItemsCostIsKnownOnceItsRequestIsChargedBeforeTheHandlerReturns(t *testing.T) {
+	const officer = "items:cost-charged"
+	up := newUpstream(t, streamOK(0.0389))
+	st := &blockingStore{memStore: newMemStore(), booked: make(chan struct{}), release: make(chan struct{})}
+	p, err := New(Config{Upstream: up.URL + "/api", Store: st, Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Caller{Officer: officer, Instance: 1, InstanceLabel: "r1", AgentName: "officer-x-r1", Model: "example/pinned-model",
+		DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { p.ServeMessages(w, req, c) }))
+	t.Cleanup(srv.Close)
+	p.ClaimedAttempt(officer, 1, "item-a", 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := http.Post(srv.URL+"/llm/v1/messages?beta=true", "application/json", strings.NewReader(clientBody))
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	<-st.booked
+	got, why := p.ItemCostWhy(officer, 1, "item-a")
+	close(st.release)
+	<-done
+	if why != "" || !near(got, 0.0389) {
+		t.Errorf("charged, handler not returned: cost %v (unknown because %q), want 0.0389 known", got, why)
+	}
+}
+
+// TestARequestNeverBookedLeavesFlightWhenItsHandlerReturns: request 1
+// (0.0151) is booked; request 2, admitted under the same hold, is answered
+// 500 by the provider and never booked. Once its handler has returned it is
+// out of flight, so the cost is known (0.0151) — not stuck at "inflight" for
+// the rest of the hold.
+func TestARequestNeverBookedLeavesFlightWhenItsHandlerReturns(t *testing.T) {
+	const officer = "items:cost-unbooked"
+	r := newRig(t, officer, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n == 2 {
+			http.Error(w, `{"type":"error","error":{"type":"api_error","message":"upstream down"}}`, http.StatusInternalServerError)
+			return
+		}
+		streamOK(0.0151)(w, req, n)
+	})
+	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+		t.Fatalf("request 1: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := r.post(t); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("request 2: %d, want the provider's 500 relayed", resp.StatusCode)
+	}
+	if got, why := r.p.ItemCostWhy(officer, 1, "item-a"); why != "" || !near(got, 0.0151) {
+		t.Errorf("after an unbooked request's handler returned: cost %v (unknown because %q), want 0.0151 known", got, why)
 	}
 }
 
@@ -163,44 +246,44 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 			t.Fatalf("request by instance %d: %d %s", n, resp.StatusCode, body)
 		}
 	}
-	unknown := func(why string, n int, item string) {
+	unknown := func(why string, n int, item, reason string) {
 		t.Helper()
-		if got, ok := r.p.ItemCost(officer, n, item); ok {
-			t.Errorf("%s: cost %v reported known, want unknown", why, got)
+		if got, r := r.p.ItemCostWhy(officer, n, item); r != reason {
+			t.Errorf("%s: cost %v, reason %q; want unknown because %q", why, got, r, reason)
 		}
 	}
 
 	// Held, first claim, but no request booked yet: no evidence, not a 0.
 	r.p.ClaimedAttempt(officer, 1, "item-none", 1)
-	unknown("a first claim with no request booked", 1, "item-none")
+	unknown("a first claim with no request booked", 1, "item-none", CostNoRequests)
 
 	// HQ's second claim of the item: an earlier hold may have spent on it.
 	r.p.ClaimedAttempt(officer, 2, "item-second", 2)
 	post(2)
-	unknown("HQ's second claim (attempts 2)", 2, "item-second")
+	unknown("HQ's second claim (attempts 2)", 2, "item-second", CostNotFirstClaim)
 
 	// No attempts from HQ (an HQ without the field, or muster's already-yours
 	// answer for an item the meter did not hold).
 	r.p.ClaimedAttempt(officer, 3, "item-noattempts", 0)
 	post(3)
-	unknown("a claim with no attempts", 3, "item-noattempts")
+	unknown("a claim with no attempts", 3, "item-noattempts", CostAttemptsUnknown)
 
 	// Adopted from a wake-loop read (a claim muster did not see: a restart).
 	r.p.Sync(officer, map[int][]string{4: {"item-adopted"}}, time.Now())
 	post(4)
-	unknown("an item adopted from HQ's claimed list", 4, "item-adopted")
+	unknown("an item adopted from HQ's claimed list", 4, "item-adopted", CostAdopted)
 
 	// A first claim, then HQ's re-claim of it (its lease lapsed): unknown.
 	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 1)
 	post(5)
 	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 2)
-	unknown("a first claim re-claimed after a lapse (attempts 2)", 5, "item-reclaimed")
+	unknown("a first claim re-claimed after a lapse (attempts 2)", 5, "item-reclaimed", CostNotFirstClaim)
 
 	// Ended: the meter no longer holds it.
 	r.p.ClaimedAttempt(officer, 6, "item-ended", 1)
 	post(6)
 	r.p.Ended(officer, 6, "item-ended")
-	unknown("an ended hold", 6, "item-ended")
+	unknown("an ended hold", 6, "item-ended", CostNotHeld)
 
 	// A request the provider reported no cost for is booked from the proxy's
 	// pessimistic estimate: not a measured cost, so the item's is unknown.
@@ -209,8 +292,8 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 	if resp, body := est.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the estimated request: %d %s", resp.StatusCode, body)
 	}
-	if got, ok := est.p.ItemCost(officer, 1, "item-estimated"); ok {
-		t.Errorf("a hold with a request booked from the estimate: cost %v reported known, want unknown", got)
+	if got, why := est.p.ItemCostWhy(officer, 1, "item-estimated"); why != CostEstimated {
+		t.Errorf("a hold with a request booked from the estimate: cost %v, reason %q; want unknown because %q", got, why, CostEstimated)
 	}
 	// An estimated request, THEN one with a reported cost: still unknown (the
 	// later request does not make the earlier estimate a measurement).
@@ -227,8 +310,8 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 			t.Fatalf("mixed request %d: %d %s", i+1, resp.StatusCode, body)
 		}
 	}
-	if got, ok := mixed.p.ItemCost(officer, 1, "item-mixed"); ok {
-		t.Errorf("an estimated request then a reported one: cost %v reported known, want unknown", got)
+	if got, why := mixed.p.ItemCostWhy(officer, 1, "item-mixed"); why != CostEstimated {
+		t.Errorf("an estimated request then a reported one: cost %v, reason %q; want unknown because %q", got, why, CostEstimated)
 	}
 
 	// The positive control, with the same requests: a first claim, metered

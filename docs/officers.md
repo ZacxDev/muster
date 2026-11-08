@@ -2225,8 +2225,9 @@ A routine instance's `officer_complete` (outcome `done`, `escalated` or
 its hold on the item booked through the proxy (each request's provider-reported
 cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
 `muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
-with no later `PATCH`, because it is final by then: every request is booked
-before its response ends, and the complete is the hold's last act.
+with no later `PATCH`: the complete is the hold's last act, and a request
+still unbooked when it is read makes the cost unknown (below) rather than
+short.
 
 🔴 **An unknown cost is omitted, never sent as 0.** The cost is known only when
 the hold is the item's whole proxy spend: HQ's first claim of the item
@@ -2234,14 +2235,27 @@ the hold is the item's whole proxy spend: HQ's first claim of the item
 HQ's claimed list after a restart, and not muster's already-yours answer for a
 hold it did not meter), at least one request booked, and none booked from the
 proxy's pessimistic estimate (a response that reported no cost), and no
-request admitted under the hold still in flight when the complete reads it
-(one still streaming would be booked after the read, so the sum would be
-short). A second or later
+request admitted under the hold still in flight when the complete reads it. A
+request leaves flight as soon as its cost is charged to the meter (before the
+usage row is written and the stream's tail is relayed), so a complete Claude
+Code sends while a handler is still finishing still reads the cost. A second or later
 claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
 send none. The meter is in memory (`internal/llmproxy/items.go`).
 
 A judgement or untiered instance's Claude Code session has **no cost source
 muster reads**, so its complete sends none.
+
+Every complete sent without a cost writes one log line, which is how the
+known-vs-unknown ratio is measured:
+
+```
+officers: item cost omitted officer=<id> instance=<agent> item=<item id> outcome=<outcome> reason=<reason>
+```
+
+`reason` is one of `not_held`, `adopted`, `not_first_claim`,
+`attempts_unknown`, `no_requests`, `estimated`, `inflight`, `over_bound`,
+`handed_on` (needs_judgement) or `no_source` (not a routine instance of an
+`llm` officer).
 
 ⚠ **HQ keeps a cost a later complete does not replace** (its complete
 coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed

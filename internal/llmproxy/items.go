@@ -37,8 +37,8 @@ import (
 // it), at least one request charged (no request is no evidence, never a 0),
 // and every one at the provider's reported cost (one booked from the proxy's
 // pessimistic estimate is not a measured cost), and no request admitted under
-// the hold still in flight (one still streaming is booked after the read, so
-// the sum so far is short). A later HQ claim of the held item (attempts 2+: its lease lapsed and it
+// the hold still in flight, i.e. not yet charged to it (its cost would be
+// missing from the sum). A request leaves flight the moment book charges it. A later HQ claim of the held item (attempts 2+: its lease lapsed and it
 // was claimed again) makes it unknown.
 type items struct {
 	mu sync.Mutex
@@ -55,17 +55,49 @@ type held struct {
 	since  time.Time
 	tokens int64
 	// usd and requests are what the hold's charged requests booked
-	// (estimated: one of them from the proxy's estimate); whole is true while
-	// they are the item's whole proxy spend (see the type).
+	// (estimated: one of them from the proxy's estimate). partial is why they
+	// are NOT the item's whole proxy spend (see the type), "" while they are:
+	// CostAdopted, CostNotFirstClaim or CostAttemptsUnknown.
 	usd       float64
 	requests  int
 	estimated bool
-	whole     bool
-	// inflight is the requests admitted under this hold whose booking has not
-	// finished (admit, done). A hold is replaced by a NEW *held whenever it
-	// changes, so a request admitted under an earlier hold finishes on that
-	// one and never touches its successor's count.
+	partial   string
+	// inflight is the requests admitted under this hold that are not yet
+	// booked into it (admit, then done: as soon as book has charged them, or
+	// when the handler returns for a request never booked). A hold is
+	// replaced by a NEW *held whenever it changes, so a request admitted under
+	// an earlier hold finishes on that one and never touches its successor's.
 	inflight int
+}
+
+// Why an item's cost is not known (Proxy.ItemCostWhy), each a short id for
+// the log line officer_complete writes when it sends no cost.
+const (
+	CostNotHeld         = "not_held"         // the instance does not hold the item (in the meter)
+	CostAdopted         = "adopted"          // adopted from HQ's claimed list (a restart): requests before it are not in it
+	CostNotFirstClaim   = "not_first_claim"  // HQ's second or later claim: an earlier hold may have spent on it
+	CostAttemptsUnknown = "attempts_unknown" // the claim carried no attempts (already-yours, or an HQ without the field)
+	CostNoRequests      = "no_requests"      // no request booked: no evidence, never a 0
+	CostEstimated       = "estimated"        // a request was booked from the proxy's estimate
+	CostInFlight        = "inflight"         // a request admitted under the hold is not booked yet
+)
+
+// partialOf is a new hold's partial for a claim HQ answered with attempts.
+func partialOf(attempts int) string {
+	switch {
+	case attempts == 1:
+		return ""
+	case attempts == 0:
+		return CostAttemptsUnknown
+	}
+	return CostNotFirstClaim
+}
+
+// flight is one admitted request's count on its hold: released once (done),
+// however many times done is called.
+type flight struct {
+	h        *held
+	released bool
 }
 
 func newItems() *items { return &items{m: map[instanceKey]*held{}} }
@@ -90,11 +122,11 @@ func (t *items) claimed(k instanceKey, item string, at time.Time, attempts int) 
 	h := t.get(k)
 	if h.item == item {
 		if attempts > 1 {
-			h.whole = false
+			h.partial = CostNotFirstClaim
 		}
 		return
 	}
-	t.m[k] = &held{item: item, since: at, whole: attempts == 1}
+	t.m[k] = &held{item: item, since: at, partial: partialOf(attempts)}
 }
 
 // ended records that the instance no longer holds item (complete or
@@ -129,7 +161,7 @@ func (t *items) sync(officer string, holding map[int][]string, at time.Time) {
 		switch {
 		case h.item != "" && slices.Contains(its, h.item):
 		case len(its) == 1:
-			t.m[k] = &held{item: its[0], since: at}
+			t.m[k] = &held{item: its[0], since: at, partial: CostAdopted}
 		case h.item != "":
 			t.m[k] = &held{since: at}
 		}
@@ -146,8 +178,8 @@ func (t *items) used(k instanceKey) (int64, string) {
 
 // admit is used, for a request the proxy is admitting: when the instance
 // holds an item, the request counts as in flight on that hold until done is
-// called with the hold admit returned (nil when it holds none).
-func (t *items) admit(k instanceKey) (int64, string, *held) {
+// called with the flight admit returned (nil when it holds none).
+func (t *items) admit(k instanceKey) (int64, string, *flight) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	h := t.get(k)
@@ -155,17 +187,23 @@ func (t *items) admit(k instanceKey) (int64, string, *held) {
 		return h.tokens, "", nil
 	}
 	h.inflight++
-	return h.tokens, h.item, h
+	return h.tokens, h.item, &flight{h: h}
 }
 
-// done ends a request admit counted in flight on h (nil: none).
-func (t *items) done(h *held) {
-	if h == nil {
+// done takes f's request out of flight on its hold. It is idempotent: book
+// calls it once the request is charged, and the handler's deferred call (for
+// a request never booked) is then a no-op. nil is no flight.
+func (t *items) done(f *flight) {
+	if f == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	h.inflight--
+	if f.released {
+		return
+	}
+	f.released = true
+	f.h.inflight--
 }
 
 // add charges n tokens and usd (estimated: booked from the proxy's estimate)
@@ -187,17 +225,26 @@ func (t *items) add(k instanceKey, item string, n int64, usd float64, estimated 
 	}
 }
 
-// cost is the USD the instance's hold on item booked, and whether that is
-// known to be the item's whole proxy spend (see the type): false when the
-// instance does not hold item, when the hold is not whole, when it charged
-// no request, when one was booked from the proxy's estimate, or while a
-// request admitted under it is in flight.
-func (t *items) cost(k instanceKey, item string) (float64, bool) {
+// cost is the USD the instance's hold on item booked, and why that is NOT
+// known to be the item's whole proxy spend ("" when it is; see the type):
+// the instance does not hold item, the hold is partial, it charged no
+// request, one was booked from the proxy's estimate, or a request admitted
+// under it is not booked yet.
+func (t *items) cost(k instanceKey, item string) (float64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	h, ok := t.m[k]
-	if !ok || item == "" || h.item != item || !h.whole || h.requests == 0 || h.estimated || h.inflight > 0 {
-		return 0, false
+	switch {
+	case !ok || item == "" || h.item != item:
+		return 0, CostNotHeld
+	case h.partial != "":
+		return 0, h.partial
+	case h.requests == 0:
+		return 0, CostNoRequests
+	case h.estimated:
+		return 0, CostEstimated
+	case h.inflight > 0:
+		return 0, CostInFlight
 	}
-	return h.usd, true
+	return h.usd, ""
 }

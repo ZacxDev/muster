@@ -180,6 +180,16 @@ func (r *itemCostRig) complete(t *testing.T, a agents.Agent, item, outcome strin
 	return bodies
 }
 
+// omitted asserts the one log line a complete sent without a cost writes,
+// pinned whole: officer, instance, item, outcome and the reason.
+func (r *itemCostRig) omitted(t *testing.T, inst, item, outcome, reason string) {
+	t.Helper()
+	want := "officers: item cost omitted officer=" + costOff + " instance=" + inst + " item=" + item + " outcome=" + outcome + " reason=" + reason + "\n"
+	if n := strings.Count(r.logs.String(), want); n != 1 {
+		t.Errorf("the omitted-cost line %q appears %d times, want once; logs:\n%s", want, n, r.logs)
+	}
+}
+
 // bodyWith is the complete body muster sends for instance inst: cost, when
 // not "", is the cost fields' literal JSON prefix.
 func bodyWith(cost, inst, outcome string) string {
@@ -208,6 +218,9 @@ func TestARoutineCompleteCarriesTheItemsProxyCost(t *testing.T) {
 	if got, want := r.complete(t, r2, b, "no_action"), bodyWith(`"cost_from":"muster:llm-proxy","cost_usd":0.0419,`, r2.Name, "no_action"); len(got) != 1 || got[0] != want {
 		t.Errorf("B's complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	if strings.Contains(r.logs.String(), "item cost omitted") {
+		t.Errorf("a complete WITH its cost logged an omitted-cost line: %s", r.logs)
+	}
 	for item, want := range map[string]float64{a: 0.0428, b: 0.0419} {
 		it := r.hq.Item(item)
 		if it.CostUSD == nil || *it.CostUSD != want || it.CostFrom == nil || *it.CostFrom != officers.CostFromLLMProxy {
@@ -235,6 +248,7 @@ func TestAnUnknownItemCostIsOmittedNotZero(t *testing.T) {
 	if got, want := r.complete(t, r2, second, "done"), bodyWith("", r2.Name, "done"); len(got) != 1 || got[0] != want {
 		t.Errorf("HQ's second claim: complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, r2.Name, second, "done", "not_first_claim")
 
 	// A first claim with no request booked: no evidence of a cost.
 	none := r.hq.AddTieredItem(costOff, "web.check", "node-none", officers.TierRoutine)
@@ -242,6 +256,7 @@ func TestAnUnknownItemCostIsOmittedNotZero(t *testing.T) {
 	if got, want := r.complete(t, r1, none, "done"), bodyWith("", r1.Name, "done"); len(got) != 1 || got[0] != want {
 		t.Errorf("no request booked: complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, r1.Name, none, "done", "no_requests")
 	for _, item := range []string{second, none} {
 		if it := r.hq.Item(item); it.CostUSD != nil || it.CostFrom != nil {
 			t.Errorf("item %s: HQ stored cost %v from %v, want none", item, it.CostUSD, it.CostFrom)
@@ -269,6 +284,7 @@ func TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost(t *testing.T) {
 	if got, want := r.complete(t, r1, item, "done"), bodyWith("", r1.Name, "done"); len(got) != 1 || got[0] != want {
 		t.Errorf("complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, r1.Name, item, "done", "attempts_unknown")
 }
 
 // TestACostAboveHQsBoundIsOmitted: a hold that booked 12345.6789 USD (above
@@ -283,6 +299,7 @@ func TestACostAboveHQsBoundIsOmitted(t *testing.T) {
 	if got, want := r.complete(t, r1, item, "done"), bodyWith("", r1.Name, "done"); len(got) != 1 || got[0] != want {
 		t.Errorf("complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, r1.Name, item, "done", "over_bound")
 }
 
 // TestACompleteHQRefusesForItsCostStillCompletes: against an HQ from before
@@ -324,10 +341,12 @@ func TestAJudgementOrHandedOnCompleteSendsNoCost(t *testing.T) {
 	if got, want := r.complete(t, r1, handed, officers.OutcomeNeedsJudgement), bodyWith("", r1.Name, officers.OutcomeNeedsJudgement); len(got) != 1 || got[0] != want {
 		t.Errorf("needs_judgement: complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, r1.Name, handed, officers.OutcomeNeedsJudgement, "handed_on")
 
 	judged := r.hq.AddTieredItem(costOff, "web.alert", "node-judged", officers.TierJudgement)
 	r.claim(t, j1, judged)
 	if got, want := r.complete(t, j1, judged, "done"), bodyWith("", j1.Name, "done"); len(got) != 1 || got[0] != want {
 		t.Errorf("judgement: complete bodies\n got %q\nwant [%s]", got, want)
 	}
+	r.omitted(t, j1.Name, judged, "done", "no_source")
 }
