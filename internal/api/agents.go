@@ -270,7 +270,7 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	return cards, mirrors, nil
 }
 
-// kindChoices is what the dispatch form offers THE CALLER: the enabled kinds,
+// kindChoices is what the caller may create (agent_dispatch's targets read it): the enabled kinds,
 // the caller's OWN Claude account names (never tokens — and never the admin's
 // pool for a member), and which kinds the caller has no credential for.
 func (s *Server) kindChoices(ctx context.Context) ui.KindChoices {
@@ -727,7 +727,7 @@ type dispatchParams struct {
 	// (agent_outcome.go).
 	DispatchedBy int64
 	// TrackOutcome: this start is a DISPATCH whose work must end in an outcome
-	// (agent_outcome.go) — the dispatch form and the chief's agent_dispatch. An
+	// (agent_outcome.go) — POST /api/agents and the chief's agent_dispatch. An
 	// officer's instance and the chief's own provisioning are not tracked.
 	TrackOutcome bool
 }

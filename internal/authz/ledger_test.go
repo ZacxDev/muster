@@ -241,6 +241,12 @@ var (
 	// send queue's dispatcher (its AsOwner), handed each row's owner after it
 	// read the row under System; the request path never calls it.
 	withPrincipalLedger = []string{
+		// The browser suite's agent-create token minter (e2e/mktoken): it mints
+		// through the real token store AS the named fixture user, so row-level
+		// security files the token under that user, as /account/tokens would.
+		// A fixture command, never linked into a binary (modulegate's linkage
+		// ledger), and it refuses any database not ending in _e2e.
+		"e2e/mktoken.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions
