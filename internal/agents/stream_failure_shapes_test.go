@@ -114,10 +114,6 @@ func turnResult(t *testing.T, client *http.Client, srv *httptest.Server, bound t
 }
 
 func TestEveryStreamFailureShapeEndsTheTurnAsAnError(t *testing.T) {
-	prevGrace := errorEventGrace
-	errorEventGrace = 300 * time.Millisecond
-	t.Cleanup(func() { errorEventGrace = prevGrace })
-
 	for _, c := range []struct {
 		name   string
 		status int
@@ -150,12 +146,6 @@ func TestEveryStreamFailureShapeEndsTheTurnAsAnError(t *testing.T) {
 				"output": []any{map[string]any{"type": "message", "role": "assistant",
 					"content": []any{map[string]any{"type": "output_text", "text": "No response from the runtime."}}}}}}) +
 				"data: [DONE]\n\n", false, ""},
-		// A bare `error` may be followed by a fallback's completion
-		// (TestAnErrorFollowedByACompletionIsNotAFailure), so it is not
-		// terminal — but a stream that goes silent after one is not left
-		// open for the request timeout.
-		{"error event then held open", http.StatusOK,
-			gatewayPrelude() + sse("error", map[string]any{"code": "api_error", "message": providerFailure}), true, providerFailure},
 		// The body ends with no terminal event at all (a runtime that died
 		// mid-turn): an answer was never given, so it is not an empty one.
 		{"no terminal event then end", http.StatusOK,
@@ -194,6 +184,57 @@ func TestAnAnswerStillEndsTheTurnAsAnAnswer(t *testing.T) {
 	reply, err, hung = turnResult(t, srv.Client(), srv, 5*time.Second)
 	if hung || err != nil || reply != "" {
 		t.Fatalf("[DONE] with no completion = (%q, %v, hung %v); want the empty answer", reply, err, hung)
+	}
+}
+
+// TestABareErrorThenSilenceEndsAtTheClientTimeoutWithTheRuntimesWords: a bare
+// `error` is not terminal (a fallback may still complete), so the reader reads
+// on after it; a runtime that then holds the connection open silently is
+// bounded by the HTTP client's Timeout, and the turn ends as the runtime's OWN
+// error — its words, and NOT context.DeadlineExceeded, which the outcome
+// tracker does not count.
+func TestABareErrorThenSilenceEndsAtTheClientTimeoutWithTheRuntimesWords(t *testing.T) {
+	srv := shapeRuntime(t, http.StatusOK,
+		gatewayPrelude()+sse("error", map[string]any{"code": "api_error", "message": providerFailure}), true)
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	_, err, hung := turnResult(t, client, srv, 5*time.Second)
+	if hung {
+		t.Fatal("a bare error then silence outlived the client's timeout")
+	}
+	if err == nil {
+		t.Fatal("a bare error then silence until the client timeout returned no error")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %q matches context.DeadlineExceeded, which the outcome tracker does not count", err)
+	}
+	var se *StreamError
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), providerFailure) {
+		t.Fatalf("error %q; want the runtime's StreamError with its words %q", err, providerFailure)
+	}
+}
+
+// TestABareErrorAPauseThenACompletionIsTheAnswer: a bare `error`, a pause (a
+// fallback model starting), then a completion that answers — over real HTTP,
+// within the client's timeout — is the answer, not a failure.
+func TestABareErrorAPauseThenACompletionIsTheAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(gatewayPrelude() + sse("error", map[string]any{"code": "api_error", "message": providerFailure})))
+		w.(http.Flusher).Flush()
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(sse("response.completed", map[string]any{"response": map[string]any{"status": "completed",
+			"output": []any{map[string]any{"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "answered on the fallback"}}}}}})))
+	}))
+	t.Cleanup(srv.Close)
+	reply, err, hung := turnResult(t, &http.Client{Timeout: 5 * time.Second}, srv, 10*time.Second)
+	if hung || err != nil || reply != "answered on the fallback" {
+		t.Fatalf("error, pause, completion = (%q, %v, hung %v); want the completion's answer", reply, err, hung)
 	}
 }
 
