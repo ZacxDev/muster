@@ -280,7 +280,9 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		d.log.Printf("plugins: message %d was sent (%s) but could NOT be recorded (settled=%v): %v",
 			messageID, outcome, ok, rerr)
 	}
-	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message})
+	// The row names the message it relays (chat_messages.plugin_message_id,
+	// migration 0095): what the agent page draws its collapsed relay row by.
+	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message, PluginMessageID: messageID})
 	// The reply's ORDERED parts — text and tool calls interleaved — as an
 	// ordinary chat turn stores them, so the session shows what the chief did.
 	parts := pc.Parts()
@@ -305,7 +307,7 @@ func (d *Deliverer) Handed(ctx context.Context, p Plugin, chief agents.Agent, m 
 	if err != nil {
 		return err
 	}
-	_, err = d.agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user",
+	_, err = d.agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user", PluginMessageID: m.ID,
 		Content: RenderMessage(p, m, d.routing, Hints{}, Retry{Now: time.Now()}, d.ToolsFor(ctx, chief)) + "\n\n" + note})
 	return err
 }

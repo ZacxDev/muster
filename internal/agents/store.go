@@ -277,6 +277,13 @@ type ChatMessage struct {
 	// internal/api's TestEveryChatWriterIsClassified pins every writer. Not
 	// serialised: no API reader needs it.
 	TypedBy int64 `json:"-"`
+
+	// PluginMessageID is the plugin message this USER row relays to the chief
+	// (migration 0095, chat_messages.plugin_message_id), 0 for every other row
+	// and for every row written before 0095. Only internal/plugins' Deliverer
+	// sets it (Deliver, Handed); the agent page draws such a row as a collapsed
+	// system row (internal/api relayOf). Not serialised: no API reader needs it.
+	PluginMessageID int64 `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

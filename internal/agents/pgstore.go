@@ -972,15 +972,15 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 	if m.Kind == "" {
 		m.Kind = "text"
 	}
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0)`,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m)).
-		Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy)
+	stored, err := scanChatMessage(s.pool.QueryRow(ctx, `
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by, plugin_message_id)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING `+chatMessageCols,
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m), pluginMessageArg(m)))
 	if err != nil {
 		return m, err
 	}
+	m = stored
 	if m.SessionID != 0 {
 		// Bump updated_at so the session sorts most-recent-first; set the title from
 		// the first user message when it's still blank (COALESCE keeps any existing
@@ -996,6 +996,28 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 			WHERE id = $1`, m.SessionID, title)
 	}
 	return m, nil
+}
+
+// chatMessageCols is the column list every chat_messages read (and the insert's
+// RETURNING) scans with scanChatMessage — ONE list, so a column added to the row
+// (typed_by 0081, plugin_message_id 0095) cannot be read by one path and
+// silently zero on another.
+const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0)`
+
+// scanChatMessage scans one row of chatMessageCols.
+func scanChatMessage(row pgx.Row) (ChatMessage, error) {
+	var m ChatMessage
+	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID)
+	return m, err
+}
+
+// pluginMessageArg is m's plugin_message_id: NULL unless m is a USER row
+// relaying a plugin message (only internal/plugins' Deliverer sets it).
+func pluginMessageArg(m ChatMessage) any {
+	if m.PluginMessageID <= 0 || m.Role != "user" {
+		return nil
+	}
+	return m.PluginMessageID
 }
 
 // typedByArg is m's typed_by: NULL unless m is a USER row with a typer. 🔴 An
@@ -1018,7 +1040,7 @@ func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64,
 		return []ChatMessage{}, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
+		SELECT `+chatMessageCols+` FROM chat_messages
 		WHERE agent_id = $1 AND typed_by = $2 AND role = 'user' AND kind = 'text' AND created_at >= $3
 		ORDER BY id DESC LIMIT $4`, agentID, by, since, limit)
 	if err != nil {
@@ -1027,8 +1049,8 @@ func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64,
 	defer rows.Close()
 	out := make([]ChatMessage, 0, limit)
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
+		m, err := scanChatMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1042,7 +1064,7 @@ func (s *PGStore) OwnerTypedChatMessages(ctx context.Context, agentID, by int64,
 
 func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]ChatMessage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
+		SELECT `+chatMessageCols+` FROM chat_messages
 		WHERE session_id=$1 ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, err
@@ -1050,8 +1072,8 @@ func (s *PGStore) ListChatMessages(ctx context.Context, sessionID int64) ([]Chat
 	defer rows.Close()
 	out := make([]ChatMessage, 0)
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
+		m, err := scanChatMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1091,7 +1113,7 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	// drift, and the drift would present as the first page of a paged read
 	// disagreeing with an unpaged one about what the conversation says.
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0) FROM chat_messages
+		SELECT `+chatMessageCols+` FROM chat_messages
 		WHERE session_id=$1 AND ($2 <= 0 OR id < $2) ORDER BY id DESC LIMIT $3`, sessionID, beforeID, limit)
 	if err != nil {
 		return nil, err
@@ -1099,8 +1121,8 @@ func (s *PGStore) ListChatMessagesPage(ctx context.Context, sessionID, beforeID 
 	defer rows.Close()
 	out := make([]ChatMessage, 0, limit)
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy); err != nil {
+		m, err := scanChatMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1161,15 +1183,7 @@ func (s *PGStore) OwnerTurnInFlight(ctx context.Context, agentID int64) (OwnerTu
 // ChatMessage reads one chat row by id (pgx.ErrNoRows when there is none
 // visible to ctx's principal).
 func (s *PGStore) ChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
-	var m ChatMessage
-	var sess *int64
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, agent_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, created_at FROM chat_messages
-		 WHERE id = $1`, id).Scan(&m.ID, &m.AgentID, &sess, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt)
-	if sess != nil {
-		m.SessionID = *sess
-	}
-	return m, err
+	return scanChatMessage(s.pool.QueryRow(ctx, `SELECT `+chatMessageCols+` FROM chat_messages WHERE id = $1`, id))
 }
 
 // DeleteChatMessagesOlderThan removes chat messages created before cutoff.

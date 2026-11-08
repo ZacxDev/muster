@@ -36,20 +36,34 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 }
 
 // relayOf is the plugin relay a stored row carries, nil for none: a USER text
-// row that NOBODY TYPED (typed_by 0 — the structural half: chat_messages has no
-// column naming the plugin message a row relayed) whose text begins with
-// muster's own relay preface (plugins.ParseRelayTurn — the textual half, which
-// is muster's words, not the sender's). A typed row is the owner's however it
-// reads: pasting a relay's text into the chat keeps it the owner's bubble.
+// row that NOBODY TYPED (typed_by 0) and that is a relay —
+//
+//   - by its STORED LINK (chat_messages.plugin_message_id, migration 0095),
+//     which internal/plugins' Deliverer writes on every relay row since. That
+//     decides it, whatever the text says; the text is read only for the
+//     label (the plugin and subject its preface names, when it has one).
+//   - for a row written BEFORE 0095 (no link), by muster's own relay preface
+//     (plugins.ParseRelayTurn — muster's words, not the sender's). This is the
+//     fallback only: no row written since 0095 needs it.
+//
+// A typed row is the owner's however it reads, link or no link: pasting a
+// relay's text into the chat keeps it the owner's bubble.
 func relayOf(m agents.ChatMessage) *ui.ChatRelay {
 	if m.Role != "user" || m.TypedBy > 0 || (m.Kind != "" && m.Kind != "text") {
 		return nil
 	}
-	r, ok := plugins.ParseRelayTurn(m.Content)
-	if !ok {
+	r, parsed := plugins.ParseRelayTurn(m.Content)
+	if m.PluginMessageID > 0 {
+		out := &ui.ChatRelay{MessageID: m.PluginMessageID}
+		if parsed && r.MessageID == m.PluginMessageID {
+			out.Source, out.Subject, out.Task = r.Plugin, r.Subject, r.TaskID != 0
+		}
+		return out
+	}
+	if !parsed {
 		return nil
 	}
-	return &ui.ChatRelay{Source: r.Plugin, Subject: r.Subject, Task: r.TaskID != 0}
+	return &ui.ChatRelay{Source: r.Plugin, Subject: r.Subject, Task: r.TaskID != 0, MessageID: r.MessageID}
 }
 
 // withChatLogLive fills v's live fields for session: TurnInFlight from the

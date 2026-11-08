@@ -40,11 +40,13 @@ import (
 // keeps the two-row header: it has no account, failover or terminal to fold,
 // and its second row is the model picker, which a menu cannot hold.
 
-// headerFolded reports whether v's page draws the folded header: an agent with
-// a card (the page surface — the chief panel's pane and a minimal test view
-// have none) of the claude-code kind.
+// headerFolded reports whether v's page draws the folded header: a claude-code
+// agent's. It is the ONLY header a claude-code agent's page has (round 0 D1
+// deleted the two-row one it used to fall back to without a card); a view with
+// no card (a minimal test view — every page the server draws has one) draws
+// the row without the status strip and the ⋯ menu, which both need the card.
 func headerFolded(v AgentDetailView) bool {
-	return v.Card.ID != 0 && agents.ResolveKind(v.Kind) == agents.KindClaudeCode
+	return agents.ResolveKind(v.Kind) == agents.KindClaudeCode
 }
 
 // foldedHeader is a claude-code agent's page header: one row (see above).
@@ -70,12 +72,12 @@ func foldedHeader(v AgentDetailView) g.Node {
 			sidebarOpenButton(),
 			// The status dot (and any badge the strip carries), live: the same
 			// strip the second row drew, refreshing itself (agentStrip).
-			agentStrip(v.Card),
+			g.If(v.Card.ID != 0, agentStrip(v.Card)),
 			agentTitle(v),
 			sessionTagsHeadNode(SessionTagTarget{AgentID: v.ID}, v.Tags),
 			g.If(v.AsksSrc != "", askerAsksBadge()),
 			agentHeaderToolsWith(v, true),
-			Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(v.Card, "", foldedMenuItems(v))),
+			g.If(v.Card.ID != 0, Span(ID(AgentMenuSlot), Class("inline-flex shrink-0"), agentActionsMenuWith(v.Card, "", foldedMenuItems(v)))),
 		),
 		// The Terminal item is a view-swap link (viewToggle's): the script that
 		// opens it in the kept frame travels with whatever draws such a link.
