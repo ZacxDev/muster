@@ -97,9 +97,9 @@ func TestChatMessageHTMLEscapesAuthorMarkup(t *testing.T) {
 
 // chatScriptJS is agentChatScript's executable source (comments stripped, so
 // prose about a deleted function cannot satisfy or fail a guard).
-func chatScriptJS(t *testing.T) string {
+func chatScriptJS(t *testing.T, name string) string {
 	t.Helper()
-	js, err := stripJSComments(jsSource(t, agentChatScript("x")))
+	js, err := stripJSComments(jsSource(t, agentChatScript(name)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func chatScriptJS(t *testing.T) string {
 // mdUnderSpace, mdUnderEm, mdInline, mdTableCells, mdIsTableSep, mdRender and
 // mdConvert.
 func TestAgentChatScriptBuildsNoMarkdown(t *testing.T) {
-	js := chatScriptJS(t)
+	js := chatScriptJS(t, "x")
 	tags := map[string]bool{}
 	for _, m := range regexp.MustCompile(`createElement\(\s*([^)]*)\)`).FindAllStringSubmatch(js, -1) {
 		tags[m[1]] = true
@@ -166,11 +166,13 @@ func htmlSinks(src string) []string {
 //
 //  1. THE PAGE (behaviour): a transcript bubble is drawn by the server, its
 //     markdown already rendered — not raw text marked data-md for a script.
-//  2. THE BROWSER (a ledger): every HTML sink in every inline script of the
-//     page is listed below with what it writes. The chat script's are the
-//     server's own HTML — the socket's "html" (a delta, a sent echo) and a
+//  2. THE BROWSER (a ledger): every HTML sink in agentChatScript — the one
+//     script that draws chat messages — is listed below with what it writes:
+//     the server's own HTML, the socket's "html" (a delta, a sent echo) and a
 //     card fragment it fetched. The list fails when it grows (a sink fed by a
-//     client renderer) or shrinks (the ledger has gone stale).
+//     client renderer) or shrinks (the ledger has gone stale). The page's
+//     other scripts (htmx, the shell, restore, toasts) draw no message and are
+//     deliberately not listed, so their changes cannot break this test.
 //  3. THE SERVER (a ledger): the socket's "html" is made only by
 //     ChatMessageHTML, and ChatMessageHTML and chatBubble are the only users
 //     of chatMessageBody — enumerated over the non-test Go of internal/ui and
@@ -178,7 +180,8 @@ func htmlSinks(src string) []string {
 //
 // 🔴 REGRESSION: red at 1b029ed9 on (1) — the bubble was
 // `data-md="">see **bold**` — and on (2): the chat script assigned
-// mdRender(…) to innerHTML five times, and (3) did not exist.
+// mdRender(…) to innerHTML six times (seven innerHTML sinks in all, with the
+// dispatch card's), and (3) did not exist.
 func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	v := AgentDetailView{Name: "agent-md", Status: "running", Messages: []ChatLine{
 		{Role: "user", Content: "see **bold** and route_id rt_ab_cd", ID: 1},
@@ -199,28 +202,25 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 		t.Errorf("a bubble is still marked data-md for client-side rendering")
 	}
 
-	// 2. The browser.
-	gotSinks := htmlSinks(page)
+	// 2. The browser: agentChatScript's HTML sinks, in source order.
+	js := chatScriptJS(t, v.Name)
+	if !strings.Contains(page, js) {
+		t.Fatalf("the agent page does not carry agentChatScript as rendered here")
+	}
+	gotSinks := htmlSinks(js)
 	wantSinks := []string{
-		// agentChatScript: a dispatched agent's card, fetched from the server.
+		// A dispatched agent's card, fetched from the server.
 		".innerHTML = html.trim()",
-		// agentChatScript: a sent message's echo, and a delta's reply so far.
+		// A sent message's echo, and a delta's reply so far.
 		".innerHTML = msg.html",
 		".innerHTML = msg.html",
-		// Not the chat's: htmx's own server response, the app shell's constant
-		// markup, a parse of a server page (restore), its copy, a toast glyph.
-		".innerHTML = e.detail.serverResponse || ''",
-		".innerHTML = SHELL",
-		"DOMParser",
-		".innerHTML = fresh.innerHTML",
-		".innerHTML = TOAST_GLYPH",
 	}
 	if strings.Join(gotSinks, "\n") != strings.Join(wantSinks, "\n") {
-		t.Errorf("the agent page's HTML sinks changed:\n got:\n  %s\nwant:\n  %s",
+		t.Errorf("agentChatScript's HTML sinks changed:\n got:\n  %s\nwant:\n  %s",
 			strings.Join(gotSinks, "\n  "), strings.Join(wantSinks, "\n  "))
 	}
-	if js := chatScriptJS(t); strings.Count(js, "innerHTML") != 3 {
-		t.Errorf("agentChatScript touches innerHTML %d times; the ledger above lists 3", strings.Count(js, "innerHTML"))
+	if n := strings.Count(js, "innerHTML"); n != len(wantSinks) {
+		t.Errorf("agentChatScript touches innerHTML %d times; the ledger above lists %d", n, len(wantSinks))
 	}
 
 	// 3. The server.

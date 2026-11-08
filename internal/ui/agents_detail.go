@@ -1861,6 +1861,9 @@ func chatBubble(role, content string, id int64) g.Node {
 		// data-msg-id: the stable key the bubble clamp remembers an opened
 		// message by across the chat-log refresh (bubble_clamp.go).
 		g.If(id > 0, g.Attr("data-msg-id", strconv.FormatInt(id, 10))),
+		// data-md-rendered: says the body is server-rendered markdown. No
+		// runtime code reads it (nothing converts bubbles any more); the browser
+		// specs count bubbles by it, as they do the mirrored view's.
 		g.Attr("data-md-rendered", ""),
 		chatMessageBody(role, content),
 	)
