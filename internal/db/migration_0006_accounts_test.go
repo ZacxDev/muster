@@ -116,8 +116,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - session_tags (0086, the per-owner session tags).
 //   - asks (0089, the ask log: every question an agent put to its owner).
 //   - host_dispatches (0093, the chief's host spawns).
+//   - notify_preferences (0094, the per-user notification preferences).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mail_resumes", "mirror_tokens", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
+	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
@@ -194,6 +195,8 @@ var wantForeignKeys = []string{
 	// 0093: a host dispatch is its owner's; its task is unlinked when deleted.
 	"host_dispatches|host_dispatches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
+	// 0094: one notification-preferences row per user.
+	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"asks|asks_episode_owner_fkey|FOREIGN KEY (episode_id, owner_id) REFERENCES session_episodes(id, owner_id) ON DELETE SET NULL (episode_id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)

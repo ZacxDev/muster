@@ -376,6 +376,11 @@ func (s *Server) episodeAsk(octx context.Context, ep sessionstate.Episode, hosts
 // mirror.WhereTarget alone, so a stop whose conversation no window held any
 // more was pushed and drawn under its raw tmux session even while its host
 // still labelled that session.
+//
+// A conversation with a human name is called by it — followed by its window's
+// tmux address when its owner turned on "Show tmux sessions"
+// (notifyName, over the target episodePlace finds: the window holding it now,
+// else the stored one).
 func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
@@ -388,6 +393,7 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		}
 		return "An agent", ""
 	}
+	where, target, at := episodePlace(ep, hosts)
 	if ep.Host != "" && ep.Key != "" {
 		// A conversation with a HUMAN name is called by it; its place is the
 		// push's to omit and the Asks page's to show. Looked up by the
@@ -395,18 +401,31 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		// session key of its own (round 1 of #505: the name was never found).
 		sub := focus.MirrorSubject(ep.Key)
 		if n := (focusIndex{sub: {Subject: sub, Name: s.storedName(octx, sub)}}).humanMirrorName(ep.Key); n != "" {
+			// Plain already, and the place is the host's words: kept whole.
+			n = notifyName(n, at, s.notifyTmuxOn(octx, ep.Owner))
 			return n, n
 		}
-		if _, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
-			return where, keep
+	}
+	return where, target
+}
+
+// episodePlace is where mirrored episode ep's session is, as episodeWho names
+// a session with no human name: the words, and the part the title rule keeps
+// verbatim (its tmux target when it has one) — and at, the window as muster
+// named it before sessions had names (mirror.SessionView.Place), for
+// notifyName; the zero Place when no tmux place is known.
+func episodePlace(ep sessionstate.Episode, hosts []mirror.HostView) (where, keep string, at mirror.Place) {
+	if ep.Host != "" && ep.Key != "" {
+		if e, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
+			return where, keep, e.Place()
 		}
 	}
 	if ep.TmuxSession != "" && ep.Host != "" {
 		if e, ok := episodePlaceEntry(hosts, ep); ok {
-			return entryWhere(e), e.WhereTarget()
+			return entryWhere(e), e.WhereTarget(), e.Place()
 		}
 		where := mirror.WhereTarget(ep.Host, ep.TmuxSession, ep.Window, ep.Index)
-		return where, where
+		return where, where, mirror.SessionView{Host: ep.Host, Session: ep.TmuxSession, Window: ep.Window, Index: ep.Index}.Place()
 	}
 	// No tmux target or no host stored: as much of the place as is known.
 	target := ep.TmuxSession + ":" + strconv.Itoa(ep.Index)
@@ -414,9 +433,9 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		target = "A session"
 	}
 	if ep.Host == "" {
-		return target, target
+		return target, target, mirror.Place{}
 	}
-	return target + " @ " + ep.Host, target
+	return target + " @ " + ep.Host, target, mirror.Place{}
 }
 
 // episodePlaceEntry is the place stored on ep (its host, tmux session and

@@ -253,7 +253,10 @@ var dockJS = func() string {
 
   // rowOf is pill p as a dock row: line 1 the waiting badge, the WHOLE label
   // (wrapping, never cut: the bar's whole-name rule) and the host, icon and
-  // name; line 2 the current focus title, one line. The page's own session is
+  // name; line 2 the current focus title, one line; then — with "Show tmux
+  // sessions" on — the window's codename and host as the server set them on
+  // the pill (data-switcher-tmux), one muted line, the second when there is
+  // no focus title. It is text in the row, so part of its accessible name. The page's own session is
   // drawn current, not linked, where the bar draws it so.
   function rowOf(p) {
     var cur = p.hasAttribute('data-switcher-current');
@@ -298,6 +301,12 @@ var dockJS = func() string {
       var l2 = el('span', 'truncate text-xs text-muted', f);
       l2.setAttribute('data-dock-focus', '');
       r.appendChild(focusAgeLine(p.getAttribute('data-switcher-focus-age'), p.hasAttribute('data-switcher-focus-stale'), l2));
+    }
+    var tx = p.getAttribute('data-switcher-tmux');
+    if (tx) {
+      var l3 = el('span', 'truncate text-xs text-muted', tx);
+      l3.setAttribute('data-dock-tmux', '');
+      r.appendChild(l3);
     }
     li.appendChild(r);
     return li;
