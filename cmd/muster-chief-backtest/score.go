@@ -357,6 +357,12 @@ func writeReport(w io.Writer, cases []Case, outDir string, offered map[string]bo
 		if p := proxy[id]; p != nil {
 			u = *p
 		}
+		// 🔴 A replay the provider refused part-way (a spent key, a timeout)
+		// is INCOMPLETE, not a decision: it is left out of the totals and
+		// shown as such, never scored as "none".
+		if ran && (u.Failed > 0 || r.ExitError != "") {
+			ran = false
+		}
 		rows = append(rows, row{v: score(c, r.ToolUses, offered), r: r, u: u, ran: ran})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].v.Case.TurnID < rows[j].v.Case.TurnID })
@@ -427,7 +433,11 @@ func writeReport(w io.Writer, cases []Case, outDir string, offered map[string]bo
 			cl += " (db)"
 		}
 		if !r.ran {
-			fmt.Fprintf(w, "| %d | %s | %s | not run | | | | | | | |\n", r.v.Case.TurnID, src, cl)
+			why := "not run"
+			if r.r.ExitError != "" || r.u.Failed > 0 {
+				why = "incomplete (provider refused or CLI failed: " + orNone(r.r.ExitError) + fmt.Sprintf(", %d failed request(s))", r.u.Failed)
+			}
+			fmt.Fprintf(w, "| %d | %s | %s | %s | | | | | | | |\n", r.v.Case.TurnID, src, cl, why)
 			continue
 		}
 		same := "yes"
@@ -467,6 +477,13 @@ func notEnglish(s string) bool {
 		}
 	}
 	return false
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "exit ok"
+	}
+	return s
 }
 
 func uniq(s []string) []string {
