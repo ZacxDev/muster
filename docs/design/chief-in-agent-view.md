@@ -766,8 +766,8 @@ workstation: assistant text containing the handoff skill's kickoff line
 | the block ≤ 1 KiB | 925 (23 larger) | — |
 | the line not fenced | 3, all mentions, not kickoffs | 19: mostly tables quoting it, and at least 2 real kickoffs written unfenced after a `---` rule |
 
-The handoff skill's tool prints the block fenced
-(`devrc/scripts/lib/handoff_doc.py`, `kickoff_block`). So `{ref, block: 0}`
+The handoff skill's own tool prints the block fenced (its `kickoff_block`
+function). So `{ref, block: 0}`
 names the kickoff in almost every case.
 
 **Phase 2 must keep `block` optional** (the whole message), as 4.2 already

@@ -97,6 +97,8 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /mirror/view/complete': 'JSON (the composer menu data)',
   'GET /mirror/view/suggest': 'JSON (the composer\'s suggested replies)',
   'GET /mirror/view/send': 'a redirect back to the view',
+  'GET /mirror/view/chief': 'a redirect back to the view (a chief send that came back from a sign-in)',
+  'GET /mirror/view/chief/log': 'an HTML fragment (the view\'s chief strip, fetched into #mv-chief-log)',
   'GET /mirror/view/subagent': 'an HTML fragment (an opened subagent card\'s steps, fetched into the card)',
   'GET /mirror/view/ws': 'websocket',
   'GET /send-queue': 'an htmx partial (the queue list)',
