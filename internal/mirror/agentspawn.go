@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -34,8 +35,8 @@ const (
 	TypeAgentSpawned = "agent-spawned"
 )
 
-// The runtimes a host can spawn (Msg.AgentSpawn). Phase 3 builds claude only;
-// a host never advertises opencode until phase 4 ships.
+// The runtimes a host can spawn (Msg.AgentSpawn). opencode is advertised only
+// beside Msg.OpenCodeSend (spawnRuntimesOf).
 const (
 	SpawnRuntimeClaude   = "claude"
 	SpawnRuntimeOpenCode = "opencode"
@@ -79,6 +80,41 @@ const (
 // host refuses any prompt that does not begin with this text, which is never a
 // subcommand name and never begins with '-'.
 const SpawnPreface = "muster: your owner's chief started you"
+
+// THE MODEL OF AN opencode SPAWN (design 2.2, 3.6): an OpenRouter model id,
+// <vendor>/<model>, which travels on the wire as openrouter/<vendor>/<model>
+// and reaches opencode as Model.Ref {providerID: "openrouter", id:
+// "<vendor>/<model>"} (upstream's Model.Ref.parse splits at the FIRST '/').
+// ONE rule for the server's check, the configured model list and the host's
+// check of what it is sent.
+
+// SpawnModelProvider is the opencode provider id a spawn's model is run under:
+// measured on opencode v2.0.32+6ec5682, OpenRouter's models are listed under
+// providerID "openrouter" (GET /api/model).
+const SpawnModelProvider = "openrouter"
+
+// MaxSpawnModel bounds an OpenRouter model id, in bytes.
+const MaxSpawnModel = 128
+
+// spawnModelRE is an OpenRouter model id's shape: <vendor>/<model>, one '/'.
+var spawnModelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+
+// ValidSpawnModel reports whether id is an OpenRouter model id muster takes
+// for an opencode spawn: the shape above, at most MaxSpawnModel bytes.
+func ValidSpawnModel(id string) bool { return len(id) <= MaxSpawnModel && spawnModelRE.MatchString(id) }
+
+// SpawnModelWire is id as an agent-spawn carries it: openrouter/<id>.
+func SpawnModelWire(id string) string { return SpawnModelProvider + "/" + id }
+
+// ParseSpawnModel reads an agent-spawn's model as opencode's Model.Ref does —
+// the provider before the FIRST '/', the id after it — and reports whether it
+// is an OpenRouter model id muster takes: the provider is exactly
+// SpawnModelProvider and the id passes ValidSpawnModel. So "a/b/c" is provider
+// "a", id "b/c", and refused.
+func ParseSpawnModel(wire string) (provider, id string, ok bool) {
+	provider, id, found := strings.Cut(wire, "/")
+	return provider, id, found && provider == SpawnModelProvider && ValidSpawnModel(id)
+}
 
 // AgentSpawnReq is an agent-spawn's request (Msg.Spawn).
 type AgentSpawnReq struct {
@@ -261,13 +297,18 @@ func (h *Hub) listingApplied(hc *hostConn) {
 }
 
 // spawnRuntimesOf is the runtimes a hello advertises that this muster knows,
-// for an -interactive host only.
+// for an -interactive host only. opencode only beside hello.OpenCodeSend: the
+// spawn posts the first prompt through the same API the gated send uses, so a
+// host that does not send to opencode cannot start it (design 3.1).
 func spawnRuntimesOf(hello Msg) []string {
 	if !hello.Interactive {
 		return nil
 	}
 	var out []string
 	for _, r := range hello.AgentSpawn {
+		if r == SpawnRuntimeOpenCode && !hello.OpenCodeSend {
+			continue
+		}
 		if (r == SpawnRuntimeClaude || r == SpawnRuntimeOpenCode) && !slices.Contains(out, r) {
 			out = append(out, r)
 		}

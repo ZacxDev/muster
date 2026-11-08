@@ -173,15 +173,9 @@ func (a launchArgs) argv(session string) []string {
 	return out
 }
 
-// normalizeOpenCodeVersion is v without "opencode " and a leading "v":
-// `opencode --version` says "opencode v2.0.32+6ec5682", GET /api/info
-// "2.0.32+6ec5682" (both measured on that build).
-func normalizeOpenCodeVersion(v string) string {
-	v = strings.TrimSpace(v)
-	v = strings.TrimPrefix(v, "opencode")
-	v = strings.TrimSpace(v)
-	return strings.TrimPrefix(v, "v")
-}
+// normalizeOpenCodeVersion is opencodehost.NormalizeVersion: the ONE rule the
+// launcher and the host spawn compare versions by.
+func normalizeOpenCodeVersion(v string) string { return opencodehost.NormalizeVersion(v) }
 
 // errVersionMismatch is the launcher's refusal of a mismatched TUI.
 var errVersionMismatch = errors.New("opencode version mismatch")
@@ -264,7 +258,7 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 	switch {
 	case session == "":
 		session = opencodehost.NewSessionID(d.now())
-		if _, err := cl.CreateSession(ctx, session, dir); err != nil {
+		if _, err := cl.CreateSession(ctx, session, dir, nil); err != nil {
 			return unbound("the session could not be created: " + err.Error())
 		}
 	case !opencodehost.ValidSessionID(session):
@@ -275,7 +269,7 @@ func runOpenCodeLaunch(args []string, d launchDeps, stderr io.Writer) int {
 		switch {
 		case errors.Is(err, opencodehost.ErrSessionNotFound):
 			// opencode's own -s creates a session that does not exist.
-			if _, err := cl.CreateSession(ctx, session, dir); err != nil {
+			if _, err := cl.CreateSession(ctx, session, dir, nil); err != nil {
 				return unbound("the session could not be created: " + err.Error())
 			}
 		case err != nil:

@@ -70,6 +70,17 @@ type Server struct {
 	version      string
 	commands     []map[string]string
 	failCommands bool
+	// The host spawn's (send.go): the models GET /api/model lists, each
+	// session's model, how many sessions were created, and every create,
+	// prompt and delete in order.
+	models        []Model
+	sessionModels map[string]map[string]string
+	creates       int
+	log           []LogEntry
+	// promptDelayOnce delays the next prompt's answer only; refusePrompts
+	// answers every prompt 400.
+	promptDelayOnce time.Duration
+	refusePrompts   bool
 }
 
 // FailEvents makes the event stream answer 503 (on) — a server whose stream
