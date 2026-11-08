@@ -38,13 +38,13 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 // relayOf is the plugin relay a stored row carries, nil for none: a USER text
 // row that NOBODY TYPED (typed_by 0) and that is a relay —
 //
-//   - by its STORED LINK (chat_messages.plugin_message_id, migration 0095),
+//   - by its STORED LINK (chat_messages.plugin_message_id, migration 0096),
 //     which internal/plugins' Deliverer writes on every relay row since. That
 //     decides it, whatever the text says; the text is read only for the
 //     label (the plugin and subject its preface names, when it has one).
-//   - for a row written BEFORE 0095 (no link), by muster's own relay preface
+//   - for a row written BEFORE 0096 (no link), by muster's own relay preface
 //     (plugins.ParseRelayTurn — muster's words, not the sender's). This is the
-//     fallback only: no row written since 0095 needs it.
+//     fallback only: no row written since 0096 needs it.
 //
 // A typed row is the owner's however it reads, link or no link: pasting a
 // relay's text into the chat keeps it the owner's bubble.

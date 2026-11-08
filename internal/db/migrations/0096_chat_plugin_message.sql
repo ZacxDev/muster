@@ -1,4 +1,4 @@
--- muster 0095 — WHICH PLUGIN MESSAGE A CHAT ROW RELAYS (PR #527, round 0 Q1).
+-- muster 0096 — WHICH PLUGIN MESSAGE A CHAT ROW RELAYS (PR #527, round 0 Q1).
 --
 --   chat_messages.plugin_message_id   the plugin message (plugin_messages.id)
 --       a USER row relays to the chief: written by internal/plugins Deliverer
@@ -16,15 +16,15 @@
 -- it, nor be blocked by it. No index: nothing reads by it; it is read with the
 -- row.
 --
--- Must apply after 0094 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0095 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default); the column inherits the
 -- table's row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0095 never writes or reads the column and runs
+-- ROLLBACK. An image from before 0096 never writes or reads the column and runs
 -- against this schema unchanged (its relay rows are drawn by the preface
 -- fallback). To remove it:
 --   ALTER TABLE chat_messages DROP COLUMN IF EXISTS plugin_message_id;
---   DELETE FROM schema_migrations WHERE version = 95;
+--   DELETE FROM schema_migrations WHERE version = 96;
 
 SET LOCAL lock_timeout = '3s';
 

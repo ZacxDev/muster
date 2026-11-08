@@ -281,7 +281,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 			messageID, outcome, ok, rerr)
 	}
 	// The row names the message it relays (chat_messages.plugin_message_id,
-	// migration 0095): what the agent page draws its collapsed relay row by.
+	// migration 0096): what the agent page draws its collapsed relay row by.
 	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message, PluginMessageID: messageID})
 	// The reply's ORDERED parts — text and tool calls interleaved — as an
 	// ordinary chat turn stores them, so the session shows what the chief did.

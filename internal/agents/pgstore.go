@@ -1000,7 +1000,7 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 
 // chatMessageCols is the column list every chat_messages read (and the insert's
 // RETURNING) scans with scanChatMessage — ONE list, so a column added to the row
-// (typed_by 0081, plugin_message_id 0095) cannot be read by one path and
+// (typed_by 0081, plugin_message_id 0096) cannot be read by one path and
 // silently zero on another.
 const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0)`
 

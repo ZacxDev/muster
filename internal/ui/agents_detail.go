@@ -60,8 +60,8 @@ type ChatLine struct {
 	// task event) to the chief: drawn as a collapsed system row (relayRow),
 	// never as the person's bubble. nil for every other line — internal/api
 	// chatLinesOf (relayOf) sets it only on an untyped user row that carries a
-	// stored plugin-message link (migration 0095), or — a row from before
-	// 0095 — whose text is muster's own relay preface (plugins.ParseRelayTurn).
+	// stored plugin-message link (migration 0096), or — a row from before
+	// 0096 — whose text is muster's own relay preface (plugins.ParseRelayTurn).
 	Relay *ChatRelay
 }
 

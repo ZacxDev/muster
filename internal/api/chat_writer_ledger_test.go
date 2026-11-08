@@ -88,7 +88,7 @@ func TestEveryChatWriterIsClassified(t *testing.T) {
 		// the quote read, and the column list every other read scans (the
 		// transcript's — a question card is answered only by a TYPED line,
 		// ui.chiefToolCard — and the one-row read): chatMessageCols, ONE list
-		// since 0095 added plugin_message_id.
+		// since 0096 added plugin_message_id.
 		`internal/agents/pgstore.go (*PGStore).AddChatMessage → sql typed_by`:         chatOwnerTyped,
 		`internal/agents/pgstore.go (*PGStore).OwnerTypedChatMessages → sql typed_by`: chatOwnerTyped,
 		`internal/agents/pgstore.go chatMessageCols → sql typed_by`:                   chatOwnerTyped,
@@ -169,7 +169,7 @@ func chatWriterSites(t *testing.T) []string {
 		for _, decl := range file.Decls {
 			// 🔴 A PACKAGE-LEVEL const OR var NAMING typed_by IS A SITE TOO. The
 			// reads' column list moved into one const (agents.chatMessageCols,
-			// with plugin_message_id, 0095), and a scan of function bodies alone
+			// with plugin_message_id, 0096), and a scan of function bodies alone
 			// stopped seeing the reads at all — the ledger reported them GONE
 			// rather than moved. Each such spec is listed by its name.
 			if gen, ok := decl.(*ast.GenDecl); ok && (gen.Tok == token.CONST || gen.Tok == token.VAR) {

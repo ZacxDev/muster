@@ -46,10 +46,10 @@ func TestOnlyAnUntypedUserRowIsARelay(t *testing.T) {
 
 // TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback: the drawn
 // transcript (chatLinesOf → ui.ChatLogBody) draws a row CARRYING a stored
-// plugin-message link (chat_messages.plugin_message_id, 0095) as the collapsed
+// plugin-message link (chat_messages.plugin_message_id, 0096) as the collapsed
 // relay row even though its text does NOT begin with muster's relay preface;
 // an owner-typed row whose text DOES read as a relay stays the owner's bubble,
-// link or no link; a pre-0095 row (no link) is still read by its preface. The
+// link or no link; a pre-0096 row (no link) is still read by its preface. The
 // fixture texts, ids and plugin labels are pairwise distinct, so a relay drawn
 // from the wrong row, or labelled from the wrong field, is seen.
 func TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback(t *testing.T) {
@@ -65,7 +65,7 @@ func TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback(t *testing.T
 		{ID: 102, Role: "user", Content: relayText, TypedBy: 7},
 		// Typed AND (impossibly) linked: still the owner's bubble — typing wins.
 		{ID: 103, Role: "user", Content: "Pasted: " + relayText, TypedBy: 7, PluginMessageID: 4402},
-		// Pre-0095 (no link), untyped, the preface: the fallback reads it.
+		// Pre-0096 (no link), untyped, the preface: the fallback reads it.
 		{ID: 104, Role: "user", Content: relayText},
 		// Untyped, no link, plain text: a bubble.
 		{ID: 105, Role: "user", Content: "Status of the gpu pool?"},

@@ -210,7 +210,7 @@ func TestATurnThatCallsToolsIsStoredAsTheChatTurnStoresIt(t *testing.T) {
 // TestAStoredRelayRowNamesThePluginMessageItRelays: the chief's chat row for a
 // delivered plugin message (Deliver) and for one handed over without a turn
 // (Handed) carries that message's id (chat_messages.plugin_message_id,
-// migration 0095) — the stored link the agent page draws its collapsed relay
+// migration 0096) — the stored link the agent page draws its collapsed relay
 // row by — and the reply rows carry none. The two messages' ids differ, so a
 // writer storing the wrong one is seen.
 func TestAStoredRelayRowNamesThePluginMessageItRelays(t *testing.T) {

@@ -30,10 +30,10 @@ var relayPreface = regexp.MustCompile(`^Plugin (.+?): (?:message_id (\d+)|task e
 // message, or a task event) back into its plugin, ids and subject; ok false
 // for any other text.
 //
-// 🔴 IT IS THE FALLBACK, FOR ROWS WRITTEN BEFORE MIGRATION 0095. Since 0095 the
+// 🔴 IT IS THE FALLBACK, FOR ROWS WRITTEN BEFORE MIGRATION 0096. Since 0096 the
 // Deliverer stores the link itself (chat_messages.plugin_message_id), and that
 // is what decides a relay row (internal/api relayOf); this is read then only for
-// the label. A row from before 0095 has no link, so for it this decides — on a
+// the label. A row from before 0096 has no link, so for it this decides — on a
 // row the caller already knows is not a person's (typed_by 0: nobody typed it
 // into muster's chat), because muster's preface is text a person typing can
 // spell too: a typed row is never passed here, so an owner who pastes a relay's
