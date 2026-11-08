@@ -60,7 +60,8 @@ func streamFailure(ev sseEvent) (*StreamError, bool) {
 		Message  string `json:"message"`
 		Error    any    `json:"error"`
 		Response struct {
-			Status string `json:"status"`
+			Status string                `json:"status"`
+			Output []responsesOutputItem `json:"output"`
 			Error  *struct {
 				Code    any    `json:"code"`
 				Message string `json:"message"`
@@ -84,6 +85,14 @@ func streamFailure(ev sseEvent) (*StreamError, bool) {
 		f := &StreamError{}
 		if e := env.Response.Error; e != nil {
 			f.Code, f.Message = codeString(e.Code), e.Message
+		}
+		// 🔴 NO error OBJECT IS NOT NO REASON: a failed completion can carry its
+		// reason (or the partial text it got to) as OUTPUT text. That text is the
+		// failure's message, bounded like the runtime's other words; "gave no
+		// reason" is only for a failure that carried neither.
+		if strings.TrimSpace(f.Message) == "" {
+			r := responsesResponse{Output: env.Response.Output}
+			f.Message = strings.TrimSpace(r.messageText())
 		}
 		return bound(f), true
 	case "error":

@@ -263,4 +263,32 @@ func TestAStreamThatGoesSilentIsBoundedByTheRequestTimeoutAndCountsAsAFailure(t 
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("error %q; want it to say the runtime's request timed out", err)
 	}
+	if !IsClientTimeout(err) {
+		t.Errorf("IsClientTimeout(%q) = false; a log label asking it would misname the failure", err)
+	}
+	if IsClientTimeout(errors.New("x")) || IsClientTimeout(context.DeadlineExceeded) {
+		t.Error("control: IsClientTimeout matched an error that is not the client's timeout")
+	}
+}
+
+// TestAFailedCompletionWithNoErrorObjectCarriesItsText: a completion whose
+// status is "failed" and that has NO response.error reports the text it
+// carried (a runtime puts its placeholder or partial answer there) as the
+// failure's message; only a failed completion with neither says "gave no
+// reason".
+func TestAFailedCompletionWithNoErrorObjectCarriesItsText(t *testing.T) {
+	const carried = "partial answer before the provider refused"
+	withText := sse("response.completed", map[string]any{"response": map[string]any{"status": "failed",
+		"output": []any{map[string]any{"type": "message", "role": "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": "  " + carried + "\n"}}}}}})
+	_, err := parseResponsesSSE(strings.NewReader(withText), nil)
+	var se *StreamError
+	if !errors.As(err, &se) || se.Message != carried {
+		t.Fatalf("failed completion with text = %v; want a StreamError whose message is exactly %q", err, carried)
+	}
+	empty := sse("response.completed", map[string]any{"response": map[string]any{"status": "failed", "output": []any{}}})
+	_, err = parseResponsesSSE(strings.NewReader(empty), nil)
+	if !errors.As(err, &se) || err.Error() != "runtime turn failed: the runtime reported the turn failed and gave no reason" {
+		t.Fatalf("failed completion with no text = %v; want the no-reason StreamError", err)
+	}
 }

@@ -335,9 +335,28 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		// — so a runtime that held a turn open past the request timeout left the
 		// agent `running` for ever. %v, not %w, on purpose: this is a failure
 		// of the runtime, and must not match the caller's deadline.
-		return nil, fmt.Errorf("the runtime's /v1/responses request timed out before the turn finished: %v", err)
+		return nil, &ClientTimeoutError{cause: err.Error()}
 	}
 	return out, err
+}
+
+// ClientTimeoutError is the HTTP client's own Timeout ending a /v1/responses
+// request while the caller's context was still alive (streamResponses).
+//
+// 🔴 IT DELIBERATELY DOES NOT MATCH context.DeadlineExceeded (net/http's error
+// does): the outcome tracker reads DeadlineExceeded as "the caller gave up" and
+// records nothing, and this is a failure of the runtime. A reader that wants
+// "the turn outlived a budget" — a log label — asks [IsClientTimeout] as well.
+type ClientTimeoutError struct{ cause string }
+
+func (e *ClientTimeoutError) Error() string {
+	return "the runtime's /v1/responses request timed out before the turn finished: " + e.cause
+}
+
+// IsClientTimeout reports whether err is (or wraps) a [ClientTimeoutError].
+func IsClientTimeout(err error) bool {
+	var c *ClientTimeoutError
+	return errors.As(err, &c)
 }
 
 // RuntimeError is a non-200, non-404 answer from an agent runtime's
@@ -488,6 +507,11 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	// sentence, and the agent's outcome said "no reply text" instead. And a read
 	// that broke after the error (the request timeout) is
 	// the runtime's error, in its words, not the read's.
+	//
+	// ⚠ SO A CALLER MUST CHECK ctx.Err() BEFORE CLASSIFYING THE ERROR: a turn
+	// CANCELLED (or past the caller's deadline) after a bare `error` event comes
+	// back as that runtime StreamError, not as context.Canceled /
+	// DeadlineExceeded. turnFailureCounts (internal/api) does check ctx first.
 	if failed != nil && (final == nil || final.answersNothing()) {
 		return nil, failed
 	}

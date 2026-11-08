@@ -671,7 +671,7 @@ func failureNote(err error) string {
 	switch {
 	case errors.As(err, &rt):
 		return fmt.Sprintf(" (the runtime answered HTTP %d, type %q)", rt.Status, rt.Type)
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || agents.IsClientTimeout(err):
 		return " (the turn outlived its budget)"
 	case errors.Is(err, context.Canceled):
 		return " (the turn was cut off, most likely by this process shutting down)"
