@@ -212,6 +212,25 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 	if got, ok := est.p.ItemCost(officer, 1, "item-estimated"); ok {
 		t.Errorf("a hold with a request booked from the estimate: cost %v reported known, want unknown", got)
 	}
+	// An estimated request, THEN one with a reported cost: still unknown (the
+	// later request does not make the earlier estimate a measurement).
+	mixed := newRig(t, officer, func(w http.ResponseWriter, req *http.Request, n int) {
+		var cost any = 0.0271
+		if n == 1 {
+			cost = nil
+		}
+		streamOK(cost)(w, req, n)
+	})
+	mixed.p.ClaimedAttempt(officer, 1, "item-mixed", 1)
+	for i := 0; i < 2; i++ {
+		if resp, body := mixed.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("mixed request %d: %d %s", i+1, resp.StatusCode, body)
+		}
+	}
+	if got, ok := mixed.p.ItemCost(officer, 1, "item-mixed"); ok {
+		t.Errorf("an estimated request then a reported one: cost %v reported known, want unknown", got)
+	}
+
 	// The positive control, with the same requests: a first claim, metered
 	// whole, is known — and stays known through muster's already-yours
 	// re-claim of the item it holds (no new HQ claim, attempts unknown).

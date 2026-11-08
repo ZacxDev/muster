@@ -442,7 +442,12 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 			return
 		}
 		var used int64
-		used, item = p.items.used(k)
+		var hold *held
+		used, item, hold = p.items.admit(k)
+		// In flight on the hold until this handler returns: book (below) runs
+		// before it, so the hold's cost is unknown until the request is booked
+		// or refused (ItemCost).
+		defer p.items.done(hold)
 		rec.Item = item
 		// 🔴 THE ITEM CAP BINDS A HELD ITEM ONLY. A turn holding none (a
 		// kickoff, a re-prompt, the turn between items) is no item's work: the

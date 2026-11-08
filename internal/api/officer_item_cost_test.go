@@ -271,6 +271,20 @@ func TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost(t *testing.T) {
 	}
 }
 
+// TestACostAboveHQsBoundIsOmitted: a hold that booked 12345.6789 USD (above
+// HQ's 10000, which HQ refuses as a reporting error) completes with ONE
+// request and no cost fields — not a costed complete HQ refuses and a retry.
+func TestACostAboveHQsBoundIsOmitted(t *testing.T) {
+	r := newItemCostRig(t)
+	r1 := r.agent(t, costRoutine+"1")
+	item := r.hq.AddTieredItem(costOff, "web.check", "node-huge", officers.TierRoutine)
+	r.claim(t, r1, item)
+	r.llm(t, r1, 12345.6789)
+	if got, want := r.complete(t, r1, item, "done"), bodyWith("", r1.Name, "done"); len(got) != 1 || got[0] != want {
+		t.Errorf("complete bodies\n got %q\nwant [%s]", got, want)
+	}
+}
+
 // TestACompleteHQRefusesForItsCostStillCompletes: against an HQ from before
 // item cost (it refuses the unknown fields, 400), the complete is sent again
 // without the cost and the item is done; the instance sees success, and the

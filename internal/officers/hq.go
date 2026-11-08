@@ -412,9 +412,9 @@ type ItemCost struct {
 }
 
 // CostFromLLMProxy is cost_from for a cost muster's LLM proxy metered: the
-// provider-reported (or, for a response that carried none, the proxy's
-// pessimistic estimate of) the cost of every request the item's routine hold
-// made.
+// provider-reported cost of every request the item's routine hold made. A
+// hold with a request booked from the proxy's estimate (a response that
+// reported no cost) has no known cost, and sends none.
 const CostFromLLMProxy = "muster:llm-proxy"
 
 // Investigation is HQ's investigation block on an `escalated` complete

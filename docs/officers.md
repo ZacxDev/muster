@@ -2233,12 +2233,21 @@ the hold is the item's whole proxy spend: HQ's first claim of the item
 (`attempts` 1 in HQ's claim answer), claimed through muster (not adopted from
 HQ's claimed list after a restart, and not muster's already-yours answer for a
 hold it did not meter), at least one request booked, and none booked from the
-proxy's pessimistic estimate (a response that reported no cost). A second or later
+proxy's pessimistic estimate (a response that reported no cost), and no
+request admitted under the hold still in flight when the complete reads it
+(one still streaming would be booked after the read, so the sum would be
+short). A second or later
 claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
 send none. The meter is in memory (`internal/llmproxy/items.go`).
 
 A judgement or untiered instance's Claude Code session has **no cost source
 muster reads**, so its complete sends none.
+
+⚠ **HQ keeps a cost a later complete does not replace** (its complete
+coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
+complete and that is worked again keeps the FIRST hold's cost: the later hold
+is not HQ's first claim, so it sends none, and the item's cost understates
+what working it cost overall.
 
 The cost never fails a complete: when HQ refuses the complete that carries it
 with a 400 (an HQ from before item cost refuses the unknown fields), muster
