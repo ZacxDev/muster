@@ -56,6 +56,25 @@ type ChatLine struct {
 	// typed_by) — not a plugin message, a hand-back or muster's own note. Only a
 	// typed line answers a question card (chiefToolCard).
 	Typed bool
+	// Relay is set on a user line muster wrote to relay a plugin message (or a
+	// task event) to the chief: drawn as a collapsed system row (relayRow),
+	// never as the person's bubble. nil for every other line — internal/api
+	// chatLinesOf (relayOf) sets it only on an untyped user row that carries a
+	// stored plugin-message link (migration 0096), or — a row from before
+	// 0096 — whose text is muster's own relay preface (plugins.ParseRelayTurn).
+	Relay *ChatRelay
+}
+
+// ChatRelay is what a relay row names: the plugin it came through and the
+// message's subject (a task event's title), "" for none. Task marks a task
+// event.
+type ChatRelay struct {
+	Source, Subject string
+	Task            bool
+	// MessageID is the plugin message's id (the row's stored link, or the id
+	// its preface names); Source "" draws "a plugin" and, with no Subject, the
+	// id names it.
+	MessageID int64
 }
 
 // ChatSurface names WHERE a chat pane is being rendered.
@@ -346,6 +365,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 }
 
 func agentDetailHeader(v AgentDetailView) g.Node {
+	if headerFolded(v) {
+		return foldedHeader(v)
+	}
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
@@ -388,86 +410,22 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 			// and moved the status icon down (main's CI re-run: 0.00002 from
 			// #agent-status's `span.relative.inline-flex.shrink-0`; e2e
 			// cls-long-transcript's stall after the strip makes it deterministic).
-			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, Div(
+			//
+			// ⚠ ONLY A GATEWAY AGENT'S PAGE HAS THIS ROW: a claude-code agent's
+			// returned foldedHeader above (one row; its account, failover, pool
+			// and Terminal in the ⋯ menu — agent_header_folded.go, PR #527).
+			Div(
 				Class("flex items-center gap-2 pl-11 text-xs"+menuRowMin(v.Card)),
 				g.If(v.Card.ID != 0, agentStrip(v.Card)),
 				agentMenuSlot(v.Card),
 				agentModelControl(v),
-			)),
-			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
-			// row in the sidebar opens this page. A claude-code agent also has a
-			// Terminal — the same Rendered | Terminal switch a mirrored Claude Code
-			// window has (viewToggle), on both of its pages. An agent of a kind
-			// with no terminal has one view and no switch.
-			//
-			// 🔴 AND THE ROW IS ONE LINE AT EVERY WIDTH (an operator report: "looks
-			// broken on mobile"). It used to carry a "kind Claude Code · <account>"
-			// chip and a "failed over from … · <reason> · resets …" chip, and at
-			// 412px each wrapped inside its rounded pill into a 3–5 line blob that
-			// grew the row to ~5 lines and pushed the switch to the edge. Now: the
-			// account NAME as plain text (the Terminal switch already says what
-			// kind of agent this is), a one-word failover marker whose detail is
-			// one TAP away (agentFailoverMarker — a title= tooltip never shows on a
-			// touch screen), and the pool as text. Every item is nowrap; the text
-			// ones are the only ones that can shrink (min-w-0 + truncate), so a
-			// long account or pool name ends in "…" instead of growing the row,
-			// and nothing here is taller than the ⋯'s 44px (menuRowMin). e2e
-			// chief-mobile.spec.ts measures the row at 412px and 1280px.
-			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
-				Div(Class("flex min-w-0 items-center gap-2"+menuRowMin(v.Card)),
-					g.If(v.Card.ID != 0, agentStrip(v.Card)),
-					agentMenuSlot(v.Card),
-					Span(g.Attr("data-cc-account", v.CCAccount), g.Attr("title", "Claude account: "+v.CCAccount),
-						Class("min-w-0 truncate text-xs font-medium text-fg2"), g.Text(v.CCAccount)),
-					g.If(v.LastFailover != "", agentFailoverMarker(v.LastFailover)),
-					g.If(v.WorkerPool != "", Span(g.Attr("data-worker-pool", v.WorkerPool), g.Attr("title", "Worker pool: "+v.WorkerPool),
-						Class("min-w-0 truncate text-xs text-muted"), g.Text("pool "+v.WorkerPool))),
-					Div(Class("ml-auto shrink-0"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
+			),
 		),
 		// A restore's "Updating…" (restore.go): hung just below the header (a
 		// sticky box, so it is the chip's containing block), over the top of
 		// the transcript, taking no room in either.
 		updatingChip("agent-updating", "right-3 top-full mt-1"),
 	)
-}
-
-// agentFailoverPopoverID is the failover detail's popover (agentFailoverMarker).
-const agentFailoverPopoverID = "agent-failover"
-
-// agentFailoverMarker is the header's account-failover marker: a one-line
-// "↻ switched" button, the ⋯'s height (h-11, so it never grows the row), that
-// opens the failover's whole line ("from <account> · <reason> · resets …") in
-// a popover. It is the title "…"'s pair (titleMoreButton/fullTitlePopover): a
-// native popover="auto" (top layer; an outside tap or Escape closes it),
-// placed under its trigger and kept inside the viewport by floatingMenuScript
-// (data-menu-align="start": the marker sits at its row's start side).
-func agentFailoverMarker(line string) g.Node {
-	return g.Group{
-		Button(
-			Type("button"),
-			g.Attr("data-failover", ""),
-			g.Attr("popovertarget", agentFailoverPopoverID),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", agentFailoverPopoverID),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Account switched: show why"),
-			Class("press inline-flex h-11 shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-1.5 text-xs font-medium text-st-warning-fg transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			Span(g.Attr("aria-hidden", "true"), g.Text("↻")),
-			g.Text("switched"),
-		),
-		Div(
-			ID(agentFailoverPopoverID),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Account failover"),
-			g.Attr("data-floating-menu", ""),
-			g.Attr("data-menu-align", "start"),
-			g.Attr("data-failover-detail", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-			Span(Class("text-xs font-semibold text-fg2"), g.Text("This agent's Claude account was switched")),
-			Span(Class("[overflow-wrap:anywhere] text-sm"), g.Text(line)),
-		),
-	}
 }
 
 // agentHeaderTools is the first header row's controls right of the title: new
@@ -484,14 +442,23 @@ func agentFailoverMarker(line string) g.Node {
 // settled before any of them is parsed. The width is the controls' own — each
 // h-11 w-11 (2.75rem), gap-3 (0.75rem) between — and a unit test pins it
 // against the rendered children.
-func agentHeaderTools(v AgentDetailView) g.Node {
+func agentHeaderTools(v AgentDetailView) g.Node { return agentHeaderToolsWith(v, false) }
+
+// agentHeaderToolsWith is agentHeaderTools; compact sets the controls 0.25rem
+// apart (gap-1) instead of 0.75rem, for a claude-code agent's one-row header (foldedHeader),
+// which also holds the status dot, the asks badge and the ⋯ beside them.
+func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	n := 2
 	if v.FocusHistory != "" {
 		n = 3
 	}
+	gap := "gap-3 "
+	if compact {
+		gap = "gap-1 "
+	}
 	return Div(
 		g.Attr("data-header-tools", ""),
-		Class("flex shrink-0 items-center gap-3 "+agentHeaderToolsWidth(n)),
+		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(n, compact)),
 		newChatButton(v.ID),
 		chatHistoryButton(sessionDrawerID),
 		g.If(v.FocusHistory != "", focusHistoryButton()),
@@ -509,10 +476,16 @@ func menuRowMin(a AgentCardView) string {
 }
 
 // agentHeaderToolsWidth is the width class of n 2.75rem controls with 0.75rem
-// gaps between them, spelled as literals so Tailwind's content scan sees them.
-func agentHeaderToolsWidth(n int) string {
-	if n == 3 {
+// gaps between them — 0.25rem when compact — spelled as literals so Tailwind's
+// content scan sees them.
+func agentHeaderToolsWidth(n int, compact bool) string {
+	switch {
+	case n == 3 && compact:
+		return "w-[8.75rem]"
+	case n == 3:
 		return "w-[9.75rem]"
+	case compact:
+		return "w-[5.75rem]"
 	}
 	return "w-[6.25rem]"
 }
@@ -934,14 +907,22 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
+		// session does, with the chip in its header (foldedHeader); see below.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
 		Div(
 			ID("chat-log"),
-			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
+			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
+			// page, as a mirrored session's Rendered view draws them (#mv-log). It
+			// was a bordered, tinted, rounded box with its own padding — on the
+			// chief's page that read as a different kind of screen from every
+			// other session (an operator report). py-1 keeps a focus ring at the
+			// scroll edge from being clipped; the column's own gutter is the sides'.
+			Class("flex flex-1 flex-col gap-3 overflow-auto py-1 min-h-0 [&[data-cg-unlaid]>*]:invisible"),
 			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
 			// can paint mid-document — under load, between any two tags — and a
 			// frame of this log before window.__cgLayoutLog runs shows it raw and
@@ -988,6 +969,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// when what it would draw is still exactly this.
 			chatLogVersioned(v),
 		),
+		// A claude-code agent's asks: between the transcript and the composer, where a
+		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
+		// question never sits between the header and the conversation. Its
+		// "N waiting" chip is the header's badge (askerAsksBadge).
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -1053,7 +1039,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-line pt-3 [&[data-cg-unlaid]]:invisible"+classIf(withSwitcher, " "+switcherRoom(false))),
+			// No divider above it: the transcript is not a card (see #chat-log),
+			// so there is no box for a rule to close.
+			Class("flex-none pt-1 [&[data-cg-unlaid]]:invisible"+classIf(withSwitcher, " "+switcherRoom(false))),
 			// 🔴 INVISIBLE UNTIL THE TRANSCRIPT IS LAID OUT, LIKE #chat-log's
 			// children. The parser can stop mid-form (measured: a frame with only
 			// its first hidden <input> parsed, the form 58px tall, then 102px when
@@ -1429,6 +1417,12 @@ func chatLogInner(v AgentDetailView) g.Node {
 			if m.Role == "assistant" && isSentinelReply(m.Content) {
 				continue
 			}
+			// A plugin message muster relayed to the chief is muster's turn, not
+			// the person's: a collapsed system row, never their bubble.
+			if m.Relay != nil {
+				items = append(items, logItem{node: relayRow(m)})
+				continue
+			}
 			items = append(items, logItem{node: chatBubble(m.Role, m.Content, m.ID)})
 		}
 	}
@@ -1520,17 +1514,13 @@ func chatLogInner(v AgentDetailView) g.Node {
 		Div(
 			ID("chat-working"),
 			g.If(v.TurnInFlight, g.Attr("data-turn-in-flight", "")),
-			Class(workingClass(v.TurnInFlight)+" max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
+			// The SAME row a mirrored session draws (#mv-working): one line of
+			// small muted pulsing text, not a bubble with bouncing dots — a bubble
+			// reads as a message the agent sent.
+			Class(workingClass(v.TurnInFlight)+" items-center self-start text-xs text-muted"),
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
-			Span(Class("animate-pulse"), g.Attr("data-working-label", ""), g.Text("working")),
-			Span(
-				g.Attr("aria-hidden", "true"),
-				Class("inline-flex gap-1"),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.3s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.15s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted")),
-			),
+			Span(Class("animate-pulse"), g.Attr("data-working-label", ""), g.Text("working…")),
 		),
 	}
 }
@@ -1823,6 +1813,47 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 		ID("task-banner"),
 		Class("flex flex-col gap-2 rounded-xl border p-3 "+tone),
 		g.Group(children),
+	)
+}
+
+// relayRow draws a relayed plugin message (ChatLine.Relay) the way a mirrored
+// session draws a harness notice (noticeRow): a compact row in the tool rows'
+// frame, collapsed, saying where it came from and what it is about —
+// "Message from <plugin> · <subject>" — and opening to the whole stored turn,
+// exactly as the chief received it. It used to be a full-width USER bubble
+// (clamped, with a fade and "Show more"), drawn as though the owner had typed
+// muster's relay preface and the fenced message.
+func relayRow(m ChatLine) g.Node {
+	what := "Message from "
+	if m.Relay.Task {
+		what = "Task event from "
+	}
+	source := m.Relay.Source
+	if source == "" {
+		source = "a plugin"
+	}
+	label := what + source
+	switch {
+	case m.Relay.Subject != "":
+		label += " · " + m.Relay.Subject
+	case m.Relay.Source == "" && m.Relay.MessageID > 0:
+		// Nothing in the text names it: the stored link's id does.
+		label += " · #" + strconv.FormatInt(m.Relay.MessageID, 10)
+	}
+	return Details(
+		g.Attr("data-relay-row", ""),
+		g.If(m.ID > 0, g.Attr("data-msg-id", strconv.FormatInt(m.ID, 10))),
+		Class("w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
+		Summary(
+			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
+			Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("✉")),
+			Span(Class("shrink-0 font-mono text-muted"), g.Text("plugin")),
+			Span(g.Attr("data-relay-label", ""), Class("min-w-0 truncate"), g.Text(label)),
+		),
+		Div(
+			Class("px-3 pb-2"),
+			Pre(Class("max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg/80 p-2 text-[11px] leading-relaxed text-muted"), g.Text(m.Content)),
+		),
 	)
 }
 

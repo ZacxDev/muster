@@ -264,7 +264,8 @@ test.describe('desktop 1280×800', () => {
     await box(page).click();
     await expect(box(page)).toBeFocused();
     const [more, send] = await Promise.all([page.locator('#mv-form #switcher-more-btn').boundingBox(), page.locator('#mv-send').boundingBox()]);
-    expect(more && send && more.x < send.x, 'the ⋯ is in the row, before Send').toBeTruthy();
+    // After Send, the row's last control (operator ask: "[input][mic][send][⋯]").
+    expect(more && send && more.x >= send.x + send.width - 0.5, 'the ⋯ is in the row, after Send').toBeTruthy();
     // The Terminal view keeps its ⋯ in the bar.
     await page.goto(origin + term('tagd4', 14));
     await expect(page.locator('#session-switcher #switcher-more-btn')).toBeVisible({ timeout: 20_000 });

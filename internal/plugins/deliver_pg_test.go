@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -203,6 +204,46 @@ func TestATurnThatCallsToolsIsStoredAsTheChatTurnStoresIt(t *testing.T) {
 		"assistant/tool_call/agent_get_task/{}", `assistant/tool_result/agent_get_task/{"ok":true}`, "assistant/text//done"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("stored turn:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestAStoredRelayRowNamesThePluginMessageItRelays: the chief's chat row for a
+// delivered plugin message (Deliver) and for one handed over without a turn
+// (Handed) carries that message's id (chat_messages.plugin_message_id,
+// migration 0096) — the stored link the agent page draws its collapsed relay
+// row by — and the reply rows carry none. The two messages' ids differ, so a
+// writer storing the wrong one is seen.
+func TestAStoredRelayRowNamesThePluginMessageItRelays(t *testing.T) {
+	s, ag, gw, d, p, chief := deliverFixture(t)
+	gw.events = []agents.StreamEvent{{Kind: "text", Text: "on it"}}
+	m1, _, _ := s.Submit(plugin(2), p.ID, msg("link-1"))
+	m2, _, _ := s.Submit(plugin(2), p.ID, msg("link-2"))
+	if m1.ID == m2.ID || m1.ID <= 0 {
+		t.Fatalf("fixture ids %d, %d", m1.ID, m2.ID)
+	}
+	if r := d.Deliver(plugin(2), p.ID, m1.ID, chief); r.Outcome != OutcomeDelivered {
+		t.Fatalf("%+v; want delivered", r)
+	}
+	pp, _ := s.Plugin(plugin(2), p.ID)
+	if err := d.Handed(plugin(2), pp, chief, m2, "routed by thread"); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := ag.ListChatMessages(plugin(2), *pp.ChiefSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range msgs {
+		got = append(got, c.Role+"/"+strconv.FormatInt(c.PluginMessageID, 10))
+	}
+	want := []string{"user/" + strconv.FormatInt(m1.ID, 10), "assistant/0", "user/" + strconv.FormatInt(m2.ID, 10)}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("rows (role/plugin_message_id) %v; want %v", got, want)
+	}
+	// The single-row read carries it too.
+	one, err := ag.(*agents.PGStore).ChatMessage(plugin(2), msgs[0].ID)
+	if err != nil || one.PluginMessageID != m1.ID {
+		t.Fatalf("ChatMessage(%d) = %+v, %v; want plugin message %d", msgs[0].ID, one, err, m1.ID)
 	}
 }
 

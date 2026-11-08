@@ -109,9 +109,6 @@ var standaloneDocuments = []documentRenderer{
 			return RenderTaskDetail(w, TaskCardView{
 				Note:   notes.Note{ID: 1, UpdatedAt: fixedNow},
 				Detail: true,
-				// The agent-less card's Dispatch button, as featuresAllOn's server
-				// draws it, so the element sweeps see it.
-				Dispatch: true,
 			}, featuresAllOn)
 		},
 	},
@@ -289,7 +286,7 @@ func sampleAppScreen() NavDocumentView {
 // REACHES EVERY SWEEP AT ONCE. A field added with `Features{Connectors: true}`
 // written out eight times would default to false at all eight, silently removing
 // whatever it gates from every document-level guard in this package.
-var featuresAllOn = Features{Connectors: true, Dispatch: true}
+var featuresAllOn = Features{Connectors: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every

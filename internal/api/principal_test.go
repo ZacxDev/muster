@@ -201,6 +201,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /account/suggest",
 		// The chief's on/off switch (chief_toggle.go): the session tier.
 		"POST /account/chief",
+		// "Show tmux sessions" (notify_prefs.go): the session tier.
+		"POST /account/notifications/tmux",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",
@@ -248,8 +250,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /tasks/{id}",
 		"GET /tasks/{id}/attachments/{aid}",
 		"GET /ui/nav/agents",
-		"GET /ui/agents/new",
-		"GET /ui/agents/notes",
+		"GET /ui/nav/waiting",
 		"GET /ui/agents/repos",
 		"GET /ui/agents/{id}/header",
 		"GET /ui/focus/history",
@@ -273,7 +274,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/tasks/{id}/edit",
 		"GET /{$}",
 		"PATCH /tasks/{id}/status",
-		"POST /agents",
 		"POST /agents/pins",
 		"POST /agents/pins/delete",
 		"GET /sessions/tags",
@@ -336,6 +336,13 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
+		// Creating an agent (agent_create_api.go): requireArmedHookToken, so
+		// the hook secret is ADMITTED with a principal — and the handler then
+		// refuses it (TestTheSharedHookSecretCannotCreateAgents). A personal
+		// token reaches it only with scope agent-create, which this walk's full
+		// token is not, so it is absent from ViaToken below on purpose
+		// (TestAFullTokenCannotCreateAgents).
+		"POST /api/agents",
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
@@ -718,6 +725,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"POST /api/pr-sessions":                 true,
 		"POST /api/plugins/messages/{id}/retry": true,
 		"POST /api/chief/replace":               true,
+		"POST /api/agents":                      true,
 		"GET /api/doctor":                       true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)

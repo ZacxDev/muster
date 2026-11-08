@@ -78,8 +78,8 @@ import (
 // small pill padding — so the row of pills, what the bar is for, gets the
 // width.
 //
-// The bar draws no "+": the task-less dispatch sheet's "+", which the retired
-// Agents list's docked bar carried, is the sidebar's (navDeployButton).
+// The bar draws no "+": the chief starts agents (the dispatch sheet and its "+"
+// were deleted, docs/design/chief-dispatch.md phase 2).
 //
 // 🔴 THE MENUS AND THE PALETTE ARE POPOVERS (the top layer), so opening any
 // moves nothing on the page: no layout shift, and no clipping by the
@@ -200,6 +200,9 @@ type SwitcherItem struct {
 	Current bool
 	// Waiting: the entry waits on the viewer (listEntry.waiting).
 	Waiting bool
+	// Attention is the entry's attention (its card's): with Waiting, what its
+	// waiting mark draws (entryWaitMark).
+	Attention *CardAttention
 	// Host and HostIcon are the entry's host and its icon key — its sidebar row's:
 	// the cluster for an agent, the window's host's otherwise. HostNamed: the
 	// label already spells the host (labelNamesHost), so the icon is
@@ -232,6 +235,10 @@ type SwitcherItem struct {
 	// its technical ids — the host the dock writes beside the name — are
 	// left off the main surfaces (they stay in Tip and in Words).
 	Named bool
+	// TmuxAt and TmuxCode are the entry's MirrorCardView.TmuxAt / TmuxCode:
+	// the pill's second line (TmuxCode) and the dock row's line under the
+	// focus (TmuxAt, data-switcher-tmux); "" for none, and always for an agent.
+	TmuxAt, TmuxCode string
 	// Tip is the entry's tooltip: its Label, then — when it is called by a
 	// human name (internal/sessionname) — the technical id that name hides
 	// (an agent's slug; a window's codename, tmux address and host).
@@ -416,6 +423,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting(), Tip: entryTip(e, labels[i]), Named: entryName(e).Human()}
 		if e.agent != nil {
 			a := e.agent
+			it.Attention = a.Attention
 			it.Href, it.Kind = a.PageHref(), "agent"
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
@@ -428,6 +436,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.FocusAge = focusAgeOf(a.Focus, now)
 		} else {
 			m := e.mirror
+			it.Attention = m.Attention
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
 			it.Host, it.HostIcon = m.Host, m.HostIcon
 			it.HostNamed = labelNamesHost(*m, labels[i])
@@ -439,6 +448,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent, now time.Time) []Switche
 			it.Prev = switcherPrevTitles(m.PrevFocus)
 			it.Focus = focusTitle(m.Focus)
 			it.FocusAge = focusAgeOf(m.Focus, now)
+			it.TmuxAt, it.TmuxCode = m.TmuxAt, m.TmuxCode
 		}
 		out[i] = it
 	}
@@ -862,6 +872,20 @@ const switcherPillClass = "inline-flex h-8 items-center gap-1 rounded-full px-2 
 // switcherLabelClass is an entry's label: one line, never truncated.
 const switcherLabelClass = "whitespace-nowrap"
 
+// With "Show tmux sessions" on, a named window's pill stacks its label over a
+// second, smaller line, its codename (SwitcherItem.TmuxCode) — inside the
+// same h-8 pill (15px + 12.5px of line boxes in its 32px), so the bar's
+// height does not change. The codename is capped and cut with an ellipsis
+// (a pill is as wide as its NAME, not its codename), and its host is left
+// off: the pill's host icon names the host, and the dock row spells it.
+const (
+	switcherTwoLineClass  = "flex flex-col items-start leading-tight"
+	switcherTmuxLineClass = "block max-w-[8rem] truncate text-[10px] font-normal text-fg2"
+)
+
+// SwitcherTmuxLineClass is switcherTmuxLineClass, for internal/api's tests.
+const SwitcherTmuxLineClass = switcherTmuxLineClass
+
 // switcherEntry is one entry: a real-load link (hx-boost="false", like a
 // sidebar row's), or — the page's own session — the same chip, not a link.
 func switcherEntry(it SwitcherItem) g.Node {
@@ -882,7 +906,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Waiting, Span(g.Attr("data-switcher-wait", ""), g.Attr("role", "img"), g.Attr("aria-label", "Waiting on you"),
 			Class("h-2 w-2 shrink-0 rounded-full bg-accent"))),
 		g.If(it.Host != "", icon),
-		Span(Class(switcherLabelClass), g.Text(it.Label)),
+		switcherLabel(it),
 	}
 	// What the search finds the entry by (palette.go's paletteBox).
 	search := g.Group{
@@ -897,6 +921,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Host != "" && !it.Named, g.Attr("data-switcher-host", it.Host)),
 		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
 		focusAgeAttrs(it),
+		// The dock row's codename line ("Show tmux sessions").
+		g.If(it.TmuxAt != "", g.Attr("data-switcher-tmux", it.TmuxAt)),
 	}
 	if it.Current {
 		return Span(
@@ -924,7 +950,35 @@ func switcherEntry(it SwitcherItem) g.Node {
 		Class("press group "+box),
 		g.Attr("data-switcher-name", it.Label),
 		Span(Class(pill+"bg-s1/70 text-fg ring-line transition group-hover:bg-s2"), inner),
+		// The entry's waiting mark, for the command palette's row (palette.go),
+		// which draws a copy of it: the SIDEBAR's mark, the same call
+		// (entryWaitMark), inert in a <template> after the pill, so the pill
+		// draws only its own dot.
+		paletteWaitMark(it),
 	)
+}
+
+// paletteWaitMark is entryWaitMark in a <template> (paletteWaitMarkAttr), or
+// nothing when the entry has no mark.
+func paletteWaitMark(it SwitcherItem) g.Node {
+	mark := entryWaitMark(it)
+	if mark == nil {
+		return nil
+	}
+	return Template(g.Attr(paletteWaitMarkAttr, ""), mark)
+}
+
+// switcherLabel is an entry's label as its pill draws it: the name, and —
+// with "Show tmux sessions" on — its codename line under it. The codename is
+// text inside the link, so it is part of the pill's accessible name
+// ("Billing migration mango:1").
+func switcherLabel(it SwitcherItem) g.Node {
+	name := Span(Class(switcherLabelClass), g.Text(it.Label))
+	if it.TmuxCode == "" {
+		return name
+	}
+	return Span(Class(switcherTwoLineClass), name,
+		Span(g.Attr("data-switcher-tmux-line", ""), Class(switcherTmuxLineClass), g.Text(it.TmuxCode)))
 }
 
 // switcherScript applies the viewer's stored view at once (it runs as the bar

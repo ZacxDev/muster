@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -301,6 +302,12 @@ type Extensions struct {
 	// stored choice, so the chief is on exactly when the user has a chief
 	// agent (chiefOn), and the Account page cannot change it.
 	ChiefPrefs chiefpref.Store
+
+	// NotifyPrefs is each user's notification preferences (internal/notifypref,
+	// migration 0094; notify_prefs.go): today "Show tmux session in
+	// notifications". nil (no database): off for everyone, and the Account
+	// page draws no switch.
+	NotifyPrefs notifypref.Store
 
 	// ChiefNudge is the chief's STALL NUDGES' configuration (MUSTER_CHIEF_NUDGES,
 	// chief_nudge.go; docs/chief-nudges.md) and ChiefNudges its decisions
@@ -820,22 +827,21 @@ func (s *Server) lifecycleServed() bool { return s.ext.Provisioner != nil }
 
 // dispatchServed reports whether this server can DISPATCH an agent: a
 // provisioner, and not one that runs the chief alone (Extensions.ComposeChief).
-// It is the ONE predicate behind requireDispatchProvisioner's 503 (POST
-// /agents) AND every surface that offers a dispatch: Features.Dispatch (the
-// sidebar's "+"), TaskCardView.Dispatch (a task card's Dispatch button), the
-// /ui/agents/new sheet's body, agent_dispatch's targets and the task actions'
-// dispatch offer. A UI that decided "can this server dispatch?" from anything
-// else could draw a button over the very 503 this answers — which is what a
-// docker compose install (MUSTER_AGENT_PROVISIONER unset, so `none`) shipped
-// with, and what the Compose chief's provisioner would bring back.
+// It is the ONE predicate behind requireDispatchServed's 503 (POST
+// /api/agents) AND every surface that offers a dispatch: agent_dispatch's
+// targets and the task actions' dispatch offer. (It also drew the web UI's
+// dispatch "+", sheet and task-card button until docs/design/chief-dispatch.md
+// phase 2 deleted them.) A surface that decided "can this server dispatch?"
+// from anything else could offer a dispatch over the very 503 this answers —
+// which is what a docker compose install (MUSTER_AGENT_PROVISIONER unset, so
+// `none`) shipped with, and what the Compose chief's provisioner would bring back.
 //
 // ⚠ IT IS NOT "A DISPATCH WILL SUCCEED". A wired provisioner whose kickoff is
 // undeliverable still answers a dispatch with a 409 naming why
-// (Provisioner.KickoffUndeliverableReason) while "Save for later" works, so
-// the sheet stays useful there and is not hidden.
+// (Provisioner.KickoffUndeliverableReason) while a stopped create works.
 func (s *Server) dispatchServed() bool { return s.lifecycleServed() && s.ext.ComposeChief == nil }
 
-// requireDispatchServed is POST /agents' second door, inside
+// requireDispatchServed is POST /api/agents' second door, inside
 // requireLifecycleProvisioner: a provisioner that runs the chief alone (the
 // Compose chief) refuses a dispatch with requireLifecycleProvisioner's 503
 // shape (ProvisionerUnwiredField, which the dispatch sheet reads) and a
@@ -910,8 +916,9 @@ type Provisioner interface {
 	//     promising a delivery is how a future implementer comes to call
 	//     SetKickedOff, which is the one thing that package must never do.
 	//   - kickoff=false creates NOTHING rather than provisioning-then-storing-
-	//     stopped. The caller's OTHER action is the UI's "Save for later", whose
-	//     gate check (agents.go, the `gate:<reason>` refusal) allows a save on the
+	//     stopped. The caller's OTHER action is a stopped create (POST /api/agents
+	//     start: false, which replaced the UI's "Save for later"), whose gate check
+	//     (agent_create_api.go, the `gate:<reason>` refusal) allows it on the
 	//     stated grounds that it "provisions nothing".
 	//
 	// An implementer that provisions on kickoff=false, or that reports a delivery
@@ -936,7 +943,7 @@ type Provisioner interface {
 	// KickoffUndeliverableReason below rather than through this method. This
 	// paragraph read "THE CALLER OF THIS METHOD IN THIS PACKAGE CANNOT SURFACE THAT
 	// REFUSAL … A refusal an operator can see needs a synchronous check in the
-	// create handler, before the row", and that check exists: handleAgentCreate
+	// create handler, before the row", and that check exists: handleAPIAgentCreate
 	// answers 409 with the reason before Agents.Create. The asynchronous half is
 	// unchanged and still true of THIS method — createAndDispatchAgent calls it
 	// inside safeGo, after the row exists — which is why the pre-flight is a

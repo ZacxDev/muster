@@ -3,14 +3,17 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
+import { agentMenu, openAgentMenu } from '../lib/agent-menu';
 
 // Four operator reports, driven through the real UI against a REAL muster-server
 // with both agent kinds enabled over the noop driver (which reports a created
 // instance ready). Nothing here provisions a pod or uses a real token: the
 // setup-tokens are obvious fakes and never leave this process.
 //
-//   1. a Claude Code agent shows no model selector / OpenRouter controls;
+//   1. a Claude Code agent's page shows no model selector / OpenRouter controls
+//      (the dispatch form's half of this report went with the form,
+//      docs/design/chief-dispatch.md phase 2);
 //   2. the agents' list — the sidebar's rows, where the retired Agents list's
 //      cards went — is ordered by most recent activity, and re-orders LIVE;
 //   3. the Tasks board prints the activity time it is ordered by;
@@ -65,23 +68,16 @@ async function login(page: Page) {
   await signIn(page, origin);
 }
 
-// saveAgent fills the sidebar "+"'s dispatch sheet and presses "Save for later"
-// (nothing provisioned); it returns the ONE row that appeared, once the page has
-// been sent to that agent's own page (the answer's HX-Redirect).
+// saveAgent creates one agent stopped (nothing provisioned) through POST
+// /api/agents (lib/seed.ts, which replaced the deleted dispatch form's "Save for
+// later"), opens its page, and returns the ONE row that appeared.
 async function saveAgent(page: Page, note: string, kind: 'gateway' | 'claude-code' = 'gateway'): Promise<AgentRow> {
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  if (kind === 'claude-code') await sheet.locator('[data-kind-option="claude-code"]').click();
   const before = new Set((await agentRows()).map((a) => a.name));
-  await sheet.locator('textarea[name="note_text"]').fill(note);
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const agent = await createAgent(origin, { kind, prompt: note });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
+  expect(created[0].name).toBe(agent.name);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 
@@ -110,75 +106,6 @@ for (const vp of [
   test.describe(`${vp.label} ${vp.viewport.width}x${vp.viewport.height}`, () => {
     test.use({ viewport: vp.viewport, isMobile: vp.isMobile, hasTouch: vp.hasTouch });
 
-    test('1a. picking Claude Code removes the model selector and the OpenRouter options from the dispatch form', async ({ page }) => {
-      await login(page);
-      // On a page of this server's own: after a reused session (lib/signin.ts)
-      // the page has not moved, and only the form's sign-in lands on home.
-      await page.goto(origin + '/tasks');
-      await openDispatchSheet(page);
-      const sheet = page.locator('#agent-modal form');
-      await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
-      // Standard: open Advanced, the model selector is there.
-      await sheet.locator('summary[aria-label="Advanced options"]').click();
-      const model = sheet.locator('#model-input');
-      await expect(model).toBeVisible();
-      // Claude Code: the gateway-only model selector leaves the screen and
-      // does not submit; the repository stays (a claude-code agent's session
-      // starts in a checkout of it), live, under Advanced.
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      await expect(model).toBeHidden();
-      await expect(sheet.locator('summary[aria-label="Advanced options"]')).toBeVisible();
-      await expect(sheet.locator('input[aria-label="Repository"]')).toBeVisible();
-      await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
-      await expect(sheet.locator('select[name="cc_account"]')).toBeVisible();
-      await expect(sheet.locator('input[name="model"]')).toBeDisabled();
-      // Back to Standard: it returns.
-      await sheet.locator('[data-kind-option="gateway"]').click();
-      await expect(model).toBeVisible();
-      await expect(sheet.locator('input[name="model"]')).toBeEnabled();
-      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-      expect(sw).toBeLessThanOrEqual(cw);
-    });
-
-    test('1b. the task-scoped dispatch confirm hides its Model row for Claude Code, and dispatches it onto the task repository', async ({ page }) => {
-      const ctx = await machine();
-      const repo = `example-org/polish-${vp.label.toLowerCase()}`;
-      const r = await ctx.post('/api/tasks', {
-        data: { title: `polish ${vp.label} task-dispatch`, body: 'task-scoped dispatch', repo, branch: 'release/e2e' },
-      });
-      expect(r.status(), await r.text()).toBeLessThan(300);
-      const task = (await r.json()) as { id: number };
-      await ctx.dispose();
-
-      await login(page);
-      await page.goto(origin + '/tasks');
-      await page.locator(`#task-${task.id} button[aria-label="Dispatch agent for this task"]`).click();
-      const sheet = page.locator('#agent-modal form');
-      const modelRow = sheet.locator('[data-dispatch-row]').filter({ hasText: 'Model' });
-      await expect(modelRow).toBeVisible();
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      await expect(modelRow).toBeHidden();
-      await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeVisible();
-      await sheet.locator('[data-kind-option="gateway"]').click();
-      await expect(modelRow).toBeVisible();
-      // Claude Code again, and dispatch: what the browser submits is a
-      // claude-code dispatch carrying the task's repository and branch and no
-      // model. (This server has no agent gateway, so the dispatch itself is
-      // refused for that reason — and for no other: not for the repository.
-      // That the server stores a claude-code row with its repository is
-      // TestAClaudeCodeDispatchKeepsItsRepository.)
-      await sheet.locator('[data-kind-option="claude-code"]').click();
-      const reqP = page.waitForRequest((x) => x.url().endsWith('/agents') && x.method() === 'POST');
-      const respP = page.waitForResponse((x) => x.url().endsWith('/agents') && x.request().method() === 'POST');
-      await sheet.locator('button[value="dispatch"]').click();
-      const form = new URLSearchParams((await reqP).postData() ?? '');
-      expect([form.get('kind'), form.get('repo'), form.get('repo_branch'), form.has('model')]).toEqual(['claude-code', repo, 'release/e2e', false]);
-      const resp = await respP;
-      const text = await resp.text();
-      expect(text).not.toContain('repositor');
-      expect([resp.status(), text]).toEqual([409, expect.stringContaining('cannot deliver an agent\'s first turn')]);
-    });
-
     test('1c. a Claude Code agent page shows its account where the model would be and never asks OpenRouter', async ({ page }) => {
       await login(page);
       const cc = await saveAgent(page, `polish ${vp.label}: cc detail`, 'claude-code');
@@ -187,8 +114,11 @@ for (const vp of [
         if (r.url().includes('/api/openrouter/')) openrouter.push(r.url());
       });
       await page.goto(origin + '/agents/' + cc.name);
-      await expect(page.locator('header [data-cc-account]')).toHaveText(/^(alpha|beta)$/);
-      await expect(page.locator('header [data-cc-account]')).toBeVisible();
+      // Its account is an item of the header's ⋯ menu (PR #527: a claude-code
+      // agent's page has one header row).
+      await expect(agentMenu(page).locator('[data-cc-account]')).toHaveText(/^(alpha|beta)$/);
+      await openAgentMenu(page);
+      await expect(agentMenu(page).locator('[data-cc-account]')).toBeVisible();
       await expect(page.locator('#model-input')).toHaveCount(0);
       await expect(page.locator('[data-combobox-remote]')).toHaveCount(0);
       await page.waitForTimeout(1000);

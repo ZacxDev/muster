@@ -216,6 +216,14 @@ func viewFrameScript() g.Node {
     if (!a || !plain(e, a)) return;
     e.preventDefault();
     e.stopPropagation();
+    // A link inside a menu (a claude-code agent's ⋯ menu holds its Terminal
+    // link, agent_header_folded.go) closes that menu: it is in the top layer,
+    // over the view this opens. Done HERE because this capture listener stops
+    // the click before any handler on the link itself could run — an
+    // hx-on:click there never fired, and the open menu then took the next ⋯
+    // tap as "close" (e2e view-swap's round trips).
+    var pop = a.closest('[popover]');
+    if (pop) { try { pop.hidePopover(); } catch (err) {} }
     var top = framed ? window.parent.musterViews : window.musterViews;
     top.show(a.getAttribute('data-view-swap'), a.href);
   }, true);

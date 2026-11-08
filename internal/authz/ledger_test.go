@@ -241,6 +241,12 @@ var (
 	// send queue's dispatcher (its AsOwner), handed each row's owner after it
 	// read the row under System; the request path never calls it.
 	withPrincipalLedger = []string{
+		// The browser suite's agent-create token minter (e2e/mktoken): it mints
+		// through the real token store AS the named fixture user, so row-level
+		// security files the token under that user, as /account/tokens would.
+		// A fixture command, never linked into a binary (modulegate's linkage
+		// ledger), and it refuses any database not ending in _e2e.
+		"e2e/mktoken.run",
 		"internal/api.(*Server).admit",
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions
@@ -268,10 +274,12 @@ var (
 		// started and stopped as the officer's configured owner, through
 		// authz.ViaOfficer.
 		"internal/api.(*Server).officerPrincipal",
-		// The kickoff deliverer's tool-enabled first turn: a gateway agent's
-		// tool calls run as the agent's owner, through authz.ViaKickoff, after
-		// the deliverer read the agent's row under System.
-		"internal/api.(*Server).kickoffPrincipal",
+		// A gateway agent's tool-enabled turn started outside an owner's
+		// session — the kickoff deliverer's first turn (authz.ViaKickoff, after
+		// the deliverer read the agent's row under System) and the machine
+		// message door's turn (authz.ViaAgentMessage): its tool calls run as the
+		// agent's owner. One site for both doors (gatewayTurnTools).
+		"internal/api.(*Server).turnPrincipal",
 		// The host-dispatch reconciler: one owner's host_dispatches rows moved on
 		// a spawn reply, a listing or the not-seen sweep, through
 		// authz.ViaHostDispatch.
@@ -299,7 +307,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

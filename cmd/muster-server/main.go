@@ -80,6 +80,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -494,6 +495,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The chief's per-user on/off toggle (migration 0060). Off by default
 		// for a user with no chief agent; see internal/api chief_toggle.go.
 		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
+		// Each user's notification preferences (migration 0094): off for
+		// everyone until they turn one on; see internal/api notify_prefs.go.
+		ext.NotifyPrefs = notifypref.NewPG(a.pool)
 		// Session state's episodes (migration 0073): off unless
 		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
 		if cfg.SessionState {
@@ -650,7 +654,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// start an agent on one, for the listed owners only. The caps are counted
 		// from the same store's audit rows.
 		if cfg.TaskRouting {
-			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners}
+			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners, DispatchModels: cfg.ChiefDispatchModels}
 			ext.ChiefDispatch = pluginStore
 		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot

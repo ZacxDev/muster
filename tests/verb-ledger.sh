@@ -58,7 +58,8 @@ fi
 # task/agent surface below. If a thirteenth is genuinely wanted, add it here,
 # add it to tree_test.go's `wiring` with the route it reaches, move
 # `wantVerbCount`, and say so in the commit.
-LEDGER="agent ls
+LEDGER="agent create
+agent ls
 agent messages
 agent resolve
 agent task comment
@@ -95,7 +96,8 @@ whoami"
 # decision.)
 # 23 -> 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md).
 # 28 -> 29: `nudge next` (a host's oldest chief-nudge notice).
-WANT_COUNT=29
+# 29 -> 30: `agent create` (POST /api/agents, docs/design/chief-dispatch.md phase 2).
+WANT_COUNT=30
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

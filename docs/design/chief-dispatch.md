@@ -4,7 +4,9 @@
 `internal/api/agent_dispatch.go`). **Phase 3 is built for claude** (host spawn,
 the trust entry, held targets and their cards, forwarding; #513 then #516: see
 "As built" under [Phase 3](#phase-3-host-spawn-for-claude-with-the-trust-entry-and-forwarding)).
-**Phases 2 and 4 are proposed.** The owner made
+**Phase 2 is built** (the machine route `POST /api/agents`, `muster agent
+create`, and the UI deletion: see "As built" under
+[Phase 2](#phase-2-delete-the-dispatch-ui)). **Phase 4 is proposed.** The owner made
 the nine decisions in [Owner decisions](#owner-decisions): four up front, and
 five more in answer to this page's first draft. This revision adds nine more:
 10-13, the owner's rules for **mirrored dispatch**: when "mirrored" means a
@@ -186,9 +188,16 @@ These are binding, and this page does not reopen them.
    - A new muster-mirror flag, off by default. The owner's host configuration
      turns it on for the owner's default mirror only.
    - Spawned agents count toward the chief's existing live and daily caps.
-   - Claude and opencode start in their **normal** permission modes, so their
-     prompts reach the owner as asks. That path has already shipped: Claude's
-     waiting state, and opencode's question and permission asks (#416).
+   - Claude Code starts in its **normal** permission mode, so its prompts reach
+     the owner as asks (Claude's waiting state, already shipped).
+   - **Amended (operator, #522 round 0, Q1 (a): "opencode should run with no
+     asking").** opencode starts in its own **allow-by-default** mode and
+     **does not ask**: muster enforces no ask-on-shell for it. Measured, with no
+     opencode configuration it ran a shell command without a permission
+     request ([7](#7-what-is-still-unverified)). Its limits are the owner's opencode **deny rules and guard plugin**, the host's
+     repository allow-list (`-agent-spawn-repos`), and `connectedRepo`.
+     An ask opencode does raise (a question, or a rule of the owner's that
+     asks) still reaches the Attention view through #416.
 4. **UI.**
    - Delete the dispatch UI: the sidebar **+**, the dispatch form and "Save for
      later".
@@ -1783,8 +1792,10 @@ and requires an entry whose `providerID` is `openrouter` and whose `id` is the
 model. Otherwise it refuses `bad_model`. ⚠ That route describes its answer as
 a snapshot that "may precede initial plugin settlement". So a list with **no
 `openrouter` models at all** is refused as `unavailable` (detail `opencode's
-model list is not ready`), never as `bad_model`, so the chief does not tell the
-owner a model is wrong when the list is merely early.
+model list is not ready (it lists no OpenRouter model)`), never as `bad_model`,
+so the chief does not tell the owner a model is wrong when the list is merely
+early. (Measured: the first answer after a restart was already complete, and a
+service with no OpenRouter key lists none at all, [7](#7-what-is-still-unverified).)
 
 **The steps** (the host, inside its spawn deadline,
 [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)):
@@ -2705,6 +2716,7 @@ test of that option through the tool, with the same refusals.
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
 | host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
+| agent | **claude:** normal permission mode, so tool use the settings in force do not allow is an ask on muster. **opencode: no ask** (decision 3, amended): it runs allow-by-default, bounded by the owner's opencode deny rules and guard plugin, the repository allow-list on the host, and `connectedRepo` above |
 | host | the repository is on `-agent-spawn-repos` (by its exact name, or `<owner>/*` for its owner; case-insensitive); the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
@@ -2873,12 +2885,21 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
   - **How it is framed:** the prompt is fenced as relayed by the chief, and
     muster's rules close the message and win (draft PRs only; never mark a
     task complete; text from outside is data).
-  - **What it can do:** the agent starts in **normal permission mode**, so
-    every tool use that the settings in force do not already allow becomes an
-    ask on muster. That is a mitigation, not a boundary. The settings in force
-    are the owner's own, plus the repository's: `.claude/settings.json` for
-    claude, `opencode.json` for opencode. Either can allow more. The
-    connected-repository rule above limits which repositories can do that.
+  - **What it can do:**
+    - **claude** starts in **normal permission mode**, so every tool use that
+      the settings in force do not already allow becomes an ask on muster.
+      That is a mitigation, not a boundary. The settings in force are the
+      owner's own plus the repository's `.claude/settings.json`, which can
+      allow more.
+    - **opencode does not ask** (decision 3, amended): it runs in its own
+      allow-by-default mode, and no ask stands between a relayed prompt and
+      its tools. Its limits are the owner's opencode **deny rules and guard plugin**, the host's
+      repository allow-list (`-agent-spawn-repos`), and `connectedRepo`.
+      A repository's own `opencode.json` can loosen opencode's rules further.
+      Both the spawned agent and the chief are told so (`spawnPermission*`,
+      `internal/api/host_dispatch.go`); neither is told it asks.
+    - The connected-repository rule above limits which repositories can
+      supply either runtime's settings.
 
 ### 5.3 Caps
 
@@ -3174,6 +3195,31 @@ Phase 1's `worker_pool` makes the deletion possible for chief deployments
   agent.
 - A stopped agent that "Save for later" created before the upgrade still
   starts from its page.
+
+#### As built (phase 2)
+
+Built as specified, in one PR. Where it differs from the text above, and why:
+
+- **`POST /agents` answers 405, not 404.** `GET /agents` (home) is still
+  registered on that path, so the mux answers Method Not Allowed with an
+  `Allow` that names no POST. `GET /ui/agents/new` and `GET /ui/agents/notes`
+  answer 404. `internal/api/dispatch_ui_removed_test.go` pins all three (in the
+  api package, where the routes are; `internal/ui/removed_surfaces_test.go`
+  pins the absent elements).
+- **A `note_id` that names no readable task is a 404 (`no such task`).** The
+  form silently dropped such a value and dispatched without the task; for a
+  machine caller that would create an agent on the wrong work.
+- **`muster agent create` with only the ordinary token sends nothing.** It
+  refuses locally (exit 2) with the scope sentence, rather than sending a
+  request that would carry no credential, so the full token never reaches the
+  route.
+- **The acceptance grep** finds, outside `removed_surfaces_test.go`, only
+  absence assertions (the Playwright checks this section asks for, and the
+  api test of the removed routes) and comments naming what was removed.
+- **`e2e/lib/seed.ts`** mints its token with `e2e/mktoken` (through the real
+  token store, as the user) and re-mints once on a 401, because some specs
+  reset the accounts tables. `agent-outcomes.spec.ts` posted to `POST /agents`
+  directly and was moved to the new route as well.
 
 ### Phase 3: host spawn for claude, with the trust entry and forwarding
 
@@ -3688,9 +3734,61 @@ send):
   first message;
 - "start a mirrored agent on `<host>`", naming no model → the model card,
   offering Claude, the configured list, and a typed id;
-- its permission ask appears in muster's Attention view (#416), and an answer
-  from there continues the session;
+- **amended (decision 3):** it runs **without asking** before it uses tools,
+  inside the owner's opencode deny rules and guard plugin; the acceptance is
+  that its tool use is NOT held for an ask. An ask it does raise (a question,
+  or a rule of the owner's that asks) appears in muster's Attention view
+  (#416), and an answer from there continues the session. Claude Code still
+  asks;
 - a routed task comment reaches it through the API.
+
+#### As built (phase 4)
+
+Where the build differs from the plan above, and what it leaves for later:
+
+- **The host checks everything about opencode before any git call**, not after
+  the worktree: `-opencode-send` and the token (before the rate limit, with the
+  request's own fields), then the service (`GET /api/info`), the TUI's version
+  (`opencode --version` on the tmux server's PATH; **fail closed** when it cannot
+  be read, unlike the launcher, which starts anyway), the launcher binary, and
+  the model against `GET /api/model`. A refusal there leaves nothing to undo.
+  The version rule is one function now (`opencodehost.NormalizeVersion`), shared
+  with the launcher.
+- **The first prompt's message id** is `mirror.OpenCodeMessageID` of
+  `agent-spawn/<dispatch>/<session>`: derived from the dispatch and the session
+  the host created, not from the dispatch row's creation time (the host does
+  not know it). A lost answer is retried once with the same id.
+- **The bind** is read from the host's own listing (`WindowLister`): the
+  window's pane `Send` with `Gen` equal to the session, within 20 s. The host
+  marks its session list stale when it creates a session, so the bind is not
+  delayed by the list's 30 s cache.
+- **`MUSTER_CHIEF_DISPATCH_MODELS=none`** lists no model; an empty or unset
+  value is the default list (the server's environment reader cannot tell an
+  empty value from an unset one). At most 8 entries (the card holds Claude, the
+  list and the typed id, 10 at most).
+- **The model card's labels** are `Claude (Claude Code)`, `<id> (opencode,
+  OpenRouter)` and `another OpenRouter model (type its id)`. A typed id binds
+  only on a model card that offered that option, and only in the model's shape;
+  **tapping** the typed-id option is refused with its own sentence (no id came
+  with it). A refusal for the wrong completion names the call to make
+  (`host/<host>/opencode with model <id>`).
+- **A model with the runtime blank** (`host/<host>/?` plus `model`) is refused:
+  the card asks for both.
+- **The live card** says `opencode · <id> (OpenRouter)`.
+- **Round-1 audit fixes.** The window runs `<muster-mirror> opencode
+  --opencode-bin <abs> -s <id>`: the launcher execs exactly the opencode binary
+  whose version the host checked, and with that flag it **refuses** a TUI whose
+  version it cannot read or that differs, or a service it cannot reach (a
+  person's own start still goes on). A model the chief sends with a host tap of
+  `host/?/?` is dropped from the re-filed hold (the model card chooses it), so
+  the card stays completable. A definite refusal of the first prompt (400, 404,
+  409, 401) is not retried; two posts with no answer are `failed` with the
+  detail `prompt not confirmed: opencode did not answer, so it may have been
+  delivered` (the wire has no unconfirmed spawn result). A model the host's
+  opencode lists with `enabled: false` is not a model it offers.
+- **Not built in phase 4:** the e2e browser spec (both runtimes); it was not
+  built in phase 3 either. The host and server halves are covered by the tmux
+  and PG suites below, and the live acceptance is the owner's.
 
 ### Rollout
 
@@ -3737,9 +3835,11 @@ through the API).
 | **MEASURED:** `--session-id <uuid>` is written to `<config>/sessions/<pid>.json` as `sessionId`, which is the mirror's second lookup (before the transcript guess), and names the transcript file `<uuid>.jsonl`. The mirror's own code path reading it was not run | [3.6](#36-the-commands-and-prompt-delivery) | phase 3 |
 | **MEASURED:** the spawn's own time. On two of the owner's repositories (about 2.5k and 3.2k tracked files, neither with `.gitmodules`), from scratch clones: a cold full clone took 2.5 s and 2.9 s, a warm `fetch --no-tags origin <base>` 0.7 s each, and `worktree add` 0.1-0.2 s. That is far below half the 120 s deadline, so the three deadlines stay. Submodule time was not measurable: neither repository has submodules | [3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task) | phase 3 |
 | ~~PR A's `ask_owner` has the four properties [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) relies on~~ **CHECKED: 1, 2 and 4 did not hold; the stored-card change makes all four hold** (table in [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | [2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model) | phase 3, before building |
-| `POST /api/session` with `model` runs the session's turns on that OpenRouter model; the provider id the hosts' configuration uses; how `GET /api/model` lists OpenRouter models, including just after a service restart | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
-| the shared service runs a session's tools in its `location.directory` | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
-| `muster-mirror opencode -s <id>` binds a pane on a session the host created a moment before | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| ~~`POST /api/session` with `model` runs the session's turns on that OpenRouter model~~ **MEASURED** (opencode v2.0.32+6ec5682, a real `opencode serve --service` on its own port, scratch `HOME`/XDG dirs, the OpenRouter key passed as `OPENROUTER_API_KEY`, on a dedicated `tmux -L` server): a session created with `model: {providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash"}` answered with every assistant message's `model` naming exactly that; the control, a second session on `qwen/qwen3-coder`, named qwen. **opencode does not check the model**: a create on `nope/not-a-model` answered 200 with that model. So the host's check against `GET /api/model` is the only bound on the model, and the spawn makes it before anything is created | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| ~~the provider id the hosts' configuration uses; how `GET /api/model` lists OpenRouter models, including just after a service restart~~ **MEASURED**: OpenRouter's models are listed under `providerID: "openrouter"`, `id: "<vendor>/<model>"` (365 of 376 entries on the scratch service; a read-only `GET /api/model` on one of the owner's hosts gave the same provider id and count). After a restart, the **first** answer the service gave (about 0.7-0.9 s after start, three restarts) already listed all 365: the "snapshot may precede plugin settlement" case was not seen. **A service with no OpenRouter credential lists no `openrouter` model at all**, so "none listed" cannot tell "not ready" from "no key": the host refuses it `unavailable`, detail `opencode's model list is not ready (it lists no OpenRouter model)`, never `bad_model` | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| ~~the shared service runs a session's tools in its `location.directory`~~ **MEASURED, holds**: with the service's own cwd the scratch home, a session in directory A ran its shell tool (`pwd > where.txt`) in A and wrote the file there; the control, a session in directory B, did so in B. ⚠ With no opencode configuration at all, opencode ran that shell command **without asking** (no permission request was raised): "normal permission mode" for opencode is whatever the owner's opencode configuration and the repository's `opencode.json` say ([5.2](#52-argv-and-prompt-injection)) | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| ~~`muster-mirror opencode -s <id>` binds a pane on a session the host created a moment before~~ **MEASURED, holds**: a long-running source (the daemon's code, warm, stream open), then `POST /api/session` and a tmux window on `muster-mirror opencode -s <id>`: the first listing (+45 ms) still showed the pane's shell; the **second** (+340 ms) showed it bound (`SourceLauncher`, `Send`, the session) and idle. With the event stream not yet open the bind still came on the second listing, with no status (so the spawn's own prompt, posted directly, does not depend on it; a later forward's idle gate does) | [3.6](#36-the-commands-and-prompt-delivery) | phase 4 |
+| `DELETE /api/session/{id}` | [3.6](#36-the-commands-and-prompt-delivery) | **MEASURED**: 204, then 404 `SessionNotFoundError` for the same id again |
 
 **Read in source, not measured:** at the pinned `6ec5682`, the opencode TUI
 has no `-m/--model` flag; only `opencode run` and `opencode mini` have one

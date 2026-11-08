@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -223,6 +224,10 @@ const (
 	// agents. Non-empty (with task routing on) is what offers the chief
 	// agent_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
+	// envChiefDispatchModels is the OpenRouter models a mirrored opencode
+	// dispatch's model card offers (docs/design/chief-dispatch.md 2.8,
+	// decision 15): comma-separated <vendor>/<model> ids, or "none".
+	envChiefDispatchModels = "MUSTER_CHIEF_DISPATCH_MODELS"
 	// THE CHIEF'S STALL NUDGES (internal/api/chief_nudge.go,
 	// docs/chief-nudges.md): the sweep's switch (off by default; on, every
 	// owner is in SHADOW mode — decisions recorded, nothing sent), how long a
@@ -754,6 +759,9 @@ type config struct {
 	TaskRouting            bool
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
+	// ChiefDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS, parsed
+	// (parseDispatchModels): the model card's OpenRouter models.
+	ChiefDispatchModels []string
 	// ChiefNudges is MUSTER_CHIEF_NUDGES=1; ChiefNudgeIdle, ChiefNudgeHourlyCap
 	// and ChiefNudgeLiveOwners its settings (loadConfig refuses a value that
 	// does not parse).
@@ -1272,6 +1280,46 @@ func splitList(v string) []string {
 }
 
 // parseOwnerIDs parses a comma list of positive user ids. Empty is no owners.
+// defaultDispatchModels is MUSTER_CHIEF_DISPATCH_MODELS when it is unset: four
+// coding models, each in OpenRouter's public model list when the design was
+// written. Configuration, not a recommendation: the host still checks each one
+// against its own opencode's list at the spawn (bad_model).
+var defaultDispatchModels = []string{"qwen/qwen3-coder", "moonshotai/kimi-k2-0905", "z-ai/glm-4.6", "deepseek/deepseek-v3.2"}
+
+// maxDispatchModels bounds the list: the card holds Claude, the list and the
+// typed-id option, at most attention.MaxOptions (10) together.
+const maxDispatchModels = 8
+
+// parseDispatchModels reads MUSTER_CHIEF_DISPATCH_MODELS: unset or blank is
+// the default list; "none" is no listed model (the card then offers Claude and
+// a typed id); otherwise comma-separated OpenRouter ids, each in
+// mirror.ValidSpawnModel's shape. A malformed or repeated entry, or more than
+// maxDispatchModels, refuses to boot, naming it.
+func parseDispatchModels(v string) ([]string, error) {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "":
+		return slices.Clone(defaultDispatchModels), nil
+	case strings.EqualFold(v, "none"):
+		return []string{}, nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		id := strings.TrimSpace(part)
+		if !mirror.ValidSpawnModel(id) {
+			return nil, fmt.Errorf("invalid %s: %q is not an OpenRouter model id (<vendor>/<model>)", envChiefDispatchModels, id)
+		}
+		if slices.Contains(out, id) {
+			return nil, fmt.Errorf("invalid %s: %q is listed twice", envChiefDispatchModels, id)
+		}
+		out = append(out, id)
+	}
+	if len(out) > maxDispatchModels {
+		return nil, fmt.Errorf("invalid %s: %d models; at most %d fit on the card", envChiefDispatchModels, len(out), maxDispatchModels)
+	}
+	return out, nil
+}
+
 func parseOwnerIDs(v string) (map[int64]bool, error) {
 	out := map[int64]bool{}
 	for _, part := range strings.Split(v, ",") {
@@ -1638,6 +1686,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
+	if c.ChiefDispatchModels, err = parseDispatchModels(getenv(envChiefDispatchModels)); err != nil {
+		return config{}, err
+	}
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)

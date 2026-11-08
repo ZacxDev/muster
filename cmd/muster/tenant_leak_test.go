@@ -523,3 +523,155 @@ func TestZeroTouchStillMixesFieldByField(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// MUSTER_AGENT_CREATE_TOKEN IS A TOKEN, AND THE PAIR RULE DECIDES IT TOO
+// (round-1 audit of #532, R1). `agent create` presents it instead of
+// MUSTER_TOKEN; it was read straight from the environment AFTER the tenant's
+// URL had been chosen, so `--tenant work agent create` sent default's exported
+// agent-create token to work's origin. The cases below set it; no earlier
+// fixture did, which is why the leak matrix could not see it.
+// ---------------------------------------------------------------------------
+
+const (
+	defaultCreateTok = "mst_create-default-0123456789"
+	workCreateTok    = "mst_create-work-0123456789ab"
+	foreignCreateTok = "mst_create-foreign-012345678"
+)
+
+// createAuths is the Authorization headers h received on POST /api/agents.
+func createAuths(h *harness) []string {
+	var out []string
+	for _, r := range h.requests() {
+		if r.method == http.MethodPost && r.uri == "/api/agents" {
+			out = append(out, r.auth)
+		}
+	}
+	return out
+}
+
+func serveCreate(f *leakFixture) {
+	for _, h := range []*harness{f.dflt, f.work, f.alien} {
+		h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":3,"name":"spry-newt"},"started":false}`)
+	}
+}
+
+var agentCreateArgs = []string{"agent", "create", "--start=false", "--prompt", "p"}
+
+// TestAnExportedAgentCreateTokenNeverCrossesTenants: every selection off the
+// zero-touch path, with an agent-create token EXPORTED and no environment
+// URL+token pair, refuses with the pair rule's own text and sends nothing
+// anywhere — whichever server the selection names, and whoever the token
+// belongs to. So does an exported one beside a FLAG pair (mixed sources).
+func TestAnExportedAgentCreateTokenNeverCrossesTenants(t *testing.T) {
+	for _, sel := range leakSelections {
+		for _, extra := range []struct {
+			name  string
+			apply func(f *leakFixture, a []string, e map[string]string) []string
+		}{
+			{"exported alone", func(f *leakFixture, a []string, e map[string]string) []string { return a }},
+			{"exported beside a flag pair", func(f *leakFixture, a []string, e map[string]string) []string {
+				return append(a, "--api-url", f.alien.srv.URL, "--token", foreignTok)
+			}},
+			{"exported beside a lone MUSTER_API_URL", func(f *leakFixture, a []string, e map[string]string) []string {
+				e["MUSTER_API_URL"] = f.alien.srv.URL
+				return a
+			}},
+		} {
+			t.Run(sel.name+"/"+extra.name, func(t *testing.T) {
+				f := newLeakFixture(t)
+				serveCreate(f)
+				args, env := sel.setup(f)
+				env["MUSTER_AGENT_CREATE_TOKEN"] = defaultCreateTok
+				args = extra.apply(f, args, env)
+				got := f.run(env, append(args, agentCreateArgs...)...)
+				if n := f.total(); n != 0 {
+					t.Errorf("🔴 %d request(s) were sent (default %v, work %v, foreign %v); an exported agent-create token "+
+						"outside an environment pair must send none", n, createAuths(f.dflt), createAuths(f.work), createAuths(f.alien))
+				}
+				if got.code != exitUsage {
+					t.Errorf("exit = %d, want %d (usage)", got.code, exitUsage)
+				}
+				if !strings.Contains(got.stderr, pairRefusalText) {
+					t.Errorf("stderr does not carry the pair refusal %q:\n%s", pairRefusalText, got.stderr)
+				}
+				if strings.Contains(got.stderr, defaultCreateTok) {
+					t.Errorf("stderr echoes the token")
+				}
+			})
+		}
+	}
+}
+
+// TestAnAgentCreateTokenTravelsWithItsOwnPair, the positive controls: (a) the
+// selected tenant's FILE token goes to that tenant's server, once, and the
+// other tenant's never does; (b) an environment URL+token pair carries an
+// exported agent-create token to the pair's server; (c) a file's agent-create
+// token does not follow an environment pair to another server.
+func TestAnAgentCreateTokenTravelsWithItsOwnPair(t *testing.T) {
+	withCreate := func(f *leakFixture) {
+		f.write(".muster/muster.env", "MUSTER_API_URL="+f.dflt.srv.URL+"\nMUSTER_TOKEN="+defaultTok+
+			"\nMUSTER_AGENT_CREATE_TOKEN="+defaultCreateTok+"\n", 0o600)
+		f.write(".muster/tenants/work.env", "MUSTER_API_URL="+f.work.srv.URL+"\nMUSTER_TOKEN="+workTok+
+			"\nMUSTER_AGENT_CREATE_TOKEN="+workCreateTok+"\n", 0o600)
+	}
+	t.Run("--tenant work: work's file token, to work", func(t *testing.T) {
+		f := newLeakFixture(t)
+		serveCreate(f)
+		withCreate(f)
+		got := f.run(map[string]string{}, append([]string{"--tenant", "work"}, agentCreateArgs...)...)
+		if got.code != exitOK {
+			t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+		}
+		if a := createAuths(f.work); len(a) != 1 || a[0] != "Bearer "+workCreateTok {
+			t.Errorf("work received %v, want its own agent-create token once", a)
+		}
+		if n := len(createAuths(f.dflt)) + len(createAuths(f.alien)); n != 0 {
+			t.Errorf("%d create(s) reached another server", n)
+		}
+	})
+	t.Run("--tenant default: default's file token, to default", func(t *testing.T) {
+		f := newLeakFixture(t)
+		serveCreate(f)
+		withCreate(f)
+		got := f.run(map[string]string{}, append([]string{"--tenant", "default"}, agentCreateArgs...)...)
+		if got.code != exitOK {
+			t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+		}
+		if a := createAuths(f.dflt); len(a) != 1 || a[0] != "Bearer "+defaultCreateTok {
+			t.Errorf("default received %v, want its own agent-create token once", a)
+		}
+		if n := len(createAuths(f.work)) + len(createAuths(f.alien)); n != 0 {
+			t.Errorf("%d create(s) reached another server", n)
+		}
+	})
+	t.Run("an environment pair carries the exported token", func(t *testing.T) {
+		f := newLeakFixture(t)
+		serveCreate(f)
+		withCreate(f)
+		env := map[string]string{"MUSTER_API_URL": f.alien.srv.URL, "MUSTER_TOKEN": foreignTok, "MUSTER_AGENT_CREATE_TOKEN": foreignCreateTok}
+		got := f.run(env, append([]string{"--tenant", "work"}, agentCreateArgs...)...)
+		if got.code != exitOK {
+			t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
+		}
+		if a := createAuths(f.alien); len(a) != 1 || a[0] != "Bearer "+foreignCreateTok {
+			t.Errorf("the pair's server received %v, want the exported agent-create token once", a)
+		}
+		if n := len(f.dflt.requests()) + len(f.work.requests()); n != 0 {
+			t.Errorf("%d request(s) reached a tenant's server under an environment pair", n)
+		}
+	})
+	t.Run("a file's token does not follow an environment pair", func(t *testing.T) {
+		f := newLeakFixture(t)
+		serveCreate(f)
+		withCreate(f)
+		env := map[string]string{"MUSTER_API_URL": f.alien.srv.URL, "MUSTER_TOKEN": foreignTok}
+		got := f.run(env, append([]string{"--tenant", "work"}, agentCreateArgs...)...)
+		if got.code != exitUsage || !strings.Contains(got.stderr, "needs a token of scope agent-create") {
+			t.Fatalf("exit = %d stderr=%q; want the local no-token refusal", got.code, got.stderr)
+		}
+		if n := f.total(); n != 0 {
+			t.Errorf("🔴 %d request(s) were sent; work's file token must not travel to the environment pair's server", n)
+		}
+	})
+}

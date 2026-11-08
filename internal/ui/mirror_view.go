@@ -215,7 +215,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				overlayNav(v.Nav, ""),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
-					overlayNavButton(),
+					// Polled only without the asks block, whose asks:changed refreshes it.
+					overlayNavButton(v.Switcher, v.AsksSrc == ""),
 					A(
 						ID("mv-back"),
 						// Home (the chief, or the session opened last): the Agents list
@@ -967,6 +968,7 @@ func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Questi
 // ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
 // persisted messages plus ccd's reply stream, which carries a turn's text and
 // tool calls and nothing the harness injects, so no notice ever reaches it.
+// (Its relayed plugin messages borrow this row's frame: relayRow.)
 func noticeRow(ev cctranscript.Event) g.Node {
 	icon, label := "🔔", "task"
 	switch ev.Notice {

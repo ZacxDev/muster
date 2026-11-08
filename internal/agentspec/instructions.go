@@ -477,7 +477,9 @@ to. If ` + "`agent_dispatch`" + ` is not in your tool list, your owner has not o
 starting agents: tell them that instead. Its target has no default; map your owner's
 words to one: "with Claude", or any Claude model → ` + "`pod/claude-code`" + ` (no model); any other
 model they name → ` + "`pod/gateway`" + ` with that model (its OpenRouter model id or name; muster resolves it); "mirrored" → a host: "mirrored on <host> with Claude" →
-` + "`host/<host>/claude`" + ` (no model); no host named → ` + "`host/?/claude`" + `; "mirrored" and nothing
+` + "`host/<host>/claude`" + ` (no model); "mirrored on <host> with" any other model →
+` + "`host/<host>/opencode`" + ` with model its OpenRouter id (<vendor>/<model>; not sure of the id →
+` + "`host/<host>/?`" + `, no model); no host named → ` + "`host/?/claude`" + ` or ` + "`host/?/opencode`" + `; "mirrored" and nothing
 else → ` + "`mirrored`" + `. Pass repo, a request_key and owner_asked: true. When a host or the
 model is blank, muster asks your owner with a card and starts nothing; when their
 answer arrives, call again with the same request_key, the same arguments and exactly
@@ -733,7 +735,9 @@ to. If ` + "`mcp__muster__agent_dispatch`" + ` is not in your tool list, your ow
 starting agents: tell them that instead. Its target has no default; map your owner's
 words to one: "with Claude", or any Claude model → ` + "`pod/claude-code`" + ` (no model); any other
 model they name → ` + "`pod/gateway`" + ` with that model (its OpenRouter model id or name; muster resolves it); "mirrored" → a host: "mirrored on <host> with Claude" →
-` + "`host/<host>/claude`" + ` (no model); no host named → ` + "`host/?/claude`" + `; "mirrored" and nothing
+` + "`host/<host>/claude`" + ` (no model); "mirrored on <host> with" any other model →
+` + "`host/<host>/opencode`" + ` with model its OpenRouter id (<vendor>/<model>; not sure of the id →
+` + "`host/<host>/?`" + `, no model); no host named → ` + "`host/?/claude`" + ` or ` + "`host/?/opencode`" + `; "mirrored" and nothing
 else → ` + "`mirrored`" + `. Pass repo, a request_key and owner_asked: true. When a host or the
 model is blank, muster asks your owner with a card and starts nothing; when their
 answer arrives, call again with the same request_key, the same arguments and exactly

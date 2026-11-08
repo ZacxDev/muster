@@ -3,19 +3,24 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, kindsPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent, postAgents } from '../lib/seed';
+import { openAgentMenu } from '../lib/agent-menu';
 
-// ccAccount is the agent page header's Claude account (the second row's plain
-// account name, data-cc-account; the Terminal switch beside it is what says
-// the kind).
-const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
+// ccAccount is the agent page's Claude account (its plain account name,
+// data-cc-account) — an item of the header's ⋯ menu since PR #527 (a claude-code
+// agent's page has one header row: agent_header_folded.go); the menu's
+// Terminal item beside it is what says the kind. Open the menu (openAgentMenu)
+// before asking whether it is visible.
+const ccAccount = (page: Page, account: string) => page.locator(`#agent-actions [data-cc-account="${account}"]`);
 
 
-// The dispatch form's agent-kind picker and the Claude account pin, at a phone
-// width (412×915), against a REAL muster-server with the claude-code kind
-// enabled over the noop driver. "Save for later" creates the row and provisions
-// nothing, so no pod, no image and no token is ever used — the tokens below are
-// obvious fakes and never leave this process.
+// Agent kinds and the Claude account pin, against a REAL muster-server with
+// the claude-code kind enabled over the noop driver, read back on the agent's
+// page at a phone width (412×915). Agents are created stopped through POST
+// /api/agents (lib/seed.ts) — the route that replaced the dispatch form and its
+// kind picker, which docs/design/chief-dispatch.md phase 2 deleted — so the row
+// is made and nothing is provisioned: no pod, no image and no token is ever
+// used. The tokens below are obvious fakes and never leave this process.
 test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
 const origin = `http://localhost:${kindsPort}`;
@@ -54,105 +59,39 @@ async function agentRows(): Promise<AgentRow[]> {
   return rows;
 }
 
-test('the kind picker dispatches a Claude Code agent onto a pinned or pooled account, and Standard stays the default', async ({ page }) => {
+test('a Claude Code agent lands on a pinned or pooled account, a pool worker in its pool, and Standard stays the default', async ({ page }) => {
   await signIn(page, origin);
 
-  const open = async () => {
-    await page.goto(origin + '/tasks');
-    await openDispatchSheet(page);
-    await expect(page.locator('#agent-modal [data-kind-picker]')).toBeVisible();
-  };
-  const sheet = page.locator('#agent-modal form');
-  const account = sheet.locator('select[name="cc_account"]');
-  const model = sheet.locator('input[name="model"]');
-  const pool = sheet.locator('input[name="worker_pool"]');
-  // save submits the form and returns the ONE agent row it created (the set of
-  // rows is diffed, so a row left by an earlier run cannot answer).
-  const save = async (note: string): Promise<AgentRow> => {
+  // save creates one stopped agent and returns the ONE row it created (the set
+  // of rows is diffed, so a row left by an earlier run cannot answer).
+  const save = async (opts: Parameters<typeof createAgent>[1]): Promise<AgentRow> => {
     const before = new Set((await agentRows()).map((a) => a.name));
-    await sheet.locator('textarea[name="note_text"]').fill(note);
-    const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-    await sheet.locator('button[value="save"]').click();
-    expect((await resp).status()).toBe(200);
+    const made = await createAgent(origin, opts);
     const created = (await agentRows()).filter((a) => !before.has(a.name));
     expect(created.length, 'exactly one agent created').toBe(1);
-    // The sheet's answer sends the page to the new agent's own page.
-    await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
+    expect(created[0].name).toBe(made.name);
     return created[0];
   };
 
-  // 1. Default: Standard checked, the account pin hidden AND disabled (so it is
-  //    not submitted), the model field live. Nothing scrolls sideways at 412px,
-  //    and both options are thumb-sized.
-  await open();
-  await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
-  await expect(account).toBeHidden();
-  await expect(account).toBeDisabled();
-  await expect(pool).toBeHidden();
-  await expect(pool).toBeDisabled();
-  await expect(model).toBeEnabled();
-  for (const kind of ['gateway', 'claude-code']) {
-    const box = await sheet.locator(`[data-kind-option="${kind}"]`).boundingBox();
-    expect(box!.height, `${kind} option height`).toBeGreaterThanOrEqual(44);
-    expect(box!.x + box!.width, `${kind} option fits the viewport`).toBeLessThanOrEqual(412);
-  }
-  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-  expect(sw).toBeLessThanOrEqual(cw);
+  // 1. Claude Code + a pinned account.
+  const pinned = await save({ kind: 'claude-code', cc_account: 'beta', prompt: 'e2e kinds: pinned to beta' });
 
-  // 2. Claude Code + a pinned account.
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await expect(account).toBeVisible();
-  await expect(account).toBeEnabled();
-  await expect(model).toBeDisabled();
-  // A claude-code agent takes a repository (its session starts in a checkout),
-  // so the repo field stays live.
-  await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
-  await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', 'alpha', 'beta']);
-  await expect(pool).toBeVisible();
-  await expect(pool).toBeEnabled();
-  await expect(sheet.locator('#worker-pool-help')).toContainText('never holds a GitHub grant');
-  await account.selectOption('beta');
-  const pinned = await save('e2e kinds: pinned to beta');
-
-  // 3. Claude Code with the pool choosing: no marks and no LIVE agent anywhere
-  //    (a saved agent is `stopped`), so the name tiebreak picks alpha — NOT the
+  // 2. Claude Code with the pool choosing: no marks and no LIVE agent anywhere
+  //    (a stopped agent is not live), so the name tiebreak picks alpha — NOT the
   //    beta pinned above, which is the control that this one was not pinned.
-  await open();
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  const pooled = await save('e2e kinds: pool choice');
+  const pooled = await save({ kind: 'claude-code', prompt: 'e2e kinds: pool choice' });
 
-  // 3b. Claude Code in a worker pool. The server is the only check on the
-  //     name: a name it refuses is a 409 whose sentence the operator reads in
-  //     the toast, and no row is made.
-  await open();
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await sheet.locator('textarea[name="note_text"]').fill('e2e kinds: bad pool');
-  await pool.fill('-bad');
+  // 2b. Claude Code in a worker pool. The server is the only check on the
+  //     name: a name it refuses is a 409 with its sentence, and no row is made.
   const beforeBad = (await agentRows()).length;
-  const refused = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await refused).status()).toBe(409);
-  await expect(page.locator('#action-toasts')).toContainText(`worker_pool "-bad" is not 1-63 of [a-z0-9-], not starting with '-'`);
+  const refused = await postAgents(origin, { kind: 'claude-code', worker_pool: '-bad', prompt: 'e2e kinds: bad pool' });
+  expect(refused.status, refused.text).toBe(409);
+  expect(JSON.parse(refused.text).error).toContain(`worker_pool "-bad" is not 1-63 of [a-z0-9-], not starting with '-'`);
   expect((await agentRows()).length, 'a refused pool creates no agent').toBe(beforeBad);
+  const worker = await save({ kind: 'claude-code', worker_pool: 'reviewers', prompt: 'e2e kinds: pool worker' });
 
-  await open();
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await pool.fill('reviewers');
-  const worker = await save('e2e kinds: pool worker');
-
-  // 4. Back to Standard after toggling: the pin and the pool are disabled again
-  //    and the row is a gateway agent with no account and no pool.
-  await open();
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await account.selectOption('alpha');
-  await pool.fill('reviewers');
-  await sheet.locator('[data-kind-option="gateway"]').click();
-  await expect(account).toBeDisabled();
-  await expect(pool).toBeHidden();
-  await expect(pool).toBeDisabled();
-  await expect(model).toBeEnabled();
-  await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
-  const standard = await save('e2e kinds: standard');
+  // 3. No kind named: a gateway agent with no account and no pool.
+  const standard = await save({ prompt: 'e2e kinds: standard' });
 
   expect([pinned.kind, pinned.ccAccount]).toEqual(['claude-code', 'beta']);
   expect([pooled.kind, pooled.ccAccount]).toEqual(['claude-code', 'alpha']);
@@ -160,18 +99,23 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   expect([worker.kind, worker.ccAccount, worker.workerPool]).toEqual(['claude-code', 'alpha', 'reviewers']);
   expect([pinned.workerPool, pooled.workerPool, standard.workerPool]).toEqual(['', '', '']);
 
-  // 5. The agent's own page (where its retired list card's chips went: the
-  //    header's second row) says which kind and account, and nothing on the
+  // 4. The agent's own page (where its retired list card's chips went: the
+  //    header's ⋯ menu) says which kind and account, and nothing on the
   //    page carries a token.
+  //    (Since PR #527 those are items of the header's ⋯ menu.)
   await page.goto(origin + '/agents/' + pinned.name);
   await expect(ccAccount(page, 'beta')).toHaveText('beta');
+  await openAgentMenu(page);
   await expect(ccAccount(page, 'beta')).toBeVisible();
-  await expect(page.locator('header [data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
+  await expect(page.locator('[data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
   expect(await page.content()).not.toContain('sk-ant-oat01');
   // …and a pool worker's page says which pool.
   await page.goto(origin + '/agents/' + worker.name);
   await expect(ccAccount(page, 'alpha')).toHaveText('alpha');
+  await openAgentMenu(page);
   await expect(ccAccount(page, 'alpha')).toBeVisible();
-  await expect(page.locator('header [data-worker-pool="reviewers"]')).toBeVisible();
+  await expect(page.locator('#agent-actions [data-worker-pool="reviewers"]')).toBeVisible();
   expect(await page.content()).not.toContain('sk-ant-oat01');
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw, 'no sideways scroll at 412px').toBeLessThanOrEqual(cw);
 });

@@ -10,7 +10,8 @@ import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken,
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 import { revealBox } from '../lib/composer';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
+import { toTerminal } from '../lib/agent-menu';
 
 // DICTATION: the microphone on every message box, in a real Chromium with its
 // FAKE microphone (--use-fake-device-for-media-stream, which records a tone),
@@ -183,19 +184,13 @@ async function agentRows(): Promise<AgentRow[]> {
 async function runningAgent(page: Page): Promise<AgentRow> {
   if (agent) return agent;
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await sheet.locator('textarea[name="note_text"]').fill('');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  // Created stopped through POST /api/agents (lib/seed.ts), which replaced the
+  // deleted dispatch sheet's "Save for later".
+  const made = await createAgent(origin, { kind: 'claude-code' });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
-  // The sheet's answer sends the page to the new agent's own page.
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
+  expect(created[0].name).toBe(made.name);
+  await page.goto(origin + '/agents/' + created[0].name);
   agent = created[0];
   const started = await page.request.post(`${origin}/agents/${agent.id}/start`, { headers: { Origin: origin } });
   expect(started.status(), await started.text()).toBe(200);
@@ -442,7 +437,9 @@ test.describe('the view switch finishes the recording in the view it hides', () 
         top,
         () => page,
         async () => {
-          await page.locator('a[data-view-swap]:visible').first().click();
+          // A claude-code agent's chat has its Terminal in the ⋯ menu (PR #527).
+          if (c.agent) await toTerminal(page);
+          else await page.locator('a[data-view-swap]:visible').first().click();
           await expect(sub.mic).toBeVisible({ timeout: 30_000 });
           await expect(iframe).toHaveCSS('visibility', 'visible');
         },
@@ -464,7 +461,8 @@ test.describe('the view switch finishes the recording in the view it hides', () 
       await expect(top.mic).toHaveAttribute('data-state', 'idle');
       await expect(top.note).toBeHidden();
       // 3. The frame shown again: its box has its transcript, its mic at rest.
-      await page.locator('a[data-view-swap]:visible').first().click();
+      if (c.agent) await toTerminal(page);
+      else await page.locator('a[data-view-swap]:visible').first().click();
       await expect(iframe).toHaveCSS('visibility', 'visible');
       await expect(sub.input).toHaveValue(FAKE_TEXT);
       await expect(sub.mic).toHaveAttribute('data-state', 'idle');

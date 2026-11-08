@@ -106,7 +106,6 @@ const (
 	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
 	whyAccessor = "the accessor itself; every display caller applies Title to its result"
 	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
-	whyDispatch = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
 	whyPerson   = "a person's (user account's) display name, not a title"
 )
 
@@ -135,14 +134,14 @@ var uiExempt = map[string]exemption{
 	"components.go sidebarIn t.Label":                    {1, whyStatic},
 	"nav_layout.go NavDocument v.Title":                  {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":                {1, whyStatic},
-	"switcher.go switcherEntry it.Label":                 {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"switcher.go switcherEntry it.Label":                 {2, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
+	"switcher.go switcherLabel it.Label":                 {1, "the pill's name line, split out of switcherEntry for \"Show tmux sessions\": SwitcherItem.Label, built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
 	"nav_agents.go navAgentRow it.Label":                 {1, "SwitcherItem.Label, built through Title by switcherItems (the switcher's own labels); the row's name and title — plaining it again would apply Title twice"},
 	"nav_agents.go navAgentRow it.Title":                 {2, "SwitcherItem.Title, built through Title by switcherItems; the command palette's data-switcher-title — plaining it again would apply Title twice"},
 	"switcher.go switcherEntry it.Title":                 {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
 	"mirror_ask.go askForm o.Label":                      {2, whyOption},
 	"mirror_ask.go askReadOnly o.Label":                  {1, whyOption},
 	"mirror_ask.go askRetryForm q.Options[p].Label":      {1, whyOption},
-	"notes.go noteDispatchButton TaskTitle":              {1, whyDispatch},
 	"notes.go editTitleBodyFields n.Title":               {1, whyForm},
 	"notes.go statusFilterRow taskstatus.Label":          {1, whyStatic},
 	"notes.go TaskTitle n.Title":                         {1, whyAccessor},

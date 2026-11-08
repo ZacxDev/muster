@@ -7,14 +7,12 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/provision"
-	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // composeWorld is chiefWorld on the Compose chief: a provisioner wired, and
@@ -30,8 +28,8 @@ func composeWorld(t *testing.T, withChief bool, cred ComposeChiefCred, credErr e
 }
 
 // TestNothingDispatchesOnTheComposeChief: the provisioner is wired for the
-// chief, and every surface that dispatches reads it as off — POST /agents (in
-// the dispatch sheet's 503 shape), the deployment refusal agent_dispatch and
+// chief, and every surface that dispatches reads it as off — POST /api/agents
+// (in the provisioner 503 shape), the deployment refusal agent_dispatch and
 // the task actions read, and dispatchServed itself. Lifecycle stays served.
 // Control: the same server without ComposeChief dispatches.
 func TestNothingDispatchesOnTheComposeChief(t *testing.T) {
@@ -39,34 +37,21 @@ func TestNothingDispatchesOnTheComposeChief(t *testing.T) {
 	if !w.s.lifecycleServed() || w.s.dispatchServed() {
 		t.Fatalf("lifecycleServed %v dispatchServed %v; want true, false", w.s.lifecycleServed(), w.s.dispatchServed())
 	}
-	rec := w.post("/agents", url.Values{"note": {"a task"}})
+	rec := apiCreateAgent(t, w.s, w.h, map[string]any{"prompt": "a task", "start": true})
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), ProvisionerUnwiredField) ||
 		!strings.Contains(rec.Body.String(), "dispatches no other agent") {
-		t.Fatalf("POST /agents: %d %s", rec.Code, rec.Body)
+		t.Fatalf("POST /api/agents: %d %s", rec.Code, rec.Body)
 	}
 	if got := w.s.chiefDispatchDeploymentRefusal(1); got == "" {
 		t.Fatal("agent_dispatch's deployment refusal is empty on the Compose chief")
 	}
-	if w.s.shellFeatures(opCtx).Dispatch {
-		t.Error("the sidebar's \"+\" (Features.Dispatch) is drawn on the Compose chief")
-	}
-	var unavailable strings.Builder
-	if err := ui.RenderDispatchUnavailable(&unavailable); err != nil {
-		t.Fatal(err)
-	}
-	if rec := w.get("/ui/agents/new", nil); rec.Body.String() != unavailable.String() {
-		t.Errorf("the dispatch sheet on the Compose chief is not the dispatch-unavailable sheet:\n%.800s", rec.Body)
-	}
 
 	control := newChiefWorld(t, false, true)
-	if !control.s.dispatchServed() || !control.s.shellFeatures(opCtx).Dispatch {
+	if !control.s.dispatchServed() {
 		t.Fatal("control: a provisioner without ComposeChief does not offer a dispatch")
 	}
-	if rec := control.get("/ui/agents/new", nil); rec.Body.String() == unavailable.String() {
-		t.Fatal("control: the dispatch sheet is the unavailable one with a dispatching provisioner")
-	}
-	if rec := control.post("/agents", url.Values{"note": {"a task"}}); strings.Contains(rec.Body.String(), "dispatches no other agent") {
-		t.Fatalf("control: POST /agents refused with the Compose sentence: %s", rec.Body)
+	if rec := apiCreateAgent(t, control.s, control.h, map[string]any{"prompt": "a task", "start": false}); strings.Contains(rec.Body.String(), "dispatches no other agent") {
+		t.Fatalf("control: POST /api/agents refused with the Compose sentence: %s", rec.Body)
 	}
 }
 

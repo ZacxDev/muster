@@ -89,6 +89,7 @@ var noStoreLiterals = map[string]string{
 	"handleUpload":             "an upload's answer",
 	"handleUploadLink":         "an upload's signed link",
 	"handleNavAgents":          "the sidebar's agent list",
+	"handleNavWaiting":         "the ☰ button's waiting badge",
 	"redirectTo":               "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
 	"handleAgentsHome":         "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":        "an agent page's status strip, ⋯ menu and notices, live",
@@ -269,9 +270,7 @@ var htmlWithoutNoStore = map[string]string{
 	"renderTaskNotFound": "a task's not-found page: nothing on it but the id the reader typed",
 
 	"answerSwitcherPin":         htmlFragment,
-	"handleAgentNewModal":       htmlFragment,
 	"handleAgentRepoOptions":    htmlFragment,
-	"handleAgentNoteOptions":    htmlFragment,
 	"handleAgentStatusIcon":     htmlFragment,
 	"handleNotifications":       htmlFragment,
 	"handleAgentTaskModal":      htmlFragment,

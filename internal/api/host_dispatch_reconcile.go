@@ -278,12 +278,25 @@ func (s *Server) sweepHostDispatches(ctx context.Context) int {
 // from its row and the hub's listing of its window (design 3.7, "The live
 // agent card"): the card and a forward find the window the same way (row host,
 // window and session).
+// hostDispatchRuntimeLabel is what a host dispatch's live card says it runs:
+// Claude Code, or opencode with its OpenRouter model (design 3.7, "The live
+// agent card").
+func hostDispatchRuntimeLabel(r plugins.HostDispatch) string {
+	if r.Runtime == mirror.SpawnRuntimeOpenCode {
+		if _, id, ok := mirror.ParseSpawnModel(r.Model); ok {
+			return "opencode · " + id + " (OpenRouter)"
+		}
+		return "opencode"
+	}
+	return "Claude Code"
+}
+
 func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.DispatchCard, error) {
 	r, err := s.hostDispatches().HostDispatchByID(ctx, id)
 	if err != nil {
 		return ui.DispatchCard{}, err
 	}
-	c := ui.DispatchCard{Host: r.Host, Runtime: "Claude Code", Repo: r.Repo, TaskID: r.TaskID,
+	c := ui.DispatchCard{Host: r.Host, Runtime: hostDispatchRuntimeLabel(r), Repo: r.Repo, TaskID: r.TaskID,
 		HostNote: "There is no Stop button: close the window on " + r.Host + " to stop it."}
 	if r.Window != "" {
 		c.Window = "agents:" + r.Window

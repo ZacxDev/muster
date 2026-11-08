@@ -3,7 +3,7 @@ import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 import { openMore } from '../lib/nav';
 
 // THE SIDE NAV ON EVERY SIGNED-IN PAGE (internal/ui/nav_layout.go), opened by
@@ -166,20 +166,12 @@ async function ccAgent(page: Page): Promise<string> {
     return new Set(rows.map((a) => a.name));
   };
   const before = await names();
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await sheet.locator('textarea[name="note_text"]').fill('e2e side nav');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  // Created stopped through POST /api/agents (lib/seed.ts), which replaced the
+  // deleted dispatch sheet's "Save for later".
+  const made = await createAgent(origin, { kind: 'claude-code', prompt: 'e2e side nav' });
   const created = [...(await names())].filter((n) => !before.has(n));
-  expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created, 'exactly one agent created').toEqual([made.name]);
   agent = created[0];
-  // Save for later answers with an HX-Redirect to the new agent's page: let
-  // that navigation land, or it interrupts the caller's next one.
-  await page.waitForURL((u) => u.pathname === `/agents/${agent}`);
   return agent;
 }
 
@@ -273,7 +265,11 @@ for (const size of [
       await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       await openByToggle(page);
       await page.locator('#view-rendered').click();
-      await expect(framed(page).locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+      // The framed page is the chat: no Rendered | Terminal switch on it, its
+      // Terminal the ⋯ menu's item (PR #527: one header row).
+      await expect(framed(page).locator('#chat-form')).toBeVisible();
+      await expect(framed(page).locator('#view-rendered')).toHaveCount(0);
+      await expect(framed(page).locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
       // The agent page keeps the shell's rail on a desktop (it is not a
       // full-height view); on a phone its hamburger opens it.
       await navOnTopInFrame(page, desktop);

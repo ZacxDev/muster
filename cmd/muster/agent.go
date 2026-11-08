@@ -28,9 +28,9 @@ type agentBrief struct {
 func newAgentCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Agent roster, name->id resolution, chat history, and an agent's own task",
+		Short: "Agent roster, name->id resolution, chat history, an agent's own task, and creating one",
 	}
-	cmd.AddCommand(newAgentLsCmd(a), newAgentResolveCmd(a), newAgentMessagesCmd(a), newAgentTaskCmd(a))
+	cmd.AddCommand(newAgentLsCmd(a), newAgentResolveCmd(a), newAgentMessagesCmd(a), newAgentTaskCmd(a), newAgentCreateCmd(a))
 	return cmd
 }
 

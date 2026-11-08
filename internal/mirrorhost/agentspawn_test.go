@@ -126,8 +126,18 @@ func TestASpawnRefusedBeforeGitRunsNoGitAndLogsBothLines(t *testing.T) {
 			mirror.SpawnBadBase, `branch "main/../x" is not a branch name this host accepts`},
 		{"a model on claude", []string{"acme/widgets"}, func() mirror.AgentSpawnReq { r := widgets(testPrompt); r.Model = "openrouter/x/y"; return r }(),
 			mirror.SpawnFailed, "muster sent a model for claude (a muster bug)"},
-		{"opencode", []string{"acme/widgets"}, func() mirror.AgentSpawnReq { r := widgets(testPrompt); r.Runtime = "opencode"; return r }(),
-			mirror.SpawnUnavailable, "this host does not start opencode agents"},
+		{"opencode with no model", []string{"acme/widgets"}, func() mirror.AgentSpawnReq { r := widgets(testPrompt); r.Runtime = "opencode"; return r }(),
+			mirror.SpawnBadModel, `"" is not an OpenRouter model (openrouter/<vendor>/<model>)`},
+		{"opencode with a model of another provider", []string{"acme/widgets"}, func() mirror.AgentSpawnReq {
+			r := widgets(testPrompt)
+			r.Runtime, r.Model = "opencode", "a/b/c"
+			return r
+		}(), mirror.SpawnBadModel, `"a/b/c" is not an OpenRouter model (openrouter/<vendor>/<model>)`},
+		{"opencode on a host without -opencode-send", []string{"acme/widgets"}, func() mirror.AgentSpawnReq {
+			r := widgets(testPrompt)
+			r.Runtime, r.Model = "opencode", "openrouter/qwen/qwen3-coder"
+			return r
+		}(), mirror.SpawnUnavailable, "this host does not send to opencode (-opencode-send is off)"},
 		{"an unknown runtime", []string{"acme/widgets"}, func() mirror.AgentSpawnReq { r := widgets(testPrompt); r.Runtime = "sh"; return r }(),
 			mirror.SpawnFailed, "muster sent an unknown runtime (a muster bug)"},
 		{"a repo that is a path", []string{"acme/widgets"}, func() mirror.AgentSpawnReq { r := widgets(testPrompt); r.Repo = "../../etc"; return r }(),

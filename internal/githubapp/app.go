@@ -939,6 +939,23 @@ func (a *App) Slug(ctx context.Context) (string, error) {
 	return out.Slug, nil
 }
 
+// CreatedAt reads when the App was created (GET /app's created_at, as the
+// App): no pull request of its bot is older, so a shipping officer's listing
+// of them stops there (internal/officership REST.OfficerPRs). An answer
+// without it is an error, never a zero time.
+func (a *App) CreatedAt(ctx context.Context) (time.Time, error) {
+	var out struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := a.appCall(ctx, http.MethodGet, a.cfg.BaseURL+"/app", nil, &out, "reading the App", ""); err != nil {
+		return time.Time{}, err
+	}
+	if out.CreatedAt.IsZero() {
+		return time.Time{}, errors.New("GitHub's answer for the App carried no created_at")
+	}
+	return out.CreatedAt, nil
+}
+
 // RepoToken is a token for repo minted in the App's own mode, for muster's
 // own server-side calls on a shipping officer's behalf (merge, tag). It is
 // never injected into an agent's request: the proxy takes its credential from

@@ -9,8 +9,10 @@ import (
 // input … show a text icon beside the mic … more space by default").
 //
 // The Rendered view's composer (ComposerView.Collapsible) is drawn with its box
-// COLLAPSED on a touch screen: the input row is "Type a message" (#mv-text),
-// the mic, the session's ⋯ and Send. Tapping "Type a message" reveals the box
+// COLLAPSED on a touch screen: the input row is the paperclip, "Type a
+// message" (#mv-text), the mic, Send and the session's ⋯. The paperclip stays
+// (web/css/input.css): a file is attached without opening the box, so without
+// raising the keyboard. Tapping "Type a message" reveals the box
 // and focuses it. Once revealed it stays open until the page is left — a send
 // does not collapse it again.
 //
@@ -60,8 +62,9 @@ const (
 // ComposerTextLabel is the "Type a message" button's accessible name.
 const ComposerTextLabel = "Type a message"
 
-// composerFieldMark is what the collapsed state hides: the box's field (the
-// box, or its wrapper with the paperclip) carries data-mv-field. A composer
+// composerFieldMark is what the collapsed state shrinks: the box's field (the
+// box, or its wrapper with the paperclip) carries data-mv-field. Collapsed,
+// the box is hidden and the paperclip alone is left of the field. A composer
 // that cannot collapse carries nothing.
 func composerFieldMark(collapse bool) g.Node {
 	if !collapse {

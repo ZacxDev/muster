@@ -15,7 +15,7 @@ The verb set is pinned in two places:
 |---|---|
 | tasks | `task ls`, `task get`, `task create`, `task comment`, `task status` |
 | an agent's own task | `agent task get`, `agent task comment`, `agent task status` |
-| agents | `agent ls`, `agent messages`, `agent resolve`, `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
+| agents | `agent ls`, `agent messages`, `agent resolve`, `agent create` ([creating an agent without the chief](provisioner.md#creating-an-agent-without-the-chief)), `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
@@ -44,6 +44,27 @@ The usual credential is a **personal API token** (`mst_…`). Mint it in the
 browser at `/account/tokens`; it acts as you ([auth.md](auth.md)). Tokens cannot
 be minted from the CLI. `muster token ls` and `muster token revoke <id>` manage
 them, and `muster whoami` says who a credential acts as.
+
+`agent create` is the one exception: it presents `MUSTER_AGENT_CREATE_TOKEN`, a
+token of scope **Create agents** (`agent-create`), and never sends
+`MUSTER_TOKEN`. The server refuses every other token on `POST /api/agents`, a
+full-access one included, so the ordinary credential cannot create agents.
+Where it is read from:
+
+- **One tenant:** from the env file, then the environment, like the token. An
+  exported `MUSTER_API_URL` alone still pairs with the file's tokens here (the
+  one-tenant path mixes sources field by field), so the file's agent-create
+  token follows it, exactly as the file's `MUSTER_TOKEN` does.
+- **More than one tenant:** the pair rule below covers it too. It comes from
+  the selected tenant's file, or from the environment only beside an
+  environment `MUSTER_API_URL` + `MUSTER_TOKEN` pair. An exported one with
+  neither makes it unusable for that tenant: `agent create` refuses (exit 2,
+  nothing sent) and says where to put it; every other verb runs as usual,
+  since none of them sends it.
+- **A flag pair** (`--api-url` + `--token`) cannot carry one: there is no flag
+  for it, and an exported one beside a flag pair names no server's pair. On a
+  host with more than one tenant, `agent create` with a flag pair is therefore
+  refused; use the tenant's file or an environment pair.
 
 ## Several servers (tenants)
 

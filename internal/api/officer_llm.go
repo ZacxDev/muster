@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -170,13 +172,73 @@ func (s *Server) llmAudit(upstream string) func(ctx context.Context, rec llmprox
 
 // llmClaimed and llmEnded tell the proxy's per-item meter about an officer
 // tool's claim, complete or release by instance (an agent name).
-func (s *Server) llmClaimed(o officers.Officer, instance string, item officers.ItemID) {
+//
+// claimBody is HQ's answer to the claim (or muster's already-yours answer):
+// its item's `attempts` tells the meter whether this is HQ's first claim of
+// the item, the only hold whose cost can be the item's whole (claimAttempts).
+func (s *Server) llmClaimed(o officers.Officer, instance string, item officers.ItemID, claimBody []byte) {
 	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
 		return
 	}
 	if n, ok := s.llmRoutineInstance(o, instance); ok {
-		s.officerRT.llm.Claimed(o.ID, n, string(item))
+		s.officerRT.llm.ClaimedAttempt(o.ID, n, string(item), claimAttempts(claimBody))
 	}
+}
+
+// claimAttempts is the `attempts` of the item in a claim answer: 0 when it
+// has none (an HQ without the field) or is muster's already-yours answer
+// (officerClaim: a heartbeat of a live hold, not a new HQ claim).
+func claimAttempts(body []byte) int {
+	var b struct {
+		AlreadyYours bool `json:"already_yours"`
+		Item         *struct {
+			Attempts int `json:"attempts"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(body, &b) != nil || b.AlreadyYours || b.Item == nil {
+		return 0
+	}
+	return b.Item.Attempts
+}
+
+// Why a complete sends no cost, beside the proxy meter's own reasons
+// (llmproxy.Cost*): the omitted-cost log line's reason.
+const (
+	costNoSource  = "no_source"  // not a routine instance of an `llm` officer: no cost source muster reads
+	costHandedOn  = "handed_on"  // needs_judgement: the item goes on to a judgement session
+	costOverBound = "over_bound" // above HQ's bound (a reporting error HQ refuses)
+)
+
+// llmItemCost is the cost a routine instance's complete of item reports to
+// HQ (civ-hq docs/OFFICERS.md "Item cost"): what its hold booked through the
+// proxy, from muster:llm-proxy, or nil when that is not known to be the
+// item's whole cost — then NOTHING is sent, never a 0 — with why (a short
+// id, for the log line). Only a complete that finishes the item carries one:
+// needs_judgement hands it on to a judgement session, whose cost muster has
+// no source for, so the item's total is not known. A judgement or untiered
+// instance's Claude Code session has no cost source muster reads: nil.
+func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.ItemID, outcome string) (*officers.ItemCost, string) {
+	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
+		return nil, costNoSource
+	}
+	n, ok := s.llmRoutineInstance(o, instance)
+	if !ok {
+		return nil, costNoSource
+	}
+	if outcome == officers.OutcomeNeedsJudgement {
+		return nil, costHandedOn
+	}
+	usd, why := s.officerRT.llm.ItemCostWhy(o.ID, n, string(item))
+	if why != "" {
+		return nil, why
+	}
+	// HQ stores 0-10000 USD (above is a reporting error it refuses); muster
+	// books to the micro-dollar (officer_llm_usage's NUMERIC(14,6)).
+	usd = math.Round(usd*1e6) / 1e6
+	if math.IsNaN(usd) || usd < 0 || usd > officers.MaxItemCostUSD {
+		return nil, costOverBound
+	}
+	return &officers.ItemCost{USD: usd, From: officers.CostFromLLMProxy}, ""
 }
 
 func (s *Server) llmEnded(o officers.Officer, instance string, item officers.ItemID) {

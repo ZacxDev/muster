@@ -30,9 +30,11 @@ import (
 // (operator decision: the sidebar and the session switcher's bar are how a
 // person moves between agents):
 //
-//   - the dispatch "+" (task-less, with "Save for later") sits beside the
-//     Agents label, or, on a server with no agent runtime, the "Agent dispatch
-//     not set up" hint (navAgentsHead);
+//   - NO dispatch "+": the chief starts agents (its agent_dispatch tool), and
+//     the machine route POST /api/agents (`muster agent create`) does for a
+//     deployment without one. docs/design/chief-dispatch.md phase 2 deleted the
+//     "+", its "Agent dispatch not set up" hint and the form, with nothing in
+//     their place (D8);
 //   - the Idle section: entries idle past MUSTER_AGENTS_IDLE_AFTER are drawn
 //     last, in a collapsed "Idle (N)" group (navIdleGroup);
 //   - a mirrored window whose host is offline says so on its row, and so does
@@ -131,7 +133,7 @@ func navAgentsSlot(overlay bool, feat Features) g.Node {
 		// A sideways swipe here is still the sidebar's (its edge-swipe close);
 		// a vertical one scrolls the list.
 		Class("flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2 pb-2"),
-		navAgentsHead(feat),
+		navAgentsHead(),
 		Div(
 			ID(NavAgentsListID),
 			hx("hx-get", NavAgentsPath),
@@ -145,49 +147,12 @@ func navAgentsSlot(overlay bool, feat Features) g.Node {
 	)
 }
 
-// NavDeployID is the sidebar's dispatch "+" (navDeployButton).
-const NavDeployID = "sidebar-deploy"
-
-// navAgentsHead is the list's head row: the "Agents" label that names the list
-// and, at its end, the dispatch "+" (Features.Dispatch) or — on a server with
-// no agent runtime — the hint that says why there is none (dispatchOffHint).
-// A fixed 44px row whatever it holds, drawn with the sidebar, so neither
-// moves anything.
-func navAgentsHead(feat Features) g.Node {
-	var end g.Node
-	if feat.Dispatch {
-		end = navDeployButton()
-	} else {
-		end = dispatchOffHint()
-	}
+// navAgentsHead is the list's head row: the "Agents" label that names the
+// list. A fixed 44px row, drawn with the sidebar, so it moves nothing.
+func navAgentsHead() g.Node {
 	return Div(
 		Class("flex min-h-[44px] shrink-0 items-center gap-2 pl-3 pt-1"),
 		P(ID(navAgentsLabelID), Class("flex-1 text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
-		end,
-	)
-}
-
-// navDeployButton is the sidebar's "+": it opens the task-less dispatch sheet
-// (GET /ui/agents/new, DispatchModalBody) — the sheet the retired Agents list's
-// bar opened — loading its body into the sheet (agentModalShell, which every
-// document with the sidebar carries) and revealing it (modalOpenClick). A 44px
-// target around a 32px face.
-func navDeployButton() g.Node {
-	return Button(
-		ID(NavDeployID),
-		Type("button"),
-		g.Attr("aria-label", "Deploy agent"),
-		g.Attr("title", "Deploy agent"),
-		g.Attr("aria-haspopup", "dialog"),
-		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
-		hx("hx-get", "/ui/agents/new"),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		Span(
-			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
-		),
 	)
 }
 
@@ -302,6 +267,126 @@ var navIdleJS = `(function () {
   });
 })();`
 
+// THE ☰ BUTTON'S WAITING BADGE (operator ask: the button that opens the
+// sidebar says when something there waits on the operator).
+//
+// 🔴 ONE PREDICATE: the count is how many of the sidebar's entries
+// listEntry.waiting holds for — the rule the rows' waiting mark
+// (navAttentionPill), the sidebar's order and the switcher's Waiting view
+// read — over the SAME entries the list is built from (internal/api's
+// agentsListEntries). It is never a second count of the attention queue: a
+// dispatched agent blocked at a permission prompt waits with no item queued.
+//
+// 🔴 THE WIRING IS ON THE SLOT, THE ROUTE ANSWERS ONLY ITS CONTENTS — the
+// Attention badge's rule (attention.go): a fragment carrying its own `load`
+// trigger, swapped in, would fire again on every swap.
+//
+// WHEN IT LOADS: on load and on the events the sidebar's rows refresh on
+// (navAgentsRailTrigger's), each only while the button is on screen (it is
+// hidden beside the desktop rail, which shows the rows themselves); on every
+// open of the drawer, so the badge and the rows just drawn agree; on the asks
+// block's own stream (asks:changed, a session page's AttentionLiveScript —
+// which fires on every queue change AND on its own minute's tick); and once a
+// minute while the tab is shown, as the Attention badge's is. A page with a
+// session switcher (the Rendered view, a Terminal view) draws its first count
+// with the page instead, so it has no load-time read; it keeps the minute's
+// poll only where nothing else on the page would refresh the badge (a
+// Terminal view, a Rendered view with no asks block) — see navWaitingSlot.
+
+// NavWaitingPath is the ☰ button's badge partial.
+const NavWaitingPath = "/ui/nav/waiting"
+
+// NavWaitingBadgeID is the badge element (NavWaitingBadgeHTML).
+const NavWaitingBadgeID = "nav-waiting-badge"
+
+// navWaitingShownJS is the badge's filter: the ☰ button holding the slot is
+// laid out (not display:none beside the desktop rail).
+const navWaitingShownJS = "this.parentElement&&this.parentElement.getClientRects().length>0"
+
+// navWaitingTrigger is the badge slot's hx-trigger. The SSE ones are
+// debounced for attentionBadgeTrigger's reason.
+const navWaitingTrigger = "load[" + navWaitingShownJS + "], " + navWaitingEventsTrigger + ", " +
+	"every 60s [(" + navWaitingShownJS + ")&&!document.hidden]"
+
+// NavWaitingCount is how many entries wait on the viewer (listEntry.waiting).
+func NavWaitingCount(list []AgentCardView, mirrors []MirrorCardView) int {
+	n := 0
+	for _, e := range orderList(list, mirrors) {
+		if e.waiting() {
+			n++
+		}
+	}
+	return n
+}
+
+// NavWaitingBadgeHTML is the badge for n waiting entries: hidden at zero. It is
+// the slot's CONTENT and carries no htmx wiring of its own. Its text is the
+// ☰ button's description (aria-describedby), so a screen reader hears
+// "Open menu, 2 waiting on you".
+func NavWaitingBadgeHTML(n int) string {
+	hidden := ""
+	if n <= 0 {
+		hidden = " hidden"
+	}
+	c := strconv.Itoa(n)
+	shown := c
+	if n > 99 {
+		shown = "99+"
+	}
+	// The words are the button's description: none at zero, so the button
+	// is not described as "0 waiting on you".
+	words := ""
+	if n > 0 {
+		words = c + " waiting on you"
+	}
+	return `<span id="` + NavWaitingBadgeID + `" data-nav-waiting="" data-count="` + c + `"` +
+		` class="pointer-events-none absolute right-0 top-0 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none text-on-accent ring-2 ring-bg"` +
+		hidden + `><span aria-hidden="true">` + shown + `</span><span class="sr-only">` + words + `</span></span>`
+}
+
+// navWaitingEventsTrigger is the badge's event refreshes, without the load and
+// without the minute's poll (navWaitingSlot adds the poll where it is needed).
+const navWaitingEventsTrigger = NavOpenEvent + " from:document, " +
+	"agents:changed[" + navWaitingShownJS + "] from:body, " +
+	"sse:agent.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"sse:chat.reply[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"sse:attention_queue.changed[" + navWaitingShownJS + "] from:body delay:50ms, " +
+	"asks:changed[" + navWaitingShownJS + "] from:document delay:50ms, " +
+	"muster:resync[" + navWaitingShownJS + "] from:body"
+
+// navWaitingSlot is the element inside the ☰ button that refreshes the badge.
+//
+// 🔴 ON A PAGE WITH A SESSION SWITCHER (s: the Rendered view, a Terminal view —
+// the overlay pages, whose open path the sidebar's list was built to spare) THE
+// FIRST COUNT IS DRAWN WITH THE PAGE, from the switcher's Waiting view: the
+// same entries and the same predicate (NewSwitcher's listEntry.waiting), already
+// read for the bar — so the page costs no extra read on load. It then refreshes
+// on the events and on each open of the drawer (navWaitingEventsTrigger), and —
+// with poll — once a minute: poll is for a page where nothing else would
+// refresh it (no /events stream, no asks block: a Terminal view, a Rendered
+// view whose window has no asks source). A Rendered view WITH its asks block
+// is refreshed by that block's asks:changed, which fires on every queue change
+// and on the block's own minute's tick, so it reads /ui/nav/waiting about once
+// a minute anyway. Without a switcher, the badge loads its count and polls
+// (navWaitingTrigger).
+func navWaitingSlot(s *Switcher, poll bool) g.Node {
+	n, trigger := 0, navWaitingTrigger
+	if s != nil {
+		n, trigger = len(s.Waiting), navWaitingEventsTrigger
+		if poll {
+			trigger += ", every 60s [(" + navWaitingShownJS + ")&&!document.hidden]"
+		}
+	}
+	return Span(ID("nav-waiting-slot"), hx("hx-get", NavWaitingPath), hx("hx-trigger", trigger),
+		hx("hx-swap", "innerHTML"), hx("hx-target", "this"), g.Raw(NavWaitingBadgeHTML(n)))
+}
+
+// RenderNavWaiting writes NavWaitingBadgeHTML for the entries.
+func RenderNavWaiting(w io.Writer, list []AgentCardView, mirrors []MirrorCardView) error {
+	_, err := io.WriteString(w, NavWaitingBadgeHTML(NavWaitingCount(list, mirrors)))
+	return err
+}
+
 // RenderNavAgents writes NavAgentsList, its focus ages at now (the server's
 // clock).
 func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, currentURL string, now time.Time) error {
@@ -320,14 +405,13 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 	label, current := it.Label, it.Current
 	var id, href, kind, color, host, icon string
-	var att *CardAttention
 	if e.agent != nil {
 		a := e.agent
-		id, href, kind, att = "nav-agent-"+strconv.FormatInt(a.ID, 10), a.PageHref(), "agent", a.Attention
+		id, href, kind = "nav-agent-"+strconv.FormatInt(a.ID, 10), a.PageHref(), "agent"
 		host, icon = podHost, clusterIcon.Key
 	} else {
 		m := e.mirror
-		id, href, kind, att, color = "nav-"+mirrorCardID(*m), MirrorCardHref(*m), "mirror", m.Attention, m.Color
+		id, href, kind, color = "nav-"+mirrorCardID(*m), MirrorCardHref(*m), "mirror", m.Color
 		host, icon = m.Host, m.HostIcon
 	}
 	// The identity colour on the row's left edge: the global --id-bd that
@@ -378,7 +462,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			navChiefChip(e.mirror),
 			navOutcome(e.agent),
 			navWork(e.work()),
-			navAttentionPill(att, e.waiting()),
+			entryWaitMark(it),
 		),
 	)
 }
@@ -430,6 +514,15 @@ func navRowTone(current bool) string {
 		return "bg-s2 text-fg ring-1 ring-inset ring-line"
 	}
 	return "text-fg2 hover:bg-s2 hover:text-fg"
+}
+
+// entryWaitMark is an entry's waiting mark, wherever it is drawn: its sidebar
+// row (navAgentRow) and the command palette's row for it (palette.go, a copy
+// of the one its switcher pill or sidebar row carries) — 🔴 ONE CALL, so the
+// two cannot draw it differently or by a different predicate (the item's
+// Attention and Waiting, listEntry.waiting). nil when there is nothing to mark.
+func entryWaitMark(it SwitcherItem) g.Node {
+	return navAttentionPill(it.Attention, it.Waiting)
 }
 
 // navAttentionPill is a row's attention: the kind's icon and the count

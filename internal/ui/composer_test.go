@@ -192,12 +192,17 @@ func TestAnAgentsRenderedViewIsItsDefaultAndBothViewsHaveTheSwitch(t *testing.T)
 
 	cc := sampleAgentDetailView()
 	cc.Name, cc.Kind, cc.CCAccount = "keen-wren", agents.KindClaudeCode, "alpha"
+	cc.Card = AgentCardView{ID: cc.ID, Name: "keen-wren", Kind: agents.KindClaudeCode, Status: "running"}
 	chat := renderString(t, AgentDetailPage(cc, featuresAllOn))
-	if !strings.Contains(chat, `<span id="view-rendered" aria-current="page"`) {
-		t.Error("the chat page does not mark Rendered as the current view")
+	// PR #527: the chat page's one header row draws no Rendered | Terminal
+	// switch (the chat IS the rendered view); its way to the terminal is the
+	// ⋯ menu's Terminal item, the same view-swap link.
+	if strings.Contains(chat, `id="view-rendered"`) {
+		t.Error("the chat page still draws the Rendered segment")
 	}
-	if !strings.Contains(chat, `<a id="view-terminal" href="/agents/keen-wren/terminal" hx-boost="false"`) {
-		t.Error("the chat page's switch does not lead to the terminal with a real load (hx-boost=false)")
+	menu := chat[strings.Index(chat, `id="`+AgentMenuID+`"`):]
+	if !strings.Contains(menu, `<a id="view-terminal" href="/agents/keen-wren/terminal" hx-boost="false"`) {
+		t.Error("the chat page's ⋯ menu does not lead to the terminal with a real load (hx-boost=false)")
 	}
 	if strings.Contains(chat, `id="open-terminal"`) {
 		t.Error("the old lone Terminal link is still drawn beside the switch")

@@ -38,6 +38,7 @@ import (
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/notifypref"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -191,6 +192,11 @@ var isolationClasses = map[string]routeClass{
 	"DELETE /api/tokens/{id}": classAPIToken,
 	// The attention summary: the token owner's own queue and hosts.
 	"GET /api/attention/summary": classAPIToken,
+	// Creating an agent (agent_create_api.go): an agent-create token only. Its
+	// note_id is read under the caller's row-level security, so B naming A's
+	// task is "no such task" (TestAnAgentCreateNamingAnotherUsersTaskIsNotFound).
+	// Not in namesObject: the walk's full tokens are refused at its door.
+	"POST /api/agents": classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
@@ -247,13 +253,14 @@ var isolationClasses = map[string]routeClass{
 	"GET /share":           classList,
 	"GET /tasks":           classList,
 	"GET /ui/nav/agents":   classList,
+	// The ☰ button's waiting badge: a count over the caller's own entries
+	// (agentsListEntries, as the list above).
+	"GET /ui/nav/waiting": classList,
 	// The palette's server search (palette.go): a session route naming no
 	// object — its live set is the caller's own entries; owner isolation is
 	// pinned by TestThePaletteServerSearchIsOwnerScoped and focus's
 	// TestSearchTitlesIsPerOwner.
 	"GET /ui/palette/history":      classList,
-	"GET /ui/agents/new":           classList,
-	"GET /ui/agents/notes":         classList,
 	"GET /ui/agents/repos":         classList,
 	"GET /ui/chief/panel":          classList,
 	"GET /ui/chief/threads/search": classList,
@@ -265,7 +272,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/tasks":                classList,
 	"GET /ui/tasks/new":            classList,
 	"GET /ui/tasks/review-count":   classList,
-	"POST /agents":                 classList, // the form names A's task as note_id
 	"POST /chief/provision":        classList,
 	"POST /connectors":             classList,
 	"POST /tasks":                  classList,
@@ -510,6 +516,9 @@ var isolationClasses = map[string]routeClass{
 	// The chief's on/off switch (chief_toggle.go): the caller's own row, and
 	// the caller's own chief (list).
 	"POST /account/chief": classList,
+	// "Show tmux sessions" (notify_prefs.go): the caller's own
+	// row (list).
+	"POST /account/notifications/tmux": classList,
 	// The chip row's reports (numbers only): the window's address in the
 	// form — B naming A's window must 404.
 	"POST /mirror/view/suggest/event": classMirror,
@@ -552,20 +561,18 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
-	"GET /ui/nav/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/nav/agents", "GET /ui/connector-requests", "GET /ui/connectors",
 	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
 	// hides (plan §Recon 4). A's tag and project are identities, its unread
 	// assistant message names its agent.
-	// (/ui/tasks/new and /ui/agents/new carry no per-user aggregate: the
-	// first lists the router's directories, admin-only and checked by the
-	// operator canary; the second is the bare dispatch form.)
+	// (/ui/tasks/new carries no per-user aggregate: it lists the router's
+	// directories, admin-only and checked by the operator canary.)
 	"GET /ui/tags", "GET /ui/notifications",
 	// The caller's own credentials: A's Claude account is NAMED with the canary,
-	// so it shows on A's credentials page and on A's dispatch form's account
-	// pin (which lists the caller's own accounts since bring-your-own).
-	"GET /account/credentials", "GET /ui/agents/new",
+	// so it shows on A's credentials page.
+	"GET /account/credentials",
 	// Accounts PR 6: A's tokens are canary-named, so the token page and the
 	// token API must show A its own — and a machine-tier list read through A's
 	// personal token must show A's tasks (the hook tier had no such control
@@ -1078,6 +1085,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
 	// The chief's on/off switch (0060): A's choice is A's.
 	ext.ChiefPrefs = chiefpref.NewPG(pool)
+	// "Show tmux sessions" (0094): A's switch is A's.
+	ext.NotifyPrefs = notifypref.NewPG(pool)
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
@@ -1292,16 +1301,6 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 		r.Header.Set("Authorization", "Bearer "+c.pluginToken)
 	case c.deviceToken != "":
 		r.Header.Set("Authorization", "Bearer "+c.deviceToken)
-	}
-	// A dispatch naming a task is the task's own Dispatch sheet, which targets
-	// that task's card (HX-Target "task-<id>") and gets the card back — so A's
-	// dispatch of A's task answers A's task (its canary), a ghost's the
-	// new-agent redirect, and B's of A's task must be the ghost's. (The answer
-	// without the header is the HX-Redirect for every caller alike.)
-	if method == http.MethodPost && path == "/agents" && r.Header.Get("HX-Request") == "true" {
-		if v, err := url.ParseQuery(body); err == nil && v.Get("note_id") != "" {
-			r.Header.Set("HX-Target", "task-"+v.Get("note_id"))
-		}
 	}
 	rec := httptest.NewRecorder()
 	func() {
@@ -1599,9 +1598,9 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 }
 
 // namesObject reports whether a route names an object — in its path, or (for
-// the dispatch and merge forms) in its body.
+// the merge form) in its body.
 func namesObject(route string) bool {
-	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
+	return paramRE.MatchString(route) || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/opencode/answer" ||

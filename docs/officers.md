@@ -1117,7 +1117,7 @@ each one from there. It is offered none of `officer_mark_ready`,
 | `POST pulls` must carry `"draft": true`. A `PATCH pulls/{n}` naming `draft`, or `state` `open`, is refused. | 403 |
 | The body's first line is exactly `Officer: <id> · item <n> · authored from untrusted inputs; review as such`, `<n>` being the branch's item, and the body has `## Root cause`, `## Evidence`, `## Test` and `## Rollback`, each heading on a line of its own (checked at create and whenever a PATCH sets the body). | 403 |
 | At create, HQ (read with the officer's own token) must show the **requesting instance** holding the branch's item under a live lease. Another holder, an expired lease, no such claimed item, or HQ unreadable is a refusal. | 403 |
-| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's issues list filtered by its bot, every page; more than 3,000 is a refusal, never a truncated count), each by the item its body's first line names, or else by its branch. GitHub answers that filter with an empty list, not an error, for a login it does not match, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
+| At most 2 of the officer's pull requests open per repository, 3 opened per UTC day across its repositories, and 1 per item in any state. They are counted from **every** pull request the officer's App opened in each repository (GitHub's pulls list, every page, keeping those whose author is its bot, the login compared case-insensitively; the issues list is never read, since the App has no Issues permission). The list is read newest created first and stops after the first page that reaches back past the App's creation (`GET /app`'s `created_at`: its bot cannot have opened anything older), so what it costs is the repository's pull requests (anyone's) opened since the App was created, not the repository's whole history. More than 3,000 of those to read is a refusal, never a truncated count, and so is a list that is not newest-first, a listed pull request without a creation time, or an App whose creation cannot be read. Each is counted by the item its body's first line names, or else by its branch. An author filter that does not match the App's login keeps nothing, which is not an error, so it is cross-checked: every branch under the officer's prefix is looked up by the branch, and a pull request of the officer's App found that way but not listed by the filter is an error (the limits refuse; the sweep reports it and still checks what the branches found). | 403 |
 | One create per officer at a time: a second create waits for the first to be forwarded and re-checked, and is refused after 2 minutes. | 403 |
 | At create and at every `PATCH` (one that only closes the pull request excepted), GitHub's `compare/{base}...{head}` is read, and refused when it has: a changed, added, removed or renamed-from path matching the repository's forbidden paths; a `.gitattributes` file in any directory (an attribute can mark files `-diff` or `binary` and so hide their diff); a **removed** line declaring `kind: PersistentVolumeClaim`, `kind: PersistentVolume`, `apiVersion: postgresql.cnpg.io/…` or `kind: Canary`; a removed `name:` line in a diff that shows one of those kinds (a rename deletes the old resource); an **added** kustomize `$patch: delete`; an entry dropped from a `kustomization.yaml`'s `resources:`/`bases:`/`components:` whose file at the base declares one of those kinds, or that is not a single YAML file muster can read (a directory, a remote base); an **added** line with a credential-shaped value (below), or an env entry whose credential-like `name:` gets a literal `value:` (the unchanged `name:` line counts as context); an added `kind: Secret` with a literal `data:`/`stringData:` value; or a file GitHub shows **no diff** for (an empty patch: a binary file, which GitHub reports with `changes: 0`, a very large file, a pure rename or copy, a mode change — except a removed file with `changes: 0`, a binary or empty file, which is read at the comparison's merge base instead and refused when it declares one of those kinds, holds a credential-shaped value, or cannot be read). The title, body and comments are checked for a credential-shaped value too. | **409**, and a notice to HQ's notices route naming the paths (never the content) |
 | After a push to a branch with an **open** pull request, after a create, and on every sweep, the same comparison check runs (below). | the pull request is **closed**, its branch deleted (on a content hit), and a notice to HQ naming the paths; the officer cannot reopen it (`state` `open` is refused above) |
@@ -2216,6 +2216,56 @@ no `spent_today`, `budget` or `book_failures` series (it is never booked):
 
 The durable copy is `officer_llm_usage`: one row per officer, routine instance
 number and UTC day with requests, tokens by direction, USD and estimated requests.
+It has no item column: an item's cost is the per-item meter's (below).
+
+#### Item cost
+
+A routine instance's `officer_complete` (outcome `done`, `escalated` or
+`no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
+its hold on the item booked through the proxy (each request's provider-reported
+cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
+`muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
+with no later `PATCH`: the complete is the hold's last act, and a request
+still unbooked when it is read makes the cost unknown (below) rather than
+short.
+
+🔴 **An unknown cost is omitted, never sent as 0.** The cost is known only when
+the hold is the item's whole proxy spend: HQ's first claim of the item
+(`attempts` 1 in HQ's claim answer), claimed through muster (not adopted from
+HQ's claimed list after a restart, and not muster's already-yours answer for a
+hold it did not meter), at least one request booked, and none booked from the
+proxy's pessimistic estimate (a response that reported no cost), and no
+request admitted under the hold still in flight when the complete reads it. A
+request leaves flight as soon as its cost is charged to the meter (before the
+usage row is written and the stream's tail is relayed), so a complete Claude
+Code sends while a handler is still finishing still reads the cost. A second or later
+claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
+send none. The meter is in memory (`internal/llmproxy/items.go`).
+
+A judgement or untiered instance's Claude Code session has **no cost source
+muster reads**, so its complete sends none.
+
+Every complete sent without a cost writes one log line, which is how the
+known-vs-unknown ratio is measured:
+
+```
+officers: item cost omitted officer=<id> instance=<agent> item=<item id> outcome=<outcome> reason=<reason>
+```
+
+`reason` is one of `not_held`, `adopted`, `not_first_claim`,
+`attempts_unknown`, `no_requests`, `estimated`, `inflight`, `over_bound`,
+`handed_on` (needs_judgement) or `no_source` (not a routine instance of an
+`llm` officer).
+
+⚠ **HQ keeps a cost a later complete does not replace** (its complete
+coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
+complete and that is worked again keeps the FIRST hold's cost: the later hold
+is not HQ's first claim, so it sends none, and the item's cost understates
+what working it cost overall.
+
+The cost never fails a complete: when HQ refuses the complete that carries it
+with a 400 (an HQ from before item cost refuses the unknown fields), muster
+sends it again without the cost, and logs `completed item … without its cost`.
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image

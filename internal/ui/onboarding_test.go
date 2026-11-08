@@ -38,17 +38,16 @@ func TestTheOnePromptIsTheSameEverywhere(t *testing.T) {
 // TestTheEmptyAgentsListSaysHowToConnect: home with nothing to open (no
 // agents and no mirrored windows: RenderAgentsHome) draws the connect
 // instructions — the tmux one-liner, the exact prompt and the guide's link —
-// inside the navigation, and offers the dispatch sheet only when the server can
-// dispatch (else the "not set up" hint).
+// inside the navigation. It offers no dispatch (docs/design/chief-dispatch.md
+// phase 2; TestTheDispatchUIIsGone pins the absence).
 func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 	var empty bytes.Buffer
-	if err := RenderAgentsHome(&empty, Features{Dispatch: true}); err != nil {
+	if err := RenderAgentsHome(&empty, Features{}); err != nil {
 		t.Fatal(err)
 	}
 	html := empty.String()
-	if !strings.Contains(html, `id="sidebar-root"`) || !strings.Contains(html, `id="`+HomeDispatchID+`"`) ||
-		!strings.Contains(html, `id="`+NavDeployID+`"`) || strings.Contains(html, DispatchOffHintAttr) {
-		t.Errorf("the onboarding page is not inside the nav with the dispatch button:\n%s", html)
+	if !strings.Contains(html, `id="sidebar-root"`) {
+		t.Errorf("the onboarding page is not inside the nav:\n%s", html)
 	}
 	for _, want := range []string{`id="agents-empty"`, `id="onboarding-prompt"`} {
 		if !strings.Contains(html, want) {
@@ -59,14 +58,6 @@ func TestTheEmptyAgentsListSaysHowToConnect(t *testing.T) {
 		if !strings.Contains(html, escapeForHTML(want)) {
 			t.Errorf("the empty state lacks %q:\n%s", want, html)
 		}
-	}
-
-	var off bytes.Buffer
-	if err := RenderAgentsHome(&off, Features{}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(off.String(), `id="`+HomeDispatchID+`"`) || !strings.Contains(off.String(), DispatchOffHintAttr) {
-		t.Fatalf("a server that cannot dispatch offers the sheet, or does not say why:\n%s", off.String())
 	}
 }
 

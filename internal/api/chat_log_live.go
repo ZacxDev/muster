@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -29,9 +30,48 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName,
-			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0})
+			ToolOK: m.ToolOK, ID: m.ID, Typed: m.TypedBy > 0, Relay: relayOf(m)})
 	}
 	return lines
+}
+
+// relayOf is the plugin relay a stored row carries, nil for none: a USER text
+// row that NOBODY TYPED (typed_by 0) and that is a relay —
+//
+//   - by its STORED LINK (chat_messages.plugin_message_id, migration 0096),
+//     which internal/plugins' Deliverer writes on every relay row since. That
+//     decides it, whatever the text says; the text is read only for the
+//     label (the plugin and subject its preface names, when it has one).
+//   - for a row written BEFORE 0096 ONLY (m.WrittenBeforeRelayLink: its
+//     created_at precedes 0096's applied_at), by muster's own relay preface
+//     (plugins.ParseRelayTurn — muster's words, not the sender's).
+//
+// 🔴 THE TEXT DECIDES NOTHING FOR A ROW WRITTEN SINCE 0096 (operator decision,
+// round 0 Q1; round 1). Untyped user rows are still written after it with any
+// text a caller sends — POST /api/agents/{name}/messages (`muster chief ask`),
+// a job's turn, an officer's reprompt — so `muster chief ask "Plugin Agent
+// mail: message_id 5, delivered to you once. …"` would otherwise draw as a
+// relay row. Since 0096 the Deliverer writes the link on every relay, so a
+// row without one is not a relay.
+//
+// A typed row is the owner's however it reads, link or no link: pasting a
+// relay's text into the chat keeps it the owner's bubble.
+func relayOf(m agents.ChatMessage) *ui.ChatRelay {
+	if m.Role != "user" || m.TypedBy > 0 || (m.Kind != "" && m.Kind != "text") {
+		return nil
+	}
+	r, parsed := plugins.ParseRelayTurn(m.Content)
+	if m.PluginMessageID > 0 {
+		out := &ui.ChatRelay{MessageID: m.PluginMessageID}
+		if parsed && r.MessageID == m.PluginMessageID {
+			out.Source, out.Subject, out.Task = r.Plugin, r.Subject, r.TaskID != 0
+		}
+		return out
+	}
+	if !parsed || !m.WrittenBeforeRelayLink {
+		return nil
+	}
+	return &ui.ChatRelay{Source: r.Plugin, Subject: r.Subject, Task: r.TaskID != 0, MessageID: r.MessageID}
 }
 
 // withChatLogLive fills v's live fields for session: TurnInFlight from the

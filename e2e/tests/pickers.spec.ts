@@ -5,13 +5,12 @@ import path from 'node:path';
 import { Locator } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
-import { hookToken, pickersConnectPort, pickersFakePort, pickersPort, repoRoot, versionTerm } from '../lib/env';
+import { pickersConnectPort, pickersFakePort, pickersPort, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { openDispatchSheet } from '../lib/dispatch';
 
 // EVERY SEARCH PICKER RANKS BY ONE RULE (internal/searchrank; window.musterRank
 // in the browser): the label STARTS with the query, then a WORD in it does, then
-// it is anywhere in it, then its letters are in it in order. Four pickers, each
+// it is anywhere in it, then its letters are in it in order. Three pickers, each
 // driven end to end against a real muster-server whose upstreams are fakes this
 // spec runs (the e2eterm build's MUSTER_E2E_GITHUB_API / _OPENROUTER_MODELS, and
 // a fake permission router behind MUSTER_ROUTER_URL). The repo picker lists a
@@ -19,8 +18,9 @@ import { openDispatchSheet } from '../lib/dispatch';
 // the fake also plays the App's API (installations, an installation token, the
 // installation's repositories), signed for with a key this spec generates:
 //
-//   the dispatch dialog's task, repo and model pickers, and the new-task
-//   sheet's directory picker.
+//   the new-task sheet's repo, model and directory pickers. (The dispatch
+//   dialog carried the repo and model pickers too, and a task picker; it was
+//   deleted, docs/design/chief-dispatch.md phase 2.)
 //
 // Each gets four entries for "kw", one per tier, served in the REVERSE of the
 // ranked order, so the order can only come out right by being ranked:
@@ -33,13 +33,11 @@ import { openDispatchSheet } from '../lib/dispatch';
 
 const origin = `http://localhost:${pickersPort}`;
 const fake = `http://127.0.0.1:${pickersFakePort}`;
-const tag = Date.now().toString(36);
 
 // The four fixtures per picker, in RANKED order (served reversed).
 const REPOS = ['kwanza/app', 'acme/old-kwik', 'acme/makwa', 'acme/kiwi'];
 const MODELS = ['kwen/kwen-3', 'acme/old-kwik', 'acme/makwa-2', 'acme/kiwi-1'];
 const DIRS = ['kwork/base', '/srv/old-kwik', '/srv/makwa', '/srv/kiwi-tools'];
-const TASKS = [`kwality pass ${tag}`, `old-kwik fix ${tag}`, `makwa cleanup ${tag}`, `k then w ${tag}`];
 
 // The fake GitHub App: an invented id, an allowlisted invented account, and a
 // throwaway key (the server only needs one that parses; the fake checks no JWT).
@@ -49,7 +47,6 @@ const APP_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).priva
 
 let server: Running | undefined;
 let upstream: http.Server | undefined;
-const taskIDs: number[] = [];
 
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -91,21 +88,9 @@ test.beforeAll(async () => {
     MUSTER_ROUTER_URL: fake,
     MUSTER_ROUTER_TOKEN: 'e2e-router-token-not-a-real-one',
   });
-  for (const title of TASKS.slice().reverse()) {
-    const r = await fetch(origin + '/api/tasks', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${hookToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, body: 'picker fixture' }),
-    });
-    expect(r.status, await r.clone().text()).toBeLessThan(300);
-    taskIDs.push(((await r.json()) as { id: number }).id);
-  }
 });
 
 test.afterAll(async () => {
-  for (const id of taskIDs) {
-    await fetch(`${origin}/api/tasks/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${hookToken}` } }).catch(() => undefined);
-  }
   await server?.stop();
   await new Promise<void>((r) => (upstream ? upstream.close(() => r()) : r()));
 });
@@ -134,16 +119,12 @@ test("the browser's rank agrees with the Go rank on the shared table", async ({ 
   expect(bad).toEqual([]);
 });
 
-test('the dispatch dialog ranks its task, repo and model pickers', async ({ page }) => {
+test('the new-task sheet ranks its repo and model pickers', async ({ page }) => {
   await signIn(page, origin);
   await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
+  await page.click('#fab-tasks');
+  const sheet = page.locator('#task-modal form');
   await expect(sheet).toBeVisible();
-  const task = sheet.locator('[data-combobox]:has(input[name="note_id"])');
-  await expect(task.locator('[data-combobox-option]', { hasText: TASKS[0] })).toHaveCount(1, { timeout: 15_000 });
-  await expectRanked(task, TASKS, 'tasks');
-
   await sheet.locator('summary[aria-label="Advanced options"]').click(); // Advanced: model and repository
   const repo = sheet.locator('[data-combobox]:has(input[name="repo"])');
   await expect(repo.locator('[data-combobox-option]', { hasText: REPOS[0] })).toHaveCount(1, { timeout: 15_000 });

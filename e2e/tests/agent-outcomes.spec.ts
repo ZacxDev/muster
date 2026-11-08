@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, outcomesCatalogPort, outcomesPort, outcomesRuntimePort, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { createAgent, postAgents } from '../lib/seed';
 
 // EVERY DISPATCHED AGENT ENDS IN A VISIBLE OUTCOME (internal/api agent_outcome.go,
 // agent_watchdog.go; docs/provisioner.md#how-an-agents-work-ends), in a real
@@ -141,15 +142,12 @@ async function agentRows(): Promise<AgentRow[]> {
   return rows;
 }
 
-// dispatch starts a gateway agent from the dispatch form's route, as the
-// signed-in owner, and returns its row.
-async function dispatch(page: Page, model: string, note: string): Promise<AgentRow> {
+// dispatch starts a gateway agent through POST /api/agents (lib/seed.ts: the
+// owner's agent-create token — the route that replaced the deleted dispatch
+// form's), and returns its row.
+async function dispatch(_page: Page, model: string, note: string): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.id));
-  const r = await page.request.post(origin + '/agents', {
-    form: { action: 'dispatch', kind: 'gateway', model, note_text: note },
-    headers: { Origin: origin, 'HX-Request': 'true' },
-  });
-  expect(r.status(), await r.text()).toBe(200);
+  await createAgent(origin, { kind: 'gateway', model, prompt: note, start: true });
   const made = (await agentRows()).filter((a) => !before.has(a.id));
   expect(made, 'the dispatch made one agent').toHaveLength(1);
   return made[0];
@@ -195,12 +193,9 @@ for (const vp of [
     test('a model the catalogue does not have is refused before any agent exists', async ({ page }) => {
       await signIn(page, origin);
       const before = (await agentRows()).length;
-      const refused = await page.request.post(origin + '/agents', {
-        form: { action: 'dispatch', kind: 'gateway', model: 'Acme v9 ultra', note_text: 'never started' },
-        headers: { Origin: origin, 'HX-Request': 'true' },
-      });
-      expect(refused.status()).toBe(409);
-      expect(await refused.text()).toContain('Closest ids: openrouter/acme/');
+      const refused = await postAgents(origin, { kind: 'gateway', model: 'Acme v9 ultra', prompt: 'never started', start: true });
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.text).toContain('Closest ids: openrouter/acme/');
       expect((await agentRows()).length, 'a refused model created no agent').toBe(before);
     });
 

@@ -5,6 +5,7 @@ import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { launchWithBfcache } from '../lib/bfcache';
 import { coarse } from '../lib/switcher';
 import { touchDrag } from '../lib/touch';
+import { toTerminal } from '../lib/agent-menu';
 
 // THE SWITCHER DOCK, PHASE 1 (docs/design/switcher-dock.md; internal/ui/
 // switcher_dock.go): the session switcher's four views as a vertical list in a
@@ -417,10 +418,14 @@ test.describe('phone 390×844 touch', () => {
       if (from === 'rendered') await openOwn(page);
       else {
         await page.goto(origin + '/agents/' + CODER);
-        await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+        // A claude-code agent's page: no Rendered | Terminal switch, its
+        // Terminal an item of the header's ⋯ menu (PR #527).
+        await expect(page.locator('#view-rendered')).toHaveCount(0);
+        await expect(page.locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
       }
       await page.evaluate(() => ((window as any).__claims = []));
-      await page.locator('#view-terminal').tap();
+      if (from === 'agent') await toTerminal(page, 'tap');
+      else await page.locator('#view-terminal').tap();
       await expect(frameEl(page)).toBeVisible();
       const f = (await (await frameEl(page).elementHandle())!.contentFrame())!;
       await f.waitForSelector('#switcher-toggle');
