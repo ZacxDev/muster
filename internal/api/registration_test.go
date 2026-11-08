@@ -115,6 +115,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		FocusRetention:  time.Hour,
 		Suggest:         &suggest.Engine{},
 		ChiefPrefs:      &memChiefPrefs{},
+		NotifyPrefs:     &memNotifyPrefs{},
 		ChiefNudge:      &ChiefNudges{},
 		ChiefNudges:     chiefnudge.NewPG(nil),
 		Episodes:        sessionstate.NewPG(nil),

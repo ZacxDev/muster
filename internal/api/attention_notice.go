@@ -163,7 +163,7 @@ func noticeItem(a attention.Ask, ds map[int64]chiefnudge.Decision, hosts []mirro
 		it.subject = focus.MirrorSubject(d.Key)
 		it.host = d.Host
 		if e, where, keep, found := sessionKeyWhere(hosts, d.Host, d.Key); found {
-			it.Source, it.target = where, keep
+			it.Source, it.target, it.at = where, keep, e.Place()
 			it.Target = noticeTarget(e.Session, e.Index)
 			it.Offline = !e.Online // Source carries whereHostOffline (entryWhere)
 			return it

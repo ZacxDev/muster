@@ -93,6 +93,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
 		{`INSERT INTO suggest_preferences (disabled) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO chief_preferences (enabled) VALUES (true)`, func() []any { return nil }, nil},
+		{`INSERT INTO notify_preferences (tmux_address) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO chief_nudges (session_kind, session_key, streak_key, decision, mode, outcome) VALUES ('mirror', $1, 'since:1', 'leave', 'shadow', 'left')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
 		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},

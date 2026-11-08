@@ -147,6 +147,55 @@ The chief keeps them where it needs an address: every row's `id`
 **body** still says where it waits. A session with no human name yet is
 called by its technical id everywhere, as before.
 
+### Show tmux sessions
+
+A per-user switch, **Account → Notifications → Show tmux sessions** ("Adds
+each session's tmux codename (like mango:1 @ atlas) to notifications and the
+session lists"), off for every user until they turn it on (stored in
+`notify_preferences`, migration 0094; no row is off). On, a session called by
+its human name is also shown by the window as muster named it before sessions
+had names — the host's label for it and the host, or, when the host sent no
+label, its tmux session and window index and the host:
+
+    Billing migration · mango:1 @ atlas
+    Billing migration · scratch3:5 @ atlas
+
+**In notifications** that place follows the name: wherever the attention
+queue names a session by its human name — the push title of an agent
+question from a mirrored session, of a held question or of a chief notice,
+the Asks list row, the attention summary's `title` and `attention_list`'s
+`name` — and a stalled or waiting session's push title ("… needs you", "… is
+stalled") and its "Stalled / waiting" row. (A waiting window's own push keeps
+its fixed title and already says where it waits in its body.)
+
+**In the session lists:** a pill on the switcher bar gets a second, smaller
+line under its name, the codename alone (`mango:1`: the pill's host icon
+already names the host, and a host name would make the pill wider than its
+name; the line is capped and cut with "…"). It sits inside the pill's 32px,
+so the bar is as tall as with the switch off. The dock's row gets a muted
+line, `mango:1 @ atlas`, under its focus title (the second line when it has
+none). Either is text in the pill or row, so it is part of its accessible
+name. Live refreshes of the bar keep it: it is drawn by the server on every
+render.
+
+The window is the one that holds the conversation when the text is made (for
+a stop whose conversation no window holds now, the place stored on the stop,
+by its codename when its host still gives one), shown verbatim. It is decided
+in one place (`tmuxPlace`, `internal/api/names.go`: notifyName adds it to a
+notification, `mirrorCards` puts it on the lists' entries);
+`TestEveryNotificationSurfaceAsksForTheTmuxAddress` classifies every surface
+on the name ledger as a notification, a list, or one it does not apply to,
+and `TestOnlyMirrorCardsSetsTheListsCodename` keeps any other code from
+setting the lists' value.
+
+Nothing else changes: a session with no human name is already called by its
+place (nothing twice), and so is one whose human name IS its codename (a
+manual name `mango:1` on the window labelled `mango:1`: no second line, no
+`mango:1 · mango:1 @ atlas`); an agent has no tmux window and gets nothing; a
+session no window shows now gets no address (muster names no place it cannot
+see). Off — or with no database, or when the switch cannot be read — every
+text and every pill is byte for byte what it was before the switch existed.
+
 ### The name bar
 
 The auto name freezes from the first focus that passes this bar, in the same

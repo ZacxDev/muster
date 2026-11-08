@@ -107,12 +107,13 @@ if ! initdb -D "$dir/data" -U muster --pwfile="$pwfile" --auth=scram-sha-256 \
 fi
 rm -f "$pwfile"
 
-# A free port: a random pick in the dynamic range, skipping one that already
-# answers, and retried if the postmaster still cannot bind it (another process
+# A free port: a random pick in 40000-59999 (clear of the Kubernetes NodePort
+# range 30000-32767, where a test Postgres collides with node services),
+# skipping one that already answers, and retried if the postmaster still cannot bind it (another process
 # took it between the probe and the start).
 port=""
 for _ in $(seq 1 20); do
-  p=$(( 20000 + RANDOM % 40000 ))
+  p=$(( 40000 + RANDOM % 20000 ))
   if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
     continue
   fi

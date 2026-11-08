@@ -337,6 +337,10 @@ export const sessionNamesPort = port + 320;
 // asking agent's /mcp door).
 export const waitingComposerPort = port + 330;
 export const waitingComposerConnectPort = port + 331;
+// tests/notify-tmux.spec.ts: "Show tmux sessions" — its own
+// server (mirror plugin on) and its own fake host. (+340: clear of the blocks
+// other branches took.)
+export const notifyTmuxPort = port + 340;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
