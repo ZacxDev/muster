@@ -1002,12 +1002,30 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 // RETURNING) scans with scanChatMessage — ONE list, so a column added to the row
 // (typed_by 0081, plugin_message_id 0096) cannot be read by one path and
 // silently zero on another.
-const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0)`
+//
+// Its last column is WrittenBeforeRelayLink: the row's created_at against 0096's
+// own applied_at in schema_migrations — the moment from which every relay row
+// carries plugin_message_id. 🔴 CHOSEN OVER AN ID CUTOVER the migration would
+// record, because that needs a table of its own (a one-row global table beside
+// the owned ones, under 0007's grants and RLSOn's ledger) to hold one number,
+// while applied_at is already written, by the migrator, at exactly that
+// moment, and nothing ever changes it. The read is an uncorrelated subquery
+// on schema_migrations' primary key, which Postgres evaluates ONCE per
+// statement (an InitPlan), so a page of messages pays one key lookup. With no
+// 0096 row (never, after migrating) it is false: the text fallback is off.
+const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0), ` +
+	`coalesce(created_at < (SELECT applied_at FROM schema_migrations WHERE version = ` + relayLinkMigrationVersion + `), false)`
+
+// relayLinkMigrationVersion is the migration that added
+// chat_messages.plugin_message_id (0096_chat_plugin_message.sql). 🔴 RENUMBER IT
+// WITH THE FILE if the migration is renumbered at merge
+// (TestTheRelayCutoverNamesTheLinkMigration checks the two agree).
+const relayLinkMigrationVersion = "96"
 
 // scanChatMessage scans one row of chatMessageCols.
 func scanChatMessage(row pgx.Row) (ChatMessage, error) {
 	var m ChatMessage
-	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID)
+	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID, &m.WrittenBeforeRelayLink)
 	return m, err
 }
 

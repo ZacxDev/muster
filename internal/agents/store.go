@@ -284,6 +284,14 @@ type ChatMessage struct {
 	// sets it (Deliver, Handed); the agent page draws such a row as a collapsed
 	// system row (internal/api relayOf). Not serialised: no API reader needs it.
 	PluginMessageID int64 `json:"-"`
+
+	// WrittenBeforeRelayLink: this row was written before migration 0096 added
+	// plugin_message_id (its created_at precedes 0096's applied_at in
+	// schema_migrations; chatMessageCols computes it). Only such a row may be
+	// taken for a plugin relay by its TEXT (internal/api relayOf's fallback):
+	// a row written since carries the link when it is one. false for every
+	// row a store that does not compute it returns.
+	WrittenBeforeRelayLink bool `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

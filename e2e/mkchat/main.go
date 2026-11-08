@@ -38,6 +38,7 @@
 //
 // MUSTER_E2E_APPEND=1 instead APPENDS stdin's messages to the latest session of
 // the EXISTING agent MUSTER_E2E_AGENT (a message stored while a page is open).
+// An entry may carry "pluginMessageId": the stored plugin-relay link (0096).
 //
 // MUSTER_E2E_KIND=claude-code with MUSTER_E2E_CC_ACCOUNT=<name> makes the agent
 // that kind (its account is only a name: nothing is provisioned).
@@ -118,9 +119,21 @@ func run() error {
 	}
 
 	if os.Getenv("MUSTER_E2E_APPEND") == "1" {
-		var msgs []agents.ChatMessage
-		if err := json.NewDecoder(os.Stdin).Decode(&msgs); err != nil {
+		// "pluginMessageId" on an entry is the stored relay link
+		// (agents.ChatMessage.PluginMessageID, migration 0096), which the
+		// message's own JSON does not carry: what a plugin relay row the
+		// Deliverer wrote looks like.
+		var in []struct {
+			agents.ChatMessage
+			PluginMessageID int64 `json:"pluginMessageId"`
+		}
+		if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
 			return fmt.Errorf("messages on stdin: %w", err)
+		}
+		msgs := make([]agents.ChatMessage, 0, len(in))
+		for _, m := range in {
+			m.ChatMessage.PluginMessageID = m.PluginMessageID
+			msgs = append(msgs, m.ChatMessage)
 		}
 		return appendMessages(ctx, pool, name, msgs)
 	}

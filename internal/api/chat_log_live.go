@@ -42,9 +42,17 @@ func chatLinesOf(msgs []agents.ChatMessage) []ui.ChatLine {
 //     which internal/plugins' Deliverer writes on every relay row since. That
 //     decides it, whatever the text says; the text is read only for the
 //     label (the plugin and subject its preface names, when it has one).
-//   - for a row written BEFORE 0096 (no link), by muster's own relay preface
-//     (plugins.ParseRelayTurn — muster's words, not the sender's). This is the
-//     fallback only: no row written since 0096 needs it.
+//   - for a row written BEFORE 0096 ONLY (m.WrittenBeforeRelayLink: its
+//     created_at precedes 0096's applied_at), by muster's own relay preface
+//     (plugins.ParseRelayTurn — muster's words, not the sender's).
+//
+// 🔴 THE TEXT DECIDES NOTHING FOR A ROW WRITTEN SINCE 0096 (operator decision,
+// round 0 Q1; round 1). Untyped user rows are still written after it with any
+// text a caller sends — POST /api/agents/{name}/messages (`muster chief ask`),
+// a job's turn, an officer's reprompt — so `muster chief ask "Plugin Agent
+// mail: message_id 5, delivered to you once. …"` would otherwise draw as a
+// relay row. Since 0096 the Deliverer writes the link on every relay, so a
+// row without one is not a relay.
 //
 // A typed row is the owner's however it reads, link or no link: pasting a
 // relay's text into the chat keeps it the owner's bubble.
@@ -60,7 +68,7 @@ func relayOf(m agents.ChatMessage) *ui.ChatRelay {
 		}
 		return out
 	}
-	if !parsed {
+	if !parsed || !m.WrittenBeforeRelayLink {
 		return nil
 	}
 	return &ui.ChatRelay{Source: r.Plugin, Subject: r.Subject, Task: r.TaskID != 0, MessageID: r.MessageID}

@@ -22,13 +22,18 @@ func TestOnlyAnUntypedUserRowIsARelay(t *testing.T) {
 	turn := plugins.RenderMessage(plugins.Plugin{Label: "Agent mail", DataScope: "mail"},
 		plugins.Message{ID: 928, Sender: "ops@example.test", Subject: "Quarterly capacity review", Body: "b", ReceivedAt: &at},
 		false, plugins.Hints{}, plugins.Retry{}, nil)
+	// Rows 1–6 were written BEFORE migration 0096 (WrittenBeforeRelayLink):
+	// only for those is the preface read at all. Row 7 is the same untyped text
+	// written AFTER it — a `muster chief ask` or a machine send spelling the
+	// preface — and is a bubble: since 0096 only the stored link makes a relay.
 	lines := chatLinesOf([]agents.ChatMessage{
-		{ID: 1, Role: "user", Content: turn},
-		{ID: 2, Role: "user", Content: turn, Kind: "text"},
-		{ID: 3, Role: "user", Content: turn, TypedBy: 1},
-		{ID: 4, Role: "assistant", Content: turn},
-		{ID: 5, Role: "user", Content: turn, Kind: "tool_result"},
-		{ID: 6, Role: "user", Content: "What changed overnight?"},
+		{ID: 1, Role: "user", Content: turn, WrittenBeforeRelayLink: true},
+		{ID: 2, Role: "user", Content: turn, Kind: "text", WrittenBeforeRelayLink: true},
+		{ID: 3, Role: "user", Content: turn, TypedBy: 1, WrittenBeforeRelayLink: true},
+		{ID: 4, Role: "assistant", Content: turn, WrittenBeforeRelayLink: true},
+		{ID: 5, Role: "user", Content: turn, Kind: "tool_result", WrittenBeforeRelayLink: true},
+		{ID: 6, Role: "user", Content: "What changed overnight?", WrittenBeforeRelayLink: true},
+		{ID: 7, Role: "user", Content: turn},
 	})
 	want := map[int64]bool{1: true, 2: true}
 	for _, l := range lines {
@@ -49,7 +54,8 @@ func TestOnlyAnUntypedUserRowIsARelay(t *testing.T) {
 // plugin-message link (chat_messages.plugin_message_id, 0096) as the collapsed
 // relay row even though its text does NOT begin with muster's relay preface;
 // an owner-typed row whose text DOES read as a relay stays the owner's bubble,
-// link or no link; a pre-0096 row (no link) is still read by its preface. The
+// link or no link; a pre-0096 row (no link) is still read by its preface, and a
+// post-0096 row with no link is a bubble whatever its text. The
 // fixture texts, ids and plugin labels are pairwise distinct, so a relay drawn
 // from the wrong row, or labelled from the wrong field, is seen.
 func TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback(t *testing.T) {
@@ -66,7 +72,10 @@ func TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback(t *testing.T
 		// Typed AND (impossibly) linked: still the owner's bubble — typing wins.
 		{ID: 103, Role: "user", Content: "Pasted: " + relayText, TypedBy: 7, PluginMessageID: 4402},
 		// Pre-0096 (no link), untyped, the preface: the fallback reads it.
-		{ID: 104, Role: "user", Content: relayText},
+		{ID: 104, Role: "user", Content: relayText, WrittenBeforeRelayLink: true},
+		// Post-0096, untyped, NO link, the preface spelled (a `muster chief ask`):
+		// a bubble — the text no longer decides for a row written since 0096.
+		{ID: 106, Role: "user", Content: relayText},
 		// Untyped, no link, plain text: a bubble.
 		{ID: 105, Role: "user", Content: "Status of the gpu pool?"},
 	})
@@ -108,7 +117,7 @@ func TestTheStoredLinkChoosesTheRelayRowAndTheTextIsOnlyTheFallback(t *testing.T
 		}
 	}
 	walk(doc)
-	want := map[string]string{"101": "relay", "102": "bubble:user", "103": "bubble:user", "104": "relay", "105": "bubble:user"}
+	want := map[string]string{"101": "relay", "102": "bubble:user", "103": "bubble:user", "104": "relay", "105": "bubble:user", "106": "bubble:user"}
 	for id, w := range want {
 		if drawn[id] != w {
 			t.Errorf("row %s drawn as %q, want %q", id, drawn[id], w)

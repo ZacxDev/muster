@@ -33,11 +33,13 @@ var relayPreface = regexp.MustCompile(`^Plugin (.+?): (?:message_id (\d+)|task e
 // 🔴 IT IS THE FALLBACK, FOR ROWS WRITTEN BEFORE MIGRATION 0096. Since 0096 the
 // Deliverer stores the link itself (chat_messages.plugin_message_id), and that
 // is what decides a relay row (internal/api relayOf); this is read then only for
-// the label. A row from before 0096 has no link, so for it this decides — on a
-// row the caller already knows is not a person's (typed_by 0: nobody typed it
-// into muster's chat), because muster's preface is text a person typing can
-// spell too: a typed row is never passed here, so an owner who pastes a relay's
-// text keeps their bubble.
+// the label. For a row written BEFORE 0096 — and only for one: the caller
+// checks agents.ChatMessage.WrittenBeforeRelayLink — it decides, on a row the
+// caller already knows is not a person's (typed_by 0: nobody typed it into
+// muster's chat). Muster's preface is text anyone sending a message can spell —
+// a typed owner, and since 0096 also an untyped machine send (`muster chief
+// ask`), a job or an officer — so a typed row is never passed here, and a row
+// written since 0096 without the link is not a relay whatever it says.
 //
 // ⚠ THE PREFACE IS MUSTER'S TEXT, NOT THE SENDER'S. It is the turn's first line,
 // outside the fence, and every outside field in it (the label) is sanitised, so

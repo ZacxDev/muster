@@ -6,9 +6,13 @@
 --       (Handed) — and by nothing else. The agent page draws such a row as a
 --       collapsed system row, never as the owner's bubble (internal/api
 --       relayOf, ui.relayRow). NULL for every other row, and for every row
---       written before this migration: nothing is backfilled. For those the
---       page falls back to reading muster's own relay preface
---       (plugins.ParseRelayTurn) on an untyped user row.
+--       written before this migration: nothing is backfilled. For a row
+--       written BEFORE it — created_at earlier than this migration's own
+--       schema_migrations.applied_at, which every chat read compares
+--       (agents chatMessageCols, WrittenBeforeRelayLink) — the page falls back
+--       to reading muster's own relay preface (plugins.ParseRelayTurn) on an
+--       untyped user row. A row written since without the link is never a
+--       relay, whatever its text says.
 --
 -- Not a foreign key, as typed_by (0081) is not: a chat row is its owner's under
 -- row-level security, and the link is a label for drawing the row — a plugin
@@ -21,8 +25,10 @@
 -- table's row-level security. Idempotent.
 --
 -- ROLLBACK. An image from before 0096 never writes or reads the column and runs
--- against this schema unchanged (its relay rows are drawn by the preface
--- fallback). To remove it:
+-- against this schema unchanged; relay rows IT writes after this migration
+-- carry no link and come after applied_at, so a newer image draws them as
+-- bubbles. To remove it (a newer image's text fallback is then off: with no
+-- version-96 row WrittenBeforeRelayLink is false):
 --   ALTER TABLE chat_messages DROP COLUMN IF EXISTS plugin_message_id;
 --   DELETE FROM schema_migrations WHERE version = 96;
 

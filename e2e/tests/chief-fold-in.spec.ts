@@ -87,7 +87,9 @@ test.beforeAll(async () => {
     [],
     { MUSTER_E2E_AGENT: NAME, MUSTER_E2E_APPEND: '1' },
     JSON.stringify([
-      { role: 'user', content: relayTurn },
+      // The stored link a Deliverer-written relay row carries (0096): since that
+      // migration the link, not the text, makes the collapsed row.
+      { role: 'user', content: relayTurn, pluginMessageId: 928 },
       { role: 'assistant', content: 'Filed it: the capacity review is task #41, due Friday.' },
       { role: 'user', content: OWNER_TURN },
       { role: 'assistant', content: 'Two nodes rebooted after the kernel rollout; both are back and healthy.' },

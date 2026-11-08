@@ -432,8 +432,11 @@ When a gateway is configured, three routes are live:
 - `POST /agents/{name}/send` is the message box (see
   [sending-and-step-up.md](sending-and-step-up.md)).
 
-A `claude-code` agent has the same Rendered | Terminal switch as a mirrored
-session.
+A `claude-code` agent's page has one header row. Its Terminal, its Claude
+account, its account-switch line and its worker pool are in the header's ⋯
+menu; Terminal opens the terminal view over the chat, as a mirrored session's
+switch does. The terminal page has the Rendered | Terminal switch back to the
+chat.
 
 ## Creating an agent without the chief
 
