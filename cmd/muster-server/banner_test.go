@@ -476,7 +476,11 @@ var bannerExempt = map[string]string{
 	envChiefSpecDir: "printed with its value on the `chief runtime: COMPOSE` line; it means nothing without " +
 		"MUSTER_CHIEF_RUNTIME, which refuses to boot with it set alone",
 	envChiefLLMModel: "printed with its value on the `chief llm: … through the LLM proxy` line api.EnableChiefLLM logs on " +
-		"the Compose chief; it means nothing without MUSTER_CHIEF_RUNTIME, which refuses it alone",
+		"the Compose chief or with MUSTER_CHIEF_LLM=openrouter; it means nothing without one of them, and it is refused alone",
+	envChiefLLM: "set, api.EnableChiefLLM logs `chief llm: the admin's chief may reach <model> through the LLM proxy …` at boot " +
+		"(validateChiefLLM refuses boot without the key, so that is the one ON line); unset is the chief on its Claude " +
+		"account as before this variable existed, nothing new to announce, and the Features page lists it under the " +
+		"Chief feature's settings",
 	envTestLLMUpstream: "TEST ONLY: announced on its own loud `llm proxy: 🔴 the chief's upstream is OVERRIDDEN …` line " +
 		"when set; unset (every real deployment) there is nothing to announce, and it is refused without the Compose chief runtime",
 	envChiefClaudeToken: "a secret, never printed; which credential the chief runs on is the Account page's to say, " +

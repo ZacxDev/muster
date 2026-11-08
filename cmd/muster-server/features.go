@@ -110,7 +110,7 @@ func featureCatalog() []features.Feature {
 			Enable: []features.Var{features.ProfileVar("chief"), is(envChiefRuntime, chiefRuntimeCompose),
 				v(envConnectorEncKey, "32 random bytes, base64")},
 			Note:     composeChiefCredentialNote,
-			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel}},
+			Settings: []string{envChiefSpecDir, envChiefClaudeToken, envChiefLLMModel, envChiefLLM}},
 		{ID: features.ChiefSessionRuntimes, Kubernetes: true, Name: "Chief session runtimes",
 			Description: "Start a chief chat session on Claude Code, with its own model.",
 			Enable:      []features.Var{is(envChiefSessionRuntimes, "claude-code")}},

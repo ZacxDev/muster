@@ -317,7 +317,7 @@ func composeChiefCredential(cfg config, plane *credentials.Plane) func(ctx conte
 	}
 }
 
-// composeChiefRoute is agentprovision.Config.ComposeChiefRoute over the same
+// composeChiefRoute is agentprovision.Config.ChiefLLMRoute (on Compose) over the same
 // rule: the LLM route exactly when the chief runs on OpenRouter.
 func composeChiefRoute(cred func(context.Context, int64) (api.ComposeChiefCred, error)) func(context.Context, int64) (bool, error) {
 	return func(ctx context.Context, owner int64) (bool, error) {
