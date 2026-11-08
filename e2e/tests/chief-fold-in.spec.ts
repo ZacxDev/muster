@@ -207,6 +207,14 @@ for (const vp of [
       await expect(page.locator('[data-cc-account]')).toBeHidden();
       await expect(page.locator('[data-failover]')).toBeHidden();
       await expect(page.locator('#view-terminal')).toBeHidden();
+      // The ☰ keeps its waiting badge (#528) in the folded row — on a phone,
+      // where the ☰ is drawn (a desktop's sidebar is always shown) — and the
+      // header's own asks badge stays beside it (operator: keep both).
+      if (vp.use.hasTouch) {
+        const nav = header.locator('#sidebar-open [data-nav-waiting]');
+        await expect(nav).toBeVisible();
+        await expect(nav).not.toHaveAttribute('data-count', '0');
+      }
       const more = header.locator('#agent-actions-open');
       await expect(more).toBeVisible();
       const mb = (await more.boundingBox())!;
