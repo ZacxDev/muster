@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/credentials"
 )
@@ -58,39 +60,44 @@ const (
 )
 
 // TestAnotherUsersCredentialsCannotBeSeenOrUsed: B (a member with no
-// credentials) cannot see A's account on the credentials page or the dispatch
-// form, cannot dispatch onto it (pinned or not), and is told what to add; the
-// admin's environment pool never appears on a member's form; A — the control —
-// sees and uses its own.
+// credentials) cannot see A's account on the credentials page, cannot create
+// an agent on it through POST /api/agents (pinned or not), and is told what
+// to add; A — the control — sees and uses its own. (The dispatch form that
+// also listed the caller's accounts was deleted, docs/design/chief-dispatch.md
+// phase 2; POST /api/agents replaced its submit.)
 func TestAnotherUsersCredentialsCannotBeSeenOrUsed(t *testing.T) {
 	w := newIsoWorld(t)
 	acct := w.objA.ccAccount
+	ts := apitokens.NewPG(w.pool)
+	createTok := map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		tok, _, err := ts.Create(isoAs(u), u.name+" create", 0, apitokens.ScopeAgentCreate)
+		if err != nil {
+			t.Fatalf("%s agent-create token: %v", u.name, err)
+		}
+		createTok[u.uid] = tok
+	}
 	for _, c := range []cred{{sessionUser: w.b.uid}, {gotrueUser: w.b.uid}} {
-		for _, path := range []string{"/account/credentials", "/ui/agents/new"} {
-			body := w.do(w.h, "GET", path, "", c).Body.String()
-			if strings.Contains(body, acct) {
-				t.Errorf("B %s %s shows A's account %q", c, path, acct)
-			}
-			if strings.Contains(body, isoEnvAccount) {
-				t.Errorf("B %s %s shows the ADMIN's environment pool", c, path)
-			}
+		body := w.do(w.h, "GET", "/account/credentials", "", c).Body.String()
+		if strings.Contains(body, acct) {
+			t.Errorf("B %s /account/credentials shows A's account %q", c, acct)
 		}
-		form := w.do(w.h, "GET", "/ui/agents/new", "", c).Body.String()
-		for _, need := range []string{credentials.NeedClaude, credentials.NeedOpenRouter} {
-			if !strings.Contains(form, htmlEscape(need)) {
-				t.Errorf("B %s: the dispatch form does not say %q", c, need)
-			}
+		if strings.Contains(body, isoEnvAccount) {
+			t.Errorf("B %s /account/credentials shows the ADMIN's environment pool", c)
 		}
-		for _, f := range []url.Values{
-			{"kind": {agents.KindClaudeCode}, "cc_account": {acct}, "note_text": {"t"}, "action": {"save"}},
-			{"kind": {agents.KindClaudeCode}, "cc_account": {isoEnvAccount}, "note_text": {"t"}, "action": {"save"}},
-			{"kind": {agents.KindClaudeCode}, "note_text": {"t"}, "action": {"save"}},
-			{"note_text": {"t"}, "action": {"save"}},
-		} {
-			rec := w.do(w.h, "POST", "/agents", f.Encode(), c)
-			if rec.Code != http.StatusConflict {
-				t.Errorf("B %s dispatched %v: %d %s; want 409", c, f, rec.Code, truncate(rec.Body.String(), 200))
-			}
+	}
+	for _, f := range []string{
+		`{"kind":"` + agents.KindClaudeCode + `","cc_account":"` + acct + `","prompt":"t","start":false}`,
+		`{"kind":"` + agents.KindClaudeCode + `","cc_account":"` + isoEnvAccount + `","prompt":"t","start":false}`,
+		`{"kind":"` + agents.KindClaudeCode + `","prompt":"t","start":false}`,
+		`{"prompt":"t","start":false}`,
+	} {
+		rec := w.do(w.h, "POST", "/api/agents", f, cred{apiToken: createTok[w.b.uid]})
+		if rec.Code != http.StatusConflict {
+			t.Errorf("B created %s: %d %s; want 409", f, rec.Code, truncate(rec.Body.String(), 200))
+		}
+		if f == `{"prompt":"t","start":false}` && !strings.Contains(rec.Body.String(), credentials.NeedOpenRouter) {
+			t.Errorf("B's gateway create does not say %q: %s", credentials.NeedOpenRouter, truncate(rec.Body.String(), 200))
 		}
 	}
 	// No agent of B's runs on any account.
@@ -100,29 +107,65 @@ func TestAnotherUsersCredentialsCannotBeSeenOrUsed(t *testing.T) {
 	}
 
 	// The control: A sees its account (and not the admin's pool), and a
-	// claude-code dispatch by A lands on it.
+	// claude-code create by A lands on it.
 	page := w.do(w.h, "GET", "/account/credentials", "", cred{sessionUser: w.a.uid}).Body.String()
-	form := w.do(w.h, "GET", "/ui/agents/new", "", cred{sessionUser: w.a.uid}).Body.String()
-	if !strings.Contains(page, acct) || !strings.Contains(form, acct) || strings.Contains(form, isoEnvAccount) {
-		t.Fatalf("CONTROL: A's page/form: own account %v/%v, admin pool on form %v",
-			strings.Contains(page, acct), strings.Contains(form, acct), strings.Contains(form, isoEnvAccount))
+	if !strings.Contains(page, acct) {
+		t.Fatal("CONTROL: A's credentials page does not show A's own account")
 	}
 	if strings.Contains(page, isoATok) || strings.Contains(page, strings.TrimPrefix(isoATok, credentials.ClaudeTokenPrefix)) {
 		t.Fatal("A's credentials page echoes A's token")
 	}
-	rec := w.do(w.h, "POST", "/agents", url.Values{"kind": {agents.KindClaudeCode}, "note_text": {"t"}, "action": {"save"}}.Encode(),
-		cred{sessionUser: w.a.uid})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("CONTROL: A's claude-code dispatch: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	rec := w.do(w.h, "POST", "/api/agents", `{"kind":"`+agents.KindClaudeCode+`","prompt":"t","start":false}`, cred{apiToken: createTok[w.a.uid]})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("CONTROL: A's claude-code create: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
 	var got string
 	if err := w.pool.QueryRow(w.sys, `SELECT cc_account FROM agents WHERE owner_id=$1 AND cc_account <> '' ORDER BY id DESC LIMIT 1`, w.a.uid).Scan(&got); err != nil || got != acct {
 		t.Fatalf("CONTROL: A's claude-code agent runs on %q (%v); want A's own %q", got, err, acct)
 	}
-	// And the admin's form lists the environment pool (the other control).
-	if op := w.do(w.h, "GET", "/ui/agents/new", "", cred{sessionUser: w.op.uid}).Body.String(); !strings.Contains(op, isoEnvAccount) || strings.Contains(op, acct) {
-		t.Fatalf("CONTROL: the admin's form: env pool %v, A's account %v", strings.Contains(op, isoEnvAccount), strings.Contains(op, acct))
+}
+
+// TestAnAgentCreateNamingAnotherUsersTaskIsNotFound: B's agent-create token
+// naming A's task (note_id) is "no such task" — the task is read under B's
+// row-level security — and creates nothing; A naming the same task creates an
+// agent on it (the control).
+func TestAnAgentCreateNamingAnotherUsersTaskIsNotFound(t *testing.T) {
+	w := newIsoWorld(t)
+	ts := apitokens.NewPG(w.pool)
+	tok := map[int64]string{}
+	for _, u := range []isoUser{w.a, w.b} {
+		tk, _, err := ts.Create(isoAs(u), u.name+" create", 0, apitokens.ScopeAgentCreate)
+		if err != nil {
+			t.Fatalf("%s agent-create token: %v", u.name, err)
+		}
+		tok[u.uid] = tk
 	}
+	body := `{"note_id":` + strconv.FormatInt(w.objA.task, 10) + `,"start":false}`
+	rec := w.do(w.h, "POST", "/api/agents", body, cred{apiToken: tok[w.b.uid]})
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no such task") {
+		t.Fatalf("B naming A's task: %d %s; want 404 no such task", rec.Code, truncate(rec.Body.String(), 200))
+	}
+	var n int
+	if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM agents WHERE note_id=$1`, w.objA.task).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if rec := w.do(w.h, "POST", "/api/agents", body, cred{apiToken: tok[w.a.uid]}); rec.Code != http.StatusCreated {
+		t.Fatalf("CONTROL: A naming A's own task: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	var after int
+	if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM agents WHERE note_id=$1`, w.objA.task).Scan(&after); err != nil || after != n+1 {
+		t.Fatalf("CONTROL: agents on A's task %d -> %d (%v); want one more", n, after, err)
+	}
+}
+
+// isoAs is u's context for minting through a real store as u (the world's
+// as2, which is local to newIsoWorld).
+func isoAs(u isoUser) context.Context {
+	role := authz.RoleMember
+	if u.uid == authz.OperatorUserID {
+		role = authz.RoleAdmin
+	}
+	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: u.uid, Role: role, Via: authz.ViaSession})
 }
 
 func htmlEscape(s string) string {

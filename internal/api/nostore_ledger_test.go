@@ -269,9 +269,7 @@ var htmlWithoutNoStore = map[string]string{
 	"renderTaskNotFound": "a task's not-found page: nothing on it but the id the reader typed",
 
 	"answerSwitcherPin":         htmlFragment,
-	"handleAgentNewModal":       htmlFragment,
 	"handleAgentRepoOptions":    htmlFragment,
-	"handleAgentNoteOptions":    htmlFragment,
 	"handleAgentStatusIcon":     htmlFragment,
 	"handleNotifications":       htmlFragment,
 	"handleAgentTaskModal":      htmlFragment,

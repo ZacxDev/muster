@@ -14,30 +14,9 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-// TestTheDispatchFormOffersAWorkerPoolForClaudeCode: GET /ui/agents/new on a
-// deployment with the claude-code kind renders the worker_pool input POST
-// /agents reads — DISABLED, so only the kind toggle can put it on the wire —
-// and a gateway-only deployment's form has none.
-func TestTheDispatchFormOffersAWorkerPoolForClaudeCode(t *testing.T) {
-	s, h, _ := kindsServer(t, stubKinds{accounts: []string{"alpha"}})
-	body := getOwed(t, s, h, "/ui/agents/new").Body.String()
-	in := inputTag(body, `name="worker_pool"`)
-	if in == "" {
-		t.Fatalf("no worker_pool input on the dispatch form:\n%s", body)
-	}
-	if !strings.Contains(in, " disabled") {
-		t.Fatalf("worker_pool input renders enabled (a gateway dispatch would carry it): %s", in)
-	}
-
-	s2, h2, _ := kindsServer(t, nil)
-	if body := getOwed(t, s2, h2, "/ui/agents/new").Body.String(); strings.Contains(body, `name="worker_pool"`) {
-		t.Fatalf("a deployment without claude-code renders a worker_pool input")
-	}
-}
-
-// TestAPoolWorkerIsVisibleWhereAgentsAreListed: a dispatch with worker_pool set
-// sends the browser to the new agent's page (the Agents list it answered with
-// is retired), and that page carries the pool chip; GET /api/agents carries
+// TestAPoolWorkerIsVisibleWhereAgentsAreListed: a create with worker_pool set
+// (POST /api/agents, which replaced the dispatch form) answers the new agent's
+// page, and that page carries the pool chip; GET /api/agents carries
 // workerPool. A second agent with no pool is the control: its page has no
 // chip, its workerPool is "".
 func TestAPoolWorkerIsVisibleWhereAgentsAreListed(t *testing.T) {
@@ -46,9 +25,9 @@ func TestAPoolWorkerIsVisibleWhereAgentsAreListed(t *testing.T) {
 	h = s.Handler()
 	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "worker_pool": {"reviewers"}})
 	if !dispatched(rec, store) {
-		t.Fatalf("dispatch: %d → %q %s", rec.Code, rec.Header().Get("Location"), rec.Body)
+		t.Fatalf("dispatch: %d %s", rec.Code, rec.Body)
 	}
-	pooled := rec.Header().Get("Location")
+	pooled := createdHref(t, rec)
 	if rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}}); !dispatched(rec, store) {
 		t.Fatalf("control dispatch: %d %s", rec.Code, rec.Body)
 	}
@@ -76,40 +55,6 @@ func TestAPoolWorkerIsVisibleWhereAgentsAreListed(t *testing.T) {
 	}
 	if len(rows) != 2 || pools["reviewers"] != 1 || pools[""] != 1 {
 		t.Fatalf("GET /api/agents pools = %v over %d rows, want one reviewers and one none", pools, len(rows))
-	}
-
-	// The same dispatch from htmx (the sidebar's "+" sheet, which targets no
-	// task): a 200 that swaps nothing and sends the page to the new agent's.
-	form := url.Values{"kind": {"claude-code"}, "action": {"save"}}
-	req := httptest.NewRequest(http.MethodPost, "/agents", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	admit(s, req)
-	hx := httptest.NewRecorder()
-	h.ServeHTTP(hx, req)
-	if created := store.rows(); hx.Code != http.StatusOK || hx.Body.Len() != 0 || len(created) != 3 ||
-		hx.Header().Get("HX-Redirect") != "/agents/"+created[2].Name {
-		t.Fatalf("htmx dispatch: %d HX-Redirect %q body %q, want 200, no body, HX-Redirect to the third row's page",
-			hx.Code, hx.Header().Get("HX-Redirect"), hx.Body)
-	}
-}
-
-// inputTag returns the first <input …> tag in html containing marker, or "".
-func inputTag(html, marker string) string {
-	for rest := html; ; {
-		i := strings.Index(rest, "<input")
-		if i < 0 {
-			return ""
-		}
-		rest = rest[i:]
-		end := strings.Index(rest, ">")
-		if end < 0 {
-			return ""
-		}
-		if tag := rest[:end+1]; strings.Contains(tag, marker) {
-			return tag
-		}
-		rest = rest[end+1:]
 	}
 }
 

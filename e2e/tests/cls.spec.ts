@@ -12,7 +12,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 import { landedHome } from '../lib/nav';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
@@ -440,21 +440,15 @@ test.describe('the full server', () => {
     return { ctx, page };
   }
 
-  // A claude-code agent of this spec's own, through the dispatch sheet (the
-  // terminal spec's path), so its terminal page exists.
+  // A claude-code agent of this spec's own, created stopped through POST
+  // /api/agents (lib/seed.ts: the terminal spec's path, which replaced the
+  // deleted dispatch sheet), so its terminal page exists.
   async function dispatchCC(page: Page): Promise<string> {
     const names = async () => new Set(((await (await page.request.get(morigin + '/ui/nav/agents')).text()).match(/href="\/agents\/[^"/?]+/g) || []).map((h) => h.slice(14)));
     const before = await names();
-    await page.goto(morigin + '/tasks');
-    await openDispatchSheet(page);
-    const sheet = page.locator('#agent-modal form');
-    await sheet.locator('[data-kind-option="claude-code"]').click();
-    await sheet.locator('textarea[name="note_text"]').fill('e2e cls terminal');
-    const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-    await sheet.locator('button[value="save"]').click();
-    expect((await resp).status()).toBe(200);
+    const agent = await createAgent(morigin, { kind: 'claude-code', prompt: 'e2e cls terminal' });
     const created = [...(await names())].filter((n) => !before.has(n));
-    expect(created.length, 'exactly one agent created').toBe(1);
+    expect(created, 'exactly one agent created').toEqual([agent.name]);
     return created[0];
   }
 

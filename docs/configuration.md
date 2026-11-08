@@ -578,6 +578,7 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_TEST_LLM_UPSTREAM` | none | no | **Read by the shipped muster-server**, unlike the rows above, and refused unless `MUSTER_CHIEF_RUNTIME=compose` is on. It replaces the Compose chief's LLM proxy upstream (OpenRouter) with this http(s) URL — the Compose smoke test's fake model (`tests/compose-chief.override.yml`). 🔴 Every chief request, with the OpenRouter key muster attaches, goes there; the boot log says so. Never set it in a real deployment; the Compose file does not forward it. |
 | `MUSTER_E2E_SUB` | none | for `e2e/mkmember` | A GoTrue user id for the e2e member fixture. |
 | `MUSTER_E2E_EMAIL` | none | for `e2e/mkmember` | That fixture user's email. |
+| `MUSTER_E2E_USER` | `1` | for `e2e/mktoken` | The user id the e2e agent-create token is minted for (`e2e/lib/seed.ts`). |
 | `MUSTER_E2E_AGENT` | none | for `e2e/mkchat` | The name of the agent the mirror-chat spec's chat fixture creates (or deletes). |
 | `MUSTER_E2E_DELETE` | off | no | (`e2e/mkchat`) `1` deletes that agent instead of creating it. |
 | `MUSTER_E2E_FOCUS` | none | no | (`e2e/mkchat`) A JSON array of `{subject, title, description, history}` (or `{subject, error}`, a failed refresh's reason; `history` writes that many earlier focuses first, for the focus history): session focus to write for the agent it creates (`"self"`) or for a mirrored session (`"mirror:<claude session id>"`), used by the focus spec. Deleting also deletes the mirrored ones it names. |
@@ -592,7 +593,7 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_E2E_CC_ACCOUNT` | none | no | (`e2e/mkchat`) The Claude account a `claude-code` agent names. Only a name: nothing is provisioned. |
 | `MUSTER_E2E_HOLD_READY_DIR` | none | no | (`e2eterm`) Holds fake instances not-ready until a file named after each instance appears in this directory. |
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |
-| `MUSTER_E2E_GITHUB_API` | none | no | (`e2eterm`) Points every GitHub API call at this base URL (a fake GitHub), so the dispatch dialog's repo picker can be driven with fixture repos. |
+| `MUSTER_E2E_GITHUB_API` | none | no | (`e2eterm`) Points every GitHub API call at this base URL (a fake GitHub), so the task forms' repo picker can be driven with fixture repos. |
 | `MUSTER_E2E_OPENROUTER_MODELS` | none | no | (`e2eterm`) Points the model search at this URL instead of OpenRouter's public model list (a fake catalogue). |
 | `MUSTER_E2E_SUGGEST_URL` | none | no | (`e2eterm`) Points the suggested replies' model at this chat-completions URL, on a fixed invented key, instead of OpenRouter (the chip row spec's fake model). |
 | `MUSTER_E2E_AGENT_ENDPOINT` | none | no | (`e2eterm`) Points every agent's gateway endpoint at this loopback URL (`http://127.0.0.1:<port>`, anything else refused): the answer-delivery spec's fake runtime. |

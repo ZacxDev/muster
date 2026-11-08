@@ -106,7 +106,6 @@ const (
 	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
 	whyAccessor = "the accessor itself; every display caller applies Title to its result"
 	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
-	whyDispatch = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
 	whyPerson   = "a person's (user account's) display name, not a title"
 )
 
@@ -142,7 +141,6 @@ var uiExempt = map[string]exemption{
 	"mirror_ask.go askForm o.Label":                      {2, whyOption},
 	"mirror_ask.go askReadOnly o.Label":                  {1, whyOption},
 	"mirror_ask.go askRetryForm q.Options[p].Label":      {1, whyOption},
-	"notes.go noteDispatchButton TaskTitle":              {1, whyDispatch},
 	"notes.go editTitleBodyFields n.Title":               {1, whyForm},
 	"notes.go statusFilterRow taskstatus.Label":          {1, whyStatic},
 	"notes.go TaskTitle n.Title":                         {1, whyAccessor},

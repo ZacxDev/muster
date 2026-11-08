@@ -67,6 +67,9 @@ const (
 type config struct {
 	apiURL string
 	token  string
+	// createTok is MUSTER_AGENT_CREATE_TOKEN, read from the process
+	// environment only (app.api), and presented only by `agent create`.
+	createTok string
 }
 
 // parseEnvFile reads a KEY=VALUE file (comments, blank lines, an optional

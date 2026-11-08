@@ -812,11 +812,11 @@ func staticCacheControl(path, v string) string {
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	// Connectors, Push and Dispatch also read the feature registry: it can
+	// Connectors and Push also read the feature registry: it can
 	// only take a control away (featureOff), never draw one over nothing.
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
-		Attention: s.ext.Attention != nil, Dispatch: s.dispatchServed() && !s.featureOff(features.Dispatch),
+		Attention: s.ext.Attention != nil,
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 

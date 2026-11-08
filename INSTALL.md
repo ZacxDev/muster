@@ -998,8 +998,7 @@ These are **mirrored sessions**: the person's own sessions. A message from
 muster is typed into that same session, so it is all there when they are back
 at the keyboard. This guide sets up nothing else: it starts no agent of its
 own, and dispatched agents (muster starting new sessions in Kubernetes) stay
-off: muster shows no **+** to start an agent and no **Dispatch** button on a
-task (<https://github.com/ZacxDev/muster/blob/main/docs/provisioner.md> turns
+off (<https://github.com/ZacxDev/muster/blob/main/docs/provisioner.md> turns
 them on).
 
 A session the person already has open **outside** tmux is invisible to muster,

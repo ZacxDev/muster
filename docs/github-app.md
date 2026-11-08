@@ -47,7 +47,7 @@ With the App configured:
   is refused, and a worker holding one is skipped for jobs: a pool worker holds
   no GitHub credential ([jobs.md](jobs.md#worker-pools)).
 - **The installation's repositories are the connected ones** (for an admin):
-  the dispatch dialog's repository picker lists them, and they are what the
+  the task forms' repository picker lists them, and they are what the
   "connected repository" check that every claude-code dispatch and
   `agent_dispatch` applies accepts.
 - **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count, matched by the

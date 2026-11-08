@@ -31,7 +31,7 @@ func renderTasks(t *testing.T, v TasksView) string {
 func renderTagCard(t *testing.T, n notes.Note) string {
 	t.Helper()
 	var b bytes.Buffer
-	if err := noteCard(TaskCardView{Note: n, Dispatch: true}).Render(&b); err != nil {
+	if err := noteCard(TaskCardView{Note: n}).Render(&b); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return b.String()
@@ -305,32 +305,6 @@ func TestEditorRoutingTagsLockedInProgress(t *testing.T) {
 	}
 	if !strings.Contains(out, "routing tags are locked") {
 		t.Fatalf("the editor must explain WHY routing tags are locked; body=%s", out)
-	}
-}
-
-// TestGateTagDisablesDispatch asserts a `gate:` tag disables the card's Dispatch
-// button and surfaces the reason (the server 409s independently).
-func TestGateTagDisablesDispatch(t *testing.T) {
-	out := renderTagCard(t, notes.Note{ID: 5, Body: "x", Tags: []string{"gate:needs-decision"}})
-
-	if !strings.Contains(out, `data-dispatch-gated="needs-decision"`) {
-		t.Fatalf("a gate: tag must mark the Dispatch button gated; body=%s", out)
-	}
-	if !strings.Contains(out, "disabled") {
-		t.Fatalf("the gated Dispatch button must be disabled; body=%s", out)
-	}
-	if !strings.Contains(out, "Gated: needs-decision") {
-		t.Fatalf("the gated button must surface the REASON; body=%s", out)
-	}
-	// It must NOT still open the dispatch modal.
-	if strings.Contains(out, "/ui/agents/new?") {
-		t.Fatalf("a gated card must not wire the dispatch modal; body=%s", out)
-	}
-
-	// An ungated card keeps the working Dispatch button.
-	ok := renderTagCard(t, notes.Note{ID: 6, Body: "x", Tags: []string{"bug"}})
-	if !strings.Contains(ok, "/ui/agents/new?") {
-		t.Fatalf("an ungated card must keep its Dispatch button; body=%s", ok)
 	}
 }
 

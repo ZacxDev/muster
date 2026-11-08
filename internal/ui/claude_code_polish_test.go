@@ -6,79 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
 )
-
-var bothKinds = KindChoices{Kinds: []string{agents.KindGateway, agents.KindClaudeCode}, Accounts: []string{"alpha"}}
-
-// gatewayOnlyBlock returns the markup of the FIRST data-gateway-only container in
-// html — the element itself, to its matching </div> — or "". (end is unused
-// since the repository moved out of the container; kept for the call sites.)
-func gatewayOnlyBlock(html, _ string) string {
-	// Anchored on the ELEMENT, not the bare attribute name: the kind toggle's
-	// script text names [data-gateway-only] earlier in the document.
-	i := strings.Index(html, "<div "+gatewayOnlyAttr)
-	if i < 0 {
-		return ""
-	}
-	depth := 0
-	for j := i; j < len(html); {
-		open, closing := strings.Index(html[j:], "<div"), strings.Index(html[j:], "</div>")
-		if closing < 0 {
-			return html[i:]
-		}
-		if open >= 0 && open < closing {
-			depth++
-			j += open + len("<div")
-			continue
-		}
-		depth--
-		j += closing + len("</div>")
-		if depth == 0 {
-			return html[i:j]
-		}
-	}
-	return html[i:]
-}
-
-// TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly pins WHICH controls
-// the kind toggle hides, in both dispatch forms: the model selector (the
-// OpenRouter-specific one — curated OpenRouter slugs and the live OpenRouter
-// search, data-combobox-remote="/api/openrouter/models") — and which it does
-// NOT: the repository, which a claude-code agent now takes (its session starts
-// in a checkout). The behavioural half — that they actually disappear on a tap — is
-// e2e/tests/claude-code-polish.spec.ts.
-func TestEveryOpenRouterControlInTheDispatchFormsIsGatewayOnly(t *testing.T) {
-	forms := map[string]string{
-		"FAB form":         renderNode(t, DispatchModalBodyFor(bothKinds)),
-		"task-scoped form": renderNode(t, DispatchModalTaskBody(TaskDispatchView{NoteID: 9, Model: "openrouter/vendor/model-x", Kinds: bothKinds})),
-	}
-	for name, html := range forms {
-		block := gatewayOnlyBlock(html, `type="submit"`)
-		if block == "" {
-			t.Errorf("%s: no data-gateway-only container", name)
-			continue
-		}
-		for _, want := range []string{`data-combobox-remote="/api/openrouter/models"`, `name="model"`} {
-			if !strings.Contains(block, want) {
-				t.Errorf("%s: %s is outside the gateway-only container — it stays on screen for a "+
-					"Claude Code dispatch", name, want)
-			}
-		}
-		if strings.Contains(block, `name="repo"`) || !strings.Contains(html, `name="repo"`) {
-			t.Errorf("%s: the repository must render OUTSIDE the gateway-only container (a claude-code agent takes one)", name)
-		}
-		// Nothing OpenRouter-specific may sit outside it.
-		outside := strings.Replace(html, block, "", 1)
-		if strings.Contains(outside, "/api/openrouter/models") || strings.Contains(outside, `name="model"`) {
-			t.Errorf("%s: a model/OpenRouter control renders outside the gateway-only container", name)
-		}
-		if !strings.Contains(html, "[data-gateway-only]") {
-			t.Errorf("%s: the kind toggle does not select [data-gateway-only], so nothing hides it", name)
-		}
-	}
-}
 
 // TestTheBoardCardPrintsTheTimeTheBoardIsOrderedBy: the task board is ordered by
 // most recent activity, so its card prints that time; the detail page keeps the

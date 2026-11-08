@@ -4,7 +4,7 @@ import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 import { landedHome, openMore } from '../lib/nav';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
@@ -547,20 +547,12 @@ test.describe('a claude-code agent', () => {
     await rig.login(page);
     if (agent) return;
     const before = await agentNames();
-    await page.goto(origin + '/tasks');
-    await openDispatchSheet(page);
-    const sheet = page.locator('#agent-modal form');
-    await sheet.locator('[data-kind-option="claude-code"]').click();
-    await sheet.locator('textarea[name="note_text"]').fill('e2e view swap');
-    const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-    await sheet.locator('button[value="save"]').click();
-    expect((await resp).status()).toBe(200);
+    // Created stopped through POST /api/agents (lib/seed.ts), which replaced
+    // the deleted dispatch sheet's "Save for later".
+    const made = await createAgent(origin, { kind: 'claude-code', prompt: 'e2e view swap' });
     const created = [...(await agentNames())].filter((n) => !before.has(n));
-    expect(created.length, 'exactly one agent created').toBe(1);
+    expect(created, 'exactly one agent created').toEqual([made.name]);
     agent = created[0];
-    // Save for later answers with an HX-Redirect to the new agent's page: let
-    // that navigation land, or it interrupts the caller's next one.
-    await page.waitForURL((u) => u.pathname === `/agents/${agent}`);
   }
 
   async function openChat(page: Page): Promise<void> {

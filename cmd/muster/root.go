@@ -96,6 +96,7 @@ func (a *app) api() (*client, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.createTok = a.getenv(envAgentCreateToken)
 	c := newClient(cfg, a.newHTTP(a.flagTimeout), a.stderr)
 	c.progName = a.progName
 	if note := tenantNote(sel, cfg.apiURL); note != "" {

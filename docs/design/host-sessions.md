@@ -2,8 +2,9 @@
 
 **Status: proposed; the design's decisions are made** (by the operator; see
 [decisions](#decisions)). **Nothing here is implemented.** The Agents list page
-it places the **New session** button on has since been retired; that button's
-home would be the sidebar, beside its dispatch **+**.
+it places the **New session** button on has since been retired, and so has the
+sidebar's dispatch **+** (chief-dispatch.md phase 2); the chief's host spawn
+([chief-dispatch.md](chief-dispatch.md)) replaced this page's trigger.
 Every other section is the recommended design. This page proposes letting
 the operator start a **new** session on one of their own machines from muster
 (the web UI and the PWA now, the Android shell later). The session is a real

@@ -15,7 +15,7 @@ The verb set is pinned in two places:
 |---|---|
 | tasks | `task ls`, `task get`, `task create`, `task comment`, `task status` |
 | an agent's own task | `agent task get`, `agent task comment`, `agent task status` |
-| agents | `agent ls`, `agent messages`, `agent resolve`, `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
+| agents | `agent ls`, `agent messages`, `agent resolve`, `agent create` ([creating an agent without the chief](provisioner.md#creating-an-agent-without-the-chief)), `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
@@ -44,6 +44,12 @@ The usual credential is a **personal API token** (`mst_…`). Mint it in the
 browser at `/account/tokens`; it acts as you ([auth.md](auth.md)). Tokens cannot
 be minted from the CLI. `muster token ls` and `muster token revoke <id>` manage
 them, and `muster whoami` says who a credential acts as.
+
+`agent create` is the one exception: it reads `MUSTER_AGENT_CREATE_TOKEN` (the
+environment only), a token of scope **Create agents** (`agent-create`), and
+never sends `MUSTER_TOKEN`. The server refuses every other token on
+`POST /api/agents`, a full-access one included, so the ordinary credential
+cannot create agents.
 
 ## Several servers (tenants)
 
