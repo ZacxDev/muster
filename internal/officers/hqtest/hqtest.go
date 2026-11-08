@@ -216,6 +216,9 @@ type Server struct {
 	// 400 and nothing is written.
 	PreCost         bool
 	completeRefusal *refusal
+	// TaskReadOff makes the task read route answer 403 task_read_off (the
+	// officer's type has no task_read), as civ-hq's officer task route does.
+	TaskReadOff bool
 }
 
 // RefuseCompletes makes every complete answer status {error, code} (status 0:
@@ -798,6 +801,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		s.Notices = append(s.Notices, Notice{Officer: officer, Body: body})
 		s.write(w, http.StatusCreated, map[string]any{"posted": true})
+	case (len(parts) == 2 || len(parts) == 3) && parts[1] == "tasks" && r.Method == http.MethodGet:
+		// civ-hq's officer task route (task-reconciler plan P20): a fixed list
+		// row, or one task; "private-1" stands for a private task (404).
+		if s.TaskReadOff {
+			s.write(w, http.StatusForbidden, map[string]any{"error": "the officer's type does not read tasks", "code": "task_read_off"})
+			return
+		}
+		if len(parts) == 2 {
+			s.write(w, http.StatusOK, map[string]any{"rows": []any{map[string]any{"id": "fixture-task-1", "status": "to do", "children_open": 0, "children_done": 2}}, "next": ""})
+			return
+		}
+		if parts[2] == "private-1" {
+			s.write(w, http.StatusNotFound, map[string]any{"error": "no such task", "code": "not_found"})
+			return
+		}
+		s.write(w, http.StatusOK, map[string]any{"task": map[string]any{"id": parts[2]}, "comments": []any{}, "statuses": []any{"to do", "complete"}, "done_statuses": []any{"complete"}})
 	case len(parts) == 3 && parts[1] == "obs":
 		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
