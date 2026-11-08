@@ -630,3 +630,12 @@ func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, 
 	}
 	return ap
 }
+
+// sessionsChanged has the next read of the root sessions go to the server: a
+// session was just created here (the host spawn), and a bind against a list
+// that predates it would not be seen until the list aged out.
+func (s *OpenCodeSource) sessionsChanged() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stale = true
+}

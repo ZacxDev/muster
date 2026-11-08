@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "a6d8c7025e9f0fc047784c3328c732965125400b1362b23f61c21dff2e86bd62",
+			want: "42ad9091ad877157819406e819d4445cbb0cb285b08d363acd86de4a220df45e",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "2ccaa1caf6629825e3133ef77f2b62bf6b3721fad82f139f2a58198600f2a0b2",
+			want: "8b174267dae6a12dccd7e1426545b4506ee255846cb33b21c1b5520cbea95756",
 			min:  1000,
 		},
 		{
@@ -756,7 +756,9 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 		// Mirrored dispatch (phase 3): the owner's words to a host target, the
 		// card for a blank, and never a cluster agent in its place.
 		"\"mirrored on <host> with Claude\" → `host/<host>/claude` (no model);",
-		"no host named → `host/?/claude`;",
+		"\"mirrored on <host> with\" any other model → `host/<host>/opencode` with model its OpenRouter id (<vendor>/<model>;",
+		"not sure of the id → `host/<host>/?`, no model);",
+		"no host named → `host/?/claude` or `host/?/opencode`;",
 		"muster asks your owner with a card and starts nothing;",
 		"call again with the same request_key, the same arguments and exactly the target they chose.",
 		"Never start a cluster agent instead of a mirrored one.",

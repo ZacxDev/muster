@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/opencodehost"
 )
 
 // THE CHIEF STARTS AN AGENT ON THIS HOST (agent-spawn): the host half of
@@ -50,7 +51,12 @@ import (
 //   - the worktree is fresh, cut from origin/<base> after a fetch, under this
 //     host's own agents directory; the owner's checkout is never touched;
 //   - Claude Code's folder-trust entry is written for that worktree and
-//     nothing else (trustSpawnedWorktree).
+//     nothing else (trustSpawnedWorktree);
+//   - opencode (agentspawn_opencode.go) only beside -opencode-send and a token,
+//     with the TUI's version the service's, and a model the host's own opencode
+//     lists under OpenRouter — all checked before any git call; its prompt is
+//     POSTED through opencode's API once the window is bound, never an argv
+//     word.
 
 // DefaultAgentSpawnRate is -agent-spawn-rate's default: 3 per 10 minutes and
 // 10 per 24 hours (its daily part equals the server's daily cap).
@@ -91,6 +97,16 @@ type AgentSpawnConfig struct {
 	// ClaudeBin, when set, is the claude binary (absolute); otherwise it is
 	// resolved against the tmux server's global PATH.
 	ClaudeBin string
+	// OpenCodeBin, when set, is the opencode binary (absolute) whose version
+	// is compared with the service's; otherwise `opencode` on the tmux
+	// server's global PATH.
+	OpenCodeBin string
+	// MirrorBin, when set, is the launcher binary an opencode window runs
+	// (`<MirrorBin> opencode -s <id>`); otherwise this process's own
+	// executable, so the launcher and the daemon are one build.
+	MirrorBin string
+	// BindWait replaces openCodeBindWait (tests).
+	BindWait time.Duration
 	// ClaudeState, when set, is Claude Code's state file; otherwise
 	// $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
 	ClaudeState string
@@ -145,7 +161,7 @@ const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f 
 // spawnConstantWords is every CONSTANT word the spawn hands tmux (the
 // argv's constants and tmux's own options). TestNoSpawnConstantWordEndsInASemicolon
 // asserts none ends in ';'.
-var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--",
+var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
 	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption}
 
@@ -346,28 +362,45 @@ func pathWithin(p, root string) bool {
 func promptDir(runtimeDir string) string { return filepath.Join(runtimeDir, "muster-mirror", "prompts") }
 
 // agentSpawnRuntimes is what this host advertises in its hello (Msg.AgentSpawn):
-// claude, when spawning is available and its binary resolves. opencode is
-// phase 4 and is never advertised here.
+// claude, when spawning is available and its binary resolves; opencode, when
+// this host also SENDS to opencode (Msg.OpenCodeSend: -opencode-send and a
+// token — the spawn posts the first prompt through that API) and both opencode
+// and the launcher resolve. Whether the service is up, its version and its
+// models are checked at each spawn, never advertised (design 3.1).
 func (h *hostSide) agentSpawnRuntimes() []string {
 	if h.version < 2 || agentSpawnUnavailable(h.c.cfg) != "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
 	defer cancel()
+	var out []string
 	if _, err := h.c.claudeBinary(ctx); err != nil {
 		h.c.log.Printf("muster-mirror: -agent-spawn: claude is not offered: %v", err)
-		return nil
+	} else {
+		out = append(out, mirror.SpawnRuntimeClaude)
 	}
-	return []string{mirror.SpawnRuntimeClaude}
+	if why := h.c.openCodeSpawnOff(ctx, h.openCodeSend()); why != "" {
+		h.c.log.Printf("muster-mirror: -agent-spawn: opencode is not offered: %s", why)
+	} else {
+		out = append(out, mirror.SpawnRuntimeOpenCode)
+	}
+	return out
 }
 
 // claudeBinary is the absolute claude binary a spawn runs: the test seam, or
 // `claude` on the tmux server's global PATH (the window's own PATH), so a
 // profile that changes PATH cannot swap it.
 func (c *Client) claudeBinary(ctx context.Context) (string, error) {
-	if b := c.cfg.AgentSpawn.ClaudeBin; b != "" {
+	return c.serverPathBinary(ctx, "claude", c.cfg.AgentSpawn.ClaudeBin)
+}
+
+// serverPathBinary is the absolute binary name a spawn runs (or checks): seam
+// when set, else name on the tmux server's global PATH (the window's own PATH),
+// so a profile that changes PATH cannot swap it.
+func (c *Client) serverPathBinary(ctx context.Context, name, seam string) (string, error) {
+	if b := seam; b != "" {
 		if !filepath.IsAbs(b) || !hostWordRE.MatchString(b) {
-			return "", errors.New("the claude binary is not an absolute path tmux would leave alone")
+			return "", fmt.Errorf("the %s binary is not an absolute path tmux would leave alone", name)
 		}
 		return b, nil
 	}
@@ -384,12 +417,12 @@ func (c *Client) claudeBinary(ctx context.Context) (string, error) {
 		if !filepath.IsAbs(d) {
 			continue
 		}
-		p := filepath.Join(d, "claude")
+		p := filepath.Join(d, name)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 && hostWordRE.MatchString(p) {
 			return p, nil
 		}
 	}
-	return "", errors.New("claude is not on the tmux server's PATH")
+	return "", fmt.Errorf("%s is not on the tmux server's PATH", name)
 }
 
 // --- the audit log -----------------------------------------------------------
@@ -681,14 +714,21 @@ func newSessionID() string {
 type spawnPlan struct {
 	clone, dir, branch, baseSHA, prompt string
 	worktreeAdded                       bool
+	// oc and session: the opencode session this spawn created ("" = none).
+	oc      *openCodeSpawn
+	session string
 }
 
-// undo removes what a spawn that did not open its window created: the prompt
-// file, the worktree (never forced), and the branch only while it still points
-// at the commit it was cut from (update-ref with the old value: never -D).
+// undo removes what a spawn that ran no agent created: the prompt file, the
+// opencode session (nothing was posted to it), the worktree (never forced),
+// and the branch only while it still points at the commit it was cut from
+// (update-ref with the old value: never -D).
 func (p *spawnPlan) undo(git string) {
 	if p.prompt != "" {
 		_ = os.Remove(p.prompt)
+	}
+	if p.session != "" && p.oc != nil {
+		p.oc.removeSession(p.session)
 	}
 	if !p.worktreeAdded {
 		return
@@ -730,10 +770,10 @@ func (c *Client) spawnAgent(ctx context.Context, h *hostSide, m mirror.Msg, rece
 	switch {
 	case err == nil:
 		result.Result, result.Window, result.Session, result.Worktree, result.Branch = "spawned", w.Window, w.Session, w.Worktree, w.Branch
-		c.log.Printf("muster-mirror: SPAWNED claude for dispatch %d in %s:%s (worktree %s), as muster asked", m.Dispatch, w.Session, w.Window, w.Worktree)
+		c.log.Printf("muster-mirror: SPAWNED %s for dispatch %d in %s:%s (worktree %s), as muster asked", spawnRuntimeOf(m), m.Dispatch, w.Session, w.Window, w.Worktree)
 	case errors.As(err, &e):
 		result.Result, result.Detail = e.code, e.detail
-		if e.code == mirror.SpawnNotListed {
+		if e.code == mirror.SpawnNotListed || w.Window != "" {
 			result.Window, result.Session, result.Worktree, result.Branch = w.Window, w.Session, w.Worktree, w.Branch
 		}
 		c.log.Printf("muster-mirror: spawn for dispatch %d refused (%s): %s", m.Dispatch, e.code, e.detail)
@@ -794,13 +834,21 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	// 3. The request, field by field.
 	switch req.Runtime {
 	case mirror.SpawnRuntimeClaude:
+		if req.Model != "" {
+			return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent a model for claude (a muster bug)")
+		}
 	case mirror.SpawnRuntimeOpenCode:
-		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "this host does not start opencode agents")
+		// The model's SHAPE, before anything else about opencode: an
+		// OpenRouter id, which this host then finds in its own opencode's
+		// list (openCodeSpawnCheck).
+		if _, _, ok := mirror.ParseSpawnModel(req.Model); !ok {
+			return w, false, true, refuseSpawn(mirror.SpawnBadModel, "%q is not an OpenRouter model (openrouter/<vendor>/<model>)", capField(req.Model, 140))
+		}
+		if why := c.openCodeSendOff(); why != "" {
+			return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "%s", why)
+		}
 	default:
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent an unknown runtime (a muster bug)")
-	}
-	if req.Model != "" {
-		return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent a model for claude (a muster bug)")
 	}
 	if m.Dispatch <= 0 {
 		return w, false, true, refuseSpawn(mirror.SpawnFailed, "muster sent no dispatch id (a muster bug)")
@@ -849,13 +897,23 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 		return w, false, true, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
 	admitted = true
-	w, err = c.spawnClaude(dctx, h, m.Dispatch, req, deadline)
+	w, err = c.spawnRuntime(dctx, h, m.Dispatch, req, deadline)
 	return w, admitted, true, err
 }
 
-// spawnClaude is steps 7 onwards: the clone, the worktree, the trust entry, the
-// prompt file, the window.
-func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, req mirror.AgentSpawnReq, deadline time.Time) (mirror.AgentSpawned, error) {
+// spawnRuntimeOf is the runtime m asks for, for a log line.
+func spawnRuntimeOf(m mirror.Msg) string {
+	if m.Spawn == nil {
+		return "?"
+	}
+	return m.Spawn.Runtime
+}
+
+// spawnRuntime is steps 7 onwards, ONE spawner for both runtimes with a branch
+// where they differ: the clone, the worktree, then claude's trust entry and
+// prompt file or opencode's session, the window, and for opencode the bind and
+// the first prompt through its API.
+func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, req mirror.AgentSpawnReq, deadline time.Time) (mirror.AgentSpawned, error) {
 	sc := c.cfg.AgentSpawn
 	git := sc.git()
 	t, ok := tmuxOf(c.cfg.Backend)
@@ -876,8 +934,18 @@ func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, r
 			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "the %s session has a %s of its own", mirror.AgentSpawnSession, mirror.DispatchOption)
 		}
 	}
-	claudeBin, err := c.claudeBinary(ctx)
-	if err != nil {
+	opencode := req.Runtime == mirror.SpawnRuntimeOpenCode
+	var bin string
+	var oc *openCodeSpawn
+	if opencode {
+		// opencode's own preconditions and the model, against the host's
+		// opencode service — BEFORE any git call: a refusal here leaves
+		// nothing to undo.
+		if oc, err = c.openCodeSpawnCheck(ctx, req.Model); err != nil {
+			return mirror.AgentSpawned{}, err
+		}
+		bin = oc.mirrorBin
+	} else if bin, err = c.claudeBinary(ctx); err != nil {
 		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "claude not found")
 	}
 	clone, err := resolveClone(ctx, git, sc.Roots, req.Repo)
@@ -904,17 +972,25 @@ func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, r
 	}
 	winSlug := mirror.SpawnSlug(req.Name, 24)
 	winName := "cc-" + strconv.FormatInt(dispatch, 10)
+	sid := newSessionID()
+	if opencode {
+		winName = "oc-" + strconv.FormatInt(dispatch, 10)
+		sid = opencodehost.NewSessionID(sc.now())
+	}
 	if winSlug != "" {
 		winName += "-" + winSlug
 	}
-	sid := newSessionID()
 	promptFile := filepath.Join(promptDir(sc.RuntimeDir), strconv.FormatInt(dispatch, 10))
-	for _, word := range []string{dir, branch, winName, sid, promptFile, claudeBin} {
+	words := []string{dir, branch, winName, sid, promptFile, bin}
+	if opencode {
+		words = append(words, oc.openCodeBin)
+	}
+	for _, word := range words {
 		if !hostWordRE.MatchString(word) {
 			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnFailed, "a spawn word has characters tmux would parse")
 		}
 	}
-	plan := &spawnPlan{clone: clone, dir: dir, branch: branch}
+	plan := &spawnPlan{clone: clone, dir: dir, branch: branch, oc: oc}
 	fail := func(e error) (mirror.AgentSpawned, error) {
 		plan.undo(git)
 		return mirror.AgentSpawned{}, e
@@ -964,14 +1040,24 @@ func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, r
 			scancel()
 		}
 	}
-	// 9. The trust entry (claude only), then the prompt file.
-	if err := c.trustSpawnedWorktree(ctx, clone, dir, dispatch, true); err != nil {
-		return fail(err)
+	// 9. claude: the trust entry, then the prompt file. opencode: its session,
+	// in the worktree, on the model — which runs NOTHING until the prompt is
+	// posted after the bind (step 12), so a spawn that fails before then has
+	// started no agent and deletes the session (spawnPlan.undo).
+	if opencode {
+		if err := oc.createSession(ctx, sid, dir); err != nil {
+			return fail(err)
+		}
+		plan.session = sid
+	} else {
+		if err := c.trustSpawnedWorktree(ctx, clone, dir, dispatch, true); err != nil {
+			return fail(err)
+		}
+		if err := writePromptFile(sc.RuntimeDir, promptFile, req.Prompt); err != nil {
+			return fail(refuseSpawn(mirror.SpawnFailed, "the prompt file could not be written"))
+		}
+		plan.prompt = promptFile
 	}
-	if err := writePromptFile(sc.RuntimeDir, promptFile, req.Prompt); err != nil {
-		return fail(refuseSpawn(mirror.SpawnFailed, "the prompt file could not be written"))
-	}
-	plan.prompt = promptFile
 	// 10. THE DEADLINE CHECK, immediately before new-window: the point of no
 	// return.
 	if sc.beforeNewWindow != nil {
@@ -984,7 +1070,12 @@ func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, r
 	if err != nil || !hostWordRE.MatchString(shell) {
 		return fail(refuseSpawn(mirror.SpawnUnavailable, "no login shell"))
 	}
-	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, claudeBin, "--session-id", sid, "--"}
+	// 🔴 NO PROMPT IN EITHER ARGV: claude's is read from its 0600 file by the
+	// constant wrapper; opencode's is posted through its API (step 12).
+	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid, "--"}
+	if opencode {
+		argv = []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "--opencode-bin", oc.openCodeBin, "-s", sid}
+	}
 	winID, pane, err := t.newAgentWindow(ctx, winName, dir, argv)
 	if err != nil {
 		return fail(refuseSpawn(mirror.SpawnFailed, "the window could not be started"))
@@ -1014,7 +1105,31 @@ func (c *Client) spawnClaude(ctx context.Context, h *hostSide, dispatch int64, r
 		return killFail(refuseSpawn(mirror.SpawnFailed, "landed outside the worktree"))
 	}
 	w := mirror.AgentSpawned{Session: mirror.AgentSpawnSession, Window: winID, Pane: pane, Worktree: dir, Branch: branch, AgentSession: sid, Warning: warning}
-	// 11. LISTING BEFORE REPLY: agent-spawned only once this connection has
+	if opencode {
+		// 11. THE BIND: the launcher bound the pane to the session this host
+		// created (the listing reads it: SourceLauncher, Send, that session).
+		// Not bound in time: nothing has run — the window is killed and the
+		// session and worktree removed.
+		if !c.waitOpenCodeBind(ctx, winID, sid) {
+			return killFail(refuseSpawn(mirror.SpawnFailed, "the window did not bind to its opencode session"))
+		}
+		// 12. THE FIRST PROMPT, AFTER THE BIND, NEVER BEFORE: posted through
+		// opencode's API under an id derived from this dispatch and session.
+		// 🔴 From here the window is KEPT whatever happens: the owner may be
+		// typing in it. A prompt not accepted is `failed`, and the server's
+		// orphan notice tells the owner about the window.
+		if err := oc.postFirstPrompt(dispatch, sid, req.Prompt); err != nil {
+			c.log.Printf("muster-mirror: spawn for dispatch %d: the first prompt was not accepted: %v", dispatch, err)
+			// The wire has no "unconfirmed" spawn result: a post whose answer
+			// never came is still `failed`, but its detail says it may have
+			// landed, so nobody resends it as if it had not.
+			if promptMayHaveLanded(err) {
+				return w, refuseSpawn(mirror.SpawnFailed, "prompt not confirmed: opencode did not answer, so it may have been delivered")
+			}
+			return w, refuseSpawn(mirror.SpawnFailed, "prompt not accepted")
+		}
+	}
+	// 13. LISTING BEFORE REPLY: agent-spawned only once this connection has
 	// SENT a listing with the window; otherwise not_listed (the row stays
 	// pending, and the next listing settles it).
 	if h != nil && !h.listWindow(ctx, mirror.AgentSpawnSession, winID) {

@@ -495,6 +495,8 @@ var bannerExempt = map[string]string{
 		"it means nothing with the sweep off",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
+	envChiefDispatchModels: "a list of OpenRouter ids for a card's options with no OFF state: unset is the default list, a " +
+		"malformed entry refuses to boot in loadConfig, and it turns nothing on — mirrored opencode dispatch is on per host (its hello)",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",

@@ -57,6 +57,11 @@ type TaskRouting struct {
 	// their chief starting agents. Non-empty is what turns agent_dispatch on;
 	// empty: nobody has, and the tool is not offered.
 	DispatchOwners map[int64]bool
+	// DispatchModels is MUSTER_CHIEF_DISPATCH_MODELS: the OpenRouter models a
+	// mirrored dispatch's model card offers for opencode, in order, each
+	// already in mirror.ValidSpawnModel's shape (empty: none listed; the card
+	// still offers the typed id).
+	DispatchModels []string
 }
 
 const (

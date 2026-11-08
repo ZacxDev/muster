@@ -119,6 +119,31 @@ func (s *Server) DelayPromptAnswers(d time.Duration) {
 	s.promptDelay = d
 }
 
+// DelayFirstPromptAnswer is DelayPromptAnswers for the NEXT prompt POST only:
+// its prompt is admitted at once and its answer comes after d; later posts
+// answer at once (a lost answer whose retry is answered).
+func (s *Server) DelayFirstPromptAnswer(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promptDelayOnce = d
+}
+
+// HangPromptAnswers is DelayPromptAnswers for EVERY prompt POST, a repeat of an
+// id included (DelayPromptAnswers answers a repeat at once): a server that
+// admits and never answers in time.
+func (s *Server) HangPromptAnswers(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promptHang = d
+}
+
+// RefusePrompts makes every prompt POST answer 400, admitting nothing (on).
+func (s *Server) RefusePrompts(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refusePrompts = on
+}
+
 // FailCommands makes GET /api/command answer 500 (on).
 func (s *Server) FailCommands(on bool) {
 	s.mu.Lock()
@@ -155,11 +180,139 @@ func (s *Server) sessionKnownLocked(sid string) (json.RawMessage, bool) {
 	return nil, false
 }
 
+// THE HOST SPAWN'S ROUTES (docs/design/chief-dispatch.md 3.6), shaped from
+// the same real server (v2.0.32+6ec5682, with an OpenRouter credential):
+// testdata/spawn-v2.0.32.json holds its bodies — a create carrying model
+// {providerID, id} answered with the session naming that model (and the same
+// for an id no provider lists: the server does NOT check it), an OpenRouter
+// entry of GET /api/model, and DELETE /api/session/{id}'s 204 then 404.
+//
+//   - POST /api/session records each session's model (SessionModel), and
+//     counts creates (Creates);
+//   - GET /api/model answers the list a test sets (SetModels), none by default;
+//   - DELETE /api/session/{id}: 204 and the session is gone, else 404.
+//
+// Every create, prompt and delete is also recorded in order (Log), so a test
+// can say which came first.
+
+//go:embed testdata/spawn-v2.0.32.json
+var spawnCapture []byte
+
+// SpawnCaptured is one body of testdata/spawn-v2.0.32.json (create-model,
+// create-unknown-model, model-openrouter, delete-404).
+func SpawnCaptured(name string) json.RawMessage {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(spawnCapture, &all); err != nil {
+		panic(err)
+	}
+	b, ok := all[name]
+	if !ok {
+		panic("no captured body " + name)
+	}
+	return b
+}
+
+// Model is a model the fake lists (GET /api/model); Disabled lists it with
+// "enabled": false.
+type Model struct {
+	ProviderID, ID string
+	Disabled       bool
+}
+
+// SetModels sets what GET /api/model lists, each entry shaped as the real
+// server's OpenRouter entry (SpawnCaptured("model-openrouter")).
+func (s *Server) SetModels(ms ...Model) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = append([]Model(nil), ms...)
+}
+
+// SessionModel is the model session sid was created with ({providerID, id}),
+// nil for none.
+func (s *Server) SessionModel(sid string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionModels[sid]
+}
+
+// Creates is how many sessions POST /api/session created.
+func (s *Server) Creates() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.creates
+}
+
+// LogEntry is one create, prompt or delete, in the order the fake saw them.
+type LogEntry struct {
+	Op, Session string
+	At          time.Time
+}
+
+// Log is every create, prompt (admitted or not) and delete, in order.
+func (s *Server) Log() []LogEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]LogEntry(nil), s.log...)
+}
+
+func (s *Server) logOp(op, sid string) {
+	s.mu.Lock()
+	s.log = append(s.log, LogEntry{Op: op, Session: sid, At: time.Now()})
+	s.mu.Unlock()
+}
+
+func (s *Server) listModels(w http.ResponseWriter) {
+	var tmpl map[string]any
+	_ = json.Unmarshal(SpawnCaptured("model-openrouter"), &tmpl)
+	s.mu.Lock()
+	ms := append([]Model(nil), s.models...)
+	s.mu.Unlock()
+	out := []map[string]any{}
+	for _, m := range ms {
+		e := map[string]any{}
+		for k, v := range tmpl {
+			e[k] = v
+		}
+		e["id"], e["modelID"], e["providerID"], e["name"], e["enabled"] = m.ID, m.ID, m.ProviderID, m.ID, !m.Disabled
+		out = append(out, e)
+	}
+	writeJSON(w, map[string]any{"location": map[string]any{"directory": "/srv/fixture"}, "data": out})
+}
+
+func (s *Server) deleteSession(w http.ResponseWriter, sid string) {
+	s.logOp("delete", sid)
+	s.mu.Lock()
+	kept := s.sessions[:0]
+	found := false
+	for _, raw := range s.sessions {
+		var cur struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(raw, &cur)
+		if cur.ID == sid {
+			found = true
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	s.sessions = kept
+	s.mu.Unlock()
+	if !found {
+		notFound(w, sid)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // serveSend answers the send routes; false for any other request.
 func (s *Server) serveSend(w http.ResponseWriter, r *http.Request, path string) bool {
 	switch {
 	case r.Method == http.MethodPost && path == "/api/session":
 		s.createSession(w, r)
+	case r.Method == http.MethodGet && path == "/api/model":
+		s.listModels(w)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/api/session/") && !strings.Contains(strings.TrimPrefix(path, "/api/session/"), "/"):
+		s.deleteSession(w, strings.TrimPrefix(path, "/api/session/"))
 	case r.Method == http.MethodGet && path == "/api/command":
 		s.mu.Lock()
 		cmds, fail := s.commands, s.failCommands
@@ -216,8 +369,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		Location struct {
 			Directory string `json:"directory"`
 		} `json:"location"`
+		Model map[string]string `json:"model"`
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err := json.Unmarshal(b, &in); err == nil {
+		s.logOp("create", in.ID)
+	}
 	if err := json.Unmarshal(b, &in); err != nil || !strings.HasPrefix(in.ID, "ses") || !strings.HasPrefix(in.Location.Directory, "/") {
 		http.Error(w, `{"_tag":"InvalidRequestError"}`, http.StatusBadRequest)
 		return
@@ -233,9 +390,20 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		"tokens":   map[string]any{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
 		"time":     map[string]any{"created": s.now().UnixMilli(), "updated": s.now().UnixMilli()},
 		"location": map[string]any{"directory": in.Location.Directory}}
+	if in.Model != nil {
+		// As the real server: the model named, with its default variant.
+		m["model"] = map[string]any{"id": in.Model["id"], "providerID": in.Model["providerID"], "variant": "default"}
+	}
 	raw, _ := json.Marshal(m)
 	s.mu.Lock()
 	s.sessions = append(s.sessions, raw)
+	s.creates++
+	if in.Model != nil {
+		if s.sessionModels == nil {
+			s.sessionModels = map[string]map[string]string{}
+		}
+		s.sessionModels[in.ID] = in.Model
+	}
 	s.mu.Unlock()
 	// The REAL server's session.created frame (testdata/prompt-v2.0.32.sse),
 	// which names the session as data.sessionID and nothing about its status.
@@ -250,11 +418,19 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 		Delivery string `json:"delivery"`
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	s.logOp("prompt", sid)
 	s.mu.Lock()
 	s.promptPosts++
 	delay := s.promptDelay
+	if s.promptDelayOnce > 0 {
+		delay, s.promptDelayOnce = s.promptDelayOnce, 0
+	}
+	refuse := s.refusePrompts
+	if s.promptHang > 0 {
+		delay = s.promptHang
+	}
 	s.mu.Unlock()
-	if err := json.Unmarshal(b, &in); err != nil || in.Text == "" || (in.ID != "" && !strings.HasPrefix(in.ID, "msg_")) {
+	if err := json.Unmarshal(b, &in); refuse || err != nil || in.Text == "" || (in.ID != "" && !strings.HasPrefix(in.ID, "msg_")) {
 		http.Error(w, `{"_tag":"InvalidRequestError"}`, http.StatusBadRequest)
 		return
 	}
@@ -283,6 +459,13 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 			return
 		}
 		// The record stored FIRST, whatever this post carries (measured).
+		if s.hangOf() > 0 {
+			select {
+			case <-time.After(s.hangOf()):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		writeJSON(w, map[string]any{"data": inboxUser(p, s.now())})
 		return
 	}
@@ -308,4 +491,10 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request, sid string) {
 func inboxUser(p Prompt, now time.Time) map[string]any {
 	return map[string]any{"id": p.ID, "sessionID": p.Session, "time": map[string]any{"created": now.UnixMilli()},
 		"type": "user", "payload": map[string]any{"text": p.Text}, "delivery": p.Delivery}
+}
+
+func (s *Server) hangOf() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.promptHang
 }

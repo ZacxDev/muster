@@ -74,7 +74,7 @@ func TestTheSpawnPromptNeverLosesItsRules(t *testing.T) {
 	for _, n := range []int{7600, 8190} {
 		prompt := strings.Repeat("y", n)
 		for _, onTask := range []bool{false, true} {
-			out := spawnPrompt("host-bravo", "acme/widgets", prompt, task, onTask)
+			out := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", prompt, task, onTask)
 			rules := chiefDispatchRulesNoTask
 			if onTask {
 				rules = chiefDispatchRules
@@ -89,7 +89,7 @@ func TestTheSpawnPromptNeverLosesItsRules(t *testing.T) {
 		}
 	}
 	// Control: a short prompt is whole.
-	if out := spawnPrompt("host-bravo", "acme/widgets", "Fix the typo.", task, true); strings.Contains(out, "did not fit") || !strings.Contains(out, "Fix the typo.") {
+	if out := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Fix the typo.", task, true); strings.Contains(out, "did not fit") || !strings.Contains(out, "Fix the typo.") {
 		t.Fatal("a short prompt was cut")
 	}
 }
@@ -118,7 +118,7 @@ func TestAHostSpawnedWindowsFirstMessageIsNotTheOwners(t *testing.T) {
 	now := time.Now()
 	// The on-task kickoff with no relay: the task's text, unfenced, after the
 	// preface — only the preface marks it as muster's.
-	kick := spawnPrompt("host-bravo", "acme/widgets", "", notes.Note{ID: 9, Body: "Merge it when green."}, true)
+	kick := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "", notes.Note{ID: 9, Body: "Merge it when green."}, true)
 	msgs := []chiefnudge.Msg{{Role: "user", Text: kick, ID: "1", At: now.Add(-time.Minute)}, {Role: "user", Text: "go ahead and push", ID: "2", At: now}}
 	got := chiefnudge.OwnerMessages(msgs, nil, nudgeInjectedPrefixes, now.Add(-time.Hour), false)
 	if len(got) != 1 || got[0].Text != "go ahead and push" {

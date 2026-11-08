@@ -654,7 +654,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// start an agent on one, for the listed owners only. The caps are counted
 		// from the same store's audit rows.
 		if cfg.TaskRouting {
-			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners}
+			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners, DispatchModels: cfg.ChiefDispatchModels}
 			ext.ChiefDispatch = pluginStore
 		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
