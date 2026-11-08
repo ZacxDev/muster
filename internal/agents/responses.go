@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -327,8 +328,30 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		}
 		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
-	return parseResponsesSSE(activityBody(ctx, resp.Body), emit)
+	// abort is resp.Body.Close: it unblocks a read the reader is stuck in (the
+	// grace after a bare `error` event, readResponsesSSE).
+	out, err := readResponsesSSE(activityBody(ctx, resp.Body), emit, func() { _ = resp.Body.Close() })
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		// 🔴 THE CLIENT'S OWN TIMEOUT, NOT THE CALLER'S DEADLINE (ctx is alive).
+		// net/http's timeout error matches context.DeadlineExceeded, and the
+		// outcome tracker reads that as "the caller gave up" and records nothing
+		// — so a runtime that held a turn open past the request timeout left the
+		// agent `running` for ever. %v, not %w, on purpose: this is a failure
+		// of the runtime, and must not match the caller's deadline.
+		return nil, fmt.Errorf("the runtime's /v1/responses request timed out before the turn finished: %v", err)
+	}
+	return out, err
 }
+
+// errorEventGrace is how long the reader waits, after a bare `error` event,
+// for anything more from the runtime before it gives up with that error. A
+// var so a test can shorten it.
+//
+// 🔴 A BARE `error` IS NOT TERMINAL (a fallback's completion may follow it:
+// TestAnErrorFollowedByACompletionIsNotAFailure), so the reader cannot stop on
+// it, and a runtime that goes silent after one would otherwise hold the turn for
+// the whole request timeout. Any further event cancels the grace.
+var errorEventGrace = time.Minute
 
 // RuntimeError is a non-200, non-404 answer from an agent runtime's
 // /v1/responses endpoint.
@@ -383,6 +406,30 @@ func newRuntimeError(status int, body []byte, snippet string) *RuntimeError {
 // byte stream. It mirrors gateway.go's bufio.Scanner SSE approach with a raised
 // buffer cap (a single response.completed line carries the full output array).
 func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, error) {
+	return readResponsesSSE(body, emit, nil)
+}
+
+// readResponsesSSE is parseResponsesSSE with abort: a function that ends a read
+// blocked on body (nil: none, the grace after a bare `error` is then off).
+//
+// 🔴 IT STOPS READING AT THE TERMINAL EVENT — response.completed,
+// response.failed, response.incomplete — NOT AT EOF OR [DONE]. A runtime that
+// reports the turn failed and then keeps the connection open (a gateway
+// runtime does, on a provider failure: see stream_failure_shapes_test.go) held
+// the turn until the request timeout, with nothing stored and the outcome
+// `running`. The terminal event is the end of the turn in the Responses stream
+// protocol; nothing after it changes the answer.
+//
+// 🔴 A TERMINAL FAILURE IS AN ERROR WHATEVER THE STREAM CARRIED: a
+// response.failed, or a completion whose status is "failed" (the same gateway
+// writes one, carrying its placeholder text, after the failure). Only a BARE
+// `error` event is forgiven by an answer that follows it.
+//
+// ⚠ A BODY THAT ENDS (EOF) WITH NO TERMINAL EVENT AND NO [DONE] IS AN ERROR,
+// not an empty answer: a runtime that died mid-turn never answered, and reading
+// that as "" recorded the agent as having replied nothing. An explicit [DONE]
+// with no completion stays the empty answer it always was.
+func readResponsesSSE(body io.Reader, emit StreamEmit, abort func()) (*responsesResponse, error) {
 	var final *responsesResponse
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -391,6 +438,16 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 	// failed is the runtime's own report that the turn FAILED (streamFailure):
 	// set, the turn is an error whatever else the stream carried.
 	var failed *StreamError
+	// terminal: a terminal event was read; terminalFailed: it was a failure;
+	// done: the runtime's explicit end-of-stream marker ([DONE]) was read.
+	var terminal, terminalFailed, done bool
+	// grace is the timer armed by a bare `error` event (errorEventGrace).
+	var grace *time.Timer
+	defer func() {
+		if grace != nil {
+			grace.Stop()
+		}
+	}()
 	// lastTextIndex is the output_index of the most recent text delta emitted this
 	// turn (-1 = none yet). A text delta whose index is higher belongs to a NEW
 	// message item, so handleResponsesEvent injects a paragraph break before it —
@@ -401,14 +458,25 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			ev = sseEvent{}
 			return
 		}
-		if f := streamFailure(ev); f != nil && failed == nil {
+		if grace != nil {
+			grace.Stop()
+			grace = nil
+		}
+		f, isTerminal := streamFailure(ev)
+		if f != nil && failed == nil {
 			failed = f
+		}
+		if isTerminal {
+			terminal = true
+			terminalFailed = terminalFailed || f != nil
+		} else if f != nil && abort != nil {
+			grace = time.AfterFunc(errorEventGrace, abort)
 		}
 		handleResponsesEvent(ev, emit, &final, &lastTextIndex)
 		ev = sseEvent{}
 	}
 
-	for sc.Scan() {
+	for !terminal && sc.Scan() {
 		line := sc.Text()
 		// A blank line terminates an event.
 		if strings.TrimSpace(line) == "" {
@@ -423,6 +491,7 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			d := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if d == "[DONE]" {
 				flush()
+				done = true
 				break
 			}
 			if ev.data != "" {
@@ -431,23 +500,35 @@ func parseResponsesSSE(body io.Reader, emit StreamEmit) (*responsesResponse, err
 			ev.data += d
 		}
 	}
-	flush()
-	if err := sc.Err(); err != nil {
-		return nil, err
+	if !terminal {
+		flush()
+	}
+	if terminalFailed {
+		return nil, failed
 	}
 	// 🔴 A FAILURE ONLY WHEN NO ANSWER FOLLOWED. A runtime can report an
 	// `error` event mid-stream (a failover attempt) and then complete the turn
 	// on its fallback; a completed response that answers (text, or tool calls)
 	// is the answer, not the error. A completion that answers NOTHING after an
 	// error is the error: read as an empty answer it lost the runtime's own
-	// sentence, and the agent's outcome said "no reply text" instead.
+	// sentence, and the agent's outcome said "no reply text" instead. And a read
+	// that broke after the error (the grace's abort, the request timeout) is
+	// the runtime's error, in its words, not the read's.
 	if failed != nil && (final == nil || final.answersNothing()) {
 		return nil, failed
 	}
+	if err := sc.Err(); err != nil && !terminal {
+		return nil, err
+	}
+	if final == nil && done {
+		// An explicit [DONE] with no completion is the runtime ENDING the turn
+		// with nothing to say, which the transport has always read as an empty
+		// answer (not a truncation, which has no marker).
+		return &responsesResponse{}, nil
+	}
 	if final == nil {
-		// No response.completed seen (defensive): return an empty response rather
-		// than nil so callers can safely call functionCalls()/messageText().
-		final = &responsesResponse{}
+		return nil, errors.New("the runtime's stream ended without a terminal event " +
+			"(no response.completed or response.failed): the turn was never answered")
 	}
 	return final, nil
 }
@@ -493,7 +574,9 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 		// (textDeltasOnly) never sees this row, and still needs the blank line
 		// between the segments on either side of it. PartCollector starts a new
 		// part at the row and drops that separator from the part's head.
-	case kind == "response.completed":
+	case kind == "response.completed" || kind == "response.incomplete":
+		// response.incomplete (a length stop) is terminal too, and its output is
+		// the answer as far as it got.
 		r := &responsesResponse{Status: "completed", Output: env.Response.Output}
 		*final = r
 	case kind == "response.output_text.delta":
@@ -710,8 +793,10 @@ const TurnEndedNotRun = `{"error":"not run: your turn ended (you asked your owne
 // call for a tool the request never offered. One turn with no loop cannot reach it.
 //
 // ⚠ THE TEXT COMES FROM response.completed, NOT FROM THE DELTAS, which is the same
-// property RunToolLoop has: a stream that emits deltas and never completes assembles
-// to "". That is the transport's contract, not a fallback this function adds.
+// property RunToolLoop has: a stream that emits deltas and ends with [DONE] but no
+// completion assembles to "", and one that simply stops (EOF, no [DONE]) is an
+// error (readResponsesSSE). That is the transport's contract, not a fallback this
+// function adds.
 func RunToollessTurn(
 	ctx context.Context,
 	client *http.Client,

@@ -45,8 +45,15 @@ func (e *StreamError) Error() string {
 const streamFailureMax = 512
 
 // streamFailure is the failure one SSE event reports, or nil when it reports
-// none. The type inside data wins over the event name, as for every event.
-func streamFailure(ev sseEvent) *StreamError {
+// none, and whether the event is TERMINAL — the end of the turn in the stream
+// protocol (response.completed, response.failed, response.incomplete), after
+// which the reader stops. The type inside data wins over the event name, as for
+// every event.
+//
+// 🔴 A COMPLETION WHOSE STATUS IS "failed" IS A FAILURE, NOT AN ANSWER. A
+// gateway runtime whose run failed writes one, carrying a placeholder as its
+// text, and read as an answer that placeholder was stored as the agent's reply.
+func streamFailure(ev sseEvent) (*StreamError, bool) {
 	var env struct {
 		Type     string `json:"type"`
 		Code     any    `json:"code"`
@@ -61,19 +68,24 @@ func streamFailure(ev sseEvent) *StreamError {
 		} `json:"response"`
 	}
 	if err := json.Unmarshal([]byte(ev.data), &env); err != nil {
-		return nil
+		return nil, false
 	}
 	kind := env.Type
 	if kind == "" {
 		kind = ev.name
 	}
 	switch kind {
+	case "response.completed", "response.incomplete":
+		if env.Response.Status != "failed" {
+			return nil, true
+		}
+		fallthrough
 	case "response.failed":
 		f := &StreamError{}
 		if e := env.Response.Error; e != nil {
 			f.Code, f.Message = codeString(e.Code), e.Message
 		}
-		return bound(f)
+		return bound(f), true
 	case "error":
 		f := &StreamError{Code: codeString(env.Code), Message: env.Message}
 		// Some runtimes nest it: {"type":"error","error":{"message":…}}.
@@ -87,9 +99,9 @@ func streamFailure(ev sseEvent) *StreamError {
 		} else if s, ok := env.Error.(string); ok && f.Message == "" {
 			f.Message = s
 		}
-		return bound(f)
+		return bound(f), false
 	}
-	return nil
+	return nil, false
 }
 
 func codeString(v any) string {
