@@ -1,0 +1,143 @@
+package llmproxy
+
+import (
+	"io"
+	"math"
+	"net/http"
+	"testing"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// AN ITEM'S COST (civ-hq docs/OFFICERS.md "Item cost"): what the routine
+// instance's hold on the item booked through the proxy, request by request,
+// as the provider reported it. officer_complete sends it to HQ as cost_usd
+// with cost_from muster:llm-proxy. It is KNOWN only when this proxy metered
+// the whole of the item's proxy work: HQ's first claim of it (attempts 1),
+// claimed through muster, and at least one request booked. Anything else is
+// unknown, and an unknown cost is never a 0.
+// ---------------------------------------------------------------------------
+
+// costsInOrder answers request n (1-based) with the stream whose provider
+// cost is costs[n-1].
+func costsInOrder(costs ...float64) func(http.ResponseWriter, *http.Request, int) {
+	return func(w http.ResponseWriter, _ *http.Request, n int) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range streamEvents(costs[n-1]) {
+			_, _ = io.WriteString(w, e)
+			w.(http.Flusher).Flush()
+		}
+	}
+}
+
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+// TestAnItemsCostIsTheSumOfItsOwnRequestsOnly: instance 1 holds item-a and
+// makes two requests (0.0137, 0.0291); instance 2, holding nothing, makes one
+// (0.0523), then claims item-b and makes one (0.0419). item-a's cost is 0.0428
+// — its own two requests, not instance 2's — and item-b's is 0.0419, not the
+// request instance 2 made before it held it. Neither instance knows a cost for
+// the item the other holds.
+func TestAnItemsCostIsTheSumOfItsOwnRequestsOnly(t *testing.T) {
+	const officer = "items:cost-sum"
+	r := newRig(t, officer, costsInOrder(0.0137, 0.0523, 0.0291, 0.0419))
+	as := func(n int) { r.set(func(c *Caller) { c.Instance, c.InstanceLabel = n, "r"+string(rune('0'+n)) }) }
+	post := func() {
+		t.Helper()
+		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("request: %d %s", resp.StatusCode, body)
+		}
+	}
+
+	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	as(1)
+	post() // 0.0137 → item-a
+	as(2)
+	post() // 0.0523 → no item (instance 2 holds none)
+	as(1)
+	post() // 0.0291 → item-a
+	r.p.ClaimedAttempt(officer, 2, "item-b", 1)
+	as(2)
+	post() // 0.0419 → item-b
+
+	if got, ok := r.p.ItemCost(officer, 1, "item-a"); !ok || !near(got, 0.0428) {
+		t.Errorf("item-a's cost = %v (known %v), want 0.0428: its own two requests", got, ok)
+	}
+	if got, ok := r.p.ItemCost(officer, 2, "item-b"); !ok || !near(got, 0.0419) {
+		t.Errorf("item-b's cost = %v (known %v), want 0.0419: its own request, not the one made holding nothing", got, ok)
+	}
+	if got, ok := r.p.ItemCost(officer, 1, "item-b"); ok {
+		t.Errorf("instance 1 (holding item-a) reports a cost %v for item-b", got)
+	}
+	if got, ok := r.p.ItemCost(officer, 2, "item-a"); ok {
+		t.Errorf("instance 2 (holding item-b) reports a cost %v for item-a", got)
+	}
+	if got, ok := r.p.ItemCost("items:another-officer", 1, "item-a"); ok {
+		t.Errorf("another officer's instance 1 reports a cost %v for item-a", got)
+	}
+}
+
+// TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt: each case is a hold
+// whose booked requests are not provably the item's whole proxy spend — so
+// its cost is unknown, never 0 and never the partial sum.
+func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
+	const officer = "items:cost-unknown"
+	r := newRig(t, officer, streamOK(0.0367))
+	as := func(n int) { r.set(func(c *Caller) { c.Instance, c.InstanceLabel = n, "r"+string(rune('0'+n)) }) }
+	post := func(n int) {
+		t.Helper()
+		as(n)
+		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
+			t.Fatalf("request by instance %d: %d %s", n, resp.StatusCode, body)
+		}
+	}
+	unknown := func(why string, n int, item string) {
+		t.Helper()
+		if got, ok := r.p.ItemCost(officer, n, item); ok {
+			t.Errorf("%s: cost %v reported known, want unknown", why, got)
+		}
+	}
+
+	// Held, first claim, but no request booked yet: no evidence, not a 0.
+	r.p.ClaimedAttempt(officer, 1, "item-none", 1)
+	unknown("a first claim with no request booked", 1, "item-none")
+
+	// HQ's second claim of the item: an earlier hold may have spent on it.
+	r.p.ClaimedAttempt(officer, 2, "item-second", 2)
+	post(2)
+	unknown("HQ's second claim (attempts 2)", 2, "item-second")
+
+	// No attempts from HQ (an HQ without the field, or muster's already-yours
+	// answer for an item the meter did not hold).
+	r.p.ClaimedAttempt(officer, 3, "item-noattempts", 0)
+	post(3)
+	unknown("a claim with no attempts", 3, "item-noattempts")
+
+	// Adopted from a wake-loop read (a claim muster did not see: a restart).
+	r.p.Sync(officer, map[int][]string{4: {"item-adopted"}}, time.Now())
+	post(4)
+	unknown("an item adopted from HQ's claimed list", 4, "item-adopted")
+
+	// A first claim, then HQ's re-claim of it (its lease lapsed): unknown.
+	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 1)
+	post(5)
+	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 2)
+	unknown("a first claim re-claimed after a lapse (attempts 2)", 5, "item-reclaimed")
+
+	// Ended: the meter no longer holds it.
+	r.p.ClaimedAttempt(officer, 6, "item-ended", 1)
+	post(6)
+	r.p.Ended(officer, 6, "item-ended")
+	unknown("an ended hold", 6, "item-ended")
+
+	// The positive control, with the same requests: a first claim, metered
+	// whole, is known — and stays known through muster's already-yours
+	// re-claim of the item it holds (no new HQ claim, attempts unknown).
+	r.p.ClaimedAttempt(officer, 7, "item-known", 1)
+	post(7)
+	post(7)
+	r.p.ClaimedAttempt(officer, 7, "item-known", 0)
+	if got, ok := r.p.ItemCost(officer, 7, "item-known"); !ok || !near(got, 2*0.0367) {
+		t.Errorf("the positive control: cost %v (known %v), want 0.0734", got, ok)
+	}
+}

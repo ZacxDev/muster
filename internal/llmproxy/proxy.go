@@ -293,6 +293,16 @@ func (p *Proxy) Claimed(officer string, instance int, item string) {
 	p.items.claimed(instanceKey{officer, instance}, item, p.now())
 }
 
+// ClaimedAttempt is Claimed, with HQ's `attempts` for the claim.
+func (p *Proxy) ClaimedAttempt(officer string, instance int, item string, attempts int) {
+	p.Claimed(officer, instance, item)
+}
+
+// ItemCost is the USD the instance's hold on item has booked.
+func (p *Proxy) ItemCost(officer string, instance int, item string) (float64, bool) {
+	return 0, false
+}
+
 // Ended tells the per-item meter that instance of officer no longer holds item.
 func (p *Proxy) Ended(officer string, instance int, item string) {
 	p.items.ended(instanceKey{officer, instance}, item, p.now())

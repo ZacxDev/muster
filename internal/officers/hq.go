@@ -399,7 +399,23 @@ type Completion struct {
 	// it, so it is never decoded into Investigation (whose omitempty lists
 	// would reshape it). Empty or JSON null sends none.
 	InvestigationJSON json.RawMessage `json:"-"`
+	// Cost is what working the item cost, sent as HQ's cost_usd + cost_from
+	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
+	// cost, and sends neither field.
+	Cost *ItemCost `json:"-"`
 }
+
+// ItemCost is an item's cost as HQ takes it: USD, and who computed it.
+type ItemCost struct {
+	USD  float64
+	From string
+}
+
+// CostFromLLMProxy is cost_from for a cost muster's LLM proxy metered: the
+// provider-reported (or, for a response that carried none, the proxy's
+// pessimistic estimate of) the cost of every request the item's routine hold
+// made.
+const CostFromLLMProxy = "muster:llm-proxy"
 
 // Investigation is HQ's investigation block on an `escalated` complete
 // (civ-hq docs/OFFICERS.md "Investigation"). HQ REQUIRES it to escalate an
