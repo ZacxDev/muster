@@ -91,8 +91,11 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 	assertCallers(t, ".", "endHostDispatch", []string{"agent_destroy_tool.go:destroyHostDispatch",
 		"host_dispatch_reconcile.go:applySpawnReply", "host_dispatch_reconcile.go:reconcileListing", "host_dispatch_reconcile.go:sweepHostDispatches"})
 	assertCallers(t, ".", "ReserveHostDispatch", []string{"host_dispatch.go:toolHostDispatch"})
+	// MarkHostDispatchDone (0097: done_at/done_summary only, never ended) is
+	// agent_report_done's on the mirror door alone.
+	assertCallers(t, ".", "MarkHostDispatchDone", []string{"host_dispatch_done.go:toolHostReportDone"})
 	// In the store, the SQL that writes host_dispatches is in exactly these
-	// four functions.
+	// five functions.
 	src, err := os.ReadFile(filepath.Join("..", "plugins", "host_dispatches.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +117,7 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 		}
 	}
 	slices.Sort(writers)
-	want := []string{"EndHostDispatch", "ReserveHostDispatch", "SetHostDispatchOrphanNotice", "UpdateHostDispatch"}
+	want := []string{"EndHostDispatch", "MarkHostDispatchDone", "ReserveHostDispatch", "SetHostDispatchOrphanNotice", "UpdateHostDispatch"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("host_dispatches is written by %v\nwant exactly %v", writers, want)
 	}

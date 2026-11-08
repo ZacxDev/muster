@@ -62,6 +62,8 @@ type hostDispatchStore interface {
 	UpdateHostDispatch(ctx context.Context, id int64, u plugins.HostDispatchUpdate) (bool, error)
 	EndHostDispatch(ctx context.Context, id int64, why string, refused bool) (plugins.HostDispatch, error)
 	SetHostDispatchOrphanNotice(ctx context.Context, id, noticeID int64) (bool, error)
+	HostDispatchForSession(ctx context.Context, host, session string) (plugins.HostDispatch, error)
+	MarkHostDispatchDone(ctx context.Context, id int64, host, session, summary string) (bool, error)
 	RecordHostDispatchAgent(ctx context.Context, object string, hostDispatchID int64) error
 	HostDispatchObject(ctx context.Context, h plugins.HostDispatch) (string, error)
 	CardHoldByKey(ctx context.Context, key string) (plugins.DispatchHold, error)

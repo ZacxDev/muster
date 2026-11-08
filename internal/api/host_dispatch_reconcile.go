@@ -310,6 +310,12 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 		}
 	case plugins.HostDispatchRunning:
 		c.State = ui.DispatchWorking
+		if !r.DoneAt.IsZero() {
+			// Done is not ended (0097): its window is still open and holds the slot.
+			c.State, c.Detail = ui.DispatchDone, "Finished: "+r.DoneSummary
+			c.HostNote = "Close the window on " + r.Host + " to end it and free its slot."
+			break
+		}
 		if s.ext.Mirror != nil {
 			for _, v := range s.ext.Mirror.Hosts(ctx) {
 				if v.Host != r.Host {
@@ -332,6 +338,9 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 			c.State, c.Detail = ui.DispatchError, "The host refused it: "+r.Refusal
 		} else {
 			c.State, c.Detail = ui.DispatchDone, "Ended ("+r.EndedWhy+")."
+			if !r.DoneAt.IsZero() {
+				c.Detail = "Finished: " + r.DoneSummary + " Ended (" + r.EndedWhy + ")."
+			}
 			if r.Worktree != "" {
 				c.Detail += " A worktree with work in it is kept at " + r.Worktree + " (" + r.Branch + ")."
 			}

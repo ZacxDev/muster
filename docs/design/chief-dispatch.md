@@ -2321,6 +2321,31 @@ becomes complete (`stopChiefAgentOnComplete`). **A host window is not closed
 automatically.** It is a process on the owner's workstation, and the owner may
 be typing into it. Its slot is freed only when the window ends.
 
+**Done is not ended** (added after phase 3 shipped; migration `0097`,
+`internal/api/host_dispatch_done.go`). The spawn prompt's rules
+(`chiefDispatchRulesNoTask`) tell a host-spawned agent to call
+`agent_report_done` when it finishes, but the mirror door did not offer that
+tool, so the agent could not say it was done and its card stayed "Working".
+The mirror door now lists `agent_report_done`. A call records a done outcome
+on the caller's **own** dispatch only:
+- The row is found by the caller's Claude session on the caller's host
+  (`agent_session`, which the host minted and the spawn reply recorded). It is
+  **not** found by the window's `@muster-dispatch` tag, because an agent with a
+  shell can set that tag to any id.
+- The row must then be bound to the caller: the same host, the same session,
+  and the same tmux window as the host lists the caller in now
+  (`hostDispatchBoundTo`). Any other session, the same session resumed in
+  another window, another host's token, and another owner are all refused.
+- The store's write (`MarkHostDispatchDone`, a fifth writer in the seam
+  ledger) repeats the host and session in its `WHERE` and writes only on a
+  `running` row, and only once. It writes `done_at` and `done_summary` and
+  nothing else.
+- **The row stays `running`, and keeps its slot, until its window closes**, as
+  above. Ending it on the report would make the next listing, which still
+  carries the window's tag, raise the orphan notice for a window the owner is
+  looking at. The card reads **Done**, with the summary and "close the window
+  on `<host>` to end it and free its slot". The owner gets one push.
+
 ### 3.8 Read-only and tenant hosts
 
 **The host refuses** in all of these cases, whatever muster sends. Each is

@@ -26,7 +26,11 @@ import (
 //     releaseHostDispatchTx, in one transaction under the owner's lock. Called
 //     only by the reconciler and agent_destroy;
 //   - SetHostDispatchOrphanNotice: orphan_notice_id only, on an ended row
-//     whose column is still empty. Called only by the reconciler.
+//     whose column is still empty. Called only by the reconciler;
+//   - MarkHostDispatchDone (0097): done_at and done_summary only, once, on a
+//     RUNNING row whose host and agent_session are the caller's. It never
+//     ends the row (done is not ended: the slot is held until the window
+//     closes). Called only by agent_report_done on the mirror door.
 
 // Host dispatch statuses.
 const (
@@ -49,6 +53,10 @@ type HostDispatch struct {
 	EndedAt                      time.Time
 	Refusal, EndedWhy, Warning   string
 	OrphanNoticeID               int64
+	// DoneAt is when the dispatch's own session said it finished
+	// (agent_report_done), zero until then; DoneSummary its one line.
+	DoneAt      time.Time
+	DoneSummary string
 }
 
 // HostDispatchNew is a pending row's fields, written with its reservation.
@@ -70,15 +78,18 @@ var ErrHostDispatchNotFound = errors.New("plugins: no such host dispatch")
 
 const hostDispatchCols = `id, owner_id, host, runtime, coalesce(model, ''), coalesce(held_id, ''), repo, base, branch, worktree,
 	coalesce(task_id, 0), reservation_id, agent_session, tmux_window, status, missing_listings, host_seen_at, created_at,
-	coalesce(ended_at, 'epoch'), refusal, ended_why, warning, coalesce(orphan_notice_id, 0)`
+	coalesce(ended_at, 'epoch'), refusal, ended_why, warning, coalesce(orphan_notice_id, 0), coalesce(done_at, 'epoch'), done_summary`
 
 func scanHostDispatch(row pgx.Row) (HostDispatch, error) {
 	var h HostDispatch
 	err := row.Scan(&h.ID, &h.Owner, &h.Host, &h.Runtime, &h.Model, &h.HeldID, &h.Repo, &h.Base, &h.Branch, &h.Worktree,
 		&h.TaskID, &h.ReservationID, &h.AgentSession, &h.Window, &h.Status, &h.MissingListings, &h.HostSeenAt, &h.CreatedAt,
-		&h.EndedAt, &h.Refusal, &h.EndedWhy, &h.Warning, &h.OrphanNoticeID)
+		&h.EndedAt, &h.Refusal, &h.EndedWhy, &h.Warning, &h.OrphanNoticeID, &h.DoneAt, &h.DoneSummary)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HostDispatch{}, ErrHostDispatchNotFound
+	}
+	if h.DoneAt.Unix() == 0 {
+		h.DoneAt = time.Time{}
 	}
 	return h, err
 }
@@ -323,6 +334,46 @@ func (s *PGStore) SetHostDispatchOrphanNotice(ctx context.Context, id, noticeID 
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET orphan_notice_id = $3
 		WHERE id = $1 AND owner_id = $2 AND status = 'ended' AND orphan_notice_id IS NULL`, id, owner, noticeID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// HostDispatchForSession is the principal's newest host dispatch on host whose
+// window runs Claude session session (agent_session, which the host minted and
+// its spawn reply recorded), ended or not. ErrHostDispatchNotFound when the
+// session is no dispatch's.
+func (s *PGStore) HostDispatchForSession(ctx context.Context, host, session string) (HostDispatch, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return HostDispatch{}, err
+	}
+	if session == "" {
+		return HostDispatch{}, ErrHostDispatchNotFound
+	}
+	return scanHostDispatch(s.pool.QueryRow(ctx, `SELECT `+hostDispatchCols+` FROM host_dispatches
+		WHERE owner_id = $1 AND host = $2 AND agent_session = $3 ORDER BY id DESC LIMIT 1`, owner, host, session))
+}
+
+// MarkHostDispatchDone records that the principal's host dispatch id is done,
+// with summary — ONLY while it is running, on host, its agent_session is
+// session, and it is not done already. It never ends the row. It reports
+// whether it wrote.
+func (s *PGStore) MarkHostDispatchDone(ctx context.Context, id int64, host, session, summary string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	if r := []rune(summary); len(r) > 300 {
+		summary = string(r[:300])
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = now(), done_summary = $5
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running' AND done_at IS NULL`,
+		id, owner, host, session, summary)
 	if err != nil {
 		return false, err
 	}
