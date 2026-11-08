@@ -1,6 +1,7 @@
 # Design: the chief in an agent's view (succession: replace or spin off, in place)
 
-**Status: proposed. Nothing on this page is built.** It builds on
+**Status: phase 0 measured and phase 1 built (see [Phase 0 results](#phase-0-results-2026-11-08)
+and [Phase 1 as built](#phase-1-as-built)); phases 2–4 are proposed.** It builds on
 [chief-dispatch.md](chief-dispatch.md) (phase 3 built for claude, #513/#516;
 phase 4, opencode on an OpenRouter model, in draft as #522) and reuses its
 target strings, `host_dispatches` row, reconciler, held cards and owner-turn
@@ -668,3 +669,181 @@ and this page does not reopen them.
    chief session keeps its own conversation, and `ownerTurnFor` passes in it.
    If it does not, the fallback in 2.3 applies: the chief's default session,
    with the strip filtered to this lineage's `about` rows.
+
+---
+
+## Phase 0 results (2026-11-08)
+
+Measured from the code at `origin/main` `1b029ed9`, from production read-only
+(the `muster` namespace's Postgres, `SELECT` only, in a read-only transaction),
+and from the operator's workstation transcripts (read only). Each answer says
+which of the three it rests on.
+
+### (a) A thread per succession chain: **no — the fallback applies (D6)**
+
+**From code.** A chief chat session with no runtime (`chat_sessions.runtime =
+''`) is routed as *legacy*: `withRoute` (`internal/api/session_runtime.go`)
+returns the context unchanged for it, so the turn carries no
+`X-Muster-CC-Session` header, and ccd runs every such turn in its **one
+primary CLI** (`cmd/ccd/lanes.go`: "one WITHOUT it is the primary's"). A
+non-default session with no runtime is therefore a second muster transcript
+over the **same** ccd conversation: the chief would see the view's exchange
+mixed into its default conversation anyway, while muster showed it as a thread
+of its own. That is the opposite of what D6 asks for.
+
+Only a `claude-code`-runtime session (a ccd *lane*) has a conversation of its
+own. It is not a substitute here:
+- it is a Claude Code CLI of its own (about 250–550 MiB, under
+  `CCD_MAX_SESSIONS`, default 3), started with none of the chief's context;
+- `ownerTurnFor` passes for a lane turn only while the primary and every other
+  CLI are idle (`onlyTheOwnersLaneWorks`). By code it would pass; it has
+  **never been measured live**.
+
+`ownerTurnFor` itself reads no session: for a turn in a no-runtime session the
+runtime's acceptance names lane `""` (the primary), exactly as for the default
+session. By code it passes; it is **UNVERIFIED live**, and moot given the
+above.
+
+**Production, read-only.**
+- The chief (agent 105) is `claude-code`, owner 1.
+- It has 3 chat sessions, all `runtime = ''`: the default one (3,220 rows, last
+  row 2026-11-08) and two non-default ones (8 and 2 rows, last used
+  2026-10-19).
+- The deployment sets `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code,gateway`, but
+  no lane session was ever opened.
+- `agents.owner_turn_lane` is `''` on every row: no owner turn was ever marked
+  in a lane.
+
+**So phase 1 builds the fallback:** the view's line goes to the chief's
+**default** session, and the strip shows that session's rows whose `about`
+names the viewed session, with the replies that follow each one.
+**This contradicts 2.3 as written** (a session keyed `about:<root key>`), which
+is not built. A per-lineage thread would need a lane session per chain, which
+is a decision of its own (memory, the CLI cap, model choice).
+
+### (b) How much transcript the tail reaches: **the newest end, always**
+
+**From code.**
+
+| runtime | backfill (`mirrorRead`) | per event |
+|---|---|---|
+| Claude Code | the last `BackfillWindow` (4 MiB) of the transcript file, at most `MaxBackfillEvents` (300) events (`internal/mirror/wire.go`, `internal/mirrorhost/transcript.go`) | text cut at `cctranscript.MaxText` (32 KiB) |
+| opencode | the newest `openCodeBackfill` (200) messages, then the same 300-event cap (`internal/mirrorhost/opencode_stream.go`) | the same |
+
+Both read from the **end**, so a session's last assistant message is always
+in the tail, however long the session is. `session_context` cuts each message
+at 6 KiB after redaction.
+
+⚠ **A risk measured from code, not seen live.** `mirrorRead` ends a read on a
+750 ms gap between batches (`focusTailQuiet`), or at 15 s, before the prompt
+index arrives. Batches arrive oldest first, so a slow host cuts the **newest**
+end, which is where a kickoff is. A partial read returns what it got.
+
+**Production, read-only.** `agent_focus` holds 51 opencode subjects (49 with a
+title) beside 129 Claude Code ones. The focus refresher reads every one of
+them through `focusSessions.Tail`, the reader `session_context` uses. So the
+opencode tail is read in production today.
+
+**A second finding, a contradiction with 2.2.** `cwd` is empty on all 51
+opencode rows: opencode's prompt events carry no working directory. So
+`focus.LatestCwd`, the `cwd` source in 2.2's table, is `""` for every
+opencode session. `session_context` answers `cwd: ""` for one; only Claude
+Code sessions have a `cwd`.
+
+### (c) What a kickoff block looks like: **one untagged fenced block, nearly always**
+
+Measured with a read-only scan of this operator's own transcripts on the
+workstation: assistant text containing the handoff skill's kickoff line
+(`/resume — continue`).
+
+| | Claude Code (`~/.claude/projects`) | opencode (`opencode-stable.db`) |
+|---|---|---|
+| assistant messages with the line | 951 | 195 |
+| the line inside a fenced block | 948 | 176 |
+| …an untagged fence | 945 (3 `markdown`) | 172 (4 `text`) |
+| …the message's last block | 940 | 175 |
+| messages with exactly one block | 939 | 176 |
+| the block ≤ 1 KiB | 925 (23 larger) | — |
+| the line not fenced | 3, all mentions, not kickoffs | 19: mostly tables quoting it, and at least 2 real kickoffs written unfenced after a `---` rule |
+
+The handoff skill's tool prints the block fenced
+(`devrc/scripts/lib/handoff_doc.py`, `kickoff_block`). So `{ref, block: 0}`
+names the kickoff in almost every case.
+
+**Phase 2 must keep `block` optional** (the whole message), as 4.2 already
+has it, because a few real kickoffs are not fenced at all.
+`internal/mdfence` (phase 1) lists blocks by CommonMark's fence rules: a
+backtick or tilde fence indented at most three spaces, closed by the same
+character at least as long.
+
+## Phase 1 as built
+
+Phase 1 follows section 5's phase 1, with the phase 0 adjustments above:
+
+- **`POST /mirror/view/chief`** (`internal/api/view_chief.go`). It is the
+  third owner chat door. It reads the address, the text and the nonce, and
+  nothing else.
+  - It refuses a principal that is not a signed-in browser session (403)
+    before anything is stored.
+  - It resolves the subject through `mirrorEntry`, which is owner-scoped
+    (`viewChiefSubject` → `sessionSubject`).
+  - It runs the turn through `startAgentTurn` → `runEnteredTurn` with
+    `ownerTypedBy(ctx)`, on the chief's **default** session.
+  - It has the same wrappers as `POST /agents/{name}/send`: a session, the
+    gateway wired, same-origin.
+  - It works when the agent composer is disabled.
+- **`chat_messages.about`**, migration **0097**: nullable `jsonb`, written
+  only through `runEnteredTurn` from this door. Its rollback is in the file's
+  header.
+  - `content` holds only the owner's words.
+  - The runtime gets them behind muster's header (`viewChiefTurnText`). The
+    phase 1 header leaves out the `agent_dispatch … successor_of` sentence,
+    which is phase 2's.
+- **The ledgers.**
+  - `TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn` grows by exactly the new door.
+  - `TestOnlyTheViewDoorBindsASubject` is the new writer ledger for `about`.
+    It sits beside `TestEveryChatWriterIsClassified`, whose `typed_by` set is
+    unchanged.
+- **The composer switch** (`internal/ui/view_chief.go`): "`<runtime>` |
+  Chief", with two radios.
+  - A stylesheet rule (`:has(#mv-to-chief:checked)`) decides which Send shows.
+    The chief's Send carries the chief route as its `formaction`, so a submit
+    without script still reaches the door.
+  - The script adds the form's action for Enter, the placeholder, the box
+    enabled on a disabled agent composer, the mode remembered per window
+    (`localStorage`, `MirrorDraftKey(…, "chief", …)`), and the strip's live
+    refresh.
+- **The chief strip.**
+  - `GET /mirror/view/chief/log` serves the chief chat's own renderer
+    (`ui.ChatLogBody`, surface `view-strip`), narrowed to this session's
+    exchange (`viewChiefThread`).
+  - It refreshes on `chat.reply`, on a send, and every 20 s while the view is
+    in chief mode.
+  - It is a native `<details>`, scrolling within 45 dvh.
+- **`session_context {subject, messages?}`** (`internal/api/session_context.go`):
+  chief-only, read-only, on MCP, offered with the focus tools.
+  - The details: runtime, host, tmux address, window, title, status, `cwd`,
+    the dispatch and its repo/base/branch/model, `suggested_target`, and
+    `suggested_model`.
+  - The tail: up to 20 messages, each redacted then cut at 6 KiB, with
+    `ref = "m:" + sha256(role‖0x00‖raw)[:12]` and its fenced blocks listed.
+  - A 32 KiB cap that drops the oldest messages first, and the untrusted note.
+- **`sessions_overview`** now lists opencode windows (`liveSessions` reads
+  `mirrorFocusEntries`), with `runtime: "opencode"`. The stale "muster sends
+  only to Claude Code" comment is corrected.
+
+**Left for later, stated:**
+- One draft for the box in both modes (2.1 keeps one per mode).
+- On a view whose agent composer is disabled, chief mode has no mic or
+  paperclip, and the box needs the script to be enabled.
+- `about.repo` is the host's short repository name when the window is not a
+  dispatch. Resolving it to a connected repository is left to phase 2, where a
+  dispatch needs it.
+- `suggested_base` (D4) is phase 2's: it needs the host's remote check.
+- The strip's collapsed one-line state (2.3) is a native `<details>` summary.
+- The Compose chief is not offered `session_context`. Its pre-allowed tools
+  are an operator decision (`ComposeChiefAllowedMCPTools`).
+- The strip attributes a reply by position. A user row of another kind,
+  written while a view turn is still running, would cut that reply out of the
+  strip; it stays in the chief's own chat. **UNVERIFIED** against production
+  interleavings.
