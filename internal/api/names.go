@@ -125,6 +125,35 @@ func (fi focusIndex) humanMirrorName(key string) string {
 	return ""
 }
 
+// notifyName is how a NOTIFICATION names a mirrored session whose HUMAN name
+// is name (an attention item's Name: a push's title, the Asks list, the
+// attention summary; an episode's push title and "Stalled / waiting" row):
+// name alone — byte for byte what it was before the preference existed —
+// unless tmux is on, its owner's "Show tmux session in notifications"
+// (notifyTmuxOn), and target is the window's mirror.WhereTarget; then name,
+// " · ", and the window's tmux address on its host (mirror.AddressAt):
+//
+//	Billing migration · work:1 @ host-alpha
+//
+// A session with no human name is already called by its place, so name is ""
+// there and stays "" (the caller shows the place: no address twice). An agent
+// has no tmux window, so no target, and is never changed.
+//
+// 🔴 THE ONE PLACE THE ADDRESS IS ADDED. Its callers are a ledger
+// (TestTheSessionNameCallerLedger's tmuxAddressSurfaces): every surface on the
+// name ledger is either one of them or says why a notification's address does
+// not apply to it, so a new notification surface cannot skip the preference.
+func notifyName(name, target string, tmux bool) string {
+	if !tmux || name == "" {
+		return name
+	}
+	at := mirror.AddressAt(target)
+	if at == "" {
+		return name
+	}
+	return name + mirror.QualifierSep + at
+}
+
 // storedName is sub's stored name halves, the zero value for none.
 func (s *Server) storedName(ctx context.Context, sub focus.Subject) focus.Name {
 	if s.ext.Focus == nil {

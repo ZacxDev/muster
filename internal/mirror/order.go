@@ -159,7 +159,22 @@ func Where(host, session, window string, index int, label string) string {
 // keep VERBATIM (textplain.TitleKeeping) — a tmux session named "_scratch_"
 // is typed as "_scratch_", never as the "scratch" a markdown stripper reads.
 func WhereTarget(host, session, window string, index int) string {
-	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
+	return whereTargetPrefix + tmuxAddress(session, window, index) + " @ " + host
+}
+
+// whereTargetPrefix leads every WhereTarget.
+const whereTargetPrefix = "tmux "
+
+// AddressAt is WhereTarget's text without its leading "tmux ":
+// "<session>:<index> @ <host>" — what a notification that names a session by
+// its human name adds after it when its owner asked for the tmux session
+// (internal/api notifyName). "" for a text that is not a WhereTarget.
+func AddressAt(target string) string {
+	at, ok := strings.CutPrefix(target, whereTargetPrefix)
+	if !ok {
+		return ""
+	}
+	return at
 }
 
 // WhereTarget is the entry's WhereTarget.

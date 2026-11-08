@@ -295,6 +295,12 @@ no window shows now reads as its stored name and host followed by
 see; one whose host has just dropped (the hub keeps listing it briefly) is
 followed by `(host offline)`. An agent's ask is named by the agent.
 
+Where the queue calls a session by its human [name](focus.md#a-sessions-name)
+instead (its place then in the Asks row's tooltip), **Show tmux session in
+notifications** (Account → Notifications, off by default) follows the name
+with the window's tmux session and host, `Billing migration · work:1 @
+host-alpha` ([focus.md](focus.md#show-tmux-session-in-notifications)).
+
 The target is shown **verbatim**: a page or notification plains a title's
 markdown, but only the codename around the target, never the
 `tmux <session>:<index> @ <host>` part — a session named `_scratch_` is shown

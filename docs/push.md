@@ -66,6 +66,14 @@ Either part is left out when unknown, and both when neither is known. The
 notification never adds the task's description or a comment's text beyond
 what it already carried.
 
+The same section has **Show tmux session in notifications** (off unless you
+turn it on): a notification that names a mirrored session by its human name
+then adds its tmux session and host after it, `Billing migration · work:1 @
+host-alpha` ([focus.md](focus.md#show-tmux-session-in-notifications)). It is
+drawn with or without Web Push, since it names sessions on the Asks list and
+in the attention summary too; its POST is `/account/notifications/tmux`
+(`on=1|0`).
+
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and
 `/account/push/{test,preferences,{id}/remove}`.

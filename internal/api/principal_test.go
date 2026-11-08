@@ -201,6 +201,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /account/suggest",
 		// The chief's on/off switch (chief_toggle.go): the session tier.
 		"POST /account/chief",
+		// "Show tmux session in notifications" (notify_prefs.go): the session tier.
+		"POST /account/notifications/tmux",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",

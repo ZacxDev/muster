@@ -376,6 +376,11 @@ func (s *Server) episodeAsk(octx context.Context, ep sessionstate.Episode, hosts
 // mirror.WhereTarget alone, so a stop whose conversation no window held any
 // more was pushed and drawn under its raw tmux session even while its host
 // still labelled that session.
+//
+// A conversation with a human name is called by it — followed by its window's
+// tmux address when its owner turned on "Show tmux session in notifications"
+// (notifyName, over the target episodePlace finds: the window holding it now,
+// else the stored one).
 func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
@@ -388,6 +393,7 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		}
 		return "An agent", ""
 	}
+	where, target := episodePlace(ep, hosts)
 	if ep.Host != "" && ep.Key != "" {
 		// A conversation with a HUMAN name is called by it; its place is the
 		// push's to omit and the Asks page's to show. Looked up by the
@@ -395,8 +401,19 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		// session key of its own (round 1 of #505: the name was never found).
 		sub := focus.MirrorSubject(ep.Key)
 		if n := (focusIndex{sub: {Subject: sub, Name: s.storedName(octx, sub)}}).humanMirrorName(ep.Key); n != "" {
+			// Plain already, and the address is a target: kept whole.
+			n = notifyName(n, target, s.notifyTmuxOn(octx, ep.Owner))
 			return n, n
 		}
+	}
+	return where, target
+}
+
+// episodePlace is where mirrored episode ep's session is, as episodeWho names
+// a session with no human name: the words, and the part the title rule keeps
+// verbatim (its tmux target when it has one).
+func episodePlace(ep sessionstate.Episode, hosts []mirror.HostView) (where, keep string) {
+	if ep.Host != "" && ep.Key != "" {
 		if _, where, keep, ok := sessionKeyWhere(hosts, ep.Host, ep.Key); ok {
 			return where, keep
 		}

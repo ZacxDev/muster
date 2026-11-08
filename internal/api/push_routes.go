@@ -339,12 +339,15 @@ func (s *Server) clearPushDeviceCookie(w http.ResponseWriter) {
 }
 
 // accountNotificationsSection renders the account page's Notifications
-// section: the caller's devices (row-level security), "send test", remove.
+// section: "Show tmux session in notifications" (notify_prefs.go — it names
+// sessions on the Asks list too, so it is drawn with or without Web Push), then
+// the caller's devices (row-level security), "send test", remove.
 func (s *Server) accountNotificationsSection(r *http.Request) string {
 	var b strings.Builder
 	b.WriteString(`<section id="notifications" data-testid="push-devices" class="flex flex-col gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h2 class="text-base font-semibold text-fg">Notifications</h2>
 `)
+	b.WriteString(s.accountNotifyTmuxForm(r))
 	if !s.pushServed() {
 		b.WriteString(`<p class="text-sm text-fg2">` + html.EscapeString(pushUnconfigured) + `</p></section>`)
 		return b.String()

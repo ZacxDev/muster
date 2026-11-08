@@ -665,6 +665,8 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
 	// The chief's per-user on/off switch on the Account page (chief_toggle.go).
 	mux.HandleFunc("POST "+accountChiefPath, s.requireOperatorWrite(s.handleAccountChief))
+	// "Show tmux session in notifications" on the Account page (notify_prefs.go).
+	mux.HandleFunc("POST "+accountNotifyTmuxPath, s.requireOperatorWrite(s.handleAccountNotifyTmux))
 
 	s.registerNotesRoutes(mux)
 	s.registerAgentRoutes(mux)

@@ -147,6 +147,35 @@ The chief keeps them where it needs an address: every row's `id`
 **body** still says where it waits. A session with no human name yet is
 called by its technical id everywhere, as before.
 
+### Show tmux session in notifications
+
+A per-user switch, **Account → Notifications → Show tmux session in
+notifications**, off for every user until they turn it on (stored in
+`notify_preferences`, migration 0094; no row is off). On, a notification that
+names a mirrored session by its human name adds the window's tmux session,
+window index and host after it:
+
+    Billing migration · work:1 @ host-alpha
+
+It applies wherever the attention queue names a session by its human name —
+the push title of a held question or a chief notice, the Asks list row, the
+attention summary's `title` and `attention_list`'s `name` — and to a stalled
+or waiting session's push title ("… needs you", "… is stalled") and its
+"Stalled / waiting" row. (A waiting window's own push keeps its fixed title
+and already says where it waits in its body.) The address
+is the window that holds the conversation when the text is made (for a stop
+whose conversation no window holds now, the place stored on the stop), shown
+verbatim. It is added in one place (`notifyName`, `internal/api/names.go`);
+`TestEveryNotificationSurfaceAsksForTheTmuxAddress` classifies every surface
+on the name ledger as one that calls it or one it does not apply to.
+
+Nothing else changes: a session with no human name is already called by its
+place (no address twice); an agent has no tmux window and keeps its name; a
+mirrored session's own ask already names its window's place; a session no
+window shows now gets no address (muster names no target it cannot see). Off
+— or with no database, or when the switch cannot be read — every text is byte
+for byte what it was before the switch existed.
+
 ### The name bar
 
 The auto name freezes from the first focus that passes this bar, in the same

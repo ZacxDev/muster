@@ -35,7 +35,7 @@ var sessionNameCallers = []string{
 	"agents.go Server.handleAgentDetail",      // the agent page's header and <title>
 	"agents.go Server.handleAgentName",        // a Save of the unchanged prefilled name is not a rename
 	"agents.go Server.handleNotifications",    // the notifications panel's unread rows
-	"attention.go Server.withNamesFrom",           // every attention item's name: the Asks list, pushes, attention_list, the summary
+	"attention.go Server.withNamesFrom",       // every attention item's name: the Asks list, pushes, attention_list, the summary
 	"chat_log_live.go Server.dispatchCardFor",
 	"chief_nudge.go Server.stallFacts",                           // the chief's stall prompt (and a notice's stored "agent <name>")                    // a dispatch card in the chief's chat
 	"connector_decide_tools.go Server.toolConnectorRequestsList", // connector requests the chief decides
@@ -56,6 +56,49 @@ var sessionNameCallers = []string{
 	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
 	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
+}
+
+// tmuxAddressSurfaces are the ledgered surfaces that name a mirrored session
+// in a NOTIFICATION — a push, the Asks list, the attention summary — and so
+// call notifyName, the one place "Show tmux session in notifications" adds the
+// window's tmux address (notify_prefs.go).
+var tmuxAddressSurfaces = []string{
+	"attention.go Server.withNamesFrom", // every attention item's Name: its push title, the Asks list, the summary (and attention_list)
+	"session_push.go Server.episodeWho", // a stalled / waiting session's push title and its "Stalled / waiting" row
+}
+
+// noTmuxAddress is every OTHER ledgered surface, with why the preference does
+// not apply to it.
+//
+// 🔴 TOGETHER WITH tmuxAddressSurfaces IT IS THE WHOLE LEDGER: a surface added
+// to sessionNameCallers must be put in one or the other, so a new notification
+// surface is a decision, never a quiet bypass of the preference.
+var noTmuxAddress = map[string]string{
+	"agents.go Server.activeNotificationRows":                    "notifications panel: agents only (no tmux window)",
+	"agents.go Server.handleNotifications":                       "notifications panel: agents only (no tmux window)",
+	"agent_outcome.go Server.agentLabel":                         "an agent outcome's push: an agent (no tmux window)",
+	"agents.go Server.cardViewIndexed":                           "navigation, not a notification",
+	"agents.go Server.handleAgentDetail":                         "a page header, not a notification",
+	"agents.go Server.handleAgentName":                           "the rename form",
+	"chat_log_live.go Server.dispatchCardFor":                    "a chat card, not a notification",
+	"chief_nudge.go Server.stallFacts":                           "the chief's prompt (it is given the place itself)",
+	"connector_decide_tools.go Server.toolConnectorRequestsList": "a chief tool",
+	"fleet_report.go Server.collectFleet":                        "a report, not a notification",
+	"focus_tools.go Server.toolFleetList":                        "a chief tool",
+	"focus_tools.go Server.toolFocusSearch":                      "a chief tool",
+	"mirror.go Server.handleMirrorTerminalPage":                  "a page header, not a notification",
+	"mirror.go Server.mirrorCards":                               "navigation, not a notification",
+	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",
+	"mirror_view.go Server.handleMirrorViewPage":                 "a page header, not a notification",
+	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",
+	"pr_routes.go Server.prAuthorHint":                           "a plugin message hint",
+	"session_names.go Server.mirrorNameUnchanged":                "the rename form",
+	"session_routes.go Server.resolveRouteTarget":                "a chief tool",
+	"sessions_overview.go Server.repoHints":                      "a chief hint",
+	"sessions_overview.go Server.liveSessions":                   "a chief tool",
+	"task_actions.go Server.chiefTaskActions":                    "a chief tool",
+	"task_routing.go Server.handTaskToChief":                     "a task event for plugins",
+	"terminal.go Server.handleAgentTerminalPage":                 "a page header, not a notification",
 }
 
 // nameAdapterSelectors are names.go's functions a surface calls to name a
@@ -132,6 +175,56 @@ func TestTheSessionNameCallerLedger(t *testing.T) {
 	}
 	if got, want := nameLedgerKeys(adapterCallers), nameLedgerSorted(sessionNameCallers); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("functions that name a session through an adapter:\n  got  %v\n  want %v\nA new surface goes on the ledger with what it is; a dropped one is removed with why.", got, want)
+	}
+}
+
+// TestEveryNotificationSurfaceAsksForTheTmuxAddress pins the seam between
+// "Show tmux session in notifications" and the surfaces: (1) every function on
+// the name ledger is classified — a tmuxAddressSurfaces entry or a
+// noTmuxAddress one with its reason, never both; (2) in this package, exactly
+// the tmuxAddressSurfaces call notifyName. A positive control proves the walk
+// can see a call: withNamesFrom IS found calling it.
+func TestEveryNotificationSurfaceAsksForTheTmuxAddress(t *testing.T) {
+	classified := map[string]bool{}
+	for _, f := range tmuxAddressSurfaces {
+		if _, both := noTmuxAddress[f]; both {
+			t.Errorf("%s is both a tmux-address surface and not one", f)
+		}
+		classified[f] = true
+	}
+	for f, why := range noTmuxAddress {
+		if why == "" {
+			t.Errorf("%s: no reason given for leaving the address out", f)
+		}
+		classified[f] = true
+	}
+	if got, want := nameLedgerKeys(classified), nameLedgerSorted(sessionNameCallers); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("classified surfaces:\n  got  %v\n  want %v\nEvery surface on the name ledger goes in tmuxAddressSurfaces (it names a session in a notification: call notifyName) or noTmuxAddress (with why not).", got, want)
+	}
+
+	callers := map[string]bool{}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// names.go is walked too: a name helper there that called notifyName
+	// would hand the address to every surface that calls the helper, unledgered.
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		for _, fn := range nameLedgerCallers(t, path, func(c *ast.CallExpr) bool {
+			id, ok := c.Fun.(*ast.Ident)
+			return ok && id.Name == "notifyName"
+		}) {
+			callers[path+" "+fn] = true
+		}
+	}
+	if !callers["attention.go Server.withNamesFrom"] {
+		t.Fatalf("positive control FAILED: the walk did not find withNamesFrom calling notifyName (found %v)", nameLedgerKeys(callers))
+	}
+	if got, want := nameLedgerKeys(callers), nameLedgerSorted(tmuxAddressSurfaces); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("functions that call notifyName:\n  got  %v\n  want %v\nA notification surface names a mirrored session through notifyName, and is a tmuxAddressSurfaces entry.", got, want)
 	}
 }
 
