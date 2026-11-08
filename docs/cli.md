@@ -45,9 +45,13 @@ browser at `/account/tokens`; it acts as you ([auth.md](auth.md)). Tokens cannot
 be minted from the CLI. `muster token ls` and `muster token revoke <id>` manage
 them, and `muster whoami` says who a credential acts as.
 
-`agent create` is the one exception: it reads `MUSTER_AGENT_CREATE_TOKEN` (the
-environment only), a token of scope **Create agents** (`agent-create`), and
-never sends `MUSTER_TOKEN`. The server refuses every other token on
+`agent create` is the one exception: it presents `MUSTER_AGENT_CREATE_TOKEN`, a
+token of scope **Create agents** (`agent-create`), and never sends
+`MUSTER_TOKEN`. It is read like the token: from the env file, then the
+environment. With more than one tenant the pair rule below covers it too: it
+comes from the selected tenant's file, or from the environment only together
+with an environment `MUSTER_API_URL` + `MUSTER_TOKEN` pair; an exported one
+beside a file's URL or a flag pair is refused and nothing is sent. The server refuses every other token on
 `POST /api/agents`, a full-access one included, so the ordinary credential
 cannot create agents.
 

@@ -457,12 +457,15 @@ first turn at all (where creating it stopped, then Start, still works).
   `start: true`, a 409 with the reason). There are no caps or budget: it is you
   acting with your own credential, not the chief.
 - **The answer** is `201` with `agent` (as `GET /api/agents` shows it),
-  `started` and `href` (its page).
+  `started` and `href` (its page). A body over **1 MiB** is a `413` naming the
+  limit.
 
 `muster agent create` wraps it, with flags named after the fields
 (`--kind`, `--repo`, `--repo-branch`, `--model`, `--prompt`, `--note-id`,
 `--cc-account`, `--cc-failover`, `--worker-pool`, and the required `--start`).
-It reads its token from `MUSTER_AGENT_CREATE_TOKEN` and never sends `MUSTER_TOKEN`:
+It reads its token from `MUSTER_AGENT_CREATE_TOKEN` (in the env file or the
+environment, under the same tenant pair rule as `MUSTER_TOKEN`:
+[cli.md](cli.md#configuration)) and never sends `MUSTER_TOKEN`:
 
 ```text
 MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --start=false --prompt "Triage the flaky upload test"

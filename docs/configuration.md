@@ -318,6 +318,7 @@ flags.
 |---|---|---|---|
 | `MUSTER_API_URL` | none | yes | The muster base URL. It has no default. |
 | `MUSTER_TOKEN` | none | yes | A personal API token (`mst_…`), or a shared machine secret. |
+| `MUSTER_AGENT_CREATE_TOKEN` | none | for `muster agent create` | A personal API token of scope **Create agents** (`agent-create`); the only token `agent create` sends. Read from the env file or the environment, under the same tenant pair rule as `MUSTER_TOKEN` ([cli.md](cli.md#configuration)). |
 | `MUSTER_TENANT` | none | no | Which tenant (muster server) to use, by name: `~/.muster/tenants/<name>.env`, or `default` for `~/.muster/muster.env`. Below `--tenant`, above `~/.muster/current`. Setting it puts the call under the pair rule ([cli.md](cli.md#several-servers-tenants)). |
 | `HOME` | the system's | no | Used to find `~/.muster/muster.env`. |
 | `CLAUDE_CODE_SESSION_ID` | none | no | Sent with task writes as the session that made them. |

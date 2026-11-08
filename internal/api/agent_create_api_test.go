@@ -231,6 +231,31 @@ func TestAnAgentCreateRequestIsCheckedBeforeTheRow(t *testing.T) {
 	}
 }
 
+// TestAnAgentCreateBodyOverTheLimitIsRefusedByName: a body over 1 MiB is a 413
+// naming the limit (not "unexpected EOF"), and creates nothing; a prompt that
+// keeps the body just under it creates the agent with the whole prompt.
+func TestAnAgentCreateBodyOverTheLimitIsRefusedByName(t *testing.T) {
+	prov := newPreflightProvisioner("")
+	store := &preflightStore{}
+	s, h := preflightServer(t, prov, store)
+	// {"prompt":"…","start":false} is 27 bytes of JSON around the prompt.
+	over := strings.Repeat("p", agentCreateMaxBody-26)
+	if rec := apiCreateAgent(t, s, h, map[string]any{"prompt": over, "start": false}); rec.Code != http.StatusRequestEntityTooLarge ||
+		createErr(t, rec) != AgentCreateTooLarge {
+		t.Fatalf("a body of %d bytes: %d %.200s; want 413 %q", agentCreateMaxBody+1, rec.Code, rec.Body, AgentCreateTooLarge)
+	}
+	if rows := store.rows(); len(rows) != 0 {
+		t.Fatalf("an oversize body created %d row(s)", len(rows))
+	}
+	under := strings.Repeat("u", agentCreateMaxBody-27)
+	if rec := apiCreateAgent(t, s, h, map[string]any{"prompt": under, "start": false}); rec.Code != http.StatusCreated {
+		t.Fatalf("a body of exactly %d bytes: %d %.200s; want 201", agentCreateMaxBody, rec.Code, rec.Body)
+	}
+	if rows := store.rows(); len(rows) != 1 || len(rows[0].PendingNote) != len(under) {
+		t.Fatalf("the at-limit prompt was not kept whole")
+	}
+}
+
 // listedTokens is mintScopeTokens with the list a test names.
 type listedTokens struct {
 	mintScopeTokens

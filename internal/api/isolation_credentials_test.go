@@ -141,13 +141,23 @@ func TestAnAgentCreateNamingAnotherUsersTaskIsNotFound(t *testing.T) {
 		tok[u.uid] = tk
 	}
 	body := `{"note_id":` + strconv.FormatInt(w.objA.task, 10) + `,"start":false}`
+	// Counted around B's request: every agent of B's, and every agent on A's
+	// task — B's request must change neither.
+	counts := func() (bAgents, onTask int) {
+		t.Helper()
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FILTER (WHERE owner_id=$1), count(*) FILTER (WHERE note_id=$2) FROM agents`,
+			w.b.uid, w.objA.task).Scan(&bAgents, &onTask); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	bBefore, n := counts()
 	rec := w.do(w.h, "POST", "/api/agents", body, cred{apiToken: tok[w.b.uid]})
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no such task") {
 		t.Fatalf("B naming A's task: %d %s; want 404 no such task", rec.Code, truncate(rec.Body.String(), 200))
 	}
-	var n int
-	if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM agents WHERE note_id=$1`, w.objA.task).Scan(&n); err != nil {
-		t.Fatal(err)
+	if bAfter, onTask := counts(); bAfter != bBefore || onTask != n {
+		t.Fatalf("🔴 B's refused request created an agent: B's agents %d -> %d, agents on A's task %d -> %d", bBefore, bAfter, n, onTask)
 	}
 	if rec := w.do(w.h, "POST", "/api/agents", body, cred{apiToken: tok[w.a.uid]}); rec.Code != http.StatusCreated {
 		t.Fatalf("CONTROL: A naming A's own task: %d %s", rec.Code, truncate(rec.Body.String(), 300))

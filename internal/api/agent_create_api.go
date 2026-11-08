@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -55,8 +54,15 @@ type agentCreateRequest struct {
 	Start      *bool  `json:"start"`
 }
 
-// agentCreateMaxBody bounds the request body. The prompt is the only free text.
-const agentCreateMaxBody = 64 << 10
+// agentCreateMaxBody bounds the request body: 1 MiB. The prompt is the only free
+// text, and it is a task's whole instructions pasted by a person, so the bound is
+// a sanity limit, not a budget (the deleted form's POST was capped only by
+// net/http's 10 MB form limit; the chief's agent_dispatch prompt is 8 KiB because
+// the chief relays it). A larger body is a 413 naming the limit.
+const agentCreateMaxBody = 1 << 20
+
+// AgentCreateTooLarge is the 413 body for a request over agentCreateMaxBody.
+const AgentCreateTooLarge = "the request body is over 1 MiB (1048576 bytes), the limit for POST /api/agents"
 
 // AgentCreateViaRefusal is the 403 body for any principal on POST /api/agents
 // that did not come through a personal token: the shared hook secret, a
@@ -76,9 +82,14 @@ func (s *Server) handleAPIAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req agentCreateRequest
-	dec := json.NewDecoder(io.LimitReader(r.Body, agentCreateMaxBody+1))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, agentCreateMaxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			s.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": AgentCreateTooLarge})
+			return
+		}
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body: " + err.Error()})
 		return
 	}

@@ -67,8 +67,9 @@ const (
 type config struct {
 	apiURL string
 	token  string
-	// createTok is MUSTER_AGENT_CREATE_TOKEN, read from the process
-	// environment only (app.api), and presented only by `agent create`.
+	// createTok is MUSTER_AGENT_CREATE_TOKEN, resolved with the URL+token pair
+	// (resolveConfig, resolvePaired) from the env file or the environment,
+	// and presented only by `agent create`.
 	createTok string
 }
 
@@ -161,6 +162,11 @@ func resolveConfig(envFilePath string, fileVals map[string]string, getenv func(s
 	set(&c.token, getenv(envToken))
 	set(&c.apiURL, flagURL)
 	set(&c.token, flagToken)
+	// The agent-create token (agent_create.go) has no flag: the file, then
+	// the environment. On this one-tenant path the sources mix, as the
+	// token's do.
+	set(&c.createTok, fileVals[envAgentCreateToken])
+	set(&c.createTok, getenv(envAgentCreateToken))
 
 	if c.apiURL == "" {
 		return config{}, failf(exitUsage,
@@ -217,6 +223,15 @@ const pairRefusal = "refused: a URL and a token override are accepted only as a 
 // MUSTER_HOOK_TOKEN is an override like MUSTER_TOKEN: it is the name agent
 // pods and hook hosts carry, and on today's resolver it beats a file's
 // MUSTER_TOKEN.
+//
+// 🔴 MUSTER_AGENT_CREATE_TOKEN (agent_create.go) IS A TOKEN TOO, AND THE SAME
+// RULE DECIDES IT, HERE (round-1 audit of #532, R1: it used to be read after
+// this function, straight from the environment, so `--tenant work` sent
+// default's exported agent-create token to work's origin). It has no flag. An
+// environment value is accepted exactly when an environment MUSTER_TOKEN is:
+// as part of an environment URL+token pair. Otherwise it comes from the
+// selected file, and only when that file also supplies the URL; an exported
+// one beside a file's URL, or beside a flag pair, is refused like a lone half.
 func resolvePaired(where string, fileVals map[string]string, getenv func(string) string, flagURL, flagToken string) (config, error) {
 	u := firstOverride(pairOverride{"--api-url", flagURL}, pairOverride{envAPIURL, getenv(envAPIURL)})
 	t := firstOverride(pairOverride{"--token", flagToken}, pairOverride{envToken, getenv(envToken)},
@@ -246,6 +261,22 @@ func resolvePaired(where string, fileVals map[string]string, getenv func(string)
 		if c.token == "" {
 			c.token = fileVals[envTokenAlias]
 		}
+	}
+	envPair := u.value != "" && t.value != "" && !u.fromFlag() && !t.fromFlag()
+	switch ct := getenv(envAgentCreateToken); {
+	case ct != "" && envPair:
+		c.createTok = ct
+	case ct != "":
+		from := "the URL comes from " + where
+		if u.value != "" {
+			from = u.name + " comes from " + u.sourceKind()
+		}
+		return config{}, failf(exitUsage,
+			"%s is set in the environment but %s: %s (an environment %s only with %s and %s), "+
+				"and no request was sent. Put it in that tenant's file instead.",
+			envAgentCreateToken, from, pairRefusal, envAgentCreateToken, envAPIURL, envToken)
+	case u.value == "":
+		c.createTok = fileVals[envAgentCreateToken]
 	}
 	if c.apiURL == "" {
 		return config{}, failf(exitUsage, "no API URL: %s sets no %s", where, envAPIURL)
