@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // agentJSON is the machine-API projection of a provisioned agent. It is the ONE
@@ -606,10 +607,23 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // NodePort many times a day. Full argument at the registration site
 // (registerAgentRoutes) and on the wrapper (requireArmedHookToken).
 //
-// ⚠ IT RUNS A TOOL-LESS TURN (askTurn), NOT chatTurn: the operator route it
-// replaces ran a plain turn, and this change re-homes a path rather than widening
-// what the agent can do while answering on it. A turn for the gateway runtime
-// beside a claude-code chief's ccd carries the chief's instructions (askTurn).
+// 🔴 A GATEWAY AGENT'S TURN HERE CARRIES ITS MUSTER TOOLS (gatewayTurn), acting
+// as the agent's OWNER (authz.ViaAgentMessage), never as this request's
+// principal — the shared hook token's is the operator's, whoever owns the agent.
+// It once ran a toolless turn (the plain turn of the operator route it
+// re-homed), so a gateway agent asked something here could not call
+// agent_report_done, attention_ask or its task tools in its answer. A
+// claude-code agent's turn stays toolless: its CLI reaches muster's tools over
+// MCP, and ccd ignores a request's tools.
+//
+// ⚠ WHAT THE TURN CARRIES IS EXACTLY WHAT THE AGENT'S OWN CHAT DOOR (chatTurn)
+// GIVES IT, deliberately — one assembly, turnTools: the system prompt
+// (AgentInstructions, which on a task names its close-out protocol; this door
+// sent none before) and AgentToolDefsFor. So a GATEWAY-KIND CHIEF (`muster chief
+// replace --kind gateway`) asked here gets its chief tool set — session routing,
+// reply drafts, answer_session_question, the gated task tool, the fleet report —
+// as in its own chat, and no worker-only tool (agent_report_done is notChief).
+// TestAMachineMessageToAGatewayChiefOffersItsChatDoorsTools pins that equality.
 //
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
@@ -669,19 +683,30 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
+	// 🔴 THE TURN IS DETACHED FROM THE REQUEST'S CANCELLATION (keeping its
+	// principal), bounded by agentTurnBudget as POST /agents/{name}/send's is
+	// (startAgentTurn). A tool turn is several requests and its tools have side
+	// effects — connector_status alone waits up to 50 s, past `chief ask`'s
+	// default 30 s timeout — so a caller that gives up must not cut the loop
+	// midway: that left the tools' effects done, no reply stored and the
+	// outcome `running`. The turn finishes, its reply is stored and its outcome
+	// recorded whether or not anyone is still waiting for the answer.
+	dctx := context.WithoutCancel(ctx)
+	turnCtx, cancel := context.WithTimeout(dctx, agentTurnBudget(a.Kind))
+	defer cancel()
 	// The one turn, in the outcome bracket (outcomeTurn): closed on every path,
 	// a panic included.
 	reply, err := func() (reply string, err error) {
-		tctx, turn := s.outcomeTurn(ctx, a)
+		tctx, turn := s.outcomeTurn(turnCtx, a)
 		defer turn.close(&reply, &err)
-		return s.ext.Gateway.Chat(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, nil)
+		return s.gatewayTurn(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, authz.ViaAgentMessage)
 	}()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return
 	}
 	if reply != "" {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		_, _ = s.ext.Agents.AddChatMessage(dctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply,
 		})
 	}

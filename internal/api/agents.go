@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -2088,11 +2089,20 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	defer s.turnSessions.begin(a.ID, sessionKey)()
 	ctx = withTurnSession(ctx, sessionKey)
 	ctx, tt := s.turnTools(ctx, a)
-	reply, err = s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
-	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
-	// 404 on request 2+ comes after the runtime answered request 1 and its tools
-	// ran; resending the message toolless there pastes it into the session twice
-	// (agents.AfterFirstRequestError).
+	return s.runTurnWithTools(ctx, a, sessionKey, text, tt, emit)
+}
+
+// runTurnWithTools sends one turn of agent a carrying tt (ChatWithTools), and
+// owns the one fallback such a turn has: a toolless Chat when the agent's image
+// predates /v1/responses. Every tool-enabled turn in this package goes through
+// it (chatTurn, gatewayTurn), so that rule is stated once.
+//
+// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
+// 404 on request 2+ comes after the runtime answered request 1 and its tools
+// ran; resending the message toolless there pastes it into the session twice
+// (agents.AfterFirstRequestError).
+func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKey, text string, tt agentkickoff.TurnTools, emit agents.StreamEmit) (string, error) {
+	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, tt.Instructions, text, tt.Tools, tt.Dispatch, emit)
 	if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
 		s.logger.Printf("agents: %s gateway lacks /v1/responses; retrying the turn WITHOUT tools "+
 			"(that runtime's image predates the endpoint, so it answers over chat-completions)", a.Name)
