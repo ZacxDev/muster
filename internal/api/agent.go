@@ -744,45 +744,81 @@ func (s *Server) turnTools(ctx context.Context, a agents.Agent) (context.Context
 }
 
 // KickoffTurnTools is agentkickoff.Config.TurnTools: a GATEWAY-kind agent's first
-// turn carries its muster tools (turnTools), as each of its chat turns does.
+// turn carries its muster tools (gatewayTurnTools), as each of its chat turns does.
+func (s *Server) KickoffTurnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools, bool) {
+	return s.gatewayTurnTools(ctx, a, authz.ViaKickoff)
+}
+
+// gatewayTurnTools is what a turn of agent a that muster starts OUTSIDE a
+// session of the owner's carries: for a GATEWAY-kind agent, its muster tools
+// (turnTools) under a context acting as its owner through via; for any other
+// agent, or a row with no owner, ok false and the turn goes out toolless.
 //
-// 🔴 THE TURN'S TOOLS RUN AS THE AGENT'S OWNER (kickoffPrincipal), NEVER AS THE
-// DELIVERER'S authz.System. Under System row-level security sees every owner's
-// rows, so an agent's tools would reach across owners; and an insert that takes
-// its owner from the principal (attention_ask, connector_request) fails outright
-// — measured: both answered an error under System and succeeded as the owner.
+// 🔴 ONE DECISION FOR EVERY SUCH DOOR: the kickoff deliverer's first turn
+// (KickoffTurnTools, authz.ViaKickoff) and the machine message door
+// (handleAPIAgentSendMessage via gatewayTurn, authz.ViaAgentMessage). Each once
+// open-coded a toolless turn of its own, so a gateway agent reached through it
+// was told to call agent_report_done or attention_ask and never offered either.
+// gateway_turn_ledger_test.go pins every call site that starts a turn.
+//
+// 🔴 THE TURN'S TOOLS RUN AS THE AGENT'S OWNER (turnPrincipal), NEVER AS THE
+// CALLER'S PRINCIPAL — the deliverer's authz.System, or the machine door's
+// operator. Under System row-level security sees every owner's rows, so an
+// agent's tools would reach across owners; and an insert that takes its owner
+// from the principal (attention_ask, connector_request) fails outright —
+// measured: both answered an error under System and succeeded as the owner.
 //
 // ⚠ NOT FOR A CLAUDE-CODE AGENT (ok false): its CLI reaches muster's tools over
 // MCP from inside its pod (MCPToolDefsFor), and ccd accepts and ignores a
 // request's instructions and tools (cmd/ccd/server.go responsesRequest), so its
-// first turn stays the toolless one it always was.
-func (s *Server) KickoffTurnTools(ctx context.Context, a agents.Agent) (context.Context, agentkickoff.TurnTools, bool) {
+// turn stays the toolless one it always was.
+func (s *Server) gatewayTurnTools(ctx context.Context, a agents.Agent, via authz.Via) (context.Context, agentkickoff.TurnTools, bool) {
 	if agents.ResolveKind(a.Kind) != agents.KindGateway {
 		return ctx, agentkickoff.TurnTools{}, false
 	}
-	pctx, ok := s.kickoffPrincipal(ctx, a)
+	pctx, ok := s.turnPrincipal(ctx, a, via)
 	if !ok {
-		s.logger.Printf("agents: %s names no owner; its first turn goes out WITHOUT tools (they act as the owner)", a.Name)
+		s.logger.Printf("agents: %s names no owner; its %s turn goes out WITHOUT tools (they act as the owner)", a.Name, via)
 		return ctx, agentkickoff.TurnTools{}, false
 	}
 	ctx, tt := s.turnTools(pctx, a)
 	return ctx, tt, true
 }
 
-// kickoffPrincipal is ctx acting as agent a's owner, through authz.ViaKickoff:
-// how a gateway agent's first turn runs its tools, so row-level security
-// confines them to that owner's rows.
+// turnVias is the closed set of principals turnPrincipal mints: one per door
+// gatewayTurnTools serves.
+var turnVias = map[authz.Via]bool{authz.ViaKickoff: true, authz.ViaAgentMessage: true}
+
+// turnPrincipal is ctx acting as agent a's owner, through via (a turnVias
+// member): how a gateway agent's turn started outside an owner's session runs
+// its tools, so row-level security confines them to that owner's rows.
 //
 // 🔴 FALSE FOR A ROW THAT NAMES NO OWNER (agentPrincipal's refusal), NEVER A
 // PANIC: authz.WithPrincipal panics on a principal with no user, and the kickoff
 // deliverer has no recover, so one such row would crash muster. The caller sends
-// that agent's first turn toolless instead.
-func (s *Server) kickoffPrincipal(ctx context.Context, a agents.Agent) (context.Context, bool) {
-	p, ok := s.agentPrincipal(ctx, a, authz.ViaKickoff)
+// that agent's turn toolless instead. False, too, for a via outside turnVias:
+// this is not a general "act as the owner" door.
+func (s *Server) turnPrincipal(ctx context.Context, a agents.Agent, via authz.Via) (context.Context, bool) {
+	if !turnVias[via] {
+		return ctx, false
+	}
+	p, ok := s.agentPrincipal(ctx, a, via)
 	if !ok {
 		return ctx, false
 	}
 	return authz.WithPrincipal(ctx, p), true
+}
+
+// gatewayTurn runs one turn of agent a that muster starts outside a session of
+// the owner's (the machine message door): with its muster tools when
+// gatewayTurnTools answers ok for it (runTurnWithTools, which owns the toolless
+// fallback for an image without /v1/responses), else the toolless Chat.
+func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, text string, via authz.Via) (string, error) {
+	tctx, tt, ok := s.gatewayTurnTools(withTurnSession(ctx, sessionKey), a, via)
+	if !ok {
+		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, nil)
+	}
+	return s.runTurnWithTools(tctx, a, sessionKey, text, tt, nil)
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls

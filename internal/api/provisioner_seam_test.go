@@ -162,9 +162,9 @@ var provisionerDeps = []provisionerDep{
 			"POST /api/jobs",
 		},
 		callers: []string{
-			"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from runUserTurn (handleAgentWS, handleAgentSend)
-			"(*Server).handleAPIAgentSendMessage", // Chat (POST /api/agents/{name}/messages)
-			"(*Server).runJobTurn",                // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
+			"(*Server).gatewayTurn",      // Chat (or runTurnWithTools); reached only from handleAPIAgentSendMessage (POST /api/agents/{name}/messages)
+			"(*Server).runJobTurn",       // Chat; reached from runJob, started only by handleJobCreate (POST /api/jobs)
+			"(*Server).runTurnWithTools", // ChatWithTools + Chat; reached from chatTurn (runUserTurn: handleAgentWS, handleAgentSend) and gatewayTurn
 		},
 	},
 }

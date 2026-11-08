@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
 // agentJSON is the machine-API projection of a provisioned agent. It is the ONE
@@ -606,10 +607,14 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // NodePort many times a day. Full argument at the registration site
 // (registerAgentRoutes) and on the wrapper (requireArmedHookToken).
 //
-// ⚠ IT RUNS A TOOL-LESS TURN (askTurn), NOT chatTurn: the operator route it
-// replaces ran a plain turn, and this change re-homes a path rather than widening
-// what the agent can do while answering on it. A turn for the gateway runtime
-// beside a claude-code chief's ccd carries the chief's instructions (askTurn).
+// 🔴 A GATEWAY AGENT'S TURN HERE CARRIES ITS MUSTER TOOLS (gatewayTurn), acting
+// as the agent's OWNER (authz.ViaAgentMessage), never as this request's
+// principal — the shared hook token's is the operator's, whoever owns the agent.
+// It once ran a toolless turn (the plain turn of the operator route it
+// re-homed), so a gateway agent asked something here could not call
+// agent_report_done, attention_ask or its task tools in its answer. A
+// claude-code agent's turn stays toolless: its CLI reaches muster's tools over
+// MCP, and ccd ignores a request's tools.
 //
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
@@ -674,7 +679,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	reply, err := func() (reply string, err error) {
 		tctx, turn := s.outcomeTurn(ctx, a)
 		defer turn.close(&reply, &err)
-		return s.ext.Gateway.Chat(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, nil)
+		return s.gatewayTurn(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, authz.ViaAgentMessage)
 	}()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
