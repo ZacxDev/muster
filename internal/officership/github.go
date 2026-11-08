@@ -172,9 +172,9 @@ type GitHub interface {
 	// OfficerPRs is every pull request login opened in this repository
 	// (GitHub's pulls list, every page, newest created first, kept when its
 	// author is login), in state "open", "closed" or "all", with its Body and
-	// head. The pulls list is read whole, so more than maxPages pages of the
-	// repository's pull requests in state (anyone's) is an error, never a
-	// truncated answer.
+	// head. For the App's own login the read stops at the App's creation;
+	// otherwise the list is read whole. More than maxPages pages read is an
+	// error, never a truncated answer.
 	OfficerPRs(ctx context.Context, login, state string) ([]PR, error)
 	// DeleteBranch deletes refs/heads/<branch> (the draft gate, after it
 	// closed a pull request whose branch holds a refused change).
@@ -213,7 +213,8 @@ type REST struct {
 	// Slug reads the App's slug (GET /app, as the App).
 	Slug func(ctx context.Context) (string, error)
 	// Created reads when the App was created (GET /app's created_at, as the
-	// App).
+	// App). OfficerPRs stops reading the App's own pull requests there; nil
+	// reads the whole list.
 	Created func(ctx context.Context) (time.Time, error)
 	HTTP    *http.Client
 }
@@ -887,12 +888,35 @@ func (g *REST) PRsForBranch(ctx context.Context, branch, state string) ([]PR, er
 // OfficerPRs implements GitHub. It reads the pulls list, never the issues
 // list: an officer App's token carries Pull requests but no Issues
 // permission, so GitHub answers the issues list 403 for it. The pulls list
-// has no author filter, so every pull request of the repository in state is
-// read (newest created first) and only login's are kept, compared
-// case-insensitively.
+// has no author filter, so it is read newest created first and only login's
+// pull requests are kept, compared case-insensitively.
+//
+// 🔴 When login is this App's own bot (Slug) and Created is set, the read
+// stops after the first page that reaches back past the App's creation: the
+// App's bot cannot have opened a pull request before the App existed, so
+// every one of its pull requests is on that page or an earlier one. The cost
+// is then the repository's pull requests since the App was created, not its
+// whole history. Any other login reads the whole list. A list that is not
+// newest-created first is an error (the stop would be a guess), and so is an
+// unreadable slug or creation time, or (when stopping) a listed pull request
+// without a created_at. A pull request created at exactly the App's creation
+// time does not stop the read; the next page is read too.
 func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error) {
+	var since time.Time
+	if g.Created != nil && g.Slug != nil {
+		slug, err := g.Slug(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(login, BotLogin(slug)) {
+			if since, err = g.Created(ctx); err != nil {
+				return nil, err
+			}
+		}
+	}
 	q := url.Values{"state": {state}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
 	var out []PR
+	var prev time.Time
 	for page := 1; page <= maxPages; page++ {
 		q.Set("page", strconv.Itoa(page))
 		var batch []restPR
@@ -900,11 +924,22 @@ func (g *REST) OfficerPRs(ctx context.Context, login, state string) ([]PR, error
 			return nil, err
 		}
 		for _, r := range batch {
+			if !since.IsZero() && r.CreatedAt.IsZero() {
+				// A missing created_at would read as older than the App and
+				// stop the read early, and would skip the order check below.
+				return nil, fmt.Errorf("GitHub's pulls list for %s carried #%d without a created_at: cannot vouch for %s's pull requests",
+					g.Repo, r.Number, login)
+			}
+			if !prev.IsZero() && r.CreatedAt.After(prev) {
+				return nil, fmt.Errorf("GitHub's pulls list for %s is not newest created first (#%d is newer than the one before it): cannot vouch for %s's pull requests",
+					g.Repo, r.Number, login)
+			}
+			prev = r.CreatedAt
 			if strings.EqualFold(r.User.Login, login) {
 				out = append(out, r.pr())
 			}
 		}
-		if len(batch) < 100 {
+		if len(batch) < 100 || (!since.IsZero() && batch[len(batch)-1].CreatedAt.Before(since)) {
 			return out, nil
 		}
 	}

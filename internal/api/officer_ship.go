@@ -71,6 +71,16 @@ func (h officerHQ) Preflight(ctx context.Context) (officers.Preflight, error) {
 	return h.c.Preflight(ctx)
 }
 
+// shipREST is the REST client the gates use for one ship repository, as
+// officer App app. Slug and Created are both wired: without Created,
+// OfficerPRs reads the App's pull requests over the whole pulls list and
+// refuses any repository past maxPages pages, however few are the App's.
+func shipREST(app *githubapp.App, repo string) *officership.REST {
+	return &officership.REST{Base: strings.TrimRight(github.APIBaseURL(), "/"), Repo: repo,
+		Token: func(ctx context.Context) (string, error) { return app.RepoToken(ctx, repo) },
+		Slug:  app.Slug, Created: app.CreatedAt, HTTP: &http.Client{Timeout: officers.DefaultHQTimeout * 2}}
+}
+
 // shipGitHubFor builds the GitHub side of officer o's ship runtime: the App,
 // the push gate's credential, and the REST client the gates use. The test
 // override (OfficersConfig.ShipGitHub) replaces the REST side and the
@@ -117,10 +127,7 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		}
 		cred, reject = app.Credential, app.Rejected
 		for _, r := range sp.RepoList(o.Repo) {
-			repo := r.Repo
-			ghFor[strings.ToLower(repo)] = &officership.REST{Base: strings.TrimRight(github.APIBaseURL(), "/"), Repo: repo,
-				Token: func(ctx context.Context) (string, error) { return app.RepoToken(ctx, repo) },
-				Slug:  app.Slug, HTTP: &http.Client{Timeout: officers.DefaultHQTimeout * 2}}
+			ghFor[strings.ToLower(r.Repo)] = shipREST(app, r.Repo)
 		}
 		gh = ghFor[strings.ToLower(o.Repo)]
 	}

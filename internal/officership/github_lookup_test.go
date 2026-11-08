@@ -168,6 +168,7 @@ func TestOfficerPRsStopsAtTheAppsCreation(t *testing.T) {
 	ours := map[int]bool{5: true, 120: true, 149: true}
 	var pages atomic.Int32
 	var ascending atomic.Bool
+	var undated atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/example-org/example-infra/pulls" {
 			t.Errorf("asked %s?%s", r.URL.Path, r.URL.RawQuery)
@@ -186,8 +187,12 @@ func TestOfficerPRsStopsAtTheAppsCreation(t *testing.T) {
 			if ascending.Load() && page == 1 && k == 10 {
 				when = at(0).Add(time.Hour) // newer than the entry before it
 			}
-			out = append(out, map[string]any{"number": 50000 - k, "state": "closed", "created_at": when.Format(time.RFC3339),
-				"user": map[string]any{"login": author, "type": "Bot"}, "head": map[string]any{"ref": fmt.Sprintf("h%d", k)}})
+			pr := map[string]any{"number": 50000 - k, "state": "closed", "created_at": when.Format(time.RFC3339),
+				"user": map[string]any{"login": author, "type": "Bot"}, "head": map[string]any{"ref": fmt.Sprintf("h%d", k)}}
+			if undated.Load() && k == 99 {
+				delete(pr, "created_at") // page 1's last entry: would read as older than the App
+			}
+			out = append(out, pr)
 		}
 		_ = json.NewEncoder(w).Encode(out)
 	}))
@@ -222,6 +227,13 @@ func TestOfficerPRsStopsAtTheAppsCreation(t *testing.T) {
 		!strings.Contains(err.Error(), "fixture: GET /app failed") {
 		t.Fatalf("creation unreadable: err = %v, want that error", err)
 	}
+	// A listed pull request without a created_at: an error, never a stop
+	// (a zero time reads as older than the App, and page 1 would be the last).
+	undated.Store(true)
+	if _, err := rest(nil).OfficerPRs(context.Background(), login, "all"); err == nil || !strings.Contains(err.Error(), "without a created_at") {
+		t.Fatalf("undated entry: err = %v, want a refusal naming it", err)
+	}
+	undated.Store(false)
 	// Not newest-created first: an error, never a stop on a guess.
 	ascending.Store(true)
 	if _, err := rest(nil).OfficerPRs(context.Background(), login, "all"); err == nil || !strings.Contains(err.Error(), "newest") {
