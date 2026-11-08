@@ -227,7 +227,9 @@ credential is shown to the app once. Only its sha256 is stored.
 - **A device credential cannot mint another.** Only a browser session can ask
   for a pairing code.
 - **It is confined to `/api/device/*`.** Every other route refuses it, and the
-  device routes refuse every other credential, a session cookie included.
+  device routes refuse every other credential, a session cookie included. Two
+  device routes take no credential at all: `POST /api/device/pair` (the code
+  is the authority) and `GET /api/device/web` (configuration only, below).
 - **Which listener.** In gotrue mode the phone reaches muster through the public
   edge, so the device routes are served on the browser listener as well. The
   shared hook and service secrets stay refused there.
@@ -284,6 +286,7 @@ The device routes:
 
 | route | what it does |
 |---|---|
+| `GET /api/device/web` | **Open: no credential.** The [sign-in origins](#sign-in-origins-for-a-single-sign-on-proxy), as `{"sso_origins": ["https://…", …]}` (`[]` when none are set), with `Cache-Control: no-store`. |
 | `GET /api/device/config` | The server version; push (whether it is served, the VAPID public key the app registers with, and the operator's push hosts, for the app's pairing check); whether PIN keys are allowed; and the feature switches (`push`; `actions`, true where the attention queue is served and the signed ask actions with it; `bubbles` and `state`, false until their phases ship). |
 | `POST /api/device/challenge` | A one-time challenge (2 minutes) for one signed action, bound to the action, its target and the sha256 of the exact text it carries. The phone's step-up key signs the returned `message`. Refused to a phone with no step-up key. |
 | `POST /api/device/actions/attention/asks/{id}/answer` | Answers an ask with `{nonce, signature, answer}` — the same answer as the Attention page's, recorded only when the signature verifies over the challenge. Audited as `device.action` once it has run, with its outcome (the ask's new status, or the refusal's code). |
@@ -294,6 +297,61 @@ The device routes:
 
 The signed actions' wire contract (the message format, the signature, the
 refusal codes) is in [design/android.md](design/android.md#the-signed-ask-actions-as-built).
+
+### Sign-in origins for a single sign-on proxy
+
+An option for deployments behind a single sign-on proxy: a gate at the edge
+that answers muster's first page with a redirect to an identity provider. The
+Android app shows muster in a WebView and opens every other origin in the
+browser, so without this the sign-in would run in the browser, its cookies
+would land there, and the app would never reach muster.
+
+`MUSTER_ANDROID_SSO_ORIGINS` ([configuration.md](configuration.md)) lists the
+origins that sign-in passes through. muster serves them at
+`GET /api/device/web`:
+
+```json
+{"sso_origins": ["https://sso.example.com", "https://idp.example.com"]}
+```
+
+- **No credential.** The app reads the list before the first sign-in, and so
+  before pairing. Your proxy must therefore let `/api/device/` through without
+  its own sign-in, which the device routes need anyway. Let **only**
+  `/api/device/` through: everything else stays behind the proxy's sign-in.
+- **Keep `/manifest.webmanifest` behind the sign-in.** The app checks whether
+  the proxy's session is still alive by fetching that file without following
+  redirects: muster serves it with no session of its own, so only the proxy
+  can answer it with a redirect or a 401, and that answer is what sends the
+  page back to sign-in. A proxy that lets the file through always answers 200,
+  and an expired session then leaves the page stalled with no sign-in.
+- **Only the list.** The answer holds nothing else and nothing per-user, and it
+  is sent with `Cache-Control: no-store`, so a change reaches the phone the
+  next time it opens muster.
+- **A page load, nothing more.** The app lets those origins load in this
+  server's WebView, in its own profile. Its bridge, document-start scripts,
+  microphone and upload routes stay on muster's own origin.
+- **List every origin the sign-in visits in the WebView**, in order: the
+  proxy's sign-in host if it differs from muster's, any sign-in hub it sends
+  to, and the identity provider's own pages. An origin left out opens in the
+  browser, and the sign-in does not come back to the app.
+- **Listing an identity provider's origin moves every link to it into the
+  app's WebView**, not only the sign-in: a link on any muster page to that
+  origin (a repository, a profile) then opens inside the app instead of the
+  browser. List only the providers your sign-in needs, ideally one.
+- **Not every identity provider allows a WebView.** Some refuse sign-in from an
+  embedded WebView by policy; pick one that allows it.
+
+The app's side, including what a sign-in origin may not do (no file picker, no
+passkeys, no bridge), is in the muster-android README, section
+[A server behind a sign-in gate](https://github.com/ZacxDev/muster-android#a-server-behind-a-sign-in-gate).
+
+Each entry is an exact `https` origin: no path, query, fragment, user info or
+wildcard, and at most 8. Its host is a DNS name whose last label contains a
+letter, a dotted-quad IPv4 address, or a bracketed IPv6 address. A host a
+browser would rewrite is refused: an IPv4-mapped IPv6 address
+(`[::ffff:1.2.3.4]`) or a name that looks numeric (`127.1`, `0x7f.0.0.1`,
+`1.2.3.4.5`, or any label that is all digits or `0x` hex). A malformed value stops the server from starting.
+Unset, the route answers `{"sso_origins": []}` and the app behaves as before.
 
 Two endpoints help with personal tokens:
 

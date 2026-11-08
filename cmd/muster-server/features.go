@@ -176,7 +176,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Android, Name: "Android app passkeys",
 			Description: "Lets the Android app use this site's passkeys.",
 			Enable:      []features.Var{v(envAndroidPackage, "package name"), v(envAndroidCertSHA256, "signing-certificate fingerprints")},
-			Settings:    []string{envAndroidAllowPINKeys}},
+			Settings:    []string{envAndroidAllowPINKeys, envAndroidSSOOrigins}},
 		{ID: features.Telemetry, Name: "Browser telemetry",
 			Description: "Grafana Faro real-user monitoring from the web UI.",
 			Enable:      []features.Var{v(envFaroUpstream, "Faro receiver collect URL")},

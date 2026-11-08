@@ -145,6 +145,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Devices:         principalDevices{},
 		AllowPINKeys:    true,
 		AssetLinks:      []byte(`[]`),
+		SSOOrigins:      []string{"https://auth.example.test"},
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
 		JobWorkspace:    stubJobWorkspace{},
