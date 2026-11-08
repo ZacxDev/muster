@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "1e5c82cceaf0d29d530654505ffbf1f851b96b42336509d7a4ac08555524e0bc",
+			want: "a6d8c7025e9f0fc047784c3328c732965125400b1362b23f61c21dff2e86bd62",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "e5f7dd6916ee600da54875bc7e8c06cf5a778b478746fb17d5cc493735eef2d6",
+			want: "2ccaa1caf6629825e3133ef77f2b62bf6b3721fad82f139f2a58198600f2a0b2",
 			min:  1000,
 		},
 		{
@@ -408,12 +408,6 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 			text: chiefAskOwnerSectionClaudeCode,
 			want: "9846f06486aae1cd2a231949f1b0f8701746a7a448798cc416941b88d5478f2b",
 			min:  400,
-		},
-		{
-			name: "chiefOwnerLanguage",
-			text: chiefOwnerLanguage,
-			want: "fd297f07cdd33531139af36f401382e634157f0be86f4424677c4850da6fef20",
-			min:  60,
 		},
 		{
 			name: "chiefHQSectionClaudeCode",
@@ -457,62 +451,62 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "configured",
 			got:  ChiefInstructions(true, false),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefCairnSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection,
 		},
 		{
 			name: "unconfigured",
 			got:  ChiefInstructions(false, false),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection,
 		},
 		{
 			name: "configured, plugins on",
 			got:  ChiefInstructions(true, true),
-			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefCairnSection + "\n" + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefAskOwnerSection + chiefCairnSection + "\n" + chiefPluginSection,
 		},
 		{
 			name: "unconfigured, plugins on",
 			got:  ChiefInstructions(false, true),
-			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefOwnerLanguage + chiefPluginSection,
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSection + chiefPluginSection,
 		},
 		{
 			name: "claude-code",
 			got:  ChiefInstructionsClaudeCode(false, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefHQSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins on",
 			got:  ChiefInstructionsClaudeCode(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode,
 		},
 		{
 			name: "claude-code, routing on",
 			got:  ChiefInstructionsClaudeCode(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "claude-code, plugins and routing on",
 			got:  ChiefInstructionsClaudeCode(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefHQSectionClaudeCode + chiefPluginSectionClaudeCode + "\n" + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "compose, plugins off, routing off",
 			got:  ChiefInstructionsCompose(false, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefComposeToolsSection(ComposeChiefTools(false)),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)),
 		},
 		{
 			name: "compose, plugins off, routing on",
 			got:  ChiefInstructionsCompose(false, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 		{
 			name: "compose, plugins on, routing off",
 			got:  ChiefInstructionsCompose(true, false),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(false)) + chiefComposePluginSection(ComposeChiefTools(false)),
 		},
 		{
 			name: "compose, plugins on, routing on",
 			got:  ChiefInstructionsCompose(true, true),
-			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefOwnerLanguage + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
+			want: chiefIdentityClaudeCode + chiefDurableSurfacesWithoutCairn + chiefLiveReads + chiefAskOwnerSectionClaudeCode + chiefComposeToolsSection(ComposeChiefTools(true)) + chiefComposePluginSection(ComposeChiefTools(true)) + chiefRoutingSectionClaudeCode,
 		},
 	} {
 		if c.got != c.want {
