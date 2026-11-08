@@ -219,6 +219,9 @@ type Server struct {
 	// TaskReadOff makes the task read route answer 403 task_read_off (the
 	// officer's type has no task_read), as civ-hq's officer task route does.
 	TaskReadOff bool
+	// TaskRoutesAbsent makes the task routes answer as an HQ without them
+	// does: its router's catch-all 404 not_found "no such route".
+	TaskRoutesAbsent bool
 }
 
 // RefuseCompletes makes every complete answer status {error, code} (status 0:
@@ -804,6 +807,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case (len(parts) == 2 || len(parts) == 3) && parts[1] == "tasks" && r.Method == http.MethodGet:
 		// civ-hq's officer task route (task-reconciler plan P20): a fixed list
 		// row, or one task; "private-1" stands for a private task (404).
+		if s.TaskRoutesAbsent {
+			s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+			return
+		}
 		if s.TaskReadOff {
 			s.write(w, http.StatusForbidden, map[string]any{"error": "the officer's type does not read tasks", "code": "task_read_off"})
 			return
@@ -813,7 +820,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if parts[2] == "private-1" {
-			s.write(w, http.StatusNotFound, map[string]any{"error": "no such task", "code": "not_found"})
+			s.write(w, http.StatusNotFound, map[string]any{"error": "no public task private-1", "code": "task_not_visible"})
 			return
 		}
 		s.write(w, http.StatusOK, map[string]any{"task": map[string]any{"id": parts[2]}, "comments": []any{}, "statuses": []any{"to do", "complete"}, "done_statuses": []any{"complete"}})

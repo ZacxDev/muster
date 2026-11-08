@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -25,10 +26,21 @@ import (
 //	GET /officers/{id}/tasks/{task_id}
 //	    {task, comments: [{id, author, body, created}], statuses, done_statuses}
 //
-// HQ never returns a private task (404 not_found, as for an absent one), and
-// refuses a type without task_read (403 task_read_off). Both are 4xx, so they
-// reach the instance as final refusals (HQError) and are never retried. A 429
-// rate_limited is HQ's per-officer limit, shared with the obs route.
+// HQ never returns a private task (404 task_not_visible, as for an absent
+// one), and refuses a type without task_read (403 task_read_off). Both are
+// 4xx, so they reach the instance as final refusals (HQError) and are never
+// retried. A 429 rate_limited is HQ's per-officer limit, shared with the obs
+// route.
+//
+// WHO MAY READ: muster offers these tools by officer TYPE NAME
+// (task-reconciler, ToolOffered); HQ enforces the type POLICY task_read
+// (403 task_read_off). Neither stands in for the other.
+//
+// 🔴 A 404 THAT IS NOT task_not_visible IS NOT A MISSING TASK. An HQ older
+// than the task routes answers them with its router's catch-all 404
+// not_found ("no such route"); read as "absent" it would make every task look
+// gone when muster is deployed before HQ. The client turns any such 404 into
+// *TaskRouteUnavailableError (task_route_unavailable).
 //
 // 🔴 MUSTER BUILDS A URL HERE, SO IT DECODES STRICTLY. The obs tools pass
 // their JSON body to HQ byte for byte and HQ's decoder refuses an unknown
@@ -131,13 +143,39 @@ func TaskGetID(raw []byte) (string, error) {
 	return id, nil
 }
 
+// TaskNotVisibleCode is HQ's 404 code for a task that is absent or private.
+const TaskNotVisibleCode = "task_not_visible"
+
+// TaskRouteUnavailableCode names the refusal of a 404 that is NOT
+// TaskNotVisibleCode: this HQ has no task route.
+const TaskRouteUnavailableCode = "task_route_unavailable"
+
+// TaskRouteUnavailableError: HQ answered the task route 404 without
+// TaskNotVisibleCode (an HQ older than the route). Final: retrying will not
+// help until HQ is upgraded; the task may well exist.
+type TaskRouteUnavailableError struct{ HQ *HQError }
+
+func (e *TaskRouteUnavailableError) Error() string {
+	return "officers: HQ has no officer task route (404 " + e.HQ.Code() + "), an HQ older than the task read: not a missing task"
+}
+
+// taskRouteErr turns a 404 that is not TaskNotVisibleCode into
+// *TaskRouteUnavailableError; every other answer is unchanged.
+func taskRouteErr(body []byte, err error) ([]byte, error) {
+	var he *HQError
+	if errors.As(err, &he) && he.Status == http.StatusNotFound && he.Code() != TaskNotVisibleCode {
+		return nil, &TaskRouteUnavailableError{HQ: he}
+	}
+	return body, err
+}
+
 // TaskList is GET /officers/{id}/tasks with the officer token; query is
 // TaskListQuery's.
 func (c *Client) TaskList(ctx context.Context, query string) ([]byte, error) {
 	if query != "" && !strings.HasPrefix(query, "?") {
 		return nil, fmt.Errorf("officers: task list query must start with ?")
 	}
-	return c.do(ctx, http.MethodGet, c.officerPath()+"/tasks"+query, "", nil)
+	return taskRouteErr(c.do(ctx, http.MethodGet, c.officerPath()+"/tasks"+query, "", nil))
 }
 
 // TaskGet is GET /officers/{id}/tasks/{task_id} with the officer token; id
@@ -146,5 +184,5 @@ func (c *Client) TaskGet(ctx context.Context, id string) ([]byte, error) {
 	if !taskIDRe.MatchString(id) {
 		return nil, fmt.Errorf("officers: %q is not an HQ task id", id)
 	}
-	return c.do(ctx, http.MethodGet, c.officerPath()+"/tasks/"+url.PathEscape(id), "", nil)
+	return taskRouteErr(c.do(ctx, http.MethodGet, c.officerPath()+"/tasks/"+url.PathEscape(id), "", nil))
 }

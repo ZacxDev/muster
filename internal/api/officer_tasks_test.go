@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -75,12 +77,13 @@ func TestTaskToolsReadHQWithTheOfficersOwnToken(t *testing.T) {
 	a := r.addInstance(r.a, 1, 911)
 	r.hq.ResetRequests()
 	out := r.s.dispatchAgentTool(ctx, a, officerTaskListTool, `{"open":true,"limit":50}`)
-	if isToolErr(out) || !strings.Contains(out, `"fixture-task-1"`) || !strings.Contains(out, `"children_done":2`) {
-		t.Fatalf("list: %s", out)
+	// HQ's answer, byte for byte (the fake's encoding/json output)
+	if want := `{"next":"","rows":[{"children_done":2,"children_open":0,"id":"fixture-task-1","status":"to do"}]}` + "\n"; out != want {
+		t.Fatalf("list:\n got %q\nwant %q", out, want)
 	}
 	out = r.s.dispatchAgentTool(ctx, a, officerTaskGetTool, `{"task_id":"868aaaa01"}`)
-	if isToolErr(out) || !strings.Contains(out, `"done_statuses":["complete"]`) {
-		t.Fatalf("get: %s", out)
+	if want := `{"comments":[],"done_statuses":["complete"],"statuses":["to do","complete"],"task":{"id":"868aaaa01"}}` + "\n"; out != want {
+		t.Fatalf("get:\n got %q\nwant %q", out, want)
 	}
 	reqs := r.hq.Requests()
 	if len(reqs) != 2 {
@@ -121,8 +124,8 @@ func TestTaskToolsPassHQsFinalRefusalsBack(t *testing.T) {
 	ctx := context.Background()
 	a := r.addInstance(r.a, 1, 931)
 	out := r.s.dispatchAgentTool(ctx, a, officerTaskGetTool, `{"task_id":"private-1"}`)
-	if st, code := obsRefusal(out); st != 404 || code != "not_found" {
-		t.Errorf("private task: %s, want refused 404 not_found", out)
+	if st, code := obsRefusal(out); st != 404 || code != "task_not_visible" {
+		t.Errorf("private task: %s, want refused 404 task_not_visible", out)
 	}
 	r.hq.TaskReadOff = true
 	for _, c := range []struct{ tool, args string }{{officerTaskListTool, `{}`}, {officerTaskGetTool, `{"task_id":"x"}`}} {
@@ -130,5 +133,43 @@ func TestTaskToolsPassHQsFinalRefusalsBack(t *testing.T) {
 		if st, code := obsRefusal(out); st != 403 || code != "task_read_off" || strings.Contains(out, "retryable") {
 			t.Errorf("%s with task_read off: %s, want a final refused 403 task_read_off", c.tool, out)
 		}
+	}
+}
+
+// refusedCode is a tool result's refused.code (muster's own refusal code).
+func refusedCode(out string) (int, string) {
+	var got struct {
+		Refused struct {
+			Status int    `json:"status"`
+			Code   string `json:"code"`
+		} `json:"refused"`
+	}
+	_ = json.Unmarshal([]byte(out), &got)
+	return got.Refused.Status, got.Refused.Code
+}
+
+// TestTaskToolsTellAMissingRouteFromAMissingTask: an HQ without the task
+// routes answers its router's 404 not_found; both tools report that as
+// task_route_unavailable (final, not retryable) — never as an absent task.
+func TestTaskToolsTellAMissingRouteFromAMissingTask(t *testing.T) {
+	r := newTaskRig(t)
+	ctx := context.Background()
+	a := r.addInstance(r.a, 1, 941)
+	r.hq.TaskRoutesAbsent = true
+	for _, c := range []struct{ tool, args string }{{officerTaskListTool, `{}`}, {officerTaskGetTool, `{"task_id":"868aaaa01"}`}} {
+		out := r.s.dispatchAgentTool(ctx, a, c.tool, c.args)
+		st, code := refusedCode(out)
+		if !isToolErr(out) || st != 404 || code != "task_route_unavailable" || strings.Contains(out, "retryable") || strings.Contains(out, "task_not_visible") {
+			t.Errorf("%s on an HQ without task routes: %s, want a final refused 404 task_route_unavailable", c.tool, out)
+		}
+	}
+}
+
+// TestAnAnswerOverTheCapSaysSo: an answer over muster's 1 MiB cap reaches
+// the instance as "ask for less", not as "failed" or "not JSON".
+func TestAnAnswerOverTheCapSaysSo(t *testing.T) {
+	out := officerToolResult(officerTaskGetTool, nil, fmt.Errorf("%w: GET /x", officers.ErrHQAnswerTooLarge))
+	if !isToolErr(out) || !strings.Contains(out, "over muster's 1 MiB cap") || !strings.Contains(out, "ask for less") {
+		t.Fatalf("got %s", out)
 	}
 }

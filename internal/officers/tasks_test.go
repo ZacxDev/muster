@@ -1,6 +1,10 @@
 package officers
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -89,6 +93,63 @@ func TestTaskGetIDIsAnHQTaskIDOnly(t *testing.T) {
 		`{"task_id":"` + strings.Repeat("a", 65) + `"}`, `{"task_id":7}`, `{}`, `{"task_id":"a","x":1}`, `{"task_id":"a b"}`, `{"task_id":"a%2F"}`} {
 		if got, err := TaskGetID([]byte(bad)); err == nil {
 			t.Errorf("TaskGetID(%s) = %q, want a refusal", bad, got)
+		}
+	}
+}
+
+// TestHQAnswerOverTheCapIsRefusedWhole: a 2xx answer over muster's 1 MiB cap
+// is ErrHQAnswerTooLarge, never a cut body; one at the cap passes.
+func TestHQAnswerOverTheCapIsRefusedWhole(t *testing.T) {
+	size := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// a JSON string padded to exactly size bytes
+		_, _ = w.Write([]byte(`"` + strings.Repeat("x", size-2) + `"`))
+	}))
+	defer srv.Close()
+	c := NewClient(Officer{ID: "task-reconciler:hq", HQURL: srv.URL}.WithToken("t"), srv.Client())
+	size = 1<<20 + 1
+	if _, err := c.TaskGet(context.Background(), "abc"); !errors.Is(err, ErrHQAnswerTooLarge) {
+		t.Fatalf("over the cap: err %v, want ErrHQAnswerTooLarge", err)
+	}
+	size = 1 << 20
+	body, err := c.TaskGet(context.Background(), "abc")
+	if err != nil || len(body) != 1<<20 {
+		t.Fatalf("at the cap: %d bytes, %v", len(body), err)
+	}
+}
+
+// TestTaskRoute404s: HQ's task_not_visible 404 stays an HQError; any other
+// 404 is TaskRouteUnavailableError; other statuses are unchanged.
+func TestTaskRoute404s(t *testing.T) {
+	status, body := 0, ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := NewClient(Officer{ID: "task-reconciler:hq", HQURL: srv.URL}.WithToken("t"), srv.Client())
+	for _, tc := range []struct {
+		status    int
+		body      string
+		routeGone bool
+	}{
+		{404, `{"code":"task_not_visible"}`, false},
+		{404, `{"code":"not_found","error":"no such route"}`, true},
+		{404, `not json`, true},
+		{403, `{"code":"task_read_off"}`, false},
+	} {
+		status, body = tc.status, tc.body
+		for name, call := range map[string]func() error{
+			"get":  func() error { _, err := c.TaskGet(context.Background(), "abc"); return err },
+			"list": func() error { _, err := c.TaskList(context.Background(), ""); return err },
+		} {
+			err := call()
+			var ru *TaskRouteUnavailableError
+			var he *HQError
+			if errors.As(err, &ru) != tc.routeGone || (!tc.routeGone && (!errors.As(err, &he) || he.Status != tc.status)) {
+				t.Errorf("%s %d %s: err %v (route unavailable %v), want route unavailable %v", name, tc.status, tc.body, err, errors.As(err, &ru), tc.routeGone)
+			}
 		}
 	}
 }

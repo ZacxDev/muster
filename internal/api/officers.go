@@ -1734,6 +1734,8 @@ func officerToolResult(name string, body []byte, err error) string {
 			refused["hq"] = json.RawMessage(hqErr.Body)
 		}
 		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ refused %s (%d)", name, hqErr.Status), "refused": refused})
+	case errors.Is(err, officers.ErrHQAnswerTooLarge):
+		return toolErr("HQ's answer to %s is over muster's 1 MiB cap, so none of it is passed on: ask for less (a smaller limit or page, a narrower filter) — the same call will fail again", name)
 	case errors.Is(err, officers.ErrHQUnavailable):
 		return toolErr("HQ is unavailable right now; try %s again in a minute", name)
 	default:
