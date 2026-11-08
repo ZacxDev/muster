@@ -793,7 +793,7 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 // failureKind names a send failure for the log without quoting it (a runtime's
 // error can echo the request), as the memo relay does.
 func failureKind(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || agents.IsClientTimeout(err) {
 		return " (the turn outlasted its deadline)"
 	}
 	return " (failed; see the agent's transcript)"
