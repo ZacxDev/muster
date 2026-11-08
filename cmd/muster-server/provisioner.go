@@ -263,9 +263,9 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plan
 		Logger:             logger,
 		KickoffDeliverable: kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired),
 	}
-	if cfg.chiefCompose() {
-		pc.ComposeChiefRoute = composeChiefRoute(composeChiefCredential(cfg, plane))
-	}
+	// The one rule for a chief on the LLM route (chiefllm.go): nil when no
+	// chief is, so every chief is built on its Claude account.
+	pc.ChiefLLMRoute = chiefLLMRoute(cfg, plane)
 	prov, err := agentprovision.New(pc)
 	if err != nil {
 		return nil, nil, err
@@ -465,6 +465,12 @@ func agentRuntime(cfg config) (agentgateway.Runtime, error) {
 // TestTheDefaultBuildCarriesNoFakeTerminal pins the nil.
 var e2eFakeTerminal func(provision.Provisioner) provision.Provisioner
 
+// k8sTestClient replaces the Kubernetes driver's in-cluster client. nil
+// (always, outside tests: nothing in this package's non-test code sets it) is
+// rest.InClusterConfig; a test sets a fake clientset so the pod a chief is
+// given can be read back from the objects the real driver renders.
+var k8sTestClient kubernetes.Interface
+
 // buildDriver builds the provisioning backend itself.
 func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
 	switch cfg.agentProvisioner() {
@@ -516,6 +522,11 @@ func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) 
 // with a message naming what is missing, and that message is the correct outcome
 // outside a pod.
 func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
+	if k8sTestClient != nil {
+		dc := k8sDriverConfig(cfg, logger)
+		dc.Client = k8sTestClient
+		return k8sdriver.New(dc)
+	}
 	rc, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("%s=%s needs in-cluster credentials and there are none: %w "+

@@ -776,16 +776,20 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	// The Compose chief on the OpenRouter key reaches its model through the
 	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, the model
-	// pinned, no muster budget (the key's own credit limit is the cap). Only
-	// the Compose chief: nothing else here runs a chief on the LLM route.
+	// pinned, no muster budget (the key's own credit limit is the cap).
 	//
-	// 🔴 THE PROXY ASKS ext.ComposeChief ON EVERY REQUEST: it serves the chief
+	// 🔴 ON COMPOSE THE PROXY ASKS ext.ComposeChief ON EVERY REQUEST: it serves the chief
 	// only when composeChiefCredential says OpenRouter (never a chief on its
 	// subscription token), on the key the credential plane gives the owner.
 	// Without ext.ComposeChief it would serve on ChiefLLM.Key whatever the rule
 	// said, so that is a boot refusal.
-	if cfg.chiefCompose() {
-		if ext.ComposeChief == nil {
+	//
+	// On Kubernetes, MUSTER_CHIEF_LLM=openrouter (chiefllm.go): the admin's
+	// chief on MUSTER_AGENT_OPENROUTER_KEY (validateChiefLLM refused boot
+	// without it); the spec builder puts that chief's pod on the route by the
+	// same rule (chiefLLMRoute).
+	if cfg.chiefOnLLMProxy() {
+		if cfg.chiefCompose() && ext.ComposeChief == nil {
 			a.Close()
 			return nil, fmt.Errorf("%s=%s: the Compose chief's credential rule is not wired (no agent provisioner), "+
 				"so the LLM proxy could not ask it", envChiefRuntime, chiefRuntimeCompose)
@@ -798,7 +802,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 		if err := srv.EnableChiefLLM(api.ChiefLLM{Model: cfg.ChiefLLMModel, Key: cfg.AgentOpenRouterKey, Upstream: upstream}); err != nil {
 			a.Close()
-			return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
+			if cfg.chiefCompose() {
+				return nil, fmt.Errorf("%s=%s: %w", envChiefRuntime, chiefRuntimeCompose, err)
+			}
+			return nil, fmt.Errorf("%s=%s: %w", envChiefLLM, chiefLLMOpenRouter, err)
 		}
 	}
 
