@@ -12,7 +12,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	g "maragu.dev/gomponents"
@@ -381,9 +380,6 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// containing-block surprises) and they're not touched by panel
 				// swaps. Only the active tab's FAB is shown; the router toggles them.
 				shellFAB("fab-tasks", "tasks", "New task", "/ui/tasks/new", "task-modal", "bottom-[calc(1.5rem+env(safe-area-inset-bottom))]", activeTab == "tasks"),
-				// The dispatch sheet (agentModalShell) is the sidebar's (sidebarIn):
-				// the "+" beside its Agents label opens it, and so does a task card's
-				// Dispatch button on the Tasks tab.
 				noteModalShell(),
 				// The error toasts' host (actionToasts) is the sidebar's (sidebarIn).
 				// Persistent notification FAB (bottom-LEFT) — the launcher for recent
@@ -592,14 +588,6 @@ func shellFAB(id, tab, ariaLabel, hxGet, modalID, bottomCls string, active bool)
 		hx("hx-on:click", modalOpenClick(modalID)),
 		g.Raw(`<svg class="h-7 w-7" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
 	)
-}
-
-// firstLine returns s up to the first newline.
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
 }
 
 // truncate shortens s to at most n runes, appending an ellipsis when cut.
@@ -1025,19 +1013,12 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// The switcher dock (switcher_dock.go): one per document, beside the
 		// palette and for its reason; closed and empty where no bar opens it.
 		switcherDock(),
-		// The dispatch sheet the "+" beside the Agents label opens
-		// (navDeployButton) — and a task card's Dispatch — on every document
-		// with the sidebar, outside the sliding panel for the palette's reason:
-		// it is position:fixed, and the panel's transform would make the panel
-		// its containing block. Its dismiss and dirty guard are taskModalScript's
-		// — DEFERRED: the sidebar is early in <body>, and a parser-blocking
-		// script there would hold every page's paint mid-document
-		// (TestTheViewPagesPaintWholeBeforeAnyScript).
-		agentModalShell(),
+		// The task sheet's dismiss and dirty guard (taskModalScript), on every
+		// document with the sidebar — DEFERRED: the sidebar is early in <body>,
+		// and a parser-blocking script there would hold every page's paint
+		// mid-document (TestTheViewPagesPaintWholeBeforeAnyScript).
 		taskModalScript(),
-		// The error toasts' host, on every document with the sidebar: the
-		// dispatch sheet's refusal is toasted on every page it opens on
-		// (dispatchFailureToast), not only where resyncScript listens.
+		// The error toasts' host, on every document with the sidebar.
 		actionToasts(),
 	)
 }
@@ -1911,12 +1892,11 @@ var appScriptSrc = staticJS("app", `
     // afterwards. From the outside it is indistinguishable from having no
     // handler at all, which is exactly how it was reported.
     setOpen(false); notifOpen(false);
-    // Both dialogs were omitted from this handler, so Escape did nothing for
-    // them. Both now route through the SAME dirty-guarded dismiss: an
-    // in-progress edit — or a typed dispatch prompt, the longest free text in
-    // the app — must not vanish on a stray keypress. cgModalDismiss is a no-op
-    // for a modal that is already hidden.
-    if (window.cgModalDismiss) { window.cgModalDismiss('task-modal'); window.cgModalDismiss('agent-modal'); }
+    // The task dialog was omitted from this handler, so Escape did nothing for
+    // it. It now routes through the dirty-guarded dismiss: an in-progress edit
+    // must not vanish on a stray keypress. cgModalDismiss is a no-op for a
+    // modal that is already hidden.
+    if (window.cgModalDismiss) { window.cgModalDismiss('task-modal'); }
   });
 
   // --- Error toasts ---
@@ -2469,9 +2449,6 @@ var resyncScriptSrc = staticJS("resync", `
     document.body.addEventListener('htmx:sseOpen', musterSSEOpen);
   }
 
-  // Said once per document, so a form that toasts its own failure where no
-  // page-wide listener exists (dispatchFailureToast) does not toast twice here.
-  window.__musterFailureToasts = true;
   // Surface htmx failures. htmx does NOT swap non-2xx responses, so without this
   // every failed form/mutation (dispatch, note, status, comment)
   // would fail SILENTLY — modal frozen, no feedback. Show the server's error text
@@ -2607,11 +2584,10 @@ var relTimeScriptSrc = staticJS("rel-time", `
 })();
 `)
 
-// taskModalScript owns BOTH bottom sheets' DISMISS semantics (cgModalDismiss /
+// taskModalScript owns the bottom sheet's DISMISS semantics (cgModalDismiss /
 // cgModalClose / cgModalDirty, keyed by modal id) and the task sheet's save
-// feedback. The dispatch sheet shares the same discard-confirm pattern rather
-// than getting a second one — its dirty check is narrower (free text only, see
-// agentDirty) because its config fields are pre-filled from localStorage.
+// feedback. (The dispatch sheet that shared them was deleted with the dispatch
+// form, docs/design/chief-dispatch.md phase 2.)
 // Three separate gaps it closes, all on the edit path:
 //
 //  1. A stray outside click (or Escape) silently discarded an in-progress edit —
@@ -2713,42 +2689,25 @@ var taskModalScriptSrc = staticJS("task-modal", `
     return false;
   }
 
-  // The dispatch sheet's guard is deliberately narrower: only its FREE TEXT.
-  // Its config fields (model / repo / directory) are pre-filled from
-  // localStorage recents as PROPERTIES, so a value-vs-defaultValue sweep would
-  // read an untouched dispatch form as dirty the instant it opened — the exact
-  // trap that excludes the task CREATE form. The prompt textarea is the long,
-  // unrecoverable thing (measured: Escape hid the sheet, and reopening refetched
-  // /ui/agents/new so the prompt came back empty).
-  function agentDirty() {
-    var b = document.getElementById('agent-modal-body');
-    if (!b) return false;
-    var els = b.querySelectorAll('textarea');
-    for (var i = 0; i < els.length; i++) {
-      if (els[i].value !== els[i].defaultValue) return true;
-    }
-    return false;
-  }
-
-  // --- Generic dismiss, shared by BOTH bottom sheets --------------------------
-  // One pattern, not two: each sheet <id> pairs with an <id>-discard bar, and an
+  // --- Generic dismiss, keyed by sheet id -------------------------------------
+  // Each sheet <id> pairs with an <id>-discard bar, and an
   // AMBIGUOUS dismiss (backdrop tap / Escape) reveals that bar instead of
   // destroying unsaved text. DOM-only, never window.confirm() — native dialogs
   // are suppressed in the installed standalone PWA and would never resolve.
-  var DIRTY = { 'task-modal': taskDirty, 'agent-modal': agentDirty };
+  var DIRTY = { 'task-modal': taskDirty };
   function discardBar(id) { return document.getElementById(id + '-discard'); }
 
   window.cgModalDirty = function (id) {
     var f = DIRTY[id];
     return !!(f && f());
   };
-  // 🔴 OPEN = CLEAR, then reveal. Every open path (the Tasks FAB, the sidebar's
-  // "+", the card Edit and the card Dispatch button) reveals the sheet from its own hx-on:click and
+  // 🔴 OPEN = CLEAR, then reveal. Every open path (the Tasks FAB and the card
+  // Edit; the dispatch "+" and card Dispatch were deleted) reveals the sheet from its own hx-on:click and
   // lets htmx fill <id>-body asynchronously. During that in-flight window the
   // body still held the PREVIOUS open's form, and the discard bar is a SIBLING
   // of the body so it survives the swap — so the dirty guard read stale text and
   // the user faced "Discard unsaved changes?" over a form that was not theirs.
-  // Measured with /ui/agents/new delayed 1200ms: bar=true, promptValue="the
+  // Measured with the (since deleted) dispatch sheet's body delayed 1200ms: bar=true, promptValue="the
   // previous prompt", then after the swap bar=true, promptValue="" — and Escape
   // would not close the sheet. That also made tasks-mobile's "Escape does not
   // destroy a typed dispatch prompt" flaky (red first attempt, green on retry).

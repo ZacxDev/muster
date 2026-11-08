@@ -70,9 +70,6 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"switcher Recent view", "Eleven builds", func() g.Node {
 			return switcherRefresh(NewSwitcher([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}}, SwitcherCurrent{}))
 		}},
-		{"dispatch picker option", "Twelve tasks", func() g.Node {
-			return g.Text(noteOptions([]NoteOption{{ID: 12, Label: "1. **Twelve** tasks"}})[0].Label)
-		}},
 		{"merge select label", `data-task-select-label="Thirteen merged"`, func() g.Node {
 			return taskSelectControl(notes.Note{ID: 13, Title: "__Thirteen__ merged", Status: notes.StatusInProgress})
 		}},

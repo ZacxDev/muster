@@ -90,7 +90,7 @@ import (
 //	  handler can reach s.ext.Provisioner unguarded through this package's call
 //	  graph MUST be wrapped, and every wrapped one must be able to. The ledger
 //	  plays no part in this half, which is why a matching two-line edit cannot
-//	  satisfy it: `POST /agents` still resolves to handleAgentCreate, which
+//	  satisfy it: `POST /api/agents` still resolves to handleAPIAgentCreate, which
 //	  still reaches Dispatch through createAndDispatchAgent.
 //
 // A plain "every wrapped route refuses" check would be satisfied by wrapping
@@ -133,15 +133,15 @@ var provisionerDeps = []provisionerDep{
 			"DELETE /agents/{id}",
 			"GET /agents/{name}/logs/stream",
 			"GET /agents/{name}/terminal/ws",
-			"POST /agents",
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
+			"POST /api/agents",
 			"POST /api/chief/replace",
 			"POST /chief/provision",
 		},
 		callers: []string{
-			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, provisionChief
-			"(*Server).handleAgentCreate",      // KickoffUndeliverableReason, the synchronous pre-flight before the row
+			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAPIAgentCreate, provisionChief
+			"(*Server).handleAPIAgentCreate",   // KickoffUndeliverableReason, the synchronous pre-flight before the row
 			"(*Server).handleAgentDelete",      // Destroy (passed to destroyAgent)
 			"(*Server).handleAgentLogsStream",  // StreamLogs
 			"(*Server).handleAgentStart",       // Start

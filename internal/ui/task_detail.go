@@ -106,10 +106,9 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 						taskDetailLive(v),
 					),
 				),
-				// The Edit button (hx-get /ui/tasks/{id}/edit → #task-modal-body) and
-				// the Dispatch button (→ #agent-modal-body) both target modal shells
-				// that must exist in the document, or their swap lands nowhere. The
-				// dispatch sheet is the sidebar's (sidebarIn), as is the modals' script.
+				// The Edit button (hx-get /ui/tasks/{id}/edit → #task-modal-body)
+				// targets a modal shell that must exist in the document, or its swap
+				// lands nowhere. The modals' script is the sidebar's (sidebarIn).
 				noteModalShell(),
 				// The error toasts' host is the sidebar's (sidebarIn).
 				// Keep the card's relative timestamp ('10s', '30m') live.

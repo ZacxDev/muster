@@ -1,7 +1,6 @@
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { Page } from '@playwright/test';
-import { openDispatchSheet } from '../lib/dispatch';
 import { layoutDispatchPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 
@@ -109,28 +108,21 @@ test('every visible control is a 44px target and every field is 16px text', asyn
   await page.click('#fab-tasks');
   await expect(page.locator('#task-modal textarea[name="body"]')).toBeVisible();
   await check('new-task sheet');
-  // The dispatching server: its Tasks board (a card's Dispatch button), its
-  // sidebar (the "+" beside the Agents label, in the drawer) and the dispatch
-  // sheet.
+  // The dispatching server (an agent provisioner wired — the shape that drew
+  // the dispatch "+", the card's Dispatch and the dispatch sheet until
+  // docs/design/chief-dispatch.md phase 2 deleted them): its Tasks board and
+  // its sidebar drawer.
   await signInDispatch(page);
   await check('tasks (dispatching server)');
-  await expect(page.locator('button[aria-label="Dispatch agent for this task"]').first(), 'the dispatching server draws a card Dispatch').toBeVisible();
   await page.click('#sidebar-open');
-  await expect(page.locator('#sidebar-deploy'), 'the dispatching server draws the +').toBeVisible();
   await check('sidebar drawer (dispatching server)');
-  await openDispatchSheet(page);
-  await expect(page.locator('#agent-modal form')).toBeVisible();
-  await check('dispatch sheet');
   expect(measured, 'the audit measured real controls').toBeGreaterThan(100);
 });
 
 test('a sheet keeps its primary action on screen with Advanced open', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 640 });
-  // The dispatch sheet is opened from the sidebar's "+" (openDispatchSheet).
   for (const [path, open, label] of [
     ['/tasks', (p: typeof page) => p.click('#fab-tasks'), 'Save task'],
-    // On the dispatching server: the shared one draws no dispatch sheet.
-    [dorigin + '/tasks', openDispatchSheet, 'Dispatch'],
   ] as const) {
     if (path.startsWith(dorigin)) await signInDispatch(page);
     await page.goto(path);
@@ -147,25 +139,27 @@ test('a sheet keeps its primary action on screen with Advanced open', async ({ p
   }
 });
 
-// The shared server is the docker compose install's shape: no agent
-// provisioner, so a dispatch could only answer 503. It must offer none — no
-// "+" beside the sidebar's Agents label (the hint that says why is drawn in its
-// place), no Dispatch on a task card — and the dispatch sheet,
-// if a stale page asks for it, explains what is missing instead of drawing a
-// form. Red at origin/main: all three were drawn. The dispatching server
-// (above) is the control: it draws the + and the card's Dispatch.
-test('a server with no agent provisioner offers no dispatch, and the sheet explains why', async ({ page }) => {
-  await page.goto('/tasks');
-  await settle(page);
-  await page.click('#sidebar-open');
-  await expect(page.locator('#sidebar [data-dispatch-off-hint]'), 'the head row the + would sit in is drawn, with its hint').toBeVisible();
-  await expect(page.locator('#sidebar-deploy')).toHaveCount(0);
-  await expect(page.locator('[id^="task-"][data-task-status]').first(), 'the board drew task cards').toBeVisible();
-  await expect(page.locator('button[aria-label="Dispatch agent for this task"]')).toHaveCount(0);
-  const sheet = await page.request.get('/ui/agents/new');
-  expect(sheet.status()).toBe(200);
-  const body = await sheet.text();
-  expect(body).toContain('data-dispatch-unavailable');
-  expect(body).toContain('Agent dispatch is not set up');
-  expect(body).not.toContain('hx-post="/agents"');
+// docs/design/chief-dispatch.md phase 2 deleted the dispatch form with nothing
+// in its place (D8): no server offers a dispatch, whether or not it has an
+// agent provisioner — no "+" beside the sidebar's Agents label and no "not set
+// up" hint there, no Dispatch on a task card — and the sheet's route is gone.
+// The shared server is the docker compose install's shape (no provisioner);
+// the dispatching server is the one that used to draw all three.
+test('no server offers a dispatch, with or without an agent provisioner', async ({ page }) => {
+  for (const [label, origin] of [
+    ['no provisioner', ''],
+    ['provisioner wired', dorigin],
+  ] as const) {
+    if (origin) await signInDispatch(page);
+    await page.goto(origin + '/tasks');
+    await settle(page);
+    await expect(page.locator('[id^="task-"][data-task-status]').first(), `${label}: the board drew task cards`).toBeVisible();
+    await expect(page.locator('button[aria-label="Dispatch agent for this task"]'), `${label}: no card Dispatch`).toHaveCount(0);
+    await page.click('#sidebar-open');
+    await expect(page.locator('#sidebar-agents-label'), `${label}: the head row is drawn`).toBeVisible();
+    await expect(page.locator('#sidebar-deploy'), `${label}: no "+"`).toHaveCount(0);
+    await expect(page.locator('#sidebar [data-dispatch-off-hint]'), `${label}: no "not set up" hint`).toHaveCount(0);
+    const sheet = await page.request.get(origin + '/ui/agents/new');
+    expect(sheet.status(), `${label}: GET /ui/agents/new`).toBe(404);
+  }
 });

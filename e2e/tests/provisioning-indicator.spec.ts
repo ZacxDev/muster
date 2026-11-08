@@ -6,7 +6,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, provPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 
 // "Provisioning agent…" must leave an OPEN agent page when the agent comes up
 // without sending a message — and "No messages yet" must take its place — with
@@ -74,23 +74,17 @@ async function login(page: Page) {
   await signIn(page, origin);
 }
 
-// saveAgent creates one agent of the kind with NO note through the dispatch
-// sheet's "Save for later" (the sidebar's "+") and returns its row (diffed, so
-// an earlier run's rows cannot answer). The save opens the new agent's page.
+// saveAgent creates one agent of the kind with NO note, stopped (what "Save for
+// later" made), through POST /api/agents (lib/seed.ts, which replaced the
+// deleted dispatch sheet), opens its page, and returns its row (diffed, so an
+// earlier run's rows cannot answer).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill('');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const made = await createAgent(origin, { kind });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name, { timeout: 15_000 });
+  expect(created[0].name).toBe(made.name);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 

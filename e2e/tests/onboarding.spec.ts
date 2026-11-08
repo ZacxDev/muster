@@ -16,11 +16,11 @@ import { startServer, Running } from '../lib/server';
 // on the seeded database: the same URL there opens a session and draws no
 // empty state, so the assertion below is about emptiness, not about the page.
 //
-// Two empty servers: one with no agent runtime (it says dispatch is not set
-// up), and one with the noop provisioner (it offers "Dispatch an agent", which
-// a phone reaches without opening the drawer). The second borrows the layout
-// spec's dispatching port: the suite runs one spec at a time, and each stops
-// its server in afterAll.
+// Two empty servers: one with no agent runtime, and one with the noop
+// provisioner. Neither offers a dispatch (docs/design/chief-dispatch.md phase 2
+// deleted "Dispatch an agent" and the "not set up" hint with the form). The
+// second borrows the layout spec's dispatching port: the suite runs one spec at
+// a time, and each stops its server in afterAll.
 
 const PROMPT =
   'Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md ' +
@@ -75,9 +75,10 @@ for (const vp of [
     await expect(empty.locator('#onboarding-prompt')).toHaveText(PROMPT);
     await expect(empty).toContainText('tmux new -A -s work claude');
     await expect(empty.locator('a[href="https://github.com/ZacxDev/muster/blob/main/INSTALL.md"]')).toBeVisible();
-    // No agent runtime: no dispatch button, and the hint that says why.
+    // No dispatch button and no "not set up" hint: the chief starts agents
+    // (docs/design/chief-dispatch.md phase 2 deleted both).
     await expect(page.locator('#home-deploy')).toHaveCount(0);
-    await expect(empty.locator('[data-dispatch-off-hint]')).toBeVisible();
+    await expect(page.locator('[data-dispatch-off-hint]')).toHaveCount(0);
     // It is drawn inside the navigation, whose list is empty too.
     await expect(page.locator('#sidebar')).toHaveCount(1);
     if (vp.width < 1024) await page.locator('#sidebar-open').click();
@@ -95,19 +96,15 @@ for (const vp of [
     expect(box!.x + box!.width).toBeLessThanOrEqual(vp.width);
   });
 
-  test(`an empty install with dispatch configured offers "Dispatch an agent" on its home (${vp.name} ${vp.width}x${vp.height})`, async ({ page }) => {
+  test(`an empty install with an agent provisioner offers no "Dispatch an agent" on its home either (${vp.name} ${vp.width}x${vp.height})`, async ({ page }) => {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await login(page, dorigin);
     await page.goto(dorigin + '/');
     expect(new URL(page.url()).pathname).toBe('/agents');
     await expect(page.locator('#agents-empty')).toBeVisible();
-    await expect(page.locator('#agents-empty [data-dispatch-off-hint]')).toHaveCount(0);
-    const btn = page.locator('#home-deploy');
-    await expect(btn).toBeVisible();
-    await expect(btn).toHaveText('Dispatch an agent');
-    // Reachable without opening the drawer, and it opens the dispatch sheet.
-    await btn.click();
-    await expect(page.locator('#agent-modal form')).toBeVisible();
+    await expect(page.locator('#home-deploy')).toHaveCount(0);
+    await expect(page.locator('[data-dispatch-off-hint]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Dispatch an agent' })).toHaveCount(0);
   });
 }
 

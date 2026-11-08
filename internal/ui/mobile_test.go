@@ -20,10 +20,8 @@ var submitButtonRe = regexp.MustCompile(`<button type="submit"[^>]*>`)
 // checks every sheet carries the class so a new sheet cannot forget it.
 func TestEverySheetKeepsItsPrimaryActionInView(t *testing.T) {
 	sheets := map[string]string{
-		"new task":      renderString(t, NotesModalBody([]string{"example"}, false)),
-		"edit task":     renderString(t, NotesEditModalBody(sampleNoteEditView())),
-		"dispatch":      renderString(t, DispatchModalBody()),
-		"dispatch task": renderString(t, DispatchModalTaskBody(TaskDispatchView{NoteID: 1, Label: "x"})),
+		"new task":  renderString(t, NotesModalBody([]string{"example"}, false)),
+		"edit task": renderString(t, NotesEditModalBody(sampleNoteEditView())),
 	}
 	for name, html := range sheets {
 		if len(submitButtonRe.FindAllString(html, -1)) == 0 {

@@ -71,7 +71,7 @@ not: they need a signed-in session. Verbs, flags and exit codes are the
 
 | op | route | what to know |
 |---|---|---|
-| create | `POST /api/tasks` | `{directory, title, body, model, repo, branch, tags}`; `body` is required. **It answers `{"id":N}` and nothing else**: read any other field back with a GET. Unknown keys are dropped without an error. `directory` is not cosmetic: dispatch infers the repository from it. |
+| create | `POST /api/tasks` | `{directory, title, body, model, repo, branch, tags}`; `body` is required. **It answers `{"id":N}` and nothing else**: read any other field back with a GET. Unknown keys are dropped without an error. |
 | read | `GET /api/tasks[/{id}]` | `?status=&tag=&limit=&summary=1` filter on the server. `tag` ANDs, and an invalid tag matches nothing (`200 []`). Ask for `summary=1` first: an unsummarised list is large. Comments, attachments and session links are **embedded**; there is no comments GET (`405`). |
 | edit | `PATCH /api/tasks/{id}` | Content, dispatch config, and tags: `tags` replaces the set, `addTags`/`removeTags` merge into it, and `tags` together with either is `400`. While the task is `in_progress`, a non-tag field or a routing tag is `409`; an edit of descriptive tags only succeeds. |
 | status | `PATCH /api/tasks/{id}/status` | Any status, `complete` included, with no in-progress guard. An agent's own `PATCH /agent/task/status` refuses `complete`. |
@@ -119,6 +119,6 @@ usually not needed.
 
 A GitHub App ([github-app.md](github-app.md)) is muster's GitHub identity, for
 admins. Its installation's repositories are the "connected" repositories for
-every dispatch check, and the dispatch dialog's repository picker lists them.
+every dispatch check, and the task forms' repository picker lists them.
 Without an App (and for a member) no repository is connected. The per-user
 OAuth connection and the Repos tab that showed it have been removed.
