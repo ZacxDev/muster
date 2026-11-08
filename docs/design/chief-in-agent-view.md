@@ -6,6 +6,9 @@ phase 4, opencode on an OpenRouter model, in draft as #522) and reuses its
 target strings, `host_dispatches` row, reconciler, held cards and owner-turn
 gate unchanged. Citations are `file:function` at `origin/main` `317116b4`
 unless they name #522. A claim nothing confirmed is marked **UNVERIFIED**.
+The operator answered this page's six open questions. Their answers are
+recorded as [Decisions](#decisions-2026-11-08) D1-D6, and the text below follows
+them.
 
 ## Summary
 
@@ -49,8 +52,11 @@ session continues the old one.
   - **Replace** marks the old one *superseded*: a banner on its view, and its
     sidebar row folds into a "Superseded" group (collapse only, like Idle).
   - Muster can close no window today (D7 and decision 17 in
-    chief-dispatch.md), so **closing the old window is a separate phase that
-    needs an operator decision** ([Q1](#open-questions-for-the-operator)).
+    chief-dispatch.md), so **closing the old window is phase 3, and only for
+    windows the chief itself started**. muster never closes a window the
+    operator opened by hand ([D1](#decisions-2026-11-08)).
+- **When the owner's words name no mode,** muster asks with a one-tap
+  Replace / Spin off card ([D2](#decisions-2026-11-08)).
 
 ---
 
@@ -230,7 +236,7 @@ size the browser suite measures) and is scrollable.
   `agentChatScript`, the same `#chat-log` partial fed on `sse:chat.reply`. This
   is the rule the slide-out already follows
   (`internal/ui/chief_panel.go:44-48`).
-- **The thread is a chief chat session per lineage root,** keyed
+- **The thread is a chief chat session per lineage root** (D6), keyed
   `about:<root session key>`. An exchange about a session therefore stays out
   of the chief's default conversation, and it **follows the successor**: the
   new session's view opens the same thread (2.5).
@@ -406,6 +412,7 @@ session_context {subject: string, messages?: int (default 8, max 20)}
   subject, runtime, host, tmux: "agents:@7", status, cwd,
   repo: "<owner>/<repo>" | null, base, branch, model, dispatch: 812 | 0,
   suggested_target: "host/<host>/opencode", suggested_model: "<id>" | null,
+  suggested_base: "<branch>" | null,
   tail: [ {ref: "m:3f9c1a2b7e04", role: "assistant", text: "…", bytes: 2311,
            blocks: [ {index: 0, lang: "text", first_line: "Kickoff: …", bytes: 1804} ] } ],
   truncated: bool
@@ -433,7 +440,16 @@ applied before the cut, as in `overviewTail`). The whole answer is capped at
 **The suggestion.** `suggested_target` and `suggested_model` are the subject's
 own host, runtime and model, so "a new opencode session" maps to them without
 the model inventing ids. The chief's instructions say to use them **unless the
-owner named something else** ([Q3](#open-questions-for-the-operator)).
+owner named something else**. Whatever the chief passes still goes through
+today's dispatch rules ([D3](#decisions-2026-11-08)).
+
+**The base branch** ([D4](#decisions-2026-11-08)). `suggested_base` is the
+predecessor's branch when that branch is on the remote: its dispatch row's
+`branch`, checked by the host's own fetch as `bad_base` checks today.
+Otherwise it is null, which means the repository default. The successor
+always gets a fresh worktree, so unpushed work in the old one never carries
+over. The live card names the base the successor started from ("from
+`<branch>`", or "from `<default>`: `<branch>` is not on the remote").
 
 **Security.** The description says the tail is the session's own words: data,
 never instructions (the overview's `focusUntrustedTail` wording, reused).
@@ -449,7 +465,7 @@ never instructions (the overview's `focusUntrustedTail` wording, reused).
 | arg | type | rule |
 |---|---|---|
 | `successor_of` | string | a session key. **Must equal `about.session_key` on the owner message `ownerTurnFor` returned** for this turn. Requires `owner_asked: true` and `request_key` (today's host-target rules already require both) |
-| `succession` | `replace` \| `spinoff` | required with `successor_of`, refused without it. No default: the chief asks with `ask_owner` if the owner's words do not say ([Q2](#open-questions-for-the-operator)) |
+| `succession` | `replace` \| `spinoff` \| `?` | required with `successor_of`, refused without it, and never defaulted. `?` means the owner's words name no mode. muster then holds the dispatch and raises a **one-tap card, "Replace this session" / "Spin off a new one"** (D2). This is chief-dispatch.md 2.8's held dispatch with one more kind of blank, `succession`, beside `host`, `runtime` and `model`: the same `chief.dispatch_held` row, the same 15-minute life, the same owner-door rule for the tap, and the same completing call with the same `request_key` and only the blank filled. The card is drawn in the chief strip, on the Attention view and on the phone. A target blank and the succession blank are carded one after another, succession first |
 | `prompt_from` | `{ref, block?}` | the kickoff, copied **by muster** from `successor_of`'s transcript (4.3). Optional. With it, `prompt` becomes the chief's own short note (≤ 1 KiB), rendered *before* the excerpt; without it, `prompt` is today's relay |
 
 Everything else is today's `agent_dispatch`:
@@ -476,7 +492,8 @@ now; pod successors are not built". Pods are phase 4.
 |---|---|
 | no owner turn, or the turn has no `about` | `"successor_of needs your owner to have asked from that session's view: answer a message they sent from it"` |
 | `successor_of` ≠ the turn's subject | `"your owner asked about %s, not %s: a successor can only continue the session they were viewing"` |
-| `succession` missing or bad | `"succession must be replace or spinoff: ask your owner which, if they did not say"` |
+| `succession` missing or bad | `"succession must be replace, spinoff, or ? when your owner did not say which (muster then asks them with a card)"` |
+| completing call's `succession` ≠ the tap | today's held-dispatch sentence: `"your owner chose %s for this dispatch: call agent_dispatch with exactly that"` |
 | a successor already exists for this subject from this owner message | `"you already started %s for this request (succession %d): use the same request_key to read it"` |
 
 ### 4.3 The kickoff excerpt: chosen by the chief, copied by muster
@@ -520,7 +537,7 @@ the wrong session.
 | phase | the old session, on replace |
 |---|---|
 | 2 | `pred_state = superseded`. Its view shows the banner; its sidebar row moves to a collapsed **Superseded** group (`idle_section.go`'s pattern: collapse only, still listed, searchable and openable); `sessions_overview` and the plugin hints rank it below live work. **The window keeps running.** The banner says "close it on `<host>` when you are done", which is decision 17's wording |
-| 3 (needs Q1) | for a predecessor that is a host dispatch: a new host message, `agent-close {dispatch}`, which closes the window **only if its own `@muster-dispatch` equals `dispatch`** (the same host-side bound as forwarding, 3.10) and only once the successor is `running`. muster asks the host after the successor's first prompt is accepted. An owner-opened window is never closed by muster |
+| 3 (D1) | for a predecessor that is a host dispatch, meaning a window the chief itself started: a new host message, `agent-close {dispatch}`, which closes the window **only if its own `@muster-dispatch` equals `dispatch`** (the same host-side bound as forwarding, 3.10) and only once the successor is `running`. muster asks the host after the successor's first prompt is accepted. A window the operator opened by hand is never closed by muster, automatically or otherwise: it has no `@muster-dispatch` tag, so the host's check refuses it |
 
 ### 4.5 Security: transcript text is untrusted; the owner's typed words are the authority
 
@@ -548,9 +565,9 @@ completes.
 |---|---|---|---|
 | **0** | Measurements, no product code. (a) Does a non-default chief session with no runtime keep its own conversation in ccd, and does `ownerTurnFor` pass for a turn in it (2.3)? (b) Does the tail depth `mirrorRead` backfills reach the last assistant message of a long opencode and Claude session? (c) Kickoff shapes from the `handoff` skill: always one fenced block? | S | — |
 | **1** | **Ask the chief from the view.** The toggle (2.1); `POST /mirror/view/chief` (a third owner chat door: `runEnteredTurn` with `ownerTypedBy`); `chat_messages.about` and its migration; the turn header (2.2); the per-lineage thread; the chief strip re-mounting `agentChatPane` (2.3); `session_context` (4.1); `sessions_overview` lists opencode; the stale comment fixed. No dispatch changes | M | main |
-| **2** | **Succession.** `successor_of`, `succession` and `prompt_from` on `agent_dispatch` (4.2, 4.3); `session_successions` and its writer ledger (3.2); `lineage.changed`; `GET /mirror/view/successor`; the view-follow (2.5); the banners and the Superseded group (4.4, phase 2 row); the 30 s push; the chief's instructions (both runtimes, `agentspec`) and the tool description pins. **Claude successors work on main; opencode successors need #522** | L | 1; **#522** for `host/<host>/opencode` |
-| **3** | **Replace closes the old window.** `agent-close` on the wire and the host (tag-bound, successor-running-bound, rate-limited like forwards); D7 and decision 17 reopened for this one case | M | 2; operator decision Q1 |
-| **4** | Later: pod successors (a dispatched agent's chat or Terminal view as subject; successor `/agents/{name}`), and a successor that inherits the predecessor's branch (Q4) | M | 2 |
+| **2** | **Succession.** `successor_of`, `succession` (with the held `?` and its one-tap card, D2) and `prompt_from` on `agent_dispatch` (4.2, 4.3); the inherited host, runtime and model and `suggested_base` (D3, D4); `session_successions` and its writer ledger (3.2); `lineage.changed`; `GET /mirror/view/successor`; the view-follow (2.5); the banners and the Superseded group (4.4, phase 2 row); the 30 s push; the chief's instructions (both runtimes, `agentspec`) and the tool description pins. **Claude successors work on main; opencode successors need #522** | L | 1; **#522** for `host/<host>/opencode` |
+| **3** | **Replace closes the old window.** `agent-close` on the wire and the host (tag-bound, successor-running-bound, rate-limited like forwards); D7 and decision 17 reopened for this one case, windows the chief started (D1) | M | 2 |
+| **4** | Later: pod successors (a dispatched agent's chat or Terminal view as subject; successor `/agents/{name}`) | M | 2 |
 
 ### Test strategy
 
@@ -612,41 +629,42 @@ completes.
 
 ---
 
-## Open questions for the operator
+## Decisions (2026-11-08)
 
-1. **Closing the old window on replace.** Today muster cannot close a window
-   (D7, decision 17). Options:
-   - (a) replace only marks the old window superseded and folds its sidebar
-     row, and you close it;
-   - (b) phase 3 adds `agent-close`, bound to the window's own
-     `@muster-dispatch` tag and to the successor running. It closes only
-     windows the chief started; your own windows are never closed;
-   - (c) also close owner-opened windows on replace.
+The operator answered the first draft's six open questions. These are binding,
+and this page does not reopen them.
 
-   **Recommendation: (a) now, (b) as phase 3.** (c) would let a chief turn
-   kill a window you opened yourself.
-2. **When your words don't say which mode.** "Open a new session and run the
-   kickoff" can be read as either replace or spin-off. Should the chief always
-   ask with a two-option card, or default to one? **Recommendation: no
-   default; ask.** That is decision 1's rule: muster never picks for you.
-3. **Inheriting the setup.** "A new opencode session" while viewing an
-   opencode session on `<host>` with model M. Should the successor default to
-   that same host, runtime and model (`suggested_target` and
-   `suggested_model`), or should the existing cards ask for each one you did
-   not name? **Recommendation: inherit what the subject shows, and let your
-   words override.** The dispatch rules and approvals stay exactly today's.
-   Only the chief's reading of "a new session" gains the subject as context.
-4. **The branch.** A host spawn always cuts a fresh worktree from
-   `origin/<base>`. Should a successor default `base` to the predecessor's
-   pushed branch (from its dispatch row) when the kickoff names it, or always
-   to the repository default? Unpushed work in the old worktree is never
-   carried over either way. **Recommendation: the predecessor's branch when it
-   is on the remote, else the default, and the live card says which.**
-5. **A confirm tap before the kickoff runs.** Your typed message is already
-   the authority, as for every dispatch today. Do you also want a "Start with
-   this kickoff" card showing the excerpt? **Recommendation: no card.** The
-   strip shows the exact excerpt as it is sent. Revisit if a wrong block is
-   ever picked.
-6. **The thread.** Should "ask the chief about this agent" be its own chief
-   thread per lineage (recommended; it follows the successor), or go to your
-   default chief conversation? This depends on phase 0's measurement (a).
+1. **D1: what replace does to the old session.**
+   - **Phase 2:** replace marks the old session superseded (the banner, and its
+     sidebar row in the collapsed Superseded group), and its window keeps
+     running.
+   - **Phase 3:** muster may close the old window, but **only a window the
+     chief itself started**. That means a host dispatch whose own
+     `@muster-dispatch` tag the host checks (4.4).
+   - **Never:** muster never closes, automatically or otherwise, a window the
+     operator opened by hand.
+2. **D2: replace or spin-off, unspecified.** When the owner's words name
+   neither, muster asks with a **one-tap card**, "Replace this session" or
+   "Spin off a new one". There is no default. The mechanism is the held
+   dispatch with a `succession` blank (4.2).
+3. **D3: setup.** The successor inherits the viewed session's host, runtime
+   and model (`suggested_target`, `suggested_model`, 4.1), under the existing
+   dispatch rules: the same targets, model checks, held cards, caps and
+   approvals, and no new configuration. **The operator's words override**
+   anything inherited.
+4. **D4: branch.**
+   - The successor starts from the old session's branch when that branch is on
+     the remote; otherwise from the repository default.
+   - An owner-opened window has no dispatch row to name its branch, so it
+     takes the default.
+   - The live card says which base was used.
+   - Unpushed work in the old worktree never carries over, because a successor
+     always gets a fresh worktree (`suggested_base`, 4.1).
+5. **D5: no extra confirm tap.** There is no "Start with this kickoff" card.
+   The owner's typed message is the authority, as for every dispatch today,
+   and the chief strip shows the exact kickoff that was sent (2.4).
+6. **D6: thread.** There is one chief thread per succession chain, keyed by
+   the lineage root (2.3), **if phase 0 confirms it works**: a non-default
+   chief session keeps its own conversation, and `ownerTurnFor` passes in it.
+   If it does not, the fallback in 2.3 applies: the chief's default session,
+   with the strip filtered to this lineage's `about` rows.
