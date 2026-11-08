@@ -165,26 +165,6 @@ func TestTheStripRefreshRedrawsWhatTheStripShows(t *testing.T) {
 	}
 }
 
-// TestTheSidebarOffersDispatchOrSaysWhy: the sidebar's Agents head draws the
-// dispatch "+" (the task-less sheet, GET /ui/agents/new into the sheet every
-// sidebar document carries) on a server that can dispatch, and the "not set
-// up" hint on one that cannot — never both, never neither.
-func TestTheSidebarOffersDispatchOrSaysWhy(t *testing.T) {
-	on := renderString(t, sidebar("", "", false, Features{Dispatch: true}))
-	off := renderString(t, sidebar("", "", false, Features{}))
-	if !strings.Contains(on, `id="`+NavDeployID+`"`) || !strings.Contains(on, `hx-get="/ui/agents/new"`) || strings.Contains(on, DispatchOffHintAttr) {
-		t.Errorf("with dispatch: the + is missing or the hint is drawn:\n%s", on)
-	}
-	if strings.Contains(off, `id="`+NavDeployID+`"`) || !strings.Contains(off, DispatchOffHintAttr) {
-		t.Errorf("without dispatch: the + is drawn or the hint is missing")
-	}
-	for name, doc := range map[string]string{"with": on, "without": off} {
-		if strings.Count(doc, `id="agent-modal"`) != 1 {
-			t.Errorf("%s dispatch: the sidebar does not carry the one dispatch sheet", name)
-		}
-	}
-}
-
 // TestIdleEntriesAreInTheSidebarsIdleGroup: the sidebar draws the Idle
 // section's entries last, in a shut "Idle (N)" group — but never one that is
 // waiting on the operator, the chief, or the page's own session; and draws no

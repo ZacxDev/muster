@@ -31,18 +31,14 @@ const TmuxOneLiner = "tmux new -A -s work claude"
 // HomeEmptyID is the onboarding page's content (agentsEmptyState).
 const HomeEmptyID = "agents-empty"
 
-// HomeDispatchID is the onboarding page's dispatch button (agentsEmptyState).
-const HomeDispatchID = "home-deploy"
-
 // agentsEmptyState is what home shows when there is nothing to open: no
 // dispatched agent and no mirrored window (internal/api handleAgentsHome — the
 // retired Agents list's empty state, now the page /agents draws when home has
 // nowhere to go). On a fresh install that is either no machine connected yet
 // or a connected machine with nothing in tmux, so it says how to fix both —
-// never a blank screen. With dispatch configured (Features.Dispatch) it also
-// offers the sheet the sidebar's "+" opens, as a button a phone can reach
-// without opening the drawer.
-func agentsEmptyState(feat Features) g.Node {
+// never a blank screen. It offers no dispatch button: the chief starts agents
+// (docs/design/chief-dispatch.md phase 2 deleted "Dispatch an agent").
+func agentsEmptyState() g.Node {
 	return Div(
 		ID(HomeEmptyID),
 		Class("mx-auto mt-12 flex w-full max-w-xl flex-col items-center gap-3 px-1 text-center"),
@@ -62,18 +58,6 @@ func agentsEmptyState(feat Features) g.Node {
 			A(Href(InstallGuideURL), Target("_blank"), Rel("noopener"), Class("text-accent underline"), g.Text("INSTALL.md")),
 			g.Text(" yourself."),
 		),
-		g.If(feat.Dispatch, Button(
-			ID(HomeDispatchID),
-			Type("button"),
-			g.Attr("aria-haspopup", "dialog"),
-			Class("press mt-2 inline-flex min-h-[44px] items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),
-			hx("hx-get", "/ui/agents/new"),
-			hx("hx-target", "#agent-modal-body"),
-			hx("hx-swap", "innerHTML"),
-			hx("hx-on:click", modalOpenClick("agent-modal")),
-			g.Text("Dispatch an agent"),
-		)),
-		g.If(!feat.Dispatch, P(Class("text-sm text-muted"), dispatchOffHint())),
 	)
 }
 
@@ -81,7 +65,7 @@ func agentsEmptyState(feat Features) g.Node {
 // (agentsEmptyState), inside the navigation (NavDocument).
 func RenderAgentsHome(w io.Writer, feat Features) error {
 	var b strings.Builder
-	if err := agentsEmptyState(feat).Render(&b); err != nil {
+	if err := agentsEmptyState().Render(&b); err != nil {
 		return err
 	}
 	return RenderNavDocument(w, NavDocumentView{Title: "Agents", Feat: feat, Main: b.String()})

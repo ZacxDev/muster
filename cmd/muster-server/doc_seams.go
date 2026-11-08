@@ -114,7 +114,9 @@ package main
 //	  creating the row, so the operator's POST has already answered 200 … CLOSING
 //	  CONDITION: a synchronous check in internal/api's create handler, before the row
 //	  exists, keyed on the same capability, answering 4xx with
-//	  agentprovision.KickoffRefusalReason's text." handleAgentCreate asks
+//	  agentprovision.KickoffRefusalReason's text." The create handler — the deleted
+//	  dispatch form's handleAgentCreate, now POST /api/agents' handleAPIAgentCreate
+//	  with start: true — asks
 //	  api.Provisioner.KickoffUndeliverableReason — the same field Dispatch branches on,
 //	  which is what stops the two answers disagreeing — and answers 409 carrying it
 //	  before Agents.Create. The async half of the sentence is still TRUE of Dispatch
@@ -124,16 +126,13 @@ package main
 //	  reaches Dispatch through createAndDispatchAgent inside safeGo, so its refusal
 //	  is recorded on the row (`error` + the reason) rather than returned. (Runbook
 //	  dispatch was the second such caller until runbooks were removed.) It has no
-//	  "Save for later" affordance for a 4xx to point at; the row they
+//	  "create stopped" affordance for a 4xx to point at; the row they
 //	  create can be brought up with Start, which is the same escape by another door.
-//	  ⚠ AND THE UI STILL *OFFERS* THE DISPATCH BUTTON ON A DEPLOYMENT THAT WILL REFUSE
-//	  IT. The refusal is legible once clicked — internal/ui's htmx:responseError
-//	  handler toasts the 409 body verbatim — but nothing dims the affordance, so the
-//	  operator learns by being refused. CLOSING CONDITION: a pull request in which the
-//	  dispatch modal's Dispatch control is disabled, with the reason beside it, when
-//	  the provisioner reports a kickoff undeliverable. WHO CHECKS IT: the reviewer of
-//	  that pull request, against a rendered modal on a deployment with
-//	  agentprovision.KickoffDeliveryWired false.
+//	  ✅ "THE UI STILL *OFFERS* THE DISPATCH BUTTON ON A DEPLOYMENT THAT WILL REFUSE
+//	  IT" IS CLOSED BY DELETION: the dispatch form, its Dispatch control and every
+//	  button that opened it were removed (docs/design/chief-dispatch.md phase 2), so
+//	  there is no affordance left to dim. The machine route answers the 409 to its
+//	  caller.
 //	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
 //	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
 //	  TWO things block it, and both are OUTSIDE internal/agentgateway:

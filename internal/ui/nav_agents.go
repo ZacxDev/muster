@@ -30,9 +30,11 @@ import (
 // (operator decision: the sidebar and the session switcher's bar are how a
 // person moves between agents):
 //
-//   - the dispatch "+" (task-less, with "Save for later") sits beside the
-//     Agents label, or, on a server with no agent runtime, the "Agent dispatch
-//     not set up" hint (navAgentsHead);
+//   - NO dispatch "+": the chief starts agents (its agent_dispatch tool), and
+//     the machine route POST /api/agents (`muster agent create`) does for a
+//     deployment without one. docs/design/chief-dispatch.md phase 2 deleted the
+//     "+", its "Agent dispatch not set up" hint and the form, with nothing in
+//     their place (D8);
 //   - the Idle section: entries idle past MUSTER_AGENTS_IDLE_AFTER are drawn
 //     last, in a collapsed "Idle (N)" group (navIdleGroup);
 //   - a mirrored window whose host is offline says so on its row, and so does
@@ -131,7 +133,7 @@ func navAgentsSlot(overlay bool, feat Features) g.Node {
 		// A sideways swipe here is still the sidebar's (its edge-swipe close);
 		// a vertical one scrolls the list.
 		Class("flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-2 pb-2"),
-		navAgentsHead(feat),
+		navAgentsHead(),
 		Div(
 			ID(NavAgentsListID),
 			hx("hx-get", NavAgentsPath),
@@ -145,49 +147,12 @@ func navAgentsSlot(overlay bool, feat Features) g.Node {
 	)
 }
 
-// NavDeployID is the sidebar's dispatch "+" (navDeployButton).
-const NavDeployID = "sidebar-deploy"
-
-// navAgentsHead is the list's head row: the "Agents" label that names the list
-// and, at its end, the dispatch "+" (Features.Dispatch) or — on a server with
-// no agent runtime — the hint that says why there is none (dispatchOffHint).
-// A fixed 44px row whatever it holds, drawn with the sidebar, so neither
-// moves anything.
-func navAgentsHead(feat Features) g.Node {
-	var end g.Node
-	if feat.Dispatch {
-		end = navDeployButton()
-	} else {
-		end = dispatchOffHint()
-	}
+// navAgentsHead is the list's head row: the "Agents" label that names the
+// list. A fixed 44px row, drawn with the sidebar, so it moves nothing.
+func navAgentsHead() g.Node {
 	return Div(
 		Class("flex min-h-[44px] shrink-0 items-center gap-2 pl-3 pt-1"),
 		P(ID(navAgentsLabelID), Class("flex-1 text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
-		end,
-	)
-}
-
-// navDeployButton is the sidebar's "+": it opens the task-less dispatch sheet
-// (GET /ui/agents/new, DispatchModalBody) — the sheet the retired Agents list's
-// bar opened — loading its body into the sheet (agentModalShell, which every
-// document with the sidebar carries) and revealing it (modalOpenClick). A 44px
-// target around a 32px face.
-func navDeployButton() g.Node {
-	return Button(
-		ID(NavDeployID),
-		Type("button"),
-		g.Attr("aria-label", "Deploy agent"),
-		g.Attr("title", "Deploy agent"),
-		g.Attr("aria-haspopup", "dialog"),
-		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
-		hx("hx-get", "/ui/agents/new"),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		Span(
-			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
-		),
 	)
 }
 

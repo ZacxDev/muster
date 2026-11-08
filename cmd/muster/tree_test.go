@@ -50,7 +50,11 @@ import (
 //
 // 28 → 29: `nudge next` (nudge.go), a host's oldest chief-nudge notice as a
 // tmux target for a jump key — read from the attention summary.
-const wantVerbCount = 29
+//
+// 29 → 30: `agent create` (agent_create.go), POST /api/agents — the machine
+// route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
+// phase 2), on its own agent-create token.
+const wantVerbCount = 30
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -70,6 +74,9 @@ var wiring = []struct {
 	// unlike `chief ask` it performs no resolve step — asserting it reaches
 	// /api/agents/{name}/messages rather than /api/agents is what pins that.
 	{"agent messages", []string{"agent", "messages", "chief"}, "GET /api/agents/chief/messages"},
+	// Creating an agent (agent_create.go) on MUSTER_AGENT_CREATE_TOKEN, which
+	// the runner below sets: the verb refuses locally without it.
+	{"agent create", []string{"agent", "create", "--start=false", "--prompt", "x"}, "POST /api/agents"},
 	// The /agent/task* family carries no id: the token identifies the caller and
 	// the server resolves the bound task from it. That these three reach
 	// /agent/task* rather than /api/tasks/* is the whole point of the commands —
@@ -239,6 +246,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			// RIGHT name from one that took whatever came first.
 			h.json("GET /api/agents", http.StatusOK,
 				`[{"id":11,"name":"clever-fox"},{"id":12,"name":"chief"}]`)
+			h.json("POST /api/agents", http.StatusCreated, `{"agent":{"id":13,"name":"spry-newt"},"started":false}`)
 			h.json("GET /api/agents/chief/messages", http.StatusOK,
 				`{"agent":"chief","agentId":12,"sessionId":8,"sessionCount":1,"sessions":[],`+
 					`"messages":[{"id":1,"sessionId":8,"role":"user","kind":"text","content":"hi",`+

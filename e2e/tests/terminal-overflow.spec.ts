@@ -3,7 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { hookToken, overflowPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 
 // A terminal whose far side is WIDER than the page (internal/termsize): the
 // session keeps its size, the page renders it in a scrolling, pinch-zoomable
@@ -55,22 +55,14 @@ async function agentNames(): Promise<Set<string>> {
   return new Set(rows.map((a) => a.name));
 }
 
-// A claude-code agent created through the API's own door (the hook token), so
-// the dispatch sheet's layout at each width is not part of this spec.
+// A claude-code agent created stopped through POST /api/agents (lib/seed.ts,
+// which replaced the deleted dispatch sheet); its page is opened.
 async function newAgent(page: Page, note: string): Promise<string> {
   const before = await agentNames();
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await sheet.locator('[data-kind-option="claude-code"]').click();
-  await sheet.locator('textarea[name="note_text"]').fill(note);
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const made = await createAgent(origin, { kind: 'claude-code', prompt: note });
   const created = [...(await agentNames())].filter((n) => !before.has(n));
-  expect(created.length, 'exactly one agent created').toBe(1);
-  // The sheet's answer sends the page to the new agent's own page.
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0]);
+  expect(created, 'exactly one agent created').toEqual([made.name]);
+  await page.goto(origin + '/agents/' + created[0]);
   return created[0];
 }
 

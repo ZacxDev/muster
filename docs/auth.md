@@ -368,12 +368,18 @@ Two endpoints help with personal tokens:
   reaches answers **403** before it runs: the task, agent and flow APIs, the
   token API, and `GET /api/whoami` too (the summary's own 200, 401 or 403
   says whether the token works). Give a status bar this kind.
+- **Create agents** (`agent-create`): [`POST /api/agents`](provisioner.md#creating-an-agent-without-the-chief)
+  and **nothing else** (every other route answers **403**). It is also the
+  only token that reaches that route: a **full-access token is refused there**,
+  so the CLI's ordinary token cannot create agents. `muster agent create`
+  reads it from `MUSTER_AGENT_CREATE_TOKEN`.
 
 The allowed routes are one list in `internal/api/api_tokens.go`
 (`tokenScopeRoutes`), checked where every personal token is admitted, so a
-route added later is refused to a bar-summary token until someone adds it
-there. The token page and `muster token ls` (`"scope": "full"` or
-`"summary"`) show each token's scope, and `muster whoami` shows the
+route added later is refused to a narrower token until someone adds it
+there; a route listed in `explicitScopeRoutes` is refused to a full token too.
+The token page and `muster token ls` (`"scope": "full"`, `"summary"` or
+`"agent-create"`) show each token's scope, and `muster whoami` shows the
 presented (full) token's.
 
 From the CLI these are `muster whoami`, `muster token ls` and

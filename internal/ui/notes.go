@@ -52,18 +52,6 @@ type TaskCardView struct {
 	// <h3> inside the list.
 	Detail bool
 
-	// Dispatch is whether this server can dispatch an agent at all
-	// (Features.Dispatch, from the same server predicate). False draws no
-	// Dispatch button on an agent-less card: with no agent runtime the
-	// sheet's submit can only answer 503.
-	//
-	// ⚠ THE ZERO VALUE DRAWS LESS, ON PURPOSE — the same polarity as Features.
-	// A card builder that forgets to set it hides a button that would have
-	// worked, which is visible and safe; the opposite default is the shipped
-	// defect this field exists to close (a "Dispatch" over a 503 on every card
-	// of a docker compose install).
-	Dispatch bool
-
 	// RefWrites are a plugin task REFERENCE's writes still on their way to the
 	// upstream (pending, claimed, failed), for the detail shape's thread. Nil
 	// for an ordinary task, and on the board, which does not read them.
@@ -151,7 +139,7 @@ func NotesPanel(active bool, drawn *shellTasks) g.Node {
 			// changing ONE card's status wiped the whole list (articles 1 → 0) and
 			// replaced it with "Couldn't load tasks.", a report of a failure that did
 			// not happen, on top of the correct per-request toast. Same idiom as
-			// dispatchCloseOnOwnSubmit (agents.go) and the edit form's after-request.
+			// the edit form's after-request.
 			hx("hx-on::response-error", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
 			hx("hx-on::send-error", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
 			hx("hx-on::timeout", "if(event.target===this && window.cgTasksListFailed)window.cgTasksListFailed(this)"),
@@ -630,10 +618,8 @@ func taskModalDiscardBar() g.Node { return modalDiscardBar("task-modal") }
 // standalone PWA, so hx-confirm/window.confirm would never resolve and the user
 // would be stuck. Hidden until cgModalDismiss(<modalID>) reveals it.
 //
-// 🔴 ONE pattern for BOTH sheets. The dispatch sheet holds the longest free text
-// in the app (the ad-hoc prompt) and Escape used to hide it unconditionally —
-// reopening refetches /ui/agents/new, so the prompt was gone. It gets this exact
-// bar, keyed by id, rather than a second discard idiom.
+// It is keyed by id, so a second sheet reuses this bar rather than growing a
+// second discard idiom (the dispatch sheet did, until it was deleted).
 //
 // The id contract is <modalID>-discard, which cgModalDismiss/cgModalClose derive.
 func modalDiscardBar(modalID string) g.Node {
@@ -1101,17 +1087,15 @@ func taskDetailHeading(n notes.Note) string {
 }
 
 // taskActionTrailing is the right-hand side of a task card's action row. With NO
-// linked agent it is the Dispatch button (unchanged behaviour). Once an agent is
-// linked it becomes a live agent-status chip (task-facing label) plus an "Open
-// chat" button that navigates to the agent's chat/detail view — replacing
-// Dispatch, so the card reflects that the task is being worked. On a server
-// that cannot dispatch (v.Dispatch false) an agent-less card draws nothing here.
+// linked agent it draws nothing: the card's Dispatch button was deleted with the
+// dispatch form (docs/design/chief-dispatch.md phase 2, D8), and the chief starts
+// an agent on a task (agent_dispatch). Once an agent is linked it is a live
+// agent-status chip (task-facing label) plus an "Open chat" button that
+// navigates to the agent's chat/detail view, so the card reflects that the task
+// is being worked.
 func taskActionTrailing(v TaskCardView) g.Node {
 	if v.Agent == nil {
-		if !v.Dispatch {
-			return nil
-		}
-		return noteDispatchButton(v.Note)
+		return nil
 	}
 	a := v.Agent
 	// shrink-0 pins the whole trailing cluster (chip + CTA) to the FAR RIGHT of the
@@ -1443,8 +1427,7 @@ func sessionRoleLabel(role string) string {
 // to the real field at their own pace with no behaviour change.
 //
 // EXPORTED because internal/api needs it too. It previously did not, and both
-// dispatch-picker labels (buildTaskDispatchView, handleAgentNoteOptions) read
-// n.Directory directly — so a producer that correctly sent `title` instead of
+// (since deleted) dispatch-picker labels read n.Directory directly — so a producer that correctly sent `title` instead of
 // smuggling it lost its heading in the picker, which is exactly where telling
 // captures apart matters. Any new label site MUST use this, not n.Directory.
 func TaskTitle(n notes.Note) string {
@@ -1780,51 +1763,6 @@ func noteDeleteButton(id int64) g.Node {
 	)
 }
 
-// noteDispatchButton opens the SHARED dispatch modal pre-selected to this task, so
-// the operator adjudicates → dispatches an agent for it in one tap. It mirrors the
-// FAB's exact open mechanism (hx-get the form body into #agent-modal-body, then
-// un-hide #agent-modal) but adds ?note=<id>&label=<short> so the "Existing task"
-// combobox is pre-filled. The label is the task's directory, falling back to a
-// truncated first line of the body.
-//
-// A `gate:<reason>` routing tag makes the task NOT dispatchable: the button
-// renders DISABLED with the reason as its title (and the dispatch endpoint 409s —
-// this is a hint, not the enforcement).
-func noteDispatchButton(n notes.Note) g.Node {
-	if reason, gated := notes.GateReason(n.Tags); gated {
-		return Button(
-			Type("button"),
-			Disabled(),
-			g.Attr("data-dispatch-gated", reason),
-			g.Attr("title", "Gated: "+reason+" — remove the gate: tag to dispatch"),
-			g.Attr("aria-label", "Dispatch blocked: "+reason),
-			Class("press inline-flex h-11 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
-			g.Text("Dispatch"),
-		)
-	}
-	label := TaskTitle(n)
-	if label == "" {
-		label = truncate(firstLine(n.Body), 60)
-	}
-	q := url.Values{}
-	q.Set("note", strconv.FormatInt(n.ID, 10))
-	q.Set("label", label)
-	return Button(
-		Type("button"),
-		g.Attr("title", "Dispatch agent for this task"),
-		g.Attr("aria-label", "Dispatch agent for this task"),
-		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
-		// Mirror shellFAB: load the dispatch form into the modal body, then reveal
-		// the always-present modal shell.
-		hx("hx-get", "/ui/agents/new?"+q.Encode()),
-		hx("hx-target", "#agent-modal-body"),
-		hx("hx-swap", "innerHTML"),
-		hx("hx-on:click", modalOpenClick("agent-modal")),
-		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 15l4-4M9 11l5-9M9 11l-4 4M14 2l4 4-9 5"/></svg>`),
-		g.Text("Dispatch"),
-	)
-}
-
 // noteEditButton renders the card's Edit control. When the task is in progress it
 // renders a DISABLED button with a hint (an in-progress task is immutable — the
 // same guard the edit route enforces server-side); otherwise it opens the SHARED
@@ -2052,10 +1990,9 @@ func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill st
 				),
 			),
 			// Advanced: directory + optional dispatch config (model/repo).
-			// A task can carry the model/repo it should dispatch with, so
-			// its Dispatch button becomes a pre-filled confirm. Reuses the exact
-			// dispatch-modal controls; their field names (directory / model / repo)
-			// match what handleNoteCreate parses. advancedDefaults JS
+			// A task can carry the model/repo an agent started on it should
+			// use. Their field names (directory / model / repo) match what
+			// handleNoteCreate parses. advancedDefaults JS
 			// pre-fills directory/model from localStorage recents (last-used) so a
 			// returning user's sane defaults ride along even while collapsed.
 			advancedDisclosure(

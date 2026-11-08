@@ -125,8 +125,6 @@ GET /sw.js
 GET /tasks
 GET /tasks/{id}
 GET /tasks/{id}/attachments/{aid}
-GET /ui/agents/new
-GET /ui/agents/notes
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
@@ -186,7 +184,6 @@ POST /agent/connectors/{name}/request
 POST /agent/officer/ask-images
 POST /agent/task/comment
 POST /agent/work
-POST /agents
 POST /agents/pins
 POST /agents/pins/delete
 POST /agents/sessions/{sid}/read
@@ -197,6 +194,7 @@ POST /agents/{id}/sessions/{sid}/default
 POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
+POST /api/agents
 POST /api/agents/{name}/messages
 POST /api/chief/replace
 POST /api/device/actions/attention/asks/{id}/answer

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -150,11 +149,16 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing
 	// for it to talk to.
 	mux.HandleFunc("POST /api/agents/{name}/messages", s.requireArmedHookToken(s.requireGatewayProvisioner(s.handleAPIAgentSendMessage)))
-	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
+	// 🔴 CREATING AN AGENT FROM A MACHINE (agent_create_api.go): the route that
+	// replaced the web UI's dispatch form, which docs/design/chief-dispatch.md
+	// phase 2 deleted (GET /ui/agents/new, GET /ui/agents/notes and POST
+	// /agents answer 404; removed_surfaces_test.go). Only a personal token of
+	// scope agent-create reaches it — a FULL token does not (explicitScopeRoutes)
+	// — and the handler refuses the shared hook secret. Auth outside, the
+	// provisioner doors inside, as every lifecycle route orders them.
+	mux.HandleFunc("POST /api/agents", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.requireDispatchServed(s.handleAPIAgentCreate))))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
-	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
-	mux.HandleFunc("POST /agents", s.requireSession(s.requireLifecycleProvisioner(s.requireDispatchServed(s.handleAgentCreate))))
 	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStart)))
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
@@ -266,45 +270,7 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	return cards, mirrors, nil
 }
 
-// handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It
-// renders INSTANTLY — the repo + task option lists (which hit the GitHub API /
-// DB) lazy-load into animated skeletons via /ui/agents/repos and /ui/agents/notes
-// once the modal opens, so the form never blocks on a slow upstream.
-//
-// When ?note=<id> is set (the Task-card Dispatch path) it loads the task and
-// renders the TASK-SCOPED confirm (fixed Model/Repository rows
-// pre-filled from the task's dispatch config). A missing/failed load falls back
-// to the plain FAB form so the modal always renders something usable.
-func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// No agent runtime: explain, rather than draw a form whose submit can only
-	// answer requireLifecycleProvisioner's 503 (dispatchServed).
-	if !s.dispatchServed() {
-		if err := ui.RenderDispatchUnavailable(w); err != nil {
-			s.logger.Printf("agents: render dispatch-unavailable sheet: %v", err)
-		}
-		return
-	}
-	if noteParam := r.URL.Query().Get("note"); noteParam != "" && s.ext.Notes != nil {
-		if id, err := strconv.ParseInt(noteParam, 10, 64); err == nil {
-			if n, err := s.ext.Notes.Get(r.Context(), id); err == nil {
-				v := s.buildTaskDispatchView(r.Context(), n)
-				v.Kinds = s.kindChoices(r.Context())
-				if rerr := ui.RenderDispatchModalTask(w, v); rerr != nil {
-					s.logger.Printf("agents: render task dispatch modal: %v", rerr)
-				}
-				return
-			} else {
-				s.logger.Printf("agents: dispatch modal load task %d: %v", id, err)
-			}
-		}
-	}
-	if err := ui.RenderDispatchModal(w, s.kindChoices(r.Context())); err != nil {
-		s.logger.Printf("agents: render dispatch modal: %v", err)
-	}
-}
-
-// kindChoices is what the dispatch form offers THE CALLER: the enabled kinds,
+// kindChoices is what the caller may create (agent_dispatch's targets read it): the enabled kinds,
 // the caller's OWN Claude account names (never tokens — and never the admin's
 // pool for a member), and which kinds the caller has no credential for.
 func (s *Server) kindChoices(ctx context.Context) ui.KindChoices {
@@ -330,73 +296,6 @@ func callerID(ctx context.Context) int64 {
 	return 0
 }
 
-// buildTaskDispatchView resolves a task's dispatch config into the task-scoped
-// modal view: the stored model/repo/branch and — when the task has no stored
-// repo — a best-effort repo inference from its directory.
-func (s *Server) buildTaskDispatchView(ctx context.Context, n notes.Note) ui.TaskDispatchView {
-	// ui.TaskTitle, NOT n.Directory: a producer that sends the real `title` field
-	// (the capture extension since #244) would otherwise show its body's first
-	// line here instead of its heading.
-	label := ui.TaskTitle(n)
-	if label == "" {
-		label = firstLine(n.Body)
-	}
-	v := ui.TaskDispatchView{
-		NoteID:     n.ID,
-		Label:      truncate(label, 80),
-		Model:      n.Model,
-		Repo:       n.Repo,
-		RepoBranch: n.RepoBranch,
-	}
-	// Infer the repo from the task's directory when none is stored (best-effort;
-	// non-fatal): match the directory (or its last path segment) against a
-	// connected repo's full name / last segment.
-	if v.Repo == "" && n.Directory != "" {
-		v.Repo = s.inferRepoFromDirectory(ctx, n.Directory)
-	}
-	return v
-}
-
-// inferRepoFromDirectory returns a connected repo whose full name equals the
-// directory, or whose last path segment matches the directory's last segment;
-// "" when there's no GitHub connection, the list fails, or nothing matches. Cheap
-// and non-fatal — a miss just leaves the repo blank in the confirm. The match
-// itself is the pure matchRepoByDirectory (unit-tested).
-func (s *Server) inferRepoFromDirectory(ctx context.Context, directory string) string {
-	list, err := s.githubRepos(ctx)
-	if err != nil {
-		return ""
-	}
-	names := make([]string, 0, len(list))
-	for _, rp := range list {
-		names = append(names, rp.FullName)
-	}
-	return matchRepoByDirectory(directory, names)
-}
-
-// matchRepoByDirectory picks the repo full name that best matches a task's
-// working directory: an exact full-name match wins; otherwise the first repo
-// whose last path segment equals the directory's last segment. "" when nothing
-// matches. Pure (no I/O) so the inference logic is unit-testable with a faked
-// repo list.
-func matchRepoByDirectory(directory string, repoFullNames []string) string {
-	if strings.TrimSpace(directory) == "" {
-		return ""
-	}
-	for _, name := range repoFullNames {
-		if name == directory {
-			return name
-		}
-	}
-	dirBase := path.Base(strings.TrimRight(directory, "/"))
-	for _, name := range repoFullNames {
-		if path.Base(name) == dirBase {
-			return name
-		}
-	}
-	return ""
-}
-
 // handleAgentRepoOptions serves /ui/agents/repos: the repo combobox <li> options
 // (slow — hits the GitHub API), swapped in over the skeleton.
 func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) {
@@ -409,28 +308,6 @@ func (s *Server) handleAgentRepoOptions(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderRepoOptions(w, repos); err != nil {
 		s.logger.Printf("agents: render repo options: %v", err)
-	}
-}
-
-// handleAgentNoteOptions serves /ui/agents/notes: the task combobox <li> options,
-// swapped in over the skeleton.
-func (s *Server) handleAgentNoteOptions(w http.ResponseWriter, r *http.Request) {
-	notesOpts := make([]ui.NoteOption, 0)
-	if s.ext.Notes != nil {
-		if list, err := s.ext.Notes.ListSummaries(r.Context()); err == nil {
-			for _, n := range list {
-				// ui.TaskTitle, NOT n.Directory — see buildTaskDispatchView.
-				label := ui.TaskTitle(n)
-				if label == "" {
-					label = firstLine(n.Body)
-				}
-				notesOpts = append(notesOpts, ui.NoteOption{ID: n.ID, Label: truncate(label, 60)})
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderNoteOptions(w, notesOpts); err != nil {
-		s.logger.Printf("agents: render note options: %v", err)
 	}
 }
 
@@ -737,152 +614,6 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	done(true)
 }
 
-// handleAgentCreate handles POST /agents: build the record, then provision only when
-// the action is a dispatch.
-//
-// 🔴 THIS COMMENT HAS NOW BEEN WRONG IN TWO OPPOSITE DIRECTIONS, WHICH IS WHY IT SAYS
-// SO. It read "save = provision at 0 replicas". That was wrong when written — a save
-// reached Provisioner.Dispatch(kickoff=false), and provision.Spec.Replicas ZERO MEANS
-// ONE, so the instance came up with a replica running — and it is wrong again now in
-// the other direction, because the lifecycle adapter creates NOTHING on that path.
-// A save provisions nothing at all; Start is what provisions a saved agent. The gate
-// check below relies on exactly that, which is why this sentence is load-bearing
-// rather than decorative.
-func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	action := r.FormValue("action")
-	// 🔴 REFUSE A DISPATCH THIS DEPLOYMENT CANNOT SATISFY *HERE*, BEFORE THE ROW,
-	// BECAUSE THE PROVISIONER'S OWN REFUSAL CANNOT REACH THE PERSON WHO CLICKED.
-	// createAndDispatchAgent calls Dispatch inside safeGo — after the row exists and
-	// after this handler has answered — so a refusal there is a log line plus a red
-	// dot whose reason reaches no HTML surface. That was measured: with a kickoff
-	// undeliverable, POST /agents answered 200, rendered the (since retired) agents list, and the
-	// operator's only evidence was a status colour.
-	//
-	// ⚠ ONLY action=dispatch IS REFUSED. "Save for later" asks for nothing this
-	// deployment cannot do, it is the operation the refusal's own remedy text points
-	// at, and refusing it would make that remedy a lie — the same asymmetry
-	// agentprovision.Adapter.Dispatch draws one layer down, and for the same reason.
-	// Both halves are pinned by TestADispatchIsRefusedWhileASaveAndAStartAreNot.
-	//
-	// 🔴 THE ANSWER IS THE PROVISIONER'S, NOT A SECOND OPINION ABOUT THE
-	// CONFIGURATION. Asking the implementation is what makes this pre-flight unable
-	// to disagree with what the dispatch would have done; computing it here from
-	// Extensions fields would be two expressions over one condition.
-	if action == "dispatch" {
-		if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-			// 409 rather than 503: the request conflicts with the deployment's
-			// current state and NOTHING about retrying it later is different, which
-			// is what 503 would promise. Same status and same shape as the
-			// `gate:<reason>` refusal below — internal/ui's htmx:responseError
-			// handler toasts the body verbatim, so this text is what the operator
-			// reads.
-			http.Error(w, reason, http.StatusConflict)
-			return
-		}
-	}
-	repo := strings.TrimSpace(r.FormValue("repo"))
-	branch := strings.TrimSpace(r.FormValue("repo_branch"))
-	model := strings.TrimSpace(r.FormValue("model"))
-	noteText := strings.TrimSpace(r.FormValue("note_text"))
-	kind := strings.TrimSpace(r.FormValue("kind"))
-	ccAccount := strings.TrimSpace(r.FormValue("cc_account"))
-	ccFailover := formTrue(r.FormValue("cc_failover"))
-	workerPool := strings.TrimSpace(r.FormValue("worker_pool"))
-
-	// Resolve the kickoff note: an existing note's body takes precedence.
-	var noteID *int64
-	if v := r.FormValue("note_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil && s.ext.Notes != nil {
-			if n, err := s.ext.Notes.Get(ctx, id); err == nil {
-				// A `gate:<reason>` routing tag means the task is NOT dispatchable yet.
-				// The card disables its Dispatch button, but this is the authoritative
-				// check (defense in depth — the modal can be opened by other paths).
-				// Refuse a real dispatch with 409 + the reason; "save for later" is
-				// still allowed (it provisions nothing).
-				if reason, gated := notes.GateReason(n.Tags); gated && action == "dispatch" {
-					http.Error(w, "task is gated ("+reason+") — remove the gate: tag to dispatch", http.StatusConflict)
-					return
-				}
-				noteText = n.Body
-				noteID = &id
-			}
-		}
-	}
-
-	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
-		Kickoff: action == "dispatch", TrackOutcome: true,
-		Kind: kind, CCAccount: ccAccount, CCFailover: ccFailover, WorkerPool: workerPool,
-	})
-	if err != nil {
-		s.logger.Printf("agents: create/dispatch: %v", err)
-		// A kind/account refusal is decided BEFORE the row exists and is the
-		// operator's to act on — the toast shows this text verbatim.
-		if errors.Is(err, ErrDispatchRefused) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		// An uncredentialed model is the OPERATOR's typo, not a server fault, and
-		// the message carries the corrected slug — answer 400 with it rather than
-		// burying the one useful sentence in a log behind a generic 500.
-		if errors.Is(err, agents.ErrModelNotCredentialed) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Error(w, "could not create agent", http.StatusInternalServerError)
-		return
-	}
-
-	// Dispatching FROM a task advances it open→in_progress so its card reflects
-	// that an agent is now working it. Only for a real dispatch (not "save"), only
-	// when the task is still open (never downgrade a later status), and always
-	// best-effort — a status failure must not fail the dispatch the user just made.
-	if action == "dispatch" && noteID != nil {
-		s.advanceTaskToInProgress(ctx, *noteID)
-	}
-
-	// 🔴 THE ANSWER HAS TO FIT THE FORM THAT ASKED. A task's Dispatch (the
-	// task-scoped sheet, on the board or on /tasks/{id}) targets that task's
-	// card, and gets the card back — the dispatch's visible effect there is the
-	// task flipping to in-progress with its new agent's status chip. Every
-	// other submit — the sidebar's "+", the onboarding page's button, whose form
-	// swaps nothing — is sent to the new agent's page (HX-Redirect), where it
-	// can be watched starting (or, saved for later, started).
-	//
-	// 🔴 THE TARGET IS READ FROM HX-Target, THE ELEMENT htmx WILL SWAP INTO. The
-	// sheet with no task can still name one (its "Existing task" combobox), so
-	// "a note id was posted" does not say which form it was. The answer used to
-	// be the Agents list, morphed into #agents-list — an element that existed
-	// ONLY on the retired list's document.
-	if noteID != nil && r.Header.Get("HX-Target") == "task-"+strconv.FormatInt(*noteID, 10) {
-		note, err := s.ext.Notes.Get(ctx, *noteID)
-		if err == nil {
-			s.renderNoteCard(w, r, note)
-			return
-		}
-		// 🔴 204, NOT SOMETHING ELSE IN THE CARD'S PLACE: htmx does not swap a
-		// No Content response, so the page keeps the card it already has —
-		// which is correct: the dispatch SUCCEEDED, only the re-read failed.
-		// advanceTaskToInProgress broadcasts task.changed after its commit, so
-		// the page's own live refresh brings the advanced card.
-		s.logger.Printf("agents: reload task %d after dispatch: %v", *noteID, err)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	to := s.agentPageHref(ctx, rec)
-	if r.Header.Get("HX-Request") != "true" {
-		http.Redirect(w, r, to, http.StatusSeeOther)
-		return
-	}
-	w.Header().Set("HX-Redirect", to)
-	w.WriteHeader(http.StatusOK)
-}
-
 // advanceTaskToInProgress flips a task open→in_progress after a dispatch. It
 // re-reads the task's current status and only advances it when still open, so a
 // task already in a later state (ready_for_review / complete) is never
@@ -934,7 +665,7 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 	//
 	// Two things follow. Other open tabs and the board learned of the advance
 	// only by accident (an agent status tick, or a resync). And the 204 branch in
-	// handleAgentCreate promised "taskDetailLive re-fetches on the next
+	// the (since deleted) dispatch form's handleAgentCreate promised "taskDetailLive re-fetches on the next
 	// sse:agent.changed / muster:resync anyway" — a promise nothing kept, since
 	// the agent.changed for THIS dispatch had already fired. This broadcast is
 	// what makes it true: it is emitted after the status is committed, so the
@@ -986,7 +717,7 @@ type dispatchParams struct {
 	WorkerPool string
 	// StartWithoutKickoff brings the new agent up with Provisioner.Start
 	// instead of Dispatch: an instance with no first turn claimed — what the
-	// form's "Save for later, then Start" ended in — WITHOUT the save. The row
+	// deleted form's "Save for later, then Start" ended in — WITHOUT the save. The row
 	// is created `provisioning` and Start keeps it so; a save would store
 	// `stopped` first, and in that window the agent would drop out of the
 	// chief's live count (agent_dispatch's worker_pool without a prompt).
@@ -996,7 +727,7 @@ type dispatchParams struct {
 	// (agent_outcome.go).
 	DispatchedBy int64
 	// TrackOutcome: this start is a DISPATCH whose work must end in an outcome
-	// (agent_outcome.go) — the dispatch form and the chief's agent_dispatch. An
+	// (agent_outcome.go) — POST /api/agents and the chief's agent_dispatch. An
 	// officer's instance and the chief's own provisioning are not tracked.
 	TrackOutcome bool
 }
@@ -2443,14 +2174,4 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
-}
-
-// formTrue reads an HTML checkbox or a JSON-ish flag: "on", "1", "true", "yes"
-// (any case) are true; anything else, including absent, is false.
-func formTrue(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "on", "1", "true", "yes":
-		return true
-	}
-	return false
 }

@@ -362,10 +362,17 @@ func TestTheComposeChiefIsWrittenWhereItsContainerReadsIt(t *testing.T) {
 		t.Fatalf("chief %q dispatch %q claude-code-agents %q; want on, off, off", states["chief"], states["dispatch"], states["claude-code-agents"])
 	}
 
-	// Dispatch is refused at its door, in the shape the dispatch sheet reads.
-	if w := st.post("/agents", url.Values{"note": {"do a thing"}}); w.Code != http.StatusServiceUnavailable ||
-		!strings.Contains(w.Body.String(), api.ProvisionerUnwiredField) || !strings.Contains(w.Body.String(), "dispatches no other agent") {
-		t.Fatalf("POST /agents on the Compose chief: %d %s", w.Code, w.Body)
+	// Creating an agent is refused at its door, POST /api/agents' second one
+	// (requireDispatchServed), before any credential question past the machine
+	// tier's — the hook secret is admitted there and would be refused by the
+	// handler, which this refusal never reaches.
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agents", strings.NewReader(`{"prompt":"do a thing","start":true}`))
+	createReq.Header.Set("Authorization", "Bearer "+st.env[envHookToken])
+	created := httptest.NewRecorder()
+	st.h.ServeHTTP(created, createReq)
+	if created.Code != http.StatusServiceUnavailable || !strings.Contains(created.Body.String(), api.ProvisionerUnwiredField) ||
+		!strings.Contains(created.Body.String(), "dispatches no other agent") {
+		t.Fatalf("POST /api/agents on the Compose chief: %d %s", created.Code, created.Body)
 	}
 
 	// The admin turns the chief on.

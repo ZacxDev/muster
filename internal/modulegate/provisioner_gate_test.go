@@ -18,8 +18,9 @@ import (
 // provisioner that runs the admin's chief and nothing else
 // (internal/api/compose_chief.go). Every place that asked `Provisioner != nil`
 // to decide whether to OFFER or PERFORM a dispatch would light up again over
-// it — the sidebar's "+", a task card's Dispatch, POST /agents,
-// agent_dispatch's targets — while every place that asks it to run the
+// it — POST /api/agents, agent_dispatch's targets (and, until
+// docs/design/chief-dispatch.md phase 2 deleted them, the sidebar's "+" and a
+// task card's Dispatch) — while every place that asks it to run the
 // chief's own lifecycle must keep answering yes.
 //
 // So the question has two names now (internal/api/ext.go):
@@ -46,15 +47,11 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/ext.go (*Server).lifecycleServed Provisioner!=nil":              1,
 	"internal/api/ext.go (*Server).dispatchServed lifecycleServed()":              1,
 	"internal/api/ext.go (*Server).requireLifecycleProvisioner lifecycleServed()": 1, // the lifecycle routes' 503
-	"internal/api/ext.go (*Server).requireDispatchServed dispatchServed()":        1, // POST /agents' second door
+	"internal/api/ext.go (*Server).requireDispatchServed dispatchServed()":        1, // POST /api/agents' second door
 
 	// --- DISPATCH: must read dispatchServed (the Compose chief answers no) ---
 	"internal/api/agent_dispatch.go (*Server).startReserved dispatchServed()":                1, // agent_dispatch's and dispatch_approve's start
 	"internal/api/task_actions.go (*Server).chiefDispatchDeploymentRefusal dispatchServed()": 1, // agent_dispatch's refusal, the task actions' offer
-	"internal/api/agents.go (*Server).handleAgentNewModal dispatchServed()":                  1, // the dispatch sheet
-	"internal/api/notes.go (*Server).taskCardView dispatchServed()":                          1, // a task card's Dispatch
-	"internal/api/notes.go (*Server).taskCardViews dispatchServed()":                         1, // the board's Dispatch buttons
-	"internal/api/server.go (*Server).shellFeatures dispatchServed()":                        1, // the sidebar's "+"
 	"cmd/muster-server/features.go (*app).featureStatuses Provisioner!=nil":                  2, // Dispatch and Claude Code agents, each in the arm AFTER the ComposeChief one
 
 	// --- LIFECYCLE: a provisioner is enough (the chief's own, or an agent that exists) ---

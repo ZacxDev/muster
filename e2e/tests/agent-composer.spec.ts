@@ -4,7 +4,7 @@ import { signIn } from '../lib/signin';
 import { agentComposerPort, hookToken, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { agentPageRe } from '../lib/agent-link';
-import { openDispatchSheet } from '../lib/dispatch';
+import { createAgent } from '../lib/seed';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
 // (the e2eterm build: the noop driver, whose terminal is played by
@@ -99,24 +99,18 @@ const storedStatus = async (name: string) => (await agentRows()).find((a) => a.n
 // counts the sign-ins the server issued, and pins this file's to exactly one.
 const sessionsIssued = () => (server?.log().match(/login: a browser session was issued/g) ?? []).length;
 
-// saveAgent creates one agent of the kind with no note through the dispatch
-// sheet's "Save for later" and returns its row (diffed against what was there).
+// saveAgent creates one agent of the kind with no note — stopped, as "Save for
+// later" made it — through POST /api/agents (lib/seed.ts, which replaced the
+// deleted dispatch form), opens its page, and returns its row (diffed against
+// what was there).
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
-  await page.goto(origin + '/tasks');
-  await openDispatchSheet(page);
-  const sheet = page.locator('#agent-modal form');
-  await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
-  await sheet.locator(`[data-kind-option="${kind}"]`).click();
-  await sheet.locator('textarea[name="note_text"]').fill('');
-  const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-  await sheet.locator('button[value="save"]').click();
-  expect((await resp).status()).toBe(200);
+  const agent = await createAgent(origin, { kind });
   const created = (await agentRows()).filter((a) => !before.has(a.name));
   expect(created.length, 'exactly one agent created').toBe(1);
+  expect(created[0].name).toBe(agent.name);
   made.push(created[0]);
-  // The sheet's answer sends the page to the new agent's own page.
-  await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name);
+  await page.goto(origin + '/agents/' + created[0].name);
   return created[0];
 }
 

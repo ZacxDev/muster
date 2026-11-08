@@ -78,8 +78,8 @@ import (
 // small pill padding — so the row of pills, what the bar is for, gets the
 // width.
 //
-// The bar draws no "+": the task-less dispatch sheet's "+", which the retired
-// Agents list's docked bar carried, is the sidebar's (navDeployButton).
+// The bar draws no "+": the chief starts agents (the dispatch sheet and its "+"
+// were deleted, docs/design/chief-dispatch.md phase 2).
 //
 // 🔴 THE MENUS AND THE PALETTE ARE POPOVERS (the top layer), so opening any
 // moves nothing on the page: no layout shift, and no clipping by the

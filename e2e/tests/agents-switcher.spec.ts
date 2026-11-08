@@ -1,9 +1,8 @@
 import { Page } from '@playwright/test';
 import { revealBox } from '../lib/composer';
 import { test, expect } from '../lib/fixtures';
-import { agentsSwitcherPort, hookToken } from '../lib/env';
+import { agentsSwitcherPort } from '../lib/env';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
-import { openDispatchSheet } from '../lib/dispatch';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { coarse, pickView } from '../lib/switcher';
 
@@ -413,48 +412,20 @@ for (const vp of [
       }
     });
 
-    test('the sidebar\'s "+" opens the dispatch sheet, and a dispatch from it creates an agent and opens it; a session page\'s bar has no "+"', async ({ page }) => {
-      test.setTimeout(90_000);
+    // docs/design/chief-dispatch.md phase 2 deleted the dispatch sheet with
+    // nothing in its place (D8): the chief starts agents. Neither the sidebar
+    // nor a session page's bar draws a "+".
+    test('neither the sidebar nor a session page\'s bar has a dispatch "+"', async ({ page }) => {
       await ready(page);
       await page.goto(MANGO);
       await expect(bar(page)).toBeVisible();
-      // A session page's bar: the same switcher, no "+" of its own.
       await expect(page.locator('#switcher-deploy')).toHaveCount(0);
       await page.locator('#sidebar-open').click();
-      const plus = page.locator('#sidebar-deploy');
-      await expect(plus).toBeVisible();
-      await expect(plus).toHaveAccessibleName('Deploy agent');
-      const pb = (await plus.boundingBox())!;
-      expect([Math.round(pb.width), Math.round(pb.height)], 'a 44px target').toEqual([44, 44]);
+      // Positive control: the sidebar's Agents head is drawn.
+      await expect(page.locator('#sidebar-agents-label')).toBeVisible();
+      await expect(page.locator('#sidebar-deploy')).toHaveCount(0);
+      await expect(page.locator('#agent-modal')).toHaveCount(0);
       await expectNoSidewaysScroll(page);
-      // Keyboard: focus it and press Enter.
-      await plus.focus();
-      await page.keyboard.press('Enter');
-      const sheet = page.locator('#agent-modal form');
-      await expect(sheet).toBeVisible();
-      await expect(sheet.locator('textarea[name="note_text"]'), 'the task-less form: an ad-hoc task box').toBeVisible();
-      await expect(sheet.locator('[data-combobox]:has(input[name="note_id"])'), 'the task-less form: an existing-task picker, not a fixed task').toHaveCount(1);
-      // A dispatch from it creates exactly one agent, and opens its page.
-      const names = async () => {
-        const r = await page.request.get(origin + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } });
-        expect(r.status()).toBe(200);
-        return (await r.json()) as { id: number; name: string }[];
-      };
-      const before = new Set((await names()).map((a) => a.name));
-      await sheet.locator('textarea[name="note_text"]').fill('e2e agents-switcher deploy');
-      const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
-      await sheet.locator('button[value="save"]').click();
-      expect((await resp).status()).toBe(200);
-      const created = (await names()).filter((a) => !before.has(a.name));
-      expect(created.length, 'exactly one agent created').toBe(1);
-      try {
-        await page.waitForURL((u) => u.pathname === '/agents/' + created[0].name, { timeout: 15_000 });
-      } finally {
-        await page.request.delete(`${origin}/agents/${created[0].id}`, { headers: { Origin: origin } });
-      }
-      // The same "+" from a page with no bar (openDispatchSheet: the sidebar's).
-      await page.goto(origin + '/tasks');
-      await openDispatchSheet(page);
     });
 
     // 🔴 THE ROW SWAP IS BOUND PER VERSION, NOT UNDER THE "/" FLAG. A window

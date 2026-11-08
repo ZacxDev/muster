@@ -89,6 +89,9 @@ var notLinkedLedger = map[string]string{
 	"e2e/mkmember": "the byo-credentials browser spec's member maker (`go run ./e2e/mkmember`). " +
 		"It writes a users row as the login role, bypassing row-level security, so it must " +
 		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
+	"e2e/mktoken": "the browser suite's agent-create token minter (`go run ./e2e/mktoken`, " +
+		"e2e/lib/seed.ts): it mints a personal token for any user id it is given, so it must " +
+		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/mkchat": "the mirror-chat browser spec's agent-with-a-chat maker (`go run ./e2e/mkchat`), " +
 		"which also deletes that agent: fixture writes, so it must never be reachable from a " +
 		"shipped binary; it refuses any database not ending in _e2e.",

@@ -62,6 +62,11 @@ const (
 	// ScopeSummary reaches GET /api/attention/summary and nothing else: what a
 	// status bar polls (internal/api's tokenScopeRoutes).
 	ScopeSummary = "summary"
+	// ScopeAgentCreate reaches POST /api/agents and nothing else (migration
+	// 0095): the owner creating an agent from a machine, which a full token
+	// does NOT reach (internal/api's explicitScopeRoutes). It is minted
+	// deliberately, at /account/tokens.
+	ScopeAgentCreate = "agent-create"
 )
 
 // MaxNameLen bounds a token's label, in characters.
@@ -85,7 +90,7 @@ var (
 	// ErrNoUser: a management call with no user principal on its context (or
 	// with the System principal, which is nobody's).
 	ErrNoUser = errors.New("apitokens: no user principal on this context")
-	// ErrBadScope: the scope is not ScopeFull or ScopeSummary.
+	// ErrBadScope: the scope is not ScopeFull, ScopeSummary or ScopeAgentCreate.
 	ErrBadScope = errors.New("apitokens: unknown token scope")
 	// ErrNameTooLong: the label is longer than MaxNameLen characters.
 	ErrNameTooLong = fmt.Errorf("apitokens: a token name is at most %d characters", MaxNameLen)
@@ -260,6 +265,8 @@ func CleanScope(scope string) (string, error) {
 		return ScopeFull, nil
 	case ScopeSummary:
 		return ScopeSummary, nil
+	case ScopeAgentCreate:
+		return ScopeAgentCreate, nil
 	}
 	return "", ErrBadScope
 }

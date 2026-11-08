@@ -214,9 +214,10 @@ const KickoffDeliveryWired = true
 // mechanism, and nothing else.
 //
 // 🔴 IT EXISTS BECAUSE THE FULL REASON IS ~900 CHARACTERS AND THE SURFACE THAT NOW
-// SHOWS IT IS A TOAST. internal/api answers POST /agents with action=dispatch 409 +
-// this text, which internal/ui's htmx:responseError handler prints verbatim; the
-// full mechanism paragraph in a toast is a wall of text an operator scrolls past.
+// SHOWED IT WAS A TOAST. internal/api answers POST /api/agents with start: true 409 +
+// this text (it answered the deleted dispatch form's POST /agents the same way,
+// which a toast printed verbatim); the full mechanism paragraph is a wall of text
+// an operator scrolls past.
 // It is a PREFIX of [KickoffRefusalReason] rather than a second sentence of its own,
 // so the two cannot drift into saying different things — pinned by
 // TestTheShortRefusalIsAPrefixOfTheLongOne.
@@ -235,8 +236,8 @@ const KickoffDeliveryWired = true
 const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: this deployment " +
 	"cannot deliver an agent's first turn, so beginning the work is impossible and creating the " +
 	"instance would only produce a pod that reads healthy and was never told what to do. " +
-	"Use \"Save for later\", then Start the agent — that brings the instance up without " +
-	"claiming a first turn nothing can deliver."
+	"Create it with `muster agent create --start=false`, then Start it from its page, which brings " +
+	"the instance up without claiming a first turn."
 
 // KickoffRefusalReason is the operator-facing text of that refusal. It is logged,
 // written to the agent row's error message, and carried in the returned error.
@@ -254,8 +255,9 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // deployment reading it and the refusal fired anyway, because nothing called the
 // gateway. The text then said in as many words that setting the variable was NOT
 // sufficient. With the deliverer wired the refusal fires ONLY when no gateway was
-// built, so the variable is exactly the remedy — and "Save for later, then Start"
-// stays in the summary as the move that works without it.
+// built, so the variable is exactly the remedy — and "create it stopped, then
+// Start" (`muster agent create --start=false`) stays in the summary as the move
+// that works without it.
 //
 // ⚠ THE SPEC AND CREDENTIAL CLAUSE SURVIVES AND IS STILL LOAD-BEARING. The text
 // tells the operator NOT to go looking at the rendered port or the gateway token,
@@ -279,12 +281,14 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // THE HTTP RESPONSE OF THE POST THAT ASKED. That last one was the open half and this
 // paragraph used to say so: "IT DOES *NOT* REACH THE HTTP RESPONSE OF THE POST THAT
 // ASKED … CLOSING CONDITION: a pull request in which POST /agents with
-// action=dispatch answers 4xx carrying this text." internal/api's handleAgentCreate
-// now asks [Adapter.KickoffUndeliverableReason] BEFORE the row is created and answers
-// 409 with [KickoffRefusalSummary], which is this string's own prefix.
+// action=dispatch answers 4xx carrying this text." That form is gone
+// (docs/design/chief-dispatch.md phase 2); internal/api's handleAPIAgentCreate, POST
+// /api/agents with start: true, asks [Adapter.KickoffUndeliverableReason] BEFORE the
+// row is created and answers 409 with [KickoffRefusalSummary], which is this
+// string's own prefix.
 // ⚠ ONE CALLER IS STILL ASYNCHRONOUS AND THAT IS DELIBERATE: handleChiefProvision
 // reaches Dispatch through createAndDispatchAgent inside safeGo, so its refusal is
-// recorded on the row rather than returned. It has no "Save for later" affordance
+// recorded on the row rather than returned. It has no "create stopped" affordance
 // to be sent to; the row it creates can be brought up with Start, which is the
 // same escape by a different door.
 const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: this deployment names no agent " +
@@ -602,8 +606,9 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 // its release either way and then stores `stopped` — and carrying that across
 // turned a consumer-side comment into a falsehood and bypassed a guard. The caller
 // is internal/api's createAndDispatchAgent, where `kickoff` is
-// `action == "dispatch"`: the OTHER action is the UI's "Save for later" button,
-// and the gate check four lines above it refuses a dispatch of a
+// `start` on POST /api/agents (it was `action == "dispatch"` on the deleted
+// dispatch form): the OTHER value creates the agent stopped (the form's "Save for
+// later"), and the gate check before it refuses a dispatch of a
 // `gate:<reason>`-tagged task while allowing a save, giving as its reason that a
 // save "provisions nothing". That was TRUE for as long as this module had no
 // provisioner at all. Wiring one made it false in the worst direction: a save on a

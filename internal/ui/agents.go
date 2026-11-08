@@ -13,7 +13,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // AgentCardView is one agent as internal/api's cardViewIndexed composes it:
@@ -166,12 +165,6 @@ func (a AgentCardView) lastActive() time.Time {
 		return a.UpdatedAt
 	}
 	return a.LastActiveAt
-}
-
-// NoteOption is a selectable existing note for the dispatch modal.
-type NoteOption struct {
-	ID    int64
-	Label string
 }
 
 // ComboOption is one option in a custom type-to-filter combobox. Value is the
@@ -409,379 +402,6 @@ func statusLabel(status string) string {
 	}
 }
 
-// agentModalShell is the static (always-present, hidden) dispatch modal. Its
-// body is loaded on demand — by the sidebar's "+" (navDeployButton) or a task
-// card's Dispatch — so it stays out of the 4s poll cycle.
-func agentModalShell() g.Node {
-	return Div(
-		ID("agent-modal"),
-		Class("hidden fixed inset-0 z-40 flex items-end justify-center sm:items-center"),
-		Div(
-			Class("absolute inset-0 bg-black/60"),
-			// Ambiguous dismiss → the SAME dirty guard the task sheet uses, so a
-			// typed ad-hoc prompt is not destroyed by a stray tap.
-			hx("hx-on:click", "if(window.cgModalDismiss){window.cgModalDismiss('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
-		),
-		Div(
-			ID("agent-modal-body"),
-			// Same height cap as #task-modal-body: an uncapped `items-end` sheet
-			// pushes its own header (and the ✕) off the top of a phone viewport and
-			// leaves no tappable backdrop, so the dialog becomes a dead end.
-			// pb uses the safe-area inset for the same reason <main> and the FABs do:
-			// this sheet sits flush against the viewport bottom, so a flat p-5 put its
-			// last control (Dispatch) under the iOS home indicator.
-			Class("relative z-10 max-h-[85dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-2xl bg-s1 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl ring-1 ring-line sm:rounded-2xl sm:pb-5"),
-			// body injected via /ui/agents/new
-		),
-		modalDiscardBar("agent-modal"),
-	)
-}
-
-// DispatchModalBody is the /ui/agents/new partial (the sidebar's "+"): the full dispatch
-// form. It renders INSTANTLY — the repo + task option lists lazy-load (with
-// animated skeletons) and the model field searches OpenRouter on type, so the
-// form never blocks on a slow upstream. Loaded into #agent-modal-body when the
-// sidebar's "+" is tapped. The Task-card Dispatch button uses the task-scoped
-// variant (DispatchModalTaskBody) instead; this task-less form is unchanged.
-func DispatchModalBody() g.Node { return DispatchModalBodyFor(KindChoices{}) }
-
-// ProvisionerGuideURL is docs/provisioner.md on GitHub: how to give muster an
-// agent runtime so it can dispatch.
-const ProvisionerGuideURL = "https://github.com/ZacxDev/muster/blob/main/docs/provisioner.md"
-
-// DispatchUnavailableAttr marks the sheet a server with no agent runtime
-// answers GET /ui/agents/new with, in place of the dispatch form.
-const DispatchUnavailableAttr = "data-dispatch-unavailable"
-
-// DispatchOffHintAttr marks the sidebar's Agents head's note on a server that cannot
-// dispatch (dispatchOffHint).
-const DispatchOffHintAttr = "data-dispatch-off-hint"
-
-// dispatchOffHint is the sidebar's Agents head's one-line note (navAgentsHead) on
-// a server with no agent runtime: the "+" is absent there, and this says why and links
-// the guide. Muted text, not a control that looks like an action. h-11 because
-// it is a link, and every link a thumb can hit is a 44px target.
-func dispatchOffHint() g.Node {
-	return A(
-		g.Attr(DispatchOffHintAttr, ""),
-		Href(ProvisionerGuideURL), Target("_blank"), Rel("noopener"),
-		g.Attr("title", "This server has no agent runtime, so it cannot start agents. Agents you run in tmux still show up here."),
-		Class("ml-auto inline-flex h-11 shrink-0 items-center px-1 text-xs text-muted underline decoration-dotted underline-offset-2 hover:text-fg"),
-		g.Text("Agent dispatch not set up"),
-	)
-}
-
-// DispatchUnavailableBody is the /ui/agents/new partial on a server that cannot
-// dispatch (Features.Dispatch false): what is missing and where to set it up,
-// instead of a form whose submit can only answer 503.
-//
-// No document drawn by that server offers the sheet (no "+", no card Dispatch
-// button), so this is reached by a page rendered before the server lost its
-// provisioner, or a hand-typed request. It carries no form, so nothing on it
-// can POST /agents.
-func DispatchUnavailableBody() g.Node {
-	return Div(
-		g.Attr(DispatchUnavailableAttr, ""),
-		Div(
-			Class("mb-4 flex items-center gap-2"),
-			H2(Class("text-base font-semibold text-fg"), g.Text("Agent dispatch is not set up")),
-			Span(Class("flex-1")),
-			dispatchCloseButton(),
-		),
-		Div(
-			Class("space-y-2 text-sm leading-relaxed text-muted"),
-			P(g.Text("This server has no agent runtime configured, so it cannot start agents. "+
-				"Agents you run in tmux on a connected machine still show up in muster.")),
-			P(
-				g.Text("Dispatch needs an agent provisioner (MUSTER_AGENT_PROVISIONER); the docker compose install ships without one. See "),
-				A(Href(ProvisionerGuideURL), Target("_blank"), Rel("noopener"), Class("text-accent underline"), g.Text("docs/provisioner.md")),
-				g.Text("."),
-			),
-		),
-	)
-}
-
-// DispatchModalBodyFor is DispatchModalBody with the deployment's agent kinds;
-// more than one renders the kind picker (see kindPicker).
-func DispatchModalBodyFor(k KindChoices) g.Node {
-	return g.Group{
-		Div(
-			Class("mb-4 flex items-center gap-3"),
-			H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch agent")),
-			Span(Class("flex-1")),
-			dispatchCloseButton(),
-		),
-		Form(
-			hx("hx-post", "/agents"),
-			// Nothing to swap: the answer sends the page to the new agent
-			// (HX-Redirect, internal/api handleAgentCreate). It used to morph
-			// #agents-list, which only the retired Agents list page had — on any
-			// other document htmx would have sent nothing at all.
-			hx("hx-swap", "none"),
-			dispatchFailureToast(),
-			// Close the modal after a successful dispatch — but ONLY for THIS form's
-			// own request. htmx:afterRequest bubbles, so the lazy repo/task combobox
-			// loads (hx-get on child <ul>s) would otherwise fire this handler and slam
-			// the modal shut ~immediately after it opens (event.target is the child,
-			// not the form). Guarding on event.target===this scopes it to the submit.
-			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
-			Class("flex flex-col gap-3"),
-			// The "what to dispatch" (an existing task or an ad-hoc description) is the
-			// primary decision, so it stays visible. Model/Repository are
-			// tucked under a collapsed "Advanced" disclosure — they default to the
-			// cluster's MUSTER_AGENT_MODEL + last-used repo (localStorage recents)
-			// so a one-tap dispatch is sane without ever opening Advanced.
-			labelledField("Existing task", lazyCombobox("note", "Existing task", "Search tasks… (optional)", "note_id", "/ui/agents/notes", "")),
-			labelledField("Or ad-hoc task", Textarea(
-				Name("note_text"),
-				Rows("3"),
-				Placeholder("Task for the agent (used if no task selected)…"),
-				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-			)),
-			kindPicker(k),
-			// The model is gateway-only (a claude-code dispatch is refused one, see
-			// kindToggleScript); the repository is for both kinds — a claude-code
-			// agent's session starts in a checkout of it.
-			advancedDisclosure(
-				gatewayOnly(labelledField("Model", modelField())),
-				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
-			),
-			Div(
-				// Sticky as a ROW: both actions stay in view when Advanced pushes them
-				// below the sheet's fold (see TestEverySheetKeepsItsPrimaryActionInView).
-				Class("sticky bottom-0 z-10 mt-1 grid grid-cols-2 gap-2 bg-s1 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))]"),
-				Button(
-					Type("submit"),
-					Name("action"), Value("dispatch"),
-					Class("press inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
-					// 🔴 No hx-disabled-elt="this" here. htmx reads hx-disabled-elt from
-					// the element that ISSUES the request, and this POST is issued by the
-					// FORM's submit event — so the attribute that used to sit on both
-					// submit buttons could provably never fire (same finding as the task
-					// edit form, notes.go). It was removed rather than left in place
-					// reading as a working double-submit guard.
-					//
-					// 🔴 The justification that used to follow — "moving it to the <form>
-					// is not a drop-in because hx-disabled-elt is inherited, so the lazy
-					// children's hx-get on `load` would disable both buttons, and a
-					// form-level guard needs hx-disinherit" — is RETRACTED. The attribute
-					// IS inherited, but its VALUE is resolved against the issuing element
-					// (htmx 2.0.4, findAttributeTargets): "this" resolves to the closest
-					// ancestor-or-self CARRYING the attribute (the form, which has no
-					// disabled state), and "find X" is scoped to the issuer, so a lazy
-					// <ul>/<div> containing no submit button matches nothing. Neither
-					// reaches these buttons. No hx-disinherit is required.
-					//
-					// What is actually true of the code below: the form has NO in-flight
-					// double-submit guard at all. The task edit form's working idiom is
-					// hx-disabled-elt="find button[type='submit']" ON THE FORM (notes.go).
-					// That is the change to make here; it is simply not made yet, and it
-					// is untested against this form's two lazy children (the task and
-					// repo comboboxes each fire hx-get on `load`; the model field is
-					// seeded, not lazy).
-					g.Text("Dispatch"),
-				),
-				Button(
-					Type("submit"),
-					Name("action"), Value("save"),
-					Class("press inline-flex items-center justify-center rounded-xl px-4 py-3 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98] disabled:opacity-60"),
-					// See the Dispatch button above: hx-disabled-elt="this" on a submit
-					// button is inert.
-					g.Text("Save for later"),
-				),
-			),
-		),
-	}
-}
-
-// dispatchCloseOnOwnSubmit closes the dispatch modal after THIS form's own
-// successful submit (guarded by event.target===this so bubbled child combobox
-// loads don't slam it shut) and fires the dispatch analytics event. Shared by
-// the task-less and task-scoped dispatch forms.
-const dispatchCloseOnOwnSubmit = "if(event.target===this && event.detail.successful){if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}try{window.cgTrack('agent.dispatch',{});}catch(e){}}"
-
-// dispatchFailureToast says a refused or failed dispatch on the page the
-// sheet is open on. The sheet is the sidebar's, so it opens on every document,
-// and htmx swaps no non-2xx answer: a refusal (a 409 with the reason, a 503)
-// would otherwise change nothing on a page without resyncScript's page-wide
-// htmx:responseError listener (an agent's page, a mirrored view). Where that
-// listener runs (window.__musterFailureToasts) it toasts, and this does not,
-// so a refusal is said exactly once. The sheet stays open with what was typed.
-func dispatchFailureToast() g.Node {
-	return g.Group{
-		hx("hx-on::response-error", "if(event.target===this&&!window.__musterFailureToasts&&window.toast){var x=event.detail&&event.detail.xhr,m=(x&&x.responseText?x.responseText:'').trim();if(!m||m.charAt(0)==='<')m='Request failed ('+((x&&x.status)||'?')+')';if(m.length>200)m=m.slice(0,200)+'…';window.toast(m)}"),
-		hx("hx-on::send-error", "if(event.target===this&&!window.__musterFailureToasts&&window.toast){window.toast('Network error — could not reach the server')}"),
-	}
-}
-
-// dispatchCloseButton is the modal's top-right close (×).
-func dispatchCloseButton() g.Node {
-	return Button(
-		Type("button"),
-		g.Attr("aria-label", "Close"),
-		Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
-		hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
-		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
-	)
-}
-
-// TaskDispatchView is the resolved dispatch config for a Task-scoped dispatch
-// confirm (the from-card path). Every field is pre-resolved server-side so the
-// modal is a pre-filled confirm: Model/Repo/RepoBranch are the effective values
-// (empty = cluster default / none / repo default).
-type TaskDispatchView struct {
-	NoteID     int64
-	Label      string // the task's first line / directory (header subtitle)
-	Model      string // resolved OpenRouter slug ("" = cluster default)
-	Repo       string // resolved repo full name ("" = none / not inferred)
-	RepoBranch string // resolved branch ("" = repo default, resolved server-side)
-
-	// Kinds is the deployment's agent kinds; more than one renders the picker.
-	Kinds KindChoices
-}
-
-// dispatchTarget is the (selector, swap) pair the task-scoped dispatch form
-// posts into: the task's own card, on the board and on /tasks/{id} alike, and
-// POST /agents answers a request targeting it with that card (internal/api's
-// handleAgentCreate reads HX-Target): the dispatch's visible effect is the task
-// flipping to in-progress with its new agent's status chip.
-//
-// 🔴 htmx resolves hx-target BEFORE it issues the request; when the selector
-// matches nothing it raises htmx:targetError and sends NOTHING — no request,
-// no error, no toast, a sheet that does not even close. The board's form used
-// to target #agents-list, which only existed because the retired Agents tab's
-// panel was drawn (hidden) into every shell document; the card is there on
-// every document that draws the Dispatch button.
-func (v TaskDispatchView) dispatchTarget() (selector, swap string) {
-	return "#task-" + strconv.FormatInt(v.NoteID, 10), "morph:outerHTML"
-}
-
-// DispatchModalTaskBody is the /ui/agents/new?note=<id> partial: a TASK-SCOPED
-// dispatch confirm. The task is known, so instead of the full form's "Existing
-// task" combobox + ad-hoc textarea, it shows two fixed rows — Model and
-// Repository — each with the task's resolved value as static text plus an inline
-// "Edit" that reveals the corresponding editable control (pre-seeded to the
-// current value). The editable controls carry the same field names the dispatch
-// POST reads (model / repo), and — being present-but-hidden — they
-// submit the resolved values even when never opened, so this is a one-tap confirm.
-// Overrides are THIS-DISPATCH-ONLY (never persisted back to the task). The task is
-// submitted via a hidden note_id; repo_branch rides along as a hidden field.
-func DispatchModalTaskBody(v TaskDispatchView) g.Node {
-	ids := strconv.FormatInt(v.NoteID, 10)
-	target, swap := v.dispatchTarget()
-
-	// Static row displays.
-	modelStatic := shortModelLabel(v.Model)
-	if modelStatic == "" {
-		modelStatic = defaultModelShortLabel()
-	}
-	// The task's title, as a reader of it sees it (textplain).
-	taskLabel := textplain.Title(v.Label)
-	repoStatic := v.Repo
-	if repoStatic == "" {
-		repoStatic = "none"
-	}
-
-	return g.Group{
-		Div(
-			Class("mb-4 flex items-start gap-3"),
-			Div(
-				Class("min-w-0"),
-				H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch · Task #"+ids)),
-				g.If(taskLabel != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(taskLabel))),
-			),
-			Span(Class("flex-1")),
-			dispatchCloseButton(),
-		),
-		Form(
-			hx("hx-post", "/agents"),
-			// The task's card (dispatchTarget): an unresolvable hx-target makes htmx
-			// drop the request silently rather than fail loudly.
-			hx("hx-target", target),
-			hx("hx-swap", swap),
-			dispatchFailureToast(),
-			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
-			Class("flex flex-col gap-3"),
-			// The task is known — submit it by id (no combobox, no ad-hoc textarea).
-			Input(Type("hidden"), Name("note_id"), Value(ids)),
-			// Resolved branch rides along (no visible row; the task-less form has no branch
-			// field either — it resolves server-side when empty).
-			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
-			kindPicker(v.Kinds),
-			// Gateway-only, like the task-less form's model field: the task's model is
-			// refused for a claude-code dispatch, so it leaves the screen when
-			// Claude Code is picked (kindToggleScript). The repository stays: both
-			// kinds work in it.
-			gatewayOnly(
-				Class("flex flex-col gap-3"),
-				dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
-			),
-			dispatchConfirmRow("Repository", repoStatic,
-				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
-			// Mobile-first action stack: a small secondary Cancel sits ABOVE the
-			// full-width primary Dispatch, so the thumb lands on Dispatch and Cancel
-			// is a deliberate, smaller reach.
-			Div(
-				Class("mt-1 flex flex-col gap-2"),
-				Button(
-					Type("button"),
-					Class("press min-h-[44px] self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98]"),
-					hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
-					g.Text("Cancel"),
-				),
-				Button(
-					Type("submit"),
-					Name("action"), Value("dispatch"),
-					Class("sticky bottom-0 z-10 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))] press w-full inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
-					hx("hx-disabled-elt", "this"),
-					g.Text("Dispatch"),
-				),
-			),
-		),
-	}
-}
-
-// dispatchConfirmRow is one row of the task-scoped confirm: a label, the resolved
-// value as static text, and an inline "Edit" that reveals the (pre-seeded)
-// editable control. The editable control is present-but-hidden so it submits the
-// resolved value even when never opened; Edit only unhides it for an override.
-// The toggle is a CSP-safe hx-on:click (the app's CSP allows hx-on via
-// unsafe-eval) that hides the static value + Edit and shows the control — the same
-// data-attribute reveal pattern the delete control uses.
-func dispatchConfirmRow(label, static string, editable g.Node) g.Node {
-	const toggle = "var r=this.closest('[data-dispatch-row]');" +
-		"r.querySelector('[data-dispatch-static]').classList.add('hidden');" +
-		"r.querySelector('[data-dispatch-editable]').classList.remove('hidden');" +
-		"this.classList.add('hidden');"
-	return Div(
-		g.Attr("data-dispatch-row", ""),
-		Class("flex flex-col gap-1.5"),
-		Div(
-			Class("flex items-center gap-2"),
-			Label(Class("text-xs font-medium text-muted"), g.Text(label)),
-			Span(Class("flex-1")),
-			Button(
-				Type("button"),
-				g.Attr("data-dispatch-edit", ""),
-				g.Attr("aria-label", "Edit "+label),
-				Class("press min-h-[44px] rounded-lg px-2 py-0.5 text-xs font-medium text-accent transition hover:bg-accent/10 hover:text-fg"),
-				hx("hx-on:click", toggle),
-				g.Text("Edit"),
-			),
-		),
-		Div(
-			g.Attr("data-dispatch-static", ""),
-			Class("truncate text-sm text-fg"),
-			g.Text(static),
-		),
-		Div(
-			g.Attr("data-dispatch-editable", ""),
-			Class("hidden"),
-			editable,
-		),
-	)
-}
-
 // comboOption renders one combobox <li> (data-value + data-label).
 func comboOption(o ComboOption) g.Node {
 	return Li(
@@ -818,14 +438,10 @@ type RepoView struct {
 	HTMLURL  string
 }
 
-// RenderRepoOptions / RenderNoteOptions write the lazy-loaded combobox option
-// lists (swapped in over the skeleton).
+// RenderRepoOptions writes the lazy-loaded repository combobox option list
+// (swapped in over the skeleton).
 func RenderRepoOptions(w io.Writer, repos []RepoView) error {
 	return comboOptionList(repoOptions(repos)).Render(w)
-}
-
-func RenderNoteOptions(w io.Writer, notes []NoteOption) error {
-	return comboOptionList(noteOptions(notes)).Render(w)
 }
 
 func comboOptionList(opts []ComboOption) g.Node {
@@ -839,14 +455,6 @@ func repoOptions(repos []RepoView) []ComboOption {
 	opts := make([]ComboOption, 0, len(repos))
 	for _, r := range repos {
 		opts = append(opts, ComboOption{Value: r.FullName, Label: r.FullName})
-	}
-	return opts
-}
-
-func noteOptions(notes []NoteOption) []ComboOption {
-	opts := make([]ComboOption, 0, len(notes))
-	for _, n := range notes {
-		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: textplain.Title(n.Label)})
 	}
 	return opts
 }
@@ -1101,7 +709,7 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 	}
 	// The seeded preselect option lives at the TOP of the list (before the
 	// skeleton). The lazy load (hx-get) swaps the list's innerHTML, but
-	// RenderNoteOptions renders only non-seed options and the combobox JS dedupes
+	// the option renderers draw only non-seed options and the combobox JS dedupes
 	// against seeds — so the seed survives and the hidden value stays valid.
 	var seed g.Node = g.Text("")
 	if presetValue != "" {
