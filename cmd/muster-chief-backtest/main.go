@@ -24,8 +24,18 @@
 //
 // tools.json and init.json are an MCP tools/list and initialize answer for
 // the chief, read from a LOCAL muster started with production's feature flags
-// (never from production). The OpenRouter key is read from the environment
-// variable BT_OPENROUTER_KEY and is never printed or written.
+// (never from production).
+//
+// 🔴 NEVER RUN IT ON PRODUCTION'S MUSTER_AGENT_OPENROUTER_KEY. That key has a
+// $5/day cap that production depends on (focus summaries, the stall
+// classifier, gateway agents); on 2026-11-08 this backtest exhausted it and
+// broke production's focus summaries for about five hours. The key is read
+// from BT_OPENROUTER_KEY only — make a key for the backtest, with its own
+// credit limit — and run refuses when it is unset, or equal to
+// MUSTER_AGENT_OPENROUTER_KEY in its own environment (backtestKey). Nothing
+// in this command reads a Kubernetes secret. The key is never printed or
+// written. A replay costs from under a cent (Flash) to about five cents (V4
+// Pro) per input, so size the backtest key's limit to the run.
 //
 // cases.jsonl holds production message text: keep it, and -out, outside the
 // repository. Nothing in CI runs this command; `go test` covers its scoring.

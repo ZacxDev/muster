@@ -83,6 +83,31 @@ func startProxy(model, key, upstream string, lines func(ProxyLine)) (string, fun
 	return "http://" + ln.Addr().String() + "/llm", func() { _ = srv.Close() }, nil
 }
 
+// 🔴 THE BACKTEST NEVER RUNS ON PRODUCTION'S OPENROUTER KEY. Production's
+// MUSTER_AGENT_OPENROUTER_KEY has a small daily cap that the focus summarizer,
+// the stall classifier and gateway agents depend on; on 2026-11-08 this
+// backtest exhausted it and production's focus summaries failed for about five
+// hours. So the key is its own variable, BT_OPENROUTER_KEY, which must be a
+// key made for the backtest; nothing here reads a Kubernetes secret; and a key
+// equal to MUSTER_AGENT_OPENROUTER_KEY in this process's environment (the
+// production name, set on a muster host) is refused. The harness cannot tell
+// production's key from any other key it is handed without reading
+// production's secret, which it never does: the variable is the guard, and its
+// operator chooses what goes in it.
+func backtestKey(getenv func(string) string) (string, error) {
+	key := strings.TrimSpace(getenv("BT_OPENROUTER_KEY"))
+	if key == "" {
+		return "", errors.New("BT_OPENROUTER_KEY is empty: set it to an OpenRouter key made for the backtest, with a " +
+			"credit limit of its own — NEVER production's MUSTER_AGENT_OPENROUTER_KEY (its daily cap is what production's " +
+			"focus summaries run on)")
+	}
+	if prod := strings.TrimSpace(getenv("MUSTER_AGENT_OPENROUTER_KEY")); prod != "" && prod == key {
+		return "", errors.New("BT_OPENROUTER_KEY is the same key as MUSTER_AGENT_OPENROUTER_KEY in this environment: " +
+			"the backtest never runs on muster's own key. Use a key made for the backtest")
+	}
+	return key, nil
+}
+
 // ToolUse is one tool the replayed chief asked the CLI to run.
 type ToolUse struct {
 	Name   string          `json:"name"`
@@ -116,9 +141,9 @@ func cmdRun(args []string) error {
 	timeout := fs.Duration("timeout", 8*time.Minute, "per case")
 	maxTurns := fs.Int("max-turns", 25, "the CLI's --max-turns")
 	_ = fs.Parse(args)
-	key := strings.TrimSpace(os.Getenv("BT_OPENROUTER_KEY"))
-	if key == "" {
-		return errors.New("BT_OPENROUTER_KEY is empty")
+	key, err := backtestKey(os.Getenv)
+	if err != nil {
+		return err
 	}
 	cases, err := readCases(*casesPath)
 	if err != nil {

@@ -1,5 +1,17 @@
 # Chief on DeepSeek V4.1 Flash: shadow-replay backtest (2026-11-08)
 
+> 🔴 **Never run this backtest on production's `MUSTER_AGENT_OPENROUTER_KEY`.**
+> Production depends on that key's $5/day cap for focus summaries, the stall classifier
+> and gateway agents. This backtest used up the cap on 2026-11-08, and production's focus
+> summaries failed for about five hours. The first failing pass was at 14:51 UTC: every
+> refresh got `403 Key limit exceeded (daily limit)`.
+>
+> `muster-chief-backtest run` reads its key only from **`BT_OPENROUTER_KEY`**. Use a key
+> made for the backtest, with its own credit limit. The run refuses to start if that
+> variable is unset, or if it equals `MUSTER_AGENT_OPENROUTER_KEY` in its own environment.
+> Nothing in the harness reads a Kubernetes secret. Size the key's limit to the run: a
+> Flash input costs under a cent; a V4 Pro input costs about five cents.
+
 **Verdict: FAIL against the operator's bar.** `deepseek/deepseek-v4.1-flash`, run through
 the chief's own harness, made the same decision as the Claude-backed chief on 50% (run 1)
 and 44% (run 2) of 50 real chief inputs. The bar is 90% or more. Neither run made an
@@ -277,8 +289,9 @@ The newest full-size DeepSeek on OpenRouter is **`deepseek/deepseek-v4-pro-0813`
 
 ## What changed from the first backtest
 
-**The prose.** The chief's standing instructions carry the two proposed lines (commit
-`078d95bb`, in this PR). Both are model-neutral:
+**The prose.** For this rerun only, the chief's standing instructions carried two
+proposed, model-neutral lines (commit `078d95bb`). **The operator dropped them:** this PR
+reverts that commit, so the chief's instructions are unchanged. The lines were:
 
 - **In the plugin section:** "Settle a message as needing nothing when nothing in it
   needs your owner: a status post that reports no change, a review round that is clean
