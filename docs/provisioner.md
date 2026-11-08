@@ -471,6 +471,11 @@ environment, under the same tenant pair rule as `MUSTER_TOKEN`:
 MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --start=false --prompt "Triage the flaky upload test"
 ```
 
+That is a host with one tenant. With more than one, put
+`MUSTER_AGENT_CREATE_TOKEN=mst_…` in the tenant's file
+(`~/.muster/tenants/<name>.env`, or `~/.muster/muster.env` for `default`) and
+run `muster --tenant <name> agent create …`.
+
 ## An agent's page
 
 A dispatched agent's page shows, under its title, the agent's live status (with

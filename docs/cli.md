@@ -47,13 +47,24 @@ them, and `muster whoami` says who a credential acts as.
 
 `agent create` is the one exception: it presents `MUSTER_AGENT_CREATE_TOKEN`, a
 token of scope **Create agents** (`agent-create`), and never sends
-`MUSTER_TOKEN`. It is read like the token: from the env file, then the
-environment. With more than one tenant the pair rule below covers it too: it
-comes from the selected tenant's file, or from the environment only together
-with an environment `MUSTER_API_URL` + `MUSTER_TOKEN` pair; an exported one
-beside a file's URL or a flag pair is refused and nothing is sent. The server refuses every other token on
-`POST /api/agents`, a full-access one included, so the ordinary credential
-cannot create agents.
+`MUSTER_TOKEN`. The server refuses every other token on `POST /api/agents`, a
+full-access one included, so the ordinary credential cannot create agents.
+Where it is read from:
+
+- **One tenant:** from the env file, then the environment, like the token. An
+  exported `MUSTER_API_URL` alone still pairs with the file's tokens here (the
+  one-tenant path mixes sources field by field), so the file's agent-create
+  token follows it, exactly as the file's `MUSTER_TOKEN` does.
+- **More than one tenant:** the pair rule below covers it too. It comes from
+  the selected tenant's file, or from the environment only beside an
+  environment `MUSTER_API_URL` + `MUSTER_TOKEN` pair. An exported one with
+  neither makes it unusable for that tenant: `agent create` refuses (exit 2,
+  nothing sent) and says where to put it; every other verb runs as usual,
+  since none of them sends it.
+- **A flag pair** (`--api-url` + `--token`) cannot carry one: there is no flag
+  for it, and an exported one beside a flag pair names no server's pair. On a
+  host with more than one tenant, `agent create` with a flag pair is therefore
+  refused; use the tenant's file or an environment pair.
 
 ## Several servers (tenants)
 

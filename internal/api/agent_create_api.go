@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -61,8 +62,10 @@ type agentCreateRequest struct {
 // the chief relays it). A larger body is a 413 naming the limit.
 const agentCreateMaxBody = 1 << 20
 
-// AgentCreateTooLarge is the 413 body for a request over agentCreateMaxBody.
-const AgentCreateTooLarge = "the request body is over 1 MiB (1048576 bytes), the limit for POST /api/agents"
+// AgentCreateTooLarge is the 413 body for a request over agentCreateMaxBody,
+// spelled from the constant so the two cannot disagree.
+var AgentCreateTooLarge = fmt.Sprintf("the request body is over %d KiB (%d bytes), the limit for POST /api/agents",
+	agentCreateMaxBody>>10, agentCreateMaxBody)
 
 // AgentCreateViaRefusal is the 403 body for any principal on POST /api/agents
 // that did not come through a personal token: the shared hook secret, a

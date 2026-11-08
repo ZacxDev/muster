@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/url"
@@ -71,6 +72,10 @@ type config struct {
 	// (resolveConfig, resolvePaired) from the env file or the environment,
 	// and presented only by `agent create`.
 	createTok string
+	// createTokRefusal is why an exported MUSTER_AGENT_CREATE_TOKEN was NOT
+	// accepted for this tenant (resolvePaired), or "". Only `agent create`
+	// raises it: no other verb sends that token, so no other verb refuses.
+	createTokRefusal string
 }
 
 // parseEnvFile reads a KEY=VALUE file (comments, blank lines, an optional
@@ -231,7 +236,9 @@ const pairRefusal = "refused: a URL and a token override are accepted only as a 
 // environment value is accepted exactly when an environment MUSTER_TOKEN is:
 // as part of an environment URL+token pair. Otherwise it comes from the
 // selected file, and only when that file also supplies the URL; an exported
-// one beside a file's URL, or beside a flag pair, is refused like a lone half.
+// one beside a file's URL, or beside a flag pair, is refused like a lone half —
+// but the refusal is RECORDED (createTokRefusal) rather than returned, and only
+// `agent create`, the one verb that sends the token, raises it (round 2, F1).
 func resolvePaired(where string, fileVals map[string]string, getenv func(string) string, flagURL, flagToken string) (config, error) {
 	u := firstOverride(pairOverride{"--api-url", flagURL}, pairOverride{envAPIURL, getenv(envAPIURL)})
 	t := firstOverride(pairOverride{"--token", flagToken}, pairOverride{envToken, getenv(envToken)},
@@ -271,10 +278,12 @@ func resolvePaired(where string, fileVals map[string]string, getenv func(string)
 		if u.value != "" {
 			from = u.name + " comes from " + u.sourceKind()
 		}
-		return config{}, failf(exitUsage,
+		c.createTokRefusal = fmt.Sprintf(
 			"%s is set in the environment but %s: %s (an environment %s only with %s and %s), "+
-				"and no request was sent. Put it in that tenant's file instead.",
-			envAgentCreateToken, from, pairRefusal, envAgentCreateToken, envAPIURL, envToken)
+				"and no request was sent. On a host with more than one tenant, put %s in that tenant's file, "+
+				"or export it beside an %s + %s pair.",
+			envAgentCreateToken, from, pairRefusal, envAgentCreateToken, envAPIURL, envToken,
+			envAgentCreateToken, envAPIURL, envToken)
 	case u.value == "":
 		c.createTok = fileVals[envAgentCreateToken]
 	}

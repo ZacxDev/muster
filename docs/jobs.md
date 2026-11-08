@@ -240,6 +240,9 @@ that can, use [`muster agent create`](provisioner.md#creating-an-agent-without-t
 MUSTER_AGENT_CREATE_TOKEN=mst_… muster agent create --kind claude-code --worker-pool reviewers --repo example-org/site --start=true
 ```
 
+(On a host with more than one tenant, put the token in that tenant's file
+instead: [cli.md](cli.md#configuration).)
+
 Leave the Claude account unset unless you want to pin one (`--cc-account`);
 the account pool chooses as it does for any agent. The repository the pool's
 jobs will name (with `repo`) must be a **public** one (see below), or the one

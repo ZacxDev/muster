@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -246,6 +247,12 @@ func TestAnAgentCreateBodyOverTheLimitIsRefusedByName(t *testing.T) {
 	}
 	if rows := store.rows(); len(rows) != 0 {
 		t.Fatalf("an oversize body created %d row(s)", len(rows))
+	}
+	// The sentence names the limit the code enforces: the byte count of the
+	// constant, and the documented 1 MiB (1024 KiB).
+	if !strings.Contains(AgentCreateTooLarge, "("+strconv.Itoa(agentCreateMaxBody)+" bytes)") ||
+		!strings.Contains(AgentCreateTooLarge, "1024 KiB (1048576 bytes)") {
+		t.Fatalf("the 413 sentence %q does not name the enforced limit %d (documented: 1 MiB)", AgentCreateTooLarge, agentCreateMaxBody)
 	}
 	under := strings.Repeat("u", agentCreateMaxBody-27)
 	if rec := apiCreateAgent(t, s, h, map[string]any{"prompt": under, "start": false}); rec.Code != http.StatusCreated {

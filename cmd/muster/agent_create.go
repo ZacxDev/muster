@@ -44,6 +44,11 @@ const agentCreateNoTokenMsg = "creating agents needs a token of scope agent-crea
 	"(Create agents) and export it as " + envAgentCreateToken + ". This verb never sends " + envToken +
 	" (the server refuses every other token on this route, a full one included), so nothing was sent."
 
+// agentCreateNoTokenTenantsMsg is appended on a host with more than one tenant,
+// where an exported token alone is not accepted (resolvePaired).
+const agentCreateNoTokenTenantsMsg = " On a host with more than one tenant, put " + envAgentCreateToken +
+	" in that tenant's file, or export it beside an " + envAPIURL + " + " + envToken + " pair."
+
 func newAgentCreateCmd(a *app) *cobra.Command {
 	var (
 		b      agentCreateBody
@@ -75,8 +80,15 @@ dispatch says to retry with --start=false, then Start).`,
 			if err != nil {
 				return err
 			}
+			if c.cfg.createTokRefusal != "" {
+				return failf(exitUsage, "%s", c.cfg.createTokRefusal)
+			}
 			if strings.TrimSpace(c.cfg.createTok) == "" {
-				return failf(exitUsage, "%s", agentCreateNoTokenMsg)
+				msg := agentCreateNoTokenMsg
+				if c.tenantNote != "" {
+					msg += agentCreateNoTokenTenantsMsg
+				}
+				return failf(exitUsage, "%s", msg)
 			}
 			b.Start = &start
 			if cmd.Flags().Changed("note-id") {

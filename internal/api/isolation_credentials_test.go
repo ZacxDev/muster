@@ -140,6 +140,16 @@ func TestAnAgentCreateNamingAnotherUsersTaskIsNotFound(t *testing.T) {
 		}
 		tok[u.uid] = tk
 	}
+	// B gets an OpenRouter key of its own, so a gateway create by B is one the
+	// server WOULD make (the control below shows it does): the count assertion
+	// is then reachable, and only the note_id guard stands between B and an
+	// agent on A's task.
+	if err := w.creds.PutOpenRouter(isoAs(w.b), "sk-or-v1-iso-member-B-key-22222222"); err != nil {
+		t.Fatalf("B's openrouter key: %v", err)
+	}
+	if rec := w.do(w.h, "POST", "/api/agents", `{"prompt":"B's own work","start":false}`, cred{apiToken: tok[w.b.uid]}); rec.Code != http.StatusCreated {
+		t.Fatalf("CONTROL: B's own create with its key: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
 	body := `{"note_id":` + strconv.FormatInt(w.objA.task, 10) + `,"start":false}`
 	// Counted around B's request: every agent of B's, and every agent on A's
 	// task — B's request must change neither.
