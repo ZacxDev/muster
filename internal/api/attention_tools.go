@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/taskstatus"
 )
 
@@ -665,6 +666,18 @@ func (s *Server) taskScopeOf(ctx context.Context, c toolCaller) (taskScope, erro
 			if l.Role == notes.RoleCreated {
 				sc.ids[l.NoteID] = true
 			}
+		}
+		// A session muster started for the chief (a host dispatch) may also
+		// touch EXACTLY its own dispatch's task, while that dispatch runs
+		// (design 5.1: a spawned agent keeps task_get and task_comment; its
+		// rules say to comment the PR and set the task ready_for_review). The
+		// caller is resolved by callerHostDispatch, the one binding rule.
+		if h, err := s.callerHostDispatch(ctx, c.asker.MirrorHost, c.asker.MirrorSession, c.mirrorWindow); err == nil {
+			if h.Status == plugins.HostDispatchRunning && h.TaskID > 0 {
+				sc.ids[h.TaskID] = true
+			}
+		} else if !errors.Is(err, plugins.ErrHostDispatchNotFound) {
+			s.logger.Printf("tasks tool: scope: host dispatch of %s: %v", c.asker.MirrorHost, err)
 		}
 		return sc, nil
 	}
