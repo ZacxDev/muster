@@ -2216,6 +2216,56 @@ no `spent_today`, `budget` or `book_failures` series (it is never booked):
 
 The durable copy is `officer_llm_usage`: one row per officer, routine instance
 number and UTC day with requests, tokens by direction, USD and estimated requests.
+It has no item column: an item's cost is the per-item meter's (below).
+
+#### Item cost
+
+A routine instance's `officer_complete` (outcome `done`, `escalated` or
+`no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
+its hold on the item booked through the proxy (each request's provider-reported
+cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
+`muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
+with no later `PATCH`: the complete is the hold's last act, and a request
+still unbooked when it is read makes the cost unknown (below) rather than
+short.
+
+🔴 **An unknown cost is omitted, never sent as 0.** The cost is known only when
+the hold is the item's whole proxy spend: HQ's first claim of the item
+(`attempts` 1 in HQ's claim answer), claimed through muster (not adopted from
+HQ's claimed list after a restart, and not muster's already-yours answer for a
+hold it did not meter), at least one request booked, and none booked from the
+proxy's pessimistic estimate (a response that reported no cost), and no
+request admitted under the hold still in flight when the complete reads it. A
+request leaves flight as soon as its cost is charged to the meter (before the
+usage row is written and the stream's tail is relayed), so a complete Claude
+Code sends while a handler is still finishing still reads the cost. A second or later
+claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
+send none. The meter is in memory (`internal/llmproxy/items.go`).
+
+A judgement or untiered instance's Claude Code session has **no cost source
+muster reads**, so its complete sends none.
+
+Every complete sent without a cost writes one log line, which is how the
+known-vs-unknown ratio is measured:
+
+```
+officers: item cost omitted officer=<id> instance=<agent> item=<item id> outcome=<outcome> reason=<reason>
+```
+
+`reason` is one of `not_held`, `adopted`, `not_first_claim`,
+`attempts_unknown`, `no_requests`, `estimated`, `inflight`, `over_bound`,
+`handed_on` (needs_judgement) or `no_source` (not a routine instance of an
+`llm` officer).
+
+⚠ **HQ keeps a cost a later complete does not replace** (its complete
+coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
+complete and that is worked again keeps the FIRST hold's cost: the later hold
+is not HQ's first claim, so it sends none, and the item's cost understates
+what working it cost overall.
+
+The cost never fails a complete: when HQ refuses the complete that carries it
+with a 400 (an HQ from before item cost refuses the unknown fields), muster
+sends it again without the cost, and logs `completed item … without its cost`.
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image
