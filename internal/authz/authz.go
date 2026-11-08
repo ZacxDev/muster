@@ -137,10 +137,19 @@ const (
 	// gateway agent's FIRST TURN with its tools in muster's process: each tool
 	// call that turn makes acts as the agent's OWNER only, as the same call in
 	// one of its chat turns does (the owner's session). One site mints it —
-	// internal/api's kickoffPrincipal, called only by KickoffTurnTools, handed
-	// the agent row the deliverer read under System. 🔴 Never System itself:
-	// that would run an agent's tools across every owner's rows.
+	// internal/api's turnPrincipal, reached only through gatewayTurnTools
+	// (KickoffTurnTools), handed the agent row the deliverer read under System.
+	// 🔴 Never System itself: that would run an agent's tools across every
+	// owner's rows.
 	ViaKickoff Via = "kickoff"
+	// ViaAgentMessage is the MACHINE MESSAGE door (POST
+	// /api/agents/{name}/messages, `chief ask`) running a gateway agent's turn
+	// with its tools in muster's process: each tool call that turn makes acts
+	// as the agent's OWNER only — never as the request's own principal, which
+	// for the shared hook token is the operator, whoever owns the agent. One
+	// site mints it — internal/api's turnPrincipal, reached only through
+	// gatewayTurnTools (handleAPIAgentSendMessage's gatewayTurn).
+	ViaAgentMessage Via = "agent-message"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -190,8 +199,11 @@ var requestVias = map[Via]bool{
 	// officerPrincipal). Without it the first wake PANICS here.
 	ViaOfficer: true,
 	// A gateway agent's first turn's tools, as its owner (internal/api's
-	// kickoffPrincipal). Without it the first tool-enabled kickoff PANICS here.
+	// turnPrincipal). Without it the first tool-enabled kickoff PANICS here.
 	ViaKickoff: true,
+	// A gateway agent's machine-message turn's tools, as its owner
+	// (internal/api's turnPrincipal). Without it the first such turn PANICS here.
+	ViaAgentMessage: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,

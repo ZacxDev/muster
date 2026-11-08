@@ -162,6 +162,28 @@ func WhereTarget(host, session, window string, index int) string {
 	return "tmux " + tmuxAddress(session, window, index) + " @ " + host
 }
 
+// TitleAt is how muster named the entry before sessions had names: its Title
+// — the host's label for the window ("mango:1"), else its tmux address
+// ("scratch3:5") — and its host: "mango:1 @ atlas". It is what a notification
+// that names a session by its human name adds after it when its owner turned
+// on "Show tmux sessions" (internal/api notifyName).
+func (s SessionView) TitleAt() string {
+	return s.Place().String()
+}
+
+// Place is a window's place as "Show tmux sessions" adds it (internal/api
+// tmuxPlace): its codename — the host's label for it ("mango:1"), else its
+// tmux address — and its host, kept APART so a session whose name already IS
+// the codename can be told without parsing "mango:1 @ atlas" back. The zero
+// value is "no window".
+type Place struct{ Code, Host string }
+
+// String is the place as it is shown: "mango:1 @ atlas" (TitleAt).
+func (p Place) String() string { return p.Code + " @ " + p.Host }
+
+// Place is the entry's Place: Title and Host.
+func (s SessionView) Place() Place { return Place{Code: s.Title(), Host: s.Host} }
+
 // WhereTarget is the entry's WhereTarget.
 func (s SessionView) WhereTarget() string {
 	return WhereTarget(s.Host, s.Session, s.Window, s.Index)

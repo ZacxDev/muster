@@ -460,7 +460,7 @@ and in `GET /api/agents` (`outcome`, `outcomeReason`, `outcomeAt`).
 |---|---|---|
 | `running` | the agent was started with a first turn | — |
 | `waiting` | its turn ended and it is idle **without saying it finished** — it asked a question, or reported progress (or its pod's background work ended) | after 60 seconds, if you have neither replied nor opened the agent's page: one push, `<agent> is waiting for you: <the LAST line of its reply>`, and one note to the chief quoting its last lines (the same with `MUSTER_SESSION_STATE=1`; session state then does not push this wait again as a stalled conversation). A conversation you are in pushes nothing. Its next turn puts it back to `running` |
-| `done` | it **said** it finished: it moved its own task to **ready for review** or **complete** (the chief or a mirrored session moving it does not count), or called `agent_report_done{summary}` (offered to every agent but the chief — a gateway agent from its first turn on, which carries its muster tools as its chat turns do; a claude-code agent over its `/mcp`; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
+| `done` | it **said** it finished: it moved its own task to **ready for review** or **complete** (the chief or a mirrored session moving it does not count), or called `agent_report_done{summary}` (offered to every agent but the chief — a gateway agent from its first turn on, which carries its muster tools as its chat turns and a `POST /api/agents/{name}/messages` turn do; a claude-code agent over its `/mcp`; a dispatch with no task is told to call it) | one push, `<agent> finished: <summary>` (none beside the task's own ready-for-review push), and a note to the chief; a new turn puts it back to `running` |
 | `failed` | a turn of it **failed**: the runtime reported the turn failed (a model it does not know, say — also when it then completes with no answer), it answered nothing, or its first turn was never delivered | its status becomes `error` with the reason as its error message; one push, `<agent> failed: <reason>`, linking to the agent; and a note to the chief that started it, so the chief can tell you and offer to start it again |
 | `stuck` | the [silence watchdog](#the-silence-watchdog) saw no activity | one push, `<agent> is stuck: <reason>`, and a note to the chief |
 
@@ -492,6 +492,21 @@ Notifications**, under the same per-owner cap as every push
 `stuck` outcome; the agent is then not watched until it is given new work.
 Fix the cause first: for a model the runtime did not know, change the agent's
 model (it is checked, below), then Start it.
+
+### What a turn muster starts carries
+
+A **gateway** agent gets muster's tools only in the turns muster sends it with
+them, so every place muster starts a turn says which it is. A **claude-code**
+agent gets its tools over its own `/mcp` in every turn, whatever the door, and
+ccd ignores any tools a request carries.
+
+| Door | What a gateway agent's turn carries |
+|---|---|
+| its chat (the agent page, the composer) | its system prompt and its tools |
+| its first turn (a dispatch's kickoff) | its system prompt and its tools, acting as its owner |
+| `POST /api/agents/{name}/messages` (`muster chief ask`) | its system prompt and its tools, acting as its owner: **exactly what its chat gives it**, so a gateway-kind chief gets its chief tools and a worker its worker tools (`agent_report_done` included). The system prompt is new here; this door used to send none. The turn is detached from the request: a caller that times out (the CLI's default is 30 s) does not cut it short; it runs to its own 30-minute budget, its reply is stored and its outcome recorded |
+| scheduled jobs, the memo relay, officer re-prompts | claude-code agents only |
+| the chief nudge | no tools, by design ([chief nudges](chief-nudges.md)) |
 
 ### Models are checked before a pod starts
 
