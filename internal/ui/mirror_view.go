@@ -968,6 +968,7 @@ func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Questi
 // ⚠ ONLY THE MIRRORED VIEW DRAWS ONE. A dispatched agent's chat is muster's own
 // persisted messages plus ccd's reply stream, which carries a turn's text and
 // tool calls and nothing the harness injects, so no notice ever reaches it.
+// (Its relayed plugin messages borrow this row's frame: relayRow.)
 func noticeRow(ev cctranscript.Event) g.Node {
 	icon, label := "🔔", "task"
 	switch ev.Notice {

@@ -7,11 +7,14 @@ import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env
 import { startServer, Running } from '../lib/server';
 import { createAgent, postAgents } from '../lib/seed';
 import { landedHome } from '../lib/nav';
+import { openAgentMenu } from '../lib/agent-menu';
 
-// ccAccount is the agent page header's Claude account (the second row's plain
-// account name, data-cc-account; the Terminal switch beside it is what says
-// the kind).
-const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
+// ccAccount is the agent page's Claude account (its plain account name,
+// data-cc-account) — an item of the header's ⋯ menu since PR #527 (a claude-code
+// agent's page has one header row: agent_header_folded.go); the menu's
+// Terminal item beside it is what says the kind. Open the menu (openAgentMenu)
+// before asking whether it is visible.
+const ccAccount = (page: Page, account: string) => page.locator(`#agent-actions [data-cc-account="${account}"]`);
 
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
@@ -153,11 +156,12 @@ test('a member brings their own Claude token; an agent they create runs on it, n
   expect(sw, 'no horizontal scroll at 412px').toBeLessThanOrEqual(cw);
 
   // 3. A stopped Claude Code agent created as the member lands on the member's
-  //    own account — its page says so in its header's second row — and never
-  //    the admin's pool.
+  //    own account — its page says so in its header's ⋯ menu (PR #527) — and
+  //    never the admin's pool.
   const agent = await createAgent(machineURL, { user: uid, kind: 'claude-code', prompt: 'e2e byo: on my own account' });
   await page.goto(`${browserURL}/agents/${agent.name}`);
   await expect(ccAccount(page, MEMBER_ACCOUNT)).toHaveText(MEMBER_ACCOUNT);
+  await openAgentMenu(page);
   await expect(ccAccount(page, MEMBER_ACCOUNT)).toBeVisible();
   const agentsPage = await page.content();
   expect(agentsPage).not.toContain(ADMIN_POOL);

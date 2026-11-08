@@ -341,6 +341,11 @@ export const waitingComposerConnectPort = port + 331;
 // server (mirror plugin on) and its own fake host. (+340: clear of the blocks
 // other branches took.)
 export const notifyTmuxPort = port + 340;
+// tests/chief-fold-in.spec.ts: the chief's page in a mirrored session's layout —
+// its own mirror rig (the e2eterm binary, mirror plugin on, the claude-code
+// kind over the noop driver) and one fake host, for the session it is compared
+// with. (+345: it was +340 until notify-tmux took that on main.)
+export const chiefFoldInPort = port + 345;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

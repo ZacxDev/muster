@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { chiefMobilePort, dsn, repoRoot, sttToken, versionA } from '../lib/env';
 import { Running, startServer } from '../lib/server';
 import { signIn } from '../lib/signin';
+import { agentMenu, openAgentMenu } from '../lib/agent-menu';
 
 // A CLAUDE-CODE AGENT'S PAGE ON A PHONE (an operator report: "the layout is
 // unintuitive and looks broken on mobile"). The agent the chief usually is: a
@@ -14,9 +15,12 @@ import { signIn } from '../lib/signin';
 //   header  the second row held a "kind Claude Code · <account>" chip and a
 //           "failed over from … · rate_limited · resets …" chip, each wrapping
 //           into a tall blob at 412px, so the row grew to ~5 lines and pushed
-//           the view switch to the edge. It is ONE line now: the account name
-//           as text and a "↻ switched" marker whose detail opens on a TAP (a
-//           popover; a title= tooltip never shows on a touch screen).
+//           the view switch to the edge. It was then ONE line: the account
+//           name as text and a "↻ switched" marker whose detail opened on a
+//           TAP. Since PR #527 the header is ONE ROW in all (internal/ui
+//           agent_header_folded.go): account, failover marker with its whole
+//           line, and Terminal are in the ⋯ menu, one TAP away (a title=
+//           tooltip never shows on a touch screen).
 //   asks    the heading wrapped beside a bordered "Hide until next ask"
 //           button, a long question ran past the block's scroll box so it read
 //           as cut off mid-sentence, and the block left the conversation a
@@ -24,6 +28,10 @@ import { signIn } from '../lib/signin';
 //           body clamped with its "Show more" INSIDE its own card, and past the
 //           first question the rest behind one "Show N more" — so the composer
 //           and some of the conversation stay on screen.
+//
+// ⚠ THE AGENT HERE IS NOT THE CHIEF (its display name is its slug): the page a
+// DISPATCHED claude-code agent draws, which folds the same way the chief's does
+// (e2e/tests/chief-fold-in.spec.ts pins both side by side).
 //
 // Every value here is invented fixture data. The agent, its failover and its
 // asks are rows e2e/ccfix and e2e/pluginfix write (a failover needs a real
@@ -92,13 +100,15 @@ async function shot(page: Page, name: string) {
   if (dir) await page.screenshot({ path: path.join(dir, name) });
 }
 
-// headerRow is the header's second row: the one the view switch sits in.
-const headerRow = (page: Page) => page.locator('header > div > div').filter({ has: page.locator('#view-terminal') });
+// headerRow is the header's ONE row (a claude-code agent's page folds its
+// status row into the ⋯ menu — internal/ui agent_header_folded.go): the row the
+// ⋯ trigger sits in.
+const headerRow = (page: Page) => page.locator('header > div').filter({ has: page.locator('#agent-actions-open') });
 
 async function open(page: Page) {
   await signIn(page, origin);
   await page.goto(origin + '/agents/' + NAME);
-  await expect(page.locator('#view-terminal')).toBeVisible();
+  await expect(page.locator('header #agent-actions-open')).toBeVisible();
   await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(ASKS);
   // The page reveals its transcript and composer once laid out.
   await expect(page.locator('#chat-form')).toBeVisible();
@@ -110,16 +120,21 @@ async function noSideScroll(page: Page) {
   expect.soft(sw, 'the page does not scroll sideways').toBeLessThanOrEqual(cw);
 }
 
-async function headerIsOneLine(page: Page) {
+async function headerIsOneLine(page: Page, how: 'click' | 'tap') {
   const row = headerRow(page);
   const box = (await row.boundingBox())!;
-  expect.soft(box.height, 'the header\'s second row is one line (the ⋯\'s 44px)').toBeLessThanOrEqual(48);
+  // One line of the ⋯'s 44px, plus the row's py-1.5 (12px).
+  expect.soft(box.height, 'the header\'s row is one line (the ⋯\'s 44px + 12px padding)').toBeLessThanOrEqual(57);
   const [sw, cw] = await row.evaluate((el) => [el.scrollWidth, el.clientWidth]);
-  expect.soft(sw, 'nothing in the header\'s second row overflows it').toBeLessThanOrEqual(cw);
-  // The account is named as text (no "kind Claude Code" label: the Terminal
-  // switch already says what kind of agent this is).
-  await expect.soft(page.locator('header [data-cc-account]')).toHaveText('beta');
+  expect.soft(sw, 'nothing in the header\'s row overflows it').toBeLessThanOrEqual(cw);
   await expect.soft(page.locator('header'), 'no kind label').not.toContainText('Claude Code');
+  // The account is named as text (no "kind Claude Code" label) — in the ⋯ menu.
+  await expect.soft(page.locator('[data-cc-account]')).toBeHidden();
+  await openAgentMenu(page, how);
+  await expect.soft(agentMenu(page).locator('[data-cc-account]')).toHaveText('beta');
+  await expect.soft(agentMenu(page), 'no kind label').not.toContainText('Claude Code');
+  await page.keyboard.press('Escape');
+  await expect(agentMenu(page)).toBeHidden();
 }
 
 // asksLeaveTheComposer: the asks block ends above the composer, the composer
@@ -141,23 +156,24 @@ test.describe('on a phone', () => {
     await open(page);
     await shot(page, 'chief-phone.png');
     await noSideScroll(page);
-    await headerIsOneLine(page);
+    await headerIsOneLine(page, 'tap');
 
-    // The failover: a one-line marker in the row, its detail one TAP away.
-    const marker = page.locator('header [data-failover]');
-    await expect(marker).toBeVisible();
-    await expect(marker).toHaveText('↻switched');
+    // The failover: a marker and its whole line in the ⋯ menu, one TAP away.
+    const marker = page.locator('[data-failover]');
     const detail = page.locator('[data-failover-detail]');
+    await expect(marker).toBeHidden();
     await expect(detail).toBeHidden();
-    await marker.tap();
+    await openAgentMenu(page, 'tap');
+    await expect(agentMenu(page).locator('[data-failover]')).toBeVisible();
+    await expect(marker).toHaveText('↻Account switched');
     await expect(detail).toBeVisible();
     await expect(detail).toContainText(FAILOVER);
     const d = (await detail.boundingBox())!;
     expect.soft(d.x, 'the detail is inside the viewport (left)').toBeGreaterThanOrEqual(0);
     expect.soft(d.x + d.width, 'the detail is inside the viewport (right)').toBeLessThanOrEqual(412);
-    expect.soft((await headerRow(page).boundingBox())!.height, 'opening it does not grow the row').toBeLessThanOrEqual(48);
+    expect.soft((await headerRow(page).boundingBox())!.height, 'opening it does not grow the row').toBeLessThanOrEqual(57);
     await shot(page, 'chief-phone-failover.png');
-    await marker.tap();
+    await page.locator('#agent-actions-open').tap();
     await expect(detail).toBeHidden();
   });
 
@@ -271,11 +287,11 @@ test.describe('on a desktop', () => {
     await open(page);
     await shot(page, 'chief-desktop.png');
     await noSideScroll(page);
-    await headerIsOneLine(page);
-    const marker = page.locator('header [data-failover]');
-    await marker.click();
+    await headerIsOneLine(page, 'click');
+    await openAgentMenu(page, 'click');
+    await expect(agentMenu(page).locator('[data-failover]')).toBeVisible();
     await expect(page.locator('[data-failover-detail]')).toContainText(FAILOVER);
-    await marker.click();
+    await page.locator('#agent-actions-open').click();
     await expect(page.locator('[data-failover-detail]')).toBeHidden();
     await expect(page.locator('#asker-asks [data-asker-asks-heading]')).toHaveText(`${ASKS} questions waiting`);
     await asksLeaveTheComposer(page, MIN_LOG);

@@ -11,6 +11,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 import { revealBox } from '../lib/composer';
 import { createAgent } from '../lib/seed';
+import { toTerminal } from '../lib/agent-menu';
 
 // DICTATION: the microphone on every message box, in a real Chromium with its
 // FAKE microphone (--use-fake-device-for-media-stream, which records a tone),
@@ -436,7 +437,9 @@ test.describe('the view switch finishes the recording in the view it hides', () 
         top,
         () => page,
         async () => {
-          await page.locator('a[data-view-swap]:visible').first().click();
+          // A claude-code agent's chat has its Terminal in the ⋯ menu (PR #527).
+          if (c.agent) await toTerminal(page);
+          else await page.locator('a[data-view-swap]:visible').first().click();
           await expect(sub.mic).toBeVisible({ timeout: 30_000 });
           await expect(iframe).toHaveCSS('visibility', 'visible');
         },
@@ -458,7 +461,8 @@ test.describe('the view switch finishes the recording in the view it hides', () 
       await expect(top.mic).toHaveAttribute('data-state', 'idle');
       await expect(top.note).toBeHidden();
       // 3. The frame shown again: its box has its transcript, its mic at rest.
-      await page.locator('a[data-view-swap]:visible').first().click();
+      if (c.agent) await toTerminal(page);
+      else await page.locator('a[data-view-swap]:visible').first().click();
       await expect(iframe).toHaveCSS('visibility', 'visible');
       await expect(sub.input).toHaveValue(FAKE_TEXT);
       await expect(sub.mic).toHaveAttribute('data-state', 'idle');

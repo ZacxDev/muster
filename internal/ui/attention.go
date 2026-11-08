@@ -212,19 +212,35 @@ const askerAsksEvent = "attention_queue.changed"
 // that reopens it (askerAsksChip) — see HIDE UNTIL NEXT ASK below.
 func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
 	return g.Group{
-		Section(
-			ID(AskerAsksID),
-			g.Attr("aria-label", "Questions waiting on your answer"),
-			g.Attr("aria-live", "polite"),
-			g.Attr("data-src", src),
-			g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
-				hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
-			Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
-			g.Raw(inner),
-		),
+		askerAsksSection(inner, src, viaHTMX),
 		askerAsksChip(),
 		askerAsksHideScript(),
 	}
+}
+
+// askerAsksBlockBadged is AskerAsksBlock WITHOUT its chip, for a page whose
+// header draws the chip as a count badge instead (askerAsksBadge — a claude-code agent's
+// page, foldedHeader). The hide script finds the badge by the chip's id, so the
+// badge must be in the document BEFORE this block: the header is.
+func askerAsksBlockBadged(inner, src string, viaHTMX bool) g.Node {
+	return g.Group{
+		askerAsksSection(inner, src, viaHTMX),
+		askerAsksHideScript(),
+	}
+}
+
+// askerAsksSection is the block's own element (AskerAsksBlock).
+func askerAsksSection(inner, src string, viaHTMX bool) g.Node {
+	return Section(
+		ID(AskerAsksID),
+		g.Attr("aria-label", "Questions waiting on your answer"),
+		g.Attr("aria-live", "polite"),
+		g.Attr("data-src", src),
+		g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
+			hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
+		Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
+		g.Raw(inner),
+	)
 }
 
 // HIDE UNTIL NEXT ASK (operator decision): the block's heading carries a
@@ -341,6 +357,31 @@ func askerAsksChip() g.Node {
 	)
 }
 
+// askerAsksBadge is the chip drawn as a HEADER badge — the count alone, in a
+// small pill — for a page that puts it in its header (a claude-code agent's,
+// foldedHeader) rather than as a floating pill over its conversation. It IS the
+// chip: the same id, so askerAsksHideScript shows it while the block is hidden
+// and a tap reopens the block, exactly as the chip does; data-asker-asks-compact
+// makes the script write the bare count and name it in aria-label.
+func askerAsksBadge() g.Node {
+	return Button(
+		ID(AskerAsksID+"-chip"),
+		Type("button"),
+		g.Attr("hidden", ""),
+		g.Attr("data-asker-asks-compact", ""),
+		g.Attr("aria-controls", AskerAsksID),
+		g.Attr("aria-label", "Show the questions waiting on your answer"),
+		g.Attr("title", "Questions waiting on your answer"),
+		// A 44px tap target, drawn as the small pill inside it.
+		Class("press group inline-flex h-11 shrink-0 items-center justify-center px-0.5"),
+		Span(
+			Class("inline-flex h-6 min-w-[1.5rem] items-center justify-center gap-1 rounded-full bg-accent/15 px-1.5 text-xs font-semibold tabular-nums text-accent ring-1 ring-inset ring-accent/40 transition group-hover:bg-accent/25"),
+			Span(Class("h-1.5 w-1.5 shrink-0 rounded-full bg-accent"), g.Attr("aria-hidden", "true")),
+			Span(g.Attr("data-asker-asks-count", "")),
+		),
+	)
+}
+
 // askerAsksHideScript is the hide and the chip (see HIDE UNTIL NEXT ASK).
 func askerAsksHideScript() g.Node {
 	return Script(g.Raw(`
@@ -409,7 +450,11 @@ func askerAsksHideScript() g.Node {
     for (var i = 0; i < k.length && hide; i++) if (d.indexOf(k[i]) < 0) hide = false;
     block.hidden = hide;
     chip.hidden = !hide;
-    if (hide) chip.querySelector('[data-asker-asks-count]').textContent = k.length + ' waiting';
+    if (hide && chip.hasAttribute('data-asker-asks-compact')) {
+      // The header badge (askerAsksBadge): the bare count, named in full.
+      chip.querySelector('[data-asker-asks-count]').textContent = String(k.length);
+      chip.setAttribute('aria-label', 'Show the ' + k.length + (k.length === 1 ? ' question' : ' questions') + ' waiting on your answer');
+    } else if (hide) chip.querySelector('[data-asker-asks-count]').textContent = k.length + ' waiting';
     else fit();
   }
   block.addEventListener('click', function (e) {

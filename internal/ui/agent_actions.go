@@ -27,7 +27,9 @@ import (
 //     (agentActionsMenu) — 🔴 THE SECOND ROW, NOT THE FIRST: the first row is
 //     the title's, and one more 44px button there would take its room (the
 //     operator's rule e2e/tests/title-room.spec.ts pins: the title keeps 150px
-//     on a 393px phone);
+//     on a 393px phone). ⚠ EXCEPT ON A CLAUDE-CODE AGENT'S PAGE, which has no second row:
+//     its ⋯ ends its one header row and holds the status row's account,
+//     failover and Terminal too (agent_header_folded.go);
 //   - the kickoff failure and its remedy, the "waiting for your github
 //     approval" notice and a GitHub problem, as notices above the transcript
 //     (agentNotices), where a long sentence has room.
@@ -115,10 +117,20 @@ func agentStripBody(a AgentCardView) g.Node {
 // trigger by floatingMenuScript; popover="auto" closes it on an outside tap
 // and on Escape. `hidden [&:popover-open]:flex`, not `flex`: any author
 // display utility beats the UA's rule that hides a closed popover.
-func agentActionsMenu(a AgentCardView) g.Node {
+func agentActionsMenu(a AgentCardView) g.Node { return agentActionsMenuWith(a, "start", nil) }
+
+// agentActionsMenuWith is agentActionsMenu with extra items FIRST (a claude-code agent's
+// page puts its status row's account, failover and Terminal there —
+// foldedMenuItems) and the menu's alignment to its trigger: "start" (left edges,
+// a trigger at its row's start) or "" (right edges, a trigger at its row's end).
+func agentActionsMenuWith(a AgentCardView, align string, extra g.Node) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	lifecycle := agentLifecycleItems(ids)
 	deletable := a.Deletable()
+	width := "w-48"
+	if extra != nil {
+		width = "w-72 max-w-[calc(100vw-16px)]"
+	}
 	return g.Group{
 		Button(
 			Type("button"),
@@ -136,9 +148,11 @@ func agentActionsMenu(a AgentCardView) g.Node {
 			g.Attr("role", "menu"),
 			g.Attr("data-floating-menu", ""),
 			// Its trigger is at the start of the header's second row: the menu
-			// opens under it, left edges aligned (floatingMenuScript).
-			g.Attr("data-menu-align", "start"),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			// opens under it, left edges aligned (floatingMenuScript). A claude-code agent's
+			// is at its row's END: right edges aligned.
+			g.If(align != "", g.Attr("data-menu-align", align)),
+			Class("invisible hidden [&:popover-open]:flex m-0 "+width+" flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			g.If(extra != nil, g.Group{extra, Div(Class("my-0.5 border-t border-line"))}),
 			Button(
 				Type("button"),
 				g.Attr("role", "menuitem"),

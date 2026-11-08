@@ -4,12 +4,14 @@
 // a real route — a failover needs a gateway reporting a rate limit from a real
 // runtime, and the noop driver runs none.
 //
-//		DATABASE_URL=…_e2e go run ./e2e/ccfix agent <owner-id> <name> <account> <token>   → prints the agent id
+//		DATABASE_URL=…_e2e go run ./e2e/ccfix agent <owner-id> <name> <account> <token> [display-name]   → prints the agent id
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix failover <owner-id> <name> <from> <reason> <resets-RFC3339>
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix ask <owner-id> <name> <question> <option>…   → prints the ask id
 //		DATABASE_URL=…_e2e go run ./e2e/ccfix rmagent <owner-id> <name>
 //
 //	  - agent: a RUNNING claude-code agent on <account>, as a dispatch leaves it.
+//	    Its display name is <name>, or [display-name] when given ("chief" makes
+//	    it its owner's chief by label).
 //	  - failover: one cc_account_failovers row (internal/ccfailover PGStore.Record
 //	    writes the same columns) from <from> to the agent's own account.
 //	  - ask: an OPEN attention_ask from the agent WITH its options — the row its
@@ -65,13 +67,17 @@ func run(args []string) error {
 	}
 	switch args[0] {
 	case "agent":
-		if len(args) != 5 {
-			return fmt.Errorf("usage: agent <owner-id> <name> <account> <token>")
+		if len(args) != 5 && len(args) != 6 {
+			return fmt.Errorf("usage: agent <owner-id> <name> <account> <token> [display-name]")
+		}
+		display := args[2]
+		if len(args) == 6 {
+			display = args[5]
 		}
 		var id int64
 		if err := conn.QueryRow(ctx, `INSERT INTO agents (owner_id, name, namespace, display_name, status, hooks_token, kicked_off, kind, cc_account)
-			VALUES ($1, $2, $3, $2, 'running', $4, true, 'claude-code', $5) RETURNING id`,
-			owner, args[2], "devpod-"+args[2], args[4], args[3]).Scan(&id); err != nil {
+			VALUES ($1, $2, $3, $6, 'running', $4, true, 'claude-code', $5) RETURNING id`,
+			owner, args[2], "devpod-"+args[2], args[4], args[3], display).Scan(&id); err != nil {
 			return err
 		}
 		fmt.Println(id)

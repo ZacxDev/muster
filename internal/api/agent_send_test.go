@@ -409,8 +409,15 @@ func TestAnAgentsTerminalPageHasTheSwitchAndTheComposer(t *testing.T) {
 	if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {
 		t.Errorf("the chat page's Referrer-Policy = %q, want same-origin (its form is one the browser may submit itself)", got)
 	}
-	if !strings.Contains(chat, `id="view-rendered" aria-current="page"`) || !strings.Contains(chat, `<a id="view-terminal" href="/agents/keen-wren/terminal"`) {
-		t.Error("the chat page has no Rendered | Terminal switch")
+	// The way to the terminal: a claude-code agent's page has ONE header row
+	// (ui foldedHeader, PR #527), so there is no Rendered segment, and the
+	// Terminal link is an item of its ⋯ menu — the same id and view-swap link.
+	if strings.Contains(chat, `id="view-rendered"`) {
+		t.Error("the chat page still draws the Rendered | Terminal switch")
+	}
+	menu := chat[strings.Index(chat, `id="`+ui.AgentMenuID+`"`):]
+	if !strings.Contains(chat, `id="`+ui.AgentMenuID+`"`) || !strings.Contains(menu, `<a id="view-terminal" href="/agents/keen-wren/terminal"`) {
+		t.Error("the chat page has no Terminal link in its ⋯ menu")
 	}
 	if form := tagOf(chat, "chat-form"); !strings.Contains(form, `method="post" action="/agents/keen-wren/send?session=41"`) {
 		t.Errorf("the chat form cannot be sent without its socket: %s", form)

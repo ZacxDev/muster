@@ -7,6 +7,7 @@ import { touchDrag } from '../lib/touch';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { createAgent } from '../lib/seed';
 import { coarse, pickView } from '../lib/switcher';
+import { openAgentMenu } from '../lib/agent-menu';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -97,10 +98,13 @@ test('a claude-code agent opens its live terminal with live keys at phone width'
   const sent = recordSent(page);
 
   await page.goto(origin + '/agents/' + name);
-  // The chat is the agent's rendered view and its default; the Terminal is the
-  // other half of the Rendered | Terminal switch.
-  await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
-  const open = page.locator('#view-terminal');
+  // The chat is the agent's rendered view and its default; the Terminal is
+  // an item of its header's ⋯ menu (PR #527: a claude-code agent's page has
+  // one header row and draws no Rendered | Terminal switch).
+  await expect(page.locator('#view-rendered'), 'no switch segment on the chat page').toHaveCount(0);
+  await expect(page.locator('#view-terminal')).toBeHidden();
+  await openAgentMenu(page);
+  const open = page.locator('#agent-actions #view-terminal');
   await expect(open).toBeVisible();
   await expect(open).toHaveText(/Terminal/);
   const ob = (await open.boundingBox())!;

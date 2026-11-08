@@ -192,10 +192,21 @@ for (const vp of [
       }
       await expect(badge(page)).toBeVisible();
       // On the button's corner, inside the screen.
-      const b = (await badge(page).boundingBox())!;
-      const m = (await menuBtn(page).boundingBox())!;
-      expect(b.x + b.width, 'the badge is on the ☰').toBeLessThanOrEqual(m.x + m.width + 1);
-      expect(b.y).toBeGreaterThanOrEqual(m.y - 1);
+      // 🔴 RETRIED, NOT READ ONCE: the badge is #nav-waiting-slot's innerHTML,
+      // and the ask fires several refreshes (sse attention_queue.changed,
+      // agent.changed, agents:changed, each its own /ui/nav/waiting read). Any
+      // one swap replaces the element, so a boundingBox read after the
+      // visibility check can land on a moment it is not laid out and return
+      // null (CI, run 42513100375 attempt 1: "Cannot read properties of null
+      // (reading 'x')" at 953ms). The geometry is asserted on one read of both
+      // boxes, retried until it holds.
+      await expect(async () => {
+        const b = await badge(page).boundingBox();
+        const m = await menuBtn(page).boundingBox();
+        expect(b && m, 'both boxes are laid out').toBeTruthy();
+        expect(b!.x + b!.width, 'the badge is on the ☰').toBeLessThanOrEqual(m!.x + m!.width + 1);
+        expect(b!.y).toBeGreaterThanOrEqual(m!.y - 1);
+      }).toPass({ timeout: 5_000 });
       await expect(menuBtn(page), 'the badge describes the button').toHaveAccessibleDescription(`${base + 1} waiting on you`);
       await noSidewaysScroll(page, vp.w);
 
@@ -246,9 +257,14 @@ for (const vp of [
         await expect(kiwi.locator('[data-palette-wait]')).toHaveCount(0);
         // The label is still the row's first line, and the mark inside the box.
         expect(await asker.evaluate((li) => (li.firstElementChild as HTMLElement).textContent)).toBe(ASKER);
-        const r = (await asker.boundingBox())!;
-        const k = (await asker.locator('[data-palette-wait]').boundingBox())!;
-        expect(k.x + k.width).toBeLessThanOrEqual(r.x + r.width);
+        // Retried on one read of both boxes, as the ☰ badge's above: the mark is
+        // drawn from the switcher's live entries, which the same events refresh.
+        await expect(async () => {
+          const r = await asker.boundingBox();
+          const k = await asker.locator('[data-palette-wait]').boundingBox();
+          expect(r && k, 'both boxes are laid out').toBeTruthy();
+          expect(k!.x + k!.width).toBeLessThanOrEqual(r!.x + r!.width);
+        }).toPass({ timeout: 5_000 });
         await noSidewaysScroll(page, vp.w);
       } finally {
         await answer(page, id);

@@ -46,9 +46,12 @@ func headerRows(t *testing.T, page string) (first, rest string) {
 
 // TestTheAgentPageCarriesWhatItsCardDid: the agent page's header draws the
 // status strip (status, the awaiting-approval badge, the kickoff badge, the
-// work chip) and the ⋯ menu (Rename, the lifecycle action, Delete) on its
-// SECOND row — never the title's first row, whose room the operator keeps —
-// and the notices above the transcript; for both kinds of agent.
+// work chip) and the ⋯ menu (Rename, the lifecycle action, Delete), and the
+// notices above the transcript; for both kinds of agent. A GATEWAY agent's
+// header draws strip and ⋯ on its SECOND row — never the title's first row,
+// whose room the operator keeps; a CLAUDE-CODE agent's has ONE row
+// (foldedHeader, agent_header_folded.go — operator decision on PR #527), which
+// holds both.
 func TestTheAgentPageCarriesWhatItsCardDid(t *testing.T) {
 	for _, kind := range []string{agents.KindGateway, agents.KindClaudeCode} {
 		v := sampleAgentDetailView()
@@ -56,13 +59,28 @@ func TestTheAgentPageCarriesWhatItsCardDid(t *testing.T) {
 		v.Card = pageCard()
 		v.ID, v.Name = v.Card.ID, v.Card.Name
 		page := renderString(t, AgentDetailPage(v, featuresAllOn))
-		first, rest := headerRows(t, page)
-		for _, id := range []string{AgentStripID, AgentMenuSlot, AgentMenuID + "-open"} {
-			if strings.Contains(first, `id="`+id+`"`) {
-				t.Errorf("%s: #%s is on the title's row", kind, id)
+		var rest string
+		if kind == agents.KindClaudeCode {
+			h := page[strings.Index(page, "<header"):]
+			rest = h[:strings.Index(h, "</header>")]
+			if !strings.Contains(rest, "data-folded-header") {
+				t.Fatalf("%s: not the folded one-row header", kind)
 			}
-			if !strings.Contains(rest, `id="`+id+`"`) {
-				t.Errorf("%s: #%s is not on the header's second row", kind, id)
+			for _, id := range []string{AgentStripID, AgentMenuSlot, AgentMenuID + "-open"} {
+				if !strings.Contains(rest, `id="`+id+`"`) {
+					t.Errorf("%s: #%s is not in the header's row", kind, id)
+				}
+			}
+		} else {
+			var first string
+			first, rest = headerRows(t, page)
+			for _, id := range []string{AgentStripID, AgentMenuSlot, AgentMenuID + "-open"} {
+				if strings.Contains(first, `id="`+id+`"`) {
+					t.Errorf("%s: #%s is on the title's row", kind, id)
+				}
+				if !strings.Contains(rest, `id="`+id+`"`) {
+					t.Errorf("%s: #%s is not on the header's second row", kind, id)
+				}
 			}
 		}
 		for _, want := range []string{`data-agent-status="running"`, `data-badge="` + AwaitingApprovalBadgeID + `"`, "data-kickoff-failed", `data-mirror-work=""`} {
