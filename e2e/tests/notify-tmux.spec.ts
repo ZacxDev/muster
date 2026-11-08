@@ -43,6 +43,9 @@ const sids = { phone: 'ntmux-phone-' + stamp, desktop: 'ntmux-desktop-' + stamp 
 const windows = { phone: 1, desktop: 2 };
 const names = { phone: 'Billing migration', desktop: 'Ledger cleanup' };
 const unnamed = [3, 4, 5, 6, 7];
+// An unnamed window each viewport's Asks test sets waiting, live, for its SSE
+// refresh (not 7: the bar test's page is window 7's).
+const unnamedWaitingOf = { phone: 4, desktop: 5 };
 const TAIL = [
   { role: 'user', text: 'Migrate the billing tables to the v2 schema' },
   { role: 'assistant', text: 'Reading the current schema first.' },
@@ -116,6 +119,7 @@ for (const vp of [
     test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
     const w = windows[vp.key];
     const name = names[vp.key];
+    const unnamedWaiting = unnamedWaitingOf[vp.key];
 
     // THE SESSION LISTS: the bar's pills and the dock's rows. The page is
     // window 7's (unnamed); the bar shows its All view, 7 pills.
@@ -174,6 +178,15 @@ for (const vp of [
       expect(lb.y >= pb.y - 0.5 && lb.y + lb.height <= pb.y + pb.height + 0.5, 'the line is inside the pill').toBe(true);
       await expect(plain.locator('[data-switcher-tmux-line]'), 'an unnamed pill draws no codename twice').toHaveCount(0);
       await expect(plain).not.toHaveAttribute('data-switcher-tmux', /.*/);
+      // Exactly the two NAMED windows (this viewport's and the other's) draw a
+      // codename line: no unnamed window, and no agent — an agent has no tmux
+      // window. The agent pill is there (the control), and draws none.
+      await expect(allRow.locator('[data-switcher-tmux-line]'), 'only the named windows').toHaveCount(2);
+      await expect(allRow.locator('[data-switcher-entry][data-switcher-tmux]')).toHaveCount(2);
+      const agents = allRow.locator('[data-switcher-entry="agent"]');
+      expect(await agents.count(), 'control: an agent pill is on the bar').toBeGreaterThanOrEqual(1);
+      await expect(agents.locator('[data-switcher-tmux-line]'), 'an agent draws no codename').toHaveCount(0);
+      await expect(allRow.locator('[data-switcher-entry="agent"][data-switcher-tmux]')).toHaveCount(0);
       const onHeight = (await bar.boundingBox())!.height;
       expect(Math.abs(onHeight - offHeight), 'the bar grows at most 4px').toBeLessThanOrEqual(4);
       await noOverflow();
@@ -184,6 +197,12 @@ for (const vp of [
       expect(tb.y, 'the third line, under the focus').toBeGreaterThanOrEqual(fb.y + fb.height - 0.5);
       const plainRow = page.locator(`#dock-list a[data-dock-row][href="${(await plain.getAttribute('href'))!}"]`);
       await expect(plainRow.locator('[data-dock-tmux]')).toHaveCount(0);
+      // The dock's rows: the codename line on the two named windows only (no
+      // unnamed window's, no agent's), and an agent row is there to have none.
+      await expect(page.locator('#dock-list [data-dock-tmux]'), 'only the named windows\' dock rows').toHaveCount(2);
+      const agentRows = page.locator('#dock-list a[data-dock-row][href^="/agents/"]');
+      expect(await agentRows.count(), 'control: an agent row is in the dock').toBeGreaterThanOrEqual(1);
+      await expect(agentRows.locator('[data-dock-tmux]'), 'an agent row draws no codename').toHaveCount(0);
       await closeDock();
 
       // A reload keeps it; so does a live refresh of the bar (the ⋯ menu's
@@ -226,6 +245,24 @@ for (const vp of [
       await setSwitch(page, true);
       await page.goto(origin + '/attention');
       await expect(askRow(page, w)).toHaveText(`${name} · cobalt:${w} @ ${host}`);
+
+      // A LIVE refresh keeps it: another window starts waiting, the server's
+      // attention_queue.changed event re-fetches the list over SSE (the
+      // marked row is replaced: the refresh happened), and the named row is
+      // still "<name> · <codename> @ <host>" — the refresh renders as its owner.
+      const extra = path.join(rig.dir, `ntmux-plain-${unnamedWaiting}-${stamp}.jsonl.waiting`);
+      const extraRow = page.locator('[data-attention-item][data-kind="session"]', { hasText: `tnotify:${unnamedWaiting} @` });
+      await expect(extraRow).toHaveCount(0);
+      await askRow(page, w).evaluate((el) => { el.setAttribute('data-stale-mark', '1'); });
+      try {
+        fs.writeFileSync(extra, '');
+        await expect(extraRow.first(), 'the list refreshed live with the new waiting window').toBeVisible({ timeout: 20_000 });
+        await expect(page.locator('#attention-items [data-stale-mark]'), 'the row was re-rendered').toHaveCount(0);
+        await expect(askRow(page, w), 'kept by the live refresh').toHaveText(`${name} · cobalt:${w} @ ${host}`);
+      } finally {
+        fs.rmSync(extra, { force: true });
+      }
+      await expect(extraRow, 'and gone again once it stops waiting').toHaveCount(0, { timeout: 20_000 });
 
       // 3. Off again: exactly the name again.
       await setSwitch(page, false);

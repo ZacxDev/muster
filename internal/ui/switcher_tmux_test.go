@@ -61,6 +61,24 @@ func TestAPillWithTheSwitchOnDrawsItsCodenameLine(t *testing.T) {
 	}
 }
 
+// TestAPillWithTheSwitchOnIsTheOffPillPlusItsCodename: the WHOLE ON pill,
+// byte for byte — the OFF golden with exactly two edits and nothing else: the
+// dock's data-switcher-tmux on the link, and the label wrapped with its
+// codename line (literal classes, not the constants, so a class change is
+// seen). A mutant that changes anything else about the pill when on fails here.
+func TestAPillWithTheSwitchOnIsTheOffPillPlusItsCodename(t *testing.T) {
+	want := strings.Replace(pillOffGolden, ` class="press group`, ` data-switcher-tmux="mango:1 @ atlas" class="press group`, 1)
+	want = strings.Replace(want, `<span class="whitespace-nowrap">Billing migration</span>`,
+		`<span class="flex flex-col items-start leading-tight"><span class="whitespace-nowrap">Billing migration</span>`+
+			`<span data-switcher-tmux-line="" class="block max-w-[8rem] truncate text-[10px] font-normal text-fg2">mango:1</span></span>`, 1)
+	if strings.Count(want, "mango:1 @ atlas") != 1 || !strings.Contains(want, "data-switcher-tmux-line") {
+		t.Fatal("fixture: the ON golden was not built from the OFF one")
+	}
+	if got := pillOf(t, namedTmuxCard("mango:1 @ atlas", "mango:1")); got != want {
+		t.Fatalf("the ON pill:\n got  %s\n want %s", got, want)
+	}
+}
+
 // TestNoCodenameLineForAnUnnamedWindowOrAnAgent: the api's rule sets nothing
 // for a window called by its codename already, nor for an agent; the ui draws
 // nothing for either (no data-switcher-tmux, no second line).

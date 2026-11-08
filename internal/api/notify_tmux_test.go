@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -146,4 +147,33 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 	prefs.err = nil
 	_ = prefs.SetTmuxAddress(context.Background(), authz.OperatorUserID, false)
 	assertOff("switched off again")
+}
+
+// TestAnAgentsAskIsNeverGivenATmuxAddress: an agent has no tmux window, so
+// with its owner's switch ON its ask is still called by its human name alone —
+// on the item and its push title — while a named mirrored ask in the SAME
+// batch gains the address (the control: the switch was read on).
+func TestAnAgentsAskIsNeverGivenATmuxAddress(t *testing.T) {
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	store := namedFocusStore()
+	store.rows[focus.AgentSubject(8)] = focus.Focus{Subject: focus.AgentSubject(8), Title: "Importing the ledger",
+		UpdatedAt: time.Now(), Name: focus.Name{Auto: "Deploy importer"}}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	prefs := &memNotifyPrefs{}
+	s.ext.NotifyPrefs = prefs
+	_ = prefs.SetTmuxAddress(context.Background(), authz.OperatorUserID, true)
+	items := []attentionItem{
+		askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 8, Label: plainName}, Question: "Deploy now?"}),
+		namedAskItem(),
+	}
+	s.withFocus(operatorCtx(), items)
+	if got := items[1].Name; got != "Billing migration · mango:1 @ ws" {
+		t.Fatalf("control: the named mirrored ask is %q, want the address (was the switch read?)", got)
+	}
+	if got := items[0].Name; got != "Deploy importer" {
+		t.Fatalf("an agent's ask is named %q, want %q (no tmux window, no address)", got, "Deploy importer")
+	}
+	if got := attentionNotification(items[0], false).Title; got != "Deploy importer is asking" {
+		t.Fatalf("an agent's ask's push title %q", got)
+	}
 }
