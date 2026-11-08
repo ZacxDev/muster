@@ -219,8 +219,8 @@ func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
 }
 
 // askerAsksBlockBadged is AskerAsksBlock WITHOUT its chip, for a page whose
-// header draws the chip as a count badge instead (askerAsksBadge — the chief's
-// page, chiefHeader). The hide script finds the badge by the chip's id, so the
+// header draws the chip as a count badge instead (askerAsksBadge — a claude-code agent's
+// page, foldedHeader). The hide script finds the badge by the chip's id, so the
 // badge must be in the document BEFORE this block: the header is.
 func askerAsksBlockBadged(inner, src string, viaHTMX bool) g.Node {
 	return g.Group{
@@ -358,8 +358,8 @@ func askerAsksChip() g.Node {
 }
 
 // askerAsksBadge is the chip drawn as a HEADER badge — the count alone, in a
-// small pill — for a page that puts it in its header (the chief's,
-// chiefHeader) rather than as a floating pill over its conversation. It IS the
+// small pill — for a page that puts it in its header (a claude-code agent's,
+// foldedHeader) rather than as a floating pill over its conversation. It IS the
 // chip: the same id, so askerAsksHideScript shows it while the block is hidden
 // and a tap reopens the block, exactly as the chip does; data-asker-asks-compact
 // makes the script write the bare count and name it in aria-label.

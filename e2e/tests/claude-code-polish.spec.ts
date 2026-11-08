@@ -4,6 +4,7 @@ import { signIn } from '../lib/signin';
 import { hookToken, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
+import { agentMenu, openAgentMenu } from '../lib/agent-menu';
 
 // Four operator reports, driven through the real UI against a REAL muster-server
 // with both agent kinds enabled over the noop driver (which reports a created
@@ -187,8 +188,11 @@ for (const vp of [
         if (r.url().includes('/api/openrouter/')) openrouter.push(r.url());
       });
       await page.goto(origin + '/agents/' + cc.name);
-      await expect(page.locator('header [data-cc-account]')).toHaveText(/^(alpha|beta)$/);
-      await expect(page.locator('header [data-cc-account]')).toBeVisible();
+      // Its account is an item of the header's ⋯ menu (PR #527: a claude-code
+      // agent's page has one header row).
+      await expect(agentMenu(page).locator('[data-cc-account]')).toHaveText(/^(alpha|beta)$/);
+      await openAgentMenu(page);
+      await expect(agentMenu(page).locator('[data-cc-account]')).toBeVisible();
       await expect(page.locator('#model-input')).toHaveCount(0);
       await expect(page.locator('[data-combobox-remote]')).toHaveCount(0);
       await page.waitForTimeout(1000);

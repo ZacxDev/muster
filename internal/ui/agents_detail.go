@@ -360,8 +360,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 }
 
 func agentDetailHeader(v AgentDetailView) g.Node {
-	if chiefFolded(v) {
-		return chiefHeader(v)
+	if headerFolded(v) {
+		return foldedHeader(v)
 	}
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
@@ -411,6 +411,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				agentMenuSlot(v.Card),
 				agentModelControl(v),
 			)),
+			// ⚠ ONLY A VIEW WITH NO CARD REACHES THIS ROW NOW: a claude-code
+			// agent's page with a card draws foldedHeader instead (one row, these
+			// controls in its ⋯ menu — agent_header_folded.go, PR #527).
+			//
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
 			// row in the sidebar opens this page. A claude-code agent also has a
 			// Terminal — the same Rendered | Terminal switch a mirrored Claude Code
@@ -504,7 +508,7 @@ func agentFailoverMarker(line string) g.Node {
 func agentHeaderTools(v AgentDetailView) g.Node { return agentHeaderToolsWith(v, false) }
 
 // agentHeaderToolsWith is agentHeaderTools; compact sets the controls 0.25rem
-// apart (gap-1) instead of 0.75rem, for the chief's one-row header (chiefHeader),
+// apart (gap-1) instead of 0.75rem, for a claude-code agent's one-row header (foldedHeader),
 // which also holds the status dot, the asks badge and the ⋯ beside them.
 func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	n := 2
@@ -966,9 +970,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
-		// The chief's page draws its asks UNDER the transcript, as a mirrored
-		// session does, with the chip in its header (chiefHeader); see below.
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !chiefFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
+		// A claude-code agent's page draws its asks UNDER the transcript, as a mirrored
+		// session does, with the chip in its header (foldedHeader); see below.
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && !headerFolded(v), AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		// What the retired list's card said under its title (agent_actions.go).
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
@@ -1028,11 +1032,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// when what it would draw is still exactly this.
 			chatLogVersioned(v),
 		),
-		// The chief's asks: between the transcript and the composer, where a
+		// A claude-code agent's asks: between the transcript and the composer, where a
 		// mirrored session's Rendered view puts its own (MirrorViewPage), so a
 		// question never sits between the header and the conversation. Its
 		// "N waiting" chip is the header's badge (askerAsksBadge).
-		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && chiefFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "" && headerFolded(v), askerAsksBlockBadged(v.Asks, v.AsksSrc, true)),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A

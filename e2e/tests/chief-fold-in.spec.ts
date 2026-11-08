@@ -38,6 +38,10 @@ const rig = new MirrorRig(chiefFoldInPort, 'e2e-fold', {
 const origin = rig.origin;
 const stamp = Date.now().toString(36);
 const NAME = `e2e-fold-${stamp}`;
+// A DISPATCHED claude-code agent (not the chief: its display name is its slug)
+// — every claude-code agent's page folds the same way (operator decision on
+// PR #527).
+const DISPATCHED = `e2e-fold-cc-${stamp}`;
 const OWNER = '1';
 const ASKS = 3;
 const FAILOVER = 'from alpha · rate_limited · resets Nov 6 22:00 UTC';
@@ -75,6 +79,9 @@ test.beforeAll(async () => {
   go('./e2e/ccfix', ['agent', OWNER, NAME, 'beta', `e2e-fold-token-${stamp}`, 'chief']);
   go('./e2e/ccfix', ['failover', OWNER, NAME, 'alpha', 'rate_limited', '2026-11-06T22:00:00Z']);
   for (let i = 0; i < ASKS; i++) go('./e2e/ccfix', ['ask', OWNER, NAME, `Fold question ${i + 1}: cordon gpu-${i}-a now?`, 'Cordon it', 'Leave it']);
+  go('./e2e/ccfix', ['agent', OWNER, DISPATCHED, 'alpha', `e2e-fold-cc-token-${stamp}`]);
+  go('./e2e/ccfix', ['failover', OWNER, DISPATCHED, 'beta', 'rate_limited', '2026-11-06T22:00:00Z']);
+  go('./e2e/ccfix', ['ask', OWNER, DISPATCHED, 'Dispatched question: retry the flaky job?', 'Retry', 'Skip']);
   go(
     './e2e/mkchat',
     [],
@@ -91,6 +98,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   try {
     go('./e2e/ccfix', ['rmagent', OWNER, NAME]);
+    go('./e2e/ccfix', ['rmagent', OWNER, DISPATCHED]);
   } finally {
     await rig.stop();
   }
@@ -281,6 +289,53 @@ for (const vp of [
       await expect(row).toContainText(BODY);
       const rb = (await row.boundingBox())!;
       expect.soft(rb.x + rb.width, 'the opened row is inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+    });
+
+    // EVERY CLAUDE-CODE AGENT, NOT ONLY THE CHIEF (operator decision on #527): a
+    // dispatched agent's page draws the same one-row header, its account,
+    // failover, pool and Terminal in the ⋯ menu, and its hidden asks as the
+    // header badge.
+    test('a dispatched claude-code agent folds the same way', async ({ page }) => {
+      await signIn(page, origin);
+      await page.goto(origin + '/agents/' + DISPATCHED);
+      await expect(page.locator('#asker-asks [data-attention-item]')).toHaveCount(1);
+      await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
+      await page.reload();
+      await expect(page.locator('#chat-form')).toBeVisible();
+      await shot(page, `dispatched-${vp.key}.png`);
+      const header = page.locator('header');
+      const hb = (await header.boundingBox())!;
+      expect(hb.height, 'the header is one row').toBeLessThanOrEqual(58);
+      await expect(header.locator('#agent-status')).toBeVisible();
+      await expect(page.locator('[data-cc-account]')).toBeHidden();
+      await expect(page.locator('[data-failover]')).toBeHidden();
+      await expect(page.locator('#view-terminal')).toBeHidden();
+      await press(page, '#agent-actions-open');
+      const menu = page.locator('#agent-actions');
+      await expect(menu).toBeVisible();
+      await expect(menu.locator('[data-cc-account]')).toHaveText('alpha');
+      await expect(menu.locator('[data-failover-detail]')).toContainText('from beta · rate_limited');
+      await expect(menu.locator('#view-terminal')).toBeVisible();
+      // The positive control that this agent is NOT the chief: it can be deleted.
+      await expect(menu.locator('[data-agent-action="delete"]')).toBeVisible();
+      await shot(page, `dispatched-${vp.key}-menu.png`);
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+      // Hidden asks: the header badge, which reopens them.
+      await press(page, '[data-asker-asks-hide]');
+      const badge = page.locator('header #asker-asks-chip');
+      await expect(badge).toBeVisible();
+      await expect(badge).toHaveText('1');
+      await expect(badge).toHaveAccessibleName('Show the 1 question waiting on your answer');
+      await press(page, 'header #asker-asks-chip');
+      await expect(page.locator('#asker-asks')).toBeVisible();
+      // Terminal from the menu opens the terminal view in the kept frame.
+      await press(page, '#agent-actions-open');
+      await press(page, '#view-terminal');
+      await expect(page.locator('iframe[data-muster-view]')).toBeVisible({ timeout: 15_000 });
+      // …and closes the menu (it is in the top layer, over the frame): left
+      // open, the next ⋯ tap only closed it (e2e view-swap's round trips).
+      await expect(menu).toBeHidden();
     });
   });
 }

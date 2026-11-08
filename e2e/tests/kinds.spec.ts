@@ -4,11 +4,14 @@ import { signIn } from '../lib/signin';
 import { hookToken, kindsPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
+import { openAgentMenu } from '../lib/agent-menu';
 
-// ccAccount is the agent page header's Claude account (the second row's plain
-// account name, data-cc-account; the Terminal switch beside it is what says
-// the kind).
-const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
+// ccAccount is the agent page's Claude account (its plain account name,
+// data-cc-account) — an item of the header's ⋯ menu since PR #527 (a claude-code
+// agent's page has one header row: agent_header_folded.go); the menu's
+// Terminal item beside it is what says the kind. Open the menu (openAgentMenu)
+// before asking whether it is visible.
+const ccAccount = (page: Page, account: string) => page.locator(`#agent-actions [data-cc-account="${account}"]`);
 
 
 // The dispatch form's agent-kind picker and the Claude account pin, at a phone
@@ -161,17 +164,20 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   expect([pinned.workerPool, pooled.workerPool, standard.workerPool]).toEqual(['', '', '']);
 
   // 5. The agent's own page (where its retired list card's chips went: the
-  //    header's second row) says which kind and account, and nothing on the
+  //    header's ⋯ menu) says which kind and account, and nothing on the
   //    page carries a token.
+  //    (Since PR #527 those are items of the header's ⋯ menu.)
   await page.goto(origin + '/agents/' + pinned.name);
   await expect(ccAccount(page, 'beta')).toHaveText('beta');
+  await openAgentMenu(page);
   await expect(ccAccount(page, 'beta')).toBeVisible();
-  await expect(page.locator('header [data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
+  await expect(page.locator('[data-worker-pool]'), 'a worker pinned to no pool shows no pool chip').toHaveCount(0);
   expect(await page.content()).not.toContain('sk-ant-oat01');
   // …and a pool worker's page says which pool.
   await page.goto(origin + '/agents/' + worker.name);
   await expect(ccAccount(page, 'alpha')).toHaveText('alpha');
+  await openAgentMenu(page);
   await expect(ccAccount(page, 'alpha')).toBeVisible();
-  await expect(page.locator('header [data-worker-pool="reviewers"]')).toBeVisible();
+  await expect(page.locator('#agent-actions [data-worker-pool="reviewers"]')).toBeVisible();
   expect(await page.content()).not.toContain('sk-ant-oat01');
 });

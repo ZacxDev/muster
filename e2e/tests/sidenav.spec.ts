@@ -273,7 +273,11 @@ for (const size of [
       await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       await openByToggle(page);
       await page.locator('#view-rendered').click();
-      await expect(framed(page).locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+      // The framed page is the chat: no Rendered | Terminal switch on it, its
+      // Terminal the ⋯ menu's item (PR #527: one header row).
+      await expect(framed(page).locator('#chat-form')).toBeVisible();
+      await expect(framed(page).locator('#view-rendered')).toHaveCount(0);
+      await expect(framed(page).locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
       // The agent page keeps the shell's rail on a desktop (it is not a
       // full-height view); on a phone its hamburger opens it.
       await navOnTopInFrame(page, desktop);

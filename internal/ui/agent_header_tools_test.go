@@ -16,6 +16,10 @@ import (
 // row sized by the strip alone until the ⋯ arrived moved the strip's status
 // icon when it did (menuRowMin; e2e cls-long-transcript's stall after the
 // strip is the behavioural case). With no card there is no ⋯ and no minimum.
+//
+// ⚠ A CLAUDE-CODE agent's page has no second row (foldedHeader): its ⋯ is in
+// the one row of 44px controls, which is that height from its first control
+// (the ☰, h-11) on — so its row is asserted to hold the ☰ instead of min-h-11.
 func TestAgentHeaderMenuRowIsTheMenusHeight(t *testing.T) {
 	for _, kind := range []string{agents.KindGateway, agents.KindClaudeCode} {
 		t.Run(kind, func(t *testing.T) {
@@ -37,6 +41,14 @@ func TestAgentHeaderMenuRowIsTheMenusHeight(t *testing.T) {
 			row := slot.Parent
 			if strip.Parent != row {
 				t.Fatal("the strip and the ⋯ are not in one row")
+			}
+			if kind == agents.KindClaudeCode {
+				// The folded one row: centred, its first control the 44px ☰.
+				open := byID(doc, "sidebar-open")
+				if c := attrOf(row, "class"); !hasClass(c, "items-center") || open == nil || open.Parent != row || !hasClass(attrOf(open, "class"), "h-11") {
+					t.Errorf("the folded row: %q, ☰ %v", c, open)
+				}
+				return
 			}
 			if c := attrOf(row, "class"); !hasClass(c, "items-center") || !hasClass(c, "min-h-11") {
 				t.Errorf("the second row: %q, want items-center with min-h-11", c)

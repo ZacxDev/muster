@@ -6,6 +6,7 @@ import { hookToken, password, viewSwapPort } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
 import { landedHome, openMore } from '../lib/nav';
+import { toTerminal } from '../lib/agent-menu';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
@@ -567,7 +568,10 @@ test.describe('a claude-code agent', () => {
     await signedIn(page);
     await page.goto(origin + '/tasks');
     await page.goto(origin + '/agents/' + agent);
-    await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+    // The chat page: no Rendered | Terminal switch on it, its Terminal the ⋯
+    // menu's item (PR #527: a claude-code agent's page has one header row).
+    await expect(page.locator('#view-rendered')).toHaveCount(0);
+    await expect(page.locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
     await expect.poll(() => chatOpened(agent) - chatClosed(agent), { message: `the chat socket opened (server log:\n${rig.server!.log()})` }).toBe(1);
   }
 
@@ -577,7 +581,7 @@ test.describe('a claude-code agent', () => {
     const chat0 = chatOpened(agent);
     const term0 = termAttached(agent);
     for (let i = 0; i < 3; i++) {
-      await page.locator('#view-terminal').click();
+      await toTerminal(page);
       await expect(frameEl(page)).toBeVisible();
       await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       expect(pathOf(page)).toBe(`/agents/${agent}/terminal`);
@@ -594,7 +598,7 @@ test.describe('a claude-code agent', () => {
 
     // A reload on the terminal opens it as the page — the positive control:
     // a NEW attach; and the old page's chat socket and attach both end.
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(frameEl(page)).toBeVisible();
     await page.reload();
     await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
@@ -615,11 +619,14 @@ test.describe('a claude-code agent', () => {
 
     await page.locator('#view-rendered').click();
     await expect(frameEl(page)).toBeVisible();
-    await expect(framed(page).locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+    // The framed page is the chat: its Terminal the ⋯ menu's item, no switch.
+    await expect(framed(page).locator('#chat-form')).toBeVisible();
+    await expect(framed(page).locator('#view-rendered')).toHaveCount(0);
+    await expect(framed(page).locator('#agent-actions #view-terminal')).toHaveAttribute('data-view-swap', 'terminal');
     await expect.poll(() => chatOpened(agent) - chat0, { message: `the framed chat connected (server log:\n${rig.server!.log()})` }).toBe(1);
     expect(pathOf(page)).toBe(`/agents/${agent}`);
     for (let i = 0; i < 2; i++) {
-      await framed(page).locator('#view-terminal').click();
+      await toTerminal(framed(page));
       await expect(frameEl(page)).toBeHidden();
       await page.locator('#view-rendered').click();
       await expect(frameEl(page)).toBeVisible();
@@ -645,7 +652,7 @@ test.describe('a claude-code agent', () => {
     await openChat(page);
     await settled();
     const chat0 = chatOpened(agent);
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     await framed(page).locator('#term-back').click();
     await expect(frameEl(page)).toBeHidden();
@@ -660,7 +667,7 @@ test.describe('a claude-code agent', () => {
     const rw0 = termAttached(agent, 'rw');
     const ro0 = termAttached(agent, 'ro');
     const d0 = termDetached(agent);
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     const t = framed(page);
     await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
     await expect(t.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
@@ -669,7 +676,7 @@ test.describe('a claude-code agent', () => {
     for (let i = 0; i < 2; i++) {
       await t.locator('#view-rendered').click();
       await expect(frameEl(page)).toBeHidden();
-      await page.locator('#view-terminal').click();
+      await toTerminal(page);
       await expect(frameEl(page)).toBeVisible();
     }
     await expect(t.locator('#term-status')).toHaveText('Connected');
@@ -767,7 +774,7 @@ test.describe('a claude-code agent', () => {
     await openChat(page);
     await settled();
     const a0 = termAttached(agent), d0 = termDetached(agent);
-    await page.locator('#view-terminal').click();
+    await toTerminal(page);
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     await framed(page).locator('#view-rendered').click();
     await expect(frameEl(page)).toBeHidden();
@@ -788,8 +795,8 @@ test.describe('a claude-code agent', () => {
     expect(termAttached(agent), `no attach on Back (server log:\n${rig.server!.log()})`).toBe(attaches);
     // And the switch works on the restored page. (Clicked by script: the
     // snapshot was taken with the sidebar open, and its backdrop is restored
-    // over the header.)
-    await page.locator('#view-terminal').evaluate((a) => (a as HTMLElement).click());
+    // over the header — and the link is the ⋯ menu's Terminal item, PR #527.)
+    await page.locator('#agent-actions #view-terminal').evaluate((a) => (a as HTMLElement).click());
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
   });
 });

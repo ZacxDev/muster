@@ -5,6 +5,7 @@ import { agentComposerPort, hookToken, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { agentPageRe } from '../lib/agent-link';
 import { openDispatchSheet } from '../lib/dispatch';
+import { agentMenu, openAgentMenu, toTerminal } from '../lib/agent-menu';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
 // (the e2eterm build: the noop driver, whose terminal is played by
@@ -152,15 +153,20 @@ for (const vp of [
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
 
       // The switch: Rendered is where we are, Terminal one tap away, thumb-sized.
-      await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
-      const toTerm = page.locator('#view-terminal');
-      // Below `sm` the switch is one icon named "Show terminal"; from `sm` up
-      // it is the word (viewToggle). The accessible name, not textContent:
-      // the link holds both spellings and CSS shows one.
-      await expect(toTerm).toHaveAccessibleName(vp.use.viewport.width < 640 ? 'Show terminal' : 'Terminal');
+      // ⚠ A claude-code agent's page has ONE header row (PR #527,
+      // agent_header_folded.go): no Rendered | Terminal switch is drawn on it —
+      // the chat IS the rendered view — and Terminal is an item of the ⋯ menu,
+      // named "Terminal" at every width.
+      await expect(page.locator('#view-rendered'), 'no switch segment on the chat page').toHaveCount(0);
+      await expect(page.locator('#view-terminal'), 'Terminal waits in the ⋯ menu').toBeHidden();
+      await openAgentMenu(page);
+      const toTerm = page.locator('#agent-actions #view-terminal');
+      await expect(toTerm).toHaveAccessibleName('Terminal');
       const tb = (await toTerm.boundingBox())!;
       expect(tb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       expect(tb.x + tb.width, 'the switch fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+      await page.keyboard.press('Escape');
+      await expect(agentMenu(page)).toBeHidden();
       // The chat's own message box wears the composer's clothes: 16px, 44px.
       const chatInput = page.locator('#chat-input');
       await expect(chatInput).toBeVisible();
@@ -184,8 +190,8 @@ for (const vp of [
 
       // The Terminal: the same switch, the other way round — and a message box.
       // It opens in a frame over the chat (view_swap.go), the address
-      // following it.
-      await toTerm.click();
+      // following it. (Its link is the ⋯ menu's Terminal item.)
+      await toTerminal(page);
       await page.waitForURL(origin + '/agents/' + agent.name + '/terminal');
       const term = page.frameLocator('iframe[data-muster-view]');
       await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');

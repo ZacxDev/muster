@@ -51,15 +51,22 @@ func ccInside(n, ancestor *html.Node) bool {
 	return false
 }
 
-// TestTheChiefsPageFoldsItsStatusRowIntoTheMenu: the claude-code chief's header
-// is ONE row holding the status dot, the asks badge and the ⋯; the account, the
-// failover with its whole line, the pool and the Terminal link are IN the ⋯
-// menu; no Rendered | Terminal switch is drawn; and the asks block comes after
-// the transcript. The same agent NOT the chief keeps its second row (the
-// control): the fold is the chief's alone.
-func TestTheChiefsPageFoldsItsStatusRowIntoTheMenu(t *testing.T) {
-	doc := ccParse(t, renderString(t, AgentDetailPage(chiefPageView(true), Features{})))
-	header := ccFirst(t, doc, "data-chief-header", "")
+// TestEveryClaudeCodeAgentsPageFoldsItsStatusRowIntoTheMenu: a claude-code
+// agent's header — the chief's AND a dispatched agent's (operator decision on
+// PR #527) — is ONE row holding the status dot, the asks badge and the ⋯; the
+// account, the failover with its whole line, the pool and the Terminal link are
+// IN the ⋯ menu; no Rendered | Terminal switch is drawn; and the asks block
+// comes after the transcript. A GATEWAY agent keeps its second row (the
+// control, TestAGatewayAgentKeepsItsHeader).
+func TestEveryClaudeCodeAgentsPageFoldsItsStatusRowIntoTheMenu(t *testing.T) {
+	for _, chief := range []bool{true, false} {
+		t.Run(map[bool]string{true: "the chief", false: "a dispatched agent"}[chief], func(t *testing.T) { foldedPageCase(t, chief) })
+	}
+}
+
+func foldedPageCase(t *testing.T, chief bool) {
+	doc := ccParse(t, renderString(t, AgentDetailPage(chiefPageView(chief), Features{})))
+	header := ccFirst(t, doc, "data-folded-header", "")
 	menu := ccFirst(t, doc, "id", AgentMenuID)
 	row := header.FirstChild
 	for _, want := range []struct{ key, val string }{{"id", "agent-status"}, {"id", AskerAsksID + "-chip"}, {"id", AgentMenuID + "-open"}, {"data-header-tools", ""}} {
@@ -104,13 +111,13 @@ func TestTheChiefsPageFoldsItsStatusRowIntoTheMenu(t *testing.T) {
 	}
 	// The menu is right-aligned to a trigger at its row's end.
 	if _, ok := ccAttr(menu, "data-menu-align"); ok {
-		t.Error("the chief's menu is aligned to its trigger's start")
+		t.Error("the folded menu is aligned to its trigger's start")
 	}
 	// The tools are gap-1 and their box is their own width: three 2.75rem
 	// controls, two 0.25rem gaps (agentHeaderToolsWidth's compact arithmetic).
-	v := chiefPageView(true)
+	v := chiefPageView(chief)
 	v.FocusHistory = FocusHistoryPath("agent:7", "")
-	for n, d := range map[int]AgentDetailView{2: chiefPageView(true), 3: v} {
+	for n, d := range map[int]AgentDetailView{2: chiefPageView(chief), 3: v} {
 		tools := ccFirst(t, ccParse(t, renderString(t, AgentDetailPage(d, Features{}))), "data-header-tools", "")
 		cls, _ := ccAttr(tools, "class")
 		want := "w-[" + strconv.FormatFloat(float64(n)*2.75+float64(n-1)*0.25, 'f', -1, 64) + "rem]"
@@ -122,37 +129,39 @@ func TestTheChiefsPageFoldsItsStatusRowIntoTheMenu(t *testing.T) {
 	if n := len(ccWithAttr(doc, "id", AskerAsksID+"-chip")); n != 1 {
 		t.Errorf("%d asks chips", n)
 	}
-	page := renderString(t, AgentDetailPage(chiefPageView(true), Features{}))
+	page := renderString(t, AgentDetailPage(chiefPageView(chief), Features{}))
 	if log, asks, form := strings.Index(page, `id="chat-log"`), strings.Index(page, `id="`+AskerAsksID+`"`), strings.Index(page, `id="chat-form"`); !(log < asks && asks < form) {
 		t.Errorf("the asks are not between the transcript (%d) and the composer (%d): %d", log, form, asks)
 	}
-
-	// The control: the same agent, not the chief.
-	plain := ccParse(t, renderString(t, AgentDetailPage(chiefPageView(false), Features{})))
-	if n := len(ccWithAttr(plain, "data-chief-header", "")); n != 0 {
-		t.Fatal("a non-chief claude-code agent drew the chief's header")
-	}
-	pmenu := ccFirst(t, plain, "id", AgentMenuID)
-	if ccInside(ccFirst(t, plain, "data-cc-account", ""), pmenu) || ccInside(ccFirst(t, plain, "id", "view-terminal"), pmenu) {
-		t.Error("a non-chief agent's account or Terminal moved into its menu")
-	}
-	if len(ccWithAttr(plain, "id", "view-rendered")) != 1 {
-		t.Error("a non-chief agent lost its Rendered | Terminal switch")
-	}
-	if a, _ := ccAttr(pmenu, "data-menu-align"); a != "start" {
-		t.Errorf("a non-chief agent's menu align %q", a)
+	// Delete follows the chief guard, not the fold (the positive control that
+	// the two cases really are the chief and not).
+	if got := len(ccWithAttr(menu, "data-agent-action", "delete")); got != map[bool]int{true: 0, false: 1}[chief] {
+		t.Errorf("chief %v: %d Delete items", chief, got)
 	}
 }
 
-// TestAGatewayChiefKeepsItsHeader: a chief that is not claude-code has no
-// account, failover or terminal to fold, and its second row is the model
-// picker: it keeps the page header.
-func TestAGatewayChiefKeepsItsHeader(t *testing.T) {
-	v := chiefPageView(true)
-	v.Kind, v.Card.Kind = agents.KindGateway, agents.KindGateway
-	doc := ccParse(t, renderString(t, AgentDetailPage(v, Features{})))
-	if n := len(ccWithAttr(doc, "data-chief-header", "")); n != 0 {
-		t.Error("a gateway chief drew the folded header")
+// TestAGatewayAgentKeepsItsHeader: an agent that is not claude-code — the chief
+// or a dispatched one — has no account, failover or terminal to fold, and its
+// second row is the model picker: it keeps the page header, its ⋯ at that
+// row's start and its asks chip under the block.
+func TestAGatewayAgentKeepsItsHeader(t *testing.T) {
+	for _, chief := range []bool{true, false} {
+		v := chiefPageView(chief)
+		v.Kind, v.Card.Kind = agents.KindGateway, agents.KindGateway
+		doc := ccParse(t, renderString(t, AgentDetailPage(v, Features{})))
+		if n := len(ccWithAttr(doc, "data-folded-header", "")); n != 0 {
+			t.Errorf("chief %v: a gateway agent drew the folded header", chief)
+		}
+		menu := ccFirst(t, doc, "id", AgentMenuID)
+		if a, _ := ccAttr(menu, "data-menu-align"); a != "start" {
+			t.Errorf("chief %v: a gateway agent's menu align %q", chief, a)
+		}
+		if n := len(ccWithAttr(menu, "data-cc-account", "")) + len(ccWithAttr(menu, "id", "view-terminal")); n != 0 {
+			t.Errorf("chief %v: a gateway agent's menu holds claude-code items", chief)
+		}
+		if chip := ccFirst(t, doc, "id", AskerAsksID+"-chip"); ccInside(chip, ccFirst(t, doc, "data-agent-title", "").Parent.Parent) {
+			t.Errorf("chief %v: a gateway agent's asks chip is in its header", chief)
+		}
 	}
 }
 

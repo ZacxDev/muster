@@ -7,11 +7,14 @@ import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
 import { landedHome } from '../lib/nav';
+import { openAgentMenu } from '../lib/agent-menu';
 
-// ccAccount is the agent page header's Claude account (the second row's plain
-// account name, data-cc-account; the Terminal switch beside it is what says
-// the kind).
-const ccAccount = (page: Page, account: string) => page.locator(`header [data-cc-account="${account}"]`);
+// ccAccount is the agent page's Claude account (its plain account name,
+// data-cc-account) — an item of the header's ⋯ menu since PR #527 (a claude-code
+// agent's page has one header row: agent_header_folded.go); the menu's
+// Terminal item beside it is what says the kind. Open the menu (openAgentMenu)
+// before asking whether it is visible.
+const ccAccount = (page: Page, account: string) => page.locator(`#agent-actions [data-cc-account="${account}"]`);
 
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
@@ -171,7 +174,7 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
 
   // 4. Save for later: the agent lands on the member's own account — its own
   //    page (where the sheet's answer sends the browser) says so in its
-  //    header's second row.
+  //    header's ⋯ menu (PR #527).
   await sheet.locator('textarea[name="note_text"]').fill('e2e byo: on my own account');
   const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
   await sheet.locator('button[value="save"]').click();
@@ -181,6 +184,7 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   expect(to, 'the answer sends the page to the new agent').toMatch(/^\/agents\/[^/?]+(\?session=\d+)?$/);
   await page.waitForURL((u) => u.pathname === to.split('?')[0]);
   await expect(ccAccount(page, MEMBER_ACCOUNT)).toHaveText(MEMBER_ACCOUNT);
+  await openAgentMenu(page);
   await expect(ccAccount(page, MEMBER_ACCOUNT)).toBeVisible();
   const agentsPage = await page.content();
   expect(agentsPage).not.toContain(ADMIN_POOL);
