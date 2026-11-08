@@ -1,11 +1,17 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"go/types"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,18 +28,19 @@ import (
 // and offers none of them.
 //
 // The ledger is the RELATIONSHIP, not a component: every call site in the
-// module's non-test source of a gateway turn method (by name AND arity, so
-// push.Service.Send and a pane's Send are not counted) or of the transport
-// primitives, keyed "<dir>.<enclosing func> → <method>", each with WHY it
+// module's non-test source (TYPE-CHECKED, the default build) of a gateway turn
+// method — by name AND arity, so a pane's two-argument Send is not a candidate —
+// or of a transport primitive, keyed "<dir>.<enclosing func> → <receiver
+// type>.<method>", with the NUMBER of such calls in that function and WHY it
 // carries what it carries. A new door fails this test until it is classified
-// here; a door removed fails it too, so a stale row cannot stand in for one
-// that moved.
+// here; a door removed fails it too; and so does a SECOND call of the same kind
+// added inside a function that already has one (a toolless Chat beside the one
+// gatewayTurn is allowed), because the count moved.
 //
-// ⚠ THIS IS SYNTACTIC: it reads the method's NAME and ARITY, not its receiver's
-// type. A new type with a 5-argument Chat would be counted (a false row to
-// classify, the safe direction); a gateway turn reached through a differently
-// named method would not. The behavioural half is the doors' own tests
-// (machine_message_tools_pg_test.go, report_done_kinds_pg_test.go).
+// ⚠ A gateway turn reached through a method with a different NAME is not a
+// candidate, and the e2eterm build tag is not loaded. The behavioural half is
+// the doors' own tests (machine_message_tools_pg_test.go,
+// report_done_kinds_pg_test.go).
 
 // gatewayTurnMethods is method name → the arity of the gateway's turn method.
 var gatewayTurnMethods = map[string]int{
@@ -57,27 +64,34 @@ const (
 	turnLivecheck      = "toolless: a manual live check against one runtime (cmd/ccd/livecheck), not a muster door"
 )
 
-var gatewayTurnLedger = map[string]string{
+// gatewayTurnSite is one row: how many such calls the function makes, and why
+// it carries what it carries.
+type gatewayTurnSite struct {
+	n   int
+	why string
+}
+
+var gatewayTurnLedger = map[string]gatewayTurnSite{
 	// The tool-carrying turns.
-	"internal/api.runTurnWithTools → ChatWithTools":         turnCarriesTools, // chatTurn (every chat door) and gatewayTurn (the machine message door)
-	"internal/agentkickoff.firstTurnSender → SendWithTools": turnCarriesTools, // a gateway agent's first turn (KickoffTurnTools)
+	"internal/api.(*Server).runTurnWithTools → api.Gateway.ChatWithTools":                     {1, turnCarriesTools}, // chatTurn (every chat door) and gatewayTurn (the machine message door)
+	"internal/agentkickoff.(*Deliverer).firstTurnSender → agentkickoff.Gateway.SendWithTools": {1, turnCarriesTools}, // a gateway agent's first turn (KickoffTurnTools)
 
 	// Toolless, and why.
-	"internal/api.runTurnWithTools → Chat":         turnToolless404,
-	"internal/api.gatewayTurn → Chat":              turnToollessNoTool,
-	"internal/agentkickoff.firstTurnSender → Send": turnToollessNoTool,
-	"internal/api.runJobTurn → Chat":               turnToollessCC, // namedJobAgent and the pool chooser refuse every other kind
-	"internal/api.Reprompt → Chat":                 turnToollessCC, // an officer's instances are created claude-code (officerFleet.Start)
-	"internal/memorelay.send → Send":               turnToollessCC, // Relay.classify counts any other kind ResultKindUnsupported
-	"internal/api.askChiefForNudge → Chat":         turnToollessNudge,
-	"cmd/ccd/livecheck.main → Chat":                turnLivecheck,
+	"internal/api.(*Server).runTurnWithTools → api.Gateway.Chat":                     {1, turnToolless404},
+	"internal/api.(*Server).gatewayTurn → api.Gateway.Chat":                          {1, turnToollessNoTool},
+	"internal/agentkickoff.(*Deliverer).firstTurnSender → agentkickoff.Gateway.Send": {1, turnToollessNoTool},
+	"internal/api.(*Server).runJobTurn → api.Gateway.Chat":                           {1, turnToollessCC}, // namedJobAgent and the pool chooser refuse every other kind
+	"internal/api.officerFleet.Reprompt → api.Gateway.Chat":                          {1, turnToollessCC}, // an officer's instances are created claude-code (officerFleet.Start)
+	"internal/memorelay.(*Relay).send → memorelay.Gateway.Send":                      {1, turnToollessCC}, // Relay.classify counts any other kind ResultKindUnsupported
+	"internal/api.(*Server).askChiefForNudge → api.Gateway.Chat":                     {1, turnToollessNudge},
+	"cmd/ccd/livecheck.main → *agentgateway.Gateway.Chat":                            {1, turnLivecheck},
 
 	// The gateway itself.
-	"internal/agentgateway.Chat → Send":                   turnImplementation,
-	"internal/agentgateway.ChatWithTools → SendWithTools": turnImplementation,
-	"internal/agentgateway.Send → RunToollessTurn":        turnImplementation,
-	"internal/agentgateway.Send → ChatStream":             turnImplementation,
-	"internal/agentgateway.SendWithTools → RunToolLoop":   turnImplementation,
+	"internal/agentgateway.(*Gateway).Chat → *agentgateway.Gateway.Send":                   {1, turnImplementation},
+	"internal/agentgateway.(*Gateway).ChatWithTools → *agentgateway.Gateway.SendWithTools": {1, turnImplementation},
+	"internal/agentgateway.(*Gateway).Send → agents.RunToollessTurn":                       {1, turnImplementation},
+	"internal/agentgateway.(*Gateway).Send → agents.ChatStream":                            {1, turnImplementation},
+	"internal/agentgateway.(*Gateway).SendWithTools → agents.RunToolLoop":                  {1, turnImplementation},
 }
 
 func TestEveryGatewayTurnCallSiteIsClassified(t *testing.T) {
@@ -91,22 +105,28 @@ func TestEveryGatewayTurnCallSiteIsClassified(t *testing.T) {
 	if len(got) < 10 {
 		t.Fatalf("instrument check FAILED: the scan found only %d gateway turn call site(s): %v", len(got), got)
 	}
-	for site := range got {
-		if _, ok := gatewayTurnLedger[site]; !ok {
+	for site, at := range got {
+		row, ok := gatewayTurnLedger[site]
+		switch {
+		case !ok:
 			t.Errorf("UNCLASSIFIED gateway turn: %s (%s). A turn a gateway agent can be sent must carry its muster "+
 				"tools (gatewayTurnTools / KickoffTurnTools); add it to gatewayTurnLedger with the reason it carries what it does",
-				site, strings.Join(got[site], ", "))
+				site, strings.Join(at, ", "))
+		case len(at) != row.n:
+			t.Errorf("%s: %d call(s) (%s); the ledger classifies %d (%s). A second send in one function is a second "+
+				"door: classify it", site, len(at), strings.Join(at, ", "), row.n, row.why)
 		}
 	}
-	for site, why := range gatewayTurnLedger {
+	for site, row := range gatewayTurnLedger {
 		if _, ok := got[site]; !ok {
-			t.Errorf("gatewayTurnLedger lists %s (%s), and the module no longer calls it there: remove or move the row", site, why)
+			t.Errorf("gatewayTurnLedger lists %s (%s), and the module no longer calls it there: remove or move the row", site, row.why)
 		}
 	}
 	// The doors that MUST carry tools: neither may go back to a toolless send.
-	for _, site := range []string{"internal/api.runTurnWithTools → ChatWithTools", "internal/agentkickoff.firstTurnSender → SendWithTools"} {
-		if gatewayTurnLedger[site] != turnCarriesTools {
-			t.Errorf("%s is classified %q; want %s", site, gatewayTurnLedger[site], turnCarriesTools)
+	for _, site := range []string{"internal/api.(*Server).runTurnWithTools → api.Gateway.ChatWithTools",
+		"internal/agentkickoff.(*Deliverer).firstTurnSender → agentkickoff.Gateway.SendWithTools"} {
+		if gatewayTurnLedger[site].why != turnCarriesTools {
+			t.Errorf("%s is classified %q; want %s", site, gatewayTurnLedger[site].why, turnCarriesTools)
 		}
 	}
 }
@@ -133,69 +153,122 @@ func TestTheMachineMessageDoorStartsItsTurnThroughGatewayTurn(t *testing.T) {
 	}
 }
 
-// scanGatewayTurns walks every non-test .go file under root (skipping
-// vendored/hidden dirs, node_modules, e2e fixtures) and returns site → positions.
+// scanGatewayTurns type-checks every package of the module (non-test files,
+// the default build, against `go list -export` data) and returns site → the
+// position of each call.
 func scanGatewayTurns(t *testing.T, root string) map[string][]string {
 	t.Helper()
-	out := map[string][]string{}
-	fset := token.NewFileSet()
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if path != root && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" || name == "vendor") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, filepath.Dir(path))
-		rel = filepath.ToSlash(rel)
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				var name string
-				switch fun := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					name = fun.Sel.Name
-				case *ast.Ident:
-					name = fun.Name
-				default:
-					return true
-				}
-				if want, ok := gatewayTurnMethods[name]; ok && want == len(call.Args) {
-					if _, isSel := call.Fun.(*ast.SelectorExpr); isSel {
-						site := rel + "." + fn.Name.Name + " → " + name
-						out[site] = append(out[site], fset.Position(call.Pos()).String())
-					}
-				} else if gatewayTransportFuncs[name] {
-					site := rel + "." + fn.Name.Name + " → " + name
-					out[site] = append(out[site], fset.Position(call.Pos()).String())
-				}
-				return true
-			})
-		}
-		return nil
-	})
+	cmd := exec.Command("go", "list", "-export", "-deps", "-json=ImportPath,Dir,GoFiles,Export,Module", "./...")
+	cmd.Dir = root
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("go list: %v: %s", err, stderr.String())
 	}
-	return out
+	type listed struct {
+		ImportPath, Dir, Export string
+		GoFiles                 []string
+		Module                  *struct{ Path string }
+	}
+	exports := map[string]string{}
+	var own []listed
+	for dec := json.NewDecoder(bytes.NewReader(out)); ; {
+		var lp listed
+		if err := dec.Decode(&lp); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		exports[lp.ImportPath] = lp.Export
+		if lp.Module != nil && lp.Module.Path == "github.com/ZacxDev/muster" {
+			own = append(own, lp)
+		}
+	}
+	fset := token.NewFileSet()
+	imp := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		f, ok := exports[path]
+		if !ok || f == "" {
+			return nil, errors.New("no export data for " + path)
+		}
+		return os.Open(f)
+	})
+	qual := func(p *types.Package) string { return p.Name() }
+	sites := map[string][]string{}
+	for _, lp := range own {
+		var files []*ast.File
+		for _, name := range lp.GoFiles {
+			f, err := parser.ParseFile(fset, filepath.Join(lp.Dir, name), nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files = append(files, f)
+		}
+		info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+		if _, err := (&types.Config{Importer: imp}).Check(lp.ImportPath, fset, files, info); err != nil {
+			t.Fatalf("type-check %s: %v", lp.ImportPath, err)
+		}
+		rel, _ := filepath.Rel(root, lp.Dir)
+		dir := filepath.ToSlash(rel)
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					name := sel.Sel.Name
+					var callee string
+					if want, ok := gatewayTurnMethods[name]; ok && want == len(call.Args) {
+						if s, ok := info.Selections[sel]; ok && s.Kind() == types.MethodVal {
+							callee = types.TypeString(s.Recv(), qual) + "." + name
+						}
+					} else if gatewayTransportFuncs[name] {
+						if obj, ok := info.Uses[sel.Sel].(*types.Func); ok && obj.Pkg() != nil {
+							callee = obj.Pkg().Name() + "." + name
+						}
+					}
+					if callee != "" {
+						site := dir + "." + funcDeclName(fn) + " → " + callee
+						sites[site] = append(sites[site], fset.Position(call.Pos()).String())
+					}
+					return true
+				})
+			}
+		}
+	}
+	return sites
+}
+
+// funcDeclName is "(*T).M", "T.M" or "F".
+func funcDeclName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return fn.Name.Name
+	}
+	typ := fn.Recv.List[0].Type
+	star := false
+	if s, ok := typ.(*ast.StarExpr); ok {
+		typ, star = s.X, true
+	}
+	if ix, ok := typ.(*ast.IndexExpr); ok {
+		typ = ix.X
+	}
+	id, ok := typ.(*ast.Ident)
+	if !ok {
+		return fn.Name.Name
+	}
+	if star {
+		return "(*" + id.Name + ")." + fn.Name.Name
+	}
+	return id.Name + "." + fn.Name.Name
 }
 
 // callsIn is the set of called names (a selector's Sel, or a bare identifier)

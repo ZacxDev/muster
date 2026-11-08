@@ -616,6 +616,15 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // claude-code agent's turn stays toolless: its CLI reaches muster's tools over
 // MCP, and ccd ignores a request's tools.
 //
+// ⚠ WHAT THE TURN CARRIES IS EXACTLY WHAT THE AGENT'S OWN CHAT DOOR (chatTurn)
+// GIVES IT, deliberately — one assembly, turnTools: the system prompt
+// (AgentInstructions, which on a task names its close-out protocol; this door
+// sent none before) and AgentToolDefsFor. So a GATEWAY-KIND CHIEF (`muster chief
+// replace --kind gateway`) asked here gets its chief tool set — session routing,
+// reply drafts, answer_session_question, the gated task tool, the fleet report —
+// as in its own chat, and no worker-only tool (agent_report_done is notChief).
+// TestAMachineMessageToAGatewayChiefOffersItsChatDoorsTools pins that equality.
+//
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
 // HTTP 200 with `{"reply":""}` in under three seconds each, because the model was a
@@ -674,10 +683,21 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
+	// 🔴 THE TURN IS DETACHED FROM THE REQUEST'S CANCELLATION (keeping its
+	// principal), bounded by agentTurnBudget as POST /agents/{name}/send's is
+	// (startAgentTurn). A tool turn is several requests and its tools have side
+	// effects — connector_status alone waits up to 50 s, past `chief ask`'s
+	// default 30 s timeout — so a caller that gives up must not cut the loop
+	// midway: that left the tools' effects done, no reply stored and the
+	// outcome `running`. The turn finishes, its reply is stored and its outcome
+	// recorded whether or not anyone is still waiting for the answer.
+	dctx := context.WithoutCancel(ctx)
+	turnCtx, cancel := context.WithTimeout(dctx, agentTurnBudget(a.Kind))
+	defer cancel()
 	// The one turn, in the outcome bracket (outcomeTurn): closed on every path,
 	// a panic included.
 	reply, err := func() (reply string, err error) {
-		tctx, turn := s.outcomeTurn(ctx, a)
+		tctx, turn := s.outcomeTurn(turnCtx, a)
 		defer turn.close(&reply, &err)
 		return s.gatewayTurn(withSessionRoute(tctx, a, sess), a, sess.SessionKey, body.Message, authz.ViaAgentMessage)
 	}()
@@ -686,7 +706,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if reply != "" {
-		_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
+		_, _ = s.ext.Agents.AddChatMessage(dctx, agents.ChatMessage{
 			AgentID: a.ID, SessionID: sess.ID, Role: "assistant", Content: reply,
 		})
 	}

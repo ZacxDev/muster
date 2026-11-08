@@ -493,6 +493,21 @@ Notifications**, under the same per-owner cap as every push
 Fix the cause first: for a model the runtime did not know, change the agent's
 model (it is checked, below), then Start it.
 
+### What a turn muster starts carries
+
+A **gateway** agent gets muster's tools only in the turns muster sends it with
+them, so every place muster starts a turn says which it is. A **claude-code**
+agent gets its tools over its own `/mcp` in every turn, whatever the door, and
+ccd ignores any tools a request carries.
+
+| Door | What a gateway agent's turn carries |
+|---|---|
+| its chat (the agent page, the composer) | its system prompt and its tools |
+| its first turn (a dispatch's kickoff) | its system prompt and its tools, acting as its owner |
+| `POST /api/agents/{name}/messages` (`muster chief ask`) | its system prompt and its tools, acting as its owner: **exactly what its chat gives it**, so a gateway-kind chief gets its chief tools and a worker its worker tools (`agent_report_done` included). The system prompt is new here; this door used to send none. The turn is detached from the request: a caller that times out (the CLI's default is 30 s) does not cut it short; it runs to its own 30-minute budget, its reply is stored and its outcome recorded |
+| scheduled jobs, the memo relay, officer re-prompts | claude-code agents only |
+| the chief nudge | no tools, by design ([chief nudges](chief-nudges.md)) |
+
 ### Models are checked before a pod starts
 
 Every door that sets an agent's model — the dispatch form, a task's own model
