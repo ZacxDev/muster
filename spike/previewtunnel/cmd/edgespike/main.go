@@ -106,6 +106,7 @@ func main() {
 		}
 		fs := flag.NewFlagSet("run", flag.ExitOnError)
 		base := fs.String("base", "", "gateway base URL")
+		hostBase := fs.String("host-base", "", "host's base URL to the gateway (e.g. http://<mesh-ip>:<port>); default -base")
 		crit := fs.String("crit", "", "1 | 4 | 5 | idlecut")
 		tr := fs.String("transport", string(pt.H2), "h2connect | yamux")
 		n := fs.Int("n", 300, "C1: echoes per side; C5: streams")
@@ -115,7 +116,7 @@ func main() {
 		gz := fs.Bool("gzip", false, "C5: request compression like a browser")
 		noFlush := fs.Bool("host-no-flush", false, "C5 negative control: host flushes only the response head")
 		_ = fs.Parse(os.Args[2:])
-		e, err := pt.NewRemoteEnv(pt.RemoteOpts{Base: *base, Secret: secret(), Transport: pt.Transport(*tr),
+		e, err := pt.NewRemoteEnv(pt.RemoteOpts{Base: *base, HostBase: *hostBase, Secret: secret(), Transport: pt.Transport(*tr),
 			Ping: *ping, HostNoPings: *noPings, ClientNoPings: *noPings, Gzip: *gz, HostNoFlush: *noFlush})
 		if err != nil {
 			log.Fatalf("env: %v", err)
@@ -135,7 +136,7 @@ func main() {
 		default:
 			log.Fatalf("unknown -crit %q", *crit)
 		}
-		fmt.Printf("transport=%s crit=%s no-pings=%v gzip=%v elapsed=%v\n  %v\n", *tr, *crit, *noPings, *gz, time.Since(t0).Round(time.Millisecond), res)
+		fmt.Printf("transport=%s crit=%s host-base=%q no-pings=%v gzip=%v elapsed=%v\n  %v\n", *tr, *crit, *hostBase, *noPings, *gz, time.Since(t0).Round(time.Millisecond), res)
 		if err != nil {
 			fmt.Printf("  VERDICT: FAIL: %v\n", err)
 			os.Exit(1)

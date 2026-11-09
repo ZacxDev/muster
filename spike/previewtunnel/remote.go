@@ -186,7 +186,8 @@ func (g *RemoteGateway) relayWS(w http.ResponseWriter, r *http.Request, noPings 
 
 // RemoteOpts configures NewRemoteEnv.
 type RemoteOpts struct {
-	Base          string // https://tunnel-spike.example
+	Base          string // https://tunnel-spike.example (the client's path)
+	HostBase      string // the host's path to the gateway, e.g. over a mesh (default: Base)
 	Secret        string
 	Transport     Transport
 	Ping          time.Duration
@@ -220,7 +221,12 @@ func NewRemoteEnv(o RemoteOpts) (*Env, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Env{Transport: o.Transport, Up: up, Host: h, Base: strings.TrimRight(o.Base, "/"),
 		HostDone: make(chan error, 1), cancel: cancel, Header: ch, Gzip: o.Gzip}
-	go func() { e.HostDone <- h.Run(ctx, e.wsURL("/v1/host")) }()
+	hostURL := e.wsURL("/v1/host")
+	if o.HostBase != "" {
+		hb := strings.TrimRight(o.HostBase, "/")
+		hostURL = "ws" + strings.TrimPrefix(hb, "http") + "/v1/host"
+	}
+	go func() { e.HostDone <- h.Run(ctx, hostURL) }()
 	// The tunnel is up when a request through it succeeds.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
