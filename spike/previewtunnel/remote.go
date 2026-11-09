@@ -193,6 +193,7 @@ type RemoteOpts struct {
 	HostNoPings   bool // host sends no tunnel pings and asks the gateway to send none either
 	ClientNoPings bool // ask the gateway not to ping the client's WebSocket legs
 	Gzip          bool
+	HostNoFlush   bool // negative control for C5: the host flushes only the response head
 }
 
 // NewRemoteEnv starts the test upstream and a host in THIS process, dials the
@@ -211,7 +212,7 @@ func NewRemoteEnv(o RemoteOpts) (*Env, error) {
 		hh.Set(NoPingsHeader, "1")
 	}
 	h := &Host{Transport: o.Transport, Allow: map[int]bool{up.Port: true},
-		Faults: Faults{NoPings: o.HostNoPings}, PingInterval: o.Ping, Header: hh}
+		Faults: Faults{NoPings: o.HostNoPings, HostNoFlush: o.HostNoFlush}, PingInterval: o.Ping, Header: hh}
 	ch := http.Header{SecretHeader: {o.Secret}}
 	if o.ClientNoPings {
 		ch.Set(NoPingsHeader, "1")

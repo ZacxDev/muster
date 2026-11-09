@@ -9,15 +9,19 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	pt "github.com/ZacxDev/muster/spike/previewtunnel"
+	"github.com/coder/websocket"
 )
 
 func secret() string {
@@ -48,7 +52,58 @@ func main() {
 		g := &pt.RemoteGateway{Secret: secret(), Ping: *ping}
 		log.Printf("gateway listening on %s", *listen)
 		log.Fatal((&http.Server{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}).ListenAndServe())
+	case "idlews":
+		// Hop discriminator for criterion 4: one no-ping WebSocket to the gateway's
+		// own /__bare_echo (no tunnel involved), optionally pinned to an IP so it
+		// can skip Cloudflare and hit the origin directly. Prints when it was cut.
+		fs := flag.NewFlagSet("idlews", flag.ExitOnError)
+		base := fs.String("base", "", "gateway base URL (https://host)")
+		connect := fs.String("connect", "", "dial this ip:port instead (origin-direct; TLS not verified)")
+		maxW := fs.Duration("max", 5*time.Minute, "give up after")
+		_ = fs.Parse(os.Args[2:])
+		if dns := os.Getenv("SPIKE_DNS"); dns != "" {
+			net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, dns)
+			}}
+		}
+		tr := &http.Transport{}
+		if *connect != "" {
+			tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, *connect)
+			}
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // Traefik's default cert; Cloudflare "full" does the same
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), *maxW+10*time.Second)
+		defer cancel()
+		u := "wss" + strings.TrimPrefix(strings.TrimRight(*base, "/"), "https") + "/__bare_echo"
+		c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr},
+			HTTPHeader: http.Header{pt.SecretHeader: {secret()}, pt.NoPingsHeader: {"1"}}})
+		if err != nil {
+			log.Fatalf("dial: %v", err)
+		}
+		if err := c.Write(ctx, websocket.MessageText, []byte("x")); err != nil {
+			log.Fatalf("write: %v", err)
+		}
+		if _, p, err := c.Read(ctx); err != nil || string(p) != "x" {
+			log.Fatalf("first echo: %v", err)
+		}
+		t0 := time.Now()
+		done := make(chan error, 1)
+		go func() { _, _, err := c.Read(ctx); done <- err }()
+		select {
+		case err := <-done:
+			fmt.Printf("idlews connect=%q cut after %v: %v\n", *connect, time.Since(t0).Round(100*time.Millisecond), err)
+		case <-time.After(*maxW):
+			fmt.Printf("idlews connect=%q alive after %v (no cut)\n", *connect, *maxW)
+		}
 	case "run":
+		// SPIKE_DNS=1.1.1.1:53 resolves through that server instead of the
+		// host's (whose cache may hold an NXDOMAIN from before the record existed).
+		if dns := os.Getenv("SPIKE_DNS"); dns != "" {
+			net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, dns)
+			}}
+		}
 		fs := flag.NewFlagSet("run", flag.ExitOnError)
 		base := fs.String("base", "", "gateway base URL")
 		crit := fs.String("crit", "", "1 | 4 | 5 | idlecut")
@@ -58,9 +113,10 @@ func main() {
 		ping := fs.Duration("ping", 30*time.Second, "ping interval")
 		noPings := fs.Bool("no-pings", false, "negative control: no pings on tunnel or client legs")
 		gz := fs.Bool("gzip", false, "C5: request compression like a browser")
+		noFlush := fs.Bool("host-no-flush", false, "C5 negative control: host flushes only the response head")
 		_ = fs.Parse(os.Args[2:])
 		e, err := pt.NewRemoteEnv(pt.RemoteOpts{Base: *base, Secret: secret(), Transport: pt.Transport(*tr),
-			Ping: *ping, HostNoPings: *noPings, ClientNoPings: *noPings, Gzip: *gz})
+			Ping: *ping, HostNoPings: *noPings, ClientNoPings: *noPings, Gzip: *gz, HostNoFlush: *noFlush})
 		if err != nil {
 			log.Fatalf("env: %v", err)
 		}
