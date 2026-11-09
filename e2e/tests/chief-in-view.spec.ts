@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { Page } from '@playwright/test';
+import { Browser, BrowserContext, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { chiefInViewFakePort, chiefInViewPort, dsn, repoRoot } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
@@ -23,8 +23,12 @@ import { writeFileAtomic } from '../lib/atomic';
 // reading the fake opencode server, and the strip. The chief's pod is a fixture
 // row (e2e/pluginfix chief). Every value is invented fixture data.
 //
-// 🔴 REGRESSION TEST: on origin/main the view has no "Chief" switch at all
-// (#mv-to), and POST /mirror/view/chief is not a route.
+// 🔴 REGRESSION TEST: before PR #537 the view had no chief mode at all, and
+// POST /mirror/view/chief was not a route. Before the toggle the mode was a
+// two-radio "<agent> | Chief" switch above the row and the composer looked the
+// same in both modes: the switch's assertions (one role="switch" checkbox,
+// first in the row, its name per mode, the chief's colour, the mode working
+// without script and when the chief script throws) fail there.
 
 const stamp = Date.now().toString(36);
 const chiefName = 'e2e-view-chief-' + stamp;
@@ -43,6 +47,11 @@ const rig = new MirrorRig(chiefInViewPort, 'e2e-cview', {
   MUSTER_E2E_AGENT_ENDPOINT: `http://127.0.0.1:${chiefInViewFakePort}`,
 });
 let runtime: http.Server | undefined;
+// A second host, opted in to the opencode send: its window's agent composer is
+// ENABLED (the Enter-on-the-switch cases need a Send that can post).
+const sendSid = 'ses_0e2eviewchiefsend9z';
+let sendHost = '';
+let stopSend: (() => Promise<void>) | undefined;
 let chiefMade = false;
 let ops = '';
 
@@ -147,10 +156,35 @@ test.beforeAll(async ({ browser }) => {
     // disabled by the runtime — the chief mode must work anyway.
     MUSTER_MIRROR_INTERACTIVE: '1',
   });
+  const sendDir = fs.mkdtempSync(path.join(rig.dir, 'opencode-send-'));
+  fs.writeFileSync(
+    path.join(sendDir, 'ops.jsonl'),
+    [
+      { op: 'session', id: sendSid, title: 'Send-enabled fixture session' },
+      { op: 'status', session: sendSid, status: 'idle' },
+      { op: 'bind', session: 'ocs', window: '@2', id: sendSid },
+    ]
+      .map((o) => JSON.stringify(o))
+      .join('\n') + '\n',
+  );
+  const sendPlain = path.join(rig.dir, 'windows-send');
+  writeFileAtomic(sendPlain, `plainsend|@1|0|1|zsh|${t0 - 50}|\n`);
+  const sendWindows = path.join(rig.dir, 'opencode-windows-send');
+  writeFileAtomic(sendWindows, `ocs|@2|0|1|${t0 - 10}|OC | Send-enabled fixture session\n`);
+  sendHost = rig.host + '-send';
+  stopSend = rig.extraHost(sendHost, {
+    MUSTER_MIRROR_E2E_WINDOWS_FILE: sendPlain,
+    MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE: sendWindows,
+    MUSTER_MIRROR_E2E_OPENCODE_DIR: sendDir,
+    MUSTER_MIRROR_E2E_REFRESH: '200ms',
+    MUSTER_MIRROR_INTERACTIVE: '1',
+    MUSTER_MIRROR_OPENCODE_SEND: '1',
+  });
   const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();
   await rig.login(page);
   await rig.waitListed(page, 'session=oc');
+  await rig.waitListed(page, 'session=ocs');
   // The chief's pod, on the noop driver: its row is the fixture's, and a chief
   // with no instance reads as stopped — a send to it is refused, as POST
   // /agents/{name}/send refuses one. Start it, as its page's Start does.
@@ -161,6 +195,7 @@ test.beforeAll(async ({ browser }) => {
 
 test.afterAll(async () => {
   try {
+    if (stopSend) await stopSend();
     if (chiefMade) fix('rmagent', '1', chiefName);
   } finally {
     await rig.stop();
@@ -179,6 +214,90 @@ test.afterEach(async ({ page }, info) => {
 const view = () => `${rig.viewPath('oc')}&window=${encodeURIComponent('@2')}`;
 const strip = (page: Page) => page.locator('#mv-chief-log');
 
+// The switch's FIXED name; its checked state is the mode, and its description
+// names the current target and the action.
+const SWITCH_NAME = 'Send to the chief';
+const AGENT_DESC = 'Sending to opencode — switch to the chief';
+const CHIEF_DESC = 'Sending to the chief — switch to opencode';
+
+// expectOneSwitch: the mode is ONE control — a checkbox with the switch role,
+// inside #mv-to — and none of the old ones (radios, a button, a <noscript>
+// duplicate) is drawn.
+async function expectOneSwitch(page: Page) {
+  await expect(page.getByRole('switch')).toHaveCount(1);
+  await expect(page.locator('#mv-to #mv-to-chief[type="checkbox"][role="switch"]')).toHaveCount(1);
+  await expect(page.locator('#mv-compose input[type="radio"], #mv-to-agent, #mv-to-ns, button#mv-to, #mv-form noscript')).toHaveCount(0);
+}
+
+// press is the operator's press on a control: a tap on a touch screen.
+const press = (l: Locator, touch: boolean) => (touch ? l.tap() : l.click());
+
+// expectToggleFirst: the toggle is the composer row's FIRST control — left of
+// every other shown control of the form (the paperclip, the input, the mic,
+// Send, the ⋯) — and a 44px target.
+async function expectToggleFirst(page: Page) {
+  const boxes = await page.locator('#mv-form').evaluate((f) =>
+    Array.from(f.querySelectorAll('button, a, textarea, label'))
+      .filter((e) => (e as HTMLElement).offsetParent !== null && e.getBoundingClientRect().width > 0)
+      .map((e) => {
+        const r = e.getBoundingClientRect();
+        return { id: e.id, x: r.x, r: r.right, w: r.width, h: r.height };
+      }),
+  );
+  expect(boxes.length, JSON.stringify(boxes)).toBeGreaterThan(2);
+  const [first, ...rest] = [...boxes].sort((a, b) => a.x - b.x);
+  expect(first.id, JSON.stringify(boxes)).toBe('mv-to');
+  for (const b of rest) expect(b.x, `${b.id} starts after the toggle ends`).toBeGreaterThanOrEqual(first.r);
+  expect(first.w).toBeGreaterThanOrEqual(44);
+  expect(first.h).toBeGreaterThanOrEqual(44);
+}
+
+// expectOneSend: exactly one submit button of the form is shown — id.
+async function expectOneSend(page: Page, id: string) {
+  const shown = page.locator('#mv-form button[type="submit"]:visible');
+  await expect(shown).toHaveCount(1);
+  await expect(shown).toHaveId(id.slice(1));
+}
+
+// look is the composer's mode-bearing computed style: its top edge, the box's
+// fill and ring, the toggle's fill, and the shown Send's fill.
+type Look = { edge: string; box: string; ring: string; toggle: string; send: string };
+function look(page: Page): Promise<Look> {
+  return page.evaluate(() => {
+    const cs = (sel: string) => getComputedStyle(document.querySelector(sel) as Element);
+    const send = Array.from(document.querySelectorAll('#mv-form button[type="submit"]')).find((b) => (b as HTMLElement).offsetParent !== null);
+    return {
+      edge: cs('#mv-compose').borderTopColor,
+      box: cs('#mv-input').backgroundColor,
+      ring: cs('#mv-input').boxShadow,
+      toggle: cs('#mv-to').backgroundColor,
+      send: send ? getComputedStyle(send).backgroundColor : '',
+    };
+  });
+}
+
+// expectChiefLook: chief mode is UNMISTAKABLE — the composer's edge, the box's
+// fill and ring, the toggle and Send all differ from agent mode's, and each is
+// the theme's chief colour (the review status token pair).
+async function expectChiefLook(page: Page, agent: Look) {
+  const tok = await page.evaluate(() => {
+    const v = (n: string) => `rgb(${getComputedStyle(document.documentElement).getPropertyValue(n).trim().split(/\s+/).join(', ')})`;
+    return { fg: v('--mu-st-review-fg'), bg: v('--mu-st-review-bg') };
+  });
+  await expect(page.locator('#mv-to-chief')).toBeChecked();
+  // The toggle's fill eases in (its `transition`): read once it has settled.
+  await expect.poll(async () => (await look(page)).toggle).toBe(tok.bg);
+  const chief = await look(page);
+  expect(chief.edge).toBe(tok.fg);
+  expect(chief.box).toBe(tok.bg);
+  expect(chief.ring).toContain(tok.fg);
+  expect(chief.toggle).toBe(tok.bg);
+  expect(chief.send).toBe(tok.fg);
+  for (const k of ['edge', 'box', 'ring', 'toggle', 'send'] as const) {
+    expect(chief[k], `chief mode's ${k} differs from agent mode's`).not.toBe(agent[k]);
+  }
+}
+
 for (const vp of [
   { name: 'phone 390×844', key: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1440×900', key: 'desktop', use: { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false } },
@@ -196,20 +315,40 @@ for (const vp of [
       // The agent composer is disabled (this host does not send to opencode)…
       const input = page.locator('#mv-input');
       await expect(input).toBeDisabled();
-      // …and the switch is there, on the agent.
+      // …and the toggle is there, on the agent: ONE button, the row's FIRST
+      // control, a 44px target, named by its current target and the action.
       const sw = page.locator('#mv-to');
+      const cb = page.getByRole('switch');
       await expect(sw).toBeVisible();
-      await expect(page.locator('#mv-to-agent')).toBeChecked();
+      await expectOneSwitch(page);
+      await expect(cb).not.toBeChecked();
+      await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(AGENT_DESC);
       await expect(page.locator('#mv-chief')).toBeHidden();
+      await expectToggleFirst(page);
+      const agentLook = await look(page);
+      await expectOneSend(page, '#mv-send');
+      // The toggle and the row fit the screen: no sideways scroll.
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath(`agent-mode-${vp.key}.png`) });
 
-      // Flip to Chief: the box is enabled, says where it goes, and the strip opens.
-      await sw.getByText('Chief', { exact: true }).click();
-      await expect(page.locator('#mv-to-chief')).toBeChecked();
+      // Flip to the chief: the toggle pressed, the box enabled, says where it
+      // goes, the form posts to the chief, the strip opens, and the composer
+      // wears the chief's colour.
+      await press(sw, vp.use.hasTouch);
+      await expect(cb).toBeChecked();
+      await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(CHIEF_DESC);
       await expect(input).toBeEnabled();
       await expect(input).toHaveAttribute('placeholder', 'Ask the chief about this session…');
+      await expect(page.locator('#mv-form')).toHaveAttribute('action', /^\/mirror\/view\/chief\?/);
       await expect(page.locator('#mv-chief')).toBeVisible();
       await expect(page.locator('#mv-send-chief')).toBeVisible();
       await expect(page.locator('#mv-send')).toBeHidden();
+      await expectOneSend(page, '#mv-send-chief');
+      await expectChiefLook(page, agentLook);
+      await expectToggleFirst(page);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await expect(strip(page).locator('[data-chief-strip-empty]').or(strip(page).locator('[data-bubble]').first())).toBeVisible();
 
       const line = `E2E-ASK-${vp.key}-${stamp}: copy the kickoff out of this session's tail`;
@@ -236,15 +375,284 @@ for (const vp of [
       expect(s!.y >= 0 && box!.y + box!.height <= vh, 'the strip and the input are on screen').toBeTruthy();
       await page.screenshot({ path: info.outputPath(`chief-in-view-${vp.key}.png`) });
 
-      // A reload lands in the mode last used for this window, the reply still there.
+      // A reload lands in the mode last used for this window, the reply still
+      // there, the composer still in the chief's colour.
       await page.reload();
-      await expect(page.locator('#mv-to-chief')).toBeChecked();
+      await expect(cb).toBeChecked();
+      await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(CHIEF_DESC);
       await expect(input).toBeEnabled();
       await expect(strip(page)).toContainText(`CHIEF-SAW opencode:${sid}`, { timeout: 20_000 });
-      // Back to the agent: disabled again, the strip gone.
-      await sw.getByText('opencode', { exact: true }).click();
+      await expectChiefLook(page, agentLook);
+      // Back to the agent: disabled again, the strip gone, the form posting to
+      // the agent, and the composer exactly as it was.
+      await press(sw, vp.use.hasTouch);
+      await expect(cb).not.toBeChecked();
+      await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(AGENT_DESC);
       await expect(input).toBeDisabled();
       await expect(page.locator('#mv-chief')).toBeHidden();
+      await expect(page.locator('#mv-form')).not.toHaveAttribute('action', /\/mirror\/view\/chief/);
+      await expectOneSend(page, '#mv-send');
+      await expect.poll(() => look(page)).toEqual(agentLook);
+      // …and that, too, is remembered.
+      await page.reload();
+      await expect(cb).not.toBeChecked();
+      await expect.poll(() => look(page)).toEqual(agentLook);
     });
   });
 }
+
+// postsTo records the page's POSTs, by path, from now on.
+function postsTo(page: Page): string[] {
+  const seen: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST') seen.push(new URL(r.url()).pathname);
+  });
+  return seen;
+}
+const AGENT_ROUTE = '/mirror/view/send';
+const CHIEF_ROUTE = '/mirror/view/chief';
+// throwChiefScript makes the chief script throw on its first lookup — and only
+// it: the composer's own script and every other one run.
+async function throwChiefScript(ctx: BrowserContext) {
+  await ctx.addInitScript(() => {
+    const get = Document.prototype.getElementById;
+    Document.prototype.getElementById = function (id: string) {
+      if (id === 'mv-chief-log') throw new Error('E2E-CHIEF-SCRIPT-THREW');
+      return get.call(this, id);
+    };
+  });
+}
+// settle gives a stray submit time to be posted before an absence is read.
+const settle = (page: Page) => page.waitForTimeout(1500);
+
+// ENTER ON THE FOCUSED SWITCH NEVER SENDS — it toggles the switch, as Space
+// does. A checkbox in a form submits the form on Enter (implicit submission)
+// through its default button: before the fix that was the agent's #mv-send,
+// so Enter on the switch posted the box to the pane. On a window whose agent
+// composer is ENABLED (the send host), with the chief script working and with
+// it thrown. Positive control: the agent's own Send does post to the agent
+// route, through the same recorder.
+for (const mode of ['script runs', 'chief script throws'] as const) {
+  test(`Enter on the focused switch toggles it and sends nothing (${mode})`, async ({ browser }) => {
+    test.setTimeout(90_000);
+    const ctx = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      storageState: { cookies: await signedInCookies(browser), origins: [] },
+    });
+    try {
+      if (mode === 'chief script throws') await throwChiefScript(ctx);
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(`${rig.origin}/mirror/view?host=${encodeURIComponent(sendHost)}&session=ocs&window=${encodeURIComponent('@2')}`);
+      const input = page.locator('#mv-input');
+      await expect(input).toBeEnabled({ timeout: 20_000 });
+      await expect(input).not.toHaveAttribute('data-agent-off', /.*/);
+      const cb = page.getByRole('switch');
+      await expect(cb).not.toBeChecked();
+      if (mode === 'chief script throws') await expect.poll(() => errors.join('|')).toContain('E2E-CHIEF-SCRIPT-THREW');
+      const posts = postsTo(page);
+      const line = `E2E-ENTER-SWITCH-${mode.replace(/ /g, '-')}-${stamp}`;
+      await input.fill(line);
+      // Agent mode: Enter on the switch flips it to the chief, posts nothing.
+      await cb.focus();
+      await cb.press('Enter');
+      await settle(page);
+      expect(posts, 'Enter on the switch in agent mode posted').toEqual([]);
+      await expect(cb).toBeChecked();
+      await expectOneSend(page, '#mv-send-chief');
+      // Chief mode: Enter flips it back, posts nothing.
+      await cb.press('Enter');
+      await settle(page);
+      expect(posts, 'Enter on the switch in chief mode posted').toEqual([]);
+      await expect(cb).not.toBeChecked();
+      await expect(input).toHaveValue(line);
+      // Positive control: the agent's Send posts, and the recorder sees it.
+      await page.locator('#mv-send').click();
+      await expect.poll(() => posts).toContain(AGENT_ROUTE);
+      expect(errors.filter((m) => !m.includes('E2E-CHIEF-SCRIPT-THREW')), 'no other script failed').toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// A DISABLED AGENT COMPOSER SENDS NOTHING TO THE AGENT in agent mode, though
+// its box is drawn enabled for the chief's sake — with the chief script thrown
+// (Enter in the box, a press on the disabled Send) and with no script (the
+// same, plus Enter on the switch). Read at the browser's request log: no POST
+// at all, so none to the agent route.
+for (const mode of ['chief script throws', 'script disabled'] as const) {
+  test(`agent mode on a disabled agent composer posts nothing (${mode})`, async ({ browser }) => {
+    test.setTimeout(90_000);
+    const ctx = await browser.newContext({
+      javaScriptEnabled: mode !== 'script disabled',
+      viewport: { width: 1440, height: 900 },
+      storageState: { cookies: await signedInCookies(browser), origins: [] },
+    });
+    try {
+      if (mode === 'chief script throws') await throwChiefScript(ctx);
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(rig.origin + view());
+      if (mode === 'chief script throws') await expect.poll(() => errors.join('|')).toContain('E2E-CHIEF-SCRIPT-THREW');
+      const cb = page.getByRole('switch');
+      await expect(cb).not.toBeChecked();
+      const input = page.locator('#mv-input');
+      await expect(input).toHaveAttribute('data-agent-off', '');
+      await expect(page.locator('#mv-send')).toBeDisabled();
+      const posts = postsTo(page);
+      await input.fill(`E2E-AGENT-OFF-${mode.replace(/ /g, '-')}-${stamp}`);
+      await input.press('Enter');
+      await page.locator('#mv-send').click({ force: true });
+      await cb.focus();
+      await cb.press('Enter');
+      await settle(page);
+      expect(posts, 'a POST left the page').toEqual([]);
+      expect(posts).not.toContain(AGENT_ROUTE);
+      if (mode === 'script disabled') await expect(cb).not.toBeChecked();
+      else await expect(cb).toBeChecked();
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+// THE MODE NEEDS NO SCRIPT. The switch is a checkbox the stylesheet follows,
+// so the mode works (a) with script DISABLED — the chief's Send, whose
+// formaction is the chief's door, is the one shown, and a native submit
+// reaches the chief — and (b) when the chief script THROWS (the composer's own
+// script still runs): Enter submits through the Send shown. On this view the
+// agent composer is disabled, so its box is drawn enabled-and-marked for the
+// chief's sake.
+async function signedInCookies(browser: Browser) {
+  const js = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  await rig.login(await js.newPage());
+  const cookies = await js.cookies();
+  await js.close();
+  return cookies;
+}
+
+// chiefTurns counts the fake chief's turns that carry line.
+const chiefTurns = (line: string) => asked.filter((a) => a.first.endsWith('\n---\n' + line)).length;
+
+test('(a) script disabled: the switch flips the mode by itself and the chief Send reaches the chief', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const ctx = await browser.newContext({
+    javaScriptEnabled: false,
+    viewport: { width: 390, height: 844 },
+    storageState: { cookies: await signedInCookies(browser), origins: [] },
+  });
+  try {
+    const page = await ctx.newPage();
+    await page.goto(rig.origin + view());
+    await expectOneSwitch(page);
+    const cb = page.getByRole('switch');
+    await expect(cb).not.toBeChecked();
+    await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(AGENT_DESC);
+    await expectToggleFirst(page);
+    const agentLook = await look(page);
+    await expectOneSend(page, '#mv-send');
+    await page.locator('#mv-to').click();
+    await expect(cb).toBeChecked();
+    await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(CHIEF_DESC);
+    await expectOneSend(page, '#mv-send-chief');
+    await expectChiefLook(page, agentLook);
+    await expect(page.locator('#mv-chief')).toBeVisible();
+    const line = `E2E-NOSCRIPT-${stamp}`;
+    // The disabled composer's box is drawn enabled for the chief's sake.
+    await expect(page.locator('#mv-input')).toBeEnabled();
+    await page.locator('#mv-input').fill(line);
+    const posted = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/mirror/view/chief', { timeout: 15_000 });
+    await page.locator('#mv-send-chief').click();
+    await posted;
+    await expect.poll(() => chiefTurns(line), { timeout: 30_000 }).toBe(1);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('(b) the chief script throws: the switch still flips the mode, and Enter reaches the chief', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    storageState: { cookies: await signedInCookies(browser), origins: [] },
+  });
+  try {
+    await throwChiefScript(ctx);
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(rig.origin + view());
+    await expect.poll(() => errors.join('|')).toContain('E2E-CHIEF-SCRIPT-THREW');
+    await expectOneSwitch(page);
+    const cb = page.getByRole('switch');
+    await expect(cb).not.toBeChecked();
+    await expectToggleFirst(page);
+    const agentLook = await look(page);
+    await expectOneSend(page, '#mv-send');
+    await page.locator('#mv-to').click();
+    await expect(cb).toBeChecked();
+    await expect(cb).toHaveAccessibleName(SWITCH_NAME);
+      await expect(cb).toHaveAccessibleDescription(CHIEF_DESC);
+    await expectOneSend(page, '#mv-send-chief');
+    await expectChiefLook(page, agentLook);
+    // The chief script never set the form's action: it is still the agent's.
+    await expect(page.locator('#mv-form')).not.toHaveAttribute('action', /\/mirror\/view\/chief/);
+    const line = `E2E-THREW-${stamp}`;
+    const input = page.locator('#mv-input');
+    await expect(input).toBeEnabled();
+    await input.fill(line);
+    const posted = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/mirror/view/chief', { timeout: 15_000 });
+    await input.press('Enter');
+    await posted;
+    await expect.poll(() => chiefTurns(line), { timeout: 30_000 }).toBe(1);
+    expect(errors.filter((m) => !m.includes('E2E-CHIEF-SCRIPT-THREW')), 'no other script failed').toEqual([]);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// THE BROWSER'S OWN SUBMIT CARRIES A CHIEF LINE TO THE CHIEF. When the
+// composer's post fails (a network error), it hands the line to the browser's
+// native form submit (composer_pending.go native()); that submit must go to
+// the line's own route — with the chief script thrown, the form's action was
+// never moved off the agent's route. The fetch is failed here; the document
+// POST that follows is read at the request log.
+test('(c) a chief line whose post fails is resubmitted by the browser to the chief route, not the agent route', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    storageState: { cookies: await signedInCookies(browser), origins: [] },
+  });
+  try {
+    await throwChiefScript(ctx);
+    const page = await ctx.newPage();
+    await page.route('**/mirror/view/chief**', (r) => (r.request().resourceType() === 'fetch' ? r.abort() : r.continue()));
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(rig.origin + view());
+    await expect.poll(() => errors.join('|')).toContain('E2E-CHIEF-SCRIPT-THREW');
+    const docs: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.resourceType() === 'document') docs.push(new URL(r.url()).pathname);
+    });
+    await page.locator('#mv-to').click();
+    await expect(page.getByRole('switch')).toBeChecked();
+    const line = `E2E-NATIVE-${stamp}`;
+    const input = page.locator('#mv-input');
+    await expect(input).toBeEnabled();
+    await input.fill(line);
+    await input.press('Enter');
+    await expect.poll(() => docs, { timeout: 15_000 }).not.toEqual([]);
+    expect(docs, 'the browser resubmitted to').toEqual([CHIEF_ROUTE]);
+    await expect.poll(() => chiefTurns(line), { timeout: 30_000 }).toBe(1);
+  } finally {
+    await ctx.close();
+  }
+});

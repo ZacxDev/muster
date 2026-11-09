@@ -164,11 +164,14 @@ Both ledgers grow by exactly one in phase 1.
 
 ### 2.1 The composer toggle
 
-This is a two-segment switch at the start of the composer's input row. It is
-drawn only when the owner has a chief that is on (`chiefpref`).
+This is one switch, the first control of the composer's input row, left of
+the paperclip: a 44px icon button (a bot for the agent, a crown for the
+chief) that is a `role="switch"` checkbox. It is drawn only when the owner has
+a chief that is on (`chiefpref`). (Phase 1 first shipped it as a two-segment
+"`<runtime>` | Chief" switch; see "Phase 1 as built".)
 
 ```
-[ opencode | Chief ]  Ask the chief about this session…           [➤]
+[♛][📎]  Ask the chief about this session…                        [➤]
 ```
 
 - **To the agent** (default): today's composer, unchanged.
@@ -187,9 +190,11 @@ drawn only when the owner has a chief that is on (`chiefpref`).
 - **The choice persists per window** in `localStorage`, under the draft key's
   scheme (`MirrorDraftKey(..., "chief", ...)`), and each mode keeps its own
   draft. A reload lands in the mode last used, and the default is the agent.
-- **No script:** it is a real `<form>`. The switch is two radio inputs whose
-  `formaction` selects the route, so a browser submit still reaches the right
-  door (the composer's "real form" rule, `mirror_compose.go:27-34`).
+- **No script:** it is a real `<form>`. The switch is a checkbox the
+  stylesheet follows: it shows the chief's Send, whose `formaction` is the
+  chief's route, so a browser submit still reaches the right door — with
+  script disabled and when the chief script throws (the composer's "real
+  form" rule, `mirror_compose.go`).
 
 ### 2.2 What is attached
 
@@ -815,15 +820,31 @@ the operator's round 0 decisions on PR #537:
   - `TestOnlyTheViewDoorBindsASubject` is the new writer ledger for `about`.
     It sits beside `TestEveryChatWriterIsClassified`, whose `typed_by` set is
     unchanged.
-- **The composer switch** (`internal/ui/view_chief.go`): "`<runtime>` |
-  Chief", with two radios.
-  - A stylesheet rule (`:has(#mv-to-chief:checked)`) decides which Send shows.
-    The chief's Send carries the chief route as its `formaction`, so a submit
-    without script still reaches the door.
-  - The script adds the form's action for Enter, the placeholder, the box
-    enabled on a disabled agent composer, the mode remembered per window
-    (`localStorage`, `MirrorDraftKey(…, "chief", …)`), and the strip's live
-    refresh.
+- **The composer switch** (`internal/ui/view_chief.go`): ONE always-present
+  control, the input row's first, left of the paperclip — a checkbox
+  (`#mv-to-chief`, `role="switch"`, checked = chief mode) inside a label
+  (`#mv-to`) drawn as a 44px icon button showing the current target's glyph (a
+  bot for the agent, a crown for the chief). Its accessible name is fixed
+  ("Send to the chief"), its checked state is the mode, and its description is
+  hidden text for the current mode, picked by the stylesheet. Its form owner is
+  an empty form of its own (`#mv-to-form`), so Enter on it never submits the
+  composer; the composer's script makes Enter toggle it. (It replaced a
+  two-radio "`<runtime>` | Chief" switch above the row.)
+  - Chief mode is drawn in the review status pair (`st-review-fg` /
+    `st-review-bg`): the composer's top edge, the box's ring and fill, the
+    switch, and the chief's Send. Agent mode is the composer as it was.
+  - ONE stylesheet rule (`#mv-compose:has(#mv-to-chief:checked)`) decides
+    which Send shows. The chief's Send carries the chief route as its
+    `formaction`, and the composer's Enter submits through the Send shown, so
+    the mode works with script, without script, and when the chief script
+    throws.
+  - A disabled agent composer's box is drawn enabled (marked
+    `data-agent-off`, its agent Send still disabled) when the chief mode is
+    offered, so the chief mode can send without the script.
+  - The script adds the mode remembered per window (`localStorage`,
+    `MirrorDraftKey(…, "chief", …)`), the form's action, the placeholder, the
+    box disabled again in agent mode on a disabled agent composer, and the
+    strip's live refresh.
 - **The chief strip.**
   - `GET /mirror/view/chief/log` serves the chief chat's own renderer
     (`ui.ChatLogBody`, surface `view-strip`), narrowed to this session's
