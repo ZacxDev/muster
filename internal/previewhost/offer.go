@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
@@ -149,8 +150,13 @@ func (h *Host) serveOffer(w http.ResponseWriter, r *http.Request) {
 		case <-changed:
 			h.mu.Lock()
 			snap, changed = h.snapshotLocked(), h.changed
-			closes := h.closes
-			h.closes = nil
+			// Host-decided closes go out on the CURRENT tunnel's stream
+			// only: a replaced tunnel's stream, still draining, must not
+			// take them to a connection the gateway is closing.
+			var closes []wire.Request
+			if h.stream == st {
+				closes, h.closes = h.closes, nil
+			}
 			h.mu.Unlock()
 			if write(snap) != nil {
 				return
@@ -167,13 +173,25 @@ func (h *Host) serveOffer(w http.ResponseWriter, r *http.Request) {
 }
 
 // reannounceLocked builds an open request for every acknowledged open, each
-// naming the previous gateway's preview id; the answer replaces it.
+// naming the previous gateway's preview id. The gateway's answer is
+// authoritative: an opened answer replaces the id, an error or a closed
+// answer drops the open, and no answer within AnswerWait drops it too
+// (expirePendingLocked). An open older than MaxOpenAge is dropped, not
+// re-announced. Opens are at most maxOpen (recordOpenLocked), so this is
+// bounded too.
 func (h *Host) reannounceLocked() []wire.Offer {
 	var out []wire.Offer
+	now := h.now()
+	h.expirePendingLocked()
 	for _, o := range h.sortedOpensLocked() {
+		if now.Sub(o.Opened) >= MaxOpenAge {
+			delete(h.opens, o.Preview)
+			h.logger.Printf("muster-mirror: previews: dropped preview %s: open longer than %v", o.Preview, MaxOpenAge)
+			continue
+		}
 		h.seq++
 		req := wire.Request{ID: "a" + strconv.FormatUint(h.seq, 10), Window: o.Window, Port: o.Port, Label: o.Label, Path: o.Path, Preview: o.Preview}
-		h.pending[req.ID] = pendingReq{req: req, typ: wire.TypeOpen, reannoun: o.Preview}
+		h.pending[req.ID] = pendingReq{req: req, typ: wire.TypeOpen, reannoun: o.Preview, deadline: now.Add(h.hc.AnswerWait)}
 		out = append(out, wire.Offer{Type: wire.TypeOpen, Request: &req})
 	}
 	return out
@@ -196,8 +214,62 @@ func (h *Host) sortedOpensLocked() []Open {
 	return out
 }
 
-// maxAnswerBytes bounds an Answer body.
-const maxAnswerBytes = 64 << 10
+// maxAnswerBytes bounds an Answer body: a few short fields.
+const maxAnswerBytes = 4 << 10
+
+// Bounds on what an answer may make the host record (recordOpenLocked).
+const (
+	// maxPreviewID: a preview id becomes the p-<id> host label, and a DNS
+	// label is at most 63 bytes.
+	maxPreviewID = 61
+	// maxWindowID: a tmux window id is "@" and an unsigned int (at most 10
+	// digits).
+	maxWindowID = 11
+)
+
+func validPreviewID(s string) bool {
+	if s == "" || len(s) > maxPreviewID {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func validWindowID(s string) bool {
+	if len(s) < 2 || len(s) > maxWindowID || s[0] != '@' {
+		return false
+	}
+	return strings.TrimLeft(s[1:], "0123456789") == ""
+}
+
+// recordOpenLocked records o if the host would serve it: previews on, a
+// well-formed id and window, its port allowed now, and — for an id not
+// already open — fewer than maxOpen opens. 🔴 THIS IS THE ONE PLACE AN OPEN
+// IS RECORDED, so the gateway (whatever it sends, and however often) can
+// never make the host hold more than maxOpen small records. The error is the
+// refusal, as a tool error code.
+func (h *Host) recordOpenLocked(o Open) string {
+	switch {
+	case h.disabled != "":
+		return "previews_off"
+	case !validPreviewID(o.Preview) || !validWindowID(o.Window):
+		return "bad_answer"
+	case h.cfg.Allows(o.Port, h.hc.Refused) != nil:
+		return CodePortNotAllowed
+	}
+	if _, replacing := h.opens[o.Preview]; !replacing && len(h.opens) >= h.cfg.MaxOpen {
+		return "max_open"
+	}
+	if o.Opened.IsZero() {
+		o.Opened = h.now()
+	}
+	h.opens[o.Preview] = o
+	return ""
+}
 
 // serveAnswer is POST wire.OpenedPath (opened) or wire.ClosedPath: the
 // gateway's answer to a request (RequestID set) or, for an open the owner
@@ -214,25 +286,37 @@ func (h *Host) serveAnswer(w http.ResponseWriter, r *http.Request, opened bool) 
 		return
 	}
 	h.mu.Lock()
+	h.expirePendingLocked()
 	p, known := h.pending[a.RequestID]
 	if known {
 		delete(h.pending, a.RequestID)
 	}
+	refused := ""
 	switch {
 	case opened && known:
+		var old Open
 		if p.reannoun != "" {
+			old = h.opens[p.reannoun]
 			delete(h.opens, p.reannoun)
 		}
-		if a.Error == "" && a.Preview != "" {
-			h.opens[a.Preview] = Open{Preview: a.Preview, Window: p.req.Window, Port: p.req.Port, Label: p.req.Label, Path: p.req.Path}
+		if a.Error == "" {
+			refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: p.req.Window, Port: p.req.Port, Label: p.req.Label, Path: p.req.Path, Opened: old.Opened})
+			if refused != "" {
+				a.Error = refused // the tool sees why the host would not keep it
+			}
 		}
 	case opened && a.RequestID == "":
-		if a.Error == "" && a.Preview != "" && a.Window != "" && a.Port > 0 {
-			h.opens[a.Preview] = Open{Preview: a.Preview, Window: a.Window, Port: a.Port}
+		// The owner clicked an offer: the gateway tells the host unasked.
+		if a.Error == "" {
+			refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: a.Window, Port: a.Port})
 		}
 	case !opened:
-		// A close by the agent's request, or one the gateway made itself
-		// (its lifecycle, the owner's Close).
+		// A close by the agent's request, by the gateway itself (its
+		// lifecycle, the owner's Close), or its answer to a re-announce:
+		// authoritative, so the open goes either way.
+		if known && p.reannoun != "" {
+			delete(h.opens, p.reannoun)
+		}
 		id := a.Preview
 		if id == "" && known {
 			id = p.req.Preview
@@ -244,6 +328,11 @@ func (h *Host) serveAnswer(w http.ResponseWriter, r *http.Request, opened bool) 
 	h.mu.Unlock()
 	if known && p.answer != nil {
 		p.answer <- a
+	}
+	if refused != "" {
+		h.logger.Printf("muster-mirror: previews: refused to record an open from the gateway: %s", refused)
+		http.Error(w, refused, http.StatusConflict)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

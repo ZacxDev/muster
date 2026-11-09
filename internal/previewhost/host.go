@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,7 +32,22 @@ type Open struct {
 	Port    int
 	Label   string
 	Path    string
+	// Opened is when the host first recorded it. A re-announce to a
+	// restarted gateway keeps it (so a restart does not renew an open), and
+	// an open older than MaxOpenAge is dropped instead of re-announced.
+	Opened time.Time
 }
+
+// MaxOpenAge bounds how long the host keeps an open alive across gateway
+// restarts: the design's default preview TTL and its offline close (24 h).
+// The host cannot read the gateway's PREVIEW_TTL, so this is its own bound —
+// and it is also what ends opens across a long disconnect: an open recorded
+// before a disconnect of more than a day is older than this on reconnect.
+const MaxOpenAge = 24 * time.Hour
+
+// maxPending bounds the requests awaiting an answer: a gateway that never
+// answers cannot grow the host's memory. Each also expires after AnswerWait.
+const maxPending = 64
 
 // HostConfig configures a Host.
 type HostConfig struct {
@@ -63,6 +79,9 @@ type HostConfig struct {
 	Logger     *log.Logger
 	// Now is the clock (nil = time.Now).
 	Now func() time.Time
+
+	// Tests only: the loopback dial of a CONNECT (nil = dialLoopback).
+	dial func(context.Context, int) (net.Conn, error)
 }
 
 // Errors of RequestOpen and RequestClose, by their tool error code.
@@ -101,6 +120,7 @@ type pendingReq struct {
 	typ      string
 	reannoun string // a re-announced open: the previous gateway's preview id
 	answer   chan wire.Answer
+	deadline time.Time // past it the request is forgotten (expirePendingLocked)
 }
 
 // upstream is one spliced CONNECT, so a port leaving the allowlist can end it.
@@ -119,6 +139,9 @@ func NewHost(hc HostConfig) *Host {
 	}
 	if hc.Logger == nil {
 		hc.Logger = log.Default()
+	}
+	if hc.dial == nil {
+		hc.dial = dialLoopback
 	}
 	return &Host{
 		hc:      hc,
@@ -201,6 +224,9 @@ func (h *Host) poll(ctx context.Context) {
 			h.reload()
 			h.readWindows(ctx)
 			h.scan()
+			h.mu.Lock()
+			h.expirePendingLocked()
+			h.mu.Unlock()
 		}
 	}
 }
@@ -216,10 +242,14 @@ func (h *Host) reload() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err != nil {
-		if h.disabled == err.Error() {
+		// 🔴 The reason goes to the gateway (wire.Config.Disabled): the
+		// file's absolute path — a home directory, a user name — is
+		// replaced by its base name. The log keeps the full error.
+		why := strings.ReplaceAll(err.Error(), h.hc.File, FileName)
+		if h.disabled == why {
 			return
 		}
-		h.disabled = err.Error()
+		h.disabled = why
 		h.logger.Printf("muster-mirror: previews are OFF until previews.json is fixed: %v", err)
 		h.closeWhereLocked(func(Open) bool { return true }, "previews are off")
 		h.broadcastLocked()
@@ -327,9 +357,14 @@ func (h *Host) request(ctx context.Context, typ string, req wire.Request) (wire.
 		h.mu.Unlock()
 		return wire.Answer{}, ErrGatewayNotConnected
 	}
+	h.expirePendingLocked()
+	if len(h.pending) >= maxPending {
+		h.mu.Unlock()
+		return wire.Answer{}, ErrGatewayTimeout
+	}
 	h.seq++
 	req.ID = "r" + strconv.FormatUint(h.seq, 10)
-	h.pending[req.ID] = pendingReq{req: req, typ: typ, answer: ch}
+	h.pending[req.ID] = pendingReq{req: req, typ: typ, answer: ch, deadline: h.now().Add(h.hc.AnswerWait)}
 	h.mu.Unlock()
 	if !st.send(wire.Offer{Type: typ, Request: &req}) {
 		h.forget(req.ID)
@@ -341,10 +376,37 @@ func (h *Host) request(ctx context.Context, typ string, req wire.Request) (wire.
 	case a := <-ch:
 		return a, nil
 	case <-t.C:
-		// The request stays pending: a late answer still records the open.
+		// Forgotten: a late answer is then unknown and ignored, and the
+		// tool has already said gateway_timeout.
+		h.forget(req.ID)
 		return wire.Answer{}, ErrGatewayTimeout
 	case <-ctx.Done():
+		h.forget(req.ID)
 		return wire.Answer{}, context.Cause(ctx)
+	}
+}
+
+func (h *Host) now() time.Time {
+	if h.hc.Now != nil {
+		return h.hc.Now()
+	}
+	return time.Now()
+}
+
+// expirePendingLocked forgets every request past its deadline. An
+// unanswered re-announce also drops its open: the restarted gateway never
+// confirmed it, so it is not open there.
+func (h *Host) expirePendingLocked() {
+	now := h.now()
+	for id, p := range h.pending {
+		if now.Before(p.deadline) {
+			continue
+		}
+		delete(h.pending, id)
+		if p.reannoun != "" {
+			delete(h.opens, p.reannoun)
+			h.logger.Printf("muster-mirror: previews: dropped preview %s: the restarted gateway never answered its re-announce", p.reannoun)
+		}
 	}
 }
 

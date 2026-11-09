@@ -171,6 +171,14 @@ func (gt *gwTunnel) quiet(d time.Duration) {
 // answer POSTs a to path (wire.OpenedPath or wire.ClosedPath).
 func (gt *gwTunnel) answer(path string, a wire.Answer) {
 	gt.t.Helper()
+	if st := gt.answerStatus(path, a); st != http.StatusNoContent {
+		gt.t.Fatalf("POST %s: %d", path, st)
+	}
+}
+
+// answerStatus POSTs a to path and returns the host's status.
+func (gt *gwTunnel) answerStatus(path string, a wire.Answer) int {
+	gt.t.Helper()
 	b, _ := json.Marshal(a)
 	req, _ := http.NewRequest(http.MethodPost, path, bytes.NewReader(b))
 	resp, err := gt.c.RoundTrip(req)
@@ -178,9 +186,7 @@ func (gt *gwTunnel) answer(path string, a wire.Answer) {
 		gt.t.Fatalf("POST %s: %v", path, err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		gt.t.Fatalf("POST %s: %d", path, resp.StatusCode)
-	}
+	return resp.StatusCode
 }
 
 // connectRaw sends a CONNECT with the given authority (not the gateway's
@@ -759,5 +765,242 @@ func TestAPortRemovedFromTheAllowlistClosesItsPreviews(t *testing.T) {
 	}
 	if st, reason, _ := gt.connectRaw(wire.ConnectAuthority(a)); st != 403 || reason != wire.ReasonPortNotAllowed {
 		t.Fatalf("new connection to the removed port: %d %q", st, reason)
+	}
+}
+
+// --------------------------------------------------------- audit round 1
+
+// TestTheGatewayCannotMakeTheHostHoldMoreThanMaxOpen: an unsolicited
+// "opened" is recorded only when the host would serve it — at most maxOpen
+// opens, an allowed port, a well-formed preview id (one DNS label's worth)
+// and tmux window id — so 2,000 hostile POSTs leave maxOpen small records,
+// and a gateway restart re-announces only those.
+func TestTheGatewayCannotMakeTheHostHoldMoreThanMaxOpen(t *testing.T) {
+	gw := newFakeGateway(t, "boot-1")
+	rig := startHost(t, `{"ports": ["5173"], "maxOpen": 2}`, HostConfig{}, TunnelConfig{URLs: []string{gw.url}})
+	gt := gw.next(5 * time.Second)
+	gt.offer(2 * time.Second)
+	for _, c := range []struct {
+		name string
+		a    wire.Answer
+		want int
+	}{
+		// Each malformed case runs while slots are free, so only its own
+		// check can refuse it (not maxOpen).
+		{"off the allowlist", wire.Answer{Preview: "p1", Window: "@1", Port: 1}, 409},
+		{"id longer than a DNS label allows", wire.Answer{Preview: strings.Repeat("a", 62), Window: "@1", Port: 5173}, 409},
+		{"id with a dot", wire.Answer{Preview: "p.1", Window: "@1", Port: 5173}, 409},
+		{"window not a tmux id", wire.Answer{Preview: "p1", Window: "@1x", Port: 5173}, 409},
+		{"window too long", wire.Answer{Preview: "p1", Window: "@" + strings.Repeat("9", 11), Port: 5173}, 409},
+		{"body over the answer bound", wire.Answer{Preview: strings.Repeat("a", 5000), Window: "@1", Port: 5173}, 400},
+		{"the longest id allowed (control)", wire.Answer{Preview: strings.Repeat("a", 61), Window: "@1234567890", Port: 5173}, 204},
+		{"first", wire.Answer{Preview: "p1", Window: "@1", Port: 5173}, 204},
+		{"past maxOpen", wire.Answer{Preview: "p3", Window: "@1", Port: 5173}, 409},
+		{"the same id again (not a new open)", wire.Answer{Preview: "p1", Window: "@2", Port: 5173}, 204},
+	} {
+		if st := gt.answerStatus(wire.OpenedPath, c.a); st != c.want {
+			t.Errorf("%s: %d, want %d", c.name, st, c.want)
+		}
+	}
+	for i := 0; i < 2000; i++ {
+		gt.answerStatus(wire.OpenedPath, wire.Answer{Preview: fmt.Sprintf("h%d-%s", i, strings.Repeat("x", 40)), Window: "@1", Port: 5173})
+	}
+	opens := rig.h.Opens()
+	if len(opens) != 2 || opens[0].Preview != strings.Repeat("a", 61) || opens[1].Preview != "p1" {
+		t.Fatalf("after 2,000 hostile opens the host holds %d: %+v", len(opens), opens)
+	}
+	// A restart re-announces the two, nothing more.
+	gw.boot.Store("boot-2")
+	gt.cancel()
+	gt = gw.next(10 * time.Second)
+	gt.offer(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		gt.offerOf(wire.TypeOpen, 2*time.Second)
+	}
+	gt.quiet(300 * time.Millisecond)
+}
+
+// testClock is a HostConfig.Now the test moves.
+type testClock struct{ off atomic.Int64 }
+
+func (c *testClock) now() time.Time          { return time.Now().Add(time.Duration(c.off.Load())) }
+func (c *testClock) advance(d time.Duration) { c.off.Add(int64(d)) }
+
+// TestReannouncedOpensFollowTheGatewaysAnswer: what the host chose for opens
+// across a gateway restart or a long disconnect. The restarted gateway's
+// answer is authoritative — an opened answer keeps the open (its original
+// open time too), a closed answer drops it, and no answer within AnswerWait
+// drops it — and an open older than MaxOpenAge (24 h; also what a disconnect
+// longer than a day leaves) is dropped, not re-announced.
+func TestReannouncedOpensFollowTheGatewaysAnswer(t *testing.T) {
+	clock := &testClock{}
+	gw := newFakeGateway(t, "boot-1")
+	rig := startHost(t, portsJSON(5173), HostConfig{AnswerWait: 300 * time.Millisecond, Now: clock.now}, TunnelConfig{URLs: []string{gw.url}})
+	gt := gw.next(5 * time.Second)
+	gt.offer(2 * time.Second)
+	for _, id := range []string{"keep", "closed", "silent"} {
+		gt.answer(wire.OpenedPath, wire.Answer{Preview: id, Window: "@1", Port: 5173})
+	}
+	var opened time.Time
+	for _, o := range rig.h.Opens() {
+		if o.Preview == "keep" {
+			opened = o.Opened
+		}
+	}
+	restart := func(boot string) *gwTunnel {
+		gw.boot.Store(boot)
+		gt.cancel()
+		gt = gw.next(10 * time.Second)
+		gt.offer(2 * time.Second)
+		return gt
+	}
+	gt = restart("boot-2")
+	re := map[string]string{}
+	for len(re) < 3 {
+		_, m := gt.offerOf(wire.TypeOpen, 2*time.Second)
+		re[m.Request.Preview] = m.Request.ID
+	}
+	gt.answer(wire.OpenedPath, wire.Answer{RequestID: re["keep"], Preview: "keep2"})
+	// A closed answer drops the old open whatever id it names.
+	gt.answer(wire.ClosedPath, wire.Answer{RequestID: re["closed"], Preview: "closed-new"})
+	// "silent" gets no answer: gone after AnswerWait.
+	deadline := time.Now().Add(3 * time.Second)
+	for len(rig.h.Opens()) != 1 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	o := rig.h.Opens()
+	if len(o) != 1 || o[0].Preview != "keep2" || !o[0].Opened.Equal(opened) {
+		t.Fatalf("after the restart: %+v; want keep2 alone, opened at %v", o, opened)
+	}
+	rig.h.mu.Lock()
+	leaked := len(rig.h.pending)
+	rig.h.mu.Unlock()
+	if leaked != 0 {
+		t.Fatalf("%d request(s) still pending after their answers and expiry", leaked)
+	}
+	// A day later (a long disconnect, or a gateway that keeps restarting):
+	// not re-announced, dropped.
+	clock.advance(MaxOpenAge)
+	gt = restart("boot-3")
+	gt.quiet(400 * time.Millisecond)
+	if o := rig.h.Opens(); len(o) != 0 {
+		t.Fatalf("an open older than MaxOpenAge survived: %+v", o)
+	}
+}
+
+// TestATimedOutRequestIsForgotten: a request the gateway does not answer in
+// time fails gateway_timeout and leaves nothing pending; its late answer
+// records nothing.
+func TestATimedOutRequestIsForgotten(t *testing.T) {
+	gw := newFakeGateway(t, "b1")
+	rig := startHost(t, portsJSON(5173), HostConfig{AnswerWait: 200 * time.Millisecond}, TunnelConfig{URLs: []string{gw.url}})
+	gt := gw.next(5 * time.Second)
+	gt.offer(2 * time.Second)
+	if _, err := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@1", Port: 5173}); !errors.Is(err, ErrGatewayTimeout) {
+		t.Fatalf("silent gateway: %v", err)
+	}
+	_, m := gt.offerOf(wire.TypeOpen, time.Second)
+	rig.h.mu.Lock()
+	n := len(rig.h.pending)
+	rig.h.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d request(s) pending after the timeout", n)
+	}
+	gt.answer(wire.OpenedPath, wire.Answer{RequestID: m.Request.ID, Preview: "late"})
+	if o := rig.h.Opens(); len(o) != 0 {
+		t.Fatalf("a late answer was recorded: %+v", o)
+	}
+	// maxPending in flight: the next request fails at once, sends nothing.
+	rig.h.mu.Lock()
+	for i := 0; i < maxPending; i++ {
+		rig.h.pending[fmt.Sprintf("fill%d", i)] = pendingReq{deadline: time.Now().Add(time.Hour)}
+	}
+	rig.h.mu.Unlock()
+	start := time.Now()
+	if _, err := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@1", Port: 5173}); !errors.Is(err, ErrGatewayTimeout) || time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("at maxPending: %v after %v; want gateway_timeout at once", err, time.Since(start))
+	}
+	gt.quiet(200 * time.Millisecond)
+}
+
+// TestAPortLeavingTheListBetweenCheckAndDialIsRefused: previews.json drops
+// the port after the CONNECT's checks passed but before the upstream is
+// spliced (the dial is where the test removes it): the re-check under the
+// reload's lock refuses with port_not_allowed instead of splicing a port no
+// longer allowed.
+func TestAPortLeavingTheListBetweenCheckAndDialIsRefused(t *testing.T) {
+	a, _ := echoServer(t, "127.0.0.1:0")
+	gw := newFakeGateway(t, "b1")
+	var rig *hostRig
+	ready := make(chan struct{})
+	dial := func(ctx context.Context, port int) (net.Conn, error) {
+		<-ready
+		writePreviews(t, rig.file, portsJSON(5173))
+		rig.h.reload()
+		return dialLoopback(ctx, port)
+	}
+	rig = startHost(t, portsJSON(a, 5173), HostConfig{dial: dial}, TunnelConfig{URLs: []string{gw.url}})
+	close(ready)
+	gt := gw.next(5 * time.Second)
+	if st, reason, rw := gt.connectRaw(wire.ConnectAuthority(a)); st != 403 || reason != wire.ReasonPortNotAllowed {
+		if rw != nil {
+			rw.Close()
+		}
+		t.Fatalf("port removed between check and dial: %d %q; want 403 port_not_allowed", st, reason)
+	}
+}
+
+// TestHostClosesGoOutOnTheCurrentTunnelOnly: with a replaced tunnel still
+// draining beside the current one, a close the host decides (its port left
+// the list) is written on the CURRENT tunnel's offer stream, never on the
+// draining one's.
+func TestHostClosesGoOutOnTheCurrentTunnelOnly(t *testing.T) {
+	mesh := newFakeGateway(t, "b1")
+	mesh.refuse.Store(true)
+	pub := newFakeGateway(t, "b1")
+	timers := newFakeTimers(5 * time.Minute)
+	rig := startHost(t, portsJSON(5173, 6006), HostConfig{}, TunnelConfig{URLs: []string{mesh.url, pub.url}, after: timers.after})
+	pt := pub.next(5 * time.Second)
+	pt.offer(2 * time.Second)
+	<-timers.asked
+	mesh.refuse.Store(false)
+	timers.fire <- time.Now()
+	mt := mesh.next(5 * time.Second)
+	mt.offer(2 * time.Second)
+	mt.answer(wire.OpenedPath, wire.Answer{Preview: "pa", Window: "@1", Port: 6006})
+	writePreviews(t, rig.file, portsJSON(5173))
+	_, cfg := mt.offerOf(wire.TypeConfig, 3*time.Second)
+	if strings.Join(cfg.Config.Ports, ",") != "5173" {
+		t.Fatalf("config %+v", cfg.Config)
+	}
+	if _, cl := mt.offer(2 * time.Second); cl.Type != wire.TypeClose || cl.Request.Preview != "pa" {
+		t.Fatalf("on the current tunnel: %+v; want the close of pa", cl)
+	}
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case line := <-pt.lines:
+			if _, m := pt.decode(line); m.Type == wire.TypeClose {
+				t.Fatalf("the draining tunnel's stream carried the close: %s", line)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestTheDisabledReasonCarriesNoPath: an invalid previews.json turns previews
+// off and the reason reaches the gateway — naming previews.json, never the
+// file's absolute path (a home directory, a user name).
+func TestTheDisabledReasonCarriesNoPath(t *testing.T) {
+	gw := newFakeGateway(t, "b1")
+	rig := startHost(t, portsJSON(5173), HostConfig{}, TunnelConfig{URLs: []string{gw.url}})
+	gt := gw.next(5 * time.Second)
+	gt.offer(2 * time.Second)
+	must(t, os.WriteFile(rig.file, []byte(`{"ports": ["80"]}`), 0o600))
+	_, m := gt.offerOf(wire.TypeConfig, 3*time.Second)
+	why := m.Config.Disabled
+	if why == "" || !strings.Contains(why, FileName) || strings.Contains(why, filepath.Dir(rig.file)) {
+		t.Fatalf("disabled reason %q; want one naming %s without %s", why, FileName, filepath.Dir(rig.file))
 	}
 }

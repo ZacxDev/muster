@@ -127,9 +127,15 @@ func interval(d time.Duration) time.Duration {
 // gateway's response (with wire.VersionRangeHeader on a version refusal).
 // The client never follows a redirect (noredirect): one would re-send the
 // host token to the Location.
+//
+// 🔴 NOR DOES IT USE A PROXY (HTTP_PROXY and friends are ignored): on the
+// overlay-mesh endpoint the dial is plain ws:// — the mesh encrypts the hop —
+// so a proxy would receive the mpt_ bearer token in clear text, and the mesh
+// address is not reachable through one anyway. The public endpoint is the
+// gateway's own; nothing in phase 1 needs a proxy to reach it.
 func DialHost(ctx context.Context, endpoint string, hdr http.Header) (*websocket.Conn, *http.Response, error) {
 	tr := &http.Transport{
-		Proxy:        http.ProxyFromEnvironment,
+		Proxy:        nil,
 		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
 	return websocket.Dial(ctx, endpoint, &websocket.DialOptions{

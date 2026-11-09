@@ -40,7 +40,7 @@ func (h *Host) serveConnect(w http.ResponseWriter, r *http.Request) {
 		wire.WriteRefusal(w, reason)
 		return
 	}
-	up, err := dialLoopback(r.Context(), port)
+	up, err := h.hc.dial(r.Context(), port)
 	if err != nil {
 		h.logger.Printf("muster-mirror: previews: refused a connection to port %d: %s (%v)", port, wire.ReasonRefused, err)
 		wire.WriteRefusal(w, wire.ReasonRefused)
