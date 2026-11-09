@@ -40,7 +40,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// An agent's outcome changed (agent_outcome.go): its page and row, and the
 		// chief panel of the chief told about it.
 		"(*Server).outcomeChanged → agentChangedFor(a.OwnerID)",
-		"(*Server).noteOutcomeToChief → broadcastTo(chief.OwnerID)",
+		// THE outcome note's writer (writeChiefNote), for a pod's outcome and a
+		// host dispatch's: the chief's owner, which both callers check is the
+		// agent's (or the row's) owner.
+		"(*Server).writeChiefNote → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",
@@ -72,10 +75,14 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// A host dispatch ended (host_dispatch.go): its owner, named explicitly
 		// because the reconciler's context carries no principal.
 		"(*Server).endHostDispatch → broadcastTo(owner)",
-		// A host dispatch's own session reported it done (host_dispatch_done.go):
-		// h.Owner is the row's owner, read under the mirror token's principal
-		// (row-level security), so it is that token's owner.
-		"(*Server).hostDispatchDone → broadcastTo(h.Owner)",
+		// A host dispatch's outcome changed (host_dispatch_done.go: done by its
+		// own session's agent_report_done, or done/waiting from its host's
+		// listing): h.Owner is the row's owner, read under the mirror token's or
+		// the hook's owner principal (row-level security), so it is that owner.
+		"(*Server).announceHostOutcome → broadcastTo(h.Owner)",
+		// A later turn re-armed a host dispatch (host_dispatch_outcome.go): the
+		// row's owner, read under hostDispatchPrincipal (row-level security).
+		"(*Server).rearmHostDispatch → broadcastTo(r.Owner)",
 		// A host's window listing moved a host dispatch (host_dispatch_reconcile.go):
 		// pctx is hostDispatchPrincipal(ctx, owner), the host's owner.
 		"(*Server).reconcileListing → broadcast(pctx)",

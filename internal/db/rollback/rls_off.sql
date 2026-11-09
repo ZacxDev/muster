@@ -286,7 +286,7 @@ BEGIN
         ALTER TABLE public.notify_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.notify_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0099 (chief_proposals), when this schema has it; same reason as 0011.
+    -- 0100 (chief_proposals), when this schema has it; same reason as 0011.
     IF to_regclass('public.chief_proposals') IS NOT NULL THEN
         ALTER TABLE public.chief_proposals NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.chief_proposals DISABLE ROW LEVEL SECURITY;

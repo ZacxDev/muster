@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CHIEF PROPOSALS (migration 0099; docs/design/chief-in-agent-view.md, phase
+// CHIEF PROPOSALS (migration 0100; docs/design/chief-in-agent-view.md, phase
 // 2): an action the chief PROPOSES about one of the owner's sessions — a
 // succession now (a new session that continues it), ending it next — which
 // only the owner's ONE TAP on its card starts. One table, one kind field, one

@@ -215,7 +215,7 @@ const notifyPreferencesMigrationVersion = 94
 // internal/plugins/chief_proposals.go), owned and under the same
 // row-level security; same treatment again. Its body is idempotent. 🔴
 // RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const chiefProposalsMigrationVersion = 99
+const chiefProposalsMigrationVersion = 100
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

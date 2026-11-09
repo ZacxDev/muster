@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -71,11 +72,96 @@ func (d *Driver) Exec(ctx context.Context, ref provision.Ref, cmd []string, stdi
 	if err != nil {
 		return err
 	}
+	return streamGuarded(ctx, ref, exec, stdin, stdout, stderr)
+}
+
+// streamGuarded runs a non-TTY exec stream with the caller's stdout and stderr
+// behind one execSink, closed before it returns.
+//
+// 🔴 client-go WRITES THE CALLER'S WRITERS FROM TWO GOROUTINES, AND KEEPS
+// WRITING AFTER StreamWithContext HAS RETURNED. Its v2+ protocol copies the
+// remote stdout and the remote stderr each on a goroutine of its own
+// (streamProtocolV2.copyStdout / copyStderr), and StreamWithContext returns as
+// soon as its context ends, without waiting for either. So (1) a caller that
+// passes ONE bytes.Buffer as both stdout and stderr — as the job worktree
+// script, the deploy-key fetch and the terminal release all do — has two
+// goroutines growing one Buffer at once: a torn slice header there is a nil
+// write inside spdystream's (*Stream).Read, a SIGSEGV in a goroutine client-go
+// started under runtime.HandleCrash, which re-panics, so nothing in muster can
+// recover it and the whole process exits (it did, mid-job). And (2) a caller
+// that reads its buffer once Exec returned on a cancelled context races the
+// copy still writing it. The sink serialises every write to the caller's
+// writers on one mutex, and close takes that mutex: once streamGuarded
+// returns, no write is in progress and none can start, so the caller owns its
+// writers again.
+//
+// ⚠ close waits for a write already in progress. That is instant for the
+// buffers non-TTY callers pass; a writer that blocks for ever would hold Exec
+// with it. ExecTTY is not routed through here: it has one output stream, and
+// its writer is a live terminal that may stall.
+func streamGuarded(ctx context.Context, ref provision.Ref, exec remotecommand.Executor, stdin io.Reader, stdout, stderr io.Writer) error {
+	sink := newExecSink(stdout, stderr)
+	defer sink.close()
 	return execError(ref, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdin:  stdin,
-		Stdout: stdout,
-		Stderr: stderr,
+		Stdout: sink.stdout(),
+		Stderr: sink.stderr(),
 	}))
+}
+
+// execSink is streamGuarded's guard around the caller's writers: one mutex for
+// both, and a closed flag after which writes are dropped.
+type execSink struct {
+	mu     sync.Mutex
+	closed bool
+	out    io.Writer
+	err    io.Writer
+}
+
+func newExecSink(stdout, stderr io.Writer) *execSink {
+	return &execSink{out: stdout, err: stderr}
+}
+
+// stdout and stderr are the writers handed to client-go: nil where the caller
+// passed nil, so the request still asks for exactly the streams it did.
+func (s *execSink) stdout() io.Writer {
+	if s.out == nil {
+		return nil
+	}
+	return sinkWriter{s, s.out}
+}
+
+func (s *execSink) stderr() io.Writer {
+	if s.err == nil {
+		return nil
+	}
+	return sinkWriter{s, s.err}
+}
+
+// close ends the sink: it waits for a write in progress, and every later one
+// is dropped (reported written, so the copy drains rather than logs an error).
+func (s *execSink) close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+}
+
+// sinkWriter is one of the sink's two writers. It deliberately has no
+// ReadFrom, so io.Copy reaches the caller's writer only through Write, under
+// the sink's mutex (a *bytes.Buffer's own ReadFrom is what the stream used to
+// grow concurrently).
+type sinkWriter struct {
+	s *execSink
+	w io.Writer
+}
+
+func (w sinkWriter) Write(p []byte) (int, error) {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	if w.s.closed {
+		return len(p), nil
+	}
+	return w.w.Write(p)
 }
 
 // ExecContainer implements provision.ContainerExecer: Exec, into the named
@@ -93,11 +179,7 @@ func (d *Driver) ExecContainer(ctx context.Context, ref provision.Ref, container
 	if err != nil {
 		return err
 	}
-	return execError(ref, exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdin:  stdin,
-		Stdout: stdout,
-		Stderr: stderr,
-	}))
+	return streamGuarded(ctx, ref, exec, stdin, stdout, stderr)
 }
 
 // ExecTTY implements provision.TTYExecer: the command runs on a pseudo-terminal

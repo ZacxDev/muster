@@ -103,8 +103,16 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 	// MarkHostDispatchDone (0097: done_at/done_summary only, never ended) is
 	// agent_report_done's on the mirror door alone.
 	assertCallers(t, ".", "MarkHostDispatchDone", []string{"host_dispatch_done.go:toolHostReportDone"})
+	// 0099's three (an opencode reply's outcome, a later turn's re-arm, a
+	// Claude done settled) are the outcome reconciler's alone.
+	assertCallers(t, ".", "RecordHostDispatchOutcome", []string{"host_dispatch_outcome.go:recordHostReply"})
+	assertCallers(t, ".", "RearmHostDispatch", []string{"host_dispatch_outcome.go:rearmHostDispatch"})
+	assertCallers(t, ".", "SettleHostDispatchDone", []string{"host_dispatch_outcome.go:claudeHostTurn"})
+	assertCallers(t, ".", "recordHostReply", []string{"host_dispatch_outcome.go:reconcileOutcomes"})
+	assertCallers(t, ".", "rearmHostDispatch", []string{"host_dispatch_outcome.go:claudeHostTurn", "host_dispatch_outcome.go:reconcileOutcomes"})
+	assertCallers(t, ".", "claudeHostTurn", []string{"host_dispatch_outcome.go:reconcileOutcomes"})
 	// In the store, the SQL that writes host_dispatches is in exactly these
-	// five functions.
+	// eight functions.
 	src, err := os.ReadFile(filepath.Join("..", "plugins", "host_dispatches.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +134,8 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 		}
 	}
 	slices.Sort(writers)
-	want := []string{"EndHostDispatch", "MarkHostDispatchDone", "ReserveHostDispatch", "SetHostDispatchOrphanNotice", "UpdateHostDispatch"}
+	want := []string{"EndHostDispatch", "MarkHostDispatchDone", "RearmHostDispatch", "RecordHostDispatchOutcome", "ReserveHostDispatch",
+		"SetHostDispatchOrphanNotice", "SettleHostDispatchDone", "UpdateHostDispatch"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("host_dispatches is written by %v\nwant exactly %v", writers, want)
 	}

@@ -45,7 +45,7 @@ session continues the old one.
   chief talked into anything by transcript text cannot point a succession at
   another session, cannot write the kickoff's words, and cannot act outside an
   owner's typed turn.
-- **A lineage row, `chief_proposals`,** links old to new: the mode, who
+- **A lineage row, `session_successions`,** links old to new: the mode, who
   asked, the chief's chat message, and the successor's `host_dispatches` id.
   The reconciler already matches the new window to its dispatch through
   `@muster-dispatch`. When the successor's row turns `running`, muster emits
@@ -333,7 +333,7 @@ branch, model}` as resolved in 2.2. Null on every other row.
 `TestEveryChatWriterIsClassified` gains the new door as the one writer of a
 non-null `about`.
 
-### 3.2 `chief_proposals` (same migration), under RLS on `owner_id`
+### 3.2 `session_successions` (same migration), under RLS on `owner_id`
 
 | column | type | |
 |---|---|---|
@@ -387,7 +387,7 @@ live card already relies on.
 **What emits `lineage.changed`:** `endHostDispatch` and the reconciler's
 `running` transition already broadcast `agent.changed` /
 `host-dispatch-<id>`. Both also call `broadcastTo(owner, "lineage.changed",
-"succession-<id>")` when a `chief_proposals` row names that dispatch.
+"succession-<id>")` when a `session_successions` row names that dispatch.
 That is one lookup by the indexed `host_dispatch_id`. The event names the
 owner and carries no text, so it adds no data path across users
 (`internal/sse` drops a zero owner).
@@ -395,7 +395,7 @@ owner and carries no text, so it adds no data path across users
 **Lookups the view makes:**
 - *"my successor"*: by `subject_key` = the entry's `SessionKey()`, newest first;
 - *"my predecessor"*: by the entry's `Dispatch` →
-  `chief_proposals.host_dispatch_id`.
+  `session_successions.host_dispatch_id`.
 
 Both are indexed, and both are read as the owner.
 
@@ -577,7 +577,7 @@ completes.
 |---|---|---|---|
 | **0** | Measurements, no product code. (a) Does a non-default chief session with no runtime keep its own conversation in ccd, and does `ownerTurnFor` pass for a turn in it (2.3)? (b) Does the tail depth `mirrorRead` backfills reach the last assistant message of a long opencode and Claude session? (c) Kickoff shapes from the `handoff` skill: always one fenced block? | S | — |
 | **1** | **Ask the chief from the view.** The toggle (2.1); `POST /mirror/view/chief` (a third owner chat door: `runEnteredTurn` with `ownerTypedBy`); `chat_messages.about` and its migration; the turn header (2.2); the per-lineage thread; the chief strip re-mounting `agentChatPane` (2.3); `session_context` (4.1); `sessions_overview` lists opencode; the stale comment fixed. No dispatch changes | M | main |
-| **2** | **Succession.** `successor_of`, `succession` (with the held `?` and its one-tap card, D2) and `prompt_from` on `agent_dispatch` (4.2, 4.3); the inherited host, runtime and model and `suggested_base` (D3, D4); `chief_proposals` and its writer ledger (3.2); `lineage.changed`; `GET /mirror/view/successor`; the view-follow (2.5); the banners and the Superseded group (4.4, phase 2 row); the 30 s push; the chief's instructions (both runtimes, `agentspec`) and the tool description pins. **Claude successors work on main; opencode successors need #522** | L | 1; **#522** for `host/<host>/opencode` |
+| **2** | **Succession.** `successor_of`, `succession` (with the held `?` and its one-tap card, D2) and `prompt_from` on `agent_dispatch` (4.2, 4.3); the inherited host, runtime and model and `suggested_base` (D3, D4); `session_successions` and its writer ledger (3.2); `lineage.changed`; `GET /mirror/view/successor`; the view-follow (2.5); the banners and the Superseded group (4.4, phase 2 row); the 30 s push; the chief's instructions (both runtimes, `agentspec`) and the tool description pins. **Claude successors work on main; opencode successors need #522** | L | 1; **#522** for `host/<host>/opencode` |
 | **3** | **Replace closes the old window.** `agent-close` on the wire and the host (tag-bound, successor-running-bound, rate-limited like forwards); D7 and decision 17 reopened for this one case, windows the chief started (D1) | M | 2 |
 | **4** | Later: pod successors (a dispatched agent's chat or Terminal view as subject; successor `/agents/{name}`) | M | 2 |
 
@@ -599,7 +599,7 @@ completes.
 - **Ledgers:**
   - `TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn` gains exactly the new door;
   - `TestEveryChatWriterIsClassified` gains `about`'s one writer;
-  - a new `chief_proposals` writer ledger fails when the set grows or
+  - a new `session_successions` writer ledger fails when the set grows or
     shrinks;
   - `TestThePageAndTheHubAgreeOnWhatCanBeSent` is unchanged, because chief
     mode is not a pane send.
@@ -879,6 +879,15 @@ This replaces 4.2's binding to the message `ownerTurnFor` returns, and D5's "no
 confirm tap": the confirm card is the only tap (there is no second "start with
 this kickoff" step).
 
+- **One primitive: the chief's proposal** (operator decision, 2026-11-09):
+  an action the chief may PREPARE about one of the owner's sessions but never
+  take. `chief_proposals` (migration **0100**; this replaces 3.2's
+  `session_successions`) is one table with a `kind` (`succession` now,
+  `end_session` reserved for the next phase), and every kind shares, by
+  construction (`internal/api/chief_proposal.go`): ONE binding rule
+  (`bindViewSubject`), ONE record and card (`fileProposal`,
+  `ui.ProposalCard`), ONE tap path (`proposalForAnswer`, answerAskFrom's
+  hook) and ONE tap route on the view (`POST /mirror/view/proposal`).
 - **`succession_propose`** (`internal/api/succession.go`), chief-only, on MCP,
   offered with `agent_dispatch` (task routing on, the owner opted in) when the
   mirror, focus and attention stores are wired. No new configuration.
@@ -905,15 +914,15 @@ this kickoff" step).
     started, else the repository default. At the start, a `bad_base` refusal
     of that branch starts once more from the default (a second reservation,
     the row relinked); the card and the view say which base was used.
-  - It records the proposal (`chief_proposals`, migration **0099**) and
-    raises the card (`raiseOwnerCard`: on the Attention view and the phone, an
+  - It records the proposal (a `chief_proposals` row of kind `succession`)
+    and raises the card (`raiseOwnerCard`: on the Attention view and the phone, an
     owner card answered only through the owner's own doors). Its question
     holds the kickoff whole when it fits, its options are "Start it" / "Not
     now", or "Replace this session" / "Spin off a new one" / "Not now" when
     `succession` was `?` (D2). It ends the chief's turn and starts nothing.
-- **The tap** is `answerAskFrom`'s succession hook (`successionForAnswer`),
+- **The tap** is `answerAskFrom`'s proposal hook (`proposalForAnswer`),
   before the answer is recorded — the same path as the Attention view, the
-  phone, and the view's own card (`POST /mirror/view/succession`, which accepts
+  phone, and the view's own card (`POST /mirror/view/proposal`, which accepts
   only the card of the session that view shows). It refuses anything but the
   owner's signed-in browser or paired phone, and any answer that is not one of
   the card's buttons. Start dispatches through the host dispatch machinery

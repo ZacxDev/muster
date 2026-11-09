@@ -245,6 +245,10 @@ type OpenCodeSource struct {
 	parent  map[string]string
 	gen     uint64
 	subs    map[chan struct{}]bool
+
+	// replies are the dispatch windows' sessions' final replies, as last read
+	// (opencode_outcome.go), by session id.
+	replies map[string]outcomeMemo
 }
 
 // titleEvents are the events after which the root sessions' titles are read

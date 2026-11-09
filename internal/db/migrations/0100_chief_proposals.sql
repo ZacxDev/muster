@@ -1,4 +1,4 @@
--- muster 0099 — CHIEF PROPOSALS: an action the chief PROPOSES about one of the
+-- muster 0100 — CHIEF PROPOSALS: an action the chief PROPOSES about one of the
 -- owner's sessions, which only the owner's ONE TAP on its card starts
 -- (docs/design/chief-in-agent-view.md, phase 2; the store is
 -- internal/plugins/chief_proposals.go, the server internal/api/chief_proposal.go
@@ -35,13 +35,12 @@
 -- STATEMENT IS IDEMPOTENT.
 --
 -- Must apply after its predecessor (the contiguity test refuses a gap). The
--- number was the next free one on main when written; another open branch may
--- take the same number, so it may need renumbering at merge (with
--- chiefProposalsMigrationVersion in internal/db/rollback.go).
+-- number was the next free one on main when written; it may need renumbering
+-- at merge (with chiefProposalsMigrationVersion in internal/db/rollback.go).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads it):
 --   DROP TABLE IF EXISTS public.chief_proposals;
---   DELETE FROM schema_migrations WHERE version = 99;
+--   DELETE FROM schema_migrations WHERE version = 100;
 
 SET LOCAL lock_timeout = '3s';
 

@@ -359,6 +359,12 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 			c.HostNote = "Close the window on " + r.Host + " to end it and free its slot."
 			break
 		}
+		if !r.WaitingAt.IsZero() {
+			// An opencode dispatch whose turn ended without its done line
+			// (0099): its owner's move, until a later turn re-arms it.
+			c.State, c.Detail = ui.DispatchWaiting, "Waiting for you: "+r.WaitingLine
+			break
+		}
 		if s.ext.Mirror != nil {
 			for _, v := range s.ext.Mirror.Hosts(ctx) {
 				if v.Host != r.Host {

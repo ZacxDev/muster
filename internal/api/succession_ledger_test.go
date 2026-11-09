@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// THE SESSION_SUCCESSIONS WRITER LEDGER (migration 0099; docs/design/
+// THE SESSION_SUCCESSIONS WRITER LEDGER (migration 0100; docs/design/
 // chief-in-agent-view.md 3.2): asserted over the Go source, failing when a set
 // GROWS or SHRINKS.
 //

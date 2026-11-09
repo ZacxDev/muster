@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
@@ -209,9 +210,14 @@ type Server struct {
 	// the jobs this process accepted and has not finished; jobSecond
 	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
 	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
-	// outcome-write attempts (zero: jobFinishRetryPause).
+	// outcome-write attempts (zero: jobFinishRetryPause). jobDrains is each
+	// agent's queue runner in this process (jobs_queue.go).
 	jobLanes         jobLanes
 	ownJobs          ownJobs
+	jobDrains        jobDrains
+	// jobsStopping is set by StopJobs at the start of a graceful shutdown:
+	// this process takes no more jobs from the table (jobs_queue.go).
+	jobsStopping atomic.Bool
 	// poolFailovers serialises a pool submission's account failover per
 	// (owner, pool) (jobs.go createPoolJob).
 	poolFailovers keyedLocks
@@ -313,6 +319,10 @@ type Server struct {
 	// agentOutcomes is the outcome tracker's in-process state (agent_outcome.go):
 	// activity-write throttling and the turns open in this process.
 	agentOutcomes outcomeTracker
+
+	// hostOutcomes serializes the host-dispatch outcome reconciler and drops a
+	// snapshot older than one it applied (host_dispatch_outcome.go).
+	hostOutcomes hostOutcomeSeq
 
 	taskDoneMu       sync.Mutex
 	taskDoneNotified map[int64]bool
