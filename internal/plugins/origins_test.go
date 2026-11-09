@@ -68,6 +68,8 @@ func TestOriginPatternMatchesHost(t *testing.T) {
 		{zone, "p-abc.example.net", true},
 		{zone, "P-ABC.Example.Net:443", true},
 		{zone, "p-abc.example.net.", true},
+		{zone, "p-abc.example.net..", true},
+		{exact, "w.example.org...:443", true},
 		{zone, "a.b.example.net", true},
 		{zone, "example.net", false},
 		{zone, "evilexample.net", false},

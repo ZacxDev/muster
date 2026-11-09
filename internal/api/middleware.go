@@ -62,9 +62,15 @@ const PluginOriginHostRefusal = "this host belongs to a plugin (MUSTER_PLUGIN_OR
 // muster with Host and Origin both a plugin host, by a misrouted edge or a
 // chosen Host, would pass them as same-origin. Refusing the host outright
 // closes that, whatever the route. Unset: nothing is refused.
+//
+// Being outermost, a refusal is outside accessLog, the span and the http
+// metrics, so it counts and logs itself (muster_plugin_origin_refusals_total,
+// and a line in requireSameOrigin's shape).
 func (s *Server) refusePluginOriginHosts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if plugins.AnyMatchesHost(s.ext.PluginOrigins, r.Host) {
+			metrics.PluginOriginRefusals.Inc()
+			s.logger.Printf("refused %s %s for Host %q: it is under MUSTER_PLUGIN_ORIGINS (421)", r.Method, r.URL.Path, r.Host)
 			h := w.Header()
 			h.Set("Content-Type", "text/plain; charset=utf-8")
 			h.Set("X-Content-Type-Options", "nosniff")

@@ -24,7 +24,7 @@ func (o OriginPattern) String() string {
 	return "https://" + o.Host
 }
 
-// MatchesHost reports whether a request's Host (a port and a trailing dot
+// MatchesHost reports whether a request's Host (a port and trailing dots
 // allowed, any case) is under o. A wildcard pattern matches every host BELOW
 // its zone, at any depth, as a CSP source does, and not the zone itself.
 func (o OriginPattern) MatchesHost(host string) bool {
@@ -48,14 +48,15 @@ func AnyMatchesHost(patterns []OriginPattern, host string) bool {
 	return false
 }
 
-// normalizeRequestHost is a Host header's host part: no port, no trailing dot,
-// lower case. "" when there is none.
+// normalizeRequestHost is a Host header's host part: no port, no trailing dots
+// (every one: `p.zone..` is the same host to a resolver), lower case. "" when
+// there is none.
 func normalizeRequestHost(host string) string {
 	host = strings.TrimSpace(host)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	return strings.TrimSuffix(strings.ToLower(host), ".")
+	return strings.TrimRight(strings.ToLower(host), ".")
 }
 
 // ParseOrigins parses MUSTER_PLUGIN_ORIGINS: comma-separated patterns, each

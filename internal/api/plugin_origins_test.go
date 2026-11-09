@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"net/http"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -89,5 +93,42 @@ func TestAPluginOriginHostIsRefusedOnEveryListener(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Errorf("CONTROL: GET /health on %s with the variable set: %d; want 200", host, rec.Code)
 		}
+	}
+}
+
+// TestAPluginOriginRefusalIsCountedAndLogged: the refusal is outermost, outside
+// the access log, the span and the http metrics, so it must count and log
+// itself. One refused request moves muster_plugin_origin_refusals_total by
+// exactly one and writes one line naming its Host; the control, a served
+// request on muster's own host, moves neither.
+func TestAPluginOriginRefusalIsCountedAndLogged(t *testing.T) {
+	pats, err := plugins.ParseOrigins("https://*.preview.example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	s := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "plugin-origins-operator-pw"}, log.New(&logs, "", 0))
+	s.UseExtensions(Extensions{PluginOrigins: pats})
+	h := s.Handler()
+
+	before := testutil.ToFloat64(metrics.PluginOriginRefusals)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, pluginHostRequest("GET", "/health", "muster.example.net"))
+	if rec.Code != http.StatusOK || testutil.ToFloat64(metrics.PluginOriginRefusals) != before ||
+		strings.Contains(logs.String(), "MUSTER_PLUGIN_ORIGINS (421)") {
+		t.Fatalf("CONTROL: a served request: %d, counter moved %v, log %q; want 200 and neither",
+			rec.Code, testutil.ToFloat64(metrics.PluginOriginRefusals)-before, logs.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, pluginHostRequest("POST", "/plugins", "p-abc.preview.example.net"))
+	if rec.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("a plugin host: %d; want 421", rec.Code)
+	}
+	if got := testutil.ToFloat64(metrics.PluginOriginRefusals) - before; got != 1 {
+		t.Errorf("muster_plugin_origin_refusals_total moved by %v; want 1", got)
+	}
+	if want := `refused POST /plugins for Host "p-abc.preview.example.net": it is under MUSTER_PLUGIN_ORIGINS (421)`; strings.Count(logs.String(), want) != 1 {
+		t.Errorf("log %q; want exactly one line %q", logs.String(), want)
 	}
 }

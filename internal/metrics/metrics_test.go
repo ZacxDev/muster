@@ -64,6 +64,7 @@ var wantMetrics = map[string][]string{
 	"muster_http_requests_total":                      {"code", "method", "route"},
 	"muster_http_request_duration_seconds":            {"method", "route"},
 	"muster_panics_total":                             {"source"},
+	"muster_plugin_origin_refusals_total":             {},
 	"muster_agent_provision_total":                    {"result"},
 	"muster_push_delivery_total":                      {"result"},
 	"muster_push_suppressed_total":                    {"reason"},
