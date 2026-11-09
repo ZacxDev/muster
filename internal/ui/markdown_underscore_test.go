@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -115,109 +113,6 @@ func TestMarkdownRoutedBlockKeepsIdentifiers(t *testing.T) {
 	}
 }
 
-// jsInlineSource is agentChatScript's inline renderer as node can run it: from
-// the underscore pass through mdInline, which calls it — running the whole
-// inline pass is what holds that the pass is actually WIRED IN.
-func jsInlineSource(t *testing.T) (node, src string) {
-	t.Helper()
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatalf("node is required to run the client renderer: %v", err)
-	}
-	js := jsSource(t, agentChatScript("x"))
-	start := strings.Index(js, "function mdUnderWord(")
-	end := strings.Index(js, "function mdTableCells(")
-	if start < 0 || end < start {
-		t.Fatalf("agentChatScript no longer carries mdUnderWord … mdInline … mdTableCells")
-	}
-	return node, js[start:end]
-}
-
-// jsInline runs the client renderer's mdInline over ins under node.
-func jsInline(t *testing.T, ins []string) []string {
-	t.Helper()
-	node, src := jsInlineSource(t)
-	in, _ := json.Marshal(ins)
-	prog := src + "\nprocess.stdout.write(JSON.stringify(" + string(in) + ".map(function (x) { return mdInline(x); })));\n"
-	out, err := exec.Command(node, "-e", prog).Output()
-	if err != nil {
-		t.Fatalf("node: %v", err)
-	}
-	var got []string
-	if err := json.Unmarshal(out, &got); err != nil || len(got) != len(ins) {
-		t.Fatalf("node output %q: %v", out, err)
-	}
-	return got
-}
-
-// TestJSUnderscoreEmphasisMatchesGo runs the client renderer's underscore pass
-// (mdUnderEm in agentChatScript, the /agents/{name} chat) under node, on the
-// same inputs, and holds it to the SAME literal outputs as the Go pass. The two
-// renderers are separate implementations of one rule (markdown.go's header says
-// why); this is what stops the JS copy keeping the bug the Go one lost.
-//
-// node is REQUIRED, not optional: a missing node fails rather than skips, so
-// this cannot go quietly green (CI's verdict.py refuses a skip anyway).
-func TestJSUnderscoreEmphasisMatchesGo(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"route_id rt_abc_def", "route_id rt_abc_def"},
-		{"a_b_c", "a_b_c"},
-		{"_real emphasis_", "<em>real emphasis</em>"},
-		{"snake_case and *star*", "snake_case and <em>star</em>"},
-		{"call route_to_session, then focus_search", "call route_to_session, then focus_search"},
-		{"route_id rt_8f51ffceb101b6c0faaf3b9b and file_path", "route_id rt_8f51ffceb101b6c0faaf3b9b and file_path"},
-		{"_use file_path here_", "<em>use file_path here</em>"},
-		{"set _only_ the file_path", "set <em>only</em> the file_path"},
-		{"a _ b_ c", "a _ b_ c"},
-		{"a _b _ c", "a _b _ c"},
-		{"__init__ and __x__", "__init__ and __x__"},
-		{"__a_ b", "__a_ b"},
-		{"_a__ b", "_a__ b"},
-		{"1_2_3 and v_1_", "1_2_3 and v_1_"},
-		{"café_x_ü", "café_x_ü"},
-		{"(_x_).", "(<em>x</em>)."},
-		{"_a\nb_ _c_", "_a\nb_ <em>c</em>"},
-		// A word can end in a combining mark: a DECOMPOSED é (e + U+0301), a
-		// Devanagari vowel sign. Neither may open emphasis on the `_` after it.
-		{"cafe\u0301_x_.txt", "cafe\u0301_x_.txt"},
-		{"सूची_x_.", "सूची_x_."},
-	}
-	for _, c := range cases {
-		// The Go pass must agree, or this test is comparing against nothing.
-		if got := mdEmphasis(c.in); got != c.want {
-			t.Errorf("Go mdEmphasis(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-	// JS only (its anchor's attributes differ from Go's): a bare URL is drawn as
-	// written. Its autolinker used to leave the anchor in the string the
-	// emphasis passes read, so a `_` or `*` in the URL paired — with the `_` of
-	// target="_blank", or inside the href. The Go equivalents are in
-	// TestMarkdownBareURLIsNotEmphasis.
-	const jsA = `" target="_blank" rel="noopener noreferrer" class="text-accent underline">`
-	cases = append(cases, []struct{ in, want string }{
-		{"see https://x.example/a_b_c now",
-			`see <a href="https://x.example/a_b_c` + jsA + `https://x.example/a_b_c</a> now`},
-		{"https://example.com/foo_ then x_",
-			`<a href="https://example.com/foo_` + jsA + `https://example.com/foo_</a> then x_`},
-		{"https://h.com/a*b*c",
-			`<a href="https://h.com/a*b*c` + jsA + `https://h.com/a*b*c</a>`},
-		{"see https://h.com/a*b* and *real* and _also_",
-			`see <a href="https://h.com/a*b*` + jsA + `https://h.com/a*b*</a> and <em>real</em> and <em>also</em>`},
-		{"(https://h.com/x_y).",
-			`(<a href="https://h.com/x_y` + jsA + `https://h.com/x_y</a>).`},
-	}...)
-	ins := make([]string, len(cases))
-	for i, c := range cases {
-		ins[i] = c.in
-	}
-	got := jsInline(t, ins)
-	for i, c := range cases {
-		if got[i] != c.want {
-			t.Errorf("JS mdInline(%q) = %q, want %q", c.in, got[i], c.want)
-		}
-	}
-}
-
 // TestMarkdownBareURLIsNotEmphasis: the Go renderer's half of the bare-URL
 // cases. mdAutolink already vaulted its anchor before this change, so these
 // are invariant guards here (the JS renderer was the one that broke them).
@@ -240,41 +135,36 @@ func TestMarkdownBareURLIsNotEmphasis(t *testing.T) {
 	}
 }
 
-// TestUnderscoreRenderersAgree holds the Go and JS underscore passes to ONE
-// output, a literal, on inputs where their character classes could differ:
-// numbers beyond 0-9 (x², Ⅻ, ٣), combining marks, and the two whitespace
-// characters the engines disagree about — U+0085 (Go's unicode.IsSpace, not
-// JS's /\s/) and U+FEFF (JS's /\s/, not Go's IsSpace). Both renderers use the
-// union, so `_` beside either one neither opens nor closes.
-func TestUnderscoreRenderersAgree(t *testing.T) {
+// TestMarkdownUnicodeWordEdges pins the underscore rule on inputs where the
+// character classes decide it: a word that ENDS in a combining mark (a
+// DECOMPOSED é is e + U+0301, the way macOS filenames arrive; the Devanagari
+// vowel sign ी U+0940 is Mc), numbers beyond 0-9 (x², Ⅻ, ٣), and U+0085 /
+// U+FEFF beside the delimiter. Each is the WHOLE rendered fragment.
+//
+// 🔴 REGRESSION (#492's F1/F2): red at d1a77724^, where mdIsWordRune was
+// `_` | IsLetter | IsDigit — `café_x_.txt` and `सूची_x_.` drew <em>x</em> mid-word
+// and so did `x²_y_.`. This used to be TestUnderscoreRenderersAgree, which held
+// a JS copy of the renderer to the same strings; that copy is deleted.
+func TestMarkdownUnicodeWordEdges(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"x²_y_.", "x²_y_."},
-		{"Ⅻ_x_ y", "Ⅻ_x_ y"},
-		{"٣_x_ y", "٣_x_ y"},
-		{"x_²_ y", "x_²_ y"},
-		{"_x_\u0301 y", "_x_\u0301 y"},
-		{"cafe\u0301_x_.txt", "cafe\u0301_x_.txt"},
-		{"सूची_x_.", "सूची_x_."},
-		{"_\u0085b_ c", "_\u0085b_ c"},
-		{"_b\u0085_ c", "_b\u0085_ c"},
-		{"_\ufeffb_ c", "_\ufeffb_ c"},
-		{"_b\ufeff_ c", "_b\ufeff_ c"},
-		{"a\u00a0_b_ c", "a\u00a0<em>b</em> c"},
-		{"a\u0085_b_ c", "a\u0085<em>b</em> c"},
-		{"(_x_²)", "(_x_²)"},
+		{"cafe\u0301_x_.txt", "<p class=\"my-1\">cafe\u0301_x_.txt</p>"},
+		{"सूची_x_.", "<p class=\"my-1\">सूची_x_.</p>"},
+		{"x²_y_.", "<p class=\"my-1\">x²_y_.</p>"},
+		{"Ⅻ_x_ y", "<p class=\"my-1\">Ⅻ_x_ y</p>"},
+		{"٣_x_ y", "<p class=\"my-1\">٣_x_ y</p>"},
+		{"x_²_ y", "<p class=\"my-1\">x_²_ y</p>"},
+		{"_x_\u0301 y", "<p class=\"my-1\">_x_\u0301 y</p>"},
+		{"_\ufeffb_ c", "<p class=\"my-1\">_\ufeffb_ c</p>"},
+		{"_b\ufeff_ c", "<p class=\"my-1\">_b\ufeff_ c</p>"},
+		{"(_x_²)", "<p class=\"my-1\">(_x_²)</p>"},
+		// The controls: the same shapes with a space or NBSP before the `_`
+		// DO emphasise, so the cases above are not literal for some other reason.
+		{"cafe\u0301 _x_.txt", "<p class=\"my-1\">cafe\u0301 <em>x</em>.txt</p>"},
+		{"a\u00a0_b_ c", "<p class=\"my-1\">a\u00a0<em>b</em> c</p>"},
 	}
-	ins := make([]string, len(cases))
-	for i, c := range cases {
-		ins[i] = c.in
-	}
-	js := jsInline(t, ins)
-	for i, c := range cases {
-		goOut := mdEmphasis(c.in)
-		if goOut != c.want {
-			t.Errorf("Go mdEmphasis(%q) = %q, want %q", c.in, goOut, c.want)
-		}
-		if js[i] != c.want {
-			t.Errorf("JS mdInline(%q) = %q, want %q", c.in, js[i], c.want)
+	for _, c := range cases {
+		if got := markdownHTML(c.in); got != c.want {
+			t.Errorf("markdownHTML(%q)\n got: %q\nwant: %q", c.in, got, c.want)
 		}
 	}
 }
@@ -311,43 +201,5 @@ func TestMarkdownUnderscoreLinear(t *testing.T) {
 	t.Logf("n: %v, 4n: %v, ratio %.1f", small, large, r)
 	if r > 9 {
 		t.Fatalf("mdItalicUnderscore scales superlinearly: 4x the input took %.1fx the time (%v vs %v)", r, large, small)
-	}
-}
-
-// TestJSUnderscoreLinear is the same bound on the client renderer, timed
-// inside node (after a warm-up, so the JIT is not what is measured).
-func TestJSUnderscoreLinear(t *testing.T) {
-	node, src := jsInlineSource(t)
-	prog := src + `
-function best(n) {
-  var s = ' _x'.repeat(n), b = Infinity;
-  for (var i = 0; i < 7; i++) {
-    var st = process.hrtime.bigint(); mdInline(s);
-    var d = Number(process.hrtime.bigint() - st); if (d < b) b = d;
-  }
-  return b;
-}
-best(5000);
-var small = best(20000), large = best(80000);
-process.stdout.write(JSON.stringify({small: small, large: large, em: mdInline(' _x'.repeat(100)).indexOf('<em>') >= 0}));
-`
-	out, err := exec.Command(node, "-e", prog).Output()
-	if err != nil {
-		t.Fatalf("node: %v", err)
-	}
-	var m struct {
-		Small, Large float64
-		Em           bool
-	}
-	if err := json.Unmarshal(out, &m); err != nil || m.Small <= 0 {
-		t.Fatalf("node output %q: %v", out, err)
-	}
-	if m.Em {
-		t.Fatalf("unclosed openers produced emphasis")
-	}
-	r := m.Large / m.Small
-	t.Logf("n: %.1fms, 4n: %.1fms, ratio %.1f", m.Small/1e6, m.Large/1e6, r)
-	if r > 9 {
-		t.Fatalf("JS mdInline scales superlinearly: 4x the input took %.1fx the time", r)
 	}
 }
