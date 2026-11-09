@@ -182,6 +182,11 @@ type Extensions struct {
 	// (wsAllowedOrigins), for proxy setups that rewrite Host. "" accepts only
 	// the request's own Host.
 	PublicURL string
+	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed: the origins a viewer
+	// plugin may be given (docs/design/previews.md). A request whose Host is
+	// under one is refused 421 before anything else runs
+	// (refusePluginOriginHosts). nil (unset): no host is refused.
+	PluginOrigins []plugins.OriginPattern
 	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp):
 	// every connected-repository check lists the App's installation
 	// repositories (github_source.go). The same App backs the `github`

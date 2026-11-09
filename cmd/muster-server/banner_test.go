@@ -402,6 +402,10 @@ var bannerLedger = []string{
 	// plugin that files tasks holds its notices, so the operator must be told
 	// which state this is (and which namespaces are accepted).
 	envPluginTaskNamespaces,
+	// The plugin origins: ON, every listener refuses a Host under them with 421,
+	// so an operator chasing a misdirected request must be told which state
+	// this is and which patterns.
+	envPluginOrigins,
 	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
 	// message into the operator's own sessions and relay the answer without
 	// approval to allowlisted senders, so the log must say which state this is
@@ -823,6 +827,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		MemoScopeMap: "widgets=widgets,widgets-clone",
 		// Plugin tasks: the banner branches on the list (and on ext.Plugins, below).
 		PluginTaskNamespaces: []string{"tracker"},
+		PluginOrigins:        []plugins.OriginPattern{{Wildcard: true, Host: "preview.example.net"}},
 		// Dictation: the banner branches on ext.Transcriber (below).
 		STTURL:   "http://stt.example.invalid:8000",
 		STTToken: "stt-credential-fixture",

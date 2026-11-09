@@ -311,6 +311,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Provisioner reproduces that defect exactly.
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
 		PublicURL:            cfg.PublicURL,
+		PluginOrigins:        cfg.PluginOrigins,
 	}
 
 	if cfg.Database != "" {
@@ -1737,6 +1738,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("plugin tasks: OFF — %s is unset, so POST /plugin/v1/tasks answers 503 when plugins are on",
 			envPluginTaskNamespaces)
+	}
+	if pats := a.cfg.PluginOrigins; len(pats) > 0 {
+		names := make([]string, len(pats))
+		for i, p := range pats {
+			names[i] = p.String()
+		}
+		l.Printf("plugin origins: ON (%s=%s) — a request whose Host is under one is refused 421 on every listener",
+			envPluginOrigins, strings.Join(names, ","))
+	} else {
+		l.Printf("plugin origins: OFF — %s is unset, so no Host is refused as a plugin's", envPluginOrigins)
 	}
 
 	// The agent door to browser flows. The deployment's own names are
