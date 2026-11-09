@@ -39,7 +39,13 @@ func (g *countingGen) n() int {
 
 type memPrefs struct{ off map[int64]bool }
 
-func (m *memPrefs) Disabled(_ context.Context, o int64) (bool, error) { return m.off[o], nil }
+// Choice reports a saved choice only for an owner in the map: a missing one
+// is "never chose", which the engine gives DefaultDisabled — the fake decides
+// no default of its own.
+func (m *memPrefs) Choice(_ context.Context, o int64) (bool, bool, error) {
+	d, ok := m.off[o]
+	return d, ok, nil
+}
 func (m *memPrefs) SetDisabled(_ context.Context, o int64, d bool) error {
 	m.off[o] = d
 	return nil
@@ -65,7 +71,7 @@ const turn2 = "Done with (a): (a) checkpoint every 500 rows is in. Should I open
 // skip, and its positive control.
 func TestTheSameInputNeverCallsTwiceAndANewTurnCallsExactlyOnce(t *testing.T) {
 	g := &countingGen{}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	ctx := context.Background()
 	b1 := turnInput(t, turn1)
 	set, out, err := e.Suggest(ctx, 1, "s", b1, 10)
@@ -94,7 +100,7 @@ func TestTheSameInputNeverCallsTwiceAndANewTurnCallsExactlyOnce(t *testing.T) {
 func TestTextExpiresAfterTheTTLButTheSkipHolds(t *testing.T) {
 	c := &clock{t: time.Unix(1_800_000_000, 0)}
 	g := &countingGen{}
-	e := &Engine{Gen: g, Now: c.now}
+	e := &Engine{On: true, Gen: g, Now: c.now}
 	b := turnInput(t, turn1)
 	if _, out, _ := e.Suggest(context.Background(), 1, "s", b, 10); out != OutcomeGenerated {
 		t.Fatal(out)
@@ -126,7 +132,7 @@ func TestTextExpiresAfterTheTTLButTheSkipHolds(t *testing.T) {
 func TestTheRateCapRefusesThe121stCallInAnHour(t *testing.T) {
 	c := &clock{t: time.Unix(1_800_000_000, 0)}
 	g := &countingGen{}
-	e := &Engine{Gen: g, Now: c.now}
+	e := &Engine{On: true, Gen: g, Now: c.now}
 	ctx := context.Background()
 	for i := 0; i < PerOwnerPerHour; i++ {
 		b := turnInput(t, turn1+" v"+string(rune('a'+i%26))+string(rune('a'+i/26)))
@@ -150,21 +156,49 @@ func TestTheRateCapRefusesThe121stCallInAnHour(t *testing.T) {
 // TestTheKillSwitchAndTheToggleMakeNoCall.
 func TestTheKillSwitchAndTheToggleMakeNoCall(t *testing.T) {
 	g := &countingGen{}
-	prefs := &memPrefs{off: map[int64]bool{2: true}}
+	prefs := &memPrefs{off: map[int64]bool{1: false, 2: true}} // 1 saved ON, 2 saved OFF, 3 never chose
 	e := &Engine{Gen: g, Prefs: prefs, Off: true}
 	b := turnInput(t, turn1)
 	if _, out, _ := e.Suggest(context.Background(), 1, "s", b, 1); out != OutcomeOff {
 		t.Fatal(out)
 	}
 	e.Off = false
-	if _, out, _ := e.Suggest(context.Background(), 2, "s", b, 1); out != OutcomeUserOff {
-		t.Fatal(out)
+	for _, o := range []int64{2, 3} {
+		if _, out, _ := e.Suggest(context.Background(), o, "s", b, 1); out != OutcomeUserOff {
+			t.Fatalf("owner %d: %v", o, out)
+		}
 	}
 	if g.n() != 0 {
 		t.Fatalf("%d calls while off", g.n())
 	}
 	if _, out, _ := e.Suggest(context.Background(), 1, "s", b, 1); out != OutcomeGenerated || g.n() != 1 {
-		t.Fatalf("positive control: owner 1 is on by default: %v", out)
+		t.Fatalf("positive control: owner 1 saved ON: %v", out)
+	}
+}
+
+// TestNoDatabaseIsOffUnlessTheServerSaysOn (operator decision): with no
+// database (Prefs nil) nobody can save a choice, so everyone gets
+// DefaultDisabled — no call — unless MUSTER_SUGGEST=on (Engine.On) turns them
+// on for everyone. With a database, On does NOT change the per-user default:
+// a user who never chose is still off, a saved ON is on.
+func TestNoDatabaseIsOffUnlessTheServerSaysOn(t *testing.T) {
+	ctx := context.Background()
+	b := turnInput(t, turn1)
+	g := &countingGen{}
+	unset := &Engine{Gen: g}
+	if set, out, _ := unset.Suggest(ctx, 1, "s", b, 1); out != OutcomeUserOff || len(set.Suggestions) != 0 || g.n() != 0 {
+		t.Fatalf("no database, MUSTER_SUGGEST unset: out=%v chips=%d calls=%d (want user-off, none, 0)", out, len(set.Suggestions), g.n())
+	}
+	on := &Engine{Gen: g, On: true}
+	if set, out, _ := on.Suggest(ctx, 1, "s", b, 1); out != OutcomeGenerated || len(set.Suggestions) == 0 || g.n() != 1 {
+		t.Fatalf("no database, MUSTER_SUGGEST=on: out=%v chips=%d calls=%d (want generated, chips, 1)", out, len(set.Suggestions), g.n())
+	}
+	withDB := &Engine{Gen: g, On: true, Prefs: &memPrefs{off: map[int64]bool{2: false}}}
+	if _, out, _ := withDB.Suggest(ctx, 1, "s", b, 1); out != OutcomeUserOff || g.n() != 1 {
+		t.Fatalf("a database and MUSTER_SUGGEST=on, owner never chose: out=%v calls=%d (want user-off, no call)", out, g.n())
+	}
+	if _, out, _ := withDB.Suggest(ctx, 2, "s", b, 1); out != OutcomeGenerated || g.n() != 2 {
+		t.Fatalf("a database and MUSTER_SUGGEST=on, owner saved ON: out=%v calls=%d", out, g.n())
 	}
 }
 
@@ -172,7 +206,7 @@ func TestTheKillSwitchAndTheToggleMakeNoCall(t *testing.T) {
 // one call.
 func TestTwoViewsOfOneTurnMakeOneCall(t *testing.T) {
 	g := &countingGen{block: make(chan struct{})}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	b := turnInput(t, turn1)
 	var wg sync.WaitGroup
 	outs := make([]Outcome, 2)
@@ -199,7 +233,7 @@ func TestTwoViewsOfOneTurnMakeOneCall(t *testing.T) {
 // any call is retried.
 func TestAFailedCallIsCachedButARefusedOneIsNot(t *testing.T) {
 	g := &countingGen{err: ErrMalformed}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	b := turnInput(t, turn1)
 	if _, out, _ := e.Suggest(context.Background(), 1, "s", b, 1); out != OutcomeFailed {
 		t.Fatal(out)
@@ -208,7 +242,7 @@ func TestAFailedCallIsCachedButARefusedOneIsNot(t *testing.T) {
 		t.Fatalf("a failed input was called again: %v %d", out, g.n())
 	}
 	kc := &keyless{}
-	e2 := &Engine{Gen: kc}
+	e2 := &Engine{On: true, Gen: kc}
 	for i := 0; i < 2; i++ {
 		_, out, _ := e2.Suggest(context.Background(), 1, "s", b, 1)
 		if out != OutcomeFailed {
@@ -246,7 +280,7 @@ func (g *ctxGen) Generate(ctx context.Context, _ int64, _ string) (Generation, e
 // away mid-call, so the next view of the same turn asks again.
 func TestACallCancelledByTheViewClosingIsNotCached(t *testing.T) {
 	g := &ctxGen{}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	b := turnInput(t, turn1)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
@@ -263,7 +297,7 @@ func TestACallCancelledByTheViewClosingIsNotCached(t *testing.T) {
 // turn calls again.
 func TestOneTurnIsOneCallWhateverInputTheViewSaw(t *testing.T) {
 	g := &countingGen{}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	full, partial := turnInput(t, turn1), turnInput(t, turn1+" ")
 	partial.Fingerprint = "a-different-input"
 	if _, out, _ := e.Suggest(context.Background(), 1, "s", full, 42); out != OutcomeGenerated {
@@ -281,7 +315,7 @@ func TestOneTurnIsOneCallWhateverInputTheViewSaw(t *testing.T) {
 // (and Forget emptied their cache) while a call ran: its answer is not kept.
 func TestTurningOffDuringACallCachesNothing(t *testing.T) {
 	g := &countingGen{block: make(chan struct{})}
-	prefs := &memPrefs{off: map[int64]bool{}}
+	prefs := &memPrefs{off: map[int64]bool{1: false}} // owner 1 saved ON
 	e := &Engine{Gen: g, Prefs: prefs}
 	done := make(chan struct{})
 	go func() {
@@ -307,7 +341,7 @@ func TestTurningOffDuringACallCachesNothing(t *testing.T) {
 // closed; another view of the same turn, still open, asks again and gets a set.
 func TestAWaiterDoesNotInheritTheCreatorsCancel(t *testing.T) {
 	g := &ctxGen{}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	b := turnInput(t, turn1)
 	ctx, cancel := context.WithCancel(context.Background())
 	created := make(chan struct{})
@@ -343,7 +377,7 @@ func TestAWaiterDoesNotInheritTheCreatorsCancel(t *testing.T) {
 // keeps the answer out.
 func TestForgetDuringACallCachesNothing(t *testing.T) {
 	g := &countingGen{block: make(chan struct{})}
-	e := &Engine{Gen: g}
+	e := &Engine{On: true, Gen: g}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -367,16 +401,16 @@ type hangingPrefs struct {
 	reads int
 }
 
-func (h *hangingPrefs) Disabled(ctx context.Context, _ int64) (bool, error) {
+func (h *hangingPrefs) Choice(ctx context.Context, _ int64) (bool, bool, error) {
 	h.mu.Lock()
 	h.reads++
 	n := h.reads
 	h.mu.Unlock()
 	if n == 1 {
-		return false, nil
+		return false, true, nil // a saved ON
 	}
 	<-ctx.Done()
-	return false, ctx.Err()
+	return false, false, ctx.Err()
 }
 func (h *hangingPrefs) SetDisabled(context.Context, int64, bool) error { return nil }
 

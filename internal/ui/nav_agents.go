@@ -484,6 +484,9 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			// The current focus title's age, which the palette's result
 			// draws beside it (switcherEntry's).
 			focusAgeAttrs(it),
+			// "Show tmux sessions": the place the palette's row draws, as a
+			// switcher pill carries it (the one helper).
+			entryTmuxAttr(it),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition "+edge+" "+navRowTone(current)),
 			// The dot's box is reserved whether or not a time is known, so the
 			// names line up.
@@ -627,22 +630,39 @@ func navMore(feat Features, body ...g.Node) g.Node {
 // the one focus-age rule), each one line, cut to the row's width. The name is
 // stable (internal/sessionname); the line under it is what the session is
 // doing now. Two lines of text-sm and text-xs fit the row's 44px.
+//
+// With "Show tmux sessions" on, a named window's row adds one more muted line
+// after those, its place as muster named the window before names
+// (SwitcherItem.TmuxAt, "mango:1 @ atlas"; the dock row's third line): the
+// second line when there is no focus title. It is text in the link, so part
+// of the row's accessible name, and cut to the row's width like the others.
+// The row then grows past 44px; with the switch off (no TmuxAt) it is drawn
+// exactly as before.
 func navRowName(label string, it SwitcherItem) g.Node {
-	if it.Focus == "" {
+	if it.Focus == "" && it.TmuxAt == "" {
 		return Span(Class("min-w-0 flex-1 truncate"), g.Text(label))
 	}
-	age := FocusAgeSuffix(it.FocusAge)
-	return Span(
-		Class("flex min-w-0 flex-1 flex-col leading-tight"),
-		Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(label)),
-		Span(
+	var focusLine g.Node
+	if it.Focus != "" {
+		age := FocusAgeSuffix(it.FocusAge)
+		focusLine = Span(
 			g.Attr("data-nav-focus", ""),
 			Class("flex min-w-0 items-baseline gap-1 text-xs font-normal text-muted"+classIf(it.FocusAge.Stale, " "+FocusStaleClass)),
 			Span(Class("min-w-0 truncate"), g.Text(it.Focus)),
 			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeLabel(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
-		),
+		)
+	}
+	return Span(
+		Class("flex min-w-0 flex-1 flex-col leading-tight"),
+		Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(label)),
+		focusLine,
+		g.If(it.TmuxAt != "", Span(g.Attr("data-nav-tmux", ""), Class(navTmuxLineClass), g.Text(it.TmuxAt))),
 	)
 }
+
+// navTmuxLineClass is the sidebar row's "Show tmux sessions" line: one muted
+// text-xs line, cut to the row's width.
+const navTmuxLineClass = "min-w-0 truncate text-xs font-normal text-muted"
 
 // navChiefChip is a mirrored window's "chief" chip: an agent the chief started
 // there (its window carries a dispatch, docs/design/chief-dispatch.md 3.7).

@@ -174,9 +174,17 @@ already names the host, and a host name would make the pill wider than its
 name; the line is capped and cut with "…"). It sits inside the pill's 32px,
 so the bar is as tall as with the switch off. The dock's row gets a muted
 line, `mango:1 @ atlas`, under its focus title (the second line when it has
-none). Either is text in the pill or row, so it is part of its accessible
-name. Live refreshes of the bar keep it: it is drawn by the server on every
-render.
+none). The sidebar's row gets the same muted line under its name and focus
+title, and so does the command palette's result for it (the search picker,
+opened from the bar's magnifier, the sidebar's, or `/`); the palette's
+result then leaves out the bare codename it would otherwise draw under a
+name with no focus title, since the line starts with it. What the palette
+finds an entry by does not change. Each is text in the pill or row, so it is
+part of its accessible name. Live refreshes keep it: the bar's and the
+sidebar's rows are drawn by the server on every render (the sidebar's on
+every SSE or minute's refetch of its partial), and the palette draws its
+results from those rows' `data-switcher-tmux` each time it is opened or the
+sidebar's rows land.
 
 The window is the one that holds the conversation when the text is made (for
 a stop whose conversation no window holds now, the place stored on the stop,
@@ -186,7 +194,10 @@ notification, `mirrorCards` puts it on the lists' entries);
 `TestEveryNotificationSurfaceAsksForTheTmuxAddress` classifies every surface
 on the name ledger as a notification, a list, or one it does not apply to,
 and `TestOnlyMirrorCardsSetsTheListsCodename` keeps any other code from
-setting the lists' value.
+setting the lists' value. In the ui, `TestOnlyTheEntryHelpersDrawTheCodename`
+pins what draws it: the one attribute helper (`entryTmuxAttr`, on a pill and
+a sidebar row), the pill's and the sidebar row's line, and the two scripts
+(the dock's and the palette's) that read the attribute.
 
 Nothing else changes: a session with no human name is already called by its
 place (nothing twice), and so is one whose human name IS its codename (a
@@ -222,7 +233,8 @@ table.
 A name is frozen, but the work can move on. When it has, the session's page
 (an agent's page, a window's Rendered view) **offers** a rename under its
 header — "This session has moved on to "Fixing the Stripe webhook retry"",
-with **Rename to "…"** and **Keep the name**. muster never renames a session
+then a **Rename to "…"** button, then **Keep the name** as a text link, one
+per row (a long offer wraps inside the banner). muster never renames a session
 on its own. The offer is decided by `focus.DriftOffer`, from the session's
 focus history:
 

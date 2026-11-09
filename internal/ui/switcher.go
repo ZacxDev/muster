@@ -236,8 +236,10 @@ type SwitcherItem struct {
 	// left off the main surfaces (they stay in Tip and in Words).
 	Named bool
 	// TmuxAt and TmuxCode are the entry's MirrorCardView.TmuxAt / TmuxCode:
-	// the pill's second line (TmuxCode) and the dock row's line under the
-	// focus (TmuxAt, data-switcher-tmux); "" for none, and always for an agent.
+	// the pill's second line (TmuxCode); and the line under the focus (TmuxAt,
+	// entryTmuxAttr's data-switcher-tmux) of the dock's row, the sidebar's row
+	// (navRowName) and the command palette's row; "" for none, and always for
+	// an agent.
 	TmuxAt, TmuxCode string
 	// Tip is the entry's tooltip: its Label, then — when it is called by a
 	// human name (internal/sessionname) — the technical id that name hides
@@ -921,8 +923,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Host != "" && !it.Named, g.Attr("data-switcher-host", it.Host)),
 		g.If(it.Focus != "", g.Attr("data-switcher-focus", it.Focus)),
 		focusAgeAttrs(it),
-		// The dock row's codename line ("Show tmux sessions").
-		g.If(it.TmuxAt != "", g.Attr("data-switcher-tmux", it.TmuxAt)),
+		// The dock row's and the palette's codename line ("Show tmux sessions").
+		entryTmuxAttr(it),
 	}
 	if it.Current {
 		return Span(
@@ -966,6 +968,20 @@ func paletteWaitMark(it SwitcherItem) g.Node {
 		return nil
 	}
 	return Template(g.Attr(paletteWaitMarkAttr, ""), mark)
+}
+
+// entryTmuxAttr is an entry's "Show tmux sessions" place as the attribute the
+// page's scripts draw it from — data-switcher-tmux="mango:1 @ atlas", the
+// entry's TmuxAt (internal/api's one rule, names.go tmuxPlace, decided it) —
+// or nothing when it has none (the switch off, a window called by its
+// codename already, an agent). 🔴 ONE CALL, ON BOTH KINDS OF ENTRY ELEMENT: a
+// switcher pill (switcherEntry) and a sidebar row (navAgentRow), the two
+// elements the command palette builds its rows from (palette.go's
+// musterPaletteEntry) and the dock its rows (switcher_dock.go's rowOf), so a
+// pill and a row cannot carry the place differently.
+// TestOnlyTheEntryHelpersDrawTheCodename pins its callers.
+func entryTmuxAttr(it SwitcherItem) g.Node {
+	return g.If(it.TmuxAt != "", g.Attr("data-switcher-tmux", it.TmuxAt))
 }
 
 // switcherLabel is an entry's label as its pill draws it: the name, and —
