@@ -66,7 +66,7 @@ func (h *hostSide) agentClose(m mirror.Msg) {
 	if m.CloseReq != nil {
 		req = *m.CloseReq
 	}
-	r, err := h.c.closeAgent(h.ctx, h.agentCloseOn(), req)
+	r, err := h.closeAgent(h.ctx, h.agentCloseOn(), req)
 	var e *mirror.CloseRefusedError
 	switch {
 	case err == nil:
@@ -117,8 +117,10 @@ func agentPaneOf(w WindowInfo) string {
 	return ""
 }
 
-// closeAgent runs one agent-close (see the file's header).
-func (c *Client) closeAgent(ctx context.Context, on bool, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error) {
+// closeAgent runs one agent-close (see the file's header). Its /exit goes
+// through the paste guard (typeInto), as every keystroke this host types does.
+func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error) {
+	c := h.c
 	refuse := func(code, f string, a ...any) (mirror.AgentCloseResult, error) {
 		return mirror.AgentCloseResult{}, &mirror.CloseRefusedError{Code: code, Detail: fmt.Sprintf(f, a...)}
 	}
@@ -142,7 +144,7 @@ func (c *Client) closeAgent(ctx context.Context, on bool, req mirror.AgentCloseR
 	if pane == "" {
 		return refuse(mirror.CloseNoAgent, "window %s runs no agent this host can ask to exit", req.Window)
 	}
-	if err := pb.PastePane(ctx, pane, "/exit"); err != nil {
+	if err := h.typeInto(ctx, pane, func() error { return pb.PastePane(ctx, pane, "/exit") }); err != nil {
 		c.log.Printf("muster-mirror: close %s:%s: /exit not typed (%v); closing after the grace", req.Session, req.Window, err)
 	}
 	deadline := time.Now().Add(c.closeGrace())

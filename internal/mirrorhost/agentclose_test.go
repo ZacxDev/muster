@@ -93,7 +93,7 @@ func TestAnAgentCloseExitsGracefullyThenCloses(t *testing.T) {
 	} {
 		cl, b := closeFixture(c.onExit)
 		start := time.Now()
-		r, err := cl.closeAgent(context.Background(), true, mirror.AgentCloseReq{Session: "work", Window: c.window})
+		r, err := (&hostSide{c: cl, ctx: context.Background(), version: 2}).closeAgent(context.Background(), true, mirror.AgentCloseReq{Session: "work", Window: c.window})
 		took := time.Since(start)
 		if err != nil || r.Graceful != c.graceful {
 			t.Fatalf("%q on %s: %+v %v; want graceful %t", c.onExit, c.window, r, err, c.graceful)
@@ -130,7 +130,7 @@ func TestAnAgentCloseRefusesAnythingElse(t *testing.T) {
 		{"a host that does not close", false, mirror.AgentCloseReq{Session: "work", Window: "@1"}, mirror.CloseUnavailable},
 	} {
 		cl, b := closeFixture("gone")
-		_, err := cl.closeAgent(context.Background(), c.on, c.req)
+		_, err := (&hostSide{c: cl, ctx: context.Background(), version: 2}).closeAgent(context.Background(), c.on, c.req)
 		var e *mirror.CloseRefusedError
 		if !errors.As(err, &e) || e.Code != c.code {
 			t.Errorf("%s: %v; want refused %s", c.name, err, c.code)
@@ -141,7 +141,7 @@ func TestAnAgentCloseRefusesAnythingElse(t *testing.T) {
 	}
 	// Positive control: the same fixture closes a listed agent window.
 	cl, b := closeFixture("gone")
-	if _, err := cl.closeAgent(context.Background(), true, mirror.AgentCloseReq{Session: "other", Window: "@4"}); err != nil || len(b.pastes) != 1 {
+	if _, err := (&hostSide{c: cl, ctx: context.Background(), version: 2}).closeAgent(context.Background(), true, mirror.AgentCloseReq{Session: "other", Window: "@4"}); err != nil || len(b.pastes) != 1 {
 		t.Fatalf("control: %v, typed %v", err, b.pastes)
 	}
 }
