@@ -34,7 +34,9 @@ import (
 //     marker (agents owner_turn_*, migration 0069) names the chief's owner and
 //     the lane. Only the owner's two signed-in chat doors set it
 //     (runEnteredTurn, for handleAgentWS and handleAgentSend, when the typer IS
-//     the agent's owner), and only once ccd ACCEPTED the text — its 103 after
+//     the agent's owner) — never a line typed from a session's view
+//     (handleViewChief: typed, but no release from a view; ownerTurnTyper) —
+//     and only once ccd ACCEPTED the text — its 103 after
 //     the CLI's UserPromptSubmit for that very text, which names the lane
 //     (agents.MarkTurnAccepted). A text ccd refused never marks; the marker is
 //     cleared when muster's turn call returns, whatever it returns (a set still
@@ -82,7 +84,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // notTyped is runEnteredTurn's typedBy for a turn no person typed into muster's
-// chat: every caller but the owner's two chat doors.
+// chat: every caller but the owner's three chat doors (the chief chat's socket
+// and form POST, and a session view's chief door — whose typed line still
+// marks no owner turn: ownerTurnTyper).
 const notTyped int64 = 0
 
 // ownerTypedBy is the user who typed a chat message arriving on ctx's request:

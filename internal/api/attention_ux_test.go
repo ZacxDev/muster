@@ -308,9 +308,12 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		// only path that reaches it.
 		"AnswerInSession":  {{"AnswerInSession", ""}, {"askerAddressedBy", ""}},
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
-		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
-		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
-		"queue paste":      {{"sendQueueDeliver", "mirror.PasteClaude"}},
+		// The chief chat's form and socket only. 🔴 NOT the view's chief door
+		// (handleViewChief): a line typed from a session's view answers none of
+		// the chief's asks (operator decision, PR #537 round 1).
+		"askerAddressed":  {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
+		"mirrorAddressed": {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
+		"queue paste":     {{"sendQueueDeliver", "mirror.PasteClaude"}},
 	} {
 		got := calls[name]
 		slices.SortFunc(got, func(a, b site) int { return strings.Compare(a.caller, b.caller) })

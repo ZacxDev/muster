@@ -414,6 +414,11 @@ func (s *Server) agentTools() []agentTool {
 		// doing now, transcripts included. Chief-only and on MCP for the focus
 		// tools' reasons; it reads the owner's whole fleet.
 		tools = append(tools, agentTool{def: sessionsOverviewToolDef(), mcp: true, chiefOnly: true})
+		// session_context (session_context.go): one mirrored session in detail,
+		// with a tail long enough to hold a kickoff — the session the owner asked
+		// about from its view (view_chief.go). Chief-only and on MCP for the
+		// overview's reasons; read-only.
+		tools = append(tools, agentTool{def: sessionContextToolDef(), mcp: true, chiefOnly: true})
 		// fleet_report (fleet_report.go): every session with focus activity in
 		// a window, ended ones included. Chief-only and on MCP for the same
 		// reasons; it reads the owner's whole fleet.
@@ -936,6 +941,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFocusSearch(ctx, arguments)
 	case sessionsOverviewToolName:
 		return s.toolSessionsOverview(ctx, a, arguments)
+	case sessionContextToolName:
+		return s.toolSessionContext(ctx, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
 	case routeToSessionToolName:

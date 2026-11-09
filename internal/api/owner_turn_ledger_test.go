@@ -63,7 +63,9 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		// because every WithTurnAccepted is, so a new one is looked at.
 		"internal/api/officers.go (*Server).OfficerTurnContext → WithTurnAccepted(ctx)",
 		// The one caller of markOwnerTurn: the turn's own user row, its typer.
-		"internal/api/agents.go (*Server).runEnteredTurn → markOwnerTurn(typedBy)",
+		// 🔴 Through ownerTurnTyper: a line with a subject (the view's chief
+		// door) marks NOTHING — no owner release from a view (PR #537 round 1).
+		"internal/api/agents.go (*Server).runEnteredTurn → markOwnerTurn(ownerTurnTyper(typedBy, about))",
 		// Who passes what into the turn.
 		"internal/api/agents.go (*Server).handleAgentWS → runEnteredTurn(ownerTypedBy(ctx))",
 		"internal/api/agents.go (*Server).runUserTurn → runEnteredTurn(notTyped)",
@@ -71,7 +73,13 @@ func TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn(t *testing.T) {
 		"internal/api/agent_send.go (*Server).handleAgentSend → startAgentTurn(ownerTypedBy(ctx))",
 		"internal/api/chief_nudge.go (*Server).sendNudgeTurn → startAgentTurn(notTyped)",
 		"internal/api/ext.go (*Server).UseExtensions → startAgentTurn(notTyped)",
-		// ownerTypedBy is called by the two doors and nothing else.
+		// The view's chief mode (view_chief.go): the owner's THIRD chat door. It
+		// reads ownerTypedBy(ctx) once, refuses anything but a signed-in browser
+		// with it (typer <= 0), and passes that same value on — recorded as
+		// typed, but its subject makes runEnteredTurn mark no owner turn.
+		"internal/api/view_chief.go (*Server).handleViewChief → ownerTypedBy(ctx)",
+		"internal/api/view_chief.go (*Server).handleViewChief → startAgentTurn(typer)",
+		// ownerTypedBy is called by the three doors and nothing else.
 		"internal/api/agents.go (*Server).handleAgentWS → ownerTypedBy(ctx)",
 		"internal/api/agent_send.go (*Server).handleAgentSend → ownerTypedBy(ctx)",
 		// The SQL: set, clear, read.

@@ -34,7 +34,7 @@ var (
 		// with no gate, so first in the registry.
 		"ask_owner",
 		"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
-		"fleet_list", "focus_search", "sessions_overview", "fleet_report",
+		"fleet_list", "focus_search", "sessions_overview", "session_context", "fleet_report",
 		// The attention queue (attention_tools.go): every agent asks and works the
 		// owner's tasks; the chief alone lists the queue.
 		"attention_ask", "attention_wait", "attention_cancel",
@@ -57,7 +57,7 @@ var (
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
 	chiefOnlyLedger = []string{"ask_owner", "task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
-		"sessions_overview", "fleet_report", "attention_list", "answer_session_question"}
+		"sessions_overview", "session_context", "fleet_report", "attention_list", "answer_session_question"}
 )
 
 // without returns list minus the names in drop, in order.

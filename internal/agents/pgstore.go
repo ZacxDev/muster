@@ -973,10 +973,10 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 		m.Kind = "text"
 	}
 	stored, err := scanChatMessage(s.pool.QueryRow(ctx, `
-		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by, plugin_message_id)
-		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO chat_messages (agent_id, owner_id, session_id, role, content, kind, tool_id, tool_name, tool_ok, typed_by, plugin_message_id, about)
+		VALUES ($1, `+ownerOfAgent+`, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING `+chatMessageCols,
-		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m), pluginMessageArg(m)))
+		m.AgentID, m.SessionID, m.Role, m.Content, m.Kind, m.ToolID, m.ToolName, m.ToolOK, typedByArg(m), pluginMessageArg(m), aboutArg(m)))
 	if err != nil {
 		return m, err
 	}
@@ -1014,7 +1014,7 @@ func (s *PGStore) AddChatMessage(ctx context.Context, m ChatMessage) (ChatMessag
 // statement (an InitPlan), so a page of messages pays one key lookup. With no
 // 0096 row (never, after migrating) it is false: the text fallback is off.
 const chatMessageCols = `id, agent_id, coalesce(session_id, 0), role, content, kind, tool_id, tool_name, tool_ok, created_at, coalesce(typed_by, 0), coalesce(plugin_message_id, 0), ` +
-	`coalesce(created_at < (SELECT applied_at FROM schema_migrations WHERE version = ` + relayLinkMigrationVersion + `), false)`
+	`coalesce(created_at < (SELECT applied_at FROM schema_migrations WHERE version = ` + relayLinkMigrationVersion + `), false), coalesce(about, '')`
 
 // relayLinkMigrationVersion is the migration that added
 // chat_messages.plugin_message_id (0096_chat_plugin_message.sql). 🔴 RENUMBER IT
@@ -1025,8 +1025,18 @@ const relayLinkMigrationVersion = "96"
 // scanChatMessage scans one row of chatMessageCols.
 func scanChatMessage(row pgx.Row) (ChatMessage, error) {
 	var m ChatMessage
-	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID, &m.WrittenBeforeRelayLink)
+	err := row.Scan(&m.ID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.Kind, &m.ToolID, &m.ToolName, &m.ToolOK, &m.CreatedAt, &m.TypedBy, &m.PluginMessageID, &m.WrittenBeforeRelayLink, &m.AboutKey)
 	return m, err
+}
+
+// aboutArg is m's about (migration 0098): NULL unless m is a USER row with a
+// subject's key (only runEnteredTurn sets one, from the view's chief door).
+// 🔴 An assistant row is never about anything the owner was viewing.
+func aboutArg(m ChatMessage) any {
+	if m.AboutKey == "" || m.Role != "user" {
+		return nil
+	}
+	return m.AboutKey
 }
 
 // pluginMessageArg is m's plugin_message_id: NULL unless m is a USER row

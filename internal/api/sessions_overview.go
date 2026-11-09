@@ -86,7 +86,7 @@ var overviewBudget = 12 * time.Second
 
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
-		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code windows active in the " +
+		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code and opencode windows active in the " +
 			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day), the distinct focus titles of " +
 			"the last 6 h with their times, anything it has waiting on your owner, and its last few user and assistant messages " +
 			"(secrets redacted, tool output left out). Use it before filing a task or drafting a reply about ongoing work, to find " +
@@ -104,7 +104,10 @@ type liveSession struct {
 	sub              focus.Subject
 	kind, name, host string
 	// where is a mirrored session's window (mirror.Where), "" for an agent.
-	where    string
+	where string
+	// runtime is a mirrored session's non-Claude runtime ("opencode"), "" for
+	// Claude Code and for an agent.
+	runtime  string
 	status   string
 	activeAt time.Time
 }
@@ -138,12 +141,17 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 				name: fi.agentName(a).Text, status: status, activeAt: at})
 		}
 	}
+	// 🔴 EVERY MIRRORED CONVERSATION FOCUS CAN NAME, opencode's included
+	// (mirrorFocusEntries, keyed by SessionView.SessionKey). Listing a session is
+	// a read: whether muster can SEND to it is decided where it sends
+	// (mirrorClaudeEntries: routing, the queue), not here.
 	seen := map[string]bool{}
-	for _, e := range s.mirrorClaudeEntries(ctx) {
-		if seen[e.ClaudeSession] {
+	for _, e := range s.mirrorFocusEntries(ctx) {
+		key := e.SessionKey()
+		if seen[key] {
 			continue
 		}
-		seen[e.ClaudeSession] = true
+		seen[key] = true
 		at := e.ActiveAt()
 		if !at.IsZero() && at.Before(cutoff) {
 			continue
@@ -152,10 +160,31 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 		if status == "" {
 			status = "unknown"
 		}
-		out = append(out, liveSession{sub: focus.MirrorSubject(e.ClaudeSession), kind: "mirror", name: fi.mirrorName(e).Text,
-			host: e.Host, where: e.Where(), status: status, activeAt: at})
+		ls := liveSession{sub: focus.MirrorSubject(key), kind: "mirror", name: fi.mirrorName(e).Text,
+			host: e.Host, where: e.Where(), status: status, activeAt: at}
+		if rt, ok := e.Spec(); ok {
+			ls.runtime = rt.Name
+		}
+		out = append(out, ls)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].activeAt.After(out[j].activeAt) })
+	return out
+}
+
+// hintableSessions is sessions minus the mirrored windows of a runtime other
+// than Claude Code (opencode). 🔴 A HINT IS AN OFFER TO ROUTE: the plugin
+// session hint names sessions the chief may hand a message to with
+// route_to_session, which takes Claude Code windows only (mirrorClaudeEntries).
+// sessions_overview still LISTS them (a read); the hint does not suggest them
+// (PR #537 round 1).
+func hintableSessions(sessions []liveSession) []liveSession {
+	out := sessions[:0:0]
+	for _, ls := range sessions {
+		if ls.sub.Kind == focus.KindMirror && ls.runtime != "" {
+			continue
+		}
+		out = append(out, ls)
+	}
 	return out
 }
 
@@ -201,7 +230,7 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR)
 		return h
 	}
-	live := s.liveSessions(ctx, chief.ID)
+	live := hintableSessions(s.liveSessions(ctx, chief.ID))
 	if len(bound) > 0 {
 		kept := live[:0:0]
 		for _, ls := range live {
@@ -459,8 +488,11 @@ type overviewLine struct {
 }
 
 type overviewSession struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// Runtime is a mirrored session's runtime when it is not Claude Code
+	// ("opencode"); absent for Claude Code and for an agent.
+	Runtime  string `json:"runtime,omitempty"`
 	Name     string `json:"name"`
 	Host     string `json:"host,omitempty"`
 	Where    string `json:"where,omitempty"` // fleetListRow.Where
@@ -507,7 +539,7 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	size := len(toolJSON(res)) + len(`,"sessions":[]`)
 	out := []overviewSession{}
 	for i, ls := range live {
-		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Name: ls.name, Host: ls.host, Where: ls.where, Status: ls.status,
+		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Runtime: ls.runtime, Name: ls.name, Host: ls.host, Where: ls.where, Status: ls.status,
 			Focus: fi[ls.sub].Title, focusAgeFields: fi.ageFields(ls.sub, now), Attention: pending[ls.sub], Transcript: tails[i]}
 		if !ls.activeAt.IsZero() {
 			row.ActiveAt = ls.activeAt.UTC().Format(time.RFC3339)

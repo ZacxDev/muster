@@ -210,6 +210,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/send",
 		"GET /mirror/terminal/send",
 		"POST /mirror/confirm-send",
+		// The view's chief mode (view_chief.go): the owner's line, a send that
+		// came back as a GET, and the chief strip — the session tier only.
+		"POST /mirror/view/chief",
+		"GET /mirror/view/chief",
+		"GET /mirror/view/chief/log",
 		// AskUserQuestion: the live region and the answers (mirror_ask.go).
 		"GET /mirror/view/asks",
 		"POST /mirror/view/ask",

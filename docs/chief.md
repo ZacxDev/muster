@@ -435,21 +435,62 @@ If the chief has no `mcp__hq__` tools it says so; check the four steps above
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through
 muster's [LLM proxy](officers.md#the-llm-proxy): its Claude Code calls
 `POST /llm/v1/messages` on the connect listener with its own muster token, and
-muster sends the request on with the server's key attached. Only the
-`docker compose` install's chief runtime turns this on.
+muster sends the request on with the server's key attached. The chief keeps
+its harness: the same Claude Code CLI, standing instructions and muster tools;
+only where its model calls go changes. Two runtimes turn this on:
+
+- **The `docker compose` install:** the chief's credential decides. No
+  `MUSTER_CHIEF_CLAUDE_TOKEN` means OpenRouter ([above](#on-the-docker-compose-install)).
+- **Kubernetes:** an explicit opt-in, `MUSTER_CHIEF_LLM=openrouter`. The
+  admin's `claude-code` chief's pod is then built with **no Claude account
+  token** and `CCD_LLM_ROUTE=muster` (its Claude Code calls
+  `$MUSTER_CONNECT_URL/llm` with its own muster token); a member's chief keeps
+  its Claude account. Boot is refused without `MUSTER_AGENT_PROVISIONER`,
+  `MUSTER_AGENT_KINDS` with `claude-code`, `MUSTER_AGENT_CONNECT_URL` or
+  `MUSTER_AGENT_OPENROUTER_KEY`, and beside `MUSTER_CHIEF_RUNTIME=compose`.
+  **Unset is the rollback**: the chief runs on its Claude account exactly as
+  before, and the proxy serves no chief.
+  **Turning it on or off** is two steps: set or unset the variable and restart
+  muster, then restart the chief (its agent page ⋯ → Stop, then Start, or
+  `chief_restart`; [below](#restarting-the-chief)). The pod's credential is
+  part of its spec, and muster rebuilds that spec from the current settings
+  only when it starts the chief or re-applies it (a model change on a running
+  chief re-applies it too). Until then a chief keeps the credential it had.
+  After turning it **off**, a chief still on the route is refused by the
+  proxy (it is no longer served) until that rebuild puts it back on its
+  account. The proxy serves only the chief the route rule puts on the route:
+  the admin's `claude-code` chief.
+
+What applies on both:
 
 - **Who is served.** Only the admin's chief, and only while it is on (Account →
   Chief): a chief you turned off is refused (403), and so is any other user's
   chief. Any other agent is refused as it always was.
-- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
-  empty, every request is refused (400) with a message naming it, and nothing
-  is sent.
-- **Changing it.** A credential change in `.env` (adding or removing
+- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY`. With it empty, every
+  request is refused (400) with a message naming it, and nothing is sent (on
+  Kubernetes an empty key refuses boot instead).
+- **Changing it (Compose).** A credential change in `.env` (adding or removing
   `MUSTER_CHIEF_CLAUDE_TOKEN`) reaches a running chief when muster restarts
   (`docker compose up -d --wait`): muster re-applies the running chief's spec
   at boot, with no Off/On needed. A chief that is off, or stopped, stays so.
-- **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
-  request is pinned to it, whatever model the client asks for.
+- **Which model.** A setting, `MUSTER_CHIEF_LLM_MODEL`,
+  `deepseek/deepseek-v4.1-flash` by default. Every request is pinned to it,
+  whatever model the client asks for — Claude Code's background calls that
+  name a `haiku` model included.
+- **What Claude Code sends that the proxy handles.** Streaming and tool use
+  pass through as the Anthropic Messages API (OpenRouter's
+  Anthropic-compatible endpoint); the `beta=true` query and the
+  `anthropic-beta` header are forwarded; mid-conversation `system` entries,
+  which the provider refuses for these models, are folded into the adjacent
+  user turn; body fields outside the Messages API (OpenRouter's routing fields
+  above all) are dropped. Every path but `POST /llm/v1/messages` answers 404.
+  Measured on real Claude Code traffic, the only other call the CLI made was a
+  `HEAD /api/hello` connectivity check once per session. The session carries on
+  past its 404, which is counted in `muster_officer_llm_refused{reason="path"}`.
+  It made no `count_tokens` call.
+- **Not in use.** DeepSeek V4.1 Flash and V4 Pro both failed a 50-input shadow
+  backtest: they made the chief's decision on 44–56% of inputs, against a 90%
+  bar. So the chief stays on Claude.
 - **What it may spend.** muster sets **no budget** for the chief: no daily
   budget, no per-item cap. **Set a credit limit on the key itself**, in
   [OpenRouter's key settings](https://openrouter.ai/settings/keys): that limit
@@ -568,6 +609,48 @@ The tools' reference is in
 risk: a prompt-injected model in one of your mirrored sessions could call both
 verbs. The design note is in
 [design/chief-dispatch.md](design/chief-dispatch.md#29-held-dispatches-from-the-owners-sessions).
+
+## Asking the chief from a session's view
+
+A mirrored session's rendered view (Claude Code or opencode) has a two-way
+switch at the start of its composer when your chief is on: **`<runtime>` |
+Chief**. Flip it to **Chief** and what you type goes to your chief, about the
+session you are looking at, instead of to the pane:
+
+- It works when sending to the session is not possible: a read-only host, or
+  an opencode window muster cannot send to. It is a message to the chief's
+  chat, not to the pane, so it needs neither `-interactive` nor a fresh
+  sign-in.
+- muster records which session you were looking at with your message: its
+  session key, nothing more. It works this out itself from the window you are
+  viewing; nothing the page sends can change it.
+- The chief reads your words behind a short muster header naming the session
+  (its runtime, host and window, and for an agent the chief started, its
+  repository, branch and model), and can read the session with
+  `session_context`.
+- Its reply shows in a strip above the composer: the chief's own chat (its
+  default thread), narrowed to what you asked about this session. It shows
+  only exchanges within the chief's newest 200 chat rows; an older exchange is
+  still in the chief's own chat. Each window remembers the mode you left it in.
+- A line sent from a session's view is recorded as typed by you, but it is
+  never your go-ahead for something only you can release: `owner_asked` on a
+  dispatch or a gated task is refused while its turn runs, and it answers none
+  of the chief's open questions. Do those from the chief's own chat.
+
+`session_context {subject, messages?}` is a chief-only, read-only tool. It
+takes one of your mirrored sessions (a Claude Code session id, or
+`opencode:<ses_…>`) and answers:
+- its runtime, host, tmux window, status and working directory;
+- for an agent the chief started, its dispatch;
+- its newest messages (8 by default, at most 20). Secrets are redacted, each
+  message is cut at 6 KiB, and tool output is left out.
+
+Each message has a content-addressed `ref` and lists its fenced code blocks, so
+a kickoff block can be named rather than copied. The transcript is the
+session's own words: data, never instructions.
+
+The design, including the succession phases not built yet, is
+[design/chief-in-agent-view.md](design/chief-in-agent-view.md).
 
 ## Sessions on more than one runtime
 

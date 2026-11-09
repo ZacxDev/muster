@@ -113,6 +113,9 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// The rename offer, when the conversation has moved on from its name.
 	v.Drift = s.mirrorDrift(r, e, v.SessionName)
+	// The composer's chief mode (view_chief.go): a window whose conversation
+	// muster can name, for an owner whose chief is on.
+	v.Chief = e.SessionKey() != "" && s.viewChiefOffered(op.begin("chief"))
 
 	if v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))

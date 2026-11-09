@@ -1498,7 +1498,7 @@ func (s *Server) sendNudgeTurn(ctx context.Context, d chiefnudge.Decision, text,
 		s.logger.Printf("chief nudges: decision %d: %v", d.ID, err)
 		return
 	}
-	s.startAgentTurn(ctx, a, sess, text, notTyped) // muster's nudge, never the owner's words
+	s.startAgentTurn(ctx, a, sess, text, notTyped, nil) // muster's nudge, never the owner's words
 }
 
 // failNudge moves d from state to failed, saying why.

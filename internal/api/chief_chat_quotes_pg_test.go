@@ -206,7 +206,7 @@ func TestANonOwnerChiefChatTurnNeverCounts(t *testing.T) {
 			if !f.srv.turns.enter(f.boss.ID) {
 				t.Fatal("the chief's turn gate is held")
 			}
-			f.srv.startAgentTurn(ctx, f.boss, f.chiefSession(t), text, notTyped)
+			f.srv.startAgentTurn(ctx, f.boss, f.chiefSession(t), text, notTyped, nil)
 			waitFor(t, func() bool { _, turns := f.gw.seen(); return len(turns) > 0 })
 			f.chiefIdle(t)
 		}},

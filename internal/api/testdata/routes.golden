@@ -109,6 +109,8 @@ GET /mirror/terminal/send
 GET /mirror/terminal/ws
 GET /mirror/view
 GET /mirror/view/asks
+GET /mirror/view/chief
+GET /mirror/view/chief/log
 GET /mirror/view/complete
 GET /mirror/view/send
 GET /mirror/view/subagent
@@ -244,6 +246,7 @@ POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask
 POST /mirror/view/ask/cancel
+POST /mirror/view/chief
 POST /mirror/view/send
 POST /mirror/view/suggest/event
 POST /plugin/v1/drafts/claim
