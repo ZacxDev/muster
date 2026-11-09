@@ -20,7 +20,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -1828,6 +1827,10 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
+		// The page drew the message as plain text the moment it sent it; this is
+		// its html (agentChatScript's 'sent'), sent for every message read, so the
+		// page's queue of waiting bubbles and these echoes stay one to one.
+		_ = wsWriteJSON(ctx, c, wsSentEcho(in.Text))
 		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
 		// message the gate refuses (the agent is being replaced) starts no turn,
 		// so it must not answer the agent's asks either.
@@ -1850,8 +1853,11 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// INVARIANT guard: it goes red for a turn tied to the socket's lifetime
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
-		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), wsStreamEmit(ctx, c, s, a.Name), nil)
+		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
+		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
 		s.turns.leave(a.ID)
+		// The reply's last bubble is drawn rendered before the turn's end is said.
+		stream.end()
 		if err != nil {
 			tcancel()
 			_ = wsWriteJSON(ctx, c, wsTurnError(err, in.Text))
@@ -2148,9 +2154,11 @@ func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKe
 }
 
 // wsStreamEmit builds an agents.StreamEmit that translates each StreamEvent into
-// the exact WS JSON message the chat client is built to consume. This is the
+// the exact WS JSON message the chat client is built to consume (wsChatStream,
+// chat_stream.go, which also renders the reply's markdown). This is the
 // server→browser half of the streaming bridge; it serves BOTH the worker and the
-// operator chat (they share the WS path).
+// operator chat (they share the WS path). The returned stream's end must be
+// called when the turn is over, before its "done" or "error".
 //
 // As a side effect it updates the server's active-agent registry so the
 // notification panel's ACTIVE section reflects the live phase: a text delta means
@@ -2158,8 +2166,9 @@ func (s *Server) runTurnWithTools(ctx context.Context, a agents.Agent, sessionKe
 // is responsible for the start ("thinking" on turn start) and the clear
 // (markAgentIdle on turn end). srv may be nil (tests / paths without a server),
 // in which case only the WS translation happens.
-func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) agents.StreamEmit {
+func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) (agents.StreamEmit, *wsChatStream) {
 	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
+	st := newWSChatStream(wsWriter(ctx, c))
 	return func(ev agents.StreamEvent) {
 		if srv != nil {
 			switch ev.Kind {
@@ -2169,25 +2178,8 @@ func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName
 				srv.markAgentActive(owner, agentName, "thinking")
 			}
 		}
-		switch ev.Kind {
-		case "text":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "delta", "content": ev.Text})
-		case "thinking":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "thinking", "content": ev.Text})
-		case "tool_call":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_call", "id": ev.ToolID, "name": ev.ToolName, "args": ev.ToolArgs,
-				"target": cctranscript.ToolTarget(ev.ToolName, ev.ToolArgs)})
-		case "tool_result":
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "tool_result", "id": ev.ToolID, "name": ev.ToolName, "ok": ev.ToolOK, "output": ev.ToolOutput})
-		case "queued":
-			// The message waits for the session's turn in flight (chat_busy.go):
-			// the page says so in place of "working".
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "queued", "content": ev.Text})
-		case "accepted":
-			// The runtime took a message that was queued: "working" again.
-			_ = wsWriteJSON(ctx, c, map[string]any{"type": "accepted"})
-		}
-	}
+		st.emit(ev)
+	}, st
 }
 
 func wsWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {

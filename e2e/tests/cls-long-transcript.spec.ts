@@ -206,7 +206,7 @@ test.describe('a 200-message agent transcript', () => {
               const r = await readMoved(page);
               // What was measured is the drawn transcript, opened at its end.
               await expect(page.locator('#chat-log [data-bubble]')).toHaveCount(CAP);
-              await expect(page.locator('#chat-log [data-md-done]'), 'every bubble was converted').toHaveCount(CAP);
+              await expect(page.locator('#chat-log [data-md-rendered]'), 'every bubble was drawn rendered by the server').toHaveCount(CAP);
               expect(await atEnd(page, '#chat-log'), 'the log opened at its end').toBe(true);
               seen.push(moved(r));
               if (moved(r) >= BAR || foreignShifts(r).length) bad.push(report(`run ${i + 1}`, r));
@@ -224,14 +224,14 @@ test.describe('a 200-message agent transcript', () => {
     // unanswered, so the document parses and paints with DOMContentLoaded (and
     // start()) still waiting on them — the window the defect painted in. In it,
     // the transcript must already be in its final layout: every bubble
-    // converted, the log at its end (with #chat-form, parsed after the layout
+    // rendered, the log at its end (with #chat-form, parsed after the layout
     // call, under it), and nothing moved. Then the scripts are let through, and
     // the whole open still moves less than the bar.
     for (const kind of ['markdown', 'plain'] as const) {
       test(`${vp.name}, ${kind}: before the deferred scripts arrive, the transcript is already laid out`, async ({ browser }) => {
         const { ctx, page, started } = await heldOpen(browser, vp.use, `/agents/${agents[kind]}`);
         try {
-          await expect(page.locator('#chat-log [data-md-done]'), 'every bubble converted before start()').toHaveCount(CAP);
+          await expect(page.locator('#chat-log [data-md-rendered]'), 'every bubble rendered before start()').toHaveCount(CAP);
           expect(await atEnd(page, '#chat-log'), 'the log is at its end before start()').toBe(true);
           const before = await readMoved(page);
           await started();
@@ -348,7 +348,7 @@ test.describe('a 200-message agent transcript', () => {
         const held = await page.evaluate(() => (window as any).__heldFrames || 0);
         console.log(`[cls-long ${vp.name}] stalled ${stall.label}: ${moved(r)} (${held} frames held)`);
         expect(held, `control: frames were painted in the held state (${stall.held ?? BUBBLES_DRAWN}), stalled ${stall.label}`).toBeGreaterThan(0);
-        await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
+        await expect(page.locator('#chat-log [data-md-rendered]')).toHaveCount(CAP);
         expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
         expect(moved(r), report(`stalled ${stall.label}`, r)).toBeLessThan(BAR);
         expect(foreignShifts(r), report(`stalled ${stall.label}`, r)).toEqual([]);
@@ -368,7 +368,7 @@ test.describe('a 200-message agent transcript', () => {
         const { ctx, page } = await open(browser, vp.use, null, `/agents/${agents.markdown}`);
         try {
           await expect(page.locator('#session-switcher'), 'the switcher is drawn').toBeVisible();
-          await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
+          await expect(page.locator('#chat-log [data-md-rendered]')).toHaveCount(CAP);
           expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
           const r = await readMoved(page);
           seen.push(moved(r));
@@ -444,7 +444,7 @@ test.describe('a 200-message agent transcript', () => {
 
 // A BOOSTED ARRIVAL: from one long agent to another by an hx-boost link, so
 // the new body (and its scripts, and the layout call) is swapped in by htmx
-// rather than parsed. One composer, wired, every bubble converted, at the end,
+// rather than parsed. One composer, wired, every bubble rendered, at the end,
 // and no page error.
 test.describe('a boosted agent → agent arrival on a long transcript', () => {
   const from = `cls-long-from-${stamp}`;
@@ -481,7 +481,7 @@ test.describe('a boosted agent → agent arrival on a long transcript', () => {
     await expect(page.locator('#chat-form'), 'one composer').toHaveCount(1);
     await expect(page.locator('#chat-form[data-cg-chat]'), 'wired by start()').toHaveCount(1);
     await expect(page.locator('#chat-log [data-bubble]')).toHaveCount(CAP);
-    await expect(page.locator('#chat-log [data-md-done]'), 'every bubble converted').toHaveCount(CAP);
+    await expect(page.locator('#chat-log [data-md-rendered]'), 'every bubble rendered').toHaveCount(CAP);
     expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
     expect(errors, 'no page error').toEqual([]);
   });

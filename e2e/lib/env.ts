@@ -352,13 +352,20 @@ export const chiefFoldInPort = port + 345;
 // whose opencode server is a fake in its own process, and that fake runtime.
 export const chiefInViewPort = port + 350;
 export const chiefInViewFakePort = port + 351;
+// tests/agent-chat-markdown.spec.ts: the agent chat's messages drawn by the
+// server's one markdown renderer, live and stored — its own server (the
+// e2eterm build, every agent endpoint pointed at the spec's FAKE runtime) and
+// that runtime. (+355: chief-in-view took +350/+351 on main.)
+export const chatMarkdownPort = port + 355;
+export const chatMarkdownRuntimePort = port + 356;
 // tests/chief-succession.spec.ts: a succession from a session's view (phase 2)
 // — its own mirror rig (as chief-in-view's, with task routing and the chief's
 // dispatch on), one fake host whose agent spawn is played, the spec's FAKE
-// runtime (the scripted chief) and its fake GitHub App.
-export const chiefSuccessionPort = port + 355;
-export const chiefSuccessionFakePort = port + 356;
-export const chiefSuccessionGitHubPort = port + 357;
+// runtime (the scripted chief) and its fake GitHub App. (+362: agent-chat-
+// markdown took +355/+356 on main.)
+export const chiefSuccessionPort = port + 362;
+export const chiefSuccessionFakePort = port + 363;
+export const chiefSuccessionGitHubPort = port + 364;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
