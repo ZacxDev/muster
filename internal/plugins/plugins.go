@@ -114,6 +114,36 @@ type Plugin struct {
 	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
 	ChiefAgentID   *int64     `json:"-"`
 	ChiefSessionID *int64     `json:"-"`
+	// Capabilities is what the token may open (migration 0102). A route names
+	// the one it needs, and requirePluginToken (internal/api) refuses a token
+	// without it. Every token minted before 0102 has CapMessages.
+	Capabilities []Capability `json:"capabilities"`
+	// OwnerLogin is how the owner's account is named to a person: its email,
+	// or its display name when it has none (the admin Users page's spelling).
+	// Set by Authenticate only, for GET /plugin/v1/self.
+	OwnerLogin string `json:"-"`
+}
+
+// Capability is one thing a plugin token may open (plugins.capabilities).
+type Capability string
+
+const (
+	// CapMessages opens every /plugin/v1/* route a plugin token opened before
+	// capabilities existed: messages, drafts, tasks and task writes.
+	CapMessages Capability = "messages"
+	// CapViewer opens the viewer seams (docs/design/previews.md). No route
+	// takes it yet.
+	CapViewer Capability = "viewer"
+)
+
+// Has reports whether p's token carries c.
+func (p Plugin) Has(c Capability) bool {
+	for _, have := range p.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // MessageIn is one inbound message as a plugin POSTs it.

@@ -140,12 +140,18 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities`
+
+// pluginDest is the scan destinations for pluginCols, in its order. THE ONE
+// COPY, as messageDest: every reader of pluginCols scans through it.
+func pluginDest(p *Plugin) []any {
+	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities}
+}
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
 	var p Plugin
-	err := row.Scan(&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID)
+	err := row.Scan(pluginDest(&p)...)
 	return p, err
 }
 
@@ -285,12 +291,14 @@ func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error
 	if !TokenShapeOK(token) {
 		return Plugin{}, ErrBadToken
 	}
-	p, err := scanPlugin(s.pool.QueryRow(ctx, `
+	var p Plugin
+	err := s.pool.QueryRow(ctx, `
 		UPDATE plugins p SET last_seen_at = now()
 		  FROM users u
 		 WHERE p.token_hash = $1 AND p.revoked_at IS NULL
 		   AND u.id = p.owner_id AND u.disabled_at IS NULL
-		RETURNING `+prefixed("p", pluginCols), HashToken(token)))
+		RETURNING `+prefixed("p", pluginCols)+`, coalesce(nullif(u.email, ''), u.display_name)`, HashToken(token)).
+		Scan(append(pluginDest(&p), &p.OwnerLogin)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Plugin{}, ErrBadToken
 	}
