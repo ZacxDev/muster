@@ -43,7 +43,9 @@ func TestTheEndCardNamesExactlyWhichWindow(t *testing.T) {
 	if _, id := f.proposeEnd(t, sxOpenCodeKey); id <= 0 {
 		t.Fatal("the opencode session was not proposed")
 	}
-	f.ownerTurn(t, f.chief, f.owner, "close the Claude session on host-echo")
+	// Typed in the chief's own chat, AFTER the view line (typed by the owner,
+	// as runEnteredTurn records it): the newest owner line names the session.
+	f.ownerChatLine(t, "close the Claude session on host-echo")
 	if _, id := f.proposeEnd(t, sxClaudeKey); id <= 0 {
 		t.Fatal("the Claude session was not proposed")
 	}

@@ -36,6 +36,11 @@ const VIEWS = {
   phone: { sid: 'ses_0e2eendphone1a2b3c4', win: '@2', title: 'Retire the old fixture loader' },
   desktop: { sid: 'ses_0e2eenddesk1a2b3c45', win: '@3', title: 'Retire the old widget parser' },
 };
+// The update pill's windows, one per viewport: their card is left open.
+const PILL = {
+  phone: { sid: 'ses_0e2epillphone1a2b3c', win: '@6', title: 'Retire the old pill fixture' },
+  desktop: { sid: 'ses_0e2epilldesk1a2b3c4', win: '@7', title: 'Retire the old pill parser' },
+};
 // The Claude Code windows, one per viewport, each at a permission prompt.
 const CLAUDE = {
   phone: { session: 'e2e-endcc-phone-' + stamp, win: '@4' },
@@ -126,7 +131,7 @@ test.beforeAll(async ({ browser }) => {
   const dir = fs.mkdtempSync(path.join(rig.dir, 'opencode-'));
   const ops = path.join(dir, 'ops.jsonl');
   let n = 0;
-  for (const v of Object.values(VIEWS)) {
+  for (const v of [...Object.values(VIEWS), ...Object.values(PILL)]) {
     n++;
     for (const l of [
       { op: 'session', id: v.sid, title: v.title },
@@ -168,7 +173,7 @@ test.beforeAll(async ({ browser }) => {
   }
   writeFileAtomic(windows, lines);
   const ocWindows = path.join(rig.dir, 'opencode-windows');
-  writeFileAtomic(ocWindows, Object.values(VIEWS).map((v, i) => `oc|${v.win}|${i}|${i === 0 ? 1 : 0}|${t0 - 10}|OC | ${v.title}`).join('\n') + '\n');
+  writeFileAtomic(ocWindows, [...Object.values(VIEWS), ...Object.values(PILL)].map((v, i) => `oc|${v.win}|${i}|${i === 0 ? 1 : 0}|${t0 - 10}|OC | ${v.title}`).join('\n') + '\n');
   await rig.startHost({
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
     MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE: ocWindows,
@@ -296,6 +301,66 @@ for (const vp of [
       // 🔴 NOTHING TYPED: the fake records every key the checked paste types.
       expect(fs.existsSync(tr + '.typed'), 'nothing was typed into the Claude pane').toBe(false);
       await page.screenshot({ path: info.outputPath(`end-cc-prompt-${vp.key}.png`) });
+    });
+
+    // 🔴 REGRESSION TEST: the "Updated · Reload" pill sat on the card (a
+    // succession's kickoff, an end card's subtitle) at phone width. ⚠ WHAT IS
+    // PLAYED: the pill's SHOW — a real one needs a second build's worker
+    // waiting — so the test un-hides it as pwa.js does and lets pwa.js place
+    // it (its own resize and 'muster:layout' paths, placeToast). The card, its
+    // arrival by the view's own fetch and the placement are muster's.
+    test('the update pill never covers the proposal card — as the card arrives, and on a reload that draws it', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      const v = PILL[vp.key];
+      const view = rig.origin + `${rig.viewPath('oc')}&window=${encodeURIComponent(v.win)}`;
+      const pill = page.locator('#sw-update-toast');
+      const card = page.locator('#mv-proposal-card[data-proposal-kind="end_session"]');
+      const show = () =>
+        page.evaluate(() => {
+          const t = document.getElementById('sw-update-toast');
+          if (t) t.hidden = false;
+          window.dispatchEvent(new Event('resize'));
+        });
+      const clear = async (when: string) => {
+        await expect(pill).toBeVisible();
+        const p = (await pill.boundingBox())!;
+        const c = (await card.boundingBox())!;
+        // On a phone the pill is in the card's column (so it had to move to
+        // clear it: the case that was reported); everywhere, on screen.
+        if (vp.key === 'phone') {
+          expect(p.x + p.width > c.x && p.x < c.x + c.width, `${when}: the pill ${JSON.stringify(p)} is in the card's column ${JSON.stringify(c)}`).toBe(true);
+        }
+        expect(p.y >= 0 && p.y + p.height <= page.viewportSize()!.height, `${when}: the pill is on screen: ${JSON.stringify(p)}`).toBe(true);
+        const hit = p.x < c.x + c.width && c.x < p.x + p.width && p.y < c.y + c.height && c.y < p.y + p.height;
+        expect(hit, `${when}: the pill ${JSON.stringify(p)} covers the card ${JSON.stringify(c)}`).toBe(false);
+      };
+      await rig.login(page);
+      await page.goto(view);
+      await expect(page.locator('#mv-log')).toContainText('All done here.', { timeout: 20_000 });
+      await show();
+      await expect(pill).toBeVisible();
+
+      // The card arrives under the pill already shown.
+      await toChief(page);
+      const input = page.locator('#mv-input');
+      await expect(input).toBeEnabled();
+      await input.fill(`E2E-PILL-${vp.key}-${stamp}: close this agent session`);
+      await input.press('Enter');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect.poll(async () => {
+        const p = await pill.boundingBox();
+        const c = await card.boundingBox();
+        return !!p && !!c && !(p.x < c.x + c.width && c.x < p.x + p.width && p.y < c.y + c.height && c.y < p.y + p.height);
+      }, { timeout: 5_000, message: 'the pill moves off the card that arrived' }).toBe(true);
+      await clear('as the card arrived');
+      await page.screenshot({ path: info.outputPath(`pill-card-${vp.key}.png`) });
+
+      // A reload draws the card with the page; the pill is shown over it.
+      await page.goto(view);
+      await expect(card).toBeVisible({ timeout: 20_000 });
+      await show();
+      await clear('on a reload');
+      expect(rig.log).not.toContain('CLOSED oc:' + v.win);
     });
   });
 }

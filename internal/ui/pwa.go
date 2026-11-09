@@ -144,8 +144,16 @@ var pwaScriptSrc = staticJS("pwa", `
   // With no free spot anywhere, the spot covering the least is used. It runs
   // while the pill is laid out but invisible (visibility:hidden), BEFORE it is
   // shown, so the pill appears in its final place and nothing moves.
-  var CONTROLS = 'a[href], button, input, select, textarea, [role=button], [tabindex]';
-  // controlBoxes: the boxes of visible controls in the pill's column.
+  //
+  // 🔴 A PROPOSAL CARD IS AVOIDED WHOLE ([data-proposal], ui.ProposalCard), not
+  // only its buttons: its kickoff and its "what happens" lines ARE what the
+  // owner is deciding on, and the pill once sat on a succession card's
+  // kickoff and an end card's subtitle at phone width. The card arrives after
+  // the page settled (the view's own fetch, no htmx swap), so the view's
+  // script says so ('muster:layout') and a pill on it moves off.
+  var CONTROLS = 'a[href], button, input, select, textarea, [role=button], [tabindex], [data-proposal]';
+  // controlBoxes: the boxes of visible controls (and proposal cards) in the
+  // pill's column.
   function controlBoxes(t, pill) {
     var boxes = [];
     var all = document.querySelectorAll(CONTROLS);
@@ -224,6 +232,10 @@ var pwaScriptSrc = staticJS("pwa", `
   }
   document.addEventListener('htmx:afterSettle', replaceIfCovering);
   window.addEventListener('resize', replaceIfCovering);
+  // A region drawn by a page's own script (the view's proposal card), and a
+  // disclosure opened or closed (the card's kickoff), move what is under it.
+  document.addEventListener('muster:layout', replaceIfCovering);
+  document.addEventListener('toggle', replaceIfCovering, true);
   registered.then(function (reg) {
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
     // A boosted navigation swaps the body, and the toast with it: the new one

@@ -288,6 +288,9 @@ type Ask struct {
 	// AskedSession is the chat session key the chief asked an owner card in
 	// (New.AskedSession), "" for unknown.
 	AskedSession string `json:"-"`
+	// SubjectKey is the session the chief's ask was raised about (New.SubjectKey,
+	// migration 0103), "" for none.
+	SubjectKey string `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -355,6 +358,12 @@ type New struct {
 	// ("" for unknown), where its answer is delivered.
 	OwnerCard    bool
 	AskedSession string
+	// SubjectKey is the session key (chat_messages.about) of the owner's view
+	// line the chief was answering when it raised the ask (migration 0103), ""
+	// for none. Set ONLY by internal/api (chiefAskSubject), never from an
+	// asker's arguments: WithdrawAbout withdraws by it when the chief files a
+	// proposal about that session.
+	SubjectKey string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -496,6 +505,10 @@ type Store interface {
 	OpenForTask(ctx context.Context, taskID int64) ([]Ask, error)
 	// Cancel withdraws an open ask.
 	Cancel(ctx context.Context, id int64) (Ask, error)
+	// WithdrawAbout withdraws (Cancelled) every open, unexpired question agent
+	// agentID raised about session key (SubjectKey, migration 0103) — never
+	// ask except, and never an ask with no SubjectKey — and returns them.
+	WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
 	// (of its owner cards, only the oldest) before this statement began (created_at < statement_timestamp()), with
 	// message (capped at MaxAnswerRunes) as the answer and queueID (0 = none)
@@ -588,7 +601,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
-	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, '')`
+	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
+	coalesce(about_key, '')`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -598,7 +612,8 @@ func scan(row pgx.Row) (Ask, error) {
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
+		&a.SubjectKey); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -699,10 +714,10 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 		message = n.PluginMessageID
 	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession)))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey)))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -1064,6 +1079,22 @@ func (s *PGStore) RecoverDeliveries(ctx context.Context) ([]Ask, error) {
 func (s *PGStore) Cancel(ctx context.Context, id int64) (Ask, error) {
 	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'cancelled', resolved_at = now()
 		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id)
+}
+
+// WithdrawAbout runs under the caller's principal: row-level security keeps
+// it to the caller's own asks. 🔴 ONLY THE STRUCTURAL LINK: an ask is
+// withdrawn when agent agentID raised it (agent_id) about exactly key
+// (about_key, which only muster sets), never by what its question says; a
+// notice, a question to the chief and an ask with no about_key are never
+// touched.
+func (s *PGStore) WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]Ask, error) {
+	if agentID <= 0 || strings.TrimSpace(key) == "" {
+		return nil, nil
+	}
+	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'cancelled', resolved_at = now()
+		WHERE status = 'open' AND expires_at > now() AND kind = 'ask' AND NOT to_chief
+		  AND agent_id = $1 AND about_key = $2 AND id <> $3
+		RETURNING `+cols, agentID, key, except))
 }
 
 // AnswerInSession runs under the caller's principal, like Answer: row-level

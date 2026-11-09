@@ -903,8 +903,9 @@ func (s *Server) askLogWindowOf(ctx context.Context, host, cs string) (session, 
 // askLoggingAttention is the attention store with the ask log's capture: every
 // ask created (an ask, never a notice; never muster's own system asks — the
 // log is what AGENTS ask) and every path that moves one out of open — the
-// queue's answer, an answer from a session, the chief's, a cancel, an answer
-// in the session, the expiry sweep — is recorded from the rows the store
+// queue's answer, an answer from a session, the chief's, a cancel, a
+// withdrawal a proposal settled, an answer in the session, the expiry sweep —
+// is recorded from the rows the store
 // returns. Each call returns exactly what the store returned: the capture is
 // queued, never awaited, and its failure is only counted.
 type askLoggingAttention struct {
@@ -947,6 +948,14 @@ func (w askLoggingAttention) Cancel(ctx context.Context, id int64) (attention.As
 	a, err := w.Store.Cancel(ctx, id)
 	w.settled(a, err)
 	return a, err
+}
+
+func (w askLoggingAttention) WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]attention.Ask, error) {
+	as, err := w.Store.WithdrawAbout(ctx, agentID, key, except)
+	for _, a := range as {
+		w.settled(a, err)
+	}
+	return as, err
 }
 
 func (w askLoggingAttention) AnswerInSession(ctx context.Context, asker attention.Asker, message string, queueID int64) ([]attention.Ask, error) {
