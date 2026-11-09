@@ -565,8 +565,8 @@ it is [open question 9](#open-questions).
 
 | option | flow control | effect on terminals | new code | verdict |
 |---|---|---|---|---|
-| **A WebSocket to the gateway, carrying HTTP/2** | per stream (`WINDOW_UPDATE`) and per connection | none: a different connection, to a different process | `x/net/http2` (already in `go.mod`), `websocket.NetConn` (coder/websocket v1.8.14) | **recommended, subject to the spike** |
-| The same, carrying yamux | per stream | none | `hashicorp/yamux` (new, MPL-2.0) | the spike's fallback |
+| **A WebSocket to the gateway, carrying HTTP/2** | per stream (`WINDOW_UPDATE`) and per connection | none: a different connection, to a different process | `x/net/http2` (already in `go.mod`), `websocket.NetConn` (coder/websocket v1.8.14) | **chosen** (the spike's recommendation) |
+| The same, carrying yamux | per stream | none | `hashicorp/yamux` (new, MPL-2.0) | passed the spike too, but adds a dependency and measured no better |
 | One dial-back WebSocket per upstream connection | kernel TCP | none | small | second fallback; one TLS and WebSocket handshake per connection |
 | Preview frames on the existing mirror tunnel | none today | the `ErrOverrun` rule truncates; bulk delays keystrokes | — | ✗ and, as a plugin, ruled out: muster carries no preview bytes |
 
@@ -597,6 +597,43 @@ it is [open question 9](#open-questions).
 
 Both connections share the host's uplink, so a large download still competes
 with terminal bytes for bandwidth, though not for a TCP stream or a read loop.
+
+**The transport is HTTP/2 `CONNECT`**, on the phase-0 spike's recommendation
+([`docs/design/previews-spike.md`](https://github.com/ZacxDev/muster/blob/spike/preview-tunnel/docs/design/previews-spike.md), [PR #548](https://github.com/ZacxDev/muster/pull/548), at `3ab86932`): it met criteria (1)–(3) on
+loopback with no new dependency. yamux also passed them, but adds a dependency
+and measured no better.
+
+🔴 **Pinned invariant: connection window > `maxConns` × stream window.** The
+spike found that `x/net/http2`'s client returns **connection-level** flow
+credit only when a stream's body is read, so a paused reader keeps its whole
+stream window out of the connection window until it resumes. Once paused
+streams × stream window ≥ connection window, **every other stream on the
+tunnel stalls**: with an 8 MiB connection window and a 4 MiB stream window,
+1 paused reader left 62/62 assets and the echo working, and 3 paused readers
+left **0/62** assets complete and the echo WebSocket unable to open. That is
+the head-of-line failure the design rejected `ErrOverrun` for, returning by
+configuration. So the gateway's `http2.Transport` sets
+`MaxReceiveBufferPerConnection` above `maxConns × MaxReceiveBufferPerStream`.
+With the stream window at 4 MiB and this page's host caps:
+
+| `maxConns` | connection window must exceed | gateway memory held by paused streams, worst case per host |
+|---|---|---|
+| 64 (default) | 256 MiB | 256 MiB |
+| 256 (the cap) | 1 GiB, so `x/net`'s 1 GiB default is **not** enough | 1 GiB |
+
+The gateway creates the client connection before the host announces its own
+`maxConns`, so it sizes the window from the cap: (256 + 1) × 4 MiB = 1028 MiB.
+The host's `MaxConcurrentStreams` (its `maxConns`) is what keeps the number of
+paused streams within that bound. The memory column is a real cost of a large
+`maxConns`, paid only while readers are paused.
+
+**Still open from the spike:** criteria (1), (4) and (5) are **unverified on the
+real edge**. The spike ran on one host, on loopback, with a local edge
+simulator, because `musterchief.com` has no DNS records yet. Phase 1 stays
+gated on re-running them from a real host through the real Cloudflare → relay
+→ gateway path. Through that path, (1)'s cost is mostly the extra edge leg, not
+the transport. Whether Cloudflare counts WebSocket pings as activity, and
+whether it or the relay buffers SSE or WebSocket frames, are unknown.
 
 ### What the host checks before it dials
 
@@ -1062,6 +1099,10 @@ gateway in the cluster, 2–3 engineer-days. **Go** if all hold:
 5. A server-sent event written by the upstream reaches the browser within
    500 ms (the edge does not buffer).
 
+**Result** ([PR #548](https://github.com/ZacxDev/muster/pull/548)): HTTP/2 `CONNECT` is go on (1)–(3), with the
+[connection-window invariant](#the-host-tunnel); (1), (4) and (5) are not yet
+measured on the real edge, so phase 1 is still gated on them.
+
 **If (1)–(3) fail** with `x/net/http2`, repeat with yamux; go if it passes.
 **If (4) or (5) fail**, the edge path is the problem: no-go for that path, and
 the operator chooses another before phase 1 starts.
@@ -1117,6 +1158,16 @@ turn it **red**, and must be watched red before it counts.
 - **Streaming and WebSockets** pass (SSE first event before the upstream ends,
   red with buffering; HMR echo).
 - **Large responses are not truncated** (50 MB to a paused reader, byte-exact).
+- **Paused readers cannot stall the tunnel** (modelled on the spike's
+  `TestH2_PausedReadersExhaustConnWindow`): hold `maxConns` streams paused on
+  one host, with the gateway's real window settings, and require an unrelated
+  stream (an asset `GET` and an echo WebSocket) to complete. Negative control,
+  measured by the spike: an 8 MiB connection window with a 4 MiB stream window
+  and 3 paused readers leaves 0/62 assets complete and the echo unable to
+  connect, so the test must go red with that configuration; positive control:
+  1 paused reader under the same windows completes 62/62. A second assertion
+  pins the invariant itself (connection window > `maxConns` cap × stream
+  window), red if either setting moves.
 - **Keepalives for the edge's idle timeout:** a quiet relayed WebSocket gets a
   browser-leg ping within the interval and the app's messages arrive
   unchanged; a quiet SSE stream gets a comment line only after a blank line,
