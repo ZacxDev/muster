@@ -131,7 +131,10 @@ func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, questio
 // (chief_proposal.go): the same row, but its notification carries no chips
 // and no signed answer actions, and no suggested replies are asked for — a
 // proposal is accepted only by a button on a surface that showed it whole
-// (proposalSurfaceRefusal), never from a push.
+// (proposalSurfaceRefusal), never from a push. 🔴 IT IS NOT NOTIFIED HERE:
+// fileProposal notifies it (proposalCardFiled) only once the proposal is
+// recorded, so a refused one (a line already used: ErrProposalLineUsed) never
+// reaches the owner's phone; its card is cancelled.
 func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
 	return s.raiseCard(ctx, chief, question, options, true, "")
 }
@@ -149,9 +152,7 @@ func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question str
 	if err != nil {
 		return attention.Ask{}, err
 	}
-	if proposal {
-		s.proposalCardFiled(a)
-	} else {
+	if !proposal {
 		s.askFiled(a)
 	}
 	return a, nil

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -117,9 +118,11 @@ func (s *Server) viewLineFor(ctx context.Context, chief agents.Agent) (agents.Ch
 // answering" (succession_propose, end_session_propose, and the subject of a
 // question the chief raises: chiefAskSubject): the NEWEST user row of chief's
 // default session THAT ITS OWNER TYPED (TypedBy, set only by the owner's
-// signed-in chat doors), when it was typed on a session's view (AboutKey)
-// within the turn budget; else the refusal. direct reports whether it is
-// also the newest user row of all — no other input was delivered after it.
+// signed-in chat doors) AT OR BEFORE THE RUNNING TURN'S OWN INPUT
+// (turnInputOf; the whole chat when that is unknown), when it was typed on a
+// session's view (AboutKey) within the turn budget; else the refusal. direct
+// reports whether that line IS the running turn's own input and no row nobody
+// typed was delivered after it.
 //
 // 🔴 THE NEWEST OWNER LINE, NOT THE NEWEST ROW (an operator's report: a
 // line typed on a view, then mail delivered behind it, refused). The chief's
@@ -130,6 +133,11 @@ func (s *Server) viewLineFor(ctx context.Context, chief agents.Agent) (agents.Ch
 // subject, and an owner's line still has to be found behind it. A line the
 // owner typed in the chief's own chat after the view line is the newest
 // owner line and has no subject, so it binds nothing here.
+//
+// 🔴 AND NOT A LINE QUEUED BEHIND THIS TURN (round 1 audit): runEnteredTurn
+// stores the owner's row before its turn takes the session, so a line typed
+// on another session's view while this turn runs is already the newest row.
+// Rows after the running turn's input belong to later turns and are not read.
 //
 // The line is still single use: CreateProposal files at most one proposal
 // of each kind on it (fileProposal's proposalLineUsed).
@@ -144,31 +152,47 @@ func (s *Server) ownerViewLine(ctx context.Context, chief agents.Agent) (line ag
 		s.logger.Printf("proposal: read %s's chat: %v", chief.Name, err)
 		return agents.ChatMessage{}, false, proposalNoViewRow
 	}
-	owner := agentOwnerID(chief)
-	direct = true
+	line, direct, ok := ownerViewLineIn(msgs, agentOwnerID(chief), s.turnInputOf(ctx, chief.ID), s.now(), agentTurnBudget(chief.Kind))
+	if !ok {
+		return agents.ChatMessage{}, false, proposalNoViewRow
+	}
+	return line, direct, ""
+}
+
+// ownerViewLineIn is ownerViewLine over msgs (oldest first): owner's newest
+// typed user row at or before input (every row when input is 0), when it is a
+// view line younger than budget at now. direct: it is input itself, and no
+// user row nobody typed comes after it.
+func ownerViewLineIn(msgs []agents.ChatMessage, owner, input int64, now time.Time, budget time.Duration) (agents.ChatMessage, bool, bool) {
+	untypedAfter := false
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if m.Role != "user" {
 			continue
 		}
 		if m.TypedBy <= 0 {
-			direct = false // a row nobody typed: passed over, never the line
+			untypedAfter = true // a row nobody typed: passed over, never the line
 			continue
 		}
-		if m.AboutKey == "" || owner <= 0 || m.TypedBy != owner || s.now().Sub(m.CreatedAt) > agentTurnBudget(chief.Kind) {
-			return agents.ChatMessage{}, false, proposalNoViewRow
+		if input > 0 && m.ID > input {
+			continue // the owner's line of a later turn, queued behind this one
 		}
-		return m, direct, ""
+		if m.AboutKey == "" || owner <= 0 || m.TypedBy != owner || now.Sub(m.CreatedAt) > budget {
+			return agents.ChatMessage{}, false, false
+		}
+		return m, input > 0 && m.ID == input && !untypedAfter, true
 	}
-	return agents.ChatMessage{}, false, proposalNoViewRow
+	return agents.ChatMessage{}, false, false
 }
 
 // chiefAskSubject is the session a question chief raises NOW is about: the
-// owner's view line's subject when the turn's own input IS that line
-// (ownerViewLine, direct), "" otherwise. 🔴 NARROW ON PURPOSE: a question
-// raised while a plugin message, a relayed answer or a note is the newest
-// input may be about that, so it is linked to no session and no proposal
-// ever withdraws it (withdrawAnsweredAsks).
+// owner's view line's subject when the running turn's own input IS that line
+// and nothing nobody typed was delivered after it (ownerViewLine, direct), ""
+// otherwise — and "" whenever the turn's input is unknown. 🔴 NARROW ON
+// PURPOSE: a question raised while a plugin message, a relayed answer or a
+// note is the newest input may be about that, and one raised in a turn for
+// another line is about that line, so neither is linked to this session and
+// no proposal ever withdraws it (withdrawAnsweredAsks).
 func (s *Server) chiefAskSubject(ctx context.Context, chief agents.Agent) string {
 	if s.ext.Agents == nil || !s.isChiefAgent(ctx, chief) {
 		return ""
@@ -351,6 +375,8 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 		return plugins.Proposal{}, "the proposal could not be recorded; try again"
 	}
 	s.logger.Printf("proposal %d: %s proposed a %s of %s (card %d)", x.ID, chief.Name, x.Kind, x.SubjectKey, ask.ID)
+	// Notified only now, recorded (raiseProposalCard's rule).
+	s.proposalCardFiled(ask)
 	s.withdrawAnsweredAsks(ctx, chief, x)
 	s.broadcastTo(agentOwnerID(chief), EventLineageChanged, proposalEventID(x))
 	return x, ""

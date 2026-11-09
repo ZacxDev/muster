@@ -161,10 +161,10 @@ func TestAQueuedViewLineAuthorisesOnlyItsOwnSubjectOnce(t *testing.T) {
 	}
 }
 
-// TestOneLineFilesOneProposalOfEachKind: the store's own rule (CreateProposal,
-// under its advisory lock), behind fileProposal's check: a second proposal of
-// a kind on the same owner line about the same session is refused; another
-// kind, another session or another line is not.
+// TestOneLineFilesOneProposalOfEachKind: the store's rule, the one place it
+// lives (CreateProposal, under its advisory lock): a second proposal of a kind
+// on the same owner line about the same session is refused; another kind,
+// another session or another line is not.
 func TestOneLineFilesOneProposalOfEachKind(t *testing.T) {
 	f := newSuccFixture(t)
 	end := func(msg int64, key string) error {

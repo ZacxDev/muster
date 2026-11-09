@@ -32,15 +32,19 @@ func askedID(t *testing.T, text string) int64 {
 	return 0
 }
 
-func (f *succFixture) askOwner(t *testing.T, question string) int64 {
+// askOwner is the chief's ask_owner in the turn whose input is message input
+// (an in-process dispatch: callIn's "ctx" door).
+func (f *succFixture) askOwner(t *testing.T, input int64, question string) int64 {
 	t.Helper()
-	return askedID(t, f.callRaw(f.chief, askOwnerTool, map[string]any{"question": question,
+	return askedID(t, f.callIn(t, "ctx", input, askOwnerTool, map[string]any{"question": question,
 		"options": []map[string]any{{"label": "acme/widgets"}, {"label": "acme/gadgets"}}}))
 }
 
-func (f *succFixture) attentionAsk(t *testing.T, question string) int64 {
+// attentionAsk is the chief's attention_ask in that turn, from a CLI's /mcp
+// call (callIn's "registry" door).
+func (f *succFixture) attentionAsk(t *testing.T, input int64, question string) int64 {
 	t.Helper()
-	return askedID(t, f.callRaw(f.chief, attentionAskTool, map[string]any{"question": question}))
+	return askedID(t, f.callIn(t, "registry", input, attentionAskTool, map[string]any{"question": question}))
 }
 
 func (f *succFixture) askStatus(t *testing.T, id int64) attention.Ask {
@@ -62,17 +66,17 @@ func (f *succFixture) askStatus(t *testing.T, id int64) attention.Ask {
 func TestAProposalWithdrawsTheQuestionsItAnswered(t *testing.T) {
 	f := newSuccFixture(t)
 	// Another session first: the chief's question about it.
-	f.viewLine(t, sxClaudeKey, "what is this session doing?")
-	otherSession := f.askOwner(t, "Do you want its summary or its diff?")
+	other := f.viewLine(t, sxClaudeKey, "what is this session doing?")
+	otherSession := f.askOwner(t, other.ID, "Do you want its summary or its diff?")
 
 	// The owner asks about the viewed session; the chief asks back, twice.
-	f.viewLine(t, sxOpenCodeKey, "copy the kickoff and start a spin-off")
-	card := f.askOwner(t, "Which repository should the spin-off use?")
-	asked := f.attentionAsk(t, "Which base branch should it start from?")
+	line := f.viewLine(t, sxOpenCodeKey, "copy the kickoff and start a spin-off")
+	card := f.askOwner(t, line.ID, "Which repository should the spin-off use?")
+	asked := f.attentionAsk(t, line.ID, "Which base branch should it start from?")
 
 	// A plugin message arrives; a question raised now is not linked.
 	f.plainLine(t, "Plugin Example mail: the weekly newsletter", 0)
-	afterMail := f.askOwner(t, "Shall I archive the newsletter?")
+	afterMail := f.askOwner(t, line.ID, "Shall I archive the newsletter?")
 
 	// Another agent of the owner's asks about the same session.
 	worker, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "askworker-" + sxOpenCodeSID[4:12], Namespace: "devpod-askworker",

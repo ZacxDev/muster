@@ -1183,12 +1183,22 @@ Observed on the release with succession phase 2 and end-session.
   chief's own chat after the view line is the newest owner line, and has no
   subject. The freshness window (the turn budget, from the line) and the
   subject rule are unchanged.
+  - **Read up to the running turn's own input** (round 1 audit). The owner's
+    row is stored before its turn takes the session, so a line typed on
+    another session's view while a turn runs is already the newest row. The
+    predicate reads only rows at or before the running turn's input
+    (`turnInputOf`: the turn's ctx for an in-process dispatch; for a CLI's
+    `/mcp` call, the registry, which answers only while exactly one turn
+    runs for the chief and its input is known). Unknown (a delivery's turn,
+    two turns at once): the whole chat, as above.
   - **Single use.** One owner line authorises at most ONE proposal of each
     kind for a session: `CreateProposal` refuses a second row of that kind
     with the same `owner_message` and `subject_key`
     (`ErrProposalLineUsed`, under a transaction-scoped advisory lock) — the
     one place the rule lives; `fileProposal` cancels the card it raised for
-    the refused one. Before, the binding to
+    the refused one, and pushes a card to the owner's phone only once its
+    proposal is recorded, so a refused one never reaches it. Before, the
+    binding to
     the newest row did this implicitly in most cases (muster's note after a
     proposal was the newest row); now that such rows are passed over, it is
     explicit. The message id is not passed by the chief: the server derives
@@ -1211,8 +1221,10 @@ Observed on the release with succession phase 2 and end-session.
   none of the chief's asks; the chief proposed; the ask stayed open until it
   expired. Now an ask records the session it was raised about
   (`attention_asks.about_key`, migration **0103**), set ONLY by muster, and
-  only when the turn's own input IS the owner's view line
-  (`chiefAskSubject`: no plugin message, relayed answer or note behind it).
+  only when the running turn's own input (known: `turnInputOf`) IS the
+  owner's view line (`chiefAskSubject`: no plugin message, relayed answer or
+  note behind it). A question raised in a turn whose input is unknown, or in
+  a turn for another line, has no subject.
   Filing a proposal withdraws the chief's own open asks with that
   `about_key` (`attention.WithdrawAbout`): `cancelled`. Never matched
   by text: an ask with no subject, another session's, another asker's, a
