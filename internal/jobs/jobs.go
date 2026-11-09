@@ -8,11 +8,12 @@
 // agent gateway and the chat store, which this package deliberately does not
 // import.
 //
-// 🔴 EVERY METHOD EXCEPT ReapOverdue RUNS UNDER THE CALLER'S PRINCIPAL.
-// jobs is under FORCE row-level security, so a caller reads and writes only its
-// own user's rows; the owner of a row is the principal's user (owner_id's
-// default), never a parameter. ReapOverdue is the reaper across every owner and
-// runs under the system principal itself (sys).
+// 🔴 EVERY METHOD EXCEPT ReapOverdue, ActiveCounts AND Heads RUNS UNDER THE
+// CALLER'S PRINCIPAL. jobs is under FORCE row-level security, so a caller reads
+// and writes only its own user's rows; the owner of a row is the principal's
+// user (owner_id's default), never a parameter. ReapOverdue is the reaper across
+// every owner and runs under the system principal itself (sys); ActiveCounts and
+// Heads read counts and ids across every owner, each under System itself.
 //
 // 🔴 A JOB IS FAILED BY THE REAPER ONLY WHEN IT IS PAST ITS OWN DEADLINE, NEVER
 // BECAUSE A PROCESS STARTED. During a rolling update the new process boots while
@@ -339,6 +340,31 @@ type Store interface {
 	// jobs (a rolling update). It runs under the system principal whatever ctx
 	// carries.
 	ReapOverdue(ctx context.Context, now time.Time) (int64, error)
+
+	// 🔴 THE QUEUE IS THE TABLE, NOT A GOROUTINE. A job used to wait for its
+	// turn in a goroutine of the process that accepted it, blocked on that
+	// process's per-agent lane; a crash took the goroutine and nothing ever ran
+	// the row, while the same worker ran every job submitted after the restart.
+	// The runner now takes each agent's next job from here, oldest first, so a
+	// job queued before a crash is run by the next process to look, in its
+	// place in line.
+
+	// Heads is, for each agent that is free at now, its oldest queued job —
+	// only agentID's when agentID is not 0 — across every owner, oldest first.
+	// An agent is NOT free while one of its jobs is held by a runner: running,
+	// or queued again by an account failover (Requeue; it has a started_at)
+	// and still before that start's deadline (started_at + timeout_s +
+	// ReapSlack, the reaper's deadline for a running job). A held job is never
+	// a head. Ids, agents and owners only. It runs under the system principal
+	// whatever ctx carries.
+	Heads(ctx context.Context, agentID int64, now time.Time) ([]Head, error)
+	// FinishQueued is Finish for a job no runner holds: queued, and never
+	// started — or re-queued by an account failover (queued again, with a
+	// started_at) whose start is past its deadline (started_at + timeout_s +
+	// ReapSlack, the database's clock), so its runner is gone. It reports
+	// false, and changes nothing, for any other job: one running anywhere, or
+	// re-queued and still held by its runner.
+	FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error)
 }
 
 // Classify turns a finished turn into a job outcome. reply and err are the
@@ -719,6 +745,72 @@ func (s *PGStore) Requeue(ctx context.Context, id int64, f Failover) (bool, erro
 
 var _ Requeuer = (*PGStore)(nil)
 
+// Head is the job an agent runs next (Store.Heads): its oldest queued job.
+// AgentID is 0 for a queued job whose agent was deleted, which has no agent to
+// run on and is its own head.
+type Head struct {
+	ID, AgentID, OwnerID int64
+}
+
+// Heads implements [Store].Heads, under the system principal whatever ctx carries —
+// its own internal/authz System ledger entry.
+//
+// 🔴 EVERY OWNER'S JOBS, NOT THE CALLER'S. Whether an agent is free, and which
+// of its jobs is oldest, are facts about every job on it; under the caller's
+// row-level security another owner's running job would read as absent. It
+// returns ids and owners only; the runner reads each job as its owner.
+//
+// 🔴 A RUNNING JOB HOLDS ITS AGENT UNTIL IT ENDS OR IS REAPED, EVEN WHEN ITS
+// PROCESS IS GONE. Nothing tells a crashed runner's job from one the other pod
+// of a rolling update is still running, and the agent's runtime may still be
+// in the dead runner's turn (a dropped request does not stop it). So the next
+// job waits for the reaper's deadline, as it would have waited for the turn,
+// rather than run beside it.
+func (s *PGStore) Heads(ctx context.Context, agentID int64, now time.Time) ([]Head, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT id, coalesce(agent_id, 0), owner_id FROM (
+		SELECT DISTINCT ON (coalesce(q.agent_id, -q.id)) q.id, q.agent_id, q.owner_id
+		FROM jobs q
+		WHERE q.status = 'queued' AND ($1::bigint = 0 OR q.agent_id = $1)
+		  AND NOT (q.started_at IS NOT NULL AND q.started_at + make_interval(secs => q.timeout_s + $3::double precision) >= $2)
+		  AND (q.agent_id IS NULL OR NOT EXISTS (SELECT 1 FROM jobs h WHERE h.agent_id = q.agent_id AND (h.status = 'running'
+		       OR (h.status = 'queued' AND h.started_at IS NOT NULL
+		           AND h.started_at + make_interval(secs => h.timeout_s + $3::double precision) >= $2))))
+		ORDER BY coalesce(q.agent_id, -q.id), q.id
+	) heads ORDER BY id`, agentID, now, ReapSlack.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("jobs: queue heads: %w", err)
+	}
+	defer rows.Close()
+	var out []Head
+	for rows.Next() {
+		var h Head
+		if err := rows.Scan(&h.ID, &h.AgentID, &h.OwnerID); err != nil {
+			return nil, fmt.Errorf("jobs: queue heads: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// FinishQueued implements [Store].FinishQueued.
+func (s *PGStore) FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error) {
+	o = normalize(o)
+	if o.Status != StatusFailed {
+		// jobs_started_check: only a failed job may end without having started.
+		return false, fmt.Errorf("jobs: finish queued %d: a job that never started can only fail, not end %s", id, o.Status)
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status = $2, result = NULL, reason = $3, error = $4, finished_at = now()
+		WHERE id = $1 AND status = 'queued'
+		  AND (started_at IS NULL OR started_at + make_interval(secs => timeout_s + $5::double precision) < now())`,
+		id, o.Status, o.Reason, o.Error, ReapSlack.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("jobs: finish queued %d: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+var _ Store = (*PGStore)(nil)
+
 // Finish moves a queued or running job to o's terminal status.
 func (s *PGStore) Finish(ctx context.Context, id int64, o Outcome) (bool, error) {
 	o = normalize(o)
@@ -746,8 +838,8 @@ const (
 		"the server running it stopped, crashed or could not record the outcome. The agent may have done some " +
 		"or all of the work, so re-submit it only if repeating that is safe"
 	// AbandonedQueuedError is a queued job's.
-	AbandonedQueuedError = "this job never started within the longest a queued job can wait: the server holding " +
-		"it stopped or crashed before running it. Nothing was sent to the agent for it"
+	AbandonedQueuedError = "this job never started within the longest a queued job can wait: nothing ran it in " +
+		"that time (its agent stayed busy, or no server was running jobs). Nothing was sent to the agent for it"
 )
 
 // The errors a graceful shutdown records on the jobs the stopping process held

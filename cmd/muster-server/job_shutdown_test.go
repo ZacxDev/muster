@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,54 @@ func (m *shutdownJobStore) Finish(_ context.Context, id int64, o jobs.Outcome) (
 
 func (m *shutdownJobStore) ReapOverdue(context.Context, time.Time) (int64, error) { return 0, nil }
 
+func (m *shutdownJobStore) Get(_ context.Context, id int64) (jobs.Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.rows[id]
+	if !ok {
+		return jobs.Job{}, jobs.ErrNotFound
+	}
+	return j, nil
+}
+
+// Heads is the PG store's rule, reduced to what this test builds: per agent
+// with nothing running, its oldest queued job (none here is a re-queued one).
+func (m *shutdownJobStore) Heads(_ context.Context, agentID int64, _ time.Time) ([]jobs.Head, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	busy := map[int64]bool{}
+	for _, j := range m.rows {
+		if j.Status == jobs.StatusRunning {
+			busy[j.AgentID] = true
+		}
+	}
+	head := map[int64]int64{}
+	for _, j := range m.rows {
+		if j.Status != jobs.StatusQueued || busy[j.AgentID] || (agentID != 0 && j.AgentID != agentID) {
+			continue
+		}
+		if h, ok := head[j.AgentID]; !ok || j.ID < h {
+			head[j.AgentID] = j.ID
+		}
+	}
+	var out []jobs.Head
+	for a, id := range head {
+		out = append(out, jobs.Head{ID: id, AgentID: a, OwnerID: 1})
+	}
+	sort.Slice(out, func(i, k int) bool { return out[i].ID < out[k].ID })
+	return out, nil
+}
+
+func (m *shutdownJobStore) FinishQueued(ctx context.Context, id int64, o jobs.Outcome) (bool, error) {
+	m.mu.Lock()
+	queued := m.rows[id].Status == jobs.StatusQueued && m.rows[id].StartedAt.IsZero()
+	m.mu.Unlock()
+	if !queued {
+		return false, nil
+	}
+	return m.Finish(ctx, id, o)
+}
+
 func (m *shutdownJobStore) row(id int64) jobs.Job {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,8 +154,8 @@ func (g *heldTurnGateway) ChatWithTools(context.Context, agents.Agent, string, s
 	return "", errors.New("not expected")
 }
 
-// TestShutdownFailsTheJobsThisProcessHolds: a job runs only in the process
-// that accepted it. On a graceful shutdown (SIGTERM → app.shutdown), this
+// TestShutdownFailsTheJobsThisProcessHolds: through the real queue runner
+// (internal/api jobs_queue.go). On a graceful shutdown (SIGTERM → app.shutdown), this
 // process's running job and the job queued behind it are failed `interrupted`,
 // each saying what happened, rather than holding the agent's queue until the
 // deadline reaper. A job of ANOTHER process (a row this one never accepted —
@@ -121,8 +170,12 @@ func TestShutdownFailsTheJobsThisProcessHolds(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// The other process's job, already in the table.
-	other, _, _ := store.Create(context.Background(), jobs.NewJob{AgentID: shutdownAgent.ID, Agent: shutdownAgent.Name, Prompt: "theirs", TimeoutSeconds: 1800})
+	// The other process's job, already in the table — on another agent, since
+	// a queued job on THIS one is the table's and this process's runner would
+	// take it first (the queue is the table, oldest first). Nothing here reads
+	// the other agent's queue (no reaper pass runs), so it stays exactly as the
+	// other process left it unless the shutdown itself touches it.
+	other, _, _ := store.Create(context.Background(), jobs.NewJob{AgentID: shutdownAgent.ID + 1, Agent: "other-tern", Prompt: "theirs", TimeoutSeconds: 1800})
 
 	submit := func(prompt string) int64 {
 		t.Helper()
