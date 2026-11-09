@@ -138,6 +138,11 @@ type MirrorCardView struct {
 	// Idle: in the Idle section (idle_section.go), composed by MarkIdle; the
 	// sidebar draws it in its Idle group (navIdleGroup).
 	Idle bool
+	// Superseded: a running successor REPLACED this session
+	// (docs/design/chief-in-agent-view.md 4.4, internal/api succession.go);
+	// the sidebar folds it into its collapsed Superseded group
+	// (navSupersededGroup). Collapse only: the window still runs and is listed.
+	Superseded bool
 }
 
 // MirrorCardHref is where a mirrored entry opens: the rendered view for a

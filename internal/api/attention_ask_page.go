@@ -79,6 +79,10 @@ func (s *Server) askShowsSuggestions(ctx context.Context, a attention.Ask) bool 
 // renderAskPage writes ask a's page (or, for ?part=live, its live region).
 func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attention.Ask) {
 	it := s.askItemNow(r.Context(), a)
+	it.proposalCard = s.isProposalCard(r.Context(), a)
+	// A chief proposal's card: its body (the kickoff) from the proposal row;
+	// one that could not be read offers no start.
+	it.proposal = s.proposalKickoffBody(r.Context(), a)
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
@@ -106,6 +110,8 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
 <p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
 `)
+	// The proposal body, which the ask's question never holds.
+	b.WriteString(proposalBodyHTML(it.proposal))
 	// A closed ask has no answer box, where the notices show: an answer or a
 	// dismissal refused because the ask closed meanwhile (?notice=ask-closed)
 	// is said here instead.
@@ -176,7 +182,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target))
+			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), it.proposalCard)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}
@@ -184,10 +190,10 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 </div>`)
 		return b.String()
 	}
-	if len(a.Options) > 0 {
+	if opts := withoutProposalStarts(it.proposal, a.Options); len(opts) > 0 {
 		b.WriteString(`<div role="group" aria-label="The asker's options" class="flex flex-col gap-2" data-ask-options>
 `)
-		for _, o := range a.Options {
+		for _, o := range opts {
 			b.WriteString(`<button type="submit" form="ask-answer" name="option" value="` + esc(o) + `" class="press min-h-[48px] w-full break-words rounded-2xl bg-s2 px-4 py-3 text-left text-base font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2/80" data-ask-option>` + esc(o) + `</button>
 `)
 		}

@@ -74,7 +74,16 @@ func assertCallers(t *testing.T, dir, name string, want []string) {
 // route, token or CLI verb reaches it.
 func TestHostSpawnHasOneDoor(t *testing.T) {
 	assertCallers(t, ".", "SpawnAgent", []string{"host_dispatch.go:spawnReserved"})
-	assertCallers(t, ".", "spawnReserved", []string{"host_dispatch.go:toolHostDispatch"})
+	// 🔴 The second caller is the owner's TAP on a succession's card (operator
+	// decision, chief-in-agent-view phase 2): an HTTP route reaches a host
+	// spawn there, but only through the owner's own door (answerAskFrom's
+	// proposal hook, attention.IsOwnerDoor), never a token.
+	assertCallers(t, ".", "spawnReserved", []string{"host_dispatch.go:toolHostDispatch", "succession.go:reserveSuccession"})
+	assertCallers(t, ".", "reserveSuccession", []string{"succession.go:startSuccession"})
+	assertCallers(t, ".", "startSuccession", []string{"succession.go:acceptSuccession"})
+	assertCallers(t, ".", "acceptSuccession", []string{"chief_proposal.go:acceptProposal"})
+	assertCallers(t, ".", "acceptProposal", []string{"chief_proposal.go:proposalForAnswer"})
+	assertCallers(t, ".", "proposalForAnswer", []string{"attention.go:answerAskFrom"})
 	assertCallers(t, ".", "toolHostDispatch", []string{"agent_dispatch.go:toolAgentDispatch"})
 }
 
@@ -90,7 +99,7 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 	assertCallers(t, ".", "EndHostDispatch", []string{"host_dispatch.go:endHostDispatch"})
 	assertCallers(t, ".", "endHostDispatch", []string{"agent_destroy_tool.go:destroyHostDispatch",
 		"host_dispatch_reconcile.go:applySpawnReply", "host_dispatch_reconcile.go:reconcileListing", "host_dispatch_reconcile.go:sweepHostDispatches"})
-	assertCallers(t, ".", "ReserveHostDispatch", []string{"host_dispatch.go:toolHostDispatch"})
+	assertCallers(t, ".", "ReserveHostDispatch", []string{"host_dispatch.go:toolHostDispatch", "succession.go:reserveSuccession"})
 	// MarkHostDispatchDone (0097: done_at/done_summary only, never ended) is
 	// agent_report_done's on the mirror door alone.
 	assertCallers(t, ".", "MarkHostDispatchDone", []string{"host_dispatch_done.go:toolHostReportDone"})

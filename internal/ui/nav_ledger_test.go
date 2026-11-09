@@ -153,13 +153,21 @@ func TestTheNavAddsNoStream(t *testing.T) {
 		}
 	}
 	// The Rendered view WITH the chief mode (view_chief.go): ONE stream, the
-	// chief strip's (chat.reply), opened by its script only while the composer
-	// is switched to Chief and closed when switched back — the view has no
-	// other /events stream to reuse (its transcript is its own socket).
+	// view's shared one (viewStreamScript), opened only while the composer is
+	// switched to Chief (the strip's chat.reply) or a succession of the view is
+	// open (lineage.changed, view_succession.go) — the view has no other
+	// /events stream to reuse (its transcript is its own socket).
 	chief := MirrorViewPage(MirrorViewView{Host: "laptop", Session: "work", Window: "@1", Interactive: true, Chief: true,
 		Nav: NavChrome{Feat: featuresAllOn}})
 	if got := streamsIn(t, chief); got != 1 {
 		t.Errorf("MirrorViewPage with the chief mode opens %d /events stream(s), want 1 (the chief strip's)", got)
+	}
+	// And with a succession but no chief (the chief turned off since): the
+	// same one shared stream.
+	succ := MirrorViewPage(MirrorViewView{Host: "laptop", Session: "work", Window: "@1", Interactive: true,
+		Succession: &SuccessionView{ID: 1, State: SuccessionStarting}, Nav: NavChrome{Feat: featuresAllOn}})
+	if got := streamsIn(t, succ); got != 1 {
+		t.Errorf("MirrorViewPage with a succession opens %d /events stream(s), want 1 (the view's shared one)", got)
 	}
 	// POSITIVE CONTROL: the counter sees a stream where one is.
 	if n := streamsIn(t, Page(defaultTab, featuresAllOn)); n < 1 {

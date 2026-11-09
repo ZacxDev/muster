@@ -400,6 +400,14 @@ type Msg struct {
 	// Spawn is an agent-spawn's request; Spawned an agent-spawned's window.
 	Spawn   *AgentSpawnReq `json:"spawn,omitempty"`
 	Spawned *AgentSpawned  `json:"spawned,omitempty"`
+	// AgentClose (hello) is the host ADVERTISING that it ends an agent window
+	// on muster's request (TypeAgentClose, agentclose.go): -interactive, and a
+	// backend that can close a window. Backward-compatible both ways.
+	AgentClose bool `json:"agentClose,omitempty"`
+	// CloseReq is an agent-close's window; CloseResult an agent-closed's
+	// outcome.
+	CloseReq    *AgentCloseReq    `json:"closeReq,omitempty"`
+	CloseResult *AgentCloseResult `json:"closeResult,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 

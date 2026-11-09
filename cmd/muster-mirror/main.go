@@ -86,6 +86,14 @@ var e2eRefresh func() time.Duration
 // wrapper chain without hiding what NoShrink asserts on the backend it wraps.
 var e2eWrap func(mirrorhost.Backend) mirrorhost.Backend
 
+// e2eSpawn, in a browser-test build, replaces the agent spawn with the fake's
+// (mirrorhost.Config.FakeSpawn), offering e2eSpawnRuntimes. nil in every
+// shipped binary (TestTheShippedBuildSpawnsForReal).
+var (
+	e2eSpawn         func(ctx context.Context, dispatch int64, req mirror.AgentSpawnReq) (mirror.AgentSpawned, error)
+	e2eSpawnRuntimes []string
+)
+
 // buildRevision is stamped by the build (-X main.buildRevision=…).
 var buildRevision = "dev"
 
@@ -371,6 +379,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		NoWork:        e2eNoWork != nil && e2eNoWork(),
 		Refresh:       refreshOverride(),
+		FakeSpawn:     e2eSpawn, FakeSpawnRuntimes: e2eSpawnRuntimes,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)

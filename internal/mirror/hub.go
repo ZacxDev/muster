@@ -140,6 +140,9 @@ type HostView struct {
 	// AgentSpawn is the runtimes the host advertised it starts for the chief
 	// (Msg.AgentSpawn), for an -interactive host only; nil otherwise.
 	AgentSpawn []string
+	// AgentClose: the host ends an agent window on muster's request
+	// (Msg.AgentClose, agentclose.go), for an -interactive host only.
+	AgentClose bool
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -461,7 +464,12 @@ type hostConn struct {
 	// spawns are the agent-spawn requests waiting for the host's
 	// agent-spawned, by id (the same id space; agentspawn.go).
 	spawns map[uint32]chan spawnAnswer
-	next   uint32
+	// closes are the agent-close requests waiting for the host's
+	// agent-closed, by id (the same id space; agentclose.go).
+	closes map[uint32]chan closeAnswer
+	// agentClose: the host advertised agent-close (an -interactive host).
+	agentClose bool
+	next       uint32
 }
 
 type stream struct {
@@ -490,7 +498,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn),
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode]})
 		hc.mu.Unlock()
 	}
@@ -735,7 +743,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{},
-		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}}
+		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}, closes: map[uint32]chan closeAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
@@ -762,6 +770,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
 		// Starting an agent likewise, and only the runtimes this muster knows.
 		hc.agentSpawn = spawnRuntimesOf(hello)
+		// Ending an agent (agentclose.go): -interactive hosts only.
+		hc.agentClose = hello.AgentClose && hello.Interactive
 		// Each runtime's answer switch: answering its ask is a write into
 		// the session (it can let a command run): -interactive hosts only,
 		// like the rest.
@@ -1059,6 +1069,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					h.agentSpawned(hc, m)
 				}
+			case TypeAgentClosed:
+				if hc.version >= 2 {
+					h.agentClosed(hc, m)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -1175,6 +1189,11 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.spawns {
 		ch <- spawnAnswer{err: ErrSpawnUnconfirmed}
 		delete(hc.spawns, id)
+	}
+	// A close written before the disconnect may be under way: unconfirmed.
+	for id, ch := range hc.closes {
+		ch <- closeAnswer{err: ErrCloseUnconfirmed}
+		delete(hc.closes, id)
 	}
 	hc.mu.Unlock()
 	if current {

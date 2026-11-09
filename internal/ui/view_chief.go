@@ -295,7 +295,11 @@ func viewChiefScript() g.Node {
   function save(chief) {
     try { if (key) { if (chief) localStorage.setItem(key, ` + strconv.Quote(ViewToChief) + `); else localStorage.removeItem(key); } } catch (e) {}
   }
-  var version = '', es = null, timer = null;
+  var version = '', timer = null;
+  // The ONE /events stream of the view (viewStreamScript), shared with the
+  // succession region.
+  var vs = window.musterViewStream;
+  if (vs) { vs.on('chat.reply', refresh); vs.on('open', refresh); }
   function refresh() {
     if (!cb.checked || typeof fetch !== 'function') return;
     var h = { 'X-Requested-With': 'XMLHttpRequest' };
@@ -312,14 +316,7 @@ func viewChiefScript() g.Node {
     }).catch(function () {});
   }
   function listen(on) {
-    if (on && !es && typeof EventSource === 'function') {
-      try {
-        es = new EventSource('/events');
-        es.addEventListener('chat.reply', refresh);
-        es.addEventListener('open', refresh);
-      } catch (e) { es = null; }
-    }
-    if (!on && es) { try { es.close(); } catch (e) {} es = null; }
+    if (vs) vs.want('chief', on);
     if (on && !timer) timer = setInterval(refresh, 20000);
     if (!on && timer) { clearInterval(timer); timer = null; }
   }

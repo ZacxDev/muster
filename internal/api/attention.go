@@ -177,6 +177,20 @@ func (st *attentionState) wakeFor(owner int64) *draftSignal {
 
 // attentionItem is one entry of the unified read model.
 type attentionItem struct {
+	// ownerCard: a chief's owner card (attention.Ask.OwnerCard), which may be
+	// a proposal's card (withAskBoxes looks).
+	ownerCard bool
+	// proposal is a chief proposal card's body (proposalKickoffBody: its
+	// kickoff, read from the proposal row), drawn under the question; set by
+	// withAskBoxes for the owner's pages only, nil everywhere else (a push,
+	// attention_list), and not in the item's JSON.
+	proposal *proposalBody
+	// proposalCard: the ask page's ask is a chief proposal's card
+	// (isProposalCard), whose answer is recorded and never delivered.
+	proposalCard bool
+	// noActions: its notification offers no chips and no signed answer
+	// actions (a chief proposal's card, proposalCardFiled). Not serialised.
+	noActions bool
 	// Key is the item's stable id: its DOM id, its notification tag's suffix.
 	Key  string `json:"key"`
 	Kind string `json:"kind"`
@@ -406,7 +420,8 @@ func (s *Server) askItemNow(ctx context.Context, a attention.Ask) attentionItem 
 func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 	src, target, at := askSourceAt(a, hosts)
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: src, target: target, at: at, Text: a.Question,
-		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
+		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions,
+		ownerCard: a.OwnerCard}
 	if a.Asker.System {
 		it.systemAsk = true
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
@@ -840,6 +855,16 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 			continue
 		}
 		items[i].dictate, items[i].dictateOff = dict, s.dictateOff()
+		if items[i].ownerCard && owner > 0 {
+			if a, err := s.ext.Attention.Get(ctx, items[i].AskID); err == nil {
+				items[i].proposal = s.proposalKickoffBody(ctx, a)
+			} else {
+				// The card's ask could not be read now: it may be a
+				// proposal's, so it offers no start.
+				items[i].proposal = proposalUnreadBody
+			}
+			items[i].Options = withoutProposalStarts(items[i].proposal, items[i].Options)
+		}
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
 		}
@@ -888,7 +913,7 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
-	if it.Kind == attentionKindAsk && it.AskID > 0 {
+	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
 		// (device_actions.go): this item is one, so they are offered.
@@ -1609,6 +1634,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
 `)
 		}
+		b.WriteString(proposalBodyHTML(it.proposal))
 		switch it.Kind {
 		case attentionKindNotice:
 			// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
@@ -1733,6 +1759,13 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	if err != nil {
 		return a, err
 	}
+	// A chief proposal's card (chief_proposal.go): the owner's tap DOES what
+	// was proposed here, before the answer is recorded; an accept refused
+	// before it did anything leaves the card open, with its sentence.
+	note, err := s.proposalForAnswer(ctx, id, answer, src)
+	if err != nil {
+		return a, err
+	}
 	if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {
@@ -1740,6 +1773,20 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	}
 	if err == nil && rel != nil {
 		s.applyAnswerRelease(ctx, a, rel)
+	}
+	if err == nil && note != nil {
+		// 🔴 A CHIEF PROPOSAL'S CARD IS NEVER DELIVERED BACK AS AN ANSWER: a
+		// tap is not a request for a turn. Its delivery is closed (MarkWaited:
+		// nothing is pushed into the chief's session, now or by the sweep),
+		// and the chief is told in muster's own sentence instead. Should
+		// MarkWaited fail, the sweep delivers the card's question and the
+		// tapped label — muster's own words: the question never holds the
+		// kickoff (successionCardQuestion).
+		if _, werr := s.ext.Attention.MarkWaited(ctx, a.ID); werr != nil {
+			s.logger.Printf("proposal: close the delivery of card %d: %v", a.ID, werr)
+		}
+		a.Delivery = attention.DeliveryWaited
+		s.noteProposalToChief(ctx, *note)
 	}
 	if err == nil {
 		s.askSettled(a)
@@ -1808,7 +1855,13 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 	if strings.TrimSpace(answer) == "" {
 		answer = r.PostFormValue("answer")
 	}
-	a, err := s.answerAsk(r.Context(), id, answer)
+	ctx := r.Context()
+	if strings.TrimSpace(r.PostFormValue("option")) != "" {
+		// A button TAPPED, not text typed (a chief proposal accepts only
+		// that: chief_proposal.go optionTapped).
+		ctx = withOptionTap(ctx)
+	}
+	a, err := s.answerAsk(ctx, id, answer)
 	if err != nil {
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: answer %d: %v", id, err)
@@ -1890,8 +1943,13 @@ func (s *Server) recentAnswers(ctx context.Context) []attention.Ask {
 // whether it offers Retry. who is the asker as askSource names it — for a
 // mirrored session the exact tmux target of the window running it now, or
 // "not shown" — since a waiting, queued or failed delivery sends the owner to
-// that session.
-func answerDeliveryText(a attention.Ask, who string) (string, bool) {
+// that session. proposal: a is a chief proposal's card, whose answer is
+// recorded and never delivered once answerAskFrom closed its delivery
+// (waited); one whose close failed says where it went, as any other.
+func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, bool) {
+	if proposal && a.Delivery == attention.DeliveryWaited {
+		return proposalAnsweredText, false
+	}
 	switch a.Delivery {
 	case attention.DeliveryQueued:
 		if a.DeliveryDetail != "" {
@@ -1923,7 +1981,13 @@ func (s *Server) answeredAsksNow(ctx context.Context, now time.Time) string {
 	if s.ext.Mirror != nil && slices.ContainsFunc(asks, askNeedsHosts) {
 		hosts = s.ext.Mirror.Hosts(ctx)
 	}
-	return answeredAsksHTML(asks, hosts, now)
+	proposals := map[int64]bool{}
+	for _, a := range asks {
+		if s.isProposalCard(ctx, a) {
+			proposals[a.ID] = true
+		}
+	}
+	return answeredAsksHTML(asks, hosts, now, proposals)
 }
 
 // answeredAsksHTML is the "Answered" part of the list: each recent answer and
@@ -1937,7 +2001,7 @@ func answerLabel(a attention.Ask) string {
 	return "Your answer: "
 }
 
-func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Time) string {
+func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Time, proposals map[int64]bool) string {
 	if len(asks) == 0 {
 		return ""
 	}
@@ -1947,7 +2011,7 @@ func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Ti
 	for _, a := range asks {
 		id := strconv.FormatInt(a.ID, 10)
 		who := textplain.TitleKeeping(askSourceParts(a, hosts))
-		text, retry := answerDeliveryText(a, who)
+		text, retry := answerDeliveryText(a, who, proposals[a.ID])
 		age := ""
 		if !a.ResolvedAt.IsZero() {
 			age = ` · <time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time>`
