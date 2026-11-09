@@ -259,7 +259,7 @@ flowchart LR
   gw -->|"/plugin/v1/* (mpl_): hand-off redeem"| muster
   cc -->|"loopback MCP: muster's tools + preview_*"| mm
   mm -->|"/mirror/connect, /mirror/mcp (unchanged)"| muster
-  mm -->|"tunnel.musterchief.com: outbound WS, HTTP/2 CONNECT, offers, opens"| gw
+  mm -->|"nebula mesh first, tunnel.musterchief.com as fallback: outbound WS, HTTP/2 CONNECT, offers, opens"| gw
   mm --> app
   gw -->|"in cluster, seam (d)"| gate --> app2
 ```
@@ -476,7 +476,7 @@ parent domain.
 |---|---|
 | `p-<id>.musterchief.com` | one preview each; `<id>` is 26 lowercase base32 characters (128 random bits) |
 | `w.musterchief.com` | the gateway's [session page](#the-gateways-session-page), the target of muster's chip |
-| `tunnel.musterchief.com` | hosts' outbound tunnel connections, nothing else |
+| `tunnel.musterchief.com` | the **public fallback** for hosts' outbound tunnel connections ([the mesh path](#host-dial-order-mesh-first-then-public)), nothing else |
 | any other label | 404 |
 
 Every name is **one label** under the zone, because the zone's edge
@@ -498,7 +498,10 @@ preview content.
     There is no Advanced Certificate Manager, so a deeper name
     (`<id>.p.musterchief.com`) would get no edge certificate. Every name here
     is one label: `p-<id>`, `tunnel`.
-  - **Proxied WebSockets work, with an idle timeout of about 100 s.** So every
+  - **Proxied WebSockets work, and Cloudflare cuts an idle one at about
+    125 s** (measured on the real edge, [PR #548](https://github.com/ZacxDev/muster/pull/548); WebSocket ping frames count
+    as activity, and the same idle WebSocket sent straight to the origin was
+    still open at 300 s). So every
     long-lived connection the gateway serves is kept from going quiet for that
     long:
     - the host tunnel pings every 30 s (both ends);
@@ -570,8 +573,9 @@ it is [open question 9](#open-questions).
 | One dial-back WebSocket per upstream connection | kernel TCP | none | small | second fallback; one TLS and WebSocket handshake per connection |
 | Preview frames on the existing mirror tunnel | none today | the `ErrOverrun` rule truncates; bulk delays keystrokes | — | ✗ and, as a plugin, ruled out: muster carries no preview bytes |
 
-1. With `-preview` and a valid `previews.json`, the host dials
-   `wss://tunnel.musterchief.com/v1/host` with `Authorization: Bearer mpt_…`,
+1. With `-preview` and a valid `previews.json`, the host dials its
+   [endpoints in order](#host-dial-order-mesh-first-then-public) (mesh, then
+   `wss://tunnel.musterchief.com/v1/host`) with `Authorization: Bearer mpt_…`,
    its host name and `X-Muster-Preview-Version: 1`. A version the gateway does
    not speak is refused with the range it does; the host logs it and retries
    with backoff, never touching the mirror tunnel.
@@ -627,13 +631,74 @@ The host's `MaxConcurrentStreams` (its `maxConns`) is what keeps the number of
 paused streams within that bound. The memory column is a real cost of a large
 `maxConns`, paid only while readers are paused.
 
-**Still open from the spike:** criteria (1), (4) and (5) are **unverified on the
-real edge**. The spike ran on one host, on loopback, with a local edge
-simulator, because `musterchief.com` has no DNS records yet. Phase 1 stays
-gated on re-running them from a real host through the real Cloudflare → relay
-→ gateway path. Through that path, (1)'s cost is mostly the extra edge leg, not
-the transport. Whether Cloudflare counts WebSocket pings as activity, and
-whether it or the relay buffers SSE or WebSocket frames, are unknown.
+**Real-edge results** ([PR #548](https://github.com/ZacxDev/muster/pull/548), measured through Cloudflare →
+prod relay → nebula → homelab relay → a gateway pod, with the host and the
+client on one workstation on the homelab LAN): (4) and (5) **pass**, (1)
+**fails on p50 for both transports**. The tunnel itself costs about 0.1 ms;
+what fails (1) is the host's tunnel crossing the public path a second time,
+about +90–118 ms at p50 on that topology. So hosts reach the gateway over the
+mesh ([below](#host-dial-order-mesh-first-then-public)), and only the
+browser leg goes through Cloudflare.
+
+### Host dial order: mesh first, then public
+
+Decided by the operator after the real-edge results ([decisions 20 and 21](#decisions)).
+
+- **Two endpoints, one protocol.** The gateway serves the host tunnel on two
+  listeners: a **mesh** listener, reached at the gateway's nebula mesh address
+  (for this deployment, the homelab relay on the nebula interface, below), and
+  the **public** one, `wss://tunnel.musterchief.com/v1/host`. Both take the
+  same `mpt_` token, the same host-name binding, the same version header and
+  the same 30 s recheck. Nothing about a tunnel differs by path except its
+  latency.
+- **Dial order.** `-preview-urls` is an ordered list, mesh first:
+  `ws://<mesh address>:<port>/v1/host,wss://tunnel.musterchief.com/v1/host`.
+  The host tries each in order and takes the first whose TCP connect, WebSocket
+  upgrade and the gateway's version answer all complete within **3 s**. A host
+  off the mesh fails the first in at most 3 s and falls back to the public
+  endpoint. If both fail, it retries the list with backoff, as today.
+- **Returning to the mesh.** While on the public path the host re-tries the
+  mesh endpoint every 5 minutes. When it connects, the gateway (which keeps
+  one tunnel per `(owner, host)`, the newer replacing the older) sends new
+  streams over the mesh tunnel and closes the public one when its last stream
+  ends, or after 60 s.
+- **Which path a host is on** is decided by the **gateway**, from the listener
+  the connection arrived on, never from anything the host says. It is shown as
+  **"slow path (via Cloudflare)"** beside the host's previews on the gateway's
+  session page, and labelled `path="mesh"|"public"` on
+  `muster_preview_tunnels` and the `preview.request` span. The host also logs
+  which endpoint it took.
+- **Criterion (1) applies to the mesh path.** The public path's measured
+  +90–118 ms p50 is an **accepted degraded mode** for a host off the mesh: a
+  preview works there, HMR included, about 100 ms slower per round trip.
+- **Plain `ws://` on the mesh.** Nebula encrypts and authenticates the hop, so
+  the mesh endpoint does not repeat TLS. The `mpt_` token therefore crosses the
+  homelab relay in the clear inside the mesh, as tokens on the public path
+  already do after the edge terminates TLS.
+
+**What the mesh endpoint needs on the deployment** (from the deployment's own
+recipe for mesh-facing relay listeners, which lives in the deployment's
+repository, not this one):
+
+- A **new port on the homelab relay only**: an nginx block that listens on the
+  relay's nebula address (as the deployment's other relayed services do) and proxies to
+  the gateway's mesh listener, with the streaming settings the spike used: an
+  empty-default `Connection` map, `proxy_buffering off`, `proxy_read_timeout
+  3600s`. **No prod relay block, no Traefik route and no Authelia rule**: the
+  mesh endpoint is never public, so the prod host firewall's relay port list
+  is not involved.
+- **Who can reach it:** every nebula mesh member, because the relay listens on
+  the mesh interface. Whether the deployment's nebula firewall can narrow that
+  port to a group of muster hosts is **UNVERIFIED**; if it can, it should.
+  Either way the endpoint is **token-gated**: a mesh member without an `mpt_`
+  token gets nothing but a refusal.
+- **The gateway's own failed-token throttle** applies on both listeners (for
+  example 10 bad tokens a minute per peer, then 429, as muster's mirror
+  connect does, [mirroring.md](../mirroring.md#tokens-revocation-rate-limits)),
+  because the mesh listener has no edge in front of it.
+- The gateway's listeners are also reachable from the LAN wherever its
+  Service is exposed as a NodePort (the relay proxies to a LAN address). That
+  is token-gated too, and is noted, not designed around.
 
 ### What the host checks before it dials
 
@@ -685,7 +750,7 @@ allowlist that is empty, meaning nothing, until written.
 | flag | env | default | |
 |---|---|---|---|
 | `-preview` | `MUSTER_MIRROR_PREVIEW` | off | turn it on |
-| `-preview-url` | `MUSTER_MIRROR_PREVIEW_URL` | none | the gateway's tunnel URL, `wss://tunnel.musterchief.com/v1/host` |
+| `-preview-urls` | `MUSTER_MIRROR_PREVIEW_URLS` | none | the gateway's tunnel endpoints, **in dial order**, comma-separated: the mesh endpoint, then `wss://tunnel.musterchief.com/v1/host` ([dial order](#host-dial-order-mesh-first-then-public)) |
 | `-preview-token-file` | `MUSTER_MIRROR_PREVIEW_TOKEN_FILE` | none | the host's `mpt_` token |
 | `-preview-file` | `MUSTER_MIRROR_PREVIEW_FILE` | `~/.config/muster-mirror/previews.json` | the allowlist |
 
@@ -1008,13 +1073,14 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 | `MUSTER_PLUGIN_ORIGINS` | muster-server | none | Origin patterns (`https://*.example.net`, exact or one wildcard label) a `viewer` plugin may be given; added to `frame-src` on the session views; a `Host` under them is refused with 421 on muster's listeners. Unset: seams (a) and (b) are off. |
 | `MUSTER_AGENT_PLUGIN_INGRESS` | muster-server | none | Seam (d), phase 2: `<namespace>/<label>=<value>[,…]:<port>`, the peer and port added to new claude-code agents' policy and Service. |
 | `MUSTER_AGENT_PREVIEW_PORTS` | muster-server | empty | Seam (d), phase 2: passed to agents as `CCD_PREVIEW_PORTS`. |
-| `MUSTER_MIRROR_PREVIEW`, `MUSTER_MIRROR_PREVIEW_URL`, `MUSTER_MIRROR_PREVIEW_TOKEN_FILE`, `MUSTER_MIRROR_PREVIEW_FILE` | muster-mirror | off / none / none / `~/.config/muster-mirror/previews.json` | [Host configuration](#host-configuration-previewsjson). |
+| `MUSTER_MIRROR_PREVIEW`, `MUSTER_MIRROR_PREVIEW_URLS`, `MUSTER_MIRROR_PREVIEW_TOKEN_FILE`, `MUSTER_MIRROR_PREVIEW_FILE` | muster-mirror | off / none / none / `~/.config/muster-mirror/previews.json` | [Host configuration](#host-configuration-previewsjson). |
 | `CCD_PREVIEW_LISTEN`, `CCD_PREVIEW_PORTS`, `CCD_PREVIEW_BEARER` | ccd | off | Phase 2: the pod gate and its MCP server; set by muster. |
 | `MUSTER_URL` | muster-preview | none | muster's API base URL, for its `/plugin/v1/*` calls; may be an in-cluster address (the name `muster-clankmail` already reads, `cmd/muster-clankmail/main_test.go:81`). |
 | `MUSTER_PUBLIC_URL` | muster-preview | none | muster's **public** URL, as browsers see it (the same meaning the server's variable has): the origin in `frame-ancestors` on `p-` and `w.`, and the base of links back to muster (`/plugin-handoffs/confirm`, "open from muster"). Required; it is not derived from `MUSTER_URL`. |
 | `PLUGIN_TOKENS_FILE` | muster-preview | none | The owners' `mpl_` tokens, one per line. |
 | `PREVIEW_DOMAIN` | muster-preview | none | `musterchief.com`. |
-| `PREVIEW_LISTEN` | muster-preview | `:8080` | The one listener, for `p-`, `w.` and `tunnel.`. |
+| `PREVIEW_LISTEN` | muster-preview | `:8080` | The public listener, for `p-`, `w.` and `tunnel.`. |
+| `PREVIEW_MESH_LISTEN` | muster-preview | none | The mesh listener: the host tunnel only, reached through the relay on the nebula address. A tunnel arriving here is on the `mesh` path. |
 | `PREVIEW_DATABASE_URL` | muster-preview | none | Its own state. |
 | `PREVIEW_SIGNING_KEY` | muster-preview | none | 32 random bytes: signs its cookies and page tokens. |
 | `PREVIEW_TTL`, `PREVIEW_IDLE`, `PREVIEW_MAX_BODY` | muster-preview | `24h`, `2h`, `32MiB` | [Lifecycle](#lifecycle), [limits](#limits-and-quotas). |
@@ -1031,7 +1097,7 @@ listener, proxy or key.
   `muster_previews_open{kind}`, `muster_preview_requests_total{kind,auth,code_class}`,
   `muster_preview_dial_seconds{kind,outcome}`, `muster_preview_bytes_total{kind,direction}`,
   `muster_preview_refusals_total{reason}`, `muster_preview_offers{state}`,
-  `muster_preview_tunnels`, `muster_preview_share_redemptions_total{outcome}`.
+  `muster_preview_tunnels{path}`, `muster_preview_share_redemptions_total{outcome}`.
 - **The host:** `host.preview.dial` with the refusing check; log one line per
   refused stream.
 - **The host's tools:** `host.preview.tool` spans for `preview_*` calls,
@@ -1055,6 +1121,8 @@ listener, proxy or key.
 | A hand-off code is intercepted | a log or a referrer | 60 s, single use, bound to plugin and target, redeemable only with that plugin's token; removed from the address bar (a redirect, or `history.replaceState` on `w.`) | none useful without the token |
 | **The gateway believes the host's window claim** | a local process on the host | the host's MCP proxy requires its per-host secret and refuses an `Origin` (`mcpproxy.go:336-350`); the window comes from the caller-supplied pane header (`mcpproxy.go:47-58`), mapped on a fresh listing, and muster does **not** re-check it (a tool call relayed through muster would have been re-checked by `mirrorSessionOf`, `internal/api/mirror_mcp.go:172`) | anything running as the host's user that can read the secret can open a preview attributed to any window on that host, on allowlisted ports; it still reaches only the owner's own session page, and the allowlist bounds what is exposed |
 | The pod's identity | the gateway | the gateway dialled that agent's gate from muster's target read, so the caller is the agent whose gate it is; no claim is involved | a process inside the pod acts as that agent, as it already can |
+| **The mesh endpoint is reachable by every mesh member** (and from the LAN at the gateway's NodePort) | any nebula member, any LAN device | the same `mpt_` token check and host binding as the public endpoint; a failed-token throttle; no prod relay, Traefik or public DNS for it; narrowing the port in the nebula firewall if it supports it (UNVERIFIED) | a mesh member can reach the gateway's tunnel listener and be refused; no edge sits in front of it, so it has no edge-level rate limiting; the token crosses the homelab relay in the clear inside nebula's encrypted hop |
+| A host's path is misreported | the host | the path is the listener the connection arrived on, not a host claim | none |
 | A host token is stolen | anyone with `mpt_` | it registers only its host name; revocable on the gateway CLI; 30 s recheck | it can impersonate that host's tunnel: answer streams with its own content for that host's previews, and send fake offers and opens (labels only, on the owner's own page) |
 | A leaked mirror token | anyone with `mmt_` | as today ([auth.md](../auth.md#machine-credentials)); it reaches **no** preview function, since the preview tools no longer go through muster | — |
 | A revoked muster session keeps an open preview | a signed-out owner, a stolen cookie | owner cookie TTL 8 h, no renewal without a fresh hand-off; closing the preview ends its cookies at once | **up to 8 h** after sign-out or disable, and a stolen cookie works for up to 8 h (decisions [13](#decisions), [19](#decisions)) |
@@ -1099,9 +1167,21 @@ gateway in the cluster, 2–3 engineer-days. **Go** if all hold:
 5. A server-sent event written by the upstream reaches the browser within
    500 ms (the edge does not buffer).
 
-**Result** ([PR #548](https://github.com/ZacxDev/muster/pull/548)): HTTP/2 `CONNECT` is go on (1)–(3), with the
-[connection-window invariant](#the-host-tunnel); (1), (4) and (5) are not yet
-measured on the real edge, so phase 1 is still gated on them.
+**Result** ([PR #548](https://github.com/ZacxDev/muster/pull/548)):
+
+| # | loopback (transport) | real edge (host leg through Cloudflare) | verdict |
+|---|---|---|---|
+| 1 | overhead p50 51–68 µs (h2) | overhead p50 **90–106 ms** (h2), **102–118 ms** (yamux); p95 95–124 ms (h2) | **fails on p50**, both transports: the host leg's second edge crossing, not the tunnel |
+| 2, 3 | pass (with the [connection-window invariant](#the-host-tunnel)) | not re-run | pass |
+| 4 | pass on a simulator | **pass**: 10 min idle with 30 s pings; without pings Cloudflare cuts at **≈125 s** (4× margin) | pass |
+| 5 | pass | **pass**, 7/7 runs: first event p50 96–106 ms, worst **415 ms** against the 500 ms bound | pass, **with a thin margin** |
+
+**Decision (operator):** hosts dial the gateway over the nebula
+mesh, with the public tunnel endpoint as their fallback
+([dial order](#host-dial-order-mesh-first-then-public)). Criterion (1) is kept
+as written and now applies to the **mesh** path; the public path's ~+100 ms is
+an accepted degraded mode. **Phase 1 stays gated on re-measuring (1) over the
+mesh path**, which is in progress separately.
 
 **If (1)–(3) fail** with `x/net/http2`, repeat with yamux; go if it passes.
 **If (4) or (5) fail**, the edge path is the problem: no-go for that path, and
@@ -1283,8 +1363,9 @@ check, written into its phase's PR.
 
 Unless marked otherwise, the operator made each of these; decisions 1–10
 were relayed by the coordinating session's briefs, 11–16 are the operator's
-answers to the round-0 audit on this pull request, and 17–19 are the
-operator's answers after the round-1 audit. Where a later
+answers to the round-0 audit on this pull request, 17–19 are the
+operator's answers after the round-1 audit, and 20–21 follow the real-edge
+spike results. Where a later
 decision changed an earlier one, the earlier one says so.
 
 1. **Origin: a wildcard subdomain.** Each preview at `p-<id>.<zone>`, gated by
@@ -1361,9 +1442,18 @@ decision changed an earlier one, the earlier one says so.
 19. **The owner preview cookie's TTL is 8 hours** (this page had proposed 1
     hour). It widens how long a sign-out, a disabled account or a stolen
     cookie can reach an open preview to 8 hours.
+20. **Hosts dial the gateway over the nebula mesh**: the
+    gateway's mesh address, the same tunnel protocol and the same `mpt_`
+    token. Only the browser leg goes through Cloudflare. Criterion (1) applies
+    to the mesh path, and phase 1 stays gated on its re-measurement.
+21. **Off-mesh hosts fall back to the public tunnel endpoint**:
+    mesh first, then `tunnel.musterchief.com`, which stays in the design; the
+    public path's ~+100 ms is an accepted degraded mode.
 
 Choices this page makes itself, which the operator has not ruled on: the
 gateway's session page holding its credential in page memory rather than a
 cookie; the stepped-up hand-off's confirm page (`/plugin-handoffs/confirm`);
-the open/ack protocol on the offer stream; and a stdio (not loopback HTTP) MCP
-server in the pod, following `hq mcp`.
+the open/ack protocol on the offer stream; a stdio (not loopback HTTP) MCP
+server in the pod, following `hq mcp`; and the mesh path's details (the 3 s
+fallback timeout, the 5-minute mesh re-try, the 60 s drain, plain `ws://`
+inside the mesh, and the path decided by listener).
