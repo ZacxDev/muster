@@ -156,9 +156,26 @@ for (const vp of [
       // A page whose ☰ is on screen at this size: the shell on a phone (the
       // rail is a drawer there), the Rendered view and then a Terminal view on
       // a desktop (their sidebar is an overlay at every width).
+      // 🔴 ONLY THE NEW DOCUMENT'S READS COUNT. The ask makes the page ON
+      // SCREEN refresh its badge (its events trigger), and that read can be
+      // issued after page.reload()/goto() has started but before the new
+      // document commits — the OLD page's read, aborted by the navigation
+      // (CI, run 42550480035 attempt 1: one read, status -1, 21 ms after the
+      // reload's document request). So each navigation under test arms
+      // `fresh`, and the main frame's next commit (framenavigated, delivered
+      // in order with the request events: the old page's reads before it, the
+      // new document's after) clears what the old page read. Cleared at the
+      // commit, never later, so a read the new page makes on load is counted.
       const reads: string[] = [];
+      let fresh = false;
       page.on('request', (r) => {
         if (new URL(r.url()).pathname === '/ui/nav/waiting') reads.push(r.url());
+      });
+      page.on('framenavigated', (f) => {
+        if (fresh && f === page.mainFrame()) {
+          fresh = false;
+          reads.length = 0;
+        }
       });
       await page.goto(vp.phone ? origin + '/tasks' : viewOf('plum'));
       await expect(menuBtn(page)).toBeVisible();
@@ -178,13 +195,17 @@ for (const vp of [
         // the switcher's Waiting view) — no read of its own. (Afterwards its
         // asks block's asks:changed refreshes it, on a queue change and on the
         // block's minute's tick.)
+        fresh = true;
         await page.reload();
+        expect(fresh, 'the reload committed (its reads are counted from there)').toBe(false);
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1));
         await page.waitForTimeout(500);
         expect(reads, 'the Rendered view drew the count with the page, no /ui/nav/waiting read').toEqual([]);
         // A Terminal view: also drawn with the page; nothing else on it
         // refreshes the badge but the drawer's open and its minute's poll.
+        fresh = true;
         await page.goto(origin + rig.terminalPath('plum') + '&window=%401');
+        expect(fresh, 'the Terminal view committed (its reads are counted from there)').toBe(false);
         await expect(menuBtn(page)).toBeVisible();
         await expect(badge(page)).toHaveAttribute('data-count', String(base + 1));
         await page.waitForTimeout(500);
