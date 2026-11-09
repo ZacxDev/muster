@@ -118,7 +118,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - host_dispatches (0093, the chief's host spawns).
 //   - notify_preferences (0094, the per-user notification preferences).
 //   - chief_proposals (0100, a session continuing one the owner viewed).
-//   - plugin_handoffs (0103, a viewer plugin's one-time hand-off codes).
+//   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}

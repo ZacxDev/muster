@@ -1,4 +1,4 @@
--- muster 0103 — THE VIEWER CAPABILITY AND HAND-OFF CODES (docs/design/
+-- muster 0104 — THE VIEWER CAPABILITY AND HAND-OFF CODES (docs/design/
 -- previews.md, "Capabilities on a plugin token" and seam (a), "Viewer
 -- hand-off"; docs/plugins.md#viewer-hand-off).
 --
@@ -38,7 +38,7 @@
 --   ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_origin_check;
 --   ALTER TABLE public.plugins DROP CONSTRAINT IF EXISTS plugins_entry_url_check;
 --   ALTER TABLE public.plugins DROP COLUMN IF EXISTS origin, DROP COLUMN IF EXISTS entry_url;
---   DELETE FROM schema_migrations WHERE version = 103;
+--   DELETE FROM schema_migrations WHERE version = 104;
 
 SET LOCAL lock_timeout = '3s';
 

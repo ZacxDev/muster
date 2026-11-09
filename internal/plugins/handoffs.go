@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// VIEWER HAND-OFF CODES (migration 0103; docs/plugins.md#viewer-hand-off).
+// VIEWER HAND-OFF CODES (migration 0104; docs/plugins.md#viewer-hand-off).
 //
 // The owner's browser, signed in on muster's own origin, mints a code for one
 // of its viewer plugins and a session view it is looking at; the browser then

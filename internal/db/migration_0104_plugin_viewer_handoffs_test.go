@@ -5,29 +5,29 @@ import (
 	"testing"
 )
 
-// TestMigration0103TiesTheViewerLinkAndKeepsEveryToken: a plugin token minted at
-// version 102 arrives at 0103 unchanged ({messages}, no origin, no entry URL).
+// TestMigration0104TiesTheViewerLinkAndKeepsEveryToken: a plugin token minted at
+// version 103 arrives at 0104 unchanged ({messages}, no origin, no entry URL).
 // After it, plugins_viewer_link stores a viewer token only WITH an origin and
 // an https entry URL, and refuses either on a token without viewer, or one
 // without the other; plugin_handoffs refuses a malformed code hash, purpose or
 // expiry and stores a well-formed row. Re-applying the file changes nothing.
-func TestMigration0103TiesTheViewerLinkAndKeepsEveryToken(t *testing.T) {
+func TestMigration0104TiesTheViewerLinkAndKeepsEveryToken(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0103_plugin_viewer", 102)
+	pool := freshAt(ctx, t, "ms_0104_plugin_viewer", 103)
 	old := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
 		VALUES (1, 'plugin-viewer-old', 'Example inbox', 'pluginhash-viewer-old', 'example') RETURNING id`)
 	var hasTable bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.plugin_handoffs') IS NOT NULL`).Scan(&hasTable); err != nil || hasTable {
-		t.Fatalf("control: at version 102 plugin_handoffs exists=%v (%v); want absent", hasTable, err)
+		t.Fatalf("control: at version 103 plugin_handoffs exists=%v (%v); want absent", hasTable, err)
 	}
 
-	applyThroughFrom(ctx, t, pool, 103)
+	applyThroughFrom(ctx, t, pool, 104)
 
 	var caps string
 	var origin, entry *string
 	if err := pool.QueryRow(ctx, `SELECT capabilities::text, origin, entry_url FROM plugins WHERE id = $1`, old).Scan(&caps, &origin, &entry); err != nil ||
 		caps != "{messages}" || origin != nil || entry != nil {
-		t.Fatalf("the token from before 0103: %s %v %v (%v); want {messages} with no origin or entry URL", caps, origin, entry, err)
+		t.Fatalf("the token from before 0104: %s %v %v (%v); want {messages} with no origin or entry URL", caps, origin, entry, err)
 	}
 
 	n := 0
@@ -82,11 +82,11 @@ func TestMigration0103TiesTheViewerLinkAndKeepsEveryToken(t *testing.T) {
 		t.Errorf("a well-formed hand-off: %v; want stored", err)
 	}
 
-	if _, err := pool.Exec(ctx, readMigration(t, "0103_plugin_viewer_handoffs.sql")); err != nil {
-		t.Fatalf("re-applying 0103: %v", err)
+	if _, err := pool.Exec(ctx, readMigration(t, "0104_plugin_viewer_handoffs.sql")); err != nil {
+		t.Fatalf("re-applying 0104: %v", err)
 	}
 	var handoffs int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM plugin_handoffs`).Scan(&handoffs); err != nil || handoffs != 1 {
-		t.Fatalf("after re-applying 0103: %d hand-offs (%v); want the one stored", handoffs, err)
+		t.Fatalf("after re-applying 0104: %d hand-offs (%v); want the one stored", handoffs, err)
 	}
 }

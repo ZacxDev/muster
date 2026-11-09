@@ -120,7 +120,7 @@ type Plugin struct {
 	Capabilities []Capability `json:"capabilities"`
 	// Origin and EntryURL are a `viewer` token's origin pattern (one of
 	// MUSTER_PLUGIN_ORIGINS at mint) and the URL under it a hand-off is sent
-	// to (migration 0103); nil on every other token.
+	// to (migration 0104); nil on every other token.
 	Origin   *string `json:"origin,omitempty"`
 	EntryURL *string `json:"entryUrl,omitempty"`
 	// OwnerLogin is how the owner's account is named to a person: its email,
