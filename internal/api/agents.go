@@ -1911,6 +1911,19 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit, nil)
 }
 
+// ownerTurnTyper is who an entered turn may mark as the OWNER'S TURN IN FLIGHT
+// (markOwnerTurn): typedBy, except for a line with a subject — one typed from
+// a session's view (view_chief.go) — which marks nothing. 🔴 NO OWNER RELEASE
+// FROM A VIEW (operator decision, PR #537 round 1): owner_asked releases
+// (ownerTurnFor) refuse while such a turn runs; the line is still recorded as
+// typed (typed_by).
+func ownerTurnTyper(typedBy int64, about *chatSubject) int64 {
+	if about != nil {
+		return notTyped
+	}
+	return typedBy
+}
+
 // runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
@@ -1918,7 +1931,8 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's three chat
 // doors (handleAgentWS, handleAgentSend, and the view's chief door
 // handleViewChief) and notTyped from every other caller. When it
-// is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
+// is a's owner AND the line has no subject (ownerTurnTyper: the view's door
+// never marks), the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
 // thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
 // TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
@@ -1944,7 +1958,7 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	if err != nil {
 		msg = agents.ChatMessage{} // no row to point at: nothing is marked
 	}
-	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, typedBy)
+	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, ownerTurnTyper(typedBy, about))
 	defer clearOwnerTurn()
 
 	// Mark active immediately (a turn always starts thinking) so the agent

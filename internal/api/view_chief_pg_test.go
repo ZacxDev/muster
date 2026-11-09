@@ -177,9 +177,10 @@ func TestTheViewChiefDoorBindsTheServersSubject(t *testing.T) {
 	if strings.Contains(text, focusSID) {
 		t.Errorf("the turn text names the forged subject %q:\n%s", focusSID, text)
 	}
-	// 🔴 AN OWNER'S TYPED TURN: marked in flight for that very row, by the owner.
-	if turn.By != 1 || turn.MessageID != row.ID {
-		t.Errorf("during the turn the owner-turn marker is %+v; want the owner (1) and the row %d", turn, row.ID)
+	// 🔴 TYPED, BUT NO OWNER RELEASE FROM A VIEW (PR #537 round 1): no
+	// owner-turn marker is set during the view's turn.
+	if turn.MessageID != 0 || turn.By != 0 {
+		t.Errorf("during the view's turn the owner-turn marker is %+v; want none (no owner release from a view)", turn)
 	}
 	if got := markerAfter(t, f.pool, f.chief); got.MessageID != 0 {
 		t.Errorf("the marker outlived the turn: %+v", got)

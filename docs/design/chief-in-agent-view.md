@@ -784,7 +784,16 @@ the operator's round 0 decisions on PR #537:
   - It resolves the subject through `mirrorEntry`, which is owner-scoped
     (`viewChiefSubject` → `sessionSubject`).
   - It runs the turn through `startAgentTurn` → `runEnteredTurn` with
-    `ownerTypedBy(ctx)`, on the chief's **default** session.
+    `ownerTypedBy(ctx)`, on the chief's **default** session. The line is
+    recorded as typed (`typed_by`).
+  - **No owner release from a view** (round 1): a line with a subject sets no
+    owner-turn marker (`ownerTurnTyper`), so `ownerTurnFor` — `owner_asked`
+    on `agent_dispatch` and on a gate release — refuses while its turn runs.
+    ⚠ This changes the summary's and 4.2's premise for phase 2, which bound
+    `successor_of` to the message `ownerTurnFor` returns: phase 2 needs its
+    own decision on how a view line authorises a succession.
+  - **It answers nothing** (round 1): no `askerAddressed`, so the chief's
+    open asks stay open, settled only from its own chat.
   - It has the same wrappers as `POST /agents/{name}/send`: a session, the
     gateway wired, same-origin.
   - It works when the agent composer is disabled.
@@ -815,7 +824,8 @@ the operator's round 0 decisions on PR #537:
 - **The chief strip.**
   - `GET /mirror/view/chief/log` serves the chief chat's own renderer
     (`ui.ChatLogBody`, surface `view-strip`), narrowed to this session's
-    exchange (`viewChiefThread`).
+    exchange (`viewChiefThread`), within the chief's newest 200 rows
+    (`chatHistoryCap`).
   - It refreshes on `chat.reply`, on a send, and every 20 s while the view is
     in chief mode.
   - It is a native `<details>`, scrolling within 45 dvh.
@@ -832,7 +842,9 @@ the operator's round 0 decisions on PR #537:
     kickoff (`prompt_from`) and the `successor_of` binding.
     `TestSessionContextAnswersExactlyItsKeys` pins the answer's key set.
 - **`sessions_overview`** now lists opencode windows (`liveSessions` reads
-  `mirrorFocusEntries`), with `runtime: "opencode"`. The stale "muster sends
+  `mirrorFocusEntries`), with `runtime: "opencode"`. The plugin session hint
+  does **not** suggest them (`hintableSessions`, round 1): a hint is an offer
+  to route, and `route_to_session` takes Claude Code windows only. The stale "muster sends
   only to Claude Code" comment is corrected.
 
 **Phase 2 brings, with the succession itself:**

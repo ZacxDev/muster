@@ -152,6 +152,15 @@ func TestTheNavAddsNoStream(t *testing.T) {
 			}
 		}
 	}
+	// The Rendered view WITH the chief mode (view_chief.go): ONE stream, the
+	// chief strip's (chat.reply), opened by its script only while the composer
+	// is switched to Chief and closed when switched back — the view has no
+	// other /events stream to reuse (its transcript is its own socket).
+	chief := MirrorViewPage(MirrorViewView{Host: "laptop", Session: "work", Window: "@1", Interactive: true, Chief: true,
+		Nav: NavChrome{Feat: featuresAllOn}})
+	if got := streamsIn(t, chief); got != 1 {
+		t.Errorf("MirrorViewPage with the chief mode opens %d /events stream(s), want 1 (the chief strip's)", got)
+	}
 	// POSITIVE CONTROL: the counter sees a stream where one is.
 	if n := streamsIn(t, Page(defaultTab, featuresAllOn)); n < 1 {
 		t.Fatalf("the shell counts %d streams — the counter is blind", n)

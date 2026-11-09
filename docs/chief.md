@@ -629,8 +629,13 @@ session you are looking at, instead of to the pane:
   repository, branch and model), and can read the session with
   `session_context`.
 - Its reply shows in a strip above the composer: the chief's own chat (its
-  default thread), narrowed to what you asked about this session. Each window
-  remembers the mode you left it in.
+  default thread), narrowed to what you asked about this session. It shows
+  only exchanges within the chief's newest 200 chat rows; an older exchange is
+  still in the chief's own chat. Each window remembers the mode you left it in.
+- A line sent from a session's view is recorded as typed by you, but it is
+  never your go-ahead for something only you can release: `owner_asked` on a
+  dispatch or a gated task is refused while its turn runs, and it answers none
+  of the chief's open questions. Do those from the chief's own chat.
 
 `session_context {subject, messages?}` is a chief-only, read-only tool. It
 takes one of your mirrored sessions (a Claude Code session id, or

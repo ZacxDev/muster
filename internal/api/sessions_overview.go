@@ -171,6 +171,23 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 	return out
 }
 
+// hintableSessions is sessions minus the mirrored windows of a runtime other
+// than Claude Code (opencode). 🔴 A HINT IS AN OFFER TO ROUTE: the plugin
+// session hint names sessions the chief may hand a message to with
+// route_to_session, which takes Claude Code windows only (mirrorClaudeEntries).
+// sessions_overview still LISTS them (a read); the hint does not suggest them
+// (PR #537 round 1).
+func hintableSessions(sessions []liveSession) []liveSession {
+	out := sessions[:0:0]
+	for _, ls := range sessions {
+		if ls.sub.Kind == focus.KindMirror && ls.runtime != "" {
+			continue
+		}
+		out = append(out, ls)
+	}
+	return out
+}
+
 // liveOf is sessions as the focus store's liveness filter.
 func liveOf(sessions []liveSession) focus.Live {
 	var l focus.Live
@@ -213,7 +230,7 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 		h.Sessions = mergeHints(plugins.MaxHintSessions, byPR)
 		return h
 	}
-	live := s.liveSessions(ctx, chief.ID)
+	live := hintableSessions(s.liveSessions(ctx, chief.ID))
 	if len(bound) > 0 {
 		kept := live[:0:0]
 		for _, ls := range live {

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
@@ -31,12 +30,15 @@ import (
 // found, and a field the page adds (a "subject", an "about", a session key) is
 // never read. TestTheViewChiefDoorBindsTheServersSubject pins it.
 //
-// 🔴 AN OWNER-TYPED TURN, BY THE SAME RULE AS THE CHIEF'S OWN CHAT. The turn runs
-// through startAgentTurn → runEnteredTurn with ownerTypedBy(ctx), so the row is
-// typed (typed_by), the turn is marked as the owner's in flight (markOwnerTurn)
-// and ownerTurnFor passes for it exactly as for a line typed in the chief's
-// chat. A principal that is not a signed-in browser session is refused before
-// anything is stored (viewChiefNotSignedIn): this door is the owner at the view.
+// 🔴 A TYPED LINE, BUT NEVER AN OWNER RELEASE (operator decisions, PR #537
+// round 1). The turn runs through startAgentTurn → runEnteredTurn with
+// ownerTypedBy(ctx), so the row is recorded as the owner's typing (typed_by).
+// But runEnteredTurn sets NO owner-turn marker for a line with a subject
+// (ownerTurnTyper), so owner_asked releases (chief_owner_release.go
+// ownerTurnFor) refuse while a view turn runs, and the line answers none of the
+// chief's open asks (no askerAddressed): those are settled only from the
+// chief's own chat. A principal that is not a signed-in browser session is
+// refused before anything is stored (viewChiefNotSignedIn).
 //
 // 🔴 IT IS A WRITE TO THE CHIEF'S CHAT, NOT TO THE PANE: no -interactive, no
 // step-up, and it works when sending to the agent is disabled (a read-only
@@ -269,16 +271,16 @@ func (s *Server) handleViewChief(w http.ResponseWriter, r *http.Request) {
 		viewChiefSent(w, r, nav, back)
 		return
 	}
-	// The turn gate first, then the asks (handleAgentSend's order).
+	// The turn gate first (handleAgentSend's order).
 	if !s.turns.enter(chief.ID) {
 		finish(false)
 		refuse(http.StatusConflict, ErrAgentBeingReplaced.Error(), noticeNotRunning)
 		return
 	}
 	finish(true)
-	// The owner wrote to the chief: its open asks are answered here, as in
-	// its own chat.
-	s.askerAddressed(ctx, attention.Asker{AgentID: chief.ID}, text)
+	// 🔴 NO askerAddressed: a line typed from a session's view answers NONE of
+	// the chief's open asks (operator decision, PR #537 round 1). They stay
+	// open, settled only from the chief's own chat.
 	s.startAgentTurn(ctx, chief, sess, text, typer, &about)
 	s.logger.Printf("view chief: the owner asked the chief about %s (%s on %s)", about.SessionKey, about.Runtime, about.Host)
 	viewChiefSent(w, r, nav, back)
