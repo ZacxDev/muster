@@ -680,7 +680,7 @@ it leaves the agent's task as it was.
 
 - **The clock** is `agents.stopped_at` (migration 0045): the time the row last
   moved into `stopped`, stamped by a database trigger (today the writers of
-  `stopped` are Stop and a saved dispatch). Writing `stopped` over a row that
+  `stopped` are Stop and the insert of an agent saved for later). Writing `stopped` over a row that
   already is `stopped` does not move it. **Start** moves the row out of
   `stopped`, so the next Stop starts a new clock: a restarted agent that is
   stopped again waits a full window. Agents already stopped when 0045 was

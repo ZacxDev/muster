@@ -280,14 +280,17 @@ func TestADispatchIsRefusedWhileASaveAndAStartAreNot(t *testing.T) {
 				"the create path it claims to.\n  body: %s", len(rows),
 				truncate(rec.Body.String(), 400))
 		}
+		// A save is the `stopped` row and NO Dispatch: its kickoff=false Dispatch
+		// only rewrote `stopped` and could overwrite a Start that landed first
+		// (TestAStartRightAfterASaveIsNotOverwrittenBackToStopped). The wait bounds
+		// an absence, so it is short.
+		if rows := store.rows(); rows[0].Status != agents.StatusStopped {
+			t.Errorf("the save's row was inserted %q, want %q", rows[0].Status, agents.StatusStopped)
+		}
 		select {
 		case <-prov.dispatchC:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the save never reached Provisioner.Dispatch")
-		}
-		if d := prov.dispatches(); len(d) != 1 || d[0] {
-			t.Errorf("the save reached Dispatch with kickoff=%v, want exactly one call with "+
-				"kickoff=false", d)
+			t.Errorf("the save reached Provisioner.Dispatch (kickoff %v); want no call", prov.dispatches())
+		case <-time.After(200 * time.Millisecond):
 		}
 	})
 

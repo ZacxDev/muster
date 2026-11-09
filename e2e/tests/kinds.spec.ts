@@ -66,15 +66,14 @@ test('a Claude Code agent lands on a pinned or pooled account, a pool worker in 
   // save creates one stopped agent and returns the ONE row it created (the set
   // of rows is diffed, so a row left by an earlier run cannot answer).
   //
-  // 🔴 IT RETURNS ONLY ONCE THE ROW READS `stopped`. A stopped create is NOT
-  // stopped when POST /api/agents answers: createAndDispatchAgent
-  // (internal/api/agents.go) inserts the row as `provisioning` and a background
-  // goroutine (agentprovision Adapter.Dispatch, kickoff=false) stores `stopped`
-  // after the 201. `provisioning` is one of the LIVE statuses the pool counts
-  // (ccpool PGStore.LiveCounts), so until that write lands the agent just made
-  // counts against its account — and the next pooled choice here can go to the
-  // other account. That is the CI flake this wait removes (the pool worker
-  // landed on beta because the pooled agent on alpha still read provisioning).
+  // 🔴 IT ALSO ASSERTS THE ROW READS `stopped`. A stopped create once read
+  // `provisioning` until a background write after the 201, and `provisioning`
+  // is one of the LIVE statuses the pool counts (ccpool PGStore.LiveCounts), so
+  // the next pooled choice here could go to the other account (the CI flake
+  // fixed by #557). createAndDispatchAgent (internal/api/agents.go) now inserts
+  // a stopped create as `stopped`, so this poll passes on its first read; it
+  // stays as a cheap guard against that order coming back
+  // (TestAStoppedCreateDoesNotSteerTheNextAccountChoice is the server-side one).
   const save = async (opts: Parameters<typeof createAgent>[1]): Promise<AgentRow> => {
     const before = new Set((await agentRows()).map((a) => a.name));
     const made = await createAgent(origin, opts);
