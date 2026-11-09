@@ -162,3 +162,61 @@ no new dependency, and yamux bought nothing measurable. Two additions:
    them at a remote gateway takes a small adaptor: the host process runs
    remotely, and the upstream's SSE send time has to come from the event
    payload rather than an in-process channel.
+
+## Real-edge results (2026-11-09)
+
+Measured through the real public path, then torn down. Code:
+`cmd/edgespike` (`gateway` deployed; `run` and `idlews` on the client side).
+
+**Path.** Client and host both ran in **one process on one workstation on the
+homelab LAN**. The gateway was a pod on the homelab cluster. Every byte went
+workstation → Cloudflare (PoP **ORD**, HTTP/2 + TLS 1.3 to the browser side)
+→ prod Traefik (Hetzner, `5.161.19.116`) → prod nginx relay → nebula mesh →
+homelab nginx relay → gateway pod. The host's tunnel made the **same trip**
+in the other direction. Both relays used muster's streaming block: an empty-default
+`Connection` map, `proxy_buffering off` and `proxy_read_timeout 3600s`. No
+Authelia was in front; the gateway's own shared secret gated every path.
+Segment round trips: workstation→ORD 28 ms, workstation→Hetzner 48 ms,
+prod relay→homelab over nebula 49 ms. **Read every number at this scope.**
+The gateway sits next to the host on the LAN, but the traffic goes out to
+Cloudflare and Hetzner and comes back twice. A deployment whose gateway sits
+near its edge would see different numbers.
+
+| # | conditions | runs | result | bound | verdict |
+|---|---|---|---|---|---|
+| 1 | 150 echoes/side, 64 B, one in flight; bare = the gateway's own `/__bare_echo` over the same public path | 3 h2 + 3 yamux | bare p50 **98–114 ms**. Overhead p50 **90–106 ms** (h2), **102–118 ms** (yamux); p95 **95–124 ms** (h2), **111–154 ms** (yamux) | +50 ms p50 / +150 ms p95 | **FAIL on p50, every run, both transports.** p95 held for h2 (3/3) and for yamux 2/3 (one run 154 ms). |
+| 4 | h2, 30 s WebSocket pings on the tunnel (both ends) and the gateway→client leg, 10 min with no data | 1 | echo after idle **ok**, new stream on the same tunnel **ok**, tunnel alive | survive 10 min | **pass** |
+| 4 control | no pings anywhere (`-no-pings`) | 1 (+1 bare-only repeat) | host tunnel, relayed `/ws` and bare `/__bare_echo` all cut at **124.5 s, 124.6 s, 125.0 s** idle, clean EOF at both client and gateway. Repeat (bare only): **125 s** | — | the real edge cuts idle WS at **≈125 s** |
+| 5 | first `data:` line, written 200 ms after headers; 15 streams/run | 3 h2, 3 h2 + `Accept-Encoding: gzip`, 1 yamux | p50 **96–106 ms**, max **105–415 ms**; gzip request answered uncompressed | ≤ 500 ms | **pass, 7/7**. The worst case was 415 ms, close to the bound. |
+| 5 control | host flushes only the response head (`-host-no-flush`) | 1 | `C5: no response headers … Client.Timeout exceeded` after 7 s | — | **red**. The message differs from the loopback control ("event not delivered"): through this path, even the response headers did not arrive. |
+
+**What the edge does, as measured:**
+
+- **Idle WebSocket cut: about 125 s, by Cloudflare.** The same no-ping bare
+  WebSocket sent **straight to the origin** (`5.161.19.116:443`, skipping
+  Cloudflare) was **still open at 300 s**. Sent through Cloudflare it was cut
+  at 125 s. The gateway log agrees (`bare_echo ended after 5m0.3s` vs
+  `2m5.2s`). The relays' 3600 s read timeout and Traefik did not cut it within
+  300 s. The cut is a clean close (EOF), seen at the client and the gateway at
+  the same moment.
+- **WebSocket ping/pong frames count as activity.** In the 10-minute pass, only
+  ping/pong frames crossed the wire (30 s apart), and nothing was cut. Without
+  them, the cut came at 125 s. So the 30 s ping interval is sufficient here,
+  with a 4× margin.
+- **No buffering of `text/event-stream` was observed** on this path, with the
+  relays' `proxy_buffering off`. First-event latency (~100 ms) is about one
+  edge round trip, since the event crosses the tunnel and the client leg.
+  Not measured: what the relays do with buffering ON. The SSE recipe does not
+  use it, and it was not changed for the test.
+- **(1) is dominated by the extra edge leg, as predicted.** The tunnel case
+  crosses the whole public path a second time. That costs one more
+  workstation↔Cloudflare↔Hetzner↔homelab round trip, about 100 ms here. The
+  transport itself costs about 0.1 ms (loopback numbers above), and h2 vs yamux
+  is within noise. **With this topology, (1) fails whichever transport is
+  used.** The bound can only be met if the host↔gateway round trip through the
+  edge is under about 50 ms. That depends on placing the gateway near the edge,
+  not on the tunnel.
+
+**Not measured on the real edge:** (2) and (3), which passed on loopback and
+were not re-run; the 10-minute run for yamux; loss or bandwidth limits; a
+browser client. Brotli `Accept-Encoding` was not tried; Go asked only for gzip.
