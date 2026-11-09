@@ -299,6 +299,72 @@ func TestTheBarsPillsCarryTheCodenameByTheViewersOwnSwitch(t *testing.T) {
 	}
 }
 
+// TestTheSidebarRowsCarryTheCodenameByTheViewersOwnSwitch: on real Postgres
+// (row-level security on the switch), the sidebar's rows — GET
+// ui.NavAgentsPath, the partial every SSE/htmx refresh of the sidebar
+// re-fetches, and what the command palette reads on a page with no bar —
+// draw a named window's place (its data-nav-tmux line, and data-switcher-tmux
+// for the palette's row) exactly when the VIEWER turned the switch on: default
+// off; a member's switch on does not reach the operator's rows; the operator's
+// on does, and is read again on the next fetch (the refresh). A window with no
+// human name, and the agent's row, never carry it.
+func TestTheSidebarRowsCarryTheCodenameByTheViewersOwnSwitch(t *testing.T) {
+	f := newAttnFixture(t)
+	if _, err := focus.NewPG(f.pool).SetManualName(asUser(1), focus.MirrorSubject(focusSID), "Ledger cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agent_focus WHERE subject_key = $1`, focusSID)
+	})
+	ws := attnWindows(mirror.StatusIdle)
+	ws[0].Label = "Gold:1"
+	f.mirror.mu.Lock()
+	f.mirror.windows = ws
+	f.mirror.mu.Unlock()
+	member := f.newMember(t)
+	p := notifypref.NewPG(f.pool)
+	f.srv.ext.NotifyPrefs = p
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notify_preferences WHERE owner_id = ANY($1)`, []int64{1, member})
+	})
+	rows := func() string { t.Helper(); return f.page(t, ui.NavAgentsPath) }
+	const attr, line = `data-switcher-tmux="Gold:1 @ ws"`, `<span data-nav-tmux="" class="min-w-0 truncate text-xs font-normal text-muted">Gold:1 @ ws</span>`
+
+	off := rows()
+	if strings.Contains(off, "data-switcher-tmux") || strings.Contains(off, "data-nav-tmux") || !strings.Contains(off, `data-switcher-name="Ledger cleanup"`) {
+		t.Fatalf("default: the rows carry a codename (or lost the named row):\n%s", truncate(off, 2000))
+	}
+	if err := p.SetTmuxAddress(asUser(member), member, true); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(); r != off {
+		t.Fatalf("a member's switch changed the operator's rows:\n got  %s\n want %s", truncate(r, 2000), truncate(off, 2000))
+	}
+	if err := p.SetTmuxAddress(asUser(1), 1, true); err != nil {
+		t.Fatal(err)
+	}
+	on := rows()
+	if !strings.Contains(on, attr) || !strings.Contains(on, line) {
+		t.Fatalf("on: the named row has no place:\n%s", truncate(on, 3000))
+	}
+	// Exactly one row: the named window. Window @2 is called by its place,
+	// and the operator's agent has no tmux window.
+	if a, l := strings.Count(on, "data-switcher-tmux="), strings.Count(on, "data-nav-tmux="); a != 1 || l != 1 {
+		t.Fatalf("on: %d rows carry the attribute and %d the line, want only the named one", a, l)
+	}
+	if !strings.Contains(on, `id="`+agentNavID(f.op.ID)+`"`) {
+		t.Fatal("control: the agent's row is not in the list")
+	}
+	// The next fetch — an SSE nudge or the minute's tick re-fetching the
+	// partial — reads the switch again: off again, gone.
+	if err := p.SetTmuxAddress(asUser(1), 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(); r != off {
+		t.Fatalf("off again: the rows are not the default's:\n got  %s\n want %s", truncate(r, 2000), truncate(off, 2000))
+	}
+}
+
 // TestTheAccountSwitchIsOffForEveryoneAndPersistsPerUser: on real Postgres
 // (row-level security, the session tier), a member and the operator who never
 // chose both read OFF on the Account page; the member turns it on — stored as

@@ -36,6 +36,16 @@ type ProposalView struct {
 	Options []string
 }
 
+// The classes of a proposal card's body (its kickoff) on the Attention view
+// and the ask page, which internal/api draws (proposalBodyHTML). They live
+// HERE because the stylesheet scans internal/ui, not that file: a class
+// written only there would never be built.
+const (
+	ProposalBodyClass     = "flex min-w-0 flex-col gap-1"
+	ProposalBodyNoteClass = "text-xs text-fg2"
+	ProposalKickoffClass  = "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-s1 px-3 py-2 font-mono text-xs text-fg ring-1 ring-line"
+)
+
 // proposalButtonClass styles the card's buttons.
 const proposalButtonClass = "press inline-flex min-h-[44px] items-center rounded-lg px-3 text-sm font-semibold transition "
 

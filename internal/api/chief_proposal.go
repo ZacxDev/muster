@@ -210,12 +210,13 @@ func proposalBodyHTML(b *proposalBody) string {
 		return ""
 	}
 	esc := html.EscapeString
-	out := `<div class="flex min-w-0 flex-col gap-1" data-attention-proposal>
-<p class="text-xs text-fg2">` + esc(b.label) + `</p>
-<pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-s1 px-3 py-2 font-mono text-xs text-fg ring-1 ring-line" data-attention-proposal-kickoff>` + esc(b.text) + `</pre>
+	// The classes are ui's (the stylesheet scans internal/ui, not this file).
+	out := `<div class="` + ui.ProposalBodyClass + `" data-attention-proposal>
+<p class="` + ui.ProposalBodyNoteClass + `">` + esc(b.label) + `</p>
+<pre class="` + ui.ProposalKickoffClass + `" data-attention-proposal-kickoff>` + esc(b.text) + `</pre>
 `
 	if b.cut {
-		out += `<p class="text-xs text-fg2" data-attention-proposal-cut>` + esc(successionCutNote) + `</p>
+		out += `<p class="` + ui.ProposalBodyNoteClass + `" data-attention-proposal-cut>` + esc(successionCutNote) + `</p>
 `
 	}
 	return out + "</div>\n"
