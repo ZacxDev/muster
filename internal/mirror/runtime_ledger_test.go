@@ -148,6 +148,9 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirror/hub.go hostConn.target ×1",
 		"internal/mirror/hub.go hostConn.targetRuntime ×1",
 		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×3",
+		// An opencode dispatch's final reply rides only an opencode window: it
+		// is opencode's own wire (outcomes.go), the runtime with no muster tool.
+		"internal/mirror/outcomes.go NormalizeOutcomes ×1",
 		"internal/mirror/runtime.go (declarations) ×4",
 		"internal/mirror/transcript.go hostConn.claudeWaiting ×1",
 		"internal/mirror/turnerror.go boundTurnError ×1",
@@ -156,6 +159,9 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirrorhost/opencode.go ResolveOpenCodePaneStarted ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
 		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",
+		// The host reading an opencode dispatch window's final reply checks the
+		// window is opencode's (opencode_outcome.go).
+		"internal/mirrorhost/opencode_outcome.go OpenCodeSource.dispatchOutcomes ×1",
 		// The gated send checking the window is opencode's NOW.
 		"internal/mirrorhost/opencode_send.go hostSide.sendOpenCode ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeGone ×1",

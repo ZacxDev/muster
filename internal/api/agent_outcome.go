@@ -557,7 +557,14 @@ func (s *Server) pushOutcome(ctx context.Context, a agents.Agent, outcome, verb,
 
 // outcomeChiefNote is the note a chief reads about an agent it started.
 func outcomeChiefNote(a agents.Agent, label, outcome, verb, detail string) string {
-	who := fmt.Sprintf("Agent %s (%q, id %d) that you started with agent_dispatch", a.Name, label, a.ID)
+	return outcomeChiefNoteAbout(fmt.Sprintf("Agent %s (%q, id %d) that you started with agent_dispatch", a.Name, label, a.ID),
+		outcome, verb, detail)
+}
+
+// outcomeChiefNoteAbout is THE outcome note's text, about who (how the note
+// names the agent): a pod's (outcomeChiefNote) and a host dispatch's
+// (noteHostOutcomeToChief) read the same.
+func outcomeChiefNoteAbout(who, outcome, verb, detail string) string {
 	switch outcome {
 	case agentoutcome.Failed:
 		return "[muster] " + who + " FAILED: " + detail + ". Its status is now error. Tell your owner what went wrong, " +
@@ -585,17 +592,26 @@ func (s *Server) noteOutcomeToChief(octx context.Context, a agents.Agent, outcom
 	if err != nil || chief.OwnerID != a.OwnerID {
 		return // destroyed, or not the owner's: nobody to tell
 	}
+	if err := s.writeChiefNote(octx, chief, outcomeChiefNote(a, s.agentLabel(octx, a), outcome, verb, detail)); err != nil {
+		s.logger.Printf("outcomes: agent %d: note to the chief: %v", a.ID, err)
+	}
+}
+
+// writeChiefNote is THE writer of an outcome note: content, as a user row in
+// chief's default session (it costs the chief no turn), and the chat redraw.
+// A pod's outcome (noteOutcomeToChief) and a host dispatch's
+// (noteHostOutcomeToChief) both write through it.
+func (s *Server) writeChiefNote(octx context.Context, chief agents.Agent, content string) error {
 	sess, err := s.defaultSession(octx, chief)
 	if err != nil {
-		s.logger.Printf("outcomes: agent %d: the chief's session: %v", a.ID, err)
-		return
+		return fmt.Errorf("the chief's session: %w", err)
 	}
 	if _, err := s.ext.Agents.AddChatMessage(octx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user",
-		Content: outcomeChiefNote(a, s.agentLabel(octx, a), outcome, verb, detail)}); err != nil {
-		s.logger.Printf("outcomes: agent %d: note to the chief: %v", a.ID, err)
-		return
+		Content: content}); err != nil {
+		return err
 	}
 	s.broadcastTo(chief.OwnerID, EventChatReply, chief.Name)
+	return nil
 }
 
 // turnFailureCounts is whether a turn's error is the AGENT failing — and the
