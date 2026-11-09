@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strconv"
 
+	"github.com/ZacxDev/muster/internal/textplain"
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -26,7 +27,6 @@ import (
 //   - the successor's own header line: "Continues <old title> · <mode> · open
 //     previous".
 // ---------------------------------------------------------------------------
-
 
 // MirrorSuccessorPath is the view's succession read (JSON: its state, its
 // card, where the successor is).
@@ -51,13 +51,13 @@ type SuccessionView struct {
 	ID    int64
 	State string
 	// Mode is replace or spinoff, "" while the owner has not chosen.
-	Mode                  string
-	Target, Model, Repo   string
-	BaseNote              string
-	SubjectTitle, PredPath   string
-	Superseded            bool
+	Mode                   string
+	Target, Model, Repo    string
+	BaseNote               string
+	SubjectTitle, PredPath string
+	Superseded             bool
 	// Card is the proposal card while the succession is proposed.
-	Card *ProposalView
+	Card                  *ProposalView
 	Host, Title, ViewPath string
 	Refusal               string
 }
@@ -72,7 +72,6 @@ func successionModeText(mode string) string {
 	}
 	return "replace or spin off — you choose"
 }
-
 
 // SuccessionCard is the card (or line, or banner) of the succession of the
 // view at ref; nil when there is nothing to draw (none, or declined).
@@ -103,14 +102,14 @@ func SuccessionCard(ref MirrorRef, x *SuccessionView) g.Node {
 	case SuccessionFailed:
 		return line("bg-danger/15 text-fg", g.Text("The successor could not be started: "+x.Refusal))
 	case SuccessionEnded:
-		return line("bg-s1 text-muted", g.Text("Its successor “"+x.Title+"” has ended."), open("open"))
+		return line("bg-s1 text-muted", g.Text("Its successor “"+textplain.Title(x.Title)+"” has ended."), open("open"))
 	case SuccessionRunning:
 		if x.Mode == "replace" {
 			return line("bg-st-warning-bg text-st-warning-fg", Span(Class("font-semibold"), g.Text("Superseded. ")),
-				g.Text("Continued in “"+x.Title+"”."), open("Open it →"),
+				g.Text("Continued in “"+textplain.Title(x.Title)+"”."), open("Open it →"),
 				Span(Class("block text-muted"), g.Text("This window keeps running: close it on "+x.Host+" when you are done.")))
 		}
-		return line("bg-s1 text-fg2", g.Text("Spun off “"+x.Title+"”."), open("Open it →"))
+		return line("bg-s1 text-fg2", g.Text("Spun off “"+textplain.Title(x.Title)+"”."), open("Open it →"))
 	}
 	// Proposed: THE chief's proposal card (view_proposal.go), its region's
 	// attributes on it.

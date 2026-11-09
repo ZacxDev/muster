@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -61,16 +62,16 @@ const successionProposeTool = "succession_propose"
 
 // The proposal's refusals, each its own sentence.
 const (
-	successionArgs      = "arguments are {successor_of, succession, prompt_from: {ref, block?}, target?, model?, repo?, base?}"
+	successionArgs    = "arguments are {successor_of, succession, prompt_from: {ref, block?}, target?, model?, repo?, base?}"
 	successionBadMode = "succession must be replace, spinoff, or ? when your owner did not say which (muster then asks them " +
 		"with a card)"
 	successionNoPromptFrom = "prompt_from is required: {ref} names the message of that session's transcript that holds the kickoff " +
 		"(session_context's ref), and block names its fenced block (omit block for the whole message)"
-	successionNoRef      = "no message %s in that session's recent transcript: read it again with session_context"
-	successionNoBlock    = "message %s has %d fenced block(s); block %d is not one of them"
-	successionEmpty      = "the kickoff muster would copy is empty"
-	successionTooLong    = "the kickoff is %d bytes; at most %d fit: ask your owner to shorten it"
-	successionControl    = "the kickoff holds a control character a runtime refuses; muster copies a kickoff only byte for byte, " +
+	successionNoRef   = "no message %s in that session's recent transcript: read it again with session_context"
+	successionNoBlock = "message %s has %d fenced block(s); block %d is not one of them"
+	successionEmpty   = "the kickoff muster would copy is empty"
+	successionTooLong = "the kickoff is %d bytes; at most %d fit: ask your owner to shorten it"
+	successionControl = "the kickoff holds a control character a runtime refuses; muster copies a kickoff only byte for byte, " +
 		"so it cannot be sent: ask your owner to fix it in that session"
 	successionTarget = "target %q is not a host target with its host and runtime named (host/<host>/claude or " +
 		"host/<host>/opencode): a successor runs on a host for now"
@@ -88,8 +89,11 @@ const (
 )
 
 // successionPushDelay is how long muster waits, once a successor runs, for a
-// view to open it before it pushes the owner a link (design 2.5 step 5).
-var successionPushDelay = 30 * time.Second
+// view to open it before it pushes the owner a link (design 2.5 step 5), in
+// nanoseconds (atomic: a test shortens it while timers armed by others read it).
+var successionPushDelay atomic.Int64
+
+func init() { successionPushDelay.Store(int64(30 * time.Second)) }
 
 // successionProposeToolDef is the tool's listing.
 func successionProposeToolDef() agents.ToolDef {
@@ -602,7 +606,8 @@ func (s *Server) successionDispatchMoved(pctx context.Context, owner, id int64, 
 // no view opened it within successionPushDelay (design 2.5 step 5): once
 // (notified_at), and never once its view was opened (successor_seen_at).
 func (s *Server) armSuccessionPush(owner, id int64) {
-	time.AfterFunc(successionPushDelay, func() {
+	delay := time.Duration(successionPushDelay.Load())
+	time.AfterFunc(delay, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		pctx := s.hostDispatchPrincipal(ctx, owner)
@@ -618,11 +623,13 @@ func (s *Server) armSuccessionPush(owner, id int64) {
 		if ok, err := st.SetSuccessionNotified(pctx, id); err != nil || !ok {
 			return
 		}
-		title := firstNonBlank(lv.Title, "The new session") + " started on " + lv.Host
+		// The push names no session by the name adapter (the "Show tmux
+		// sessions" notification rule is notifyName's): the host only.
+		title := "Your new session started on " + lv.Host
 		s.pushTask(owner, push.EventAgent, RouterNotification{Type: taskNotificationType, ID: proposalEventID(x), Title: title,
 			Body: "It continues " + firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey) + ". Open it.", Tag: proposalEventID(x),
 			Data: map[string]string{"url": lv.ViewPath}})
-		s.logger.Printf("succession %d: no view opened the successor within %s; pushed its owner a link", id, successionPushDelay)
+		s.logger.Printf("succession %d: no view opened the successor within %s; pushed its owner a link", id, delay)
 	})
 }
 

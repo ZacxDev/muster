@@ -634,9 +634,9 @@ func TestTheSuccessionProposeKeysArePinned(t *testing.T) {
 // opened it within the delay, muster pushes once (notified_at); a successor
 // whose view was opened first is never pushed about.
 func TestTheSuccessorPushWaitsForAView(t *testing.T) {
-	old := successionPushDelay
-	successionPushDelay = 50 * time.Millisecond
-	t.Cleanup(func() { successionPushDelay = old })
+	old := successionPushDelay.Load()
+	successionPushDelay.Store(int64(50 * time.Millisecond))
+	t.Cleanup(func() { successionPushDelay.Store(old) })
 	f := newSuccFixture(t)
 	start := func() plugins.Proposal {
 		f.viewLine(t, sxOpenCodeKey, "continue it")
