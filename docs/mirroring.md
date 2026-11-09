@@ -1276,6 +1276,17 @@ times an hour per window. An hourly sweep removes a spawned worktree whose windo
 is gone **only** when it is clean and its branch has no commit the remote lacks;
 anything else stays, logged.
 
+**How a spawned agent says it finished.** A Claude Code agent calls
+`agent_report_done` on the mirror MCP. An opencode agent has no muster tool, so
+the host reads it instead: for each idle window carrying `@muster-dispatch` and
+running a launcher-bound opencode session, it reads that session's final reply
+from the opencode server (once per change of the session) and sends its last
+three lines on an `outcomes` message. muster records **done** only when the
+reply's last line is `MUSTER-DONE: <summary>`, and **waiting** otherwise; a
+later turn in the window puts the card back to Working. An older host sends no
+`outcomes` message, so its opencode dispatches stay Working until their window
+closes. Details: [design](design/chief-dispatch.md), section 3.7.
+
 **Turning it on, one step at a time.** Ship the binary with `-agent-spawn` unset
 (nothing changes); then set `-agent-spawn` and **one** repository in
 `-agent-spawn-repos` on one host's default mirror unit only (never a

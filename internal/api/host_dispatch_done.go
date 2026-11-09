@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -132,22 +133,68 @@ func (s *Server) toolHostReportDone(ctx context.Context, host, sid, window, argu
 		"next": "Recorded: your owner is told you finished. Your window stays open; your owner closes it to end the dispatch."})
 }
 
-// hostDispatchDone tells the owner host dispatch h finished: the card redraws
-// (the same event an end sends) and one push.
+// hostDispatchDone tells the owner host dispatch h finished — by either path
+// (agent_report_done for Claude, the reply's done line for opencode): the card
+// redraws (the same event an end sends), one push, and a note to the owner's
+// chief.
 func (s *Server) hostDispatchDone(ctx context.Context, h plugins.HostDispatch, summary string) {
+	s.announceHostOutcome(ctx, h, agentoutcome.Done, "finished", summary,
+		summary+" Close its window (agents:"+h.Window+") on "+h.Host+" to end the dispatch.", summary)
+}
+
+// hostDispatchWaiting tells the owner host dispatch h stopped WITHOUT saying it
+// finished (an opencode reply with no done line): the card redraws, one push
+// quoting the reply's last line, and a note to the chief quoting its last
+// lines.
+func (s *Server) hostDispatchWaiting(ctx context.Context, h plugins.HostDispatch, line string, lines []string) {
+	s.announceHostOutcome(ctx, h, agentoutcome.Waiting, "is waiting for you", line,
+		line+" Open its window (agents:"+h.Window+") on "+h.Host+" to answer it.", strings.Join(lines, "\n"))
+}
+
+// announceHostOutcome is what a host dispatch's changed outcome does, once
+// (its caller's conditional write applied): the agent.changed event, ONE push
+// "<runtime> on <host> <verb>: <detail>" tagged so a newer outcome replaces an
+// older one, and the chief's note (noteHostOutcomeToChief) quoting note.
+func (s *Server) announceHostOutcome(ctx context.Context, h plugins.HostDispatch, outcome, verb, detail, body, note string) {
 	// To the ROW'S owner: h was read under the caller's principal (row-level
 	// security), so h.Owner is the mirror token's owner — as endHostDispatch
 	// names its owner explicitly.
-	owner := h.Owner
 	id := strconv.FormatInt(h.ID, 10)
-	s.logger.Printf("host dispatch %s on %s finished", id, h.Host)
+	s.logger.Printf("host dispatch %s on %s %s", id, h.Host, verb)
 	s.broadcastTo(h.Owner, EventAgentChanged, "host-dispatch-"+id)
-	who := hostDispatchRuntimeLabel(h) + " on " + h.Host
-	s.pushTask(owner, push.EventAgentOutcome, RouterNotification{
+	s.pushTask(h.Owner, push.EventAgentOutcome, RouterNotification{
 		Type:  taskNotificationType,
-		Title: who + " finished: " + summary,
-		Body:  summary + " Close its window (agents:" + h.Window + ") on " + h.Host + " to end the dispatch.",
+		Title: hostDispatchRuntimeLabel(h) + " on " + h.Host + " " + verb + ": " + truncate(detail, outcomePushTitleMax),
+		Body:  body,
 		Tag:   "host-dispatch-" + id + "-outcome",
 		Data:  map[string]string{"url": ui.MirrorViewPath(h.Host, mirror.AgentSpawnSession)},
 	})
+	s.noteHostOutcomeToChief(ctx, h, outcome, verb, note)
+}
+
+// noteHostOutcomeToChief writes the outcome note (outcomeChiefNoteAbout, the
+// pod path's text) into the default session of h's owner's chief, through the
+// one writer (writeChiefNote). A host dispatch is started only by its owner's
+// chief (agent_dispatch), so that chief is the one told; an owner with no chief
+// on is told by the push alone.
+func (s *Server) noteHostOutcomeToChief(ctx context.Context, h plugins.HostDispatch, outcome, verb, detail string) {
+	if s.ext.Agents == nil {
+		return
+	}
+	pctx := s.hostDispatchPrincipal(context.WithoutCancel(ctx), h.Owner)
+	chief, err := s.chiefAgent(pctx)
+	if err != nil {
+		if !errors.Is(err, ErrNoChief) {
+			s.logger.Printf("host dispatch %d: find the chief: %v", h.ID, err)
+		}
+		return
+	}
+	if chief.OwnerID != h.Owner {
+		return
+	}
+	who := fmt.Sprintf("The %s agent on %s (host dispatch %d, window agents:%s) that you started with agent_dispatch",
+		hostDispatchRuntimeLabel(h), h.Host, h.ID, h.Window)
+	if err := s.writeChiefNote(pctx, chief, outcomeChiefNoteAbout(who, outcome, verb, detail)); err != nil {
+		s.logger.Printf("host dispatch %d: note to the chief: %v", h.ID, err)
+	}
 }

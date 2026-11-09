@@ -413,9 +413,10 @@ func TestAHostDispatchsSessionWorksItsOwnTaskOnly(t *testing.T) {
 }
 
 // TestTheSpawnRulesAreRuntimeSpecific: claude's spawn prompt carries the pod
-// rules (agent_report_done with no task, ready_for_review on one); opencode's,
-// which has no muster tool path, names NO muster tool and ends with its own
-// rules, on a task and without one.
+// rules (agent_report_done with no task, ready_for_review on one) and never the
+// done line; opencode's, which has no muster tool path, names NO muster tool,
+// gives the done line its host reads (agentoutcome.DoneSentinel) and the rule
+// to ask without it, and ends with its own rules, on a task and without one.
 func TestTheSpawnRulesAreRuntimeSpecific(t *testing.T) {
 	task := notes.Note{ID: 77, Body: "Fix the typo."}
 	tools := []string{"agent_report_done", "chief_ask", "attention_", "task_get", "task_comment", "task_set_status", "tasks_list", "route_reply"}
@@ -436,6 +437,14 @@ func TestTheSpawnRulesAreRuntimeSpecific(t *testing.T) {
 			if strings.Contains(oc, name) {
 				t.Errorf("on task %v: opencode's prompt names %q, a tool it cannot call:\n%s", onTask, name, oc)
 			}
+		}
+		// opencode is told the done line, exactly as the grammar spells it, and to
+		// ask WITHOUT it; claude, which has agent_report_done, is not.
+		if !strings.Contains(oc, " exactly: "+agentoutcome.DoneSentinel+" <a one-line summary>.") || !strings.Contains(oc, "do NOT write that line") {
+			t.Errorf("on task %v: opencode's prompt does not give the done line and the ask-without-it rule:\n%s", onTask, oc)
+		}
+		if strings.Contains(claude, agentoutcome.DoneSentinel) {
+			t.Errorf("on task %v: claude's prompt names the done line, which is opencode's", onTask)
 		}
 		if !onTask && !strings.Contains(claude, "agent_report_done") {
 			t.Error("claude's no-task prompt lost agent_report_done")

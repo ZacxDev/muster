@@ -237,6 +237,28 @@ func FirstLine(s string, max int) string {
 	return ""
 }
 
+// DoneSentinel is THE completion signal of an agent that has no muster tool
+// to call (a host-spawned opencode agent, docs/design/chief-dispatch.md 3.7):
+// its final reply's LAST non-empty line, exactly this prefix and a one-line
+// summary.
+const DoneSentinel = "MUSTER-DONE:"
+
+// ParseDone is the done grammar, THE one place it is written: line (a reply's
+// last non-empty line) trimmed of surrounding white space must START with
+// DoneSentinel exactly — case, punctuation and all, nothing before it, no
+// markdown around it — and what follows, trimmed, is the summary, which must
+// not be empty. ok is false for anything else, and a reply whose last line is
+// not this is WAITING, never done (the package doc's rule: done is an explicit
+// signal only).
+func ParseDone(line string) (summary string, ok bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(line), DoneSentinel)
+	if !found {
+		return "", false
+	}
+	summary = strings.TrimSpace(rest)
+	return summary, summary != ""
+}
+
 // LastLines is a reply's last n non-empty lines, each cut to max runes: what a
 // "waiting for you" push and note quote — the end of a turn is where its
 // question is, not its first line.

@@ -2290,6 +2290,8 @@ The card reads the row, and the hub's listing for the row's window:
 | `pending`, no reply yet | "Starting on `<host>`…", the runtime, and for opencode the model |
 | `pending`, reply timed out | "Started on `<host>`? muster has not seen the window yet" |
 | `running` | the window `agents:<window>` on `<host>`, the runtime and model, the agent's status from the listing (`busy`, `idle`, `waiting`), and a link to the window page |
+| `running`, done | **Done**, "Finished: `<summary>`", and "close the window on `<host>` to end it and free its slot" (below) |
+| `running`, waiting (opencode) | **Waiting**, "Waiting for you: `<the reply's last line>`" (below) |
 | `ended`, refused | the refusal's sentence ([3.1](#31-wire-messages-and-capability)) |
 | `ended`, otherwise | "Ended (`<why>`)"; for a kept worktree, its path and branch |
 
@@ -2385,9 +2387,89 @@ task from any session but its own, nor after it has ended.
 
 **The spawn rules are per runtime** (`spawnRules`). Claude keeps the pod rules
 unchanged. opencode has no muster tool path, so its rules name no muster tool.
-They tell it to finish, end with a final message that summarises the result,
-and leave the window for the owner to close. A cut task is not pointed at
-`task_get`.
+They tell it to end its final message with one last line,
+`MUSTER-DONE: <a one-line summary>`, when the work is finished, and to ask in
+its final message **without** that line when it needs its owner; the owner
+closes the window. The sentence is built from the grammar's own constant
+(`agentoutcome.DoneSentinel`). A cut task is not pointed at `task_get`.
+
+**An opencode dispatch's outcome** (migration `0099`,
+`internal/mirrorhost/opencode_outcome.go`, `internal/mirror/outcomes.go`,
+`internal/api/host_dispatch_outcome.go`). opencode runs without asking, so by
+the owner's decision it gets **no** muster tool, and cannot call
+`agent_report_done`. Its host observes the session it spawned instead:
+- **What the host reads.** For each window it lists that carries a
+  `@muster-dispatch` tag, runs an opencode session the launcher bound (so the
+  session is known, not matched from a title) and is **idle**, the host reads
+  the session's newest 30 messages from its opencode server. The final reply is
+  the newest assistant message (its id is the reply's *mark*) and the text of
+  the newest assistant message that has any, after the person's last prompt.
+  Nothing is read while that message is still streaming or a prompt is not yet
+  answered. One read per session per change: the read is remembered against the
+  session's event count, so an idle window costs nothing on later refreshes; a
+  failed read sends nothing and is retried after 30 s.
+- **The wire.** The host sends the reply's last three non-empty lines and its
+  mark on a message of its own, `outcomes` (the window list's worst case
+  already fills 98% of a frame, as for `work`): the whole map of window id to
+  outcome, after the window list, whenever it changed; an empty map clears it.
+  Both halves keep an outcome only on a listed, idle, opencode window with a
+  dispatch tag and a session (`NormalizeOutcomes`), at most 32 per message
+  (11.5% of a frame at every bound). Each line is cut to 200 bytes with its
+  control characters made spaces. No version bump: an older muster drops the
+  message, and an older host never sends one, so its opencode dispatches stay
+  "Working" until their window closes, as before.
+- **The decision is the server's, in one place.** `agentoutcome.ParseDone` is
+  the grammar: the reply's **last** line, trimmed, must start with exactly
+  `MUSTER-DONE:` (case, punctuation and all, with nothing before it and no
+  markdown around it), and the rest, trimmed, is a summary that must not be
+  empty. Then the row is **done** with that summary, scrubbed as
+  `agent_report_done`'s is (`hostDoneSummary`). Anything else is **waiting**,
+  with the last line: a question, a progress report, the line quoted earlier in
+  the reply, an empty summary, the wrong case. **An idle reply is never done**
+  (the pod path's rule, [How an agent's work ends](../provisioner.md#how-an-agents-work-ends)).
+- **Once per reply.** The store writes only when the reply's mark is not the one
+  it last recorded (`outcome_mark`), so each reply pushes once and notes the
+  chief once. Done is still not ended: the row stays `running` and holds its
+  slot. A wait is pushed when it is recorded; the pod path's 60-second hold
+  before telling a wait is not applied here.
+- **Who can record one.** The hub's hook runs as the **connection's** owner,
+  over that connection's host's rows. A row's window is the one
+  `dispatchWindow` picks (a forged tag never moves it), and it must run the
+  row's own opencode session (`agent_session`). The store's write
+  (`RecordHostDispatchOutcome`) repeats the host and session in its `WHERE`,
+  and writes only an **opencode** row that is `running`.
+- **Not for Claude.** An outcome on a Claude dispatch's window is refused and
+  logged: a Claude dispatch reports done only with `agent_report_done`, whose
+  caller is bound to its own session (`callerHostDispatch`). The host path must
+  not become a way around that binding. A Claude dispatch has no waiting
+  outcome; its card shows the listing's status as before.
+- **The trust model is the host's.** The host is authenticated by its token, as
+  for every listing; it can claim any outcome for its own windows, exactly as
+  it can claim their status today. It cannot claim one for another host's or
+  another owner's dispatch.
+
+**A later turn** (both runtimes). A done or waiting dispatch whose window is
+then listed **busy** (or waiting on a prompt) goes back to **Working**
+(`RearmHostDispatch`): the owner typed into it. Its next reply is judged
+afresh. A Claude dispatch calls `agent_report_done` in the middle of a turn, so
+the busy listing right after the report is that same turn: it is re-armed only
+after it has been listed **idle** once since the report (`done_settled`,
+`SettleHostDispatchDone`), and can then report done again. A re-arm pushes
+nothing. The outcome hook runs on its own goroutine for each listing and each
+`outcomes` message; each call carries a number that grows across the hub, and
+a call older than one already applied is dropped, so a late busy snapshot
+cannot undo a newer reply.
+
+**The chief is told.** A done host dispatch (either runtime) and a waiting
+opencode one write one note into the default session of the owner's chief,
+with the pod path's text (`outcomeChiefNoteAbout`, through the one writer
+`writeChiefNote`): "finished: `<summary>`. Tell your owner it is done", or
+"WAITING FOR YOUR OWNER … Its last words:" and the reply's last lines. An
+owner with no chief on is told by the push alone.
+
+**The seam ledger now has eight writers**: 0097's `MarkHostDispatchDone`, and
+0099's `RecordHostDispatchOutcome`, `RearmHostDispatch` and
+`SettleHostDispatchDone`, each called only by the outcome reconciler.
 
 ### 3.8 Read-only and tenant hosts
 

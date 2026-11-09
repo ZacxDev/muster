@@ -116,6 +116,11 @@ func (s *Service) SetSpawnReplyNotify(fn func(owner int64, host string, m Msg)) 
 // SetListingNotify installs the hub's listing hook (Hub.SetListingNotify).
 func (s *Service) SetListingNotify(fn func(owner int64, host string, windows []Window)) { s.hub.SetListingNotify(fn) }
 
+// SetOutcomesNotify installs the hub's outcomes hook (Hub.SetOutcomesNotify).
+func (s *Service) SetOutcomesNotify(fn func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)) {
+	s.hub.SetOutcomesNotify(fn)
+}
+
 // SpawnAgent asks one of the viewing principal's hosts to start an agent for
 // host dispatch dispatch. See Hub.SpawnAgent.
 func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, req AgentSpawnReq) (AgentSpawned, error) {
