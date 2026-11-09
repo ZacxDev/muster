@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/http"
 	"slices"
 	"strconv"
@@ -153,6 +154,75 @@ func (s *Server) bindViewSubject(ctx context.Context, chief agents.Agent, claime
 	}
 	return line, e, s.sessionSubject(ctx, e), ""
 }
+
+// proposalBody is what an owner's proposal card draws under its question on
+// the Attention view and the ask page, read from the proposal ROW (never from
+// the ask): for a succession, its kickoff.
+type proposalBody struct {
+	label, text string
+	// cut: text is cut, and the whole is on the session's view.
+	cut bool
+}
+
+// proposalKickoffBody is ask a's proposal body for ctx's principal, nil when
+// a is no proposal's card (or the principal is not its owner: the store reads
+// the principal's own proposals only). 🔴 THE ONE PLACE OFF THE SESSION'S VIEW
+// THAT THE KICKOFF IS READ FOR DRAWING, and only for the owner's own pages
+// (withAskBoxes, renderAskPage): the ask's question never holds it
+// (successionCardQuestion), so attention_list, attention_wait, the push and
+// an answer's delivery cannot hand it to anyone.
+func (s *Server) proposalKickoffBody(ctx context.Context, a attention.Ask) *proposalBody {
+	st := s.proposals()
+	if st == nil || !a.OwnerCard || a.Asker.AgentID <= 0 || a.Owner != requestOwner(ctx) {
+		return nil
+	}
+	x, err := st.ProposalByAsk(ctx, a.ID)
+	if err != nil || x.Kind != plugins.ProposalSuccession {
+		return nil
+	}
+	b := &proposalBody{label: "Kickoff · " + strconv.Itoa(len(x.Kickoff)) + " bytes, copied exactly from the session", text: x.Kickoff}
+	if !successionKickoffFitsCard(x) {
+		b.text, b.cut = cutRunes(x.Kickoff, successionCardKickoffRoom(x)), true
+	}
+	return b
+}
+
+// isProposalCard reports whether ask a is one of ctx's principal's chief
+// proposal cards.
+func (s *Server) isProposalCard(ctx context.Context, a attention.Ask) bool {
+	st := s.proposals()
+	if st == nil || !a.OwnerCard || a.Asker.AgentID <= 0 {
+		return false
+	}
+	_, err := st.ProposalByAsk(ctx, a.ID)
+	return err == nil
+}
+
+// proposalAnsweredText is a proposal card's answer as the Answered list and
+// the ask page say it (#546 round 2, G1): recorded, and never delivered to
+// the chief, which muster told in its own words.
+const proposalAnsweredText = "muster recorded your answer. It is not sent to your chief: muster told it what you decided in its own words."
+
+// proposalBodyHTML is b as the Attention view's card and the ask page draw it
+// ("" for nil).
+func proposalBodyHTML(b *proposalBody) string {
+	if b == nil {
+		return ""
+	}
+	esc := html.EscapeString
+	out := `<div class="flex min-w-0 flex-col gap-1" data-attention-proposal>
+<p class="text-xs text-fg2">` + esc(b.label) + `</p>
+<pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-s1 px-3 py-2 font-mono text-xs text-fg ring-1 ring-line" data-attention-proposal-kickoff>` + esc(b.text) + `</pre>
+`
+	if b.cut {
+		out += `<p class="text-xs text-fg2" data-attention-proposal-cut>` + esc(successionCutNote) + `</p>
+`
+	}
+	return out + "</div>\n"
+}
+
+// successionCutNote is a cut kickoff's line under it off the view.
+const successionCutNote = "Cut here: the whole kickoff is on the session's view, and it starts from there."
 
 // fileProposal records proposal n (its kind's fields set by the caller) about
 // the session keyed key (subject about), answering the owner's message
@@ -333,7 +403,14 @@ func proposalSurfaceRefusal(ctx context.Context, x plugins.Proposal, answer stri
 		return successionReviewOnView
 	case successionStartLabel, successionReplaceLabel, successionSpinoffLabel:
 		// 🔴 NEVER FROM THE PHONE (round 1, 🟡2): its notification shows the
-		// card's question, not the kickoff the start would run.
+		// card's question, not the kickoff the start would run. DEFENCE IN
+		// DEPTH, unreachable in production today (round 2, G2): the only
+		// doors that mark an answer a tapped button (withOptionTap) are the
+		// Attention view's form and the view's tap route, both behind a
+		// signed-in browser session (requireSession), so a phone's answer
+		// is refused by optionTapped above — and a proposal card's push
+		// carries no chips or signed actions anyway (proposalCardFiled).
+		// This keeps a start off the phone should either of those change.
 		if p, ok := authz.From(ctx); ok && p.Via == authz.ViaDevice {
 			return successionReviewOnView
 		}

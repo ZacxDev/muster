@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -187,12 +186,13 @@ func (s *Server) kickoffCopy(ctx context.Context, key, ref string, block *int) (
 
 // kickoffSendable reports whether kickoff can be sent unaltered: valid UTF-8
 // with no control character but a newline or a tab (what the claude-code
-// runtime refuses, fence.Sanitize's note) and NO INVISIBLE FORMATTING — a
-// Unicode format character (Cf: zero-width characters, the bidi overrides and
-// isolates U+202A–202E and U+2066–2069) or a tag character (U+E0000–E007F).
-// Those would make the text the owner reads on the card differ from what the
-// agent runs, so a kickoff holding one is refused, never altered (round 1,
-// 🟡4).
+// runtime refuses, fence.Sanitize's note) and none of the invisible
+// characters that can make the text the owner reads on the card differ from
+// what the agent runs (kickoffInvisible). A kickoff holding one is refused,
+// never altered (round 1, 🟡4). Every other format character is ordinary
+// text and passes (round 2): an emoji sequence's zero-width joiner, the ZWNJ
+// of Persian and the Indic scripts, the left-to-right and right-to-left
+// marks, a soft hyphen.
 func kickoffSendable(kickoff string) bool {
 	if !utf8.ValidString(kickoff) {
 		return false
@@ -201,11 +201,27 @@ func kickoffSendable(kickoff string) bool {
 		if r == '\n' || r == '\t' {
 			continue
 		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || unicode.Is(unicode.Cf, r) || (r >= 0xE0000 && r <= 0xE007F) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || kickoffInvisible(r) {
 			return false
 		}
 	}
 	return true
+}
+
+// kickoffInvisible reports whether r reorders or hides text: a bidi
+// embedding or override (U+202A–202E) or isolate (U+2066–2069), a zero-width
+// space or word joiner (U+200B, U+2060), a zero-width no-break space or byte
+// order mark (U+FEFF), or a tag character (U+E0000–E007F).
+func kickoffInvisible(r rune) bool {
+	switch {
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+		return true
+	case r == 0x200B, r == 0x2060, r == 0xFEFF:
+		return true
+	case r >= 0xE0000 && r <= 0xE007F:
+		return true
+	}
+	return false
 }
 
 // successorPrompt is a successor's first message: muster's spawn preface
@@ -281,36 +297,42 @@ func successionBaseNote(x plugins.Proposal) string {
 	return "from " + x.Base
 }
 
-// successionCardQuestion is the card's question on the Attention view and the
-// phone: what starts, where, and the kickoff itself (cut only when the whole
-// question would not fit; the view's card always shows it whole).
+// successionCardQuestion is the card's QUESTION, the attention ask's, which
+// the Attention view, the phone's push, attention_list, attention_wait and an
+// answer's delivery all read: muster's own sentence of what starts, where,
+// and how long the kickoff is. 🔴 IT HOLDS NO KICKOFF TEXT, BY CONSTRUCTION
+// (#546 round 2): the kickoff is raw session text, kept ONLY on the proposal
+// row (chief_proposals.kickoff), and only the owner's card draws it, from
+// that row (the session's view: successionCard; the Attention view and the
+// ask page: proposalKickoffBody). So no reader of the ask, now or added
+// later, is handed it. It reads x.Kickoff for its length only
+// (TestNoWriterPutsTheKickoffInTheAsk pins that).
 func successionCardQuestion(x plugins.Proposal) string {
-	q := successionCardHead(x)
-	if successionKickoffFitsCard(x) {
-		return q + x.Kickoff
-	}
-	return q + cutRunes(x.Kickoff, attention.MaxQuestionRunes-utf8.RuneCountInString(q)-80) + "\n[the whole kickoff is on the session's view]"
-}
-
-// successionCardHead is the card question's text before the kickoff.
-func successionCardHead(x plugins.Proposal) string {
 	what := "Start a session that continues “" + firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey) + "”"
 	settings := successionModeLabel(x.Mode) + " · " + x.Target
 	if x.Model != "" {
 		settings += " · " + x.Model
 	}
 	settings += " · " + x.Repo + ", " + successionBaseNote(x)
-	return what + "?\n" + settings + "\nKickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied from the session):\n"
+	return what + "?\n" + settings + "\nThe kickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied exactly from the session) is shown on the card."
 }
 
-// successionKickoffFitsCard reports whether x's kickoff fits WHOLE in the
-// card's question (the Attention view's and the phone's). 🔴 ONE THAT DOES
-// NOT is startable only from the session's view, where it is shown whole
-// (operator decision, #546 round 0 Q1): elsewhere its card offers only
-// "Review on the session's view", and a start from there is refused
-// (proposalSurfaceRefusal).
+// successionKickoffFitsCard reports whether x's kickoff fits WHOLE on the
+// Attention view's card, which draws it from the proposal row under the
+// question, in the room the question leaves of an ask's
+// (successionCardKickoffRoom). 🔴 ONE THAT DOES NOT is startable only from
+// the session's view, where it is shown whole (operator decision, #546 round
+// 0 Q1): elsewhere its card offers only "Review on the session's view", and
+// a start from there is refused (proposalSurfaceRefusal).
 func successionKickoffFitsCard(x plugins.Proposal) bool {
-	return utf8.RuneCountInString(x.Kickoff) <= attention.MaxQuestionRunes-utf8.RuneCountInString(successionCardHead(x))
+	return utf8.RuneCountInString(x.Kickoff) <= successionCardKickoffRoom(x)
+}
+
+// successionCardKickoffRoom is how many runes of x's kickoff the Attention
+// view's card shows: what an ask's question may hold
+// (attention.MaxQuestionRunes) less the card's own question.
+func successionCardKickoffRoom(x plugins.Proposal) int {
+	return attention.MaxQuestionRunes - utf8.RuneCountInString(successionCardQuestion(x))
 }
 
 // successionReviewLabel is a cut kickoff's one button off the view.

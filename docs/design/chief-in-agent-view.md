@@ -1016,14 +1016,13 @@ this kickoff" step).
   because the proposal inherits the settings itself.
 
 **Round 1 (audit of #546):**
-- The kickoff never reaches the chief's model raw. The tool's
-  `kickoff.first_line` is redacted with `redact.Secrets` (the session_context
-  redactor). A proposal card's answer is **never delivered back** as an
-  attention answer: its question carries the copied kickoff, so its delivery
-  is closed (`MarkWaited`) and no turn is queued. The chief gets muster's own
-  sentence instead, a chat note that costs no turn ("Your owner tapped Start
-  on your proposal N (succession of <key>)…", or "declined"), with no kickoff
-  text.
+- The tool's `kickoff.first_line` is redacted with `redact.Secrets` (the
+  session_context redactor). A proposal card's answer is **never delivered
+  back** as an attention answer: a tap is not a request for a turn, so its
+  delivery is closed (`MarkWaited`) and no turn is queued. The chief gets
+  muster's own sentence instead, a chat note that costs no turn ("Your owner
+  tapped Start on your proposal N (succession of <key>)…", or "declined"),
+  with no kickoff text. The Answered list says muster recorded the answer.
 - A start is a **tapped button**: the view's card, or the Attention view's
   option button (`optionTapped`). Typed text that spells a button accepts
   nothing.
@@ -1033,18 +1032,39 @@ this kickoff" step).
   refused server-side. The surfaces that may start one are those that
   showed the whole kickoff: the session's view always, and the Attention
   view when the kickoff fits its card.
-- A kickoff holding invisible formatting is refused, never altered: a
-  Unicode format character (zero-width characters, the bidi overrides and
-  isolates) or a tag character.
+- A kickoff holding invisible formatting is refused, never altered: a bidi
+  embedding, override or isolate (U+202A–202E, U+2066–2069), a zero-width
+  space, word joiner or byte order mark (U+200B, U+2060, U+FEFF), or a tag
+  character (U+E0000–E007F). Round 2 narrowed this from every format
+  character: an emoji sequence's zero-width joiner, the ZWNJ of Persian and
+  the Indic scripts, the left-to-right and right-to-left marks and a soft
+  hyphen are ordinary text.
 - The card promises the fall back to the default branch only where it runs
   (D4: the inherited branch of a session the chief started).
+
+**Round 2 (delta audit of #546):**
+- **The kickoff never reaches the chief's model raw, by construction.** The
+  card's attention ask holds muster's own sentence only ("Start a session that
+  continues “…”? … The kickoff (N bytes, copied exactly from the session) is
+  shown on the card."), never kickoff text. The kickoff is stored only on the
+  `chief_proposals` row. The owner's card draws it from that row: the
+  session's view, and the Attention view's card and the ask page (both for
+  the owner's own principal only). So `attention_list`, `attention_wait`,
+  the push, the delivery sweep (even when closing the delivery fails) and any
+  later reader of the ask see no kickoff. A ledger test pins that the only
+  writer of a proposal's ask is `fileProposal`, whose question is built by
+  a builder that reads the kickoff's length only.
+- The cut rule is unchanged in effect and reads the row's kickoff length: a
+  kickoff over the room the question leaves of an ask's limit is drawn cut on
+  the Attention view, whose card then offers only "Review on the session's
+  view".
 
 **Left for later, stated:**
 - The 30 s push to a successor nobody opened is an in-process timer: a muster
   restart in those 30 s loses it (the successor still runs and is listed).
-- The view's card shows its own kickoff in full; the Attention view and the
-  phone show the question's text, which holds the kickoff whole only when it
-  fits the question's limit.
+- The view's card shows its own kickoff in full; the Attention view's card
+  shows it whole only when it fits the question's limit, and the phone's push
+  shows only the question.
 - An owner line typed in the chief's own chat while a card is open settles the
   oldest open owner card in session (the owner-card rule); a succession card
   settled that way starts nothing and reads as expired on the view.

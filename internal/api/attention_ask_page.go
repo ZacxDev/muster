@@ -79,6 +79,7 @@ func (s *Server) askShowsSuggestions(ctx context.Context, a attention.Ask) bool 
 // renderAskPage writes ask a's page (or, for ?part=live, its live region).
 func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attention.Ask) {
 	it := s.askItemNow(r.Context(), a)
+	it.proposalCard = s.isProposalCard(r.Context(), a)
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil
 	}
@@ -106,6 +107,9 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
 <p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
 `)
+	// A chief proposal's card: its body (the kickoff) from the proposal row,
+	// which the ask's question never holds.
+	b.WriteString(proposalBodyHTML(s.proposalKickoffBody(r.Context(), a)))
 	// A closed ask has no answer box, where the notices show: an answer or a
 	// dismissal refused because the ask closed meanwhile (?notice=ask-closed)
 	// is said here instead.
@@ -176,7 +180,7 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 `)
 		}
 		if a.Status == attention.Answered {
-			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target))
+			text, _ := answerDeliveryText(a, textplain.TitleKeeping(it.Source, it.target), it.proposalCard)
 			b.WriteString(`<p class="break-words text-sm text-fg2" data-ask-delivery>` + esc(text) + `</p>
 `)
 		}

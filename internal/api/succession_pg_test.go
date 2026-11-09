@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -303,10 +304,15 @@ func TestTheKickoffIsCopiedByteForByte(t *testing.T) {
 		x.KickoffSHA256 != "e146979add69d0404283b6c9bf228ff8b7614480b2568264e4690600a86105c3" {
 		t.Fatalf("the copied kickoff: %q (ref %s block %d)\nwant %q", x.Kickoff, x.KickoffRef, x.KickoffBlock, sxBlock0)
 	}
-	// The card shows it whole (the Attention view's question).
+	// The owner's Attention view shows it whole, from the proposal row; the
+	// card's question holds none of it (#546 round 2).
 	cs := f.cards(t)
-	if len(cs) != 1 || !strings.HasSuffix(cs[0].Question, "\n"+sxBlock0) || strings.Join(cs[0].Options, "|") != "Start it|Not now" {
+	if len(cs) != 1 || strings.Contains(cs[0].Question, "widget parser") || strings.Join(cs[0].Options, "|") != "Start it|Not now" {
 		t.Fatalf("the card: %+v", cs)
+	}
+	if page := f.ownerGet(t, f.srv.handleAttentionItems, "/attention/items", 0); !strings.Contains(page,
+		`data-attention-proposal-kickoff>`+html.EscapeString(sxBlock0)+`</pre>`) {
+		t.Fatalf("the Attention view's card does not show the kickoff whole:\n%s", page)
 	}
 	// The tap: the host is sent a first message holding the block BYTE FOR
 	// BYTE, after muster's preface and before its rules.
@@ -699,8 +705,7 @@ func TestACutKickoffStartsOnlyFromTheView(t *testing.T) {
 	}
 	x, _ := f.plugins.ProposalByID(f.asOwner, id)
 	cs := f.cards(t)
-	if len(cs) != 1 || strings.Join(cs[0].Options, "|") != "Review on the session's view" ||
-		!strings.HasSuffix(cs[0].Question, "\n[the whole kickoff is on the session's view]") {
+	if len(cs) != 1 || strings.Join(cs[0].Options, "|") != "Review on the session's view" || strings.Contains(cs[0].Question, "0123456789abcdef") {
 		t.Fatalf("the cut card: %+v", cs)
 	}
 	phone := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaDevice})
