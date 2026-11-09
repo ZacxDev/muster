@@ -245,7 +245,10 @@ func logLineFor(out, prefix string) string {
 // feature that was asked for. Controls: with a key they are on; with
 // MUSTER_SUGGEST=off, off for that reason.
 func TestAKeylessInstallReportsSuggestAndFocusOffNotMisconfigured(t *testing.T) {
-	ext := api.Extensions{Suggest: &suggest.Engine{}, Focus: focus.NewPG(nil)}
+	// On: the registry fixture has no Prefs (no store wired), so it stands for
+	// a server whose engine serves someone; a DB-less default-off engine is
+	// TestNoDatabaseSuggestRepliesAreOffUnlessOn.
+	ext := api.Extensions{Suggest: &suggest.Engine{On: true}, Focus: focus.NewPG(nil)}
 	keyless := featureSet(t, config{FocusInterval: time.Minute}, ext, true)
 	for _, id := range []string{features.SuggestedReplies, features.Focus} {
 		f, _ := keyless.Get(id)
@@ -261,7 +264,7 @@ func TestAKeylessInstallReportsSuggestAndFocusOffNotMisconfigured(t *testing.T) 
 	}
 	// With a credential store, members can bring their own key: both are ON,
 	// and the reason says for whom (#441 round 1).
-	withStore := api.Extensions{Suggest: &suggest.Engine{}, Focus: focus.NewPG(nil), Credentials: credentialPage{}}
+	withStore := api.Extensions{Suggest: &suggest.Engine{On: true}, Focus: focus.NewPG(nil), Credentials: credentialPage{}}
 	members := featureSet(t, config{FocusInterval: time.Minute}, withStore, true)
 	for _, id := range []string{features.SuggestedReplies, features.Focus} {
 		if f, _ := members.Get(id); f.State != features.On || !strings.Contains(f.Reason, "for members who saved their own OpenRouter key") {

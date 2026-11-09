@@ -58,7 +58,7 @@ func showN(t *testing.T, e *Engine, owner int64, prefix string, n, fillEvery int
 // back on (Resume) clears it for that engine and the next.
 func TestTheCountsMoveOnEventsAndAPauseSurvivesARestart(t *testing.T) {
 	u := pgUsage(t)
-	e := &Engine{Gen: &countingGen{}, Usage: u, PerOwner: 10_000, Global: 10_000}
+	e := &Engine{On: true, Gen: &countingGen{}, Usage: u, PerOwner: 10_000, Global: 10_000}
 	showN(t, e, 2, "a", 3, 1)
 	if got, err := u.Get(asUser(2), 2); err != nil || got != (Tally{Shown: 3, Filled: 3, Sent: 3, EditSum: 9}) {
 		t.Fatalf("after 3 shown and filled: %+v %v", got, err)
@@ -68,7 +68,7 @@ func TestTheCountsMoveOnEventsAndAPauseSurvivesARestart(t *testing.T) {
 	if o := e.Enabled(asUser(2), 2); o != OutcomePaused {
 		t.Fatalf("not paused: %q", o)
 	}
-	restarted := &Engine{Gen: &countingGen{}, Usage: u}
+	restarted := &Engine{On: true, Gen: &countingGen{}, Usage: u}
 	if o := restarted.Enabled(asUser(2), 2); o != OutcomePaused {
 		t.Fatalf("the pause did not survive a restart: %q", o)
 	}
@@ -83,7 +83,7 @@ func TestTheCountsMoveOnEventsAndAPauseSurvivesARestart(t *testing.T) {
 	if o := restarted.Enabled(asUser(2), 2); o != "" {
 		t.Fatalf("resumed: %q", o)
 	}
-	if o := (&Engine{Gen: &countingGen{}, Usage: u}).Enabled(asUser(2), 2); o != "" {
+	if o := (&Engine{On: true, Gen: &countingGen{}, Usage: u}).Enabled(asUser(2), 2); o != "" {
 		t.Fatalf("the resume did not survive a restart: %q", o)
 	}
 }

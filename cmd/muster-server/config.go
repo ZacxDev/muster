@@ -714,6 +714,11 @@ type config struct {
 	FocusModel string
 	// SuggestOff is MUSTER_SUGGEST=off: the suggested-replies kill switch.
 	SuggestOff bool
+	// SuggestOn is MUSTER_SUGGEST=on (set explicitly): with no database, where
+	// nobody can save a choice, it turns suggestions on for everyone
+	// (suggest.Engine.On). With a database it changes nothing: each user's own
+	// switch, off until they turn it on, governs.
+	SuggestOn bool
 	// SuggestModel is MUSTER_SUGGEST_MODEL (suggest.DefaultModel unset).
 	SuggestModel string
 	// AgentsIdleAfter is MUSTER_AGENTS_IDLE_AFTER (ui.DefaultIdleSectionAfter
@@ -1616,7 +1621,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.FocusRetention = d
 	}
 	switch v := strings.ToLower(strings.TrimSpace(getenv(envSuggest))); v {
-	case "", "on", "1", "true":
+	case "":
+	case "on", "1", "true":
+		c.SuggestOn = true
 	case "off", "0", "false":
 		c.SuggestOff = true
 	default:
