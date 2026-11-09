@@ -681,6 +681,32 @@ and this page does not reopen them.
    If it does not, the fallback in 2.3 applies: the chief's default session,
    with the strip filtered to this lineage's `about` rows.
 
+## Decisions (2026-11-09)
+
+7. **D7: a view line authorises nothing by itself; the owner's tap on a
+   card does.** The chief proposes, and the owner's one tap on the card it
+   raises (on the view, the Attention view and the phone) is the
+   authorisation. Transcript text can at most cause a proposal. This
+   replaces D5's "no confirm tap" and 4.2's binding to `ownerTurnFor`.
+8. **D8: one primitive.** The confirm card is a generic chief proposal with
+   a kind: one card, one tap path, one binding rule. Succession is its first
+   kind and ending a session its second.
+9. **D9: ending a session on the owner's explicit request.** On the owner's
+   explicit request, and only then, the chief may propose ending ANY of the
+   owner's sessions: a mirrored window on their hosts (Claude Code or
+   opencode), windows the owner opened by hand included, or a pod agent it
+   started.
+   - **Binding:** the session the owner's view line is about, or one the
+     owner named in a line typed in the chief's own chat.
+   - **Authorisation:** the tap. Nothing ends without it.
+   - **How:** gracefully, then closed. The agent is asked to exit, and its
+     window is closed once it exits, or after about 30 s whatever it does.
+     A pod agent goes through muster's own stop and destroy.
+   - **What it changes:** this supersedes D1's "never closes a window the
+     operator opened by hand" **for the explicit-request case only**. An
+     automatic close on replace (phase 3) stays limited to windows the chief
+     itself started.
+
 ---
 
 ## Phase 0 results (2026-11-08)
@@ -969,3 +995,60 @@ this kickoff" step).
   oldest open owner card in session (the owner-card rule); a succession card
   settled that way starts nothing and reads as expired on the view.
 - No phase 3 (closing the replaced window) and no pod successors.
+
+## End-session as built
+
+This section follows D9. It is the chief proposal's second kind
+(`end_session`), built on the same binding, card and tap.
+
+- **`end_session_propose {session}`** (`internal/api/end_session.go`) is
+  offered wherever `succession_propose` is. The session is bound in one of
+  two ways:
+  1. **From a view line:** the shared rule (`bindViewSubject`). The session
+     the chief names must be the one the line is about.
+  2. **From the chief's own chat:** the turn must be the owner's own typed
+     turn (`ownerTurnFor`), and the session may be any of the owner's: a
+     mirrored session's key (owner-scoped through the hub), or `agent:<name>`
+     for a pod agent of the owner's. A plugin message, a session's words or
+     muster's own note never binds.
+- A mirrored session's host must advertise agent-close. Otherwise the
+  proposal is refused, saying so.
+- **The card** reads "End this session?", with the session, where it runs and
+  what will happen, and the buttons End it / Not now.
+- **The tap** (the same `proposalForAnswer`):
+  - Everything that can refuse runs first, and a refusal leaves the card
+    open: the window still listed, the host able to close, the agent still
+    the owner's.
+  - Then `StartEnd` (accepted, ending) and the end itself:
+    - A mirrored window: muster sends the host **agent-close** for exactly
+      the window that shows the session now (`mirror.Hub.CloseAgent`, whose
+      one caller is `closeEndedWindow`).
+    - A pod agent: `destroyAgent`, as the owner's destroy does.
+  - `RecordEnd` stores ended or failed, with a one-line detail.
+  - The view's proposal region shows "Ending this session…", then "Session
+    ended." or the failure. Once the window is gone, the view reads the
+    proposal by id (`GET /mirror/view/proposal?id=`).
+- **agent-close, the host half** (`internal/mirrorhost/agentclose.go`):
+  - It is advertised (`Msg.AgentClose`) only by an `-interactive` v2 host
+    whose backend lists windows, pastes into a pane and closes a window.
+  - The request names one window: its tmux session and window id. The host
+    refuses anything else, with nothing typed or closed:
+    - a window it does not list in that session (`not_listed`);
+    - a window running no agent it can ask to exit (`no_agent`).
+  - It types `/exit` into the agent's pane, then re-lists every 300 ms:
+    - the window gone is a graceful end;
+    - the pane back at no agent is also graceful, and the window is closed;
+    - otherwise, after the grace (30 s) the window is closed anyway and the
+      end is reported as not graceful.
+- **Ship note:** the hosts run `muster-mirror` from the operator's devrc
+  flake. Agent-close reaches a host only once that host runs a release with
+  it, which needs a flake bump after the release. Until then the host does
+  not advertise it, and the chief's proposal is refused with that sentence.
+
+**Left for later, stated:**
+- The card is not drawn in the chief's own chat. From that path the owner
+  taps it on the Attention view or the phone (a chat tap is their next typed
+  message, which settles an owner card without accepting it).
+- The graceful exit is the text `/exit` for both runtimes. Whether a real
+  opencode build quits on it is **UNVERIFIED** on a real host. The fallback
+  closes the window after the grace either way.
