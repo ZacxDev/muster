@@ -947,7 +947,7 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officerToolDefs are the tools an officer instance is offered. None takes an
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
-	return append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef())
+	return append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -1137,6 +1137,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.officerKubeRead(ctx, a, o, c, arguments), true
 	case officers.ToolObsRaw:
 		return s.officerObsRaw(ctx, a, o, c, arguments), true
+	case officers.ToolTaskList, officers.ToolTaskGet:
+		return officerTaskRead(ctx, c, name, arguments), true // officer_tasks.go
 	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
 	// ObsQueryArgs) — but for a judgement instance's item_id, which is
@@ -1732,6 +1734,8 @@ func officerToolResult(name string, body []byte, err error) string {
 			refused["hq"] = json.RawMessage(hqErr.Body)
 		}
 		return toolJSON(map[string]any{"error": fmt.Sprintf("HQ refused %s (%d)", name, hqErr.Status), "refused": refused})
+	case errors.Is(err, officers.ErrHQAnswerTooLarge):
+		return toolErr("HQ's answer to %s is over muster's 1 MiB cap, so none of it is passed on: ask for less (a smaller limit or page, a narrower filter) — the same call will fail again", name)
 	case errors.Is(err, officers.ErrHQUnavailable):
 		return toolErr("HQ is unavailable right now; try %s again in a minute", name)
 	default:

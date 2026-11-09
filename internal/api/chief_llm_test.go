@@ -202,6 +202,16 @@ type chiefLLMOpts struct {
 	enable bool
 	cfg    ChiefLLM
 	off    map[int64]bool
+	// noRouted leaves cfg.Routed nil; otherwise an unset one is
+	// claudeCodeRouted, the stand-in for the spec builder's predicate.
+	noRouted bool
+}
+
+// claudeCodeRouted stands in for agentprovision.ChiefLLMRouted (whose
+// reserved-slug check this fixture's chief rows do not carry): a claude-code
+// agent is on the route.
+func claudeCodeRouted(_ context.Context, a agents.Agent) (bool, error) {
+	return agents.ResolveKind(a.Kind) == agents.KindClaudeCode, nil
 }
 
 func newChiefLLMRig(t *testing.T, o chiefLLMOpts) *chiefLLMRig {
@@ -213,6 +223,9 @@ func newChiefLLMRig(t *testing.T, o chiefLLMOpts) *chiefLLMRig {
 	if o.enable {
 		if o.cfg.Upstream == "" {
 			o.cfg.Upstream = r.up.URL + "/api"
+		}
+		if o.cfg.Routed == nil && !o.noRouted {
+			o.cfg.Routed = claudeCodeRouted
 		}
 		if err := r.s.EnableChiefLLM(o.cfg); err != nil {
 			t.Fatal(err)
@@ -545,4 +558,33 @@ func TestAnOfficerRequestDoesNotReadTheAgentsList(t *testing.T) {
 
 func metricsOfficerLLMUpstreamAuth(officer, status string) float64 {
 	return testutil.ToFloat64(metrics.OfficerLLMUpstreamAuth.WithLabelValues(officer, status))
+}
+
+// TestOffComposeTheProxyServesOnlyTheChiefTheRouteRuleRoutes: a chief the
+// route predicate does not route — here a gateway-kind admin chief — is
+// refused 403 with nothing sent, and the claude-code one is still served; with
+// no predicate at all every chief is refused (fail closed).
+func TestOffComposeTheProxyServesOnlyTheChiefTheRouteRuleRoutes(t *testing.T) {
+	r := chiefLLMOn(t)
+	if w := r.post(t, tokAdminChief); w.Code != http.StatusOK {
+		t.Fatalf("control: the claude-code admin chief: %d %s", w.Code, w.Body)
+	}
+	r.ag.mu.Lock()
+	for i := range r.ag.rows {
+		if r.ag.rows[i].HooksToken == tokAdminChief {
+			r.ag.rows[i].Kind = agents.KindGateway
+		}
+	}
+	r.ag.mu.Unlock()
+	w := r.post(t, tokAdminChief)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), ChiefNotRoutedRefusal) {
+		t.Fatalf("a gateway-kind admin chief: %d %s, want 403 %q", w.Code, w.Body, ChiefNotRoutedRefusal)
+	}
+	if r.up.calls() != 1 {
+		t.Fatalf("upstream calls = %d, want only the control's 1", r.up.calls())
+	}
+	none := newChiefLLMRig(t, chiefLLMOpts{enable: true, cfg: ChiefLLM{Key: chiefAdminKey}, noRouted: true})
+	if w := none.post(t, tokAdminChief); w.Code != http.StatusForbidden || none.up.calls() != 0 {
+		t.Fatalf("no route predicate: %d %s (upstream %d), want 403 and nothing sent", w.Code, w.Body, none.up.calls())
+	}
 }

@@ -375,6 +375,8 @@ const (
 	envChiefSpecDir     = "MUSTER_CHIEF_SPEC_DIR"
 	envChiefClaudeToken = "MUSTER_CHIEF_CLAUDE_TOKEN"
 	envChiefLLMModel    = "MUSTER_CHIEF_LLM_MODEL"
+	// The Kubernetes chief on the LLM proxy (chiefllm.go): "openrouter" or unset.
+	envChiefLLM = "MUSTER_CHIEF_LLM"
 	// TEST ONLY (testllm.go): the chief's LLM proxy upstream.
 	envTestLLMUpstream = "MUSTER_TEST_LLM_UPSTREAM"
 
@@ -907,10 +909,13 @@ type config struct {
 	ChiefRuntime     string
 	ChiefSpecDir     string
 	ChiefClaudeToken string
-	// ChiefLLMModel is MUSTER_CHIEF_LLM_MODEL: the OpenRouter model the Compose
+	// ChiefLLMModel is MUSTER_CHIEF_LLM_MODEL: the OpenRouter model the
 	// chief's requests are pinned to when it runs on the OpenRouter key
 	// (api.DefaultChiefLLMModel when unset).
 	ChiefLLMModel string
+	// ChiefLLM is MUSTER_CHIEF_LLM: "" or "openrouter" (chiefllm.go), which
+	// puts the Kubernetes deployment's admin chief on the LLM proxy.
+	ChiefLLM string
 	// LLMTestUpstream is MUSTER_TEST_LLM_UPSTREAM, accepted only with the
 	// Compose chief runtime (testllm.go).
 	LLMTestUpstream string
@@ -1779,6 +1784,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err := c.applyTestLLMUpstream(getenv); err != nil {
 		return config{}, err
 	}
+	if err := c.applyChiefLLM(getenv); err != nil {
+		return config{}, err
+	}
 	// Last: it refuses agent-plane variables set beside it, so every one of
 	// them must already be read.
 	if err := c.applyComposeChief(getenv); err != nil {
@@ -2169,6 +2177,9 @@ func (c config) validate() error {
 			return fmt.Errorf("%s=%q is not an http(s) URL: the browser telemetry relay would forward every "+
 				"post to nowhere. Set the Faro receiver's collect URL (http://<alloy>:<port>/collect) or unset it", envFaroUpstream, c.FaroUpstream)
 		}
+	}
+	if err := c.validateChiefLLM(); err != nil {
+		return err
 	}
 	return c.validateProvisioner()
 }
