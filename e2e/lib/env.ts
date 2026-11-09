@@ -366,6 +366,12 @@ export const chatMarkdownRuntimePort = port + 356;
 export const chiefSuccessionPort = port + 362;
 export const chiefSuccessionFakePort = port + 363;
 export const chiefSuccessionGitHubPort = port + 364;
+// tests/chief-end-session.spec.ts: ending a session from its view — its own
+// mirror rig (as chief-succession's, no GitHub App) with one fake host that
+// plays agent-close (MUSTER_MIRROR_E2E_CLOSE), and the spec's FAKE runtime.
+// (+366: chief-succession takes +362..+365.)
+export const chiefEndSessionPort = port + 366;
+export const chiefEndSessionFakePort = port + 367;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

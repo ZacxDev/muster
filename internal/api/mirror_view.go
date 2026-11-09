@@ -118,9 +118,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v.Chief = e.SessionKey() != "" && s.viewChiefOffered(op.begin("chief"))
 	// Its succession, and the one it continues (succession.go).
 	sctx := op.begin("succession")
-	if x, ok := s.successionForView(sctx, e); ok {
-		v.Succession = &x
-	}
+	v.Succession, v.End = s.proposalsForView(sctx, e)
 	if p, ok := s.predecessorForView(sctx, e); ok {
 		v.Predecessor = &p
 	}

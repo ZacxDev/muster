@@ -152,14 +152,18 @@ func successorHeader(p *SuccessionView) g.Node {
 // successionRegion is the view's succession region: the successor header,
 // then the card of this session's own succession, in a container the script
 // refreshes from src.
-func successionRegion(ref MirrorRef, x, pred *SuccessionView, live bool) g.Node {
-	if !live && x == nil && pred == nil {
+func successionRegion(ref MirrorRef, x, pred *SuccessionView, end *EndView, live bool) g.Node {
+	if !live && x == nil && pred == nil && end == nil {
 		return nil
+	}
+	// The session's NEWEST proposal: a succession's, or an end's.
+	card := SuccessionCard(ref, x)
+	if end != nil {
+		card = EndSessionCard(ref, end)
 	}
 	return g.Group([]g.Node{
 		successorHeader(pred),
-		Div(ID("mv-succession"), g.Attr("data-src", ref.SuccessorPath()), g.Attr("aria-live", "polite"),
-			SuccessionCard(ref, x)),
+		Div(ID("mv-succession"), g.Attr("data-src", ref.SuccessorPath()), g.Attr("aria-live", "polite"), card),
 		Div(ID("mv-follow"), g.Attr("hidden", ""), g.Attr("role", "status"),
 			Class("flex items-center gap-2 border-b border-line bg-accent/15 px-3 py-2 text-sm text-fg"),
 			Span(Class("min-w-0 flex-1"), g.Text("Opening the new session…")),
@@ -238,9 +242,18 @@ func successionScript() g.Node {
       if (p) go(p, id);
     }
   }
-  function refresh() {
-    fetch(src, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (r) {
+  function read(url) {
+    return fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (r) {
       return r.ok ? r.json() : null;
+    });
+  }
+  function refresh() {
+    // The view's own read; once its window is gone (an ended session), the
+    // proposal it showed, by id.
+    var el = cur(), id = el ? el.getAttribute('data-succession') : '';
+    read(src).then(function (j) {
+      if (j || !id) return j;
+      return read(` + strconv.Quote(MirrorProposalReadPath) + ` + '?id=' + encodeURIComponent(id));
     }).then(function (j) {
       if (!j) return;
       box.innerHTML = j.card_html || '';

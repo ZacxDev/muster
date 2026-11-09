@@ -99,6 +99,8 @@ type chatSubject struct {
 	// CanSucceed: the chief is offered succession_propose (succession.go), so
 	// the header says how to continue the session. Not stored.
 	CanSucceed bool
+	// CanEnd: the chief is offered end_session_propose (end_session.go).
+	CanEnd bool
 }
 
 // key is the subject's session key, "" for none (a nil subject: every chat
@@ -163,6 +165,9 @@ func viewChiefTurnText(about *chatSubject, text string) string {
 	if about.CanSucceed {
 		b.WriteString(viewChiefSuccessionLine(one(about.SessionKey)))
 	}
+	if about.CanEnd {
+		b.WriteString(viewChiefEndLine(one(about.SessionKey)))
+	}
 	b.WriteString("---\n")
 	b.WriteString(text)
 	return b.String()
@@ -175,6 +180,13 @@ func viewChiefSuccessionLine(key string) string {
 		successionProposeTool + " with successor_of: \"" + key + "\", succession: replace, spinoff or ? (when they did not say " +
 		"which), and prompt_from: {ref, block} naming the kickoff in session_context's tail. muster copies the kickoff and shows " +
 		"your owner a card; nothing starts until they tap it.\n"
+}
+
+// viewChiefEndLine is the header's line on ending the session: the one tool,
+// its binding, and that nothing ends on the call.
+func viewChiefEndLine(key string) string {
+	return "If your owner asks to close or end this session, call " + endSessionProposeTool + " with session: \"" + key +
+		"\". muster shows your owner a card; nothing ends until they tap it.\n"
 }
 
 // viewChiefSubject is the session the view at (host, session, window) shows,
@@ -252,6 +264,7 @@ func (s *Server) handleViewChief(w http.ResponseWriter, r *http.Request) {
 	}
 	back = mirrorRef(e).ViewPath()
 	about.CanSucceed = successionOffered(s.ext)
+	about.CanEnd = endSessionOffered(s.ext)
 	if strings.TrimSpace(text) == "" {
 		refuse(http.StatusBadRequest, AgentSendEmpty, noticeEmpty)
 		return

@@ -97,6 +97,11 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).proposalForAnswer → broadcastTo(a.Owner)",
 		"(*Server).reserveSuccession → broadcastTo(owner)",
 		"(*Server).successionDispatchMoved → broadcastTo(owner)",
+		// An end_session tapped (end_session.go acceptEndSession) and settled
+		// (settleEnd): owner is the tap's principal (requestOwner), carried to
+		// the settling goroutine.
+		"(*Server).acceptEndSession → broadcastTo(owner)",
+		"(*Server).settleEnd → broadcastTo(owner)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

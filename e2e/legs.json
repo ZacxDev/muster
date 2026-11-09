@@ -94,7 +94,8 @@
     "tests/dock-fade.spec.ts": 8.0,
     "tests/agent-outcomes.spec.ts": 30.0,
     "tests/agent-chat-markdown.spec.ts": 12.0,
-    "tests/chief-succession.spec.ts": 40.0
+    "tests/chief-succession.spec.ts": 40.0,
+    "tests/chief-end-session.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -149,6 +150,7 @@
     ],
     "2": [
       "tests/chief-succession.spec.ts",
+      "tests/chief-end-session.spec.ts",
       "tests/chief-fold-in.spec.ts",
       "tests/bfcache-restore.spec.ts",
       "tests/devices.spec.ts",

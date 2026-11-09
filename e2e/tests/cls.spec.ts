@@ -99,6 +99,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /mirror/view/send': 'a redirect back to the view',
   'GET /mirror/view/chief': 'a redirect back to the view (a chief send that came back from a sign-in)',
   'GET /mirror/view/chief/log': 'an HTML fragment (the view\'s chief strip, fetched into #mv-chief-log)',
+  'GET /mirror/view/proposal': 'JSON (a proposal read by id, for a view whose window is gone)',
   'GET /mirror/view/successor': 'JSON (the view\'s succession read: its card and where the successor is)',
   'GET /mirror/view/subagent': 'an HTML fragment (an opened subagent card\'s steps, fetched into the card)',
   'GET /mirror/view/ws': 'websocket',

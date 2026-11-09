@@ -89,6 +89,7 @@ var noStoreLiterals = map[string]string{
 	"handleUpload":             "an upload's answer",
 	"handleUploadLink":         "an upload's signed link",
 	"handleViewChiefLog":       "the view's chief strip (the chief's chat, as handleAgentChatLog)",
+	"handleProposalRead":       "a proposal read by id (an ended session's view): live state",
 	"handleViewSuccessor":      "the view's succession read (its card and where the successor is): live state",
 	"handleNavAgents":          "the sidebar's agent list",
 	"handleNavWaiting":         "the ☰ button's waiting badge",

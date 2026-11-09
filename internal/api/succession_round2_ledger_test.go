@@ -26,7 +26,7 @@ import (
 // one its buttons are (its askOptions argument, when that is no literal list
 // of constants).
 var (
-	proposalQuestionBuilders = []string{"successionCardQuestion"}
+	proposalQuestionBuilders = []string{"endSessionCardQuestion", "successionCardQuestion"}
 	proposalOptionBuilders   = []string{"successionAskOptions"}
 )
 

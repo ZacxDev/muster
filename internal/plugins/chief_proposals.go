@@ -15,7 +15,7 @@ import (
 // decision column: every kind shares the card, the tap and the binding
 // (internal/api chief_proposal.go).
 //
-// 🔴 ONE SEAM LEDGER, SIX WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
+// 🔴 ONE SEAM LEDGER, EIGHT WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
 // the set over the Go source):
 //
 //   - CreateProposal: the proposal. Called only by the chief's propose tools
@@ -33,7 +33,11 @@ import (
 //     succession. Called only when the successor's dispatch turns running;
 //   - SetSuccessionNotified: notified_at, once. Called only by the 30 s push;
 //   - SetSuccessorSeen: successor_seen_at, once. Called only when the
-//     successor's own view is opened.
+//     successor's own view is opened;
+//   - StartEnd (0101): an end_session's tap — decided = accepted, end_state =
+//     ending — on an undecided row. Called only by the end-session accept;
+//   - RecordEnd (0101): ended or failed, on an 'ending' row. Called only when
+//     the end settles.
 
 // Proposal kinds.
 const (
@@ -73,6 +77,11 @@ type Proposal struct {
 	BaseUsed                               string
 	SubjectState                           string
 	SuccessorSeenAt, NotifiedAt, CreatedAt time.Time
+	// An end_session's (0101): the pod agent it ends (0 for a mirrored
+	// window), and how the end went.
+	SubjectAgent        int64
+	EndState, EndDetail string
+	EndedAt             time.Time
 }
 
 // ProposalNew is a proposal's fields.
@@ -88,6 +97,8 @@ type ProposalNew struct {
 	Target, Model, Repo, Base          string
 	Kickoff, KickoffSHA256, KickoffRef string
 	KickoffBlock                       int // -1 for the whole message
+	// An end_session's pod agent (0 for a mirrored window).
+	SubjectAgent int64
 }
 
 var (
@@ -101,18 +112,19 @@ const proposalCols = `id, owner_id, kind, chief_agent, owner_message, subject_ke
 	subject_tmux_window, subject_title, coalesce(subject_dispatch, 0), coalesce(ask_id, 0), decided, coalesce(decided_at, 'epoch'),
 	coalesce(mode, ''), target, model, repo, base, kickoff, kickoff_sha256, kickoff_ref, coalesce(kickoff_block, -1),
 	coalesce(host_dispatch_id, 0), base_used, subject_state, coalesce(successor_seen_at, 'epoch'), coalesce(notified_at, 'epoch'),
-	created_at`
+	created_at, coalesce(subject_agent, 0), end_state, end_detail, coalesce(ended_at, 'epoch')`
 
 func scanProposal(row pgx.Row) (Proposal, error) {
 	var x Proposal
 	err := row.Scan(&x.ID, &x.Owner, &x.Kind, &x.ChiefAgent, &x.OwnerMessage, &x.SubjectKey, &x.SubjectRuntime, &x.SubjectHost,
 		&x.SubjectTmuxSession, &x.SubjectTmuxWindow, &x.SubjectTitle, &x.SubjectDispatch, &x.AskID, &x.Decided, &x.DecidedAt,
 		&x.Mode, &x.Target, &x.Model, &x.Repo, &x.Base, &x.Kickoff, &x.KickoffSHA256, &x.KickoffRef, &x.KickoffBlock,
-		&x.HostDispatchID, &x.BaseUsed, &x.SubjectState, &x.SuccessorSeenAt, &x.NotifiedAt, &x.CreatedAt)
+		&x.HostDispatchID, &x.BaseUsed, &x.SubjectState, &x.SuccessorSeenAt, &x.NotifiedAt, &x.CreatedAt,
+		&x.SubjectAgent, &x.EndState, &x.EndDetail, &x.EndedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Proposal{}, ErrProposalNotFound
 	}
-	for _, t := range []*time.Time{&x.DecidedAt, &x.SuccessorSeenAt, &x.NotifiedAt} {
+	for _, t := range []*time.Time{&x.DecidedAt, &x.SuccessorSeenAt, &x.NotifiedAt, &x.EndedAt} {
 		if t.Unix() == 0 {
 			*t = time.Time{}
 		}
@@ -139,11 +151,11 @@ func (s *PGStore) CreateProposal(ctx context.Context, n ProposalNew) (Proposal, 
 	}
 	return scanProposal(s.pool.QueryRow(ctx, `INSERT INTO chief_proposals (owner_id, kind, chief_agent, owner_message, subject_key,
 		subject_runtime, subject_host, subject_tmux_session, subject_tmux_window, subject_title, subject_dispatch, ask_id, mode, target,
-		model, repo, base, kickoff, kickoff_sha256, kickoff_ref, kickoff_block)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING `+proposalCols,
+		model, repo, base, kickoff, kickoff_sha256, kickoff_ref, kickoff_block, subject_agent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING `+proposalCols,
 		owner, n.Kind, n.ChiefAgent, n.OwnerMessage, n.SubjectKey, n.SubjectRuntime, n.SubjectHost, n.SubjectTmuxSession, n.SubjectTmuxWindow,
 		n.SubjectTitle, nullable(n.SubjectDispatch, 0), nullable(n.AskID, 0), nullable(n.Mode, ""), n.Target, n.Model, n.Repo, n.Base,
-		n.Kickoff, n.KickoffSHA256, n.KickoffRef, block))
+		n.Kickoff, n.KickoffSHA256, n.KickoffRef, block, nullable(n.SubjectAgent, 0)))
 }
 
 // ProposalByID is the principal's proposal id.
@@ -291,5 +303,53 @@ func (s *PGStore) SetSuccessorSeen(ctx context.Context, id int64) error {
 	}
 	_, err = s.pool.Exec(ctx, `UPDATE chief_proposals SET successor_seen_at = now()
 		WHERE id = $1 AND owner_id = $2 AND kind = 'succession' AND successor_seen_at IS NULL`, id, owner)
+	return err
+}
+
+// LatestProposalAbout is the principal's newest proposal of any kind about
+// the session keyed key (what that session's view shows).
+func (s *PGStore) LatestProposalAbout(ctx context.Context, key string) (Proposal, error) {
+	owner, err := hostDispatchOwner(ctx, "a proposal")
+	if err != nil {
+		return Proposal{}, err
+	}
+	return scanProposal(s.pool.QueryRow(ctx, `SELECT `+proposalCols+` FROM chief_proposals
+		WHERE owner_id = $1 AND subject_key = $2 ORDER BY id DESC LIMIT 1`, owner, key))
+}
+
+// StartEnd records the owner's tap on an end_session: accepted, ending — on
+// an undecided row only (single use).
+func (s *PGStore) StartEnd(ctx context.Context, id int64) error {
+	owner, err := hostDispatchOwner(ctx, "a proposal")
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE chief_proposals SET decided = 'accepted', decided_at = now(), end_state = 'ending'
+		WHERE id = $1 AND owner_id = $2 AND kind = 'end_session' AND decided = ''`, id, owner)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrProposalDecided
+	}
+	return nil
+}
+
+// RecordEnd settles an ending end_session: ended (detail says how) or failed
+// (detail says why).
+func (s *PGStore) RecordEnd(ctx context.Context, id int64, ended bool, detail string) error {
+	owner, err := hostDispatchOwner(ctx, "a proposal")
+	if err != nil {
+		return err
+	}
+	state := "failed"
+	if ended {
+		state = "ended"
+	}
+	if r := []rune(detail); len(r) > 500 {
+		detail = string(r[:500])
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE chief_proposals SET end_state = $3, end_detail = $4, ended_at = now()
+		WHERE id = $1 AND owner_id = $2 AND kind = 'end_session' AND end_state = 'ending'`, id, owner, state, detail)
 	return err
 }

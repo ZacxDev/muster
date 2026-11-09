@@ -517,8 +517,10 @@ var isolationClasses = map[string]routeClass{
 	"GET /mirror/view/chief/log": classMirror,
 	// A succession of a view's session (succession.go): its read and the
 	// card's tap, both naming the window by its address (mirrorEntry).
-	"GET /mirror/view/successor":   classMirror,
+	"GET /mirror/view/successor": classMirror,
 	"POST /mirror/view/proposal": classMirror,
+	// A proposal read by id (an ended session's view): the principal's own row.
+	"GET /mirror/view/proposal": classMirror,
 	// Suggested replies (suggest.go): the window's set (address in the query)
 	// — B naming A's window must 404; the toggle is the caller's own row (list).
 	"GET /mirror/view/suggest": classMirror,
@@ -1693,7 +1695,8 @@ var sideEffectControlled = map[string]string{
 	// succession_pg_test.go: another owner's tap and read of the owner's card are
 	// not found and start nothing.
 	"GET /mirror/view/successor":            "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
-	"POST /mirror/view/proposal":          "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
+	"POST /mirror/view/proposal":            "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
+	"GET /mirror/view/proposal":             "needs A's proposal; read as the principal (row-level security plus the owner in the WHERE)",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",

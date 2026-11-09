@@ -514,7 +514,7 @@ func (s *Server) toolSuccessionPropose(ctx context.Context, a agents.Agent, argu
 	if in.PromptFrom.Block != nil {
 		blk = *in.PromptFrom.Block
 	}
-	row, why := s.fileProposal(ctx, a, line, about, plugins.ProposalNew{Kind: plugins.ProposalSuccession, Mode: mode, Target: t.String(),
+	row, why := s.fileProposal(ctx, a, line.ID, line.AboutKey, about, plugins.ProposalNew{Kind: plugins.ProposalSuccession, Mode: mode, Target: t.String(),
 		Model: model, Repo: repo, Base: base, Kickoff: kickoff, KickoffSHA256: sha256Hex(kickoff), KickoffRef: strings.TrimSpace(in.PromptFrom.Ref),
 		KickoffBlock: blk}, successionCardQuestion(x), successionAskOptions(x))
 	if why != "" {
@@ -821,11 +821,14 @@ func (s *Server) registerSuccessionRoutes(mux Mux) {
 	// A proposal card's tap (chief_proposal.go): the owner's signed-in
 	// session, same-origin.
 	mux.HandleFunc("POST /mirror/view/proposal", s.requireSession(s.requireSameOrigin(s.handleProposalTap)))
+	// A proposal's read by id, for a view whose window is gone.
+	mux.HandleFunc("GET /mirror/view/proposal", s.requireSession(s.handleProposalRead))
 }
 
 // successorJSON is GET /mirror/view/successor's answer.
 type successorJSON struct {
 	ID        int64          `json:"id,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
 	State     string         `json:"state"`
 	Mode      string         `json:"mode,omitempty"`
 	CardHTML  string         `json:"card_html"`
@@ -851,18 +854,77 @@ func (s *Server) handleViewSuccessor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := successorJSON{State: "none"}
-	if x, ok := s.successionForView(r.Context(), e); ok {
-		html, err := ui.RenderSuccessionCard(mirrorRef(e), &x)
-		if err != nil {
-			s.logger.Printf("succession %d: render its card: %v", x.ID, err)
-		}
-		out = successorJSON{ID: x.ID, State: x.State, Mode: x.Mode, CardHTML: html}
-		if x.ViewPath != "" {
-			t, _ := parseHostTarget(x.Target)
-			out.Successor = &successorLink{ViewPath: x.ViewPath, Title: x.Title, Host: x.Host, Runtime: t.Runtime}
+	if st := s.proposals(); st != nil {
+		if x, err := st.LatestProposalAbout(r.Context(), e.SessionKey()); err == nil {
+			out = s.proposalJSON(r.Context(), x, mirrorRef(e))
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// proposalJSON is proposal x as a view's read answers it, its card drawn for
+// the view at ref.
+func (s *Server) proposalJSON(ctx context.Context, x plugins.Proposal, ref ui.MirrorRef) successorJSON {
+	if x.Kind == plugins.ProposalEndSession {
+		v := s.endLive(ctx, x)
+		html, err := ui.RenderEndSessionCard(ref, &v)
+		if err != nil {
+			s.logger.Printf("proposal %d: render its card: %v", x.ID, err)
+		}
+		return successorJSON{ID: x.ID, Kind: x.Kind, State: v.State, CardHTML: html}
+	}
+	v := s.successionLive(ctx, x)
+	html, err := ui.RenderSuccessionCard(ref, &v)
+	if err != nil {
+		s.logger.Printf("proposal %d: render its card: %v", x.ID, err)
+	}
+	out := successorJSON{ID: x.ID, Kind: x.Kind, State: v.State, Mode: v.Mode, CardHTML: html}
+	if v.ViewPath != "" {
+		t, _ := parseHostTarget(v.Target)
+		out.Successor = &successorLink{ViewPath: v.ViewPath, Title: v.Title, Host: v.Host, Runtime: t.Runtime}
+	}
+	return out
+}
+
+// handleProposalRead is GET /mirror/view/proposal?id=: one of the principal's
+// proposals as a view reads it — for a view whose window is gone (an ended
+// session), which its address no longer finds. Read as the principal (row-level
+// security plus the owner in the WHERE).
+func (s *Server) handleProposalRead(w http.ResponseWriter, r *http.Request) {
+	st := s.proposals()
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if st == nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	x, err := st.ProposalByID(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	out := s.proposalJSON(r.Context(), x, ui.MirrorRef{Host: x.SubjectHost, Session: x.SubjectTmuxSession, Window: x.SubjectTmuxWindow})
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// proposalsForView is what view e's proposal region draws: its session's
+// newest proposal — a succession's, or an end's.
+func (s *Server) proposalsForView(ctx context.Context, e mirror.SessionView) (*ui.SuccessionView, *ui.EndView) {
+	st := s.proposals()
+	if st == nil || e.SessionKey() == "" {
+		return nil, nil
+	}
+	x, err := st.LatestProposalAbout(ctx, e.SessionKey())
+	if err != nil {
+		return nil, nil
+	}
+	if x.Kind == plugins.ProposalEndSession {
+		v := s.endLive(ctx, x)
+		return nil, &v
+	}
+	v := s.successionLive(ctx, x)
+	return &v, nil
 }
