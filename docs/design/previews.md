@@ -504,7 +504,12 @@ preview content.
     still open at 300 s). So every
     long-lived connection the gateway serves is kept from going quiet for that
     long:
-    - the host tunnel pings every 30 s (both ends);
+    - the host tunnel pings every 30 s (both ends). On the mesh path the
+      tunnel does not cross Cloudflare, but the homelab gateway's nebula
+      conntrack TCP timeout is **12 minutes** (measured on the mesh path,
+      [PR #548](https://github.com/ZacxDev/muster/pull/548)), so the tunnel's ping interval must stay well under that too;
+      30 s does. A mesh tunnel left without pings survived 10 idle minutes;
+      longer is untested;
     - a preview WebSocket is relayed **message by message** (the gateway
       terminates the browser leg and the upstream leg, with coder/websocket
       on both) rather than as raw bytes after the `101`, so the gateway can
@@ -668,9 +673,18 @@ Decided by the operator after the real-edge results ([decisions 20 and 21](#deci
   session page, and labelled `path="mesh"|"public"` on
   `muster_preview_tunnels` and the `preview.request` span. The host also logs
   which endpoint it took.
-- **Criterion (1) applies to the mesh path.** The public path's measured
-  +90–118 ms p50 is an **accepted degraded mode** for a host off the mesh: a
-  preview works there, HMR included, about 100 ms slower per round trip.
+- **Criterion (1) applies to the mesh path, and passes there** at the best
+  case measured ([PR #548](https://github.com/ZacxDev/muster/pull/548)): with the host on the mesh and the browser through
+  Cloudflare, the tunnel added **−7.9 to +3.9 ms at p50** and at most 27.7 ms at
+  p95 (6/6 runs, h2 and yamux), and the first SSE event arrived at p50 48–50 ms
+  (worst 57 ms). The public path's measured +100–104 ms p50 (same session) is an
+  **accepted degraded mode** for a host off the mesh: a preview works there,
+  HMR included, about 100 ms slower per round trip.
+- 🔴 **Best case only.** The measuring host's mesh path to the homelab relay ran
+  over the LAN (0.39 ms round trip). An off-site mesh host adds its own round
+  trip to the relay, and one relayed through the prod lighthouse adds about the
+  prod↔homelab mesh round trip (~45–50 ms), which is close to (1)'s 50 ms p50
+  bound. That is the [one measurement outstanding](#the-spikes-gono-go).
 - **Plain `ws://` on the mesh.** Nebula encrypts and authenticates the hop, so
   the mesh endpoint does not repeat TLS. The `mpt_` token therefore crosses the
   homelab relay in the clear inside the mesh, as tokens on the public path
@@ -687,9 +701,14 @@ repository, not this one):
   3600s`. **No prod relay block, no Traefik route and no Authelia rule**: the
   mesh endpoint is never public, so the prod host firewall's relay port list
   is not involved.
-- **Who can reach it:** every nebula mesh member, because the relay listens on
-  the mesh interface. Whether the deployment's nebula firewall can narrow that
-  port to a group of muster hosts is **UNVERIFIED**; if it can, it should.
+- **Who can reach it:** every nebula mesh member allowed by the nebula
+  firewall, because the relay listens on the mesh interface. What was
+  observed: the homelab gateway's nebula firewall already admits TCP on any
+  port from the measuring workstation's groups, so no mesh change was needed,
+  and the mesh listener refused a missing or wrong secret with 401
+  ([PR #548](https://github.com/ZacxDev/muster/pull/548)). Whether that firewall can narrow this one port to a group of
+  muster hosts was not tried, so it remains **UNVERIFIED**; if it can, it
+  should.
   Either way the endpoint is **token-gated**: a mesh member without an `mpt_`
   token gets nothing but a refusal.
 - **The gateway's own failed-token throttle** applies on both listeners (for
@@ -1140,7 +1159,7 @@ listener, proxy or key.
 
 | phase | what | depends on |
 |---|---|---|
-| **0: spike (gates phase 1)** | HTTP/2 `CONNECT` over `websocket.NetConn`, from a host through the real edge path to a gateway, with the go/no-go below | — |
+| **0: spike (done)** | HTTP/2 `CONNECT` over `websocket.NetConn`, through the real edge and then the mesh path: go, with one off-site measurement outstanding ([go/no-go](#the-spikes-gono-go)) | — |
 | **1: hosts, owner-only** | muster-server: the `viewer` capability and origin, seams (a) and (b), `MUSTER_PLUGIN_ORIGINS` with the 421 refusal; `muster-preview` with the tunnel, proxy, session page, owner cookie, offers; `muster-mirror -preview` with its checks, listener reports and the `preview_*` tools in its MCP proxy; docs (a `previews.md` page, plugins.md for the seams, configuration rows, a decisions entry) | 0 |
 | **2: pods** | seam (d) and the `agent_targets` capability, the `ccd` gate and its stdio MCP server, measuring whether the spec change rolls agents | 1 |
 | **3: share links** | the stepped-up hand-off (`/plugin-handoffs/confirm`), Share on the session page, audit, limits | 1 |
@@ -1180,8 +1199,38 @@ gateway in the cluster, 2–3 engineer-days. **Go** if all hold:
 mesh, with the public tunnel endpoint as their fallback
 ([dial order](#host-dial-order-mesh-first-then-public)). Criterion (1) is kept
 as written and now applies to the **mesh** path; the public path's ~+100 ms is
-an accepted degraded mode. **Phase 1 stays gated on re-measuring (1) over the
-mesh path**, which is in progress separately.
+an accepted degraded mode.
+
+**Mesh-path results** ([PR #548](https://github.com/ZacxDev/muster/pull/548), head `22f4fc9e`; host on the mesh, browser
+through Cloudflare, with the Cloudflare fallback re-measured in the same
+session as the baseline):
+
+| # | mesh host | Cloudflare fallback, same session | verdict |
+|---|---|---|---|
+| 1 | overhead p50 **−1.5 to +3.9 ms** (h2), **−7.9 to +0.6 ms** (yamux); p95 at most **27.7 ms** | overhead p50 **100–104 ms**, p95 105–107 ms | mesh **pass 6/6**; fallback fails (the accepted degraded mode) |
+| 4 | 10 min idle with 30 s pings: echo, new stream and tunnel all ok. Without pings the mesh tunnel was still alive at 10 min; the browser legs through Cloudflare were cut at ≈125 s | — | **pass**; pings stay for the browser leg and for the mesh's 12-minute conntrack timeout |
+| 5 | first event p50 **48–50 ms**, worst **57 ms** | p50 99–103 ms, worst 119 ms | **pass** on both |
+
+Negative controls went red as expected (a 100 ms host delay: overhead p50
+91 ms; a host that flushes only its response head: no headers within 7 s).
+Negative overheads are noise from the Cloudflare browser leg, which varies by
+more than the mesh hop adds.
+
+**Verdict: go for phase 1, on the mesh path**, on best-case evidence: the
+measuring host reached the homelab relay over the LAN (0.39 ms).
+
+**One measurement is outstanding, to take during phase 1:** criteria (1) and
+(5) from a **genuinely off-site mesh host** (for example the laptop off the
+home network), once on a **direct** nebula path and once **relayed through the
+prod lighthouse**. If it fails (1)'s bound:
+
+- **relayed:** that host gets what an off-mesh host gets, a preview that works
+  about one extra mesh round trip slower, the same accepted degraded mode as
+  the public fallback. Nothing in the design changes;
+- **direct:** (1) is not met for off-site hosts at all, which the spike already
+  identified as a question of where the gateway sits relative to its hosts, not
+  of the tunnel. Phase 1 continues for on-site hosts, and placement is put to
+  the operator then.
 
 **If (1)–(3) fail** with `x/net/http2`, repeat with yamux; go if it passes.
 **If (4) or (5) fail**, the edge path is the problem: no-go for that path, and
@@ -1315,8 +1364,11 @@ check, written into its phase's PR.
 
 ## Risks
 
-- **The spike fails on the chosen edge.** Then the edge path changes before
-  anything is built.
+- **Off-site mesh hosts may miss criterion (1).** The mesh numbers are a LAN
+  best case; the outstanding off-site measurement decides it
+  ([go/no-go](#the-spikes-gono-go)).
+- **The SSE margin on the public fallback was thin once** (worst 415 ms of
+  500 ms in the first real-edge run; 119 ms in the mesh session's baseline).
 - **Third-party cookie policy.** The frame depends on partitioned cookies; the
   new tab does not.
 - **Tools read once.** A session that connected before `-preview` was turned
@@ -1445,7 +1497,8 @@ decision changed an earlier one, the earlier one says so.
 20. **Hosts dial the gateway over the nebula mesh**: the
     gateway's mesh address, the same tunnel protocol and the same `mpt_`
     token. Only the browser leg goes through Cloudflare. Criterion (1) applies
-    to the mesh path, and phase 1 stays gated on its re-measurement.
+    to the mesh path. (Its re-measurement passed at the best case measured,
+    and lifted the phase-1 gate, [go/no-go](#the-spikes-gono-go).)
 21. **Off-mesh hosts fall back to the public tunnel endpoint**:
     mesh first, then `tunnel.musterchief.com`, which stays in the design; the
     public path's ~+100 ms is an accepted degraded mode.
