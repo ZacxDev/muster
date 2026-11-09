@@ -39,8 +39,20 @@ import (
 const (
 	pluginsPath      = "/plugins"
 	pluginAPIPrefix  = "/plugin/v1"
+	pluginSelfPath   = pluginAPIPrefix + "/self"
 	pluginsNotServed = "this server does not serve plugins (MUSTER_PLUGINS is off)"
 )
+
+// pluginCapAny is the capability of a route every live plugin token opens,
+// whatever it carries: GET /plugin/v1/self only. Deliberately not a value
+// plugins.capabilities admits (0102's CHECK), so no row can hold it.
+const pluginCapAny plugins.Capability = "(any live token)"
+
+// PluginCapabilityRefusal is the 403 body when a live plugin token lacks the
+// capability its route needs. It names the capability, not the token's own set.
+func PluginCapabilityRefusal(c plugins.Capability) string {
+	return "this plugin token does not have the \"" + string(c) + "\" capability this route needs"
+}
 
 // PluginTokenRefusal is the 401 body for every refused credential on the plugin
 // door — another kind of token, a malformed one, an unknown or revoked one — so
@@ -65,19 +77,24 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// Retrying a message the chief never confirmed (plugin_retry.go).
 	s.registerPluginRetryRoutes(mux)
 
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim))
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
+	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
+	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
+	// is its ledger: a route added, dropped or moved to another capability turns
+	// it red. CapMessages is every route a token opened before capabilities.
+	mux.HandleFunc("GET "+pluginSelfPath, s.requirePluginToken(pluginCapAny, s.handlePluginSelf))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(plugins.CapMessages, s.handlePluginMessage))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(plugins.CapMessages, s.handlePluginDraftClaim))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(plugins.CapMessages, s.handlePluginDraftResult))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
-	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
+	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginTask))
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
 	// the writes people and agents queued on this plugin's references.
-	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList))
-	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(s.handlePluginTaskWritesClaim))
-	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(s.handlePluginTaskWriteResult))
+	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskList))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskWritesClaim))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskWriteResult))
 	// A reply sent directly, stamped with the message it answers
 	// (owner_replies.go): its waiting route ends owner_answered. 404 with routing off.
-	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(s.handlePluginOwnerAnswered))
+	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginOwnerAnswered))
 	// Session routing (session_routes.go): a MIRRORED session's reply_to_chief,
 	// with its host's own muster credential acting as the owner (a personal
 	// token, or the armed hook token). 404 with routing off. Fail-closed on an
@@ -111,8 +128,13 @@ func (s *Server) requirePluginsOn(next http.HandlerFunc) http.HandlerFunc {
 type pluginCtxKey struct{}
 
 // requirePluginToken admits a PLUGIN token and nothing else, acting as its owner
-// through authz.ViaPlugin. See the file header.
-func (s *Server) requirePluginToken(next http.HandlerFunc) http.HandlerFunc {
+// through authz.ViaPlugin, and only when the token carries capability need
+// (pluginCapAny: any live token). See the file header.
+//
+// The capability is checked AFTER the token is found and BEFORE the request is
+// admitted, so a token without it reaches no handler and no store call but
+// the lookup (TestAViewerOnlyTokenIsRefusedOnTheMessagesRoutes).
+func (s *Server) requirePluginToken(need plugins.Capability, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.ext.Plugins == nil {
 			http.NotFound(w, r)
@@ -132,6 +154,10 @@ func (s *Server) requirePluginToken(next http.HandlerFunc) http.HandlerFunc {
 		default:
 			s.logger.Printf("plugins: token lookup failed: %v", err)
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "could not check the plugin token"})
+			return
+		}
+		if need != pluginCapAny && !p.Has(need) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": PluginCapabilityRefusal(need)})
 			return
 		}
 		ctx := context.WithValue(r.Context(), pluginCtxKey{}, p)
@@ -164,6 +190,25 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 	}
 	s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PluginTokenElsewhere})
 	return true
+}
+
+// pluginSelf is GET /plugin/v1/self's answer: who the presented token is.
+type pluginSelf struct {
+	PluginID     int64                `json:"plugin_id"`
+	PluginName   string               `json:"plugin_name"`
+	OwnerID      int64                `json:"owner_id"`
+	OwnerLogin   string               `json:"owner_login"`
+	Capabilities []plugins.Capability `json:"capabilities"`
+}
+
+// handlePluginSelf is GET /plugin/v1/self: the presented token's plugin id and
+// name, its owner (id, and the login a person names them by) and its
+// capabilities. Any live token may ask; a revoked token or a disabled owner is
+// the door's 401, which is how a plugin learns either within one call.
+func (s *Server) handlePluginSelf(w http.ResponseWriter, r *http.Request) {
+	p := pluginFromContext(r.Context())
+	s.writeJSON(w, http.StatusOK, pluginSelf{PluginID: p.ID, PluginName: p.Name, OwnerID: p.OwnerID,
+		OwnerLogin: p.OwnerLogin, Capabilities: p.Capabilities})
 }
 
 // handlePluginMessage is POST /plugin/v1/messages: store one inbound message

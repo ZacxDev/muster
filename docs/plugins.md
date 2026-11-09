@@ -29,7 +29,7 @@ The whole loop:
 | door | who | routes |
 |---|---|---|
 | The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
 
 A plugin token is shown once, when you create it. muster stores only its
 sha256. The token acts as you, and only on `/plugin/v1/*`:
@@ -40,9 +40,22 @@ sha256. The token acts as you, and only on `/plugin/v1/*`:
   sessions.
 
 Each plugin has a **name** (a slug), a **label** (what your chief's conversation
-for it is called) and a **data scope**. The page lists each plugin with when it
+for it is called), a **data scope** and a set of **capabilities**. The page lists each plugin with when it
 was last seen (its last authenticated call) and how many of its messages are
 still waiting to reach your chief.
+
+### Capabilities
+
+A plugin token opens only the routes its **capabilities** allow:
+
+| capability | opens |
+|---|---|
+| `messages` | every route below except `GET /plugin/v1/self`: messages, drafts, tasks and task writes |
+| `viewer` | reserved for the session-view seams of previews (a plugin's chip on a session view, and hand-off codes); no route takes it yet |
+
+Every token has `messages`, including every token minted before capabilities
+existed (migration `0102`). `GET /plugin/v1/self` takes any live token. The
+set is fixed when the token is minted.
 
 ## The plugin author's contract
 
@@ -52,7 +65,22 @@ JSON. On every route:
 | answer | meaning |
 |---|---|
 | `401` | not a live plugin token (unknown, revoked, malformed, another kind of credential, or the owner's account is disabled) |
+| `403` | a live token without the [capability](#capabilities) the route needs; the body names it |
 | `404` | plugins are off on this server |
+
+### `GET /plugin/v1/self`: who the token is
+
+Any live plugin token may ask. The answer names the token's plugin, its owner
+and its capabilities:
+
+```json
+{"plugin_id": 3, "plugin_name": "example-inbox", "owner_id": 1,
+ "owner_login": "owner@example.invalid", "capabilities": ["messages"]}
+```
+
+`owner_login` is the owner's email, or the account's display name when it has
+no email. A revoked token or a disabled owner gets the `401` above, so calling
+this route is how a plugin learns of either.
 
 ### `POST /plugin/v1/messages`: an inbound message
 

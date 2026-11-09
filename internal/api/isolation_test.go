@@ -458,6 +458,9 @@ var isolationClasses = map[string]routeClass{
 	"POST /send-queue/{id}/edit/cancel":       classParam,
 	"POST /send-queue/confirm":                classMirror,
 	"POST /plugin/v1/messages":                classPlugin,
+	// Who the presented plugin token is: it names nothing, and answers only
+	// the token's own plugin and owner.
+	"GET /plugin/v1/self": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
