@@ -63,6 +63,15 @@ var (
 		Help: "Requests refused 421 because their Host is under MUSTER_PLUGIN_ORIGINS.",
 	})
 
+	// PluginHandoffs counts viewer hand-off codes (docs/plugins.md#viewer-hand-off)
+	// by purpose (`view`; `unknown` for a redeem that matched no code) and
+	// outcome: minted, rate_limited and refused (POST /plugin-handoffs);
+	// redeemed and not_found (POST /plugin/v1/handoffs/redeem).
+	PluginHandoffs = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_plugin_handoffs_total",
+		Help: "Viewer hand-off codes minted and redeemed, by purpose and outcome.",
+	}, []string{"purpose", "outcome"})
+
 	// PushDelivery counts Web Push delivery attempts, one per DEVICE per
 	// notification, by result:
 	//   ok      — the push service accepted it (2xx)

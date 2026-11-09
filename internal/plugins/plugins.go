@@ -118,6 +118,11 @@ type Plugin struct {
 	// the one it needs, and requirePluginToken (internal/api) refuses a token
 	// without it. Every token minted before 0102 has CapMessages.
 	Capabilities []Capability `json:"capabilities"`
+	// Origin and EntryURL are a `viewer` token's origin pattern (one of
+	// MUSTER_PLUGIN_ORIGINS at mint) and the URL under it a hand-off is sent
+	// to (migration 0104); nil on every other token.
+	Origin   *string `json:"origin,omitempty"`
+	EntryURL *string `json:"entryUrl,omitempty"`
 	// OwnerLogin is how the owner's account is named to a person: its email,
 	// or its display name when it has none (the admin Users page's spelling).
 	// Set by Authenticate only, for GET /plugin/v1/self.
@@ -131,8 +136,8 @@ const (
 	// CapMessages opens every /plugin/v1/* route a plugin token opened before
 	// capabilities existed: messages, drafts, tasks and task writes.
 	CapMessages Capability = "messages"
-	// CapViewer opens the viewer seams (docs/design/previews.md). No route
-	// takes it yet.
+	// CapViewer opens the viewer seams (docs/design/previews.md): the plugin's
+	// chip on session views, and redeeming hand-off codes.
 	CapViewer Capability = "viewer"
 )
 

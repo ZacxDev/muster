@@ -121,6 +121,8 @@ var routeVias = map[authz.Via][]string{
 		// Plugins (0015): the page and its forms (404 while plugins are off).
 		"GET /plugins",
 		"POST /plugins",
+		// A viewer hand-off's mint (plugin_handoffs.go).
+		"POST /plugin-handoffs",
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
@@ -434,6 +436,7 @@ var routeVias = map[authz.Via][]string{
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
 		"GET /plugin/v1/self",
+		"POST /plugin/v1/handoffs/redeem",
 		"POST /plugin/v1/messages",
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
@@ -498,7 +501,8 @@ type principalPlugins struct{ plugins.Store }
 func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
 	if tok == pPluginToken {
 		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
-			Capabilities: []plugins.Capability{plugins.CapMessages}}, nil
+			// Both capabilities, so the probe reaches every plugin route's handler.
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -562,7 +566,9 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
-		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{}})
+		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{},
+		// The viewer routes are on, so their doors are probed too.
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}}})
 	seen := &[]authz.Principal{}
 	s.principalProbe = func(r *http.Request) {
 		p, ok := authz.From(r.Context())

@@ -409,8 +409,12 @@ var isolationClasses = map[string]routeClass{
 	// Plugins (0015). The page and its forms are the session tier and the
 	// revoke names A's plugin by id; the message route is a plugin token only
 	// and names no object (a message lands in the token owner's own rows).
-	"GET /plugins":              classList,
-	"POST /plugins":             classList,
+	"GET /plugins":  classList,
+	"POST /plugins": classList,
+	// A viewer hand-off (plugin_handoffs.go) names its plugin and window in the
+	// BODY, not the path, so the walk's A-ids never reach it: another owner's
+	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
+	"POST /plugin-handoffs":     classList,
 	"POST /plugins/{id}/revoke": classParam,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
@@ -461,6 +465,8 @@ var isolationClasses = map[string]routeClass{
 	// Who the presented plugin token is: it names nothing, and answers only
 	// the token's own plugin and owner.
 	"GET /plugin/v1/self": classPlugin,
+	// A hand-off redeem names a code, which RLS and the plugin id confine.
+	"POST /plugin/v1/handoffs/redeem": classPlugin,
 	// Reply drafts (PR C): the owner's decisions name A's draft by id; the
 	// plugin's claim names nothing (it leases the token owner's own drafts) and
 	// its result names A's draft — which B's plugin must not settle.
