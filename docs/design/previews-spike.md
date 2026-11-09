@@ -1,16 +1,25 @@
 # Previews: phase-0 tunnel spike, results
 
-Status: **spike results**, for [previews.md](previews.md) ("The spike's
-go/no-go", design head `27c5b184`, PR #544). Code:
-[`spike/previewtunnel/`](../../spike/previewtunnel/) (throwaway, separate Go
-module). Measured 2026-11-08.
+Status: **spike results**, for
+[previews.md](https://github.com/ZacxDev/muster/blob/14cad6ac3ff9b8bcad75772cae5e5b03af3fdd3b/docs/design/previews.md)
+("The spike's go/no-go", design head `27c5b184`, PR #544). Measured with the
+harness at `3ab86932` (loopback), `b7378b8c` (real edge) and `78d6e30a` (mesh path).
+
+**The harness is not in the tree.** It was a throwaway, separate Go module, and
+it lived at commit **`22f4fc9e`** on branch `spike/preview-tunnel`:
+[`spike/previewtunnel/` at `22f4fc9e`](https://github.com/ZacxDev/muster/tree/22f4fc9e85f040e568c6b5f399fb5ed8ea5ebaae/spike/previewtunnel).
+That covers the loopback suite (`criteria_test.go`, including the negative controls and
+`TestH2_PausedReadersExhaustConnWindow`) and `cmd/edgespike` (the real-edge
+`gateway`/`run`/`idlews` modes). Recover it with
+`git checkout 22f4fc9e -- spike/previewtunnel` to re-run (1), (4) and (5) from an
+off-site host. File and test names below refer to that commit.
 
 ## Verdict
 
 | | |
 |---|---|
 | **Transport** | **Go for HTTP/2 `CONNECT` over `websocket.NetConn`**, with one configuration rule (below). yamux also passed (1)–(3), so the fallback is not needed. |
-| **Edge** | **Measured 2026-11-09** (see "Real-edge results" at the end): (4) **pass** (Cloudflare cuts idle WS at ≈125 s; 30 s pings keep it up), (5) **pass**, (1) **fail**. The extra edge leg (≈100 ms on that topology) dominates, not the transport. |
+| **Edge** | **Measured** (see "Real-edge results" at the end): (4) **pass** (Cloudflare cuts idle WS at ≈125 s; 30 s pings keep it up), (5) **pass**, (1) **fail**. The extra edge leg (≈100 ms on that topology) dominates, not the transport. |
 | **Phase 1** | Transport and edge behaviour are settled. **(1) needs a host↔gateway edge round trip under ≈50 ms**, which is a gateway-placement question, not a tunnel one. |
 
 The doc asks for the measurement "from one real host, over the deployment's
@@ -163,7 +172,7 @@ no new dependency, and yamux bought nothing measurable. Two additions:
    remotely, and the upstream's SSE send time has to come from the event
    payload rather than an in-process channel.
 
-## Real-edge results (2026-11-09)
+## Real-edge results
 
 Measured through the real public path, then torn down. Code:
 `cmd/edgespike` (`gateway` deployed; `run` and `idlews` on the client side).
@@ -171,15 +180,15 @@ Measured through the real public path, then torn down. Code:
 **Path.** Client and host both ran in **one process on one workstation on the
 homelab LAN**. The gateway was a pod on the homelab cluster. Every byte went
 workstation → Cloudflare (PoP **ORD**, HTTP/2 + TLS 1.3 to the browser side)
-→ prod Traefik (Hetzner, `5.161.19.116`) → prod nginx relay → nebula mesh →
+→ the production Traefik edge (a VPS) → prod nginx relay → nebula mesh →
 homelab nginx relay → gateway pod. The host's tunnel made the **same trip**
 in the other direction. Both relays used muster's streaming block: an empty-default
 `Connection` map, `proxy_buffering off` and `proxy_read_timeout 3600s`. No
 Authelia was in front; the gateway's own shared secret gated every path.
-Segment round trips: workstation→ORD 28 ms, workstation→Hetzner 48 ms,
+Segment round trips: workstation→ORD 28 ms, workstation→edge VPS 48 ms,
 prod relay→homelab over nebula 49 ms. **Read every number at this scope.**
 The gateway sits next to the host on the LAN, but the traffic goes out to
-Cloudflare and Hetzner and comes back twice. A deployment whose gateway sits
+Cloudflare and the edge VPS and comes back twice. A deployment whose gateway sits
 near its edge would see different numbers.
 
 | # | conditions | runs | result | bound | verdict |
@@ -193,7 +202,7 @@ near its edge would see different numbers.
 **What the edge does, as measured:**
 
 - **Idle WebSocket cut: about 125 s, by Cloudflare.** The same no-ping bare
-  WebSocket sent **straight to the origin** (`5.161.19.116:443`, skipping
+  WebSocket sent **straight to the origin** (the edge's public address on 443, skipping
   Cloudflare) was **still open at 300 s**. Sent through Cloudflare it was cut
   at 125 s. The gateway log agrees (`bare_echo ended after 5m0.3s` vs
   `2m5.2s`). The relays' 3600 s read timeout and Traefik did not cut it within
@@ -210,7 +219,7 @@ near its edge would see different numbers.
   use it, and it was not changed for the test.
 - **(1) is dominated by the extra edge leg, as predicted.** The tunnel case
   crosses the whole public path a second time. That costs one more
-  workstation↔Cloudflare↔Hetzner↔homelab round trip, about 100 ms here. The
+  workstation↔Cloudflare↔edge VPS↔homelab round trip, about 100 ms here. The
   transport itself costs about 0.1 ms (loopback numbers above), and h2 vs yamux
   is within noise. **With this topology, (1) fails whichever transport is
   used.** The bound can only be met if the host↔gateway round trip through the
@@ -221,7 +230,7 @@ near its edge would see different numbers.
 were not re-run; the 10-minute run for yamux; loss or bandwidth limits; a
 browser client. Brotli `Accept-Encoding` was not tried; Go asked only for gzip.
 
-## Mesh-path results (2026-11-09)
+## Mesh-path results
 
 Operator decision: **hosts dial the gateway over the nebula mesh; only the
 browser leg goes through Cloudflare** (off-mesh hosts fall back to Cloudflare).
@@ -231,14 +240,14 @@ session as the baseline. Gateway image `5cee5306` (adds `-host-base`).
 **Topology, and why this is a BEST-CASE LOWER BOUND.**
 
 - **Browser leg (as before):** client → Cloudflare ORD → prod Traefik → prod
-  relay → nebula → homelab relay `10.42.0.10:8135` → gateway pod.
-- **Host leg:** `ws://10.42.0.10:8135/v1/host` over the mesh. The client's
-  socket was confirmed with `ss`: `10.42.0.30:40878 → 10.42.0.10:8135`. The
-  homelab gateway's nebula firewall already admits TCP on any port from groups
-  `workbench`/`services`, so no mesh change was needed. The shared-secret gate
+  relay → nebula → homelab relay's mesh listener → gateway pod.
+- **Host leg:** `ws://<relay mesh address>:<port>/v1/host` over the mesh. The
+  host's socket was confirmed with `ss` (mesh address → relay mesh listener). The
+  homelab gateway's nebula firewall already admits TCP on any port from the
+  host's mesh groups, so no mesh change was needed. The shared-secret gate
   held on the mesh listener: 401 without the secret, and 401 with a wrong one.
-- **The host is this workstation**, mesh node `workbench`, 10.42.0.30. Its mesh
-  round trip to 10.42.0.10 is **0.39 ms**: the nebula underlay is the **LAN**.
+- **The host is the measuring workstation**, itself a mesh node. Its mesh
+  round trip to the relay is **0.39 ms**: the nebula underlay is the **LAN**.
 - **This is not representative of an off-site mesh host.** For an off-site
   host, expect the host leg to add about its own round trip to the homelab
   relay. If that host relays through the lighthouse instead of a direct path,
