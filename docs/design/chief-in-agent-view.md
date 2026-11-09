@@ -948,10 +948,12 @@ this kickoff" step).
     (`replace` | `spinoff` | `?`), `prompt_from: {ref, block?}`, and only when
     the owner's words say so, `target`, `model`, `repo`, `base`.
     `TestTheSuccessionProposeKeysArePinned` pins both key sets.
-  - **The binding.** The chief's newest user row in its default session must
-    be a view line (`about` set, typed by the owner, within the turn budget);
-    `successor_of` must equal its `about`. The subject's place is read again
-    from the hub, owner-scoped. Anything else is refused with its own sentence.
+  - **The binding.** The newest user row the OWNER typed in the chief's
+    default session must be a view line (`about` set, within the turn
+    budget); `successor_of` must equal its `about`. The subject's place is
+    read again from the hub, owner-scoped. Anything else is refused with its
+    own sentence. (Changed in round 4: this was the chief's newest user row of
+    any kind, so a plugin message delivered behind the view line refused it.)
   - **The kickoff.** muster re-reads the transcript and copies the message
     whose `ref` matches — its fenced block when `block` is given, else the
     whole message (phase 0 found unfenced kickoffs) — byte for byte. Too long
@@ -1062,8 +1064,9 @@ this kickoff" step).
   writer of a proposal's ask is `fileProposal`, whose question is built by
   a builder that reads the kickoff's length only.
 - Round 3: a card whose proposal row (or ask) cannot be read when it is
-  drawn shows "muster could not load this card's kickoff just now… reload"
-  and offers no start button, on the Attention view and the ask page. The
+  drawn shows "muster could not load this card's proposal just now… reload"
+  and offers no start button, on the Attention view and the ask page (round
+  4: nor an end-session card's End it). The
   Answered list says muster recorded a proposal card's answer only once its
   delivery was closed; otherwise it says where the answer went.
 - The cut rule is unchanged in effect and reads the row's kickoff length: a
@@ -1162,6 +1165,77 @@ This section follows D9. It is the chief proposal's second kind
   message, which settles an owner card without accepting it).
 - No graceful exit for opencode: its window is closed at once. A graceful
   path would need an exit call in opencode's server API.
+
+## Round 4: four defects seen live (2026-11-09)
+
+Observed on the release with succession phase 2 and end-session.
+
+- **A view line with other inputs queued behind it was refused.** The owner
+  asked from a view; plugin mail delivered right after it was its own turn
+  each; the chief answered the view line inside one of those turns, and
+  `succession_propose` was refused ("the message you are answering was not
+  typed on a session's view"), because the binding read the chief's newest
+  user row of any kind. Now ONE predicate (`ownerViewLine`, behind
+  `bindViewSubject` and both propose tools) takes the newest row the OWNER
+  typed (`typed_by`, which only the owner's signed-in chat doors set). A row
+  nobody typed (a plugin delivery, a relayed answer, muster's note) is passed
+  over and never authorises: it has no subject. A line the owner typed in the
+  chief's own chat after the view line is the newest owner line, and has no
+  subject. The freshness window (the turn budget, from the line) and the
+  subject rule are unchanged.
+  - **Read up to the running turn's own input** (round 1 audit). The owner's
+    row is stored before its turn takes the session, so a line typed on
+    another session's view while a turn runs is already the newest row. The
+    predicate reads only rows at or before the running turn's input
+    (`turnInputOf`: the turn's ctx for an in-process dispatch; for a CLI's
+    `/mcp` call, the registry, which answers only while exactly one turn
+    runs for the chief and its input is known). Unknown (a delivery's turn,
+    two turns at once): the whole chat, as above.
+  - **Single use.** One owner line authorises at most ONE proposal of each
+    kind for a session: `CreateProposal` refuses a second row of that kind
+    with the same `owner_message` and `subject_key`
+    (`ErrProposalLineUsed`, under a transaction-scoped advisory lock) — the
+    one place the rule lives; `fileProposal` cancels the card it raised for
+    the refused one, and pushes a card to the owner's phone only once its
+    proposal is recorded, so a refused one never reaches it. Before, the
+    binding to
+    the newest row did this implicitly in most cases (muster's note after a
+    proposal was the newest row); now that such rows are passed over, it is
+    explicit. The message id is not passed by the chief: the server derives
+    the line itself, as before.
+  - Accepted, stated: a plugin message delivered within the budget behind an
+    unused view line can still steer the chief into proposing for that
+    view's session, once per kind. It could always do so inside the view
+    line's own turn (transcript text can cause a proposal), and nothing
+    starts or ends without the owner's tap on a card that shows what would
+    happen.
+- **The update pill covered the card.** At phone width the "Updated · Reload"
+  pill sat on a succession card's kickoff and an end card's subtitle: it
+  slides only past controls, and the card arrives by the view's own fetch,
+  after the page settled. `pwa.js` now avoids a proposal card whole
+  (`[data-proposal]`), and the view's script fires `muster:layout` when it
+  draws the card (as does any `<details>` toggle), so a pill on it moves off.
+- **A question the proposal answered stayed open.** The chief asked about the
+  session (ask_owner or attention_ask, e.g. "which repository?" after a
+  refusal); the owner answered with a new line on the view, which settles
+  none of the chief's asks; the chief proposed; the ask stayed open until it
+  expired. Now an ask records the session it was raised about
+  (`attention_asks.about_key`, migration **0103**), set ONLY by muster, and
+  only when the running turn's own input (known: `turnInputOf`) IS the
+  owner's view line (`chiefAskSubject`: no plugin message, relayed answer or
+  note behind it). A question raised in a turn whose input is unknown, or in
+  a turn for another line, has no subject.
+  Filing a proposal withdraws the chief's own open asks with that
+  `about_key` (`attention.WithdrawAbout`): `cancelled`. Never matched
+  by text: an ask with no subject, another session's, another asker's, a
+  question to the chief, a notice, and the proposal's own card are not
+  touched. muster's own cards for the chief (a held dispatch's) carry no
+  subject.
+- **An unreadable end card still offered End it.** Round 3 kept the start
+  buttons off a card whose proposal row could not be read, but not End it.
+  Which kind the card is cannot be known then, so every kind's accept is left
+  off (`proposalStartLabels`), and the note says the proposal could not be
+  loaded.
 - A dialog that opens in the milliseconds between the last check and the
   Enter is not caught: the Claude prompt guard is a check before the keys,
   not a lock (`claude_guard.go`).

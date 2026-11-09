@@ -69,7 +69,7 @@ func TestOneTypedReplySettlesOneCard(t *testing.T) {
 	f := newDeliveryFixture(t)
 	// Another asker's older open card: the rule is per asker, so it is neither
 	// settled nor counted as this chief's oldest.
-	theirs, err := f.srv.raiseOwnerCard(asUser(1), f.op, "Their question?", []string{"a", "b"})
+	theirs, err := f.srv.raiseOwnerCard(asUser(1), f.op, "Their question?", []string{"a", "b"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

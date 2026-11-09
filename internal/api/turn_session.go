@@ -63,6 +63,81 @@ func (r *turnSessionRegistry) current(agent int64) string {
 	return ""
 }
 
+// THE TURN'S OWN INPUT: the chat_messages row a turn was started for (the
+// owner's line runEnteredTurn stored), so the owner's view line a tool call
+// answers is read relative to THAT row, not to whatever the newest row is
+// (ownerViewLine). The same two doors: an in-process dispatch reads its turn's
+// ctx (withTurnInput); a CLI's /mcp call reads the registry, which answers
+// only while exactly ONE turn runs for the agent and that turn's input is
+// known — two overlapping turns (one waiting out the other's busy, a delivery
+// beside a typed turn) cannot be told apart, so they answer 0.
+
+type turnInputKey struct{}
+
+// withTurnInput marks ctx as the turn whose input is chat message id.
+func withTurnInput(ctx context.Context, id int64) context.Context {
+	return context.WithValue(ctx, turnInputKey{}, id)
+}
+
+// turnInputFrom is ctx's turn input, 0 for none.
+func turnInputFrom(ctx context.Context) int64 {
+	id, _ := ctx.Value(turnInputKey{}).(int64)
+	return id
+}
+
+// turnInputRegistry is agent id -> the inputs of its running turns (0 for a
+// turn whose input muster did not store first: a delivery, a nudge).
+type turnInputRegistry struct {
+	mu   sync.Mutex
+	runs map[int64][]int64
+}
+
+// begin records agent's turn with input id until the returned func is called.
+func (r *turnInputRegistry) begin(agent, id int64) func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.runs == nil {
+		r.runs = map[int64][]int64{}
+	}
+	r.runs[agent] = append(r.runs[agent], id)
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		l := r.runs[agent]
+		for i := len(l) - 1; i >= 0; i-- {
+			if l[i] == id {
+				l = append(l[:i:i], l[i+1:]...)
+				break
+			}
+		}
+		if len(l) == 0 {
+			delete(r.runs, agent)
+		} else {
+			r.runs[agent] = l
+		}
+	}
+}
+
+// only is the input of agent's one running turn; 0 when none runs, more than
+// one does, or its input is unknown.
+func (r *turnInputRegistry) only(agent int64) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l := r.runs[agent]; len(l) == 1 {
+		return l[0]
+	}
+	return 0
+}
+
+// turnInputOf is the input row of the turn agent's tool call runs in: ctx's
+// turn, else the one turn muster is running for it now, else 0 (unknown).
+func (s *Server) turnInputOf(ctx context.Context, agent int64) int64 {
+	if id := turnInputFrom(ctx); id > 0 {
+		return id
+	}
+	return s.turnInputs.only(agent)
+}
+
 // turnSessionOf is the chat session key agent's tool call runs in: ctx's turn,
 // else the turn muster is running for it now, else "" (unknown: the answer
 // goes to its default session).

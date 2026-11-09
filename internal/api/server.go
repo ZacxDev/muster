@@ -285,6 +285,9 @@ type Server struct {
 	// turnSessions is the chat session of each agent's running turn
 	// (turn_session.go): where an owner card it raises is answered.
 	turnSessions turnSessionRegistry
+	// turnInputs is the input row of each agent's running turn
+	// (turn_session.go): the owner's line a tool call answers.
+	turnInputs turnInputRegistry
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
