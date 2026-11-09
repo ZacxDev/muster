@@ -56,7 +56,17 @@ type execServer struct {
 	hold bool
 	// closed is closed when the server sees the connection go away.
 	closed chan struct{}
+	// flood, when set, plays a command that writes flood chunks of floodChunk
+	// bytes to stdout AND to stderr at the same time (a fetch's output and its
+	// progress), from two goroutines, then exits 0.
+	flood int
+	// drip, when set, plays a command that writes to stdout and stderr until
+	// the connection goes away (only a cancelled context ends it).
+	drip bool
 }
+
+// floodChunk is one write of a flood.
+var floodChunk = bytes.Repeat([]byte("x"), 4096)
 
 func newExecServer(t *testing.T) *execServer {
 	return &execServer{t: t, gotSize: make(chan struct{}, 16), closed: make(chan struct{})}
@@ -130,7 +140,28 @@ func (s *execServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	out := byType[corev1.StreamTypeStdout]
-	if in := byType[corev1.StreamTypeStdin]; in != nil && out != nil {
+	if s.flood > 0 || s.drip {
+		var wg sync.WaitGroup
+		for _, st := range []httpstream.Stream{out, byType[corev1.StreamTypeStderr]} {
+			if st == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(st httpstream.Stream) {
+				defer wg.Done()
+				for i := 0; s.drip || i < s.flood; i++ {
+					if _, err := st.Write(floodChunk); err != nil {
+						return
+					}
+				}
+			}(st)
+		}
+		wg.Wait()
+		if s.drip {
+			close(s.closed)
+			return
+		}
+	} else if in := byType[corev1.StreamTypeStdin]; in != nil && out != nil {
 		// The container's side of a terminal: echo what was typed.
 		_, _ = io.Copy(out, in)
 	} else if out != nil {
@@ -347,6 +378,87 @@ func TestExecStillStreamsAfterTheURLMovedToRESTConfig(t *testing.T) {
 			t.Error("a plain Exec must not ask for a TTY")
 		}
 	})
+}
+
+// TestExecWithOneBufferForStdoutAndStderrIsSafe: the job worktree script, the
+// deploy-key fetch and the terminal release each pass ONE bytes.Buffer as both
+// stdout and stderr. client-go copies the two remote streams on two goroutines
+// of its own, so a command writing both at once had them growing one Buffer
+// concurrently: a data race that tore the Buffer's slice and SIGSEGVed inside
+// spdystream's (*Stream).Read, under client-go's HandleCrash, which re-panics,
+// so it took the whole process down. Run under -race (CI's `go test -race`):
+// at the unguarded driver the race detector fails this test; here every byte
+// of both streams arrives.
+func TestExecWithOneBufferForStdoutAndStderrIsSafe(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) {
+		srv := newExecServer(t)
+		srv.flood = 64
+		d, ref, _ := execRig(t, m, srv)
+		for _, viaContainer := range []bool{false, true} {
+			var out bytes.Buffer
+			var err error
+			if viaContainer {
+				err = d.ExecContainer(context.Background(), ref, "deploy-key", []string{"fetch"}, nil, &out, &out)
+			} else {
+				err = d.Exec(context.Background(), ref, []string{"fetch"}, nil, &out, &out)
+			}
+			if err != nil {
+				t.Fatalf("Exec (named container %v): %v", viaContainer, err)
+			}
+			if want := 2 * srv.flood * len(floodChunk); out.Len() != want {
+				t.Fatalf("Exec (named container %v) collected %d bytes, want %d (both streams, every chunk)",
+					viaContainer, out.Len(), want)
+			}
+		}
+	})
+}
+
+// TestExecLeavesTheCallersWritersAloneOnceItReturns: StreamWithContext returns
+// as soon as its context ends, while client-go's copy goroutines may still be
+// writing. A job whose deadline passed mid-exec then reads its buffer for the
+// error message while a copy writes it. Once Exec has returned, the caller's
+// writers must not be written again: the buffer is read twice, apart, and must
+// not change (and -race must see no write racing the reads).
+func TestExecLeavesTheCallersWritersAloneOnceItReturns(t *testing.T) {
+	srv := newExecServer(t)
+	srv.drip = true
+	d, ref, _ := execRig(t, nsModes[0], srv)
+	var shared bytes.Buffer
+	first := &firstWrite{w: &shared, seen: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Exec(ctx, ref, []string{"yes"}, nil, first, nil) }()
+	select {
+	case <-first.seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no output reached the caller")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Exec after cancel: %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Exec did not return after its context was cancelled")
+	}
+	n := shared.Len()
+	time.Sleep(200 * time.Millisecond)
+	if again := shared.Len(); again != n {
+		t.Fatalf("the caller's buffer grew from %d to %d bytes after Exec returned", n, again)
+	}
+}
+
+// firstWrite passes writes to w and closes seen on the first.
+type firstWrite struct {
+	w    io.Writer
+	once sync.Once
+	seen chan struct{}
+}
+
+func (f *firstWrite) Write(p []byte) (int, error) {
+	f.once.Do(func() { close(f.seen) })
+	return f.w.Write(p)
 }
 
 // TestTheExecRBACPrerequisiteIsTheVerbTheDriverSends derives the verb from the
