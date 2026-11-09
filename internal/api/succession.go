@@ -41,8 +41,8 @@ import (
 // answerAskFrom) dispatches, and only on that tap.
 //
 // 🔴 THE SUBJECT IS THE VIEW LINE'S, NEVER THE TRANSCRIPT'S. successor_of must
-// equal chat_messages.about of the line the chief is answering (viewLineFor:
-// the newest user row of its default session, typed by the owner on a
+// equal chat_messages.about of the line the chief is answering (ownerViewLine:
+// the newest row of its default session the OWNER typed, on a
 // session's view, within a turn's budget). A transcript that names another
 // session cannot point the proposal at it: the key is compared, and the
 // subject's place is resolved again from the hub (owner-scoped).

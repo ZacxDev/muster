@@ -384,6 +384,11 @@ func askView(a attention.Ask) map[string]any {
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote
 	}
+	// A question muster withdrew says why (a proposal answered it:
+	// withdrawAnsweredAsks).
+	if a.Status == attention.Cancelled && a.SettledReason != "" {
+		out["reason"] = a.SettledReason
+	}
 	if a.AnsweredVia.ViaSession() {
 		out["answered_via"], out["answered_from"] = a.AnsweredVia.Via, a.AnsweredVia.String()
 	}
@@ -452,8 +457,15 @@ func (s *Server) toolAttentionAsk(ctx context.Context, c toolCaller, arguments s
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("arguments are {question, options?, timeout_seconds?}")
 	}
+	// The chief's question remembers the session of the owner's view line it
+	// was raised in the turn of (chiefAskSubject; "" for any other caller), so
+	// the proposal that answers it withdraws it (withdrawAnsweredAsks).
+	about := ""
+	if c.agent != nil {
+		about = s.chiefAskSubject(ctx, *c.agent)
+	}
 	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: c.asker, Question: in.Question, Options: in.Options,
-		Timeout: time.Duration(in.TimeoutSeconds) * time.Second})
+		Timeout: time.Duration(in.TimeoutSeconds) * time.Second, AboutKey: about})
 	switch {
 	case err == nil:
 	case errors.Is(err, attention.ErrInvalid), errors.Is(err, attention.ErrTooMany):

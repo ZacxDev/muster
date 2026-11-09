@@ -36,9 +36,11 @@ import (
 // But runEnteredTurn sets NO owner-turn marker for a line with a subject
 // (ownerTurnTyper), so owner_asked releases (chief_owner_release.go
 // ownerTurnFor) refuse while a view turn runs, and the line answers none of the
-// chief's open asks (no askerAddressed): those are settled only from the
-// chief's own chat. A principal that is not a signed-in browser session is
-// refused before anything is stored (viewChiefNotSignedIn).
+// chief's open asks (no askerAddressed): those are settled from the
+// chief's own chat — or withdrawn, the ones about this session, when the chief
+// files a proposal for it (withdrawAnsweredAsks). A principal that is not a
+// signed-in browser session is refused before anything is stored
+// (viewChiefNotSignedIn).
 //
 // 🔴 IT IS A WRITE TO THE CHIEF'S CHAT, NOT TO THE PANE: no -interactive, no
 // step-up, and it works when sending to the agent is disabled (a read-only
@@ -310,7 +312,8 @@ func (s *Server) handleViewChief(w http.ResponseWriter, r *http.Request) {
 	finish(true)
 	// 🔴 NO askerAddressed: a line typed from a session's view answers NONE of
 	// the chief's open asks (operator decision, PR #537 round 1). They stay
-	// open, settled only from the chief's own chat.
+	// open, settled from the chief's own chat (or withdrawn by a proposal
+	// about this session: withdrawAnsweredAsks).
 	s.startAgentTurn(ctx, chief, sess, text, typer, &about)
 	s.logger.Printf("view chief: the owner asked the chief about %s (%s on %s)", about.SessionKey, about.Runtime, about.Host)
 	viewChiefSent(w, r, nav, back)

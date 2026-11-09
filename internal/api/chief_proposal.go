@@ -27,12 +27,15 @@ import (
 // session next. Every kind shares, by construction:
 //
 //   - ONE BINDING RULE (bindViewSubject): the proposal is about the session the
-//     owner's view line is about (chat_messages.about of the newest user row
-//     the chief is answering), and the session the chief names must be that
-//     one. Transcript text names nothing here.
-//   - ONE RECORD AND CARD (fileProposal): a chief_proposals row of its kind,
-//     and an owner card (raiseOwnerCard: the view, the Attention view, the
-//     phone) whose buttons are the kind's options and "Not now".
+//     owner's view line is about (chat_messages.about of the newest row the
+//     OWNER typed: ownerViewLine — inputs nobody typed, delivered after it,
+//     are passed over and never authorise), and the session the chief names
+//     must be that one. Transcript text names nothing here.
+//   - ONE RECORD AND CARD (fileProposal): a chief_proposals row of its kind —
+//     at most one of each kind per owner line and session — and an owner card
+//     (raiseOwnerCard: the view, the Attention view, the phone) whose buttons
+//     are the kind's options and "Not now". Filing it withdraws the chief's
+//     own open questions about that session (withdrawAnsweredAsks).
 //   - ONE TAP (proposalForAnswer, answerAskFrom's hook, BEFORE the answer is
 //     recorded): only the owner's own door (their signed-in browser or paired
 //     phone), only one of the card's buttons, only an undecided proposal. Not
@@ -50,6 +53,8 @@ const (
 	proposalOtherSubject = "your owner asked about %s, not %s: you can only propose this for the session they were viewing"
 	proposalNotVisible   = "session %s is not visible now: the session's transcript can no longer be read"
 	proposalNoCard       = "the card could not be put in front of your owner (%s): nothing was proposed"
+	proposalLineUsed     = "you already proposed this for the message your owner sent: one message of theirs authorises one " +
+		"proposal of each kind for a session, so nothing was proposed — wait for them to ask again"
 )
 
 // The tap's refusals, as the owner reads them (the view's card, the Attention
@@ -76,6 +81,7 @@ func proposalEventID(x plugins.Proposal) string { return x.Kind + "-" + strconv.
 // hostDispatchStore is).
 type proposalStore interface {
 	CreateProposal(ctx context.Context, n plugins.ProposalNew) (plugins.Proposal, error)
+	ProposalForLine(ctx context.Context, kind string, ownerMessage int64, key string) (plugins.Proposal, error)
 	ProposalByID(ctx context.Context, id int64) (plugins.Proposal, error)
 	ProposalByAsk(ctx context.Context, askID int64) (plugins.Proposal, error)
 	LatestProposalFor(ctx context.Context, kind, key string) (plugins.Proposal, error)
@@ -101,36 +107,78 @@ func (s *Server) proposals() proposalStore {
 	return st
 }
 
-// viewLineFor is the owner's view line chief is answering: the NEWEST user row
-// of its default session, when the owner typed it on a session's view
-// (AboutKey, TypedBy the owner) within the turn budget; else the refusal.
-//
-// 🔴 THE NEWEST ROW, NOT THE NEWEST VIEW ROW: a plugin delivery, a relayed
-// answer or a line typed in the chief's own chat after the view line is the
-// turn being answered now, and it carries no subject.
+// viewLineFor is the owner's view line chief may act on now (ownerViewLine),
+// or the refusal.
 func (s *Server) viewLineFor(ctx context.Context, chief agents.Agent) (agents.ChatMessage, string) {
+	line, _, why := s.ownerViewLine(ctx, chief)
+	return line, why
+}
+
+// ownerViewLine is THE ONE PREDICATE for "the owner's line the chief is
+// answering" (succession_propose, end_session_propose, and the subject of a
+// question the chief raises: chiefAskSubject): the NEWEST user row of chief's
+// default session THAT ITS OWNER TYPED (TypedBy, set only by the owner's
+// signed-in chat doors), when it was typed on a session's view (AboutKey)
+// within the turn budget; else the refusal. direct reports whether it is
+// also the newest user row of all — no other input was delivered after it.
+//
+// 🔴 THE NEWEST OWNER LINE, NOT THE NEWEST ROW (an operator's report: a
+// line typed on a view, then mail delivered behind it, refused). The chief's
+// CLI takes its inputs as they come: a plugin message delivered after the
+// owner's view line is its own turn, and the chief may answer the view line
+// inside it. So a row nobody typed — a plugin delivery, a relayed answer,
+// muster's note — is passed over, never itself authorising: it has no
+// subject, and an owner's line still has to be found behind it. A line the
+// owner typed in the chief's own chat after the view line is the newest
+// owner line and has no subject, so it binds nothing here.
+//
+// The line is still single use: CreateProposal files at most one proposal
+// of each kind on it (fileProposal's proposalLineUsed).
+func (s *Server) ownerViewLine(ctx context.Context, chief agents.Agent) (line agents.ChatMessage, direct bool, why string) {
 	sess, err := s.defaultSession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("proposal: %s's default session: %v", chief.Name, err)
-		return agents.ChatMessage{}, proposalNoViewRow
+		return agents.ChatMessage{}, false, proposalNoViewRow
 	}
 	msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, sess.ID, chatHistoryCap)
 	if err != nil {
 		s.logger.Printf("proposal: read %s's chat: %v", chief.Name, err)
-		return agents.ChatMessage{}, proposalNoViewRow
+		return agents.ChatMessage{}, false, proposalNoViewRow
 	}
+	owner := agentOwnerID(chief)
+	direct = true
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if m.Role != "user" {
 			continue
 		}
-		owner := agentOwnerID(chief)
-		if m.AboutKey == "" || owner <= 0 || m.TypedBy != owner || s.now().Sub(m.CreatedAt) > agentTurnBudget(chief.Kind) {
-			return agents.ChatMessage{}, proposalNoViewRow
+		if m.TypedBy <= 0 {
+			direct = false // a row nobody typed: passed over, never the line
+			continue
 		}
-		return m, ""
+		if m.AboutKey == "" || owner <= 0 || m.TypedBy != owner || s.now().Sub(m.CreatedAt) > agentTurnBudget(chief.Kind) {
+			return agents.ChatMessage{}, false, proposalNoViewRow
+		}
+		return m, direct, ""
 	}
-	return agents.ChatMessage{}, proposalNoViewRow
+	return agents.ChatMessage{}, false, proposalNoViewRow
+}
+
+// chiefAskSubject is the session a question chief raises NOW is about: the
+// owner's view line's subject when the turn's own input IS that line
+// (ownerViewLine, direct), "" otherwise. 🔴 NARROW ON PURPOSE: a question
+// raised while a plugin message, a relayed answer or a note is the newest
+// input may be about that, so it is linked to no session and no proposal
+// ever withdraws it (withdrawAnsweredAsks).
+func (s *Server) chiefAskSubject(ctx context.Context, chief agents.Agent) string {
+	if s.ext.Agents == nil || !s.isChiefAgent(ctx, chief) {
+		return ""
+	}
+	line, direct, why := s.ownerViewLine(ctx, chief)
+	if why != "" || !direct {
+		return ""
+	}
+	return line.AboutKey
 }
 
 // bindViewSubject is THE BINDING RULE: the view line chief is answering, the
@@ -164,21 +212,24 @@ type proposalBody struct {
 	// cut: text is cut, and the whole is on the session's view.
 	cut bool
 	// unread: the proposal row (or the ask) could not be read, so the card
-	// shows no kickoff, says so, and offers no start (proposalUnreadStarts).
+	// shows no kickoff, says so, and offers no accept of any kind — no start,
+	// no End it (withoutProposalStarts).
 	unread bool
 }
 
 // proposalUnreadBody is a card whose proposal could not be read now.
 var proposalUnreadBody = &proposalBody{unread: true}
 
-// proposalUnreadNote is what such a card says instead of its kickoff.
-const proposalUnreadNote = "muster could not load this card's kickoff just now, so it cannot be started from here: reload the page."
+// proposalUnreadNote is what such a card says instead of what it would do.
+const proposalUnreadNote = "muster could not load this card's proposal just now, so it cannot be accepted from here: reload the page."
 
-// proposalStartLabels are the buttons that start a proposal: never drawn on
-// a card whose kickoff could not be loaded (withoutProposalStarts).
-var proposalStartLabels = []string{successionStartLabel, successionReplaceLabel, successionSpinoffLabel}
+// proposalStartLabels are the buttons that ACCEPT a proposal, of every kind
+// (a succession's starts, an end-session's End it): never drawn on a card
+// whose proposal could not be loaded (withoutProposalStarts) — which kind it
+// is cannot be known then, so every kind's are left out.
+var proposalStartLabels = []string{successionStartLabel, successionReplaceLabel, successionSpinoffLabel, endSessionLabel}
 
-// withoutProposalStarts is options less the start buttons when b is a card
+// withoutProposalStarts is options less every accept button when b is a card
 // that could not be read; options as they are otherwise.
 func withoutProposalStarts(b *proposalBody, options []string) []string {
 	if b == nil || !b.unread {
@@ -196,7 +247,7 @@ func withoutProposalStarts(b *proposalBody, options []string) []string {
 // proposalKickoffBody is ask a's proposal body for ctx's principal, nil when
 // a is no proposal's card (or the principal is not its owner: the store reads
 // the principal's own proposals only), and proposalUnreadBody when the row
-// could not be read: the card then offers no start. 🔴 THE ONE PLACE OFF THE SESSION'S VIEW
+// could not be read: the card then offers no accept. 🔴 THE ONE PLACE OFF THE SESSION'S VIEW
 // THAT THE KICKOFF IS READ FOR DRAWING, and only for the owner's own pages
 // (withAskBoxes, renderAskPage): the ask's question never holds it
 // (successionCardQuestion), so attention_list, attention_wait, the push and
@@ -281,6 +332,14 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	if st == nil || s.ext.Attention == nil {
 		return plugins.Proposal{}, "proposals are not available on this muster"
 	}
+	// 🔴 SINGLE USE: one owner line, one proposal of each kind for a session
+	// (asked here so no card is raised; CreateProposal enforces it).
+	if _, err := st.ProposalForLine(ctx, n.Kind, ownerMsg, key); err == nil {
+		return plugins.Proposal{}, proposalLineUsed
+	} else if !errors.Is(err, plugins.ErrProposalNotFound) {
+		s.logger.Printf("proposal: read %s's %s on message %d: %v", chief.Name, n.Kind, ownerMsg, err)
+		return plugins.Proposal{}, "the proposal could not be recorded; try again"
+	}
 	ask, err := s.raiseProposalCard(ctx, chief, question, askOptions)
 	if err != nil {
 		return plugins.Proposal{}, fmt.Sprintf(proposalNoCard, ownerCardRefusal(err))
@@ -290,13 +349,46 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	n.SubjectTmuxSession, n.SubjectTmuxWindow, n.SubjectTitle, n.SubjectDispatch = about.TmuxSession, about.TmuxWindow, cutRunes(about.Title, 300), about.Dispatch
 	x, err := st.CreateProposal(ctx, n)
 	if err != nil {
-		s.logger.Printf("proposal: record %s's %s for %s: %v", chief.Name, n.Kind, key, err)
 		_, _ = s.cancelAsk(ctx, ask.ID)
+		if errors.Is(err, plugins.ErrProposalLineUsed) {
+			return plugins.Proposal{}, proposalLineUsed
+		}
+		s.logger.Printf("proposal: record %s's %s for %s: %v", chief.Name, n.Kind, key, err)
 		return plugins.Proposal{}, "the proposal could not be recorded; try again"
 	}
 	s.logger.Printf("proposal %d: %s proposed a %s of %s (card %d)", x.ID, chief.Name, x.Kind, x.SubjectKey, ask.ID)
+	s.withdrawAnsweredAsks(ctx, chief, x)
 	s.broadcastTo(agentOwnerID(chief), EventLineageChanged, proposalEventID(x))
 	return x, ""
+}
+
+// proposalWithdrawnReason is a question withdrawAnsweredAsks settled, as its
+// row records it (attention.Ask.SettledReason) and attention_wait reads it.
+func proposalWithdrawnReason(x plugins.Proposal) string {
+	return "superseded: your chief proposed a " + strings.ReplaceAll(x.Kind, "_", " ") + " of this session (proposal " +
+		strconv.FormatInt(x.ID, 10) + "), so this question about it was withdrawn"
+}
+
+// withdrawAnsweredAsks withdraws the questions the chief raised for proposal
+// x's flow, which the proposal answered: its still-open asks — ask_owner's
+// cards and attention_ask's — linked to x's session (attention.Ask.AboutKey,
+// which chiefAskSubject sets only for a question raised in the turn of the
+// owner's own view line about it). 🔴 THE LINK IS STRUCTURAL: an ask is never
+// matched by its text, and one with no subject, another session's, another
+// asker's or x's own card is never touched.
+func (s *Server) withdrawAnsweredAsks(ctx context.Context, chief agents.Agent, x plugins.Proposal) {
+	if s.ext.Attention == nil || x.SubjectKey == "" {
+		return
+	}
+	as, err := s.ext.Attention.WithdrawAbout(ctx, chief.ID, x.SubjectKey, x.AskID, proposalWithdrawnReason(x))
+	if err != nil {
+		s.logger.Printf("proposal %d: withdraw %s's questions about %s: %v", x.ID, chief.Name, x.SubjectKey, err)
+		return
+	}
+	for _, a := range as {
+		s.logger.Printf("proposal %d: withdrew %s's question %d about %s", x.ID, chief.Name, a.ID, x.SubjectKey)
+		s.askSettled(a)
+	}
 }
 
 // proposalNote is what muster tells the chief once its proposal was decided:
