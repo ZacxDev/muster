@@ -105,6 +105,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO device_challenges (device_id, nonce_sha256, action, target, expires_at) VALUES ($1, sha256(convert_to($2, 'UTF8')), 'ask_dismiss', '1', now() + interval '2 minutes')`, func() []any { return []any{device, "nonce-" + tag} }, nil},
 		{`INSERT INTO device_pairing_codes (code_sha256, signin_at, expires_at) VALUES (sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 minute')`, func() []any { return []any{"code-" + tag} }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
+		{`INSERT INTO plugin_handoffs (plugin_id, code_hash, target, purpose, stepped_up, minted_at, expires_at) VALUES ($1, md5($2) || md5($2), '{"mirror":{}}', 'view', false, now(), now() + interval '1 minute')`, func() []any { return []any{plugin, "handoff-" + tag} }, nil},
 		{`INSERT INTO plugin_messages (plugin_id, external_id, body, status, agent_id) VALUES ($1, $2, 'hello', 'delivering', $3) RETURNING id`, func() []any { return []any{plugin, "ext-" + tag, agent} }, &message},
 		{`INSERT INTO plugin_reply_drafts (message_id, agent_id, agent_name, body, expires_at) VALUES ($1, $2, 'a', 'reply', now() + interval '1 day')`, func() []any { return []any{message, agent} }, nil},
 		{`INSERT INTO pins (kind, agent_id) VALUES ('agent', $1)`, func() []any { return []any{agent} }, nil},

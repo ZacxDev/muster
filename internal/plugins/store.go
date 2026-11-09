@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,18 @@ import (
 // owner is LEARNED.
 type Store interface {
 	// Create mints a plugin for ctx's principal and returns the token ONCE.
+	// Its token has CapMessages and nothing else.
 	Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error)
+	// CreatePlugin is Create with the capabilities (and, for CapViewer, the
+	// origin and entry URL) chosen. The caller validates the origin and entry
+	// URL against the deployment's MUSTER_PLUGIN_ORIGINS (ValidViewerLink).
+	CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error)
+	// MintHandoff mints a single-use hand-off code for one of the principal's
+	// live viewer plugins (handoffs.go). ErrNotFound for any other plugin.
+	MintHandoff(ctx context.Context, pluginID int64, in HandoffIn, now time.Time) (string, Plugin, error)
+	// RedeemHandoff spends a code minted for pluginID (handoffs.go): unknown,
+	// used, expired or another plugin's are one ErrNotFound.
+	RedeemHandoff(ctx context.Context, pluginID int64, code string, now time.Time) (Handoff, error)
 	// List is the principal's plugins, newest first.
 	List(ctx context.Context) ([]Plugin, error)
 	// Revoke revokes one of the principal's plugins, reporting whether it has
@@ -140,13 +152,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url`
 
 // pluginDest is the scan destinations for pluginCols, in its order. THE ONE
 // COPY, as messageDest: every reader of pluginCols scans through it.
 func pluginDest(p *Plugin) []any {
 	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities}
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL}
 }
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
@@ -204,15 +216,46 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 }
 
 func (s *PGStore) Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error) {
-	label = strings.TrimSpace(label)
+	return s.CreatePlugin(ctx, NewPlugin{Name: name, Label: label, DataScope: dataScope, Capabilities: []Capability{CapMessages}})
+}
+
+// NewPlugin is what CreatePlugin mints.
+type NewPlugin struct {
+	Name, Label, DataScope string
+	Capabilities           []Capability
+	// Origin and EntryURL: set exactly when Capabilities has CapViewer.
+	Origin, EntryURL string
+}
+
+// ViewerOnlyDataScope is the data scope a token without CapMessages stores
+// (it brings no messages, so it names nowhere to record them).
+const ViewerOnlyDataScope = "none"
+
+func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
+	name, label, dataScope := in.Name, strings.TrimSpace(in.Label), in.DataScope
 	if err := ValidName(name); err != nil {
 		return "", Plugin{}, err
 	}
 	if err := ValidLabel(label); err != nil {
 		return "", Plugin{}, err
 	}
+	caps, err := validCapabilities(in.Capabilities)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	viewer := slices.Contains(caps, CapViewer)
+	if viewer != (in.Origin != "" && in.EntryURL != "") || (in.Origin == "") != (in.EntryURL == "") {
+		return "", Plugin{}, invalid("a viewer plugin needs an origin and an entry URL, and only a viewer plugin has them")
+	}
+	if !slices.Contains(caps, CapMessages) {
+		dataScope = ViewerOnlyDataScope
+	}
 	if err := ValidScope(dataScope); err != nil {
 		return "", Plugin{}, err
+	}
+	var origin, entry *string
+	if viewer {
+		origin, entry = &in.Origin, &in.EntryURL
 	}
 	tok, err := NewToken()
 	if err != nil {
@@ -222,12 +265,17 @@ func (s *PGStore) Create(ctx context.Context, name, label, dataScope string) (st
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		p, err = scanPlugin(tx.QueryRow(ctx, `
-			INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, $2, $3, $4) RETURNING `+pluginCols,
-			name, label, HashToken(tok), dataScope))
+			INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+pluginCols,
+			name, label, HashToken(tok), dataScope, caps, origin, entry))
 		if err != nil {
 			return err
 		}
-		return audit(ctx, tx, "plugin.created", Object(p.ID), map[string]any{"name": name, "data_scope": dataScope})
+		detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
+		if viewer {
+			detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
+		}
+		return audit(ctx, tx, "plugin.created", Object(p.ID), detail)
 	})
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {

@@ -50,12 +50,73 @@ A plugin token opens only the routes its **capabilities** allow:
 
 | capability | opens |
 |---|---|
-| `messages` | every route below except `GET /plugin/v1/self`: messages, drafts, tasks and task writes |
-| `viewer` | reserved for the session-view seams of [previews](design/previews.md#capabilities-on-a-plugin-token) (a plugin's chip on a session view, and hand-off codes); no route takes it yet |
+| `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
+| `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](design/previews.md#capabilities-on-a-plugin-token) build on |
 
-Every token has `messages`, including every token minted before capabilities
-existed (migration `0102`). `GET /plugin/v1/self` takes any live token. The
-set is fixed when the token is minted.
+Every token minted before capabilities existed has `messages` (migration
+`0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
+token is minted: nothing widens or narrows it.
+
+On `/plugins`, the choice is drawn only while `MUSTER_PLUGIN_ORIGINS` is set
+([configuration.md](configuration.md#muster-server-optional-features)); without
+it every new token gets `messages`. A `viewer` token also carries:
+
+- an **origin**, one of the server's `MUSTER_PLUGIN_ORIGINS` patterns, chosen
+  from a list;
+- an **entry URL** under that origin: `https://<host>/<path>` with no user,
+  port, query or fragment, whose host is under the origin. So
+  `https://evil.example.net/x?.<zone>` and `https://w.<zone>@evil.example.net/`
+  are refused.
+
+A token with `viewer` and no `messages` brings no messages, so its data scope
+is stored as `none` whatever the form says.
+
+### Viewer hand-off
+
+How a viewer plugin learns, without a sign-in of its own, that a browser
+belongs to a signed-in owner, and which session view they came from. Off
+(the typed `feature_disabled` 404, feature `plugin-viewers`) until plugins are
+on and `MUSTER_PLUGIN_ORIGINS` is set.
+
+1. muster's page, signed in on muster's own origin, posts
+   `POST /plugin-handoffs` with the plugin and the mirrored window being
+   viewed:
+
+   ```json
+   {"plugin": 3, "target": {"mirror": {"host": "ws", "window": "@3"}}}
+   ```
+
+   The plugin must be one of the owner's own live `viewer` plugins, and the
+   window one the owner's host lists now (by its tmux window id); either
+   refused is a `404`. muster mints a **code**: 32 random bytes, stored only as
+   its sha256, valid **60 s**, single use. It records the owner, the plugin,
+   the window (with its session as the host lists it), the purpose `view`, and
+   whether the browser session's [step-up](sending-and-step-up.md#step-up-confirm-its-you)
+   was fresh at that moment, read from the session, never from the request.
+   It answers `200 {"url": "<entry URL>?muster_code=<code>&muster_plugin=<id>"}`.
+   An owner may mint 60 codes a minute; past that, `429` with `Retry-After`.
+2. The page opens that URL. `muster_plugin` lets a plugin holding several
+   owners' tokens pick the one to redeem with; it is not a credential.
+3. The plugin's entry route redeems the code with its own token:
+
+   ```
+   POST /plugin/v1/handoffs/redeem   {"code": "<muster_code>"}
+   ```
+
+   ```json
+   {"owner_id": 1, "target": {"mirror": {"host": "ws", "session": "main", "window": "@3"}},
+    "purpose": "view", "stepped_up": true, "minted_at": "2000-01-02T03:04:05Z"}
+   ```
+
+   A code that is unknown, already redeemed, expired, or minted for another
+   plugin (the owner's own or anyone's) is one `404`. A token without `viewer`
+   gets the `403` above. The plugin should then remove the code from the
+   address bar (a redirect, or `history.replaceState`) and answer with
+   `Referrer-Policy: no-referrer`.
+
+Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
+`rate_limited` and `refused` on the mint, `redeemed` and `not_found` (purpose
+`unknown`) on the redeem.
 
 ## The plugin author's contract
 
@@ -66,7 +127,7 @@ JSON. On every route:
 |---|---|
 | `401` | not a live plugin token (unknown, revoked, malformed, another kind of credential, or the owner's account is disabled) |
 | `403` | a live token without the [capability](#capabilities) the route needs; the body names it |
-| `404` | plugins are off on this server |
+| `404` | plugins are off on this server (the hand-off redeem also while `MUSTER_PLUGIN_ORIGINS` is unset) |
 
 ### `GET /plugin/v1/self`: who the token is
 

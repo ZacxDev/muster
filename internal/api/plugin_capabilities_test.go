@@ -25,6 +25,7 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/task-writes/claim":            "messages",
 	"POST /plugin/v1/task-writes/{id}/result":      "messages",
 	"POST /plugin/v1/messages/{id}/owner-answered": "messages",
+	"POST /plugin/v1/handoffs/redeem":              "viewer",
 }
 
 // goldenPluginRoutes is every /plugin/v1/* route in the checked-in route golden.
@@ -97,6 +98,13 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			}
 			if messagesRefused {
 				t.Errorf("CONTROL %s with a messages token: refused (%d); want it past the capability check", route, messagesCode)
+			}
+		case "viewer":
+			if !messagesRefused {
+				t.Errorf("%s with a messages-only token: %d; want 403, the route needs viewer", route, messagesCode)
+			}
+			if viewerRefused {
+				t.Errorf("CONTROL %s with a viewer token: refused (%d); want it past the capability check", route, viewerCode)
 			}
 		case "any":
 			if viewerRefused || messagesRefused {

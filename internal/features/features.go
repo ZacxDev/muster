@@ -56,6 +56,7 @@ const (
 	AskLog               = "ask-log"
 	Plugins              = "plugins"
 	PluginTasks          = "plugin-tasks"
+	PluginViewers        = "plugin-viewers"
 	SessionRouting       = "session-routing"
 	TaskRouting          = "task-routing"
 	PRMailRouting        = "pr-mail-routing"
