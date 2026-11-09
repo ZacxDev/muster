@@ -178,15 +178,15 @@ Measured through the real public path, then torn down. Code:
 `cmd/edgespike` (`gateway` deployed; `run` and `idlews` on the client side).
 
 **Path.** Client and host both ran in **one process on one workstation on the
-homelab LAN**. The gateway was a pod on the homelab cluster. Every byte went
+on-prem LAN**. The gateway was a pod on the on-prem cluster. Every byte went
 workstation → Cloudflare (PoP **ORD**, HTTP/2 + TLS 1.3 to the browser side)
-→ the production Traefik edge (a VPS) → prod nginx relay → nebula mesh →
-homelab nginx relay → gateway pod. The host's tunnel made the **same trip**
+→ the production Traefik edge (a VPS) → prod nginx relay → overlay mesh →
+on-prem nginx relay → gateway pod. The host's tunnel made the **same trip**
 in the other direction. Both relays used muster's streaming block: an empty-default
 `Connection` map, `proxy_buffering off` and `proxy_read_timeout 3600s`. No
 Authelia was in front; the gateway's own shared secret gated every path.
 Segment round trips: workstation→ORD 28 ms, workstation→edge VPS 48 ms,
-prod relay→homelab over nebula 49 ms. **Read every number at this scope.**
+prod relay→on-prem cluster over the mesh 49 ms. **Read every number at this scope.**
 The gateway sits next to the host on the LAN, but the traffic goes out to
 Cloudflare and the edge VPS and comes back twice. A deployment whose gateway sits
 near its edge would see different numbers.
@@ -219,7 +219,7 @@ near its edge would see different numbers.
   use it, and it was not changed for the test.
 - **(1) is dominated by the extra edge leg, as predicted.** The tunnel case
   crosses the whole public path a second time. That costs one more
-  workstation↔Cloudflare↔edge VPS↔homelab round trip, about 100 ms here. The
+  workstation↔Cloudflare↔edge VPS↔on-prem round trip, about 100 ms here. The
   transport itself costs about 0.1 ms (loopback numbers above), and h2 vs yamux
   is within noise. **With this topology, (1) fails whichever transport is
   used.** The bound can only be met if the host↔gateway round trip through the
@@ -232,7 +232,7 @@ browser client. Brotli `Accept-Encoding` was not tried; Go asked only for gzip.
 
 ## Mesh-path results
 
-Operator decision: **hosts dial the gateway over the nebula mesh; only the
+Operator decision: **hosts dial the gateway over the overlay mesh; only the
 browser leg goes through Cloudflare** (off-mesh hosts fall back to Cloudflare).
 Re-measured in one session, with the Cloudflare fallback measured in the same
 session as the baseline. Gateway image `5cee5306` (adds `-host-base`).
@@ -240,18 +240,18 @@ session as the baseline. Gateway image `5cee5306` (adds `-host-base`).
 **Topology, and why this is a BEST-CASE LOWER BOUND.**
 
 - **Browser leg (as before):** client → Cloudflare ORD → prod Traefik → prod
-  relay → nebula → homelab relay's mesh listener → gateway pod.
+  relay → mesh → on-prem relay's mesh listener → gateway pod.
 - **Host leg:** `ws://<relay mesh address>:<port>/v1/host` over the mesh. The
   host's socket was confirmed with `ss` (mesh address → relay mesh listener). The
-  homelab gateway's nebula firewall already admits TCP on any port from the
+  on-prem relay's mesh firewall already admits TCP on any port from the
   host's mesh groups, so no mesh change was needed. The shared-secret gate
   held on the mesh listener: 401 without the secret, and 401 with a wrong one.
 - **The host is the measuring workstation**, itself a mesh node. Its mesh
-  round trip to the relay is **0.39 ms**: the nebula underlay is the **LAN**.
+  round trip to the relay is **0.39 ms**: the mesh underlay is the **LAN**.
 - **This is not representative of an off-site mesh host.** For an off-site
-  host, expect the host leg to add about its own round trip to the homelab
+  host, expect the host leg to add about its own round trip to the on-prem
   relay. If that host relays through the lighthouse instead of a direct path,
-  expect about the prod↔homelab mesh round trip (~45–50 ms) on top.
+  expect about the prod↔on-prem mesh round trip (~45–50 ms) on top.
 - **No genuinely remote mesh host was used.** The laptop was on the same LAN
   at the time (1.7 ms minimum ping).
 
@@ -282,7 +282,7 @@ mesh hop (~0.4 ms) adds.
 - **(4): the mesh leg was not cut in 10 idle minutes without pings.** The
   browser leg still needs its 30 s pings (Cloudflare cuts it at 125 s), so the
   ping rule stays for that leg.
-  - Not measured: idle beyond 10 min on the mesh. The homelab gateway's nebula
+  - Not measured: idle beyond 10 min on the mesh. The on-prem relay's mesh
     conntrack `tcp_timeout` is **12m**, so a tunnel idle for longer than that
     is untested. Keep tunnel pings well under 12 min.
 - **Not measured:** an off-site or relayed mesh host; mesh loss; (2)/(3) on
