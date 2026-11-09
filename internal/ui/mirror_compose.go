@@ -260,6 +260,12 @@ func mirrorComposer(v ComposerView) g.Node {
 	if off {
 		placeholder = v.DisabledPlaceholder
 	}
+	// 🔴 A DISABLED composer's box is drawn ENABLED when the chief mode is
+	// offered (view_chief.go's header): a disabled box submits nothing, so
+	// the chief mode could not send without its script. It is marked instead
+	// (data-agent-off), its agent Send stays disabled, and the chief script
+	// disables it again in agent mode.
+	boxOff := off && v.Chief == nil
 	noteClass := "px-3 pt-2 text-xs break-words "
 	if v.NoticeOK {
 		noteClass += "text-fg2"
@@ -324,6 +330,8 @@ func mirrorComposer(v ComposerView) g.Node {
 		// of the composer (view_chief.go).
 		g.If(v.Chief != nil, StyleEl(g.Raw(viewChiefStyle))),
 		g.If(v.Chief != nil, viewChiefStrip(v.Chief)),
+		// The chief switch's own (empty) form, outside the composer's.
+		g.If(v.Chief != nil, viewChiefForm(v.Chief)),
 		// The suggested replies (suggest_row.go): above the composer, out of
 		// flow, drawn hidden — or, auto-paused, one line saying so.
 		suggestRow(suggest),
@@ -345,8 +353,6 @@ func mirrorComposer(v ComposerView) g.Node {
 		composerMenuBox(menu),
 		// The attachments' chips (attach.go): above the input, hidden while empty.
 		attachBox(upload),
-		// "<agent> | Chief": where the box's text goes (view_chief.go).
-		g.If(v.Chief != nil, viewChiefSwitch(v.Chief)),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -356,6 +362,9 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Attr("data-empty", MirrorComposeEmpty),
 			g.Attr("data-down", mirrorComposeDown),
 			g.Attr("novalidate", ""),
+			// The chief's route, which the composer's script reads to tell a
+			// line to the chief from one to the pane (composer_pending.go).
+			g.If(v.Chief != nil, g.Attr("data-chief-path", MirrorChiefPath)),
 			// The page may be hx-boost'ed (an agent's): a boosted form would be
 			// submitted by htmx as well as by the script.
 			hx("hx-boost", "false"),
@@ -365,6 +374,9 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
 			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
+			// The chief toggle, the row's FIRST control, left of the paperclip:
+			// where the box's text goes (view_chief.go).
+			g.If(v.Chief != nil, viewChiefToggle(v.Chief)),
 			// The paperclip sits INSIDE the input, on its left (attach.go).
 			attachFieldOrOff(upload, uploadOff, composerFieldMark(collapse), func(pad string, mark g.Node) g.Node {
 				return Textarea(
@@ -374,7 +386,8 @@ func mirrorComposer(v ComposerView) g.Node {
 					Rows("1"),
 					g.Attr("aria-label", v.Aria),
 					g.Attr("enterkeyhint", "send"),
-					g.If(off, g.Attr("disabled", "")),
+					g.If(boxOff, g.Attr("disabled", "")),
+					g.If(off && !boxOff, g.Attr("data-agent-off", "")),
 					g.If(off, g.Attr("title", v.Disabled)),
 					g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
 					Placeholder(placeholder),

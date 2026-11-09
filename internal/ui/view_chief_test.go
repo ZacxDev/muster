@@ -2,55 +2,140 @@ package ui
 
 import (
 	"html"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 // TestTheViewDrawsTheChiefModeOnlyWhenOffered: with Chief set the Rendered
-// view's composer draws the "<agent> | Chief" switch (two radios, the agent
-// checked), the chief's Send — a submit whose formaction is the chief's route
-// with the window's address, so a browser submit reaches the chief's door — and
-// the strip pointed at the window's chief log; and it does so on a window whose
-// agent composer is DISABLED (an opencode window that is not launcher-bound),
-// where the agent's Send stays disabled and the chief's is not. Without Chief
-// none of it is drawn (the composer as it was).
+// view's composer draws the chief switch (ONE always-present checkbox,
+// role="switch", unchecked, in a label drawn as the icon button), the chief's
+// Send — a submit whose formaction is the chief's route with the window's
+// address, so a browser submit reaches the chief's door — and the strip
+// pointed at the window's chief log; and it does so on a window whose agent
+// composer is DISABLED (an opencode window that is not launcher-bound), where
+// the agent's Send stays disabled and the chief's is not, and the box is drawn
+// ENABLED but marked (data-agent-off) so the chief mode can send with no
+// script. Without Chief none of it is drawn (the composer as it was, its box
+// disabled).
 func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 	base := MirrorViewView{Host: "ws", Session: "main", Window: "@3", Interactive: true, ViewOnly: "opencode",
 		ViewOnlyWhy: "this host does not send to opencode", DraftUser: 1}
 	off := renderString(t, MirrorViewPage(base))
-	for _, id := range []string{`id="mv-to"`, `id="mv-send-chief"`, `id="mv-chief"`, `id="mv-chief-log"`, ViewChiefPlaceholder} {
+	for _, id := range []string{`id="mv-to"`, `id="mv-to-chief"`, `id="mv-send-chief"`, `id="mv-chief"`, `id="mv-chief-log"`, ViewChiefPlaceholder, `data-chief-path="`, `data-agent-off=""`} {
 		if strings.Contains(off, id) {
 			t.Errorf("without Chief the view draws %s", id)
 		}
+	}
+	if !regexp.MustCompile(`<textarea id="mv-input"[^>]*\sdisabled[\s>=]`).MatchString(off) {
+		t.Errorf("without Chief the disabled composer's box is no longer disabled")
 	}
 
 	on := base
 	on.Chief = true
 	page := renderString(t, MirrorViewPage(on))
 	for _, want := range []string{
-		`<input id="mv-to-agent" type="radio" name="to" value="agent" checked>opencode`,
-		`<input id="mv-to-chief" type="radio" name="to" value="chief">Chief`,
+		// The switch's own empty form, outside the composer's: Enter on the
+		// switch submits nothing.
+		`<form id="mv-to-form" hidden="" aria-hidden="true"></form>`,
+		// The switch: a label drawn as the button (a fixed title), a checkbox
+		// with the switch role (unchecked: the agent), a FIXED name, and a
+		// description per mode as hidden text.
+		`<label id="mv-to" title="Send to the chief" class="`,
+		`<input id="mv-to-chief" type="checkbox" form="mv-to-form" role="switch" autocomplete="off" aria-label="Send to the chief" aria-describedby="mv-to-desc" data-mode-key="` +
+			html.EscapeString(MirrorDraftKey(1, ViewToChief, "ws", "main", "@3")) + `">`,
+		`<span id="mv-to-desc" class="sr-only"><span data-to-mode="agent">Sending to opencode — switch to the chief</span>` +
+			`<span data-to-mode="chief">Sending to the chief — switch to opencode</span></span>`,
 		`id="mv-send-chief" type="submit" formaction="/mirror/view/chief?host=ws&amp;session=main&amp;window=%403"`,
 		`id="mv-chief-log" data-src="/mirror/view/chief/log?host=ws&amp;session=main&amp;window=%403"`,
-		`data-mode-key="` + html.EscapeString(MirrorDraftKey(1, ViewToChief, "ws", "main", "@3")) + `"`,
-		// The stylesheet that follows the checked radio, with or without script.
+		// The composer's script tells a chief line by the route, drawn by the
+		// server (not set by the chief script, which may not run).
+		`data-chief-path="/mirror/view/chief"`,
+		// The ONE stylesheet path: the checkbox checked.
 		`#mv-compose:has(#mv-to-chief:checked) #mv-send-chief { display: inline-flex; }`,
+		`#mv-compose:has(#mv-to-chief:checked) #mv-to span[data-to-mode="chief"] { display: inline; }`,
+		// The chief's colour, from the theme's tokens: the box, the composer's edge.
+		`#mv-compose:has(#mv-to-chief:checked) #mv-input { background-color: rgb(var(--mu-st-review-bg)); box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)); opacity: 1; }`,
+		`#mv-compose:has(#mv-to-chief:checked) { border-top-color: rgb(var(--mu-st-review-fg));`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the chief mode lacks %s", want)
 		}
 	}
-	// The agent's own Send is still drawn disabled: the chief mode changes
-	// nothing about what the pane can be sent.
+	// The old two-radio switch, the button toggle and its <noscript>
+	// duplicate are gone; the mode is never a form field; one selector path.
+	for _, gone := range []string{`role="radiogroup"`, `id="mv-to-agent"`, `id="mv-to-row"`, `name="to"`, `<noscript><style>#mv-to`,
+		`mv-to-ns`, `aria-pressed`, `data-to="chief"`, `<button id="mv-to"`, `data-label-agent`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("the chief mode still draws %s", gone)
+		}
+	}
+	// The box is enabled, marked; the agent's own Send is still drawn
+	// disabled: the chief mode changes nothing about what the pane can be sent.
+	box := regexp.MustCompile(`<textarea id="mv-input"[^>]*>`).FindString(page)
+	if regexp.MustCompile(`\sdisabled[\s>=]`).MatchString(box) || !strings.Contains(box, `data-agent-off=""`) {
+		t.Errorf("the box of a disabled composer with the chief mode is not enabled-and-marked: %s", box)
+	}
 	if !strings.Contains(page, `id="mv-send" type="submit" disabled`) {
 		t.Errorf("the disabled agent composer's Send is no longer disabled")
 	}
 	if strings.Contains(page, `id="mv-send-chief" type="submit" disabled`) {
 		t.Errorf("the chief's Send is drawn disabled on a view whose agent composer is")
 	}
-	// A Claude Code window names its agent segment "Claude".
+	// A Claude Code window names its agent "Claude", and its box is as it was.
 	cc := renderString(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1", Interactive: true, Chief: true}))
-	if !strings.Contains(cc, `value="agent" checked>Claude`) {
-		t.Errorf("a Claude Code window's agent segment is not named Claude")
+	if !strings.Contains(cc, `<span data-to-mode="agent">Sending to Claude — switch to the chief</span>`) || !strings.Contains(cc, `<span data-to-mode="chief">Sending to the chief — switch to Claude</span>`) {
+		t.Errorf("a Claude Code window's switch does not name Claude")
+	}
+	if strings.Contains(cc, `data-agent-off=""`) {
+		t.Errorf("an enabled composer's box is marked agent-off")
+	}
+}
+
+// formControlRE finds the composer form's controls (button, a,
+// textarea, label) by id, in document order — read with <noscript> removed.
+var formControlRE = regexp.MustCompile(`<(button|a|textarea|label)\b[^>]*\bid="([^"]+)"`)
+
+// TestTheChiefToggleIsTheRowsFirstControl: the toggle is the composer row's
+// FIRST control — before the paperclip (which sits inside the input's field),
+// the input, the keyboard button, the mic, Send and the ⋯ — on a Claude Code
+// window with uploads and dictation, and on a disabled opencode one (no
+// paperclip there: a disabled composer draws none).
+func TestTheChiefToggleIsTheRowsFirstControl(t *testing.T) {
+	for name, v := range map[string]MirrorViewView{
+		"claude":   {Host: "ws", Session: "main", Window: "@1", Interactive: true, Chief: true, Upload: "/uploads", Dictate: "/dictate", DraftUser: 1},
+		"opencode": {Host: "ws", Session: "main", Window: "@3", Interactive: true, ViewOnly: "opencode", Chief: true, DraftUser: 1},
+	} {
+		page := renderString(t, MirrorViewPage(v))
+		i := strings.Index(page, `<form id="mv-form"`)
+		j := strings.Index(page[i:], `</form>`)
+		if i < 0 || j < 0 {
+			t.Fatalf("%s: no composer form", name)
+		}
+		form := page[i : i+j]
+		// <noscript> holds the fallback, not a scripted control.
+		form = regexp.MustCompile(`(?s)<noscript>.*?</noscript>`).ReplaceAllString(form, "")
+		var ids []string
+		for _, m := range formControlRE.FindAllStringSubmatch(form, -1) {
+			ids = append(ids, m[2])
+		}
+		// The switch sits in the row, but its form owner is its own empty
+		// form, drawn outside the composer's (Enter on it submits nothing).
+		if !strings.Contains(form, `id="mv-to-chief" type="checkbox" form="mv-to-form"`) {
+			t.Errorf("%s: the switch is owned by the composer's form", name)
+		}
+		if i, f := strings.Index(page, `<form id="mv-to-form"`), strings.Index(page, `<form id="mv-form"`); i < 0 || i > f {
+			t.Errorf("%s: the switch's own form is not drawn before (outside) the composer's", name)
+		}
+		if len(ids) < 3 || ids[0] != "mv-to" {
+			t.Fatalf("%s: the row's controls are %v, want mv-to first", name, ids)
+		}
+		if name == "claude" {
+			if ids[1] != "mv-attach" || ids[2] != "mv-input" {
+				t.Errorf("%s: the paperclip and the input do not follow the toggle: %v", name, ids)
+			}
+		} else if ids[1] != "mv-input" {
+			t.Errorf("%s: the input does not follow the toggle: %v", name, ids)
+		}
 	}
 }

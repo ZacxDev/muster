@@ -300,7 +300,11 @@ var mirrorComposerJS = `
     shown();
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
-    if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
+    // 🔴 The browser posts the line to ITS OWN route (p.to: the Queue's, the
+    // chief's), never to whatever the form's action was left at — a chief
+    // line must not fall back to the agent's route.
+    if (p.to) form.setAttribute('action', p.to);
+    else if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
     if (d) d.pending(input);
     browserSubmit();
   }
@@ -860,18 +864,44 @@ var mirrorComposerJS = `
     // Send), else the form's action.
     var to = (sub && sub.getAttribute('formaction')) || form.getAttribute('action');
     try { start({ text: text, typed: typed, queued: queued, to: to, again: again }); }
-    catch (err) { input.value = text; shown(); browserSubmit(); }
+    catch (err) { input.value = text; shown(); if (to) form.setAttribute('action', to); browserSubmit(); }
   });
   input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });
+  // 🔴 ENTER ON THE CHIEF SWITCH TOGGLES IT, never sends (view_chief.go's
+  // header): here, not in the chief's script, so it holds when that script
+  // threw. Enter on it already submits nothing (it is owned by its own empty
+  // form); this makes Enter do what Space does. The event bubbles through
+  // this form all the same: it is the switch's ancestor.
+  form.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (e.key !== 'Enter' || !t || t.id !== 'mv-to-chief') return;
+    e.preventDefault();
+    if (!e.repeat) t.click();
+  });
+  // shownSend is the form's Send on screen: the first submit button of the
+  // input row that is drawn (#mv-send, or the chief's #mv-send-chief in chief
+  // mode); null when none is.
+  function shownSend() {
+    var bs = form.querySelectorAll('#mv-send, #mv-send-chief');
+    for (var i = 0; i < bs.length; i++) if (bs[i].getClientRects().length) return bs[i];
+    return null;
+  }
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       // 🔴 A HELD ENTER SENDS ONCE: its auto-repeats are not more sends (a
       // focus that moved into the box mid-hold must not send what it holds).
       if (e.repeat) return;
+      // 🔴 ENTER IS A PRESS ON THE SEND SHOWN. The form may draw more than one
+      // Send and show one by its stylesheet (the view's chief mode shows the
+      // chief's, view_chief.go): Enter submits through the one on screen, so
+      // its formaction is the route even when no script has set the form's
+      // action — and a disabled one sends nothing, as a press on it would.
+      var by = shownSend();
+      if (by && by.disabled) return;
       // requestSubmit is missing from older Safari; a click on Send is the same
       // submit, through the same handler.
-      if (form.requestSubmit) form.requestSubmit(); else send.click();
+      if (form.requestSubmit) { if (by && by !== send) form.requestSubmit(by); else form.requestSubmit(); } else (by || send).click();
     }
   });
 })();
