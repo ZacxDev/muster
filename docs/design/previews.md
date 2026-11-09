@@ -259,7 +259,7 @@ flowchart LR
   gw -->|"/plugin/v1/* (mpl_): hand-off redeem"| muster
   cc -->|"loopback MCP: muster's tools + preview_*"| mm
   mm -->|"/mirror/connect, /mirror/mcp (unchanged)"| muster
-  mm -->|"nebula mesh first, tunnel.musterchief.com as fallback: outbound WS, HTTP/2 CONNECT, offers, opens"| gw
+  mm -->|"overlay mesh first, tunnel.musterchief.com as fallback: outbound WS, HTTP/2 CONNECT, offers, opens"| gw
   mm --> app
   gw -->|"in cluster, seam (d)"| gate --> app2
 ```
@@ -505,7 +505,7 @@ preview content.
     long-lived connection the gateway serves is kept from going quiet for that
     long:
     - the host tunnel pings every 30 s (both ends). On the mesh path the
-      tunnel does not cross Cloudflare, but the homelab gateway's nebula
+      tunnel does not cross Cloudflare, but the on-prem relay host's overlay-mesh
       conntrack TCP timeout is **12 minutes** (measured on the mesh path,
       [PR #548](https://github.com/ZacxDev/muster/pull/548)), so the tunnel's ping interval must stay well under that too;
       30 s does. A mesh tunnel left without pings survived 10 idle minutes;
@@ -637,8 +637,8 @@ paused streams within that bound. The memory column is a real cost of a large
 `maxConns`, paid only while readers are paused.
 
 **Real-edge results** ([PR #548](https://github.com/ZacxDev/muster/pull/548), measured through Cloudflare →
-prod relay → nebula → homelab relay → a gateway pod, with the host and the
-client on one workstation on the homelab LAN): (4) and (5) **pass**, (1)
+public relay → overlay mesh → on-prem relay → a gateway pod, with the host and the
+client on one workstation on the on-prem LAN): (4) and (5) **pass**, (1)
 **fails on p50 for both transports**. The tunnel itself costs about 0.1 ms;
 what fails (1) is the host's tunnel crossing the public path a second time,
 about +90–118 ms at p50 on that topology. So hosts reach the gateway over the
@@ -650,8 +650,8 @@ browser leg goes through Cloudflare.
 Decided by the operator after the real-edge results ([decisions 20 and 21](#decisions)).
 
 - **Two endpoints, one protocol.** The gateway serves the host tunnel on two
-  listeners: a **mesh** listener, reached at the gateway's nebula mesh address
-  (for this deployment, the homelab relay on the nebula interface, below), and
+  listeners: a **mesh** listener, reached at the gateway's overlay-mesh address
+  (for this deployment, the on-prem relay on its mesh interface, below), and
   the **public** one, `wss://tunnel.musterchief.com/v1/host`. Both take the
   same `mpt_` token, the same host-name binding, the same version header and
   the same 30 s recheck. Nothing about a tunnel differs by path except its
@@ -680,30 +680,30 @@ Decided by the operator after the real-edge results ([decisions 20 and 21](#deci
   (worst 57 ms). The public path's measured +100–104 ms p50 (same session) is an
   **accepted degraded mode** for a host off the mesh: a preview works there,
   HMR included, about 100 ms slower per round trip.
-- 🔴 **Best case only.** The measuring host's mesh path to the homelab relay ran
+- 🔴 **Best case only.** The measuring host's mesh path to the on-prem relay ran
   over the LAN (0.39 ms round trip). An off-site mesh host adds its own round
-  trip to the relay, and one relayed through the prod lighthouse adds about the
-  prod↔homelab mesh round trip (~45–50 ms), which is close to (1)'s 50 ms p50
+  trip to the relay, and one relayed through a public relay node of the mesh adds about the
+  public-relay↔on-prem mesh round trip (~45–50 ms), which is close to (1)'s 50 ms p50
   bound. That is the [one measurement outstanding](#the-spikes-gono-go).
-- **Plain `ws://` on the mesh.** Nebula encrypts and authenticates the hop, so
+- **Plain `ws://` on the mesh.** The overlay mesh encrypts and authenticates the hop, so
   the mesh endpoint does not repeat TLS. The `mpt_` token therefore crosses the
-  homelab relay in the clear inside the mesh, as tokens on the public path
+  on-prem relay in the clear inside the mesh, as tokens on the public path
   already do after the edge terminates TLS.
 
 **What the mesh endpoint needs on the deployment** (from the deployment's own
 recipe for mesh-facing relay listeners, which lives in the deployment's
 repository, not this one):
 
-- A **new port on the homelab relay only**: an nginx block that listens on the
-  relay's nebula address (as the deployment's other relayed services do) and proxies to
+- A **new port on the on-prem relay only**: an nginx block that listens on the
+  relay's mesh address (as the deployment's other relayed services do) and proxies to
   the gateway's mesh listener, with the streaming settings the spike used: an
   empty-default `Connection` map, `proxy_buffering off`, `proxy_read_timeout
-  3600s`. **No prod relay block, no Traefik route and no Authelia rule**: the
-  mesh endpoint is never public, so the prod host firewall's relay port list
+  3600s`. **No public relay block, no edge route and no sign-on proxy rule**: the
+  mesh endpoint is never public, so the public relay host's firewall port list
   is not involved.
-- **Who can reach it:** every nebula mesh member allowed by the nebula
+- **Who can reach it:** every overlay-mesh member allowed by the mesh's
   firewall, because the relay listens on the mesh interface. What was
-  observed: the homelab gateway's nebula firewall already admits TCP on any
+  observed: the on-prem relay host's mesh firewall already admits TCP on any
   port from the measuring workstation's groups, so no mesh change was needed,
   and the mesh listener refused a missing or wrong secret with 401
   ([PR #548](https://github.com/ZacxDev/muster/pull/548)). Whether that firewall can narrow this one port to a group of
@@ -1099,7 +1099,7 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 | `PLUGIN_TOKENS_FILE` | muster-preview | none | The owners' `mpl_` tokens, one per line. |
 | `PREVIEW_DOMAIN` | muster-preview | none | `musterchief.com`. |
 | `PREVIEW_LISTEN` | muster-preview | `:8080` | The public listener, for `p-`, `w.` and `tunnel.`. |
-| `PREVIEW_MESH_LISTEN` | muster-preview | none | The mesh listener: the host tunnel only, reached through the relay on the nebula address. A tunnel arriving here is on the `mesh` path. |
+| `PREVIEW_MESH_LISTEN` | muster-preview | none | The mesh listener: the host tunnel only, reached through the relay on its mesh address. A tunnel arriving here is on the `mesh` path. |
 | `PREVIEW_DATABASE_URL` | muster-preview | none | Its own state. |
 | `PREVIEW_SIGNING_KEY` | muster-preview | none | 32 random bytes: signs its cookies and page tokens. |
 | `PREVIEW_TTL`, `PREVIEW_IDLE`, `PREVIEW_MAX_BODY` | muster-preview | `24h`, `2h`, `32MiB` | [Lifecycle](#lifecycle), [limits](#limits-and-quotas). |
@@ -1140,7 +1140,7 @@ listener, proxy or key.
 | A hand-off code is intercepted | a log or a referrer | 60 s, single use, bound to plugin and target, redeemable only with that plugin's token; removed from the address bar (a redirect, or `history.replaceState` on `w.`) | none useful without the token |
 | **The gateway believes the host's window claim** | a local process on the host | the host's MCP proxy requires its per-host secret and refuses an `Origin` (`mcpproxy.go:336-350`); the window comes from the caller-supplied pane header (`mcpproxy.go:47-58`), mapped on a fresh listing, and muster does **not** re-check it (a tool call relayed through muster would have been re-checked by `mirrorSessionOf`, `internal/api/mirror_mcp.go:172`) | anything running as the host's user that can read the secret can open a preview attributed to any window on that host, on allowlisted ports; it still reaches only the owner's own session page, and the allowlist bounds what is exposed |
 | The pod's identity | the gateway | the gateway dialled that agent's gate from muster's target read, so the caller is the agent whose gate it is; no claim is involved | a process inside the pod acts as that agent, as it already can |
-| **The mesh endpoint is reachable by every mesh member** (and from the LAN at the gateway's NodePort) | any nebula member, any LAN device | the same `mpt_` token check and host binding as the public endpoint; a failed-token throttle; no prod relay, Traefik or public DNS for it; narrowing the port in the nebula firewall if it supports it (UNVERIFIED) | a mesh member can reach the gateway's tunnel listener and be refused; no edge sits in front of it, so it has no edge-level rate limiting; the token crosses the homelab relay in the clear inside nebula's encrypted hop |
+| **The mesh endpoint is reachable by every mesh member** (and from the LAN at the gateway's NodePort) | any overlay-mesh member, any LAN device | the same `mpt_` token check and host binding as the public endpoint; a failed-token throttle; no public relay, edge route or public DNS for it; narrowing the port in the mesh firewall if it supports it (UNVERIFIED) | a mesh member can reach the gateway's tunnel listener and be refused; no edge sits in front of it, so it has no edge-level rate limiting; the token crosses the on-prem relay in the clear inside the mesh's encrypted hop |
 | A host's path is misreported | the host | the path is the listener the connection arrived on, not a host claim | none |
 | A host token is stolen | anyone with `mpt_` | it registers only its host name; revocable on the gateway CLI; 30 s recheck | it can impersonate that host's tunnel: answer streams with its own content for that host's previews, and send fake offers and opens (labels only, on the owner's own page) |
 | A leaked mirror token | anyone with `mmt_` | as today ([auth.md](../auth.md#machine-credentials)); it reaches **no** preview function, since the preview tools no longer go through muster | — |
@@ -1195,7 +1195,7 @@ gateway in the cluster, 2–3 engineer-days. **Go** if all hold:
 | 4 | pass on a simulator | **pass**: 10 min idle with 30 s pings; without pings Cloudflare cuts at **≈125 s** (4× margin) | pass |
 | 5 | pass | **pass**, 7/7 runs: first event p50 96–106 ms, worst **415 ms** against the 500 ms bound | pass, **with a thin margin** |
 
-**Decision (operator):** hosts dial the gateway over the nebula
+**Decision (operator):** hosts dial the gateway over the overlay
 mesh, with the public tunnel endpoint as their fallback
 ([dial order](#host-dial-order-mesh-first-then-public)). Criterion (1) is kept
 as written and now applies to the **mesh** path; the public path's ~+100 ms is
@@ -1217,12 +1217,12 @@ Negative overheads are noise from the Cloudflare browser leg, which varies by
 more than the mesh hop adds.
 
 **Verdict: go for phase 1, on the mesh path**, on best-case evidence: the
-measuring host reached the homelab relay over the LAN (0.39 ms).
+measuring host reached the on-prem relay over the LAN (0.39 ms).
 
 **One measurement is outstanding, to take during phase 1:** criteria (1) and
-(5) from a **genuinely off-site mesh host** (for example the laptop off the
-home network), once on a **direct** nebula path and once **relayed through the
-prod lighthouse**. If it fails (1)'s bound:
+(5) from a **genuinely off-site mesh host** (for example a laptop off the
+home network), once on a **direct** mesh path and once **relayed through a
+public relay node of the mesh**. If it fails (1)'s bound:
 
 - **relayed:** that host gets what an off-mesh host gets, a preview that works
   about one extra mesh round trip slower, the same accepted degraded mode as
@@ -1488,7 +1488,7 @@ decision changed an earlier one, the earlier one says so.
 19. **The owner preview cookie's TTL is 8 hours** (this page had proposed 1
     hour). It widens how long a sign-out, a disabled account or a stolen
     cookie can reach an open preview to 8 hours.
-20. **Hosts dial the gateway over the nebula mesh**: the
+20. **Hosts dial the gateway over the overlay mesh**: the
     gateway's mesh address, the same tunnel protocol and the same `mpt_`
     token. Only the browser leg goes through Cloudflare. Criterion (1) applies
     to the mesh path. (Its re-measurement passed at the best case measured,
