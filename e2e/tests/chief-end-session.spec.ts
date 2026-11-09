@@ -179,6 +179,21 @@ async function listed(page: import('@playwright/test').Page, win: string): Promi
   return html.includes(`window=${encodeURIComponent(win)}`) && html.includes('session=oc');
 }
 
+// toChief flips the view's composer to the chief, on either form of its
+// switch: the two-radio "<agent> | Chief" group, or the single toggle that
+// replaces it (#mv-to-chief, role="switch", checked = chief). Both carry the
+// chief control as #mv-to-chief; a forced check reaches the visually hidden
+// input either way, and the assertion says it took.
+async function toChief(page: import('@playwright/test').Page) {
+  const ctl = page.locator('#mv-to-chief');
+  if ((await ctl.getAttribute('role')) === 'switch') {
+    await ctl.check({ force: true });
+  } else {
+    await page.locator('#mv-to').getByText('Chief', { exact: true }).click();
+  }
+  await expect(ctl).toBeChecked();
+}
+
 for (const vp of [
   { name: 'phone 390×844', key: 'phone' as const, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop 1440×900', key: 'desktop' as const, use: { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false } },
@@ -194,7 +209,7 @@ for (const vp of [
       await expect(page.locator('#mv-log')).toContainText('All done here.', { timeout: 20_000 });
       expect(await listed(page, v.win), 'the window is listed before').toBe(true);
 
-      await page.locator('#mv-to').getByText('Chief', { exact: true }).click();
+      await toChief(page);
       const input = page.locator('#mv-input');
       await expect(input).toBeEnabled();
       await input.fill(`E2E-END-${vp.key}-${stamp}: close this agent session`);
