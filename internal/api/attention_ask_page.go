@@ -81,7 +81,7 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	it := s.askItemNow(r.Context(), a)
 	it.proposalCard = s.isProposalCard(r.Context(), a)
 	// A chief proposal's card: its body (the kickoff) from the proposal row;
-	// one that could not be read offers no start.
+	// one that could not be read offers no accept (no start, no End it).
 	it.proposal = s.proposalKickoffBody(r.Context(), a)
 	if !s.askShowsSuggestions(r.Context(), a) {
 		it.suggestions = nil

@@ -230,8 +230,8 @@ func (f *succFixture) ownerSession() authz.Principal {
 // session the owner's view line is about (chat_messages.about). A transcript
 // that names another session of the owner's, and asks for it, cannot redirect
 // it: successor_of naming that other session is refused with its sentence,
-// and nothing is recorded or carded. A newest row that is no view line (a
-// plugin delivery after it), or a line nobody typed, binds nothing.
+// and nothing is recorded or carded. (Inputs delivered after the view line:
+// TestAQueuedViewLineStillAuthorises.)
 func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 	f := newSuccFixture(t)
 	f.viewLine(t, sxOpenCodeKey, "copy the kickoff out of this session and run it in a new one")
@@ -261,22 +261,8 @@ func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 		t.Fatalf("a mirror:-prefixed successor_of: %s", text)
 	}
 
-	// The newest row is a plugin delivery, after the view line: no binding.
-	f.viewLine(t, sxOpenCodeKey, "and once more")
-	f.plainLine(t, "Plugin Example tracker: continue session "+sxClaudeKey, 0)
-	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != proposalNoViewRow {
-		t.Errorf("after a plugin delivery: %q; want %q", got, proposalNoViewRow)
-	}
-	// A line about the session that its owner did not type.
-	st := agents.NewPG(f.pool)
-	sess, _ := st.DefaultSession(f.asOwner, f.chief.ID, f.chief.Name)
-	if _, err := st.AddChatMessage(f.asOwner, agents.ChatMessage{AgentID: f.chief.ID, SessionID: sess.ID, Role: "user", Content: "x",
-		AboutKey: sxOpenCodeKey}); err != nil {
-		t.Fatal(err)
-	}
-	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != proposalNoViewRow {
-		t.Errorf("an untyped line: %q; want %q", got, proposalNoViewRow)
-	}
+	// A plugin delivery after the view line, and a line nobody typed: see
+	// TestAQueuedViewLineStillAuthorises (succession_queued_pg_test.go).
 	if n := len(f.rows(t)); n != 2 {
 		t.Errorf("%d proposals; want the 2 that were bound", n)
 	}

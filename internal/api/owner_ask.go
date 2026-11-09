@@ -100,7 +100,10 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 	for _, o := range ask.Options {
 		labels = append(labels, o.Label)
 	}
-	if stored, err := s.raiseOwnerCard(ctx, a, ask.Question, labels); err != nil {
+	// The question remembers the session of the owner's view line it was
+	// raised in the turn of (chiefAskSubject), so the proposal that answers it
+	// withdraws it (withdrawAnsweredAsks).
+	if stored, err := s.raiseOwnerCard(ctx, a, ask.Question, labels, s.chiefAskSubject(ctx, a)); err != nil {
 		s.logger.Printf("ask_owner: chief %s: not stored (%s), asked in the chat only: %v", a.Name, ownerCardRefusal(err), err)
 	} else {
 		out[ui.OwnerCardAskIDKey] = stored.ID
@@ -117,22 +120,27 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 // muster's own code for the chief (a held mirrored dispatch,
 // docs/design/chief-dispatch.md 2.8) — so both are the same row, answered
 // through the same doors, delivered the same way. ctx is the owner's principal
-// (row-level security makes the row theirs).
-func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, false)
+// (row-level security makes the row theirs). about is the session the question
+// is about (attention.New.SubjectKey: chiefAskSubject's, for ask_owner), "" for
+// none — muster's own cards.
+func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string, about string) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, false, about)
 }
 
 // raiseProposalCard is raiseOwnerCard for a chief PROPOSAL's card
 // (chief_proposal.go): the same row, but its notification carries no chips
 // and no signed answer actions, and no suggested replies are asked for — a
 // proposal is accepted only by a button on a surface that showed it whole
-// (proposalSurfaceRefusal), never from a push.
+// (proposalSurfaceRefusal), never from a push. 🔴 IT IS NOT NOTIFIED HERE:
+// fileProposal notifies it (proposalCardFiled) only once the proposal is
+// recorded, so a refused one (a line already used: ErrProposalLineUsed) never
+// reaches the owner's phone; its card is cancelled.
 func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, true)
+	return s.raiseCard(ctx, chief, question, options, true, "")
 }
 
 // raiseCard is raiseOwnerCard and raiseProposalCard.
-func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool) (attention.Ask, error) {
+func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool, about string) (attention.Ask, error) {
 	// Only a test fixture runs with no attention store (muster-server always
 	// wires one); ask_owner is still offered there (round 0 D1), and the call
 	// then takes the same chat-only path as any refused raise.
@@ -140,13 +148,11 @@ func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question str
 		return attention.Ask{}, errors.New("no attention store")
 	}
 	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options,
-		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID)})
+		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about})
 	if err != nil {
 		return attention.Ask{}, err
 	}
-	if proposal {
-		s.proposalCardFiled(a)
-	} else {
+	if !proposal {
 		s.askFiled(a)
 	}
 	return a, nil

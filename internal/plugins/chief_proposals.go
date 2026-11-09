@@ -18,8 +18,9 @@ import (
 // 🔴 ONE SEAM LEDGER, EIGHT WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
 // the set over the Go source):
 //
-//   - CreateProposal: the proposal. Called only by the chief's propose tools
-//     (through internal/api's fileProposal);
+//   - CreateProposal: the proposal — at most one of each kind per owner line
+//     and session (ErrProposalLineUsed). Called only by the chief's propose
+//     tools (through internal/api's fileProposal);
 //   - a succession's LINK, only inside ReserveHostDispatch's reservation
 //     transaction (HostDispatchNew.Succession): decided = accepted and
 //     host_dispatch_id, on a row still UNDECIDED — or, for the base fallback,
@@ -106,6 +107,9 @@ var (
 	ErrProposalNotFound = errors.New("plugins: no such proposal")
 	// ErrProposalDecided: the row was already accepted or declined.
 	ErrProposalDecided = errors.New("plugins: the proposal was already decided")
+	// ErrProposalLineUsed: the owner's line already has a proposal of that
+	// kind about that session (CreateProposal: one line authorises one).
+	ErrProposalLineUsed = errors.New("plugins: that owner message already has a proposal of this kind for this session")
 )
 
 const proposalCols = `id, owner_id, kind, chief_agent, owner_message, subject_key, subject_runtime, subject_host, subject_tmux_session,
@@ -140,6 +144,13 @@ func nullable[T comparable](v, zero T) any {
 }
 
 // CreateProposal records the chief's proposal, as the principal.
+//
+// 🔴 ONE OWNER LINE AUTHORISES AT MOST ONE PROPOSAL OF EACH KIND FOR A
+// SESSION: a row of n's kind, answering the same owner message
+// (owner_message) about the same session (subject_key), refuses it with
+// ErrProposalLineUsed. The check and the insert are serialised per owner
+// message by a transaction-scoped advisory lock, so two concurrent calls on
+// one line cannot both pass.
 func (s *PGStore) CreateProposal(ctx context.Context, n ProposalNew) (Proposal, error) {
 	owner, err := hostDispatchOwner(ctx, "a proposal")
 	if err != nil {
@@ -149,13 +160,35 @@ func (s *PGStore) CreateProposal(ctx context.Context, n ProposalNew) (Proposal, 
 	if n.KickoffBlock >= 0 && n.Kind == ProposalSuccession {
 		block = n.KickoffBlock
 	}
-	return scanProposal(s.pool.QueryRow(ctx, `INSERT INTO chief_proposals (owner_id, kind, chief_agent, owner_message, subject_key,
+	var x Proposal
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('chief_proposals:%s:%s', $1::bigint, $2::bigint), 0))`,
+			owner, n.OwnerMessage); err != nil {
+			return err
+		}
+		var used bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM chief_proposals
+			WHERE owner_id = $1 AND kind = $2 AND owner_message = $3 AND subject_key = $4)`,
+			owner, n.Kind, n.OwnerMessage, n.SubjectKey).Scan(&used); err != nil {
+			return err
+		}
+		if used {
+			return ErrProposalLineUsed
+		}
+		var err error
+		x, err = scanProposal(tx.QueryRow(ctx, `INSERT INTO chief_proposals (owner_id, kind, chief_agent, owner_message, subject_key,
 		subject_runtime, subject_host, subject_tmux_session, subject_tmux_window, subject_title, subject_dispatch, ask_id, mode, target,
 		model, repo, base, kickoff, kickoff_sha256, kickoff_ref, kickoff_block, subject_agent)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING `+proposalCols,
-		owner, n.Kind, n.ChiefAgent, n.OwnerMessage, n.SubjectKey, n.SubjectRuntime, n.SubjectHost, n.SubjectTmuxSession, n.SubjectTmuxWindow,
-		n.SubjectTitle, nullable(n.SubjectDispatch, 0), nullable(n.AskID, 0), nullable(n.Mode, ""), n.Target, n.Model, n.Repo, n.Base,
-		n.Kickoff, n.KickoffSHA256, n.KickoffRef, block, nullable(n.SubjectAgent, 0)))
+			owner, n.Kind, n.ChiefAgent, n.OwnerMessage, n.SubjectKey, n.SubjectRuntime, n.SubjectHost, n.SubjectTmuxSession, n.SubjectTmuxWindow,
+			n.SubjectTitle, nullable(n.SubjectDispatch, 0), nullable(n.AskID, 0), nullable(n.Mode, ""), n.Target, n.Model, n.Repo, n.Base,
+			n.Kickoff, n.KickoffSHA256, n.KickoffRef, block, nullable(n.SubjectAgent, 0)))
+		return err
+	})
+	if err != nil {
+		return Proposal{}, err
+	}
+	return x, nil
 }
 
 // ProposalByID is the principal's proposal id.
