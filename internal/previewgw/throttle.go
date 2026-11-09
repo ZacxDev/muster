@@ -48,14 +48,29 @@ func peerOf(p Path, r *http.Request) string {
 	return host
 }
 
+// maxFailKeys bounds the limiter's map. Keys are cheap for an
+// unauthenticated client to vary (a header on the public path), so past this
+// many live keys a NEW key shares one overflow bucket: those peers are
+// throttled together, the map stops growing, and a known key keeps its own.
+const maxFailKeys = 4096
+
+// overflowKey is the shared bucket's key; no peer key is empty.
+const overflowKey = ""
+
 // failLimiter counts failures per key in fixed windows.
+//
+// Expired keys are pruned at most once per window, when the map is full —
+// never on every call, which with many keys made each failure a scan of the
+// whole map under the mutex.
 type failLimiter struct {
 	limit  int
 	window time.Duration
 	now    func() time.Time
 
-	mu sync.Mutex
-	by map[string]failWindow
+	mu        sync.Mutex
+	by        map[string]failWindow
+	lastPrune time.Time
+	prunes    int // how many prune scans ran (tests)
 }
 
 type failWindow struct {
@@ -73,14 +88,22 @@ func (l *failLimiter) fail(key string) (over bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	if len(l.by) > 4096 {
-		for k, w := range l.by {
-			if now.Sub(w.start) >= l.window {
-				delete(l.by, k)
+	w, ok := l.by[key]
+	if !ok && len(l.by) >= maxFailKeys {
+		if l.lastPrune.IsZero() || now.Sub(l.lastPrune) >= l.window {
+			l.lastPrune = now
+			l.prunes++
+			for k, kw := range l.by {
+				if now.Sub(kw.start) >= l.window {
+					delete(l.by, k)
+				}
 			}
 		}
+		if len(l.by) >= maxFailKeys {
+			key = overflowKey
+			w, ok = l.by[key]
+		}
 	}
-	w, ok := l.by[key]
 	if !ok || now.Sub(w.start) >= l.window {
 		w = failWindow{start: now}
 	}

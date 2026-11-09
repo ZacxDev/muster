@@ -185,6 +185,9 @@ type dialOpts struct {
 	header   http.Header
 	maxConns int    // the host's own Serve maxConns; 0 = wire.MaxConns
 	hostHdr  string // the request's Host; default tunnel.<domain>
+	// holdAnswers: the host never answers the gateway's POSTs (each blocks
+	// until the gateway gives up on it).
+	holdAnswers bool
 }
 
 // dialHost dials e's listener as a host would. A refusal returns the
@@ -244,6 +247,10 @@ func (e *gwEnv) dialHost(t *testing.T, o dialOpts) (*fakeHost, *http.Response, e
 				}
 			}
 		case r.Method == http.MethodPost && (r.URL.Path == wire.OpenedPath || r.URL.Path == wire.ClosedPath):
+			if o.holdAnswers {
+				<-r.Context().Done()
+				return
+			}
 			var a wire.Answer
 			if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
 				http.Error(w, "bad answer", http.StatusBadRequest)

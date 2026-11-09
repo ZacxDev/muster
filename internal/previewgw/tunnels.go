@@ -37,6 +37,7 @@ type Tunnel struct {
 	path      Path
 	client    *tunnel.Client
 	ctx       context.Context
+	answers   chan pendingAnswer // to answerWorker; bounded (answerQueue)
 
 	mu        sync.Mutex
 	state     HostState

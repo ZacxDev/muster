@@ -31,6 +31,27 @@ const (
 	// recheckFailLimit consecutive unreadable token files end every tunnel
 	// (as muster's mirror connect does when it cannot verify a token twice).
 	recheckFailLimit = 2
+	// UnknownLimit consecutive /self checks without a verdict (muster
+	// unreachable, a 5xx, a 404 because plugins are off) end a token's last
+	// verdict: about ten minutes at one check a minute. An outage shorter
+	// than that does not drop previews; a longer one stops serving an owner
+	// muster can no longer vouch for. One later live verdict restores it.
+	UnknownLimit = 10
+)
+
+// Listener timeouts (both listeners).
+//
+//   - ReadHeaderTimeout: a client has this long to send its request headers;
+//     a slow-header client cannot hold a connection open for free.
+//   - IdleTimeout: a keep-alive connection with no request in flight closes
+//     after this long — the design's 5 min "HTTP connection idle" limit.
+//
+// No ReadTimeout or WriteTimeout: a host tunnel is one long-lived hijacked
+// WebSocket, and so will be every streamed preview response; a whole-request
+// deadline would cut them. Liveness of a tunnel is the 30 s ping's job.
+const (
+	listenReadHeaderTimeout = 10 * time.Second
+	listenIdleTimeout       = 5 * time.Minute
 )
 
 // SelfAsker is the one muster call the gateway makes (MusterClient.Self).
@@ -50,8 +71,9 @@ type Options struct {
 
 // tokenState is what the gateway last learned about one plugin token.
 type tokenState struct {
-	owner   int64 // from the last 200; 0 before any
-	verdict SelfVerdict
+	owner    int64 // from the last 200; 0 before any
+	verdict  SelfVerdict
+	unknowns int // consecutive checks without a verdict
 }
 
 // Gateway is the running preview gateway.
@@ -77,7 +99,8 @@ type Gateway struct {
 	byKey        map[tunnelKey]*Tunnel
 	all          map[*Tunnel]struct{}
 	previews     map[string]*Preview
-	tokens       []tokenState // parallel to cfg.PluginTokens
+	previewBy    map[previewKey]string // (owner, host, window, port) → id
+	tokens       []tokenState          // parallel to cfg.PluginTokens
 	recheckFails int
 }
 
@@ -114,10 +137,11 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		reg:          reg,
 		tunnelsGauge: gauge,
 		ctx:          ctx, cancel: cancel,
-		byKey:    map[tunnelKey]*Tunnel{},
-		all:      map[*Tunnel]struct{}{},
-		previews: map[string]*Preview{},
-		tokens:   make([]tokenState, len(cfg.PluginTokens)),
+		byKey:     map[tunnelKey]*Tunnel{},
+		all:       map[*Tunnel]struct{}{},
+		previews:  map[string]*Preview{},
+		previewBy: map[previewKey]string{},
+		tokens:    make([]tokenState, len(cfg.PluginTokens)),
 	}
 	return g, nil
 }
@@ -163,7 +187,8 @@ func (g *Gateway) liveOwnerLocked(owner int64) bool {
 // previews of every owner that was served and no longer is: one whose token
 // answered 401, or 200 without the viewer capability, with no other live
 // token of that owner. A token muster did not answer for keeps its last
-// verdict.
+// verdict for UnknownLimit-1 checks; at the UnknownLimit-th in a row it is
+// no longer live (its owner closes as above) until muster answers again.
 func (g *Gateway) CheckOwners(ctx context.Context) {
 	answers := make([]SelfAnswer, len(g.cfg.PluginTokens))
 	for i, tok := range g.cfg.PluginTokens {
@@ -180,10 +205,18 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 	for i, a := range answers {
 		switch a.Verdict {
 		case SelfUnknown:
+			g.tokens[i].unknowns++
+			n := g.tokens[i].unknowns
+			reason := "no verdict"
 			if a.Err != nil {
-				g.log.Warn("plugin token check failed; keeping its last verdict", "token", i+1, "err", a.Err.Error())
+				reason = a.Err.Error()
 			}
-			continue
+			if n >= UnknownLimit && g.tokens[i].verdict == SelfLive {
+				g.tokens[i].verdict = SelfUnknown
+				g.log.Warn("plugin token unverified for too long; its owner is no longer served", "token", i+1, "consecutive", n, "err", reason)
+			} else if n < UnknownLimit {
+				g.log.Warn("plugin token check failed; keeping its last verdict", "token", i+1, "consecutive", n, "err", reason)
+			}
 		case SelfLive:
 			g.tokens[i] = tokenState{owner: a.Self.OwnerID, verdict: SelfLive}
 		case SelfDead:
@@ -191,6 +224,7 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 				g.tokens[i].owner = a.Self.OwnerID
 			}
 			g.tokens[i].verdict = SelfDead
+			g.tokens[i].unknowns = 0
 		}
 	}
 	var gone []int64
@@ -212,8 +246,10 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 }
 
 // Recheck re-reads the host-token file and ends every tunnel whose token is
-// gone, or no longer names the tunnel's owner and host; the previews of a
-// revoked host close with it.
+// gone, or no longer names the tunnel's owner and host. It also closes the
+// previews of every (owner, host) no stored token names any more — whether
+// or not that host has a tunnel now: a host revoked while offline must not
+// keep previews a new token for the same name would re-attach.
 func (g *Gateway) Recheck() {
 	toks, err := g.store.List()
 	g.mu.Lock()
@@ -230,18 +266,28 @@ func (g *Gateway) Recheck() {
 	g.recheckFails = 0
 	g.mu.Unlock()
 	ix := indexTokens(toks)
+	valid := map[tunnelKey]bool{}
+	for _, rec := range toks {
+		valid[tunnelKey{rec.OwnerID, rec.Host}] = true
+	}
 	revoked := g.closeTunnelsWhere(func(t *Tunnel) bool {
 		rec, ok := ix[t.tokenHash]
 		return !ok || rec.Host != t.key.host || rec.OwnerID != t.key.owner
 	})
-	if len(revoked) == 0 {
-		return
-	}
 	g.mu.Lock()
+	n := 0
 	for _, t := range revoked {
-		g.closePreviewsLocked(t.key.owner, t.key.host)
+		n += g.closePreviewsLocked(t.key.owner, t.key.host)
+	}
+	for _, p := range g.previews {
+		if k := (tunnelKey{p.OwnerID, p.Host}); !valid[k] {
+			n += g.closePreviewsLocked(k.owner, k.host)
+		}
 	}
 	g.mu.Unlock()
+	if n > 0 {
+		g.log.Info("closed the previews of hosts with no valid token", "previews", n)
+	}
 	for _, t := range revoked {
 		g.log.Info("host token revoked: tunnel closed", "host", t.key.host, "path", string(t.path))
 	}
@@ -359,7 +405,8 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			g.log.Error("tunnel start failed", "host", rec.Host, "err", err.Error())
 			return
 		}
-		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx}
+		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx,
+			answers: make(chan pendingAnswer, answerQueue)}
 		if err := g.register(t); err != nil {
 			_ = cl.Close()
 			return
@@ -372,6 +419,20 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 	})
 }
 
+// servers builds the listeners' http.Servers: the public one, and the mesh
+// one when configured, with the listener timeouts above.
+func (g *Gateway) servers() []*http.Server {
+	mk := func(addr string, h http.Handler) *http.Server {
+		return &http.Server{Addr: addr, Handler: h,
+			ReadHeaderTimeout: listenReadHeaderTimeout, IdleTimeout: listenIdleTimeout}
+	}
+	out := []*http.Server{mk(g.cfg.Listen, g.PublicHandler())}
+	if g.cfg.MeshListen != "" {
+		out = append(out, mk(g.cfg.MeshListen, g.MeshHandler()))
+	}
+	return out
+}
+
 // Run serves the public listener and, when configured, the mesh listener
 // until ctx ends.
 func (g *Gateway) Run(ctx context.Context) error {
@@ -381,9 +442,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 		s    *http.Server
 		addr string
 	}
-	servers := []srv{{&http.Server{Addr: g.cfg.Listen, Handler: g.PublicHandler(), ReadHeaderTimeout: 10 * time.Second}, g.cfg.Listen}}
-	if g.cfg.MeshListen != "" {
-		servers = append(servers, srv{&http.Server{Addr: g.cfg.MeshListen, Handler: g.MeshHandler(), ReadHeaderTimeout: 10 * time.Second}, g.cfg.MeshListen})
+	var servers []srv
+	for _, s := range g.servers() {
+		servers = append(servers, srv{s, s.Addr})
 	}
 	errc := make(chan error, len(servers))
 	for _, s := range servers {

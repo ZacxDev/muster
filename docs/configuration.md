@@ -607,7 +607,13 @@ What it does now:
   `capabilities` lacks `viewer`, closes that owner's tunnels and previews once
   none of the owner's tokens is live, and its new tunnels are refused `403`
   until one is. An owner is not served before muster has answered for one of
-  its tokens. No other answer (unreachable, `5xx`, `404`) changes anything.
+  its tokens. Any other outcome (muster unreachable, `5xx`, `404` because
+  plugins are off) keeps a token's last verdict for 9 checks in a row; at the
+  10th (about ten minutes) the token is no longer live and its owner closes as
+  above. One later live answer serves the owner again.
+- **Revoked hosts.** A host whose token is revoked loses its previews at the
+  next 30 s check even if it is offline then; a new token for the same host
+  name starts with none.
 - **No database.** Previews are in memory; a restart closes them.
 - **Metric:** `muster_preview_tunnels{path}`.
 
