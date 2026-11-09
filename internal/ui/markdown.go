@@ -13,14 +13,20 @@ import (
 )
 
 // markdown.go — a small, dependency-free, escape-FIRST markdown renderer used to
-// format machine+user-authored task bodies (and comments) on the server.
+// format machine+user-authored task bodies, comments and chat messages on the
+// server.
 //
 // Safety: the source is HTML-escaped BEFORE any markup is applied, so no author
 // content can ever inject HTML/JS — the only tags in the output are the ones we
-// emit. This mirrors the client-side mdRender in agents_detail.go (escape →
-// inline → block) so the two renderers behave the same; we keep a Go copy rather
-// than pulling a markdown library (blackfriday is only an indirect dep) to keep
-// the surface tiny and the escaping guarantee auditable.
+// emit. We keep it in-tree rather than pulling a markdown library (blackfriday
+// is only an indirect dep) to keep the surface tiny and the escaping guarantee
+// auditable.
+//
+// 🔴 IT IS THE ONLY MARKDOWN RENDERER. The /agents/{name} chat used to carry a
+// second, JS copy (mdRender in agentChatScript); every inline fix had to land
+// in both, and they drifted. The chat now draws its transcript, its streamed
+// reply and the echo of a sent message through ChatMessageHTML, which calls
+// this file (agents_detail.go chatMessageBody). Do not grow a client copy back.
 //
 // Supported: bold (**x**), italic (*x* / _x_, the `_` form never intra-word), inline code (`x`), fenced code
 // blocks (```lang … ```), blockquotes (> …), bullet lists (- / *), ordered
@@ -69,13 +75,6 @@ var (
 	// emitted href as a raw control byte while the code text vanished. Excluding it
 	// makes such input stay literal markdown — which is exactly what it did before
 	// the vault existed.
-	//
-	// NOTE: the JS renderer in agents_detail.go had the same hole — its AUTOLINK
-	// excluded the sentinel but its markdown-link regex did not, so it leaked its
-	// own sentinel into an href for the same input. Fixed in 0.7.79; both regexes
-	// there now carry the exclusion. The two renderers use DIFFERENT sentinels
-	// (\x00 here, U+E000 in the JS), so keep the fixes parallel in intent but do
-	// not "sync" them by copying one into the other.
 	mdLink = regexp.MustCompile("\\[([^\\]\\x00]+)\\]\\(([^)\\s\\x00]+)\\)")
 	// mdHTTPScheme gates which link URLs become anchors: http:// or https:// only.
 	// Case-insensitive so HTTPS:// etc. still pass; the escaped URL's scheme is
@@ -83,9 +82,7 @@ var (
 	mdHTTPScheme = regexp.MustCompile(`(?i)^https?://`)
 	// mdBareURL matches a BARE http(s) URL — one an author wrote without
 	// [text](url) around it. Agents paste pull-request and issue links into task
-	// bodies and comments constantly, and every one of them rendered as inert text
-	// here while the JS renderer in agents_detail.go had autolinked them since it
-	// shipped: one document, two surfaces, two answers.
+	// bodies and comments constantly.
 	//
 	// The \x00 exclusion is the vault sentinel, for the same reason mdLink carries
 	// it — a URL directly abutting a placeholder must not swallow it into the href.
@@ -94,8 +91,7 @@ var (
 	// this pattern sees.
 	mdBareURL = regexp.MustCompile(`(?i)https?://[^\s<\x00]+`)
 	// mdURLTrail is the trailing punctuation that belongs to the SENTENCE, not to
-	// the URL — `see https://example.com/x.` must not link the full stop. Mirrors
-	// the JS renderer's set exactly.
+	// the URL — `see https://example.com/x.` must not link the full stop.
 	mdURLTrail = regexp.MustCompile(`[.,)\]!?:;"']+$`)
 	// mdVaultToken matches a vault placeholder for the single-pass restore.
 	mdVaultToken = regexp.MustCompile("\x00(\\d+)\x00")
@@ -107,8 +103,6 @@ var (
 	// and `--:` meaning; accepting them here only means the separator row is
 	// RECOGNISED when an author writes one (so the table renders at all instead of
 	// degrading to a paragraph full of pipes). Every cell is emitted `text-left`.
-	// The JS renderer in agents_detail.go made the same trade; matching it is
-	// deliberate, so the two surfaces do not disagree about one document.
 	mdTableSepCell = regexp.MustCompile(`^:?-+:?$`)
 )
 
@@ -118,8 +112,7 @@ var (
 // It also strips NUL, the vault delimiter (mdVaultSep). Doing it HERE rather than
 // in mdInline covers every path — including fenced code blocks, which do not go
 // through mdInline and so previously carried an author NUL straight into the
-// output. NUL is not renderable content, so dropping it loses nothing. This
-// mirrors the JS renderer, which strips its own  sentinel in mdEsc.
+// output. NUL is not renderable content, so dropping it loses nothing.
 func mdEscape(s string) string {
 	s = strings.ReplaceAll(s, mdVaultSep, "")
 	s = strings.ReplaceAll(s, "&", "&amp;")
@@ -163,8 +156,7 @@ func (v *mdVault) stash(html string) string {
 // well inside maxTaskBodyLen: 195 KB with 50k code spans took 33.5s that way
 // versus 0.7s before this change — and internal/ui/notes.go renders every task's
 // full body on the list page, so a single such row would have made the page cost
-// tens of seconds of CPU for every viewer, permanently. This mirrors what the JS
-// renderer in agents_detail.go already does.
+// tens of seconds of CPU for every viewer, permanently.
 //
 // An index that is not ours (or out of range) yields "" rather than leaking a raw
 // control byte into the output.
@@ -275,16 +267,13 @@ func mdEmphasis(s string) string {
 // Devanagari vowel signs (सूची) are marks, so `café_x_` must not open there.
 // Numbers are N, not just decimal digits, so `x²_y_` stays literal.
 //
-// 🔴 THE JS RENDERER'S mdUnderWord (agentChatScript) USES THE SAME CLASSES —
-// \p{L}\p{M}\p{N} — and TestUnderscoreRenderersAgree holds the two to one
-// output on a fixed list of such inputs. Change both or neither.
+// TestMarkdownUnicodeWordEdges pins the literal output for such inputs.
 func mdIsWordRune(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsNumber(r)
 }
 
 // mdIsUnderSpace is the whitespace side of the rule: Go's unicode.IsSpace plus
-// U+FEFF. The JS renderer's /\s/ is IsSpace minus U+0085 plus U+FEFF, so its
-// side adds U+0085 — the two renderers use the UNION, and agree on both.
+// U+FEFF (a zero-width no-break space is no word character either).
 func mdIsUnderSpace(r rune) bool {
 	return unicode.IsSpace(r) || r == '\uFEFF'
 }
@@ -391,8 +380,7 @@ func mdUnderCloses(s string, j int) bool {
 //
 // — crossing <em>/</a>, i.e. malformed HTML. Emphasizing the label here, in
 // isolation, both prevents that and preserves `[*x*](u)` italicizing as it always
-// has (the JS renderer vaults the whole anchor without this and does NOT support
-// emphasis in a label; matching it exactly would have been a silent regression).
+// has.
 func mdLinkify(escaped string, v *mdVault) string {
 	return mdLink.ReplaceAllStringFunc(escaped, func(m string) string {
 		g := mdLink.FindStringSubmatch(m)
@@ -409,8 +397,8 @@ func mdLinkify(escaped string, v *mdVault) string {
 }
 
 // renderMarkdown converts a markdown source string to a safe HTML fragment node
-// (g.Raw of escaped-then-marked-up output). It is the server-side counterpart of
-// the JS mdRender. The returned node is safe to embed directly.
+// (g.Raw of escaped-then-marked-up output). The returned node is safe to embed
+// directly.
 func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
 }
@@ -466,21 +454,9 @@ func snippetPlain(src string, n int) string {
 
 // --- GFM pipe tables ---------------------------------------------------------
 //
-// 🔴 PORTED FROM THE JS RENDERER'S LOGIC, NOT COPIED FROM ITS SOURCE. The
-// client-side mdRender in agents_detail.go has had pipe tables since before this
-// one did, and its behaviour is the specification followed here: a header row
-// containing `|` immediately followed by a separator row, cells split on `|`
-// with the optional outer pipes dropped, body rows gathered while they still
-// contain a `|`, alignment discarded. The two renderers use DIFFERENT sentinels
-// (\x00 here, U+E000 there) and different escape points (this one escapes per
-// line, that one escapes the whole source up front), so keeping them parallel
-// means keeping the INTENT parallel — see the note on mdLink above.
-//
-// ⚠ IT IS NOT A DUPLICATE OF A LIVE PATH. The JS renderer only ever walks
-// `[data-md]` elements, which only chatBubble on /agents/{name} emits; the
-// session and tmux chat views are rendered by THIS function and had no table
-// support at all. Two implementations of one grammar is a known, accepted cost
-// recorded here so the next reader does not mistake it for an oversight.
+// A header row containing `|` immediately followed by a separator row, cells
+// split on `|` with the optional outer pipes dropped, body rows gathered while
+// they still contain a `|`, alignment discarded.
 
 // mdTableCells splits one pipe-table row into trimmed cells, dropping the
 // optional leading and trailing pipe so both `| a | b |` and `a | b` work.
@@ -515,8 +491,7 @@ func mdIsTableSep(line string) bool {
 // markdownHTML's paragraph gather runs LAST and swallows every contiguous line
 // that no earlier branch claimed — so without teaching it this same predicate,
 // a table's HEADER row is absorbed into the preceding paragraph and the table
-// branch is never reached for it. The JS renderer carries the identical check in
-// both places for the identical reason. Spelled once here so the two cannot
+// branch is never reached for it. Spelled once here so the two cannot
 // drift into disagreeing about what a table is.
 func mdTableStartsAt(lines []string, i int) bool {
 	if i < 0 || i+1 >= len(lines) {
@@ -627,7 +602,7 @@ func markdownHTML(src string) string {
 		}
 
 		// GFM pipe table. Checked AFTER the list branches (a `- a | b` line is a
-		// bullet, exactly as in the JS renderer) and BEFORE the blank-line and
+		// bullet) and BEFORE the blank-line and
 		// paragraph branches, which would otherwise claim the header row.
 		//
 		// Cells run through mdInline(mdEscape(...)) like every other author text
