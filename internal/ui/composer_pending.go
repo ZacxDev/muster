@@ -863,15 +863,30 @@ var mirrorComposerJS = `
     catch (err) { input.value = text; shown(); browserSubmit(); }
   });
   input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });
+  // shownSend is the form's Send on screen: the first submit button of the
+  // input row that is drawn (#mv-send, or the chief's #mv-send-chief in chief
+  // mode); null when none is.
+  function shownSend() {
+    var bs = form.querySelectorAll('#mv-send, #mv-send-chief');
+    for (var i = 0; i < bs.length; i++) if (bs[i].getClientRects().length) return bs[i];
+    return null;
+  }
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       // 🔴 A HELD ENTER SENDS ONCE: its auto-repeats are not more sends (a
       // focus that moved into the box mid-hold must not send what it holds).
       if (e.repeat) return;
+      // 🔴 ENTER IS A PRESS ON THE SEND SHOWN. The form may draw more than one
+      // Send and show one by its stylesheet (the view's chief mode shows the
+      // chief's, view_chief.go): Enter submits through the one on screen, so
+      // its formaction is the route even when no script has set the form's
+      // action — and a disabled one sends nothing, as a press on it would.
+      var by = shownSend();
+      if (by && by.disabled) return;
       // requestSubmit is missing from older Safari; a click on Send is the same
       // submit, through the same handler.
-      if (form.requestSubmit) form.requestSubmit(); else send.click();
+      if (form.requestSubmit) { if (by && by !== send) form.requestSubmit(by); else form.requestSubmit(); } else (by || send).click();
     }
   });
 })();

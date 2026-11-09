@@ -260,6 +260,12 @@ func mirrorComposer(v ComposerView) g.Node {
 	if off {
 		placeholder = v.DisabledPlaceholder
 	}
+	// 🔴 A DISABLED composer's box is drawn ENABLED when the chief mode is
+	// offered (view_chief.go's header): a disabled box submits nothing, so
+	// the chief mode could not send without its script. It is marked instead
+	// (data-agent-off), its agent Send stays disabled, and the chief script
+	// disables it again in agent mode.
+	boxOff := off && v.Chief == nil
 	noteClass := "px-3 pt-2 text-xs break-words "
 	if v.NoticeOK {
 		noteClass += "text-fg2"
@@ -354,6 +360,9 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Attr("data-empty", MirrorComposeEmpty),
 			g.Attr("data-down", mirrorComposeDown),
 			g.Attr("novalidate", ""),
+			// The chief's route, which the composer's script reads to tell a
+			// line to the chief from one to the pane (composer_pending.go).
+			g.If(v.Chief != nil, g.Attr("data-chief-path", MirrorChiefPath)),
 			// The page may be hx-boost'ed (an agent's): a boosted form would be
 			// submitted by htmx as well as by the script.
 			hx("hx-boost", "false"),
@@ -375,7 +384,8 @@ func mirrorComposer(v ComposerView) g.Node {
 					Rows("1"),
 					g.Attr("aria-label", v.Aria),
 					g.Attr("enterkeyhint", "send"),
-					g.If(off, g.Attr("disabled", "")),
+					g.If(boxOff, g.Attr("disabled", "")),
+					g.If(off && !boxOff, g.Attr("data-agent-off", "")),
 					g.If(off, g.Attr("title", v.Disabled)),
 					g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
 					Placeholder(placeholder),

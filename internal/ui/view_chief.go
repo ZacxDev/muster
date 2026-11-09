@@ -10,44 +10,49 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE VIEW'S CHIEF MODE (docs/design/chief-in-agent-view.md, phase 1): a
-// toggle button on a mirrored session's Rendered view composer — the row's
+// switch on a mirrored session's Rendered view composer — the input row's
 // FIRST control, left of the paperclip — that sends the box's text to the
 // owner's CHIEF, about this session, instead of to the pane; and the chief
-// strip above the input, where the chief's replies about this session are
-// shown.
+// strip above the input row, where the chief's replies about this session
+// are shown.
 //
-// THE TOGGLE (#mv-to, viewChiefToggle) is one <button type="button"> whose
-// aria-pressed is the mode (true = the chief). It shows the CURRENT target's
-// glyph (viewIconAgent / viewIconChief) and its aria-label names the current
-// target and the action. In chief mode the composer wears the chief's colour —
-// the review status pair (st-review-fg / st-review-bg), distinct from the
-// amber accent the agent's Send wears: the composer's top edge, the box's ring
-// and fill, the toggle pressed, and the chief's Send. Agent mode is drawn as
-// the composer always was.
+// THE SWITCH (viewChiefToggle) is ONE control, always present: a checkbox
+// (#mv-to-chief, role="switch"; checked = the chief) inside a label (#mv-to)
+// drawn as a 44px icon button. It shows the CURRENT target's glyph
+// (viewIconAgent / viewIconChief), and its accessible name is the label's
+// visually hidden text for the current mode — the current target and the
+// action — picked by the stylesheet, so it is right with no script at all. In
+// chief mode the composer wears the chief's colour — the review status pair
+// (st-review-fg / st-review-bg), distinct from the amber accent the agent's
+// Send wears: the composer's top edge, the box's ring and fill, the switch,
+// and the chief's Send. Agent mode is drawn as the composer always was.
 //
 // 🔴 A REAL FORM FIRST, THE SCRIPT SECOND (the composer's rule, mirror_compose.go).
-// Which Send is shown, and which route a submit reaches, follows the mode by a
-// stylesheet rule (viewChiefOn: #mv-compose[data-to=chief], which the script
-// sets, OR #mv-compose:has(#mv-to-chief:checked), the no-script checkbox), so
-// a browser submit with no script still reaches the chief's door: its Send
-// (#mv-send-chief) is a submit button whose formaction is the chief's route.
-// Without script the button cannot toggle anything, so it is hidden and a
-// <noscript> checkbox (#mv-to-chief, in a label drawn like the button) takes
-// its place — the radios' old behaviour, one input. The script
-// (viewChiefScript) adds the rest — the toggle, the form's own action for
-// Enter, the placeholder, the box enabled on a view whose agent composer is
-// disabled, the strip's live refresh, and the mode remembered per window.
+// EVERYTHING THAT DECIDES WHERE A LINE GOES FOLLOWS THE CHECKBOX BY THE
+// STYLESHEET (viewChiefOn: #mv-compose:has(#mv-to-chief:checked)), so the
+// mode works with script, without script, AND when this file's script threw:
+// the chief's Send (#mv-send-chief, a submit whose formaction is the chief's
+// route) is the Send shown in chief mode, and the composer's Enter submits
+// through the Send shown (composer_pending.go). The script (viewChiefScript)
+// only adds to that — the mode remembered per window, the form's own action,
+// the placeholder and the box's name, the box disabled again in agent mode
+// on a view whose agent composer is disabled, a press that keeps the box's
+// focus, and the strip's live refresh.
 //
 // 🔴 THE STRIP RE-MOUNTS THE CHIEF'S CHAT, NEVER A SECOND ONE: its content is
 // ui.ChatLogBody, the renderer of the chief's own #chat-log, served narrowed to
 // this session's exchange (internal/api handleViewChiefLog), refreshed on the
 // same chat.reply event.
 //
+// 🔴 A DISABLED AGENT COMPOSER IS DRAWN WITH ITS BOX ENABLED when the chief
+// mode is offered (mirror_compose.go, data-agent-off): a disabled box submits
+// nothing, so the chief mode could not send without the script. The agent's
+// own Send stays disabled, and the box is dimmed in agent mode; the script
+// disables it again in agent mode.
+//
 // ⚠ WHAT PHASE 1 LEAVES OUT, STATED: one draft for the box in both modes (the
 // design keeps one per mode); with the agent composer DISABLED there is no mic
-// or paperclip in chief mode either (a disabled composer draws neither), and
-// without script the box stays disabled there, so the chief mode needs the
-// script on such a view.
+// or paperclip in chief mode either (a disabled composer draws neither).
 // ---------------------------------------------------------------------------
 
 // MirrorChiefPath is where the view's chief mode posts the owner's line.
@@ -71,39 +76,38 @@ const (
 	ViewChiefStripEmpty = "Nothing asked about this session yet. Your chief answers here."
 )
 
-// The mode's two values (#mv-compose's data-to, and the remembered mode).
+// The mode's two values (the remembered mode).
 const (
 	ViewToAgent = "agent"
 	ViewToChief = "chief"
 )
 
-// ViewToAgentLabel and ViewToChiefLabel are the toggle's accessible name (and
-// title) in each mode: the current target, then what a press does.
+// ViewToAgentLabel and ViewToChiefLabel are the switch's accessible name in
+// each mode: the current target, then what a press does.
 func ViewToAgentLabel(agent string) string { return "Sending to " + agent + " — switch to the chief" }
 
-// ViewToChiefLabel is the toggle's name in chief mode (see ViewToAgentLabel).
+// ViewToChiefLabel is the switch's name in chief mode (see ViewToAgentLabel).
 func ViewToChiefLabel(agent string) string { return "Sending to the chief — switch to " + agent }
 
-// The toggle's two glyphs, in the composer's icon style (24-unit stroked
+// The switch's two glyphs, in the composer's icon style (24-unit stroked
 // paths in currentColor, as host_icons.go's): the agent a bot's head, the
-// chief a crown. Each is drawn in the mode it names (viewChiefStyle).
+// chief a crown. Each is shown in the mode it names (viewChiefStyle).
 const (
-	viewIconAgent = `<svg data-to-icon="agent" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4"/><path d="M9 13h.01M15 13h.01"/><path d="M9.5 16.5h5"/></svg>`
-	viewIconChief = `<svg data-to-icon="chief" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/><path d="M5 19h14"/></svg>`
+	viewIconAgent = `<svg data-to-mode="agent" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4"/><path d="M9 13h.01M15 13h.01"/><path d="M9.5 16.5h5"/></svg>`
+	viewIconChief = `<svg data-to-mode="chief" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/><path d="M5 19h14"/></svg>`
 )
 
-// viewChiefToggleClass is the toggle's look in agent mode: the mic's clothes
+// viewChiefToggleClass is the switch's look in agent mode: the mic's clothes
 // (dictateButtonClass), a 44px square — and, like the mic, no hover fill: a
-// tap leaves a touch screen "hovering", and the toggle would stay lit in agent
+// tap leaves a touch screen "hovering", and the switch would stay lit in agent
 // mode (measured in e2e/tests/chief-in-view.spec.ts). Chief mode is
 // viewChiefStyle's.
-const viewChiefToggleClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition"
+const viewChiefToggleClass = "press relative inline-flex min-h-[44px] min-w-[44px] shrink-0 cursor-pointer items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition"
 
-// viewChiefOn is a selector list for "the composer is in chief mode", each
-// selector followed by suffix: the script's mode (data-to) or, without
-// script, the checked <noscript> checkbox.
+// viewChiefOn is the ONE selector for "the composer is in chief mode" — the
+// switch's checkbox checked — followed by suffix.
 func viewChiefOn(suffix string) string {
-	return `#mv-compose[data-to="chief"]` + suffix + `, #mv-compose:has(#mv-to-chief:checked)` + suffix
+	return `#mv-compose:has(#mv-to-chief:checked)` + suffix
 }
 
 // ComposerChief is a composer's chief mode (ComposerView.Chief).
@@ -139,63 +143,51 @@ func (v ComposerView) chiefAction() string {
 // chief's Send and the strip are. The chief's colour is the review status
 // pair, from the theme's tokens in either theme.
 var viewChiefStyle = `
-#mv-send-chief, #mv-chief, :is(#mv-to, #mv-to-ns) [data-to-icon="chief"] { display: none; }
+#mv-send-chief, #mv-chief, #mv-to [data-to-mode="chief"] { display: none; }
 ` + viewChiefOn(` #mv-send-chief`) + ` { display: inline-flex; }
 ` + viewChiefOn(` #mv-chief`) + ` { display: block; }
 ` + viewChiefOn(` :is(#mv-send, #mv-send-group, #mv-queue, #mv-queue-off, #mv-suggest, #mv-suggest-paused, #mv-complete-box, #mv-readonly)`) + ` { display: none !important; }
-` + viewChiefOn(` :is(#mv-to, #mv-to-ns) [data-to-icon="agent"]`) + ` { display: none; }
-` + viewChiefOn(` :is(#mv-to, #mv-to-ns) [data-to-icon="chief"]`) + ` { display: block; }
+` + viewChiefOn(` #mv-to [data-to-mode="agent"]`) + ` { display: none; }
+` + viewChiefOn(` #mv-to svg[data-to-mode="chief"]`) + ` { display: block; }
+` + viewChiefOn(` #mv-to span[data-to-mode="chief"]`) + ` { display: inline; }
 ` + viewChiefOn(``) + ` { border-top-color: rgb(var(--mu-st-review-fg)); box-shadow: inset 0 2px 0 rgb(var(--mu-st-review-fg)); }
-` + viewChiefOn(` #mv-input`) + ` { background-color: rgb(var(--mu-st-review-bg)); box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)); }
+` + viewChiefOn(` #mv-input`) + ` { background-color: rgb(var(--mu-st-review-bg)); box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)); opacity: 1; }
 ` + viewChiefOn(` #mv-input:focus`) + ` { box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)), 0 0 0 3px rgb(var(--mu-st-review-fg) / 0.35); }
-` + viewChiefOn(` :is(#mv-to, #mv-to-ns)`) + ` { background-color: rgb(var(--mu-st-review-bg)); color: rgb(var(--mu-st-review-fg)); box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)); }
-` + viewChiefOn(` :is(#mv-to, #mv-to-ns) svg path`) + ` { fill: currentColor; fill-opacity: 0.3; }
+` + viewChiefOn(` #mv-to`) + ` { background-color: rgb(var(--mu-st-review-bg)); color: rgb(var(--mu-st-review-fg)); box-shadow: inset 0 0 0 2px rgb(var(--mu-st-review-fg)); }
+` + viewChiefOn(` #mv-to svg path`) + ` { fill: currentColor; fill-opacity: 0.3; }
+#mv-input[data-agent-off] { opacity: 0.5; }
 #mv-send-chief { background-color: rgb(var(--mu-st-review-fg)); color: rgb(var(--mu-bg)); }
-#mv-to-chief { position: absolute; opacity: 0; width: 1px; height: 1px; }
-#mv-to-ns:has(#mv-to-chief:focus-visible) { outline: 2px solid currentColor; outline-offset: 2px; }
+#mv-to-chief { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+#mv-to:has(#mv-to-chief:focus-visible) { outline: 2px solid rgb(var(--mu-focus)); outline-offset: 2px; }
 #mv-chief-log { max-height: 45dvh; }
 `
 
-// viewChiefToggle is the mode's toggle, the composer row's first control: a
-// button, on the agent (the default; the script restores the window's last
-// mode). Without script it is hidden and a <noscript> checkbox in its place
-// does its job (see the file's header).
+// viewChiefToggle is the mode's switch, the composer row's first control: a
+// checkbox (role="switch") in a label drawn as an icon button, unchecked (the
+// agent; the script restores the window's last mode). Its accessible name is
+// the label's hidden text for the current mode. The checkbox has no name: the
+// mode is never a form field. See the file's header.
 func viewChiefToggle(c *ComposerChief) g.Node {
 	if c == nil {
 		return nil
 	}
-	return g.Group([]g.Node{
-		Button(
-			ID("mv-to"),
-			Type("button"),
-			g.Attr("aria-pressed", "false"),
-			g.Attr("aria-label", ViewToAgentLabel(c.Agent)),
-			g.Attr("title", ViewToAgentLabel(c.Agent)),
-			g.Attr("data-label-agent", ViewToAgentLabel(c.Agent)),
-			g.Attr("data-label-chief", ViewToChiefLabel(c.Agent)),
-			g.Attr("data-mode-key", c.ModeKey),
-			Class(viewChiefToggleClass),
-			g.Raw(viewIconAgent),
-			g.Raw(viewIconChief),
-		),
-		// The no-script equivalent: the same face, a checkbox the stylesheet
-		// follows. No name: the mode is never a form field.
-		NoScript(
-			StyleEl(g.Raw(`#mv-to { display: none !important; }`)),
-			Label(
-				ID("mv-to-ns"),
-				g.Attr("title", "Send to the chief"),
-				Class(viewChiefToggleClass+" relative cursor-pointer"),
-				Input(ID("mv-to-chief"), Type("checkbox"), g.Attr("aria-label", "Send to the chief")),
-				g.Raw(viewIconAgent),
-				g.Raw(viewIconChief),
-			),
-		),
-	})
+	return Label(
+		ID("mv-to"),
+		g.Attr("title", ViewToAgentLabel(c.Agent)),
+		g.Attr("data-label-agent", ViewToAgentLabel(c.Agent)),
+		g.Attr("data-label-chief", ViewToChiefLabel(c.Agent)),
+		Class(viewChiefToggleClass),
+		Input(ID("mv-to-chief"), Type("checkbox"), g.Attr("role", "switch"), g.Attr("autocomplete", "off"),
+			g.Attr("data-mode-key", c.ModeKey)),
+		Span(g.Attr("data-to-mode", ViewToAgent), Class("sr-only"), g.Text(ViewToAgentLabel(c.Agent))),
+		Span(g.Attr("data-to-mode", ViewToChief), Class("sr-only"), g.Text(ViewToChiefLabel(c.Agent))),
+		g.Raw(viewIconAgent),
+		g.Raw(viewIconChief),
+	)
 }
 
 // viewChiefStrip is the chief strip: the chief's chat about this session, a
-// scrolling box above the switch, collapsible (a native <details>), filled
+// scrolling box above the composer's input row, collapsible (a native <details>), filled
 // and refreshed by viewChiefScript.
 func viewChiefStrip(c *ComposerChief) g.Node {
 	if c == nil {
@@ -233,8 +225,9 @@ func viewChiefSend(v ComposerView) g.Node {
 	)
 }
 
-// viewChiefScript is the mode's behaviour on top of the form's own (see the
-// file's header). The strip's stream is opened only while the mode is chief.
+// viewChiefScript is the mode's behaviour on top of the form's own and the
+// stylesheet's (see the file's header): nothing it does decides where a line
+// goes. The strip's stream is opened only while the mode is chief.
 func viewChiefScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -242,22 +235,21 @@ func viewChiefScript() g.Node {
   var form = document.getElementById('mv-form');
   var input = document.getElementById('mv-input');
   var sw = document.getElementById('mv-to');
+  var cb = document.getElementById('mv-to-chief');
   var chiefSend = document.getElementById('mv-send-chief');
   var log = document.getElementById('mv-chief-log');
-  if (!compose || !form || !input || !sw || !chiefSend || !log) return;
-  // A press on the toggle, like one on Send, keeps the box's focus (and a
+  if (!compose || !form || !input || !sw || !cb || !chiefSend || !log) return;
+  // A press on the switch, like one on Send, keeps the box's focus (and a
   // phone's keyboard up).
   (` + sendKeepsFocusJS + `)(chiefSend);
-  (` + sendKeepsFocusJS + `)(sw);
-  var chief = false;
+  (` + sendKeepsFocusJS + `)(cb);
   var agentAction = form.getAttribute('action');
   var chiefAction = chiefSend.getAttribute('formaction');
   var agentSend = document.getElementById('mv-send');
-  var off = input.disabled;
+  var off = input.hasAttribute('data-agent-off');
   var agentPlaceholder = input.getAttribute('placeholder') || '';
   var agentAria = input.getAttribute('aria-label') || '';
-  var key = sw.getAttribute('data-mode-key');
-  form.setAttribute('data-chief-path', ` + strconv.Quote(MirrorChiefPath) + `);
+  var key = cb.getAttribute('data-mode-key');
   function load() {
     try { return key && localStorage.getItem(key) === ` + strconv.Quote(ViewToChief) + `; } catch (e) { return false; }
   }
@@ -266,7 +258,7 @@ func viewChiefScript() g.Node {
   }
   var version = '', es = null, timer = null;
   function refresh() {
-    if (!chief || typeof fetch !== 'function') return;
+    if (!cb.checked || typeof fetch !== 'function') return;
     var h = { 'X-Requested-With': 'XMLHttpRequest' };
     if (version) h[` + strconv.Quote(ChatLogVersionHeader) + `] = version;
     fetch(log.getAttribute('data-src'), { credentials: 'same-origin', headers: h }).then(function (r) {
@@ -293,16 +285,15 @@ func viewChiefScript() g.Node {
     if (!on && timer) { clearInterval(timer); timer = null; }
   }
   function apply() {
-    var label = sw.getAttribute(chief ? 'data-label-chief' : 'data-label-agent') || '';
-    sw.setAttribute('aria-pressed', chief ? 'true' : 'false');
-    sw.setAttribute('aria-label', label);
-    sw.setAttribute('title', label);
-    compose.setAttribute('data-to', chief ? ` + strconv.Quote(ViewToChief) + ` : ` + strconv.Quote(ViewToAgent) + `);
+    var chief = cb.checked;
+    sw.setAttribute('title', sw.getAttribute(chief ? 'data-label-chief' : 'data-label-agent') || '');
     form.setAttribute('action', chief ? chiefAction : agentAction);
     input.setAttribute('placeholder', chief ? ` + strconv.Quote(ViewChiefPlaceholder) + ` : agentPlaceholder);
     input.setAttribute('aria-label', chief ? ` + strconv.Quote(ViewChiefAria) + ` : agentAria);
-    // 🔴 A DISABLED AGENT COMPOSER STAYS DISABLED FOR THE AGENT: only the
-    // chief's mode enables the box (the server refuses a pane send anyway).
+    // 🔴 A DISABLED AGENT COMPOSER STAYS DISABLED FOR THE AGENT: its box is
+    // drawn enabled for the chief mode's sake (see the file's header), and
+    // only the chief's mode leaves it enabled (the server refuses a pane send
+    // anyway).
     if (off) {
       input.disabled = !chief;
       if (agentSend) agentSend.disabled = true;
@@ -311,12 +302,12 @@ func viewChiefScript() g.Node {
     if (chief) refresh();
     if (window.musterPinMeasure) window.musterPinMeasure();
   }
-  sw.addEventListener('click', function () { chief = !chief; save(chief); apply(); });
+  cb.addEventListener('change', function () { save(cb.checked); apply(); });
   // The composer says a line went to the chief (composer_pending.go): its
   // "working…" is drawn by the server as soon as the turn is counted.
   document.addEventListener('mv-chief-sent', refresh);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
-  chief = !!load();
+  cb.checked = !!load();
   apply();
 })();
 `))

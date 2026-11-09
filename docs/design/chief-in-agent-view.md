@@ -812,23 +812,28 @@ the operator's round 0 decisions on PR #537:
   - `TestOnlyTheViewDoorBindsASubject` is the new writer ledger for `about`.
     It sits beside `TestEveryChatWriterIsClassified`, whose `typed_by` set is
     unchanged.
-- **The composer toggle** (`internal/ui/view_chief.go`): one button
-  (`#mv-to`, `aria-pressed` = chief mode), the input row's first control, left
-  of the paperclip; it shows the current target's glyph (a bot for the agent, a
-  crown for the chief). (It replaced a two-radio "`<runtime>` | Chief" switch
-  above the row.)
+- **The composer switch** (`internal/ui/view_chief.go`): ONE always-present
+  control, the input row's first, left of the paperclip — a checkbox
+  (`#mv-to-chief`, `role="switch"`, checked = chief mode) inside a label
+  (`#mv-to`) drawn as a 44px icon button showing the current target's glyph (a
+  bot for the agent, a crown for the chief). Its accessible name is hidden text
+  for the current mode, picked by the stylesheet. (It replaced a two-radio
+  "`<runtime>` | Chief" switch above the row.)
   - Chief mode is drawn in the review status pair (`st-review-fg` /
     `st-review-bg`): the composer's top edge, the box's ring and fill, the
-    toggle, and the chief's Send. Agent mode is the composer as it was.
-  - A stylesheet rule (`#mv-compose[data-to=chief]`, set by the script, or
-    `:has(#mv-to-chief:checked)`, a `<noscript>` checkbox drawn in the hidden
-    toggle's place) decides which Send shows. The chief's Send carries the
-    chief route as its `formaction`, so a submit without script still reaches
-    the door.
-  - The script adds the toggle, the form's action for Enter, the placeholder, the box
-    enabled on a disabled agent composer, the mode remembered per window
-    (`localStorage`, `MirrorDraftKey(…, "chief", …)`), and the strip's live
-    refresh.
+    switch, and the chief's Send. Agent mode is the composer as it was.
+  - ONE stylesheet rule (`#mv-compose:has(#mv-to-chief:checked)`) decides
+    which Send shows. The chief's Send carries the chief route as its
+    `formaction`, and the composer's Enter submits through the Send shown, so
+    the mode works with script, without script, and when the chief script
+    throws.
+  - A disabled agent composer's box is drawn enabled (marked
+    `data-agent-off`, its agent Send still disabled) when the chief mode is
+    offered, so the chief mode can send without the script.
+  - The script adds the mode remembered per window (`localStorage`,
+    `MirrorDraftKey(…, "chief", …)`), the form's action, the placeholder, the
+    box disabled again in agent mode on a disabled agent composer, and the
+    strip's live refresh.
 - **The chief strip.**
   - `GET /mirror/view/chief/log` serves the chief chat's own renderer
     (`ui.ChatLogBody`, surface `view-strip`), narrowed to this session's
