@@ -346,12 +346,18 @@ export const notifyTmuxPort = port + 340;
 // kind over the noop driver) and one fake host, for the session it is compared
 // with. (+345: it was +340 until notify-tmux took that on main.)
 export const chiefFoldInPort = port + 345;
+// tests/chief-in-view.spec.ts: asking the chief from a session's view — its own
+// mirror rig (the e2eterm binary, mirror plugin on, the agent gateway on with
+// every agent endpoint pointed at the spec's FAKE runtime) with one fake host
+// whose opencode server is a fake in its own process, and that fake runtime.
+export const chiefInViewPort = port + 350;
+export const chiefInViewFakePort = port + 351;
 // tests/agent-chat-markdown.spec.ts: the agent chat's messages drawn by the
 // server's one markdown renderer, live and stored — its own server (the
 // e2eterm build, every agent endpoint pointed at the spec's FAKE runtime) and
-// that runtime. (+350: clear of the blocks other branches took.)
-export const chatMarkdownPort = port + 350;
-export const chatMarkdownRuntimePort = port + 351;
+// that runtime. (+355: chief-in-view took +350/+351 on main.)
+export const chatMarkdownPort = port + 355;
+export const chatMarkdownRuntimePort = port + 356;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

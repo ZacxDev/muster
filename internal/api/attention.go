@@ -1990,7 +1990,9 @@ func nonNilItems(items []attentionItem) []attentionItem {
 // askerAddressed is the operator writing to an asker DIRECTLY — a message
 // pasted into a mirrored session's window (mirrorDeliver), queued for it
 // (sendQueueAdd), or sent to a dispatched agent's chat (handleAgentSend,
-// handleAgentWS): every ask that asker raised before the message that is still
+// handleAgentWS) — never a line typed to the chief from a session's view
+// (handleViewChief: the chief's asks are settled only from its own chat;
+// operator decision, PR #537 round 1): every ask that asker raised before the message that is still
 // open leaves the queue as
 // answered_in_session, the message (capped) its answer — its notification
 // cleared, its waiters woken (askSettled), so the asker's attention_wait

@@ -54,6 +54,8 @@ const (
 	noticeFailed     = "failed"
 	noticeNotRunning = "not-running"
 	noticeNoGateway  = "no-gateway"
+	// The view's chief mode (view_chief.go): no chief, or it is off.
+	noticeNoChief = "no-chief"
 	// The send queue's (send_queue.go).
 	noticeQueued       = "queued"
 	noticeQueueOff     = "queue-off"
@@ -163,6 +165,7 @@ var composerNotices = map[string]struct {
 	noticeBadText:           {"Not sent: a message is plain text (newlines and tabs only), up to 16 KiB.", false},
 	noticeFailed:            {"Not sent: the message could not be delivered.", false},
 	noticeNotRunning:        {AgentNotRunningNotice, false},
+	noticeNoChief:           {"Not sent: " + ViewChiefNoChief + ".", false},
 	noticeNoGateway:         {"Not sent: this server has no agent gateway to deliver a message through.", false},
 	noticeQueued:            {"Queued: it is sent when the session has been idle for a while, even if you close this page.", true},
 	noticeQueueOff:          {"Not queued: muster cannot tell when this Claude Code session is idle, so it cannot queue for it. Send it now, or upgrade muster-mirror.", false},

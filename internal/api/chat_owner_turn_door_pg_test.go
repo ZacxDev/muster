@@ -232,7 +232,7 @@ func TestNoMarkerOutlivesItsTurn(t *testing.T) {
 	for _, mode := range []string{runtimeCancels, runtimeTimesOut} {
 		gw.set(mode)
 		text := "an owner turn that " + mode
-		if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, text, 1, nil); err == nil {
+		if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, text, 1, nil, nil); err == nil {
 			t.Fatalf("%s: the turn reported success", mode)
 		}
 		if got := gw.seen(t, text); got.MessageID == 0 {
@@ -245,7 +245,7 @@ func TestNoMarkerOutlivesItsTurn(t *testing.T) {
 
 	gw.late = make(chan struct{})
 	gw.set(runtimeLate103)
-	if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, "a turn whose 103 comes late", 1, nil); err == nil {
+	if _, err := f.srv.runEnteredTurn(asUser(1), f.op, sess, "a turn whose 103 comes late", 1, nil, nil); err == nil {
 		t.Fatal("late: the turn reported success")
 	}
 	<-gw.late

@@ -1847,7 +1847,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
-		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit)
+		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
 		s.turns.leave(a.ID)
 		// The reply's last bubble is drawn rendered before the turn's end is said.
 		stream.end()
@@ -1914,16 +1914,31 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 	defer s.turns.leave(a.ID)
 	// 🔴 notTyped: this door's one caller is the route hand-back
 	// (startClaimedChiefTurn), muster's words, never a line the owner typed.
-	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit)
+	return s.runEnteredTurn(ctx, a, session, text, notTyped, emit, nil)
+}
+
+// ownerTurnTyper is who an entered turn may mark as the OWNER'S TURN IN FLIGHT
+// (markOwnerTurn): typedBy, except for a line with a subject — one typed from
+// a session's view (view_chief.go) — which marks nothing. 🔴 NO OWNER RELEASE
+// FROM A VIEW (operator decision, PR #537 round 1): owner_asked releases
+// (ownerTurnFor) refuse while such a turn runs; the line is still recorded as
+// typed (typed_by).
+func ownerTurnTyper(typedBy int64, about *chatSubject) int64 {
+	if about != nil {
+		return notTyped
+	}
+	return typedBy
 }
 
 // runEnteredTurn is runUserTurn for a caller that has ALREADY entered a's turn
 // gate (s.turns.enter) and leaves it afterwards: the operator's two doors, which
 // must know the turn is admitted before they answer the agent's asks.
 //
-// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's two chat doors
-// (handleAgentWS, handleAgentSend) and notTyped from every other caller. When it
-// is a's owner, the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
+// typedBy is who TYPED text: ownerTypedBy(ctx) from the owner's three chat
+// doors (handleAgentWS, handleAgentSend, and the view's chief door
+// handleViewChief) and notTyped from every other caller. When it
+// is a's owner AND the line has no subject (ownerTurnTyper: the view's door
+// never marks), the turn is marked as the OWNER'S TURN IN FLIGHT from the moment
 // the runtime accepts the text until chatTurn returns (markOwnerTurn) — the one
 // thing agent_dispatch's owner_asked releases a gate on (chief_owner_release.go).
 // TestOnlyTheOwnersChatDoorsMarkAnOwnerTurn pins who passes what.
@@ -1933,13 +1948,23 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 // Chief-chat turn be quoted as the owner's covering words (step 3b-1,
 // chief_chat_quotes.go). Every other writer of a chat row leaves it unset
 // (TestEveryChatWriterIsClassified).
-func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+//
+// about is the session the owner was viewing when they typed text (the view's
+// chief door, view_chief.go: resolved by the server, never by the page), nil
+// from every other caller. Its session KEY only is stored on the user row
+// (chat_messages.about, migration 0098) beside text, and the runtime is handed
+// text behind a muster header rendered from the whole subject, in memory
+// (viewChiefTurnText). 🔴 THE ROW'S CONTENT IS ONLY
+// WHAT WAS TYPED: the header is muster's, so the owner's covering words
+// (chief_chat_quotes.go) never include it. TestOnlyTheViewDoorBindsASubject
+// pins who passes what.
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit, about *chatSubject) ([]agents.TurnPart, error) {
 	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text,
-		TypedBy: typedBy})
+		TypedBy: typedBy, AboutKey: about.key()})
 	if err != nil {
 		msg = agents.ChatMessage{} // no row to point at: nothing is marked
 	}
-	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, typedBy)
+	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, ownerTurnTyper(typedBy, about))
 	defer clearOwnerTurn()
 
 	// Mark active immediately (a turn always starts thinking) so the agent
@@ -1955,7 +1980,7 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	}
 	// A typed `busy` (another turn holds the session — a chief's kickoff, say)
 	// waits for that turn and sends again, rather than failing (chat_busy.go).
-	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, text, collect)
+	reply, err := s.chatTurnWhenFree(ctx, a, session.SessionKey, viewChiefTurnText(about, text), collect)
 	// The turn ended (reply or error): drop the live phase. The entry lingers
 	// as "recently active" until activeAgentWindow lapses.
 	s.markAgentIdle(a.Name)

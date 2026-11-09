@@ -136,6 +136,10 @@ type MirrorViewView struct {
 	// drawn under the header (mirrorHostBanner).
 	Offline bool
 	Note    string
+	// Chief draws the composer's chief mode (view_chief.go): the owner has a
+	// chief that is on, and the window names a conversation the chief can be
+	// asked about. False draws the composer as it was.
+	Chief bool
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -191,6 +195,16 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		composer.Suggest, composer.SuggestPaused = "", false
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
+	}
+	if v.Chief {
+		agent := "Claude"
+		if v.ViewOnly != "" {
+			agent = v.ViewOnly
+		} else if v.Agent != "" {
+			agent = v.Agent
+		}
+		composer.Chief = &ComposerChief{Agent: agent, LogSrc: ref.ChiefLogPath(),
+			ModeKey: MirrorDraftKey(v.DraftUser, ViewToChief, v.Host, v.Session, v.Window)}
 	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),

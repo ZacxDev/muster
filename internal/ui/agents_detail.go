@@ -98,6 +98,10 @@ const (
 	ChatSurfacePage ChatSurface = ""
 	// ChatSurfaceChiefPanel is the chief slide-out inside the home shell.
 	ChatSurfaceChiefPanel ChatSurface = "chief-panel"
+	// ChatSurfaceViewStrip is the chief strip on a mirrored session's Rendered
+	// view (view_chief.go): the chief's chat about that session, log only — no
+	// form, no drawer — served by internal/api handleViewChiefLog.
+	ChatSurfaceViewStrip ChatSurface = "view-strip"
 )
 
 // AgentDetailView is the data the agent detail page renders.
@@ -1484,8 +1488,12 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// The chief panel keeps chiefIntro() (its own, richer copy) and the
 		// provisioning row below owns the still-coming-up case, so neither is
 		// doubled up.
-		g.If(v.Surface != ChatSurfaceChiefPanel && len(msgs) == 0 && !chatIsProvisioning(v.Status),
+		g.If(v.Surface != ChatSurfaceChiefPanel && v.Surface != ChatSurfaceViewStrip && len(msgs) == 0 && !chatIsProvisioning(v.Status),
 			chatEmptyState()),
+		// The view's chief strip with nothing in it yet: one line, not the
+		// page's tall empty state.
+		g.If(v.Surface == ChatSurfaceViewStrip && len(msgs) == 0,
+			P(g.Attr("data-chief-strip-empty", ""), Class("text-xs text-muted"), g.Text(ViewChiefStripEmpty))),
 		g.Group(msgs),
 		// Completion banner (Task 6): rendered inside #chat-log so the existing
 		// sse:chat.reply / task:changed re-fetch of this partial re-evaluates the

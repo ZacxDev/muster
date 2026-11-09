@@ -349,6 +349,9 @@ func composerMenuScript(src string) g.Node {
 
   function refresh() {
     if (inserting) return;
+    // No slash menu in the chief mode (view_chief.go): the text goes to the
+    // chief, not to the session's commands.
+    if (compose && compose.getAttribute('data-to') === 'chief') { close(); return; }
     var t = tokenAt();
     if (!t) { dismissed = -1; close(); return; }
     if (t.start === dismissed) { close(); return; }

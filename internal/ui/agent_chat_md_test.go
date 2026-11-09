@@ -246,6 +246,58 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	}
 }
 
+// TestTheViewChiefStripDrawsOnlyServerRenderedMessages is the same seam for
+// the second surface that shows chat messages: the chief strip on a mirrored
+// session's view (view_chief.go, #537). It has no chat script of its own: it
+// fetches ui.ChatLogBody — the chief's #chat-log, rendered by chatBubble — and
+// assigns it. So:
+//
+//  1. ChatLogBody's bubbles are server-rendered markdown (no data-md for a
+//     client to convert — the mirrored view carries no converter, so on main
+//     before this change the strip showed raw markdown);
+//  2. viewChiefScript's HTML sinks are exactly that one assignment, of the
+//     fetched body (a two-way ledger, like agentChatScript's).
+func TestTheViewChiefStripDrawsOnlyServerRenderedMessages(t *testing.T) {
+	v := AgentDetailView{Name: "chief-md", Status: "running", Messages: []ChatLine{
+		{Role: "user", Content: "is **this** route_id rt_ab_cd ok?", ID: 1},
+		{Role: "assistant", Content: "yes: https://example.com/foo_ then x_", ID: 2},
+	}}
+	body, _, err := ChatLogBody(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-msg-id="1" data-md-rendered=""><p class="my-1">is <strong>this</strong> route_id rt_ab_cd ok?</p></div>`,
+		`data-msg-id="2" data-md-rendered=""><p class="my-1">yes: <a href="https://example.com/foo_` + chatAnchor + `https://example.com/foo_</a> then x_</p></div>`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("the strip's body does not draw the bubble rendered:\nwant %s", want)
+		}
+	}
+	if strings.Contains(string(body), `data-md=""`) {
+		t.Errorf("a strip bubble is marked data-md for a client renderer the mirrored view does not have")
+	}
+
+	js, err := stripJSComments(jsSource(t, viewChiefScript()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(htmlSinks(js), "\n"); got != ".innerHTML = html" {
+		t.Errorf("viewChiefScript's HTML sinks = %q; want only the fetched ChatLogBody's `.innerHTML = html`", got)
+	}
+	if n := strings.Count(js, "innerHTML"); n != 1 {
+		t.Errorf("viewChiefScript touches innerHTML %d times; the ledger lists 1", n)
+	}
+	if !strings.Contains(js, "fetch(log.getAttribute('data-src')") {
+		t.Errorf("viewChiefScript no longer fills the strip from its data-src (the server's ChatLogBody)")
+	}
+	for _, m := range regexp.MustCompile(`function\s+([A-Za-z_$][\w$]*)\s*\(`).FindAllStringSubmatch(js, -1) {
+		if strings.HasPrefix(m[1], "md") {
+			t.Errorf("viewChiefScript declares %s: a client-side markdown renderer", m[1])
+		}
+	}
+}
+
 // goCallers is `<callee> <- <pkg>.<enclosing func>` for every call to one of
 // names in the non-test Go files of dirs, sorted.
 func goCallers(t *testing.T, dirs []string, names ...string) []string {
