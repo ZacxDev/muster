@@ -946,6 +946,13 @@ this kickoff" step).
     holds the kickoff whole when it fits, its options are "Start it" / "Not
     now", or "Replace this session" / "Spin off a new one" / "Not now" when
     `succession` was `?` (D2). It ends the chief's turn and starts nothing.
+  - **A kickoff that does not fit the card's question whole** (operator
+    decision, #546 round 0 Q1) is startable only from the session's view,
+    where it is shown whole. On the Attention view and the phone its card
+    offers only "Review on the session's view". A start from there, whether
+    that button or Start sent anyway, is refused server-side
+    (`proposalSurfaceRefusal`) and the card stays open. A kickoff that fits
+    whole still starts from anywhere.
 - **The tap** is `answerAskFrom`'s proposal hook (`proposalForAnswer`),
   before the answer is recorded — the same path as the Attention view, the
   phone, and the view's own card (`POST /mirror/view/proposal`, which accepts

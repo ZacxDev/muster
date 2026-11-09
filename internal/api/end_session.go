@@ -163,7 +163,7 @@ func (s *Server) proposeEnd(ctx context.Context, a agents.Agent, ownerMsg int64,
 	title := firstNonBlank(oneLine(about.Title), key)
 	q := "End “" + title + "”?\n" + endSessionHow(about.Runtime) + "."
 	x, why := s.fileProposal(ctx, a, ownerMsg, key, about, plugins.ProposalNew{Kind: plugins.ProposalEndSession, SubjectAgent: agentID},
-		q, []string{endSessionLabel})
+		q, []string{endSessionLabel, proposalDeclineLabel})
 	if why != "" {
 		return toolErr("%s", why)
 	}

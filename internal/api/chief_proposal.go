@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -153,16 +154,17 @@ func (s *Server) bindViewSubject(ctx context.Context, chief agents.Agent, claime
 
 // fileProposal records proposal n (its kind's fields set by the caller) about
 // the session keyed key (subject about), answering the owner's message
-// ownerMsg, and raises its card with question and the kind's options followed
-// by Not now: the ONE way a proposal is made. The caller has bound key
-// (bindViewSubject, or the owner's own typed turn).
+// ownerMsg, and raises its card with question and askOptions (the buttons the
+// Attention view and the phone offer, Not now included when offered): the ONE
+// way a proposal is made. The caller has bound key (bindViewSubject, or the
+// owner's own typed turn).
 func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg int64, key string, about chatSubject, n plugins.ProposalNew,
-	question string, options []string) (plugins.Proposal, string) {
+	question string, askOptions []string) (plugins.Proposal, string) {
 	st := s.proposals()
 	if st == nil || s.ext.Attention == nil {
 		return plugins.Proposal{}, "proposals are not available on this muster"
 	}
-	ask, err := s.raiseOwnerCard(ctx, chief, question, append(append([]string(nil), options...), proposalDeclineLabel))
+	ask, err := s.raiseOwnerCard(ctx, chief, question, askOptions)
 	if err != nil {
 		return plugins.Proposal{}, fmt.Sprintf(proposalNoCard, ownerCardRefusal(err))
 	}
@@ -208,7 +210,14 @@ func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string,
 	if x.Decided != plugins.ProposalOpen {
 		return errReleaseRefused(proposalDecidedAlready)
 	}
-	if !proposalOptionOf(a, answer) {
+	// What the surface the answer came from may do: a card whose content it
+	// could not show whole is not accepted there (successionKickoffFitsCard).
+	if why := proposalSurfaceRefusal(ctx, x, answer); why != "" {
+		return errReleaseRefused(why)
+	}
+	// One of the card's buttons: the ask's own, or — tapped on the session's
+	// view (handleProposalTap) — one of the view card's.
+	if !proposalOptionOf(a, answer) && !(fromProposalView(ctx) && slices.Contains(proposalViewOptions(x), sameWords(answer))) {
 		return errReleaseRefused(proposalNotATap)
 	}
 	if sameWords(answer) == proposalDeclineLabel {
@@ -223,6 +232,50 @@ func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string,
 		return errReleaseRefused(fmt.Sprintf(proposalAcceptFailed, why))
 	}
 	return nil
+}
+
+// proposalViewKey marks an answer given by a tap on the proposal card of the
+// session's own view (handleProposalTap: the owner's signed-in session, the
+// card of the session that view shows).
+type proposalViewKey struct{}
+
+func withProposalView(ctx context.Context) context.Context {
+	return context.WithValue(ctx, proposalViewKey{}, true)
+}
+
+func fromProposalView(ctx context.Context) bool {
+	v, _ := ctx.Value(proposalViewKey{}).(bool)
+	return v
+}
+
+// proposalViewOptions is the buttons proposal x's card has on the session's
+// view (which shows it whole), Not now included.
+func proposalViewOptions(x plugins.Proposal) []string {
+	switch x.Kind {
+	case plugins.ProposalSuccession:
+		return append(successionCardOptions(x.Mode), proposalDeclineLabel)
+	}
+	return nil
+}
+
+// proposalSurfaceRefusal is why answer cannot be taken from the surface it
+// came from, "" when it can. 🔴 A SUCCESSION WHOSE KICKOFF DOES NOT FIT ITS
+// CARD WHOLE starts only from the session's view (operator decision, #546
+// round 0 Q1): off the view, a start — and the review button itself — is
+// refused, and the card stays open.
+func proposalSurfaceRefusal(ctx context.Context, x plugins.Proposal, answer string) string {
+	if x.Kind != plugins.ProposalSuccession || fromProposalView(ctx) {
+		return ""
+	}
+	switch sameWords(answer) {
+	case successionReviewLabel:
+		return successionReviewOnView
+	case successionStartLabel, successionReplaceLabel, successionSpinoffLabel:
+		if !successionKickoffFitsCard(x) {
+			return successionReviewOnView
+		}
+	}
+	return ""
 }
 
 // acceptProposal is the kind's accept on the owner's tap of button choice
@@ -274,7 +327,7 @@ func (s *Server) handleProposalTap(w http.ResponseWriter, r *http.Request) {
 	}
 	nav := isDocumentNavigation(r)
 	back := mirrorRef(e).ViewPath()
-	a, err := s.answerAskFrom(ctx, x.AskID, r.PostFormValue("choice"), attention.AnswerSource{})
+	a, err := s.answerAskFrom(withProposalView(ctx), x.AskID, r.PostFormValue("choice"), attention.AnswerSource{})
 	if err != nil {
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("proposal %d: the tap: %v", x.ID, err)
