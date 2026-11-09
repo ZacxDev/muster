@@ -51,7 +51,7 @@ A plugin token opens only the routes its **capabilities** allow:
 | capability | opens |
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self`: messages, drafts, tasks and task writes |
-| `viewer` | reserved for the session-view seams of previews (a plugin's chip on a session view, and hand-off codes); no route takes it yet |
+| `viewer` | reserved for the session-view seams of [previews](design/previews.md#capabilities-on-a-plugin-token) (a plugin's chip on a session view, and hand-off codes); no route takes it yet |
 
 Every token has `messages`, including every token minted before capabilities
 existed (migration `0102`). `GET /plugin/v1/self` takes any live token. The
