@@ -726,7 +726,12 @@ kept — the job keeps its status and `error` says
 
 ## How a job runs
 
-1. The job waits for its agent: jobs on one agent run one at a time.
+1. The job waits for its agent: jobs on one agent run one at a time, oldest
+   first. The queue is the `jobs` table, not the server's memory: each
+   server takes an agent's next job from it when the agent is free (no job of
+   the agent `running`, on any server) — after a submission, and in the
+   reaper's pass at boot and every minute — so a job a crashed server left
+   queued is run by the next server to look, before the agent's newer jobs.
 2. A new chat session is opened on the agent, on the `claude-code` runtime
    and with the job's `model` if it has one, so ccd runs the job in a Claude
    Code CLI of its own (a fresh conversation, started with `--model` when there
@@ -780,22 +785,41 @@ step 6 has its own bound.
 
 - **No isolation from the commit's code, and so no third-party commits.** See
   the note at the top.
-- **One job at a time per worker.** Each job has its own worktree and its own
+- **One job at a time per worker.** A server runs a worker's jobs one after
+  another, and takes none while one of its jobs reads `running`; two servers
+  of a rolling update can still both reach for the same next job in the same
+  instant, and the store's conditional start lets exactly one run it (the
+  other leaves an empty chat session on the agent). Each job has its own worktree and its own
   CLI, but one worker's turns share its Claude account and its pod's memory,
   and running several at once on one worker has not been exercised.
-- **No survival across a restart.** The turn runs inside the server process,
-  and nothing waits for it on shutdown. On a graceful shutdown the server
-  fails the jobs it holds itself — queued ones ("nothing was sent to the
+- **No survival of a running turn across a restart.** A **queued** job does
+  survive one: the queue is the table (step 1 of [How a job
+  runs](#how-a-job-runs)), so the next server's boot pass runs it, in its
+  place in line. A **running** one does not. The turn runs inside the server
+  process, and nothing waits for it on shutdown. On a graceful shutdown the
+  server first stops taking jobs from the table (a job it took but had not
+  started stays queued for another server), then fails the jobs it holds itself — queued ones ("nothing was sent to the
   agent") and running ones ("the agent may have done some of the work") —
   with `interrupted`, within 5 seconds; it never touches another server's
-  jobs. A job a crashed server leaves unfinished is
+  jobs, nor a job it accepted that another server has since started. A job a crashed server leaves unfinished is
   failed `interrupted` by the reaper, which runs at boot and every minute and
   fails a job only once it is past its own deadline: a `running` job at
   `started_at` + `timeout_s` + 5 minutes, a `queued` one at `created_at` + 2h40m
   (the longest a queued job can wait: 4 jobs × (2100 s + 5 minutes)). So a job
   can read `running` for up to that long after its server died, and a job the
   other server of a rolling update is still running is never failed by the new
-  one. The same pass ends a job orphaned by a crash in muster or by an outcome
+  one. ⚠ **A crashed server's running job holds its agent until then**: nothing
+  tells it from a job another server is still running, and the agent's runtime
+  may still be in its turn (a dropped request does not stop one), so the
+  agent's next job waits for the reaper's deadline rather than run beside it.
+  The pass that fails it starts the next one. For example, a job submitted with
+  `timeout_s` 1200 that was running when its server crashed holds its worker
+  for about 25 minutes (`started_at` + 1200 s + 5 minutes); every job queued
+  on that worker, older or newer, waits that long, and then runs in order.
+  This is deliberate: muster keeps no per-server lease that could tell a dead
+  server's job from a live one. A job re-queued by an [account
+  failover](#account-failover) is held the same way, for its own server, until
+  its start's deadline. The same pass ends a job orphaned by a crash in muster or by an outcome
   it could not record (the write is retried 3 times first). The agent may have
   done some of the work, so re-submitting is the caller's call. A server that
   stops or crashes mid-job also leaves that job's worktree on the agent's

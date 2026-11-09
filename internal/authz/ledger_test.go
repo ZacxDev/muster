@@ -203,6 +203,11 @@ var (
 		// whoever submitted the jobs (under the caller's RLS another user's
 		// job would read as absent, and the worker as idle). Counts only, no row.
 		"internal/jobs.(*PGStore).ActiveCounts",
+		// The job queue's dispatch read: each free agent's oldest queued job
+		// (ids, agents and owners only), across every owner, since another
+		// owner's running job holds the agent too; each job is then read and run
+		// as its owner (withPrincipalLedger's jobPrincipal).
+		"internal/jobs.(*PGStore).Heads",
 		// The ask log (migration 0089): the retention sweep's one helper. It
 		// clears question and answer text past the TTL and deletes rows past
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and
@@ -284,6 +289,10 @@ var (
 		// a spawn reply, a listing or the not-seen sweep, through
 		// authz.ViaHostDispatch.
 		"internal/api.(*Server).hostDispatchPrincipal",
+		// The job queue's runner: a job no request of this process holds (one a
+		// restart left queued) is read and run as its owner, through
+		// authz.ViaJobQueue, after jobs.PGStore.Heads read the head under System.
+		"internal/api.(*Server).jobPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -307,7 +316,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )
