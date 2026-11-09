@@ -85,15 +85,24 @@ func TestCancellingAnEditLeavesTheTextAndReleasesTheHold(t *testing.T) {
 // claim it again, and the claim clears the lapsed hold.
 func TestAnAbandonedEditRunsOutAndTheRowRevertsWithItsOriginalText(t *testing.T) {
 	s, _ := pgStore(t)
-	shortHold(s, 50*time.Millisecond)
 	a := mustEnqueue(t, s, 2, mirrorItem("original"))
+	// CONTROL: held, the claim is refused. The control runs under the full
+	// EditHold, not the short one below: the hold is judged on Postgres's
+	// clock, so under a 50 ms hold a loaded runner's scheduling delay between
+	// Hold and Claim could let it lapse first and the control would flake.
+	if _, err := s.Hold(as(2), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Claim(context.Background(), a.ID, time.Now(), claimFor("pod-a", time.Now())); err != nil || ok {
+		t.Fatalf("CONTROL: a claim while held: %v, %v; want refused", ok, err)
+	}
+	// The edit that is abandoned: a short hold taking the row over (a new
+	// token), left to run out. Everything after the sleep holds however late
+	// it runs, so nothing below depends on the runner's speed.
+	shortHold(s, 50*time.Millisecond)
 	h, err := s.Hold(as(2), a.ID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	// CONTROL: held, the claim is refused.
-	if _, ok, err := s.Claim(context.Background(), a.ID, time.Now(), claimFor("pod-a", time.Now())); err != nil || ok {
-		t.Fatalf("CONTROL: a claim while held: %v, %v; want refused", ok, err)
 	}
 	time.Sleep(150 * time.Millisecond)
 	got, err := s.Get(as(2), a.ID)
