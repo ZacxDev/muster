@@ -114,10 +114,11 @@ func main() {
 		ping := fs.Duration("ping", 30*time.Second, "ping interval")
 		noPings := fs.Bool("no-pings", false, "negative control: no pings on tunnel or client legs")
 		gz := fs.Bool("gzip", false, "C5: request compression like a browser")
+		hostDelay := fs.Duration("host-write-delay", 0, "C1 negative control: host sleeps before each tunnel write")
 		noFlush := fs.Bool("host-no-flush", false, "C5 negative control: host flushes only the response head")
 		_ = fs.Parse(os.Args[2:])
 		e, err := pt.NewRemoteEnv(pt.RemoteOpts{Base: *base, HostBase: *hostBase, Secret: secret(), Transport: pt.Transport(*tr),
-			Ping: *ping, HostNoPings: *noPings, ClientNoPings: *noPings, Gzip: *gz, HostNoFlush: *noFlush})
+			Ping: *ping, HostNoPings: *noPings, ClientNoPings: *noPings, Gzip: *gz, HostNoFlush: *noFlush, HostDelay: *hostDelay})
 		if err != nil {
 			log.Fatalf("env: %v", err)
 		}
