@@ -21,11 +21,9 @@ import (
 // Authenticate, which the caller runs under authz.System because it is how the
 // owner is LEARNED.
 type Store interface {
-	// Create mints a plugin for ctx's principal and returns the token ONCE.
-	// Its token has CapMessages and nothing else.
-	Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error)
-	// CreatePlugin is Create with the capabilities (and, for CapViewer, the
-	// origin and entry URL) chosen. The caller validates the origin and entry
+	// CreatePlugin mints a plugin for ctx's principal and returns the token
+	// ONCE, with the capabilities (and, for CapViewer, the origin and entry
+	// URL) chosen. The caller validates the origin and entry
 	// URL against the deployment's MUSTER_PLUGIN_ORIGINS (ValidViewerLink).
 	CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error)
 	// MintHandoff mints a single-use hand-off code for one of the principal's
@@ -215,6 +213,9 @@ func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(ctx)
 }
 
+// Create is CreatePlugin for a messages-only token. Not on Store: no request
+// path mints that way any more (the /plugins form goes through CreatePlugin);
+// it stays on PGStore as the tests' shorthand.
 func (s *PGStore) Create(ctx context.Context, name, label, dataScope string) (string, Plugin, error) {
 	return s.CreatePlugin(ctx, NewPlugin{Name: name, Label: label, DataScope: dataScope, Capabilities: []Capability{CapMessages}})
 }

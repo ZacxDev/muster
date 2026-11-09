@@ -40,6 +40,9 @@ const (
 	// PluginHandoffNoPlugin and PluginHandoffNoWindow are the mint's 404s.
 	PluginHandoffNoPlugin = "no such viewer plugin"
 	PluginHandoffNoWindow = "no such window on your hosts"
+	// PluginHandoffOriginRetired is the mint's 403 for a token whose origin the
+	// admin has since removed from MUSTER_PLUGIN_ORIGINS.
+	PluginHandoffOriginRetired = "this plugin's origin is no longer in this server's MUSTER_PLUGIN_ORIGINS; revoke it and mint another"
 )
 
 func (s *Server) registerPluginHandoffRoutes(mux Mux) {
@@ -98,11 +101,16 @@ func (s *Server) handlePluginHandoffMint(w http.ResponseWriter, r *http.Request)
 		Purpose: plugins.PurposeView,
 		// 🔴 SERVER-DERIVED: the session's own sign-in time, never a field.
 		SteppedUp: stepup.Fresh(r.Context(), s.stepUpNow()),
+		// The plugin's link is re-checked against the CURRENT allowlist.
+		Origins: s.ext.PluginOrigins,
 	}, s.now())
 	switch {
 	case err == nil:
 	case errors.Is(err, plugins.ErrNotFound):
 		refused(http.StatusNotFound, PluginHandoffNoPlugin)
+		return
+	case errors.Is(err, plugins.ErrViewerOriginRetired):
+		refused(http.StatusForbidden, PluginHandoffOriginRetired)
 		return
 	case errors.Is(err, plugins.ErrHandoffRateLimited):
 		metrics.PluginHandoffs.WithLabelValues(plugins.PurposeView, "rate_limited").Inc()

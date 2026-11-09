@@ -345,3 +345,38 @@ func TestPluginCreateRefusesEntryURLTricksAndViewerWhenUnset(t *testing.T) {
 		}
 	}
 }
+
+// TestAHandoffIsRefusedOnceTheTokensOriginIsNoLongerAllowed: a viewer token
+// minted under a MUSTER_PLUGIN_ORIGINS pattern cannot mint a code after the
+// admin removes that pattern — the code would send the owner's browser to a
+// host the server no longer trusts (and no longer refuses with 421). Refused
+// 403 naming why, and nothing is minted. The control: the same token mints
+// while its pattern is still listed, beside another one.
+func TestAHandoffIsRefusedOnceTheTokensOriginIsNoLongerAllowed(t *testing.T) {
+	f := newHandoffSeam(t, hoZone)
+	_, id, rec := f.create(f.a, viewerForm("viewer-a", hoEntry))
+	if id == 0 {
+		t.Fatalf("creating a viewer plugin: %d", rec.Code)
+	}
+	minted := testutil.ToFloat64(metrics.PluginHandoffs.WithLabelValues("view", "minted"))
+	still, err := plugins.ParseOrigins("https://*.other.example.net," + hoZone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.ext.PluginOrigins = still
+	if rec, _ := f.mint(f.a, false, mintBody(id, "ws-a", "@3")); rec.Code != http.StatusOK {
+		t.Fatalf("CONTROL: its pattern still listed (beside another): %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	removed, err := plugins.ParseOrigins("https://*.other.example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.ext.PluginOrigins = removed
+	if rec, link := f.mint(f.a, false, mintBody(id, "ws-a", "@3")); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), PluginHandoffOriginRetired) || link != "" {
+		t.Fatalf("its pattern removed: %d %s; want 403 saying the origin is no longer allowed, and no URL", rec.Code, rec.Body.String())
+	}
+	if got := testutil.ToFloat64(metrics.PluginHandoffs.WithLabelValues("view", "minted")) - minted; got != 1 {
+		t.Fatalf("minted moved by %v; want 1 (the control's only)", got)
+	}
+}

@@ -28,14 +28,21 @@ const (
 	HandoffMintsPerMinute = 60
 	// PurposeView is the purpose of a code minted from a session view's chip.
 	PurposeView = "view"
-	// handoffKeep is how long a spent or expired code's row is kept; a mint
-	// deletes its owner's older ones.
+	// handoffKeep is the age past which a mint deletes its owner's rows. It is
+	// not a retention period: there is no background reaper, so an owner's
+	// older rows stay until that owner's NEXT mint.
 	handoffKeep = 24 * time.Hour
 )
 
 // ErrHandoffRateLimited: the owner minted HandoffMintsPerMinute codes in the
 // last minute.
 var ErrHandoffRateLimited = errors.New("plugins: too many hand-offs this minute")
+
+// ErrViewerOriginRetired: the plugin's stored origin and entry URL no longer
+// pass ValidViewerLink against the deployment's current MUSTER_PLUGIN_ORIGINS
+// (the admin removed its pattern), so a code would send the owner's browser to
+// a host the server no longer trusts.
+var ErrViewerOriginRetired = errors.New("plugins: the plugin's origin is no longer allowed")
 
 var purposeRE = regexp.MustCompile(`^[a-z_]{1,32}$`)
 
@@ -60,6 +67,10 @@ type HandoffIn struct {
 	Target    HandoffTarget
 	Purpose   string
 	SteppedUp bool
+	// Origins is the deployment's CURRENT MUSTER_PLUGIN_ORIGINS. The plugin's
+	// stored origin and entry URL must still pass ValidViewerLink against it,
+	// or the mint is ErrViewerOriginRetired.
+	Origins []OriginPattern
 }
 
 // Handoff is a redeemed code.
@@ -118,6 +129,12 @@ func (s *PGStore) MintHandoff(ctx context.Context, pluginID int64, in HandoffIn,
 		}
 		if err != nil {
 			return err
+		}
+		if p.Origin == nil || p.EntryURL == nil {
+			return ErrNotFound
+		}
+		if _, err := ValidViewerLink(in.Origins, *p.Origin, *p.EntryURL); err != nil {
+			return ErrViewerOriginRetired
 		}
 		// The per-owner cap, counted from the owner's own rows. Serialised per
 		// plugin by the lock above; mints racing on two of one owner's plugins

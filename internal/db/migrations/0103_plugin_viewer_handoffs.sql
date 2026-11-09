@@ -21,7 +21,9 @@
 -- minted by its owner's browser session and redeemed by its plugin's token,
 -- which acts as the same owner (authz.ViaPlugin), so owner_isolation is what
 -- makes another owner's code not exist. Re-applied by db.RLSOn. DELETE is
--- granted for the mint's own cleanup of its owner's day-old rows.
+-- granted for the mint's own cleanup: each mint deletes its owner's rows
+-- minted more than a day earlier. Nothing else prunes them, so an owner who
+-- stops minting keeps their last rows (at most a day's worth) until the next.
 --
 -- Idempotent.
 --

@@ -64,7 +64,8 @@ it every new token gets `messages`. A `viewer` token also carries:
 - an **origin**, one of the server's `MUSTER_PLUGIN_ORIGINS` patterns, chosen
   from a list;
 - an **entry URL** under that origin: `https://<host>/<path>` with no user,
-  port, query or fragment, whose host is under the origin. So
+  port (not even an empty one), query or fragment, whose host is lower-case
+  DNS labels (none empty) under the origin. So
   `https://evil.example.net/x?.<zone>` and `https://w.<zone>@evil.example.net/`
   are refused.
 
@@ -88,7 +89,10 @@ on and `MUSTER_PLUGIN_ORIGINS` is set.
 
    The plugin must be one of the owner's own live `viewer` plugins, and the
    window one the owner's host lists now (by its tmux window id); either
-   refused is a `404`. muster mints a **code**: 32 random bytes, stored only as
+   refused is a `404`. The plugin's origin and entry URL are checked again
+   against the server's **current** `MUSTER_PLUGIN_ORIGINS`: once the admin
+   removes its pattern, the mint is refused `403` (revoke the plugin and mint
+   another). muster mints a **code**: 32 random bytes, stored only as
    its sha256, valid **60 s**, single use. It records the owner, the plugin,
    the window (with its session as the host lists it), the purpose `view`, and
    whether the browser session's [step-up](sending-and-step-up.md#step-up-confirm-its-you)

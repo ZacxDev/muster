@@ -24,7 +24,7 @@ func mustViewer(t *testing.T, s *PGStore, uid int64, name string, caps ...Capabi
 
 func hoIn() HandoffIn {
 	return HandoffIn{Target: HandoffTarget{Mirror: &MirrorTarget{Host: "ws", Session: "main", Window: "@3"}},
-		Purpose: PurposeView, SteppedUp: true}
+		Purpose: PurposeView, SteppedUp: true, Origins: []OriginPattern{{Wildcard: true, Host: "viewer.example.net"}}}
 }
 
 // TestCreatePluginStoresTheViewerLinkAndNoneScope: a viewer-only token stores
@@ -107,6 +107,11 @@ func TestAHandoffIsSingleUseExpiresAndIsItsPluginsAlone(t *testing.T) {
 	}
 	if _, _, err := s.MintHandoff(session(3), p.ID, hoIn(), t0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("minting for another owner's plugin: %v; want ErrNotFound", err)
+	}
+	retired := hoIn()
+	retired.Origins = []OriginPattern{{Wildcard: true, Host: "other.example.net"}}
+	if _, _, err := s.MintHandoff(session(2), p.ID, retired, t0); !errors.Is(err, ErrViewerOriginRetired) {
+		t.Fatalf("minting after the plugin's origin left MUSTER_PLUGIN_ORIGINS: %v; want ErrViewerOriginRetired", err)
 	}
 	if _, err := s.Revoke(session(2), other.ID); err != nil {
 		t.Fatal(err)

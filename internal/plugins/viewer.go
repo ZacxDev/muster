@@ -33,8 +33,9 @@ func validCapabilities(caps []Capability) ([]Capability, error) {
 //
 // The origin must BE one of patterns. The entry URL must be exactly an
 // `https://<host>/<path>` URL, with its host under that origin: no user info,
-// no port, no query, no fragment, no trailing dot on the host, and it must
-// read back byte for byte as it parses (so no encoding or backslash trick
+// no port (an empty one included), no query, no fragment, a host of lower-case
+// DNS labels with none empty and no trailing dot, and it must read back byte
+// for byte as it parses (so no encoding or backslash trick
 // reads one way here and another in a browser). So
 // `https://evil.example.net/x?.<zone>` and `https://w.<zone>@evil.example.net/`
 // are refused.
@@ -52,13 +53,17 @@ func ValidViewerLink(patterns []OriginPattern, origin, entry string) (string, er
 		return "", invalid("choose an origin from this server's MUSTER_PLUGIN_ORIGINS")
 	}
 	u, err := url.Parse(entry)
-	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Port() != "" ||
-		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Host == "" || strings.HasSuffix(u.Host, ".") ||
-		u.String() != entry || len(entry) > 2048 {
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.String() != entry || len(entry) > 2048 {
 		return "", invalid("the entry URL must be https://<host>/<path> with no user, port, query or fragment")
 	}
-	if !p.MatchesHost(u.Host) || strings.ToLower(u.Host) != u.Host {
-		return "", invalid("the entry URL's host must be under %s, in lower case", p.String())
+	// The host as a pattern host must be: lower-case DNS labels, none empty, no
+	// port (not even an empty one), no trailing dot, not an IP address.
+	if validPatternHost(u.Host) != nil {
+		return "", invalid("the entry URL's host must be a lower-case DNS name with no port")
+	}
+	if !p.MatchesHost(u.Host) {
+		return "", invalid("the entry URL's host must be under %s", p.String())
 	}
 	return p.String(), nil
 }
