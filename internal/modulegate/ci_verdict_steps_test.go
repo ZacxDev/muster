@@ -34,7 +34,9 @@ var wantVerdictPipes = map[string]string{
 		" --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream",
 	"ccd-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 -u tests/verdict.py --echo all",
 	"mirror-tmux": "go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all" +
-		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches",
+		" --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches" +
+		" --require TestTmuxATenantSpawnLandsInItsServerAndReachesItsOwnMuster --require TestTmuxATenantSpawnNeverStartsItsServer" +
+		" --require TestTmuxAMisSetTenantUnitNeitherSpawnsNorSweepsTheDefaultsWorktrees --require TestTmuxATenantOpenCodeSpawnBindsInItsServer",
 	"mirror-macos": "go test -race -json ./internal/mirrorhost/... ./cmd/muster-mirror/... | python3 -u tests/verdict.py --echo summary --require TestDarwinSourceReadsThisHostsOwnProcesses",
 }
 

@@ -495,7 +495,7 @@ jobs:
       - name: go test (tmuxit), and assert the tmux tests ran and none skipped
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/ | python3 -u tests/verdict.py --echo all --require TestTmuxADaemonStartedBeforeItsServerStillGetsItsQuestions --require TestTmuxASymlinkedTMUX_TMPDIRMatches --require TestTmuxATenantSpawnLandsInItsServerAndReachesItsOwnMuster --require TestTmuxATenantSpawnNeverStartsItsServer --require TestTmuxAMisSetTenantUnitNeitherSpawnsNorSweepsTheDefaultsWorktrees --require TestTmuxATenantOpenCodeSpawnBindsInItsServer
 
   # Local: PATH="$(nix build --no-link --print-out-paths 'github:NixOS/nixpkgs/nixos-24.05#tmux^out')/bin:$PATH" \
   #          go test -tags tmuxit -race -run '^TestTmux' ./internal/mirror/ ./internal/mirrorhost/ ./cmd/muster-mirror/
