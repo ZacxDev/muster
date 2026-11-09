@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -21,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -71,7 +73,8 @@ const (
 	successionNoBlock = "message %s has %d fenced block(s); block %d is not one of them"
 	successionEmpty   = "the kickoff muster would copy is empty"
 	successionTooLong = "the kickoff is %d bytes; at most %d fit: ask your owner to shorten it"
-	successionControl = "the kickoff holds a control character a runtime refuses; muster copies a kickoff only byte for byte, " +
+	successionControl = "the kickoff holds a control character or invisible formatting (a zero-width, bidirectional or tag " +
+		"character) that would make what your owner reads differ from what runs; muster copies a kickoff only byte for byte, " +
 		"so it cannot be sent: ask your owner to fix it in that session"
 	successionTarget = "target %q is not a host target with its host and runtime named (host/<host>/claude or " +
 		"host/<host>/opencode): a successor runs on a host for now"
@@ -184,7 +187,12 @@ func (s *Server) kickoffCopy(ctx context.Context, key, ref string, block *int) (
 
 // kickoffSendable reports whether kickoff can be sent unaltered: valid UTF-8
 // with no control character but a newline or a tab (what the claude-code
-// runtime refuses, fence.Sanitize's note).
+// runtime refuses, fence.Sanitize's note) and NO INVISIBLE FORMATTING — a
+// Unicode format character (Cf: zero-width characters, the bidi overrides and
+// isolates U+202A–202E and U+2066–2069) or a tag character (U+E0000–E007F).
+// Those would make the text the owner reads on the card differ from what the
+// agent runs, so a kickoff holding one is refused, never altered (round 1,
+// 🟡4).
 func kickoffSendable(kickoff string) bool {
 	if !utf8.ValidString(kickoff) {
 		return false
@@ -193,7 +201,7 @@ func kickoffSendable(kickoff string) bool {
 		if r == '\n' || r == '\t' {
 			continue
 		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || unicode.Is(unicode.Cf, r) || (r >= 0xE0000 && r <= 0xE007F) {
 			return false
 		}
 	}
@@ -259,12 +267,18 @@ func successionModeLabel(mode string) string {
 	return "Replace or spin off: your choice"
 }
 
-// successionBaseNote is what the card says about the base (D4).
-func successionBaseNote(base string) string {
-	if base == "" {
+// successionBaseNote is what the card says about x's base (D4). The fall
+// back to the default branch is promised only where it runs: the inherited
+// branch of a session the chief started (SubjectDispatch); a base the owner
+// named is used as it is (the host refuses one not on the remote).
+func successionBaseNote(x plugins.Proposal) string {
+	switch {
+	case x.Base == "":
 		return "from the repository's default branch"
+	case x.SubjectDispatch > 0:
+		return "from " + x.Base + " when it is on the remote, else from the repository's default branch"
 	}
-	return "from " + base + " when it is on the remote, else from the repository's default branch"
+	return "from " + x.Base
 }
 
 // successionCardQuestion is the card's question on the Attention view and the
@@ -285,7 +299,7 @@ func successionCardHead(x plugins.Proposal) string {
 	if x.Model != "" {
 		settings += " · " + x.Model
 	}
-	settings += " · " + x.Repo + ", " + successionBaseNote(x.Base)
+	settings += " · " + x.Repo + ", " + successionBaseNote(x)
 	return what + "?\n" + settings + "\nKickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied from the session):\n"
 }
 
@@ -320,7 +334,7 @@ func successionAskOptions(x plugins.Proposal) []string {
 // the kickoff exactly as copied.
 func successionCard(x plugins.Proposal) ui.ProposalView {
 	return proposalCardView(x, "Start a new session that continues this one?", [][2]string{
-		{"How", successionModeText(x.Mode)}, {"On", x.Target}, {"Model", x.Model}, {"Repo", x.Repo}, {"Base", successionBaseNote(x.Base)},
+		{"How", successionModeText(x.Mode)}, {"On", x.Target}, {"Model", x.Model}, {"Repo", x.Repo}, {"Base", successionBaseNote(x)},
 	}, "Kickoff · "+strconv.Itoa(len(x.Kickoff))+" bytes, copied exactly from this session", x.Kickoff, successionCardOptions(x.Mode))
 }
 
@@ -468,7 +482,7 @@ func (s *Server) toolSuccessionPropose(ctx context.Context, a agents.Agent, argu
 		base = about.Branch // D4: the old session's branch, when it is on the remote (checked at the start)
 	}
 	x := plugins.Proposal{SubjectKey: line.AboutKey, SubjectRuntime: about.Runtime, SubjectHost: about.Host, SubjectTitle: about.Title,
-		Mode: mode, Target: t.String(), Model: model, Repo: repo, Base: base, Kickoff: kickoff}
+		SubjectDispatch: about.Dispatch, Mode: mode, Target: t.String(), Model: model, Repo: repo, Base: base, Kickoff: kickoff}
 	// 🔴 REFUSED, NEVER CUT: the kickoff must fit whole.
 	if room := successorPromptRoom(t.Runtime, t.Host, repo, x); len(kickoff) > room {
 		return refuse(fmt.Sprintf(successionTooLong, len(kickoff), room))
@@ -485,7 +499,7 @@ func (s *Server) toolSuccessionPropose(ctx context.Context, a agents.Agent, argu
 	}
 	out := map[string]any{"proposed": true, "succession_id": row.ID, "card_id": row.AskID, "succession": firstNonBlank(mode, "?"),
 		"target": row.Target, "repo": row.Repo, "base": nullIfEmpty(row.Base), "model": nullIfEmpty(row.Model),
-		"kickoff": map[string]any{"bytes": len(kickoff), "sha256": row.KickoffSHA256, "first_line": kickoffFirstLine(kickoff)},
+		"kickoff": map[string]any{"bytes": len(kickoff), "sha256": row.KickoffSHA256, "first_line": redact.Secrets(kickoffFirstLine(kickoff))},
 		"next": "muster put the card on your owner's view of that session, their Attention view and phone. NOTHING has started: " +
 			"when they tap Start, muster starts the new session itself and their view follows it. END YOUR TURN NOW — do not call " +
 			"agent_dispatch for it."}
@@ -668,7 +682,7 @@ func (s *Server) armSuccessionPush(owner, id int64) {
 // successionLive is succession x as a view reads it: its state from the card
 // and its successor's dispatch row, and where the successor is.
 func (s *Server) successionLive(ctx context.Context, x plugins.Proposal) ui.SuccessionView {
-	v := ui.SuccessionView{ID: x.ID, Mode: x.Mode, Target: x.Target, Model: x.Model, Repo: x.Repo, BaseNote: successionBaseNote(x.Base),
+	v := ui.SuccessionView{ID: x.ID, Mode: x.Mode, Target: x.Target, Model: x.Model, Repo: x.Repo, BaseNote: successionBaseNote(x),
 		SubjectTitle: firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey),
 		PredPath:     ui.MirrorRef{Host: x.SubjectHost, Session: x.SubjectTmuxSession, Window: x.SubjectTmuxWindow}.ViewPath(),
 		Superseded:   x.SubjectState == "superseded"}

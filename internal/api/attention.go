@@ -177,6 +177,9 @@ func (st *attentionState) wakeFor(owner int64) *draftSignal {
 
 // attentionItem is one entry of the unified read model.
 type attentionItem struct {
+	// noActions: its notification offers no chips and no signed answer
+	// actions (a chief proposal's card, proposalCardFiled). Not serialised.
+	noActions bool
 	// Key is the item's stable id: its DOM id, its notification tag's suffix.
 	Key  string `json:"key"`
 	Kind string `json:"kind"`
@@ -888,7 +891,7 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
-	if it.Kind == attentionKindAsk && it.AskID > 0 {
+	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
 		// (device_actions.go): this item is one, so they are offered.
@@ -1736,7 +1739,8 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	// A chief proposal's card (chief_proposal.go): the owner's tap DOES what
 	// was proposed here, before the answer is recorded; an accept refused
 	// before it did anything leaves the card open, with its sentence.
-	if err := s.proposalForAnswer(ctx, id, answer, src); err != nil {
+	note, err := s.proposalForAnswer(ctx, id, answer, src)
+	if err != nil {
 		return a, err
 	}
 	if src.ViaSession() {
@@ -1746,6 +1750,18 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	}
 	if err == nil && rel != nil {
 		s.applyAnswerRelease(ctx, a, rel)
+	}
+	if err == nil && note != nil {
+		// 🔴 A CHIEF PROPOSAL'S CARD IS NEVER DELIVERED BACK AS AN ANSWER: its
+		// question carries the copied kickoff (raw session text), and a tap
+		// is not a request for a turn. Its delivery is closed (MarkWaited:
+		// nothing is pushed into the chief's session, now or by the sweep),
+		// and the chief is told in muster's own sentence instead.
+		if _, werr := s.ext.Attention.MarkWaited(ctx, a.ID); werr != nil {
+			s.logger.Printf("proposal: close the delivery of card %d: %v", a.ID, werr)
+		}
+		a.Delivery = attention.DeliveryWaited
+		s.noteProposalToChief(ctx, *note)
 	}
 	if err == nil {
 		s.askSettled(a)
@@ -1814,7 +1830,13 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 	if strings.TrimSpace(answer) == "" {
 		answer = r.PostFormValue("answer")
 	}
-	a, err := s.answerAsk(r.Context(), id, answer)
+	ctx := r.Context()
+	if strings.TrimSpace(r.PostFormValue("option")) != "" {
+		// A button TAPPED, not text typed (a chief proposal accepts only
+		// that: chief_proposal.go optionTapped).
+		ctx = withOptionTap(ctx)
+	}
+	a, err := s.answerAsk(ctx, id, answer)
 	if err != nil {
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: answer %d: %v", id, err)

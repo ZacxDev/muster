@@ -10,6 +10,8 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -164,7 +166,7 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	if st == nil || s.ext.Attention == nil {
 		return plugins.Proposal{}, "proposals are not available on this muster"
 	}
-	ask, err := s.raiseOwnerCard(ctx, chief, question, askOptions)
+	ask, err := s.raiseProposalCard(ctx, chief, question, askOptions)
 	if err != nil {
 		return plugins.Proposal{}, fmt.Sprintf(proposalNoCard, ownerCardRefusal(err))
 	}
@@ -182,56 +184,115 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	return x, ""
 }
 
+// proposalNote is what muster tells the chief once its proposal was decided:
+// its own sentence, never the card's question or answer (which carry the
+// copied kickoff, raw session text).
+type proposalNote struct {
+	chief int64
+	text  string
+}
+
 // proposalForAnswer is THE TAP (answerAskFrom, BEFORE the answer is
-// recorded); a nil error when ask id is no proposal's card. On a card the
-// answer must come through the owner's own door, be one of its buttons and
-// find the proposal undecided; Not now declines it, any other button is the
-// kind's accept. An accept refused before it did anything leaves the card
-// OPEN, with its sentence.
-func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string, src attention.AnswerSource) error {
+// recorded); nil, nil when ask id is no proposal's card. On a card the answer
+// must come through the owner's own door, be one of its buttons TAPPED as a
+// button (optionTapped: never free text that spells one), come from a surface
+// that showed the proposal whole (proposalSurfaceRefusal) and find the
+// proposal undecided; Not now declines it, any other button is the kind's
+// accept. An accept refused before it did anything leaves the card OPEN,
+// with its sentence. The note is muster's sentence for the chief
+// (noteProposalToChief): the answer itself is never delivered.
+func (s *Server) proposalForAnswer(ctx context.Context, id int64, answer string, src attention.AnswerSource) (*proposalNote, error) {
 	st := s.proposals()
 	if st == nil || s.ext.Attention == nil {
-		return nil
+		return nil, nil
 	}
 	a, err := s.ext.Attention.Get(ctx, id)
 	if err != nil || a.Status != attention.Open {
-		return nil // the store's Answer says what is wrong with the ask itself
+		return nil, nil // the store's Answer says what is wrong with the ask itself
 	}
 	x, err := st.ProposalByAsk(ctx, id)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	// 🔴 THE OWNER'S OWN DOOR: a signed-in browser or the paired phone, as the
 	// card's owner. A mirrored session's attention_answer, a token, a plugin:
 	// refused before anything is recorded or done.
 	if src.ViaSession() || !attention.IsOwnerDoor(ctx, a.Owner) {
-		return errReleaseRefused(proposalNotOwnersDoor)
+		return nil, errReleaseRefused(proposalNotOwnersDoor)
 	}
 	if x.Decided != plugins.ProposalOpen {
-		return errReleaseRefused(proposalDecidedAlready)
+		return nil, errReleaseRefused(proposalDecidedAlready)
 	}
-	// What the surface the answer came from may do: a card whose content it
-	// could not show whole is not accepted there (successionKickoffFitsCard).
+	// 🔴 A BUTTON, TAPPED: free text that spells a button accepts nothing.
+	if !optionTapped(ctx) {
+		return nil, errReleaseRefused(proposalNotATap)
+	}
+	// What the surface the answer came from may do: a card it could not show
+	// whole is not accepted there.
 	if why := proposalSurfaceRefusal(ctx, x, answer); why != "" {
-		return errReleaseRefused(why)
+		return nil, errReleaseRefused(why)
 	}
 	// One of the card's buttons: the ask's own, or — tapped on the session's
 	// view (handleProposalTap) — one of the view card's.
-	if !proposalOptionOf(a, answer) && !(fromProposalView(ctx) && slices.Contains(proposalViewOptions(x), sameWords(answer))) {
-		return errReleaseRefused(proposalNotATap)
+	if !proposalOptionOf(a, answer) && !(fromProposalView(ctx) && slices.Contains(proposalViewOptions(x), strings.TrimSpace(answer))) {
+		return nil, errReleaseRefused(proposalNotATap)
 	}
-	if sameWords(answer) == proposalDeclineLabel {
+	choice := strings.TrimSpace(answer)
+	if choice == proposalDeclineLabel {
 		if err := st.DeclineProposal(ctx, x.ID); err != nil {
-			return errReleaseRefused(proposalDecidedAlready)
+			return nil, errReleaseRefused(proposalDecidedAlready)
 		}
 		s.logger.Printf("proposal %d (%s): declined by its owner", x.ID, x.Kind)
 		s.broadcastTo(a.Owner, EventLineageChanged, proposalEventID(x))
-		return nil
+		return &proposalNote{chief: x.ChiefAgent, text: proposalDecisionNote(x, false)}, nil
 	}
-	if why := s.acceptProposal(ctx, x, sameWords(answer)); why != "" {
-		return errReleaseRefused(fmt.Sprintf(proposalAcceptFailed, why))
+	if why := s.acceptProposal(ctx, x, choice); why != "" {
+		return nil, errReleaseRefused(fmt.Sprintf(proposalAcceptFailed, why))
 	}
-	return nil
+	return &proposalNote{chief: x.ChiefAgent, text: proposalDecisionNote(x, true)}, nil
+}
+
+// proposalDecisionNote is muster's sentence to the chief about proposal x's
+// decision: its kind, its id and the session key — no kickoff, no card text.
+func proposalDecisionNote(x plugins.Proposal, accepted bool) string {
+	what := "your proposal " + strconv.FormatInt(x.ID, 10) + " (" + x.Kind + " of " + fence.Sanitize(x.SubjectKey) + ")"
+	if !accepted {
+		return "[muster] Your owner declined " + what + ". Nothing was done. Do not propose it again unless they ask."
+	}
+	if x.Kind == plugins.ProposalSuccession {
+		return "[muster] Your owner tapped Start on " + what + ": muster is starting the successor and their view follows it. " +
+			"Nothing more is needed from you."
+	}
+	return "[muster] Your owner accepted " + what + ": muster is doing it. Nothing more is needed from you."
+}
+
+// noteProposalToChief writes n as a note in the chief's chat (writeChiefNote:
+// a user row, no turn), read as the card's owner.
+func (s *Server) noteProposalToChief(ctx context.Context, n proposalNote) {
+	if s.ext.Agents == nil || n.chief <= 0 {
+		return
+	}
+	chief, err := s.ext.Agents.Get(ctx, n.chief)
+	if err != nil {
+		s.logger.Printf("proposal: the chief %d to tell: %v", n.chief, err)
+		return
+	}
+	if err := s.writeChiefNote(context.WithoutCancel(ctx), chief, n.text); err != nil {
+		s.logger.Printf("proposal: note to the chief: %v", err)
+	}
+}
+
+// optionTapKey marks an answer given by TAPPING one of a card's buttons (the
+// Attention view's option button, the view's proposal card), never free text.
+type optionTapKey struct{}
+
+func withOptionTap(ctx context.Context) context.Context {
+	return context.WithValue(ctx, optionTapKey{}, true)
+}
+
+func optionTapped(ctx context.Context) bool {
+	v, _ := ctx.Value(optionTapKey{}).(bool)
+	return v
 }
 
 // proposalViewKey marks an answer given by a tap on the proposal card of the
@@ -267,10 +328,15 @@ func proposalSurfaceRefusal(ctx context.Context, x plugins.Proposal, answer stri
 	if x.Kind != plugins.ProposalSuccession || fromProposalView(ctx) {
 		return ""
 	}
-	switch sameWords(answer) {
+	switch strings.TrimSpace(answer) {
 	case successionReviewLabel:
 		return successionReviewOnView
 	case successionStartLabel, successionReplaceLabel, successionSpinoffLabel:
+		// 🔴 NEVER FROM THE PHONE (round 1, 🟡2): its notification shows the
+		// card's question, not the kickoff the start would run.
+		if p, ok := authz.From(ctx); ok && p.Via == authz.ViaDevice {
+			return successionReviewOnView
+		}
 		if !successionKickoffFitsCard(x) {
 			return successionReviewOnView
 		}
@@ -290,14 +356,10 @@ func (s *Server) acceptProposal(ctx context.Context, x plugins.Proposal, choice 
 	return "muster cannot do a " + x.Kind + " yet"
 }
 
-// proposalOptionOf reports whether answer is one of ask a's own options.
+// proposalOptionOf reports whether answer is exactly one of ask a's own
+// options (a button's value, as its button sends it).
 func proposalOptionOf(a attention.Ask, answer string) bool {
-	for _, o := range a.Options {
-		if sameWords(o) == sameWords(answer) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.Options, strings.TrimSpace(answer))
 }
 
 // handleProposalTap is POST /mirror/view/proposal (id, choice, host, session,
@@ -327,7 +389,7 @@ func (s *Server) handleProposalTap(w http.ResponseWriter, r *http.Request) {
 	}
 	nav := isDocumentNavigation(r)
 	back := mirrorRef(e).ViewPath()
-	a, err := s.answerAskFrom(withProposalView(ctx), x.AskID, r.PostFormValue("choice"), attention.AnswerSource{})
+	a, err := s.answerAskFrom(withOptionTap(withProposalView(ctx)), x.AskID, r.PostFormValue("choice"), attention.AnswerSource{})
 	if err != nil {
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("proposal %d: the tap: %v", x.ID, err)
