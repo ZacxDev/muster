@@ -192,6 +192,9 @@ type Hub struct {
 	// inputs (agentspawn.go).
 	spawnReplyNotify func(owner int64, host string, m Msg)
 	listingNotify    func(owner int64, host string, windows []Window)
+	// outcomesNotify is the host-dispatch outcome reconciler's input
+	// (outcomes.go).
+	outcomesNotify func(owner int64, host string, seq uint64, windows []Window, outcomes map[string]WindowOutcome)
 	// statusNotify is called with a host's owner whenever any of its agent
 	// windows' status changes (SetStatusNotify): the ask log's turn-end hook.
 	statusNotify func(owner int64)
@@ -432,11 +435,14 @@ type hostConn struct {
 	repos map[string]string
 	// work and colors are the host's last TypeWork and TypeColors maps
 	// (NormalizeWork / NormalizeColors over windows).
-	work    map[string]WindowWork
-	colors  map[string]string
-	streams map[uint32]*stream
-	watches map[uint32]*watch
-	pastes  map[uint32]chan error
+	work   map[string]WindowWork
+	colors map[string]string
+	// outcomes is the host's last TypeOutcomes map (NormalizeOutcomes over
+	// windows, re-restricted at every listing: outcomesApplied).
+	outcomes map[string]WindowOutcome
+	streams  map[uint32]*stream
+	watches  map[uint32]*watch
+	pastes   map[uint32]chan error
 	// scrolls are the scroll requests waiting for the host's scrolled, by id
 	// (the same id space as streams and pastes).
 	scrolls map[uint32]chan error
@@ -841,6 +847,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	h.changed(owner)
 	// The hello's listing is the reconciler's first input from this host.
 	h.listingApplied(hc)
+	h.outcomesApplied(hc)
 
 	// firstHandled closes once the read loop has handled the host's first
 	// message after the welcome (its repos, work or a sessions update): the
@@ -950,6 +957,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 				h.observe(hc.key.owner, hc.key.host, windows, h.now())
 				h.listingApplied(hc)
+				h.outcomesApplied(hc)
 				// 🔴 ONLY A CHANGE SOMEBODY CAN SEE NUDGES THE OPEN VIEWS, and an
 				// activity-only one is THROTTLED. A changed list or order nudges
 				// at once. A time that moved with nothing else (a busy window that
@@ -1004,6 +1012,16 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 					if !same {
 						h.changed(hc.key.owner)
 					}
+				}
+			case TypeOutcomes:
+				// The idle opencode dispatch windows' final replies (outcomes.go),
+				// restricted to the windows it lists now. Nothing a card draws
+				// from the hub: the reconciler records them on the dispatch rows.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					hc.outcomes = NormalizeOutcomes(m.Outcomes, hc.windows)
+					hc.mu.Unlock()
+					h.outcomesApplied(hc)
 				}
 			case TypeEvents:
 				if hc.version >= 2 {

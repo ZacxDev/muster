@@ -13,7 +13,7 @@ import (
 // HOST DISPATCHES (migration 0093; docs/design/chief-dispatch.md 2.6 and 3.7): an
 // agent the chief started in a tmux window on one of its owner's hosts.
 //
-// 🔴 ONE SEAM LEDGER, FOUR WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
+// 🔴 ONE SEAM LEDGER, EIGHT WRITERS, EACH WITH ITS NAMED CALLERS (a test asserts
 // the set over the Go source):
 //
 //   - the PENDING INSERT, only inside ReserveHostDispatch's reservation
@@ -30,7 +30,17 @@ import (
 //   - MarkHostDispatchDone (0097): done_at and done_summary only, once, on a
 //     RUNNING row whose host and agent_session are the caller's. It never
 //     ends the row (done is not ended: the slot is held until the window
-//     closes). Called only by agent_report_done on the mirror door.
+//     closes). Called only by agent_report_done on the mirror door;
+//   - RecordHostDispatchOutcome (0098): an OPENCODE row's done or waiting
+//     outcome, read from the reply its host observed, once per reply
+//     (outcome_mark), on a RUNNING row whose host and agent_session are the
+//     listing's. Called only by the outcome reconciler;
+//   - RearmHostDispatch (0098): a later turn clears done/waiting back to
+//     working — a Claude row only once settled. Called only by the outcome
+//     reconciler;
+//   - SettleHostDispatchDone (0098): done_settled, on a Claude row reported
+//     done that has since been listed idle. Called only by the outcome
+//     reconciler.
 
 // Host dispatch statuses.
 const (
@@ -53,10 +63,20 @@ type HostDispatch struct {
 	EndedAt                      time.Time
 	Refusal, EndedWhy, Warning   string
 	OrphanNoticeID               int64
-	// DoneAt is when the dispatch's own session said it finished
-	// (agent_report_done), zero until then; DoneSummary its one line.
+	// DoneAt is when the dispatch said it finished — its own session's
+	// agent_report_done (Claude), or its reply's done line (opencode) — zero
+	// until then and after a later turn; DoneSummary its one line.
 	DoneAt      time.Time
 	DoneSummary string
+	// WaitingAt is when an opencode dispatch's turn ended without the done
+	// line (0098), zero otherwise; WaitingLine that reply's last line.
+	WaitingAt   time.Time
+	WaitingLine string
+	// OutcomeMark names the reply an opencode outcome was read from; "" for
+	// none. DoneSettled: a Claude dispatch reported done has been listed idle
+	// since (its reporting turn is over).
+	OutcomeMark string
+	DoneSettled bool
 }
 
 // HostDispatchNew is a pending row's fields, written with its reservation.
@@ -78,18 +98,23 @@ var ErrHostDispatchNotFound = errors.New("plugins: no such host dispatch")
 
 const hostDispatchCols = `id, owner_id, host, runtime, coalesce(model, ''), coalesce(held_id, ''), repo, base, branch, worktree,
 	coalesce(task_id, 0), reservation_id, agent_session, tmux_window, status, missing_listings, host_seen_at, created_at,
-	coalesce(ended_at, 'epoch'), refusal, ended_why, warning, coalesce(orphan_notice_id, 0), coalesce(done_at, 'epoch'), done_summary`
+	coalesce(ended_at, 'epoch'), refusal, ended_why, warning, coalesce(orphan_notice_id, 0), coalesce(done_at, 'epoch'), done_summary,
+	coalesce(waiting_at, 'epoch'), waiting_line, outcome_mark, done_settled`
 
 func scanHostDispatch(row pgx.Row) (HostDispatch, error) {
 	var h HostDispatch
 	err := row.Scan(&h.ID, &h.Owner, &h.Host, &h.Runtime, &h.Model, &h.HeldID, &h.Repo, &h.Base, &h.Branch, &h.Worktree,
 		&h.TaskID, &h.ReservationID, &h.AgentSession, &h.Window, &h.Status, &h.MissingListings, &h.HostSeenAt, &h.CreatedAt,
-		&h.EndedAt, &h.Refusal, &h.EndedWhy, &h.Warning, &h.OrphanNoticeID, &h.DoneAt, &h.DoneSummary)
+		&h.EndedAt, &h.Refusal, &h.EndedWhy, &h.Warning, &h.OrphanNoticeID, &h.DoneAt, &h.DoneSummary,
+		&h.WaitingAt, &h.WaitingLine, &h.OutcomeMark, &h.DoneSettled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HostDispatch{}, ErrHostDispatchNotFound
 	}
 	if h.DoneAt.Unix() == 0 {
 		h.DoneAt = time.Time{}
+	}
+	if h.WaitingAt.Unix() == 0 {
+		h.WaitingAt = time.Time{}
 	}
 	return h, err
 }
@@ -371,9 +396,90 @@ func (s *PGStore) MarkHostDispatchDone(ctx context.Context, id int64, host, sess
 	if r := []rune(summary); len(r) > 300 {
 		summary = string(r[:300])
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = now(), done_summary = $5
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = now(), done_summary = $5, done_settled = false
 		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running' AND done_at IS NULL`,
 		id, owner, host, session, summary)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// The outcomes RecordHostDispatchOutcome records.
+const (
+	HostOutcomeDone    = "done"
+	HostOutcomeWaiting = "waiting"
+)
+
+// RecordHostDispatchOutcome records outcome (HostOutcomeDone with line as its
+// summary, or HostOutcomeWaiting with line as its last line) on the
+// principal's host dispatch id, read from the reply its host names mark —
+// ONLY while it is an OPENCODE row, running, on host, its agent_session is
+// session, and mark is not the reply it last recorded. Done clears waiting and
+// waiting clears done. It never ends the row. It reports whether it wrote.
+func (s *PGStore) RecordHostDispatchOutcome(ctx context.Context, id int64, host, session, outcome, line, mark string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" || mark == "" || (outcome != HostOutcomeDone && outcome != HostOutcomeWaiting) {
+		return false, nil
+	}
+	line, mark = cutRunes(line, 300), cutRunes(mark, 128)
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET
+		  done_at      = CASE WHEN $5 = 'done' THEN now() END,
+		  done_summary = CASE WHEN $5 = 'done' THEN $6 ELSE '' END,
+		  waiting_at   = CASE WHEN $5 = 'waiting' THEN now() END,
+		  waiting_line = CASE WHEN $5 = 'waiting' THEN $6 ELSE '' END,
+		  outcome_mark = $7, done_settled = false
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND runtime = 'opencode'
+		  AND status = 'running' AND outcome_mark <> $7`,
+		id, owner, host, session, outcome, line, mark)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RearmHostDispatch clears the principal's host dispatch id's done or waiting
+// outcome — a later turn: it is working again — ONLY while it is running, on
+// host, its agent_session is session, it has one, and (a Claude row) its done
+// is settled. It reports whether it wrote.
+func (s *PGStore) RearmHostDispatch(ctx context.Context, id int64, host, session string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_at = NULL, done_summary = '', waiting_at = NULL, waiting_line = '',
+		  outcome_mark = '', done_settled = false
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running'
+		  AND (done_at IS NOT NULL OR waiting_at IS NOT NULL) AND (runtime = 'opencode' OR done_settled)`,
+		id, owner, host, session)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SettleHostDispatchDone records that the principal's host dispatch id,
+// reported done, has been listed idle since — ONLY while it is running, on
+// host, its agent_session is session, done and not settled. It reports
+// whether it wrote.
+func (s *PGStore) SettleHostDispatchDone(ctx context.Context, id int64, host, session string) (bool, error) {
+	owner, err := hostDispatchOwner(ctx, "a host dispatch")
+	if err != nil {
+		return false, err
+	}
+	if session == "" {
+		return false, nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE host_dispatches SET done_settled = true
+		WHERE id = $1 AND owner_id = $2 AND host = $3 AND agent_session = $4 AND status = 'running'
+		  AND done_at IS NOT NULL AND NOT done_settled`,
+		id, owner, host, session)
 	if err != nil {
 		return false, err
 	}

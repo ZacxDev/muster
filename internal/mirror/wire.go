@@ -466,6 +466,9 @@ type Msg struct {
 	// Colors (colors) is, per window id, the window's tmux identity colour as
 	// lowercase #rrggbb — the WHOLE map each time (work.go).
 	Colors map[string]string `json:"colors,omitempty"`
+	// Outcomes (outcomes) is, per window id, the final reply of an idle
+	// opencode window the chief started — the WHOLE map each time (outcomes.go).
+	Outcomes map[string]WindowOutcome `json:"outcomes,omitempty"`
 
 	// ---- tracing (internal/telemetry) ----
 
