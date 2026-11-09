@@ -190,6 +190,11 @@ func (s *Server) acceptEndSession(ctx context.Context, x plugins.Proposal, choic
 		if err != nil || ag.OwnerID != owner {
 			return "the agent is gone"
 		}
+		// The chief (and an officer) is never ended this way: the destroy
+		// paths' one guard, asked BEFORE the tap is recorded.
+		if _, protected, err := s.agentIsDeleteProtected(ctx, ag.ID); err != nil || protected {
+			return endSessionChief
+		}
 		if err := st.StartEnd(ctx, x.ID); err != nil {
 			return proposalDecidedAlready
 		}
