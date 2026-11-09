@@ -625,7 +625,9 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 //	                 delivers it once the instance is ready. WITHOUT: REFUSE —
 //	                 create nothing, store `error` carrying KickoffRefusalReason,
 //	                 and return ErrKickoffUndeliverable.
-//	kickoff=false -> create nothing, store `stopped`. The status is now TRUE
+//	kickoff=false -> create nothing, store `stopped` (only tests call this now:
+//	                 createAndDispatchAgent inserts a save `stopped` and no
+//	                 longer dispatches it — see the branch). The status is now TRUE
 //	                 rather than a statement about what this service is waiting
 //	                 for, which is also what makes the model-change roll in
 //	                 internal/api correct for such an agent: it branches on the
@@ -644,6 +646,14 @@ func (a *Adapter) Dispatch(ctx context.Context, agentID int64, kickoff bool) err
 		return fmt.Errorf("agentprovision: dispatch agent %d: load row: %w", agentID, err)
 	}
 	if !kickoff {
+		// ⚠ NO PRODUCTION CALLER REACHES THIS BRANCH ANY MORE: internal/api's
+		// createAndDispatchAgent inserts a save `stopped` and starts no background
+		// Dispatch for it (this write was redundant, and unconditional — a Start
+		// landing first was overwritten back to `stopped`; guarded there by
+		// TestAStartRightAfterASaveIsNotOverwrittenBackToStopped). Only tests call
+		// Dispatch(kickoff=false) now. It is kept because Provisioner.Dispatch
+		// still takes the flag and what it does for false stays the safe answer.
+		//
 		// 🔴 NO DRIVER CALL AT ALL ON THIS PATH. It is not a route answering 200
 		// and doing nothing — the caller asked for a saved agent and gets exactly
 		// that: a row, a status that is true, and no cluster objects. The token is

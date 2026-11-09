@@ -352,9 +352,9 @@ no one-start-per-task rule and no owner-answer rule**, and `POST /agents` has
 no `requireSameOrigin`. It is the uncapped path.
 
 **"Save for later" is not a drafts feature.**
-- `action=save` creates the same `agents` row, which
-  `Adapter.Dispatch(..., kickoff=false)` sets to `stopped` without provisioning
-  anything (`internal/agentprovision/agentprovision.go:620-641`).
+- `action=save` creates the same `agents` row, inserted `stopped`, without
+  provisioning anything (no `Adapter.Dispatch` runs for it; see
+  `createAndDispatchAgent` in `internal/api/agents.go`).
 - The owner later brings it up with **Start** (`POST /agents/{id}/start`,
   `Adapter.Start` `:704`, from the agent page's ⋯ menu,
   `internal/ui/agent_actions.go:169`).
