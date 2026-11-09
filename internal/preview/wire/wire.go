@@ -71,12 +71,13 @@ const (
 )
 
 // MaxConns is the cap on a host's maxConns, and its default: the number of
-// HTTP/2 streams a host's tunnel carries at once (the host's
-// SETTINGS_MAX_CONCURRENT_STREAMS). Phase 1 caps it at 64, below the design's
-// 256, so the gateway's connection window — sized from this cap in
-// internal/preview/tunnel — stays (64+1) × 4 MiB. Raising it raises that
-// window and the gateway memory paused readers can hold; the invariant test in
-// internal/preview/tunnel pins both numbers together.
+// UPSTREAM connections (CONNECT streams) a host's tunnel carries at once. The
+// control streams are on top of it (internal/preview/tunnel.ControlStreams).
+// Phase 1 caps it at 64, below the design's 256, so the gateway's connection
+// window — sized from this cap in internal/preview/tunnel — stays
+// (64+4+1) × 4 MiB. Raising it raises that window and the gateway memory
+// paused readers can hold; the invariant test in internal/preview/tunnel pins
+// the numbers together.
 const MaxConns = 64
 
 // PingInterval is how often each end of a tunnel sends a WebSocket ping. It
@@ -107,7 +108,12 @@ const (
 	ReasonPortNotAllowed  Reason = "port_not_allowed" // 403: the port is not in previews.json
 	ReasonForeignListener Reason = "foreign_listener" // 403: the listener is another user's
 	ReasonRefused         Reason = "refused"          // 502: nothing is listening (both loopbacks)
-	ReasonMaxConns        Reason = "max_conns"        // 429: the host's maxConns streams are open
+	// ReasonMaxConns (429): all of the host's maxConns upstream slots stayed
+	// in use. The GATEWAY emits it, when a Dial has waited its bound for a
+	// free slot (internal/preview/tunnel, ClientOptions.DialWait); the host
+	// sends it only as a backstop, for a CONNECT that arrives past its
+	// maxConns anyway, and the gateway retries that within the same wait.
+	ReasonMaxConns Reason = "max_conns"
 )
 
 var reasonStatus = map[Reason]int{

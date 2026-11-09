@@ -214,10 +214,11 @@ func TestControlStreamDeliversLinesAsWritten(t *testing.T) {
 }
 
 // TestMaxConnsBoundsConcurrentStreams: with MaxConns 2 a third Dial waits for
-// a free stream (and its ctx ends the wait); closing one lets it through.
+// a free slot, and its ctx ends the wait when that comes before DialWait;
+// closing one lets it through.
 func TestMaxConnsBoundsConcurrentStreams(t *testing.T) {
 	echo := startTCP(t, echoUpstream)
-	p := newPair(t, pairOpts{host: HostOptions{MaxConns: 2}, allow: []int{echo}})
+	p := newPair(t, pairOpts{host: HostOptions{MaxConns: 2}, client: ClientOptions{MaxConns: 2, DialWait: time.Minute}, allow: []int{echo}})
 	a, err := p.client.Dial(context.Background(), echo)
 	if err != nil {
 		t.Fatal(err)

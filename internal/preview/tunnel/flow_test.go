@@ -23,42 +23,50 @@ func TestFlowControlInvariantIsPinned(t *testing.T) {
 	if wire.MaxConns != 64 {
 		t.Errorf("wire.MaxConns = %d, want 64 (phase 1's cap)", wire.MaxConns)
 	}
+	if ControlStreams != 4 {
+		t.Errorf("ControlStreams = %d, want 4 (the offer stream + 3 answers)", ControlStreams)
+	}
+	if DefaultDialWait != 10*time.Second {
+		t.Errorf("DefaultDialWait = %v, want 10s", DefaultDialWait)
+	}
 	if StreamWindow != 4<<20 {
 		t.Errorf("StreamWindow = %d, want 4 MiB", StreamWindow)
 	}
-	if ConnWindow != 260<<20 {
-		t.Errorf("ConnWindow = %d, want 260 MiB = (64+1) × 4 MiB", ConnWindow)
+	if ConnWindow != 276<<20 {
+		t.Errorf("ConnWindow = %d, want 276 MiB = (64+4+1) × 4 MiB", ConnWindow)
 	}
 	if UploadStreamWindow != 1<<20 {
 		t.Errorf("UploadStreamWindow = %d, want 1 MiB", UploadStreamWindow)
 	}
-	if UploadConnWindow != 65<<20 {
-		t.Errorf("UploadConnWindow = %d, want 65 MiB = (64+1) × 1 MiB", UploadConnWindow)
+	if UploadConnWindow != 69<<20 {
+		t.Errorf("UploadConnWindow = %d, want 69 MiB = (64+4+1) × 1 MiB", UploadConnWindow)
 	}
-	// The invariant itself: no set of MaxConns paused streams can hold the
-	// whole connection window, in either direction.
-	if !(ConnWindow > wire.MaxConns*StreamWindow) {
-		t.Errorf("ConnWindow %d <= MaxConns × StreamWindow %d", ConnWindow, wire.MaxConns*StreamWindow)
+	// The invariant itself: no set of paused streams the host admits (every
+	// data stream plus every control stream) can hold the whole connection
+	// window, in either direction.
+	streams := wire.MaxConns + ControlStreams
+	if !(ConnWindow > streams*StreamWindow) {
+		t.Errorf("ConnWindow %d <= (MaxConns+ControlStreams) × StreamWindow %d", ConnWindow, streams*StreamWindow)
 	}
-	if !(UploadConnWindow > wire.MaxConns*UploadStreamWindow) {
-		t.Errorf("UploadConnWindow %d <= MaxConns × UploadStreamWindow %d", UploadConnWindow, wire.MaxConns*UploadStreamWindow)
+	if !(UploadConnWindow > streams*UploadStreamWindow) {
+		t.Errorf("UploadConnWindow %d <= (MaxConns+ControlStreams) × UploadStreamWindow %d", UploadConnWindow, streams*UploadStreamWindow)
 	}
 
 	c := ClientOptions{}.http2Config()
-	if c.MaxReceiveBufferPerStream != 4<<20 || c.MaxReceiveBufferPerConnection != 260<<20 {
-		t.Errorf("client config = stream %d conn %d, want 4 MiB / 260 MiB", c.MaxReceiveBufferPerStream, c.MaxReceiveBufferPerConnection)
+	if c.MaxReceiveBufferPerStream != 4<<20 || c.MaxReceiveBufferPerConnection != 276<<20 {
+		t.Errorf("client config = stream %d conn %d, want 4 MiB / 276 MiB", c.MaxReceiveBufferPerStream, c.MaxReceiveBufferPerConnection)
 	}
 	s, err := HostOptions{}.server()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.MaxConcurrentStreams != 64 || s.MaxUploadBufferPerStream != 1<<20 || s.MaxUploadBufferPerConnection != 65<<20 {
-		t.Errorf("host server = streams %d upload stream %d conn %d, want 64 / 1 MiB / 65 MiB",
+	if s.MaxConcurrentStreams != 68 || s.MaxUploadBufferPerStream != 1<<20 || s.MaxUploadBufferPerConnection != 69<<20 {
+		t.Errorf("host server = streams %d upload stream %d conn %d, want 68 / 1 MiB / 69 MiB",
 			s.MaxConcurrentStreams, s.MaxUploadBufferPerStream, s.MaxUploadBufferPerConnection)
 	}
 	for _, n := range []int{1, 10, 64} {
 		s, err := HostOptions{MaxConns: n}.server()
-		if err != nil || s.MaxConcurrentStreams != uint32(n) {
+		if err != nil || s.MaxConcurrentStreams != uint32(n+4) {
 			t.Errorf("MaxConns %d: streams %v, err %v", n, s, err)
 		}
 	}
@@ -175,7 +183,7 @@ func TestPausedReadersCannotStallTheTunnel(t *testing.T) {
 // TestTheWorstCaseCapCannotStallTheTunnel is the invariant at its bound: the
 // host's whole cap minus one stream is paused, and the last stream must still
 // carry assets and an echo. The windows are scaled down (256 KiB per stream,
-// the same (cap+1) × stream formula) to keep the test's memory small; the cap
+// the same (cap+ControlStreams+1) × stream formula) to keep the test's memory small; the cap
 // is the real one. The negative control sizes the connection window at
 // cap/2 × stream, which the paused streams fill. (Not (cap-1) × stream: a
 // paused stream measured holding ~245 KiB of its 256 KiB, because x/net
@@ -219,8 +227,8 @@ func TestTheWorstCaseCapCannotStallTheTunnel(t *testing.T) {
 		t.Logf("RESULT paused=%d connWindow=%d KiB: assets %d/4, echo %d/10 (%v)", paused, connWindow>>10, ok, n, err)
 		return ok, err == nil && n == 10
 	}
-	t.Run("(cap+1) × stream", func(t *testing.T) {
-		if ok, echo := run(t, (wire.MaxConns+1)*sw); ok != 4 || !echo {
+	t.Run("(cap+control+1) × stream", func(t *testing.T) {
+		if ok, echo := run(t, (wire.MaxConns+ControlStreams+1)*sw); ok != 4 || !echo {
 			t.Fatalf("the worst case stalled: assets %d/4 echo %v", ok, echo)
 		}
 	})
