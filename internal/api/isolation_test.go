@@ -1803,7 +1803,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
 	// door (its message stored as B's, its two claims — the drafts' and the
-	// task writes' — answered "nothing for you"), or its clean answers
+	// task writes' — answered "nothing for you", and GET /plugin/v1/self naming
+	// B's own plugin), or its clean answers
 	// everywhere else are only the refusal of an unknown token. The result
 	// routes name A's draft and A's write, so they are NOT among them; the
 	// reference listing names no namespace in the walk (400).
@@ -1816,8 +1817,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			}
 		}
 	}
-	if plugAdmitted != 3 {
-		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message and two claim routes", plugAdmitted)
+	if plugAdmitted != 4 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message, two claim routes and its self", plugAdmitted)
 	}
 	// The device-credential leg: B's device must have been ADMITTED on its own
 	// tier (its config read, its own unpair) and nowhere else. The push PUT is

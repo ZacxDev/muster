@@ -81,20 +81,20 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
 	// is its ledger: a route added, dropped or moved to another capability turns
 	// it red. CapMessages is every route a token opened before capabilities.
-	mux.HandleFunc("GET "+pluginSelfPath, s.requirePluginToken(pluginCapAny, s.handlePluginSelf))
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(plugins.CapMessages, s.handlePluginMessage))
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(plugins.CapMessages, s.handlePluginDraftClaim))
-	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(plugins.CapMessages, s.handlePluginDraftResult))
+	mux.HandleFunc("GET "+pluginSelfPath, s.requirePluginToken(s.handlePluginSelf, pluginCapAny))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage, plugins.CapMessages))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim, plugins.CapMessages))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult, plugins.CapMessages))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
-	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginTask))
+	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, plugins.CapMessages))
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
 	// the writes people and agents queued on this plugin's references.
-	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskList))
-	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskWritesClaim))
-	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(plugins.CapMessages, s.handlePluginTaskWriteResult))
+	mux.HandleFunc("GET "+pluginTasksPath, s.requirePluginToken(s.handlePluginTaskList, plugins.CapMessages))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/claim", s.requirePluginToken(s.handlePluginTaskWritesClaim, plugins.CapMessages))
+	mux.HandleFunc("POST "+pluginTaskWritesPath+"/{id}/result", s.requirePluginToken(s.handlePluginTaskWriteResult, plugins.CapMessages))
 	// A reply sent directly, stamped with the message it answers
 	// (owner_replies.go): its waiting route ends owner_answered. 404 with routing off.
-	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(plugins.CapMessages, s.handlePluginOwnerAnswered))
+	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(s.handlePluginOwnerAnswered, plugins.CapMessages))
 	// Session routing (session_routes.go): a MIRRORED session's reply_to_chief,
 	// with its host's own muster credential acting as the owner (a personal
 	// token, or the armed hook token). 404 with routing off. Fail-closed on an
@@ -131,10 +131,13 @@ type pluginCtxKey struct{}
 // through authz.ViaPlugin, and only when the token carries capability need
 // (pluginCapAny: any live token). See the file header.
 //
+// The handler is the FIRST argument, as every wrapper's is: the route walks
+// (provisioner_seam_test.go's innermostRouteHandler) follow Args[0].
+//
 // The capability is checked AFTER the token is found and BEFORE the request is
 // admitted, so a token without it reaches no handler and no store call but
 // the lookup (TestAViewerOnlyTokenIsRefusedOnTheMessagesRoutes).
-func (s *Server) requirePluginToken(need plugins.Capability, next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requirePluginToken(next http.HandlerFunc, need plugins.Capability) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.ext.Plugins == nil {
 			http.NotFound(w, r)
