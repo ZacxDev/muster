@@ -671,3 +671,59 @@ func TestTheSuccessorPushWaitsForAView(t *testing.T) {
 		t.Errorf("the successor whose view was opened: %+v", x)
 	}
 }
+
+// TestACutKickoffStartsOnlyFromTheView (operator decision, #546 round 0 Q1): a
+// kickoff that does not fit the card's question whole is cut there, so the
+// Attention view and the phone offer ONLY "Review on the session's view", and
+// a start from them — their own button, or Start typed or sent — is refused
+// SERVER-SIDE with the card left open. The session's view, which shows the
+// kickoff whole, starts it. A kickoff that fits whole still starts from the
+// phone.
+func TestACutKickoffStartsOnlyFromTheView(t *testing.T) {
+	f := newSuccFixture(t)
+	f.sm.tmu.Lock()
+	// 4097 bytes: over the question's room (attention.MaxQuestionRunes, 4000
+	// runes, less the head), under the spawn prompt's.
+	f.sm.tails["@3"] = append(f.sm.tails["@3"], cctranscript.Event{Kind: cctranscript.KindText,
+		Text: "Kickoff:\n```\n" + strings.Repeat("0123456789abcdef\n", 240) + "```\n"})
+	f.sm.tmu.Unlock()
+	f.viewLine(t, sxOpenCodeKey, "run its long kickoff in a new session")
+	text, id := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", "m:d31fa7eb0e12", intp(0)))
+	if id <= 0 {
+		t.Fatalf("the long kickoff's proposal: %s", text)
+	}
+	x, _ := f.plugins.ProposalByID(f.asOwner, id)
+	cs := f.cards(t)
+	if len(cs) != 1 || strings.Join(cs[0].Options, "|") != "Review on the session's view" ||
+		!strings.HasSuffix(cs[0].Question, "\n[the whole kickoff is on the session's view]") {
+		t.Fatalf("the cut card: %+v", cs)
+	}
+	phone := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaDevice})
+	for _, ans := range []string{"Review on the session's view", "Start it"} {
+		_, err := f.srv.answerAskFrom(phone, x.AskID, ans, attention.AnswerSource{})
+		if err == nil || !strings.Contains(err.Error(), successionReviewOnView) {
+			t.Errorf("the phone's %q on a cut card: %v; want refused: %q", ans, err, successionReviewOnView)
+		}
+	}
+	if a, _ := f.srv.ext.Attention.Get(f.asOwner, x.AskID); a.Status != attention.Open || len(f.m.spawnCalls()) != 0 {
+		t.Fatalf("after the phone's refused answers: card %s, %d spawns; want open, none", a.Status, len(f.m.spawnCalls()))
+	}
+	// The session's view shows it whole, and starts it.
+	if w := f.tapAs(t, f.ownerSession(), id, "@3", "Start it"); w.Code != http.StatusNoContent {
+		t.Fatalf("the view's Start: %d %s", w.Code, w.Body)
+	}
+	calls := f.m.spawnCalls()
+	if len(calls) != 1 || !strings.Contains(calls[0].req.Prompt, strings.Repeat("0123456789abcdef\n", 239)+"0123456789abcdef\n---") {
+		t.Fatalf("the view's Start: spawns %d", len(calls))
+	}
+	// Control: a kickoff that fits whole starts from the phone.
+	f.viewLine(t, sxOpenCodeKey, "and the short one")
+	_, id2 := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefFenc, intp(0)))
+	x2, _ := f.plugins.ProposalByID(f.asOwner, id2)
+	if _, err := f.srv.answerAskFrom(phone, x2.AskID, "Start it", attention.AnswerSource{}); err != nil {
+		t.Fatalf("the phone's Start on a whole kickoff: %v", err)
+	}
+	if n := len(f.m.spawnCalls()); n != 2 {
+		t.Errorf("the phone's Start on a whole kickoff: %d spawns in all; want 2", n)
+	}
+}

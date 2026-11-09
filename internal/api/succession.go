@@ -271,17 +271,49 @@ func successionBaseNote(base string) string {
 // phone: what starts, where, and the kickoff itself (cut only when the whole
 // question would not fit; the view's card always shows it whole).
 func successionCardQuestion(x plugins.Proposal) string {
+	q := successionCardHead(x)
+	if successionKickoffFitsCard(x) {
+		return q + x.Kickoff
+	}
+	return q + cutRunes(x.Kickoff, attention.MaxQuestionRunes-utf8.RuneCountInString(q)-80) + "\n[the whole kickoff is on the session's view]"
+}
+
+// successionCardHead is the card question's text before the kickoff.
+func successionCardHead(x plugins.Proposal) string {
 	what := "Start a session that continues “" + firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey) + "”"
 	settings := successionModeLabel(x.Mode) + " · " + x.Target
 	if x.Model != "" {
 		settings += " · " + x.Model
 	}
 	settings += " · " + x.Repo + ", " + successionBaseNote(x.Base)
-	q := what + "?\n" + settings + "\nKickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied from the session):\n"
-	if room := attention.MaxQuestionRunes - utf8.RuneCountInString(q); utf8.RuneCountInString(x.Kickoff) <= room {
-		return q + x.Kickoff
+	return what + "?\n" + settings + "\nKickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied from the session):\n"
+}
+
+// successionKickoffFitsCard reports whether x's kickoff fits WHOLE in the
+// card's question (the Attention view's and the phone's). 🔴 ONE THAT DOES
+// NOT is startable only from the session's view, where it is shown whole
+// (operator decision, #546 round 0 Q1): elsewhere its card offers only
+// "Review on the session's view", and a start from there is refused
+// (proposalSurfaceRefusal).
+func successionKickoffFitsCard(x plugins.Proposal) bool {
+	return utf8.RuneCountInString(x.Kickoff) <= attention.MaxQuestionRunes-utf8.RuneCountInString(successionCardHead(x))
+}
+
+// successionReviewLabel is a cut kickoff's one button off the view.
+const successionReviewLabel = "Review on the session's view"
+
+// successionReviewOnView refuses a start (or the review button) from a
+// surface that showed the kickoff cut.
+const successionReviewOnView = "this kickoff is too long to show in full here: open the session's view to read it whole, and start it there"
+
+// successionAskOptions is the card's buttons on the Attention view and the
+// phone: the kind's own and Not now when the kickoff fits the question
+// whole, else ONLY the review button.
+func successionAskOptions(x plugins.Proposal) []string {
+	if !successionKickoffFitsCard(x) {
+		return []string{successionReviewLabel}
 	}
-	return q + cutRunes(x.Kickoff, attention.MaxQuestionRunes-utf8.RuneCountInString(q)-80) + "\n[the whole kickoff is on the session's view]"
+	return append(successionCardOptions(x.Mode), proposalDeclineLabel)
 }
 
 // successionCard is succession x's proposal card: what starts, where, and
@@ -447,7 +479,7 @@ func (s *Server) toolSuccessionPropose(ctx context.Context, a agents.Agent, argu
 	}
 	row, why := s.fileProposal(ctx, a, line, about, plugins.ProposalNew{Kind: plugins.ProposalSuccession, Mode: mode, Target: t.String(),
 		Model: model, Repo: repo, Base: base, Kickoff: kickoff, KickoffSHA256: sha256Hex(kickoff), KickoffRef: strings.TrimSpace(in.PromptFrom.Ref),
-		KickoffBlock: blk}, successionCardQuestion(x), successionCardOptions(mode))
+		KickoffBlock: blk}, successionCardQuestion(x), successionAskOptions(x))
 	if why != "" {
 		return refuse(why)
 	}
