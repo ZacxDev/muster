@@ -368,11 +368,16 @@ for (const vp of [
       // row / the option, never widening the sidebar, the picker or the page.
       // (Lengthened in the page: the fixture's names are short.)
       const long = 'Reconcile the quarterly billing ledger migration across every regional shard ';
+      // The picker is opened first, then the pill lengthened and the results
+      // redrawn (the input's own handler) in ONE synchronous evaluate, so a
+      // live re-render of the bar cannot land in between.
+      await openFromBar();
       await page.locator('#session-switcher [data-switcher-list="all"] a[data-switcher-entry][href*="window=%40' + w + '"]').evaluate((a, s) => {
         a.setAttribute('data-switcher-name', s.repeat(3));
         a.setAttribute('data-switcher-tmux', s.repeat(3) + ' @ <b>x</b>');
+        document.getElementById('switcher-search-input')!.dispatchEvent(new Event('input'));
       }, long);
-      await openFromBar();
+      await expect(opt(w).locator('span').first(), 'control: the option was redrawn long').toHaveText(long.repeat(3).trim());
       // Read once the picker has settled (no running animation), both boxes in
       // one frame: two separate reads straddled its opening on a CI phone run.
       const fitP = await opt(w).evaluate(async (li) => {
@@ -393,21 +398,24 @@ for (const vp of [
       await page.keyboard.press('Escape');
       await page.goto(origin + '/tasks');
       await showSidebar();
-      await sideRow(w).evaluate((a, s) => {
-        (a.querySelector('[data-nav-name]') as HTMLElement).textContent = s.repeat(3);
-        (a.querySelector('[data-nav-tmux]') as HTMLElement).textContent = s.repeat(3);
+      // Lengthened AND measured in ONE synchronous evaluate: the rail's rows
+      // are re-fetched live (an SSE event, the minute's tick), and a swap
+      // landing between a separate write and read measured the real short
+      // name (CI run 42565032895, desktop). Layout is forced by the reads.
+      const m = await sideRow(w).evaluate((a, s) => {
+        const name = a.querySelector('[data-nav-name]') as HTMLElement, tmux = a.querySelector('[data-nav-tmux]') as HTMLElement;
+        name.textContent = s.repeat(3);
+        tmux.textContent = s.repeat(3);
+        const side = document.getElementById('sidebar')!.getBoundingClientRect(), r = a.getBoundingClientRect();
+        const cut = (el: HTMLElement) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow });
+        return { row: r.right, side: side.right, name: cut(name), tmux: cut(tmux), sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
       }, long);
-      // Both boxes read in one frame (a drawer still settling moves both).
-      const fit = await sideRow(w).evaluate((a) => {
-        const s = document.getElementById('sidebar')!.getBoundingClientRect(), r = a.getBoundingClientRect();
-        return { row: r.right, side: s.right };
-      });
-      expect(fit.row, 'the row fits the sidebar').toBeLessThanOrEqual(fit.side + 0.5);
-      for (const sel of ['[data-nav-name]', '[data-nav-tmux]']) {
-        const cut = await sideRow(w).locator(sel).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow }));
+      expect(m.row, 'the row fits the sidebar').toBeLessThanOrEqual(m.side + 0.5);
+      for (const [sel, cut] of [['[data-nav-name]', m.name], ['[data-nav-tmux]', m.tmux]] as const) {
         expect(cut.sw, `${sel} is cut`).toBeGreaterThan(cut.cw);
         expect(cut.ov).toBe('ellipsis');
       }
+      expect(m.sw, 'the page does not scroll sideways').toBeLessThanOrEqual(m.cw);
       await noOverflow();
 
       // OFF again: gone, rows and picker.
