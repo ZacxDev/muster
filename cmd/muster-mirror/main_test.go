@@ -381,7 +381,7 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 	done := make(chan string, 1)
 	go func() {
 		_, _, errs := runWith(t, map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
-			envAllowHTTP: "1", envMCPListen: "127.0.0.1:0", envMCPSecret: secret})
+			envAllowHTTP: "1", envMCPListen: "127.0.0.1:47999", envMCPSecret: secret})
 		done <- errs
 	}()
 	select {
