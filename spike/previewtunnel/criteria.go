@@ -30,6 +30,25 @@ type Env struct {
 	Base      string     // http://<edgePrev>
 	HostDone  chan error // receives when the host's Run returns
 	cancel    func()
+	// Header is sent on every client request (remote mode: the gateway secret).
+	Header http.Header
+	// Gzip makes CheckC5's client ask for compression the way a browser does.
+	Gzip bool
+}
+
+// http1Client is an HTTP/1.1-only client (a bare Transport never negotiates h2).
+func http1Client() *http.Client { return &http.Client{Transport: &http.Transport{}} }
+
+func (e *Env) dialOpts() *websocket.DialOptions {
+	return &websocket.DialOptions{HTTPHeader: e.Header.Clone(), HTTPClient: http1Client()}
+}
+
+func (e *Env) newReq(ctx context.Context, url string) *http.Request {
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	for k, v := range e.Header {
+		req.Header[k] = v
+	}
+	return req
 }
 
 type EnvOpts struct {
@@ -80,9 +99,11 @@ func NewEnv(o EnvOpts) (*Env, error) {
 
 func (e *Env) Close() {
 	e.cancel()
-	e.GW.Close()
-	e.EdgeTun.Close()
-	e.EdgePrev.Close()
+	if e.GW != nil { // nil in remote mode: the gateway runs elsewhere
+		e.GW.Close()
+		e.EdgeTun.Close()
+		e.EdgePrev.Close()
+	}
 	e.Up.Close()
 }
 
@@ -96,8 +117,8 @@ func pct(d []time.Duration, p float64) time.Duration {
 }
 
 // EchoRTTs sends n 64-byte messages one at a time and records each round trip.
-func EchoRTTs(ctx context.Context, url string, n int) ([]time.Duration, error) {
-	c, _, err := websocket.Dial(ctx, url, nil)
+func EchoRTTs(ctx context.Context, url string, n int, opts *websocket.DialOptions) ([]time.Duration, error) {
+	c, _, err := websocket.Dial(ctx, url, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +163,11 @@ const (
 func CheckC1(e *Env, n int) (C1, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	bare, err := EchoRTTs(ctx, e.wsURL("/__bare_echo"), n)
+	bare, err := EchoRTTs(ctx, e.wsURL("/__bare_echo"), n, e.dialOpts())
 	if err != nil {
 		return C1{}, fmt.Errorf("bare: %w", err)
 	}
-	tun, err := EchoRTTs(ctx, e.wsURL("/ws"), n)
+	tun, err := EchoRTTs(ctx, e.wsURL("/ws"), n, e.dialOpts())
 	if err != nil {
 		return C1{}, fmt.Errorf("tunnel: %w", err)
 	}
@@ -202,7 +223,7 @@ type PausedDownload struct {
 
 func StartPausedDownload(e *Env, size int64, seed uint64) (*PausedDownload, error) {
 	cl := &http.Client{Transport: &http.Transport{DisableCompression: true}}
-	resp, err := cl.Get(fmt.Sprintf("%s/blob?n=%d&seed=%d", e.Base, size, seed))
+	resp, err := cl.Do(e.newReq(context.Background(), fmt.Sprintf("%s/blob?n=%d&seed=%d", e.Base, size, seed)))
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +291,7 @@ func CheckC3(e *Env, size int64, pause time.Duration, echoN int) (C3, error) {
 	r := C3{Assets: assets}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	bare, err := EchoRTTs(ctx, e.wsURL("/__bare_echo"), echoN)
+	bare, err := EchoRTTs(ctx, e.wsURL("/__bare_echo"), echoN, e.dialOpts())
 	if err != nil {
 		return r, err
 	}
@@ -317,7 +338,7 @@ func CheckC3(e *Env, size int64, pause time.Duration, echoN int) (C3, error) {
 		defer wg.Done()
 		ectx, ecancel := context.WithDeadline(ctx, resumeAt)
 		defer ecancel()
-		tun, echoErr = EchoRTTs(ectx, e.wsURL("/ws"), echoN)
+		tun, echoErr = EchoRTTs(ectx, e.wsURL("/ws"), echoN, e.dialOpts())
 	}()
 	wg.Wait()
 	r.AssetsBeforeResume = time.Now().Before(resumeAt)
@@ -366,7 +387,7 @@ func CheckC4(e *Env, idle time.Duration) (C4, error) {
 	r := C4{Idle: idle}
 	ctx, cancel := context.WithTimeout(context.Background(), idle+30*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, e.wsURL("/ws"), nil)
+	c, _, err := websocket.Dial(ctx, e.wsURL("/ws"), e.dialOpts())
 	if err != nil {
 		return r, err
 	}
@@ -403,7 +424,7 @@ func CheckC4(e *Env, idle time.Duration) (C4, error) {
 	r.EchoAfterIdle = roundtrip()
 	gctx, gcancel := context.WithTimeout(ctx, 5*time.Second)
 	defer gcancel()
-	req, _ := http.NewRequestWithContext(gctx, "GET", e.Base+"/blob?n=1024&seed=1", nil)
+	req := e.newReq(gctx, e.Base+"/blob?n=1024&seed=1")
 	if resp, err := (&http.Client{Transport: &http.Transport{}}).Do(req); err == nil {
 		n, _ := io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -415,7 +436,9 @@ func CheckC4(e *Env, idle time.Duration) (C4, error) {
 	default:
 		r.HostTunnelAlive = true
 	}
-	r.EdgeKillsTun, r.EdgeKillsPrev = e.EdgeTun.Kills.Load(), e.EdgePrev.Kills.Load()
+	if e.EdgeTun != nil { // remote mode has no simulator; the real edge's kills show as the other fields
+		r.EdgeKillsTun, r.EdgeKillsPrev = e.EdgeTun.Kills.Load(), e.EdgePrev.Kills.Load()
+	}
 	if !r.EchoAfterIdle || !r.NewStreamAfterIdle || !r.HostTunnelAlive || r.EdgeKillsTun+r.EdgeKillsPrev > 0 {
 		return r, fmt.Errorf("C4 FAIL: %v", r)
 	}
@@ -425,27 +448,30 @@ func CheckC4(e *Env, idle time.Duration) (C4, error) {
 // ---------------------------------------------------------------- criterion 5
 
 type C5 struct {
-	N        int
-	P50, Max time.Duration
+	N          int
+	P50, Max   time.Duration
+	Compressed bool // the response arrived compressed (only possible with Env.Gzip)
 }
 
 func (r C5) String() string {
-	return fmt.Sprintf("n=%d first-event latency p50=%v max=%v", r.N, r.P50, r.Max)
+	return fmt.Sprintf("n=%d first-event latency p50=%v max=%v compressed=%v", r.N, r.P50, r.Max, r.Compressed)
 }
 
 const C5Max = 500 * time.Millisecond
 
 func CheckC5(e *Env, n int, hold time.Duration) (C5, error) {
 	var lat []time.Duration
-	cl := &http.Client{Transport: &http.Transport{DisableCompression: true}, Timeout: hold + time.Second}
+	cl := &http.Client{Transport: &http.Transport{DisableCompression: !e.Gzip}, Timeout: hold + 5*time.Second}
+	compressed := false
 	for i := 0; i < n; i++ {
 		for len(e.Up.SSESent) > 0 {
 			<-e.Up.SSESent
 		}
-		resp, err := cl.Get(fmt.Sprintf("%s/sse?hold=%s", e.Base, hold))
+		resp, err := cl.Do(e.newReq(context.Background(), fmt.Sprintf("%s/sse?hold=%s", e.Base, hold)))
 		if err != nil {
 			return C5{}, fmt.Errorf("C5: no response headers: %w", err)
 		}
+		compressed = compressed || resp.Uncompressed
 		br := bufio.NewReader(resp.Body)
 		var got time.Time
 		for {
@@ -463,7 +489,7 @@ func CheckC5(e *Env, n int, hold time.Duration) (C5, error) {
 		resp.Body.Close()
 		lat = append(lat, max(0, got.Sub(sent)))
 	}
-	r := C5{N: n, P50: pct(lat, .5), Max: pct(lat, 1)}
+	r := C5{N: n, P50: pct(lat, .5), Max: pct(lat, 1), Compressed: compressed}
 	if r.Max > C5Max {
 		return r, fmt.Errorf("C5 FAIL: max first-event latency %v > %v", r.Max, C5Max)
 	}

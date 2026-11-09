@@ -87,12 +87,18 @@ type Host struct {
 	Faults       Faults
 	PingInterval time.Duration
 	Stats        HostStats
+	Header       http.Header // extra headers on the tunnel request (remote mode: secret, port)
 }
 
 // Run dials wsURL and serves the tunnel until ctx ends or the tunnel drops.
 func (h *Host) Run(ctx context.Context, wsURL string) error {
+	hdr := http.Header{"X-Muster-Preview-Version": {"1"}, "X-Spike-Transport": {string(h.Transport)}}
+	for k, v := range h.Header {
+		hdr[k] = v
+	}
 	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"X-Muster-Preview-Version": {"1"}, "X-Spike-Transport": {string(h.Transport)}},
+		HTTPHeader: hdr,
+		HTTPClient: http1Client(), // HTTP/1.1: a WebSocket upgrade through a TLS edge must not negotiate h2
 	})
 	if err != nil {
 		return err
