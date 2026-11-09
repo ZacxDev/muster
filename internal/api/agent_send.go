@@ -182,7 +182,7 @@ func agentCanBeSent(status string) bool { return status == agents.StatusRunning 
 // composer (handleAgentSend) and the view's chief door (view_chief.go),
 // notTyped from every other caller; about is runEnteredTurn's (the view's chief
 // door's subject, nil everywhere else).
-func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, about *agents.ChatAbout) {
+func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, about *chatSubject) {
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 	// Counted NOW, before this request answers: the page this send redirects back
 	// to is drawn next, and must already show "working…" (session_turns.go).

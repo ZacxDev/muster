@@ -1931,15 +1931,16 @@ func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents
 //
 // about is the session the owner was viewing when they typed text (the view's
 // chief door, view_chief.go: resolved by the server, never by the page), nil
-// from every other caller. It is stored on the user row (chat_messages.about,
-// migration 0097) beside text, and the runtime is handed text behind a muster
-// header rendered from it (viewChiefTurnText). 🔴 THE ROW'S CONTENT IS ONLY
+// from every other caller. Its session KEY only is stored on the user row
+// (chat_messages.about, migration 0098) beside text, and the runtime is handed
+// text behind a muster header rendered from the whole subject, in memory
+// (viewChiefTurnText). 🔴 THE ROW'S CONTENT IS ONLY
 // WHAT WAS TYPED: the header is muster's, so the owner's covering words
 // (chief_chat_quotes.go) never include it. TestOnlyTheViewDoorBindsASubject
 // pins who passes what.
-func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit, about *agents.ChatAbout) ([]agents.TurnPart, error) {
+func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, typedBy int64, emit agents.StreamEmit, about *chatSubject) ([]agents.TurnPart, error) {
 	msg, err := s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text,
-		TypedBy: typedBy, About: about})
+		TypedBy: typedBy, AboutKey: about.key()})
 	if err != nil {
 		msg = agents.ChatMessage{} // no row to point at: nothing is marked
 	}

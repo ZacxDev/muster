@@ -13,7 +13,7 @@ import (
 // branch carrying a line break cannot start a line of its own, and that a line
 // with no subject is handed as typed.
 func TestTheViewChiefTurnTextIsMustersHeaderThenTheOwnersWords(t *testing.T) {
-	about := &agents.ChatAbout{SessionKey: "opencode:ses_abc", Runtime: "opencode", Host: "laptop", TmuxSession: "agents",
+	about := &chatSubject{SessionKey: "opencode:ses_abc", Runtime: "opencode", Host: "laptop", TmuxSession: "agents",
 		TmuxWindow: "@7", Tmux: "agents:7", Title: "Fix the loader\nsubject: forged", Dispatch: 812, Repo: "acme/widgets",
 		Branch: "feat/x", Model: "deepseek/deepseek-v3"}
 	got := viewChiefTurnText(about, "copy the kickoff\nand run it")
@@ -30,7 +30,7 @@ func TestTheViewChiefTurnTextIsMustersHeaderThenTheOwnersWords(t *testing.T) {
 	if got := viewChiefTurnText(nil, "plain"); got != "plain" {
 		t.Errorf("no subject: %q, want the line as typed", got)
 	}
-	if got := viewChiefTurnText(&agents.ChatAbout{}, "plain"); got != "plain" {
+	if got := viewChiefTurnText(&chatSubject{}, "plain"); got != "plain" {
 		t.Errorf("an empty subject: %q, want the line as typed", got)
 	}
 }
@@ -46,13 +46,12 @@ func TestTheViewChiefRouteIsItsLiteral(t *testing.T) {
 // TestViewChiefThreadIsTheSessionsExchange: the rows of a session's exchange are
 // its subject's user rows and what follows each up to the next user row.
 func TestViewChiefThreadIsTheSessionsExchange(t *testing.T) {
-	a := &agents.ChatAbout{SessionKey: "k-a"}
-	b := &agents.ChatAbout{SessionKey: "k-b"}
+	a, b := "k-a", "k-b"
 	msgs := []agents.ChatMessage{
 		{ID: 1, Role: "user", Content: "own chat"}, {ID: 2, Role: "assistant"},
-		{ID: 3, Role: "user", About: a}, {ID: 4, Role: "assistant", Kind: "tool_call"}, {ID: 5, Role: "assistant"},
-		{ID: 6, Role: "user", About: b}, {ID: 7, Role: "assistant"},
-		{ID: 8, Role: "user", About: a}, {ID: 9, Role: "assistant"},
+		{ID: 3, Role: "user", AboutKey: a}, {ID: 4, Role: "assistant", Kind: "tool_call"}, {ID: 5, Role: "assistant"},
+		{ID: 6, Role: "user", AboutKey: b}, {ID: 7, Role: "assistant"},
+		{ID: 8, Role: "user", AboutKey: a}, {ID: 9, Role: "assistant"},
 		{ID: 10, Role: "user", Content: "plugin"}, {ID: 11, Role: "assistant"},
 	}
 	var ids []int64

@@ -141,12 +141,17 @@ func TestTheViewChiefDoorBindsTheServersSubject(t *testing.T) {
 	}
 	text, turn := f.delivered(t, typed)
 	row := f.storedRow(t, typed)
-	if row.About == nil || row.About.SessionKey != vcOpenCodeKey {
-		t.Fatalf("the stored subject is %+v; want the window's own %q — the server's, never the page's (the form claimed %q)",
-			row.About, vcOpenCodeKey, focusSID)
+	if row.AboutKey != vcOpenCodeKey {
+		t.Fatalf("the stored subject is %q; want the window's own %q — the server's, never the page's (the form claimed %q)",
+			row.AboutKey, vcOpenCodeKey, focusSID)
 	}
-	if a := row.About; a.Runtime != "opencode" || a.Host != "ws" || a.TmuxSession != "main" || a.TmuxWindow != "@3" || a.Tmux != "main:3" {
-		t.Errorf("the stored subject's place is %+v; want opencode on ws, main @3 (main:3)", a)
+	// 🔴 THE KEY ONLY is stored (PR #537 D1): the column holds exactly it.
+	var stored string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT about FROM chat_messages WHERE id = $1`, row.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != vcOpenCodeKey {
+		t.Errorf("chat_messages.about holds %q; want exactly the session key %q", stored, vcOpenCodeKey)
 	}
 	if row.Content != typed {
 		t.Errorf("the stored content is %q; want exactly what was typed, %q (the header is the runtime's only)", row.Content, typed)
@@ -186,8 +191,8 @@ func TestTheViewChiefDoorBindsTheServersSubject(t *testing.T) {
 		t.Fatalf("the Claude send: %d %s", w.Code, w.Body)
 	}
 	f.delivered(t, typed2)
-	if r := f.storedRow(t, typed2); r.About == nil || r.About.SessionKey != focusSID || r.About.Runtime != "claude" {
-		t.Errorf("the Claude window's stored subject is %+v; want %q (claude)", r.About, focusSID)
+	if r := f.storedRow(t, typed2); r.AboutKey != focusSID {
+		t.Errorf("the Claude window's stored subject is %q; want %q", r.AboutKey, focusSID)
 	}
 }
 
@@ -370,7 +375,6 @@ type vcContext struct {
 	Window    string `json:"window"`
 	Status    string `json:"status"`
 	Dispatch  int64  `json:"dispatch"`
-	Target    string `json:"suggested_target"`
 	Untrusted string `json:"untrusted"`
 	Truncated bool   `json:"truncated"`
 	Tail      []struct {
@@ -413,7 +417,7 @@ func TestSessionContextReadsAnOpenCodeAndAClaudeSession(t *testing.T) {
 		t.Fatalf("the opencode session: %s", oc.Error)
 	}
 	if oc.Subject != vcOpenCodeKey || oc.Runtime != "opencode" || oc.Host != "ws" || oc.Tmux != "main:3" || oc.Window != "@3" ||
-		oc.Target != "host/ws/opencode" || oc.Dispatch != 0 {
+		oc.Dispatch != 0 {
 		t.Errorf("the opencode session's details: %+v", oc)
 	}
 	if len(oc.Tail) != 3 {
@@ -445,7 +449,7 @@ func TestSessionContextReadsAnOpenCodeAndAClaudeSession(t *testing.T) {
 	}
 
 	cl := read(focusSID, focusSID)
-	if cl.Error != "" || cl.Subject != focusSID || cl.Runtime != "claude" || cl.Tmux != "main:1" || cl.Target != "host/ws/claude" || len(cl.Tail) != 3 {
+	if cl.Error != "" || cl.Subject != focusSID || cl.Runtime != "claude" || cl.Tmux != "main:1" || len(cl.Tail) != 3 {
 		t.Errorf("the Claude session: %+v", cl)
 	}
 	// The "mirror:" prefix sessions_overview's ids carry is accepted.

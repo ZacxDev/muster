@@ -22,7 +22,7 @@ import (
 // The owner is looking at a mirrored session's rendered view and flips the
 // composer to "Chief". What they type goes to their chief, not to the pane, and
 // muster records WHICH session they were looking at with it: the subject, in
-// chat_messages.about (migration 0097).
+// chat_messages.about (migration 0098; its key only).
 //
 // 🔴 THE SUBJECT IS THE SERVER'S, NEVER THE PAGE'S. The browser sends only the
 // view's address (host, session, window: the fields every composer sends), the
@@ -75,6 +75,36 @@ const (
 	ViewChiefNoChief = "you have no chief turned on: turn it on in Account → Chief"
 )
 
+// chatSubject is the mirrored session the owner was viewing when they typed a
+// line to the chief (sessionSubject), as the server resolved it at that
+// moment. 🔴 ONLY ITS KEY IS STORED (chat_messages.about, migration 0098;
+// operator decision, PR #537 D1): the rest builds the chief's header
+// (viewChiefTurnText) and session_context's answer, in memory.
+type chatSubject struct {
+	// SessionKey is the conversation's key (mirror.SessionView.SessionKey):
+	// a Claude Code session id, or "opencode:<ses_…>".
+	SessionKey string
+	// Runtime is the window's runtime ("claude", "opencode").
+	Runtime string
+	// Host, TmuxSession and TmuxWindow address the window; Tmux is its
+	// operator-facing address ("<session>:<index>"), Title its name.
+	Host, TmuxSession, TmuxWindow, Tmux, Title string
+	// Dispatch is the host dispatch the window was started for (0: a window
+	// the owner opened); Repo, Base, Branch and Model are that dispatch's,
+	// or Repo the window's short repository name without one.
+	Dispatch                  int64
+	Repo, Base, Branch, Model string
+}
+
+// key is the subject's session key, "" for none (a nil subject: every chat
+// writer but the view's chief door).
+func (c *chatSubject) key() string {
+	if c == nil {
+		return ""
+	}
+	return c.SessionKey
+}
+
 // viewChiefTurnHeader starts the header the chief reads above the owner's
 // words (viewChiefTurnText).
 const viewChiefTurnHeader = "[muster] Your owner is viewing a "
@@ -91,7 +121,7 @@ const viewChiefTitleRunes = 120
 //
 // Every value in the header is one line (fence.Sanitize): a title or a branch
 // name cannot start a line of its own that reads as muster's.
-func viewChiefTurnText(about *agents.ChatAbout, text string) string {
+func viewChiefTurnText(about *chatSubject, text string) string {
 	if about == nil || about.SessionKey == "" {
 		return text
 	}
@@ -134,10 +164,10 @@ func viewChiefTurnText(about *agents.ChatAbout, text string) string {
 // when the address is not a listed window of the principal's that names a
 // conversation. 🔴 IT READS NOTHING FROM THE REQUEST BUT THE ADDRESS: the
 // window is found through mirrorEntry, the principal's hosts only.
-func (s *Server) viewChiefSubject(r *http.Request, host, session, window string) (agents.ChatAbout, mirror.SessionView, bool) {
+func (s *Server) viewChiefSubject(r *http.Request, host, session, window string) (chatSubject, mirror.SessionView, bool) {
 	_, e, listed, _, ok := s.mirrorEntry(r, host, session, window)
 	if !ok || !listed || e.SessionKey() == "" {
-		return agents.ChatAbout{}, mirror.SessionView{}, false
+		return chatSubject{}, mirror.SessionView{}, false
 	}
 	return s.sessionSubject(r.Context(), e), e, true
 }
@@ -147,9 +177,10 @@ func (s *Server) viewChiefSubject(r *http.Request, host, session, window string)
 // dispatch's repository, base, branch and model, read as ctx's principal.
 //
 // 🔴 THE ONE PLACE A SUBJECT IS BUILT: the view's door stores it on the owner's
-// line (chat_messages.about), and session_context answers with it.
-func (s *Server) sessionSubject(ctx context.Context, e mirror.SessionView) agents.ChatAbout {
-	about := agents.ChatAbout{SessionKey: e.SessionKey(), Runtime: mirror.RuntimeClaude, Host: e.Host,
+// line (its key only, chat_messages.about) and builds the chief's header from it,
+// and session_context answers with it.
+func (s *Server) sessionSubject(ctx context.Context, e mirror.SessionView) chatSubject {
+	about := chatSubject{SessionKey: e.SessionKey(), Runtime: mirror.RuntimeClaude, Host: e.Host,
 		TmuxSession: e.Session, TmuxWindow: e.Window, Tmux: e.Address(), Dispatch: e.Dispatch, Repo: e.Repo}
 	if rt, ok := e.Spec(); ok {
 		about.Runtime = rt.Name
@@ -291,7 +322,7 @@ func viewChiefThread(msgs []agents.ChatMessage, key string) []agents.ChatMessage
 	in := false
 	for _, m := range msgs {
 		if m.Role == "user" {
-			in = m.About != nil && m.About.SessionKey == key
+			in = m.AboutKey == key
 		}
 		if in {
 			out = append(out, m)

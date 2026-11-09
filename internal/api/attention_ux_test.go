@@ -310,9 +310,9 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		"askerAddressedBy": {{"askerAddressed", ""}, {"mirrorAddressed", ""}},
 		// The owner's three chat doors: the chief chat's form and socket, and
 		// the view's chief mode (view_chief.go).
-		"askerAddressed":   {{"handleAgentSend", ""}, {"handleAgentWS", ""}, {"handleViewChief", ""}},
-		"mirrorAddressed":  {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
-		"queue paste":      {{"sendQueueDeliver", "mirror.PasteClaude"}},
+		"askerAddressed":  {{"handleAgentSend", ""}, {"handleAgentWS", ""}, {"handleViewChief", ""}},
+		"mirrorAddressed": {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
+		"queue paste":     {{"sendQueueDeliver", "mirror.PasteClaude"}},
 	} {
 		got := calls[name]
 		slices.SortFunc(got, func(a, b site) int { return strings.Compare(a.caller, b.caller) })

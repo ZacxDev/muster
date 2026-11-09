@@ -15,14 +15,14 @@ import (
 )
 
 // TestOnlyTheViewDoorBindsASubject is the WRITER LEDGER behind chat_messages.about
-// (migration 0097; docs/design/chief-in-agent-view.md 3.1): the session the owner
+// (migration 0098; docs/design/chief-in-agent-view.md 3.1): the KEY of the session the owner
 // was viewing when they typed a line to the chief. Phase 2's succession binds to
 // it ("successor_of must equal about.session_key"), so a second writer would be
 // a second way to point the chief at a session — every way a value can reach
 // the field is listed here, across the WHOLE module's non-test source, and
 // compared BOTH ways: a new site fails, and so does a listed one that is gone.
 //
-//   - ANY struct-literal key OR assignment whose target is named About;
+//   - ANY struct-literal key OR assignment whose target is named AboutKey;
 //   - every call of the two turn functions that carry the subject
 //     (runEnteredTurn, startAgentTurn), with that argument as written: only
 //     the view's chief door (handleViewChief) passes one; every other caller
@@ -35,7 +35,7 @@ import (
 func TestOnlyTheViewDoorBindsASubject(t *testing.T) {
 	want := []string{
 		// The one setter: the user row runEnteredTurn stores, from its about.
-		"internal/api/agents.go (*Server).runEnteredTurn → literal About: about",
+		"internal/api/agents.go (*Server).runEnteredTurn → literal AboutKey: about.key()",
 		// Who passes what into the turn.
 		"internal/api/agents.go (*Server).handleAgentWS → runEnteredTurn(nil)",
 		"internal/api/agents.go (*Server).runUserTurn → runEnteredTurn(nil)",
@@ -45,10 +45,9 @@ func TestOnlyTheViewDoorBindsASubject(t *testing.T) {
 		"internal/api/ext.go (*Server).UseExtensions → startAgentTurn(nil)",
 		// 🔴 THE ONE NON-NIL SUBJECT: resolved by viewChiefSubject from the hub.
 		"internal/api/view_chief.go (*Server).handleViewChief → startAgentTurn(&about)",
-		// The store: the insert writes it (NULL unless a user row has one) and
-		// the one scan reads it back.
+		// The store: the insert writes it (NULL unless a user row has one); the
+		// one scan reads it back into the field (a Scan target, not a write).
 		"internal/agents/pgstore.go (*PGStore).AddChatMessage → aboutArg(m)",
-		"internal/agents/pgstore.go scanChatMessage → assign m.About",
 	}
 	got := aboutSites(t)
 	sort.Strings(want)
@@ -61,7 +60,7 @@ func TestOnlyTheViewDoorBindsASubject(t *testing.T) {
 	// Positive control on the scanner: it reached both packages and the setter.
 	setters := 0
 	for _, g := range got {
-		if strings.Contains(g, "literal About: about") {
+		if strings.Contains(g, "literal AboutKey: about.key()") {
 			setters++
 		}
 	}
@@ -129,12 +128,12 @@ func aboutSites(t *testing.T) []string {
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.KeyValueExpr:
-					if k, ok := x.Key.(*ast.Ident); ok && k.Name == "About" {
-						out = append(out, at+"literal About: "+render(x.Value))
+					if k, ok := x.Key.(*ast.Ident); ok && k.Name == "AboutKey" {
+						out = append(out, at+"literal AboutKey: "+render(x.Value))
 					}
 				case *ast.AssignStmt:
 					for _, l := range x.Lhs {
-						if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "About" {
+						if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "AboutKey" {
 							out = append(out, at+"assign "+render(l))
 						}
 					}

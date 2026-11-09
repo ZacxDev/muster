@@ -580,12 +580,13 @@ session you are looking at, instead of to the pane:
   an opencode window muster cannot send to. It is a message to the chief's
   chat, not to the pane, so it needs neither `-interactive` nor a fresh
   sign-in.
-- muster records which session you were looking at with your message (its
-  key, runtime, host and window, and for an agent the chief started, its
-  repository, branch and model). It works this out itself from the window you
-  are viewing; nothing the page sends can change it.
-- The chief reads your words behind a short muster header naming the session,
-  and can read the session with `session_context`.
+- muster records which session you were looking at with your message: its
+  session key, nothing more. It works this out itself from the window you are
+  viewing; nothing the page sends can change it.
+- The chief reads your words behind a short muster header naming the session
+  (its runtime, host and window, and for an agent the chief started, its
+  repository, branch and model), and can read the session with
+  `session_context`.
 - Its reply shows in a strip above the composer: the chief's own chat (its
   default thread), narrowed to what you asked about this session. Each window
   remembers the mode you left it in.

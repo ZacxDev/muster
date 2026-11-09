@@ -183,14 +183,12 @@ func (s *Server) toolSessionContext(ctx context.Context, arguments string) strin
 		"subject": key, "runtime": about.Runtime, "host": about.Host, "tmux": about.Tmux, "window": about.TmuxWindow,
 		"title": about.Title, "status": status, "cwd": cwd, "dispatch": about.Dispatch,
 		"repo": nullIfEmpty(about.Repo), "base": nullIfEmpty(about.Base), "branch": nullIfEmpty(about.Branch),
-		"model": nullIfEmpty(about.Model),
-		// What a session that continues this one would most likely be: its own
-		// host and runtime (and, for a dispatch, its model). A suggestion for
-		// the chief to use unless the owner named something else; whatever it
-		// passes goes through agent_dispatch's own rules.
-		"suggested_target": "host/" + about.Host + "/" + about.Runtime,
-		"suggested_model":  nullIfEmpty(about.Model),
-		"untrusted":        sessionContextUntrusted,
+		"model":     nullIfEmpty(about.Model),
+		"untrusted": sessionContextUntrusted,
+		// 🔴 NO SUGGESTED TARGET OR MODEL (operator decision, PR #537 round 0
+		// Q1/D3): what a successor would run on arrives in phase 2, with the
+		// verbatim kickoff copy and the successor_of binding, not before.
+		// TestSessionContextAnswersExactlyItsKeys pins the key set.
 	}
 	tail := sessionContextTail(entries, n)
 	// 🔴 THE HARD CAP: the oldest messages go first; the newest — where a
