@@ -812,12 +812,20 @@ the operator's round 0 decisions on PR #537:
   - `TestOnlyTheViewDoorBindsASubject` is the new writer ledger for `about`.
     It sits beside `TestEveryChatWriterIsClassified`, whose `typed_by` set is
     unchanged.
-- **The composer switch** (`internal/ui/view_chief.go`): "`<runtime>` |
-  Chief", with two radios.
-  - A stylesheet rule (`:has(#mv-to-chief:checked)`) decides which Send shows.
-    The chief's Send carries the chief route as its `formaction`, so a submit
-    without script still reaches the door.
-  - The script adds the form's action for Enter, the placeholder, the box
+- **The composer toggle** (`internal/ui/view_chief.go`): one button
+  (`#mv-to`, `aria-pressed` = chief mode), the input row's first control, left
+  of the paperclip; it shows the current target's glyph (a bot for the agent, a
+  crown for the chief). (It replaced a two-radio "`<runtime>` | Chief" switch
+  above the row.)
+  - Chief mode is drawn in the review status pair (`st-review-fg` /
+    `st-review-bg`): the composer's top edge, the box's ring and fill, the
+    toggle, and the chief's Send. Agent mode is the composer as it was.
+  - A stylesheet rule (`#mv-compose[data-to=chief]`, set by the script, or
+    `:has(#mv-to-chief:checked)`, a `<noscript>` checkbox drawn in the hidden
+    toggle's place) decides which Send shows. The chief's Send carries the
+    chief route as its `formaction`, so a submit without script still reaches
+    the door.
+  - The script adds the toggle, the form's action for Enter, the placeholder, the box
     enabled on a disabled agent composer, the mode remembered per window
     (`localStorage`, `MirrorDraftKey(…, "chief", …)`), and the strip's live
     refresh.

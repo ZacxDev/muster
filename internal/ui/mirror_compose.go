@@ -345,8 +345,6 @@ func mirrorComposer(v ComposerView) g.Node {
 		composerMenuBox(menu),
 		// The attachments' chips (attach.go): above the input, hidden while empty.
 		attachBox(upload),
-		// "<agent> | Chief": where the box's text goes (view_chief.go).
-		g.If(v.Chief != nil, viewChiefSwitch(v.Chief)),
 		Form(
 			ID("mv-form"),
 			// 🔴 method + action: without the script this is still a form the
@@ -365,6 +363,9 @@ func mirrorComposer(v ComposerView) g.Node {
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
 			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
+			// The chief toggle, the row's FIRST control, left of the paperclip:
+			// where the box's text goes (view_chief.go).
+			g.If(v.Chief != nil, viewChiefToggle(v.Chief)),
 			// The paperclip sits INSIDE the input, on its left (attach.go).
 			attachFieldOrOff(upload, uploadOff, composerFieldMark(collapse), func(pad string, mark g.Node) g.Node {
 				return Textarea(
