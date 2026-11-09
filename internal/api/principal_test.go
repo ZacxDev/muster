@@ -218,7 +218,7 @@ var routeVias = map[authz.Via][]string{
 		// A succession (succession.go): the view's read and the card's tap —
 		// the session tier only (the tap is the owner's own door).
 		"GET /mirror/view/successor",
-		"POST /mirror/view/succession",
+		"POST /mirror/view/proposal",
 		// AskUserQuestion: the live region and the answers (mirror_ask.go).
 		"GET /mirror/view/asks",
 		"POST /mirror/view/ask",

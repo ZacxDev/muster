@@ -77,11 +77,13 @@ func TestHostSpawnHasOneDoor(t *testing.T) {
 	// 🔴 The second caller is the owner's TAP on a succession's card (operator
 	// decision, chief-in-agent-view phase 2): an HTTP route reaches a host
 	// spawn there, but only through the owner's own door (answerAskFrom's
-	// succession hook, attention.IsOwnerDoor), never a token.
+	// proposal hook, attention.IsOwnerDoor), never a token.
 	assertCallers(t, ".", "spawnReserved", []string{"host_dispatch.go:toolHostDispatch", "succession.go:reserveSuccession"})
 	assertCallers(t, ".", "reserveSuccession", []string{"succession.go:startSuccession"})
-	assertCallers(t, ".", "startSuccession", []string{"succession.go:successionForAnswer"})
-	assertCallers(t, ".", "successionForAnswer", []string{"attention.go:answerAskFrom"})
+	assertCallers(t, ".", "startSuccession", []string{"succession.go:acceptSuccession"})
+	assertCallers(t, ".", "acceptSuccession", []string{"chief_proposal.go:acceptProposal"})
+	assertCallers(t, ".", "acceptProposal", []string{"chief_proposal.go:proposalForAnswer"})
+	assertCallers(t, ".", "proposalForAnswer", []string{"attention.go:answerAskFrom"})
 	assertCallers(t, ".", "toolHostDispatch", []string{"agent_dispatch.go:toolAgentDispatch"})
 }
 

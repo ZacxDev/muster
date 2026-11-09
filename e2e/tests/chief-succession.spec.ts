@@ -270,9 +270,9 @@ for (const vp of [
 
       // THE CARD, on this view: the exact kickoff muster copied, and the
       // settings — and NOTHING has started.
-      const card = page.locator('#mv-succession-card');
+      const card = page.locator('#mv-proposal-card');
       await expect(card).toBeVisible({ timeout: 30_000 });
-      await expect(page.locator('#mv-succession-kickoff')).toHaveText(KICKOFF);
+      await expect(page.locator('#mv-proposal-body')).toHaveText(KICKOFF);
       await expect(card).toContainText(`host/${rig.host}/opencode`);
       await expect(card).toContainText(MODEL);
       await expect(card).toContainText(REPO);
@@ -284,7 +284,7 @@ for (const vp of [
       await page.screenshot({ path: info.outputPath(`succession-card-${vp.key}.png`) });
 
       // THE TAP: the authorisation. The view then follows the successor.
-      await tap('[data-succession-choice="Start it"]');
+      await tap('[data-proposal-choice="Start it"]');
       await expect(page.locator('#mv-follow')).toBeVisible({ timeout: 30_000 });
       await expect(page).toHaveURL(/session=agents/, { timeout: 30_000 });
       const sp = spawns();

@@ -63,7 +63,7 @@ type HostDispatch struct {
 type HostDispatchNew struct {
 	Host, Runtime, Model, HeldID, Repo, Base string
 	TaskID                                   int64
-	// Succession, when > 0, is the session_successions row this dispatch
+	// Succession, when > 0, is the chief_proposals row this dispatch
 	// starts (migration 0099): linked IN THE SAME TRANSACTION, single use
 	// (linkSuccessionTx), with SuccessionMode the mode the owner's tap chose.
 	// SuccessionPrev is the dispatch the row is still linked to when this is

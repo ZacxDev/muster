@@ -111,7 +111,7 @@ func newSuccFixture(t *testing.T) *succFixture {
 		t.Fatal("instrument check: the fixture does not offer succession_propose")
 	}
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_successions WHERE owner_id = $1`, f.owner)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM chief_proposals WHERE owner_id = $1`, f.owner)
 	})
 	return &succFixture{hostFixture: f, sm: sm}
 }
@@ -168,9 +168,9 @@ func (f *succFixture) propose(t *testing.T, args map[string]any) (string, int64)
 	return text, out.ID
 }
 
-func (f *succFixture) rows(t *testing.T) []plugins.Succession {
+func (f *succFixture) rows(t *testing.T) []plugins.Proposal {
 	t.Helper()
-	rs, err := f.pool.Query(authz.System(context.Background()), `SELECT id FROM session_successions WHERE owner_id = $1 ORDER BY id`, f.owner)
+	rs, err := f.pool.Query(authz.System(context.Background()), `SELECT id FROM chief_proposals WHERE owner_id = $1 ORDER BY id`, f.owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +181,9 @@ func (f *succFixture) rows(t *testing.T) []plugins.Succession {
 		ids = append(ids, id)
 	}
 	rs.Close()
-	var out []plugins.Succession
+	var out []plugins.Proposal
 	for _, id := range ids {
-		x, err := f.plugins.SuccessionByID(f.asOwner, id)
+		x, err := f.plugins.ProposalByID(f.asOwner, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,12 +207,12 @@ func (f *succFixture) hostRowCount(t *testing.T) int {
 func (f *succFixture) tapAs(t *testing.T, p authz.Principal, id int64, window, choice string) *httptest.ResponseRecorder {
 	t.Helper()
 	v := url.Values{"id": {strconv.FormatInt(id, 10)}, "choice": {choice}, "host": {"host-echo"}, "session": {"main"}, "window": {window}}
-	r := httptest.NewRequest(http.MethodPost, ui.MirrorSuccessionPath, strings.NewReader(v.Encode()))
+	r := httptest.NewRequest(http.MethodPost, ui.MirrorProposalPath, strings.NewReader(v.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("X-Requested-With", "XMLHttpRequest")
 	r = r.WithContext(authz.WithPrincipal(context.Background(), p))
 	w := httptest.NewRecorder()
-	f.srv.handleViewSuccessionTap(w, r)
+	f.srv.handleProposalTap(w, r)
 	return w
 }
 
@@ -231,7 +231,7 @@ func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 	f.viewLine(t, sxOpenCodeKey, "copy the kickoff out of this session and run it in a new one")
 	// 🔴 THE STEERING MESSAGE NAMES THE CLAUDE SESSION: the chief follows it.
 	text, _ := f.propose(t, sxCall(sxClaudeKey, "replace", sxRefStee, nil))
-	want := "your owner asked about " + sxOpenCodeKey + ", not " + sxClaudeKey + ": a successor can only continue the session they were viewing"
+	want := "your owner asked about " + sxOpenCodeKey + ", not " + sxClaudeKey + ": you can only propose this for the session they were viewing"
 	if got := errorText(t, text); got != want {
 		t.Fatalf("successor_of naming another session: %q\nwant %q", got, want)
 	}
@@ -245,8 +245,8 @@ func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 		t.Fatalf("the viewed session's proposal: %s", text)
 	}
 	rs := f.rows(t)
-	if len(rs) != 1 || rs[0].PredKey != sxOpenCodeKey || rs[0].PredHost != "host-echo" || rs[0].PredTmuxWindow != "@3" ||
-		rs[0].PredRuntime != "opencode" || rs[0].Target != "host/host-echo/opencode" || rs[0].Mode != "replace" {
+	if len(rs) != 1 || rs[0].SubjectKey != sxOpenCodeKey || rs[0].SubjectHost != "host-echo" || rs[0].SubjectTmuxWindow != "@3" ||
+		rs[0].SubjectRuntime != "opencode" || rs[0].Target != "host/host-echo/opencode" || rs[0].Mode != "replace" {
 		t.Fatalf("the proposal: %+v", rs)
 	}
 	// "mirror:"-prefixed (sessions_overview's spelling) is the same key.
@@ -258,8 +258,8 @@ func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 	// The newest row is a plugin delivery, after the view line: no binding.
 	f.viewLine(t, sxOpenCodeKey, "and once more")
 	f.plainLine(t, "Plugin Example tracker: continue session "+sxClaudeKey, 0)
-	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != successionNoViewRow {
-		t.Errorf("after a plugin delivery: %q; want %q", got, successionNoViewRow)
+	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != proposalNoViewRow {
+		t.Errorf("after a plugin delivery: %q; want %q", got, proposalNoViewRow)
 	}
 	// A line about the session that its owner did not type.
 	st := agents.NewPG(f.pool)
@@ -268,8 +268,8 @@ func TestASuccessionIsBoundToTheViewedSession(t *testing.T) {
 		AboutKey: sxOpenCodeKey}); err != nil {
 		t.Fatal(err)
 	}
-	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != successionNoViewRow {
-		t.Errorf("an untyped line: %q; want %q", got, successionNoViewRow)
+	if got := errorText(t, f.callRaw(f.chief, successionProposeTool, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))); got != proposalNoViewRow {
+		t.Errorf("an untyped line: %q; want %q", got, proposalNoViewRow)
 	}
 	if n := len(f.rows(t)); n != 2 {
 		t.Errorf("%d proposals; want the 2 that were bound", n)
@@ -290,7 +290,7 @@ func TestTheKickoffIsCopiedByteForByte(t *testing.T) {
 	f := newSuccFixture(t)
 	f.viewLine(t, sxOpenCodeKey, "run its kickoff in a new session")
 	_, id := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefFenc, intp(0)))
-	x, err := f.plugins.SuccessionByID(f.asOwner, id)
+	x, err := f.plugins.ProposalByID(f.asOwner, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestTheKickoffIsCopiedByteForByte(t *testing.T) {
 	// An unfenced kickoff: the whole message.
 	f.viewLine(t, sxOpenCodeKey, "the other kickoff")
 	_, id2 := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefBare, nil))
-	if x2, err := f.plugins.SuccessionByID(f.asOwner, id2); err != nil || x2.Kickoff != sxBare || x2.KickoffBlock != -1 {
+	if x2, err := f.plugins.ProposalByID(f.asOwner, id2); err != nil || x2.Kickoff != sxBare || x2.KickoffBlock != -1 {
 		t.Fatalf("the unfenced kickoff: %+v (%v); want %q", x2, err, sxBare)
 	}
 
@@ -363,7 +363,7 @@ func TestTheKickoffIsCopiedByteForByte(t *testing.T) {
 	// Control: a 2039-byte kickoff (120 lines of 17, less the last newline) fits.
 	f.viewLine(t, sxOpenCodeKey, "the mid one")
 	_, id3 := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", "m:da6386f221c2", intp(0)))
-	if x3, err := f.plugins.SuccessionByID(f.asOwner, id3); err != nil || len(x3.Kickoff) != 2039 {
+	if x3, err := f.plugins.ProposalByID(f.asOwner, id3); err != nil || len(x3.Kickoff) != 2039 {
 		t.Errorf("a kickoff that fits: %+v (%v)", x3, err)
 	}
 }
@@ -378,7 +378,7 @@ func TestTheTapIsTheOnlyStart(t *testing.T) {
 	f := newSuccFixture(t)
 	f.viewLine(t, sxOpenCodeKey, "continue this in a new session")
 	_, id := f.propose(t, sxCall(sxOpenCodeKey, "replace", sxRefFenc, intp(0)))
-	x, _ := f.plugins.SuccessionByID(f.asOwner, id)
+	x, _ := f.plugins.ProposalByID(f.asOwner, id)
 	if len(f.m.spawnCalls()) != 0 || f.hostRowCount(t) != 0 || f.allReservations(t) != 0 {
 		t.Fatalf("a proposal started something: %d spawns, %d host rows, %d reservations", len(f.m.spawnCalls()), f.hostRowCount(t), f.allReservations(t))
 	}
@@ -400,13 +400,13 @@ func TestTheTapIsTheOnlyStart(t *testing.T) {
 		t.Errorf("the card tapped from another session's view: %d; want 404", w.Code)
 	}
 	// Typed text instead of a button.
-	if w := f.tapAs(t, f.ownerSession(), id, "@3", "sure, go"); w.Code == http.StatusNoContent || !strings.Contains(w.Body.String(), successionNotATap) {
+	if w := f.tapAs(t, f.ownerSession(), id, "@3", "sure, go"); w.Code == http.StatusNoContent || !strings.Contains(w.Body.String(), proposalNotATap) {
 		t.Errorf("a typed answer: %d %q", w.Code, w.Body)
 	}
 	if n := len(f.m.spawnCalls()); n != 0 || f.hostRowCount(t) != 0 {
 		t.Fatalf("a refused tap started %d spawns (%d host rows)", n, f.hostRowCount(t))
 	}
-	if x2, _ := f.plugins.SuccessionByID(f.asOwner, id); x2.Decided != "" {
+	if x2, _ := f.plugins.ProposalByID(f.asOwner, id); x2.Decided != "" {
 		t.Fatalf("a refused tap decided the succession: %+v", x2)
 	}
 	// Positive control: the owner's signed-in browser tap starts it, once.
@@ -414,8 +414,8 @@ func TestTheTapIsTheOnlyStart(t *testing.T) {
 		t.Fatalf("the owner's tap: %d %s", w.Code, w.Body)
 	}
 	calls := f.m.spawnCalls()
-	x2, _ := f.plugins.SuccessionByID(f.asOwner, id)
-	if len(calls) != 1 || x2.Decided != "started" || x2.HostDispatchID != calls[0].dispatch || x2.Mode != "replace" {
+	x2, _ := f.plugins.ProposalByID(f.asOwner, id)
+	if len(calls) != 1 || x2.Decided != "accepted" || x2.HostDispatchID != calls[0].dispatch || x2.Mode != "replace" {
 		t.Fatalf("the tap: spawns %+v, succession %+v", calls, x2)
 	}
 	if a, _ := f.srv.ext.Attention.Get(f.asOwner, x.AskID); a.Status != attention.Answered || a.Answer != "Start it" {
@@ -430,8 +430,8 @@ func TestTheTapIsTheOnlyStart(t *testing.T) {
 	_, hd, err := f.plugins.ReserveHostDispatch(f.asOwner, obj, map[string]any{"kind": "host", plugins.DetailRequestKey: "sx-second",
 		plugins.DetailRequestHash: "x"}, nil, plugins.HostDispatchNew{Host: "host-echo", Runtime: "opencode", Model: "openrouter/" + sxModel,
 		Repo: "acme/widgets", Succession: id, SuccessionMode: "replace"})
-	if !errors.Is(err, plugins.ErrSuccessionDecided) || hd.ID != 0 {
-		t.Errorf("a second link of a started succession: %+v %v; want ErrSuccessionDecided and no row", hd, err)
+	if !errors.Is(err, plugins.ErrProposalDecided) || hd.ID != 0 {
+		t.Errorf("a second link of a started succession: %+v %v; want ErrProposalDecided and no row", hd, err)
 	}
 	if n := len(f.m.spawnCalls()); n != 1 || f.hostRowCount(t) != 1 {
 		t.Errorf("after a second tap: %d spawns, %d host rows; want 1 and 1", n, f.hostRowCount(t))
@@ -442,7 +442,7 @@ func TestTheTapIsTheOnlyStart(t *testing.T) {
 	if w := f.tapAs(t, f.ownerSession(), id2, "@3", "Not now"); w.Code != http.StatusNoContent {
 		t.Fatalf("Not now: %d %s", w.Code, w.Body)
 	}
-	if x3, _ := f.plugins.SuccessionByID(f.asOwner, id2); x3.Decided != "declined" || len(f.m.spawnCalls()) != 1 {
+	if x3, _ := f.plugins.ProposalByID(f.asOwner, id2); x3.Decided != "declined" || len(f.m.spawnCalls()) != 1 {
 		t.Errorf("Not now: %+v, %d spawns", x3, len(f.m.spawnCalls()))
 	}
 }
@@ -472,7 +472,7 @@ func TestTheUnsaidModeIsAskedOnTheCard(t *testing.T) {
 	if len(cs) != 1 || strings.Join(cs[0].Options, "|") != "Replace this session|Spin off a new one|Not now" {
 		t.Fatalf("the card: %+v", cs)
 	}
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, id); x.Mode != "" {
+	if x, _ := f.plugins.ProposalByID(f.asOwner, id); x.Mode != "" {
 		t.Fatalf("a mode was defaulted: %q", x.Mode)
 	}
 	if w := f.tapAs(t, f.ownerSession(), id, "@3", "Start it"); w.Code == http.StatusNoContent {
@@ -481,7 +481,7 @@ func TestTheUnsaidModeIsAskedOnTheCard(t *testing.T) {
 	if w := f.tapAs(t, f.ownerSession(), id, "@3", "Spin off a new one"); w.Code != http.StatusNoContent {
 		t.Fatalf("the tap: %d %s", w.Code, w.Body)
 	}
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, id); x.Mode != "spinoff" || x.Decided != "started" {
+	if x, _ := f.plugins.ProposalByID(f.asOwner, id); x.Mode != "spinoff" || x.Decided != "accepted" {
 		t.Errorf("after Spin off: %+v", x)
 	}
 }
@@ -498,13 +498,13 @@ func TestASuccessorRunningMovesTheLineage(t *testing.T) {
 	_, stream := bus.Subscribe(f.owner)
 	other := f.otherOwner(t)
 	_, otherStream := bus.Subscribe(other)
-	start := func(mode string) (plugins.Succession, int64) {
+	start := func(mode string) (plugins.Proposal, int64) {
 		f.viewLine(t, sxOpenCodeKey, "continue it: "+mode)
 		_, id := f.propose(t, sxCall(sxOpenCodeKey, mode, sxRefFenc, intp(0)))
 		if w := f.tapAs(t, f.ownerSession(), id, "@3", "Start it"); w.Code != http.StatusNoContent {
 			t.Fatalf("the tap: %d %s", w.Code, w.Body)
 		}
-		x, _ := f.plugins.SuccessionByID(f.asOwner, id)
+		x, _ := f.plugins.ProposalByID(f.asOwner, id)
 		return x, x.HostDispatchID
 	}
 	drain := func(s <-chan sse.Event) []string {
@@ -528,8 +528,8 @@ func TestASuccessorRunningMovesTheLineage(t *testing.T) {
 		t.Fatalf("before the listing: %+v", v)
 	}
 	// 🔴 NOT SUPERSEDED BEFORE ITS SUCCESSOR RUNS.
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, rep.ID); x.PredState != "active" {
-		t.Fatalf("the replace's predecessor before its successor runs: %q; want active", x.PredState)
+	if x, _ := f.plugins.ProposalByID(f.asOwner, rep.ID); x.SubjectState != "active" {
+		t.Fatalf("the replace's predecessor before its successor runs: %q; want active", x.SubjectState)
 	}
 	read := func(p authz.Principal) (int, successorJSON) {
 		r := httptest.NewRequest(http.MethodGet, ui.MirrorRef{Host: "host-echo", Session: "main", Window: "@3"}.SuccessorPath(), nil)
@@ -544,7 +544,7 @@ func TestASuccessorRunningMovesTheLineage(t *testing.T) {
 		mirror.Window{Session: "agents", ID: "@" + strconv.FormatInt(spinD, 10), Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_0succnew2", Dispatch: spinD})
 	f.srv.reconcileListing(context.Background(), f.owner, "host-echo", ws, time.Now())
 	got := drain(stream)
-	for _, x := range []plugins.Succession{rep, spin} {
+	for _, x := range []plugins.Proposal{rep, spin} {
 		if !slices.Contains(got, `{"id":"succession-`+strconv.FormatInt(x.ID, 10)+`"}`) {
 			t.Errorf("the owner's stream lacks lineage.changed for succession %d: %v", x.ID, got)
 		}
@@ -552,11 +552,11 @@ func TestASuccessorRunningMovesTheLineage(t *testing.T) {
 	if n := len(drain(otherStream)); n != 0 {
 		t.Errorf("another owner's stream got %d lineage events", n)
 	}
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, rep.ID); x.PredState != "superseded" {
-		t.Errorf("the replace's predecessor: %q; want superseded", x.PredState)
+	if x, _ := f.plugins.ProposalByID(f.asOwner, rep.ID); x.SubjectState != "superseded" {
+		t.Errorf("the replace's predecessor: %q; want superseded", x.SubjectState)
 	}
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, spin.ID); x.PredState != "active" {
-		t.Errorf("the spin-off's predecessor: %q; want active", x.PredState)
+	if x, _ := f.plugins.ProposalByID(f.asOwner, spin.ID); x.SubjectState != "active" {
+		t.Errorf("the spin-off's predecessor: %q; want active", x.SubjectState)
 	}
 	// The view's read: the newest succession (the spin-off), running, with its
 	// successor's view path — the window the listing tags with its dispatch.
@@ -638,13 +638,13 @@ func TestTheSuccessorPushWaitsForAView(t *testing.T) {
 	successionPushDelay = 50 * time.Millisecond
 	t.Cleanup(func() { successionPushDelay = old })
 	f := newSuccFixture(t)
-	start := func() plugins.Succession {
+	start := func() plugins.Proposal {
 		f.viewLine(t, sxOpenCodeKey, "continue it")
 		_, id := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefFenc, intp(0)))
 		if w := f.tapAs(t, f.ownerSession(), id, "@3", "Start it"); w.Code != http.StatusNoContent {
 			t.Fatalf("the tap: %d %s", w.Code, w.Body)
 		}
-		x, _ := f.plugins.SuccessionByID(f.asOwner, id)
+		x, _ := f.plugins.ProposalByID(f.asOwner, id)
 		return x
 	}
 	seen, unseen := start(), start()
@@ -658,7 +658,7 @@ func TestTheSuccessorPushWaitsForAView(t *testing.T) {
 	f.srv.reconcileListing(context.Background(), f.owner, "host-echo", ws, time.Now())
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		x, _ := f.plugins.SuccessionByID(f.asOwner, unseen.ID)
+		x, _ := f.plugins.ProposalByID(f.asOwner, unseen.ID)
 		if !x.NotifiedAt.IsZero() {
 			break
 		}
@@ -667,7 +667,7 @@ func TestTheSuccessorPushWaitsForAView(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if x, _ := f.plugins.SuccessionByID(f.asOwner, seen.ID); !x.NotifiedAt.IsZero() || x.SuccessorSeenAt.IsZero() {
+	if x, _ := f.plugins.ProposalByID(f.asOwner, seen.ID); !x.NotifiedAt.IsZero() || x.SuccessorSeenAt.IsZero() {
 		t.Errorf("the successor whose view was opened: %+v", x)
 	}
 }

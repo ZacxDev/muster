@@ -518,7 +518,7 @@ var isolationClasses = map[string]routeClass{
 	// A succession of a view's session (succession.go): its read and the
 	// card's tap, both naming the window by its address (mirrorEntry).
 	"GET /mirror/view/successor":   classMirror,
-	"POST /mirror/view/succession": classMirror,
+	"POST /mirror/view/proposal": classMirror,
 	// Suggested replies (suggest.go): the window's set (address in the query)
 	// — B naming A's window must 404; the toggle is the caller's own row (list).
 	"GET /mirror/view/suggest": classMirror,
@@ -1613,7 +1613,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/view/chief" || route == "POST /mirror/view/succession" ||
+		route == "POST /mirror/view/chief" || route == "POST /mirror/view/proposal" ||
 		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/opencode/answer" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
@@ -1693,7 +1693,7 @@ var sideEffectControlled = map[string]string{
 	// succession_pg_test.go: another owner's tap and read of the owner's card are
 	// not found and start nothing.
 	"GET /mirror/view/successor":            "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
-	"POST /mirror/view/succession":          "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
+	"POST /mirror/view/proposal":          "needs A's succession; controlled in succession_pg_test.go (TestTheTapIsTheOnlyStart)",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",

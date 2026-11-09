@@ -15,7 +15,7 @@ import (
 //     (succession_propose). It shows the exact kickoff muster copied and the
 //     settings, and its buttons — Start (or Replace / Spin off) and Not now —
 //     are THE AUTHORISATION: nothing starts until the owner taps one. A real
-//     form (POST MirrorSuccessionPath) that the script submits in place;
+//     form (POST MirrorProposalPath, view_proposal.go) that the script submits in place;
 //   - the LINE while the successor starts, and the banner once it runs
 //     ("Continued in …" / "Spun off …"), and "superseded" on a replaced view;
 //   - the FOLLOW: the view that saw the proposal (or the start) navigates to
@@ -27,8 +27,6 @@ import (
 //     previous".
 // ---------------------------------------------------------------------------
 
-// MirrorSuccessionPath is where the card's buttons post the owner's tap.
-const MirrorSuccessionPath = "/mirror/view/succession"
 
 // MirrorSuccessorPath is the view's succession read (JSON: its state, its
 // card, where the successor is).
@@ -56,11 +54,10 @@ type SuccessionView struct {
 	Mode                  string
 	Target, Model, Repo   string
 	BaseNote              string
-	Kickoff               string
-	KickoffBytes          int
-	PredTitle, PredPath   string
+	SubjectTitle, PredPath   string
 	Superseded            bool
-	Options               []string
+	// Card is the proposal card while the succession is proposed.
+	Card *ProposalView
 	Host, Title, ViewPath string
 	Refusal               string
 }
@@ -76,8 +73,6 @@ func successionModeText(mode string) string {
 	return "replace or spin off — you choose"
 }
 
-// successionButtonClass styles the card's buttons.
-const successionButtonClass = "press inline-flex min-h-[44px] items-center rounded-lg px-3 text-sm font-semibold transition "
 
 // SuccessionCard is the card (or line, or banner) of the succession of the
 // view at ref; nil when there is nothing to draw (none, or declined).
@@ -117,46 +112,12 @@ func SuccessionCard(ref MirrorRef, x *SuccessionView) g.Node {
 		}
 		return line("bg-s1 text-fg2", g.Text("Spun off “"+x.Title+"”."), open("Open it →"))
 	}
-	// Proposed: the card itself.
-	hidden := func(n, v string) g.Node { return Input(Type("hidden"), Name(n), Value(v)) }
-	var buttons []g.Node
-	for i, o := range x.Options {
-		cls := successionButtonClass + "text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"
-		if i == 0 || (x.Mode == "" && i == 1) {
-			cls = successionButtonClass + "bg-accent text-on-accent hover:bg-accent/90"
-		}
-		buttons = append(buttons, Button(Type("submit"), Name("choice"), Value(o), g.Attr("data-succession-choice", o), Class(cls), g.Text(o)))
+	// Proposed: THE chief's proposal card (view_proposal.go), its region's
+	// attributes on it.
+	if x.Card == nil {
+		return nil
 	}
-	setting := func(k, v string) g.Node {
-		if v == "" {
-			return nil
-		}
-		return Div(Class("flex gap-2"), Span(Class("w-16 shrink-0 text-muted"), g.Text(k)), Span(Class("min-w-0 break-words text-fg"), g.Text(v)))
-	}
-	return Section(append(attrs,
-		ID("mv-succession-card"),
-		g.Attr("aria-label", "Your chief's proposal"),
-		Class("border-b border-line bg-s1 px-3 py-2 text-xs text-fg2"),
-		P(Class("text-sm font-semibold text-fg"), g.Text("Start a new session that continues this one?")),
-		P(Class("text-muted"), g.Text("Your chief proposed it. Nothing starts until you tap.")),
-		Div(Class("mt-1 flex flex-col gap-0.5"),
-			setting("How", successionModeText(x.Mode)),
-			setting("On", x.Target),
-			setting("Model", x.Model),
-			setting("Repo", x.Repo),
-			setting("Base", x.BaseNote),
-		),
-		g.El("details", g.Attr("open", ""), Class("mt-1"),
-			g.El("summary", Class("press cursor-pointer py-1 font-semibold text-fg2"),
-				g.Text("Kickoff · "+strconv.Itoa(x.KickoffBytes)+" bytes, copied exactly from this session")),
-			Pre(ID("mv-succession-kickoff"), Class("max-h-[30dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-s2 p-2 font-mono text-[12px] text-fg"),
-				g.Text(x.Kickoff)),
-		),
-		Form(Method("post"), Action(MirrorSuccessionPath), ID("mv-succession-form"), Class("mt-2 flex flex-wrap gap-2"),
-			hidden("id", strconv.FormatInt(x.ID, 10)), hidden("host", ref.Host), hidden("session", ref.Session), hidden("window", ref.Window),
-			g.Group(buttons)),
-		P(ID("mv-succession-error"), g.Attr("role", "alert"), g.Attr("hidden", ""), Class("mt-1 text-danger")),
-	)...)
+	return ProposalCard(ref, *x.Card, attrs...)
 }
 
 func onHost(h string) string {
@@ -185,7 +146,7 @@ func successorHeader(p *SuccessionView) g.Node {
 	}
 	return P(ID("mv-predecessor"), g.Attr("data-predecessor", strconv.FormatInt(p.ID, 10)),
 		Class("border-b border-line bg-s1 px-3 py-1.5 text-xs text-fg2 break-words"),
-		g.Text("Continues “"+p.PredTitle+"” · "+successionModeText(p.Mode)+" · "),
+		g.Text("Continues “"+p.SubjectTitle+"” · "+successionModeText(p.Mode)+" · "),
 		A(Href(p.PredPath), g.Attr("data-predecessor-open", ""), Class("font-semibold text-accent underline"), g.Text("open previous")))
 }
 
@@ -203,7 +164,7 @@ func successionRegion(ref MirrorRef, x, pred *SuccessionView, live bool) g.Node 
 		Div(ID("mv-follow"), g.Attr("hidden", ""), g.Attr("role", "status"),
 			Class("flex items-center gap-2 border-b border-line bg-accent/15 px-3 py-2 text-sm text-fg"),
 			Span(Class("min-w-0 flex-1"), g.Text("Opening the new session…")),
-			Button(Type("button"), ID("mv-follow-stay"), Class(successionButtonClass+"text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"), g.Text("Stay here"))),
+			Button(Type("button"), ID("mv-follow-stay"), Class(proposalButtonClass+"text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"), g.Text("Stay here"))),
 	})
 }
 
@@ -290,7 +251,7 @@ func successionScript() g.Node {
     }).catch(function () {});
   }
   function wire() {
-    var form = document.getElementById('mv-succession-form');
+    var form = document.getElementById('mv-proposal-form');
     if (!form || form.getAttribute('data-wired')) return;
     form.setAttribute('data-wired', '1');
     form.addEventListener('submit', function (ev) {
@@ -306,7 +267,7 @@ func successionScript() g.Node {
         headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function (r) {
         if (r.ok) return refresh();
         return r.text().then(function (t) {
-          var err = document.getElementById('mv-succession-error');
+          var err = document.getElementById('mv-proposal-error');
           if (err) { err.textContent = t; err.hidden = false; }
           Array.prototype.forEach.call(form.querySelectorAll('button'), function (b) { b.disabled = false; });
         });

@@ -210,12 +210,12 @@ const hostDispatchesMigrationVersion = 93
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const notifyPreferencesMigrationVersion = 94
 
-// sessionSuccessionsMigrationVersion is session_successions' migration (a
+// chiefProposalsMigrationVersion is chief_proposals' migration (a
 // session that continues one the owner was viewing,
-// internal/plugins/session_successions.go), owned and under the same
+// internal/plugins/chief_proposals.go), owned and under the same
 // row-level security; same treatment again. Its body is idempotent. 🔴
 // RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const sessionSuccessionsMigrationVersion = 99
+const chiefProposalsMigrationVersion = 99
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
@@ -227,7 +227,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasSessionSuccessions bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges, hasChiefPreferences, hasChiefNudges, hasCCAccountFailovers, hasTaskRefWrites, hasSessionEpisodes, hasOfficerLLMUsage, hasOfficerJudgementSessions, hasSessionTags, hasAsks, hasHostDispatches, hasNotifyPreferences, hasChiefProposals bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -263,8 +263,8 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.asks') IS NOT NULL,
 		to_regclass('public.host_dispatches') IS NOT NULL,
 		to_regclass('public.notify_preferences') IS NOT NULL,
-		to_regclass('public.session_successions') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasSessionSuccessions); err != nil {
+		to_regclass('public.chief_proposals') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges, &hasChiefPreferences, &hasChiefNudges, &hasCCAccountFailovers, &hasTaskRefWrites, &hasSessionEpisodes, &hasOfficerLLMUsage, &hasOfficerJudgementSessions, &hasSessionTags, &hasAsks, &hasHostDispatches, &hasNotifyPreferences, &hasChiefProposals); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -304,7 +304,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == asksMigrationVersion && hasAsks) &&
 			!(m.version == hostDispatchesMigrationVersion && hasHostDispatches) &&
 			!(m.version == notifyPreferencesMigrationVersion && hasNotifyPreferences) &&
-			!(m.version == sessionSuccessionsMigrationVersion && hasSessionSuccessions) {
+			!(m.version == chiefProposalsMigrationVersion && hasChiefProposals) {
 			continue
 		}
 		tx, err := pool.Begin(ctx)

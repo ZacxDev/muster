@@ -15,7 +15,7 @@ import (
 // chief-in-agent-view.md 3.2): asserted over the Go source, failing when a set
 // GROWS or SHRINKS.
 //
-//   - in the store, the SQL that writes session_successions is in exactly
+//   - in the store, the SQL that writes chief_proposals is in exactly
 //     these functions, and in no other file;
 //   - in internal/api, each writer has its one named caller: the proposal
 //     (succession_propose), the decline (the card's Not now), supersede (the
@@ -23,20 +23,21 @@ import (
 //     (the successor's view);
 //   - the link is reached only inside ReserveHostDispatch's transaction.
 func TestTheSuccessionWritersAreALedger(t *testing.T) {
-	assertCallers(t, ".", "CreateSuccession", []string{"succession.go:toolSuccessionPropose"})
-	assertCallers(t, ".", "DeclineSuccession", []string{"succession.go:successionForAnswer"})
+	assertCallers(t, ".", "CreateProposal", []string{"chief_proposal.go:fileProposal"})
+	assertCallers(t, ".", "fileProposal", []string{"succession.go:toolSuccessionPropose"})
+	assertCallers(t, ".", "DeclineProposal", []string{"chief_proposal.go:proposalForAnswer"})
 	assertCallers(t, ".", "MarkSuperseded", []string{"succession.go:successionDispatchMoved"})
 	assertCallers(t, ".", "SetSuccessionNotified", []string{"succession.go:armSuccessionPush"})
 	assertCallers(t, ".", "SetSuccessorSeen", []string{"succession.go:predecessorForView"})
 	assertCallers(t, ".", "successionDispatchMoved", []string{"host_dispatch.go:endHostDispatch", "host_dispatch_reconcile.go:reconcileListing"})
 	assertCallers(t, filepath.Join("..", "plugins"), "linkSuccessionTx", []string{"host_dispatches.go:ReserveHostDispatch"})
 
-	src, err := os.ReadFile(filepath.Join("..", "plugins", "session_successions.go"))
+	src, err := os.ReadFile(filepath.Join("..", "plugins", "chief_proposals.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	af, err := parser.ParseFile(fset, "session_successions.go", src, 0)
+	af, err := parser.ParseFile(fset, "chief_proposals.go", src, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,24 +48,24 @@ func TestTheSuccessionWritersAreALedger(t *testing.T) {
 			continue
 		}
 		body := string(src[fset.Position(fd.Body.Pos()).Offset:fset.Position(fd.Body.End()).Offset])
-		if strings.Contains(body, "INSERT INTO session_successions") || strings.Contains(body, "UPDATE session_successions") {
+		if strings.Contains(body, "INSERT INTO chief_proposals") || strings.Contains(body, "UPDATE chief_proposals") {
 			writers = append(writers, fd.Name.Name)
 		}
 	}
 	slices.Sort(writers)
-	want := []string{"CreateSuccession", "DeclineSuccession", "MarkSuperseded", "SetSuccessionNotified", "SetSuccessorSeen", "linkSuccessionTx"}
+	want := []string{"CreateProposal", "DeclineProposal", "MarkSuperseded", "SetSuccessionNotified", "SetSuccessorSeen", "linkSuccessionTx"}
 	if !slices.Equal(writers, want) {
-		t.Errorf("session_successions is written by %v\nwant exactly %v", writers, want)
+		t.Errorf("chief_proposals is written by %v\nwant exactly %v", writers, want)
 	}
 	files, _ := filepath.Glob(filepath.Join("..", "plugins", "*.go"))
 	files2, _ := filepath.Glob("*.go")
 	for _, f := range append(files, files2...) {
-		if strings.HasSuffix(f, "_test.go") || filepath.Base(f) == "session_successions.go" {
+		if strings.HasSuffix(f, "_test.go") || filepath.Base(f) == "chief_proposals.go" {
 			continue
 		}
 		b, _ := os.ReadFile(f)
-		if strings.Contains(string(b), "INSERT INTO session_successions") || strings.Contains(string(b), "UPDATE session_successions") {
-			t.Errorf("%s writes session_successions", f)
+		if strings.Contains(string(b), "INSERT INTO chief_proposals") || strings.Contains(string(b), "UPDATE chief_proposals") {
+			t.Errorf("%s writes chief_proposals", f)
 		}
 	}
 }

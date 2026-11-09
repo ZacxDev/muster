@@ -249,7 +249,7 @@ POST /mirror/view/ask
 POST /mirror/view/ask/cancel
 POST /mirror/view/chief
 POST /mirror/view/send
-POST /mirror/view/succession
+POST /mirror/view/proposal
 POST /mirror/view/suggest/event
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result

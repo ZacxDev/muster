@@ -1733,10 +1733,10 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	if err != nil {
 		return a, err
 	}
-	// A succession's card (succession.go): the owner's tap STARTS the
-	// successor here, before the answer is recorded; a start refused before
-	// anything was reserved leaves the card open, with its sentence.
-	if _, err := s.successionForAnswer(ctx, id, answer, src); err != nil {
+	// A chief proposal's card (chief_proposal.go): the owner's tap DOES what
+	// was proposed here, before the answer is recorded; an accept refused
+	// before it did anything leaves the card open, with its sentence.
+	if err := s.proposalForAnswer(ctx, id, answer, src); err != nil {
 		return a, err
 	}
 	if src.ViaSession() {
