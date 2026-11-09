@@ -1973,6 +1973,8 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	}
 	ctx, clearOwnerTurn := s.markOwnerTurn(ctx, a, msg, ownerTurnTyper(typedBy, about))
 	defer clearOwnerTurn()
+	// The turn's own input, carried to its tool calls (turn_session.go).
+	ctx = withTurnInput(ctx, msg.ID)
 
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
@@ -2126,6 +2128,9 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// the in-process dispatch reads ctx, a CLI's /mcp call the registry).
 	defer s.turnSessions.begin(a.ID, sessionKey)()
 	ctx = withTurnSession(ctx, sessionKey)
+	// Its input row (0: one muster did not store first), for the view line a
+	// tool call answers (ownerViewLine): ctx, and the registry for a CLI.
+	defer s.turnInputs.begin(a.ID, turnInputFrom(ctx))()
 	ctx, tt := s.turnTools(ctx, a)
 	return s.runTurnWithTools(ctx, a, sessionKey, text, tt, emit)
 }

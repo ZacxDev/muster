@@ -260,6 +260,8 @@ func successionScript() g.Node {
       wire();
       seen(cur());
       if (window.musterPinMeasure) window.musterPinMeasure();
+      // The update pill moves off a card it now covers (pwa.js).
+      try { document.dispatchEvent(new CustomEvent('muster:layout')); } catch (e) {}
     }).catch(function () {});
   }
   function wire() {

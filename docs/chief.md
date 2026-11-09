@@ -636,6 +636,16 @@ session you are looking at, instead of to the pane:
   never your go-ahead for something only you can release: `owner_asked` on a
   dispatch or a gated task is refused while its turn runs, and it answers none
   of the chief's open questions. Do those from the chief's own chat.
+- When you ask from a view for a new session that continues this one, or to
+  end it, the chief only PROPOSES it: a card you tap. Your line authorises one
+  proposal of each kind for that session, as long as it is still the newest
+  line you typed to the chief and within a turn's time. Messages muster
+  delivered to the chief after it, such as plugin mail, neither authorise
+  anything nor get in the way.
+- If the chief asked you something about that session while answering your
+  view line (which repository, which branch), and you answered with a new
+  line on the view instead of on its card, the question is withdrawn once the
+  chief files the proposal: muster records it as cancelled. A question the chief raised about anything else is never touched.
 
 `session_context {subject, messages?}` is a chief-only, read-only tool. It
 takes one of your mirrored sessions (a Claude Code session id, or

@@ -378,7 +378,7 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	if slices.Contains(blanks, "runtime") {
 		held.Model, in.Model = "", ""
 	}
-	ask, err := s.raiseOwnerCard(ctx, a, cardQuestion(blanks[0], t), labels)
+	ask, err := s.raiseOwnerCard(ctx, a, cardQuestion(blanks[0], t), labels, "")
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
 	}

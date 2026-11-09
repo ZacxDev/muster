@@ -193,7 +193,7 @@ func TestMusterRaisesACardForTheChiefAndThePhoneAnswerIsRecordedAsTheDevice(t *t
 		via      authz.Via
 		wantDoor string
 	}{{authz.ViaDevice, attention.ViaDevice}, {authz.ViaToken, ""}} {
-		a, err := f.srv.raiseOwnerCard(asUser(1), f.chief, "Which model?", []string{"Claude (Claude Code)", "qwen/qwen3-coder"})
+		a, err := f.srv.raiseOwnerCard(asUser(1), f.chief, "Which model?", []string{"Claude (Claude Code)", "qwen/qwen3-coder"}, "")
 		if err != nil {
 			t.Fatal(err)
 		}

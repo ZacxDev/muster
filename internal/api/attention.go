@@ -860,7 +860,7 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 				items[i].proposal = s.proposalKickoffBody(ctx, a)
 			} else {
 				// The card's ask could not be read now: it may be a
-				// proposal's, so it offers no start.
+				// proposal's, so it offers no accept (no start, no End it).
 				items[i].proposal = proposalUnreadBody
 			}
 			items[i].Options = withoutProposalStarts(items[i].proposal, items[i].Options)
