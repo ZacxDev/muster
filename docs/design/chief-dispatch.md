@@ -209,9 +209,11 @@ The owner's answers to the first draft's open questions:
 5. **Worker pools.** `agent_dispatch` gains a `worker_pool` option, under the
    same target, budget and `owner_asked` rules. This unblocks the UI deletion
    ([2.2](#22-parameters), [4](#4-replacing-the-dispatch-ui-a-machine-route-a-cli-verb-then-the-deletion)).
-6. **Default tmux server only: accepted.** The owner's default mirror runs on
-   each host's default tmux server, so a mirror on any other server refuses to
-   spawn ([3.8](#38-read-only-and-tenant-hosts)).
+6. **Default tmux server only: accepted** — **revised:** a tenant's mirror
+   may spawn into its own tmux server when it explicitly opts in
+   (`-agent-spawn-tenant-server`, naming that very server). Without the
+   opt-in, a mirror on any server but the default still refuses
+   ([3.8](#38-read-only-and-tenant-hosts)).
 7. **Claude Code's folder trust.** The host writes the trust entry into Claude
    Code's configuration before launching. It is scoped to worktrees the mirror
    itself has just created under its own agents directory, and never touches
@@ -1591,8 +1593,9 @@ git -C <clone> worktree add --no-track -b muster/<dispatch>-<slug> <dir> refs/re
   mirror is the default server ([3.8](#38-read-only-and-tenant-hosts)).
   - If `has-session -t =agents` succeeds, the host uses `new-window -t
     =agents:`.
-  - Otherwise it uses `new-session -d -s agents`, and on "duplicate session"
-    it retries as `new-window`. This is `resume.go:351-388`, with the session
+  - Otherwise it uses `new-session -d -s agents` (as built, preceded by
+    tmux's `-f /dev/null`: [3.8](#38-read-only-and-tenant-hosts)), and on
+    "duplicate session" it retries as `new-window`. This is `resume.go:351-388`, with the session
     name fixed.
   - The tmux server must already be running. If it is not, the spawn is
     refused as `unavailable` (detail `no tmux server`), and the host compares the server's pid
@@ -2477,12 +2480,18 @@ owner with no chief on is told by the push alone.
 `unavailable`, with its own detail:
 - no `-interactive`: detail `not interactive`;
 - no `-agent-spawn`: detail `agent spawn is off`;
-- **a mirror on any tmux server but the default one**: detail `not the
-  default tmux server`.
+- **a mirror on any tmux server but the default one, without the tenant
+  opt-in**: detail `not the default tmux server`;
+- **a tenant opt-in that names another server than the mirror's own**:
+  detail `-agent-spawn-tenant-server names another tmux server than the one
+  this mirror mirrors` (a value that is neither a socket name nor an
+  absolute path stops `muster-mirror` at startup, exit 2);
+- **a tenant's server that is not running**: detail `the tenant tmux server is
+  not running (this host never starts it)`.
 
 **What "the default tmux server" means, exactly.** The rule is: **refuse
 whenever `-tmux-socket` (`-L`) or `-tmux-socket-path` (`-S`) is set, unless it
-resolves to the default socket.**
+resolves to the default socket** — or the tenant opt-in below names it.
 - **The default socket** is `realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>/default`,
   computed from the environment `tmuxEnv` passes to tmux
   (`internal/mirrorhost/tmux.go:87-98`). `tmuxEnv` keeps `TMUX_TMPDIR`
@@ -2491,9 +2500,9 @@ resolves to the default socket.**
 - **No flag set:** the default server, accepted.
 - **`-L default`,** or an `-S` path whose `realpath` equals the default
   socket: the default server, accepted.
-- **Anything else:** refused. That covers `-L work`, and any `-S` path that
-  is not the default socket even when its basename is `default`, such as a
-  `default` socket in another directory.
+- **Anything else:** refused without the opt-in. That covers `-L work`, and
+  any `-S` path that is not the default socket even when its basename is
+  `default`, such as a `default` socket in another directory.
 - **Where this comes from.** It is multi-tenant.md's own classification: the
   default mirror runs on the default tmux server, and each tenant's mirror
   runs on its own named server, `muster-mirror@<tenant>` → `tmux -L <tenant>`
@@ -2501,13 +2510,62 @@ resolves to the default socket.**
   by that design, a tenant's.
 - The check runs at startup, and again at each spawn.
 
-**Why the last rule is structural.** In multi-tenant.md, a non-default tmux
-server is exactly what marks a tenant's mirror
+**Why the refusal without the opt-in stays structural.** In multi-tenant.md, a
+non-default tmux server is exactly what marks a tenant's mirror
 (`muster-mirror@<tenant>` → `tmux -L <tenant>`). So even if a tenant unit's
-environment set `-agent-spawn` by mistake, that mirror would still refuse.
-Decision 2 says "the host's DEFAULT tmux server", so this costs nothing the
-owner asked for, and the owner confirmed it (decision 6): their default mirror
-runs on each host's default tmux server.
+environment sets `-agent-spawn` by mistake, that mirror still refuses: setting
+`-agent-spawn` alone never reaches a tenant's server.
+
+**Revised (decision 6): a tenant's mirror may spawn when it opts in.** The
+owner now wants a tenant's own muster server to start agents on a host, into
+that tenant's tmux server. The opt-in is `-agent-spawn-tenant-server <server>`
+(`MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER`), and as built:
+- **It must name the mirror's own server.** The value is a socket name (the
+  `-L` form) or an absolute socket path (the `-S` form); it is resolved as the
+  mirror's own `-tmux-socket`/`-tmux-socket-path` is (the `-S` path's
+  directory by `realpath`, a name under `realpath(${TMUX_TMPDIR:-/tmp})/
+  tmux-<uid>/`), and the two resolved paths must be equal. So one opt-in
+  cannot point a mirror at another tenant's server or at the default one: a
+  mirror only ever spawns on the server it lists, which every spawn command
+  already names (`-L`/`-S` on each tmux call, `internal/mirrorhost/tmux.go`).
+- **The tenant's server must already be running; the host never starts it.**
+  A tmux server started by the host would load the user's default tmux
+  configuration, and a session-saving plugin there would write over the
+  default server's saved state and could restore the user's own sessions into
+  the tenant's server, which the tenant's mirror then shows to the tenant. So
+  the spawn refuses (above) and sends only `display-message`, which never
+  starts a server. The one command that can — the `new-session` that creates
+  `agents` ([3.4](#34-the-tmux-agents-session-and-window-names)), should the
+  server exit after that check — carries `-f /dev/null`, on every server, so
+  a server it starts loads no configuration (and the spawn is then killed by
+  the server-pid check). Refusing was chosen over starting the server with a
+  configured `-tmux-config` file: the tenant's server is the operator's to
+  start, with whatever configuration they choose, and a mirror that never
+  starts one has no configuration to get wrong.
+- **The agent reaches the tenant's muster.** Its window is in the tenant's
+  server, so tmux sets its `$TMUX` to that server's socket (a `-e TMUX=` in the
+  spawn's own environment would not change it: tmux sets `$TMUX` itself,
+  measured on tmux 3.7c for a `new-session`). The MCP endpoint and the `AskUserQuestion` hook both route by
+  that value (multi-tenant.md, "The local MCP endpoint" and "Hook secrets"):
+  only the tenant mirror's `-mcp-listen` endpoint gives the session tools, and
+  the hook picks the tenant's record. The spawn writes no MCP or hook
+  configuration of its own.
+- **Its own namespace.** Two muster servers number dispatches independently,
+  so a tenant's spawn puts `tenant-<name>` (an `-S` server: `tenant-` and a
+  short hash of its resolved path) in its worktree directory
+  (`<agent-spawn-dir>/tenant-<name>/<owner>__<repo>/<dispatch>`), its branch
+  (`muster/tenant-<name>-<dispatch>-<slug>`) and its prompt file. Each
+  mirror's hourly sweep reads only its own directory; the default mirror's
+  reads only `<owner>__<repo>` entries, which a namespace directory is not.
+  Before namespaces, a tenant unit with `-agent-spawn` set by mistake swept the
+  shared agents directory against its own server's windows and removed the
+  default mirror's clean, live worktrees.
+- **opencode** follows the same rules: the launcher runs in the tenant's
+  server, writes a launch record naming that server's socket, and the tenant
+  mirror (whose launch records are those of its own server) binds it.
+- **No server change.** muster offers a host for dispatch when its mirror
+  advertises spawn runtimes (`hostSpawnable`); a tenant's mirror advertises
+  them once it passes the checks above.
 
 **The server cannot cross tenants.** The hub keys hosts by `(owner, host)`.
 - A mirror connected to a different muster server (another tenant) is not in

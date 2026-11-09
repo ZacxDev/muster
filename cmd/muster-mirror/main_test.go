@@ -66,6 +66,55 @@ func TestMissingURLOrTokenIsAUsageError(t *testing.T) {
 	}
 }
 
+// TestABadTenantSpawnServerStopsTheDaemon: a -agent-spawn-tenant-server that is
+// neither a socket name nor an absolute socket path is a usage error, from the
+// flag or its env var, before anything dials. CONTROL: a valid one gets past it
+// to the next check (the cleartext URL's).
+func TestABadTenantSpawnServerStopsTheDaemon(t *testing.T) {
+	env := map[string]string{envURL: "http://192.0.2.1:8105", envToken: "mmt_x", envHost: "laptop"}
+	if rc, _, errs := runWith(t, env, "-agent-spawn-tenant-server", "x/teamq"); rc != 2 || !strings.Contains(errs, `-agent-spawn-tenant-server "x/teamq"`) {
+		t.Fatalf("flag: rc %d %s", rc, errs)
+	}
+	env[envAgentSpawnTenantServer] = "team q"
+	if rc, _, errs := runWith(t, env); rc != 2 || !strings.Contains(errs, `-agent-spawn-tenant-server "team q"`) {
+		t.Fatalf("env: rc %d %s", rc, errs)
+	}
+	env[envAgentSpawnTenantServer] = "teamq"
+	if rc, _, errs := runWith(t, env); rc != 2 || strings.Contains(errs, "agent-spawn-tenant-server") || !strings.Contains(errs, "cleartext") {
+		t.Fatalf("CONTROL, a valid value: rc %d %s; want the cleartext refusal", rc, errs)
+	}
+}
+
+// TestTheTenantSpawnOptInReachesTheHost: a tenant's daemon (-tmux-socket
+// teamq) with -agent-spawn says at startup that it starts agents on that
+// tenant's server only when -agent-spawn-tenant-server names it; without it,
+// that it starts none, for the old reason. The daemon's context is ended
+// before it dials, so only its startup runs.
+func TestTheTenantSpawnOptInReachesTheHost(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tenant server: nothing to touch
+	t.Setenv("TMUX", "")
+	prevC := runContext
+	t.Cleanup(func() { runContext = prevC })
+	for _, c := range []struct{ optIn, want string }{
+		{"teamq", `STARTING AGENTS IS ON (-agent-spawn): your chief may start claude in tmux session "agents" on the tenant tmux server "teamq"`},
+		{"", "-agent-spawn is set but this host starts no agent: not the default tmux server"},
+	} {
+		runContext = func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}
+		rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example", envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envSocket: "teamq", envInteractive: "1", envAgentSpawn: "1", envAgentSpawnRepos: "acme/widgets", envAgentSpawnTenantServer: c.optIn,
+			"XDG_RUNTIME_DIR": filepath.Join(tmp, "run"), "XDG_DATA_HOME": filepath.Join(tmp, "data"), "XDG_STATE_HOME": filepath.Join(tmp, "state"),
+			envAgentSpawnRoots: filepath.Join(tmp, "src"), "HOME": tmp})
+		if rc != 0 || !strings.Contains(errs, c.want) {
+			t.Fatalf("opt-in %q: rc %d, log:\n%s\nwant %q", c.optIn, rc, errs, c.want)
+		}
+	}
+}
+
 // listBackend is a host's tmux for -list: fixed sessions and active windows.
 type listBackend struct{}
 

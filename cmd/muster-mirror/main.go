@@ -110,10 +110,15 @@ const (
 	envAgentSpawnRepos = "MUSTER_MIRROR_AGENT_SPAWN_REPOS"
 	envAgentSpawnRate  = "MUSTER_MIRROR_AGENT_SPAWN_RATE"
 	envAgentSpawnLog   = "MUSTER_MIRROR_AGENT_SPAWN_LOG"
-	envLabelsFile    = "MUSTER_MIRROR_LABELS_FILE"
-	envPaneMapDir    = "MUSTER_MIRROR_PANE_MAP_DIR"
-	envMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
-	envMCPSecret     = "MUSTER_MIRROR_MCP_SECRET_FILE"
+
+	// envAgentSpawnTenantServer: the one non-default tmux server a tenant's
+	// mirror may spawn on — it must name the server the mirror mirrors.
+	envAgentSpawnTenantServer = "MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER"
+
+	envLabelsFile = "MUSTER_MIRROR_LABELS_FILE"
+	envPaneMapDir = "MUSTER_MIRROR_PANE_MAP_DIR"
+	envMCPListen  = "MUSTER_MIRROR_MCP_LISTEN"
+	envMCPSecret  = "MUSTER_MIRROR_MCP_SECRET_FILE"
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
@@ -196,12 +201,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	openCodeSend := fs.Bool("opencode-send", envBool(envOpenCodeSend), "with -interactive: let muster SEND messages to opencode sessions on this host through the opencode server's API — only to a pane started with `muster-mirror opencode`, only while its session is idle, behind a fresh sign-in. OFF by default: whatever the agent there may run, a message from muster can ask it to ("+envOpenCodeSend+")")
-	agentSpawn := fs.Bool("agent-spawn", envBool(envAgentSpawn), "with -interactive, on the DEFAULT tmux server only: let your chief START a Claude Code agent on this host — a fresh git worktree of a repository on -agent-spawn-repos, cut from origin, and a window in tmux session `agents`, in normal permission mode. OFF by default: it starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ("+envAgentSpawn+")")
+	agentSpawn := fs.Bool("agent-spawn", envBool(envAgentSpawn), "with -interactive, on the DEFAULT tmux server (or, with -agent-spawn-tenant-server, on the tenant tmux server this mirror mirrors): let your chief START a Claude Code agent on this host — a fresh git worktree of a repository on -agent-spawn-repos, cut from origin, and a window in tmux session `agents`, in normal permission mode. OFF by default: it starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ("+envAgentSpawn+")")
 	agentSpawnRoots := fs.String("agent-spawn-roots", or(getenv(envAgentSpawnRoots), "~/src"), "colon-separated directories whose DIRECT children are the clones a spawned agent's worktree may be cut from ("+envAgentSpawnRoots+")")
 	agentSpawnDir := fs.String("agent-spawn-dir", or(getenv(envAgentSpawnDir), defaultAgentSpawnDir(getenv)), "where spawned agents' worktrees go, <dir>/<owner>__<repo>/<dispatch> ("+envAgentSpawnDir+")")
 	agentSpawnRepos := fs.String("agent-spawn-repos", getenv(envAgentSpawnRepos), "comma-separated <owner>/<repo> this host will spawn agents in. EMPTY BY DEFAULT: with none listed, -agent-spawn starts nothing ("+envAgentSpawnRepos+")")
 	agentSpawnRate := fs.String("agent-spawn-rate", or(getenv(envAgentSpawnRate), mirrorhost.DefaultAgentSpawnRate), "this host's own spawn rate limit, counted from the audit log ("+envAgentSpawnRate+")")
 	agentSpawnLog := fs.String("agent-spawn-log", or(getenv(envAgentSpawnLog), defaultAgentSpawnLog(getenv)), "the append-only spawn audit log (JSON lines, 0600): every request before any work starts, and its result; a spawn whose first line cannot be written is refused ("+envAgentSpawnLog+")")
+	agentSpawnTenantServer := fs.String("agent-spawn-tenant-server", getenv(envAgentSpawnTenantServer), "with -agent-spawn, on a TENANT's mirror (-tmux-socket/-tmux-socket-path naming a non-default tmux server): opt in to spawning on that server. The value must name the SAME server as this mirror's own -tmux-socket (a socket name) or -tmux-socket-path (an absolute path); anything else refuses every spawn. The tenant's tmux server must already be running: this host never starts it. Empty (the default) = spawn on the default tmux server only ("+envAgentSpawnTenantServer+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -339,6 +345,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "muster-mirror:", err)
 		return 2
 	}
+	if _, err := mirrorhost.ParseAgentSpawnTenantServer(*agentSpawnTenantServer); err != nil {
+		fmt.Fprintln(stderr, "muster-mirror:", err)
+		return 2
+	}
 	if _, err := mirrorhost.ParseAgentSpawnRate(*agentSpawnRate); err != nil {
 		fmt.Fprintln(stderr, "muster-mirror:", err)
 		return 2
@@ -354,7 +364,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		AgentSpawn: mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
-			Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR")},
+			Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
+			TenantServer: *agentSpawnTenantServer},
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
@@ -401,9 +412,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		} else if len(spawnRepos) == 0 {
 			logger.Printf("muster-mirror: -agent-spawn is ON but -agent-spawn-repos names no repository: this host starts no agent until you list one")
 		} else {
-			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude in tmux session %q, in a new worktree of %s, rate %s, audit log %s",
-				"agents", strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog))
+			server := "the default tmux server"
+			if *agentSpawnTenantServer != "" {
+				server = fmt.Sprintf("the tenant tmux server %q (-agent-spawn-tenant-server)", *agentSpawnTenantServer)
+			}
+			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude in tmux session %q on %s, in a new worktree of %s, rate %s, audit log %s",
+				"agents", server, strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog))
 		}
+	}
+	if *agentSpawnTenantServer != "" && !*agentSpawn {
+		logger.Printf("muster-mirror: -agent-spawn-tenant-server has no effect without -agent-spawn: this host starts no agent")
 	}
 	switch {
 	case *openCodeSend && !*interactive:
