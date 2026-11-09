@@ -384,11 +384,6 @@ func askView(a attention.Ask) map[string]any {
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote
 	}
-	// A question muster withdrew says why (a proposal answered it:
-	// withdrawAnsweredAsks).
-	if a.Status == attention.Cancelled && a.SettledReason != "" {
-		out["reason"] = a.SettledReason
-	}
 	if a.AnsweredVia.ViaSession() {
 		out["answered_via"], out["answered_from"] = a.AnsweredVia.Via, a.AnsweredVia.String()
 	}

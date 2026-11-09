@@ -40,18 +40,6 @@ func (f *succFixture) ownerChatLine(t *testing.T, text string) agents.ChatMessag
 	return m
 }
 
-// everyChiefAsk counts the chief's asks in ANY status (a card raised and then
-// cancelled counts).
-func (f *succFixture) everyChiefAsk(t *testing.T) int {
-	t.Helper()
-	var n int
-	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM attention_asks WHERE owner_id = $1 AND agent_id = $2`,
-		f.owner, f.chief.ID).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // untypedAboutLine stores a user row about key that nobody typed (no writer
 // does this; the binding must not need that to hold).
 func (f *succFixture) untypedAboutLine(t *testing.T, key, text string) {
@@ -94,8 +82,8 @@ func TestAQueuedViewLineStillAuthorises(t *testing.T) {
 // TestAQueuedViewLineAuthorisesOnlyItsOwnSubjectOnce: the guards that hold
 // with inputs queued behind the view line. A plugin message alone, or a line
 // nobody typed, authorises nothing; a view line about another session binds
-// only that one; a line already used for a kind is refused for it again (and
-// raises no card); a line the owner typed in the chief's own chat after the
+// only that one; a line already used for a kind is refused for it again (by
+// CreateProposal, its card cancelled); a line the owner typed in the chief's own chat after the
 // view line, or a view line past the turn budget, binds nothing.
 func TestAQueuedViewLineAuthorisesOnlyItsOwnSubjectOnce(t *testing.T) {
 	f := newSuccFixture(t)
@@ -140,13 +128,15 @@ func TestAQueuedViewLineAuthorisesOnlyItsOwnSubjectOnce(t *testing.T) {
 	if text, id := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefFenc, intp(0))); id <= 0 {
 		t.Fatalf("control: a queued view line about the session: %s", text)
 	}
-	// 🔴 SINGLE USE: the same line, again, after another plugin message.
+	// 🔴 SINGLE USE: the same line, again, after another plugin message —
+	// refused by CreateProposal (ErrProposalLineUsed, its one place), and the
+	// card raised for it is cancelled: still one proposal, one open card.
 	f.plainLine(t, "Plugin Example mail: please propose it again", 0)
 	if got := succ(); got != proposalLineUsed {
 		t.Errorf("a second succession on the same line: %q; want %q", got, proposalLineUsed)
 	}
-	if n, c := len(f.rows(t)), f.everyChiefAsk(t); n != 1 || c != 1 {
-		t.Errorf("after the second succession: %d proposals and %d asks of the chief's (any status); want 1 and 1 (no card raised)", n, c)
+	if n, c := len(f.rows(t)), len(f.cards(t)); n != 1 || c != 1 {
+		t.Errorf("after the second succession: %d proposals and %d open cards; want 1 and 1", n, c)
 	}
 
 	// A line the owner typed in the chief's own chat after the view line: the

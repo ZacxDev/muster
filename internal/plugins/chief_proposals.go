@@ -191,19 +191,6 @@ func (s *PGStore) CreateProposal(ctx context.Context, n ProposalNew) (Proposal, 
 	return x, nil
 }
 
-// ProposalForLine is the principal's proposal of kind answering owner
-// message ownerMessage about the session keyed key (ErrProposalNotFound for
-// none): whether that line was already used for one (CreateProposal's rule,
-// asked before a card is raised).
-func (s *PGStore) ProposalForLine(ctx context.Context, kind string, ownerMessage int64, key string) (Proposal, error) {
-	owner, err := hostDispatchOwner(ctx, "a proposal")
-	if err != nil {
-		return Proposal{}, err
-	}
-	return scanProposal(s.pool.QueryRow(ctx, `SELECT `+proposalCols+` FROM chief_proposals
-		WHERE owner_id = $1 AND kind = $2 AND owner_message = $3 AND subject_key = $4 ORDER BY id DESC LIMIT 1`, owner, kind, ownerMessage, key))
-}
-
 // ProposalByID is the principal's proposal id.
 func (s *PGStore) ProposalByID(ctx context.Context, id int64) (Proposal, error) {
 	owner, err := hostDispatchOwner(ctx, "a proposal")

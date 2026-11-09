@@ -950,8 +950,8 @@ func (w askLoggingAttention) Cancel(ctx context.Context, id int64) (attention.As
 	return a, err
 }
 
-func (w askLoggingAttention) WithdrawAbout(ctx context.Context, agentID int64, key string, except int64, reason string) ([]attention.Ask, error) {
-	as, err := w.Store.WithdrawAbout(ctx, agentID, key, except, reason)
+func (w askLoggingAttention) WithdrawAbout(ctx context.Context, agentID int64, key string, except int64) ([]attention.Ask, error) {
+	as, err := w.Store.WithdrawAbout(ctx, agentID, key, except)
 	for _, a := range as {
 		w.settled(a, err)
 	}

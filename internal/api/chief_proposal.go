@@ -81,7 +81,6 @@ func proposalEventID(x plugins.Proposal) string { return x.Kind + "-" + strconv.
 // hostDispatchStore is).
 type proposalStore interface {
 	CreateProposal(ctx context.Context, n plugins.ProposalNew) (plugins.Proposal, error)
-	ProposalForLine(ctx context.Context, kind string, ownerMessage int64, key string) (plugins.Proposal, error)
 	ProposalByID(ctx context.Context, id int64) (plugins.Proposal, error)
 	ProposalByAsk(ctx context.Context, askID int64) (plugins.Proposal, error)
 	LatestProposalFor(ctx context.Context, kind, key string) (plugins.Proposal, error)
@@ -332,14 +331,6 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	if st == nil || s.ext.Attention == nil {
 		return plugins.Proposal{}, "proposals are not available on this muster"
 	}
-	// 🔴 SINGLE USE: one owner line, one proposal of each kind for a session
-	// (asked here so no card is raised; CreateProposal enforces it).
-	if _, err := st.ProposalForLine(ctx, n.Kind, ownerMsg, key); err == nil {
-		return plugins.Proposal{}, proposalLineUsed
-	} else if !errors.Is(err, plugins.ErrProposalNotFound) {
-		s.logger.Printf("proposal: read %s's %s on message %d: %v", chief.Name, n.Kind, ownerMsg, err)
-		return plugins.Proposal{}, "the proposal could not be recorded; try again"
-	}
 	ask, err := s.raiseProposalCard(ctx, chief, question, askOptions)
 	if err != nil {
 		return plugins.Proposal{}, fmt.Sprintf(proposalNoCard, ownerCardRefusal(err))
@@ -350,6 +341,9 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	x, err := st.CreateProposal(ctx, n)
 	if err != nil {
 		_, _ = s.cancelAsk(ctx, ask.ID)
+		// 🔴 SINGLE USE: one owner line, one proposal of each kind for a
+		// session — CreateProposal is the one place the rule lives (the card
+		// raised for the refused one is cancelled above).
 		if errors.Is(err, plugins.ErrProposalLineUsed) {
 			return plugins.Proposal{}, proposalLineUsed
 		}
@@ -360,13 +354,6 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg 
 	s.withdrawAnsweredAsks(ctx, chief, x)
 	s.broadcastTo(agentOwnerID(chief), EventLineageChanged, proposalEventID(x))
 	return x, ""
-}
-
-// proposalWithdrawnReason is a question withdrawAnsweredAsks settled, as its
-// row records it (attention.Ask.SettledReason) and attention_wait reads it.
-func proposalWithdrawnReason(x plugins.Proposal) string {
-	return "superseded: your chief proposed a " + strings.ReplaceAll(x.Kind, "_", " ") + " of this session (proposal " +
-		strconv.FormatInt(x.ID, 10) + "), so this question about it was withdrawn"
 }
 
 // withdrawAnsweredAsks withdraws the questions the chief raised for proposal
@@ -380,7 +367,7 @@ func (s *Server) withdrawAnsweredAsks(ctx context.Context, chief agents.Agent, x
 	if s.ext.Attention == nil || x.SubjectKey == "" {
 		return
 	}
-	as, err := s.ext.Attention.WithdrawAbout(ctx, chief.ID, x.SubjectKey, x.AskID, proposalWithdrawnReason(x))
+	as, err := s.ext.Attention.WithdrawAbout(ctx, chief.ID, x.SubjectKey, x.AskID)
 	if err != nil {
 		s.logger.Printf("proposal %d: withdraw %s's questions about %s: %v", x.ID, chief.Name, x.SubjectKey, err)
 		return

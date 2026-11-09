@@ -1186,8 +1186,9 @@ Observed on the release with succession phase 2 and end-session.
   - **Single use.** One owner line authorises at most ONE proposal of each
     kind for a session: `CreateProposal` refuses a second row of that kind
     with the same `owner_message` and `subject_key`
-    (`ErrProposalLineUsed`, under a transaction-scoped advisory lock), and
-    `fileProposal` asks first so no card is raised. Before, the binding to
+    (`ErrProposalLineUsed`, under a transaction-scoped advisory lock) — the
+    one place the rule lives; `fileProposal` cancels the card it raised for
+    the refused one. Before, the binding to
     the newest row did this implicitly in most cases (muster's note after a
     proposal was the newest row); now that such rows are passed over, it is
     explicit. The message id is not passed by the chief: the server derives
@@ -1213,9 +1214,7 @@ Observed on the release with succession phase 2 and end-session.
   only when the turn's own input IS the owner's view line
   (`chiefAskSubject`: no plugin message, relayed answer or note behind it).
   Filing a proposal withdraws the chief's own open asks with that
-  `about_key` (`attention.WithdrawAbout`): `cancelled`, with
-  `settled_reason` ("superseded: your chief proposed a … of this session
-  (proposal N) …"), which `attention_wait` returns as `reason`. Never matched
+  `about_key` (`attention.WithdrawAbout`): `cancelled`. Never matched
   by text: an ask with no subject, another session's, another asker's, a
   question to the chief, a notice, and the proposal's own card are not
   touched. muster's own cards for the chief (a held dispatch's) carry no

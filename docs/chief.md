@@ -645,8 +645,7 @@ session you are looking at, instead of to the pane:
 - If the chief asked you something about that session while answering your
   view line (which repository, which branch), and you answered with a new
   line on the view instead of on its card, the question is withdrawn once the
-  chief files the proposal: muster records it as cancelled, superseded by the
-  proposal. A question the chief raised about anything else is never touched.
+  chief files the proposal: muster records it as cancelled. A question the chief raised about anything else is never touched.
 
 `session_context {subject, messages?}` is a chief-only, read-only tool. It
 takes one of your mirrored sessions (a Claude Code session id, or

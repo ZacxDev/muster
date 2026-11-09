@@ -54,7 +54,7 @@ func (f *succFixture) askStatus(t *testing.T, id int64) attention.Ask {
 
 // TestAProposalWithdrawsTheQuestionsItAnswered: the chief's ask_owner card
 // and attention_ask raised in the turn of the owner's view line about the
-// session are withdrawn (cancelled, with muster's reason) once the chief
+// session are withdrawn (cancelled) once the chief
 // files a proposal about it. Untouched: the chief's question in the turn of a
 // view line about ANOTHER session; its question raised while a plugin message
 // was the newest input (linked to no session); and another agent's question
@@ -96,23 +96,15 @@ func TestAProposalWithdrawsTheQuestionsItAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reason := "superseded: your chief proposed a succession of this session (proposal " + itoa(x.ID) + "), so this question about it was withdrawn"
 	for name, aid := range map[string]int64{"the ask_owner card": card, "the attention_ask": asked} {
-		a := f.askStatus(t, aid)
-		if a.Status != attention.Cancelled || a.SettledReason != reason {
-			t.Errorf("%s about the session: %s, reason %q; want cancelled, %q", name, a.Status, a.SettledReason, reason)
+		if a := f.askStatus(t, aid); a.Status != attention.Cancelled {
+			t.Errorf("%s about the session: %s; want cancelled", name, a.Status)
 		}
 	}
 	for name, aid := range map[string]int64{"another session's question": otherSession, "a question after a plugin message": afterMail,
 		"another agent's question": theirs.ID, "the proposal's own card": x.AskID} {
-		if a := f.askStatus(t, aid); a.Status != attention.Open || a.SettledReason != "" {
-			t.Errorf("%s: %s, reason %q; want it open", name, a.Status, a.SettledReason)
+		if a := f.askStatus(t, aid); a.Status != attention.Open {
+			t.Errorf("%s: %s; want it open", name, a.Status)
 		}
-	}
-	// attention_wait tells the chief why (a read: wait_seconds 0).
-	var wait map[string]any
-	_ = json.Unmarshal([]byte(f.callRaw(f.chief, attentionWaitTool, map[string]any{"id": asked, "wait_seconds": 0})), &wait)
-	if wait["status"] != string(attention.Cancelled) || wait["reason"] != reason {
-		t.Errorf("attention_wait on the withdrawn ask: %v", wait)
 	}
 }
