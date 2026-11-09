@@ -34,7 +34,9 @@ import (
 // the page (owner answer: "Recent in-page + full on typing"). The values are
 // attributes the server escapes, read with getAttribute, and a hit is JSON;
 // all are drawn with textContent. The page's own session is left out either
-// way.
+// way. With the viewer's "Show tmux sessions" on, a named window's pill or row
+// also carries data-switcher-tmux (entryTmuxAttr), which its result draws as
+// a muted line ("mango:1 @ atlas"); it is drawn, never searched.
 //
 // 🔴 A POPOVER (the top layer), so opening it moves nothing on the page. It
 // sits in #sidebar-root, OUTSIDE the sliding #sidebar panel: the panel is
@@ -184,7 +186,10 @@ const paletteMatchJS = `  window.musterPaletteMatch = function (e, q) {
       title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
       prev: (a.getAttribute('data-switcher-prev') || '').split('\n').filter(Boolean),
       age: a.getAttribute('data-switcher-focus-age') || '', stale: a.hasAttribute('data-switcher-focus-stale'),
-      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n, mark: window.musterWaitMark(a) };
+      kind: a.getAttribute('data-switcher-entry') || a.getAttribute('data-nav-agent'), n: n, mark: window.musterWaitMark(a),
+      // "Show tmux sessions": the place the server set (entryTmuxAttr), drawn
+      // by the palette's row; never searched (the codename is, as code).
+      tmux: a.getAttribute('data-switcher-tmux') || '' };
   };
   // window.musterWaitMark is element a's WAITING MARK — the sidebar's
   // (entryWaitMark): a switcher pill keeps it inert in a <template>, a sidebar
@@ -350,8 +355,19 @@ const paletteJS = `
         li.appendChild(p);
       } else {
         var isTitle = !!e.title && e.title !== e.label;
-        var sub = isTitle ? e.title : (e.code !== e.label ? e.code : '');
+        // With a tmux line (below) the bare codename is not drawn as well: the
+        // tmux line starts with it.
+        var sub = isTitle ? e.title : (e.code !== e.label && !e.tmux ? e.code : '');
         if (sub) li.appendChild(focusAgeLine(isTitle ? e.age : '', e.stale, el('span', 'truncate text-xs text-muted', sub)));
+      }
+      // "Show tmux sessions" on: the window's place, one muted line under the
+      // rest ("mango:1 @ atlas", as the server set it on the pill or sidebar
+      // row it came from: data-switcher-tmux). Text in the option, so part of
+      // its accessible name.
+      if (e.tmux) {
+        var tl = el('span', 'truncate text-xs text-muted', e.tmux);
+        tl.setAttribute('data-palette-tmux', '');
+        li.appendChild(tl);
       }
       // Waiting on the operator: the sidebar's own mark, copied, at the row's
       // end (out of flow, so the label stays the row's first child).
