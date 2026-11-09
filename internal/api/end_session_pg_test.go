@@ -210,6 +210,6 @@ func TestAnEndFromTheChiefsOwnChat(t *testing.T) {
 // answerAs answers ask id as the owner's signed-in browser (the Attention view).
 func (f *succFixture) answerAs(t *testing.T, id int64, answer string) error {
 	t.Helper()
-	_, err := f.srv.answerAskFrom(authz.WithPrincipal(context.Background(), f.ownerSession()), id, answer, attention.AnswerSource{})
+	_, err := f.srv.answerAskFrom(withOptionTap(authz.WithPrincipal(context.Background(), f.ownerSession())), id, answer, attention.AnswerSource{})
 	return err
 }
