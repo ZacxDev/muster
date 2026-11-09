@@ -811,7 +811,12 @@ step 6 has its own bound.
   tells it from a job another server is still running, and the agent's runtime
   may still be in its turn (a dropped request does not stop one), so the
   agent's next job waits for the reaper's deadline rather than run beside it.
-  The pass that fails it starts the next one. A job re-queued by an [account
+  The pass that fails it starts the next one. For example, a job submitted with
+  `timeout_s` 1200 that was running when its server crashed holds its worker
+  for about 25 minutes (`started_at` + 1200 s + 5 minutes); every job queued
+  on that worker, older or newer, waits that long, and then runs in order.
+  This is deliberate: muster keeps no per-server lease that could tell a dead
+  server's job from a live one. A job re-queued by an [account
   failover](#account-failover) is held the same way, for its own server, until
   its start's deadline. The same pass ends a job orphaned by a crash in muster or by an outcome
   it could not record (the write is retried 3 times first). The agent may have

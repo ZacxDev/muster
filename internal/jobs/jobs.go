@@ -340,6 +340,27 @@ type Store interface {
 	// jobs (a rolling update). It runs under the system principal whatever ctx
 	// carries.
 	ReapOverdue(ctx context.Context, now time.Time) (int64, error)
+
+	// 🔴 THE QUEUE IS THE TABLE, NOT A GOROUTINE. A job used to wait for its
+	// turn in a goroutine of the process that accepted it, blocked on that
+	// process's per-agent lane; a crash took the goroutine and nothing ever ran
+	// the row, while the same worker ran every job submitted after the restart.
+	// The runner now takes each agent's next job from here, oldest first, so a
+	// job queued before a crash is run by the next process to look, in its
+	// place in line.
+
+	// Heads is, for each agent that is free at now, its oldest queued job —
+	// only agentID's when agentID is not 0 — across every owner, oldest first.
+	// An agent is NOT free while one of its jobs is held by a runner: running,
+	// or queued again by an account failover (Requeue; it has a started_at)
+	// and still before that start's deadline (started_at + timeout_s +
+	// ReapSlack, the reaper's deadline for a running job). A held job is never
+	// a head. Ids, agents and owners only. It runs under the system principal
+	// whatever ctx carries.
+	Heads(ctx context.Context, agentID int64, now time.Time) ([]Head, error)
+	// FinishQueued is Finish for a job that must still be queued: it reports
+	// false, and changes nothing, once the job has started (in any process).
+	FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error)
 }
 
 // Classify turns a finished turn into a job outcome. reply and err are the
@@ -720,39 +741,14 @@ func (s *PGStore) Requeue(ctx context.Context, id int64, f Failover) (bool, erro
 
 var _ Requeuer = (*PGStore)(nil)
 
-// Head is the job an agent runs next (Queue.Heads): its oldest queued job.
+// Head is the job an agent runs next (Store.Heads): its oldest queued job.
 // AgentID is 0 for a queued job whose agent was deleted, which has no agent to
 // run on and is its own head.
 type Head struct {
 	ID, AgentID, OwnerID int64
 }
 
-// Queue is the store's dispatch half, asserted by the job runner rather than
-// added to Store, like Requeuer: a store without it is dispatched as before,
-// by a goroutine per submission, and nothing re-dispatches what a crashed
-// process left queued.
-//
-// 🔴 THE QUEUE IS THE TABLE, NOT A GOROUTINE. A job used to wait for its turn
-// in a goroutine of the process that accepted it, blocked on that process's
-// per-agent lane; a crash took the goroutine and nothing ever ran the row,
-// while the same worker ran every job submitted after the restart. A runner
-// now takes each agent's next job from here, oldest first, so a job queued
-// before a crash is run by the next process to look, in its place in line.
-type Queue interface {
-	// Heads is, for each agent that is free at now, its oldest queued job —
-	// only agentID's when agentID is not 0 — across every owner, oldest first.
-	// An agent is NOT free while one of its jobs is held by a runner: running,
-	// or queued again by an account failover (Requeue; it has a started_at)
-	// and still before that start's deadline (started_at + timeout_s +
-	// ReapSlack, the reaper's deadline for a running job). A held job is never
-	// a head. Ids, agents and owners only.
-	Heads(ctx context.Context, agentID int64, now time.Time) ([]Head, error)
-	// FinishQueued is Finish for a job that must still be queued: it reports
-	// false, and changes nothing, once the job has started (in any process).
-	FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error)
-}
-
-// Heads implements [Queue], under the system principal whatever ctx carries —
+// Heads implements [Store].Heads, under the system principal whatever ctx carries —
 // its own internal/authz System ledger entry.
 //
 // 🔴 EVERY OWNER'S JOBS, NOT THE CALLER'S. Whether an agent is free, and which
@@ -792,7 +788,7 @@ func (s *PGStore) Heads(ctx context.Context, agentID int64, now time.Time) ([]He
 	return out, rows.Err()
 }
 
-// FinishQueued implements [Queue].
+// FinishQueued implements [Store].FinishQueued.
 func (s *PGStore) FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error) {
 	o = normalize(o)
 	if o.Status != StatusFailed {
@@ -807,7 +803,7 @@ func (s *PGStore) FinishQueued(ctx context.Context, id int64, o Outcome) (bool, 
 	return tag.RowsAffected() == 1, nil
 }
 
-var _ Queue = (*PGStore)(nil)
+var _ Store = (*PGStore)(nil)
 
 // Finish moves a queued or running job to o's terminal status.
 func (s *PGStore) Finish(ctx context.Context, id int64, o Outcome) (bool, error) {

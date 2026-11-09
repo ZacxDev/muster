@@ -12,7 +12,7 @@ import (
 )
 
 // THE JOB QUEUE'S RUNNER: each agent's jobs are taken from the table, oldest
-// first (jobs.Queue.Heads), by one drain per agent in this process.
+// first (jobs.Store.Heads), by one drain per agent in this process.
 //
 // 🔴 WHY: A QUEUED JOB USED TO LIVE IN A GOROUTINE. The submission started one
 // goroutine per job, which waited on its agent's in-process lane (jobLanes).
@@ -38,11 +38,8 @@ import (
 //     pass does not take it while its runner waits for the worker's new pod.
 //   - a graceful shutdown still fails the jobs this process accepted
 //     (FailOwnJobs) — a queued one only while it is still queued
-//     (jobs.Queue.FinishQueued), so one another process has started since is
+//     (jobs.Store.FinishQueued), so one another process has started since is
 //     left to it.
-//
-// A store without jobs.Queue (a test fake) is run as before: one goroutine per
-// submission (runJobAlone), and nothing re-dispatches.
 
 // jobDrainHeadTimeout bounds one read of the queue's heads.
 const jobDrainHeadTimeout = 10 * time.Second
@@ -94,44 +91,18 @@ func (d *jobDrains) forget(agentID int64) {
 	delete(d.again, agentID)
 }
 
-// jobQueue is the store's dispatch half, when it has one.
-func (s *Server) jobQueue() (jobs.Queue, bool) {
-	if s.ext.Jobs == nil {
-		return nil, false
-	}
-	q, ok := s.ext.Jobs.(jobs.Queue)
-	return q, ok
-}
-
-// dispatchJob hands a job just accepted (and registered in ownJobs under ctx)
-// to its runner.
-func (s *Server) dispatchJob(ctx context.Context, j jobs.Job) {
-	if _, ok := s.jobQueue(); ok && j.AgentID != 0 {
-		s.kickJobs(j.AgentID)
-		return
-	}
-	s.runJobAlone(ctx, j)
-}
-
-// runJobAlone is the runner of a store without jobs.Queue: the job's own
-// goroutine.
-func (s *Server) runJobAlone(ctx context.Context, j jobs.Job) {
-	safeGo(s.logger, "job "+strconv.FormatInt(j.ID, 10), func() { s.runJob(ctx, j) })
-}
-
 // kickJobs makes sure agentID's drain runs: it starts one, or tells the
 // running one to read the queue again.
 func (s *Server) kickJobs(agentID int64) {
-	q, ok := s.jobQueue()
-	if !ok || agentID == 0 || !s.jobDrains.start(agentID) {
+	if s.ext.Jobs == nil || agentID == 0 || !s.jobDrains.start(agentID) {
 		return
 	}
-	safeGo(s.logger, "job queue of agent "+strconv.FormatInt(agentID, 10), func() { s.drainJobs(q, agentID) })
+	safeGo(s.logger, "job queue of agent "+strconv.FormatInt(agentID, 10), func() { s.drainJobs(agentID) })
 }
 
 // drainJobs runs agentID's queue until it is empty (or its head cannot be
 // run now) and no kick came in meanwhile.
-func (s *Server) drainJobs(q jobs.Queue, agentID int64) {
+func (s *Server) drainJobs(agentID int64) {
 	defer func() {
 		// A panic outside a job's own run (each is recovered below) must not
 		// leave the agent marked as drained for ever: the next kick starts again.
@@ -141,7 +112,7 @@ func (s *Server) drainJobs(q jobs.Queue, agentID int64) {
 		}
 	}()
 	for {
-		s.drainJobsOnce(q, agentID)
+		s.drainJobsOnce(agentID)
 		if !s.jobDrains.next(agentID) {
 			return
 		}
@@ -149,11 +120,11 @@ func (s *Server) drainJobs(q jobs.Queue, agentID int64) {
 }
 
 // drainJobsOnce runs agentID's heads one after another until it has none.
-func (s *Server) drainJobsOnce(q jobs.Queue, agentID int64) {
+func (s *Server) drainJobsOnce(agentID int64) {
 	var last int64
 	for {
 		hctx, cancel := context.WithTimeout(context.Background(), jobDrainHeadTimeout)
-		heads, err := q.Heads(hctx, agentID, s.jobClock())
+		heads, err := s.ext.Jobs.Heads(hctx, agentID, s.jobClock())
 		cancel()
 		if err != nil {
 			s.logger.Printf("jobs: agent %d: read the queue: %v (the next reaper pass reads it again)", agentID, err)
@@ -233,12 +204,11 @@ func (s *Server) jobClock() time.Time {
 // queued — and fails a queued job whose agent was deleted, which has nothing
 // to run on.
 func (s *Server) dispatchQueuedJobs(ctx context.Context) {
-	q, ok := s.jobQueue()
-	if !ok {
+	if s.ext.Jobs == nil {
 		return
 	}
 	hctx, cancel := context.WithTimeout(ctx, jobDrainHeadTimeout)
-	heads, err := q.Heads(hctx, 0, s.jobClock())
+	heads, err := s.ext.Jobs.Heads(hctx, 0, s.jobClock())
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
@@ -256,7 +226,7 @@ func (s *Server) dispatchQueuedJobs(ctx context.Context) {
 		if j, err := s.ext.Jobs.Get(jctx, h.ID); err == nil {
 			msg = fmt.Sprintf("agent %q was deleted before the job started; nothing was sent to it", j.Agent)
 		}
-		if _, err := q.FinishQueued(jctx, h.ID, jobs.Failed(jobs.ReasonAgentUnavailable, msg)); err != nil {
+		if _, err := s.ext.Jobs.FinishQueued(jctx, h.ID, jobs.Failed(jobs.ReasonAgentUnavailable, msg)); err != nil {
 			s.logger.Printf("jobs: %d: fail a job whose agent was deleted: %v", h.ID, err)
 		}
 		fcancel()

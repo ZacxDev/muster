@@ -246,7 +246,7 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	s.ownJobs.add(j.ID, runCtx)
 	// To its agent's queue runner (jobs_queue.go), which runs the agent's jobs
 	// oldest first — this one after any a dead process left queued.
-	s.dispatchJob(runCtx, j)
+	s.kickJobs(j.AgentID)
 	s.writeJSON(w, http.StatusAccepted, jobView(j))
 }
 
@@ -967,7 +967,6 @@ func (s *Server) FailOwnJobs(timeout time.Duration) int {
 	}
 	s.ownJobs.mu.Unlock()
 	deadline := time.Now().Add(timeout)
-	q, hasQueue := s.jobQueue()
 	failed := 0
 	for _, p := range list {
 		msg := jobs.ShutdownQueuedError
@@ -977,11 +976,11 @@ func (s *Server) FailOwnJobs(timeout time.Duration) int {
 		ctx, cancel := context.WithDeadline(context.WithoutCancel(p.ctx), deadline)
 		var ok bool
 		var err error
-		if !p.started && hasQueue {
+		if !p.started {
 			// 🔴 A JOB THIS PROCESS NEVER STARTED IS FAILED ONLY WHILE IT IS
 			// STILL QUEUED: the queue is the table (jobs_queue.go), so another
 			// process may have started it since, and its run is not ours to end.
-			ok, err = q.FinishQueued(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+			ok, err = s.ext.Jobs.FinishQueued(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
 		} else {
 			ok, err = s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
 		}
@@ -1119,9 +1118,8 @@ func (s *Server) jobTimeout(j jobs.Job) time.Duration {
 
 // runJob runs one job to its end and records the outcome. ctx carries the
 // submitter's principal (or, for a job taken from the queue that no request of
-// this process holds, its owner's: jobPrincipal) and no deadline. Its callers
-// are the agent's queue runner (drainJobsOnce) and, for a store without
-// jobs.Queue, the submission's own goroutine (runJobAlone).
+// this process holds, its owner's: jobPrincipal) and no deadline. Its one
+// caller is the agent's queue runner (drainJobsOnce).
 func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	// Deferred first, so it runs last: the job is this process's until its
 	// outcome is recorded.
