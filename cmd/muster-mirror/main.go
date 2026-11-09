@@ -47,6 +47,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
+	"github.com/ZacxDev/muster/internal/previewhost"
 	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
@@ -215,6 +216,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	agentSpawnRepos := fs.String("agent-spawn-repos", getenv(envAgentSpawnRepos), "comma-separated <owner>/<repo> this host will spawn agents in. EMPTY BY DEFAULT: with none listed, -agent-spawn starts nothing ("+envAgentSpawnRepos+")")
 	agentSpawnRate := fs.String("agent-spawn-rate", or(getenv(envAgentSpawnRate), mirrorhost.DefaultAgentSpawnRate), "this host's own spawn rate limit, counted from the audit log ("+envAgentSpawnRate+")")
 	agentSpawnLog := fs.String("agent-spawn-log", or(getenv(envAgentSpawnLog), defaultAgentSpawnLog(getenv)), "the append-only spawn audit log (JSON lines, 0600): every request before any work starts, and its result; a spawn whose first line cannot be written is refused ("+envAgentSpawnLog+")")
+	// Previews (preview.go): off by default; in this release -preview only
+	// validates and logs.
+	pf := previewFlags{}
+	fs.BoolVar(&pf.On, "preview", envBool(envPreview), "PREVIEWS (not yet live: this release validates the configuration and logs what it would offer, and dials nothing): serve an allowlisted loopback web server started in a mirrored window to its owner through the preview gateway; on the default tmux server's daemon only; a bad configuration turns previews off with a logged reason, never fatal ("+envPreview+")")
+	fs.StringVar(&pf.URLs, "preview-urls", getenv(envPreviewURLs), "with -preview: the preview gateway's host-tunnel endpoints, ws:// or wss://, comma-separated IN DIAL ORDER (the overlay-mesh endpoint first, then the public one) ("+envPreviewURLs+")")
+	fs.StringVar(&pf.TokenFile, "preview-token-file", getenv(envPreviewTokenFile), "with -preview: file holding this host's preview gateway token (mpt_…), not readable by group or others ("+envPreviewTokenFile+")")
+	fs.StringVar(&pf.File, "preview-file", or(getenv(envPreviewFile), previewhost.DefaultFile()), "with -preview: previews.json, the allowlist {\"ports\": [\"5173\", \"8000-8099\"], \"offer\": true, \"maxOpen\": 8, \"maxConns\": 64}; ports 1024-65535 only; missing or invalid = previews off ("+envPreviewFile+")")
+	listPreviews := fs.Bool("previews", false, "with -list: print the listener reports this host would offer from -preview-file — one line each: window id, port, process name, session — and dial nothing")
 	agentSpawnTenantServer := fs.String("agent-spawn-tenant-server", getenv(envAgentSpawnTenantServer), "with -agent-spawn, on a TENANT's mirror (-tmux-socket/-tmux-socket-path naming a non-default tmux server): opt in to spawning on that server. The value must name the SAME server as this mirror's own -tmux-socket (a socket name) or -tmux-socket-path (an absolute path); anything else refuses every spawn. The tenant's tmux server must already be running: this host never starts it. Empty (the default) = spawn on the default tmux server only ("+envAgentSpawnTenantServer+")")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -284,6 +293,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return printOpenCode(lctx, backend, ocCreds, ocWhy, stdout, stderr)
+	}
+	if *list && *listPreviews {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return printPreviews(lctx, backend, pf, alwaysRefusedPorts(*mcpListen, ocCreds), previewProcRoot, stdout, stderr)
 	}
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -401,6 +415,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 		}()
 	}
+	var previewDone chan struct{}
+	switch {
+	case pf.On:
+		previewDone = startPreview(pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), logger)
+	case pf.URLs != "" || pf.TokenFile != "":
+		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
+	}
 	mode := "read-only"
 	if *interactive {
 		mode = "INTERACTIVE (-interactive)"
@@ -504,6 +525,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		case <-time.After(5 * time.Second):
 		}
 	}
+	previewSettle(previewDone, 5*time.Second)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		logger.Printf("muster-mirror: %v", err)
 		return 1
