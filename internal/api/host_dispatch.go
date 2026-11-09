@@ -970,6 +970,9 @@ func (s *Server) endHostDispatch(ctx context.Context, owner, id int64, why strin
 		// late reply end rows from a principal-less context, whose event would
 		// otherwise go to nobody and leave the owner's page showing it running.
 		s.broadcastTo(owner, EventAgentChanged, "host-dispatch-"+strconv.FormatInt(id, 10))
+		// A succession's successor ended (refused, or its window closed): the
+		// predecessor's views say so (succession.go).
+		s.successionDispatchMoved(s.hostDispatchPrincipal(ctx, owner), owner, id, false)
 		// Its task, when nobody else works it, goes back to open: the start is
 		// released, and a new one needs an open task (as a pod's destroy does).
 		if h.TaskID > 0 {

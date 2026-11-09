@@ -79,6 +79,17 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// A host's window listing moved a host dispatch (host_dispatch_reconcile.go):
 		// pctx is hostDispatchPrincipal(ctx, owner), the host's owner.
 		"(*Server).reconcileListing → broadcast(pctx)",
+		// A succession changed (succession.go), always lineage.changed, which
+		// carries no text: proposed (agentOwnerID(a) is the chief's owner, whose
+		// principal the tool call runs as), declined on the owner's own door
+		// (a.Owner is the card's owner, checked by attention.IsOwnerDoor), its
+		// successor reserved on that tap (requestOwner(ctx), the tap's
+		// principal), and its successor's dispatch moved (owner, the row's,
+		// named explicitly as endHostDispatch's and the reconciler's are).
+		"(*Server).toolSuccessionPropose → broadcastTo(agentOwnerID(a))",
+		"(*Server).successionForAnswer → broadcastTo(a.Owner)",
+		"(*Server).reserveSuccession → broadcastTo(owner)",
+		"(*Server).successionDispatchMoved → broadcastTo(owner)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

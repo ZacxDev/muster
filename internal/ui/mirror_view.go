@@ -140,6 +140,10 @@ type MirrorViewView struct {
 	// chief that is on, and the window names a conversation the chief can be
 	// asked about. False draws the composer as it was.
 	Chief bool
+	// Succession is this session's newest succession (view_succession.go), nil
+	// for none; Predecessor the one this session's window continues, nil for
+	// none.
+	Succession, Predecessor *SuccessionView
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -265,6 +269,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// name (session_name.go).
 				driftBanner(v.Drift),
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
+				// A succession of this session's: the card, its line, the follow
+				// (view_succession.go).
+				successionRegion(ref, v.Succession, v.Predecessor, v.Chief),
 				Div(
 					ID("mv-error"),
 					g.Attr("role", "alert"),
@@ -324,6 +331,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil, successionScript()),
 				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),

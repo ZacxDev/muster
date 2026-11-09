@@ -173,6 +173,9 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 		}
 		if changed {
 			s.broadcast(pctx, EventAgentChanged, "host-dispatch-"+strconv.FormatInt(r.ID, 10))
+			// A succession's successor now runs: its predecessor's views follow
+			// (succession.go).
+			s.successionDispatchMoved(pctx, owner, r.ID, true)
 		}
 	}
 	for id := range tagged {

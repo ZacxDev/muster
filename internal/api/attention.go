@@ -1733,6 +1733,12 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	if err != nil {
 		return a, err
 	}
+	// A succession's card (succession.go): the owner's tap STARTS the
+	// successor here, before the answer is recorded; a start refused before
+	// anything was reserved leaves the card open, with its sentence.
+	if _, err := s.successionForAnswer(ctx, id, answer, src); err != nil {
+		return a, err
+	}
 	if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {

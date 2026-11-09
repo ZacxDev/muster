@@ -440,6 +440,12 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// succession_propose (succession.go): the chief proposes a session that
+		// continues the one its owner asked about from its view; only the owner's
+		// tap on the card starts it. Chief-only and on MCP, with agent_dispatch.
+		if successionOffered(s.ext) {
+			tools = append(tools, agentTool{def: successionProposeToolDef(), mcp: true, chiefOnly: true})
+		}
 	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
@@ -943,6 +949,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolSessionsOverview(ctx, a, arguments)
 	case sessionContextToolName:
 		return s.toolSessionContext(ctx, arguments)
+	case successionProposeTool:
+		if !successionOffered(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolSuccessionPropose(ctx, a, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
 	case routeToSessionToolName:
