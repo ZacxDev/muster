@@ -320,6 +320,10 @@ type Server struct {
 	// activity-write throttling and the turns open in this process.
 	agentOutcomes outcomeTracker
 
+	// hostOutcomes serializes the host-dispatch outcome reconciler and drops a
+	// snapshot older than one it applied (host_dispatch_outcome.go).
+	hostOutcomes hostOutcomeSeq
+
 	taskDoneMu       sync.Mutex
 	taskDoneNotified map[int64]bool
 

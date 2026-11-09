@@ -446,6 +446,11 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			return err
 		}
 	}
+	if len(first.outcomes) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypeOutcomes, Outcomes: first.outcomes}); err != nil {
+			return err
+		}
+	}
 	if beforeRefreshHook != nil {
 		beforeRefreshHook(conn)
 	}
@@ -628,6 +633,10 @@ type listing struct {
 	// (mirror/work.go).
 	work   map[string]mirror.WindowWork
 	colors map[string]string
+	// outcomes is each idle opencode dispatch window's final reply by window
+	// id (opencode_outcome.go), on a message of its own like work
+	// (mirror/outcomes.go).
+	outcomes map[string]mirror.WindowOutcome
 	// hostLimit is the usage limit across all the host's Claude windows
 	// (turnend.go's hostLimitOf); nil for none. It rides the hello and
 	// sessions messages beside the windows.
@@ -691,6 +700,9 @@ func (h *hostSide) read() (listing, bool) {
 			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
 			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
 		}
+	}
+	if src, ok := h.openCodeSource(); ok {
+		l.outcomes = mirror.NormalizeOutcomes(src.dispatchOutcomes(raw), windows)
 	}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
 	// What a muster that predates Windows keeps is at most MaxSessions sessions,
@@ -1061,6 +1073,11 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 	}
 	if !maps.Equal(now.colors, last.colors) {
 		if err := h.send(mirror.Msg{Type: mirror.TypeColors, Colors: now.colors}); err != nil {
+			return false
+		}
+	}
+	if !mirror.OutcomesEqual(now.outcomes, last.outcomes) {
+		if err := h.send(mirror.Msg{Type: mirror.TypeOutcomes, Outcomes: now.outcomes}); err != nil {
 			return false
 		}
 	}
