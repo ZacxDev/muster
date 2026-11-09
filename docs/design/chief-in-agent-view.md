@@ -1040,7 +1040,7 @@ This section follows D9. It is the chief proposal's second kind
     - the pane back at no agent is also graceful, and the window is closed;
     - otherwise, after the grace (30 s) the window is closed anyway and the
       end is reported as not graceful.
-- **Ship note:** the hosts run `muster-mirror` from the operator's devrc
+- **Ship note:** the hosts run `muster-mirror` as pinned by the operator's own host
   flake. Agent-close reaches a host only once that host runs a release with
   it, which needs a flake bump after the release. Until then the host does
   not advertise it, and the chief's proposal is refused with that sentence.
