@@ -319,11 +319,10 @@ func successionTargetOf(in successionProposeIn, about chatSubject) (hostTarget, 
 		}
 		return t, ""
 	}
-	rt := mirror.SpawnRuntimeClaude
-	if about.Runtime == mirror.RuntimeOpenCode {
-		rt = mirror.SpawnRuntimeOpenCode
-	}
-	t := hostTarget{Host: about.Host, Runtime: rt}
+	// The subject's runtime label (sessionSubject: a RuntimeSpec's name, or
+	// "claude") IS the spawn runtime of the same name when the host spawns it;
+	// anything else is no host target (hostSpawnable refuses it after).
+	t := hostTarget{Host: about.Host, Runtime: about.Runtime}
 	if mirror.ValidHost(t.Host) != nil {
 		return hostTarget{}, fmt.Sprintf(successionTarget, t.String())
 	}
@@ -409,7 +408,7 @@ func (s *Server) toolSuccessionPropose(ctx context.Context, a agents.Agent, argu
 			return refuse(agentDispatchModel)
 		}
 	case mirror.SpawnRuntimeOpenCode:
-		if model == "" && in.Target == "" && about.Runtime == mirror.RuntimeOpenCode {
+		if model == "" && in.Target == "" && about.Runtime == t.Runtime {
 			model = strings.TrimPrefix(about.Model, mirror.SpawnModelProvider+"/")
 		}
 		if model == "" {
