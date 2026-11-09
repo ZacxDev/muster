@@ -21,11 +21,11 @@ import (
 // lives in this package because internal/api already has a database;
 // agentprovision has none.)
 //
-// Rows are inserted `provisioning`, as internal/api's dispatch inserts every
-// agent. A Dispatch with no kickoff (Save for later) and a Stop leaves the agent
-// unreapable however long it stays stopped; a Dispatch with a kickoff then Stop,
-// and a saved agent that is Started then Stopped, are reapable once past the
-// window.
+// Rows are inserted as internal/api's createAndDispatchAgent inserts them: a
+// save (Save for later) `stopped`, with no Dispatch after it; a dispatch
+// `provisioning`. A saved agent never started stays unreapable however long it
+// stays stopped; a Dispatch with a kickoff then Stop, and a saved agent that is
+// Started then Stopped, are reapable once past the window.
 func TestOnlyAnAgentTheAdapterBroughtUpIsReapable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(dbtest.AsOperator(context.Background()), time.Minute)
 	defer cancel()
@@ -45,10 +45,10 @@ func TestOnlyAnAgentTheAdapterBroughtUpIsReapable(t *testing.T) {
 		t.Fatal(err)
 	}
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	mk := func(name string) agents.Agent {
+	mk := func(name, status string) agents.Agent {
 		t.Helper()
 		ag, err := store.Create(ctx, agents.Agent{Name: name + "-" + suffix, Namespace: "devpod-" + name + "-" + suffix,
-			PendingNote: "do the thing", Status: agents.StatusProvisioning})
+			PendingNote: "do the thing", Status: status})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,11 +65,11 @@ func TestOnlyAnAgentTheAdapterBroughtUpIsReapable(t *testing.T) {
 			t.Fatalf("%s: %v", what, err)
 		}
 	}
-	saved, dispatched, savedThenStarted := mk("seam-saved"), mk("seam-dispatched"), mk("seam-started")
-	must("save", a.Dispatch(ctx, saved.ID, false))
+	saved := mk("seam-saved", agents.StatusStopped)
+	dispatched := mk("seam-dispatched", agents.StatusProvisioning)
+	savedThenStarted := mk("seam-started", agents.StatusStopped)
 	must("dispatch", a.Dispatch(ctx, dispatched.ID, true))
 	must("stop dispatched", a.Stop(ctx, dispatched.ID))
-	must("save", a.Dispatch(ctx, savedThenStarted.ID, false))
 	must("start", a.Start(ctx, savedThenStarted.ID))
 	must("stop started", a.Stop(ctx, savedThenStarted.ID))
 

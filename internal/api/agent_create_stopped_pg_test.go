@@ -27,9 +27,9 @@ func (k selectingKinds) SelectClaudeAccount(ctx context.Context, owner int64, pi
 // window counted it against its account, and a create made right after it was
 // steered to a different account by Choose's fewest-live rank.
 //
-// The provisioner here records the dispatch and writes nothing, which holds
-// that window open for the whole test: the result must not depend on whether
-// the background step has run yet.
+// A save no longer starts that background step at all
+// (TestAStartRightAfterASaveIsNotOverwrittenBackToStopped); the fixture's
+// provisioner writes nothing either way, so the result cannot depend on one.
 func TestAStoppedCreateDoesNotSteerTheNextAccountChoice(t *testing.T) {
 	const alpha, beta = "stopped-create-alpha", "stopped-create-beta"
 	src, err := ccpool.NewStatic(map[string]string{alpha: "tok-alpha", beta: "tok-beta"})

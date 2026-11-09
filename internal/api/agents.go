@@ -850,8 +850,9 @@ func dispatchDisplayName(noteID int64, noteText string) string {
 const dispatchTitleMaxRunes = 300
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
-// background (kickoff sends the note as the first message). Shared by the human
-// dispatch form and the chief provision.
+// background (kickoff sends the note as the first message); a save (no kickoff,
+// no StartWithoutKickoff) is only the `stopped` row, with no background step.
+// Shared by the human dispatch form and the chief provision.
 func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (agents.Agent, error) {
 	kind, account, err := s.resolveKindAccount(ctx, p)
 	if err != nil {
@@ -929,17 +930,19 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// Extensions.AgentNamespacePrefix and Extensions.AgentNamespace.
 	//
 	// 🔴 A STOPPED CREATE ("save for later": no kickoff, no Start) IS INSERTED
-	// `stopped`, NOT `provisioning`. Its background step
-	// (agentprovision.Adapter.Dispatch with kickoff=false) builds nothing — no
-	// driver call, no token — and only writes `stopped`. Inserted `provisioning`,
-	// the row read as live until that goroutine ran, AFTER the 201: the account
+	// `stopped`, NOT `provisioning`. Its old background step
+	// (agentprovision.Adapter.Dispatch with kickoff=false) built nothing — no
+	// driver call, no token — and only wrote `stopped`; it is no longer started
+	// at all (below). Inserted `provisioning`, the row read as live until that
+	// goroutine ran, AFTER the 201: the account
 	// pool's live count (ccpool.PGStore.LiveCounts) counted it, so a create
 	// right after it was steered to another account by Choose's fewest-live
 	// rank. The pool worker (StartWithoutKickoff) keeps `provisioning`: it IS
 	// coming up and must hold its live slot (TestAPoolWorkerStaysLiveWhileItStarts).
 	// Guarded by TestAStoppedCreateDoesNotSteerTheNextAccountChoice.
+	saved := !p.Kickoff && !p.StartWithoutKickoff
 	status := agents.StatusProvisioning
-	if !p.Kickoff && !p.StartWithoutKickoff {
+	if saved {
 		status = agents.StatusStopped
 	}
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
@@ -972,6 +975,16 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// The agent was just created (provisioning, or stopped when saved): nudge open pages so a task's
 	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
+	// 🔴 A SAVE STARTS NO BACKGROUND STEP. The row is already `stopped` (above),
+	// which is all Provisioner.Dispatch(kickoff=false) would write — and it writes
+	// it UNCONDITIONALLY, so a Start issued between this 201 and that goroutine
+	// running was overwritten back to `stopped` over the instance the Start had
+	// just brought up (and with first_started_at stamped, the reaper would later
+	// tear down a live agent). Guarded by
+	// TestAStartRightAfterASaveIsNotOverwrittenBackToStopped.
+	if saved {
+		return rec, nil
+	}
 	// WithoutCancel: the dispatch outlives this request, but it must keep the
 	// request's principal — row-level security scopes every store call the
 	// adapter makes to it (see Provisioner).
