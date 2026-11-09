@@ -26,6 +26,11 @@ import { writeFileAtomic } from '../lib/atomic';
 //      before sessions had names;
 //   3. turned OFF again, the row is exactly the name again.
 //
+// The same switch draws the place on the session lists: the bar's pills and
+// the dock's rows (one test), and the sidebar's rows and the search picker —
+// the command palette, opened from the bottom bar's magnifier and from the
+// sidebar's — with the sidebar's rows refreshed live over SSE (another).
+//
 // 🔴 REGRESSION TEST: on origin/main the Account page has no such switch and
 // POST /account/notifications/tmux does not exist. The suite runs one worker
 // (playwright.config.ts), and the operator's switch is deleted before and
@@ -46,6 +51,8 @@ const unnamed = [3, 4, 5, 6, 7];
 // An unnamed window each viewport's Asks test sets waiting, live, for its SSE
 // refresh (not 7: the bar test's page is window 7's).
 const unnamedWaitingOf = { phone: 4, desktop: 5 };
+// The unnamed window the sidebar test sets waiting, live, for its SSE refresh.
+const sidebarWaiting = 6;
 const TAIL = [
   { role: 'user', text: 'Migrate the billing tables to the v2 schema' },
   { role: 'assistant', text: 'Reading the current schema first.' },
@@ -228,6 +235,183 @@ for (const vp of [
       await open();
       await expect(bar.locator('[data-switcher-tmux], [data-switcher-tmux-line]')).toHaveCount(0);
       expect(Math.abs((await bar.boundingBox())!.height - offHeight)).toBeLessThanOrEqual(0.5);
+    });
+
+    // THE SIDEBAR'S ROWS AND THE SEARCH PICKER (the command palette). The
+    // sidebar is read on /tasks (the shell: its /events stream wraps the
+    // sidebar, so the rows are re-fetched live on an SSE event); the palette is
+    // opened from the bottom bar's magnifier on window 7's view (its results
+    // are built from the bar's pills) and from the sidebar's on /tasks (built
+    // from the rows).
+    test('the sidebar\'s rows and the search picker gain the place line only with the switch on, and keep it across an SSE refresh of the sidebar', async ({ page }) => {
+      test.setTimeout(150_000);
+      await signIn(page, origin);
+      await rig.waitListed(page, `cobalt:${w}`);
+      const place = `cobalt:${w} @ ${host}`;
+      const phone = vp.use.viewport.width < 1024;
+      const list = page.locator('#sidebar-agents-list');
+      const sideRow = (n: number) => list.locator(`a[data-nav-agent="mirror"][href*="window=%40${n}"]`);
+      const showSidebar = async () => {
+        if (phone || !(await list.isVisible())) await page.locator('#sidebar-open').click();
+        // The drawer slides in: measured only once it is all on screen.
+        await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+        await expect(sideRow(w)).toBeVisible({ timeout: 20_000 });
+        await expect(sideRow(w)).toHaveAttribute('data-switcher-name', name);
+      };
+      const opts = page.locator('#switcher-search-results [role="option"]');
+      const opt = (n: number) => page.locator(`#switcher-search-results [role="option"][data-href*="window=%40${n}"]`);
+      const view7 = async () => {
+        await page.goto(origin + `/mirror/view?host=${host}&session=tnotify&window=%407`);
+        await expect(page.locator('#session-switcher [data-switcher-list="all"] a[data-switcher-entry]').first()).toBeAttached();
+      };
+      const openFromBar = async () => {
+        const b = page.locator('#switcher-search-open');
+        await (vp.use.hasTouch ? b.tap() : b.click());
+        await expect(page.locator('#switcher-search')).toBeVisible();
+        await expect(opt(w)).toBeVisible();
+      };
+      const noOverflow = async () => {
+        const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+        expect(o.sw, 'the page does not scroll sideways').toBeLessThanOrEqual(o.cw);
+      };
+
+      // OFF: no place anywhere, in the rows or the picker.
+      await page.goto(origin + '/tasks');
+      await showSidebar();
+      await expect(list.locator('[data-nav-tmux], [data-switcher-tmux]')).toHaveCount(0);
+      await view7();
+      await openFromBar();
+      expect(await opts.count(), 'the picker lists the other sessions').toBeGreaterThanOrEqual(6);
+      await expect(page.locator('#switcher-search-results [data-palette-tmux]')).toHaveCount(0);
+      await expect(opt(w)).not.toContainText(`cobalt:${w} @`);
+      // A name with no focus title: the line under it is the bare codename
+      // (main's behaviour; ON replaces it with the place, below).
+      const bareCode = opt(w).locator('span', { hasText: new RegExp(`^cobalt:${w}$`) });
+      await expect(bareCode, 'control: OFF draws the bare codename under the name').toHaveCount(1);
+      // The OFF picker's whole list, for the merge-base differential (run with
+      // MUSTER_E2E_PALETTE_DUMP=<file> at main and at this branch, then diff).
+      if (process.env.MUSTER_E2E_PALETTE_DUMP) {
+        const h = await page.locator('#switcher-search-results').innerHTML();
+        fs.writeFileSync(process.env.MUSTER_E2E_PALETTE_DUMP + '.' + vp.key, h.split(host).join('<HOST>').split(stamp).join('<STAMP>'));
+      }
+      await page.keyboard.press('Escape');
+
+      // ON.
+      await setSwitch(page, true);
+      // The sidebar: the line under the named row's name, only on the two
+      // named windows (this viewport's and the other's) — no unnamed window
+      // (called by its codename already), no agent (no tmux window).
+      await page.goto(origin + '/tasks');
+      await showSidebar();
+      const line = sideRow(w).locator('[data-nav-tmux]');
+      await expect(line).toHaveText(place);
+      await expect(line).toBeVisible();
+      await expect(sideRow(w)).toHaveAttribute('data-switcher-tmux', place);
+      await expect(sideRow(w), 'the place is part of the row\'s accessible name').toHaveAccessibleName(new RegExp(place));
+      const nb = (await sideRow(w).locator('[data-nav-name]').boundingBox())!, lb = (await line.boundingBox())!;
+      expect(lb.y, 'the line is under the name').toBeGreaterThanOrEqual(nb.y + nb.height - 0.5);
+      await expect(list.locator('[data-nav-tmux]'), 'only the named windows').toHaveCount(2);
+      await expect(list.locator('a[data-switcher-tmux]')).toHaveCount(2);
+      await expect(sideRow(3).locator('[data-nav-tmux]'), 'an unnamed row draws no place').toHaveCount(0);
+      const agentRows = list.locator('a[data-nav-agent="agent"]');
+      expect(await agentRows.count(), 'control: an agent row is in the sidebar').toBeGreaterThanOrEqual(1);
+      await expect(list.locator('a[data-nav-agent="agent"] [data-nav-tmux], a[data-nav-agent="agent"][data-switcher-tmux]'), 'an agent row draws no place').toHaveCount(0);
+      await noOverflow();
+
+      // A LIVE refresh of the sidebar keeps it: another window starts
+      // waiting, the server's attention_queue.changed event re-fetches the
+      // rows over SSE (the marked row is replaced: the refresh happened).
+      // Window 6: not one the other tests set waiting (4, 5) or open (7).
+      const extra = path.join(rig.dir, `ntmux-plain-${sidebarWaiting}-${stamp}.jsonl.waiting`);
+      await sideRow(w).evaluate((el) => el.setAttribute('data-stale-mark', '1'));
+      try {
+        fs.writeFileSync(extra, '');
+        await expect(list.locator('[data-stale-mark]'), 'the rows were re-fetched live').toHaveCount(0, { timeout: 20_000 });
+        await expect(sideRow(w).locator('[data-nav-tmux]'), 'kept by the live refresh').toHaveText(place);
+        // The picker opened from the SIDEBAR here (no bar on this page) is
+        // built from those refreshed rows.
+        await page.locator('#sidebar-search').click();
+        await expect(opt(w).locator('[data-palette-tmux]')).toHaveText(place);
+        await expect(page.locator('#switcher-search-results [data-palette-tmux]')).toHaveCount(2);
+        await page.keyboard.press('Escape');
+      } finally {
+        fs.rmSync(extra, { force: true });
+      }
+      await expect(sideRow(sidebarWaiting), 'and it stops waiting again').not.toHaveAttribute('data-nav-wait', /.*/, { timeout: 30_000 });
+
+      // The picker opened from the BOTTOM BAR (built from the pills).
+      await view7();
+      await openFromBar();
+      const pl = opt(w).locator('[data-palette-tmux]');
+      await expect(pl).toHaveText(place);
+      await expect(pl).toBeVisible();
+      await expect(opt(w), 'the place is part of the option\'s accessible name').toHaveAccessibleName(new RegExp(place));
+      // The codename is not drawn twice: the bare codename line OFF drew is
+      // gone, the place (which starts with it) in its stead.
+      await expect(bareCode, 'no bare codename next to the place').toHaveCount(0);
+      // Under the name.
+      const ob = (await opt(w).locator('span').first().boundingBox())!, pb = (await pl.boundingBox())!;
+      expect(pb.y, 'the line is under the name').toBeGreaterThanOrEqual(ob.y + ob.height - 0.5);
+      await expect(page.locator('#switcher-search-results [data-palette-tmux]'), 'only the named windows').toHaveCount(2);
+      await expect(opt(3).locator('[data-palette-tmux]'), 'an unnamed option draws no place').toHaveCount(0);
+      const agentOpts = page.locator('#switcher-search-results [role="option"][data-kind="agent"]');
+      expect(await agentOpts.count(), 'control: an agent is in the picker').toBeGreaterThanOrEqual(1);
+      await expect(agentOpts.locator('[data-palette-tmux]'), 'an agent draws no place').toHaveCount(0);
+      // Search is unchanged: the codename finds the window by its code, as
+      // before, and the result still draws the place.
+      await page.locator('#switcher-search-input').fill(`cobalt:${w}`);
+      await expect(opt(w)).toHaveAttribute('data-match', 'code');
+      await expect(opt(w).locator('[data-palette-tmux]')).toHaveText(place);
+      await page.keyboard.press('Escape');
+
+      // LONG TITLES: the name and the place cut with an ellipsis inside the
+      // row / the option, never widening the sidebar, the picker or the page.
+      // (Lengthened in the page: the fixture's names are short.)
+      const long = 'Reconcile the quarterly billing ledger migration across every regional shard ';
+      await page.locator('#session-switcher [data-switcher-list="all"] a[data-switcher-entry][href*="window=%40' + w + '"]').evaluate((a, s) => {
+        a.setAttribute('data-switcher-name', s.repeat(3));
+        a.setAttribute('data-switcher-tmux', s.repeat(3) + ' @ <b>x</b>');
+      }, long);
+      await openFromBar();
+      const box = (await page.locator('#switcher-search').boundingBox())!;
+      const o = (await opt(w).boundingBox())!;
+      expect(o.x + o.width, 'the option fits the picker').toBeLessThanOrEqual(box.x + box.width + 0.5);
+      for (const sel of ['span >> nth=0', '[data-palette-tmux]']) {
+        const cut = await opt(w).locator(sel).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow }));
+        expect(cut.sw, `${sel} is cut, not wrapped wide`).toBeGreaterThan(cut.cw);
+        expect(cut.ov).toBe('ellipsis');
+      }
+      await expect(opt(w).locator('b'), 'the place is drawn as text').toHaveCount(0);
+      await expect(opt(w).locator('[data-palette-tmux]')).toContainText('@ <b>x</b>');
+      await noOverflow();
+      await page.keyboard.press('Escape');
+      await page.goto(origin + '/tasks');
+      await showSidebar();
+      await sideRow(w).evaluate((a, s) => {
+        (a.querySelector('[data-nav-name]') as HTMLElement).textContent = s.repeat(3);
+        (a.querySelector('[data-nav-tmux]') as HTMLElement).textContent = s.repeat(3);
+      }, long);
+      // Both boxes read in one frame (a drawer still settling moves both).
+      const fit = await sideRow(w).evaluate((a) => {
+        const s = document.getElementById('sidebar')!.getBoundingClientRect(), r = a.getBoundingClientRect();
+        return { row: r.right, side: s.right };
+      });
+      expect(fit.row, 'the row fits the sidebar').toBeLessThanOrEqual(fit.side + 0.5);
+      for (const sel of ['[data-nav-name]', '[data-nav-tmux]']) {
+        const cut = await sideRow(w).locator(sel).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow }));
+        expect(cut.sw, `${sel} is cut`).toBeGreaterThan(cut.cw);
+        expect(cut.ov).toBe('ellipsis');
+      }
+      await noOverflow();
+
+      // OFF again: gone, rows and picker.
+      await setSwitch(page, false);
+      await page.goto(origin + '/tasks');
+      await showSidebar();
+      await expect(list.locator('[data-nav-tmux], [data-switcher-tmux]')).toHaveCount(0);
+      await view7();
+      await openFromBar();
+      await expect(page.locator('#switcher-search-results [data-palette-tmux]')).toHaveCount(0);
     });
 
     test('the switch is off by default, turns on and persists, and the Asks row gains and loses the tmux address', async ({ page }) => {

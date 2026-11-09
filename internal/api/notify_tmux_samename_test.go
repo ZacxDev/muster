@@ -17,9 +17,10 @@ import (
 // is its window's codename (a manual name "mango:1" on the window the host
 // labels "mango:1") is already headed by the codename, so with its owner's
 // "Show tmux sessions" ON it gains nothing: no codename line on its pill, no
-// data-switcher-tmux for its dock row, and no "mango:1 · mango:1 @ ws" on its
-// ask's name or push title. The control: the SAME window under a name that is
-// not its codename gains all three.
+// data-switcher-tmux for its dock row, no line (nor palette attribute) on its
+// sidebar row, and no "mango:1 · mango:1 @ ws" on its ask's name or push
+// title. The control: the SAME window under a name that is not its codename
+// gains all of them.
 func TestANameThatIsTheCodenameGetsNoCodenameAgain(t *testing.T) {
 	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()} // @1 labelled "mango:1"
 	store := namedFocusStore()
@@ -56,6 +57,14 @@ func TestANameThatIsTheCodenameGetsNoCodenameAgain(t *testing.T) {
 		}
 		return b.String()
 	}
+	// The sidebar's row for the card (and so the palette's, which reads it).
+	row := func(c ui.MirrorCardView) string {
+		var b strings.Builder
+		if err := ui.RenderNavAgents(&b, nil, []ui.MirrorCardView{c}, "", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
 
 	// CONTROL: a name that is not the codename gains the codename everywhere.
 	name("Billing migration")
@@ -64,6 +73,9 @@ func TestANameThatIsTheCodenameGetsNoCodenameAgain(t *testing.T) {
 	}
 	if p := pill(card()); !strings.Contains(p, `data-switcher-tmux="mango:1 @ ws"`) || !strings.Contains(p, "data-switcher-tmux-line") {
 		t.Fatalf("control: the pill lacks the codename:\n%s", p)
+	}
+	if r := row(card()); !strings.Contains(r, `data-switcher-tmux="mango:1 @ ws"`) || !strings.Contains(r, ">mango:1 @ ws</span>") {
+		t.Fatalf("control: the sidebar row lacks the codename:\n%s", r)
 	}
 	if it := ask(); it.Name != "Billing migration · mango:1 @ ws" {
 		t.Fatalf("control: the ask is named %q", it.Name)
@@ -76,6 +88,9 @@ func TestANameThatIsTheCodenameGetsNoCodenameAgain(t *testing.T) {
 	}
 	if p := pill(card()); strings.Contains(p, "data-switcher-tmux") {
 		t.Errorf("a name that is the codename: the pill draws it again (line or dock attr):\n%s", p)
+	}
+	if r := row(card()); strings.Contains(r, "data-switcher-tmux") || strings.Contains(r, "data-nav-tmux") {
+		t.Errorf("a name that is the codename: the sidebar row draws it again (line or palette attr):\n%s", r)
 	}
 	it := ask()
 	if it.Name != "mango:1" {

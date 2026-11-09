@@ -69,11 +69,14 @@ var tmuxAddressSurfaces = []string{
 }
 
 // tmuxListSurfaces are the ledgered surfaces that put "Show tmux sessions"'
-// codename on a SESSION LIST's entries — the bar's pills and the dock's rows —
-// through tmuxPlace (the rule notifyName applies too), not through notifyName:
-// a list draws the codename on a line of its own, not after the name.
+// codename on a SESSION LIST's entries — the bar's pills, the dock's rows, the
+// sidebar's rows and the command palette's (which draws it from a pill or a
+// sidebar row) — through tmuxPlace (the rule notifyName applies too), not
+// through notifyName: a list draws the codename on a line of its own, not
+// after the name. Which ui functions draw it is internal/ui's
+// TestOnlyTheEntryHelpersDrawTheCodename.
 var tmuxListSurfaces = []string{
-	"mirror.go Server.mirrorCards", // ui.MirrorCardView.TmuxAt / TmuxCode: the switcher bar's pills, the dock's rows
+	"mirror.go Server.mirrorCards", // ui.MirrorCardView.TmuxAt / TmuxCode: the switcher bar's pills, the dock's rows, the sidebar's rows, the palette's rows
 }
 
 // noTmuxAddress is every OTHER ledgered surface, with why the preference does
