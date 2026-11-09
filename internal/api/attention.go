@@ -858,7 +858,12 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 		if items[i].ownerCard && owner > 0 {
 			if a, err := s.ext.Attention.Get(ctx, items[i].AskID); err == nil {
 				items[i].proposal = s.proposalKickoffBody(ctx, a)
+			} else {
+				// The card's ask could not be read now: it may be a
+				// proposal's, so it offers no start.
+				items[i].proposal = proposalUnreadBody
 			}
+			items[i].Options = withoutProposalStarts(items[i].proposal, items[i].Options)
 		}
 		if links && owner > 0 {
 			items[i].sessionLink = s.attentionSessionPath(ctx, owner, items[i])
@@ -1939,9 +1944,10 @@ func (s *Server) recentAnswers(ctx context.Context) []attention.Ask {
 // mirrored session the exact tmux target of the window running it now, or
 // "not shown" — since a waiting, queued or failed delivery sends the owner to
 // that session. proposal: a is a chief proposal's card, whose answer is
-// recorded and never delivered (answerAskFrom closes its delivery).
+// recorded and never delivered once answerAskFrom closed its delivery
+// (waited); one whose close failed says where it went, as any other.
 func answerDeliveryText(a attention.Ask, who string, proposal bool) (string, bool) {
-	if proposal {
+	if proposal && a.Delivery == attention.DeliveryWaited {
 		return proposalAnsweredText, false
 	}
 	switch a.Delivery {

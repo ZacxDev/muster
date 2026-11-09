@@ -22,8 +22,13 @@ import (
 // each set failing when it GROWS or SHRINKS.
 
 // proposalQuestionBuilders is every function a proposal card's question is
-// built by (fileProposal's question argument).
-var proposalQuestionBuilders = []string{"endSessionCardQuestion", "successionCardQuestion"}
+// built by (fileProposal's question argument); proposalOptionBuilders every
+// one its buttons are (its askOptions argument, when that is no literal list
+// of constants).
+var (
+	proposalQuestionBuilders = []string{"endSessionCardQuestion", "successionCardQuestion"}
+	proposalOptionBuilders   = []string{"successionAskOptions"}
+)
 
 // TestNoWriterPutsTheKickoffInTheAsk pins the one path from a kickoff to an
 // attention ask:
@@ -32,9 +37,12 @@ var proposalQuestionBuilders = []string{"endSessionCardQuestion", "successionCar
 //   - a proposal's ask is raised only by raiseProposalCard, only from
 //     fileProposal, and raiseCard only from it and raiseOwnerCard;
 //   - every fileProposal call passes, as the question, a call to a listed
-//     builder, and no builder (nor any package function it reaches) reads a
-//     plugins.Proposal's Kickoff field except as the one argument of len or
-//     utf8.RuneCountInString;
+//     builder, and as the options a call to a listed builder or a literal
+//     list of constants; no builder (nor any package function it reaches)
+//     reads a plugins.Proposal's Kickoff field except as the one argument of
+//     len or utf8.RuneCountInString;
+//   - kickoffCopy's result (and any variable assigned from it) appears in no
+//     fileProposal call's question or options, at any depth (round 3);
 //   - the functions that read that field at all are a ledger: the owner's
 //     card renderers, the cut rule, the spawn.
 func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
@@ -43,24 +51,48 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)
+	tainted := pkg.kickoffTaint()
+	if len(tainted) == 0 {
+		t.Fatal("instrument check: no variable holds kickoffCopy's result")
+	}
 	qi := paramIndex(t, pkg.funcs["fileProposal"], "question")
-	var builders []string
+	oi := paramIndex(t, pkg.funcs["fileProposal"], "askOptions")
+	var builders, optBuilders []string
 	for _, fd := range pkg.funcs {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok || calleeName(call) != "fileProposal" {
 				return true
 			}
-			if len(call.Args) <= qi {
-				t.Errorf("%s calls fileProposal with %d arguments; its question is argument %d", fd.Name.Name, len(call.Args), qi)
+			if len(call.Args) <= qi || len(call.Args) <= oi {
+				t.Errorf("%s calls fileProposal with %d arguments", fd.Name.Name, len(call.Args))
 				return true
+			}
+			for _, arg := range []ast.Expr{call.Args[qi], call.Args[oi]} {
+				if v := pkg.taintedIn(arg, tainted); v != "" {
+					t.Errorf("%s passes fileProposal the kickoff (%s) in its question or options", fd.Name.Name, v)
+				}
 			}
 			q, ok := call.Args[qi].(*ast.CallExpr)
 			if !ok {
 				t.Errorf("%s passes fileProposal a question that is no builder's call", fd.Name.Name)
-				return true
+			} else {
+				builders = append(builders, calleeName(q))
 			}
-			builders = append(builders, calleeName(q))
+			switch o := call.Args[oi].(type) {
+			case *ast.CallExpr:
+				optBuilders = append(optBuilders, calleeName(o))
+			case *ast.CompositeLit:
+				for _, e := range o.Elts {
+					if _, ok := e.(*ast.Ident); !ok {
+						if _, ok := e.(*ast.BasicLit); !ok {
+							t.Errorf("%s passes fileProposal an option that is no constant", fd.Name.Name)
+						}
+					}
+				}
+			default:
+				t.Errorf("%s passes fileProposal options that are neither a builder's call nor a literal list", fd.Name.Name)
+			}
 			return true
 		})
 	}
@@ -69,12 +101,17 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	if !slices.Equal(builders, proposalQuestionBuilders) {
 		t.Errorf("proposal questions are built by %v\nwant exactly %v", builders, proposalQuestionBuilders)
 	}
-	for _, b := range proposalQuestionBuilders {
+	slices.Sort(optBuilders)
+	optBuilders = slices.Compact(optBuilders)
+	if !slices.Equal(optBuilders, proposalOptionBuilders) {
+		t.Errorf("proposal options are built by %v\nwant exactly %v", optBuilders, proposalOptionBuilders)
+	}
+	for _, b := range append(slices.Clone(proposalQuestionBuilders), proposalOptionBuilders...) {
 		if _, ok := pkg.funcs[b]; !ok {
 			t.Fatalf("instrument check: no function %s", b)
 		}
 		for _, bad := range pkg.kickoffReadsReached(b) {
-			t.Errorf("the question builder %s reaches %s, which reads the kickoff's text", b, bad)
+			t.Errorf("the builder %s reaches %s, which reads the kickoff's text", b, bad)
 		}
 	}
 
@@ -115,6 +152,69 @@ func paramIndex(t *testing.T, fd *ast.FuncDecl, name string) int {
 	}
 	t.Fatalf("instrument check: fileProposal has no parameter %q", name)
 	return -1
+}
+
+// kickoffTaint is every variable that holds kickoffCopy's result: the first
+// result of a call to it, and — to a fixpoint — any variable assigned from an
+// expression using one (a composite literal excepted: a Proposal's Kickoff
+// field is the field-read rule's).
+func (p typedPkg) kickoffTaint() map[types.Object]bool {
+	tainted := map[types.Object]bool{}
+	obj := func(e ast.Expr) types.Object {
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			return nil
+		}
+		if o := p.info.Defs[id]; o != nil {
+			return o
+		}
+		return p.info.Uses[id]
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fd := range p.funcs {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				as, ok := n.(*ast.AssignStmt)
+				if !ok || len(as.Rhs) == 0 {
+					return true
+				}
+				rhs := as.Rhs[0]
+				from := false
+				if call, ok := rhs.(*ast.CallExpr); ok && calleeName(call) == "kickoffCopy" {
+					from = true
+				} else if _, lit := rhs.(*ast.CompositeLit); !lit && len(as.Rhs) == len(as.Lhs) {
+					for i, r := range as.Rhs {
+						if _, lit := r.(*ast.CompositeLit); !lit && p.taintedIn(r, tainted) != "" {
+							if o := obj(as.Lhs[i]); o != nil && !tainted[o] {
+								tainted[o], changed = true, true
+							}
+						}
+					}
+					return true
+				}
+				if from {
+					if o := obj(as.Lhs[0]); o != nil && !tainted[o] {
+						tainted[o], changed = true, true
+					}
+				}
+				return true
+			})
+		}
+	}
+	return tainted
+}
+
+// taintedIn is the name of a tainted variable e uses, at any depth, "" for
+// none.
+func (p typedPkg) taintedIn(e ast.Node, tainted map[types.Object]bool) string {
+	found := ""
+	ast.Inspect(e, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && found == "" && tainted[p.info.Uses[id]] {
+			found = id.Name
+		}
+		return found == ""
+	})
+	return found
 }
 
 // typedPkg is internal/api's non-test source, type-checked.
@@ -166,7 +266,7 @@ func typedAPI(t *testing.T) typedPkg {
 		}
 		files = append(files, f)
 	}
-	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	if _, err := (&types.Config{Importer: imp}).Check(self.ImportPath, fset, files, info); err != nil {
 		t.Fatalf("type-check %s: %v", self.ImportPath, err)
 	}
