@@ -67,22 +67,22 @@ import (
 //     the worker's Claude account, network and volume; any other file in the
 //     commit (a build script, a test) is the commit's, and the turn may run it.
 //     So it is for commits by trusted members only (docs/jobs.md).
-//   - survival across a restart. The turn runs in this process and nothing waits
-//     for it on shutdown. A graceful shutdown fails the jobs THIS process holds
-//     (FailOwnJobs), never another's. After a crash, the reaper (RunJobReaper
-//     → jobs.Store.ReapOverdue, at boot and every JobReapInterval) fails a job
-//     only once it is past its own deadline, so a job a crashed process left
-//     behind is failed `interrupted`
-//     up to timeout_s + jobs.ReapSlack after it started (or jobs.MaxQueueWait
-//     after it was queued) — and a job the OTHER pod of a rolling update is
-//     still running is left alone.
+//   - survival of a RUNNING job across a restart. The turn runs in this
+//     process and nothing waits for it on shutdown. A graceful shutdown fails
+//     the jobs THIS process holds (FailOwnJobs), never another's. After a
+//     crash, the reaper (RunJobReaper → jobs.Store.ReapOverdue, at boot and
+//     every JobReapInterval) fails a running job only once it is past its own
+//     deadline, timeout_s + jobs.ReapSlack after it started — and a job the
+//     OTHER pod of a rolling update is still running is left alone. A QUEUED
+//     job does survive a crash: the queue is the table (jobs_queue.go), and the
+//     same pass runs it, after the running job ahead of it ends or is reaped.
 //   - more than jobs.MaxActivePerAgent jobs queued or running on one agent: a
 //     submission past that is refused 429.
 //   - cancellation of the agent's turn on timeout. The job's deadline aborts
 //     muster's request to ccd and the job ends timed_out, but ccd's turn may run
 //     on; a later job on the same agent can then be refused `busy` by ccd.
 //   - more than one job per agent at a time. Jobs on one agent run one after
-//     another in this process (jobLanes). Each has its own worktree and its own
+//     another, oldest first, from the agent's queue (jobs_queue.go, jobLanes). Each has its own worktree and its own
 //     CLI, so nothing on disk is shared any more; but one worker's turns share
 //     its Claude account and its pod's memory (ccd runs at most
 //     CCD_MAX_SESSIONS CLIs), and parallel job turns on one worker have not
@@ -241,10 +241,12 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	// principal (every store call below acts as the caller under row-level
 	// security).
 	runCtx := context.WithoutCancel(ctx)
-	// Registered BEFORE the goroutine starts, so a shutdown that begins right
+	// Registered BEFORE it is dispatched, so a shutdown that begins right
 	// after this response cannot miss it (FailOwnJobs).
 	s.ownJobs.add(j.ID, runCtx)
-	safeGo(s.logger, "job "+strconv.FormatInt(j.ID, 10), func() { s.runJob(runCtx, j) })
+	// To its agent's queue runner (jobs_queue.go), which runs the agent's jobs
+	// oldest first — this one after any a dead process left queued.
+	s.kickJobs(j.AgentID)
 	s.writeJSON(w, http.StatusAccepted, jobView(j))
 }
 
@@ -886,9 +888,9 @@ func jobTime(t time.Time) any {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// ownJobs is the set of jobs THIS process accepted and has not finished, so a
-// graceful shutdown can fail them (FailOwnJobs): a job runs only in the process
-// that accepted it, so nothing else ever will.
+// ownJobs is the set of jobs THIS process accepted, or took from the queue to
+// run (jobs_queue.go), and has not finished, so a graceful shutdown can fail
+// them (FailOwnJobs).
 type ownJobs struct {
 	mu sync.Mutex
 	m  map[int64]*ownJob
@@ -899,15 +901,52 @@ type ownJob struct {
 	// call on a job runs under it (row-level security).
 	ctx     context.Context
 	started bool
+	// adopted: taken from the queue, not accepted by this process (adopt).
+	adopted bool
 }
 
-func (o *ownJobs) add(id int64, ctx context.Context) {
+func (o *ownJobs) add(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx}) }
+
+// adopt registers a job this process took from the queue without having
+// accepted it.
+func (o *ownJobs) adopt(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx, adopted: true}) }
+
+func (o *ownJobs) put(id int64, j *ownJob) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.m == nil {
 		o.m = make(map[int64]*ownJob)
 	}
-	o.m[id] = &ownJob{ctx: ctx}
+	o.m[id] = j
+}
+
+// accepted reports whether this process accepted job id (rather than took it
+// from the queue).
+func (o *ownJobs) accepted(id int64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	j, ok := o.m[id]
+	return ok && !j.adopted
+}
+
+// dropUnstarted is drop, unless the job has started here since it was read.
+func (o *ownJobs) dropUnstarted(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok && !j.started {
+		delete(o.m, id)
+	}
+}
+
+// ctxOf is the context job id was registered under, while it is this
+// process's.
+func (o *ownJobs) ctxOf(id int64) (context.Context, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok {
+		return j.ctx, true
+	}
+	return nil, false
 }
 
 func (o *ownJobs) markStarted(id int64) {
@@ -961,7 +1000,16 @@ func (s *Server) FailOwnJobs(timeout time.Duration) int {
 			msg = jobs.ShutdownRunningError
 		}
 		ctx, cancel := context.WithDeadline(context.WithoutCancel(p.ctx), deadline)
-		ok, err := s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		var ok bool
+		var err error
+		if !p.started {
+			// 🔴 A JOB THIS PROCESS NEVER STARTED IS FAILED ONLY WHILE IT IS
+			// STILL QUEUED: the queue is the table (jobs_queue.go), so another
+			// process may have started it since, and its run is not ours to end.
+			ok, err = s.ext.Jobs.FinishQueued(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		} else {
+			ok, err = s.ext.Jobs.Finish(ctx, p.id, jobs.Failed(jobs.ReasonInterrupted, msg))
+		}
 		cancel()
 		switch {
 		case err != nil:
@@ -1035,8 +1083,12 @@ const (
 const JobReapInterval = time.Minute
 
 // RunJobReaper fails abandoned jobs — each past its own deadline
-// (jobs.Store.ReapOverdue) — once immediately, then every interval until ctx ends.
+// (jobs.Store.ReapOverdue) — and dispatches every agent's queued jobs
+// (dispatchQueuedJobs), once immediately, then every interval until ctx ends.
 // It does nothing with no job store. Started by cmd/muster-server.
+//
+// 🔴 THE PASS AT BOOT IS WHAT RUNS A JOB A CRASH LEFT QUEUED. Its goroutine
+// died with the process; the row is the only thing left of it.
 //
 // 🔴 IT REPLACES A BOOT SWEEP THAT FAILED EVERY UNFINISHED JOB, which was wrong
 // under a rolling update: the new pod boots while the old one still runs jobs,
@@ -1064,22 +1116,21 @@ func (s *Server) RunJobReaper(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// reapJobsOnce is one reaper pass at the reaper's clock.
+// reapJobsOnce is one reaper pass at the reaper's clock: it fails what is past
+// its deadline, THEN dispatches what is queued (dispatchQueuedJobs) — in that
+// order, so a job past its queue wait is failed rather than run, and an agent
+// a dead process's running job held is free for its next job in the same pass.
 func (s *Server) reapJobsOnce(ctx context.Context) {
-	now := time.Now
-	if s.jobNow != nil {
-		now = s.jobNow
-	}
-	n, err := s.ext.Jobs.ReapOverdue(ctx, now())
+	n, err := s.ext.Jobs.ReapOverdue(ctx, s.jobClock())
 	if err != nil {
 		if ctx.Err() == nil {
 			s.logger.Printf("jobs: reap overdue jobs: %v", err)
 		}
-		return
-	}
-	if n > 0 {
+	} else if n > 0 {
 		s.logger.Printf("jobs: failed %d job(s) past their deadline with nothing running them (reason %q)", n, jobs.ReasonInterrupted)
 	}
+	s.pruneOwnJobs()
+	s.dispatchQueuedJobs(ctx)
 }
 
 // jobTimeout is a job's timeout_s as a duration. jobSecond is a test seam (zero
@@ -1093,13 +1144,30 @@ func (s *Server) jobTimeout(j jobs.Job) time.Duration {
 }
 
 // runJob runs one job to its end and records the outcome. ctx carries the
-// submitter's principal and no deadline.
+// submitter's principal (or, for a job taken from the queue that no request of
+// this process holds, its owner's: jobPrincipal) and no deadline. Its one
+// caller is the agent's queue runner (drainJobsOnce).
 func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	// Deferred first, so it runs last: the job is this process's until its
-	// outcome is recorded.
-	defer s.ownJobs.drop(j.ID)
+	// outcome is recorded — or, on a stop before it started (below), until
+	// FailOwnJobs fails it, when this process accepted it.
+	keep := false
+	defer func() {
+		if !keep {
+			s.ownJobs.drop(j.ID)
+		}
+	}()
 	release := s.jobLanes.lock(j.AgentID)
 	defer release()
+	// held: this runner has started the job (Start succeeded), and so holds it
+	// until its outcome is recorded, an account failover's re-queue included.
+	//
+	// 🔴 UNTIL THEN THE JOB IS THE TABLE'S, NOT THIS RUNNER'S: another server
+	// may have started it since this one read it. Every outcome written before
+	// Start is therefore FinishQueued, which changes nothing once the job has
+	// started anywhere; an unconditional Finish there would end the winner's
+	// running job and drop its real result.
+	held := false
 	finish := func(o jobs.Outcome) {
 		pause := s.jobFinishBackoff
 		if pause <= 0 {
@@ -1107,7 +1175,12 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		}
 		for attempt := 1; ; attempt++ {
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobFinishTimeout)
-			_, err := s.ext.Jobs.Finish(fctx, j.ID, o)
+			var err error
+			if held {
+				_, err = s.ext.Jobs.Finish(fctx, j.ID, o)
+			} else {
+				_, err = s.ext.Jobs.FinishQueued(fctx, j.ID, o)
+			}
 			cancel()
 			if err == nil {
 				return
@@ -1159,6 +1232,13 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		finish(jobs.Failed(jobs.ReasonInternal, "could not open a chat session on the agent"))
 		return
 	}
+	// A stopping server starts nothing (StopJobs). A job it accepted stays
+	// registered, for FailOwnJobs to fail as before; one it took from the
+	// queue is left queued for another server.
+	if s.jobsStopping.Load() {
+		keep = s.ownJobs.accepted(j.ID)
+		return
+	}
 	// Marked BEFORE the row moves, so a shutdown racing the move reports the
 	// cautious "the agent may have done the work", never "nothing was sent".
 	s.ownJobs.markStarted(j.ID)
@@ -1172,6 +1252,7 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		// Not queued any more: something else already finished it.
 		return
 	}
+	held = true
 	for {
 		jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
 		o := s.runJobTurn(jctx, a, sess, j)

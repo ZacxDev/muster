@@ -25,6 +25,9 @@ func (r *reapCounter) ReapOverdue(_ context.Context, now time.Time) (int64, erro
 	return 0, nil
 }
 
+// Heads is the reaper pass's dispatch read: nothing is queued here.
+func (r *reapCounter) Heads(context.Context, int64, time.Time) ([]jobs.Head, error) { return nil, nil }
+
 // TestTheBackgroundLoopsRunTheJobReaper: the job reaper is one of the server's
 // background loops — its first pass at start (boot), then on its interval —
 // with no database pool in the app, since it keys on the job store alone. It

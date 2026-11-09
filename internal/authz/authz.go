@@ -165,6 +165,12 @@ const (
 	// spawn reply, a listing or its sweep: a background job acting as the row's
 	// OWNER only. One site mints it — internal/api's hostDispatchPrincipal.
 	ViaHostDispatch Via = "host-dispatch"
+	// ViaJobQueue is the MACHINE JOB QUEUE's runner (internal/api's job drain)
+	// running a job that no request of this process is holding — one a crashed
+	// or restarted server left queued — as the job's OWNER only, never as
+	// everybody. One site mints it — internal/api's jobPrincipal — handed the
+	// owner of a head jobs.PGStore.Heads read under System.
+	ViaJobQueue Via = "job-queue"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -210,6 +216,9 @@ var requestVias = map[Via]bool{
 	// The host-dispatch reconciler, per owner (internal/api's
 	// hostDispatchPrincipal). Without it the first spawn reply PANICS here.
 	ViaHostDispatch: true,
+	// The job queue's runner, per job owner (internal/api's jobPrincipal).
+	// Without it the first job left queued by a restart PANICS here.
+	ViaJobQueue: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

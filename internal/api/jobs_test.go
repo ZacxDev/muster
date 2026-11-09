@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/jobs"
 )
 
@@ -39,6 +41,16 @@ type memJobs struct {
 	finishCalls    int
 	// reapedAt records each ReapOverdue's clock.
 	reapedAt []time.Time
+	// owners is each row's owner where it is not 1 (the service tier's user).
+	owners map[int64]int64
+}
+
+// ownerLocked is job id's owner.
+func (m *memJobs) ownerLocked(id int64) int64 {
+	if o, ok := m.owners[id]; ok {
+		return o
+	}
+	return 1
 }
 
 func newMemJobs() *memJobs { return &memJobs{rows: map[int64]jobs.Job{}} }
@@ -191,6 +203,83 @@ func (m *memJobs) ReapOverdue(_ context.Context, now time.Time) (int64, error) {
 	return n, nil
 }
 
+// Heads applies the PG store's rule (jobs_queue_pg_test.go pins it there): per
+// free agent its oldest queued job, oldest first; an agent holding a running
+// job, or one re-queued and still inside its start's deadline, is not free.
+func (m *memJobs) Heads(_ context.Context, agentID int64, now time.Time) ([]jobs.Head, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	held := func(j jobs.Job) bool {
+		return j.Status == jobs.StatusRunning || (j.Status == jobs.StatusQueued && !j.StartedAt.IsZero() &&
+			!j.StartedAt.Add(time.Duration(j.TimeoutSeconds)*time.Second+jobs.ReapSlack).Before(now))
+	}
+	busy := map[int64]bool{}
+	for _, j := range m.rows {
+		if j.AgentID != 0 && held(j) {
+			busy[j.AgentID] = true
+		}
+	}
+	head := map[int64]jobs.Job{}
+	var out []jobs.Head
+	for _, j := range m.rows {
+		if j.Status != jobs.StatusQueued || held(j) || (agentID != 0 && j.AgentID != agentID) {
+			continue
+		}
+		if j.AgentID == 0 {
+			out = append(out, jobs.Head{ID: j.ID, OwnerID: m.ownerLocked(j.ID)})
+			continue
+		}
+		if busy[j.AgentID] {
+			continue
+		}
+		if h, ok := head[j.AgentID]; !ok || j.ID < h.ID {
+			head[j.AgentID] = j
+		}
+	}
+	for _, j := range head {
+		out = append(out, jobs.Head{ID: j.ID, AgentID: j.AgentID, OwnerID: m.ownerLocked(j.ID)})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	return out, nil
+}
+
+// FinishQueued is Finish, only for a job no runner holds: queued, and never
+// started or started past its deadline (the PG store's rule).
+func (m *memJobs) FinishQueued(ctx context.Context, id int64, o jobs.Outcome) (bool, error) {
+	m.mu.Lock()
+	j := m.rows[id]
+	queued := j.Status == jobs.StatusQueued && (j.StartedAt.IsZero() ||
+		j.StartedAt.Add(time.Duration(j.TimeoutSeconds)*time.Second+jobs.ReapSlack).Before(time.Now()))
+	m.mu.Unlock()
+	if !queued {
+		return false, nil
+	}
+	return m.Finish(ctx, id, o)
+}
+
+// putQueued records a queued job directly, as a crashed process leaves one:
+// a row and nothing else — no goroutine, no ownJobs entry, no lane.
+func (m *memJobs) putQueued(j jobs.Job) jobs.Job { return m.putQueuedFor(1, j) }
+
+// putQueuedFor is putQueued for a job owned by owner.
+func (m *memJobs) putQueuedFor(owner int64, j jobs.Job) jobs.Job {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.next++
+	if owner != 1 {
+		if m.owners == nil {
+			m.owners = map[int64]int64{}
+		}
+		m.owners[m.next] = owner
+	}
+	j.ID, j.Status = m.next, jobs.StatusQueued
+	if j.CreatedAt.IsZero() {
+		j.CreatedAt = time.Now()
+	}
+	m.rows[j.ID] = j
+	return j
+}
+
 func (m *memJobs) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -211,6 +300,11 @@ type jobAgents struct {
 	mu       sync.Mutex
 	sessions []agents.ChatSession
 	msgs     []agents.ChatMessage
+	// getAs is the principal each Get ran under (the job runner's agent read).
+	getAs []authz.Principal
+	// onGet, when set, runs inside each Get (a moment inside a job's run
+	// before its Start).
+	onGet func()
 }
 
 var jobAgentRows = map[string]agents.Agent{
@@ -226,7 +320,15 @@ func (s *jobAgents) GetByName(_ context.Context, name string) (agents.Agent, err
 	return a, nil
 }
 
-func (s *jobAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
+func (s *jobAgents) Get(ctx context.Context, id int64) (agents.Agent, error) {
+	s.mu.Lock()
+	p, _ := authz.From(ctx)
+	s.getAs = append(s.getAs, p)
+	onGet := s.onGet
+	s.mu.Unlock()
+	if onGet != nil {
+		onGet()
+	}
 	for _, a := range jobAgentRows {
 		if a.ID == id {
 			return a, nil
