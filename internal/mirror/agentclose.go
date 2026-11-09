@@ -12,15 +12,22 @@ import (
 // the chief's proposal card — never on its own.
 //
 //   - agent-close (muster → host) names exactly one window: its tmux session
-//     and window id (CloseReq). The host checks the window is one it LISTS
-//     now, of that session, running an agent it knows how to ask (Claude Code
-//     or opencode), and refuses anything else.
-//   - The host asks the agent to exit cleanly (it types /exit), waits for the
-//     agent's process to end — the window closes with it, or the pane is back
+//     and window id, and the conversation muster expects there (CloseReq.Key,
+//     a session key). The host checks the window is one it LISTS now, of that
+//     session, running an agent (Claude Code or opencode) in THAT
+//     conversation, and refuses anything else.
+//   - A Claude Code agent is asked to exit cleanly: the host types /exit only
+//     through the Claude prompt guard's checked paste, and only when the pane
+//     is at an idle prompt with an empty input box. Then it waits for the
+//     agent's process to end — the window closes with it, or its pane is back
 //     at a shell, which it then closes — and closes the window itself once
-//     the grace (AgentCloseGrace) has passed without that.
-//   - agent-closed (host → muster) says how it ended (CloseResult.Graceful),
-//     or the refusal.
+//     the grace (AgentCloseGrace) has passed without that. A pane waiting on
+//     the person (a permission prompt, a picker, a dialog) or holding a draft
+//     is typed nothing: its window is closed at once.
+//   - An opencode window is closed at once: muster types into no opencode
+//     pane, and opencode's server offers no call that exits its TUI.
+//   - agent-closed (host → muster) says how it ended (CloseResult.Graceful,
+//     and Reason when it was not), or the refusal.
 //
 // 🔴 OPT-IN BY CAPABILITY, BACKWARD-COMPATIBLE BOTH WAYS: a host advertises
 // Msg.AgentClose (an -interactive v2 host whose backend can close a window);
@@ -38,30 +45,39 @@ const (
 const (
 	// CloseNotListed: no window of that session with that id is listed.
 	CloseNotListed = "not_listed"
-	// CloseNoAgent: the window runs no agent the host knows how to ask to exit.
+	// CloseNoAgent: the window runs no agent (Claude Code or opencode).
 	CloseNoAgent = "no_agent"
 	// CloseUnavailable: this host does not close windows (not -interactive,
 	// or a backend that cannot).
 	CloseUnavailable = "unavailable"
 	// CloseFailed: the close itself failed.
 	CloseFailed = "failed"
+	// CloseMismatch: the window runs a different conversation than the one
+	// the request names (CloseReq.Key), or none at all now.
+	CloseMismatch = "mismatch"
 )
 
 // AgentCloseGrace is how long a host waits for the agent to exit on its own
 // before it closes the window anyway (operator decision: ~30 s).
 const AgentCloseGrace = 30 * time.Second
 
-// AgentCloseReq is an agent-close's request (Msg.CloseReq).
+// AgentCloseReq is an agent-close's request (Msg.CloseReq): the window, and
+// Key, the session key of the conversation muster expects it to run
+// (Window.SessionKey's rule: a Claude session id, or "opencode:<id>"). The
+// host refuses (CloseMismatch) a window running any other.
 type AgentCloseReq struct {
 	Session string `json:"session"`
 	Window  string `json:"window"`
+	Key     string `json:"key"`
 }
 
 // AgentCloseResult is an agent-closed's outcome (Msg.CloseResult): Graceful
-// when the agent exited on its own within the grace, false when the host
-// closed the window after it.
+// when the agent exited on its own after /exit, false when the host closed
+// the window without that, with Reason saying why (it was waiting on the
+// person, an opencode window, the grace passed).
 type AgentCloseResult struct {
-	Graceful bool `json:"graceful"`
+	Graceful bool   `json:"graceful"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // CloseRefusedError is a host's refusal of an agent-close.
@@ -96,8 +112,8 @@ type closeAnswer struct {
 func (h *Hub) CloseAgent(ctx context.Context, owner int64, host string, req AgentCloseReq) (r AgentCloseResult, err error) {
 	ctx, done := hubOp(ctx, "agent-close")
 	defer func() { done(err) }()
-	if ValidSession(req.Session) != nil || ValidWindowID(req.Window) != nil {
-		return AgentCloseResult{}, errors.New("mirror: a close names one window: its session and its window id")
+	if ValidSession(req.Session) != nil || ValidWindowID(req.Window) != nil || !ValidSessionKey(req.Key) {
+		return AgentCloseResult{}, errors.New("mirror: a close names one window (its session and its window id) and the conversation it runs")
 	}
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]

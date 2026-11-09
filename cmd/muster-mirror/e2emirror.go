@@ -621,9 +621,25 @@ func (w windowFake) ClaudeScreen(ctx context.Context, pane string) (string, erro
 	return "", fmt.Errorf("pane %s is not a Claude window's", pane)
 }
 
-// PasteChecked implements mirrorhost.ClaudeCheckedPaster.
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster. An agent asked to
+// exit (agent-close, e2eclose.go) exits on the checked paste's Enter, and its
+// window with it: the ONLY way the fake exits, as the real host types /exit
+// only through this checked paste (never a raw PastePane, and never into an
+// opencode pane).
 func (w windowFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
-	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, func() error { return w.Paste(ctx, p, text) }, before, beforeEnter)
+	enter := func() error { return w.Paste(ctx, p, text) }
+	if text == "/exit" && e2eCloseOn() {
+		enter = func() error {
+			ws, _ := w.Windows(ctx)
+			for _, win := range ws {
+				if win.Pane == p.Pane {
+					e2eCloseWindow(win.Session, win.ID)
+				}
+			}
+			return nil
+		}
+	}
+	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, enter, before, beforeEnter)
 }
 
 // ActivePane is the per-session lookup; a per-window host is never asked it.
@@ -634,12 +650,6 @@ func (w windowFake) ActivePane(context.Context, string) (string, bool) { return 
 func (w windowFake) PastePane(ctx context.Context, pane, text string) error {
 	ws, _ := w.Windows(ctx)
 	for _, win := range ws {
-		// An agent asked to exit (agent-close, e2eclose.go): it exits, and its
-		// window with it.
-		if win.Pane == pane && text == "/exit" && e2eCloseOn() {
-			e2eCloseWindow(win.Session, win.ID)
-			return nil
-		}
 		if win.Pane == pane && win.Claude != nil {
 			return w.Paste(ctx, *win.Claude, text)
 		}

@@ -23,7 +23,7 @@ import (
 
 // proposalQuestionBuilders is every function a proposal card's question is
 // built by (fileProposal's question argument).
-var proposalQuestionBuilders = []string{"successionCardQuestion"}
+var proposalQuestionBuilders = []string{"endSessionCardQuestion", "successionCardQuestion"}
 
 // TestNoWriterPutsTheKickoffInTheAsk pins the one path from a kickoff to an
 // attention ask:
@@ -43,6 +43,7 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)
+	qi := paramIndex(t, pkg.funcs["fileProposal"], "question")
 	var builders []string
 	for _, fd := range pkg.funcs {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -50,11 +51,11 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 			if !ok || calleeName(call) != "fileProposal" {
 				return true
 			}
-			if len(call.Args) != 7 {
-				t.Errorf("%s calls fileProposal with %d arguments; the ledger reads the 6th as the question", fd.Name.Name, len(call.Args))
+			if len(call.Args) <= qi {
+				t.Errorf("%s calls fileProposal with %d arguments; its question is argument %d", fd.Name.Name, len(call.Args), qi)
 				return true
 			}
-			q, ok := call.Args[5].(*ast.CallExpr)
+			q, ok := call.Args[qi].(*ast.CallExpr)
 			if !ok {
 				t.Errorf("%s passes fileProposal a question that is no builder's call", fd.Name.Name)
 				return true
@@ -95,6 +96,25 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	if !slices.Equal(readers, want) {
 		t.Errorf("a proposal's Kickoff field is read by %v\nwant exactly %v", readers, want)
 	}
+}
+
+// paramIndex is the index of fd's parameter named name.
+func paramIndex(t *testing.T, fd *ast.FuncDecl, name string) int {
+	t.Helper()
+	if fd == nil {
+		t.Fatal("instrument check: no fileProposal")
+	}
+	i := 0
+	for _, f := range fd.Type.Params.List {
+		for _, n := range f.Names {
+			if n.Name == name {
+				return i
+			}
+			i++
+		}
+	}
+	t.Fatalf("instrument check: fileProposal has no parameter %q", name)
+	return -1
 }
 
 // typedPkg is internal/api's non-test source, type-checked.

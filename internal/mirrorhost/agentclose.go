@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -15,20 +18,37 @@ import (
 // 🔴 NARROW BY CONSTRUCTION:
 //   - only an -interactive v2 host whose backend lists windows, pastes into a
 //     pane and closes a window advertises it (agentCloseOn);
-//   - the request names ONE window, by its tmux session and window id, and
-//     the host closes it only when it LISTS that window now, in that session,
-//     running an agent it knows how to ask to exit (Claude Code, opencode).
-//     Anything else is refused (not_listed, no_agent) and nothing is typed or
-//     closed;
+//   - the request names ONE window, by its tmux session and window id, AND
+//     the conversation muster expects it to run (AgentCloseReq.Key). The host
+//     closes it only when it LISTS that window now, in that session, running
+//     an agent (Claude Code, opencode) in exactly that conversation. Anything
+//     else is refused (not_listed, no_agent, mismatch) and nothing is typed
+//     or closed;
 //   - the token the host connects with names its owner, so the request is
 //     always that owner's.
 //
-// GRACEFUL, THEN CLOSED: the host types /exit into the window's agent pane
-// (both runtimes take it), then re-lists every closePoll: the window gone (the
-// agent was its process) or its pane back at no agent is a graceful end — the
-// window is then closed if still there. Once the grace (mirror.AgentCloseGrace,
-// Config.AgentCloseGrace in tests) passes without that, the window is closed
-// anyway.
+// 🔴 /exit IS TYPED ONLY THROUGH THE CLAUDE PROMPT GUARD (claude_guard.go),
+// never a raw paste: Enter on a permission prompt approves it, on an
+// AskUserQuestion picker takes its first option, and after a half-typed
+// draft submits the draft with "/exit" on it. So for a Claude Code window the
+// host first runs the paste guard and claudeReady (its session status, its
+// screen, an EMPTY input box), and types /exit only through the checked
+// paste (ClaudeCheckedPaster), which checks again before the paste and before
+// its Enter. Any refusal types nothing (or withholds the Enter) and the window
+// is closed at once, reported not graceful with the reason.
+//
+// OPENCODE IS CLOSED AT ONCE: muster types into no opencode pane (the paste
+// guard refuses it), and the opencode server API this host uses offers no
+// call that exits its TUI. Its window is closed without waiting, reported not
+// graceful.
+//
+// GRACEFUL, THEN CLOSED (Claude Code): after /exit the host re-lists every
+// closePoll. The window gone, or the agent's OWN pane (the pane id read at
+// the start, with its process) no longer running it, is a graceful end — the
+// window is then closed if still there. Once the grace
+// (mirror.AgentCloseGrace, Config.AgentCloseGrace in tests) passes without
+// that, the window is listed once more and closed only if it still runs that
+// conversation.
 
 // WindowCloser is a Backend that can close one window by its id. Tmux is one.
 type WindowCloser interface {
@@ -117,8 +137,56 @@ func agentPaneOf(w WindowInfo) string {
 	return ""
 }
 
-// closeAgent runs one agent-close (see the file's header). Its /exit goes
-// through the paste guard (typeInto), as every keystroke this host types does.
+// windowSessionKey is the session key of the conversation w runs, as the
+// host SENDS it (WireWindows, mirror.Window.SessionKey): "" for none.
+func windowSessionKey(w WindowInfo) string {
+	ws := WireWindows([]WindowInfo{w}, nil, true, time.Now())
+	if len(ws) != 1 {
+		return ""
+	}
+	return ws[0].SessionKey()
+}
+
+// windowRuns reports whether window w runs the conversation keyed key: in
+// its active pane (windowSessionKey), or — a Claude Code session whose pane
+// is no longer the active one — in one of its other panes (w.Others).
+func windowRuns(w WindowInfo, key string) bool {
+	if windowSessionKey(w) == key {
+		return true
+	}
+	for _, o := range w.Others {
+		if o.Gen == key {
+			return true
+		}
+	}
+	return false
+}
+
+// agentProcAlive reports whether process pid still runs. A var only so a
+// test can play a process that outlives its pane's focus.
+var agentProcAlive = func(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// The reasons a close was not graceful (AgentCloseResult.Reason), as the
+// owner reads them.
+const (
+	closeReasonOpenCode = "opencode is not asked to exit: muster types nothing into an opencode pane, and opencode offers no exit call, so its window was closed at once"
+	closeReasonGrace    = "Claude Code did not exit within the grace after /exit, so its window was closed"
+	closeReasonNotTyped = "nothing was typed into Claude Code, because %s; its window was closed at once"
+	// closeReasonOther is a graceful end's note when the window was left open.
+	closeReasonOther = "Claude Code exited; its window runs another agent now, so it was left open"
+)
+
+// closeAgent runs one agent-close (see the file's header).
 func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error) {
 	c := h.c
 	refuse := func(code, f string, a ...any) (mirror.AgentCloseResult, error) {
@@ -129,9 +197,11 @@ func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentClos
 	}
 	wl, _ := capabilityOf[WindowLister](c.cfg.Backend)
 	wc, _ := capabilityOf[WindowCloser](c.cfg.Backend)
-	pb, _ := PaneOf(c.cfg.Backend)
 	if mirror.ValidSession(req.Session) != nil || mirror.ValidWindowID(req.Window) != nil {
 		return refuse(mirror.CloseNotListed, "the request names no window")
+	}
+	if !mirror.ValidSessionKey(req.Key) {
+		return refuse(mirror.CloseMismatch, "the request names no conversation")
 	}
 	w, ok, err := listedWindow(ctx, wl, req.Session, req.Window)
 	if err != nil {
@@ -142,10 +212,37 @@ func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentClos
 	}
 	pane := agentPaneOf(w)
 	if pane == "" {
-		return refuse(mirror.CloseNoAgent, "window %s runs no agent this host can ask to exit", req.Window)
+		return refuse(mirror.CloseNoAgent, "window %s runs no agent this host can end", req.Window)
 	}
-	if err := h.typeInto(ctx, pane, func() error { return pb.PastePane(ctx, pane, "/exit") }); err != nil {
-		c.log.Printf("muster-mirror: close %s:%s: /exit not typed (%v); closing after the grace", req.Session, req.Window, err)
+	if k := windowSessionKey(w); k != req.Key {
+		return refuse(mirror.CloseMismatch, "window %s runs a different conversation now", req.Window)
+	}
+	// kill closes the window, re-listing it first: only a window still
+	// running the request's conversation is closed (one gone meanwhile is
+	// gone; one running another is refused).
+	kill := func(reason string) (mirror.AgentCloseResult, error) {
+		w, ok, err := listedWindow(ctx, wl, req.Session, req.Window)
+		if err != nil {
+			return mirror.AgentCloseResult{}, err
+		}
+		if !ok {
+			return mirror.AgentCloseResult{Graceful: reason == "", Reason: reason}, nil
+		}
+		if !windowRuns(w, req.Key) {
+			return refuse(mirror.CloseMismatch, "window %s runs a different conversation now; it was not closed", req.Window)
+		}
+		if err := wc.KillWindow(ctx, req.Window); err != nil {
+			return mirror.AgentCloseResult{}, err
+		}
+		return mirror.AgentCloseResult{Graceful: reason == "", Reason: reason}, nil
+	}
+	if w.Claude == nil {
+		return kill(closeReasonOpenCode)
+	}
+	agent := *w.Claude
+	if why := h.typeExit(ctx, req, agent); why != "" {
+		c.log.Printf("muster-mirror: close %s:%s: nothing typed (%s); closing the window", req.Session, req.Window, why)
+		return kill(fmt.Sprintf(closeReasonNotTyped, why))
 	}
 	deadline := time.Now().Add(c.closeGrace())
 	for time.Now().Before(deadline) {
@@ -161,7 +258,12 @@ func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentClos
 		if !ok {
 			return mirror.AgentCloseResult{Graceful: true}, nil
 		}
-		if agentPaneOf(w) == "" {
+		if agentExited(w, agent) {
+			if agentPaneOf(w) != "" {
+				// It exited, and the window runs another agent now: that one
+				// is not the request's, so the window is left open.
+				return mirror.AgentCloseResult{Graceful: true, Reason: closeReasonOther}, nil
+			}
 			// The agent exited; its pane is back at a shell: close the window.
 			if err := wc.KillWindow(ctx, req.Window); err != nil {
 				return mirror.AgentCloseResult{}, err
@@ -169,8 +271,59 @@ func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentClos
 			return mirror.AgentCloseResult{Graceful: true}, nil
 		}
 	}
-	if err := wc.KillWindow(ctx, req.Window); err != nil {
-		return mirror.AgentCloseResult{}, err
+	return kill(closeReasonGrace)
+}
+
+// agentExited reports whether the Claude Code agent was (its pane and
+// process, read at the start) no longer runs in window w: read from ITS OWN
+// pane — while that pane is still the window's active one, by what the
+// listing says runs there; once another pane is active, by its process.
+func agentExited(w WindowInfo, agent ClaudePane) bool {
+	if w.Pane == agent.Pane {
+		return w.Claude == nil || w.Claude.PID != agent.PID
 	}
-	return mirror.AgentCloseResult{Graceful: false}, nil
+	return !agentProcAlive(agent.PID)
+}
+
+// typeExit types /exit into Claude Code pane agent of req's window, through
+// the paste guard and the Claude prompt guard's checked paste, only when the
+// pane is at an idle prompt with an empty input box: "" when it was typed and
+// submitted, else why nothing was (or, with the Enter withheld, why it was not
+// submitted).
+func (h *hostSide) typeExit(ctx context.Context, req mirror.AgentCloseReq, agent ClaudePane) string {
+	cb, ok := h.claudeBackend()
+	cp, okc := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend)
+	if !ok || !okc {
+		return "this host cannot check Claude Code's screen before typing"
+	}
+	m := mirror.Msg{Session: req.Session, Window: req.Window}
+	before := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, agent.Pane, true) }
+	beforeEnter := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, agent.Pane, false) }
+	if err := h.guardPane(ctx, agent.Pane); err != nil {
+		return closeWhy(err)
+	}
+	if err := before(ctx); err != nil {
+		return closeWhy(err)
+	}
+	if err := h.typeInto(ctx, agent.Pane, func() error { return cp.PasteChecked(ctx, agent, "/exit", before, beforeEnter) }); err != nil {
+		return closeWhy(err)
+	}
+	return ""
+}
+
+// closeWhy is a guard's refusal as a close's reason says it.
+func closeWhy(err error) string {
+	switch {
+	case errors.Is(err, ErrClaudeWaiting):
+		return "it was waiting on you (a permission prompt or a question)"
+	case errors.Is(err, ErrClaudeDialog):
+		return "its screen showed a dialog (a permission prompt, a picker or a menu)"
+	case errors.Is(err, ErrClaudeBox):
+		return "its input box held a draft"
+	}
+	var pe *ClaudePastedError
+	if errors.As(err, &pe) {
+		return "a dialog opened as /exit was typed, so Enter was not pressed"
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(err.Error(), "Not sent: "), ".")
 }

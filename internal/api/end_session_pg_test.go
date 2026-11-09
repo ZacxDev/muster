@@ -134,7 +134,7 @@ func TestAnEndNeedsTheOwnersTap(t *testing.T) {
 	}
 	got := f.settled(t, id)
 	calls := f.closeCalls()
-	if len(calls) != 1 || calls[0].host != "host-echo" || calls[0].req != (mirror.AgentCloseReq{Session: "main", Window: "@3"}) {
+	if len(calls) != 1 || calls[0].host != "host-echo" || calls[0].req != (mirror.AgentCloseReq{Session: "main", Window: "@3", Key: sxOpenCodeKey}) {
 		t.Fatalf("the close: %+v", calls)
 	}
 	if got.Decided != "accepted" || got.EndState != "ended" || got.EndDetail != "the agent exited and its window closed" {

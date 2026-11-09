@@ -56,7 +56,7 @@ func EndSessionCard(ref MirrorRef, x *EndView) g.Node {
 		return line("bg-s1 text-muted", g.Text("Your chief's proposal to end this session expired: ask it again."))
 	case EndEnding:
 		return line("bg-s1 text-fg2", Span(Class("animate-pulse"), g.Text("Ending this session… ")),
-			Span(Class("text-muted"), g.Text("muster asked the agent to exit; its window closes within 30 s.")))
+			Span(Class("text-muted"), g.Text("muster is ending it: its window closes within 30 s.")))
 	case EndEnded:
 		return line("bg-st-warning-bg text-st-warning-fg", Span(Class("font-semibold"), g.Text("Session ended. ")), g.Text(x.Detail))
 	case SuccessionFailed:

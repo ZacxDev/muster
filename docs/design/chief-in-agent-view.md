@@ -699,14 +699,20 @@ and this page does not reopen them.
 9. **D9: ending a session on the owner's explicit request.** On the owner's
    explicit request, and only then, the chief may propose ending ANY of the
    owner's sessions: a mirrored window on their hosts (Claude Code or
-   opencode), windows the owner opened by hand included, or a pod agent it
-   started.
+   opencode), windows the owner opened by hand included, or any pod agent of
+   theirs, whoever started it. Never the chief itself, and never an
+   officer's instance (both are delete-protected).
    - **Binding:** the session the owner's view line is about, or one the
      owner named in a line typed in the chief's own chat.
    - **Authorisation:** the tap. Nothing ends without it.
-   - **How:** gracefully, then closed. The agent is asked to exit, and its
-     window is closed once it exits, or after about 30 s whatever it does.
-     A pod agent goes through muster's own stop and destroy.
+   - **How:** gracefully where that is safe, then closed. A Claude Code
+     agent at an idle prompt with an empty input box is asked to exit
+     (`/exit`, through the Claude prompt guard), and its window is closed
+     once it exits, or after about 30 s whatever it does. One waiting on the
+     owner (a permission prompt, a picker, a dialog) or holding a draft is
+     typed nothing, and its window is closed at once. An opencode window is
+     closed at once (#549 round 1). A pod agent goes through muster's own
+     stop and destroy.
    - **What it changes:** this supersedes D1's "never closes a window the
      operator opened by hand" **for the explicit-request case only**. An
      automatic close on replace (phase 3) stays limited to windows the chief
@@ -1083,20 +1089,27 @@ This section follows D9. It is the chief proposal's second kind
   2. **From the chief's own chat:** the turn must be the owner's own typed
      turn (`ownerTurnFor`), and the session may be any of the owner's: a
      mirrored session's key (owner-scoped through the hub), or `agent:<name>`
-     for a pod agent of the owner's. A plugin message, a session's words or
-     muster's own note never binds.
+     for any pod agent of the owner's. The chief itself and an officer's
+     instance are refused at the proposal, with no card. A plugin message, a
+     session's words or muster's own note never binds.
 - A mirrored session's host must advertise agent-close. Otherwise the
   proposal is refused, saying so.
 - **The card** reads "End this session?", with the session, where it runs and
-  what will happen, and the buttons End it / Not now.
+  what will happen, and the buttons End it / Not now. Its attention ask's
+  question (the Attention view, the phone, `attention_list`) is muster's own
+  sentence naming exactly which session: its label, then host · tmux session
+  · window (or "your agent “name”"), then what happens. It holds no
+  transcript text.
 - **The tap** (the same `proposalForAnswer`):
   - Everything that can refuse runs first, and a refusal leaves the card
-    open: the window still listed, the host able to close, the agent still
-    the owner's.
+    open: the window still listed, still the card's own window (the host,
+    tmux session and window the card named), the host able to close, the
+    agent still the owner's and not protected.
   - Then `StartEnd` (accepted, ending) and the end itself:
     - A mirrored window: muster sends the host **agent-close** for exactly
-      the window that shows the session now (`mirror.Hub.CloseAgent`, whose
-      one caller is `closeEndedWindow`).
+      that window, naming the conversation it must be running
+      (`AgentCloseReq.Key`; `mirror.Hub.CloseAgent`, whose one caller is
+      `closeEndedWindow`).
     - A pod agent: `destroyAgent`, as the owner's destroy does.
   - `RecordEnd` stores ended or failed, with a one-line detail.
   - The view's proposal region shows "Ending this session…", then "Session
@@ -1105,15 +1118,33 @@ This section follows D9. It is the chief proposal's second kind
 - **agent-close, the host half** (`internal/mirrorhost/agentclose.go`):
   - It is advertised (`Msg.AgentClose`) only by an `-interactive` v2 host
     whose backend lists windows, pastes into a pane and closes a window.
-  - The request names one window: its tmux session and window id. The host
-    refuses anything else, with nothing typed or closed:
+  - The request names one window (its tmux session and window id) and the
+    conversation muster expects there. The host refuses anything else, with
+    nothing typed or closed:
     - a window it does not list in that session (`not_listed`);
-    - a window running no agent it can ask to exit (`no_agent`).
-  - It types `/exit` into the agent's pane, then re-lists every 300 ms:
+    - a window running no agent (`no_agent`);
+    - a window running another conversation, in its active pane or any
+      other (`mismatch`).
+  - **Claude Code:** the paste guard, then the Claude prompt guard
+    (`claudeReady`: its session status, its screen, an EMPTY input box).
+    Only if all pass is `/exit` typed, through the checked paste
+    (`PasteChecked`), which checks again before the paste and before its
+    Enter. Any refusal types nothing (or withholds the Enter), and the
+    window is closed at once, reported not graceful with the reason. Enter
+    on a permission prompt would approve it, on a picker would take its
+    first option, and after a draft would submit the draft. After `/exit`
+    the host re-lists every 300 ms:
     - the window gone is a graceful end;
-    - the pane back at no agent is also graceful, and the window is closed;
-    - otherwise, after the grace (30 s) the window is closed anyway and the
-      end is reported as not graceful.
+    - the agent's OWN pane (its pane id and process, read at the start) no
+      longer running it is also graceful, and the window is closed if it
+      runs no other agent;
+    - otherwise, after the grace (30 s) the host lists the window once more
+      and closes it only if it still runs that conversation, reported not
+      graceful.
+  - **opencode:** closed at once, reported not graceful. muster types into
+    no opencode pane (the paste guard refuses it), and the opencode server
+    API the host uses (`internal/opencodehost`) has no call that exits its
+    TUI.
 - **Ship note:** the hosts run `muster-mirror` as pinned by the operator's own host
   flake. Agent-close reaches a host only once that host runs a release with
   it, which needs a flake bump after the release. Until then the host does
@@ -1123,6 +1154,8 @@ This section follows D9. It is the chief proposal's second kind
 - The card is not drawn in the chief's own chat. From that path the owner
   taps it on the Attention view or the phone (a chat tap is their next typed
   message, which settles an owner card without accepting it).
-- The graceful exit is the text `/exit` for both runtimes. Whether a real
-  opencode build quits on it is **UNVERIFIED** on a real host. The fallback
-  closes the window after the grace either way.
+- No graceful exit for opencode: its window is closed at once. A graceful
+  path would need an exit call in opencode's server API.
+- A dialog that opens in the milliseconds between the last check and the
+  Enter is not caught: the Claude prompt guard is a check before the keys,
+  not a lock (`claude_guard.go`).

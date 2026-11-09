@@ -13,10 +13,14 @@ import (
 
 // ENDING AN AGENT WINDOW, PLAYED (agent-close; internal/mirrorhost/
 // agentclose.go). With MUSTER_MIRROR_E2E_CLOSE=1 the per-window fake can close
-// a window (mirrorhost.WindowCloser), so it advertises agent-close; an agent
-// window's pane that is typed /exit "exits", and its window with it — the
-// graceful path, through the REAL host code (closeAgent's listing checks, its
-// /exit, its wait). A closed window is gone from every later listing.
+// a window (mirrorhost.WindowCloser), so it advertises agent-close; a Claude
+// window that is typed /exit through the checked paste (windowFake.PasteChecked)
+// "exits", and its window with it — the graceful path, through the REAL host
+// code (closeAgent's listing and conversation checks, the Claude prompt
+// guard, its /exit, its wait). A Claude window waiting on the person (its
+// .waiting marker or a prompt .screen) is typed nothing and closed at once;
+// an opencode window is closed at once, as production does. A closed window
+// is gone from every later listing.
 // Unset, the fake closes nothing and advertises nothing.
 
 var e2eClosed struct {

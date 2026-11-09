@@ -11,14 +11,18 @@ import { writeFileAtomic } from '../lib/atomic';
 // "End-session"), on the operator's click path: an opencode window's Rendered
 // view, the composer flipped to "Chief", "close this agent session", the CARD
 // muster raises, the owner's TAP — the authorisation — and the window gone,
-// the view saying the session ended.
+// the view saying the session ended. And a Claude Code window at a permission
+// prompt: the tap types NOTHING into it (Enter there would approve the
+// prompt) and its window is closed at once.
 //
 // ⚠ WHAT IS PLAYED: the model (a FAKE /v1/responses runtime is the chief: on a
 // view turn whose owner line asks to close, it calls end_session_propose with
 // the subject muster's header names) and tmux (the e2emirror build's
-// MUSTER_MIRROR_E2E_CLOSE: a window can be closed, and an agent typed /exit
-// exits with its window). Everything else is muster's own, and the HOST's own
-// agent-close code: its listing check, its /exit, its wait, its answer.
+// MUSTER_MIRROR_E2E_CLOSE: a window can be closed, and a Claude Code agent
+// typed /exit through the checked paste exits with its window). Everything
+// else is muster's own, and the HOST's own agent-close code: its listing and
+// conversation checks, the Claude prompt guard, its answer. An opencode
+// window is closed at once, never typed into, as in production.
 // Every value is invented fixture data.
 //
 // 🔴 REGRESSION TEST: on its base branch the chief has no end_session_propose,
@@ -32,6 +36,17 @@ const VIEWS = {
   phone: { sid: 'ses_0e2eendphone1a2b3c4', win: '@2', title: 'Retire the old fixture loader' },
   desktop: { sid: 'ses_0e2eenddesk1a2b3c45', win: '@3', title: 'Retire the old widget parser' },
 };
+// The Claude Code windows, one per viewport, each at a permission prompt.
+const CLAUDE = {
+  phone: { session: 'e2e-endcc-phone-' + stamp, win: '@4' },
+  desktop: { session: 'e2e-endcc-desk-' + stamp, win: '@5' },
+};
+const rule = '─'.repeat(40);
+// The CLI at a permission prompt (the shape of cmd/muster-mirror's
+// e2ePromptScreen): Enter here takes "1. Yes".
+const permissionScreen = `● Bash(touch /tmp/x)\n\n${rule}\n Bash command\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n`;
+const rec = (o: object) => JSON.stringify(o) + '\n';
+const transcripts: Record<string, string> = {};
 
 const rig = new MirrorRig(chiefEndSessionPort, 'e2e-cend', {
   MUSTER_FOCUS_INTERVAL: '0',
@@ -134,7 +149,24 @@ test.beforeAll(async ({ browser }) => {
   }
   const t0 = Math.floor(Date.now() / 1000);
   const windows = path.join(rig.dir, 'windows');
-  writeFileAtomic(windows, `plain|@1|0|1|zsh|${t0 - 50}|\n`);
+  let lines = `plain|@1|0|1|zsh|${t0 - 50}|\n`;
+  let i = 0;
+  for (const [k, c] of Object.entries(CLAUDE)) {
+    const tr = path.join(rig.dir, c.session + '.jsonl');
+    transcripts[k] = tr;
+    fs.writeFileSync(
+      tr,
+      rec({ type: 'user', promptId: 'p', origin: { kind: 'human' }, message: { role: 'user', content: 'tidy the fixtures' } }) +
+        rec({ type: 'assistant', message: { content: [{ type: 'text', text: 'Fixtures tidied.' }] } }),
+    );
+    // Claude Code's own status says idle; its SCREEN shows the prompt (one
+    // that opened after the host's last report): only the host's check at
+    // the moment of typing sees it.
+    fs.writeFileSync(tr + '.screen', permissionScreen);
+    lines += `cc|${c.win}|${i}|${i === 0 ? 1 : 0}|claude|${t0 - 20}|${tr}\n`;
+    i++;
+  }
+  writeFileAtomic(windows, lines);
   const ocWindows = path.join(rig.dir, 'opencode-windows');
   writeFileAtomic(ocWindows, Object.values(VIEWS).map((v, i) => `oc|${v.win}|${i}|${i === 0 ? 1 : 0}|${t0 - 10}|OC | ${v.title}`).join('\n') + '\n');
   await rig.startHost({
@@ -174,9 +206,9 @@ test.afterEach(async ({ page }, info) => {
 
 // listed is whether the host lists window win of session oc now (the
 // sidebar's read of the hub).
-async function listed(page: import('@playwright/test').Page, win: string): Promise<boolean> {
+async function listed(page: import('@playwright/test').Page, win: string, session = 'oc'): Promise<boolean> {
   const html = await (await page.request.get(rig.origin + '/ui/nav/agents')).text();
-  return html.includes(`window=${encodeURIComponent(win)}`) && html.includes('session=oc');
+  return html.includes(`session=${session}&amp;window=${encodeURIComponent(win)}`) || html.includes(`session=${session}&window=${encodeURIComponent(win)}`);
 }
 
 // toChief flips the view's composer to the chief, on either form of its
@@ -219,7 +251,7 @@ for (const vp of [
       const card = page.locator('#mv-proposal-card[data-proposal-kind="end_session"]');
       await expect(card).toBeVisible({ timeout: 30_000 });
       await expect(card).toContainText('End this session?');
-      await expect(card).toContainText('asks opencode to exit');
+      await expect(card).toContainText('closes its window at once (opencode is not asked to exit');
       await page.waitForTimeout(500);
       expect(await listed(page, v.win), 'the proposal closed nothing').toBe(true);
       expect(rig.log).not.toContain('CLOSED oc:' + v.win);
@@ -229,10 +261,41 @@ for (const vp of [
       const btn = page.locator('[data-proposal-choice="End it"]');
       await (vp.use.hasTouch ? btn.tap() : btn.click());
       await expect(page.locator('#mv-succession')).toContainText('Session ended.', { timeout: 30_000 });
-      await expect(page.locator('#mv-succession')).toContainText('the agent exited and its window closed');
+      await expect(page.locator('#mv-succession')).toContainText('opencode is not asked to exit');
       await expect.poll(() => listed(page, v.win), { timeout: 15_000, message: 'the window is gone from the listing' }).toBe(false);
-      expect(rig.log).toContain(`CLOSED oc:${v.win} on muster's request (graceful: true)`);
+      expect(rig.log).toContain(`CLOSED oc:${v.win} on muster's request (graceful: false)`);
       await page.screenshot({ path: info.outputPath(`end-ended-${vp.key}.png`) });
+    });
+
+    test('a Claude Code window at a permission prompt → one tap → NOTHING is typed, its window is closed at once', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      const c = CLAUDE[vp.key];
+      const tr = transcripts[vp.key];
+      await rig.login(page);
+      await page.goto(rig.origin + `${rig.viewPath('cc')}&window=${encodeURIComponent(c.win)}`);
+      await expect(page.locator('#mv-log')).toContainText('Fixtures tidied.', { timeout: 20_000 });
+      expect(await listed(page, c.win, 'cc'), 'the window is listed before').toBe(true);
+      await toChief(page);
+      // A Claude Code view on a phone keeps its box behind "Type a message"
+      // (#mv-text) until tapped (ui/composer_reveal.go).
+      const reveal = page.locator('#mv-text');
+      if ((await reveal.isVisible()) && (await reveal.getAttribute('aria-expanded')) === 'false') await reveal.click();
+      const input = page.locator('#mv-input');
+      await expect(input).toBeVisible();
+      await input.fill(`E2E-ENDCC-${vp.key}-${stamp}: close this agent session`);
+      await input.press('Enter');
+      const card = page.locator('#mv-proposal-card[data-proposal-kind="end_session"]');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect(card).toContainText('if it is waiting on you or holds a draft, nothing is typed');
+      const btn = page.locator('[data-proposal-choice="End it"]');
+      await (vp.use.hasTouch ? btn.tap() : btn.click());
+      await expect(page.locator('#mv-succession')).toContainText('Session ended.', { timeout: 30_000 });
+      await expect(page.locator('#mv-succession')).toContainText('nothing was typed into Claude Code, because its screen showed a dialog');
+      await expect.poll(() => listed(page, c.win, 'cc'), { timeout: 15_000, message: 'the window is gone from the listing' }).toBe(false);
+      expect(rig.log).toContain(`CLOSED cc:${c.win} on muster's request (graceful: false)`);
+      // 🔴 NOTHING TYPED: the fake records every key the checked paste types.
+      expect(fs.existsSync(tr + '.typed'), 'nothing was typed into the Claude pane').toBe(false);
+      await page.screenshot({ path: info.outputPath(`end-cc-prompt-${vp.key}.png`) });
     });
   });
 }

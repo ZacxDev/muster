@@ -29,7 +29,11 @@ import (
 //     A new one fails here, so a new way to type cannot arrive unguarded;
 //  4. the typing primitives (pasteBracketed, pasteEnter) are called only by
 //     PastePane and PasteChecked (the Claude prompt guard's paste, itself
-//     reached only through typeInto). There is no exception to typeInto.
+//     reached only through typeInto). There is no exception to typeInto;
+//  5. agent-close's /exit (hostSide.typeExit) types ONLY through PasteChecked
+//     — the Claude prompt guard's checked paste, with claudeReady before the
+//     paste and before its Enter — never a raw PastePane or Paste, whose
+//     Enter nothing checks (#549 round 1).
 func TestEveryWayThisHostTypesIntoAPaneGoesThroughThePasteGuard(t *testing.T) {
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob("*.go")
@@ -37,6 +41,8 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughThePasteGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	var guarded, unguarded []string
+	// typedBy is, per typeInto call site, which typing calls its keys make.
+	typedBy := map[string][]string{}
 	literals := map[string][]string{}
 	callers := map[string][]string{}
 	files := 0
@@ -102,6 +108,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughThePasteGuard(t *testing.T) {
 						switch {
 						case inTypeInto[x]:
 							// counted below, by its typeInto call
+							typedBy[where] = append(typedBy[where], sel.Sel.Name)
 						case recv == "Tmux":
 							// the backend's own implementation
 						default:
@@ -129,8 +136,11 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughThePasteGuard(t *testing.T) {
 		t.Fatalf("a call types into a pane WITHOUT the paste guard (hostSide.typeInto):\n  %s", strings.Join(unguarded, "\n  "))
 	}
 	slices.Sort(guarded)
-	if want := []string{"hostSide.answer", "hostSide.cancelAsk", "hostSide.closeAgent", "hostSide.paste", "hostSide.paste"}; !slices.Equal(guarded, want) {
+	if want := []string{"hostSide.answer", "hostSide.cancelAsk", "hostSide.paste", "hostSide.paste", "hostSide.typeExit"}; !slices.Equal(guarded, want) {
 		t.Fatalf("typeInto is called from %q; want exactly %q — update this ledger only for a NEW way of typing that goes through it", guarded, want)
+	}
+	if got := typedBy["hostSide.typeExit"]; !slices.Equal(got, []string{"PasteChecked"}) {
+		t.Errorf("agent-close's /exit is typed by %q; want exactly the Claude prompt guard's checked paste [PasteChecked]", got)
 	}
 	for name, want := range map[string][]string{
 		"pasteBracketed": {"Tmux.PasteChecked", "Tmux.PastePane"},
