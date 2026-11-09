@@ -352,6 +352,12 @@ export const chiefFoldInPort = port + 345;
 // whose opencode server is a fake in its own process, and that fake runtime.
 export const chiefInViewPort = port + 350;
 export const chiefInViewFakePort = port + 351;
+// tests/agent-chat-markdown.spec.ts: the agent chat's messages drawn by the
+// server's one markdown renderer, live and stored — its own server (the
+// e2eterm build, every agent endpoint pointed at the spec's FAKE runtime) and
+// that runtime. (+355: chief-in-view took +350/+351 on main.)
+export const chatMarkdownPort = port + 355;
+export const chatMarkdownRuntimePort = port + 356;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

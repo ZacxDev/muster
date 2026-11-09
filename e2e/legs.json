@@ -92,7 +92,8 @@
     "tests/chief-mobile.spec.ts": 12.0,
     "tests/chief-fold-in.spec.ts": 15.0,
     "tests/dock-fade.spec.ts": 8.0,
-    "tests/agent-outcomes.spec.ts": 30.0
+    "tests/agent-outcomes.spec.ts": 30.0,
+    "tests/agent-chat-markdown.spec.ts": 12.0
   },
   "legs": {
     "1": [
@@ -142,7 +143,8 @@
       "tests/dock-fade.spec.ts",
       "tests/features.spec.ts",
       "tests/optimistic-send.spec.ts",
-      "tests/mcp-dispatch.spec.ts"
+      "tests/mcp-dispatch.spec.ts",
+      "tests/agent-chat-markdown.spec.ts"
     ],
     "2": [
       "tests/chief-fold-in.spec.ts",
