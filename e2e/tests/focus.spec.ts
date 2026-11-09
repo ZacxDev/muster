@@ -155,6 +155,8 @@ async function expectAgeInside(line: import('@playwright/test').Locator) {
       const a = l.querySelector('[data-focus-age]') as HTMLElement | null;
       if (!l.isConnected || !a) return null;
       const ar = a.getBoundingClientRect(), lr = l.getBoundingClientRect();
+      // A line that is not rendered reads as a zero box, which would pass both checks.
+      if (ar.width <= 0 || lr.width <= 0) return null;
       return { ageRight: ar.right, lineRight: lr.right, cut: a.scrollWidth > a.clientWidth + 0.5 };
     });
   let m: Awaited<ReturnType<typeof read>> = null;
