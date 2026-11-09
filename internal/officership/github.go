@@ -558,29 +558,27 @@ func escapeRef(ref string) string {
 	return strings.Join(segs, "/")
 }
 
-// Tags implements GitHub: every refs/tags/v* ref.
+// Tags implements GitHub: every refs/tags/v* ref, in ONE request. GitHub's
+// git/matching-refs (like git/refs) does not paginate: it ignores page and
+// per_page and answers every matching ref on every call, with no Link header
+// (measured: a repo with 282 v* tags answered the same 282 for page 1, 2, 3
+// and 50). Looping pages therefore only re-reads the same list.
 func (g *REST) Tags(ctx context.Context) ([]TagRef, error) {
-	var out []TagRef
-	for page := 1; page <= maxPages; page++ {
-		var batch []struct {
-			Ref    string `json:"ref"`
-			Object struct {
-				SHA  string `json:"sha"`
-				Type string `json:"type"`
-			} `json:"object"`
-		}
-		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/git/matching-refs/tags/v?per_page=100&page=%d", g.repoPath(), page), "", nil,
-			&batch, "listing tags"); err != nil {
-			return nil, err
-		}
-		for _, r := range batch {
-			out = append(out, TagRef{Name: strings.TrimPrefix(r.Ref, "refs/tags/"), ObjectSHA: r.Object.SHA, ObjectType: r.Object.Type})
-		}
-		if len(batch) < 100 {
-			return out, nil
-		}
+	var refs []struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
 	}
-	return nil, fmt.Errorf("more than %d tags: too many to vouch for the highest", maxPages*100)
+	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/git/matching-refs/tags/v", "", nil, &refs, "listing tags"); err != nil {
+		return nil, err
+	}
+	out := make([]TagRef, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, TagRef{Name: strings.TrimPrefix(r.Ref, "refs/tags/"), ObjectSHA: r.Object.SHA, ObjectType: r.Object.Type})
+	}
+	return out, nil
 }
 
 // TagObject implements GitHub.
@@ -827,28 +825,25 @@ func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
 	return nil
 }
 
-// Branches implements GitHub (git/matching-refs, every page).
+// Branches implements GitHub: every refs/heads/<prefix>* ref, in ONE
+// request. git/matching-refs does not paginate (see Tags): it answers every
+// match on every call and ignores page and per_page.
 func (g *REST) Branches(ctx context.Context, prefix string) ([]Branch, error) {
-	var out []Branch
-	for page := 1; page <= maxPages; page++ {
-		var refs []struct {
-			Ref    string `json:"ref"`
-			Object struct {
-				SHA string `json:"sha"`
-			} `json:"object"`
-		}
-		if err := g.do(ctx, http.MethodGet, fmt.Sprintf("%s/git/matching-refs/heads/%s?per_page=100&page=%d", g.repoPath(), escapeRef(prefix), page),
-			"", nil, &refs, "listing branches under "+prefix); err != nil {
-			return nil, err
-		}
-		for _, r := range refs {
-			out = append(out, Branch{Name: strings.TrimPrefix(r.Ref, "refs/heads/"), SHA: r.Object.SHA})
-		}
-		if len(refs) < 100 {
-			return out, nil
-		}
+	var refs []struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
 	}
-	return nil, fmt.Errorf("more than %d branches under %s", maxPages*100, prefix)
+	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/git/matching-refs/heads/"+escapeRef(prefix),
+		"", nil, &refs, "listing branches under "+prefix); err != nil {
+		return nil, err
+	}
+	out := make([]Branch, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, Branch{Name: strings.TrimPrefix(r.Ref, "refs/heads/"), SHA: r.Object.SHA})
+	}
+	return out, nil
 }
 
 // CommitTime implements GitHub.

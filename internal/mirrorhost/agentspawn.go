@@ -91,6 +91,12 @@ type AgentSpawnConfig struct {
 	Server string
 	// RuntimeDir is $XDG_RUNTIME_DIR: prompt files go under it ("" refuses).
 	RuntimeDir string
+	// TenantServer is -agent-spawn-tenant-server: the ONE non-default tmux
+	// server this mirror may spawn on, named as -tmux-socket names a server
+	// (a socket name) or as -tmux-socket-path does (an absolute socket path).
+	// It must resolve to the very server this mirror mirrors; empty (the
+	// default) keeps spawning on the default tmux server only (design 3.8).
+	TenantServer string
 
 	// --- test seams (no flag sets these) ---
 
@@ -163,7 +169,11 @@ const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f 
 // asserts none ends in ';'.
 var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
-	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption}
+	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption, spawnNoConfig[0], spawnNoConfig[1]}
+
+// spawnNoConfig is the tmux option the spawn's new-session carries: a server it
+// would start loads no configuration (newAgentWindow).
+var spawnNoConfig = [2]string{"-f", "/dev/null"}
 
 // errSpawn is a refusal with its code (mirror.Spawn*) and fixed detail.
 type errSpawn struct{ code, detail string }
@@ -272,7 +282,7 @@ func agentSpawnUnavailable(cfg Config) string {
 	case !sc.Enabled:
 		return "agent spawn is off"
 	}
-	if why := notDefaultTmuxServer(cfg.Backend); why != "" {
+	if why := spawnTmuxServerRefusal(cfg.Backend, sc.TenantServer); why != "" {
 		return why
 	}
 	if sc.RuntimeDir == "" {
@@ -312,19 +322,110 @@ func notDefaultTmuxServer(b Backend) string {
 	if t.Socket == "" && t.SocketPath == "" {
 		return ""
 	}
+	if resolvedTmuxSocket(t) == resolvedTmuxSocket(Tmux{}) {
+		return ""
+	}
+	return "not the default tmux server"
+}
+
+// resolvedTmuxSocket is the socket path of the server t names, resolved the way
+// tmux resolves it: -S <path> with its DIRECTORY's real path (the socket may
+// not exist yet), else -L <name> (or "default") under
+// realpath(${TMUX_TMPDIR:-/tmp})/tmux-<uid>.
+func resolvedTmuxSocket(t Tmux) string {
+	if t.SocketPath != "" {
+		return filepath.Join(realOrClean(filepath.Dir(t.SocketPath)), filepath.Base(t.SocketPath))
+	}
+	name := t.Socket
+	if name == "" {
+		name = "default"
+	}
 	tmpdir := os.Getenv("TMUX_TMPDIR")
 	if tmpdir == "" {
 		tmpdir = "/tmp"
 	}
-	def := filepath.Join(realOrClean(tmpdir), "tmux-"+strconv.Itoa(os.Getuid()), "default")
+	return filepath.Join(realOrClean(tmpdir), "tmux-"+strconv.Itoa(os.Getuid()), name)
+}
+
+// tenantServerNameRE is a -agent-spawn-tenant-server value naming a server as
+// -tmux-socket (-L) does: a socket NAME, no '/'.
+var tenantServerNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// ParseAgentSpawnTenantServer reads -agent-spawn-tenant-server: "" (off), a
+// socket name (-L form) or an absolute socket path (-S form). It answers the
+// server as a Tmux whose resolvedTmuxSocket can be compared with the mirror's.
+func ParseAgentSpawnTenantServer(s string) (Tmux, error) {
 	switch {
-	// The socket may not exist yet: its DIRECTORY is resolved, then its name.
-	case t.SocketPath != "" && filepath.Join(realOrClean(filepath.Dir(t.SocketPath)), filepath.Base(t.SocketPath)) == def:
-		return ""
-	case t.SocketPath == "" && t.Socket == "default":
+	case s == "":
+		return Tmux{}, nil
+	case strings.Contains(s, "/"):
+		if !filepath.IsAbs(s) || filepath.Clean(s) != s || !hostWordRE.MatchString(s) {
+			return Tmux{}, fmt.Errorf("-agent-spawn-tenant-server %q: a socket path must be absolute and clean", s)
+		}
+		return Tmux{SocketPath: s}, nil
+	case s == "." || s == ".." || !tenantServerNameRE.MatchString(s):
+		return Tmux{}, fmt.Errorf("-agent-spawn-tenant-server %q: not a tmux socket name (letters, digits, '.', '_', '-') or an absolute socket path", s)
+	}
+	return Tmux{Socket: s}, nil
+}
+
+// spawnTmuxServerRefusal is why backend b's tmux server may not take a spawn,
+// "" when it may (design 3.8, revised):
+//
+//   - with NO opt-in, only the default tmux server (notDefaultTmuxServer, its
+//     detail unchanged) — so a tenant unit that sets -agent-spawn by mistake
+//     still refuses;
+//   - with -agent-spawn-tenant-server set, exactly the server it names, which
+//     must be the one this mirror mirrors: a value naming any other server
+//     (another tenant's, or the default one from a tenant unit) refuses with a
+//     detail of its own.
+func spawnTmuxServerRefusal(b Backend, optIn string) string {
+	if optIn == "" {
+		return notDefaultTmuxServer(b)
+	}
+	t, ok := tmuxOf(b)
+	if !ok {
+		return "not the default tmux server"
+	}
+	want, err := ParseAgentSpawnTenantServer(optIn)
+	if err != nil {
+		return "-agent-spawn-tenant-server is not a tmux socket name or an absolute socket path"
+	}
+	if resolvedTmuxSocket(want) != resolvedTmuxSocket(t) {
+		return "-agent-spawn-tenant-server names another tmux server than the one this mirror mirrors"
+	}
+	return ""
+}
+
+// spawnNamespace is "" for a mirror of the default tmux server, and
+// "tenant-<name>" for one of a tenant's server (<name> its -L name, or a short
+// hash of its -S path). A tenant's spawns put it in their worktree directory
+// (<agent-spawn-dir>/<namespace>/…), branch and prompt file, because two
+// muster servers number their dispatches independently: dispatch 12 of the
+// default server and dispatch 12 of a tenant's must never share a worktree, a
+// branch or a prompt file, and one mirror's sweep must never see the other's
+// worktrees (the default mirror's sweep reads only <owner>__<repo> entries,
+// which a namespace directory is not).
+func (c *Client) spawnNamespace() string {
+	t, ok := tmuxOf(c.cfg.Backend)
+	if !ok || notDefaultTmuxServer(t) == "" {
 		return ""
 	}
-	return "not the default tmux server"
+	if t.SocketPath == "" && tenantServerNameRE.MatchString(t.Socket) {
+		return "tenant-" + t.Socket
+	}
+	sum := sha256.Sum256([]byte(resolvedTmuxSocket(t)))
+	return "tenant-" + hex.EncodeToString(sum[:6])
+}
+
+// spawnDir is where this mirror's spawned worktrees go: the agents directory,
+// or its namespace directory under it on a tenant's server.
+func (c *Client) spawnDir() string {
+	d := realOrClean(c.cfg.AgentSpawn.Dir)
+	if ns := c.spawnNamespace(); ns != "" {
+		return filepath.Join(d, ns)
+	}
+	return d
 }
 
 // tmuxOf is b's Tmux, looking through wrappers.
@@ -931,8 +1032,18 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	}
 	// The tmux server must already run, and no global or `agents` session
 	// @muster-dispatch may be set (it would tag every window, by inheritance).
+	//
+	// 🔴 A SERVER THAT IS NOT RUNNING IS NEVER STARTED HERE. A tenant's server
+	// started by this process would load the user's DEFAULT tmux config, whose
+	// plugins (a session saver/restorer) would overwrite the default server's
+	// saved state and restore personal sessions into the tenant's server —
+	// which this mirror then shows to the tenant. So: refused, and `display-
+	// message` (which never starts a server) is the only command sent.
 	pidBefore, err := t.serverPID(ctx)
 	if err != nil {
+		if notDefaultTmuxServer(t) != "" {
+			return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "the tenant tmux server is not running (this host never starts it)")
+		}
 		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "no tmux server")
 	}
 	if v, _ := t.run(ctx, "show-options", "-gqv", mirror.DispatchOption); strings.TrimSpace(v) != "" {
@@ -973,9 +1084,17 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 		}
 	}
 	owner, name, _ := strings.Cut(strings.ToLower(req.Repo), "/")
-	dir := filepath.Join(realOrClean(sc.Dir), owner+"__"+name, strconv.FormatInt(dispatch, 10))
+	dir := filepath.Join(c.spawnDir(), owner+"__"+name, strconv.FormatInt(dispatch, 10))
 	slug := mirror.SpawnSlug(req.Name, 40)
-	branch := "muster/" + strconv.FormatInt(dispatch, 10)
+	// On a tenant's server, its namespace leads the branch and the prompt
+	// file (spawnNamespace): the other muster server's dispatch of the same
+	// number never collides.
+	ns := c.spawnNamespace()
+	nsPrefix := ""
+	if ns != "" {
+		nsPrefix = ns + "-"
+	}
+	branch := "muster/" + nsPrefix + strconv.FormatInt(dispatch, 10)
 	if slug != "" {
 		branch += "-" + slug
 	}
@@ -989,7 +1108,7 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	if winSlug != "" {
 		winName += "-" + winSlug
 	}
-	promptFile := filepath.Join(promptDir(sc.RuntimeDir), strconv.FormatInt(dispatch, 10))
+	promptFile := filepath.Join(promptDir(sc.RuntimeDir), nsPrefix+strconv.FormatInt(dispatch, 10))
 	words := []string{dir, branch, winName, sid, promptFile, bin}
 	if opencode {
 		words = append(words, oc.openCodeBin)
@@ -1241,7 +1360,12 @@ func (t Tmux) newAgentWindow(ctx context.Context, name, dir string, argv []strin
 	if _, herr := t.run(ctx, "has-session", "-t", "="+session); herr == nil {
 		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
 	} else {
-		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-session", "-s", session}, opts...), argv...)...)
+		// 🔴 `-f /dev/null`: new-session is the one tmux command here that
+		// STARTS a server when none runs (the spawn checked one runs, but it
+		// may have exited since). A server started here must never load the
+		// user's tmux config (spawnRuntime: its plugins would save over and
+		// restore into the wrong server). On a running server tmux ignores -f.
+		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{spawnNoConfig[0], spawnNoConfig[1], "new-session", "-s", session}, opts...), argv...)...)
 		if err != nil && strings.Contains(err.Error(), "duplicate session") {
 			out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
 		}
@@ -1298,7 +1422,7 @@ func (c *Client) trustSpawnedWorktree(ctx context.Context, clone, dir string, di
 	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
 		return bad("not its own real path")
 	}
-	spawnDir := realOrClean(sc.Dir)
+	spawnDir := c.spawnDir()
 	repoDir := filepath.Dir(dir)
 	if filepath.Dir(repoDir) != spawnDir || filepath.Base(dir) != strconv.FormatInt(dispatch, 10) || !strings.Contains(filepath.Base(repoDir), "__") {
 		return bad("not a worktree of this spawn under the agents directory")
@@ -1528,12 +1652,13 @@ func (c *Client) SweepAgentWorktrees(ctx context.Context, live map[int64]bool) {
 		return
 	}
 	git := sc.git()
-	repos, _ := os.ReadDir(realOrClean(sc.Dir))
+	spawnDir := c.spawnDir()
+	repos, _ := os.ReadDir(spawnDir)
 	for _, r := range repos {
 		if !r.IsDir() || !strings.Contains(r.Name(), "__") {
 			continue
 		}
-		rd := filepath.Join(realOrClean(sc.Dir), r.Name())
+		rd := filepath.Join(spawnDir, r.Name())
 		ds, _ := os.ReadDir(rd)
 		for _, d := range ds {
 			id, err := strconv.ParseInt(d.Name(), 10, 64)
@@ -1611,6 +1736,11 @@ func (c *Client) sweepLoop(ctx context.Context) {
 // listing that cannot be read sweeps NOTHING: an unknown live set is not an
 // empty one.
 func (c *Client) sweepOnce(ctx context.Context) {
+	// 🔴 A TENANT'S MIRROR SWEEPS ONLY ITS OWN NAMESPACE (SweepAgentWorktrees
+	// reads spawnDir). It lists only its OWN server's windows, where no
+	// default-server agent's window is; sweeping the shared agents directory it
+	// would read every default-server worktree as dead and remove it — which a
+	// tenant unit with -agent-spawn set by mistake did before namespaces.
 	wl, ok := WindowListerOf(c.cfg.Backend)
 	if !ok {
 		return
