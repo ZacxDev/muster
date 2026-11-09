@@ -728,6 +728,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// every agent-spawned frame, late or not, and every applied listing.
 		mirrorSvc.SetSpawnReplyNotify(srv.HostDispatchSpawnReply)
 		mirrorSvc.SetListingNotify(srv.HostDispatchListing)
+		// And its outcome half (host_dispatch_outcome.go): an opencode
+		// dispatch's final reply, and a later turn re-arming a done one.
+		mirrorSvc.SetOutcomesNotify(srv.HostDispatchOutcomes)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)
