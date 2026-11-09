@@ -927,6 +927,21 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// namespaces that hold nothing and read as "never provisioned". Nothing places
 	// anything with this value, so the disagreement failed nowhere. See
 	// Extensions.AgentNamespacePrefix and Extensions.AgentNamespace.
+	//
+	// 🔴 A STOPPED CREATE ("save for later": no kickoff, no Start) IS INSERTED
+	// `stopped`, NOT `provisioning`. Its background step
+	// (agentprovision.Adapter.Dispatch with kickoff=false) builds nothing — no
+	// driver call, no token — and only writes `stopped`. Inserted `provisioning`,
+	// the row read as live until that goroutine ran, AFTER the 201: the account
+	// pool's live count (ccpool.PGStore.LiveCounts) counted it, so a create
+	// right after it was steered to another account by Choose's fewest-live
+	// rank. The pool worker (StartWithoutKickoff) keeps `provisioning`: it IS
+	// coming up and must hold its live slot (TestAPoolWorkerStaysLiveWhileItStarts).
+	// Guarded by TestAStoppedCreateDoesNotSteerTheNextAccountChoice.
+	status := agents.StatusProvisioning
+	if !p.Kickoff && !p.StartWithoutKickoff {
+		status = agents.StatusStopped
+	}
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
 		Name:              name,
 		Namespace:         s.ext.AgentNamespace(name),
@@ -938,7 +953,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		NoteID:            p.NoteID,
 		NoteText:          p.NoteText,
 		PendingNote:       p.NoteText,
-		Status:            agents.StatusProvisioning,
+		Status:            status,
 		Kind:              kind,
 		CCAccount:         account,
 		// A pin is an account the CALLER named; the pool's own choice is not.
@@ -954,7 +969,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if p.Kickoff && p.TrackOutcome {
 		s.outcomeDispatched(ctx, rec, p.DispatchedBy)
 	}
-	// The agent was just created (provisioning): nudge open pages so a task's
+	// The agent was just created (provisioning, or stopped when saved): nudge open pages so a task's
 	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
 	// WithoutCancel: the dispatch outlives this request, but it must keep the
