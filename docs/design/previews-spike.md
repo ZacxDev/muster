@@ -220,3 +220,61 @@ near its edge would see different numbers.
 **Not measured on the real edge:** (2) and (3), which passed on loopback and
 were not re-run; the 10-minute run for yamux; loss or bandwidth limits; a
 browser client. Brotli `Accept-Encoding` was not tried; Go asked only for gzip.
+
+## Mesh-path results (2026-11-09)
+
+Operator decision: **hosts dial the gateway over the nebula mesh; only the
+browser leg goes through Cloudflare** (off-mesh hosts fall back to Cloudflare).
+Re-measured in one session, with the Cloudflare fallback measured in the same
+session as the baseline. Gateway image `5cee5306` (adds `-host-base`).
+
+**Topology, and why this is a BEST-CASE LOWER BOUND.**
+
+- **Browser leg (as before):** client → Cloudflare ORD → prod Traefik → prod
+  relay → nebula → homelab relay `10.42.0.10:8135` → gateway pod.
+- **Host leg:** `ws://10.42.0.10:8135/v1/host` over the mesh. The client's
+  socket was confirmed with `ss`: `10.42.0.30:40878 → 10.42.0.10:8135`. The
+  homelab gateway's nebula firewall already admits TCP on any port from groups
+  `workbench`/`services`, so no mesh change was needed. The shared-secret gate
+  held on the mesh listener: 401 without the secret, and 401 with a wrong one.
+- **The host is this workstation**, mesh node `workbench`, 10.42.0.30. Its mesh
+  round trip to 10.42.0.10 is **0.39 ms**: the nebula underlay is the **LAN**.
+- **This is not representative of an off-site mesh host.** For an off-site
+  host, expect the host leg to add about its own round trip to the homelab
+  relay. If that host relays through the lighthouse instead of a direct path,
+  expect about the prod↔homelab mesh round trip (~45–50 ms) on top.
+- **No genuinely remote mesh host was used.** The laptop was on the same LAN
+  at the time (1.7 ms minimum ping).
+
+| # | path | runs | result | bound | verdict |
+|---|---|---|---|---|---|
+| 1 | Cloudflare fallback, h2 | 3 | bare p50 100–104 ms; overhead p50 **100–104 ms**, p95 **105–107 ms** | +50 / +150 ms | **FAIL** (reproduces the earlier run) |
+| 1 | mesh host, h2 | 3 | bare p50 98–100 ms; overhead p50 **−1.5 to +3.9 ms**, p95 **−2.0 to +27.7 ms** | +50 / +150 ms | **pass 3/3** |
+| 1 | mesh host, yamux | 3 | overhead p50 **−7.9 to +0.6 ms**, p95 **−53.8 to +1.4 ms** | +50 / +150 ms | **pass 3/3** |
+| 1 control | mesh host, h2, host sleeps 100 ms per write | 1 | overhead p50 91 ms | — | **red**, as it should be |
+| 4 | mesh host, h2, 30 s pings, 10 min idle | 1 | echo after idle ok, new stream ok, tunnel alive | survive | **pass** |
+| 4 control | mesh host, no pings anywhere, 10 min | 1 | **mesh tunnel alive at 10 min**. Browser legs through Cloudflare cut at **124.6 s** (relayed `/ws`) and **125.0 s** (bare), clean EOF; the gateway log agrees (2m5.2s) | — | Cloudflare's ≈125 s cut applies to the browser leg only |
+| 5 | Cloudflare fallback | 3 | first-event p50 **99–103 ms**, max **108–119 ms** | ≤ 500 ms | **pass 3/3** |
+| 5 | mesh host | 3 | first-event p50 **48–50 ms**, max **50–57 ms** | ≤ 500 ms | **pass 3/3** |
+| 5 control | mesh host, `-host-no-flush` | 1 | no response headers within 7 s | — | **red** (same shape as on the Cloudflare path) |
+
+Negative overheads are noise. Bare and tunnel samples are taken one after the
+other, over the same Cloudflare browser leg, which varies by more than the
+mesh hop (~0.4 ms) adds.
+
+**What changes with the mesh host:**
+
+- **(1) passes, because the second edge traversal is gone.** The tunnel's cost
+  is now the transport (~0.1 ms on loopback) plus the mesh hop. Through
+  Cloudflare, the same session measured about 100 ms. The bound now depends on
+  the host↔relay mesh round trip. Measured here only at the LAN best case.
+- **(5) halves, to about one edge one-way trip** (~50 ms). The event no longer
+  crosses Cloudflare on the host leg.
+- **(4): the mesh leg was not cut in 10 idle minutes without pings.** The
+  browser leg still needs its 30 s pings (Cloudflare cuts it at 125 s), so the
+  ping rule stays for that leg.
+  - Not measured: idle beyond 10 min on the mesh. The homelab gateway's nebula
+    conntrack `tcp_timeout` is **12m**, so a tunnel idle for longer than that
+    is untested. Keep tunnel pings well under 12 min.
+- **Not measured:** an off-site or relayed mesh host; mesh loss; (2)/(3) on
+  either path; yamux for (4)/(5) on the mesh.
