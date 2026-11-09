@@ -233,7 +233,8 @@ table.
 A name is frozen, but the work can move on. When it has, the session's page
 (an agent's page, a window's Rendered view) **offers** a rename under its
 header — "This session has moved on to "Fixing the Stripe webhook retry"",
-with **Rename to "…"** and **Keep the name**. muster never renames a session
+then a **Rename to "…"** button, then **Keep the name** as a text link, one
+per row (a long offer wraps inside the banner). muster never renames a session
 on its own. The offer is decided by `focus.DriftOffer`, from the session's
 focus history:
 

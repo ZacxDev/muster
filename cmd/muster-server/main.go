@@ -478,9 +478,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.FocusRetention = cfg.FocusRetention
 	}
 	// Suggested replies: the same per-owner OpenRouter key as focus, through
-	// the same plane — no new credential. ON unless MUSTER_SUGGEST=off; the
-	// per-user toggle needs the database (no database: everyone is on).
-	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, Logger: logger,
+	// the same plane — no new credential. MUSTER_SUGGEST=off kills them
+	// everywhere. With a database each user's own toggle governs, OFF until
+	// they turn it on (suggest.DefaultDisabled). With no database nobody can
+	// choose, so they are off unless MUSTER_SUGGEST=on turns them on for
+	// everyone (On; it changes nothing when there is a database).
+	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, On: cfg.SuggestOn, Logger: logger,
 		Gen: &suggest.OpenRouter{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.SuggestModel}}
 	if e2eSuggestGen != nil {
 		// 🔴 ONLY A `-tags e2eterm` BUILD: the browser suite's fake model.
