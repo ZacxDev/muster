@@ -2254,7 +2254,28 @@ func agentChatScript(name string) g.Node {
     return wrap;
   }
 
+  // keepOpenHTML replaces el's content with serverHTML (a streaming bubble's
+  // next html) and opens again every <details> that was open, by position: a
+  // fenced code block is drawn collapsed, and one the owner opened while the
+  // reply streamed must not snap shut at the next update (#538 round 1 F2).
+  // The bubble's earlier blocks are a prefix of its later ones, so a position
+  // names the same block.
+  function keepOpenHTML(el, serverHTML) {
+    var open = [];
+    el.querySelectorAll('details').forEach(function (d, i) { if (d.open) open.push(i); });
+    el.innerHTML = serverHTML;
+    var ds = el.querySelectorAll('details');
+    open.forEach(function (i) { if (ds[i]) ds[i].open = true; });
+  }
   function resetTurn() { turn = null; text = null; think = null; tools = {}; }
+  // keepOrResetTurn is a send's reset of the turn being drawn: none while a
+  // reply still streams. The server reads this socket's next message only
+  // after the turn in flight, so its bubble does not end at the send, and its
+  // next delta's html is that bubble's WHOLE text so far: a fresh bubble here
+  // would draw the reply twice, the old part above and all of it below
+  // (#538 round 1 F1). The reply goes on in the bubble it was in; the turn's
+  // end resets as always.
+  function keepOrResetTurn() { if (!session.streaming) resetTurn(); }
 
   // owedRefetch pays a #chat-log refetch the streaming guard cancelled (see the
   // htmx:beforeRequest note): the turn is over, so the stored transcript is
@@ -2324,7 +2345,7 @@ func agentChatScript(name string) g.Node {
         // as plain text after it, until the next html replaces both.
         var dt = ensureText();
         if (msg.html != null) {
-          dt.innerHTML = msg.html; dt._tail = null;
+          keepOpenHTML(dt, msg.html); dt._tail = null;
         } else if (msg.content) {
           if (!dt._tail) { dt._tail = document.createElement('span'); dt._tail.className = 'whitespace-pre-wrap'; dt.appendChild(dt._tail); }
           dt._tail.textContent += msg.content;
@@ -2573,8 +2594,8 @@ func agentChatScript(name string) g.Node {
     if (window.musterDraft) window.musterDraft.sent(input);
     renewNonce();
     sendBtn.disabled = true;
+    keepOrResetTurn();
     session.streaming = true;
-    resetTurn();
     showWorking();
   }
   // sendText sends text as the owner's next message WITHOUT touching the
@@ -2599,8 +2620,8 @@ func agentChatScript(name string) g.Node {
     ws.send(JSON.stringify({ type: 'message', text: t }));
     renewNonce();
     sendBtn.disabled = true;
+    keepOrResetTurn();
     session.streaming = true;
-    resetTurn();
     showWorking();
   }
   // preventDefault only once send() has taken the message: if it throws, the

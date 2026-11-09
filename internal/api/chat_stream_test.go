@@ -116,6 +116,38 @@ func TestTheChatStreamRendersAtMostOncePerWindow(t *testing.T) {
 	})
 }
 
+// TestQueuedAndAcceptedDoNotEndTheBubble: "queued" and "accepted" are words
+// about the MESSAGE, not parts of the reply — the page keeps drawing the same
+// text bubble across them (agentChatScript sets text = null only at thinking,
+// tool_call and tool_result). So the server's bubble goes on too: the html
+// after them is the whole bubble, its text before them included. They flush
+// owed html first, so nothing streamed waits on them.
+//
+// #538 round 1 F3: before this test, `queued` ending a bubble survived every test.
+func TestQueuedAndAcceptedDoNotEndTheBubble(t *testing.T) {
+	withHTMLEvery(t, time.Hour)
+	r := &recorder{}
+	st := newWSChatStream(r.write)
+	st.emit(agents.StreamEvent{Kind: "text", Text: "a"})
+	st.emit(agents.StreamEvent{Kind: "text", Text: " _b_"})
+	st.emit(agents.StreamEvent{Kind: "queued", Text: "waiting"})
+	st.emit(agents.StreamEvent{Kind: "text", Text: " c"})
+	st.emit(agents.StreamEvent{Kind: "accepted"})
+	st.emit(agents.StreamEvent{Kind: "text", Text: " d"})
+	st.end()
+	sameMsgs(t, r.all(), []string{
+		jsonOf(map[string]any{"type": "delta", "content": "a", "html": `<p class="my-1">a</p>`}),
+		jsonOf(map[string]any{"type": "delta", "content": " _b_"}),
+		jsonOf(map[string]any{"type": "delta", "content": "", "html": `<p class="my-1">a <em>b</em></p>`}),
+		jsonOf(map[string]any{"type": "queued", "content": "waiting"}),
+		jsonOf(map[string]any{"type": "delta", "content": " c"}),
+		jsonOf(map[string]any{"type": "delta", "content": "", "html": `<p class="my-1">a <em>b</em> c</p>`}),
+		jsonOf(map[string]any{"type": "accepted"}),
+		jsonOf(map[string]any{"type": "delta", "content": " d"}),
+		jsonOf(map[string]any{"type": "delta", "content": "", "html": `<p class="my-1">a <em>b</em> c d</p>`}),
+	})
+}
+
 // TestTheChatStreamRendersAPausedReplyWhenItsWindowEnds: a reply that stops
 // mid-bubble (the model is thinking, a tool is slow to start) is drawn
 // rendered when the window ends, not left as plain text until the next event.

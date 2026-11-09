@@ -66,6 +66,21 @@ const HELD_REPLY = ['Here is **bo', 'ld** and https://h.example/a*b*c', ' and �
 // later `_` on the line (the JS copy drew target="<em>blank").
 const SSE_REPLY = ['**sse** reply_ok https://example.com/foo_ then x_'];
 
+// A reply in two parts with a gate between them, then a gate before its end:
+// part one carries a fenced code block (drawn as a <details>) and a marker
+// that must appear ONCE however the owner sends while it streams.
+const TWO_A = ['MARK-ONE start\n```\nline a\n```\n'];
+const TWO_B = ['tail **two**'];
+
+async function streamTwo(res: http.ServerResponse, key: string) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  for (const d of TWO_A) res.write(sse('response.output_text.delta', { delta: d, output_index: 0 }));
+  await gate('a-' + key).wait();
+  for (const d of TWO_B) res.write(sse('response.output_text.delta', { delta: d, output_index: 0 }));
+  await gate('b-' + key).wait();
+  res.end(sse('response.completed', { response: { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: [...TWO_A, ...TWO_B].join('') }] }] } }));
+}
+
 async function stream(res: http.ServerResponse, deltas: string[], hold?: Gate) {
   res.setHeader('Content-Type', 'text/event-stream');
   for (const d of deltas) {
@@ -89,6 +104,8 @@ test.beforeAll(async () => {
         res.statusCode = 404;
         return res.end();
       }
+      const two = /MD-TWO-(\w+)/.exec(body);
+      if (two) return void streamTwo(res, two[1]);
       const held = /MD-HOLD-(\w+)/.exec(body);
       if (held) return void stream(res, HELD_REPLY, gate(held[1]));
       if (body.includes('MD-SSE-')) return void stream(res, SSE_REPLY);
@@ -199,6 +216,92 @@ for (const vp of [
       expect(await html(page, '#chat-log [data-bubble="assistant"][data-md-rendered]')).toBe(sseHTML);
       await expect(page.locator('#chat-log [data-md]'), 'no bubble left for a client renderer').toHaveCount(0);
       await expect(page.locator('#chat-log script, #chat-log img'), 'no author tag became an element').toHaveCount(0);
+    });
+
+    // #538 round 1 F1 + F2: a message sent (Enter) while a reply streams, and
+    // a code block opened while it streams.
+    //
+    // F1: the reply's text appears ONCE. The server's bubble does not end when
+    // the owner sends — it reads the next message only after this turn — so
+    // its next html is the whole reply so far; the page must keep drawing it
+    // into the bubble it was drawing, not start a new one beside the old.
+    // F2: a <details> the owner opened stays open across the next html.
+    test('a message sent mid-stream does not duplicate the reply, and an opened code block stays open', async ({ page }) => {
+      test.setTimeout(120_000);
+      const key = 'two' + vp.name + stamp;
+      const name = `e2e-md2-${vp.name}-${stamp}`;
+      fix('agent', '1', name, `e2e-md2-token-not-a-real-one-${vp.name}-${stamp}`);
+      agentsMade.push(name);
+      await signIn(page, origin);
+      await page.goto(`${origin}/agents/${name}`);
+      await expect(page.locator('#chat-form[data-cg-chat]')).toHaveCount(1);
+
+      await send(page, `first MD-TWO-${key}`);
+      await expect.poll(() => gate('a-' + key).entered, { timeout: 15_000 }).toBe(1);
+      const turn = page.locator('#chat-log [data-chat-turn][data-chat-local]').last();
+      const code = turn.locator('details').first();
+      await expect(code, 'part one drew its code block').toBeVisible();
+      await code.locator('summary').click();
+      await expect(code).toHaveJSProperty('open', true);
+
+      // Enter while the reply streams (the send button is disabled; Enter is not).
+      await send(page, 'second _msg_');
+      gate('a-' + key).release();
+      await expect(turn, 'part two arrived').toContainText('tail two');
+      const log = page.locator('#chat-log');
+      expect((await log.innerText()).split('MARK-ONE').length - 1, 'the reply\'s first part is drawn once').toBe(1);
+      await expect(page.locator('#chat-log [data-chat-turn][data-chat-local] details[open]'), 'the opened code block is still open').toHaveCount(1);
+      gate('b-' + key).release();
+      await expect(page.locator('#chat-log [data-chat-local]')).toHaveCount(0, { timeout: 20_000 });
+    });
+
+    // pendingSent (agentChatScript): an echo fills the OLDEST bubble still
+    // waiting on THIS socket. A message the server never read (dropped here,
+    // in flight) leaves its bubble waiting; after a reconnect, the next
+    // message's echo must land in the next message's bubble, not that one —
+    // and a second message on the same socket must get its own echo too.
+    test('after a reconnect, an echo fills its own bubble, not one the old socket left waiting', async ({ page }) => {
+      test.setTimeout(120_000);
+      const key = 'rc' + vp.name + stamp;
+      const name = `e2e-md3-${vp.name}-${stamp}`;
+      fix('agent', '1', name, `e2e-md3-token-not-a-real-one-${vp.name}-${stamp}`);
+      agentsMade.push(name);
+      let sockets = 0;
+      let current: { close(): Promise<void> } | null = null;
+      await page.routeWebSocket((u) => u.pathname === `/agents/${name}/ws`, (ws) => {
+        sockets++;
+        current = ws;
+        const srv = ws.connectToServer();
+        ws.onMessage((m) => {
+          if (String(m).includes('MD-DROP')) return; // never reaches the server: no echo
+          srv.send(m);
+        });
+      });
+      await signIn(page, origin);
+      await page.goto(`${origin}/agents/${name}`);
+      await expect(page.locator('#chat-form[data-cg-chat]')).toHaveCount(1);
+      await expect.poll(() => sockets).toBe(1);
+
+      const mine = page.locator('#chat-log [data-bubble="user"][data-chat-local]');
+      await send(page, 'MD-DROP **one**');
+      await expect(mine).toHaveCount(1);
+      await current!.close();
+      await expect.poll(() => sockets, { message: 'the page reconnected', timeout: 30_000 }).toBe(2);
+      await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState), { timeout: 15_000 }).toBe(1);
+
+      await send(page, `after _x_ MD-HOLD-${key}`);
+      await expect(mine).toHaveCount(2);
+      await expect.poll(() => mine.nth(1).evaluate((e) => e.innerHTML), { message: "the new message's echo, in its own bubble" })
+        .toBe(`<p class="my-1">after <em>x</em> MD-HOLD-${key}</p>`);
+      expect(await mine.nth(0).evaluate((e) => e.innerHTML), 'the dropped message keeps its plain text').toBe('MD-DROP **one**');
+      gate(key).release();
+      await expect(page.locator('#chat-log [data-chat-local]')).toHaveCount(0, { timeout: 20_000 });
+
+      const k2 = key + 'b';
+      await send(page, `again _y_ MD-HOLD-${k2}`);
+      await expect.poll(() => mine.last().evaluate((e) => e.innerHTML), { message: 'a second echo on one socket fills its own bubble' })
+        .toBe(`<p class="my-1">again <em>y</em> MD-HOLD-${k2}</p>`);
+      gate(k2).release();
     });
   });
 }

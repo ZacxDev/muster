@@ -209,10 +209,12 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	}
 	gotSinks := htmlSinks(js)
 	wantSinks := []string{
+		// keepOpenHTML's, whose only caller passes a delta's reply so far
+		// (checked just below).
+		".innerHTML = serverHTML",
 		// A dispatched agent's card, fetched from the server.
 		".innerHTML = html.trim()",
-		// A sent message's echo, and a delta's reply so far.
-		".innerHTML = msg.html",
+		// A sent message's echo.
 		".innerHTML = msg.html",
 	}
 	if strings.Join(gotSinks, "\n") != strings.Join(wantSinks, "\n") {
@@ -221,6 +223,13 @@ func TestAgentChatHTMLComesOnlyFromTheServer(t *testing.T) {
 	}
 	if n := strings.Count(js, "innerHTML"); n != len(wantSinks) {
 		t.Errorf("agentChatScript touches innerHTML %d times; the ledger above lists %d", n, len(wantSinks))
+	}
+	var calls []string
+	for _, m := range regexp.MustCompile(`keepOpenHTML\(([^)]*)\)`).FindAllStringSubmatch(js, -1) {
+		calls = append(calls, m[1])
+	}
+	if strings.Join(calls, " | ") != "el, serverHTML | dt, msg.html" {
+		t.Errorf("keepOpenHTML's declaration and callers = %q; want its declaration and ONE caller, with a delta's msg.html", calls)
 	}
 
 	// 3. The server.
