@@ -373,9 +373,15 @@ for (const vp of [
         a.setAttribute('data-switcher-tmux', s.repeat(3) + ' @ <b>x</b>');
       }, long);
       await openFromBar();
-      const box = (await page.locator('#switcher-search').boundingBox())!;
-      const o = (await opt(w).boundingBox())!;
-      expect(o.x + o.width, 'the option fits the picker').toBeLessThanOrEqual(box.x + box.width + 0.5);
+      // Read once the picker has settled (no running animation), both boxes in
+      // one frame: two separate reads straddled its opening on a CI phone run.
+      const fitP = await opt(w).evaluate(async (li) => {
+        const pal = document.getElementById('switcher-search')!;
+        await Promise.all(pal.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => null)));
+        const b = pal.getBoundingClientRect(), r = li.getBoundingClientRect();
+        return { opt: r.right, pal: b.right };
+      });
+      expect(fitP.opt, 'the option fits the picker').toBeLessThanOrEqual(fitP.pal + 0.5);
       for (const sel of ['span >> nth=0', '[data-palette-tmux]']) {
         const cut = await opt(w).locator(sel).evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow }));
         expect(cut.sw, `${sel} is cut, not wrapped wide`).toBeGreaterThan(cut.cw);
