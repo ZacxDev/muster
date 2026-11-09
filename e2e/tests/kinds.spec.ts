@@ -48,6 +48,7 @@ interface AgentRow {
   kind: string;
   ccAccount: string;
   workerPool: string;
+  status: string;
 }
 
 async function agentRows(): Promise<AgentRow[]> {
@@ -64,20 +65,44 @@ test('a Claude Code agent lands on a pinned or pooled account, a pool worker in 
 
   // save creates one stopped agent and returns the ONE row it created (the set
   // of rows is diffed, so a row left by an earlier run cannot answer).
+  //
+  // 🔴 IT RETURNS ONLY ONCE THE ROW READS `stopped`. A stopped create is NOT
+  // stopped when POST /api/agents answers: createAndDispatchAgent
+  // (internal/api/agents.go) inserts the row as `provisioning` and a background
+  // goroutine (agentprovision Adapter.Dispatch, kickoff=false) stores `stopped`
+  // after the 201. `provisioning` is one of the LIVE statuses the pool counts
+  // (ccpool PGStore.LiveCounts), so until that write lands the agent just made
+  // counts against its account — and the next pooled choice here can go to the
+  // other account. That is the CI flake this wait removes (the pool worker
+  // landed on beta because the pooled agent on alpha still read provisioning).
   const save = async (opts: Parameters<typeof createAgent>[1]): Promise<AgentRow> => {
     const before = new Set((await agentRows()).map((a) => a.name));
     const made = await createAgent(origin, opts);
     const created = (await agentRows()).filter((a) => !before.has(a.name));
     expect(created.length, 'exactly one agent created').toBe(1);
     expect(created[0].name).toBe(made.name);
+    await expect
+      .poll(async () => (await agentRows()).find((a) => a.name === made.name)?.status, {
+        message: `${made.name} reaches stopped (it counts as live on its account until then)`,
+      })
+      .toBe('stopped');
     return created[0];
   };
+
+  // The pool's other input: no live claude-code agent on either account before
+  // the choices below (a stopped one is not live). Say so here, by name, rather
+  // than as an alpha/beta diff further down.
+  const live = (await agentRows()).filter(
+    (a) => a.kind === 'claude-code' && ['alpha', 'beta'].includes(a.ccAccount) && ['pending', 'provisioning', 'running'].includes(a.status),
+  );
+  expect(live.map((a) => `${a.name}@${a.ccAccount}:${a.status}`), 'no live claude-code agent on the pool before the test').toEqual([]);
 
   // 1. Claude Code + a pinned account.
   const pinned = await save({ kind: 'claude-code', cc_account: 'beta', prompt: 'e2e kinds: pinned to beta' });
 
   // 2. Claude Code with the pool choosing: no marks and no LIVE agent anywhere
-  //    (a stopped agent is not live), so the name tiebreak picks alpha — NOT the
+  //    (a stopped agent is not live, and save waits until the pinned one IS
+  //    stopped), so the name tiebreak picks alpha — NOT the
   //    beta pinned above, which is the control that this one was not pinned.
   const pooled = await save({ kind: 'claude-code', prompt: 'e2e kinds: pool choice' });
 
