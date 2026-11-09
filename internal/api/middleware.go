@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
@@ -36,11 +37,43 @@ func SetTelemetryConnectSrc(rawURL string) {
 }
 
 // withMiddleware wraps the mux with the cross-cutting middleware chain, outermost
-// first: panic recovery (so a handler panic can never crash the single-replica
-// process), security headers, the request's server span (internal/telemetry;
-// none while tracing is off), then access logging.
+// first: the plugin-origin Host refusal (refusePluginOriginHosts), panic
+// recovery (so a handler panic can never crash the single-replica process),
+// security headers, the request's server span (internal/telemetry; none while
+// tracing is off), then access logging.
+//
+// Every listener muster-server binds (the main port, MUSTER_CONNECT_PORT's
+// OnlyConnectSurface and MUSTER_BROWSER_PORT's BrowserListener) wraps this one
+// Handler, so the refusal covers all three (TestAPluginOriginHostIsRefusedOnEveryListener).
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
-	return s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next))))
+	return s.refusePluginOriginHosts(s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next)))))
+}
+
+// PluginOriginHostRefusal is the 421 body for a request whose Host is under
+// MUSTER_PLUGIN_ORIGINS.
+const PluginOriginHostRefusal = "this host belongs to a plugin (MUSTER_PLUGIN_ORIGINS), not to muster\n"
+
+// refusePluginOriginHosts answers 421 Misdirected Request, before any handler,
+// for a request whose Host is under MUSTER_PLUGIN_ORIGINS.
+//
+// 🔴 WHY: those hosts are a plugin's (a preview gateway's zone), and muster's
+// same-origin checks trust the request's own Host (wsAllowedOrigins puts r.Host
+// on the list requireSameOrigin and the WebSockets accept). A request reaching
+// muster with Host and Origin both a plugin host, by a misrouted edge or a
+// chosen Host, would pass them as same-origin. Refusing the host outright
+// closes that, whatever the route. Unset: nothing is refused.
+func (s *Server) refusePluginOriginHosts(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if plugins.AnyMatchesHost(s.ext.PluginOrigins, r.Host) {
+			h := w.Header()
+			h.Set("Content-Type", "text/plain; charset=utf-8")
+			h.Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusMisdirectedRequest)
+			_, _ = w.Write([]byte(PluginOriginHostRefusal))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // recoverMiddleware turns a panic in any handler into a logged 500 instead of a
