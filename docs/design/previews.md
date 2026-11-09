@@ -11,10 +11,14 @@ start a server or web app on its own localhost (a Vite or Next dev server, a
 docs site, a Storybook) and have it served to the owner, in a view inside
 muster, through a tunnel. Each such exposure is a **preview**.
 
-**Previews are a plugin.** A separate process, the **preview gateway**
-(`muster-preview`), owns the preview domain and every preview byte. muster
-proxies none of it. muster gains four small, **reusable plugin seams**, and
-previews are their first consumer ([the seams](#the-plugin-seams)).
+**Previews are a plugin, plus code on the machines.** A separate process, the
+**preview gateway** (`muster-preview`), owns the preview domain and every
+preview byte; muster-server proxies none of it, and gains three small,
+**reusable plugin seams**, with previews as their first consumer
+([the seams](#the-plugin-seams)). The parts that must run **on the machine
+being previewed** — the allowlist, the loopback dial, the listener reports and
+the agent's tools — live in muster's own host and pod binaries
+([what lands in muster's binaries](#what-lands-in-musters-own-binaries)).
 
 Where this page says how muster works today, it cites `file:line` at commit
 `0df73e27`, and the code is the authority ([decisions.md](../decisions.md)).
@@ -22,22 +26,30 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
 
 ## Summary
 
-- **Shape: gateway plus narrow seams.** `muster-preview` is a plugin in the
-  sense of [plugins.md](../plugins.md): its own process and deployment, holding
-  an `mpl_` plugin token. It serves the preview domain, holds the host
-  tunnels, proxies to pods, sets the preview cookie and issues share links.
-  muster's code changes are only the seams.
+- **Shape: gateway, narrow seams, machine-side code.** `muster-preview` is a
+  plugin in the sense of [plugins.md](../plugins.md): its own process and
+  deployment, holding an `mpl_` plugin token. It serves the preview domain,
+  holds the host tunnels, proxies to pods, sets the preview cookie and issues
+  share links. muster-server gains only the seams and the provisioner
+  configuration; `muster-mirror` (phase 1) and `ccd` (phase 2) gain the
+  machine side.
 - **The seams**, each designed for any plugin:
   - **(a) viewer hand-off:** muster mints a one-time code for a signed-in
-    owner; the plugin redeems it, and later re-checks that the owner's session
-    is still live, by **calling muster**;
-  - **(b) a session-view embed slot:** a plugin registers, per session, a
-    chip that opens its own origin in a new tab or a sandboxed frame;
-  - **(c) plugin-contributed MCP tools:** a plugin declares tools; muster
-    offers them on its MCP doors and relays each call through a **claim
-    queue** the plugin long-polls, like drafts and task writes;
+    owner; the plugin redeems it by **calling muster**. There is no liveness
+    check: the preview cookie's short TTL bounds a revoked session instead;
+  - **(b) one chip per plugin on every session view,** linking to the plugin's
+    page for that session (for previews: that window's offers and open
+    previews);
   - **(d) a provisioner ingress seam:** muster's agent NetworkPolicy and
-    Service gain a configured ingress peer and port, for the pod path.
+    Service gain a configured ingress peer and port, for the pod path
+    (phase 2).
+  (The previous revision's seam (c), plugin-contributed MCP tools relayed
+  through muster, is **dropped**; the letters are kept so references stay
+  stable.)
+- **The agent's tools are served on the machine:** on a host,
+  `muster-mirror`'s loopback MCP proxy adds `preview_open`, `preview_list` and
+  `preview_close` to the tools it already serves and answers them itself; in a
+  pod, `ccd` registers a loopback MCP server. Neither goes through muster.
 - **No seam makes muster call out.** Every request between muster and the
   plugin is the plugin's ([reconciliation](#plugins-pull-muster-never-calls-out-reconciled)).
 - **Preview zone:** `musterchief.com`, a separate registrable domain from
@@ -46,16 +58,15 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
 - **Hosts first.** `muster-mirror -preview` opens a **second outbound
   WebSocket, to the gateway** (never to muster), carrying HTTP/2 `CONNECT`
   streams, one per upstream TCP connection. It reports new loopback listeners
-  on allowlisted ports so the UI can **offer** one; nothing is exposed until the
-  owner clicks it. The host dials loopback only and enforces its own
-  allowlist.
+  on allowlisted ports so the gateway's page can **offer** one; nothing is
+  exposed until the owner clicks it. The host dials loopback only and enforces
+  its own allowlist.
 - **Openers:** the agent's `preview_open` tool, and the owner's click on an
   offered listener. There is no UI for typing a port.
 - **Pods second:** a loopback gate in `ccd` on one new declared port, reached
   by the gateway in-cluster through seam (d).
 - **Share links third:** owner-minted behind step-up, expiring, revocable,
-  audited; **full access by default**, with an optional read-only (GET/HEAD)
-  flag at mint.
+  audited; **full access** (any method, WebSockets).
 - **Phase 1 starts with a spike** with a written go/no-go: HTTP/2 `CONNECT`
   over a WebSocket through the real edge path, with yamux as the fallback
   ([phased plan](#phased-plan)).
@@ -64,8 +75,8 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
 
 - An agent that has started a server can show it to its owner with one tool
   call; a server a session starts is offered to the owner without one.
-  Either way it appears in that session's view in muster within a second or
-  two, on a phone or at a desk.
+  Either way the owner reaches it from that session's view in muster, through
+  the plugin's chip, on a phone or at a desk.
 - The same tools, arguments and errors for a mirrored session and (phase 2) a
   dispatched `claude-code` agent.
 - **Dev servers work as on localhost:** WebSockets (Vite and Next hot module
@@ -77,8 +88,9 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
   muster, or a stolen session reaches only loopback ports the host's own file
   (or the pod's gate) allows. Nothing becomes a proxy into a host's LAN or the
   cluster.
-- **muster carries no preview traffic** and gains only seams another plugin
-  could use.
+- **muster-server carries no preview traffic.** Its own changes are the seams
+  and the provisioner configuration; the preview code it ships is confined to
+  the host and pod binaries, which must run on the machine anyway.
 - The owner can show a preview to someone without a muster account, briefly
   and revocably (phase 3).
 
@@ -89,11 +101,11 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
 - **Production hosting.** Previews close when their session goes away, and are
   capped.
 - **An owner-typed port.** Openers are the agent's tool and the host's offer
-  ([decision 4](#decisions)).
+  ([decision 9](#decisions)).
 - **Gateway-kind agents, the compose driver, opencode sessions** as agent
   openers: no in-pod gate for the first two, and opencode has no muster tools
   ([mirroring.md](../mirroring.md)). An opencode window's listeners are still
-  **offered** (decision 4 needs no tool).
+  **offered** (decision 9 needs no tool).
 - **Making preview content safe.** It is untrusted, and is kept away.
 - **TLS to the upstream.** Plain HTTP on loopback; TLS ends at the edge.
 
@@ -143,8 +155,8 @@ this tunnel, and under the plugin shape they do not go to muster at all.
   `POST /plugin/v1/drafts/claim` and `POST /plugin/v1/task-writes/claim`, each
   a lease of 2 minutes and a result route
   ([plugins.md](../plugins.md#post-pluginv1draftsclaim-collect-an-approved-reply),
-  [task writes](../plugins.md#post-pluginv1task-writesclaim)). Seam (c) copies
-  them.
+  [task writes](../plugins.md#post-pluginv1task-writesclaim)). Revision 2's seam
+  (c) copied them; it is dropped.
 - **"Plugins pull; muster never calls out"**
   ([decisions.md](../decisions.md#plugins-pull-muster-never-calls-out)):
   muster holds no address or credential for anything outside it.
@@ -153,20 +165,30 @@ this tunnel, and under the plugin shape they do not go to muster at all.
 
 ### The MCP doors
 
-- Mirrored sessions: the host's loopback MCP endpoint (`-mcp-listen`,
-  loopback-only, `internal/mirrorhost/mcpproxy.go:443-452`) forwards to
-  `POST /mirror/mcp` (`internal/api/mirror_mcp.go:92`), which believes the
-  calling session only when that host lists it (`internal/api/mirror_mcp.go:71-78`,
-  `mirrorSessionOf` at `:172`). The tool set is `mirrorTools`
-  (`internal/api/mirror_mcp.go:219-274`).
-- Agents: `POST /mcp` on the connect surface (`internal/api/connectors.go:60,89`);
-  each `agentTool` has an `mcp` flag (`internal/api/agent.go:317`).
-  `agent_report_done` is already on both doors (`internal/api/agent.go:361`,
-  `internal/api/mirror_mcp.go:269-271`).
+- **Mirrored sessions** reach muster's tools through the host's loopback MCP
+  proxy (`-mcp-listen`, loopback-only, `internal/mirrorhost/mcpproxy.go:443-452`),
+  which requires a per-host secret and refuses any request carrying an
+  `Origin` (`mcpproxy.go:336-350`), and forwards to `POST /mirror/mcp`
+  (`internal/api/mirror_mcp.go:92`).
+- **The proxy already resolves the caller itself.** A session names itself by
+  the caller-supplied `X-Muster-Pane` and `X-Muster-Tmux` headers
+  (`mcpproxy.go:47-58`), and the proxy maps that pane, on a fresh window
+  listing, to the Claude session running in it (`session`, `mcpproxy.go:132-160`).
+  Only a `tools/call` is bound to a session; `initialize` and `tools/list` are
+  forwarded unbound (`mcpproxy.go:369-394`). The proxy also answers a caller
+  from another tmux server **itself**, with an empty tool list
+  (`answerOutsider`, `mcpproxy.go:225-286`), so it already speaks enough MCP to
+  serve tools of its own. muster then re-checks the session against the host's
+  listing (`internal/api/mirror_mcp.go:71-78`, `mirrorSessionOf` at `:172`).
+  The `X-Muster-Tmux` header is routing, not enforcement: anything running as
+  this user can name any pane (`mcpproxy.go:240-242`).
+- **Agents** reach muster at `POST /mcp` (`internal/api/connectors.go:60,89`).
+  A pod can also run a local MCP server of its own: `ccd seed` registers the
+  stdio server `hq mcp` for the chief when `CCD_HQ_MCP=1`
+  (`internal/podagent/hqmcp.go:8-45`, `cmd/ccd/hqmcp.go`). That is the
+  precedent for the pod's preview tools.
 - **Claude Code reads a tools list once, at connect**
   (`internal/api/mirror_mcp.go:213-217`; [attention.md](../attention.md#stale-tool-definitions)).
-  A plugin tool registered after a session connected is not seen by it until
-  it reconnects. Seam (c) is built around that.
 
 ### The pod's network
 
@@ -215,47 +237,68 @@ this tunnel, and under the plugin shape they do not go to muster at all.
 flowchart LR
   subgraph viewer["Viewer's browser"]
     page["muster page<br/>(muster's own domain)"]
-    frame["preview frame / tab<br/>p-‹id›.musterchief.com"]
+    frame["gateway page and previews<br/>*.musterchief.com"]
   end
   subgraph core["muster deployment"]
-    muster["muster-server<br/>seams (a)(b)(c), provisioner (d)"]
+    muster["muster-server<br/>seams (a)(b), provisioner (d)"]
     gw["muster-preview<br/>(preview gateway)"]
   end
   subgraph host["Your machine"]
-    mm["muster-mirror"]
+    cc["Claude Code session"]
+    mm["muster-mirror<br/>MCP proxy + -preview"]
     app["dev server<br/>127.0.0.1:5173"]
   end
   subgraph cluster["agent pod (phase 2)"]
-    gate["ccd preview gate"]
+    gate["ccd: preview gate<br/>+ preview MCP server"]
     app2["dev server<br/>127.0.0.1:3000"]
   end
-  page -->|"session view, embed chip"| muster
+  page -->|"session view, the plugin's chip"| muster
   frame -->|"*.musterchief.com via edge"| gw
-  gw -->|"/plugin/v1/* (mpl_): hand-off, embeds, tool-call claims"| muster
-  mm -->|"/mirror/connect (unchanged)"| muster
-  mm -->|"tunnel.musterchief.com: outbound WS, HTTP/2 CONNECT, listener reports"| gw
+  gw -->|"/plugin/v1/* (mpl_): hand-off redeem"| muster
+  cc -->|"loopback MCP: muster's tools + preview_*"| mm
+  mm -->|"/mirror/connect, /mirror/mcp (unchanged)"| muster
+  mm -->|"tunnel.musterchief.com: outbound WS, HTTP/2 CONNECT, offers, opens"| gw
   mm --> app
   gw -->|"in cluster, seam (d)"| gate --> app2
 ```
 
 Arrows point from the side that opens the connection. muster opens none to
-the gateway, the host or the viewer's preview origin.
+the gateway, the host or the viewer's preview origin, and no preview tool call
+passes through muster.
 
-### Where the host side lives
+### What lands in muster's own binaries
 
-| option | install | knows panes and processes | credentials it holds | verdict |
-|---|---|---|---|---|
-| **A `-preview` mode inside `muster-mirror`, in its own package** | none new: the host already runs it | ✓ reuses the pane process-tree walk, for listener attribution | its own gateway token `mpt_`, separate from `mmt_`; the preview code never reads the mirror token | **recommended** |
-| A separate small binary (`muster-preview host`) | a second unit and config per host | would duplicate the tmux and `/proc` walks | `mpt_` only | acceptable if the operator wants the plugin to ship separately ([open question 1](#open-questions)) |
+The previous revision said muster's code changes were only the seams. That was
+not true, and is corrected here. Previews ship code in four places:
 
-The preview side runs in the `muster-mirror` process but shares nothing with
-the mirror tunnel: its own goroutines, its own connection to the gateway URL,
-its own token file. A `muster-mirror@<tenant>` unit runs its own.
+| binary | what it gains | phase |
+|---|---|---|
+| `muster-server` | seams (a) and (b), the plugin capability and origin columns, `MUSTER_PLUGIN_ORIGINS` and its 421 refusal; seam (d)'s provisioner configuration (`MUSTER_AGENT_PLUGIN_INGRESS`, `MUSTER_AGENT_PREVIEW_PORTS`) and the `agent_targets` read | 1; (d) in 2 |
+| `muster-mirror` | `-preview`: `previews.json`, the tunnel to the gateway, the loopback dial and its checks, listener reports, and the three `preview_*` tools answered in its MCP proxy | 1 |
+| `ccd` (agent image) | the preview gate on its own declared port, and a stdio preview MCP server registered by `ccd seed` | 2 |
+| `muster-preview` | the gateway itself, a new binary in this module, as `muster-clankmail` is | 1 |
+
+**Why that is acceptable.** Decision 2 puts the bound on the machine: only the
+side that owns the machine can dial its loopback, check who owns a listening
+socket, and refuse a port whatever a compromised muster or gateway asks. Those
+checks must therefore run in a process already on the host and in the pod, and
+`muster-mirror` and `ccd` are those processes; the code is behind an opt-in
+flag and empty-by-default allowlists. muster-server itself still proxies no
+preview byte and stores no preview, offer or process name.
+
+**The alternative** is a separate host binary (`muster-preview host`) and a
+sidecar container in the agent pod. It keeps every preview line out of
+muster's own binaries, at the cost of a second install and unit per host,
+duplicating `muster-mirror`'s tmux and `/proc` walks and its MCP proxy, and a
+second container in every agent pod (which still needs seam (d)). It is
+[open question 1](#open-questions).
 
 ## The plugin seams
 
 Each is generic: it names a plugin, not previews. A plugin uses a seam only
-with the **capability** its owner granted it.
+with the **capability** its owner granted it. (Revision 2's seam (c),
+plugin-contributed MCP tools relayed through a claim queue, is **dropped**:
+the tools are served on the machine instead, [below](#the-mcp-tools).)
 
 ### Capabilities on a plugin token
 
@@ -264,127 +307,99 @@ A new column on the plugin record, `capabilities`, a set:
 | capability | opens | granted by |
 |---|---|---|
 | `messages` (legacy) | every route a plugin token opens today | **every existing token, by migration**; the default on the create form |
-| `handoff` | seam (a)'s redeem and liveness routes | the owner, at mint, on `/plugins` |
-| `embeds` | seam (b)'s routes | the owner |
-| `tools` | seam (c)'s declare, claim and result routes | the owner |
-| `agent_targets` | seam (d)'s agent-target read (phase 2) | the owner |
+| `viewer` | seams (a) and (b): the plugin's chip on session views, and redeeming hand-off codes | the owner, at mint, on `/plugins` |
+
+`handoff` and `embeds` were one capability in all but name: neither is usable
+without the other, and both need the same origin. `agent_targets` (seam d) is
+added with the pod path, in [phase 2](#d-provisioner-ingress-seam-phase-2).
 
 - **Backward compatible:** existing tokens get `messages`, so every route they
   open today still opens; a route checks its capability in
-  `requirePluginToken`'s admitted context. A new token may hold any subset: the
-  preview gateway's has `handoff`, `embeds`, `tools` (and `agent_targets` in
-  phase 2), and **not** `messages`, so it cannot post to the chief.
+  `requirePluginToken`'s admitted context. The preview gateway's token has
+  `viewer` (and `agent_targets` from phase 2) and **not** `messages`, so it
+  cannot post to the chief.
 - **Granting:** checkboxes on the create form; widening an existing token's set
-  needs a fresh sign-in (step-up), narrowing does not. The page lists each
-  token's capabilities.
-- **Origin:** a token with `handoff` or `embeds` also carries **one origin
-  pattern**, e.g. `https://*.musterchief.com`, chosen by the owner from the
-  deployment's allowlist `MUSTER_PLUGIN_ORIGINS`. The allowlist is the admin's
-  because it widens the CSP of muster's pages for everyone.
+  needs a fresh sign-in (step-up), narrowing does not.
+- **Origin and entry URL:** a `viewer` token also carries **one origin
+  pattern** (e.g. `https://*.musterchief.com`), chosen by the owner from the
+  deployment's allowlist `MUSTER_PLUGIN_ORIGINS`, and **one entry URL** under
+  it (e.g. `https://w.musterchief.com/__muster/enter`). The allowlist is the
+  admin's because it widens the CSP of muster's pages for everyone.
 
 ### (a) Viewer hand-off
 
 How a plugin learns, without its own sign-in, that a browser belongs to a
-signed-in owner.
+signed-in owner, and which session view they came from.
 
-1. The owner clicks a chip (seam b). muster's page `POST`s
+1. The owner clicks the plugin's chip (seam b). muster's page `POST`s
    `/plugin-handoffs` on muster's own origin (signed-in, same-origin) with the
-   chip's id. muster mints a **code**: 32 random bytes, stored hashed, bound
-   to the owner, the plugin, the chip's **subject** (an opaque string the
-   plugin set, e.g. `preview:<id>` or `offer:<id>`), and the browser session
-   it came from; valid 60 s, single use.
-2. muster answers with the chip's `enter_url` (under the plugin's origin) plus
-   `?muster_code=<code>`. The page navigates the frame or a new tab there.
+   plugin id. muster mints a **code**: 32 random bytes, stored hashed, bound to
+   the owner, the plugin, the **target** (the session view it was clicked on,
+   as muster knows it: `{"mirror": {host, window}}` or `{"agent": {id}}`),
+   whether the browser session's **step-up** was fresh at that moment, and a
+   purpose (`view`); valid 60 s, single use.
+2. muster answers with the token's entry URL plus `?muster_code=<code>`. The
+   page navigates the frame or a new tab there.
 3. The plugin's entry route **calls muster**:
-   `POST /plugin/v1/handoffs/redeem {code}` → `200 {owner, subject,
-   session_ref, expires_at}`. A code minted for another plugin, used, expired
-   or unknown is one `404`. The code leaves the URL by redirect, with
+   `POST /plugin/v1/handoffs/redeem {code}` → `200 {owner, target, purpose,
+   stepped_up, minted_at}`. A code minted for another plugin, used, expired or
+   unknown is one `404`. The code leaves the URL by redirect, with
    `Referrer-Policy: no-referrer`.
-4. **Liveness:** the plugin calls `POST /plugin/v1/handoffs/check
-   {session_refs: [...]}` (up to 500) at least every 30 s for the sessions
-   behind its open cookies and connections, and gets back the ones still
-   live: not signed out, not before Sign out everywhere or the session cutoff,
-   account enabled (the second wall device credentials get,
-   [auth.md](../auth.md#paired-devices)); in password mode, issued under the
-   current password-derived key. **The plugin must fail closed:** a
-   `session_ref` not confirmed live within 90 s is treated as dead.
 
-The `session_ref` is opaque to the plugin (a keyed hash), so the plugin learns
-no session identifier muster could be asked to act on.
+**No liveness check** (revision 2's `POST /plugin/v1/handoffs/check` is
+dropped). A plugin bounds what a code buys with its own short-lived cookie,
+renewed only by a fresh hand-off. **The cost:** signing out of muster, Sign out
+everywhere, a disabled account or a password rotation reach an already-open
+preview only when its cookie expires, not within 30 s. For previews that TTL is
+1 hour ([auth](#auth-on-preview-origins)).
 
-### (b) Session-view embed slot
+**The stepped-up hand-off** (for actions a plugin wants behind a fresh
+sign-in, such as minting a share link in phase 3). The plugin sends the owner,
+top-level, to `GET /plugin-handoffs/confirm?plugin=<id>&target=<…>&purpose=<word>`
+on muster. muster shows a page naming the plugin and the purpose; if the
+session's step-up is stale it runs muster's own step-up dialog there
+([sending-and-step-up.md](../sending-and-step-up.md#step-up-confirm-its-you)).
+Its **Continue** button is a same-origin `POST` that mints a code with
+`stepped_up: true` and that purpose, and answers `303` to the entry URL with
+the code. The `GET` changes nothing, so a third-party page that navigates the
+owner there gains nothing without the owner's click. `purpose` is a word
+(`^[a-z_]{1,32}$`) muster shows and returns but does not interpret; the target
+must be one of the owner's own hosts' windows or agents.
 
-How a plugin puts something in a session's view.
+### (b) One chip per plugin on every session view
 
-- `PUT /plugin/v1/embeds/{key}` with `{target, label, state, enter_url}`:
-  - `target`: `{"mirror": {"host", "window"}}` or `{"agent": {"id"}}`,
-    checked against the owner's own hosts and agents (a host the owner does not
-    have, or an agent of another owner, is `404`);
-  - `label`: at most 60 characters, shown as text, never HTML;
-  - `state`: `offered` | `open` | `unavailable`, drawn as the chip's style;
-  - `enter_url`: must match the token's origin pattern exactly (scheme, host
-    under the pattern, no user info), at most 512 bytes.
-  `DELETE /plugin/v1/embeds/{key}` removes it. At most 16 per target and 64
-  per plugin. Rows are owner-scoped under row-level security.
-- **Live:** a change reaches an open session view over the page's existing
-  live stream, so a chip appears or changes without a reload. A view with no
-  chips draws nothing (the `cls.spec.ts` gate,
-  [testing.md](../testing.md#the-browser-suite-e2e)).
-- **The chip:** `label`, with **Open** (new tab) and **Show here** (frame).
-  Both mint a hand-off (seam a) at click time. muster adds nothing a plugin did
-  not register, and offers no plugin-specific buttons: a share or close button
-  lives inside the plugin's own page.
+How a plugin gets a way in from a session's view.
+
+- For each of the owner's `viewer` plugins, the session view pages
+  (`/mirror/view`, `/agents/{name}`) draw **one static chip**: the plugin's
+  label, with **Open** (new tab) and **Show here** (frame). Both mint a
+  hand-off (seam a) at click time, targeted at the session being viewed. The
+  chip is the same on every session; the plugin's page decides what to show
+  for the target.
+- **No per-session rows, no states, nothing the plugin writes:** muster draws
+  the chip from the token row alone. A revoked token's chip disappears.
 - **The frame:** `sandbox="allow-scripts allow-same-origin allow-forms
   allow-popups allow-downloads allow-modals"` with **no**
   `allow-top-navigation` (so plugin content cannot navigate muster's tab),
   `allow=""` (no camera, microphone, location), `referrerpolicy="no-referrer"`.
   `allow-same-origin` is safe because the frame's origin is not muster's.
-- **CSP:** the session view pages (`/mirror/view`, `/agents/{name}`) add
-  `frame-src` with the origins in `MUSTER_PLUGIN_ORIGINS`; every other page is
-  unchanged (`internal/api/middleware.go:119-131`).
-- **Stale chips:** an embed whose plugin token is revoked disappears; one whose
-  plugin has not called muster for 5 minutes is drawn `unavailable`.
+- **CSP:** the session view pages add `frame-src` with the origins in
+  `MUSTER_PLUGIN_ORIGINS`; every other page is unchanged
+  (`internal/api/middleware.go:119-131`).
+- **The chip's placement is fixed**, so it does not shift the page's layout
+  when it appears (the `cls.spec.ts` gate,
+  [testing.md](../testing.md#the-browser-suite-e2e)).
 
-### (c) Plugin-contributed MCP tools
+**The cost:** muster renders **no per-preview chip**. An open preview or a new
+offer is not visible in muster's own view until the owner opens the plugin's
+chip, and muster raises no notice when one appears. In exchange muster stores
+nothing about previews, offers or the processes behind them.
 
-How a plugin offers tools to its owner's sessions and agents.
+For previews, the chip opens the gateway's **session page** at
+`w.musterchief.com`, which lists that window's offers and open previews
+([the gateway's session page](#the-gateways-session-page)).
 
-| option | agent's surface | network | fits "plugins pull" | verdict |
-|---|---|---|---|---|
-| **muster lists the tool and relays each call through a claim queue** | unchanged: the same MCP doors | none new | ✓ the plugin long-polls | **recommended** |
-| The agent calls the plugin's own MCP server | a second MCP server per agent, configured per host and per pod | pods would need egress to the plugin, which their policy forbids (`claudecode.go:102-104`) | ✓ | ✗ two surfaces, new credentials in every session |
-| muster calls the plugin per tool call | unchanged | muster → plugin | ✗ needs the exception | ✗ |
-
-- **Declaring:** `PUT /plugin/v1/tools` with up to 8 definitions `{name,
-  description, input_schema, callers: ["mirror","agent"], timeout_s}`. A name
-  must match `^[a-z][a-z0-9_]{2,39}$`, must not be one of muster's own tool
-  names, and must not be another of the owner's plugins' (each `409`).
-  Descriptions are capped at 1 KiB and schemas at 8 KiB. Declarations persist.
-- **Listing:** `tools/list` on `POST /mirror/mcp` and `POST /mcp` includes the
-  owner's plugins' declared tools for that kind of caller, marked in the
-  description as from a plugin. The chief gets none (its list is pinned,
-  `TestTheChiefsToolListIsPinned`). Because Claude Code reads the list at
-  connect, **declarations persist and are listed even while the plugin is
-  down**; the call then fails fast.
-- **Calling:** muster stores the call (`plugin_tool_calls`: tool, arguments,
-  the caller as muster proved it — `{"mirror": {host, window, claude_session}}`
-  or `{"agent": {id, name}}` — and a deadline of `timeout_s`, at most 20 s), and
-  waits on it.
-- **Claiming:** `POST /plugin/v1/tool-calls/claim {"wait_s": 0-25, "limit":
-  1-20}` hands out pending calls, each leased until its deadline.
-  `POST /plugin/v1/tool-calls/{id}/result {"ok", "content", "error"}` answers
-  it, and muster returns it to the waiting caller. The plugin must claim with
-  `wait_s` > 0 continuously, so a call is picked up in milliseconds.
-- **At most once, like drafts:** a call not claimed by its deadline expires
-  and is never handed out; the caller gets "the plugin did not answer". A call
-  claimed but answered late is recorded, and the caller has already been told
-  it timed out. A tool whose effect matters must be idempotent, as
-  `preview_open` is per `(caller, port)`.
-- **No plugin tool reaches another owner, and arguments are the model's**:
-  the plugin treats them as untrusted input, and muster's proof of the caller
-  is the only identity it may rely on.
-
-### (d) Provisioner ingress seam
+### (d) Provisioner ingress seam (phase 2)
 
 What the pod path needs from muster, which owns the agent's policy. It is
 configuration, not plugin code.
@@ -392,17 +407,22 @@ configuration, not plugin code.
 - `MUSTER_AGENT_PLUGIN_INGRESS`: one peer `{namespace, podLabels, port}`. With
   it set, each new `claude-code` spec gets:
   - a declared port named `plugin` (so the Service gains it,
-    `internal/provision/k8s/render.go:533-562`);
+    `internal/provision/k8s/render.go:533-562`). It stays a **separate** port
+    from the chat gateway's 18789 ([decision 15](#decisions)), so the
+    gateway's peer is admitted to the preview gate and not to the chat
+    gateway;
   - a **second ingress rule** admitting that peer (namespace AND labels, as
     the controller peer is written) on that port only. The muster-pod rule
     keeps its port list and does not gain this port;
   - `CCD_PREVIEW_LISTEN`, `CCD_PREVIEW_PORTS` (from `MUSTER_AGENT_PREVIEW_PORTS`)
     and `CCD_PREVIEW_BEARER`, a random per-agent secret distinct from the chat
     gateway's bearer.
-- `GET /plugin/v1/agents/{id}/target` (capability `agent_targets`) answers
-  `{host, port, bearer}` for one of the owner's agents provisioned with the
-  gate, so the plugin can reach it. Another owner's agent, or one without the
-  gate, is `404`.
+- **The `agent_targets` capability** (added in phase 2):
+  `GET /plugin/v1/agents/{id}/target` answers `{host, port, bearer}` for one
+  of the owner's agents provisioned with the gate, and
+  `GET /plugin/v1/agents?gate=true` lists them, so the gateway knows which
+  pods to connect to. Another owner's agent, or one without the gate, is
+  `404`.
 - `provision.Network` gains a generic `ExtraIngress` list for this. A peer
   with no port is refused at spec validation, so an empty port list can never
   render (the rule `network.go:208-210` already states).
@@ -414,27 +434,25 @@ configuration, not plugin code.
 
 | interaction | who opens the connection |
 |---|---|
-| hand-off redeem and liveness checks | the plugin → muster |
-| embed register and delete | the plugin → muster |
-| tool declarations, call claims, results | the plugin → muster |
-| agent target read | the plugin → muster |
-| the browser opening the plugin's origin | the **browser**, on the owner's click, to an origin the admin allowed and the owner chose |
-| the host tunnel and listener reports | the host → the gateway |
-| the pod gate | the gateway → the pod |
+| hand-off redeem | the plugin → muster |
+| agent list and target read (phase 2) | the plugin → muster |
+| the browser opening the plugin's origin, and the stepped-up confirm page | the **browser**, on the owner's click, to an origin the admin allowed and the owner chose |
+| the agent's preview tools | the session → its own machine (`muster-mirror`'s proxy, or `ccd`); never muster |
+| the host tunnel, offers and opens | the host → the gateway |
+| the pod gate, offers and opens | the gateway → the pod |
 
 **No seam needs an exception.** muster holds no plugin address it connects
-to: the origin it stores is used only to build a link and a CSP entry, and the
-decision's worry ("a URL an owner can set is a way to make muster send
-requests wherever that owner chooses") does not arise, because muster sends
-none; a code that a stranger's origin received is useless without that
-plugin's token. The cost of pull is latency, paid only in seam (c), and a
-continuous long-poll keeps it to the claim's wake-up.
+to: the origin and entry URL it stores are used only to build a link and a
+CSP entry, so the decision's worry ("a URL an owner can set is a way to make
+muster send requests wherever that owner chooses") does not arise, because
+muster sends none. A code that a stranger's origin received is useless
+without that plugin's token.
 
 ## The preview gateway
 
 ### Zone and deployment
 
-The preview zone is **`musterchief.com`** ([decision 2](#decisions)), a
+The preview zone is **`musterchief.com`** ([decision 7](#decisions)), a
 different registrable domain from muster's, so previews are cross-site to
 muster: a preview cannot set a cookie muster receives, cannot ride muster's
 `SameSite=Lax` cookies, and receives no cookie an SSO proxy sets on muster's
@@ -443,14 +461,16 @@ parent domain.
 | name | serves |
 |---|---|
 | `p-<id>.musterchief.com` | one preview each; `<id>` is 26 lowercase base32 characters (128 random bits) |
+| `w.musterchief.com` | the gateway's [session page](#the-gateways-session-page), the target of muster's chip |
 | `tunnel.musterchief.com` | hosts' outbound tunnel connections, nothing else |
 | any other label | 404 |
 
 Every name is **one label** under the zone, because the zone's edge
-certificate covers the apex and one level only (below). The gateway has **no web
-UI of its own** beyond preview pages: host tokens are minted on its CLI, like
-mirror tokens ([below](#host-tokens)), so no gateway session cookie sits
-same-site to preview content.
+certificate covers the apex and one level only (below). The gateway sets **no
+cookie outside the preview hosts**: its session page keeps its credential in
+page memory, and host tokens are minted on its CLI, like mirror tokens
+([below](#host-tokens)), so no gateway session cookie sits same-site to
+preview content.
 
 **What the operator must provide:**
 
@@ -484,7 +504,7 @@ same-site to preview content.
   | name | type | target | proxied |
   |---|---|---|---|
   | `*.musterchief.com` | `CNAME` (or `A`/`AAAA`) | the deployment's public ingress for the gateway | yes |
-  | `tunnel.musterchief.com` | covered by the wildcard; an explicit record only if it must differ | — | yes |
+  | `tunnel.musterchief.com`, `w.musterchief.com` | covered by the wildcard; an explicit record only if one must differ | — | yes |
   | `musterchief.com` (apex) | optional; the gateway answers 404 there | — | yes |
 
   A proxied wildcard record is available on the Free plan (per Cloudflare's
@@ -506,7 +526,7 @@ same-site to preview content.
 
 An `mpl_` token is one owner's. The gateway reads a file of them
 (`PLUGIN_TOKENS_FILE`, one per line) and serves those owners; it learns each
-token's owner from its first redeem or claim. On a single-operator deployment
+token's owner from its first redeem. On a single-operator deployment
 that is one token. A deployment-wide plugin credential for many owners is
 [open question 2](#open-questions).
 
@@ -516,9 +536,9 @@ that is one token. A deployment-wide plugin credential for many owners is
 once; the gateway stores its sha256; `ls` and `revoke` as for mirror tokens
 ([mirroring.md](../mirroring.md#how-it-connects)). A token registers only its
 own host name, and the gateway re-checks it every 30 s on a live tunnel. The
-host name must equal the one the host's mirror token is minted for, because
-seam (c) names the caller's host as muster proved it, and the gateway routes
-by `(owner, host)`.
+host name must equal the one the host's mirror token is minted for, because a
+hand-off's target names the host as muster knows it, and the gateway matches
+that to the tunnel by `(owner, host)`.
 
 ### The host tunnel
 
@@ -540,7 +560,11 @@ by `(owner, host)`.
    `http2.ClientConn`. The host opens no listener.
 3. **Control:** the gateway's first stream is `GET /v1/offer`, a long-lived
    response on which the host writes newline-delimited JSON: its allowlist and
-   caps, and [listener reports](#listener-reports).
+   caps, [listener reports](#listener-reports), and the agent tools'
+   `open`/`close` requests, each with a request id
+   ([the MCP tools](#the-mcp-tools)). The gateway answers a request with
+   `POST /v1/opened` or `POST /v1/closed` on the same connection (it is the
+   HTTP/2 client), within 5 s.
 4. **Data:** each upstream TCP connection is one `CONNECT` stream (RFC 9113
    §8.5) with `:authority` `127.0.0.1:<port>`. The host takes **only the
    port**, applies [its checks](#what-the-host-checks-before-it-dials), dials,
@@ -568,7 +592,7 @@ with terminal bytes for bandwidth, though not for a TCP stream or a read loop.
 
 ### Listener reports
 
-How the host offers servers to the UI ([decision 4](#decisions)).
+How the host offers servers to the owner ([decision 9](#decisions)).
 
 - **Poll:** every 5 s (the window refresh's interval), read `/proc/net/tcp` and
   `tcp6` for `LISTEN` sockets bound to loopback or the wildcard address, on an
@@ -579,16 +603,16 @@ How the host offers servers to the UI ([decision 4](#decisions)).
   at most 15 bytes>, window: <tmux window id>, first_seen}`. **Not** the argv,
   working directory, environment, pid, or any listener outside a tmux pane:
   a listener with no pane has no session to show it in, and is not offered.
-- **The gateway turns each report into an `offered` embed** (seam b) on that
-  window: label `<process> · :<port>`. A report that disappears removes the
-  embed, unless a preview of that port is open.
-- **Nothing is exposed until the click.** The chip's subject is
-  `offer:<id>`; when the owner arrives with a hand-off code for it, the gateway
-  opens the preview (one `CONNECT` probe), and only then serves it. An offer
-  never accepts traffic.
-- **Privacy:** the process name and port reach the gateway and, as the chip's
-  label, muster's database. `"offer": false` in `previews.json` turns reports
-  off; the agent tool still works.
+- **The gateway lists each report as an offer** on that window's
+  [session page](#the-gateways-session-page): `<process> · :<port>`, with
+  **Open**. A report that disappears removes the offer, unless a preview of
+  that port is open.
+- **Nothing is exposed until the click.** **Open** on the session page is
+  what opens the preview (one `CONNECT` probe); only then does its `p-<id>`
+  host serve anything. An offer never accepts traffic.
+- **Privacy:** the process name and port reach the gateway and its page, and
+  **never muster**: muster stores nothing about offers. `"offer": false` in
+  `previews.json` turns reports off; the agent tool still works.
 - macOS: **UNVERIFIED** (`lsof` would be the source); reports are off there.
 
 ### Host configuration: `previews.json`
@@ -625,8 +649,12 @@ allowlist that is empty, meaning nothing, until written.
 
 ### The pod path (phase 2)
 
-The gateway runs in the cluster, so no tunnel. Through seam (d) it reads the
-agent's target and opens a TCP connection to `<host>:<port>`:
+The gateway runs in the cluster, so no tunnel. Through seam (d) it lists the
+owner's agents that have a gate, reads each one's target, and holds a
+long-lived `GET /v1/offer` on each gate, the same stream a host serves:
+listener reports and the agent's tool requests, answered by `POST /v1/opened`
+and `POST /v1/closed` to the gate. For data it opens a TCP connection to
+`<host>:<port>`:
 
 ```http
 CONNECT 127.0.0.1:5173 HTTP/1.1
@@ -650,7 +678,7 @@ that agent row, read by the plugin from muster. `MUSTER_DIAL_DENY_PRIVATE`
 involved: muster dials nothing on this path.
 
 Officers run the same image and would work; they are left off
-([open question 5](#open-questions)). Gateway-kind agents and the compose
+([open question 4](#open-questions)). Gateway-kind agents and the compose
 driver get no gate.
 
 ### The proxy
@@ -673,27 +701,63 @@ with the dialer "a `CONNECT` stream on that host's tunnel" or "the pod's gate":
   the gateway's is dropped; an extra `Content-Security-Policy: frame-ancestors
   <muster's origin>` (intersected with the app's own); `X-Content-Type-Options:
   nosniff`; the app's `Strict-Transport-Security` dropped.
-- **Long-lived connections** are re-checked every 30 s (cookie, preview open,
-  owner session live through seam (a)'s check, share link) and closed on a
-  failure.
+- **Long-lived connections** are re-checked every 30 s (cookie not expired,
+  preview open, share link live) and closed on a failure; a WebSocket opened
+  under an owner cookie is closed when that cookie expires.
 - **HMR** clients connect to `location.host`; an app pinned to an explicit HMR
   host or port bypasses the preview. The tool description says so.
 
+### The gateway's session page
+
+What muster's chip opens: `https://w.musterchief.com/__muster/enter?muster_code=…`.
+
+- The entry route redeems the code (seam a), learns the owner and the
+  **target** (the window or agent the chip was clicked on, as muster knows
+  it), and renders that target's page: its **offers** (`<process> · :<port>`,
+  with **Open**) and its **open previews** (label and port, with **Open**,
+  **Close**, and in phase 3 **Share**). An offer or preview of another window
+  is not shown.
+- **No cookie.** The rendered page carries a page token (random, 15 minutes,
+  bound to owner and target) in its own script memory, and sends it as a
+  header on the page's polls (every 5 s while visible) and its actions. It is
+  never a cookie, so preview content on a sibling `p-` host cannot ride it,
+  and a reload or an expired token means clicking muster's chip again.
+- **Open** asks the gateway (with the page token) for a one-time preview entry
+  code, then navigates the frame or a new tab to that preview's host
+  ([auth](#auth-on-preview-origins)). Opening an offer is the moment the
+  preview is created.
+- The page is served with `frame-ancestors <muster's origin>` and the same
+  security headers as muster's own pages, and renders every label as text.
+
 ### Auth on preview origins
 
-- **Owner:** the entry route `/__muster/enter?muster_code=…` redeems the code
-  (seam a), and sets `__Host-mp`: `Secure`, `HttpOnly`, `Path=/`, host-only,
-  `SameSite=None`, `Partitioned`, 1 h, HMAC-signed `{preview id, owner,
-  session_ref, expires}` with the gateway's key. It then redirects to
+- **Owner:** the owner reaches a preview only from the gateway's session
+  page, which was itself entered through a muster hand-off (seam a). **Open**
+  there sends the browser (frame or tab) to
+  `p-<id>.musterchief.com/__muster/enter?g=<code>`, where `<code>` is a
+  **gateway-minted** one-time code (60 s, single use, bound to that preview and
+  owner). The entry route sets `__Host-mp`: `Secure`, `HttpOnly`, `Path=/`,
+  host-only, `SameSite=None`, `Partitioned`, HMAC-signed `{preview id, owner,
+  expires}` with the gateway's key. It then redirects to
   `/__muster/check`, which goes on to the preview if the cookie arrived, and
   otherwise says "This browser blocks embedded previews. Open it in a new
   tab."
 - **The cookie is bound to its preview:** another preview's cookie is refused
   even if a browser sent it.
+- **TTL: 1 hour, never renewed by itself.** With no liveness check
+  ([seam a](#a-viewer-hand-off)), the TTL is the only bound on how long a
+  signed-out or disabled owner, or a stolen cookie, keeps reaching an open
+  preview. One hour is chosen because it is about one sitting of work on a
+  dev server: shorter, and HMR sessions break mid-work and push the owner back
+  through muster's chip every few minutes, which trains them to click through;
+  longer, and a sign-out means little for an afternoon. On expiry the next
+  request (and any open WebSocket, at its next 30 s check) gets the gateway's
+  "session expired: open the preview again from muster" page, and a fresh chip
+  click renews it.
 - In a frame the cookie is third-party; partitioned cookies work in Chromium,
   and Firefox partitions by default. **Safari and the Android app's WebView are
   UNVERIFIED** (the WebView refuses third-party cookies unless the app enables
-  them, [open question 6](#open-questions)). **Open** in a new tab always
+  them, [open question 5](#open-questions)). **Open** in a new tab always
   works.
 - No step-up for the owner: viewing reaches a dev server, not a shell.
 
@@ -701,60 +765,83 @@ with the dialer "a `CONNECT` stream on that host's tunnel" or "the pod's gate":
 
 | question | design |
 |---|---|
-| **Who can mint** | The owner, on the preview's own page (a `/__muster/share` panel the gateway serves on the preview origin, reached only with the owner cookie), behind a **fresh sign-in**: the panel sends the owner through a hand-off whose code muster mints only with a step-up from the last `MUSTER_STEPUP_WINDOW` ([sending-and-step-up.md](../sending-and-step-up.md#step-up-confirm-its-you)); the redeem answer says so (`stepped_up: true`). Never an agent: no tool mints one. |
-| **Access** | **Full by default** ([decision 5](#decisions)); a **read-only** flag at mint refuses every method but `GET` and `HEAD` with 405, and refuses WebSocket upgrades (which can carry writes). |
+| **Who can mint** | The owner, behind a **fresh sign-in**, through seam (a)'s [stepped-up hand-off](#a-viewer-hand-off): **Share** on the gateway's session page sends the owner, top-level, to muster's `GET /plugin-handoffs/confirm?plugin=<id>&target=<the window>&purpose=share`; muster runs its step-up there if it is stale, and its **Continue** `POST` mints a code with `stepped_up: true` and `purpose: share` and redirects to the gateway's entry URL. The gateway mints a link only on redeeming such a code for that target within the last 5 minutes, and only for a preview of that target. Never an agent: no tool mints one. |
+| **Access** | **Full**: every method, and WebSockets ([decision 16](#decisions)). There is no read-only option. |
 | **TTL** | 15 min, **1 h (default)**, 8 h, 24 h; never past the preview's own TTL; capped by `PREVIEW_SHARE_MAX_TTL`. |
-| **What it is** | `https://p-<id>.musterchief.com/__muster/share/<token>`; 32 random bytes, stored hashed by the gateway with preview, access, expiry, revocation, first use, use count. |
+| **What it is** | `https://p-<id>.musterchief.com/__muster/share/<token>`; 32 random bytes, stored hashed by the gateway with preview, expiry, revocation, first use, use count. |
 | **Redeeming** | Sets `__Host-mps` (signed, bound to share and preview, `SameSite=Lax`, expiring with the link) and redirects the token out of the URL. Any number of viewers until expiry or revocation. |
 | **Reach** | That one preview's origin. Nothing of muster's. |
 | **Unauthenticated viewers** | Yes; that is the point. |
-| **Revocation** | On the share panel; closing the preview revokes its links; so does the owner's session ending only if [open question 7](#open-questions) says so. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
-| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 8](#open-questions). |
+| **Revocation** | On the session page; closing the preview revokes its links; so does the owner's session ending only if [open question 6](#open-questions) says so. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
+| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 7](#open-questions). |
 | **Rate limits** | Per link: 600 requests a minute and 32 concurrent connections. Unknown or revoked tokens: 30 a minute per client address. Per owner: 20 live links. |
 
 ## The MCP tools
 
-Declared by the gateway through seam (c), for `callers: ["mirror"]` in phase 1
-and `["mirror","agent"]` from phase 2:
+Served **on the machine**, never through muster ([decision 11](#decisions)).
 
 | tool | arguments | result | errors |
 |---|---|---|---|
-| `preview_open` | `port` (1–65535), `label` (≤ 60, optional), `path` (starts with `/`, ≤ 512 bytes, optional) | `{id, port, label, state: "open"}`; the chip is in the session's view | `port_not_allowed`, `not_listening`, `foreign_listener`, `host_not_connected`, `gate_unavailable` (pod), `max_open`, and muster's own "the plugin did not answer" |
-| `preview_list` | none | the calling session's previews | — |
-| `preview_close` | `id` | `{closed: true}` | `not_found` (also another session's) |
+| `preview_open` | `port` (1–65535), `label` (≤ 60, optional), `path` (starts with `/`, ≤ 512 bytes, optional) | `{id, port, label, state: "open"}`; it is listed on the gateway's session page for the caller's window | `previews_off`, `port_not_allowed`, `not_listening`, `foreign_listener`, `gateway_not_connected`, `gateway_timeout`, `max_open` |
+| `preview_list` | none | the caller's open previews | `previews_off` |
+| `preview_close` | `id` | `{closed: true}` | `not_found` (also another caller's) |
 
-- **Bound to the caller muster proved** (seam c): a mirrored session's
-  `(host, window, claude_session)`, an agent's id. Only that caller lists or
-  closes it; the owner closes any from the preview's own page.
+**On a host (phase 1).** `muster-mirror`'s loopback MCP proxy, when `-preview`
+is on and `previews.json` loaded:
+
+- appends the three definitions to the `tools/list` answer it forwards from
+  muster (`mcpproxy.go:369-394` forwards it unbound today), and if muster
+  cannot be reached answers `tools/list` with the three alone, so a session
+  that starts while muster is down still sees them (Claude Code reads the list
+  once, at connect);
+- answers a `tools/call` for `preview_*` **itself**, without forwarding it.
+  It resolves the caller's pane to its window with the same fresh listing it
+  uses for muster's tools (`session`, `mcpproxy.go:132-160`), checks the port
+  against its own allowlist and listener checks, probes it (a loopback dial
+  and `HEAD /`, 5 s), and writes an `open` request on the gateway tunnel's
+  offer stream; the gateway's `POST /v1/opened` carries the preview id back.
+  `preview_list` is answered from the host's own record of acknowledged
+  opens;
+- refuses everything else as it does now. A session without the muster MCP
+  entry configured ([attention.md](../attention.md#mirrored-claude-code-sessions))
+  has no preview tools; its listeners are still offered.
+
+**In a pod (phase 2).** `ccd seed` registers a stdio MCP server,
+`ccd preview-mcp`, when `CCD_PREVIEW_PORTS` is set, as it registers `hq mcp`
+for the chief (`internal/podagent/hqmcp.go:8-45`). It opens no port: it
+talks to the `ccd` gate process over a local socket, and the gate writes the
+request on the offer stream the gateway holds open. The tools therefore appear
+as `mcp__preview__preview_*` in a pod and `mcp__muster__preview_*` on a host;
+the names after the prefix, the arguments and the errors are the same.
+
+- **Bound to the caller the machine names:** on a host, the window its pane
+  resolves to; in a pod, the agent (the gateway knows which agent's gate it
+  is connected to). The gateway believes the host's window as stated: muster
+  does not check it ([threat model](#threat-model)).
 - **Idempotent per `(caller, port)`**: the same id comes back.
-- **Probes first:** one `CONNECT` and `HEAD /` with a 5 s budget. Refused:
-  `not_listening`. Any HTTP answer opens it.
-- **No preview URL is returned**: the link works only for the owner, and the
-  chip is where they find it.
+- **Any HTTP answer opens it**; a refused connection is `not_listening`.
+- **No preview URL is returned**: the owner finds it through muster's chip.
 
 ## Lifecycle
 
-The gateway owns preview state (its own Postgres or SQLite: `previews`,
-`shares`, `host_tokens`); muster holds only the embed rows.
+The gateway owns all preview state (its own Postgres or SQLite: `previews`,
+`shares`, `host_tokens`). muster holds none: no preview, offer or embed rows.
 
 | event | what happens |
 |---|---|
-| `preview_open`, or the owner's click on an offer | probe; record; embed `open` |
-| `preview_close`, or **Close** on the preview's page | closed; connections end; embed removed |
-| The host's tunnel drops | requests get a "host offline" page (503); embed `unavailable` |
+| `preview_open`, or **Open** on an offer | probe; record; listed on the session page |
+| `preview_close`, or **Close** on the session page | closed; connections end |
+| The host's tunnel drops | requests get a "host offline" page (503) |
 | Offline for 24 h | closed |
 | The window is gone (no listing on the offer stream names it) for 10 minutes | closed |
 | The port leaves the allowlist | closed |
 | No request for `PREVIEW_IDLE` (default 2 h) | closed |
 | Open longer than `PREVIEW_TTL` (default 24 h) | closed; reopening mints a new id |
 | The host token is revoked | tunnel ends within 30 s; that host's previews close |
-| The plugin token is revoked or loses a capability | the gateway's calls fail; it closes that owner's previews; muster drops the embeds |
+| The plugin token is revoked or loses `viewer` | muster's chip disappears and redeems fail; the gateway closes that owner's previews on its next failed call; open owner cookies end within their 1 h |
+| The owner signs out, or is disabled, in muster | nothing at once; open owner cookies end within 1 h (the cost of [decision 13](#decisions)) |
 | The agent is destroyed (phase 2) | its target read answers `404`; the gateway closes its previews within a minute |
 | The upstream stops answering | a "not answering" page (502); the preview stays open |
-
-Embeds are muster's, so the gateway re-puts every open preview's embed at
-start and deletes the ones it no longer knows; muster also drops embeds of a
-plugin silent for 24 h.
 
 ## Limits and quotas
 
@@ -772,9 +859,6 @@ Following [limits.md](../limits.md#mirroring):
 | response | size | none; flow-controlled | — |
 | upstream headers | time | 60 s | gateway |
 | HTTP connection | idle | 5 min | gateway |
-| per plugin (muster) | embeds | 16 per target, 64 in all | muster |
-| per plugin (muster) | declared tools | 8 | muster |
-| per plugin (muster) | pending tool calls | 32 | muster |
 | per owner (muster) | hand-off codes minted | 60 a minute | muster |
 | share links | see [share links](#share-links-phase-3) | | gateway |
 
@@ -786,17 +870,17 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 
 | variable | binary | default | what it does |
 |---|---|---|---|
-| `MUSTER_PLUGIN_ORIGINS` | muster-server | none | Origin patterns (`https://*.example.net`, exact or one wildcard label) a plugin may be given for hand-offs and embeds; added to `frame-src` on the session views; a `Host` under them is refused with 421 on muster's listeners. Unset: seams (a) and (b) are off. |
-| `MUSTER_AGENT_PLUGIN_INGRESS` | muster-server | none | Seam (d): `<namespace>/<label>=<value>[,…]:<port>`, the peer and port added to new claude-code agents' policy and Service. |
-| `MUSTER_AGENT_PREVIEW_PORTS` | muster-server | empty | Seam (d): passed to agents as `CCD_PREVIEW_PORTS`. |
+| `MUSTER_PLUGIN_ORIGINS` | muster-server | none | Origin patterns (`https://*.example.net`, exact or one wildcard label) a `viewer` plugin may be given; added to `frame-src` on the session views; a `Host` under them is refused with 421 on muster's listeners. Unset: seams (a) and (b) are off. |
+| `MUSTER_AGENT_PLUGIN_INGRESS` | muster-server | none | Seam (d), phase 2: `<namespace>/<label>=<value>[,…]:<port>`, the peer and port added to new claude-code agents' policy and Service. |
+| `MUSTER_AGENT_PREVIEW_PORTS` | muster-server | empty | Seam (d), phase 2: passed to agents as `CCD_PREVIEW_PORTS`. |
 | `MUSTER_MIRROR_PREVIEW`, `MUSTER_MIRROR_PREVIEW_URL`, `MUSTER_MIRROR_PREVIEW_TOKEN_FILE`, `MUSTER_MIRROR_PREVIEW_FILE` | muster-mirror | off / none / none / `~/.config/muster-mirror/previews.json` | [Host configuration](#host-configuration-previewsjson). |
-| `CCD_PREVIEW_LISTEN`, `CCD_PREVIEW_PORTS`, `CCD_PREVIEW_BEARER` | ccd | off | The pod gate; set by muster. |
+| `CCD_PREVIEW_LISTEN`, `CCD_PREVIEW_PORTS`, `CCD_PREVIEW_BEARER` | ccd | off | Phase 2: the pod gate and its MCP server; set by muster. |
 | `MUSTER_URL` | muster-preview | none | muster's base URL (the name `muster-clankmail` already reads). |
 | `PLUGIN_TOKENS_FILE` | muster-preview | none | The owners' `mpl_` tokens, one per line. |
 | `PREVIEW_DOMAIN` | muster-preview | none | `musterchief.com`. |
-| `PREVIEW_LISTEN` | muster-preview | `:8080` | The one listener, for preview hosts and `tunnel.`. |
+| `PREVIEW_LISTEN` | muster-preview | `:8080` | The one listener, for `p-`, `w.` and `tunnel.`. |
 | `PREVIEW_DATABASE_URL` | muster-preview | none | Its own state. |
-| `PREVIEW_SIGNING_KEY` | muster-preview | none | 32 random bytes: signs its cookies. |
+| `PREVIEW_SIGNING_KEY` | muster-preview | none | 32 random bytes: signs its cookies and page tokens. |
 | `PREVIEW_TTL`, `PREVIEW_IDLE`, `PREVIEW_MAX_BODY` | muster-preview | `24h`, `2h`, `32MiB` | [Lifecycle](#lifecycle), [limits](#limits-and-quotas). |
 | `PREVIEW_SHARES`, `PREVIEW_SHARE_MAX_TTL` | muster-preview | off, `24h` | Phase 3. |
 
@@ -814,9 +898,9 @@ listener, proxy or key.
   `muster_preview_tunnels`, `muster_preview_share_redemptions_total{outcome}`.
 - **The host:** `host.preview.dial` with the refusing check; log one line per
   refused stream.
-- **muster's seams:** `muster_plugin_handoffs_total{outcome}`,
-  `muster_plugin_tool_calls_total{outcome}` and `muster_plugin_tool_call_seconds`
-  (claim latency and total), `muster_plugin_embeds`.
+- **The host's tools:** `host.preview.tool` spans for `preview_*` calls,
+  with the outcome code.
+- **muster's seams:** `muster_plugin_handoffs_total{purpose,outcome}`.
 - **Privacy:** no path, query, header or body is logged, traced or labelled; no
   hand-off code, share token or host token appears anywhere but its hash.
 
@@ -828,20 +912,22 @@ listener, proxy or key.
 | Preview script acts on muster (CSRF) | preview content | cross-site: `SameSite=Lax` withholds muster's cookies; `requireSameOrigin` checks `Origin` (`internal/api/auth.go:313-331`) | none known |
 | A preview host reaches muster's routes | a misrouted edge, a chosen `Host` | the edge routes the zone to the gateway; muster refuses `MUSTER_PLUGIN_ORIGINS` hosts (421), closing the `wsAllowedOrigins` `r.Host` hole (`internal/api/agents.go:2031`) | none |
 | Clickjacking or top-navigation of muster's tab | content in the frame | `sandbox` without `allow-top-navigation`; muster keeps `frame-ancestors 'none'` | a look-alike drawn inside the frame |
-| One preview steals another's cookie | preview script | one host per preview; host-only cookies naming their preview | none |
-| **The gateway is compromised** | an attacker in its pod | it holds owners' `mpl_` tokens with only the preview capabilities (no `messages`); every host still enforces its allowlist, loopback and uid; muster's session never reaches it | it sees all preview traffic; can open previews on any allowlisted port of connected hosts; can write embeds (chips that link only to its own origin); can answer its tools' calls with misleading text to agents; can mint share links; in phase 2 holds gate bearers for owners' agents |
-| **An `mpl_` token is stolen** | anyone with it | capabilities limit it to the seams; revocable on `/plugins` | redeeming needs a fresh code from the owner's browser, so no session is gained; it can register embeds under the token's origin, declare tools whose descriptions every session reads (a prompt-injection channel; descriptions marked as plugin, capped), answer tool calls, read agent targets |
+| One preview steals another's cookie, or the session page's credential | preview script on a sibling `p-` host | one host per preview; host-only cookies naming their preview; the session page holds its token in page memory, never a cookie | none |
+| **The gateway is compromised** | an attacker in its pod | it holds owners' `mpl_` tokens with `viewer` only (no `messages`); every host still enforces its allowlist, loopback and uid; muster's session never reaches it | it sees all preview traffic; can open previews on any allowlisted port of connected hosts; can mint share links; can answer the hosts' tool requests with any id (agents are told a preview opened that did not); in phase 2 holds gate bearers for owners' agents |
+| **An `mpl_` token is stolen** | anyone with it | `viewer` opens only the redeem route; revocable on `/plugins` | it can redeem codes, but a code exists only after the owner clicks the chip, and goes to the plugin's own origin; with `agent_targets` (phase 2), it can read the owner's agents' gate addresses and bearers |
 | Gateway ↔ muster authentication | the network | the gateway presents `mpl_` over muster's TLS URL or in-cluster; muster authenticates nothing of the gateway's because it never connects to it | in-cluster plain HTTP is as safe as the cluster network |
-| A hand-off code is intercepted | a log or a referrer | 60 s, single use, bound to plugin and subject, redeemable only with that plugin's token; stripped from the URL by redirect | none useful without the token |
-| A host token is stolen | anyone with `mpt_` | it registers only its host name; revocable on the gateway CLI; 30 s recheck | it can impersonate that host's tunnel: answer streams with its own content for that host's previews, and send fake listener offers (labels only) |
+| A hand-off code is intercepted | a log or a referrer | 60 s, single use, bound to plugin and target, redeemable only with that plugin's token; stripped from the URL by redirect | none useful without the token |
+| **The gateway believes the host's window claim** | a local process on the host | the host's MCP proxy requires its per-host secret and refuses an `Origin` (`mcpproxy.go:336-350`); the window comes from the caller-supplied pane header (`mcpproxy.go:47-58`), mapped on a fresh listing, and muster does **not** re-check it (a tool call relayed through muster would have been re-checked by `mirrorSessionOf`, `internal/api/mirror_mcp.go:172`) | anything running as the host's user that can read the secret can open a preview attributed to any window on that host, on allowlisted ports; it still reaches only the owner's own session page, and the allowlist bounds what is exposed |
+| The pod's identity | the gateway | the gateway dialled that agent's gate from muster's target read, so the caller is the agent whose gate it is; no claim is involved | a process inside the pod acts as that agent, as it already can |
+| A host token is stolen | anyone with `mpt_` | it registers only its host name; revocable on the gateway CLI; 30 s recheck | it can impersonate that host's tunnel: answer streams with its own content for that host's previews, and send fake offers and opens (labels only, on the owner's own page) |
+| A leaked mirror token | anyone with `mmt_` | as today ([auth.md](../auth.md#machine-credentials)); it reaches **no** preview function, since the preview tools no longer go through muster | — |
+| A revoked muster session keeps an open preview | a signed-out owner, a stolen cookie | owner cookie TTL 1 h, no renewal without a fresh hand-off | up to 1 h after sign-out or disable ([decision 13](#decisions)) |
 | muster used to proxy into a host's LAN or the cluster | compromised muster or gateway | the host dials loopback only and ignores the requested address; the gate likewise; the gateway reads targets from muster, never from an agent | whatever listens on allowlisted loopback ports as this user |
 | An allowlisted port held by another user or a system service | another local user | `foreign_listener` (Linux) | macOS: none |
 | Exposing muster-mirror's MCP or opencode's server | an agent or a click | always refused by the host | an unknown control port, if allowlisted |
-| A leaked mirror token | anyone with `mmt_` | as today ([auth.md](../auth.md#machine-credentials)); through seam (c) it can call `preview_open` as that host's sessions on allowlisted ports, and nothing more; viewing needs the owner's browser | revoke it |
 | A prompt-injected agent exposes something | the agent | allowlisted ports; owner-only by default; no agent-minted share links | the owner can be shown it |
-| Listener reports leak what runs on a host | the gateway, muster's database | port and process name only, pane-bound listeners only, `"offer": false` | process names are visible to the gateway |
-| A leaked share link | its recipients | expiry, revocation, read-only option, rate limits, audit | until revoked, they see that app |
-| A stolen preview cookie | malware on the viewer | 1 h, one preview, tied to a live session | 90 s after the session ends at most |
+| Listener reports leak what runs on a host | the gateway | port and process name only, pane-bound listeners only, `"offer": false`; nothing reaches muster | process names are visible to the gateway |
+| A leaked share link | its recipients | expiry, revocation, rate limits, audit | until revoked, they have **full access** to that app, writes and WebSockets included ([decision 16](#decisions)) |
 | The app learns about viewers | the agent's app | viewer address and edge headers stripped | what the browser sends |
 | DNS rebinding against the dev server | a third-party page | the proxy always sends `Host: localhost:<port>` from loopback | the dev server's own rule |
 | Exhaustion | an agent, a viewer, a plugin | [limits](#limits-and-quotas) | bandwidth uncapped |
@@ -851,12 +937,12 @@ listener, proxy or key.
 | phase | what | depends on |
 |---|---|---|
 | **0: spike (gates phase 1)** | HTTP/2 `CONNECT` over `websocket.NetConn`, from a host through the real edge path to a gateway, with the go/no-go below | — |
-| **1: hosts, owner-only** | muster: plugin capabilities and origins, seams (a), (b), (c), `MUSTER_PLUGIN_ORIGINS` with the 421 refusal; `muster-preview` with the tunnel, proxy, owner cookie, tools, offers; `muster-mirror -preview` with its checks and listener reports; docs (a `previews.md` page, plugins.md for the seams, configuration rows, a decisions entry) | 0 |
-| **2: pods** | seam (d), the `ccd` gate, `agent_targets`, `callers: ["agent"]`, measuring whether the spec change rolls agents | 1 |
-| **3: share links** | the share panel, the step-up hand-off, read-only flag, audit, limits | 1 |
+| **1: hosts, owner-only** | muster-server: the `viewer` capability and origin, seams (a) and (b), `MUSTER_PLUGIN_ORIGINS` with the 421 refusal; `muster-preview` with the tunnel, proxy, session page, owner cookie, offers; `muster-mirror -preview` with its checks, listener reports and the `preview_*` tools in its MCP proxy; docs (a `previews.md` page, plugins.md for the seams, configuration rows, a decisions entry) | 0 |
+| **2: pods** | seam (d) and the `agent_targets` capability, the `ccd` gate and its stdio MCP server, measuring whether the spec change rolls agents | 1 |
+| **3: share links** | the stepped-up hand-off (`/plugin-handoffs/confirm`), Share on the session page, audit, limits | 1 |
 
 **Hosts first** because that is where the operator will use previews
-([decision 3](#decisions)), and phase 1 now carries everything the pod path
+([decision 8](#decisions)), and phase 1 now carries everything the pod path
 reuses. Share links stay last: they are the only part that reaches people
 without a muster account.
 
@@ -888,27 +974,27 @@ turn it **red**, and must be watched red before it counts.
 
 **Phase 1 — muster's seams**
 
-- **Capabilities:** a token without `tools` is refused on the tool routes, one
-  without `messages` on `POST /plugin/v1/messages`; every existing token after
-  the migration still reaches every route it reached before (red if the
-  migration's default is dropped). Widening without step-up is refused before
-  any write.
+- **Capabilities:** a token without `viewer` is refused on the redeem route and
+  draws no chip, one without `messages` is refused on `POST /plugin/v1/messages`;
+  every existing token after the migration still reaches every route it
+  reached before (red if the migration's default is dropped). Widening without
+  step-up is refused before any write.
 - **Hand-off:** a code is single use, expires at 60 s, and is refused to
-  another plugin's token and for another subject; the check route reports a
-  signed-out session dead (red without the cutoff read), and in password mode
-  a session from before a password rotation dead.
-- **Embeds:** an `enter_url` outside the token's origin is refused (with a
-  look-alike host, `https://evil.example.net/x?.musterchief.com`, and a
-  user-info form, as negative controls); a target of another owner's host is
-  `404`; the view's CSP has `frame-src` only on the session views.
+  another plugin's token; its target is the session view it was minted on, and
+  a mint naming another owner's host or agent is refused. `stepped_up` is true
+  only when the step-up was fresh at mint (red if it is copied from the
+  request).
+- **Stepped-up confirm:** the `GET` mints nothing (a test counts codes before
+  and after); the `POST` with a stale step-up shows the step-up and mints
+  nothing; with a fresh one it mints `stepped_up: true` and redirects only to
+  the token's entry URL.
+- **The chip:** an entry URL outside the token's origin is refused at mint
+  (with a look-alike host, `https://evil.example.net/x?.musterchief.com`, and a
+  user-info form, as negative controls); the view's CSP has `frame-src` only on
+  the session views; a revoked token's chip is gone.
 - **The 421:** a request to muster with `Host` and `Origin` both
   `p-x.musterchief.com` is refused before any handler. Red today: it passes
   `requireSameOrigin` through `r.Host`.
-- **Tools:** a declared tool is listed on both doors for its callers and not
-  for the chief (pinned list unchanged); a name colliding with a muster tool is
-  `409`; an unclaimed call expires at its deadline and is never handed out
-  (red if expiry is lease-lapse-and-retry, as task writes are); the caller in
-  a claim is muster's proven one, not the arguments.
 
 **Phase 1 — gateway and host**
 
@@ -917,9 +1003,9 @@ turn it **red**, and must be watched red before it counts.
   the app's own cookie). Red with a plain director.
 - **The cookie is bound to its preview**; replayed, expired and other-preview
   codes are refused.
-- **Revocation reaches an open WebSocket** within the recheck (owner sign-out,
-  preview close), with a positive control that stays open across several
-  intervals.
+- **Expiry and close reach an open WebSocket** within the recheck (the owner
+  cookie's TTL passing, the preview closed), with a positive control that
+  stays open across several intervals before expiry.
 - **Streaming and WebSockets** pass (SSE first event before the upstream ends,
   red with buffering; HMR echo).
 - **Large responses are not truncated** (50 MB to a paused reader, byte-exact).
@@ -939,11 +1025,22 @@ turn it **red**, and must be watched red before it counts.
   test asserts the exact key set), only for pane-bound listeners.
 - **Host token:** registers only its own host; revoked, the tunnel ends within
   30 s.
-- **Browser (Playwright, 390×844 and 1280×800):** a fake host's listener
-  appears as an offered chip; clicking **Show here** opens it in the frame with
-  a partitioned cookie and an HMR message arrives; an agent's `preview_open`
-  makes a chip appear without a reload; third-party cookies blocked → the
-  "open in a new tab" page. A view without chips passes `cls.spec.ts`.
+- **The host's tools:** `tools/list` through the proxy carries muster's tools
+  plus exactly the three `preview_*` (and the three alone when muster is
+  unreachable); a `preview_*` call is never forwarded to muster (a fake muster
+  counts zero requests for it, with a positive control: a muster tool call
+  through the same proxy counts one); an unlisted port, a refused port and a
+  closed port give their codes; the call binds to the window of the caller's
+  pane; a gateway that does not answer within 5 s gives `gateway_timeout`.
+- **The session page:** shows only the target window's offers and previews;
+  its page token is never set as a cookie (a test reads `Set-Cookie` on every
+  `w.` response and finds none).
+- **Browser (Playwright, 390×844 and 1280×800):** the plugin's chip opens the
+  session page; a fake host's listener is listed as an offer there; **Open**
+  opens it in the frame with a partitioned cookie and an HMR message arrives;
+  an agent's `preview_open` appears on the page at its next poll; third-party
+  cookies blocked → the "open in a new tab" page. The view with the chip
+  passes `cls.spec.ts`.
 
 **Phase 2**
 
@@ -954,12 +1051,15 @@ turn it **red**, and must be watched red before it counts.
 - The gate dials loopback only, checks its own port list, refuses 18789 and its
   own port, refuses a missing bearer and the chat gateway's bearer.
 - `agent_targets` refuses another owner's agent and an agent without the gate.
+- `ccd seed` registers the preview MCP server only with `CCD_PREVIEW_PORTS`
+  set, and it opens no TCP port.
 
 **Phase 3**
 
 - A share link opens its preview without a session, and not another
-  preview's; read-only refuses `POST` and a WebSocket upgrade with 405 (red
-  without the method check); minting without a stepped-up hand-off is refused;
+  preview's, with every method and a WebSocket upgrade; minting without a
+  stepped-up hand-off for that window from the last 5 minutes is refused (red
+  if `stepped_up` is not read);
   revoked and expired links refused, an open WebSocket closed within 30 s;
   the rate limits answer 429 at their numbers.
 
@@ -974,8 +1074,10 @@ check, written into its phase's PR.
   anything is built.
 - **Third-party cookie policy.** The frame depends on partitioned cookies; the
   new tab does not.
-- **Plugin tools read once.** A session that connected before the gateway
-  first declared its tools does not see them until it reconnects.
+- **Tools read once.** A session that connected before `-preview` was turned
+  on does not see the preview tools until it reconnects.
+- **No in-muster sign of a preview.** The owner learns of an offer or an
+  agent's preview only by opening the plugin's chip ([decision 12](#decisions)).
 - **Dev servers with their own host or HMR settings** need configuring.
 - **A spec change** may roll every claude-code agent (phase 2, UNVERIFIED).
 - **One gateway replica:** host tunnels are in-process state, as muster's
@@ -984,36 +1086,41 @@ check, written into its phase's PR.
 
 ## Open questions
 
-1. **Host side: inside `muster-mirror` (recommended) or a separate binary?**
-   Inside reuses the pane walk and adds no install; separate keeps the plugin
-   shippable apart from muster's host agent.
+1. **Host and pod side: inside `muster-mirror` and `ccd` (as designed), or a
+   separate host binary and an agent-pod sidecar** that keep every preview line
+   out of muster's own binaries ([what lands where](#what-lands-in-musters-own-binaries))?
 2. **Many owners:** is one `mpl_` token per owner in the gateway's file
    enough, or should muster gain a deployment-wide plugin credential, minted
    by an admin, that acts for any owner who enables a plugin?
-3. **Who may grant `tools`:** any owner for their own token (as designed), or
-   admin-only, since a plugin's tool descriptions reach every session of that
-   owner's and are a prompt-injection channel?
-4. **Should `-preview` require `-interactive`?** The design says no.
-5. **Officers:** offer the tools to officer instances in phase 2, or keep them
+3. **Should `-preview` require `-interactive`?** The design says no.
+4. **Officers:** offer the tools to officer instances in phase 2, or keep them
    off as recommended?
-6. **Android app:** enable third-party cookies in its WebView for the frame,
+5. **Android app:** enable third-party cookies in its WebView for the frame,
    or rely on **Open**?
-7. **Share links and the owner's session:** should the owner signing out (or
+6. **Share links and the owner's session:** should the owner signing out (or
    Sign out everywhere) revoke their share links, or only closing the preview
-   and the owner being disabled?
-8. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
+   and the owner being disabled? (With no liveness check, signing out could
+   reach the gateway only at the owner's next hand-off.)
+7. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
    share links, and preview opens), or does the gateway's own log suffice?
-9. **Offers outside tmux:** listeners not under any pane are never offered.
+8. **Offers outside tmux:** listeners not under any pane are never offered.
    Should they be offered on a host-level place (muster has no host page
    today), or stay unoffered?
-10. **Default ports** to suggest for `previews.json` and
-    `MUSTER_AGENT_PREVIEW_PORTS` (the example lists Vite, Vite preview,
-    Storybook, Next/Express, and 8000–8099).
+9. **Default ports** to suggest for `previews.json` and
+   `MUSTER_AGENT_PREVIEW_PORTS` (the example lists Vite, Vite preview,
+   Storybook, Next/Express, and 8000–8099).
+10. **The owner cookie's 1-hour TTL:** acceptable as the bound on sign-out and
+    on a stolen cookie, or shorter at the cost of re-opening from the chip?
+11. **The tool prefix differs** between hosts (`mcp__muster__preview_*`, in
+    the proxy) and pods (`mcp__preview__preview_*`, a separate server): acceptable,
+    or should the host proxy serve them as a second MCP server too?
 
 ## Decisions
 
-The operator made each of these. The rest of this page follows them; where a
-later one changed an earlier one, the earlier one says so.
+Unless marked otherwise, the operator made each of these; decisions 1–10
+were relayed by the coordinating session's briefs, and 11–16 are the
+operator's answers to the round-0 audit on this pull request. Where a later
+decision changed an earlier one, the earlier one says so.
 
 1. **Origin: a wildcard subdomain.** Each preview at `p-<id>.<zone>`, gated by
    a short-lived signed cookie minted from the owner's muster session; the app
@@ -1023,20 +1130,21 @@ later one changed an earlier one, the earlier one says so.
    (`preview_open` / `preview_close`), the same for pod agents and mirrored
    sessions; a host-side opt-in flag and allowlist file, patterned on `-spawn`
    and `spawn.json`; no per-preview approval; the preview appears in the
-   session's view at once. **Widened by decision 9** (offers).
+   session's view at once. **Widened by decision 9** (offers); **"in the
+   session's view" narrowed by decision 12** (through the plugin's chip).
 3. **Audience: the owner, plus share links**, expiring, signed and revocable.
-   **Access default set by decision 10.**
+   **Access set by decision 16.**
 4. **Deliverable: this design document only.** No code.
 5. **Plugin shape: gateway plus narrow seams.** A separate preview gateway
    owns the preview domain and all preview traffic — the pod proxy, the host
    tunnel endpoint, the preview cookie, share links. muster proxies no preview
-   bytes, and adds reusable plugin seams: (a) a viewer hand-off the gateway
-   redeems and re-checks by calling muster; (b) a session-view embed slot;
-   (c) plugin-contributed MCP tools relayed through a pull queue; (d) a
-   provisioner configuration seam for the pod path's ingress. The existing
-   plugin contract stays backward compatible.
-6. **Supersedes this page's first revision**, which put the preview listener,
-   the reverse proxy and the preview cookie in muster-server.
+   bytes, and adds reusable plugin seams. The existing plugin contract stays
+   backward compatible. **Its seam list is amended by decisions 11–14:** seam
+   (a) loses its liveness re-check, seam (b) becomes one static chip, seam (c)
+   is dropped, and `agent_targets` moves to phase 2.
+6. *(Drafting session, not the operator.)* **This page supersedes its first
+   revision**, which put the preview listener, the reverse proxy and the
+   preview cookie in muster-server.
 7. **Preview zone: `musterchief.com`**, a separate registrable domain from
    muster's, one label per name under it.
 8. **Phase order: mirrored hosts first.** Phase 1 is the gateway, the seams
@@ -1044,7 +1152,37 @@ later one changed an earlier one, the earlier one says so.
    phase 2, share links phase 3.
 9. **Openers: the agent's tool and offered listeners.** The host reports new
    loopback listeners on allowlisted ports (with the ownership check on Linux)
-   directly to the gateway, and the UI offers a one-click Open; nothing is
+   directly to the gateway, and the owner opens one with one click; nothing is
    exposed until clicked. No owner-typed port.
-10. **Share links: full access by default**, with an optional read-only
-    (GET/HEAD) flag at mint.
+10. ~~Share links: full access by default, with an optional read-only
+    (GET/HEAD) flag at mint.~~ **Corrected by decision 16.** Revision 2
+    recorded this as an operator decision because the coordinating session's
+    brief listed it among the operator's; the round-0 audit found no operator
+    source for it, and the coordinating session has since said it was its own
+    choice. The operator settled it in decision 16.
+11. **Round 0, D1/Q1: seam (c) is dropped.** `preview_open`, `preview_list`
+    and `preview_close` are served on the machine: on a host by
+    `muster-mirror`'s loopback MCP proxy, which talks to the gateway over its
+    own preview tunnel; in a pod by a local MCP server `ccd` registers. No
+    tool call goes through muster.
+12. **Round 0, D2: seam (b) is one static chip per plugin** on every session
+    view, linking to the plugin's page for that session. No per-session embed
+    rows, chip states or process names in muster. The cost: muster draws no
+    per-preview chip.
+13. **Round 0, D3: no liveness check.** `POST /plugin/v1/handoffs/check` is
+    dropped; the preview cookie has a short TTL, renewed only by a fresh
+    hand-off from the chip. The cost: a sign-out reaches open previews within
+    that TTL.
+14. **Round 0, D4: `handoff` and `embeds` are one capability** (`viewer`);
+    `agent_targets` is deferred to phase 2.
+15. **Round 0, D5 declined: the pod gate keeps its own declared port**,
+    separate from the chat gateway's 18789, so the gateway's ingress peer is
+    never admitted to the chat gateway.
+16. **Round 0, D6/Q2: share links have full access** — every method, and
+    WebSockets. There is no read-only flag.
+
+Choices this page makes itself, which the operator has not ruled on: the
+owner cookie's 1-hour TTL; the gateway's session page holding its credential
+in page memory rather than a cookie; the stepped-up hand-off's confirm page
+(`/plugin-handoffs/confirm`); the open/ack protocol on the offer stream; and a
+stdio (not loopback HTTP) MCP server in the pod, following `hq mcp`.
