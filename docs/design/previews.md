@@ -567,7 +567,7 @@ that to the tunnel by `(owner, host)`. **The owner is the admin's assertion:**
 that owner. On a single-owner deployment that is the operator asserting their
 own host, as with mirror tokens on the server's CLI; with several owners, a
 mistyped owner would route one owner's host into another's previews. Proving
-it is [open question 9](#open-questions).
+it is [open question 8](#open-questions).
 
 ### The host tunnel
 
@@ -974,8 +974,8 @@ the others must hold without it:
 | **Redeeming** | Sets `__Host-mps` (signed, bound to share and preview, `SameSite=Lax`, expiring with the link) and redirects the token out of the URL. Any number of viewers until expiry or revocation. |
 | **Reach** | That one preview's origin. Nothing of muster's. |
 | **Unauthenticated viewers** | Yes; that is the point. |
-| **Revocation** | On the session page; closing the preview revokes its links; so does the owner's session ending only if [open question 5](#open-questions) says so. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
-| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 6](#open-questions). |
+| **Revocation** | Exactly three things end a link before it expires ([decision 22](#decisions)): **Revoke** on the session page, **closing the preview**, and the **owner being disabled** (or the plugin token revoked). The gateway learns of the last within a minute: it calls `GET /plugin/v1/self` for each token every minute, and a `401` (which the plugin contract answers for a revoked token or a disabled owner, [plugins.md](../plugins.md#the-plugin-authors-contract)) closes that owner's previews and their links. 🔴 **Links outlive the owner's sign-out:** signing out of muster, Sign out everywhere or a password rotation ends none of them, so a signed-out owner's links keep working until they are closed, revoked or expire. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
+| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 5](#open-questions). |
 | **Rate limits** | Per link: 600 requests a minute and 32 concurrent connections. Unknown or revoked tokens: 30 a minute per client address. Per owner: 20 live links. |
 
 ## The MCP tools
@@ -1057,8 +1057,8 @@ The gateway owns all preview state (its own Postgres or SQLite: `previews`,
 | No request for `PREVIEW_IDLE` (default 2 h) | closed |
 | Open longer than `PREVIEW_TTL` (default 24 h) | closed; reopening mints a new id |
 | The host token is revoked | tunnel ends within 30 s; that host's previews close |
-| The plugin token is revoked or loses `viewer` | muster's chip disappears and redeems fail; the gateway closes that owner's previews on its next failed call; open owner cookies end within their 8 h |
-| The owner signs out, or is disabled, in muster | nothing at once; open owner cookies end within 8 h (the cost of decisions [13](#decisions) and [19](#decisions)); revoking the plugin token (row above) is the faster cut-off for a disabled owner |
+| The plugin token is revoked or loses `viewer`, or the owner is disabled | muster's chip disappears and redeems fail; the gateway's minute-by-minute `GET /plugin/v1/self` gets a `401` and it closes that owner's previews and their share links within a minute; open owner cookies end with their previews |
+| The owner signs out in muster | nothing at once: open owner cookies end within 8 h (decisions [13](#decisions) and [19](#decisions)), and share links keep working until closed, revoked or expired ([decision 22](#decisions)) |
 | The agent is destroyed (phase 2) | its target read answers `404`; the gateway closes its previews within a minute |
 | The upstream stops answering | a "not answering" page (502); the preview stays open |
 
@@ -1150,7 +1150,7 @@ listener, proxy or key.
 | Exposing muster-mirror's MCP or opencode's server | an agent or a click | always refused by the host | an unknown control port, if allowlisted |
 | A prompt-injected agent exposes something | the agent | allowlisted ports; owner-only by default; no agent-minted share links | the owner can be shown it |
 | Listener reports leak what runs on a host | the gateway | port and process name only, pane-bound listeners only, `"offer": false`; nothing reaches muster | process names are visible to the gateway |
-| A leaked share link | its recipients | expiry, revocation, rate limits, audit | until revoked, they have **full access** to that app, writes and WebSockets included ([decision 16](#decisions)) |
+| A leaked share link | its recipients | expiry, revocation, closing the preview, the owner being disabled; rate limits, audit | until revoked, closed or expired, they have **full access** to that app, writes and WebSockets included ([decision 16](#decisions)); **the owner signing out does not end it** ([decision 22](#decisions)), so an owner who signs out believing that cuts off a link they shared is wrong — they must revoke it or close the preview |
 | The app learns about viewers | the agent's app | viewer address and edge headers stripped | what the browser sends |
 | DNS rebinding against the dev server | a third-party page | the proxy always sends `Host: localhost:<port>` from loopback | the dev server's own rule |
 | Exhaustion | an agent, a viewer, a plugin | [limits](#limits-and-quotas) | bandwidth uncapped |
@@ -1391,21 +1391,15 @@ check, written into its phase's PR.
    off as recommended?
 4. **Android app:** enable third-party cookies in its WebView for the frame,
    or rely on **Open**?
-5. **Share links and the owner's session:** should the owner signing out (or
-   Sign out everywhere) revoke their share links, or only closing the preview
-   and the owner being disabled? (With no liveness check, signing out could
-   reach the gateway only at the owner's next hand-off.) The 8-hour owner
-   cookie makes this weigh more: today nothing the owner does in muster
-   reaches an open preview or its links for up to 8 hours.
-6. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
+5. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
    share links, and preview opens), or does the gateway's own log suffice?
-7. **Offers outside tmux:** listeners not under any pane are never offered.
+6. **Offers outside tmux:** listeners not under any pane are never offered.
    Should they be offered on a host-level place (muster has no host page
    today), or stay unoffered?
-8. **Default ports** to suggest for `previews.json` and
+7. **Default ports** to suggest for `previews.json` and
    `MUSTER_AGENT_PREVIEW_PORTS` (the example lists Vite, Vite preview,
    Storybook, Next/Express, and 8000–8099).
-9. **Many owners, host tokens:** `host-token create <owner> <host>` trusts the
+8. **Many owners, host tokens:** `host-token create <owner> <host>` trusts the
    admin's typed owner. Should the binding be proven instead (for example,
    accepted only after a hand-off from that owner whose target names that
    host), or is the admin's assertion enough while one operator runs the
@@ -1417,7 +1411,7 @@ Unless marked otherwise, the operator made each of these; decisions 1–10
 were relayed by the coordinating session's briefs, 11–16 are the operator's
 answers to the round-0 audit on this pull request, 17–19 are the
 operator's answers after the round-1 audit, and 20–21 follow the real-edge
-spike results. Where a later
+spike results, and 22 was made before merge. Where a later
 decision changed an earlier one, the earlier one says so.
 
 1. **Origin: a wildcard subdomain.** Each preview at `p-<id>.<zone>`, gated by
@@ -1502,6 +1496,9 @@ decision changed an earlier one, the earlier one says so.
 21. **Off-mesh hosts fall back to the public tunnel endpoint**:
     mesh first, then `tunnel.musterchief.com`, which stays in the design; the
     public path's ~+100 ms is an accepted degraded mode.
+22. **Share links outlive the owner's sign-out.** Only closing the preview,
+    an explicit revoke, or the owner being disabled end a link before it
+    expires. A signed-out owner's links keep working until then.
 
 Choices this page makes itself, which the operator has not ruled on: the
 gateway's session page holding its credential in page memory rather than a
