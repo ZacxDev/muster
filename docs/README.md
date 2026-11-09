@@ -52,5 +52,6 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone
 - [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
+- [design/previews.md](design/previews.md) — proposed: an agent's local dev server (in a pod, or on a mirrored host) served to its owner inside muster on a per-preview subdomain, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
