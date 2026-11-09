@@ -60,12 +60,23 @@ const (
 	OutcomeFailed    Outcome = "failed"
 )
 
-// Prefs is the per-user toggle. Disabled is true when owner turned
-// suggestions off; the default (no row) is ON (operator decision).
+// Prefs is the per-user toggle. Disabled is true when owner has suggestions
+// off: they turned them off, or they never turned them on — a user with no
+// saved choice reads as DefaultDisabled (OFF). A nil Prefs (no database) has
+// no per-user toggle at all, and the engine serves everyone.
 type Prefs interface {
 	Disabled(ctx context.Context, owner int64) (bool, error)
 	SetDisabled(ctx context.Context, owner int64, disabled bool) error
 }
+
+// DefaultDisabled is a user's toggle when they have never saved one: OFF
+// (operator decision, 2026-11-08 — suggestions spend the user's OpenRouter key
+// and send their conversation to it, so each user opts in, in Account →
+// Suggested replies). 🔴 THE ONE PLACE THE DEFAULT IS DECIDED: every Prefs
+// reads a missing choice as this, and nothing else spells it. It is a
+// semantics of the absence of a row, so changing it rewrites no one's saved
+// choice: a saved ON (disabled=false) stays on and a saved OFF stays off.
+const DefaultDisabled = true
 
 // KeyChecker is a Generator that can say, without a call, that it cannot
 // serve owner (no OpenRouter key).

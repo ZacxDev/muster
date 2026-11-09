@@ -21,12 +21,13 @@ var ErrNotOwner = errors.New("suggest: the toggle is read only as its owner")
 // NewPGPrefs is Prefs over pool.
 func NewPGPrefs(pool *pgxpool.Pool) *PGPrefs { return &PGPrefs{pool: pool} }
 
-// Disabled implements Prefs. No row is ON (the default).
+// Disabled implements Prefs. No row is the user's never-saved choice:
+// DefaultDisabled (OFF). A row is their saved choice, on or off.
 //
 // 🔴 FAILS CLOSED WITHOUT THE OWNER'S PRINCIPAL. Row-level security hides a
-// row from any other principal, and a hidden row would read as "no row" —
-// ON — for a user who turned suggestions off. So a ctx that does not act as
-// owner is an error, which the engine reads as off.
+// row from any other principal, and a hidden row would read as "no row" — the
+// default, whatever the user saved. So a ctx that does not act as owner is an
+// error, which the engine reads as off.
 func (p *PGPrefs) Disabled(ctx context.Context, owner int64) (bool, error) {
 	if pr, ok := authz.From(ctx); !ok || pr.UserID != owner {
 		return false, ErrNotOwner
@@ -34,7 +35,7 @@ func (p *PGPrefs) Disabled(ctx context.Context, owner int64) (bool, error) {
 	var off bool
 	err := p.pool.QueryRow(ctx, `SELECT disabled FROM suggest_preferences WHERE owner_id = $1`, owner).Scan(&off)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return DefaultDisabled, nil
 	}
 	return off, err
 }

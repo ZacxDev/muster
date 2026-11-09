@@ -14,7 +14,9 @@ ask's notification on a paired phone, and only after the phone's step-up
 confirmation, which shows the exact text
 ([decisions.md](decisions.md#a-phone-answers-an-ask-with-a-signed-action-and-a-suggestion-may-be-sent-from-it)).
 
-On by default; each user can turn them off in **Account → Suggested replies**.
+Off by default for each user: a user turns them on (and off again) in
+**Account → Suggested replies**; until they do, they get no chips and no model
+call is made for them.
 Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet) —
 and an attention **ask**, whose notification and page offer the same kind of
 chips for its question ([attention.md](attention.md#suggested-replies-to-an-ask)).
@@ -74,7 +76,8 @@ is already idle. A session nobody is looking at never generates.
 Then, every one of these must hold, or nothing is generated (and nothing is
 served — the same checks run again whenever the composer asks):
 
-- suggestions are on: not `MUSTER_SUGGEST=off`, and not turned off by you;
+- suggestions are on: not `MUSTER_SUGGEST=off`, and turned on by you (they
+  are off until you do);
 - the window is a Claude Code pane that names its session (not opencode, not a
   plain terminal) and has a rendered view, on a host that is interactive (the
   composer is enabled);
@@ -229,12 +232,17 @@ says why. The pause is persisted, so it survives a restart or a deploy.
 Turning suggestions back on in Account resumes and starts the count over (a
 user who was not paused keeps their counts).
 
-## Turning it off
+## Turning it on and off
 
-- `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)).
+- `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)),
+  whatever any user chose.
 - Each user's own toggle, in **Account → Suggested replies** (or
-  `POST /account/suggest` with `on=0` or `on=1`; stored in
-  `suggest_preferences`, migration `0048`; on is the default). Off also drops
+  `POST /account/suggest` with `on=1` or `on=0`; stored in
+  `suggest_preferences`, migration `0048`). **Off is the default**: a user
+  with no saved choice is off (`suggest.DefaultDisabled`); a saved choice,
+  on or off, is kept as it is. The default was on until November 2026; a
+  row saved while it was still means what it meant: `disabled = false` is
+  on, `true` is off. Off also drops
   that user's cached sets, and a call already running is not kept. A toggle
   that cannot be read as its owner, or not within 5 s after a call, reads as
   off.

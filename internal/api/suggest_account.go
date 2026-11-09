@@ -63,7 +63,7 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	}
 	switch outcome {
 	case suggest.OutcomeUserOff:
-		return head + saved + state("off", "Off.") + usage + form(true, "Turn suggested replies on") + `</section>`
+		return head + saved + state("off", "Off. They stay off until you turn them on.") + usage + form(true, "Turn suggested replies on") + `</section>`
 	case suggest.OutcomePaused:
 		return head + saved + state("paused", "Paused: after "+strconv.Itoa(suggest.AutoPauseMinShown)+" sets were shown, fewer than "+
 			strconv.Itoa(suggest.AutoPauseRatePercent)+"% of them were tapped. Turning them back on starts the count over.") +

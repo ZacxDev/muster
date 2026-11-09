@@ -66,7 +66,7 @@ func featureCatalog() []features.Feature {
 				v(envUploadSigningKey, "32+ random bytes")},
 			Settings: []string{envS3Endpoint, envS3Bucket, envS3AccessKey, envS3SecretKey, envPublicURL, envS3Region, envUploadMaxBytes, envUploadLinkTTL}},
 		{ID: features.SuggestedReplies, Name: "Suggested replies",
-			Description: "Up to three suggested replies when a Claude Code session hands back control. On by default; needs an OpenRouter key.",
+			Description: "Up to three suggested replies when a Claude Code session hands back control. Off for each user until they turn them on in Account; needs an OpenRouter key.",
 			Enable:      []features.Var{v(envAgentOpenRouterKey, "OpenRouter key")},
 			Settings:    []string{envSuggest, envSuggestModel}},
 		{ID: features.Focus, Name: "Session focus",

@@ -41,7 +41,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Push](#push) | phone notifications | VAPID keys (generated), HTTPS | on in INSTALL.md | 3 `.env` lines |
 | [Dictation](#dictation) | a microphone on every message box | a speech-to-text service: bundled (CPU or GPU) or your API key | off (INSTALL.md asks) | `--profile stt` + 1 line |
 | [Attachments](#attachments) | attach files in the message box; agents get signed links | an S3 store: bundled or your own | off | `--profile s3` + 2 lines |
-| [Suggested replies](#suggested-replies) | reply chips when a session hands back to you | an OpenRouter key | off until the key is set | 1 line |
+| [Suggested replies](#suggested-replies) | reply chips when a session hands back to you | an OpenRouter key | off until the key is set, then off for each user until they turn them on | 1 line |
 | [Focus](#focus) | a title and summary per session, searchable | an OpenRouter key | off until the key is set | the same line |
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
@@ -233,10 +233,13 @@ a tap fills the box, never sends. [suggested-replies.md](suggested-replies.md).
   to turn them off for everyone.
 - **Default:** off until you set `MUSTER_AGENT_OPENROUTER_KEY` in `.env`:
   without a key no suggestion can be made, and muster reports the feature as
-  off, needing that variable.
-- **Check:** `muster doctor` or the Features page; then chips appear above the
-  box when a session finishes a turn with its Rendered view open.
-  **Account → Suggested replies** is the per-user switch.
+  off, needing that variable. With the key set, suggestions are still **off
+  for each user until they turn them on**: a user who has never chosen gets
+  no chips and no model call is made for them.
+- **Check:** `muster doctor` or the Features page; then turn them on in
+  **Account → Suggested replies** (the per-user switch: on, and off again),
+  and chips appear above the box when a session finishes a turn with its
+  Rendered view open.
 
 ### Focus
 

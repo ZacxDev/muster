@@ -40,6 +40,9 @@ const windows = { phone: 1, desktop: 2 };
 // A second window per viewport for the drift offer (5.), its own conversation.
 const driftSids = { phone: 'drift-phone-' + stamp, desktop: 'drift-desktop-' + stamp };
 const driftWindows = { phone: 3, desktop: 4 };
+// The drift test's second offer: long enough to wrap on a phone, short enough
+// to be a focus title (focus.TitleCapRunes, 60).
+const longOffer = 'Wiring the Stripe refund flow for partial capture retries';
 const view = (w: number) => `/mirror/view?host=${host}&session=namesx&window=%40${w}`;
 
 const REAL_TAIL = [
@@ -103,6 +106,35 @@ async function closeSidebar(page: Page) {
 async function openSidebar(page: Page) {
   const open = page.locator('#sidebar-open');
   if (await open.isVisible()) await open.click();
+}
+
+// expectStackedOffer: the rename offer is three rows — the copy, then the
+// Rename button, then "Keep the name" — each wholly below the one before it
+// (none overlapping) and inside the banner, the banner and the page with no
+// sideways overflow; "Keep the name" is a text link (no fill, no ring) and
+// both are 44px targets.
+async function expectStackedOffer(page: Page, banner: Locator) {
+  const box = (await banner.boundingBox())!;
+  const copy = (await banner.getByText('This session has moved on to').boundingBox())!;
+  const accept = (await banner.locator('[data-session-drift-accept]').boundingBox())!;
+  const keep = (await banner.locator('[data-session-drift-dismiss]').boundingBox())!;
+  expect(copy.y + copy.height, 'the copy is above the Rename button').toBeLessThanOrEqual(accept.y + 0.5);
+  expect(accept.y + accept.height, 'the Rename button is above Keep the name').toBeLessThanOrEqual(keep.y + 0.5);
+  for (const [what, b] of [['the copy', copy], ['Rename', accept], ['Keep the name', keep]] as const) {
+    expect(b.x, `${what} starts inside the banner`).toBeGreaterThanOrEqual(box.x - 0.5);
+    expect(b.x + b.width, `${what} ends inside the banner`).toBeLessThanOrEqual(box.x + box.width + 0.5);
+  }
+  for (const b of [accept, keep]) expect(b.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+  const o = await banner.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, dw: document.documentElement.scrollWidth, iw: window.innerWidth }));
+  expect(o.sw, 'the banner does not overflow sideways').toBeLessThanOrEqual(o.cw);
+  expect(o.dw, 'the page does not scroll sideways').toBeLessThanOrEqual(o.iw);
+  const look = await banner.locator('[data-session-drift-dismiss]').evaluate((el) => {
+    const c = getComputedStyle(el);
+    return { bg: c.backgroundColor, shadow: c.boxShadow, line: c.textDecorationLine };
+  });
+  expect(look.bg, 'Keep the name has no fill').toBe('rgba(0, 0, 0, 0)');
+  expect(look.shadow, 'Keep the name has no ring').toBe('none');
+  expect(look.line, 'not underlined at rest').toBe('none');
 }
 
 for (const vp of [
@@ -201,19 +233,41 @@ for (const vp of [
       await expect(page.locator('header [data-session-name="auto"]'), 'offered, not renamed').toHaveText('Billing migration');
       const keep = banner.locator('[data-session-drift-dismiss]');
       const accept = banner.locator('[data-session-drift-accept]');
-      for (const b of [keep, accept]) expect((await b.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+      await expect(accept).toHaveText('Rename to “Fixing the Stripe webhook retry”');
+      await expect(keep).toHaveText('Keep the name');
+      await expectStackedOffer(page, banner);
+      if (!vp.use.isMobile) {
+        // A link: underlined on hover.
+        await keep.hover();
+        await expect.poll(() => keep.evaluate((el) => getComputedStyle(el).textDecorationLine)).toBe('underline');
+      }
       // Keep the name: gone, and still gone after a reload.
       await Promise.all([page.waitForEvent('load'), keep.click()]);
       await expect(banner).toHaveCount(0);
       await page.reload();
       await expect(banner).toHaveCount(0);
       // A new focus title releases the dismissal.
-      writeFocus([{ subject: dsub, title: 'Wiring the Stripe refund flow', tail: REAL_TAIL }]);
+      // A LONG offer (57 characters): it wraps — the copy and the button's own
+      // label — inside the banner, still three rows, nothing sideways.
+      writeFocus([{ subject: dsub, title: longOffer, tail: REAL_TAIL }]);
       await page.goto(origin + view(dw));
-      await expect(banner).toHaveAttribute('data-session-drift', 'Wiring the Stripe refund flow');
+      await expect(banner).toHaveAttribute('data-session-drift', longOffer);
+      await expectStackedOffer(page, banner);
+      if (vp.key === 'phone') {
+        // CONTROL that the long case IS long here: the button's label is on
+        // more than one line (its text's line boxes), so the no-overflow check
+        // above saw a wrapped label, not one that happened to fit. (The
+        // button's HEIGHT cannot say so: two 16px lines still fit its 44px.)
+        const lines = await accept.evaluate((el) => {
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          return new Set(Array.from(r.getClientRects(), (b) => Math.round(b.top))).size;
+        });
+        expect(lines, 'the long label wraps on a phone').toBeGreaterThan(1);
+      }
       // Accept: one tap renames it; the name is the person's now.
       await Promise.all([page.waitForEvent('load'), accept.click()]);
-      await expect(page.locator('header [data-session-name="manual"]')).toHaveText('Wiring the Stripe refund flow');
+      await expect(page.locator('header [data-session-name="manual"]')).toHaveText(longOffer);
       await expect(banner).toHaveCount(0);
     });
   });

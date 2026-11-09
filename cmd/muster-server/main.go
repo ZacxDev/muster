@@ -478,8 +478,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.FocusRetention = cfg.FocusRetention
 	}
 	// Suggested replies: the same per-owner OpenRouter key as focus, through
-	// the same plane — no new credential. ON unless MUSTER_SUGGEST=off; the
-	// per-user toggle needs the database (no database: everyone is on).
+	// the same plane — no new credential. Built unless MUSTER_SUGGEST=off; each
+	// user's own toggle needs the database and is OFF until they turn it on
+	// (suggest.DefaultDisabled). No database: no toggle, everyone is on.
 	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, Logger: logger,
 		Gen: &suggest.OpenRouter{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.SuggestModel}}
 	if e2eSuggestGen != nil {
