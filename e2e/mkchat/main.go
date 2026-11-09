@@ -1,6 +1,6 @@
 // Command mkchat gives a browser spec an agent of its OWN with a persisted
 // chat, so the spec can drive real server-rendered bubbles (chatBubble's
-// data-md and data-msg-id) without adding rows to the seeded agents other
+// data-md-rendered and data-msg-id) without adding rows to the seeded agents other
 // specs count. With MUSTER_E2E_DELETE=1 it deletes that agent (and, by the
 // foreign keys, its sessions and messages) instead.
 //

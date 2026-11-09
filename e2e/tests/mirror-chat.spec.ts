@@ -362,7 +362,7 @@ test('a tap opens a clamped bubble, a second tap leaves it open, and only Show l
 
 // The agent chat specs below drive an agent of their OWN (e2e/mkchat) with a
 // persisted chat, so their bubbles are the server's real chatBubble markup
-// (data-md, data-msg-id) without adding rows to a seeded agent other specs
+// (data-md-rendered, data-msg-id) without adding rows to a seeded agent other specs
 // count. It is deleted after.
 //
 // The delete is armed BEFORE mkchat runs, and the delete is idempotent: a run
@@ -503,10 +503,10 @@ test('the agent chat clamps a long bubble and leaves its short seeded ones alone
   const log = page.locator('#chat-log');
   const seeded = log.locator('[data-bubble="user"]').first();
   await expect(seeded).toContainText('Check the docs build.');
-  await expect(seeded).toHaveAttribute('data-md-done', '');
+  await expect(seeded).toHaveAttribute('data-md-rendered', '');
   await expect(seeded).not.toHaveAttribute('data-clamp', /.*/);
   const long = log.locator('[data-bubble="user"]').last();
-  await expect(long).toHaveAttribute('data-md', '');
+  await expect(long).toHaveAttribute('data-md-rendered', '');
   await expect(long).toContainText('agent line 30');
   await expect(long).toHaveAttribute('data-clamp', 'closed');
   await expect.poll(() => fromBottom(page, '#chat-log'), { message: 'the agent log opened at the bottom' }).toBeLessThan(2);
