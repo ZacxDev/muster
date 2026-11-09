@@ -225,6 +225,14 @@ type SessionDrift struct {
 // person's) and "Keep the name" (dismissed until the focus changes again).
 // Server-drawn with the page, so it moves nothing in after paint; nothing for
 // no offer.
+//
+// STACKED, ONE THING PER ROW (operator decision): the copy, then the Rename
+// button, then "Keep the name" as a text link — in one flex row the three
+// competed for the width and a long offer squeezed the copy to a sliver. Each
+// row is at most the banner's width and wraps inside it (a long offer wraps
+// the copy and the button's own label, never the page). "Keep the name" is a
+// form POST like the button above it, styled as a link (no ring, no fill,
+// underlined on hover and keyboard focus), still a 44px-tall target.
 func driftBanner(d *SessionDrift) g.Node {
 	if d == nil || d.Offer == "" {
 		return nil
@@ -236,20 +244,21 @@ func driftBanner(d *SessionDrift) g.Node {
 		}
 		return g.Group(nodes)
 	}
-	const btn = "press inline-flex min-h-[44px] items-center rounded-lg px-3 text-xs font-semibold transition "
 	return Div(
 		ID("session-drift"),
 		g.Attr("data-session-drift", d.Offer),
 		hx("hx-boost", "false"),
-		Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-s1 px-3 py-1 text-xs text-fg2"),
-		Span(Class("min-w-0 flex-1 break-words"), g.Text("This session has moved on to “"+d.Offer+"”.")),
-		Form(Method("post"), Action(d.RenameAction), hx("hx-post", d.RenameAction), hx("hx-swap", "none"),
+		Class("flex flex-col items-start gap-1 border-b border-line bg-s1 px-3 py-2 text-xs text-fg2"),
+		P(Class("max-w-full break-words"), g.Text("This session has moved on to “"+d.Offer+"”.")),
+		Form(Method("post"), Action(d.RenameAction), hx("hx-post", d.RenameAction), hx("hx-swap", "none"), Class("max-w-full"),
 			hidden([2]string{"name", d.Offer}),
-			Button(Type("submit"), g.Attr("data-session-drift-accept", ""), Class(btn+"bg-accent text-on-accent hover:bg-accent/90"),
+			Button(Type("submit"), g.Attr("data-session-drift-accept", ""),
+				Class("press inline-flex min-h-[44px] max-w-full items-center rounded-lg bg-accent px-3 py-1 text-left text-xs font-semibold break-words text-on-accent transition hover:bg-accent/90"),
 				g.Text("Rename to “"+d.Offer+"”"))),
-		Form(Method("post"), Action(SessionDriftDismissPath), hx("hx-post", SessionDriftDismissPath), hx("hx-swap", "none"),
+		Form(Method("post"), Action(SessionDriftDismissPath), hx("hx-post", SessionDriftDismissPath), hx("hx-swap", "none"), Class("max-w-full"),
 			hidden([2]string{"title", d.Offer}),
-			Button(Type("submit"), g.Attr("data-session-drift-dismiss", ""), Class(btn+"text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"),
+			Button(Type("submit"), g.Attr("data-session-drift-dismiss", ""),
+				Class("inline-flex min-h-[44px] min-w-[44px] items-center px-1 text-xs font-semibold text-fg2 underline-offset-2 hover:text-fg hover:underline focus-visible:underline"),
 				g.Text("Keep the name"))),
 	)
 }

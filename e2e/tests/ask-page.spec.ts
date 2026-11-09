@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { askPageConnectPort, askPageFakePort, askPagePort, dsn, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { turnSuggestionsOn } from '../lib/suggest';
 
 // THE ASK PAGE A NOTIFICATION OPENS (internal/api attention_ask_page.go), in a
 // real browser against a real muster-server (the e2eterm build, its suggestion
@@ -135,6 +136,7 @@ for (const vp of [
       hold = vp.live ? new Promise<void>((r) => (release = r)) : undefined;
       const before = calls;
       await signIn(page, origin);
+      await turnSuggestionsOn(page, origin); // off until the user turns them on
       const id = await ask(question(vp.name));
       if (!vp.live) await expect.poll(() => calls - before, { timeout: 15_000 }).toBe(1);
 
@@ -213,6 +215,7 @@ test.describe('answered elsewhere, phone 390×844', () => {
     test.setTimeout(90_000);
     hold = undefined;
     await signIn(page, origin);
+    await turnSuggestionsOn(page, origin); // off until the user turns them on
     const id = await ask(question('elsewhere'));
     await page.goto(origin + `/attention/asks/${id}`);
     await expect(page.locator('[data-ask-dismiss]')).toBeVisible();
@@ -235,6 +238,7 @@ test.describe('desktop 1280×800', () => {
     test.setTimeout(90_000);
     hold = undefined;
     await signIn(page, origin);
+    await turnSuggestionsOn(page, origin); // off until the user turns them on
     const id = await ask(question('desktop'));
     await page.goto(origin + `/attention/open/ask-${id}`);
     await page.waitForURL(origin + `/attention/asks/${id}`);
