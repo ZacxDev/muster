@@ -58,8 +58,11 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	owner := requestOwner(r.Context())
 	usage := s.suggestUsageReadout(r, owner)
 	outcome := eng.Enabled(r.Context(), owner)
+	if eng.Prefs == nil && outcome == suggest.OutcomeUserOff {
+		return head + state("off", "Off for everyone: this server has no database, so there is no per-user switch here. MUSTER_SUGGEST=on turns them on for everyone.") + usage + `</section>`
+	}
 	if eng.Prefs == nil && outcome != suggest.OutcomePaused {
-		return head + state("on", "On. (This server has no database, so it cannot be turned off per user here.)") + usage + `</section>`
+		return head + state("on", "On for everyone (MUSTER_SUGGEST=on). This server has no database, so it cannot be turned off per user here.") + usage + `</section>`
 	}
 	switch outcome {
 	case suggest.OutcomeUserOff:

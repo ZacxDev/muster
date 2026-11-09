@@ -478,7 +478,7 @@ func TestTheChipRowsReportsCountAndCarryNoText(t *testing.T) {
 // suggestions back on in Account resumes them, and the Account page's own
 // form comes back to the page.
 func TestAPausedUserIsToldSoAndTheToggleResumesThem(t *testing.T) {
-	prefs := &suggestPrefs{}
+	prefs := &suggestPrefs{saved: true} // saved ON
 	f := newSuggestFixture(t, func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = prefs })
 	f.eng.PerOwner, f.eng.Global = 10_000, 10_000
 	// 200 sets shown, none tapped.
@@ -539,8 +539,9 @@ func TestTheAccountSectionSaysTheStateAndOffersTheToggle(t *testing.T) {
 		state string
 		on    string // the form's on value, "" for no form
 	}{
-		{"on", func(*suggest.Engine, *suggestPrefs) {}, "on", "0"},
-		{"off", func(_ *suggest.Engine, p *suggestPrefs) { p.off = true }, "off", "1"},
+		{"on", func(_ *suggest.Engine, p *suggestPrefs) { p.saved = true }, "on", "0"},
+		{"off", func(_ *suggest.Engine, p *suggestPrefs) { p.off, p.saved = true, true }, "off", "1"},
+		{"never chose", func(*suggest.Engine, *suggestPrefs) {}, "off", "1"},
 		{"server off", func(e *suggest.Engine, _ *suggestPrefs) { e.Off = true }, "server-off", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -576,7 +577,7 @@ func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_" + strings.Repeat("a", 26)}}
 		}, false},
 		{"kill switch", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Off = true }, false},
-		{"user off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true} }, false},
+		{"user off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true, saved: true} }, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

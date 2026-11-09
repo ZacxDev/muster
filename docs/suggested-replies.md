@@ -16,7 +16,8 @@ confirmation, which shows the exact text
 
 Off by default for each user: a user turns them on (and off again) in
 **Account → Suggested replies**; until they do, they get no chips and no model
-call is made for them.
+call is made for them. A server with no database has no per-user switch, so
+they are off for everyone there unless `MUSTER_SUGGEST=on`.
 Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet) —
 and an attention **ask**, whose notification and page offer the same kind of
 chips for its question ([attention.md](attention.md#suggested-replies-to-an-ask)).
@@ -236,10 +237,15 @@ user who was not paused keeps their counts).
 
 - `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)),
   whatever any user chose.
+- `MUSTER_SUGGEST=on` matters only with **no database**: nobody can save a
+  choice there, so suggestions are off for everyone unless it is set, and on
+  for everyone (with an OpenRouter key) when it is. With a database it
+  changes nothing: each user's own switch, off until they turn it on, governs.
 - Each user's own toggle, in **Account → Suggested replies** (or
   `POST /account/suggest` with `on=1` or `on=0`; stored in
   `suggest_preferences`, migration `0048`). **Off is the default**: a user
-  with no saved choice is off (`suggest.DefaultDisabled`); a saved choice,
+  with no saved choice is off (`suggest.DefaultDisabled`, applied in one
+  place, `Engine.userOff`); a saved choice,
   on or off, is kept as it is. The default was on until November 2026; a
   row saved while it was still means what it meant: `disabled = false` is
   on, `true` is off. Off also drops

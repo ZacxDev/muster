@@ -66,7 +66,7 @@ func featureCatalog() []features.Feature {
 				v(envUploadSigningKey, "32+ random bytes")},
 			Settings: []string{envS3Endpoint, envS3Bucket, envS3AccessKey, envS3SecretKey, envPublicURL, envS3Region, envUploadMaxBytes, envUploadLinkTTL}},
 		{ID: features.SuggestedReplies, Name: "Suggested replies",
-			Description: "Up to three suggested replies when a Claude Code session hands back control. Off for each user until they turn them on in Account; needs an OpenRouter key.",
+			Description: "Up to three suggested replies when a Claude Code session hands back control. Off for each user until they turn them on in Account (with no database, until MUSTER_SUGGEST=on); needs an OpenRouter key.",
 			Enable:      []features.Var{v(envAgentOpenRouterKey, "OpenRouter key")},
 			Settings:    []string{envSuggest, envSuggestModel}},
 		{ID: features.Focus, Name: "Session focus",
@@ -314,6 +314,11 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 		st[features.SuggestedReplies] = off(envSuggest + "=off turns them off for everyone")
 	case c.openRouterKeyMissing():
 		st[features.SuggestedReplies] = openRouterStatus(ext)
+	case ext.Suggest.OffForEveryone():
+		// After the key (without it nothing can turn them on). No database:
+		// nobody can turn them on for themselves, so they are off for
+		// everyone (the engine's own default) until the server says on.
+		st[features.SuggestedReplies] = off(noDB + ", so they are off for everyone unless " + envSuggest + "=on")
 	default:
 		st[features.SuggestedReplies] = on("")
 	}

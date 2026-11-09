@@ -39,6 +39,12 @@ func pgPrefsDSN(t *testing.T) (*PGPrefs, string) {
 	return NewPGPrefs(pool), dsn
 }
 
+// disabled is owner's toggle as the engine reads it from p: the saved
+// choice, or DefaultDisabled for none (Engine.userOff, the one place).
+func disabled(p *PGPrefs, ctx context.Context, owner int64) (bool, error) {
+	return (&Engine{Prefs: p}).userOff(ctx, owner)
+}
+
 func asUser(uid int64) context.Context {
 	role := authz.RoleMember
 	if uid == authz.OperatorUserID {
@@ -53,26 +59,26 @@ func asUser(uid int64) context.Context {
 func TestTheToggleIsOffByDefaultAndPerUser(t *testing.T) {
 	p := pgPrefs(t)
 	for _, u := range []int64{2, 3} {
-		if off, err := p.Disabled(asUser(u), u); err != nil || !off {
+		if off, err := disabled(p, asUser(u), u); err != nil || !off {
 			t.Fatalf("user %d, never chose: off=%v err=%v (want off)", u, off, err)
 		}
 	}
 	if err := p.SetDisabled(asUser(2), 2, false); err != nil {
 		t.Fatal(err)
 	}
-	if off, err := p.Disabled(asUser(2), 2); err != nil || off {
+	if off, err := disabled(p, asUser(2), 2); err != nil || off {
 		t.Fatalf("user 2 turned it on: off=%v err=%v", off, err)
 	}
-	if off, err := p.Disabled(asUser(3), 3); err != nil || !off {
+	if off, err := disabled(p, asUser(3), 3); err != nil || !off {
 		t.Fatalf("user 2's ON reached user 3: off=%v err=%v", off, err)
 	}
 	// User 3 reading user 2's row is refused before the query (RLS would hide
 	// the row, which would read as the default): the engine reads the error
 	// as off.
-	if _, err := p.Disabled(asUser(3), 2); !errors.Is(err, ErrNotOwner) {
+	if _, err := disabled(p, asUser(3), 2); !errors.Is(err, ErrNotOwner) {
 		t.Fatalf("user 3 read user 2's toggle: err=%v", err)
 	}
-	if _, err := p.Disabled(context.Background(), 2); !errors.Is(err, ErrNotOwner) {
+	if _, err := disabled(p, context.Background(), 2); !errors.Is(err, ErrNotOwner) {
 		t.Fatalf("a principal-less read: err=%v", err)
 	}
 	// User 3 writing user 2's row (off, or on) is refused, and changes nothing.
@@ -81,16 +87,16 @@ func TestTheToggleIsOffByDefaultAndPerUser(t *testing.T) {
 			t.Fatalf("user 3 wrote user 2's toggle (disabled=%v)", d)
 		}
 	}
-	if off, _ := p.Disabled(asUser(2), 2); off {
+	if off, _ := disabled(p, asUser(2), 2); off {
 		t.Fatal("user 3's write changed user 2's toggle")
 	}
-	if off, _ := p.Disabled(asUser(3), 3); !off {
+	if off, _ := disabled(p, asUser(3), 3); !off {
 		t.Fatal("user 3's refused write of user 2's row turned user 3 on")
 	}
 	if err := p.SetDisabled(asUser(2), 2, true); err != nil {
 		t.Fatal(err)
 	}
-	if off, _ := p.Disabled(asUser(2), 2); !off {
+	if off, _ := disabled(p, asUser(2), 2); !off {
 		t.Fatal("off again")
 	}
 }
@@ -108,7 +114,7 @@ func TestASavedChoiceKeepsItsMeaning(t *testing.T) {
 		off   bool
 		what  string
 	}{{2, false, "a saved ON"}, {3, true, "a saved OFF"}, {4, true, "no row (the default)"}} {
-		if off, err := p.Disabled(asUser(c.owner), c.owner); err != nil || off != c.off {
+		if off, err := disabled(p, asUser(c.owner), c.owner); err != nil || off != c.off {
 			t.Errorf("%s (user %d): off=%v err=%v, want off=%v", c.what, c.owner, off, err, c.off)
 		}
 	}
