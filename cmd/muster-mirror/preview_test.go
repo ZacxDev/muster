@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -83,7 +84,9 @@ func TestCheckPreviewRefusesEachBadInputWithItsReason(t *testing.T) {
 		{"url with user info", func(p *previewFlags) { p.URLs = "wss://u:p@tunnel.example.net/v1/host" }, false, "nothing else"},
 		{"too many urls", func(p *previewFlags) { p.URLs = "ws://a/,ws://b/,ws://c/,ws://d/,ws://e/" }, false, "at most 4"},
 		{"no token file", func(p *previewFlags) { p.TokenFile = "" }, false, "set -preview-token-file"},
-		{"token readable by others", func(p *previewFlags) { p.TokenFile = write("open", goodPreviewToken, 0o644) }, false, "readable by others (mode 0644)"},
+		{"token readable by group and others", func(p *previewFlags) { p.TokenFile = write("open", goodPreviewToken, 0o644) }, false, "readable by group or others (mode 0644)"},
+		{"token readable by group", func(p *previewFlags) { p.TokenFile = write("grp", goodPreviewToken, 0o640) }, false, "readable by group or others (mode 0640)"},
+		{"token readable by others only", func(p *previewFlags) { p.TokenFile = write("oth", goodPreviewToken, 0o604) }, false, "readable by group or others (mode 0604)"},
 		{"token symlink", func(p *previewFlags) { p.TokenFile = link }, false, "not a regular file"},
 		{"not a preview token", func(p *previewFlags) { p.TokenFile = write("mmt", "mmt_"+strings.Repeat("B", 43), 0o600) }, false, "does not hold a preview host token"},
 		{"bare prefix", func(p *previewFlags) { p.TokenFile = write("bare", "mpt_", 0o600) }, false, "does not hold a preview host token"},
@@ -99,6 +102,71 @@ func TestCheckPreviewRefusesEachBadInputWithItsReason(t *testing.T) {
 				t.Fatalf("the reason prints the token: %v", err)
 			}
 		})
+	}
+}
+
+// TestATokenOnlyItsOwnerCanReadIsAccepted: the controls for the mode cases
+// above — 0400 and 0700 (owner only, whatever the owner's bits) pass.
+func TestATokenOnlyItsOwnerCanReadIsAccepted(t *testing.T) {
+	file, _ := previewFiles(t, `{"ports": ["5173"]}`)
+	for _, mode := range []os.FileMode{0o400, 0o600, 0o700} {
+		p := filepath.Join(t.TempDir(), "tok")
+		if err := os.WriteFile(p, []byte(goodPreviewToken), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := checkPreview(previewFlags{On: true, URLs: "wss://tunnel.example.net/v1/host", TokenFile: p, File: file}, true); err != nil {
+			t.Errorf("mode %04o refused: %v", mode, err)
+		}
+	}
+}
+
+// TestTheRefusedMCPPortIsTheOneTheEndpointBinds is the relationship between
+// -mcp-listen and previews: for every address, EITHER ListenMCP refuses it
+// (no endpoint, nothing to protect) OR the port it actually bound is refused by
+// alwaysRefusedPorts(that address). Port 0 and a service name used to bind a
+// port the text did not show, leaving the refused set empty.
+func TestTheRefusedMCPPortIsTheOneTheEndpointBinds(t *testing.T) {
+	cfg, err := previewhost.Parse([]byte(`{"ports": ["1024-65535"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freePort := free.Addr().(*net.TCPAddr).Port
+	free.Close()
+	for _, c := range []struct {
+		addr       string
+		mustRefuse bool
+	}{
+		{"127.0.0.1:0", true},
+		{"127.0.0.1:http", true},
+		{"127.0.0.1:" + fmt.Sprint(freePort), false},
+		{"127.0.0.1:+" + fmt.Sprint(freePort), true},
+	} {
+		l, err := mirrorhost.ListenMCP(c.addr)
+		if err != nil {
+			if !c.mustRefuse {
+				t.Errorf("%s: refused: %v", c.addr, err)
+			} else if !strings.Contains(err.Error(), "the port must be a number 1-65535") {
+				t.Errorf("%s: refused for another reason: %v", c.addr, err)
+			}
+			continue
+		}
+		bound := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		if c.mustRefuse {
+			t.Errorf("%s: ListenMCP bound port %d", c.addr, bound)
+		}
+		aerr := cfg.Allows(bound, alwaysRefusedPorts(c.addr, nil))
+		var r *previewhost.Refusal
+		if !errors.As(aerr, &r) || r.Code != previewhost.CodePortNotAllowed || !strings.Contains(r.Why, "MCP endpoint") {
+			t.Errorf("%s: the endpoint bound port %d and previews allow it (%v)", c.addr, bound, aerr)
+		}
 	}
 }
 

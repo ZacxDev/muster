@@ -111,8 +111,8 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
-// Parse validates previews.json's bytes. Unknown fields are refused, so a
-// misspelt cap ("maxconns") is an error rather than a silent default.
+// Parse validates previews.json's bytes. Unknown fields are refused, and every
+// key must be spelt exactly (see the exact-key pass below).
 func Parse(b []byte) (Config, error) {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return Config{}, errors.New("the file is empty")
@@ -126,8 +126,12 @@ func Parse(b []byte) (Config, error) {
 	if dec.More() {
 		return Config{}, errors.New("more than one JSON value")
 	}
-	// encoding/json matches keys CASE-INSENSITIVELY, so DisallowUnknownFields
-	// alone takes "maxconns" for "maxConns". Every key must be spelt exactly.
+	// encoding/json matches keys CASE-INSENSITIVELY, and DisallowUnknownFields
+	// does not change that: a lone case variant ("maxconns") is HONOURED as
+	// maxConns, not defaulted, and the same key twice in different casing
+	// (`"maxConns": 7, "maxconns": 9`) silently yields the LAST one, 9. This
+	// pass refuses both: every key must be spelt exactly, so the file means
+	// one thing.
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(b, &keys); err != nil {
 		return Config{}, fmt.Errorf("not a previews.json object: %w", err)

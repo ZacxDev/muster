@@ -125,11 +125,22 @@ func parseHexAddr(h string, v6 bool) (netip.Addr, bool) {
 	return netip.AddrFrom16(out).Unmap(), true
 }
 
+// Listeners is one read of /proc/net/tcp{,6}: its LISTEN sockets, and how many
+// rows could not be parsed. A bad row could be any socket — another user's
+// listener included — so a check that must not fail open (CheckListener)
+// refuses while Bad > 0; the offer scan, which only ever leaves things out,
+// reads Sockets alone.
+type Listeners struct {
+	Sockets []Socket
+	Bad     int
+}
+
 // ReadListeners reads <root>/net/tcp and <root>/net/tcp6 and returns their
-// LISTEN sockets. root is "/proc" on this host or a test's fixture tree. A
-// missing tcp6 (a kernel without IPv6) is not an error; a missing tcp is.
-func ReadListeners(root string) ([]Socket, error) {
-	var all []Socket
+// LISTEN sockets and bad-row count. root is "/proc" on this host or a test's
+// fixture tree. A missing tcp6 (a kernel without IPv6) is not an error; a
+// missing tcp is, and so is a file with bad rows and no socket read.
+func ReadListeners(root string) (Listeners, error) {
+	var all Listeners
 	for _, f := range []struct {
 		name string
 		v6   bool
@@ -139,25 +150,31 @@ func ReadListeners(root string) ([]Socket, error) {
 			if f.v6 && os.IsNotExist(err) {
 				continue
 			}
-			return nil, err
+			return Listeners{}, err
 		}
 		socks, bad := ParseProcNet(b, f.v6)
 		if bad > 0 && len(socks) == 0 {
-			return nil, fmt.Errorf("%s: %d rows in an unknown shape and no listener read", filepath.Join(root, "net", f.name), bad)
+			return Listeners{}, fmt.Errorf("%s: %d rows in an unknown shape and no listener read", filepath.Join(root, "net", f.name), bad)
 		}
-		all = append(all, socks...)
+		all.Sockets = append(all.Sockets, socks...)
+		all.Bad += bad
 	}
 	return all, nil
 }
 
-// CheckListener is the foreign_listener check, on sockets ReadListeners
-// returned: nil when port has at least one listener where a loopback dial
-// reaches it (Socket.Local) and EVERY such listener is uid's; a *Refusal with
+// CheckListener is the foreign_listener check, on a ReadListeners read: nil
+// when port has at least one listener where a loopback dial reaches it
+// (Socket.Local) and EVERY such listener is uid's; a *Refusal with
 // CodeForeignListener when any is another user's — the dial could reach that
-// one, so one is enough; CodeNotListening when there is none.
-func CheckListener(socks []Socket, port, uid int) error {
+// one, so one is enough — and ALSO when the read had rows it could not parse
+// (FAIL CLOSED: an unread row may be another user's listener on this port);
+// CodeNotListening when there is none.
+func CheckListener(l Listeners, port, uid int) error {
+	if l.Bad > 0 {
+		return &Refusal{Code: CodeForeignListener, Why: fmt.Sprintf("%d row(s) of /proc/net/tcp{,6} could not be read, so whose listener holds port %d is unknown", l.Bad, port)}
+	}
 	found := false
-	for _, s := range socks {
+	for _, s := range l.Sockets {
 		if s.Port != port || !s.Local() {
 			continue
 		}

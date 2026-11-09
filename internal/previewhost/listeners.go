@@ -79,10 +79,11 @@ func (s *Scanner) Scan(c Config, refused AlwaysRefused, panes map[int]string) ([
 	if !c.Offer {
 		return nil, nil
 	}
-	socks, err := ReadListeners(s.root())
+	read, err := ReadListeners(s.root())
 	if err != nil {
 		return nil, err
 	}
+	socks := read.Sockets
 	// Only the sockets that could be reported get their owner looked up.
 	want := map[uint64]int{} // inode → port
 	for _, k := range socks {

@@ -31,7 +31,8 @@ func TestABadPreviewsFileDisablesWithItsReason(t *testing.T) {
 		{"signed", `{"ports": ["+3000"]}`, `"+3000" is not a port number`},
 		{"one bad among good", `{"ports": ["3000", "x", "5173"]}`, `port entry "x"`},
 		{"ports as numbers", `{"ports": [3000]}`, "not a previews.json object"},
-		{"misspelt cap", `{"ports": ["3000"], "maxconns": 8}`, `unknown field "maxconns"`},
+		{"case variant of a key", `{"ports": ["3000"], "maxconns": 8}`, `unknown field "maxconns"`},
+		{"same key twice in different casing", `{"ports": ["3000"], "maxConns": 7, "maxconns": 9}`, `unknown field "maxconns"`},
 		{"unknown key", `{"ports": ["3000"], "share": true}`, `unknown field "share"`},
 		{"duplicate key in other case", `{"ports": ["3000"], "Ports": ["22"]}`, `unknown field "Ports"`},
 		{"maxOpen zero", `{"ports": ["3000"], "maxOpen": 0}`, `"maxOpen" 0 is outside 1-32`},
@@ -135,14 +136,9 @@ func TestTheMCPAndOpencodePortsAreRefusedEvenWhenListed(t *testing.T) {
 	}
 }
 
-// TestPortsOfTheRefusedEndpoints: how muster-mirror finds the ports to refuse
-// from -mcp-listen and the opencode token's url.
+// TestPortsOfTheRefusedEndpoints: how muster-mirror finds the opencode
+// server's port to refuse from the opencode token's url.
 func TestPortsOfTheRefusedEndpoints(t *testing.T) {
-	for addr, want := range map[string]int{"127.0.0.1:47823": 47823, "[::1]:4000": 4000, "": 0, "127.0.0.1": 0, "x:0": 0} {
-		if got, ok := PortOfAddr(addr); got != want || ok != (want != 0) {
-			t.Errorf("PortOfAddr(%q) = %d, %v; want %d", addr, got, ok, want)
-		}
-	}
 	for u, want := range map[string]int{"http://127.0.0.1:4096": 4096, "http://127.0.0.1": 80, "https://[::1]": 443, "http://127.0.0.1:4096/x": 4096, "": 0, "ftp://h": 0} {
 		if got, ok := PortOfURL(u); got != want || ok != (want != 0) {
 			t.Errorf("PortOfURL(%q) = %d, %v; want %d", u, got, ok, want)

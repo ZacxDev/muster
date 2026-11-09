@@ -127,7 +127,7 @@ func readPreviewToken(path string) (string, error) {
 		return "", fmt.Errorf("the preview token file %s is not a regular file", path)
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("the preview token file %s is readable by others (mode %04o); chmod 600 it", path, fi.Mode().Perm())
+		return "", fmt.Errorf("the preview token file %s is readable by group or others (mode %04o); chmod 600 it", path, fi.Mode().Perm())
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -144,7 +144,10 @@ func readPreviewToken(path string) (string, error) {
 // -mcp-listen's (muster's tools) and the opencode server's (from the token
 // file's url, which can change while the host runs).
 func alwaysRefusedPorts(mcpListen string, oc *opencodehost.Credentials) previewhost.AlwaysRefused {
-	mcpPort, mcpOK := previewhost.PortOfAddr(mcpListen)
+	// The port ListenMCP binds: MCPListenPort is its one source, so an address
+	// it refuses (port 0, a service name) starts no endpoint to refuse.
+	mcpPort, err := mirrorhost.MCPListenPort(mcpListen)
+	mcpOK := mcpListen != "" && err == nil
 	return func() map[int]string {
 		out := map[int]string{}
 		if mcpOK {

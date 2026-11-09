@@ -108,11 +108,20 @@ func TestTheMCPEndpointListensOnLoopbackOnly(t *testing.T) {
 			t.Errorf("%s: %v", addr, err)
 		}
 	}
-	l, err := ListenMCP("127.0.0.1:0")
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := free.Addr().String()
+	free.Close()
+	l, err := ListenMCP(addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	if l.Addr().String() != addr {
+		t.Fatalf("bound %v, asked for %s", l.Addr(), addr)
+	}
 	if ip := l.Addr().(*net.TCPAddr).IP; !ip.IsLoopback() {
 		t.Fatalf("listening on %v", ip)
 	}

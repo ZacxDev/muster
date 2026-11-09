@@ -22,8 +22,10 @@ const fixtureTCP = `  sl  local_address rem_address   st tx_queue rx_queue tr tm
    4: 0100007F:1435 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 50005 1 0000000000000000 20 4 30 10 -1
    5: 0100007F:1F9A 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 50009 1 0000000000000000 100 0 0 10 0
    6: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 50010 1 0000000000000000 100 0 0 10 0
-   7: this row is not a socket
-`
+` + fixtureBadRow
+
+// fixtureBadRow is fixtureTCP's one row that is not a socket.
+const fixtureBadRow = "   7: this row is not a socket\n"
 
 const fixtureTCP6 = `  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000001000000:1435 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 50006 1 0000000000000000 100 0 0 10 0

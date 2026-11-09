@@ -2,7 +2,6 @@ package previewhost
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -132,20 +131,6 @@ func (c Config) Allows(port int, refused AlwaysRefused) error {
 		return &Refusal{Code: CodePortNotAllowed, Why: fmt.Sprintf("port %d is not on the allowlist (%s)", port, c.Ports)}
 	}
 	return nil
-}
-
-// PortOfAddr is the port of a host:port listen address ("127.0.0.1:47823",
-// "[::1]:47823"); false when it has none.
-func PortOfAddr(addr string) (int, bool) {
-	_, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		return 0, false
-	}
-	n, err := strconv.Atoi(p)
-	if err != nil || n < 1 || n > 65535 {
-		return 0, false
-	}
-	return n, true
 }
 
 // PortOfURL is the port a URL connects to: its explicit port, else its

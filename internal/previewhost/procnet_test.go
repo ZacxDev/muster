@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -70,20 +71,12 @@ func TestParseProcNetRefusesWrongWidthsAndFamilies(t *testing.T) {
 // listens on is not_listening; and a foreign listener on a LAN address only
 // (unreachable by the loopback dial) is not_listening, not foreign.
 func TestForeignListenerThroughTheProcSeam(t *testing.T) {
-	f := newProcFixture(t, fixtureTCP, fixtureTCP6)
+	// The fixture without its one malformed row: a bad row makes the check
+	// refuse everything (TestCheckListenerFailsClosedOnARowItCannotRead).
+	f := newProcFixture(t, strings.Replace(fixtureTCP, fixtureBadRow, "", 1), fixtureTCP6)
 	socks, err := ReadListeners(f.root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := func(err error) string {
-		var r *Refusal
-		if errors.As(err, &r) {
-			return r.Code
-		}
-		if err != nil {
-			return "other: " + err.Error()
-		}
-		return ""
+	if err != nil || socks.Bad != 0 {
+		t.Fatalf("read: %+v, %v; want no bad rows", socks, err)
 	}
 	for _, c := range []struct {
 		port int
@@ -105,7 +98,7 @@ func TestForeignListenerThroughTheProcSeam(t *testing.T) {
 		t.Errorf("port 5173 as uid 4242: %q, want foreign_listener", got)
 	}
 	// A foreign row on a LAN address next to an own loopback one: still own.
-	lan := append([]Socket{{Addr: netip.MustParseAddr("192.0.2.10"), Port: 5173, UID: 1001, Inode: 1}}, socks...)
+	lan := Listeners{Sockets: append([]Socket{{Addr: netip.MustParseAddr("192.0.2.10"), Port: 5173, UID: 1001, Inode: 1}}, socks.Sockets...)}
 	if got := code(CheckListener(lan, 5173, fixtureUID)); got != "" {
 		t.Errorf("own loopback + foreign LAN on 5173: %q, want allowed", got)
 	}
@@ -118,10 +111,49 @@ func TestReadListenersSaysWhenTheFileIsInAnUnknownShape(t *testing.T) {
 		t.Fatal("a tcp table of garbage read as no listeners")
 	}
 	socks, err := ReadListeners(newProcFixture(t, "  sl  local_address rem_address\n", "").root)
-	if err != nil || len(socks) != 0 {
+	if err != nil || len(socks.Sockets) != 0 || socks.Bad != 0 {
 		t.Fatalf("empty table, no tcp6: %v, %v; want none, no error", socks, err)
 	}
 	if _, err := ReadListeners(t.TempDir()); err == nil {
 		t.Fatal("a root with no net/tcp read as no listeners")
+	}
+}
+
+// code is err's Refusal code, "" for nil, "other: …" for anything else.
+func code(err error) string {
+	var r *Refusal
+	if errors.As(err, &r) {
+		return r.Code
+	}
+	if err != nil {
+		return "other: " + err.Error()
+	}
+	return ""
+}
+
+// TestCheckListenerFailsClosedOnARowItCannotRead: one good row (this user's
+// 127.0.0.1:5173) and one malformed row. The check refuses 5173 as
+// foreign_listener, saying a row could not be read — the unread row might be
+// another user's listener on it. The control is the same good row alone,
+// allowed. The offer scan is not held to this: it reads Sockets only.
+func TestCheckListenerFailsClosedOnARowItCannotRead(t *testing.T) {
+	const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+	good := "   0: 0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 50001 1 0000000000000000 100 0 0 10 0\n"
+	bad := "   1: 0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  uid?        0 50002 1 0000000000000000 100 0 0 10 0\n"
+	l, err := ReadListeners(newProcFixture(t, header+good+bad, "").root)
+	if err != nil || l.Bad != 1 || len(l.Sockets) != 1 {
+		t.Fatalf("read: %+v, %v; want 1 socket, 1 bad row", l, err)
+	}
+	err = CheckListener(l, 5173, fixtureUID)
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeForeignListener || !strings.Contains(r.Why, "could not be read") {
+		t.Fatalf("one good + one bad row: %v; want foreign_listener saying a row could not be read", err)
+	}
+	l, err = ReadListeners(newProcFixture(t, header+good, "").root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := code(CheckListener(l, 5173, fixtureUID)); got != "" {
+		t.Fatalf("control, the good row alone: %q, want allowed", got)
 	}
 }

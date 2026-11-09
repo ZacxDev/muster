@@ -69,7 +69,7 @@ func TestTheRealProcFindsThisTestsOwnListener(t *testing.T) {
 	}
 }
 
-func mustListeners(t *testing.T) []previewhost.Socket {
+func mustListeners(t *testing.T) previewhost.Listeners {
 	t.Helper()
 	s, err := previewhost.ReadListeners("/proc")
 	if err != nil {
