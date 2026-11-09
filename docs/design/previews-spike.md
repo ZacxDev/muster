@@ -10,8 +10,8 @@ module). Measured 2026-11-08.
 | | |
 |---|---|
 | **Transport** | **Go for HTTP/2 `CONNECT` over `websocket.NetConn`**, with one configuration rule (below). yamux also passed (1)–(3), so the fallback is not needed. |
-| **Edge** | **Not measured.** (4) and (5), and the part of (1) the edge contributes, need the real edge path. `musterchief.com` has no DNS records yet, so no real path exists to measure. |
-| **Phase 1** | **Still gated** on running this same harness from a real host through the real edge to a gateway in the cluster. Only the transport question is settled here. |
+| **Edge** | **Measured 2026-11-09** (see "Real-edge results" at the end): (4) **pass** (Cloudflare cuts idle WS at ≈125 s; 30 s pings keep it up), (5) **pass**, (1) **fail**. The extra edge leg (≈100 ms on that topology) dominates, not the transport. |
+| **Phase 1** | Transport and edge behaviour are settled. **(1) needs a host↔gateway edge round trip under ≈50 ms**, which is a gateway-placement question, not a tunnel one. |
 
 The doc asks for the measurement "from one real host, over the deployment's
 real edge path to a gateway in the cluster". This spike ran **on one host, on
