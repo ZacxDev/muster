@@ -1213,13 +1213,15 @@ yet.
 
 A host started with `-interactive` **and** `-agent-spawn`
 (`MUSTER_MIRROR_AGENT_SPAWN`), on its **default** tmux server, lets your chief
-start a Claude Code agent there ([design](design/chief-dispatch.md), section 3).
+start a Claude Code agent there — or, on a tenant's mirror that also opts in
+with `-agent-spawn-tenant-server`, into that tenant's tmux server (below) ([design](design/chief-dispatch.md), section 3).
 It is off by default, because it starts a process on the host, and it does
 nothing until you also list repositories:
 
 | flag | env | default | |
 |---|---|---|---|
-| `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses) |
+| `-agent-spawn` | `MUSTER_MIRROR_AGENT_SPAWN` | off | turn it on (needs `-interactive`, and the default tmux server: a tenant's mirror refuses unless it also sets `-agent-spawn-tenant-server`) |
+| `-agent-spawn-tenant-server` | `MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER` | empty | a tenant's mirror only: opt in to spawning on its tmux server. The value must name **the same server** as the mirror's own `-tmux-socket` (a socket name) or `-tmux-socket-path` (an absolute path); see [tenants](#starting-agents-on-a-tenants-tmux-server) |
 | `-agent-spawn-repos` | `MUSTER_MIRROR_AGENT_SPAWN_REPOS` | **empty: none** | the `<owner>/<repo>` this host spawns in, or `<owner>/*` for every repository of that owner (case-insensitive; the owner must match exactly, never as a prefix). With a wildcard, which repositories have a clone under `-agent-spawn-roots` (and are connected in muster) is the bound within that owner. Empty means nothing spawns |
 | `-agent-spawn-roots` | `MUSTER_MIRROR_AGENT_SPAWN_ROOTS` | `~/src` | colon-separated directories whose direct children are your clones |
 | `-agent-spawn-dir` | `MUSTER_MIRROR_AGENT_SPAWN_DIR` | `$XDG_DATA_HOME/muster-mirror/agents` | where worktrees go |
@@ -1252,7 +1254,8 @@ repository, a base branch, the prompt and a display name. The host:
   after `--`);
 - fetches `origin/<base>` and cuts a **new worktree** at
   `<agent-spawn-dir>/<owner>__<repo>/<dispatch>` on the branch
-  `muster/<dispatch>-<slug>`. Your own checkout is never touched; a dirty clone
+  `muster/<dispatch>-<slug>` (on a tenant's server, under its namespace:
+  [tenants](#starting-agents-on-a-tenants-tmux-server)). Your own checkout is never touched; a dirty clone
   is fine. Submodules are initialised under a time budget, as a warning if they
   do not finish;
 - writes Claude Code's folder-trust entry for that worktree and nothing else
@@ -1287,10 +1290,64 @@ later turn in the window puts the card back to Working. An older host sends no
 `outcomes` message, so its opencode dispatches stay Working until their window
 closes. Details: [design](design/chief-dispatch.md), section 3.7.
 
+### Starting agents on a tenant's tmux server
+
+A `muster-mirror@<tenant>` unit mirrors its own tmux server (`-tmux-socket
+<tenant>`). Setting `-agent-spawn` there **alone still refuses** every spawn
+(`not the default tmux server`), so a tenant unit that inherits the flag by
+mistake starts nothing. To let that tenant's muster start agents on this host,
+set both, and name the unit's own server:
+
+```
+MUSTER_MIRROR_INTERACTIVE=1
+MUSTER_MIRROR_TMUX_SOCKET=acme
+MUSTER_MIRROR_AGENT_SPAWN=1
+MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER=acme
+MUSTER_MIRROR_AGENT_SPAWN_REPOS=acme-org/widgets
+```
+
+- The opt-in must resolve to the server the mirror mirrors (`acme` and
+  `-tmux-socket-path <realpath(${TMUX_TMPDIR:-/tmp})>/tmux-<uid>/acme` are the
+  same server). Naming any other server — another tenant's, or `default` —
+  refuses every spawn with `-agent-spawn-tenant-server names another tmux
+  server than the one this mirror mirrors`. A value that is neither a socket
+  name nor an absolute path stops the mirror at startup.
+- **The tenant's tmux server must already be running.** The host never starts
+  it: a spawn while it is down is refused, `the tenant tmux server is not
+  running (this host never starts it)`. (A server started by the host would
+  load your default tmux configuration, whose session-saving plugins would
+  write over the default server's saved sessions and restore your own sessions
+  into the tenant's server, where its mirror shows them to the tenant.) Start
+  it yourself with its own configuration, e.g. `tmux -L acme -f
+  ~/.config/tmux/acme.conf new-session -d`. Should the server exit between the
+  host's check and the window, the `new-session` the spawn sends carries
+  `-f /dev/null`, so it loads no configuration.
+- The window opens in session `agents` **of the tenant's server**, so the
+  agent's `$TMUX` names that server: its MCP calls (`agent_report_done`,
+  `chief_ask`, …) are answered by the tenant mirror's `-mcp-listen` endpoint
+  (every other mirror's endpoint gives a session from another tmux server no
+  tools), and its `AskUserQuestion` hook picks the tenant's hook record. Claude
+  Code needs that tenant's MCP server registered, as for any session on the
+  tenant's server.
+- Worktrees, branches and prompt files carry the tenant's namespace:
+  `<agent-spawn-dir>/tenant-<tenant>/<owner>__<repo>/<dispatch>` on
+  `muster/tenant-<tenant>-<dispatch>-<slug>` (an `-S` server's namespace is a
+  short hash of its path). Two muster servers number dispatches independently,
+  so the same number never shares a worktree, and each mirror's hourly sweep
+  reads only its own directory.
+- opencode spawns follow the same rules (with `-opencode-send`): the launcher
+  runs in the tenant's server and the tenant mirror binds it.
+- The audit log and rate limit are per `-agent-spawn-log`: left at its default,
+  the tenant and default mirrors share one log, hence one host-wide limit.
+  Give the tenant unit its own `-agent-spawn-log` for a limit of its own.
+- Only the host changes: the tenant's muster server offers a host for
+  dispatch once its mirror advertises spawning, as for any host.
+
 **Turning it on, one step at a time.** Ship the binary with `-agent-spawn` unset
 (nothing changes); then set `-agent-spawn` and **one** repository in
-`-agent-spawn-repos` on one host's default mirror unit only (never a
-`muster-mirror@<tenant>` unit), and restart it. To turn it off, drop either and
+`-agent-spawn-repos` on one host's default mirror unit only, and restart it.
+A `muster-mirror@<tenant>` unit also needs `-agent-spawn-tenant-server`
+([above](#starting-agents-on-a-tenants-tmux-server)). To turn it off, drop either and
 restart: a window already running keeps running, with its worktree.
 
 ## Tokens, revocation, rate limits
