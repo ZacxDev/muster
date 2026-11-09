@@ -161,11 +161,14 @@ Both ledgers grow by exactly one in phase 1.
 
 ### 2.1 The composer toggle
 
-This is a two-segment switch at the start of the composer's input row. It is
-drawn only when the owner has a chief that is on (`chiefpref`).
+This is one switch, the first control of the composer's input row, left of
+the paperclip: a 44px icon button (a bot for the agent, a crown for the
+chief) that is a `role="switch"` checkbox. It is drawn only when the owner has
+a chief that is on (`chiefpref`). (Phase 1 first shipped it as a two-segment
+"`<runtime>` | Chief" switch; see "Phase 1 as built".)
 
 ```
-[ opencode | Chief ]  Ask the chief about this session…           [➤]
+[♛][📎]  Ask the chief about this session…                        [➤]
 ```
 
 - **To the agent** (default): today's composer, unchanged.
@@ -184,9 +187,11 @@ drawn only when the owner has a chief that is on (`chiefpref`).
 - **The choice persists per window** in `localStorage`, under the draft key's
   scheme (`MirrorDraftKey(..., "chief", ...)`), and each mode keeps its own
   draft. A reload lands in the mode last used, and the default is the agent.
-- **No script:** it is a real `<form>`. The switch is two radio inputs whose
-  `formaction` selects the route, so a browser submit still reaches the right
-  door (the composer's "real form" rule, `mirror_compose.go:27-34`).
+- **No script:** it is a real `<form>`. The switch is a checkbox the
+  stylesheet follows: it shows the chief's Send, whose `formaction` is the
+  chief's route, so a browser submit still reaches the right door — with
+  script disabled and when the chief script throws (the composer's "real
+  form" rule, `mirror_compose.go`).
 
 ### 2.2 What is attached
 
