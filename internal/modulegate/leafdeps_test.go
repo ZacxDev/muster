@@ -122,3 +122,24 @@ func TestTheTerminalScreenReaderImportsOnlyTheStandardLibrary(t *testing.T) {
 		t.Fatalf("internal/termscreen pulls in %v; it must import only the standard library", got)
 	}
 }
+
+// TestThePreviewWireImportsOnlyTheStandardLibrary: internal/preview/wire — the
+// preview tunnel's protocol, which the agent pod's ccd will link in phase 2 —
+// imports nothing outside the standard library, so it cannot bring cmd/ccd a
+// websocket client. The instrument is checked first on its sibling
+// internal/preview/tunnel, which does import github.com/coder/websocket.
+func TestThePreviewWireImportsOnlyTheStandardLibrary(t *testing.T) {
+	root := moduleRoot(t)
+	seen := false
+	for _, p := range nonStdDepsOf(t, root, "./internal/preview/tunnel") {
+		if p == "github.com/coder/websocket" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("instrument check FAILED: internal/preview/tunnel imports github.com/coder/websocket, and the listing does not see it")
+	}
+	if got := nonStdDepsOf(t, root, "./internal/preview/wire"); len(got) != 0 {
+		t.Fatalf("internal/preview/wire pulls in %v; it must import only the standard library", got)
+	}
+}
