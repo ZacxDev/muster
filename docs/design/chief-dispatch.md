@@ -2393,7 +2393,7 @@ its final message **without** that line when it needs its owner; the owner
 closes the window. The sentence is built from the grammar's own constant
 (`agentoutcome.DoneSentinel`). A cut task is not pointed at `task_get`.
 
-**An opencode dispatch's outcome** (migration `0098`,
+**An opencode dispatch's outcome** (migration `0099`,
 `internal/mirrorhost/opencode_outcome.go`, `internal/mirror/outcomes.go`,
 `internal/api/host_dispatch_outcome.go`). opencode runs without asking, so by
 the owner's decision it gets **no** muster tool, and cannot call
@@ -2468,7 +2468,7 @@ with the pod path's text (`outcomeChiefNoteAbout`, through the one writer
 owner with no chief on is told by the push alone.
 
 **The seam ledger now has eight writers**: 0097's `MarkHostDispatchDone`, and
-0098's `RecordHostDispatchOutcome`, `RearmHostDispatch` and
+0099's `RecordHostDispatchOutcome`, `RearmHostDispatch` and
 `SettleHostDispatchDone`, each called only by the outcome reconciler.
 
 ### 3.8 Read-only and tenant hosts

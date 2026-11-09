@@ -358,7 +358,7 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 		}
 		if !r.WaitingAt.IsZero() {
 			// An opencode dispatch whose turn ended without its done line
-			// (0098): its owner's move, until a later turn re-arms it.
+			// (0099): its owner's move, until a later turn re-arms it.
 			c.State, c.Detail = ui.DispatchWaiting, "Waiting for you: "+r.WaitingLine
 			break
 		}

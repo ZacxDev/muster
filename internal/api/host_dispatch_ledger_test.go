@@ -94,7 +94,7 @@ func TestTheHostDispatchWritersAreALedger(t *testing.T) {
 	// MarkHostDispatchDone (0097: done_at/done_summary only, never ended) is
 	// agent_report_done's on the mirror door alone.
 	assertCallers(t, ".", "MarkHostDispatchDone", []string{"host_dispatch_done.go:toolHostReportDone"})
-	// 0098's three (an opencode reply's outcome, a later turn's re-arm, a
+	// 0099's three (an opencode reply's outcome, a later turn's re-arm, a
 	// Claude done settled) are the outcome reconciler's alone.
 	assertCallers(t, ".", "RecordHostDispatchOutcome", []string{"host_dispatch_outcome.go:recordHostReply"})
 	assertCallers(t, ".", "RearmHostDispatch", []string{"host_dispatch_outcome.go:rearmHostDispatch"})

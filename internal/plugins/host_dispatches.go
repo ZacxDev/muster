@@ -31,14 +31,14 @@ import (
 //     RUNNING row whose host and agent_session are the caller's. It never
 //     ends the row (done is not ended: the slot is held until the window
 //     closes). Called only by agent_report_done on the mirror door;
-//   - RecordHostDispatchOutcome (0098): an OPENCODE row's done or waiting
+//   - RecordHostDispatchOutcome (0099): an OPENCODE row's done or waiting
 //     outcome, read from the reply its host observed, once per reply
 //     (outcome_mark), on a RUNNING row whose host and agent_session are the
 //     listing's. Called only by the outcome reconciler;
-//   - RearmHostDispatch (0098): a later turn clears done/waiting back to
+//   - RearmHostDispatch (0099): a later turn clears done/waiting back to
 //     working — a Claude row only once settled. Called only by the outcome
 //     reconciler;
-//   - SettleHostDispatchDone (0098): done_settled, on a Claude row reported
+//   - SettleHostDispatchDone (0099): done_settled, on a Claude row reported
 //     done that has since been listed idle. Called only by the outcome
 //     reconciler.
 
@@ -69,7 +69,7 @@ type HostDispatch struct {
 	DoneAt      time.Time
 	DoneSummary string
 	// WaitingAt is when an opencode dispatch's turn ended without the done
-	// line (0098), zero otherwise; WaitingLine that reply's last line.
+	// line (0099), zero otherwise; WaitingLine that reply's last line.
 	WaitingAt   time.Time
 	WaitingLine string
 	// OutcomeMark names the reply an opencode outcome was read from; "" for

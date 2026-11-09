@@ -1,4 +1,4 @@
--- muster 0098 — A HOST DISPATCH'S OUTCOME BEYOND DONE (docs/design/chief-dispatch.md
+-- muster 0099 — A HOST DISPATCH'S OUTCOME BEYOND DONE (docs/design/chief-dispatch.md
 -- 3.7, "An opencode dispatch's outcome" and "A later turn"; the store is
 -- internal/plugins/host_dispatches.go, the reconciler
 -- internal/api/host_dispatch_outcome.go).
@@ -21,17 +21,17 @@
 -- SettleHostDispatchDone, each only on a running row whose host and
 -- agent_session are the caller's.
 --
--- Must apply after 0097 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0098 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default); the columns inherit the
 -- table's row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0098 never reads or writes these columns and
+-- ROLLBACK. An image from before 0099 never reads or writes these columns and
 -- runs against this schema unchanged. To remove them:
 --   ALTER TABLE public.host_dispatches DROP COLUMN IF EXISTS done_settled;
 --   ALTER TABLE public.host_dispatches DROP COLUMN IF EXISTS outcome_mark;
 --   ALTER TABLE public.host_dispatches DROP COLUMN IF EXISTS waiting_line;
 --   ALTER TABLE public.host_dispatches DROP COLUMN IF EXISTS waiting_at;
---   DELETE FROM schema_migrations WHERE version = 98;
+--   DELETE FROM schema_migrations WHERE version = 99;
 
 SET LOCAL lock_timeout = '3s';
 
