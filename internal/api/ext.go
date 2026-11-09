@@ -924,7 +924,9 @@ type Provisioner interface {
 	//     stopped. The caller's OTHER action is a stopped create (POST /api/agents
 	//     start: false, which replaced the UI's "Save for later"), whose gate check
 	//     (agent_create_api.go, the `gate:<reason>` refusal) allows it on the
-	//     stated grounds that it "provisions nothing".
+	//     stated grounds that it "provisions nothing". createAndDispatchAgent no
+	//     longer calls Dispatch for that create at all (it inserts the row
+	//     `stopped`); kickoff=false is still part of this contract.
 	//
 	// An implementer that provisions on kickoff=false, or that reports a delivery
 	// it did not make, is wrong against this interface — not merely different.
