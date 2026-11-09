@@ -989,7 +989,33 @@ this kickoff" step).
 - `session_context` is unchanged: its `suggested_*` keys were not re-added,
   because the proposal inherits the settings itself.
 
+**Round 1 (audit of #546):**
+- The kickoff never reaches the chief's model raw. The tool's
+  `kickoff.first_line` is redacted with `redact.Secrets` (the session_context
+  redactor). A proposal card's answer is **never delivered back** as an
+  attention answer: its question carries the copied kickoff, so its delivery
+  is closed (`MarkWaited`) and no turn is queued. The chief gets muster's own
+  sentence instead, a chat note that costs no turn ("Your owner tapped Start
+  on your proposal N (succession of <key>)…", or "declined"), with no kickoff
+  text.
+- A start is a **tapped button**: the view's card, or the Attention view's
+  option button (`optionTapped`). Typed text that spells a button accepts
+  nothing.
+- **Never from the phone:** a proposal card's push carries no chips and no
+  signed answer actions, and asks for no suggested replies
+  (`raiseProposalCard`). A device answer that would start a succession is
+  refused server-side. The surfaces that may start one are those that
+  showed the whole kickoff: the session's view always, and the Attention
+  view when the kickoff fits its card.
+- A kickoff holding invisible formatting is refused, never altered: a
+  Unicode format character (zero-width characters, the bidi overrides and
+  isolates) or a tag character.
+- The card promises the fall back to the default branch only where it runs
+  (D4: the inherited branch of a session the chief started).
+
 **Left for later, stated:**
+- The 30 s push to a successor nobody opened is an in-process timer: a muster
+  restart in those 30 s loses it (the successor still runs and is listed).
 - The view's card shows its own kickoff in full; the Attention view and the
   phone show the question's text, which holds the kickoff whole only when it
   fits the question's limit.

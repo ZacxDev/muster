@@ -700,7 +700,7 @@ func TestACutKickoffStartsOnlyFromTheView(t *testing.T) {
 	}
 	phone := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaDevice})
 	for _, ans := range []string{"Review on the session's view", "Start it"} {
-		_, err := f.srv.answerAskFrom(phone, x.AskID, ans, attention.AnswerSource{})
+		_, err := f.srv.answerAskFrom(withOptionTap(phone), x.AskID, ans, attention.AnswerSource{})
 		if err == nil || !strings.Contains(err.Error(), successionReviewOnView) {
 			t.Errorf("the phone's %q on a cut card: %v; want refused: %q", ans, err, successionReviewOnView)
 		}
@@ -716,14 +716,32 @@ func TestACutKickoffStartsOnlyFromTheView(t *testing.T) {
 	if len(calls) != 1 || !strings.Contains(calls[0].req.Prompt, strings.Repeat("0123456789abcdef\n", 239)+"0123456789abcdef\n---") {
 		t.Fatalf("the view's Start: spawns %d", len(calls))
 	}
-	// Control: a kickoff that fits whole starts from the phone.
+	// A kickoff that fits whole starts from the Attention view's button (a
+	// signed-in browser, a TAPPED option) — never from the phone (round 1).
 	f.viewLine(t, sxOpenCodeKey, "and the short one")
 	_, id2 := f.propose(t, sxCall(sxOpenCodeKey, "spinoff", sxRefFenc, intp(0)))
 	x2, _ := f.plugins.ProposalByID(f.asOwner, id2)
-	if _, err := f.srv.answerAskFrom(phone, x2.AskID, "Start it", attention.AnswerSource{}); err != nil {
-		t.Fatalf("the phone's Start on a whole kickoff: %v", err)
+	if _, err := f.srv.answerAskFrom(withOptionTap(phone), x2.AskID, "Start it", attention.AnswerSource{}); err == nil ||
+		!strings.Contains(err.Error(), successionReviewOnView) {
+		t.Errorf("the phone's Start on a whole kickoff: %v; want refused", err)
+	}
+	if w := f.attentionForm(t, x2.AskID, url.Values{"option": {"Start it"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("the Attention view's Start on a whole kickoff: %d %s", w.Code, w.Body)
 	}
 	if n := len(f.m.spawnCalls()); n != 2 {
-		t.Errorf("the phone's Start on a whole kickoff: %d spawns in all; want 2", n)
+		t.Errorf("after the Attention view's Start: %d spawns in all; want 2", n)
 	}
+}
+
+// attentionForm posts the Attention view's answer form for ask id as the
+// owner's signed-in browser (the handler behind requireOperatorWrite).
+func (f *succFixture) attentionForm(t *testing.T, id int64, v url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/answer", strings.NewReader(v.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.SetPathValue("id", strconv.FormatInt(id, 10))
+	r = r.WithContext(authz.WithPrincipal(context.Background(), f.ownerSession()))
+	w := httptest.NewRecorder()
+	f.srv.handleAttentionAnswerForm(w, r)
+	return w
 }
