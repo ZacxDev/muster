@@ -821,9 +821,12 @@ the operator's round 0 decisions on PR #537:
   control, the input row's first, left of the paperclip — a checkbox
   (`#mv-to-chief`, `role="switch"`, checked = chief mode) inside a label
   (`#mv-to`) drawn as a 44px icon button showing the current target's glyph (a
-  bot for the agent, a crown for the chief). Its accessible name is hidden text
-  for the current mode, picked by the stylesheet. (It replaced a two-radio
-  "`<runtime>` | Chief" switch above the row.)
+  bot for the agent, a crown for the chief). Its accessible name is fixed
+  ("Send to the chief"), its checked state is the mode, and its description is
+  hidden text for the current mode, picked by the stylesheet. Its form owner is
+  an empty form of its own (`#mv-to-form`), so Enter on it never submits the
+  composer; the composer's script makes Enter toggle it. (It replaced a
+  two-radio "`<runtime>` | Chief" switch above the row.)
   - Chief mode is drawn in the review status pair (`st-review-fg` /
     `st-review-bg`): the composer's top edge, the box's ring and fill, the
     switch, and the chief's Send. Agent mode is the composer as it was.

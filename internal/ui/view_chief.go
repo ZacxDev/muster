@@ -19,9 +19,11 @@ import (
 // THE SWITCH (viewChiefToggle) is ONE control, always present: a checkbox
 // (#mv-to-chief, role="switch"; checked = the chief) inside a label (#mv-to)
 // drawn as a 44px icon button. It shows the CURRENT target's glyph
-// (viewIconAgent / viewIconChief), and its accessible name is the label's
-// visually hidden text for the current mode — the current target and the
-// action — picked by the stylesheet, so it is right with no script at all. In
+// (viewIconAgent / viewIconChief). Its accessible name is FIXED
+// (ViewChiefSwitchName, also its title) and its checked state is the mode;
+// its description (#mv-to-desc) is the current target and the action, the
+// visually hidden text for the current mode picked by the stylesheet, so it
+// is right with no script at all. In
 // chief mode the composer wears the chief's colour — the review status pair
 // (st-review-fg / st-review-bg), distinct from the amber accent the agent's
 // Send wears: the composer's top edge, the box's ring and fill, the switch,
@@ -33,7 +35,19 @@ import (
 // mode works with script, without script, AND when this file's script threw:
 // the chief's Send (#mv-send-chief, a submit whose formaction is the chief's
 // route) is the Send shown in chief mode, and the composer's Enter submits
-// through the Send shown (composer_pending.go). The script (viewChiefScript)
+// through the Send shown (composer_pending.go).
+//
+// 🔴 ENTER ON THE FOCUSED SWITCH NEVER SENDS. Enter on a checkbox submits
+// the checkbox's FORM OWNER implicitly: Chromium clicks that form's first
+// ENABLED submit button, shown or not (measured: the agent's #mv-send on an
+// enabled composer, so Enter on the switch posted the box to the pane; the
+// chief's hidden #mv-send-chief on a disabled one; a disabled "blocker"
+// placed first is skipped). So the checkbox is not owned by #mv-form at all:
+// its form attribute names #mv-to-form (viewChiefForm), an empty form with no
+// submit button beside it, and Enter on the switch submits nothing — with or
+// without script. The composer's script (which runs when this file's throws)
+// makes Enter on the switch toggle it, as Space does; without script Enter on
+// the switch does nothing (Space toggles it). The script (viewChiefScript)
 // only adds to that — the mode remembered per window, the form's own action,
 // the placeholder and the box's name, the box disabled again in agent mode
 // on a view whose agent composer is disabled, a press that keeps the box's
@@ -76,17 +90,22 @@ const (
 	ViewChiefStripEmpty = "Nothing asked about this session yet. Your chief answers here."
 )
 
+// ViewChiefSwitchName is the switch's fixed accessible name (and title); its
+// checked state says whether it is on.
+const ViewChiefSwitchName = "Send to the chief"
+
 // The mode's two values (the remembered mode).
 const (
 	ViewToAgent = "agent"
 	ViewToChief = "chief"
 )
 
-// ViewToAgentLabel and ViewToChiefLabel are the switch's accessible name in
-// each mode: the current target, then what a press does.
+// ViewToAgentLabel and ViewToChiefLabel are the switch's accessible
+// description in each mode: the current target, then what a press does.
 func ViewToAgentLabel(agent string) string { return "Sending to " + agent + " — switch to the chief" }
 
-// ViewToChiefLabel is the switch's name in chief mode (see ViewToAgentLabel).
+// ViewToChiefLabel is the switch's description in chief mode (see
+// ViewToAgentLabel).
 func ViewToChiefLabel(agent string) string { return "Sending to the chief — switch to " + agent }
 
 // The switch's two glyphs, in the composer's icon style (24-unit stroked
@@ -164,26 +183,46 @@ var viewChiefStyle = `
 
 // viewChiefToggle is the mode's switch, the composer row's first control: a
 // checkbox (role="switch") in a label drawn as an icon button, unchecked (the
-// agent; the script restores the window's last mode). Its accessible name is
-// the label's hidden text for the current mode. The checkbox has no name: the
-// mode is never a form field. See the file's header.
+// agent; the script restores the window's last mode), named
+// ViewChiefSwitchName and described by the label's hidden text for the
+// current mode. The checkbox belongs to viewChiefForm, not to the
+// composer's form, so Enter on it submits nothing; and it has no name
+// attribute: the mode is never a form field. See the file's header.
 func viewChiefToggle(c *ComposerChief) g.Node {
 	if c == nil {
 		return nil
 	}
 	return Label(
+			ID("mv-to"),
+			g.Attr("title", ViewChiefSwitchName),
+			Class(viewChiefToggleClass),
 		ID("mv-to"),
-		g.Attr("title", ViewToAgentLabel(c.Agent)),
-		g.Attr("data-label-agent", ViewToAgentLabel(c.Agent)),
-		g.Attr("data-label-chief", ViewToChiefLabel(c.Agent)),
+		g.Attr("title", ViewChiefSwitchName),
 		Class(viewChiefToggleClass),
-		Input(ID("mv-to-chief"), Type("checkbox"), g.Attr("role", "switch"), g.Attr("autocomplete", "off"),
+		Input(ID("mv-to-chief"), Type("checkbox"), g.Attr("form", viewChiefFormID), g.Attr("role", "switch"), g.Attr("autocomplete", "off"),
+			g.Attr("aria-label", ViewChiefSwitchName), g.Attr("aria-describedby", "mv-to-desc"),
 			g.Attr("data-mode-key", c.ModeKey)),
-		Span(g.Attr("data-to-mode", ViewToAgent), Class("sr-only"), g.Text(ViewToAgentLabel(c.Agent))),
-		Span(g.Attr("data-to-mode", ViewToChief), Class("sr-only"), g.Text(ViewToChiefLabel(c.Agent))),
+		Span(ID("mv-to-desc"), Class("sr-only"),
+			Span(g.Attr("data-to-mode", ViewToAgent), g.Text(ViewToAgentLabel(c.Agent))),
+			Span(g.Attr("data-to-mode", ViewToChief), g.Text(ViewToChiefLabel(c.Agent))),
+		),
 		g.Raw(viewIconAgent),
 		g.Raw(viewIconChief),
 	)
+}
+
+// viewChiefFormID is the switch's own form (viewChiefForm).
+const viewChiefFormID = "mv-to-form"
+
+// viewChiefForm is the switch's form owner: empty, hidden, never submitted —
+// it has no submit button, and a checkbox does not submit a form without one
+// (see the file's header). Drawn outside the composer's form (forms do not
+// nest).
+func viewChiefForm(c *ComposerChief) g.Node {
+	if c == nil {
+		return nil
+	}
+	return Form(ID(viewChiefFormID), g.Attr("hidden", ""), g.Attr("aria-hidden", "true"))
 }
 
 // viewChiefStrip is the chief strip: the chief's chat about this session, a
@@ -286,7 +325,6 @@ func viewChiefScript() g.Node {
   }
   function apply() {
     var chief = cb.checked;
-    sw.setAttribute('title', sw.getAttribute(chief ? 'data-label-chief' : 'data-label-agent') || '');
     form.setAttribute('action', chief ? chiefAction : agentAction);
     input.setAttribute('placeholder', chief ? ` + strconv.Quote(ViewChiefPlaceholder) + ` : agentPlaceholder);
     input.setAttribute('aria-label', chief ? ` + strconv.Quote(ViewChiefAria) + ` : agentAria);

@@ -35,14 +35,17 @@ func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 	on.Chief = true
 	page := renderString(t, MirrorViewPage(on))
 	for _, want := range []string{
-		// The switch: a label drawn as the button, a checkbox with the switch
-		// role (unchecked: the agent), and the name for each mode as hidden text.
-		`<label id="mv-to" title="Sending to opencode — switch to the chief"` +
-			` data-label-agent="Sending to opencode — switch to the chief" data-label-chief="Sending to the chief — switch to opencode"`,
-		`<input id="mv-to-chief" type="checkbox" role="switch" autocomplete="off" data-mode-key="` +
+		// The switch's own empty form, outside the composer's: Enter on the
+		// switch submits nothing.
+		`<form id="mv-to-form" hidden="" aria-hidden="true"></form>`,
+		// The switch: a label drawn as the button (a fixed title), a checkbox
+		// with the switch role (unchecked: the agent), a FIXED name, and a
+		// description per mode as hidden text.
+		`<label id="mv-to" title="Send to the chief" class="`,
+		`<input id="mv-to-chief" type="checkbox" form="mv-to-form" role="switch" autocomplete="off" aria-label="Send to the chief" aria-describedby="mv-to-desc" data-mode-key="` +
 			html.EscapeString(MirrorDraftKey(1, ViewToChief, "ws", "main", "@3")) + `">`,
-		`<span data-to-mode="agent" class="sr-only">Sending to opencode — switch to the chief</span>`,
-		`<span data-to-mode="chief" class="sr-only">Sending to the chief — switch to opencode</span>`,
+		`<span id="mv-to-desc" class="sr-only"><span data-to-mode="agent">Sending to opencode — switch to the chief</span>` +
+			`<span data-to-mode="chief">Sending to the chief — switch to opencode</span></span>`,
 		`id="mv-send-chief" type="submit" formaction="/mirror/view/chief?host=ws&amp;session=main&amp;window=%403"`,
 		`id="mv-chief-log" data-src="/mirror/view/chief/log?host=ws&amp;session=main&amp;window=%403"`,
 		// The composer's script tells a chief line by the route, drawn by the
@@ -62,7 +65,7 @@ func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 	// The old two-radio switch, the button toggle and its <noscript>
 	// duplicate are gone; the mode is never a form field; one selector path.
 	for _, gone := range []string{`role="radiogroup"`, `id="mv-to-agent"`, `id="mv-to-row"`, `name="to"`, `<noscript><style>#mv-to`,
-		`mv-to-ns`, `aria-pressed`, `data-to="chief"`, `<button id="mv-to"`} {
+		`mv-to-ns`, `aria-pressed`, `data-to="chief"`, `<button id="mv-to"`, `data-label-agent`} {
 		if strings.Contains(page, gone) {
 			t.Errorf("the chief mode still draws %s", gone)
 		}
@@ -81,7 +84,7 @@ func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 	}
 	// A Claude Code window names its agent "Claude", and its box is as it was.
 	cc := renderString(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1", Interactive: true, Chief: true}))
-	if !strings.Contains(cc, `<span data-to-mode="agent" class="sr-only">Sending to Claude — switch to the chief</span>`) || !strings.Contains(cc, `data-label-chief="Sending to the chief — switch to Claude"`) {
+	if !strings.Contains(cc, `<span data-to-mode="agent">Sending to Claude — switch to the chief</span>`) || !strings.Contains(cc, `<span data-to-mode="chief">Sending to the chief — switch to Claude</span>`) {
 		t.Errorf("a Claude Code window's switch does not name Claude")
 	}
 	if strings.Contains(cc, `data-agent-off=""`) {
@@ -115,6 +118,14 @@ func TestTheChiefToggleIsTheRowsFirstControl(t *testing.T) {
 		var ids []string
 		for _, m := range formControlRE.FindAllStringSubmatch(form, -1) {
 			ids = append(ids, m[2])
+		}
+		// The switch sits in the row, but its form owner is its own empty
+		// form, drawn outside the composer's (Enter on it submits nothing).
+		if !strings.Contains(form, `id="mv-to-chief" type="checkbox" form="mv-to-form"`) {
+			t.Errorf("%s: the switch is owned by the composer's form", name)
+		}
+		if i, f := strings.Index(page, `<form id="mv-to-form"`), strings.Index(page, `<form id="mv-form"`); i < 0 || i > f {
+			t.Errorf("%s: the switch's own form is not drawn before (outside) the composer's", name)
 		}
 		if len(ids) < 3 || ids[0] != "mv-to" {
 			t.Fatalf("%s: the row's controls are %v, want mv-to first", name, ids)

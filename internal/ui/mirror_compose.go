@@ -330,6 +330,8 @@ func mirrorComposer(v ComposerView) g.Node {
 		// of the composer (view_chief.go).
 		g.If(v.Chief != nil, StyleEl(g.Raw(viewChiefStyle))),
 		g.If(v.Chief != nil, viewChiefStrip(v.Chief)),
+		// The chief switch's own (empty) form, outside the composer's.
+		g.If(v.Chief != nil, viewChiefForm(v.Chief)),
 		// The suggested replies (suggest_row.go): above the composer, out of
 		// flow, drawn hidden — or, auto-paused, one line saying so.
 		suggestRow(suggest),

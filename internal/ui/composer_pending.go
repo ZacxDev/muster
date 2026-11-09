@@ -300,7 +300,11 @@ var mirrorComposerJS = `
     shown();
     if (nonce) nonce.value = p.nonce;
     againField(!!p.again);
-    if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
+    // 🔴 The browser posts the line to ITS OWN route (p.to: the Queue's, the
+    // chief's), never to whatever the form's action was left at — a chief
+    // line must not fall back to the agent's route.
+    if (p.to) form.setAttribute('action', p.to);
+    else if (p.queued && queueBtn) form.setAttribute('action', queueBtn.getAttribute('formaction'));
     if (d) d.pending(input);
     browserSubmit();
   }
@@ -860,9 +864,20 @@ var mirrorComposerJS = `
     // Send), else the form's action.
     var to = (sub && sub.getAttribute('formaction')) || form.getAttribute('action');
     try { start({ text: text, typed: typed, queued: queued, to: to, again: again }); }
-    catch (err) { input.value = text; shown(); browserSubmit(); }
+    catch (err) { input.value = text; shown(); if (to) form.setAttribute('action', to); browserSubmit(); }
   });
   input.addEventListener('input', function () { if (input.value.trim() && !noteHeld()) say(''); });
+  // 🔴 ENTER ON THE CHIEF SWITCH TOGGLES IT, never sends (view_chief.go's
+  // header): here, not in the chief's script, so it holds when that script
+  // threw. Enter on it already submits nothing (it is owned by its own empty
+  // form); this makes Enter do what Space does. The event bubbles through
+  // this form all the same: it is the switch's ancestor.
+  form.addEventListener('keydown', function (e) {
+    var t = e.target;
+    if (e.key !== 'Enter' || !t || t.id !== 'mv-to-chief') return;
+    e.preventDefault();
+    if (!e.repeat) t.click();
+  });
   // shownSend is the form's Send on screen: the first submit button of the
   // input row that is drawn (#mv-send, or the chief's #mv-send-chief in chief
   // mode); null when none is.
