@@ -209,9 +209,11 @@ type Server struct {
 	// the jobs this process accepted and has not finished; jobSecond
 	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
 	// the reaper's clock (nil: time.Now); jobFinishBackoff is the pause between
-	// outcome-write attempts (zero: jobFinishRetryPause).
+	// outcome-write attempts (zero: jobFinishRetryPause). jobDrains is each
+	// agent's queue runner in this process (jobs_queue.go).
 	jobLanes         jobLanes
 	ownJobs          ownJobs
+	jobDrains        jobDrains
 	// poolFailovers serialises a pool submission's account failover per
 	// (owner, pool) (jobs.go createPoolJob).
 	poolFailovers keyedLocks

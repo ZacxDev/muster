@@ -366,11 +366,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.AskLog.On {
 			ext.AskLog = &api.AskLog{Store: asklog.NewPG(pool), TextTTL: cfg.AskLog.TextTTL, JevAtCapture: cfg.AskLog.JevAtCapture}
 		}
-		// The machine job API (migration 0037). A job runs inside the process
-		// that accepted it; what a dead process left unfinished is failed by
-		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is
-		// past its own deadline. NOT here at boot: during a rolling update the
-		// old pod is still running its jobs while this one boots.
+		// The machine job API (migration 0037). A job's turn runs inside the
+		// process that started it; the queue is the table, so what a dead
+		// process left queued is run by the reaper's pass (startBackgroundLoops
+		// → RunJobReaper, which also dispatches), and what it left running is
+		// failed only once it is past its own deadline. NOT here at boot:
+		// during a rolling update the old pod is still running its jobs while
+		// this one boots.
 		ext.Jobs = jobs.NewPG(pool)
 
 		if cfg.connectorStoreConfigured() {
@@ -1083,7 +1085,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	}
 	// The machine job API's reaper: a pass now (boot) and every
 	// jobReapEvery, failing only jobs past their own deadline, so it is safe
-	// while the other pod of a rolling update still runs jobs. Before the pool
+	// while the other pod of a rolling update still runs jobs, then running
+	// each free agent's oldest queued job (a job a crash left queued). Before the pool
 	// guard because it keys on the job store, not the pool: it returns at once
 	// when there is none.
 	if a.srv != nil {

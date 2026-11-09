@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -189,6 +190,71 @@ func (m *memJobs) ReapOverdue(_ context.Context, now time.Time) (int64, error) {
 		}
 	}
 	return n, nil
+}
+
+// Heads applies the PG store's rule (jobs_queue_pg_test.go pins it there): per
+// free agent its oldest queued job, oldest first; an agent holding a running
+// job, or one re-queued and still inside its start's deadline, is not free.
+func (m *memJobs) Heads(_ context.Context, agentID int64, now time.Time) ([]jobs.Head, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	held := func(j jobs.Job) bool {
+		return j.Status == jobs.StatusRunning || (j.Status == jobs.StatusQueued && !j.StartedAt.IsZero() &&
+			!j.StartedAt.Add(time.Duration(j.TimeoutSeconds)*time.Second+jobs.ReapSlack).Before(now))
+	}
+	busy := map[int64]bool{}
+	for _, j := range m.rows {
+		if j.AgentID != 0 && held(j) {
+			busy[j.AgentID] = true
+		}
+	}
+	head := map[int64]jobs.Job{}
+	var out []jobs.Head
+	for _, j := range m.rows {
+		if j.Status != jobs.StatusQueued || held(j) || (agentID != 0 && j.AgentID != agentID) {
+			continue
+		}
+		if j.AgentID == 0 {
+			out = append(out, jobs.Head{ID: j.ID, OwnerID: 1})
+			continue
+		}
+		if busy[j.AgentID] {
+			continue
+		}
+		if h, ok := head[j.AgentID]; !ok || j.ID < h.ID {
+			head[j.AgentID] = j
+		}
+	}
+	for _, j := range head {
+		out = append(out, jobs.Head{ID: j.ID, AgentID: j.AgentID, OwnerID: 1})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].ID < out[b].ID })
+	return out, nil
+}
+
+// FinishQueued is Finish, only while the job is still queued.
+func (m *memJobs) FinishQueued(ctx context.Context, id int64, o jobs.Outcome) (bool, error) {
+	m.mu.Lock()
+	queued := m.rows[id].Status == jobs.StatusQueued
+	m.mu.Unlock()
+	if !queued {
+		return false, nil
+	}
+	return m.Finish(ctx, id, o)
+}
+
+// putQueued records a queued job directly, as a crashed process leaves one:
+// a row and nothing else — no goroutine, no ownJobs entry, no lane.
+func (m *memJobs) putQueued(j jobs.Job) jobs.Job {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.next++
+	j.ID, j.Status = m.next, jobs.StatusQueued
+	if j.CreatedAt.IsZero() {
+		j.CreatedAt = time.Now()
+	}
+	m.rows[j.ID] = j
+	return j
 }
 
 func (m *memJobs) count() int {
