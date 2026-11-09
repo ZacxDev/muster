@@ -446,6 +446,11 @@ func (s *Server) agentTools() []agentTool {
 		if successionOffered(s.ext) {
 			tools = append(tools, agentTool{def: successionProposeToolDef(), mcp: true, chiefOnly: true})
 		}
+		// end_session_propose (end_session.go): the chief proposes ending one
+		// of its owner's sessions; only the owner's tap ends it.
+		if endSessionOffered(s.ext) {
+			tools = append(tools, agentTool{def: endSessionToolDef(), mcp: true, chiefOnly: true})
+		}
 	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
@@ -954,6 +959,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 			return toolErr("unknown tool %q", name)
 		}
 		return s.toolSuccessionPropose(ctx, a, arguments)
+	case endSessionProposeTool:
+		if !endSessionOffered(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolEndSessionPropose(ctx, a, arguments)
 	case fleetReportToolName:
 		return s.toolFleetReport(ctx, a, arguments)
 	case routeToSessionToolName:

@@ -24,7 +24,14 @@ import (
 //   - the link is reached only inside ReserveHostDispatch's transaction.
 func TestTheSuccessionWritersAreALedger(t *testing.T) {
 	assertCallers(t, ".", "CreateProposal", []string{"chief_proposal.go:fileProposal"})
-	assertCallers(t, ".", "fileProposal", []string{"succession.go:toolSuccessionPropose"})
+	assertCallers(t, ".", "fileProposal", []string{"end_session.go:proposeEnd", "succession.go:toolSuccessionPropose"})
+	// 0101: an end_session's tap and its settling, and the ONE host close a
+	// tap reaches.
+	assertCallers(t, ".", "StartEnd", []string{"end_session.go:acceptEndSession"})
+	assertCallers(t, ".", "RecordEnd", []string{"end_session.go:settleEnd"})
+	assertCallers(t, ".", "CloseAgent", []string{"end_session.go:closeEndedWindow"})
+	assertCallers(t, ".", "closeEndedWindow", []string{"end_session.go:acceptEndSession"})
+	assertCallers(t, ".", "acceptEndSession", []string{"chief_proposal.go:acceptProposal"})
 	assertCallers(t, ".", "DeclineProposal", []string{"chief_proposal.go:proposalForAnswer"})
 	assertCallers(t, ".", "MarkSuperseded", []string{"succession.go:successionDispatchMoved"})
 	assertCallers(t, ".", "SetSuccessionNotified", []string{"succession.go:armSuccessionPush"})
@@ -53,7 +60,7 @@ func TestTheSuccessionWritersAreALedger(t *testing.T) {
 		}
 	}
 	slices.Sort(writers)
-	want := []string{"CreateProposal", "DeclineProposal", "MarkSuperseded", "SetSuccessionNotified", "SetSuccessorSeen", "linkSuccessionTx"}
+	want := []string{"CreateProposal", "DeclineProposal", "MarkSuperseded", "RecordEnd", "SetSuccessionNotified", "SetSuccessorSeen", "StartEnd", "linkSuccessionTx"}
 	if !slices.Equal(writers, want) {
 		t.Errorf("chief_proposals is written by %v\nwant exactly %v", writers, want)
 	}

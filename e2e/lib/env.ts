@@ -359,6 +359,11 @@ export const chiefInViewFakePort = port + 351;
 export const chiefSuccessionPort = port + 355;
 export const chiefSuccessionFakePort = port + 356;
 export const chiefSuccessionGitHubPort = port + 357;
+// tests/chief-end-session.spec.ts: ending a session from its view — its own
+// mirror rig (as chief-succession's, no GitHub App) with one fake host that
+// plays agent-close (MUSTER_MIRROR_E2E_CLOSE), and the spec's FAKE runtime.
+export const chiefEndSessionPort = port + 360;
+export const chiefEndSessionFakePort = port + 361;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

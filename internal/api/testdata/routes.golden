@@ -112,6 +112,7 @@ GET /mirror/view/asks
 GET /mirror/view/chief
 GET /mirror/view/chief/log
 GET /mirror/view/complete
+GET /mirror/view/proposal
 GET /mirror/view/send
 GET /mirror/view/subagent
 GET /mirror/view/successor
@@ -248,8 +249,8 @@ POST /mirror/terminal/send
 POST /mirror/view/ask
 POST /mirror/view/ask/cancel
 POST /mirror/view/chief
-POST /mirror/view/send
 POST /mirror/view/proposal
+POST /mirror/view/send
 POST /mirror/view/suggest/event
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result

@@ -127,7 +127,11 @@ func init() {
 	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
-			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+			b = &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+		}
+		// The agent-close fake (e2eclose.go): only with MUSTER_MIRROR_E2E_CLOSE.
+		if wf, ok := windowFakeIn(b); ok && e2eCloseOn() {
+			b = &closeFake{Backend: b, w: wf}
 		}
 		return b
 	}
@@ -512,7 +516,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		out = append(out, info)
 	}
-	return append(out, openCodeWindowsE2E()...), nil
+	return e2eWithoutClosed(append(out, openCodeWindowsE2E()...)), nil
 }
 
 // windowFakeStatus is a Claude window's status and when it was written. From
@@ -630,6 +634,12 @@ func (w windowFake) ActivePane(context.Context, string) (string, bool) { return 
 func (w windowFake) PastePane(ctx context.Context, pane, text string) error {
 	ws, _ := w.Windows(ctx)
 	for _, win := range ws {
+		// An agent asked to exit (agent-close, e2eclose.go): it exits, and its
+		// window with it.
+		if win.Pane == pane && text == "/exit" && e2eCloseOn() {
+			e2eCloseWindow(win.Session, win.ID)
+			return nil
+		}
 		if win.Pane == pane && win.Claude != nil {
 			return w.Paste(ctx, *win.Claude, text)
 		}

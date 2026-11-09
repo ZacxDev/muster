@@ -144,6 +144,9 @@ type MirrorViewView struct {
 	// for none; Predecessor the one this session's window continues, nil for
 	// none.
 	Succession, Predecessor *SuccessionView
+	// End is this session's newest proposal when it is an end_session's
+	// (view_end_session.go), drawn instead of Succession; nil otherwise.
+	End *EndView
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -271,7 +274,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
 				// A succession of this session's: the card, its line, the follow
 				// (view_succession.go).
-				successionRegion(ref, v.Succession, v.Predecessor, v.Chief),
+				successionRegion(ref, v.Succession, v.Predecessor, v.End, v.Chief),
 				Div(
 					ID("mv-error"),
 					g.Attr("role", "alert"),
@@ -307,7 +310,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				),
 				// The view's one /events stream, before the scripts that share it
 				// (the chief strip's, the succession region's).
-				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil, viewStreamScript()),
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil || v.End != nil, viewStreamScript()),
 				mirrorComposer(composer),
 				g.If(v.Interactive && v.ViewOnly == "", confirmDialog(v.StepUp)),
 				g.If(v.Interactive && v.ViewOnly == "", stepUpScript()),
@@ -334,7 +337,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
-				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil, successionScript()),
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil || v.End != nil, successionScript()),
 				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),

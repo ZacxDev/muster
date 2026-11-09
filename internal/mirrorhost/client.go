@@ -124,6 +124,8 @@ type Config struct {
 	// build leaves it nil (TestTheShippedBuildSpawnsForReal).
 	FakeSpawn         func(ctx context.Context, dispatch int64, req mirror.AgentSpawnReq) (mirror.AgentSpawned, error)
 	FakeSpawnRuntimes []string
+	// AgentCloseGrace replaces mirror.AgentCloseGrace (tests).
+	AgentCloseGrace time.Duration
 	// ResumeSpawn lets muster ask this host to RESUME an ended Claude Code
 	// session in a new tmux window (muster-mirror's -resume-spawn,
 	// MUSTER_MIRROR_RESUME_SPAWN; resume.go): with -interactive, the host
@@ -411,6 +413,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	hello.AgentSpawn = conn.agentSpawnRuntimes()
+	hello.AgentClose = conn.agentCloseOn()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -536,6 +539,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeAgentSpawn:
 				if conn.version >= 2 {
 					go traced(m, conn.agentSpawn)
+				}
+			case mirror.TypeAgentClose:
+				if conn.version >= 2 {
+					go traced(m, conn.agentClose)
 				}
 			}
 		}

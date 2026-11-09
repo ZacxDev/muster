@@ -74,6 +74,9 @@ type proposalStore interface {
 	ProposalByID(ctx context.Context, id int64) (plugins.Proposal, error)
 	ProposalByAsk(ctx context.Context, askID int64) (plugins.Proposal, error)
 	LatestProposalFor(ctx context.Context, kind, key string) (plugins.Proposal, error)
+	LatestProposalAbout(ctx context.Context, key string) (plugins.Proposal, error)
+	StartEnd(ctx context.Context, id int64) error
+	RecordEnd(ctx context.Context, id int64, ended bool, detail string) error
 	SuccessionForDispatch(ctx context.Context, hostDispatchID int64) (plugins.Proposal, error)
 	SupersededKeys(ctx context.Context) (map[string]bool, error)
 	DeclineProposal(ctx context.Context, id int64) error
@@ -149,9 +152,11 @@ func (s *Server) bindViewSubject(ctx context.Context, chief agents.Agent, claime
 }
 
 // fileProposal records proposal n (its kind's fields set by the caller) about
-// subject about, answering view line line, and raises its card with question
-// and the kind's options followed by Not now: the ONE way a proposal is made.
-func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, line agents.ChatMessage, about chatSubject, n plugins.ProposalNew,
+// the session keyed key (subject about), answering the owner's message
+// ownerMsg, and raises its card with question and the kind's options followed
+// by Not now: the ONE way a proposal is made. The caller has bound key
+// (bindViewSubject, or the owner's own typed turn).
+func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, ownerMsg int64, key string, about chatSubject, n plugins.ProposalNew,
 	question string, options []string) (plugins.Proposal, string) {
 	st := s.proposals()
 	if st == nil || s.ext.Attention == nil {
@@ -161,12 +166,12 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, line agen
 	if err != nil {
 		return plugins.Proposal{}, fmt.Sprintf(proposalNoCard, ownerCardRefusal(err))
 	}
-	n.ChiefAgent, n.OwnerMessage, n.AskID = chief.ID, line.ID, ask.ID
-	n.SubjectKey, n.SubjectRuntime, n.SubjectHost = line.AboutKey, about.Runtime, about.Host
+	n.ChiefAgent, n.OwnerMessage, n.AskID = chief.ID, ownerMsg, ask.ID
+	n.SubjectKey, n.SubjectRuntime, n.SubjectHost = key, about.Runtime, about.Host
 	n.SubjectTmuxSession, n.SubjectTmuxWindow, n.SubjectTitle, n.SubjectDispatch = about.TmuxSession, about.TmuxWindow, cutRunes(about.Title, 300), about.Dispatch
 	x, err := st.CreateProposal(ctx, n)
 	if err != nil {
-		s.logger.Printf("proposal: record %s's %s for %s: %v", chief.Name, n.Kind, line.AboutKey, err)
+		s.logger.Printf("proposal: record %s's %s for %s: %v", chief.Name, n.Kind, key, err)
 		_, _ = s.cancelAsk(ctx, ask.ID)
 		return plugins.Proposal{}, "the proposal could not be recorded; try again"
 	}
@@ -226,6 +231,8 @@ func (s *Server) acceptProposal(ctx context.Context, x plugins.Proposal, choice 
 	switch x.Kind {
 	case plugins.ProposalSuccession:
 		return s.acceptSuccession(ctx, x, choice)
+	case plugins.ProposalEndSession:
+		return s.acceptEndSession(ctx, x, choice)
 	}
 	return "muster cannot do a " + x.Kind + " yet"
 }

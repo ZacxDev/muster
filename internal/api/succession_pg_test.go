@@ -59,6 +59,10 @@ type succMirror struct {
 	*spawnMirror
 	tmu   sync.Mutex
 	tails map[string][]cctranscript.Event
+	// closes is every CloseAgent (end_session_pg_test.go); closeReply what
+	// it answers (nil: a graceful close).
+	closes     []closeCall
+	closeReply func(host string, req mirror.AgentCloseReq) (mirror.AgentCloseResult, error)
 }
 
 func (m *succMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
@@ -97,6 +101,7 @@ func newSuccFixture(t *testing.T) *succFixture {
 	f := newHostFixture(t)
 	f.withConnectedRepos(t, "acme/widgets")
 	echo := ocHost("host-echo", mirror.SpawnRuntimeClaude, mirror.SpawnRuntimeOpenCode)
+	echo.AgentClose = true
 	echo.Windows = mirror.NormalizeWindows(sxWindows(), 0)
 	echo.Sessions, echo.Claude, echo.Labels, echo.Activity = mirror.SessionsOf(echo.Windows)
 	f.m.hosts = append(f.m.hosts, echo)
