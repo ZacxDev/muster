@@ -207,6 +207,35 @@ func successionRegion(ref MirrorRef, x, pred *SuccessionView, live bool) g.Node 
 	})
 }
 
+// viewStreamScript is the view's ONE /events stream (window.musterViewStream),
+// shared by the chief strip (view_chief.go) and the succession region: each
+// registers its handlers with on(name, fn) and says whether it needs the
+// stream with want(key, on); the stream is open while anything wants it. A
+// stream per feature would be a second connection per tab against the
+// browser's per-host limit (TestTheNavAddsNoStream).
+func viewStreamScript() g.Node {
+	return Script(g.Raw(`
+window.musterViewStream = window.musterViewStream || (function () {
+  var es = null, wants = {}, handlers = {};
+  function sync() {
+    var any = false;
+    for (var k in wants) if (wants[k]) any = true;
+    if (any && !es && typeof EventSource === 'function') {
+      try {
+        es = new EventSource('/events');
+        for (var n in handlers) handlers[n].forEach(function (f) { es.addEventListener(n, f); });
+      } catch (e) { es = null; }
+    }
+    if (!any && es) { try { es.close(); } catch (e) {} es = null; }
+  }
+  return {
+    on: function (name, fn) { (handlers[name] = handlers[name] || []).push(fn); if (es) es.addEventListener(name, fn); },
+    want: function (key, on) { wants[key] = !!on; sync(); }
+  };
+})();
+`))
+}
+
 // successionScript is the region's behaviour: the card's tap in place, the
 // refresh on the owner's stream, and the follow. The stream is opened only
 // while a succession of this view is open (proposed or starting), or once the
@@ -219,21 +248,14 @@ func successionScript() g.Node {
   var stay = document.getElementById('mv-follow-stay');
   if (!box || typeof fetch !== 'function') return;
   var src = box.getAttribute('data-src');
-  var es = null, armed = {}, stayed = false, timer = null;
+  var vs = window.musterViewStream, armed = {}, stayed = false, timer = null;
   function cur() { return box.querySelector('[data-succession]'); }
   function state(el) { return el ? el.getAttribute('data-succession-state') : ''; }
   function open(s) { return s === ` + strconv.Quote(SuccessionProposed) + ` || s === ` + strconv.Quote(SuccessionStarting) + `; }
   function jumped(id) { try { return sessionStorage.getItem('muster.lineage.jumped.' + id) === '1'; } catch (e) { return false; } }
   function markJumped(id) { try { sessionStorage.setItem('muster.lineage.jumped.' + id, '1'); } catch (e) {} }
-  function listen() {
-    if (es || typeof EventSource !== 'function') return;
-    try {
-      es = new EventSource('/events');
-      es.addEventListener('lineage.changed', refresh);
-      es.addEventListener('chat.reply', refresh);
-      es.addEventListener('open', refresh);
-    } catch (e) { es = null; }
-  }
+  if (vs) { vs.on('lineage.changed', refresh); vs.on('chat.reply', refresh); vs.on('open', refresh); }
+  function listen() { if (vs) vs.want('succession', true); }
   function go(path, id) {
     if (stayed || jumped(id)) return;
     follow.hidden = false;
@@ -298,8 +320,15 @@ func successionScript() g.Node {
   document.addEventListener('mv-chief-sent', function () { listen(); refresh(); });
   // A page that comes back asks again once (a missed event: a phone asleep, a dropped stream).
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+  window.addEventListener('pageshow', function (ev) { if (ev.persisted) refresh(); });
   wire();
   seen(cur());
+  // A Back or Forward to this view may be drawn from the browser's cache, as
+  // it was before the succession moved: ask once.
+  try {
+    var nav = performance.getEntriesByType('navigation')[0];
+    if (nav && nav.type === 'back_forward') refresh();
+  } catch (e) {}
 })();
 `))
 }

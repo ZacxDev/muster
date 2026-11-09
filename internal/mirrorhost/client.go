@@ -117,6 +117,13 @@ type Config struct {
 	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
 	// build); no flag sets it.
 	NoWork bool
+	// FakeSpawn, when set, REPLACES the agent spawn (agentspawn.go) with a
+	// fixture's: this host advertises FakeSpawnRuntimes and answers each
+	// agent-spawn with what FakeSpawn returns. FOR THE BROWSER SUITE ONLY
+	// (cmd/muster-mirror's e2emirror build); no flag sets it, and a shipped
+	// build leaves it nil (TestTheShippedBuildSpawnsForReal).
+	FakeSpawn         func(ctx context.Context, dispatch int64, req mirror.AgentSpawnReq) (mirror.AgentSpawned, error)
+	FakeSpawnRuntimes []string
 	// ResumeSpawn lets muster ask this host to RESUME an ended Claude Code
 	// session in a new tmux window (muster-mirror's -resume-spawn,
 	// MUSTER_MIRROR_RESUME_SPAWN; resume.go): with -interactive, the host

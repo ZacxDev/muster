@@ -833,7 +833,9 @@ func (s *Server) predecessorForView(ctx context.Context, e mirror.SessionView) (
 		return ui.SuccessionView{}, false
 	}
 	if x.SuccessorSeenAt.IsZero() {
-		if err := st.SetSuccessorSeen(ctx, x.ID); err != nil {
+		// Not on the request's cancellation: a page that is navigated away
+		// from mid-load still opened the successor.
+		if err := st.SetSuccessorSeen(context.WithoutCancel(ctx), x.ID); err != nil {
 			s.logger.Printf("succession %d: record its successor seen: %v", x.ID, err)
 		}
 	}

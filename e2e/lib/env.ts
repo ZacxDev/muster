@@ -352,6 +352,13 @@ export const chiefFoldInPort = port + 345;
 // whose opencode server is a fake in its own process, and that fake runtime.
 export const chiefInViewPort = port + 350;
 export const chiefInViewFakePort = port + 351;
+// tests/chief-succession.spec.ts: a succession from a session's view (phase 2)
+// — its own mirror rig (as chief-in-view's, with task routing and the chief's
+// dispatch on), one fake host whose agent spawn is played, the spec's FAKE
+// runtime (the scripted chief) and its fake GitHub App.
+export const chiefSuccessionPort = port + 355;
+export const chiefSuccessionFakePort = port + 356;
+export const chiefSuccessionGitHubPort = port + 357;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

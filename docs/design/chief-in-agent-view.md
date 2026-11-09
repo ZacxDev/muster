@@ -1,7 +1,10 @@
 # Design: the chief in an agent's view (succession: replace or spin off, in place)
 
-**Status: phase 0 measured and phase 1 built (see [Phase 0 results](#phase-0-results-2026-11-08)
-and [Phase 1 as built](#phase-1-as-built)); phases 2–4 are proposed.** It builds on
+**Status: phase 0 measured, phases 1 and 2 built (see [Phase 0 results](#phase-0-results-2026-11-08),
+[Phase 1 as built](#phase-1-as-built) and [Phase 2 as built](#phase-2-as-built)); phases 3–4 are
+proposed.** Phase 2 follows the operator's decision of 2026-11-09 on how a view
+line authorises a succession (a one-tap confirm card), which changes 4.2 and D5
+as written below; [Phase 2 as built](#phase-2-as-built) says how. It builds on
 [chief-dispatch.md](chief-dispatch.md) (phase 3 built for claude, #513/#516;
 phase 4, opencode on an OpenRouter model, in draft as #522) and reuses its
 target strings, `host_dispatches` row, reconciler, held cards and owner-turn
@@ -864,3 +867,96 @@ the operator's round 0 decisions on PR #537:
   written while a view turn is still running, would cut that reply out of the
   strip; it stays in the chief's own chat. **UNVERIFIED** against production
   interleavings.
+
+## Phase 2 as built
+
+**The operator's decision (2026-11-09), answering phase 1's open question.** A
+view line marks no owner turn, so it cannot authorise a start by itself. The
+authorisation is a **one-tap confirm card**: the chief *prepares* a succession,
+muster shows the owner the exact kickoff and settings, and the owner's tap is
+what starts it. Transcript text can at most cause a proposal, never a start.
+This replaces 4.2's binding to the message `ownerTurnFor` returns, and D5's "no
+confirm tap": the confirm card is the only tap (there is no second "start with
+this kickoff" step).
+
+- **`succession_propose`** (`internal/api/succession.go`), chief-only, on MCP,
+  offered with `agent_dispatch` (task routing on, the owner opted in) when the
+  mirror, focus and attention stores are wired. No new configuration.
+  - Arguments (unknown ones refused): `successor_of`, `succession`
+    (`replace` | `spinoff` | `?`), `prompt_from: {ref, block?}`, and only when
+    the owner's words say so, `target`, `model`, `repo`, `base`.
+    `TestTheSuccessionProposeKeysArePinned` pins both key sets.
+  - **The binding.** The chief's newest user row in its default session must
+    be a view line (`about` set, typed by the owner, within the turn budget);
+    `successor_of` must equal its `about`. The subject's place is read again
+    from the hub, owner-scoped. Anything else is refused with its own sentence.
+  - **The kickoff.** muster re-reads the transcript and copies the message
+    whose `ref` matches — its fenced block when `block` is given, else the
+    whole message (phase 0 found unfenced kickoffs) — byte for byte. Too long
+    for the spawn prompt: refused (`the kickoff is N bytes; at most M fit`),
+    never cut. A control character a runtime refuses: refused, never altered.
+  - **What it inherits (D3).** The subject's host and runtime; for opencode,
+    the model of a session the chief started (an owner-opened opencode window
+    has none muster knows, so the chief must pass the one the owner named);
+    the repository of a session the chief started, else the window's short
+    repository name when exactly one connected repository has it. The owner's
+    words override each.
+  - **The base (D4).** The old session's branch for a session the chief
+    started, else the repository default. At the start, a `bad_base` refusal
+    of that branch starts once more from the default (a second reservation,
+    the row relinked); the card and the view say which base was used.
+  - It records the proposal (`session_successions`, migration **0099**) and
+    raises the card (`raiseOwnerCard`: on the Attention view and the phone, an
+    owner card answered only through the owner's own doors). Its question
+    holds the kickoff whole when it fits, its options are "Start it" / "Not
+    now", or "Replace this session" / "Spin off a new one" / "Not now" when
+    `succession` was `?` (D2). It ends the chief's turn and starts nothing.
+- **The tap** is `answerAskFrom`'s succession hook (`successionForAnswer`),
+  before the answer is recorded — the same path as the Attention view, the
+  phone, and the view's own card (`POST /mirror/view/succession`, which accepts
+  only the card of the session that view shows). It refuses anything but the
+  owner's signed-in browser or paired phone, and any answer that is not one of
+  the card's buttons. Start dispatches through the host dispatch machinery
+  unchanged: `hostSpawnable`, `connectedRepoName`, the chief's caps
+  (`ReserveHostDispatch`), `spawnReserved` and the reconciler. The succession
+  is linked to its dispatch **in the reservation's transaction, single use**:
+  a second link of a decided row rolls the whole reservation back. A start
+  refused before anything was reserved leaves the card open with its sentence.
+- **The successor's first message** is muster's spawn preface, a line naming
+  the session the kickoff was copied from, the kickoff exactly as copied
+  between two rules, then muster's rules.
+- **The lineage.** When the successor's dispatch turns running (the
+  reconciler), a replace's predecessor is marked superseded and the owner's
+  stream gets `lineage.changed` (`succession-<id>`, no text); the event also
+  goes out on a proposal, a decision, a start and an end. 30 s after running,
+  if no view opened the successor (`successor_seen_at`), the owner gets one
+  push linking to it.
+- **The view.** `GET /mirror/view/successor` answers `{id, state, mode,
+  card_html, successor: {view_path, title, host, runtime}}`. The view draws the
+  card (the kickoff in full, the settings, the buttons), then "A successor is
+  starting…", then "Superseded. Continued in …" (replace) or "Spun off …". The
+  view that saw the succession open follows it once it runs: "Opening the new
+  session…" for 1.5 s with Stay here, then `location.assign` (the top window
+  when framed), at most once per succession (`sessionStorage`). It asks again
+  on `visibilitychange`, on a stream reconnect and on a back-forward restore.
+  A view opened after the successor ran shows the banner and does not jump.
+  The successor's view says "Continues “…” · replace · open previous".
+- **The sidebar.** A superseded session folds into a collapsed "Superseded (N)"
+  group (collapse only; the window keeps running and is listed). Its window is
+  not closed (D1: phase 3).
+- **The chief is told** in the view turn's header, only when the tool is
+  offered: call `succession_propose` with the subject, the mode or `?`, and
+  `prompt_from`, and that nothing starts until the owner taps. The agentspec
+  instructions are unchanged: the header reaches both runtimes on exactly the
+  turns it applies to.
+- `session_context` is unchanged: its `suggested_*` keys were not re-added,
+  because the proposal inherits the settings itself.
+
+**Left for later, stated:**
+- The view's card shows its own kickoff in full; the Attention view and the
+  phone show the question's text, which holds the kickoff whole only when it
+  fits the question's limit.
+- An owner line typed in the chief's own chat while a card is open settles the
+  oldest open owner card in session (the owner-card rule); a succession card
+  settled that way starts nothing and reads as expired on the view.
+- No phase 3 (closing the replaced window) and no pod successors.

@@ -267,6 +267,13 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	// pins are marked: decided on every build, so an entry active again leaves
 	// it on the next refresh.
 	ui.MarkIdle(cards, mirrors, s.now(), s.ext.AgentsIdleAfter)
+	// The sessions a running successor replaced (succession.go): the
+	// sidebar's Superseded group. One read for all of them.
+	if sup := s.supersededKeys(ctx); len(sup) > 0 {
+		for i := range mirrors {
+			mirrors[i].Superseded = mirrors[i].FocusKey != "" && sup[mirrors[i].FocusKey]
+		}
+	}
 	return cards, mirrors, nil
 }
 

@@ -199,8 +199,12 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
 	items := switcherItems(es, cur, now)
-	var rows, idle []g.Node
+	var rows, idle, superseded []g.Node
 	for i, e := range es {
+		if e.superseded() && !e.waiting() && !items[i].Current {
+			superseded = append(superseded, navAgentRow(e, items[i], now))
+			continue
+		}
 		if navInIdleGroup(e, items[i]) {
 			idle = append(idle, navAgentRow(e, items[i], now))
 			continue
@@ -209,8 +213,36 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	}
 	return g.Group{
 		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
+		navSupersededGroup(superseded),
 		navIdleGroup(idle),
 	}
+}
+
+// NavSupersededID is the sidebar's Superseded group (navSupersededGroup).
+const NavSupersededID = "sidebar-superseded"
+
+// navSupersededGroup is the sessions a running successor replaced (a
+// succession's replace, design 4.4): their rows under a "Superseded (N)"
+// disclosure that starts shut, above the Idle group. Collapse only — each is
+// still listed, searchable and openable, and its window keeps running. A row
+// that waits on the operator, or the page's own, stays in the list above.
+// Nothing when none is.
+func navSupersededGroup(rows []g.Node) g.Node {
+	if len(rows) == 0 {
+		return nil
+	}
+	return Details(
+		ID(NavSupersededID),
+		g.Attr("data-nav-superseded", ""),
+		Class("group/sup mt-1 border-t border-line pt-1"),
+		Summary(
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-xs font-medium uppercase tracking-wide text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition-transform group-open/sup:rotate-90" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
+			Span(g.Text("Superseded")),
+			Span(g.Attr("data-nav-superseded-count", ""), Class("tabular-nums"), g.Text("("+strconv.Itoa(len(rows))+")")),
+		),
+		Ul(g.Attr("aria-label", "Superseded sessions"), Class("flex flex-col gap-0.5"), g.Group(rows)),
+	)
 }
 
 // navInIdleGroup is whether a row is drawn in the Idle group: the entry is in

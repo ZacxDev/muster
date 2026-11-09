@@ -305,6 +305,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Class("px-3 pb-1 text-xs text-muted"),
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
+				// The view's one /events stream, before the scripts that share it
+				// (the chief strip's, the succession region's).
+				g.If(v.Chief || v.Succession != nil || v.Predecessor != nil, viewStreamScript()),
 				mirrorComposer(composer),
 				g.If(v.Interactive && v.ViewOnly == "", confirmDialog(v.StepUp)),
 				g.If(v.Interactive && v.ViewOnly == "", stepUpScript()),
