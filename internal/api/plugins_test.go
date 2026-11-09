@@ -27,11 +27,13 @@ type countingPlugins struct {
 // Short aliases: the leak gate reads `Bearer "+<a long identifier>` as a
 // credential-shaped string.
 const (
-	pgnTok    = "mpl_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
-	pgnSvc    = "plugins-test-service-token-0123456789abcd"
-	pgnRunner = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
-	pgnAgent  = "plugins-test-agent-own-token-0123456789"
-	pgnMsg    = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
+	pgnTok = "mpl_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	// pgnViewerTok is a live token with the viewer capability and not messages.
+	pgnViewerTok = "mpl_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
+	pgnSvc       = "plugins-test-service-token-0123456789abcd"
+	pgnRunner    = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	pgnAgent     = "plugins-test-agent-own-token-0123456789"
+	pgnMsg       = `{"external_id":"ext-1","sender":"a@example.invalid","subject":"s","body":"hello"}`
 )
 
 func (c *countingPlugins) note(ctx context.Context, m string) {
@@ -55,8 +57,13 @@ func (c *countingPlugins) reset() {
 
 func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins.Plugin, error) {
 	c.note(ctx, "Authenticate")
-	if tok == pgnTok {
-		return plugins.Plugin{ID: 3, OwnerID: authz.OperatorUserID, Name: "example-inbox", Label: "Example inbox"}, nil
+	switch tok {
+	case pgnTok:
+		return plugins.Plugin{ID: 3, OwnerID: authz.OperatorUserID, Name: "example-inbox", Label: "Example inbox",
+			Capabilities: []plugins.Capability{plugins.CapMessages}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnViewerTok:
+		return plugins.Plugin{ID: 4, OwnerID: authz.OperatorUserID, Name: "example-viewer", Label: "Example viewer",
+			Capabilities: []plugins.Capability{plugins.CapViewer}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -225,6 +232,9 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	{"/plugin/v1/tasks?namespace=tracker&live=true", "", "", http.StatusServiceUnavailable, http.MethodGet},
 	{"/plugin/v1/task-writes/claim", `{"wait_s":0}`, "", http.StatusServiceUnavailable, ""},
 	{"/plugin/v1/task-writes/5/result", `{"ok":true}`, "", http.StatusServiceUnavailable, ""},
+	// Who the token is (plugin_capabilities_test.go): it reaches no store
+	// method past the token lookup.
+	{"/plugin/v1/self", "", "", http.StatusOK, http.MethodGet},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
@@ -334,6 +344,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 		{"POST", "/plugins/messages/1/retry", ""}, {"POST", "/api/plugins/messages/1/retry", ""},
 		{"POST", "/plugin/v1/drafts/claim", `{"wait_seconds":0}`}, {"POST", "/plugin/v1/drafts/1/result", `{"ok":true}`},
 		{"POST", "/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`},
+		{"GET", "/plugin/v1/self", ""},
 	} {
 		for name, c := range map[string]pluginCred{"plugin token": pBearer(pgnTok), "session": session,
 			"hook token": pBearer(tokTestHook), "none": func(*http.Request) {}} {

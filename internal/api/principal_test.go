@@ -433,6 +433,7 @@ var routeVias = map[authz.Via][]string{
 	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
+		"GET /plugin/v1/self",
 		"POST /plugin/v1/messages",
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
@@ -496,7 +497,8 @@ type principalPlugins struct{ plugins.Store }
 
 func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
 	if tok == pPluginToken {
-		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test"}, nil
+		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
+			Capabilities: []plugins.Capability{plugins.CapMessages}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

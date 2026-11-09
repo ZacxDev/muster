@@ -118,6 +118,7 @@ GET /mirror/view/subagent
 GET /mirror/view/successor
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /plugin/v1/self
 GET /plugin/v1/tasks
 GET /plugins
 GET /readyz
