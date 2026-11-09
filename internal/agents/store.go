@@ -292,6 +292,19 @@ type ChatMessage struct {
 	// a row written since carries the link when it is one. false for every
 	// row a store that does not compute it returns.
 	WrittenBeforeRelayLink bool `json:"-"`
+
+	// AboutKey is the KEY of the session the owner was VIEWING when they typed
+	// this USER row to the chief from its rendered view (migration 0098,
+	// chat_messages.about): a Claude Code session id or "opencode:<ses_…>";
+	// "" for every other row and for every row written before 0098. Only the
+	// key is stored (operator decision, PR #537 D1): the window's place and
+	// dispatch are read from the view when the line is sent, for the chief's
+	// header only. 🔴 ONE WRITER SETS IT: runEnteredTurn, from the view's chief
+	// door (POST /mirror/view/chief), which resolves it on the SERVER from the
+	// hub's owner-scoped state, never from the page. internal/api's
+	// TestOnlyTheViewDoorBindsASubject pins the writers. Not serialised: no API
+	// reader needs it.
+	AboutKey string `json:"-"`
 }
 
 // ChatSession is one independent conversation with an agent's gateway. Each

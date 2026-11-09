@@ -509,6 +509,12 @@ var isolationClasses = map[string]routeClass{
 	// An opened subagent card's steps: the same address in the query, plus
 	// the agent id.
 	"GET /mirror/view/subagent": classMirror,
+	// The view's chief mode (view_chief.go): addressed by the window like a
+	// send (form for the POST, query for the GETs). B naming A's window must
+	// 404 before anything is stored or read.
+	"POST /mirror/view/chief":    classMirror,
+	"GET /mirror/view/chief":     classMirror,
+	"GET /mirror/view/chief/log": classMirror,
 	// Suggested replies (suggest.go): the window's set (address in the query)
 	// — B naming A's window must 404; the toggle is the caller's own row (list).
 	"GET /mirror/view/suggest": classMirror,
@@ -1603,6 +1609,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
+		route == "POST /mirror/view/chief" ||
 		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/opencode/answer" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
@@ -1670,7 +1677,13 @@ var sideEffectControlled = map[string]string{
 	// owner isolation is pinned at the store, where it is enforced:
 	// TestThePGStoreDedupsAnIdempotencyKeyPerOwner (internal/jobs) reads another
 	// owner's job as ErrNotFound and refuses a job on another owner's agent.
-	"GET /api/jobs/{id}":                    "the service tier only (user 1); per-owner isolation controlled in internal/jobs's pg tests",
+	"GET /api/jobs/{id}": "the service tier only (user 1); per-owner isolation controlled in internal/jobs's pg tests",
+	// The view's chief mode answers about A's window only once A has a chief
+	// (this world's A has none, so A's own answer is the ghost's). Its control
+	// is view_chief_pg_test.go: the owner's own window is accepted (and its strip
+	// drawn), another owner's same address is 404 and stores nothing.
+	"POST /mirror/view/chief":               "needs A's chief; controlled in view_chief_pg_test.go (TestTheViewChiefDoorRefuses)",
+	"GET /mirror/view/chief/log":            "needs A's chief; controlled in view_chief_pg_test.go (TestTheViewChiefStripShowsThisSessionsExchangeOnly)",
 	"POST /agents/{id}/stop":                "as start",
 	"DELETE /agents/{id}":                   "as start (Destroy)",
 	"POST /agents/sessions/{sid}/read":      "A's chat_sessions.read_at moved; the mutation leg shows B's did not",

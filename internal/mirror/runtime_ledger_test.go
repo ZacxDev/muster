@@ -137,6 +137,11 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		// opencode API send, docs/design/opencode-first-class.md).
 		"internal/api/send_queue.go (declarations) ×2",
 		"internal/api/send_queue.go queueWordsOf ×1",
+		// A chief subject's runtime LABEL (view_chief.go): a Claude Code window
+		// has no RuntimeSpec (Spec is false for it), so it is named "claude"
+		// here; every other runtime's name comes from its spec. It decides
+		// nothing — it is the turn header's and session_context's word.
+		"internal/api/view_chief.go Server.sessionSubject ×1",
 		"internal/mirror/agentstate.go Hub.AgentState ×1",
 		// The host view's opencode flags: OpenCodeAnswer and OpenCodeSend.
 		"internal/mirror/hub.go Hub.Hosts ×2",

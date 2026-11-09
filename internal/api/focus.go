@@ -165,9 +165,10 @@ func (f focusSessions) Candidates(ctx context.Context) ([]focus.Candidate, error
 // "<runtime>:<id>", mirror.SessionView.SessionKey), most recently active
 // first.
 //
-// 🔴 FOCUS ONLY. Routing, the send queue and the sessions overview stay on
-// mirrorClaudeEntries: each of those is a way to SEND, and muster sends only
-// to Claude Code.
+// 🔴 A READ, NEVER A SEND. Focus, the sessions overview's list (liveSessions)
+// and session_context read through it. Routing and the send queue stay on
+// mirrorClaudeEntries: each of those is a way to SEND, and they send only to
+// Claude Code (opencode's gated send is its own path, RuntimeSpec.GatedSend).
 func (s *Server) mirrorFocusEntries(ctx context.Context) []mirror.SessionView {
 	if s.ext.Mirror == nil {
 		return nil
