@@ -54,4 +54,5 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [design/previews.md](design/previews.md) — proposed: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
+- [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
