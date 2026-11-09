@@ -1,0 +1,365 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/opencodehost"
+	"github.com/ZacxDev/muster/internal/previewhost"
+)
+
+const goodPreviewToken = "mpt_" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+// previewFiles writes a previews.json and a token file (0600) into a temp dir.
+func previewFiles(t *testing.T, previews string) (file, token string) {
+	t.Helper()
+	dir := t.TempDir()
+	file, token = filepath.Join(dir, "previews.json"), filepath.Join(dir, "preview-token")
+	if previews != "" {
+		if err := os.WriteFile(file, []byte(previews), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(token, []byte(goodPreviewToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file, token
+}
+
+// TestCheckPreviewRefusesEachBadInputWithItsReason: every input -preview
+// validates, wrong one way at a time, is refused with the reason naming it;
+// the all-good control passes. The token never appears in a reason.
+func TestCheckPreviewRefusesEachBadInputWithItsReason(t *testing.T) {
+	file, token := previewFiles(t, `{"ports": ["5173"]}`)
+	good := previewFlags{On: true, URLs: "ws://192.0.2.7:9000/v1/host,wss://tunnel.example.net/v1/host", TokenFile: token, File: file}
+	setup, err := checkPreview(good, true)
+	if err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	if setup.Token != goodPreviewToken || len(setup.URLs) != 2 || setup.URLs[0] != "ws://192.0.2.7:9000/v1/host" || !setup.Config.Ports.Contains(5173) {
+		t.Fatalf("control setup: %+v", setup)
+	}
+
+	dir := t.TempDir()
+	write := func(name, body string, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(token, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		mut     func(*previewFlags)
+		tenant  bool
+		wantWhy string
+	}{
+		{"per-tenant daemon", func(*previewFlags) {}, true, "default tmux server's daemon only"},
+		{"missing previews.json", func(p *previewFlags) { p.File = filepath.Join(dir, "nope.json") }, false, "does not exist"},
+		{"privileged port", func(p *previewFlags) { p.File = write("low.json", `{"ports": ["443"]}`, 0o600) }, false, "port 443 is outside 1024-65535"},
+		{"malformed range", func(p *previewFlags) { p.File = write("rng.json", `{"ports": ["9000-8000"]}`, 0o600) }, false, "the range ends (8000) before it starts (9000)"},
+		{"no urls", func(p *previewFlags) { p.URLs = " , " }, false, "names no gateway endpoint"},
+		{"http url", func(p *previewFlags) { p.URLs = "https://tunnel.example.net/v1/host" }, false, "is not ws:// or wss://"},
+		{"url with a query", func(p *previewFlags) { p.URLs = "wss://tunnel.example.net/v1/host?t=1" }, false, "nothing else"},
+		{"url with user info", func(p *previewFlags) { p.URLs = "wss://u:p@tunnel.example.net/v1/host" }, false, "nothing else"},
+		{"too many urls", func(p *previewFlags) { p.URLs = "ws://a/,ws://b/,ws://c/,ws://d/,ws://e/" }, false, "at most 4"},
+		{"no token file", func(p *previewFlags) { p.TokenFile = "" }, false, "set -preview-token-file"},
+		{"token readable by others", func(p *previewFlags) { p.TokenFile = write("open", goodPreviewToken, 0o644) }, false, "readable by others (mode 0644)"},
+		{"token symlink", func(p *previewFlags) { p.TokenFile = link }, false, "not a regular file"},
+		{"not a preview token", func(p *previewFlags) { p.TokenFile = write("mmt", "mmt_"+strings.Repeat("B", 43), 0o600) }, false, "does not hold a preview host token"},
+		{"bare prefix", func(p *previewFlags) { p.TokenFile = write("bare", "mpt_", 0o600) }, false, "does not hold a preview host token"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pf := good
+			c.mut(&pf)
+			_, err := checkPreview(pf, !c.tenant)
+			if err == nil || !strings.Contains(err.Error(), c.wantWhy) {
+				t.Fatalf("got %v, want a reason saying %q", err, c.wantWhy)
+			}
+			if strings.Contains(err.Error(), goodPreviewToken[4:]) {
+				t.Fatalf("the reason prints the token: %v", err)
+			}
+		})
+	}
+}
+
+// TestAlwaysRefusedPortsAreTheMCPAndOpencodePorts: -mcp-listen's port and the
+// opencode token's server port, re-read at each call; neither when unset.
+func TestAlwaysRefusedPortsAreTheMCPAndOpencodePorts(t *testing.T) {
+	oc, err := opencodehost.EnvCredentials("http://127.0.0.1:4096", "9999999999.sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := alwaysRefusedPorts("127.0.0.1:47823", oc)()
+	if len(got) != 2 || !strings.Contains(got[47823], "MCP endpoint") || !strings.Contains(got[4096], "opencode") {
+		t.Fatalf("refused = %v", got)
+	}
+	if got := alwaysRefusedPorts("", nil)(); len(got) != 0 {
+		t.Fatalf("nothing configured, refused = %v", got)
+	}
+}
+
+// startPreviewLog runs startPreview to completion and returns its log.
+func startPreviewLog(t *testing.T, pf previewFlags, defaultDaemon bool, refused map[int]string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	done := startPreview(pf, defaultDaemon, func() map[int]string { return refused }, log.New(&buf, "", 0))
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startPreview never finished")
+	}
+	return buf.String()
+}
+
+// TestStartPreviewLogsWhatItWouldOfferOrWhyItIsOff: a valid configuration is
+// logged with its numbers and an always-refused port it lists is named; a bad
+// one is logged as OFF with its reason; a panic inside is recovered and logged
+// as OFF, never crashing the host.
+func TestStartPreviewLogsWhatItWouldOfferOrWhyItIsOff(t *testing.T) {
+	file, token := previewFiles(t, `{"ports": ["5173", "40000-50000"], "maxOpen": 4}`)
+	pf := previewFlags{On: true, URLs: "ws://192.0.2.7:9000/v1/host", TokenFile: token, File: file}
+	out := startPreviewLog(t, pf, true, map[int]string{47823: "muster-mirror's MCP endpoint (-mcp-listen)"})
+	for _, want := range []string{
+		"previews are configured (ports 5173,40000-50000, maxOpen 4, maxConns 64",
+		"endpoints ws://192.0.2.7:9000/v1/host) but this release does not dial the gateway yet",
+		"port 47823 is on the allowlist but is muster-mirror's MCP endpoint (-mcp-listen), and is always refused",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q\nlacks %q", out, want)
+		}
+	}
+	if strings.Contains(out, goodPreviewToken) {
+		t.Fatalf("the log prints the token: %s", out)
+	}
+	if out := startPreviewLog(t, previewFlags{On: true, File: filepath.Join(t.TempDir(), "x.json")}, true, nil); !strings.Contains(out, "previews are OFF, mirroring continues:") || !strings.Contains(out, "does not exist") {
+		t.Errorf("bad config log: %q", out)
+	}
+	var buf bytes.Buffer
+	done := startPreview(pf, true, func() map[int]string { panic("boom") }, log.New(&buf, "", 0))
+	<-done
+	if !strings.Contains(buf.String(), "previews are OFF, mirroring continues: preview setup panicked: boom") {
+		t.Errorf("panic log: %q", buf.String())
+	}
+}
+
+// TestPreviewNeverStopsOrDialsAnything is -preview through run: with a bad
+// previews.json the host still dials muster and says previews are OFF; with a
+// valid one it says what it would offer — and in neither case does anything
+// connect to the gateway endpoint. The gateway's counter is shown to count
+// (one dial of our own, after) so its zero means something.
+func TestPreviewNeverStopsOrDialsAnything(t *testing.T) {
+	gw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gw.Close()
+	var accepts atomic.Int32
+	go func() {
+		for {
+			c, err := gw.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			c.Close()
+		}
+	}()
+	gwURL := "ws://" + gw.Addr().String() + "/v1/host"
+	goodFile, token := previewFiles(t, `{"ports": ["5173"]}`)
+	for _, c := range []struct {
+		name, file, want string
+	}{
+		{"bad previews.json", filepath.Join(t.TempDir(), "missing.json"), "previews are OFF, mirroring continues:"},
+		{"valid", goodFile, "but this release does not dial the gateway yet"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rc, errs := runUntilDialled(t, map[string]string{envPreview: "1", envPreviewURLs: gwURL, envPreviewTokenFile: token, envPreviewFile: c.file})
+			if rc != 0 || !strings.Contains(errs, c.want) {
+				t.Fatalf("rc %d, log lacks %q:\n%s", rc, c.want, errs)
+			}
+		})
+	}
+	if n := accepts.Load(); n != 0 {
+		t.Fatalf("something dialled the gateway endpoint %d time(s)", n)
+	}
+	// Positive control: the counter sees a dial.
+	conn, err := net.Dial("tcp", gw.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for accepts.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := accepts.Load(); n != 1 {
+		t.Fatalf("instrument: our own dial counted %d, want 1", n)
+	}
+}
+
+// TestPreviewFlagsWithoutPreviewSayTheyDoNothing: the endpoints or token set
+// with -preview off is logged as having no effect.
+func TestPreviewFlagsWithoutPreviewSayTheyDoNothing(t *testing.T) {
+	rc, errs := runUntilDialled(t, map[string]string{envPreviewURLs: "wss://tunnel.example.net/v1/host"})
+	if rc != 0 || !strings.Contains(errs, "have no effect without -preview: previews are off") {
+		t.Fatalf("rc %d, log:\n%s", rc, errs)
+	}
+	if strings.Contains(errs, "previews are configured") {
+		t.Fatalf("previews configured with -preview off:\n%s", errs)
+	}
+}
+
+// runUntilDialled runs the daemon against a fake muster with extra env, waits
+// for it to dial /mirror/connect, stops it, and returns its status and log.
+func runUntilDialled(t *testing.T, extra map[string]string) (int, string) {
+	t.Helper()
+	dialled := make(chan struct{}, 1)
+	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mirror/connect" {
+			select {
+			case dialled <- struct{}{}:
+			default:
+			}
+		}
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	defer muster.Close()
+	prevB, prevC := newTmuxBackend, runContext
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	env := map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop", envAllowHTTP: "1"}
+	for k, v := range extra {
+		env[k] = v
+	}
+	type result struct {
+		rc   int
+		errs string
+	}
+	done := make(chan result, 1)
+	go func() {
+		rc, _, errs := runWith(t, env)
+		done <- result{rc, errs}
+	}()
+	select {
+	case <-dialled:
+	case r := <-done:
+		t.Fatalf("run ended before dialling muster: rc %d %s", r.rc, r.errs)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never dialled muster")
+	}
+	cancel()
+	select {
+	case r := <-done:
+		return r.rc, r.errs
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not stop")
+	}
+	return 0, ""
+}
+
+// windowsBackend is listBackend that also lists windows: two, with pane roots
+// 100 (window @3) and 300 (window @5).
+type windowsBackend struct{ listBackend }
+
+func (windowsBackend) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
+	return []mirrorhost.WindowInfo{
+		{Session: "work", ID: "@3", Index: 1, Pane: "%1", PanePID: 100},
+		{Session: "docs", ID: "@5", Index: 0, Pane: "%2", PanePID: 300},
+	}, nil
+}
+
+// A synthetic /proc/net/tcp (format of a Linux 6.x host, values invented):
+// 5173 and 8000 and 47823 listen on 127.0.0.1 as uid <uid>, 8001 as uid 4242.
+func previewTCP(uid int) string {
+	row := func(n int, port int, u int, inode int) string {
+		return fmt.Sprintf("   %d: 0100007F:%04X 00000000:0000 0A 00000000:00000000 00:00000000 00000000 %5d        0 %d 1 0000000000000000 100 0 0 10 0\n", n, port, u, inode)
+	}
+	return "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
+		row(0, 5173, uid, 61001) + row(1, 8000, uid, 61002) + row(2, 47823, uid, 61003) + row(3, 8001, 4242, 61004)
+}
+
+// TestListPreviewsReadsTheProcSeamEndToEnd is `-list -previews` on a fixture
+// proc tree: the listener walk goes through mirrorhost.ProcTable (stat files,
+// the locator's own reader) from the socket's fd up to a window's pane root.
+// node (5173, in @3) and hugo (8000, in @5) are printed; the -mcp-listen port
+// (47823, listed) and another user's 8001 (listed) are not.
+func TestListPreviewsReadsTheProcSeamEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	mk := func(pid, ppid int, comm string, inodes ...int) {
+		dir := filepath.Join(root, fmt.Sprint(pid), "fd")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stat := fmt.Sprintf("%d (%s) S %d 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0", pid, comm, ppid)
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprint(pid), "stat"), []byte(stat), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for i, ino := range inodes {
+			if err := os.Symlink(fmt.Sprintf("socket:[%d]", ino), filepath.Join(dir, fmt.Sprint(3+i))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "net", "tcp"), []byte(previewTCP(os.Getuid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mk(100, 1, "zsh")
+	mk(101, 100, "node", 61001)
+	mk(102, 100, "muster-mirror", 61003)
+	mk(103, 100, "intruder", 61004)
+	mk(300, 1, "bash")
+	mk(301, 300, "sh")
+	mk(302, 301, "hugo", 61002)
+	file, _ := previewFiles(t, `{"ports": ["5173", "8000-8001", "47823"]}`)
+
+	prevB, prevRoot := e2eBackend, previewProcRoot
+	t.Cleanup(func() { e2eBackend, previewProcRoot = prevB, prevRoot })
+	e2eBackend = func() mirrorhost.Backend { return windowsBackend{} }
+	previewProcRoot = root
+	rc, out, errs := runWith(t, map[string]string{envPreviewFile: file, envMCPListen: "127.0.0.1:47823"}, "-list", "-previews")
+	if previewhost.Supported() != nil {
+		// macOS: reports are off, and the command says so (exit 1).
+		if rc != 1 || out != "" || !strings.Contains(errs, "UNVERIFIED on") {
+			t.Fatalf("off-Linux: rc %d, out %q, errs %q", rc, out, errs)
+		}
+		return
+	}
+	if want := "@3\t5173\tnode\twork\n@5\t8000\thugo\tdocs\n"; rc != 0 || out != want {
+		t.Fatalf("rc %d, stdout %q (stderr %q); want %q", rc, out, errs, want)
+	}
+	// Control: without -mcp-listen, 47823 is just another listed port.
+	rc, out, _ = runWith(t, map[string]string{envPreviewFile: file}, "-list", "-previews")
+	if rc != 0 || !strings.Contains(out, "@3\t47823\tmuster-mirror\twork\n") {
+		t.Fatalf("control without -mcp-listen: rc %d, stdout %q", rc, out)
+	}
+	// A bad previews.json: off, with the reason, exit 1.
+	rc, _, errs = runWith(t, map[string]string{envPreviewFile: filepath.Join(root, "none.json")}, "-list", "-previews")
+	if rc != 1 || !strings.Contains(errs, "previews are off:") {
+		t.Fatalf("bad file: rc %d, %q", rc, errs)
+	}
+}
