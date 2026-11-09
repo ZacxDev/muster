@@ -109,9 +109,9 @@ func TestAProposalWithdrawsTheQuestionsItAnswered(t *testing.T) {
 			t.Errorf("%s: %s, reason %q; want it open", name, a.Status, a.SettledReason)
 		}
 	}
-	// attention_wait tells the chief why.
+	// attention_wait tells the chief why (a read: wait_seconds 0).
 	var wait map[string]any
-	_ = json.Unmarshal([]byte(f.callRaw(f.chief, attentionWaitTool, map[string]any{"id": asked})), &wait)
+	_ = json.Unmarshal([]byte(f.callRaw(f.chief, attentionWaitTool, map[string]any{"id": asked, "wait_seconds": 0})), &wait)
 	if wait["status"] != string(attention.Cancelled) || wait["reason"] != reason {
 		t.Errorf("attention_wait on the withdrawn ask: %v", wait)
 	}
