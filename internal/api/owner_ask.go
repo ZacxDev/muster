@@ -121,7 +121,7 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 // docs/design/chief-dispatch.md 2.8) — so both are the same row, answered
 // through the same doors, delivered the same way. ctx is the owner's principal
 // (row-level security makes the row theirs). about is the session the question
-// is about (attention.New.AboutKey: chiefAskSubject's, for ask_owner), "" for
+// is about (attention.New.SubjectKey: chiefAskSubject's, for ask_owner), "" for
 // none — muster's own cards.
 func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string, about string) (attention.Ask, error) {
 	return s.raiseCard(ctx, chief, question, options, false, about)
@@ -145,7 +145,7 @@ func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question str
 		return attention.Ask{}, errors.New("no attention store")
 	}
 	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options,
-		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), AboutKey: about})
+		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about})
 	if err != nil {
 		return attention.Ask{}, err
 	}

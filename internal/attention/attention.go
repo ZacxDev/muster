@@ -288,9 +288,9 @@ type Ask struct {
 	// AskedSession is the chat session key the chief asked an owner card in
 	// (New.AskedSession), "" for unknown.
 	AskedSession string `json:"-"`
-	// AboutKey is the session the chief's ask was raised about (New.AboutKey,
+	// SubjectKey is the session the chief's ask was raised about (New.SubjectKey,
 	// migration 0103), "" for none.
-	AboutKey string `json:"-"`
+	SubjectKey string `json:"-"`
 	// SettledReason is why muster withdrew the ask (WithdrawAbout, 0103), ""
 	// for any ask it did not withdraw.
 	SettledReason string `json:"-"`
@@ -361,12 +361,12 @@ type New struct {
 	// ("" for unknown), where its answer is delivered.
 	OwnerCard    bool
 	AskedSession string
-	// AboutKey is the session key (chat_messages.about) of the owner's view
+	// SubjectKey is the session key (chat_messages.about) of the owner's view
 	// line the chief was answering when it raised the ask (migration 0103), ""
 	// for none. Set ONLY by internal/api (chiefAskSubject), never from an
 	// asker's arguments: WithdrawAbout withdraws by it when the chief files a
 	// proposal about that session.
-	AboutKey string
+	SubjectKey string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -510,8 +510,8 @@ type Store interface {
 	Cancel(ctx context.Context, id int64) (Ask, error)
 	// WithdrawAbout withdraws (Cancelled, with reason as its SettledReason)
 	// every open, unexpired question agent agentID raised about session key
-	// (AboutKey, migration 0103) — never ask except, and never an ask with no
-	// AboutKey — and returns them.
+	// (SubjectKey, migration 0103) — never ask except, and never an ask with no
+	// SubjectKey — and returns them.
 	WithdrawAbout(ctx context.Context, agentID int64, key string, except int64, reason string) ([]Ask, error)
 	// AnswerInSession settles as AnsweredInSession every open ask asker raised
 	// (of its owner cards, only the oldest) before this statement began (created_at < statement_timestamp()), with
@@ -617,7 +617,7 @@ func scan(row pgx.Row) (Ask, error) {
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.AboutKey, &a.SettledReason); err != nil {
+		&a.SubjectKey, &a.SettledReason); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -721,7 +721,7 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.AboutKey)))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey)))
 	if err != nil {
 		return Ask{}, err
 	}

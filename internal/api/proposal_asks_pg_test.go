@@ -81,7 +81,7 @@ func TestAProposalWithdrawsTheQuestionsItAnswered(t *testing.T) {
 		t.Fatal(err)
 	}
 	theirs, err := f.srv.ext.Attention.Create(f.asOwner, attention.New{Asker: callerOfAgent(worker).asker, Question: "Is this session mine?",
-		AboutKey: sxOpenCodeKey})
+		SubjectKey: sxOpenCodeKey})
 	if err != nil {
 		t.Fatal(err)
 	}

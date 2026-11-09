@@ -371,7 +371,7 @@ func proposalWithdrawnReason(x plugins.Proposal) string {
 
 // withdrawAnsweredAsks withdraws the questions the chief raised for proposal
 // x's flow, which the proposal answered: its still-open asks — ask_owner's
-// cards and attention_ask's — linked to x's session (attention.Ask.AboutKey,
+// cards and attention_ask's — linked to x's session (attention.Ask.SubjectKey,
 // which chiefAskSubject sets only for a question raised in the turn of the
 // owner's own view line about it). 🔴 THE LINK IS STRUCTURAL: an ask is never
 // matched by its text, and one with no subject, another session's, another
