@@ -66,10 +66,15 @@ type Request struct {
 	ID      string `json:"id"`
 	Window  string `json:"window"`
 	Session string `json:"session,omitempty"`
-	Port    int    `json:"port,omitempty"`    // open
-	Label   string `json:"label,omitempty"`   // open, at most 60 bytes
-	Path    string `json:"path,omitempty"`    // open, starts with "/"
-	Preview string `json:"preview,omitempty"` // close; on a re-announced open, the id the previous gateway gave
+	Port    int    `json:"port,omitempty"`  // open
+	Label   string `json:"label,omitempty"` // open, at most 60 bytes
+	Path    string `json:"path,omitempty"`  // open, starts with "/"
+	// Preview names the preview a close ends. On an open it is ADVISORY and
+	// unused: a gateway mints a new id for every open it records, a
+	// re-announced one included (ids are the gateway's to mint, never the
+	// host's to choose), so a host must take the id from the Answer and
+	// accept that it changed.
+	Preview string `json:"preview,omitempty"`
 }
 
 // Answer is the body of POST OpenedPath and POST ClosedPath. RequestID is

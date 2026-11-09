@@ -137,9 +137,9 @@ func (g *Gateway) applyOffer(t *Tunnel, m wire.Offer) {
 }
 
 // openPreview records an agent's preview_open. One preview per (owner, host,
-// window, port): a repeat answers the same id. A re-announced open (one the
-// previous gateway had acknowledged) gets a new id: ids are this gateway's to
-// mint, never the host's to choose.
+// window, port): a repeat answers the same id. r.Preview is ignored on an open
+// (wire.Request): a re-announced open gets a new id, because ids are this
+// gateway's to mint, never the host's to choose.
 //
 // ⚠ NOT YET: the probe (a loopback dial and HEAD / before answering), the
 // open-preview limits and the lifecycle timers arrive with the proxy.

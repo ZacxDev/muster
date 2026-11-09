@@ -142,29 +142,50 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 	}
 }
 
-// The public listener keys the throttle on CF-Connecting-IP, and caps the
-// failures of every peer together: a client reaching it without the edge can
-// write any CF-Connecting-IP, so the per-peer count alone bounds nothing.
-func TestThePublicListenerHasAGlobalFailureCap(t *testing.T) {
+// The public listener keys the throttle on CF-Connecting-IP: ten bad tokens
+// from one such peer, then 429 on the 11th; a fresh CF-Connecting-IP is still
+// 401. There is no cap across peers (round 0, D1).
+func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
-	for i := 1; i <= 100; i++ { // literal: the global cap's contract
-		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha",
-			header: http.Header{"Cf-Connecting-Ip": {fmt.Sprintf("203.0.113.%d", i)}}})
+	cf := func(ip string) http.Header { return http.Header{"Cf-Connecting-Ip": {ip}} }
+	for i := 1; i <= 10; i++ {
+		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
 		if statusOf(resp) != http.StatusUnauthorized {
-			t.Fatalf("public bad token #%d from a fresh peer: HTTP %d; want 401", i, statusOf(resp))
+			t.Fatalf("public bad token #%d: HTTP %d; want 401", i, statusOf(resp))
 		}
 	}
-	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha",
-		header: http.Header{"Cf-Connecting-Ip": {"203.0.113.250"}}})
+	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.1")})
 	if statusOf(resp) != http.StatusTooManyRequests {
-		t.Fatalf("public bad token #101 (a fresh peer, past the global cap): HTTP %d; want 429", statusOf(resp))
+		t.Fatalf("public bad token #11 from one CF-Connecting-IP: HTTP %d; want 429", statusOf(resp))
 	}
-	// The mesh listener has no global cap: a fresh mesh peer is still 401.
-	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha",
-		header: http.Header{"X-Real-Ip": {"198.51.100.77"}}})
+	_, resp, _ = e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha", header: cf("203.0.113.2")})
 	if statusOf(resp) != http.StatusUnauthorized {
-		t.Fatalf("mesh bad token from a fresh peer: HTTP %d; want 401", statusOf(resp))
+		t.Fatalf("public bad token from a fresh CF-Connecting-IP: HTTP %d; want 401", statusOf(resp))
+	}
+}
+
+// /metrics and /healthz are on the mesh listener only: the public listener
+// answers 404 for both, whatever the Host.
+func TestMetricsAndHealthAreOnTheMeshListenerOnly(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	for _, path := range []string{"/metrics", "/healthz"} {
+		resp, err := http.Get(e.mesh.URL + path)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("mesh %s: %v, HTTP %d; want 200", path, err, statusOf(resp))
+		}
+		resp.Body.Close()
+		for _, host := range []string{"", "tunnel." + testDomain, "w." + testDomain, "in-cluster.svc"} {
+			req, _ := http.NewRequest(http.MethodGet, e.public.URL+path, nil)
+			if host != "" {
+				req.Host = host
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil || resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("public %s (Host %q): %v, HTTP %d; want 404", path, host, err, statusOf(resp))
+			}
+			resp.Body.Close()
+		}
 	}
 }
 
@@ -418,6 +439,22 @@ func TestTheOfferStreamLandsInMemory(t *testing.T) {
 	fh.offers <- wire.Offer{Type: wire.TypeClose, Request: &wire.Request{ID: "r5", Window: "@2", Preview: a1.a.Preview}}
 	if a := <-fh.answers; a.a.Error != "not_found" {
 		t.Fatalf("second close answered %+v", a)
+	}
+}
+
+// A re-announced open carrying the previous gateway's id gets a NEW id: the
+// host cannot choose one (wire.Request.Preview is advisory on an open).
+func TestAReannouncedOpenGetsANewID(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	fh := e.mustDial(t, dialOpts{listener: "mesh", token: e.mint(t, 1, "alpha"), hostName: "alpha"})
+	const old = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	fh.offers <- wire.Offer{Type: wire.TypeOpen, Request: &wire.Request{ID: "r1", Window: "@1", Port: 5173, Preview: old}}
+	a := (<-fh.answers).a
+	if a.Error != "" || a.Preview == old || len(a.Preview) != 26 {
+		t.Fatalf("re-announced open answered %+v; want a new 26-character id, not %q", a, old)
+	}
+	if ps := e.g.Previews(1); len(ps) != 1 || ps[0].ID != a.Preview {
+		t.Fatalf("previews %+v; want the one new id %q", ps, a.Preview)
 	}
 }
 

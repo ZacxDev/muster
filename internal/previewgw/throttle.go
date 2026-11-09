@@ -17,12 +17,6 @@ const (
 	// FailLimit failed token checks per FailWindow per peer; the next is 429.
 	FailLimit  = 10
 	FailWindow = time.Minute
-	// PublicFailLimit is the public listener's global cap: failed token
-	// checks per FailWindow from every peer together. The public path's peer
-	// key is a header the edge sets (CF-Connecting-IP); a request that
-	// reaches the listener without crossing the edge can write any value
-	// there, so per-peer counting alone bounds nothing for it.
-	PublicFailLimit = 100
 )
 
 // Path is which listener a tunnel arrived on.
@@ -54,16 +48,14 @@ func peerOf(p Path, r *http.Request) string {
 	return host
 }
 
-// failLimiter counts failures per key in fixed windows, plus an optional
-// total across keys.
+// failLimiter counts failures per key in fixed windows.
 type failLimiter struct {
-	limit, total int // total 0: no global cap
-	window       time.Duration
-	now          func() time.Time
+	limit  int
+	window time.Duration
+	now    func() time.Time
 
-	mu  sync.Mutex
-	by  map[string]failWindow
-	all failWindow
+	mu sync.Mutex
+	by map[string]failWindow
 }
 
 type failWindow struct {
@@ -71,12 +63,12 @@ type failWindow struct {
 	n     int
 }
 
-func newFailLimiter(limit, total int, window time.Duration, now func() time.Time) *failLimiter {
-	return &failLimiter{limit: limit, total: total, window: window, now: now, by: map[string]failWindow{}}
+func newFailLimiter(limit int, window time.Duration, now func() time.Time) *failLimiter {
+	return &failLimiter{limit: limit, window: window, now: now, by: map[string]failWindow{}}
 }
 
 // fail records one failure from key and reports whether it is past a limit
-// (the 11th of a minute from one peer, or past the global cap).
+// (the 11th of a minute from one peer).
 func (l *failLimiter) fail(key string) (over bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -94,14 +86,5 @@ func (l *failLimiter) fail(key string) (over bool) {
 	}
 	w.n++
 	l.by[key] = w
-	if l.total > 0 {
-		if now.Sub(l.all.start) >= l.window {
-			l.all = failWindow{start: now}
-		}
-		l.all.n++
-		if l.all.n > l.total {
-			return true
-		}
-	}
 	return w.n > l.limit
 }

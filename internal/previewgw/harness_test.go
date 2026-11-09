@@ -135,10 +135,10 @@ func (e *gwEnv) mint(t *testing.T, owner int64, host string) string {
 }
 
 // gauge reads muster_preview_tunnels{path} from the public listener's
-// /metrics, as a scraper would (a Host outside the zone).
+// /metrics on the mesh listener, as a scraper would.
 func (e *gwEnv) gauge(t *testing.T, p Path) float64 {
 	t.Helper()
-	resp, err := http.Get(e.public.URL + "/metrics")
+	resp, err := http.Get(e.mesh.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}

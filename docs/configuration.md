@@ -584,9 +584,8 @@ What it does now:
   `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; every other name in the zone
   answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
   only). A tunnel's path (`mesh` or `public`) is the listener it arrived on,
-  never anything in the request. A request whose `Host` is outside the zone
-  (an in-cluster scrape) may read `/metrics` and `/healthz` on the public
-  listener; the mesh listener answers `/healthz`.
+  never anything in the request. `/metrics` and `/healthz` are served on the
+  mesh listener only.
 - **Host tokens.** `muster-preview host-token create [<owner>] <host>` prints
   an `mpt_` token once; `host-token ls` and `host-token revoke <id>` as for
   mirror tokens. `<owner>` is an owner's login as muster's
@@ -599,9 +598,8 @@ What it does now:
 - **Checks on a tunnel.** An unknown `X-Muster-Preview-Version` is refused
   `426` with the range spoken. Ten failed token checks a minute from one peer
   (the mesh listener's `X-Real-IP`, the public listener's `CF-Connecting-IP`,
-  else the TCP peer) get `429` instead of `401`, and the public listener also
-  answers `429` past 100 failures a minute from every peer together. A valid
-  token is never refused by either limit.
+  else the TCP peer) get `429` instead of `401`. A valid token is never
+  refused by that limit.
 - **One tunnel per owner and host.** A newer tunnel takes new streams at once;
   the older closes when its last stream ends, or 60 s later.
 - **Owners.** Every minute (and at start) it calls `GET /plugin/v1/self` for

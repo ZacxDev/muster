@@ -109,8 +109,8 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	g := &Gateway{
 		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster,
 		boot: hex.EncodeToString(b), o: o,
-		failMesh:     newFailLimiter(FailLimit, 0, FailWindow, o.Clock.Now),
-		failPublic:   newFailLimiter(FailLimit, PublicFailLimit, FailWindow, o.Clock.Now),
+		failMesh:     newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		failPublic:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		reg:          reg,
 		tunnelsGauge: gauge,
 		ctx:          ctx, cancel: cancel,
@@ -250,41 +250,31 @@ func (g *Gateway) Recheck() {
 // ---------------------------------------------------------------- serving
 
 // PublicHandler serves the public listener (PREVIEW_LISTEN): the host tunnel
-// on tunnel.<domain>; every other name in the zone is 404 for now (the
-// session page and the previews arrive with the proxy). A request whose Host
-// is not in the zone at all (an in-cluster scrape) may read /metrics and
-// /healthz; the edge only ever forwards names in the zone.
+// on tunnel.<domain>, and 404 for everything else (the session page and the
+// previews arrive with the proxy). It serves no /metrics or /healthz: those
+// are on the mesh listener, which the edge never reaches.
 func (g *Gateway) PublicHandler() http.Handler {
-	metrics := promhttp.HandlerFor(g.reg, promhttp.HandlerOpts{})
 	host := g.hostTunnel(PathPublic)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := requestHost(r)
-		switch {
-		case name == "tunnel."+g.cfg.Domain:
-			if r.URL.Path == wire.HostPath {
-				host.ServeHTTP(w, r)
-				return
-			}
-		case name == g.cfg.Domain || strings.HasSuffix(name, "."+g.cfg.Domain):
-		case r.URL.Path == "/metrics":
-			metrics.ServeHTTP(w, r)
-			return
-		case r.URL.Path == "/healthz":
-			_, _ = w.Write([]byte("ok\n"))
+		if requestHost(r) == "tunnel."+g.cfg.Domain && r.URL.Path == wire.HostPath {
+			host.ServeHTTP(w, r)
 			return
 		}
 		http.NotFound(w, r)
 	})
 }
 
-// MeshHandler serves the mesh listener (PREVIEW_MESH_LISTEN): the host tunnel
-// only, whatever the Host.
+// MeshHandler serves the mesh listener (PREVIEW_MESH_LISTEN): the host tunnel,
+// /metrics and /healthz, whatever the Host.
 func (g *Gateway) MeshHandler() http.Handler {
 	host := g.hostTunnel(PathMesh)
+	metrics := promhttp.HandlerFor(g.reg, promhttp.HandlerOpts{})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case wire.HostPath:
 			host.ServeHTTP(w, r)
+		case "/metrics":
+			metrics.ServeHTTP(w, r)
 		case "/healthz":
 			_, _ = w.Write([]byte("ok\n"))
 		default:
