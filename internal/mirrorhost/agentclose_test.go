@@ -53,6 +53,9 @@ type closeBackend struct {
 	onExit string
 	// afterExit, when set, runs after an Enter on /exit (with the lock held).
 	afterExit func(b *closeBackend)
+	// afterPaste, when set, runs between the paste and the check before its
+	// Enter (with the lock held): a dialog opening as /exit lands.
+	afterPaste func(b *closeBackend)
 }
 
 func (b *closeBackend) List(context.Context) ([]string, error) { return []string{"work", "other"}, nil }
@@ -108,6 +111,9 @@ func (b *closeBackend) PasteChecked(ctx context.Context, p ClaudePane, text stri
 			b.mu.Lock()
 			defer b.mu.Unlock()
 			b.pastes = append(b.pastes, p.Pane+" "+text)
+			if b.afterPaste != nil {
+				b.afterPaste(b)
+			}
 			return nil
 		},
 		func(context.Context) error {
@@ -239,6 +245,39 @@ func TestAClaudeWaitingOnThePersonIsTypedNothing(t *testing.T) {
 		if !slices.Equal(b.killed, []string{"@1"}) || took > 300*time.Millisecond {
 			t.Errorf("%s: closed %v after %s; want @1 closed at once", c.name, b.killed, took)
 		}
+	}
+}
+
+// TestADialogOpeningAsExitLandsWithholdsTheEnter (#549 round 2): the check
+// before the Enter is real. A permission prompt, or a waiting status, that
+// appears between the paste of /exit and its Enter: NO Enter is pressed, and
+// the window is closed at once, not graceful, saying /exit was typed but its
+// Enter withheld. The control: nothing appears, and the Enter is pressed.
+func TestADialogOpeningAsExitLandsWithholdsTheEnter(t *testing.T) {
+	permission := capture(t, "../../cmd/ccd/testdata/pane_permission_2.1.296.txt")
+	for _, c := range []struct {
+		name string
+		flip func(b *closeBackend)
+		why  string
+	}{
+		{"a permission prompt", func(b *closeBackend) { b.screens["%11"] = permission }, "its screen showed a dialog"},
+		{"a waiting status", func(b *closeBackend) { b.windows[0].Claude.Status = mirror.StatusWaiting }, "it was waiting on you"},
+	} {
+		cl, b := closeFixture(t, "gone")
+		b.afterPaste = c.flip
+		r, err, _ := runClose(cl, req1)
+		if !slices.Equal(b.pastes, []string{"%11 /exit"}) || len(b.enters) != 0 {
+			t.Errorf("%s: typed %v, Enter in %v; want /exit pasted and NO Enter", c.name, b.pastes, b.enters)
+		}
+		want := "/exit was typed into Claude Code but Enter was withheld, because " + c.why
+		if err != nil || r.Graceful || !strings.HasPrefix(r.Reason, want) || !slices.Equal(b.killed, []string{"@1"}) {
+			t.Errorf("%s: %+v %v, closed %v; want closed at once, not graceful, %q", c.name, r, err, b.killed, want)
+		}
+	}
+	cl, b := closeFixture(t, "gone")
+	b.afterPaste = func(*closeBackend) {}
+	if r, err, _ := runClose(cl, req1); err != nil || !r.Graceful || !slices.Equal(b.enters, []string{"%11"}) {
+		t.Fatalf("control: %+v %v, Enter in %v; want the Enter pressed and a graceful end", r, err, b.enters)
 	}
 }
 

@@ -182,6 +182,9 @@ const (
 	closeReasonOpenCode = "opencode is not asked to exit: muster types nothing into an opencode pane, and opencode offers no exit call, so its window was closed at once"
 	closeReasonGrace    = "Claude Code did not exit within the grace after /exit, so its window was closed"
 	closeReasonNotTyped = "nothing was typed into Claude Code, because %s; its window was closed at once"
+	// closeReasonWithheld: the check before the Enter refused, after /exit
+	// was pasted (ClaudePastedError).
+	closeReasonWithheld = "/exit was typed into Claude Code but Enter was withheld, because %s; its window was closed at once"
 	// closeReasonOther is a graceful end's note when the window was left open.
 	closeReasonOther = "Claude Code exited; its window runs another agent now, so it was left open"
 )
@@ -240,9 +243,9 @@ func (h *hostSide) closeAgent(ctx context.Context, on bool, req mirror.AgentClos
 		return kill(closeReasonOpenCode)
 	}
 	agent := *w.Claude
-	if why := h.typeExit(ctx, req, agent); why != "" {
-		c.log.Printf("muster-mirror: close %s:%s: nothing typed (%s); closing the window", req.Session, req.Window, why)
-		return kill(fmt.Sprintf(closeReasonNotTyped, why))
+	if reason := h.typeExit(ctx, req, agent); reason != "" {
+		c.log.Printf("muster-mirror: close %s:%s: %s", req.Session, req.Window, reason)
+		return kill(reason)
 	}
 	deadline := time.Now().Add(c.closeGrace())
 	for time.Now().Before(deadline) {
@@ -288,8 +291,8 @@ func agentExited(w WindowInfo, agent ClaudePane) bool {
 // typeExit types /exit into Claude Code pane agent of req's window, through
 // the paste guard and the Claude prompt guard's checked paste, only when the
 // pane is at an idle prompt with an empty input box: "" when it was typed and
-// submitted, else why nothing was (or, with the Enter withheld, why it was not
-// submitted).
+// submitted, else the close's reason (closeWhy): why nothing was typed, or why
+// the Enter was withheld.
 func (h *hostSide) typeExit(ctx context.Context, req mirror.AgentCloseReq, agent ClaudePane) string {
 	cb, ok := h.claudeBackend()
 	cp, okc := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend)
@@ -311,8 +314,19 @@ func (h *hostSide) typeExit(ctx context.Context, req mirror.AgentCloseReq, agent
 	return ""
 }
 
-// closeWhy is a guard's refusal as a close's reason says it.
+// closeWhy is a guard's refusal as the close's reason says it. 🔴 THE
+// WITHHELD ENTER FIRST: a ClaudePastedError unwraps to the refusal that
+// withheld it, so the plain cases would otherwise claim nothing was typed.
 func closeWhy(err error) string {
+	var pe *ClaudePastedError
+	if errors.As(err, &pe) {
+		return fmt.Sprintf(closeReasonWithheld, guardWhy(pe.Why))
+	}
+	return fmt.Sprintf(closeReasonNotTyped, guardWhy(err))
+}
+
+// guardWhy is a guard's refusal as a clause.
+func guardWhy(err error) string {
 	switch {
 	case errors.Is(err, ErrClaudeWaiting):
 		return "it was waiting on you (a permission prompt or a question)"
@@ -320,10 +334,6 @@ func closeWhy(err error) string {
 		return "its screen showed a dialog (a permission prompt, a picker or a menu)"
 	case errors.Is(err, ErrClaudeBox):
 		return "its input box held a draft"
-	}
-	var pe *ClaudePastedError
-	if errors.As(err, &pe) {
-		return "a dialog opened as /exit was typed, so Enter was not pressed"
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(err.Error(), "Not sent: "), ".")
 }
