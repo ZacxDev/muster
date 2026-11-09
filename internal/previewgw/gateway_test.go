@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -417,6 +419,39 @@ func TestTheOfferStreamLandsInMemory(t *testing.T) {
 	if a := <-fh.answers; a.a.Error != "not_found" {
 		t.Fatalf("second close answered %+v", a)
 	}
+}
+
+// A host can close only its own previews: another host of the same owner
+// naming the id gets not_found and the preview stays.
+func TestAHostClosesOnlyItsOwnPreviews(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	fa := e.mustDial(t, dialOpts{listener: "mesh", token: e.mint(t, 1, "alpha"), hostName: "alpha"})
+	fb := e.mustDial(t, dialOpts{listener: "mesh", token: e.mint(t, 1, "bravo"), hostName: "bravo"})
+	fa.offers <- wire.Offer{Type: wire.TypeOpen, Request: &wire.Request{ID: "r1", Window: "@1", Port: 5173}}
+	id := (<-fa.answers).a.Preview
+	fb.offers <- wire.Offer{Type: wire.TypeClose, Request: &wire.Request{ID: "r2", Window: "@1", Preview: id}}
+	if a := <-fb.answers; a.a.Error != "not_found" {
+		t.Fatalf("bravo closing alpha's preview: %+v; want not_found", a)
+	}
+	if n := len(e.g.Previews(1)); n != 1 {
+		t.Fatalf("%d preview(s); want alpha's 1 still open", n)
+	}
+}
+
+// An unreadable host-token file at one recheck keeps the tunnels (a torn
+// read must not drop every host); at the second in a row it ends them all,
+// as muster's mirror connect does when it cannot verify tokens twice.
+func TestTwoUnreadableRechecksInARowEndEveryTunnel(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	e.mustDial(t, dialOpts{listener: "mesh", token: e.mint(t, 1, "alpha"), hostName: "alpha"})
+	ta := e.tunnelFor(1, "alpha")
+	if err := os.WriteFile(filepath.Join(e.store.Dir, hostTokensFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(RecheckEvery)
+	stillOpen(t, "the tunnel after one unreadable recheck", ta.Done())
+	e.clock.Advance(RecheckEvery)
+	closedSoon(t, "the tunnel after two unreadable rechecks", ta.Done())
 }
 
 // Another listener name in the zone is 404 on the public listener (the
