@@ -59,7 +59,7 @@ func TestRevokeEndsTheTunnelWithin30s(t *testing.T) {
 	if _, err := e.store.Revoke(id); err != nil {
 		t.Fatal(err)
 	}
-	e.clock.Advance(RecheckEvery - time.Second)
+	e.clock.Advance(29 * time.Second) // literals: the 30 s is the contract, not RecheckEvery's value
 	stillOpen(t, "alpha's tunnel 1 s before the recheck", ta.Done())
 	e.clock.Advance(time.Second)
 	closedSoon(t, "alpha's tunnel at the 30 s recheck", ta.Done())
@@ -115,7 +115,7 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 	good := e.mint(t, 1, "alpha")
 	bad := wire.TokenPrefix + strings.Repeat("A", hostTokenLen-len(wire.TokenPrefix))
 	peer := func(ip string) http.Header { return http.Header{"X-Real-Ip": {ip}} }
-	for i := 1; i <= FailLimit; i++ {
+	for i := 1; i <= 10; i++ { // literal: 10 a minute is the contract
 		_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
 		if statusOf(resp) != http.StatusUnauthorized {
 			t.Fatalf("bad token #%d: HTTP %d; want 401", i, statusOf(resp))
@@ -123,7 +123,7 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 	}
 	_, resp, _ := e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
 	if statusOf(resp) != http.StatusTooManyRequests {
-		t.Fatalf("bad token #%d: HTTP %d; want 429", FailLimit+1, statusOf(resp))
+		t.Fatalf("bad token #11: HTTP %d; want 429", statusOf(resp))
 	}
 	// A malformed token counts the same.
 	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: "junk", hostName: "alpha", header: peer("198.51.100.1")})
@@ -135,7 +135,7 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 		t.Fatalf("another peer's first bad token: HTTP %d; want 401", statusOf(resp))
 	}
 	e.mustDial(t, dialOpts{listener: "mesh", token: good, hostName: "alpha", header: peer("198.51.100.1")})
-	e.clock.Advance(FailWindow)
+	e.clock.Advance(time.Minute)
 	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha", header: peer("198.51.100.1")})
 	if statusOf(resp) != http.StatusUnauthorized {
 		t.Fatalf("bad token in the next minute: HTTP %d; want 401", statusOf(resp))
@@ -148,7 +148,7 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 func TestThePublicListenerHasAGlobalFailureCap(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
-	for i := 1; i <= PublicFailLimit; i++ {
+	for i := 1; i <= 100; i++ { // literal: the global cap's contract
 		_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha",
 			header: http.Header{"Cf-Connecting-Ip": {fmt.Sprintf("203.0.113.%d", i)}}})
 		if statusOf(resp) != http.StatusUnauthorized {
@@ -158,7 +158,7 @@ func TestThePublicListenerHasAGlobalFailureCap(t *testing.T) {
 	_, resp, _ := e.dialHost(t, dialOpts{listener: "public", token: bad, hostName: "alpha",
 		header: http.Header{"Cf-Connecting-Ip": {"203.0.113.250"}}})
 	if statusOf(resp) != http.StatusTooManyRequests {
-		t.Fatalf("public bad token #%d (a fresh peer, past the global cap): HTTP %d; want 429", PublicFailLimit+1, statusOf(resp))
+		t.Fatalf("public bad token #101 (a fresh peer, past the global cap): HTTP %d; want 429", statusOf(resp))
 	}
 	// The mesh listener has no global cap: a fresh mesh peer is still 401.
 	_, resp, _ = e.dialHost(t, dialOpts{listener: "mesh", token: bad, hostName: "alpha",
@@ -215,7 +215,7 @@ func TestSelfWithoutViewerOr401ClosesTheOwnersTunnels(t *testing.T) {
 			<-f1.answers
 
 			e.fm.set("mpl_owner1", c.status, c.self)
-			e.clock.Advance(SelfEvery - time.Second)
+			e.clock.Advance(59 * time.Second) // literals: the minute is the contract, not SelfEvery's value
 			stillOpen(t, "owner 1's tunnel before the minute check", t1.Done())
 			e.clock.Advance(time.Second)
 			if c.wantGone {
@@ -309,7 +309,7 @@ func TestANewerTunnelReplacesTheOlderAndDrains(t *testing.T) {
 				conn.Close()
 				closedSoon(t, "the draining tunnel after its last stream", old.Done())
 			case timeout:
-				e.clock.Advance(DrainTimeout - time.Second)
+				e.clock.Advance(59 * time.Second) // literals: the 60 s is the contract, not DrainTimeout's value
 				stillOpen(t, "the draining tunnel 1 s before the drain timeout", old.Done())
 				e.clock.Advance(time.Second)
 				closedSoon(t, "the draining tunnel at the drain timeout", old.Done())
