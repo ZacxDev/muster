@@ -287,7 +287,16 @@ func New(cfg Config) (*Client, error) {
 // until ctx ends. A connection that stayed up for a minute resets the backoff.
 func (c *Client) Run(ctx context.Context) error {
 	if c.cfg.AgentSpawn.Enabled {
-		go c.sweepLoop(ctx)
+		// Run returns only once the sweep has stopped: a sweep still running
+		// (and logging) after Run returned outlived the daemon that started
+		// it — a git call mid-removal at shutdown, and a race on the logger's
+		// writer in a caller that reads it after Run (measured under -race).
+		swept := make(chan struct{})
+		go func() {
+			defer close(swept)
+			c.sweepLoop(ctx)
+		}()
+		defer func() { <-swept }()
 	}
 	backoff := time.Second
 	for {

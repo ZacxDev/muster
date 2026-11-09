@@ -10,17 +10,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
 
+// runWith runs the daemon's run with env and args, answering its exit code,
+// stdout and stderr. Its writers are locked: a goroutine the daemon started
+// that still logs as run returns (a background loop not yet stopped) must not
+// race the read of what it wrote.
 func runWith(t *testing.T, env map[string]string, args ...string) (int, string, string) {
 	t.Helper()
-	var out, errb bytes.Buffer
+	var out, errb lockedBuffer
 	rc := run(args, func(k string) string { return env[k] }, &out, &errb)
 	return rc, out.String(), errb.String()
+}
+
+// lockedBuffer is a bytes.Buffer safe for concurrent writes and reads.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestTheTokenNeverHasToBeAnArgument: there is no -token flag (argv is visible
