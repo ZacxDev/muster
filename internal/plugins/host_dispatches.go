@@ -83,6 +83,13 @@ type HostDispatch struct {
 type HostDispatchNew struct {
 	Host, Runtime, Model, HeldID, Repo, Base string
 	TaskID                                   int64
+	// Succession, when > 0, is the chief_proposals row this dispatch
+	// starts (migration 0100): linked IN THE SAME TRANSACTION, single use
+	// (linkSuccessionTx), with SuccessionMode the mode the owner's tap chose.
+	// SuccessionPrev is the dispatch the row is still linked to when this is
+	// the base fallback's second start (0 otherwise).
+	Succession, SuccessionPrev int64
+	SuccessionMode             string
 }
 
 // HostDispatchUpdate is what UpdateHostDispatch may write; a nil field is left.
@@ -154,7 +161,12 @@ func (s *PGStore) ReserveHostDispatch(ctx context.Context, object string, detail
 		hd, err = scanHostDispatch(tx.QueryRow(ctx, `INSERT INTO host_dispatches (owner_id, host, runtime, model, held_id, repo, base, task_id, reservation_id)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+hostDispatchCols,
 			owner, row.Host, row.Runtime, model, held, row.Repo, row.Base, task, reservationID))
-		return err
+		if err != nil || row.Succession <= 0 {
+			return err
+		}
+		// The succession's link, in this transaction: a row already decided
+		// rolls the whole reservation back, so a second tap inserts nothing.
+		return linkSuccessionTx(ctx, tx, owner, row.Succession, row.SuccessionPrev, hd.ID, row.SuccessionMode, row.Base)
 	})
 	if err != nil {
 		return res, HostDispatch{}, err

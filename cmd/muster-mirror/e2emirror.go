@@ -127,7 +127,11 @@ func init() {
 	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
-			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+			b = &scrollFake{Backend: b, file: f, pos: map[string]int{}}
+		}
+		// The agent-close fake (e2eclose.go): only with MUSTER_MIRROR_E2E_CLOSE.
+		if wf, ok := windowFakeIn(b); ok && e2eCloseOn() {
+			b = &closeFake{Backend: b, w: wf}
 		}
 		return b
 	}
@@ -512,7 +516,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		out = append(out, info)
 	}
-	return append(out, openCodeWindowsE2E()...), nil
+	return e2eWithoutClosed(append(out, openCodeWindowsE2E()...)), nil
 }
 
 // windowFakeStatus is a Claude window's status and when it was written. From
@@ -617,9 +621,25 @@ func (w windowFake) ClaudeScreen(ctx context.Context, pane string) (string, erro
 	return "", fmt.Errorf("pane %s is not a Claude window's", pane)
 }
 
-// PasteChecked implements mirrorhost.ClaudeCheckedPaster.
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster. An agent asked to
+// exit (agent-close, e2eclose.go) exits on the checked paste's Enter, and its
+// window with it: the ONLY way the fake exits, as the real host types /exit
+// only through this checked paste (never a raw PastePane, and never into an
+// opencode pane).
 func (w windowFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
-	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, func() error { return w.Paste(ctx, p, text) }, before, beforeEnter)
+	enter := func() error { return w.Paste(ctx, p, text) }
+	if text == "/exit" && e2eCloseOn() {
+		enter = func() error {
+			ws, _ := w.Windows(ctx)
+			for _, win := range ws {
+				if win.Pane == p.Pane {
+					e2eCloseWindow(win.Session, win.ID)
+				}
+			}
+			return nil
+		}
+	}
+	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, enter, before, beforeEnter)
 }
 
 // ActivePane is the per-session lookup; a per-window host is never asked it.

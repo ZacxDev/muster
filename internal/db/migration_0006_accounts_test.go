@@ -117,9 +117,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - asks (0089, the ask log: every question an agent put to its owner).
 //   - host_dispatches (0093, the chief's host spawns).
 //   - notify_preferences (0094, the per-user notification preferences).
+//   - chief_proposals (0100, a session continuing one the owner viewed).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -197,6 +198,9 @@ var wantForeignKeys = []string{
 	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
 	// 0094: one notification-preferences row per user.
 	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0100: a proposal is its owner's; its successor is a host dispatch.
+	"chief_proposals|chief_proposals_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_proposals|chief_proposals_host_dispatch_id_fkey|FOREIGN KEY (host_dispatch_id) REFERENCES host_dispatches(id)",
 	"asks|asks_episode_owner_fkey|FOREIGN KEY (episode_id, owner_id) REFERENCES session_episodes(id, owner_id) ON DELETE SET NULL (episode_id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)

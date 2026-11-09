@@ -42,6 +42,10 @@ func (e listEntry) work() mirror.WindowWork {
 }
 
 // idle reports whether the entry is drawn in the Idle section (MarkIdle).
+// superseded reports whether a running successor replaced the entry's
+// session (a mirrored window only).
+func (e listEntry) superseded() bool { return e.mirror != nil && e.mirror.Superseded }
+
 func (e listEntry) idle() bool {
 	if e.agent != nil {
 		return e.agent.Idle

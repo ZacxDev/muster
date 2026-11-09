@@ -53,6 +53,16 @@ func (s *Server) askFiled(a attention.Ask) {
 	s.startAskSuggestions(a)
 }
 
+// proposalCardFiled is askFiled for a chief proposal's card: the push with no
+// chips and no signed actions (attentionItem.noActions), the queue's redraw,
+// and NO suggested replies.
+func (s *Server) proposalCardFiled(a attention.Ask) {
+	it := s.askPushItem(s.attentionPrincipal(context.Background(), a.Owner), a)
+	it.noActions = true
+	s.attentionNotify(a.Owner, it)
+	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
+}
+
 // askPushItem is ask a as its notification is built from: askItemNow, and —
 // for a chief notice, whose body leads with its session's focus title — that
 // title's time (withFocus, the Asks list's own rule) and its age on the

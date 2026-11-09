@@ -368,6 +368,9 @@ func promptDir(runtimeDir string) string { return filepath.Join(runtimeDir, "mus
 // and the launcher resolve. Whether the service is up, its version and its
 // models are checked at each spawn, never advertised (design 3.1).
 func (h *hostSide) agentSpawnRuntimes() []string {
+	if h.version >= 2 && h.c.cfg.FakeSpawn != nil && h.c.cfg.Interactive {
+		return h.c.cfg.FakeSpawnRuntimes // the browser suite's fixture (Config.FakeSpawn)
+	}
 	if h.version < 2 || agentSpawnUnavailable(h.c.cfg) != "" {
 		return nil
 	}
@@ -743,7 +746,13 @@ func (p *spawnPlan) undo(git string) {
 
 // agentSpawn serves an agent-spawn and answers agent-spawned.
 func (h *hostSide) agentSpawn(m mirror.Msg) {
-	w, err := h.c.spawnAgent(h.ctx, h, m, h.c.cfg.AgentSpawn.now())
+	var w mirror.AgentSpawned
+	var err error
+	if fake := h.c.cfg.FakeSpawn; fake != nil && m.Spawn != nil {
+		w, err = fake(h.ctx, m.Dispatch, *m.Spawn) // the browser suite's fixture (Config.FakeSpawn)
+	} else {
+		w, err = h.c.spawnAgent(h.ctx, h, m, h.c.cfg.AgentSpawn.now())
+	}
 	ans := mirror.Msg{Type: mirror.TypeAgentSpawned, ID: m.ID, Dispatch: m.Dispatch}
 	var e *errSpawn
 	switch {

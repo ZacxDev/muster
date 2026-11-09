@@ -611,6 +611,9 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_MIRROR_E2E_NO_CATALOG` | unset | no | (`e2emirror`) `1`: the host advertises no composer-menu catalog and answers no request, as one that predates it (`mirrorhost.Config.NoCatalog`). |
 | `MUSTER_MIRROR_E2E_NO_SUBAGENTS` | unset | no | (`e2emirror`) `1`: the host advertises no subagent reporting — no subagent summaries on a view's stream, no tail request answered — as one that predates the subagent cards (`mirrorhost.Config.NoSubagents`). |
 | `MUSTER_MIRROR_E2E_NO_WORK` | unset | no | (`e2emirror`) `1`: the host sends no `work` and no `colors` message, as one that predates the live work counts and identity colours (`mirrorhost.Config.NoWork`). |
+| `MUSTER_MIRROR_E2E_SPAWN_RUNTIMES` | unset | no | (`e2emirror`) Comma-separated runtimes (`opencode`) the fake host advertises for agent-spawn and answers itself (`mirrorhost.Config.FakeSpawn`): it lists a window tagged with the dispatch and puts its prompt on the fake opencode server. Unset, the fake starts nothing. |
+| `MUSTER_MIRROR_E2E_SPAWN_LOG` | unset | no | (`e2emirror`) A file the fake agent-spawn appends each request to, one JSON line (`dispatch`, `runtime`, `repo`, `base`, `model`, `name`, `prompt`). |
+| `MUSTER_MIRROR_E2E_CLOSE` | unset | no | (`e2emirror`) `1`: the per-window fake can close a window, so it advertises agent-close; an agent pane typed `/exit` exits with its window. Unset, it closes nothing and advertises nothing. |
 | `MUSTER_MIRROR_E2E_CWD` | unset | no | (`e2emirror`) The working directory of every window of the per-window fake: where its project `.claude` is found. |
 | `MUSTER_MIRROR_E2E_PASTE_FILE` | none | no | (`e2emirror`) Where pastes into non-Claude panes are recorded. |
 | `MUSTER_MIRROR_E2E_ACTIVE_FILE` | none | no | (`e2emirror`) `session=index` lines: each session's active window. |

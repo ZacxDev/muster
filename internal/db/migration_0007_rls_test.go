@@ -112,6 +112,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO session_tags (kind, agent_id, tag) VALUES ('agent', $1, 'tagged')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO asks (kind, runtime, question) VALUES ('attention_ask', 'agent', 'ok?')`, func() []any { return nil }, nil},
 		{`INSERT INTO host_dispatches (host, runtime, repo, reservation_id) VALUES ('ws', 'claude', 'acme/widgets', 1)`, func() []any { return nil }, nil},
+		{`INSERT INTO chief_proposals (kind, chief_agent, owner_message, subject_key, subject_runtime, subject_host, subject_tmux_session, subject_tmux_window, target, repo, kickoff, kickoff_sha256, kickoff_ref) VALUES ('succession', 1, 1, 'opencode:ses_0x', 'opencode', 'ws', 's', '@1', 'host/ws/opencode', 'acme/widgets', 'go', repeat('a', 64), 'm:000000000000')`, func() []any { return nil }, nil},
 		{`INSERT INTO send_queue (mirror_host, mirror_session, mirror_window, body, stepup_at) VALUES ($1, 's', '', 'hello', now())`, func() []any { return []any{"host-" + tag} }, nil},
 		{`INSERT INTO agent_focus (subject_kind, subject_key, agent_id, title) VALUES ('agent', $1::bigint::text, $1, 'focus')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO agent_focus_history (subject_kind, subject_key, agent_id, title) VALUES ('agent', $1::bigint::text, $1, 'focus')`, func() []any { return []any{agent} }, nil},

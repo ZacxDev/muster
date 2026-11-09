@@ -119,6 +119,20 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 // through the same doors, delivered the same way. ctx is the owner's principal
 // (row-level security makes the row theirs).
 func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, false)
+}
+
+// raiseProposalCard is raiseOwnerCard for a chief PROPOSAL's card
+// (chief_proposal.go): the same row, but its notification carries no chips
+// and no signed answer actions, and no suggested replies are asked for — a
+// proposal is accepted only by a button on a surface that showed it whole
+// (proposalSurfaceRefusal), never from a push.
+func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, true)
+}
+
+// raiseCard is raiseOwnerCard and raiseProposalCard.
+func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool) (attention.Ask, error) {
 	// Only a test fixture runs with no attention store (muster-server always
 	// wires one); ask_owner is still offered there (round 0 D1), and the call
 	// then takes the same chat-only path as any refused raise.
@@ -130,7 +144,11 @@ func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, questio
 	if err != nil {
 		return attention.Ask{}, err
 	}
-	s.askFiled(a)
+	if proposal {
+		s.proposalCardFiled(a)
+	} else {
+		s.askFiled(a)
+	}
 	return a, nil
 }
 
