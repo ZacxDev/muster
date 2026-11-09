@@ -3,15 +3,17 @@ package main
 // Previews (docs/design/previews.md): serving a loopback web server an agent
 // started here to its owner, through the preview gateway. OFF by default.
 //
-// In this release -preview loads and validates previews.json, the gateway
-// endpoints and the host token, and logs what it would offer. NOTHING DIALS:
-// the tunnel to the gateway is a later change. `-list -previews` prints the
-// listener reports this host would send.
+// With -preview and a valid previews.json, endpoints and host token, the host
+// keeps a tunnel to the gateway (internal/previewhost: mesh endpoint first,
+// then the public one), answers its CONNECT streams for allowlisted ports,
+// and offers this user's listeners in mirrored windows. `-list -previews`
+// prints the listener reports this host would send.
 //
 // 🔴 NEVER FATAL, NEVER IN THE WAY: a bad previews.json, token or endpoint
-// turns previews OFF with a logged reason; a panic in preview code is recovered
-// and logged; and it all runs on its own goroutine, so mirroring — the job this
-// process exists for — starts at once whatever it finds.
+// turns previews OFF with a logged reason; an unreachable gateway is retried
+// with backoff; a panic in preview code is recovered and logged; and it all
+// runs on its own goroutine, so mirroring — the job this process exists for —
+// starts at once and goes on whatever it finds.
 
 import (
 	"context"
@@ -22,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -51,7 +54,7 @@ type previewFlags struct {
 	File      string
 }
 
-// previewSetup is a validated -preview: what a later release dials with.
+// previewSetup is a validated -preview: what the host dials with.
 type previewSetup struct {
 	Config previewhost.Config
 	URLs   []string
@@ -162,9 +165,18 @@ func alwaysRefusedPorts(mcpListen string, oc *opencodehost.Credentials) previewh
 	}
 }
 
-// startPreview is -preview in this release: validate, then log what would be
-// offered. done is closed when it has said its piece.
-func startPreview(pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, logger *log.Logger) (done chan struct{}) {
+// previewStartHook, when set, runs first on the preview goroutine. FOR THE
+// TESTS ONLY (a panic there must leave mirroring running); nil in a build.
+var previewStartHook func()
+
+// startPreview is -preview: validate, then serve previews until ctx ends, all
+// on its own goroutine. done is closed when it has stopped (or found previews
+// off). windows is where the mirror's refresh delivers its window listing.
+//
+// The window listing comes from the mirror's refresh (windows); while that is
+// silent — it runs only while muster is connected — the host reads backend's
+// itself, so previews never depend on muster.
+func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, hostName string, backend mirrorhost.Backend, windows *previewWindows, logger *log.Logger) (done chan struct{}) {
 	done = make(chan struct{})
 	go func() {
 		defer close(done)
@@ -173,6 +185,9 @@ func startPreview(pf previewFlags, defaultDaemon bool, refused previewhost.Alway
 				logger.Printf("muster-mirror: previews are OFF, mirroring continues: preview setup panicked: %v", r)
 			}
 		}()
+		if previewStartHook != nil {
+			previewStartHook()
+		}
 		setup, err := checkPreview(pf, defaultDaemon)
 		if err != nil {
 			logger.Printf("muster-mirror: previews are OFF, mirroring continues: %v", err)
@@ -193,10 +208,73 @@ func startPreview(pf previewFlags, defaultDaemon bool, refused previewhost.Alway
 		if err := previewhost.Supported(); err != nil {
 			reports = "off: " + err.Error()
 		}
-		logger.Printf("muster-mirror: previews are configured (ports %s, maxOpen %d, maxConns %d, listener reports %s; endpoints %s) but this release does not dial the gateway yet",
+		logger.Printf("muster-mirror: previews are ON (ports %s, maxOpen %d, maxConns %d, listener reports %s); dialling %s",
 			cfg.Ports, cfg.MaxOpen, cfg.MaxConns, reports, strings.Join(setup.URLs, " then "))
+		hc := previewhost.HostConfig{
+			Config: cfg, File: expandHome(pf.File), Refused: refused, UID: os.Getuid(),
+			Procs: previewProcs(""), Logger: logger,
+		}
+		if wl, ok := mirrorhost.WindowListerOf(backend); ok {
+			hc.Windows = func(ctx context.Context) ([]previewhost.Window, error) {
+				ws, err := wl.Windows(ctx)
+				return previewWindowsOf(ws), err
+			}
+		}
+		h := previewhost.NewHost(hc)
+		if windows != nil {
+			windows.set(h.SetWindows)
+		}
+		h.Run(ctx, previewhost.TunnelConfig{URLs: setup.URLs, Token: setup.Token, HostName: hostName})
 	}()
 	return done
+}
+
+// previewWindows carries the mirror refresh's window listing to the preview
+// host (mirrorhost.Config.OnWindows). Until previews start it drops them.
+// 🔴 IT RECOVERS: it runs on the mirror's refresh goroutine, and a panic in
+// preview code must never stop mirroring.
+type previewWindows struct {
+	mu     sync.Mutex
+	f      func([]previewhost.Window)
+	logger *log.Logger
+	logged bool
+}
+
+func (p *previewWindows) set(f func([]previewhost.Window)) {
+	p.mu.Lock()
+	p.f = f
+	p.mu.Unlock()
+}
+
+// publish is mirrorhost.Config.OnWindows.
+func (p *previewWindows) publish(ws []mirrorhost.WindowInfo) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.mu.Lock()
+			first := !p.logged
+			p.logged = true
+			p.mu.Unlock()
+			if first && p.logger != nil {
+				p.logger.Printf("muster-mirror: previews: the window listing panicked (mirroring continues): %v", r)
+			}
+		}
+	}()
+	p.mu.Lock()
+	f := p.f
+	p.mu.Unlock()
+	if f == nil {
+		return
+	}
+	f(previewWindowsOf(ws))
+}
+
+// previewWindowsOf is each window's id and pane roots.
+func previewWindowsOf(ws []mirrorhost.WindowInfo) []previewhost.Window {
+	out := make([]previewhost.Window, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, previewhost.Window{ID: w.ID, PanePIDs: w.PanePIDs()})
+	}
+	return out
 }
 
 // previewProcs is the process table listener attribution walks: mirrorhost's,

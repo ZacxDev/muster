@@ -45,6 +45,7 @@ import (
 	"github.com/coder/websocket"
 	"golang.org/x/net/http2"
 
+	"github.com/ZacxDev/muster/internal/noredirect"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
@@ -124,6 +125,8 @@ func interval(d time.Duration) time.Duration {
 // TLSNextProto is net/http's documented way to turn HTTP/2 negotiation off,
 // and a WebSocket upgrade cannot ride HTTP/2. A refused dial returns the
 // gateway's response (with wire.VersionRangeHeader on a version refusal).
+// The client never follows a redirect (noredirect): one would re-send the
+// host token to the Location.
 func DialHost(ctx context.Context, endpoint string, hdr http.Header) (*websocket.Conn, *http.Response, error) {
 	tr := &http.Transport{
 		Proxy:        http.ProxyFromEnvironment,
@@ -131,7 +134,7 @@ func DialHost(ctx context.Context, endpoint string, hdr http.Header) (*websocket
 	}
 	return websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 		HTTPHeader: hdr.Clone(),
-		HTTPClient: &http.Client{Transport: tr},
+		HTTPClient: noredirect.Client(&http.Client{Transport: tr}),
 	})
 }
 

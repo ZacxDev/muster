@@ -219,7 +219,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Previews (preview.go): off by default; in this release -preview only
 	// validates and logs.
 	pf := previewFlags{}
-	fs.BoolVar(&pf.On, "preview", envBool(envPreview), "PREVIEWS (not yet live: this release validates the configuration and logs what it would offer, and dials nothing): serve an allowlisted loopback web server started in a mirrored window to its owner through the preview gateway; on the default tmux server's daemon only; a bad configuration turns previews off with a logged reason, never fatal ("+envPreview+")")
+	fs.BoolVar(&pf.On, "preview", envBool(envPreview), "PREVIEWS: serve an allowlisted loopback web server started in a mirrored window to its owner through the preview gateway; on the default tmux server's daemon only; a bad configuration turns previews off with a logged reason, never fatal ("+envPreview+")")
 	fs.StringVar(&pf.URLs, "preview-urls", getenv(envPreviewURLs), "with -preview: the preview gateway's host-tunnel endpoints, ws:// or wss://, comma-separated IN DIAL ORDER (the overlay-mesh endpoint first, then the public one) ("+envPreviewURLs+")")
 	fs.StringVar(&pf.TokenFile, "preview-token-file", getenv(envPreviewTokenFile), "with -preview: file holding this host's preview gateway token (mpt_…), not readable by group or others ("+envPreviewTokenFile+")")
 	fs.StringVar(&pf.File, "preview-file", or(getenv(envPreviewFile), previewhost.DefaultFile()), "with -preview: previews.json, the allowlist {\"ports\": [\"5173\", \"8000-8099\"], \"offer\": true, \"maxOpen\": 8, \"maxConns\": 64}; ports 1024-65535 only; missing or invalid = previews off ("+envPreviewFile+")")
@@ -381,6 +381,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			spawnRoots = append(spawnRoots, expandHome(r))
 		}
 	}
+	// -preview takes the refresh's window listing (previewWindows recovers,
+	// so preview code cannot stop the refresh); nil when previews are off.
+	var previewWins *previewWindows
+	var onWindows func([]mirrorhost.WindowInfo)
+	if pf.On {
+		previewWins = &previewWindows{logger: logger}
+		onWindows = previewWins.publish
+	}
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
@@ -393,6 +401,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		NoWork:        e2eNoWork != nil && e2eNoWork(),
 		Refresh:       refreshOverride(),
+		OnWindows:     onWindows,
 		FakeSpawn:     e2eSpawn, FakeSpawnRuntimes: e2eSpawnRuntimes,
 	})
 	if err != nil {
@@ -418,7 +427,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	var previewDone chan struct{}
 	switch {
 	case pf.On:
-		previewDone = startPreview(pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), logger)
+		// 🔴 OPT-IN, SO NEVER FATAL, AND NEVER IN THE WAY: like the MCP
+		// endpoint above, previews run on their own goroutine with a recover;
+		// a bad configuration, an unreachable gateway or a panic is logged and
+		// the host mirrors without them.
+		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, previewWins, logger)
 	case pf.URLs != "" || pf.TokenFile != "":
 		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
 	}

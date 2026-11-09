@@ -60,6 +60,12 @@ type Config struct {
 	// Refresh is how often the session list is re-read (default 5s); a change is
 	// sent at once.
 	Refresh time.Duration
+	// OnWindows, when set, is handed every window listing a per-window
+	// refresh reads (each Refresh, and on a RefreshNow): muster-mirror's
+	// -preview takes its window listing from here rather than reading tmux a
+	// second time. It is called on the refresh goroutine, so it must return
+	// at once and must not panic (muster-mirror's wrapper recovers).
+	OnWindows func([]WindowInfo)
 	// ViewPoll is how often an open rendered view's transcript is checked for
 	// new lines (default 300ms): what "live while a turn runs" costs — one stat
 	// per open view per tick.
@@ -708,6 +714,9 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	if err != nil {
 		return listing{}, false
+	}
+	if h.c.cfg.OnWindows != nil {
+		h.c.cfg.OnWindows(raw)
 	}
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
