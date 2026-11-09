@@ -226,7 +226,7 @@ type SessionDrift struct {
 // Server-drawn with the page, so it moves nothing in after paint; nothing for
 // no offer.
 //
-// STACKED, ONE THING PER ROW (operator, 2026-11-08): the copy, then the Rename
+// STACKED, ONE THING PER ROW (operator decision): the copy, then the Rename
 // button, then "Keep the name" as a text link — in one flex row the three
 // competed for the width and a long offer squeezed the copy to a sliver. Each
 // row is at most the banner's width and wraps inside it (a long offer wraps

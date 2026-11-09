@@ -176,7 +176,7 @@ func TestTheKillSwitchAndTheToggleMakeNoCall(t *testing.T) {
 	}
 }
 
-// TestNoDatabaseIsOffUnlessTheServerSaysOn (operator, 2026-11-09): with no
+// TestNoDatabaseIsOffUnlessTheServerSaysOn (operator decision): with no
 // database (Prefs nil) nobody can save a choice, so everyone gets
 // DefaultDisabled — no call — unless MUSTER_SUGGEST=on (Engine.On) turns them
 // on for everyone. With a database, On does NOT change the per-user default:

@@ -70,11 +70,11 @@ type Prefs interface {
 }
 
 // DefaultDisabled is a user's toggle when they have never saved one: OFF
-// (operator decision, 2026-11-08 — suggestions spend the user's OpenRouter key
-// and send their conversation to it, so each user opts in, in Account →
-// Suggested replies). It holds in the no-database mode too (operator,
-// 2026-11-09), where nobody can save a choice and Engine.On
-// (MUSTER_SUGGEST=on) is the server's opt-in for everyone.
+// (operator decision — suggestions spend the user's OpenRouter key and send
+// their conversation to it, so each user opts in, in Account → Suggested
+// replies). It holds in the no-database mode too (operator decision), where
+// nobody can save a choice and Engine.On (MUSTER_SUGGEST=on) is the server's
+// opt-in for everyone.
 //
 // 🔴 THE ONE PLACE THE DEFAULT IS DECIDED: Engine.userOff applies it to every
 // owner with no saved choice, and nothing else spells it. It is a semantics of

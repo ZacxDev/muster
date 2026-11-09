@@ -10,7 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/suggest"
 )
 
-// TestNoDatabaseSuggestRepliesAreOffUnlessOn (operator, 2026-11-09): with no
+// TestNoDatabaseSuggestRepliesAreOffUnlessOn (operator decision): with no
 // database nobody can turn suggested replies on for themselves, so the
 // Features page says they are OFF for everyone, naming MUSTER_SUGGEST=on;
 // with it (and a key) they are ON. With a database, MUSTER_SUGGEST unset is
