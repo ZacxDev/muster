@@ -36,7 +36,7 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
 - **The seams**, each designed for any plugin:
   - **(a) viewer hand-off:** muster mints a one-time code for a signed-in
     owner; the plugin redeems it by **calling muster**. There is no liveness
-    check: the preview cookie's short TTL bounds a revoked session instead;
+    check: the preview cookie's 8-hour TTL bounds a revoked session instead;
   - **(b) one chip per plugin on every session view,** linking to the plugin's
     page for that session (for previews: that window's offers and open
     previews);
@@ -292,8 +292,9 @@ preview byte and stores no preview, offer or process name.
 sidecar container in the agent pod. It keeps every preview line out of
 muster's own binaries, at the cost of a second install and unit per host,
 duplicating `muster-mirror`'s tmux and `/proc` walks and its MCP proxy, and a
-second container in every agent pod (which still needs seam (d)). It is
-[open question 1](#open-questions).
+second container in every agent pod (which still needs seam (d)). **The
+operator rejected it** ([decision 18](#decisions)): the preview code lives
+inside `muster-mirror` and `ccd`, for the reasons above.
 
 ## The plugin seams
 
@@ -355,11 +356,11 @@ signed-in owner, and which session view they came from.
    the response carries `Referrer-Policy: no-referrer`.
 
 **No liveness check** (revision 2's `POST /plugin/v1/handoffs/check` is
-dropped). A plugin bounds what a code buys with its own short-lived cookie,
+dropped). A plugin bounds what a code buys with its own expiring cookie,
 renewed only by a fresh hand-off. **The cost:** signing out of muster, Sign out
 everywhere, a disabled account or a password rotation reach an already-open
 preview only when its cookie expires, not within 30 s. For previews that TTL is
-1 hour ([auth](#auth-on-preview-origins)).
+**8 hours** ([auth](#auth-on-preview-origins)).
 
 **The stepped-up hand-off** (for actions a plugin wants behind a fresh
 sign-in, such as minting a share link in phase 3). The plugin sends the owner,
@@ -543,7 +544,7 @@ token's plugin id and owner at start from a new route, `GET /plugin/v1/self`
 (no plugin route answers that today, `internal/api/plugins.go:54-91`). A hand-off names its plugin in `muster_plugin`, so the gateway knows
 which token redeems it. On a single-operator deployment that is one token. A
 deployment-wide plugin credential for many owners is
-[open question 2](#open-questions).
+[open question 1](#open-questions).
 
 ### Host tokens
 
@@ -558,7 +559,7 @@ that to the tunnel by `(owner, host)`. **The owner is the admin's assertion:**
 that owner. On a single-owner deployment that is the operator asserting their
 own host, as with mirror tokens on the server's CLI; with several owners, a
 mistyped owner would route one owner's host into another's previews. Proving
-it is [open question 11](#open-questions).
+it is [open question 9](#open-questions).
 
 ### The host tunnel
 
@@ -700,7 +701,7 @@ that agent row, read by the plugin from muster. `MUSTER_DIAL_DENY_PRIVATE`
 involved: muster dials nothing on this path.
 
 Officers run the same image and would work; they are left off
-([open question 4](#open-questions)). Gateway-kind agents and the compose
+([open question 3](#open-questions)). Gateway-kind agents and the compose
 driver get no gate.
 
 ### The proxy
@@ -770,20 +771,22 @@ What muster's chip opens: `https://w.musterchief.com/__muster/enter?muster_code=
   tab."
 - **The cookie is bound to its preview:** another preview's cookie is refused
   even if a browser sent it.
-- **TTL: 1 hour, never renewed by itself.** With no liveness check
-  ([seam a](#a-viewer-hand-off)), the TTL is the only bound on how long a
-  signed-out or disabled owner, or a stolen cookie, keeps reaching an open
-  preview. One hour is chosen because it is about one sitting of work on a
-  dev server: shorter, and HMR sessions break mid-work and push the owner back
-  through muster's chip every few minutes, which trains them to click through;
-  longer, and a sign-out means little for an afternoon. On expiry the next
+- **TTL: 8 hours, never renewed by itself** ([decision 19](#decisions)). With
+  no liveness check ([seam a](#a-viewer-hand-off)), the TTL is the only bound
+  on how long a signed-out or disabled owner, or a stolen cookie, keeps
+  reaching an open preview, so **a sign-out, a disabled account or a stolen
+  cookie reach an open preview for up to 8 hours**. In exchange an owner is
+  sent back through muster's chip about once a working day rather than every
+  hour. Because of that reach, closing a preview (which ends its cookies at the
+  next request, [lifecycle](#lifecycle)) is the way to cut a preview off at
+  once. On expiry the next
   request (and any open WebSocket, at its next 30 s check) gets the gateway's
   "session expired: open the preview again from muster" page, and a fresh chip
   click renews it.
 - In a frame the cookie is third-party (`SameSite=None; Partitioned`); partitioned cookies work in Chromium,
   and Firefox partitions by default. **Safari and the Android app's WebView are
   UNVERIFIED** (the WebView refuses third-party cookies unless the app enables
-  them, [open question 5](#open-questions)). **Open** in a new tab always
+  them, [open question 4](#open-questions)). **Open** in a new tab always
   works.
 - No step-up for the owner: viewing reaches a dev server, not a shell.
 
@@ -850,8 +853,8 @@ the others must hold without it:
 | **Redeeming** | Sets `__Host-mps` (signed, bound to share and preview, `SameSite=Lax`, expiring with the link) and redirects the token out of the URL. Any number of viewers until expiry or revocation. |
 | **Reach** | That one preview's origin. Nothing of muster's. |
 | **Unauthenticated viewers** | Yes; that is the point. |
-| **Revocation** | On the session page; closing the preview revokes its links; so does the owner's session ending only if [open question 6](#open-questions) says so. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
-| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 7](#open-questions). |
+| **Revocation** | On the session page; closing the preview revokes its links; so does the owner's session ending only if [open question 5](#open-questions) says so. Re-checked every request (30 s cache at most) and every 30 s on a WebSocket. |
+| **Audit** | The gateway's own log table (created, first redemption with the client address, revoked, expired). muster's `audit_log` is not written by a plugin today; whether a seam should let it is [open question 6](#open-questions). |
 | **Rate limits** | Per link: 600 requests a minute and 32 concurrent connections. Unknown or revoked tokens: 30 a minute per client address. Per owner: 20 live links. |
 
 ## The MCP tools
@@ -933,8 +936,8 @@ The gateway owns all preview state (its own Postgres or SQLite: `previews`,
 | No request for `PREVIEW_IDLE` (default 2 h) | closed |
 | Open longer than `PREVIEW_TTL` (default 24 h) | closed; reopening mints a new id |
 | The host token is revoked | tunnel ends within 30 s; that host's previews close |
-| The plugin token is revoked or loses `viewer` | muster's chip disappears and redeems fail; the gateway closes that owner's previews on its next failed call; open owner cookies end within their 1 h |
-| The owner signs out, or is disabled, in muster | nothing at once; open owner cookies end within 1 h (the cost of [decision 13](#decisions)) |
+| The plugin token is revoked or loses `viewer` | muster's chip disappears and redeems fail; the gateway closes that owner's previews on its next failed call; open owner cookies end within their 8 h |
+| The owner signs out, or is disabled, in muster | nothing at once; open owner cookies end within 8 h (the cost of decisions [13](#decisions) and [19](#decisions)); revoking the plugin token (row above) is the faster cut-off for a disabled owner |
 | The agent is destroyed (phase 2) | its target read answers `404`; the gateway closes its previews within a minute |
 | The upstream stops answering | a "not answering" page (502); the preview stays open |
 
@@ -1017,7 +1020,7 @@ listener, proxy or key.
 | The pod's identity | the gateway | the gateway dialled that agent's gate from muster's target read, so the caller is the agent whose gate it is; no claim is involved | a process inside the pod acts as that agent, as it already can |
 | A host token is stolen | anyone with `mpt_` | it registers only its host name; revocable on the gateway CLI; 30 s recheck | it can impersonate that host's tunnel: answer streams with its own content for that host's previews, and send fake offers and opens (labels only, on the owner's own page) |
 | A leaked mirror token | anyone with `mmt_` | as today ([auth.md](../auth.md#machine-credentials)); it reaches **no** preview function, since the preview tools no longer go through muster | — |
-| A revoked muster session keeps an open preview | a signed-out owner, a stolen cookie | owner cookie TTL 1 h, no renewal without a fresh hand-off | up to 1 h after sign-out or disable ([decision 13](#decisions)) |
+| A revoked muster session keeps an open preview | a signed-out owner, a stolen cookie | owner cookie TTL 8 h, no renewal without a fresh hand-off; closing the preview ends its cookies at once | **up to 8 h** after sign-out or disable, and a stolen cookie works for up to 8 h (decisions [13](#decisions), [19](#decisions)) |
 | muster used to proxy into a host's LAN or the cluster | compromised muster or gateway | the host dials loopback only and ignores the requested address; the gate likewise; the gateway reads targets from muster, never from an agent | whatever listens on allowlisted loopback ports as this user |
 | An allowlisted port held by another user or a system service | another local user | `foreign_listener` (Linux) | macOS: none |
 | Exposing muster-mirror's MCP or opencode's server | an agent or a click | always refused by the host | an unknown control port, if allowlisted |
@@ -1108,7 +1111,8 @@ turn it **red**, and must be watched red before it counts.
   redirect) and its script calls `history.replaceState` to drop
   `muster_code`; a reload without a code shows "open from muster".
 - **Expiry and close reach an open WebSocket** within the recheck (the owner
-  cookie's TTL passing, the preview closed), with a positive control that
+  cookie's 8 h TTL passing on a test clock, a cookie minted 8 h + 1 s earlier
+  refused and one minted 8 h − 1 s earlier accepted, the preview closed), with a positive control that
   stays open across several intervals before expiry.
 - **Streaming and WebSockets** pass (SSE first event before the upstream ends,
   red with buffering; HMR echo).
@@ -1196,42 +1200,40 @@ check, written into its phase's PR.
 
 ## Open questions
 
-1. **Host and pod side: inside `muster-mirror` and `ccd` (as designed), or a
-   separate host binary and an agent-pod sidecar** that keep every preview line
-   out of muster's own binaries ([what lands where](#what-lands-in-musters-own-binaries))?
-2. **Many owners:** is one `mpl_` token per owner in the gateway's file
+1. **Many owners:** is one `mpl_` token per owner in the gateway's file
    enough, or should muster gain a deployment-wide plugin credential, minted
    by an admin, that acts for any owner who enables a plugin?
-3. **Should `-preview` require `-interactive`?** The design says no.
-4. **Officers:** offer the tools to officer instances in phase 2, or keep them
+2. **Should `-preview` require `-interactive`?** The design says no.
+3. **Officers:** offer the tools to officer instances in phase 2, or keep them
    off as recommended?
-5. **Android app:** enable third-party cookies in its WebView for the frame,
+4. **Android app:** enable third-party cookies in its WebView for the frame,
    or rely on **Open**?
-6. **Share links and the owner's session:** should the owner signing out (or
+5. **Share links and the owner's session:** should the owner signing out (or
    Sign out everywhere) revoke their share links, or only closing the preview
    and the owner being disabled? (With no liveness check, signing out could
-   reach the gateway only at the owner's next hand-off.)
-7. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
+   reach the gateway only at the owner's next hand-off.) The 8-hour owner
+   cookie makes this weigh more: today nothing the owner does in muster
+   reaches an open preview or its links for up to 8 hours.
+6. **Audit in muster:** should a seam let a plugin write `audit_log` rows (for
    share links, and preview opens), or does the gateway's own log suffice?
-8. **Offers outside tmux:** listeners not under any pane are never offered.
+7. **Offers outside tmux:** listeners not under any pane are never offered.
    Should they be offered on a host-level place (muster has no host page
    today), or stay unoffered?
-9. **Default ports** to suggest for `previews.json` and
+8. **Default ports** to suggest for `previews.json` and
    `MUSTER_AGENT_PREVIEW_PORTS` (the example lists Vite, Vite preview,
    Storybook, Next/Express, and 8000–8099).
-10. **The owner cookie's 1-hour TTL:** acceptable as the bound on sign-out and
-    on a stolen cookie, or shorter at the cost of re-opening from the chip?
-11. **Many owners, host tokens:** `host-token create <owner> <host>` trusts the
-    admin's typed owner. Should the binding be proven instead (for example,
-    accepted only after a hand-off from that owner whose target names that
-    host), or is the admin's assertion enough while one operator runs the
-    gateway?
+9. **Many owners, host tokens:** `host-token create <owner> <host>` trusts the
+   admin's typed owner. Should the binding be proven instead (for example,
+   accepted only after a hand-off from that owner whose target names that
+   host), or is the admin's assertion enough while one operator runs the
+   gateway?
 
 ## Decisions
 
 Unless marked otherwise, the operator made each of these; decisions 1–10
-were relayed by the coordinating session's briefs, and 11–16 are the
-operator's answers to the round-0 audit on this pull request. Where a later
+were relayed by the coordinating session's briefs, 11–16 are the operator's
+answers to the round-0 audit on this pull request, and 17–19 are the
+operator's answers after the round-1 audit. Where a later
 decision changed an earlier one, the earlier one says so.
 
 1. **Origin: a wildcard subdomain.** Each preview at `p-<id>.<zone>`, gated by
@@ -1274,17 +1276,19 @@ decision changed an earlier one, the earlier one says so.
     choice. The operator settled it in decision 16.
 11. **Round 0, D1/Q1: seam (c) is dropped.** `preview_open`, `preview_list`
     and `preview_close` are served on the machine: on a host by
-    `muster-mirror`'s loopback MCP proxy, which talks to the gateway over its
-    own preview tunnel; in a pod by a local MCP server `ccd` registers. No
-    tool call goes through muster.
+    `muster-mirror`'s loopback MCP listener, which talks to the gateway over
+    its own preview tunnel; in a pod by a local MCP server `ccd` registers. No
+    tool call goes through muster. (The round-0 wording had the host proxy
+    append them to muster's `tools/list`; **decision 17** replaces that with a
+    separate server.)
 12. **Round 0, D2: seam (b) is one static chip per plugin** on every session
     view, linking to the plugin's page for that session. No per-session embed
     rows, chip states or process names in muster. The cost: muster draws no
     per-preview chip.
 13. **Round 0, D3: no liveness check.** `POST /plugin/v1/handoffs/check` is
-    dropped; the preview cookie has a short TTL, renewed only by a fresh
-    hand-off from the chip. The cost: a sign-out reaches open previews within
-    that TTL.
+    dropped; the preview cookie has a TTL (set to 8 h by decision 19),
+    renewed only by a fresh hand-off from the chip. The cost: a sign-out
+    reaches open previews only within that TTL.
 14. **Round 0, D4: `handoff` and `embeds` are one capability** (`viewer`);
     `agent_targets` is deferred to phase 2.
 15. **Round 0, D5 declined: the pod gate keeps its own declared port**,
@@ -1292,14 +1296,23 @@ decision changed an earlier one, the earlier one says so.
     never admitted to the chat gateway.
 16. **Round 0, D6/Q2: share links have full access** — every method, and
     WebSockets. There is no read-only flag.
+17. **The host's preview tools are a separate loopback MCP server**
+    (`/preview-mcp` on `muster-mirror`'s loopback listener, prefix
+    `mcp__preview__`), not an append to muster's `tools/list`, so a muster
+    outage still fails the `muster` server loudly
+    ([the MCP tools](#the-mcp-tools)). Proposed by this page after the round-1
+    audit; approved by the operator.
+18. **The preview code lives inside `muster-mirror` and `ccd`**, not in a
+    separate host binary or an agent-pod sidecar. The alternative was rejected
+    for its second install per host, its duplicated tmux, `/proc` and MCP
+    code, and a second container in every agent pod
+    ([what lands where](#what-lands-in-musters-own-binaries)).
+19. **The owner preview cookie's TTL is 8 hours** (this page had proposed 1
+    hour). It widens how long a sign-out, a disabled account or a stolen
+    cookie can reach an open preview to 8 hours.
 
 Choices this page makes itself, which the operator has not ruled on: the
-owner cookie's 1-hour TTL; the gateway's session page holding its credential
-in page memory rather than a cookie; the stepped-up hand-off's confirm page
-(`/plugin-handoffs/confirm`); the open/ack protocol on the offer stream; and a
-stdio (not loopback HTTP) MCP server in the pod, following `hq mcp`; and, after
-the round-1 audit, serving the host's preview tools as a separate MCP server
-(`/preview-mcp`) on `muster-mirror`'s loopback listener rather than appending
-them to muster's list. That still meets decision 11 (served on the machine by
-the loopback MCP proxy, never through muster), changes only how they are
-listed, and gives hosts and pods the same `mcp__preview__` prefix.
+gateway's session page holding its credential in page memory rather than a
+cookie; the stepped-up hand-off's confirm page (`/plugin-handoffs/confirm`);
+the open/ack protocol on the offer stream; and a stdio (not loopback HTTP) MCP
+server in the pod, following `hq mcp`.
