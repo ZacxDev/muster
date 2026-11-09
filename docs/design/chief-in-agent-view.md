@@ -1,7 +1,10 @@
 # Design: the chief in an agent's view (succession: replace or spin off, in place)
 
-**Status: phase 0 measured and phase 1 built (see [Phase 0 results](#phase-0-results-2026-11-08)
-and [Phase 1 as built](#phase-1-as-built)); phases 2–4 are proposed.** It builds on
+**Status: phase 0 measured, phases 1 and 2 built (see [Phase 0 results](#phase-0-results-2026-11-08),
+[Phase 1 as built](#phase-1-as-built) and [Phase 2 as built](#phase-2-as-built)); phases 3–4 are
+proposed.** Phase 2 follows the operator's decision of 2026-11-09 on how a view
+line authorises a succession (a one-tap confirm card), which changes 4.2 and D5
+as written below; [Phase 2 as built](#phase-2-as-built) says how. It builds on
 [chief-dispatch.md](chief-dispatch.md) (phase 3 built for claude, #513/#516;
 phase 4, opencode on an OpenRouter model, in draft as #522) and reuses its
 target strings, `host_dispatches` row, reconciler, held cards and owner-turn
@@ -161,11 +164,14 @@ Both ledgers grow by exactly one in phase 1.
 
 ### 2.1 The composer toggle
 
-This is a two-segment switch at the start of the composer's input row. It is
-drawn only when the owner has a chief that is on (`chiefpref`).
+This is one switch, the first control of the composer's input row, left of
+the paperclip: a 44px icon button (a bot for the agent, a crown for the
+chief) that is a `role="switch"` checkbox. It is drawn only when the owner has
+a chief that is on (`chiefpref`). (Phase 1 first shipped it as a two-segment
+"`<runtime>` | Chief" switch; see "Phase 1 as built".)
 
 ```
-[ opencode | Chief ]  Ask the chief about this session…           [➤]
+[♛][📎]  Ask the chief about this session…                        [➤]
 ```
 
 - **To the agent** (default): today's composer, unchanged.
@@ -184,9 +190,11 @@ drawn only when the owner has a chief that is on (`chiefpref`).
 - **The choice persists per window** in `localStorage`, under the draft key's
   scheme (`MirrorDraftKey(..., "chief", ...)`), and each mode keeps its own
   draft. A reload lands in the mode last used, and the default is the agent.
-- **No script:** it is a real `<form>`. The switch is two radio inputs whose
-  `formaction` selects the route, so a browser submit still reaches the right
-  door (the composer's "real form" rule, `mirror_compose.go:27-34`).
+- **No script:** it is a real `<form>`. The switch is a checkbox the
+  stylesheet follows: it shows the chief's Send, whose `formaction` is the
+  chief's route, so a browser submit still reaches the right door — with
+  script disabled and when the chief script throws (the composer's "real
+  form" rule, `mirror_compose.go`).
 
 ### 2.2 What is attached
 
@@ -337,9 +345,9 @@ non-null `about`.
 | `id` | bigserial | the id in `lineage.changed` |
 | `owner_id` | bigint | RLS |
 | `root_key` | text | the lineage root's session key (the thread key, 2.3): the predecessor's own `root_key`, or its `session_key` if it has none |
-| `pred_key` | text | the predecessor's session key |
-| `pred_host`, `pred_tmux_session`, `pred_tmux_window` | text | where it was when the owner asked |
-| `pred_dispatch` | bigint null | its `host_dispatches` id, when the chief started it |
+| `subject_key` | text | the predecessor's session key |
+| `subject_host`, `subject_tmux_session`, `subject_tmux_window` | text | where it was when the owner asked |
+| `subject_dispatch` | bigint null | its `host_dispatches` id, when the chief started it |
 | `mode` | text | `replace` or `spinoff` (CHECK) |
 | `requested_by` | bigint | the user, from the owner's turn |
 | `owner_message` | bigint | the chat row `ownerTurnFor` returned, which carries `about` |
@@ -347,7 +355,7 @@ non-null `about`.
 | `request_key` | text | the dispatch's; `UNIQUE (owner_id, request_key)` |
 | `host_dispatch_id` | bigint | `REFERENCES host_dispatches`: the successor |
 | `excerpt_sha256` | text null | the copied kickoff's hash (4.3) |
-| `pred_state` | text | `active` or `superseded` (replace only, set when the successor runs) |
+| `subject_state` | text | `active` or `superseded` (replace only, set when the successor runs) |
 | `notified_at` | timestamptz null | the push in 2.5 (5) went out |
 | `created_at` | timestamptz | |
 
@@ -361,7 +369,7 @@ ledger over the Go source, failing if the set grows *or* shrinks):
 1. **Insert:** inside `agent_dispatch`'s `onReserved` hook, in the **same
    transaction** as the `pending` `host_dispatches` insert, and only when
    `successor_of` is set. A refused reservation writes neither row.
-2. **`MarkSuperseded`:** sets `pred_state = 'superseded'` where `mode =
+2. **`MarkSuperseded`:** sets `subject_state = 'superseded'` where `mode =
    'replace'`. Its only caller is the reconciler, in the same step that moves
    the successor's row to `running`.
 3. **`SetSuccessionNotified`:** its only caller is the 30 s push timer.
@@ -390,7 +398,7 @@ owner and carries no text, so it adds no data path across users
 (`internal/sse` drops a zero owner).
 
 **Lookups the view makes:**
-- *"my successor"*: by `pred_key` = the entry's `SessionKey()`, newest first;
+- *"my successor"*: by `subject_key` = the entry's `SessionKey()`, newest first;
 - *"my predecessor"*: by the entry's `Dispatch` →
   `session_successions.host_dispatch_id`.
 
@@ -545,7 +553,7 @@ the wrong session.
 
 | phase | the old session, on replace |
 |---|---|
-| 2 | `pred_state = superseded`. Its view shows the banner; its sidebar row moves to a collapsed **Superseded** group (`idle_section.go`'s pattern: collapse only, still listed, searchable and openable); `sessions_overview` and the plugin hints rank it below live work. **The window keeps running.** The banner says "close it on `<host>` when you are done", which is decision 17's wording |
+| 2 | `subject_state = superseded`. Its view shows the banner; its sidebar row moves to a collapsed **Superseded** group (`idle_section.go`'s pattern: collapse only, still listed, searchable and openable); `sessions_overview` and the plugin hints rank it below live work. **The window keeps running.** The banner says "close it on `<host>` when you are done", which is decision 17's wording |
 | 3 (D1) | for a predecessor that is a host dispatch, meaning a window the chief itself started: a new host message, `agent-close {dispatch}`, which closes the window **only if its own `@muster-dispatch` equals `dispatch`** (the same host-side bound as forwarding, 3.10) and only once the successor is `running`. muster asks the host after the successor's first prompt is accepted. A window the operator opened by hand is never closed by muster, automatically or otherwise: it has no `@muster-dispatch` tag, so the host's check refuses it |
 
 ### 4.5 Security: transcript text is untrusted; the owner's typed words are the authority
@@ -590,7 +598,7 @@ completes.
     byte-identical to the transcript block (a pinned literal fixture, not one
     derived from the code under test);
   - `request_key` replay and reuse, with the excerpt's hash in the hash;
-  - replace vs spin-off `pred_state`;
+  - replace vs spin-off `subject_state`;
   - `lineage.changed` goes to the owner only, and nothing goes for a dispatch
     that is not a succession.
 - **Ledgers:**
@@ -677,6 +685,38 @@ and this page does not reopen them.
    chief session keeps its own conversation, and `ownerTurnFor` passes in it.
    If it does not, the fallback in 2.3 applies: the chief's default session,
    with the strip filtered to this lineage's `about` rows.
+
+## Decisions (2026-11-09)
+
+7. **D7: a view line authorises nothing by itself; the owner's tap on a
+   card does.** The chief proposes, and the owner's one tap on the card it
+   raises (on the view, the Attention view and the phone) is the
+   authorisation. Transcript text can at most cause a proposal. This
+   replaces D5's "no confirm tap" and 4.2's binding to `ownerTurnFor`.
+8. **D8: one primitive.** The confirm card is a generic chief proposal with
+   a kind: one card, one tap path, one binding rule. Succession is its first
+   kind and ending a session its second.
+9. **D9: ending a session on the owner's explicit request.** On the owner's
+   explicit request, and only then, the chief may propose ending ANY of the
+   owner's sessions: a mirrored window on their hosts (Claude Code or
+   opencode), windows the owner opened by hand included, or any pod agent of
+   theirs, whoever started it. Never the chief itself, and never an
+   officer's instance (both are delete-protected).
+   - **Binding:** the session the owner's view line is about, or one the
+     owner named in a line typed in the chief's own chat.
+   - **Authorisation:** the tap. Nothing ends without it.
+   - **How:** gracefully where that is safe, then closed. A Claude Code
+     agent at an idle prompt with an empty input box is asked to exit
+     (`/exit`, through the Claude prompt guard), and its window is closed
+     once it exits, or after about 30 s whatever it does. One waiting on the
+     owner (a permission prompt, a picker, a dialog) or holding a draft is
+     typed nothing, and its window is closed at once. An opencode window is
+     closed at once (#549 round 1). A pod agent goes through muster's own
+     stop and destroy.
+   - **What it changes:** this supersedes D1's "never closes a window the
+     operator opened by hand" **for the explicit-request case only**. An
+     automatic close on replace (phase 3) stays limited to windows the chief
+     itself started.
 
 ---
 
@@ -812,15 +852,31 @@ the operator's round 0 decisions on PR #537:
   - `TestOnlyTheViewDoorBindsASubject` is the new writer ledger for `about`.
     It sits beside `TestEveryChatWriterIsClassified`, whose `typed_by` set is
     unchanged.
-- **The composer switch** (`internal/ui/view_chief.go`): "`<runtime>` |
-  Chief", with two radios.
-  - A stylesheet rule (`:has(#mv-to-chief:checked)`) decides which Send shows.
-    The chief's Send carries the chief route as its `formaction`, so a submit
-    without script still reaches the door.
-  - The script adds the form's action for Enter, the placeholder, the box
-    enabled on a disabled agent composer, the mode remembered per window
-    (`localStorage`, `MirrorDraftKey(…, "chief", …)`), and the strip's live
-    refresh.
+- **The composer switch** (`internal/ui/view_chief.go`): ONE always-present
+  control, the input row's first, left of the paperclip — a checkbox
+  (`#mv-to-chief`, `role="switch"`, checked = chief mode) inside a label
+  (`#mv-to`) drawn as a 44px icon button showing the current target's glyph (a
+  bot for the agent, a crown for the chief). Its accessible name is fixed
+  ("Send to the chief"), its checked state is the mode, and its description is
+  hidden text for the current mode, picked by the stylesheet. Its form owner is
+  an empty form of its own (`#mv-to-form`), so Enter on it never submits the
+  composer; the composer's script makes Enter toggle it. (It replaced a
+  two-radio "`<runtime>` | Chief" switch above the row.)
+  - Chief mode is drawn in the review status pair (`st-review-fg` /
+    `st-review-bg`): the composer's top edge, the box's ring and fill, the
+    switch, and the chief's Send. Agent mode is the composer as it was.
+  - ONE stylesheet rule (`#mv-compose:has(#mv-to-chief:checked)`) decides
+    which Send shows. The chief's Send carries the chief route as its
+    `formaction`, and the composer's Enter submits through the Send shown, so
+    the mode works with script, without script, and when the chief script
+    throws.
+  - A disabled agent composer's box is drawn enabled (marked
+    `data-agent-off`, its agent Send still disabled) when the chief mode is
+    offered, so the chief mode can send without the script.
+  - The script adds the mode remembered per window (`localStorage`,
+    `MirrorDraftKey(…, "chief", …)`), the form's action, the placeholder, the
+    box disabled again in agent mode on a disabled agent composer, and the
+    strip's live refresh.
 - **The chief strip.**
   - `GET /mirror/view/chief/log` serves the chief chat's own renderer
     (`ui.ChatLogBody`, surface `view-strip`), narrowed to this session's
@@ -864,3 +920,248 @@ the operator's round 0 decisions on PR #537:
   written while a view turn is still running, would cut that reply out of the
   strip; it stays in the chief's own chat. **UNVERIFIED** against production
   interleavings.
+
+## Phase 2 as built
+
+**The operator's decision (2026-11-09), answering phase 1's open question.** A
+view line marks no owner turn, so it cannot authorise a start by itself. The
+authorisation is a **one-tap confirm card**: the chief *prepares* a succession,
+muster shows the owner the exact kickoff and settings, and the owner's tap is
+what starts it. Transcript text can at most cause a proposal, never a start.
+This replaces 4.2's binding to the message `ownerTurnFor` returns, and D5's "no
+confirm tap": the confirm card is the only tap (there is no second "start with
+this kickoff" step).
+
+- **One primitive: the chief's proposal** (operator decision, 2026-11-09):
+  an action the chief may PREPARE about one of the owner's sessions but never
+  take. `chief_proposals` (migration **0100**; this replaces 3.2's
+  `session_successions`) is one table with a `kind` (`succession` now,
+  `end_session` reserved for the next phase), and every kind shares, by
+  construction (`internal/api/chief_proposal.go`): ONE binding rule
+  (`bindViewSubject`), ONE record and card (`fileProposal`,
+  `ui.ProposalCard`), ONE tap path (`proposalForAnswer`, answerAskFrom's
+  hook) and ONE tap route on the view (`POST /mirror/view/proposal`).
+- **`succession_propose`** (`internal/api/succession.go`), chief-only, on MCP,
+  offered with `agent_dispatch` (task routing on, the owner opted in) when the
+  mirror, focus and attention stores are wired. No new configuration.
+  - Arguments (unknown ones refused): `successor_of`, `succession`
+    (`replace` | `spinoff` | `?`), `prompt_from: {ref, block?}`, and only when
+    the owner's words say so, `target`, `model`, `repo`, `base`.
+    `TestTheSuccessionProposeKeysArePinned` pins both key sets.
+  - **The binding.** The chief's newest user row in its default session must
+    be a view line (`about` set, typed by the owner, within the turn budget);
+    `successor_of` must equal its `about`. The subject's place is read again
+    from the hub, owner-scoped. Anything else is refused with its own sentence.
+  - **The kickoff.** muster re-reads the transcript and copies the message
+    whose `ref` matches — its fenced block when `block` is given, else the
+    whole message (phase 0 found unfenced kickoffs) — byte for byte. Too long
+    for the spawn prompt: refused (`the kickoff is N bytes; at most M fit`),
+    never cut. A control character a runtime refuses: refused, never altered.
+  - **What it inherits (D3).** The subject's host and runtime; for opencode,
+    the model of a session the chief started (an owner-opened opencode window
+    has none muster knows, so the chief must pass the one the owner named);
+    the repository of a session the chief started, else the window's short
+    repository name when exactly one connected repository has it. The owner's
+    words override each.
+  - **The base (D4).** The old session's branch for a session the chief
+    started, else the repository default. At the start, a `bad_base` refusal
+    of that branch starts once more from the default (a second reservation,
+    the row relinked); the card and the view say which base was used.
+  - It records the proposal (a `chief_proposals` row of kind `succession`)
+    and raises the card (`raiseOwnerCard`: on the Attention view and the phone, an
+    owner card answered only through the owner's own doors). Its question
+    holds the kickoff whole when it fits, its options are "Start it" / "Not
+    now", or "Replace this session" / "Spin off a new one" / "Not now" when
+    `succession` was `?` (D2). It ends the chief's turn and starts nothing.
+  - **A kickoff that does not fit the card's question whole** (operator
+    decision, #546 round 0 Q1) is startable only from the session's view,
+    where it is shown whole. On the Attention view and the phone its card
+    offers only "Review on the session's view". A start from there, whether
+    that button or Start sent anyway, is refused server-side
+    (`proposalSurfaceRefusal`) and the card stays open. A kickoff that fits
+    whole still starts from anywhere.
+- **The tap** is `answerAskFrom`'s proposal hook (`proposalForAnswer`),
+  before the answer is recorded — the same path as the Attention view, the
+  phone, and the view's own card (`POST /mirror/view/proposal`, which accepts
+  only the card of the session that view shows). It refuses anything but the
+  owner's signed-in browser or paired phone, and any answer that is not one of
+  the card's buttons. Start dispatches through the host dispatch machinery
+  unchanged: `hostSpawnable`, `connectedRepoName`, the chief's caps
+  (`ReserveHostDispatch`), `spawnReserved` and the reconciler. The succession
+  is linked to its dispatch **in the reservation's transaction, single use**:
+  a second link of a decided row rolls the whole reservation back. A start
+  refused before anything was reserved leaves the card open with its sentence.
+- **The successor's first message** is muster's spawn preface, a line naming
+  the session the kickoff was copied from, the kickoff exactly as copied
+  between two rules, then muster's rules.
+- **The lineage.** When the successor's dispatch turns running (the
+  reconciler), a replace's predecessor is marked superseded and the owner's
+  stream gets `lineage.changed` (`succession-<id>`, no text); the event also
+  goes out on a proposal, a decision, a start and an end. 30 s after running,
+  if no view opened the successor (`successor_seen_at`), the owner gets one
+  push linking to it.
+- **The view.** `GET /mirror/view/successor` answers `{id, state, mode,
+  card_html, successor: {view_path, title, host, runtime}}`. The view draws the
+  card (the kickoff in full, the settings, the buttons), then "A successor is
+  starting…", then "Superseded. Continued in …" (replace) or "Spun off …". The
+  view that saw the succession open follows it once it runs: "Opening the new
+  session…" for 1.5 s with Stay here, then `location.assign` (the top window
+  when framed), at most once per succession (`sessionStorage`). It asks again
+  on `visibilitychange`, on a stream reconnect and on a back-forward restore.
+  A view opened after the successor ran shows the banner and does not jump.
+  The successor's view says "Continues “…” · replace · open previous".
+- **The sidebar.** A superseded session folds into a collapsed "Superseded (N)"
+  group (collapse only; the window keeps running and is listed). Its window is
+  not closed (D1: phase 3).
+- **The chief is told** in the view turn's header, only when the tool is
+  offered: call `succession_propose` with the subject, the mode or `?`, and
+  `prompt_from`, and that nothing starts until the owner taps. The agentspec
+  instructions are unchanged: the header reaches both runtimes on exactly the
+  turns it applies to.
+- `session_context` is unchanged: its `suggested_*` keys were not re-added,
+  because the proposal inherits the settings itself.
+
+**Round 1 (audit of #546):**
+- The tool's `kickoff.first_line` is redacted with `redact.Secrets` (the
+  session_context redactor). A proposal card's answer is **never delivered
+  back** as an attention answer: a tap is not a request for a turn, so its
+  delivery is closed (`MarkWaited`) and no turn is queued. The chief gets
+  muster's own sentence instead, a chat note that costs no turn ("Your owner
+  tapped Start on your proposal N (succession of <key>)…", or "declined"),
+  with no kickoff text. The Answered list says muster recorded the answer.
+- A start is a **tapped button**: the view's card, or the Attention view's
+  option button (`optionTapped`). Typed text that spells a button accepts
+  nothing.
+- **Never from the phone:** a proposal card's push carries no chips and no
+  signed answer actions, and asks for no suggested replies
+  (`raiseProposalCard`). A device answer that would start a succession is
+  refused server-side. The surfaces that may start one are those that
+  showed the whole kickoff: the session's view always, and the Attention
+  view when the kickoff fits its card.
+- A kickoff holding invisible formatting is refused, never altered: a bidi
+  embedding, override or isolate (U+202A–202E, U+2066–2069), a zero-width
+  space, word joiner or byte order mark (U+200B, U+2060, U+FEFF), or a tag
+  character (U+E0000–E007F). Round 2 narrowed this from every format
+  character: an emoji sequence's zero-width joiner, the ZWNJ of Persian and
+  the Indic scripts, the left-to-right and right-to-left marks and a soft
+  hyphen are ordinary text.
+- The card promises the fall back to the default branch only where it runs
+  (D4: the inherited branch of a session the chief started).
+
+**Round 2 (delta audit of #546):**
+- **The kickoff never reaches the chief's model raw, by construction.** The
+  card's attention ask holds muster's own sentence only ("Start a session that
+  continues “…”? … Read the kickoff (N bytes, copied exactly from the
+  session) in muster: on the session's view, or on this card in the Attention
+  view."), never kickoff text. The kickoff is stored only on the
+  `chief_proposals` row. The owner's card draws it from that row: the
+  session's view, and the Attention view's card and the ask page (both for
+  the owner's own principal only). So `attention_list`, `attention_wait`,
+  the push, the delivery sweep (even when closing the delivery fails) and any
+  later reader of the ask see no kickoff. A ledger test pins that the only
+  writer of a proposal's ask is `fileProposal`, whose question is built by
+  a builder that reads the kickoff's length only.
+- Round 3: a card whose proposal row (or ask) cannot be read when it is
+  drawn shows "muster could not load this card's kickoff just now… reload"
+  and offers no start button, on the Attention view and the ask page. The
+  Answered list says muster recorded a proposal card's answer only once its
+  delivery was closed; otherwise it says where the answer went.
+- The cut rule is unchanged in effect and reads the row's kickoff length: a
+  kickoff over the room the question leaves of an ask's limit is drawn cut on
+  the Attention view, whose card then offers only "Review on the session's
+  view".
+
+**Left for later, stated:**
+- The 30 s push to a successor nobody opened is an in-process timer: a muster
+  restart in those 30 s loses it (the successor still runs and is listed).
+- The view's card shows its own kickoff in full; the Attention view's card
+  shows it whole only when it fits the question's limit, and the phone's push
+  shows only the question.
+- An owner line typed in the chief's own chat while a card is open settles the
+  oldest open owner card in session (the owner-card rule); a succession card
+  settled that way starts nothing and reads as expired on the view.
+- No phase 3 (closing the replaced window) and no pod successors.
+
+## End-session as built
+
+This section follows D9. It is the chief proposal's second kind
+(`end_session`), built on the same binding, card and tap.
+
+- **`end_session_propose {session}`** (`internal/api/end_session.go`) is
+  offered wherever `succession_propose` is. The session is bound in one of
+  two ways:
+  1. **From a view line:** the shared rule (`bindViewSubject`). The session
+     the chief names must be the one the line is about.
+  2. **From the chief's own chat:** the turn must be the owner's own typed
+     turn (`ownerTurnFor`), and the session may be any of the owner's: a
+     mirrored session's key (owner-scoped through the hub), or `agent:<name>`
+     for any pod agent of the owner's. The chief itself and an officer's
+     instance are refused at the proposal, with no card. A plugin message, a
+     session's words or muster's own note never binds.
+- A mirrored session's host must advertise agent-close. Otherwise the
+  proposal is refused, saying so.
+- **The card** reads "End this session?", with the session, where it runs and
+  what will happen, and the buttons End it / Not now. Its attention ask's
+  question (the Attention view, the phone, `attention_list`) is muster's own
+  sentence naming exactly which session: its label, then host · tmux session
+  · window (or "your agent “name”"), then what happens. It holds no
+  transcript text.
+- **The tap** (the same `proposalForAnswer`):
+  - Everything that can refuse runs first, and a refusal leaves the card
+    open: the window still listed, still the card's own window (the host,
+    tmux session and window the card named), the host able to close, the
+    agent still the owner's and not protected.
+  - Then `StartEnd` (accepted, ending) and the end itself:
+    - A mirrored window: muster sends the host **agent-close** for exactly
+      that window, naming the conversation it must be running
+      (`AgentCloseReq.Key`; `mirror.Hub.CloseAgent`, whose one caller is
+      `closeEndedWindow`).
+    - A pod agent: `destroyAgent`, as the owner's destroy does.
+  - `RecordEnd` stores ended or failed, with a one-line detail.
+  - The view's proposal region shows "Ending this session…", then "Session
+    ended." or the failure. Once the window is gone, the view reads the
+    proposal by id (`GET /mirror/view/proposal?id=`).
+- **agent-close, the host half** (`internal/mirrorhost/agentclose.go`):
+  - It is advertised (`Msg.AgentClose`) only by an `-interactive` v2 host
+    whose backend lists windows, pastes into a pane and closes a window.
+  - The request names one window (its tmux session and window id) and the
+    conversation muster expects there. The host refuses anything else, with
+    nothing typed or closed:
+    - a window it does not list in that session (`not_listed`);
+    - a window running no agent (`no_agent`);
+    - a window running another conversation, in its active pane or any
+      other (`mismatch`).
+  - **Claude Code:** the paste guard, then the Claude prompt guard
+    (`claudeReady`: its session status, its screen, an EMPTY input box).
+    Only if all pass is `/exit` typed, through the checked paste
+    (`PasteChecked`), which checks again before the paste and before its
+    Enter. Any refusal types nothing (or withholds the Enter), and the
+    window is closed at once, reported not graceful with the reason. Enter
+    on a permission prompt would approve it, on a picker would take its
+    first option, and after a draft would submit the draft. After `/exit`
+    the host re-lists every 300 ms:
+    - the window gone is a graceful end;
+    - the agent's OWN pane (its pane id and process, read at the start) no
+      longer running it is also graceful, and the window is closed if it
+      runs no other agent;
+    - otherwise, after the grace (30 s) the host lists the window once more
+      and closes it only if it still runs that conversation, reported not
+      graceful.
+  - **opencode:** closed at once, reported not graceful. muster types into
+    no opencode pane (the paste guard refuses it), and the opencode server
+    API the host uses (`internal/opencodehost`) has no call that exits its
+    TUI.
+- **Ship note:** the hosts run `muster-mirror` as pinned by the operator's own host
+  flake. Agent-close reaches a host only once that host runs a release with
+  it, which needs a flake bump after the release. Until then the host does
+  not advertise it, and the chief's proposal is refused with that sentence.
+
+**Left for later, stated:**
+- The card is not drawn in the chief's own chat. From that path the owner
+  taps it on the Attention view or the phone (a chat tap is their next typed
+  message, which settles an owner card without accepting it).
+- No graceful exit for opencode: its window is closed at once. A graceful
+  path would need an exit call in opencode's server API.
+- A dialog that opens in the milliseconds between the last check and the
+  Enter is not caught: the Claude prompt guard is a check before the keys,
+  not a lock (`claude_guard.go`).

@@ -40,7 +40,7 @@ func served(t *testing.T, e *Engine, n int) []string {
 func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) {
 	run := func(shown, everyNth, skipFills int) (*Engine, *countingGen) {
 		g := &countingGen{}
-		e := &Engine{Gen: g, PerOwner: 10_000, Global: 10_000}
+		e := &Engine{On: true, Gen: g, PerOwner: 10_000, Global: 10_000}
 		fps := served(t, e, shown)
 		fills := 0
 		for i, fp := range fps {
@@ -132,7 +132,7 @@ func (g *gateUsage) Reset(context.Context, int64) error {
 func TestAResumeIsNotUndoneByAReadThatRacedIt(t *testing.T) {
 	ctx := context.Background()
 	g := &gateUsage{paused: true}
-	e := &Engine{Gen: &countingGen{}, Usage: g}
+	e := &Engine{On: true, Gen: &countingGen{}, Usage: g}
 	if o := e.Enabled(ctx, 1); o != OutcomePaused {
 		t.Fatalf("setup: %q", o)
 	}
@@ -162,7 +162,7 @@ func TestAResumeIsNotUndoneByAReadThatRacedIt(t *testing.T) {
 // a fingerprint this engine did not serve that owner for that subject does
 // not count; an unknown event does not count. A send adds its edit distance.
 func TestASetCountsOnceAndOnlyWhenItWasServed(t *testing.T) {
-	e := &Engine{Gen: &countingGen{}}
+	e := &Engine{On: true, Gen: &countingGen{}}
 	fp := served(t, e, 1)[0]
 	cases := []struct {
 		owner      int64

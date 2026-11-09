@@ -94,7 +94,7 @@ type suggestFixture struct {
 func newSuggestFixture(t *testing.T, mutate func(*fakeMirror, *Extensions)) *suggestFixture {
 	t.Helper()
 	gen := &recordingGen{}
-	eng := &suggest.Engine{Gen: gen}
+	eng := &suggest.Engine{On: true, Gen: gen}
 	fm := &fakeMirror{online: true, interactive: true, statusReport: true, v2: &fakeMirrorV2{batches: suggestBackfill()},
 		windows:    []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Claude: true, ClaudeSession: suggestSID, Activity: 1_700_000_000}},
 		agentState: &mirror.AgentState{Runtime: mirror.RuntimeClaude, Status: mirror.StatusIdle, Since: suggestTok}}
@@ -201,7 +201,7 @@ func TestEachExclusionMakesNoCall(t *testing.T) {
 			fm.windows = []mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_" + strings.Repeat("a", 26)}}
 		}, nil},
 		{"kill switch", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Off = true }, nil},
-		{"user toggle off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true} }, nil},
+		{"user toggle off", func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = &suggestPrefs{off: true, saved: true} }, nil},
 		{"open attention ask (hidden on this device or not)", func(_ *fakeMirror, ext *Extensions) {
 			ext.Attention = openAsks{asks: []attention.Ask{{ID: 7, Question: "Which region?", Asker: attention.Asker{MirrorHost: "ws", MirrorSession: suggestSID}}}}
 		}, nil},
@@ -240,10 +240,16 @@ func TestAnAttentionAskOfAnotherSessionDoesNotBlock(t *testing.T) {
 	}
 }
 
-type suggestPrefs struct{ off bool }
+// suggestPrefs is one user's toggle in memory: saved=false is "never chose",
+// which the engine gives suggest.DefaultDisabled — the fake decides no
+// default of its own.
+type suggestPrefs struct{ off, saved bool }
 
-func (p *suggestPrefs) Disabled(context.Context, int64) (bool, error)        { return p.off, nil }
-func (p *suggestPrefs) SetDisabled(_ context.Context, _ int64, d bool) error { p.off = d; return nil }
+func (p *suggestPrefs) Choice(context.Context, int64) (bool, bool, error) { return p.off, p.saved, nil }
+func (p *suggestPrefs) SetDisabled(_ context.Context, _ int64, d bool) error {
+	p.off, p.saved = d, true
+	return nil
+}
 
 // TestTheTrackerEndsATurnOnlyWhenTheBusyMarkerFalls.
 func TestTheTrackerEndsATurnOnlyWhenTheBusyMarkerFalls(t *testing.T) {
@@ -296,7 +302,7 @@ func TestASetIsServedOnlyForItsOwnTurnAndOnlyWhileIdle(t *testing.T) {
 // TestTheToggleRoute: the per-user toggle off stops generation and drops the
 // cached set; on again is on; anything but 1/0 is refused.
 func TestTheToggleRoute(t *testing.T) {
-	prefs := &suggestPrefs{}
+	prefs := &suggestPrefs{saved: true} // saved ON
 	f := newSuggestFixture(t, func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = prefs })
 	post := func(path string, form url.Values) int {
 		req, _ := http.NewRequest(http.MethodPost, f.ts.URL+path, strings.NewReader(form.Encode()))

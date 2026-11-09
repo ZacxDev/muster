@@ -131,6 +131,16 @@ func (s *Service) SpawnAgent(ctx context.Context, host string, dispatch int64, r
 	return s.hub.SpawnAgent(ctx, o, host, dispatch, req)
 }
 
+// CloseAgent asks ctx's principal's host to end the agent in window req
+// (agentclose.go).
+func (s *Service) CloseAgent(ctx context.Context, host string, req AgentCloseReq) (AgentCloseResult, error) {
+	o, err := owner(ctx)
+	if err != nil {
+		return AgentCloseResult{}, err
+	}
+	return s.hub.CloseAgent(ctx, o, host, req)
+}
+
 // SetNotifyDebounce overrides the nudge coalescing window (tests).
 func (s *Service) SetNotifyDebounce(d time.Duration) {
 	s.hub.mu.Lock()

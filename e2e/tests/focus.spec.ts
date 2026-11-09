@@ -132,15 +132,38 @@ test.afterAll(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// 🔴 THE LISTS THESE READ ARE RE-RENDERED LIVE (the Asks list and the sidebar
+// on SSE and a minute's tick), so an element a locator resolved can be
+// replaced before Playwright evaluates on it: measured, 1 read in 19 at
+// /attention found the row detached (isConnected false), reading "" for every
+// computed style and null for its box. So each read below is ONE evaluate that
+// answers null for a detached element, polled until a connected one answers.
+
+// styleOf polls line's computed font-style and opacity, from a connected
+// element only.
+const styleOf = (line: import('@playwright/test').Locator) =>
+  expect.poll(() => line.evaluate((e) => (e.isConnected ? [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity] : null)));
+
 // expectAgeInside: the line's age is drawn whole and inside the line's box
 // (at a phone's width too: the title cuts, the age never does).
 async function expectAgeInside(line: import('@playwright/test').Locator) {
   const age = line.locator('[data-focus-age]');
   await expect(age).toBeVisible();
-  const [a, l] = [await age.boundingBox(), await line.boundingBox()];
-  expect(a && l, 'both are laid out').toBeTruthy();
-  expect(a!.x + a!.width, 'the age ends inside its line').toBeLessThanOrEqual(l!.x + l!.width + 0.5);
-  expect(await age.evaluate((e) => e.scrollWidth <= e.clientWidth + 0.5), 'the age is not cut').toBe(true);
+  // Both boxes and the cut check from one connected element, in one frame.
+  const read = () =>
+    line.evaluate((l) => {
+      const a = l.querySelector('[data-focus-age]') as HTMLElement | null;
+      if (!l.isConnected || !a) return null;
+      const ar = a.getBoundingClientRect(), lr = l.getBoundingClientRect();
+      // A line that is not rendered reads as a zero box, which would pass both checks.
+      if (ar.width <= 0 || lr.width <= 0) return null;
+      return { ageRight: ar.right, lineRight: lr.right, cut: a.scrollWidth > a.clientWidth + 0.5 };
+    });
+  let m: Awaited<ReturnType<typeof read>> = null;
+  await expect.poll(async () => (m = await read()), { message: 'both are laid out' }).not.toBeNull();
+  if (!m) throw new Error('both are laid out');
+  expect(m.ageRight, 'the age ends inside its line').toBeLessThanOrEqual(m.lineRight + 0.5);
+  expect(m.cut, 'the age is not cut').toBe(false);
 }
 
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
@@ -555,7 +578,7 @@ for (const vp of [
       // Labelled: it is how old the title is, not a waiting time.
       await expect(stale.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
       await expect(stale).toHaveAttribute('data-focus-stale', '');
-      expect(await stale.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+      await styleOf(stale).toEqual(['italic', '0.6']);
       await expectAgeInside(stale);
 
       await input.fill('cache eviction');
@@ -563,7 +586,7 @@ for (const vp of [
       const aged = options.first().locator('[data-focus-line]');
       await expect(aged.locator('[data-focus-age]')).toHaveText('· 2d');
       await expect(aged).not.toHaveAttribute('data-focus-stale');
-      expect(await aged.evaluate((e) => getComputedStyle(e).fontStyle)).toBe('normal');
+      await expect.poll(() => aged.evaluate((e) => (e.isConnected ? getComputedStyle(e).fontStyle : null))).toBe('normal');
 
       // CONTROL: the agent's focus is fresh — its title, and no age.
       await input.fill('quarterly ledgers');
@@ -581,7 +604,7 @@ for (const vp of [
       await expect(row.locator('[data-focus-age]')).toHaveAttribute('aria-label', 'focus title set 5d ago (stale)');
       const line = row.locator('[data-focus-stale]');
       await expect(line).toHaveCount(1);
-      expect(await line.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+      await styleOf(line).toEqual(['italic', '0.6']);
       await expectAgeInside(line);
     });
 
@@ -607,7 +630,7 @@ for (const vp of [
         await expect(w6.locator('[data-focus-age]')).toHaveText('· 5d');
         const line = w6.locator('[data-focus-line]');
         await expect(line).toHaveAttribute('data-focus-stale', '');
-        expect(await line.evaluate((e) => [getComputedStyle(e).fontStyle, getComputedStyle(e).opacity])).toEqual(['italic', '0.6']);
+        await styleOf(line).toEqual(['italic', '0.6']);
         await expectAgeInside(line);
         const w5 = rowOfLabel('focuswin:5');
         await expect(w5.locator('[data-focus-age]')).toHaveText('· 2d');

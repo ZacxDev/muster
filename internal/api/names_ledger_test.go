@@ -57,6 +57,7 @@ var sessionNameCallers = []string{
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
 	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
 	"view_chief.go Server.sessionSubject",                        // the subject's title: the chief's turn header and session_context
+	"succession.go Server.successionLive",                        // the successor's title on its predecessor's view
 }
 
 // tmuxAddressSurfaces are the ledgered surfaces that name a mirrored session
@@ -69,11 +70,14 @@ var tmuxAddressSurfaces = []string{
 }
 
 // tmuxListSurfaces are the ledgered surfaces that put "Show tmux sessions"'
-// codename on a SESSION LIST's entries — the bar's pills and the dock's rows —
-// through tmuxPlace (the rule notifyName applies too), not through notifyName:
-// a list draws the codename on a line of its own, not after the name.
+// codename on a SESSION LIST's entries — the bar's pills, the dock's rows, the
+// sidebar's rows and the command palette's (which draws it from a pill or a
+// sidebar row) — through tmuxPlace (the rule notifyName applies too), not
+// through notifyName: a list draws the codename on a line of its own, not
+// after the name. Which ui functions draw it is internal/ui's
+// TestOnlyTheEntryHelpersDrawTheCodename.
 var tmuxListSurfaces = []string{
-	"mirror.go Server.mirrorCards", // ui.MirrorCardView.TmuxAt / TmuxCode: the switcher bar's pills, the dock's rows
+	"mirror.go Server.mirrorCards", // ui.MirrorCardView.TmuxAt / TmuxCode: the switcher bar's pills, the dock's rows, the sidebar's rows, the palette's rows
 }
 
 // noTmuxAddress is every OTHER ledgered surface, with why the preference does
@@ -108,6 +112,7 @@ var noTmuxAddress = map[string]string{
 	"task_routing.go Server.handTaskToChief":                     "a task event for plugins",
 	"terminal.go Server.handleAgentTerminalPage":                 "a page header, not a notification",
 	"view_chief.go Server.sessionSubject":                        "the chief's turn header and a chief tool (it is given the place itself)",
+	"succession.go Server.successionLive":                        "a page's line (the predecessor's view), not a notification: the successor push names no session",
 }
 
 // nameAdapterSelectors are names.go's functions a surface calls to name a

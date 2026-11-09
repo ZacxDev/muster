@@ -71,7 +71,7 @@ type sugFixture struct {
 func newSugFixture(t *testing.T, gen *gatedGen, tune func(*suggest.Engine)) *sugFixture {
 	t.Helper()
 	sf := &sugFixture{raw: &rawPusher{}, web: ep("sug-web"), native: ep("sug-native"), gen: gen}
-	sf.engine = &suggest.Engine{Gen: gen}
+	sf.engine = &suggest.Engine{On: true, Gen: gen}
 	if tune != nil {
 		tune(sf.engine)
 	}

@@ -183,5 +183,6 @@ func openCodeWindowsE2E() []mirrorhost.WindowInfo {
 		out = append(out, mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: "opencode",
 			Activity: activity, Pane: pane, PanePID: 1, Agent: &ap})
 	}
-	return out
+	// The windows the fake agent spawn opened (e2espawn.go).
+	return append(out, spawnedWindowsE2E(time.Now().Unix())...)
 }

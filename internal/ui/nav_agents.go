@@ -199,8 +199,12 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	// The switcher's items for the same entries: each row's label, and what
 	// the command palette finds it by on a page with no switcher (palette.go).
 	items := switcherItems(es, cur, now)
-	var rows, idle []g.Node
+	var rows, idle, superseded []g.Node
 	for i, e := range es {
+		if e.superseded() && !e.waiting() && !items[i].Current {
+			superseded = append(superseded, navAgentRow(e, items[i], now))
+			continue
+		}
 		if navInIdleGroup(e, items[i]) {
 			idle = append(idle, navAgentRow(e, items[i], now))
 			continue
@@ -209,8 +213,36 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 	}
 	return g.Group{
 		g.If(len(rows) > 0, Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))),
+		navSupersededGroup(superseded),
 		navIdleGroup(idle),
 	}
+}
+
+// NavSupersededID is the sidebar's Superseded group (navSupersededGroup).
+const NavSupersededID = "sidebar-superseded"
+
+// navSupersededGroup is the sessions a running successor replaced (a
+// succession's replace, design 4.4): their rows under a "Superseded (N)"
+// disclosure that starts shut, above the Idle group. Collapse only — each is
+// still listed, searchable and openable, and its window keeps running. A row
+// that waits on the operator, or the page's own, stays in the list above.
+// Nothing when none is.
+func navSupersededGroup(rows []g.Node) g.Node {
+	if len(rows) == 0 {
+		return nil
+	}
+	return Details(
+		ID(NavSupersededID),
+		g.Attr("data-nav-superseded", ""),
+		Class("group/sup mt-1 border-t border-line pt-1"),
+		Summary(
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-xs font-medium uppercase tracking-wide text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 transition-transform group-open/sup:rotate-90" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5l5 5-5 5"/></svg>`),
+			Span(g.Text("Superseded")),
+			Span(g.Attr("data-nav-superseded-count", ""), Class("tabular-nums"), g.Text("("+strconv.Itoa(len(rows))+")")),
+		),
+		Ul(g.Attr("aria-label", "Superseded sessions"), Class("flex flex-col gap-0.5"), g.Group(rows)),
+	)
 }
 
 // navInIdleGroup is whether a row is drawn in the Idle group: the entry is in
@@ -452,6 +484,9 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			// The current focus title's age, which the palette's result
 			// draws beside it (switcherEntry's).
 			focusAgeAttrs(it),
+			// "Show tmux sessions": the place the palette's row draws, as a
+			// switcher pill carries it (the one helper).
+			entryTmuxAttr(it),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition "+edge+" "+navRowTone(current)),
 			// The dot's box is reserved whether or not a time is known, so the
 			// names line up.
@@ -595,22 +630,39 @@ func navMore(feat Features, body ...g.Node) g.Node {
 // the one focus-age rule), each one line, cut to the row's width. The name is
 // stable (internal/sessionname); the line under it is what the session is
 // doing now. Two lines of text-sm and text-xs fit the row's 44px.
+//
+// With "Show tmux sessions" on, a named window's row adds one more muted line
+// after those, its place as muster named the window before names
+// (SwitcherItem.TmuxAt, "mango:1 @ atlas"; the dock row's third line): the
+// second line when there is no focus title. It is text in the link, so part
+// of the row's accessible name, and cut to the row's width like the others.
+// The row then grows past 44px; with the switch off (no TmuxAt) it is drawn
+// exactly as before.
 func navRowName(label string, it SwitcherItem) g.Node {
-	if it.Focus == "" {
+	if it.Focus == "" && it.TmuxAt == "" {
 		return Span(Class("min-w-0 flex-1 truncate"), g.Text(label))
 	}
-	age := FocusAgeSuffix(it.FocusAge)
-	return Span(
-		Class("flex min-w-0 flex-1 flex-col leading-tight"),
-		Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(label)),
-		Span(
+	var focusLine g.Node
+	if it.Focus != "" {
+		age := FocusAgeSuffix(it.FocusAge)
+		focusLine = Span(
 			g.Attr("data-nav-focus", ""),
 			Class("flex min-w-0 items-baseline gap-1 text-xs font-normal text-muted"+classIf(it.FocusAge.Stale, " "+FocusStaleClass)),
 			Span(Class("min-w-0 truncate"), g.Text(it.Focus)),
 			g.If(age != "", Span(g.Attr("data-focus-age", ""), g.Attr("title", FocusAgeLabel(it.FocusAge)), Class("shrink-0"), g.Text(strings.TrimPrefix(age, " ")))),
-		),
+		)
+	}
+	return Span(
+		Class("flex min-w-0 flex-1 flex-col leading-tight"),
+		Span(g.Attr("data-nav-name", ""), Class("truncate"), g.Text(label)),
+		focusLine,
+		g.If(it.TmuxAt != "", Span(g.Attr("data-nav-tmux", ""), Class(navTmuxLineClass), g.Text(it.TmuxAt))),
 	)
 }
+
+// navTmuxLineClass is the sidebar row's "Show tmux sessions" line: one muted
+// text-xs line, cut to the row's width.
+const navTmuxLineClass = "min-w-0 truncate text-xs font-normal text-muted"
 
 // navChiefChip is a mirrored window's "chief" chip: an agent the chief started
 // there (its window carries a dispatch, docs/design/chief-dispatch.md 3.7).

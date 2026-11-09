@@ -7,6 +7,7 @@ import { suggestFakePort, suggestPort } from '../lib/env';
 import { clsInit, readCls, resetCls } from '../lib/cls';
 import { cc, MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { turnSuggestionsOn } from '../lib/suggest';
 
 // SUGGESTED REPLIES' CHIP ROW (docs/suggested-replies.md), in a real browser
 // against a real muster-server (the e2eterm build, its model pointed at a FAKE
@@ -96,6 +97,8 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 async function openView(page: Page) {
   await rig.login(page);
+  // Off until the user turns them on (suggest.DefaultDisabled).
+  await turnSuggestionsOn(page, rig.origin);
   await page.goto(rig.origin + viewPath());
   await expect(page.locator('#mv-input'), `the rendered view (muster-mirror log:\n${rig.log})`).toBeEnabled({ timeout: 20_000 });
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });

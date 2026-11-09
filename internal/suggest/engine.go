@@ -60,12 +60,27 @@ const (
 	OutcomeFailed    Outcome = "failed"
 )
 
-// Prefs is the per-user toggle. Disabled is true when owner turned
-// suggestions off; the default (no row) is ON (operator decision).
+// Prefs is the per-user toggle store. Choice is owner's SAVED choice:
+// saved=false when they never chose, and then disabled means nothing — a
+// Prefs never decides the default; Engine.userOff does (DefaultDisabled).
+// A nil Prefs is the no-database mode: nobody has a saved choice.
 type Prefs interface {
-	Disabled(ctx context.Context, owner int64) (bool, error)
+	Choice(ctx context.Context, owner int64) (disabled, saved bool, err error)
 	SetDisabled(ctx context.Context, owner int64, disabled bool) error
 }
+
+// DefaultDisabled is a user's toggle when they have never saved one: OFF
+// (operator decision — suggestions spend the user's OpenRouter key and send
+// their conversation to it, so each user opts in, in Account → Suggested
+// replies). It holds in the no-database mode too (operator decision), where
+// nobody can save a choice and Engine.On (MUSTER_SUGGEST=on) is the server's
+// opt-in for everyone.
+//
+// 🔴 THE ONE PLACE THE DEFAULT IS DECIDED: Engine.userOff applies it to every
+// owner with no saved choice, and nothing else spells it. It is a semantics of
+// the absence of a row, so changing it rewrites no one's saved choice: a saved
+// ON (disabled=false) stays on and a saved OFF stays off.
+const DefaultDisabled = true
 
 // KeyChecker is a Generator that can say, without a call, that it cannot
 // serve owner (no OpenRouter key).
@@ -110,7 +125,12 @@ type Engine struct {
 	Gen Generator
 	// Off is the kill switch (MUSTER_SUGGEST=off): nothing is generated or
 	// served.
-	Off   bool
+	Off bool
+	// On is MUSTER_SUGGEST=on: in the no-database mode (Prefs nil, so no user
+	// can save a choice), it turns suggestions on for everyone. With a
+	// database it changes nothing: a user's own saved choice, or
+	// DefaultDisabled, governs (userOff).
+	On    bool
 	Prefs Prefs
 	// Usage keeps each user's counts and pause (autopause.go); nil keeps them
 	// in memory.
@@ -178,20 +198,54 @@ func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 	if e == nil || e.Off {
 		return OutcomeOff
 	}
-	if e.Prefs != nil {
-		off, err := e.Prefs.Disabled(ctx, owner)
-		if err != nil {
-			e.logf("suggest: owner %d: read the toggle: %v", owner, err)
-			return OutcomeUserOff
-		}
-		if off {
-			return OutcomeUserOff
-		}
+	off, err := e.userOff(ctx, owner)
+	if err != nil {
+		e.logf("suggest: owner %d: read the toggle: %v", owner, err)
+		return OutcomeUserOff
+	}
+	if off {
+		return OutcomeUserOff
 	}
 	if e.paused(ctx, owner) {
 		return OutcomePaused
 	}
 	return ""
+}
+
+// userOff is whether owner has suggestions off by their toggle: their saved
+// choice when they have one, otherwise DefaultDisabled — overridden only by
+// the server's opt-in (On) when there is no database, so nobody can choose.
+// THE one place a missing choice is given a value.
+func (e *Engine) userOff(ctx context.Context, owner int64) (bool, error) {
+	var disabled, saved bool
+	if e.Prefs != nil {
+		var err error
+		if disabled, saved, err = e.Prefs.Choice(ctx, owner); err != nil {
+			return true, err
+		}
+	}
+	if saved {
+		return disabled, nil
+	}
+	return e.unchosen(), nil
+}
+
+// unchosen is the toggle of an owner with no saved choice: DefaultDisabled,
+// unless there is no database (nobody CAN choose) and the server opted
+// everyone in (On).
+func (e *Engine) unchosen() bool {
+	if e.Prefs == nil && e.On {
+		return false
+	}
+	return DefaultDisabled
+}
+
+// OffForEveryone is true when no user can have suggestions: the kill switch,
+// or no database (no per-user switch) with the default off and no
+// MUSTER_SUGGEST=on. The Features page reads it, so it says what the engine
+// does.
+func (e *Engine) OffForEveryone() bool {
+	return e == nil || e.Off || (e.Prefs == nil && e.unchosen())
 }
 
 // Suggest is the set for (owner, subject) built from b: the cached one when

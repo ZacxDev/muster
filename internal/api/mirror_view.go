@@ -116,6 +116,12 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The composer's chief mode (view_chief.go): a window whose conversation
 	// muster can name, for an owner whose chief is on.
 	v.Chief = e.SessionKey() != "" && s.viewChiefOffered(op.begin("chief"))
+	// Its succession, and the one it continues (succession.go).
+	sctx := op.begin("succession")
+	v.Succession, v.End = s.proposalsForView(sctx, e)
+	if p, ok := s.predecessorForView(sctx, e); ok {
+		v.Predecessor = &p
+	}
 
 	if v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))

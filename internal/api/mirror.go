@@ -80,6 +80,7 @@ func (s *Server) registerMirrorRoutes(mux Mux) {
 	s.registerMirrorViewRoutes(mux)
 	// The view's chief mode (view_chief.go).
 	s.registerViewChiefRoutes(mux)
+	s.registerSuccessionRoutes(mux)
 	// AskUserQuestion answered from the rendered view (mirror_ask.go): the
 	// hook's routes, on its mirror token, and the question card's.
 	s.registerMirrorAskRoutes(mux)
