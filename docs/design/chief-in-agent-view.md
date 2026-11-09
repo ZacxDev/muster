@@ -1019,8 +1019,9 @@ this kickoff" step).
 **Round 2 (delta audit of #546):**
 - **The kickoff never reaches the chief's model raw, by construction.** The
   card's attention ask holds muster's own sentence only ("Start a session that
-  continues “…”? … The kickoff (N bytes, copied exactly from the session) is
-  shown on the card."), never kickoff text. The kickoff is stored only on the
+  continues “…”? … Read the kickoff (N bytes, copied exactly from the
+  session) in muster: on the session's view, or on this card in the Attention
+  view."), never kickoff text. The kickoff is stored only on the
   `chief_proposals` row. The owner's card draws it from that row: the
   session's view, and the Attention view's card and the ask page (both for
   the owner's own principal only). So `attention_list`, `attention_wait`,
@@ -1028,6 +1029,11 @@ this kickoff" step).
   later reader of the ask see no kickoff. A ledger test pins that the only
   writer of a proposal's ask is `fileProposal`, whose question is built by
   a builder that reads the kickoff's length only.
+- Round 3: a card whose proposal row (or ask) cannot be read when it is
+  drawn shows "muster could not load this card's kickoff just now… reload"
+  and offers no start button, on the Attention view and the ask page. The
+  Answered list says muster recorded a proposal card's answer only once its
+  delivery was closed; otherwise it says where the answer went.
 - The cut rule is unchanged in effect and reads the row's kickoff length: a
   kickoff over the room the question leaves of an ask's limit is drawn cut on
   the Attention view, whose card then offers only "Review on the session's

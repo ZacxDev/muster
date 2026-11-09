@@ -314,7 +314,8 @@ func successionCardQuestion(x plugins.Proposal) string {
 		settings += " · " + x.Model
 	}
 	settings += " · " + x.Repo + ", " + successionBaseNote(x)
-	return what + "?\n" + settings + "\nThe kickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied exactly from the session) is shown on the card."
+	return what + "?\n" + settings + "\nRead the kickoff (" + strconv.Itoa(len(x.Kickoff)) + " bytes, copied exactly from the session) in muster: " +
+		"on the session's view, or on this card in the Attention view."
 }
 
 // successionKickoffFitsCard reports whether x's kickoff fits WHOLE on the

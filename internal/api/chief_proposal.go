@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -159,11 +160,40 @@ type proposalBody struct {
 	label, text string
 	// cut: text is cut, and the whole is on the session's view.
 	cut bool
+	// unread: the proposal row (or the ask) could not be read, so the card
+	// shows no kickoff, says so, and offers no start (proposalUnreadStarts).
+	unread bool
+}
+
+// proposalUnreadBody is a card whose proposal could not be read now.
+var proposalUnreadBody = &proposalBody{unread: true}
+
+// proposalUnreadNote is what such a card says instead of its kickoff.
+const proposalUnreadNote = "muster could not load this card's kickoff just now, so it cannot be started from here: reload the page."
+
+// proposalStartLabels are the buttons that start a proposal: never drawn on
+// a card whose kickoff could not be loaded (withoutProposalStarts).
+var proposalStartLabels = []string{successionStartLabel, successionReplaceLabel, successionSpinoffLabel}
+
+// withoutProposalStarts is options less the start buttons when b is a card
+// that could not be read; options as they are otherwise.
+func withoutProposalStarts(b *proposalBody, options []string) []string {
+	if b == nil || !b.unread {
+		return options
+	}
+	var out []string
+	for _, o := range options {
+		if !slices.Contains(proposalStartLabels, o) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // proposalKickoffBody is ask a's proposal body for ctx's principal, nil when
 // a is no proposal's card (or the principal is not its owner: the store reads
-// the principal's own proposals only). 🔴 THE ONE PLACE OFF THE SESSION'S VIEW
+// the principal's own proposals only), and proposalUnreadBody when the row
+// could not be read: the card then offers no start. 🔴 THE ONE PLACE OFF THE SESSION'S VIEW
 // THAT THE KICKOFF IS READ FOR DRAWING, and only for the owner's own pages
 // (withAskBoxes, renderAskPage): the ask's question never holds it
 // (successionCardQuestion), so attention_list, attention_wait, the push and
@@ -174,7 +204,13 @@ func (s *Server) proposalKickoffBody(ctx context.Context, a attention.Ask) *prop
 		return nil
 	}
 	x, err := st.ProposalByAsk(ctx, a.ID)
-	if err != nil || x.Kind != plugins.ProposalSuccession {
+	switch {
+	case errors.Is(err, plugins.ErrProposalNotFound):
+		return nil // an owner card that is no proposal's
+	case err != nil:
+		s.logger.Printf("proposal: read card %d's proposal: %v", a.ID, err)
+		return proposalUnreadBody
+	case x.Kind != plugins.ProposalSuccession:
 		return nil
 	}
 	b := &proposalBody{label: "Kickoff · " + strconv.Itoa(len(x.Kickoff)) + " bytes, copied exactly from the session", text: x.Kickoff}
@@ -196,8 +232,10 @@ func (s *Server) isProposalCard(ctx context.Context, a attention.Ask) bool {
 }
 
 // proposalAnsweredText is a proposal card's answer as the Answered list and
-// the ask page say it (#546 round 2, G1): recorded, and never delivered to
-// the chief, which muster told in its own words.
+// the ask page say it (#546 round 2, G1), once its delivery was closed
+// (answerAskFrom's MarkWaited): recorded, and never delivered to the chief,
+// which muster told in its own words. A card whose delivery could not be
+// closed says where its answer went, as any other (answerDeliveryText).
 const proposalAnsweredText = "muster recorded your answer. It is not sent to your chief: muster told it what you decided in its own words."
 
 // proposalBodyHTML is b as the Attention view's card and the ask page draw it
@@ -207,6 +245,12 @@ func proposalBodyHTML(b *proposalBody) string {
 		return ""
 	}
 	esc := html.EscapeString
+	if b.unread {
+		return `<div class="` + ui.ProposalBodyClass + `" data-attention-proposal data-attention-proposal-unread>
+<p class="` + ui.ProposalBodyNoteClass + `">` + esc(proposalUnreadNote) + `</p>
+</div>
+`
+	}
 	// The classes are ui's (the stylesheet scans internal/ui, not this file).
 	out := `<div class="` + ui.ProposalBodyClass + `" data-attention-proposal>
 <p class="` + ui.ProposalBodyNoteClass + `">` + esc(b.label) + `</p>
@@ -251,8 +295,9 @@ func (s *Server) fileProposal(ctx context.Context, chief agents.Agent, line agen
 }
 
 // proposalNote is what muster tells the chief once its proposal was decided:
-// its own sentence, never the card's question or answer (which carry the
-// copied kickoff, raw session text).
+// its own sentence, never the card's question or answer (a tap is not a
+// request for a turn; and the question names no kickoff text anyway:
+// successionCardQuestion).
 type proposalNote struct {
 	chief int64
 	text  string

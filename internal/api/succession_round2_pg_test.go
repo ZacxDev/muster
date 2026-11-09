@@ -69,8 +69,8 @@ func TestTheKickoffIsInNoReaderOfTheAsk(t *testing.T) {
 	}
 	leaks("the card's stored question", a.Question)
 	want := "Start a session that continues “main:3”?\nSpin off a new one · host/host-echo/opencode · " + sxModel +
-		" · acme/widgets, from the repository's default branch\nThe kickoff (" + strconv.Itoa(len(r2Kickoff)) +
-		" bytes, copied exactly from the session) is shown on the card."
+		" · acme/widgets, from the repository's default branch\nRead the kickoff (" + strconv.Itoa(len(r2Kickoff)) +
+		" bytes, copied exactly from the session) in muster: on the session's view, or on this card in the Attention view."
 	if a.Question != want {
 		t.Errorf("the card's question:\n%q\nwant\n%q", a.Question, want)
 	}
