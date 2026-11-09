@@ -136,3 +136,29 @@ func TestFinishQueuedLeavesAStartedJobAlone(t *testing.T) {
 		t.Fatalf("the queued job = %s/%s %q", got.Status, got.Reason, got.Error)
 	}
 }
+
+// TestFinishQueuedLeavesARequeuedJobAlone: a job re-queued by an account
+// failover reads queued again, but its runner still holds it (it waits for the
+// worker's new pod, then starts it again). A shutdown of ANOTHER server that
+// once accepted it must not fail it: FinishQueued requires a job that never
+// started.
+func TestFinishQueuedLeavesARequeuedJobAlone(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 1, "job-finish-requeued")
+	j, _, err := s.Create(as(1), NewJob{AgentID: a.ID, Agent: a.Name, Prompt: "p", TimeoutSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Start(as(1), j.ID, "alpha", 0); !ok || err != nil {
+		t.Fatalf("start: %v %v", ok, err)
+	}
+	if ok, err := s.Requeue(as(1), j.ID, Failover{From: "alpha", To: "beta", Reason: "rate_limited"}); !ok || err != nil {
+		t.Fatalf("requeue: %v %v", ok, err)
+	}
+	if ok, err := s.FinishQueued(as(1), j.ID, Failed(ReasonInterrupted, ShutdownQueuedError)); ok || err != nil {
+		t.Fatalf("FinishQueued(re-queued) = %v, %v; want false", ok, err)
+	}
+	if got, _ := s.Get(as(1), j.ID); got.Status != StatusQueued || got.Reason != "" {
+		t.Fatalf("the re-queued job = %s/%s, want queued", got.Status, got.Reason)
+	}
+}

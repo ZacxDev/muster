@@ -901,15 +901,41 @@ type ownJob struct {
 	// call on a job runs under it (row-level security).
 	ctx     context.Context
 	started bool
+	// adopted: taken from the queue, not accepted by this process (adopt).
+	adopted bool
 }
 
-func (o *ownJobs) add(id int64, ctx context.Context) {
+func (o *ownJobs) add(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx}) }
+
+// adopt registers a job this process took from the queue without having
+// accepted it.
+func (o *ownJobs) adopt(id int64, ctx context.Context) { o.put(id, &ownJob{ctx: ctx, adopted: true}) }
+
+func (o *ownJobs) put(id int64, j *ownJob) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.m == nil {
 		o.m = make(map[int64]*ownJob)
 	}
-	o.m[id] = &ownJob{ctx: ctx}
+	o.m[id] = j
+}
+
+// accepted reports whether this process accepted job id (rather than took it
+// from the queue).
+func (o *ownJobs) accepted(id int64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	j, ok := o.m[id]
+	return ok && !j.adopted
+}
+
+// dropUnstarted is drop, unless the job has started here since it was read.
+func (o *ownJobs) dropUnstarted(id int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if j, ok := o.m[id]; ok && !j.started {
+		delete(o.m, id)
+	}
 }
 
 // ctxOf is the context job id was registered under, while it is this
@@ -1103,6 +1129,7 @@ func (s *Server) reapJobsOnce(ctx context.Context) {
 	} else if n > 0 {
 		s.logger.Printf("jobs: failed %d job(s) past their deadline with nothing running them (reason %q)", n, jobs.ReasonInterrupted)
 	}
+	s.pruneOwnJobs()
 	s.dispatchQueuedJobs(ctx)
 }
 
@@ -1122,10 +1149,25 @@ func (s *Server) jobTimeout(j jobs.Job) time.Duration {
 // caller is the agent's queue runner (drainJobsOnce).
 func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 	// Deferred first, so it runs last: the job is this process's until its
-	// outcome is recorded.
-	defer s.ownJobs.drop(j.ID)
+	// outcome is recorded — or, on a stop before it started (below), until
+	// FailOwnJobs fails it, when this process accepted it.
+	keep := false
+	defer func() {
+		if !keep {
+			s.ownJobs.drop(j.ID)
+		}
+	}()
 	release := s.jobLanes.lock(j.AgentID)
 	defer release()
+	// held: this runner has started the job (Start succeeded), and so holds it
+	// until its outcome is recorded, an account failover's re-queue included.
+	//
+	// 🔴 UNTIL THEN THE JOB IS THE TABLE'S, NOT THIS RUNNER'S: another server
+	// may have started it since this one read it. Every outcome written before
+	// Start is therefore FinishQueued, which changes nothing once the job has
+	// started anywhere; an unconditional Finish there would end the winner's
+	// running job and drop its real result.
+	held := false
 	finish := func(o jobs.Outcome) {
 		pause := s.jobFinishBackoff
 		if pause <= 0 {
@@ -1133,7 +1175,12 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		}
 		for attempt := 1; ; attempt++ {
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobFinishTimeout)
-			_, err := s.ext.Jobs.Finish(fctx, j.ID, o)
+			var err error
+			if held {
+				_, err = s.ext.Jobs.Finish(fctx, j.ID, o)
+			} else {
+				_, err = s.ext.Jobs.FinishQueued(fctx, j.ID, o)
+			}
 			cancel()
 			if err == nil {
 				return
@@ -1185,6 +1232,13 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		finish(jobs.Failed(jobs.ReasonInternal, "could not open a chat session on the agent"))
 		return
 	}
+	// A stopping server starts nothing (StopJobs). A job it accepted stays
+	// registered, for FailOwnJobs to fail as before; one it took from the
+	// queue is left queued for another server.
+	if s.jobsStopping.Load() {
+		keep = s.ownJobs.accepted(j.ID)
+		return
+	}
 	// Marked BEFORE the row moves, so a shutdown racing the move reports the
 	// cautious "the agent may have done the work", never "nothing was sent".
 	s.ownJobs.markStarted(j.ID)
@@ -1198,6 +1252,7 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		// Not queued any more: something else already finished it.
 		return
 	}
+	held = true
 	for {
 		jctx, cancel := context.WithTimeout(ctx, s.jobTimeout(j))
 		o := s.runJobTurn(jctx, a, sess, j)

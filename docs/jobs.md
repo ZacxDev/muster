@@ -796,8 +796,9 @@ step 6 has its own bound.
   survive one: the queue is the table (step 1 of [How a job
   runs](#how-a-job-runs)), so the next server's boot pass runs it, in its
   place in line. A **running** one does not. The turn runs inside the server
-  process, and nothing waits for it on shutdown. On a graceful shutdown the server
-  fails the jobs it holds itself — queued ones ("nothing was sent to the
+  process, and nothing waits for it on shutdown. On a graceful shutdown the
+  server first stops taking jobs from the table (a job it took but had not
+  started stays queued for another server), then fails the jobs it holds itself — queued ones ("nothing was sent to the
   agent") and running ones ("the agent may have done some of the work") —
   with `interrupted`, within 5 seconds; it never touches another server's
   jobs, nor a job it accepted that another server has since started. A job a crashed server leaves unfinished is

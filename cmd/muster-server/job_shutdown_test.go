@@ -104,7 +104,7 @@ func (m *shutdownJobStore) Heads(_ context.Context, agentID int64, _ time.Time) 
 
 func (m *shutdownJobStore) FinishQueued(ctx context.Context, id int64, o jobs.Outcome) (bool, error) {
 	m.mu.Lock()
-	queued := m.rows[id].Status == jobs.StatusQueued
+	queued := m.rows[id].Status == jobs.StatusQueued && m.rows[id].StartedAt.IsZero()
 	m.mu.Unlock()
 	if !queued {
 		return false, nil

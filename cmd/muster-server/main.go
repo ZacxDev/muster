@@ -1160,6 +1160,10 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 // — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
 // fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
+	// FIRST: this process takes no more machine jobs from the table
+	// (api.StopJobs). During a rolling update the other pod is accepting them,
+	// and a job taken now would be failed below, or started and abandoned.
+	a.srv.StopJobs()
 	// Streams end FIRST, by one explicit call, before EITHER server's Shutdown.
 	// Shutdown waits for active connections and an SSE stream never goes idle,
 	// so an open stream would otherwise hold the drain to its deadline — see

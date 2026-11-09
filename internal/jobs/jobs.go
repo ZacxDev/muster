@@ -358,8 +358,12 @@ type Store interface {
 	// a head. Ids, agents and owners only. It runs under the system principal
 	// whatever ctx carries.
 	Heads(ctx context.Context, agentID int64, now time.Time) ([]Head, error)
-	// FinishQueued is Finish for a job that must still be queued: it reports
-	// false, and changes nothing, once the job has started (in any process).
+	// FinishQueued is Finish for a job no runner holds: queued, and never
+	// started — or re-queued by an account failover (queued again, with a
+	// started_at) whose start is past its deadline (started_at + timeout_s +
+	// ReapSlack, the database's clock), so its runner is gone. It reports
+	// false, and changes nothing, for any other job: one running anywhere, or
+	// re-queued and still held by its runner.
 	FinishQueued(ctx context.Context, id int64, o Outcome) (bool, error)
 }
 
@@ -796,7 +800,9 @@ func (s *PGStore) FinishQueued(ctx context.Context, id int64, o Outcome) (bool, 
 		return false, fmt.Errorf("jobs: finish queued %d: a job that never started can only fail, not end %s", id, o.Status)
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE jobs SET status = $2, result = NULL, reason = $3, error = $4, finished_at = now()
-		WHERE id = $1 AND status = 'queued'`, id, o.Status, o.Reason, o.Error)
+		WHERE id = $1 AND status = 'queued'
+		  AND (started_at IS NULL OR started_at + make_interval(secs => timeout_s + $5::double precision) < now())`,
+		id, o.Status, o.Reason, o.Error, ReapSlack.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("jobs: finish queued %d: %w", id, err)
 	}

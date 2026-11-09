@@ -37,9 +37,10 @@ import (
 //     runner (Heads skips it until its start's deadline), so another process's
 //     pass does not take it while its runner waits for the worker's new pod.
 //   - a graceful shutdown still fails the jobs this process accepted
-//     (FailOwnJobs) — a queued one only while it is still queued
+//     (FailOwnJobs) — a queued one only while no runner holds it
 //     (jobs.Store.FinishQueued), so one another process has started since is
-//     left to it.
+//     left to it. It first stops this process taking jobs (StopJobs), so a
+//     stopping server takes none it did not already hold.
 
 // jobDrainHeadTimeout bounds one read of the queue's heads.
 const jobDrainHeadTimeout = 10 * time.Second
@@ -94,7 +95,7 @@ func (d *jobDrains) forget(agentID int64) {
 // kickJobs makes sure agentID's drain runs: it starts one, or tells the
 // running one to read the queue again.
 func (s *Server) kickJobs(agentID int64) {
-	if s.ext.Jobs == nil || agentID == 0 || !s.jobDrains.start(agentID) {
+	if s.ext.Jobs == nil || agentID == 0 || s.jobsStopping.Load() || !s.jobDrains.start(agentID) {
 		return
 	}
 	safeGo(s.logger, "job queue of agent "+strconv.FormatInt(agentID, 10), func() { s.drainJobs(agentID) })
@@ -123,6 +124,10 @@ func (s *Server) drainJobs(agentID int64) {
 func (s *Server) drainJobsOnce(agentID int64) {
 	var last int64
 	for {
+		// A stopping server takes nothing more from the table (StopJobs).
+		if s.jobsStopping.Load() {
+			return
+		}
 		hctx, cancel := context.WithTimeout(context.Background(), jobDrainHeadTimeout)
 		heads, err := s.ext.Jobs.Heads(hctx, agentID, s.jobClock())
 		cancel()
@@ -152,9 +157,9 @@ func (s *Server) drainJobsOnce(agentID int64) {
 			return
 		}
 		if j.Status != jobs.StatusQueued {
-			if adopted {
-				s.ownJobs.drop(h.ID)
-			}
+			// Not ours to run any more (another server started or ended it),
+			// whether this process accepted it or not.
+			s.ownJobs.drop(h.ID)
 			continue
 		}
 		if adopted {
@@ -178,7 +183,7 @@ func (s *Server) jobContext(h jobs.Head) (ctx context.Context, adopted bool) {
 		return ctx, false
 	}
 	ctx = s.jobPrincipal(context.Background(), h.OwnerID)
-	s.ownJobs.add(h.ID, ctx)
+	s.ownJobs.adopt(h.ID, ctx)
 	return ctx, true
 }
 
@@ -204,7 +209,7 @@ func (s *Server) jobClock() time.Time {
 // queued — and fails a queued job whose agent was deleted, which has nothing
 // to run on.
 func (s *Server) dispatchQueuedJobs(ctx context.Context) {
-	if s.ext.Jobs == nil {
+	if s.ext.Jobs == nil || s.jobsStopping.Load() {
 		return
 	}
 	hctx, cancel := context.WithTimeout(ctx, jobDrainHeadTimeout)
@@ -228,7 +233,50 @@ func (s *Server) dispatchQueuedJobs(ctx context.Context) {
 		}
 		if _, err := s.ext.Jobs.FinishQueued(jctx, h.ID, jobs.Failed(jobs.ReasonAgentUnavailable, msg)); err != nil {
 			s.logger.Printf("jobs: %d: fail a job whose agent was deleted: %v", h.ID, err)
+		} else {
+			s.ownJobs.drop(h.ID)
 		}
 		fcancel()
+	}
+}
+
+// StopJobs is the FIRST step of a graceful shutdown (cmd/muster-server's
+// shutdown, before the HTTP drain): from now on this process takes no job from
+// the table — no drain starts, a running drain reads the queue no more, the
+// reaper's pass dispatches nothing, and a job not yet started is not started
+// (runJob). A job this process took from the queue but had not started is
+// left queued for another server; one it accepted stays this process's, and
+// FailOwnJobs fails it as before.
+//
+// 🔴 WITHOUT IT, A STOPPING SERVER KEEPS TAKING JOBS. During a rolling update
+// the old pod's drains run on their own context until the process exits, so
+// it could take a job the NEW pod accepted, then fail it in FailOwnJobs or
+// start it and exit, leaving it running with no runner until it is reaped.
+func (s *Server) StopJobs() { s.jobsStopping.Store(true) }
+
+// pruneOwnJobs drops every job this process holds but has not started whose
+// row is no longer queued — another server ran it, the reaper failed it, it
+// was failed agent_unavailable — so a later shutdown reads only jobs that are
+// still this process's.
+func (s *Server) pruneOwnJobs() {
+	s.ownJobs.mu.Lock()
+	type held struct {
+		id  int64
+		ctx context.Context
+	}
+	var list []held
+	for id, j := range s.ownJobs.m {
+		if !j.started {
+			list = append(list, held{id, j.ctx})
+		}
+	}
+	s.ownJobs.mu.Unlock()
+	for _, h := range list {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), jobFinishTimeout)
+		j, err := s.ext.Jobs.Get(ctx, h.id)
+		cancel()
+		if err == nil && j.Status != jobs.StatusQueued {
+			s.ownJobs.dropUnstarted(h.id)
+		}
 	}
 }

@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
@@ -214,6 +215,9 @@ type Server struct {
 	jobLanes         jobLanes
 	ownJobs          ownJobs
 	jobDrains        jobDrains
+	// jobsStopping is set by StopJobs at the start of a graceful shutdown:
+	// this process takes no more jobs from the table (jobs_queue.go).
+	jobsStopping atomic.Bool
 	// poolFailovers serialises a pool submission's account failover per
 	// (owner, pool) (jobs.go createPoolJob).
 	poolFailovers keyedLocks
