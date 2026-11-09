@@ -11,9 +11,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -91,7 +93,7 @@ func createErr(t *testing.T, rec *httptest.ResponseRecorder) string {
 }
 
 // TestAnAgentCreateTokenCreatesAnAgentAsItsOwner: start true dispatches
-// (kickoff), start false creates the row stopped (no kickoff); both answer 201
+// (kickoff), start false creates the row stopped (no Dispatch at all); both answer 201
 // with the agent, created AS THE TOKEN'S OWNER (the principal the store sees).
 func TestAnAgentCreateTokenCreatesAnAgentAsItsOwner(t *testing.T) {
 	for _, start := range []bool{true, false} {
@@ -120,9 +122,23 @@ func TestAnAgentCreateTokenCreatesAnAgentAsItsOwner(t *testing.T) {
 		if got := store.creators(); len(got) != 1 || got[0] != authz.OperatorUserID {
 			t.Fatalf("start=%v: created as %v; want the token's owner (%d)", start, got, authz.OperatorUserID)
 		}
+		if !start {
+			// A save is the stopped row and nothing else: no background Dispatch
+			// (TestAStartRightAfterASaveIsNotOverwrittenBackToStopped is the race
+			// that caused). The wait bounds an absence, so it is short.
+			if rows[0].Status != agents.StatusStopped {
+				t.Fatalf("start=false: row inserted %q; want %q", rows[0].Status, agents.StatusStopped)
+			}
+			select {
+			case <-prov.dispatchC:
+				t.Fatalf("start=false: a save reached Provisioner.Dispatch (kickoff %v); want no call", prov.dispatches())
+			case <-time.After(200 * time.Millisecond):
+			}
+			continue
+		}
 		<-prov.dispatchC
-		if d := prov.dispatches(); len(d) != 1 || d[0] != start {
-			t.Fatalf("start=%v: Dispatch kickoff = %v", start, d)
+		if d := prov.dispatches(); len(d) != 1 || !d[0] {
+			t.Fatalf("start=true: Dispatch kickoff = %v; want one call with kickoff", d)
 		}
 	}
 }
