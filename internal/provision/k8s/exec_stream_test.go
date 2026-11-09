@@ -60,13 +60,20 @@ type execServer struct {
 	// bytes to stdout AND to stderr at the same time (a fetch's output and its
 	// progress), from two goroutines, then exits 0.
 	flood int
-	// drip, when set, plays a command that writes to stdout and stderr until
-	// the connection goes away (only a cancelled context ends it).
-	drip bool
+	// big, when set, plays a command that writes ONE bigChunk to stdout and
+	// then runs until the connection goes away (only a cancelled context ends
+	// it). The chunk is one SPDY data frame of three io.Copy buffers (32 KiB),
+	// so the client's copy delivers it in three Writes, the later ones served
+	// from the frame already buffered client-side — writes that happen whether
+	// or not the connection is still open.
+	big bool
 }
 
 // floodChunk is one write of a flood.
 var floodChunk = bytes.Repeat([]byte("x"), 4096)
+
+// bigChunk is big's one write: three of io.Copy's 32 KiB buffers.
+var bigChunk = bytes.Repeat([]byte("y"), 96<<10)
 
 func newExecServer(t *testing.T) *execServer {
 	return &execServer{t: t, gotSize: make(chan struct{}, 16), closed: make(chan struct{})}
@@ -140,7 +147,13 @@ func (s *execServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	out := byType[corev1.StreamTypeStdout]
-	if s.flood > 0 || s.drip {
+	if s.big {
+		_, _ = out.Write(bigChunk)
+		<-conn.CloseChan()
+		close(s.closed)
+		return
+	}
+	if s.flood > 0 {
 		var wg sync.WaitGroup
 		for _, st := range []httpstream.Stream{out, byType[corev1.StreamTypeStderr]} {
 			if st == nil {
@@ -149,7 +162,7 @@ func (s *execServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			wg.Add(1)
 			go func(st httpstream.Stream) {
 				defer wg.Done()
-				for i := 0; s.drip || i < s.flood; i++ {
+				for i := 0; i < s.flood; i++ {
 					if _, err := st.Write(floodChunk); err != nil {
 						return
 					}
@@ -157,10 +170,6 @@ func (s *execServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}(st)
 		}
 		wg.Wait()
-		if s.drip {
-			close(s.closed)
-			return
-		}
 	} else if in := byType[corev1.StreamTypeStdin]; in != nil && out != nil {
 		// The container's side of a terminal: echo what was typed.
 		_, _ = io.Copy(out, in)
@@ -414,51 +423,97 @@ func TestExecWithOneBufferForStdoutAndStderrIsSafe(t *testing.T) {
 }
 
 // TestExecLeavesTheCallersWritersAloneOnceItReturns: StreamWithContext returns
-// as soon as its context ends, while client-go's copy goroutines may still be
-// writing. A job whose deadline passed mid-exec then reads its buffer for the
-// error message while a copy writes it. Once Exec has returned, the caller's
-// writers must not be written again: the buffer is read twice, apart, and must
-// not change (and -race must see no write racing the reads).
+// as soon as its context ends, while client-go's copy goroutine may still be
+// writing — a job whose deadline passed mid-exec then reads its buffer for the
+// error message while the copy writes it. Made deterministic: the command
+// writes one frame the copy delivers in three Writes, and the caller's writer
+// HOLDS its first Write until the test releases it; the context is cancelled
+// with that Write in progress. Two things must hold:
+//   - Exec does not return while the held Write is in progress (the sink's
+//     close waits for it). Unguarded, it returns at once.
+//   - No Write reaches the caller once Exec has returned. Every later Write
+//     waits (up to lateWait) for Exec to return before it counts itself; one
+//     that sees Exec returned is a write after return. The sink's closed flag
+//     drops every Write after its close, so none reaches the writer at all;
+//     without the flag, the third Write (after close, by the mutex's hand-off
+//     to the long-waiting close) arrives after return every time.
 func TestExecLeavesTheCallersWritersAloneOnceItReturns(t *testing.T) {
 	srv := newExecServer(t)
-	srv.drip = true
+	srv.big = true
 	d, ref, _ := execRig(t, nsModes[0], srv)
-	var shared bytes.Buffer
-	first := &firstWrite{w: &shared, seen: make(chan struct{})}
+	w := &heldWriter{entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- d.Exec(ctx, ref, []string{"yes"}, nil, first, nil) }()
+	go func() {
+		err := d.Exec(ctx, ref, []string{"yes"}, nil, w, nil)
+		close(w.returned)
+		done <- err
+	}()
 	select {
-	case <-first.seen:
+	case <-w.entered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("no output reached the caller")
+		t.Fatal("instrument check FAILED: no output reached the caller")
 	}
 	cancel()
+	select {
+	case err := <-done:
+		close(w.release)
+		t.Fatalf("Exec returned (%v) while its write to the caller was still in progress", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(w.release)
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Exec after cancel: %v, want context.Canceled", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Exec did not return after its context was cancelled")
+		t.Fatal("Exec did not return once the held write was released")
 	}
-	n := shared.Len()
-	time.Sleep(200 * time.Millisecond)
-	if again := shared.Len(); again != n {
-		t.Fatalf("the caller's buffer grew from %d to %d bytes after Exec returned", n, again)
+	time.Sleep(2 * lateWait)
+	if n := w.late(); n != 0 {
+		t.Fatalf("%d write(s) reached the caller after Exec returned", n)
 	}
 }
 
-// firstWrite passes writes to w and closes seen on the first.
-type firstWrite struct {
-	w    io.Writer
-	once sync.Once
-	seen chan struct{}
+// lateWait is how long a heldWriter's later Write waits to see Exec return.
+const lateWait = 300 * time.Millisecond
+
+// heldWriter holds its first Write until release is closed, and counts each
+// later Write that finds Exec returned (returned closed) within lateWait.
+type heldWriter struct {
+	mu       sync.Mutex
+	n, after int
+	once     sync.Once
+	entered  chan struct{}
+	release  chan struct{}
+	returned chan struct{}
 }
 
-func (f *firstWrite) Write(p []byte) (int, error) {
-	f.once.Do(func() { close(f.seen) })
-	return f.w.Write(p)
+func (w *heldWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.n++
+	first := w.n == 1
+	w.mu.Unlock()
+	if first {
+		w.once.Do(func() { close(w.entered) })
+		<-w.release
+		return len(p), nil
+	}
+	select {
+	case <-w.returned:
+		w.mu.Lock()
+		w.after++
+		w.mu.Unlock()
+	case <-time.After(lateWait):
+	}
+	return len(p), nil
+}
+
+func (w *heldWriter) late() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.after
 }
 
 // TestTheExecRBACPrerequisiteIsTheVerbTheDriverSends derives the verb from the
