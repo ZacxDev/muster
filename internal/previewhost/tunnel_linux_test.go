@@ -6,12 +6,10 @@ package previewhost
 // design (Supported). Off Linux both are off and nothing here applies.
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -91,12 +89,12 @@ func TestConnectRefusesWithEachReason(t *testing.T) {
 	}
 }
 
-// TestTheGatewaySeesExactlyTheReportKeys: a listener this test opens, in a
-// "pane" whose root is this process, reaches the gateway as a listeners line
-// whose every entry has exactly the keys port, process, window and
-// first_seen — never a pid, argv, directory or environment — with this
-// listener's values; and a listener that goes away is withdrawn.
-func TestTheGatewaySeesExactlyTheReportKeys(t *testing.T) {
+// TestTheGatewayGetsListenerReportsOnChange: a listener this test opens, in
+// a "pane" whose root is this process, reaches the gateway as a listeners
+// line with this listener's values; it is not re-sent while unchanged, and
+// it is withdrawn when the listener goes away. (The report's key set is
+// pinned once, by the wire.Listener and Report ledgers.)
+func TestTheGatewayGetsListenerReportsOnChange(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	must(t, err)
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -104,24 +102,13 @@ func TestTheGatewaySeesExactlyTheReportKeys(t *testing.T) {
 	procs := func() (map[int]Proc, error) {
 		return map[int]Proc{os.Getpid(): {PPID: os.Getppid(), Comm: "previewtest"}}, nil
 	}
-	rig := startHost(t, portsJSON(port), HostConfig{Procs: procs}, TunnelConfig{URLs: []string{gw.url}})
-	rig.h.SetWindows([]Window{{ID: "@7", PanePIDs: []int{os.Getpid()}}})
+	src := &windowSource{}
+	src.set(Window{ID: "@7", PanePIDs: []int{os.Getpid()}})
+	startHost(t, portsJSON(port), HostConfig{Procs: procs, Windows: src.read}, TunnelConfig{URLs: []string{gw.url}})
 	gt := gw.next(5 * time.Second)
 	raw, m := gt.offerOf(wire.TypeListeners, 3*time.Second)
-	var line struct {
-		Listeners []map[string]json.RawMessage `json:"listeners"`
-	}
-	must(t, json.Unmarshal(raw, &line))
-	if len(line.Listeners) != 1 {
+	if len(m.Listeners) != 1 {
 		t.Fatalf("listeners line %s; want one listener", raw)
-	}
-	var keys []string
-	for k := range line.Listeners[0] {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	if strings.Join(keys, ",") != "first_seen,port,process,window" {
-		t.Fatalf("a report carries keys %v; want exactly first_seen,port,process,window (line %s)", keys, raw)
 	}
 	l := m.Listeners[0]
 	if l.Port != port || l.Process != "previewtest" || l.Window != "@7" {

@@ -381,14 +381,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			spawnRoots = append(spawnRoots, expandHome(r))
 		}
 	}
-	// -preview takes the refresh's window listing (previewWindows recovers,
-	// so preview code cannot stop the refresh); nil when previews are off.
-	var previewWins *previewWindows
-	var onWindows func([]mirrorhost.WindowInfo)
-	if pf.On {
-		previewWins = &previewWindows{logger: logger}
-		onWindows = previewWins.publish
-	}
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
@@ -401,7 +393,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		NoWork:        e2eNoWork != nil && e2eNoWork(),
 		Refresh:       refreshOverride(),
-		OnWindows:     onWindows,
 		FakeSpawn:     e2eSpawn, FakeSpawnRuntimes: e2eSpawnRuntimes,
 	})
 	if err != nil {
@@ -431,7 +422,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// endpoint above, previews run on their own goroutine with a recover;
 		// a bad configuration, an unreachable gateway or a panic is logged and
 		// the host mirrors without them.
-		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, previewWins, logger)
+		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger)
 	case pf.URLs != "" || pf.TokenFile != "":
 		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
 	}

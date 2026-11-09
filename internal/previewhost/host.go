@@ -50,13 +50,12 @@ type HostConfig struct {
 	// report walk reads.
 	Proc  string
 	Procs ProcTable
-	// Poll is how often previews.json is re-read and listeners are scanned
-	// (default 5 s, the window refresh's interval).
+	// Poll is how often previews.json is re-read, the windows are listed and
+	// the listeners are scanned (default 5 s, the mirror's own refresh).
 	Poll time.Duration
-	// Windows reads the window listing itself, for when the mirror's
-	// refresh is not delivering one (SetWindows): that refresh runs only
-	// while muster is connected, and previews must not depend on muster.
-	// Read when no listing arrived for two Polls; nil = never.
+	// Windows lists the mirrored tmux windows, every Poll: previews' ONLY
+	// window source, so they work whether or not muster is connected. nil =
+	// no listing (no window line is sent, and no listener is attributed).
 	Windows func(context.Context) ([]Window, error)
 	// AnswerWait bounds how long an open or close request waits for the
 	// gateway's answer (default 5 s).
@@ -85,8 +84,7 @@ type Host struct {
 	disabled string // non-empty: previews are off, and why
 	windows  []string
 	panes    map[int]string
-	haveWins bool      // a window listing arrived (none sent before: empty is not unknown)
-	winsAt   time.Time // when SetWindows last ran
+	haveWins bool // a window listing was read (none sent before: empty is not unknown)
 	reports  []wire.Listener
 	changed  chan struct{} // closed and replaced on every change
 	stream   *offerStream  // the newest offer stream: requests go there
@@ -139,10 +137,17 @@ func (h *Host) broadcastLocked() {
 	h.changed = make(chan struct{})
 }
 
-// SetWindows is the window refresh's listing (every 5 s, from muster-mirror's
-// existing refresh). It is cheap and never blocks: the offer stream sends the
-// listing only when the set of ids changed.
-func (h *Host) SetWindows(ws []Window) {
+// readWindows lists the windows (HostConfig.Windows). A failed read keeps
+// the last listing: a tmux hiccup is not every window closing.
+func (h *Host) readWindows(ctx context.Context) {
+	if h.hc.Windows == nil {
+		return
+	}
+	ws, err := h.hc.Windows(ctx)
+	if err != nil {
+		h.logger.Printf("muster-mirror: previews: list windows (keeping the last list): %v", err)
+		return
+	}
 	ids := make([]string, 0, len(ws))
 	panes := map[int]string{}
 	for _, w := range ws {
@@ -158,35 +163,8 @@ func (h *Host) SetWindows(ws []Window) {
 	// Every listing wakes the offer stream, which sends it only if it
 	// differs from what that stream last sent (serveOffer): one comparison,
 	// in one place.
-	h.panes, h.windows, h.haveWins, h.winsAt = panes, ids, true, h.now()
+	h.panes, h.windows, h.haveWins = panes, ids, true
 	h.broadcastLocked()
-}
-
-func (h *Host) now() time.Time {
-	if h.hc.Now != nil {
-		return h.hc.Now()
-	}
-	return time.Now()
-}
-
-// readWindows reads the listing itself (HostConfig.Windows) when the refresh
-// has delivered none for two Polls. A failed read keeps the last listing.
-func (h *Host) readWindows(ctx context.Context) {
-	if h.hc.Windows == nil {
-		return
-	}
-	h.mu.Lock()
-	stale := !h.haveWins || h.now().Sub(h.winsAt) >= 2*h.hc.Poll
-	h.mu.Unlock()
-	if !stale {
-		return
-	}
-	ws, err := h.hc.Windows(ctx)
-	if err != nil {
-		h.logger.Printf("muster-mirror: previews: list windows (keeping the last list): %v", err)
-		return
-	}
-	h.SetWindows(ws)
 }
 
 // maxConns is the maxConns a tunnel is served with now, and the channel
@@ -208,8 +186,8 @@ func (h *Host) config() (Config, bool) {
 	return h.cfg, h.disabled == ""
 }
 
-// poll re-reads previews.json, reads the window listing if the refresh is
-// not delivering it, and scans the listeners, every Poll until ctx ends.
+// poll re-reads previews.json, lists the windows and scans the listeners,
+// every Poll until ctx ends.
 func (h *Host) poll(ctx context.Context) {
 	t := time.NewTicker(h.hc.Poll)
 	defer t.Stop()
@@ -307,7 +285,7 @@ func (h *Host) scan() {
 			out = append(out, wire.Listener{Port: r.Port, Process: r.Process, Window: r.Window, FirstSeen: r.FirstSeen.UTC().Format(time.RFC3339)})
 		}
 	}
-	// Like SetWindows, every scan wakes the offer stream, which sends the
+	// Like readWindows, every scan wakes the offer stream, which sends the
 	// reports only when they differ from what it last sent.
 	h.mu.Lock()
 	defer h.mu.Unlock()

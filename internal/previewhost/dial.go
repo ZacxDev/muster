@@ -22,8 +22,9 @@ import (
 // taken; all failing, the list again after a jittered backoff. While on a
 // later endpoint (the public path) the earlier ones are re-tried every
 // MeshRetry; one that answers becomes the tunnel, and the one it replaces
-// keeps serving its open streams until the gateway closes it (at most
-// drainFor).
+// keeps serving its open streams until the GATEWAY closes it (the design
+// gives that 60 s close to the gateway alone; the host sets no timer of its
+// own).
 
 // Defaults of TunnelConfig.
 const (
@@ -31,9 +32,6 @@ const (
 	DefaultMeshRetry  = 5 * time.Minute
 	minBackoff        = time.Second
 	maxBackoff        = time.Minute
-	// drainFor bounds how long a replaced tunnel keeps serving: the gateway
-	// closes it when its last stream ends, or after 60 s.
-	drainFor = 70 * time.Second
 	// stableFor is how long a tunnel must stay up for the backoff to reset.
 	stableFor = time.Minute
 )
@@ -90,7 +88,7 @@ func (h *Host) Run(ctx context.Context, tc TunnelConfig) {
 	backoff := minBackoff
 	for ctx.Err() == nil {
 		up := time.Now()
-		if err := h.connectAndServe(ctx, tc); err != nil && ctx.Err() == nil {
+		if err := h.connectAndServe(ctx, tc, &wg); err != nil && ctx.Err() == nil {
 			h.logger.Printf("muster-mirror: previews: %v", err)
 		}
 		if time.Since(up) >= stableFor {
@@ -149,13 +147,15 @@ func dialRefusal(resp *http.Response, err error) string {
 // tunnel ends; on a later endpoint it re-tries the earlier ones every
 // MeshRetry, and moves to one that answers. A changed maxConns ends the
 // tunnel (its HTTP/2 SETTINGS are fixed), so the caller redials with it.
-func (h *Host) connectAndServe(ctx context.Context, tc TunnelConfig) error {
+//
+// A replaced tunnel drains on its own goroutine, counted in drains (Run's,
+// which waits for it only when ctx ends): 🔴 the return here — and so the
+// redial — never waits for an old tunnel's drain.
+func (h *Host) connectAndServe(ctx context.Context, tc TunnelConfig, drains *sync.WaitGroup) error {
 	ws, idx, err := h.dialList(ctx, tc, tc.URLs)
 	if err != nil {
 		return err
 	}
-	var drains sync.WaitGroup
-	defer drains.Wait()
 	for {
 		h.logger.Printf("muster-mirror: previews: tunnel up via %s", tc.URLs[idx])
 		n, changed := h.maxConns()
@@ -201,18 +201,11 @@ func (h *Host) connectAndServe(ctx context.Context, tc TunnelConfig) error {
 					continue
 				}
 				// The replaced tunnel keeps its open streams until the
-				// gateway closes it, never longer than drainFor.
+				// gateway closes it (or ctx ends: its context is a child).
 				drains.Add(1)
 				go func(cancel context.CancelFunc, done <-chan error) {
 					defer drains.Done()
-					select {
-					case <-done:
-					case <-ctx.Done():
-						<-done
-					case <-tc.after(drainFor):
-						cancel()
-						<-done
-					}
+					<-done
 					cancel()
 				}(cancel, done)
 				ws, idx = nws, nidx

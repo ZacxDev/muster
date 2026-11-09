@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -171,12 +170,9 @@ var previewStartHook func()
 
 // startPreview is -preview: validate, then serve previews until ctx ends, all
 // on its own goroutine. done is closed when it has stopped (or found previews
-// off). windows is where the mirror's refresh delivers its window listing.
-//
-// The window listing comes from the mirror's refresh (windows); while that is
-// silent — it runs only while muster is connected — the host reads backend's
-// itself, so previews never depend on muster.
-func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, hostName string, backend mirrorhost.Backend, windows *previewWindows, logger *log.Logger) (done chan struct{}) {
+// off). The host lists backend's windows itself every poll — its one window
+// source — so previews work whether or not muster is connected.
+func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, hostName string, backend mirrorhost.Backend, logger *log.Logger) (done chan struct{}) {
 	done = make(chan struct{})
 	go func() {
 		defer close(done)
@@ -221,51 +217,9 @@ func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refu
 			}
 		}
 		h := previewhost.NewHost(hc)
-		if windows != nil {
-			windows.set(h.SetWindows)
-		}
 		h.Run(ctx, previewhost.TunnelConfig{URLs: setup.URLs, Token: setup.Token, HostName: hostName})
 	}()
 	return done
-}
-
-// previewWindows carries the mirror refresh's window listing to the preview
-// host (mirrorhost.Config.OnWindows). Until previews start it drops them.
-// 🔴 IT RECOVERS: it runs on the mirror's refresh goroutine, and a panic in
-// preview code must never stop mirroring.
-type previewWindows struct {
-	mu     sync.Mutex
-	f      func([]previewhost.Window)
-	logger *log.Logger
-	logged bool
-}
-
-func (p *previewWindows) set(f func([]previewhost.Window)) {
-	p.mu.Lock()
-	p.f = f
-	p.mu.Unlock()
-}
-
-// publish is mirrorhost.Config.OnWindows.
-func (p *previewWindows) publish(ws []mirrorhost.WindowInfo) {
-	defer func() {
-		if r := recover(); r != nil {
-			p.mu.Lock()
-			first := !p.logged
-			p.logged = true
-			p.mu.Unlock()
-			if first && p.logger != nil {
-				p.logger.Printf("muster-mirror: previews: the window listing panicked (mirroring continues): %v", r)
-			}
-		}
-	}()
-	p.mu.Lock()
-	f := p.f
-	p.mu.Unlock()
-	if f == nil {
-		return
-	}
-	f(previewWindowsOf(ws))
 }
 
 // previewWindowsOf is each window's id and pane roots.

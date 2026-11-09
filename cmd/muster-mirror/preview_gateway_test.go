@@ -4,16 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/coder/websocket"
 
-	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
@@ -72,60 +69,10 @@ func newPreviewGateway(t *testing.T) *previewGateway {
 	return g
 }
 
-// windows waits for a windows line and returns its ids, comma-joined.
-func (g *previewGateway) windows(t *testing.T, within time.Duration) string {
-	t.Helper()
-	deadline := time.After(within)
-	for {
-		select {
-		case m := <-g.offers:
-			if m.Type == wire.TypeWindows {
-				return strings.Join(m.Windows, ",")
-			}
-		case <-deadline:
-			t.Fatalf("the gateway got no window listing within %v", within)
-		}
-	}
-}
-
-// TestTheRefreshWindowListingReachesTheGateway: a listing the mirror's
-// refresh publishes (previewWindows, mirrorhost.Config.OnWindows) reaches the
-// gateway's offer stream once previews are up — on a backend that cannot list
-// windows itself, so the refresh is the only source.
-func TestTheRefreshWindowListingReachesTheGateway(t *testing.T) {
-	gw := newPreviewGateway(t)
-	file, token := previewFiles(t, `{"ports": ["5173"]}`)
-	sink := &previewWindows{}
-	ctx, cancel := context.WithCancel(context.Background())
-	var lg lockedBuffer
-	done := startPreview(ctx, previewFlags{On: true, URLs: gw.url, TokenFile: token, File: file}, true,
-		func() map[int]string { return nil }, "laptop", listBackend{}, sink, log.New(&lg, "", 0))
-	t.Cleanup(func() { cancel(); previewSettle(done, 5*time.Second) })
-	if h := <-gw.hosts; h != "laptop" {
-		t.Fatalf("the tunnel dial named host %q", h)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		sink.publish([]mirrorhost.WindowInfo{{Session: "work", ID: "@3", PanePID: 100}})
-		select {
-		case m := <-gw.offers:
-			if m.Type == wire.TypeWindows {
-				if got := strings.Join(m.Windows, ","); got != "@3" {
-					t.Fatalf("windows %q", got)
-				}
-				return
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the refresh's listing never reached the gateway; log:\n%s", lg.String())
-		}
-	}
-}
-
 // TestPreviewsListWindowsWithMusterDown is -preview through run with muster
-// refusing every connect, so the mirror's refresh never runs: the host reads
-// the windows itself and the gateway gets them.
+// refusing every connect: the tunnel dial names this host, and the host lists
+// the backend's windows itself (previews' one window source) and the gateway
+// gets them — muster's state has no part in it.
 func TestPreviewsListWindowsWithMusterDown(t *testing.T) {
 	gw := newPreviewGateway(t)
 	file, token := previewFiles(t, `{"ports": ["5173"]}`)
@@ -146,6 +93,9 @@ func TestPreviewsListWindowsWithMusterDown(t *testing.T) {
 		}, windowsBackend{})
 	if rc != 0 {
 		t.Fatalf("rc %d, log:\n%s", rc, errs)
+	}
+	if h := <-gw.hosts; h != "laptop" {
+		t.Fatalf("the tunnel dial named host %q", h)
 	}
 	if w := <-got; w != "@3,@5" {
 		t.Fatalf("windows %q; want @3,@5 from the backend", w)

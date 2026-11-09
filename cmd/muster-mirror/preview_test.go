@@ -193,7 +193,7 @@ func startPreviewLog(t *testing.T, pf previewFlags, defaultDaemon bool, refused 
 	var buf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	done := startPreview(ctx, pf, defaultDaemon, func() map[int]string { return refused }, "laptop", nil, nil, log.New(&buf, "", 0))
+	done := startPreview(ctx, pf, defaultDaemon, func() map[int]string { return refused }, "laptop", nil, log.New(&buf, "", 0))
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -226,33 +226,10 @@ func TestStartPreviewLogsWhatItOffersOrWhyItIsOff(t *testing.T) {
 		t.Errorf("bad config log: %q", out)
 	}
 	var buf bytes.Buffer
-	done := startPreview(context.Background(), pf, true, func() map[int]string { panic("boom") }, "laptop", nil, nil, log.New(&buf, "", 0))
+	done := startPreview(context.Background(), pf, true, func() map[int]string { panic("boom") }, "laptop", nil, log.New(&buf, "", 0))
 	<-done
 	if !strings.Contains(buf.String(), "previews are OFF, mirroring continues: preview setup panicked: boom") {
 		t.Errorf("panic log: %q", buf.String())
-	}
-}
-
-// TestPreviewWindowsNeverPanicsTheRefresh: the window sink the mirror's
-// refresh calls recovers a panic in preview code (logging it once), drops
-// listings before previews start, and hands each window's id and pane roots
-// on once they have.
-func TestPreviewWindowsNeverPanicsTheRefresh(t *testing.T) {
-	var buf bytes.Buffer
-	p := &previewWindows{logger: log.New(&buf, "", 0)}
-	ws := []mirrorhost.WindowInfo{{Session: "work", ID: "@3", PanePID: 100}}
-	p.publish(ws) // before previews start: dropped
-	var got []previewhost.Window
-	p.set(func(w []previewhost.Window) { got = w })
-	p.publish(ws)
-	if len(got) != 1 || got[0].ID != "@3" || len(got[0].PanePIDs) != 1 || got[0].PanePIDs[0] != 100 {
-		t.Fatalf("handed on %+v", got)
-	}
-	p.set(func([]previewhost.Window) { panic("boom") })
-	p.publish(ws)
-	p.publish(ws)
-	if n := strings.Count(buf.String(), "the window listing panicked (mirroring continues): boom"); n != 1 {
-		t.Fatalf("panic logged %d times: %q", n, buf.String())
 	}
 }
 

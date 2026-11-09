@@ -543,15 +543,67 @@ func TestAReturningMeshIsTakenAtTheNextTick(t *testing.T) {
 	}
 }
 
+// TestANewTunnelsDeathRedialsWhileTheOldOneDrains: after the move to the
+// mesh, the replaced public tunnel drains for as long as the gateway keeps it
+// (the gateway owns its close; this one never closes it). When the NEW tunnel
+// dies meanwhile, the host redials at once — it does not wait for the old
+// tunnel's drain — and the old one is still draining.
+func TestANewTunnelsDeathRedialsWhileTheOldOneDrains(t *testing.T) {
+	mesh := newFakeGateway(t, "b1")
+	mesh.refuse.Store(true)
+	pub := newFakeGateway(t, "b1")
+	timers := newFakeTimers(5 * time.Minute)
+	startHost(t, portsJSON(5173), HostConfig{}, TunnelConfig{URLs: []string{mesh.url, pub.url}, after: timers.after})
+	pt := pub.next(5 * time.Second)
+	<-timers.asked
+	mesh.refuse.Store(false)
+	timers.fire <- time.Now()
+	mt := mesh.next(5 * time.Second)
+	mt.cancel() // the new tunnel dies; the old one is still up
+	select {
+	case <-mesh.tunnels:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the host did not redial within 4 s of its tunnel dying: it is waiting on the replaced tunnel's drain")
+	}
+	select {
+	case <-pt.c.Done():
+		t.Fatal("the replaced tunnel was closed by the host; the gateway owns its close")
+	default:
+	}
+}
+
 // ------------------------------------------------------------ offer stream
 
-// TestTheWindowListingIsSentOnlyOnChange: the listing goes out once when
-// known, never again for repeats of the same set (in any order), and again
-// when the set changes.
+// windowSource is a HostConfig.Windows the test changes: each read returns
+// the current set (in the order set) and counts.
+type windowSource struct {
+	mu    sync.Mutex
+	ws    []Window
+	reads atomic.Int32
+}
+
+func (w *windowSource) set(ws ...Window) {
+	w.mu.Lock()
+	w.ws = ws
+	w.mu.Unlock()
+}
+
+func (w *windowSource) read(context.Context) ([]Window, error) {
+	w.reads.Add(1)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]Window(nil), w.ws...), nil
+}
+
+// TestTheWindowListingIsSentOnlyOnChange: the host lists the windows itself
+// every poll; the listing goes out once when known, never again while the
+// set stays the same (whatever order tmux returns it in) — over many polls,
+// counted — and again when the set changes.
 func TestTheWindowListingIsSentOnlyOnChange(t *testing.T) {
+	src := &windowSource{}
+	src.set(Window{ID: "@2"}, Window{ID: "@1"})
 	gw := newFakeGateway(t, "b1")
-	rig := startHost(t, portsJSON(5173), HostConfig{}, TunnelConfig{URLs: []string{gw.url}})
-	rig.h.SetWindows([]Window{{ID: "@2"}, {ID: "@1"}})
+	startHost(t, portsJSON(5173), HostConfig{Windows: src.read}, TunnelConfig{URLs: []string{gw.url}})
 	gt := gw.next(5 * time.Second)
 	_, cfg := gt.offer(2 * time.Second)
 	if cfg.Type != wire.TypeConfig || cfg.Config.MaxConns != 64 || len(cfg.Config.Ports) != 1 || cfg.Config.Ports[0] != "5173" {
@@ -561,56 +613,16 @@ func TestTheWindowListingIsSentOnlyOnChange(t *testing.T) {
 	if strings.Join(w.Windows, ",") != "@1,@2" {
 		t.Fatalf("windows %v", w.Windows)
 	}
-	for i := 0; i < 5; i++ {
-		rig.h.SetWindows([]Window{{ID: "@1"}, {ID: "@2"}})
-		rig.h.SetWindows([]Window{{ID: "@2"}, {ID: "@1"}})
+	src.set(Window{ID: "@1"}, Window{ID: "@2"}) // same set, other order
+	before := src.reads.Load()
+	gt.quiet(400 * time.Millisecond)
+	if n := src.reads.Load() - before; n < 4 {
+		t.Fatalf("instrument: only %d window reads during the quiet window; the poll is not running", n)
 	}
-	gt.quiet(300 * time.Millisecond)
-	rig.h.SetWindows([]Window{{ID: "@1"}, {ID: "@3"}})
+	src.set(Window{ID: "@1"}, Window{ID: "@3"})
 	_, w = gt.offer(2 * time.Second)
 	if w.Type != wire.TypeWindows || strings.Join(w.Windows, ",") != "@1,@3" {
 		t.Fatalf("after the change: %+v; want windows @1,@3", w)
-	}
-}
-
-// TestTheHostReadsWindowsItselfOnlyWhenTheRefreshIsSilent: with no refresh
-// delivering a listing (muster unreachable), the host reads one itself and
-// the gateway gets it; while the refresh delivers one every poll, the host
-// does not read tmux a second time.
-func TestTheHostReadsWindowsItselfOnlyWhenTheRefreshIsSilent(t *testing.T) {
-	var reads atomic.Int32
-	windows := func(context.Context) ([]Window, error) {
-		reads.Add(1)
-		return []Window{{ID: "@9", PanePIDs: []int{1234}}}, nil
-	}
-	gw := newFakeGateway(t, "b1")
-	rig := startHost(t, portsJSON(5173), HostConfig{Windows: windows}, TunnelConfig{URLs: []string{gw.url}})
-	gt := gw.next(5 * time.Second)
-	_, w := gt.offerOf(wire.TypeWindows, 2*time.Second)
-	if strings.Join(w.Windows, ",") != "@9" {
-		t.Fatalf("windows %v; want the host's own read", w.Windows)
-	}
-	// Now the refresh delivers, faster than the poll: no more own reads.
-	stop := make(chan struct{})
-	fed := make(chan struct{})
-	go func() {
-		defer close(fed)
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(10 * time.Millisecond):
-				rig.h.SetWindows([]Window{{ID: "@1"}})
-			}
-		}
-	}()
-	time.Sleep(100 * time.Millisecond)
-	before := reads.Load()
-	time.Sleep(500 * time.Millisecond) // ten polls
-	close(stop)
-	<-fed
-	if n := reads.Load() - before; n != 0 {
-		t.Fatalf("the host read windows %d time(s) while the refresh delivered them", n)
 	}
 }
 
