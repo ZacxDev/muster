@@ -440,8 +440,8 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ListenMCP listens on addr, which must be a literal loopback IP and port
-// ("127.0.0.1:47823", "[::1]:47823").
+// ListenMCP listens on addr, which must be a literal loopback IP and a numeric
+// port ("127.0.0.1:47823", "[::1]:47823"): MCPListenPort's.
 func ListenMCP(addr string) (net.Listener, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -451,7 +451,29 @@ func ListenMCP(addr string) (net.Listener, error) {
 	if ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("muster-mirror: -mcp-listen %q is not a loopback address; the MCP endpoint listens on 127.0.0.1 or ::1 only", addr)
 	}
-	return net.Listen("tcp", addr)
+	port, err := MCPListenPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	return net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+// MCPListenPort is the port -mcp-listen names, and the ONE answer to "which
+// port is the MCP endpoint on": digits only, 1-65535. Port 0 (the kernel
+// picks) and a service name ("postgresql") are refused, because either would
+// bind a port the text does not show — and previews, which must never expose
+// this endpoint, read its port from the text (before, or without, the bind).
+// ListenMCP binds exactly this port, so the text and the bound port agree.
+func MCPListenPort(addr string) (int, error) {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, fmt.Errorf("muster-mirror: -mcp-listen %q: %w", addr, err)
+	}
+	n, err := strconv.Atoi(p)
+	if p == "" || strings.TrimLeft(p, "0123456789") != "" || err != nil || n < 1 || n > 65535 {
+		return 0, fmt.Errorf("muster-mirror: -mcp-listen %q: the port must be a number 1-65535 (not 0 or a service name), so the endpoint is where the address says", addr)
+	}
+	return n, nil
 }
 
 // ServeMCP serves h on l until ctx ends.
