@@ -48,10 +48,46 @@ type fakeGateway struct {
 
 // gwTunnel is one accepted tunnel: its client and its offer stream's lines.
 type gwTunnel struct {
-	t      *testing.T
-	c      *tunnel.Client
-	lines  chan []byte
-	cancel context.CancelFunc
+	t           *testing.T
+	c           *tunnel.Client
+	ctx         context.Context
+	lines       chan []byte
+	cancel      context.CancelFunc
+	offerCancel context.CancelFunc
+}
+
+// startOffer opens an offer stream (GET wire.OfferPath with boot) on the
+// tunnel, its lines into a fresh gt.lines.
+func (gt *gwTunnel) startOffer(boot string) {
+	octx, ocancel := context.WithCancel(gt.ctx)
+	gt.lines, gt.offerCancel = make(chan []byte, 256), ocancel
+	lines := gt.lines
+	req, _ := http.NewRequestWithContext(octx, http.MethodGet, wire.OfferPath, nil)
+	req.Header.Set(wire.GatewayBootHeader, boot)
+	go func() {
+		resp, err := gt.c.RoundTrip(req)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				lines <- line
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// openOffer is another offer stream on the same tunnel, as its own view.
+func (gt *gwTunnel) openOffer(boot string) *gwTunnel {
+	n := &gwTunnel{t: gt.t, c: gt.c, ctx: gt.ctx, cancel: gt.cancel}
+	n.startOffer(boot)
+	return n
 }
 
 func newFakeGateway(t *testing.T, boot string) *fakeGateway {
@@ -84,26 +120,8 @@ func newFakeGateway(t *testing.T, boot string) *fakeGateway {
 			t.Errorf("NewClient: %v", err)
 			return
 		}
-		gt := &gwTunnel{t: t, c: c, lines: make(chan []byte, 256), cancel: func() { c.Close(); tcancel() }}
-		req, _ := http.NewRequestWithContext(tctx, http.MethodGet, wire.OfferPath, nil)
-		req.Header.Set(wire.GatewayBootHeader, g.boot.Load().(string))
-		go func() {
-			resp, err := c.RoundTrip(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-			br := bufio.NewReader(resp.Body)
-			for {
-				line, err := br.ReadBytes('\n')
-				if len(line) > 0 {
-					gt.lines <- line
-				}
-				if err != nil {
-					return
-				}
-			}
-		}()
+		gt := &gwTunnel{t: t, c: c, ctx: tctx, cancel: func() { c.Close(); tcancel() }}
+		gt.startOffer(g.boot.Load().(string))
 		g.tunnels <- gt
 	}))
 	g.url = "ws" + strings.TrimPrefix(g.srv.URL, "http") + wire.HostPath
@@ -621,8 +639,8 @@ func TestTheWindowListingIsSentOnlyOnChange(t *testing.T) {
 	}
 	src.set(Window{ID: "@1"}, Window{ID: "@2"}) // same set, other order
 	before := src.reads.Load()
-	gt.quiet(400 * time.Millisecond)
-	if n := src.reads.Load() - before; n < 4 {
+	gt.quiet(500 * time.Millisecond) // ~10 polls; ≥ 2 counted even on a loaded CI runner
+	if n := src.reads.Load() - before; n < 2 {
 		t.Fatalf("instrument: only %d window reads during the quiet window; the poll is not running", n)
 	}
 	src.set(Window{ID: "@1"}, Window{ID: "@3"})
@@ -817,7 +835,19 @@ func TestTheGatewayCannotMakeTheHostHoldMoreThanMaxOpen(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		gt.offerOf(wire.TypeOpen, 2*time.Second)
 	}
-	gt.quiet(300 * time.Millisecond)
+	// No third re-announce. (Closes of the refused opens may still arrive:
+	// the host closes every open it would not keep.)
+	quiet := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case line := <-gt.lines:
+			if _, m := gt.decode(line); m.Type == wire.TypeOpen {
+				t.Fatalf("a re-announce past the 2 kept opens: %s", line)
+			}
+		case <-quiet:
+			return
+		}
+	}
 }
 
 // testClock is a HostConfig.Now the test moves.
@@ -888,29 +918,83 @@ func TestReannouncedOpensFollowTheGatewaysAnswer(t *testing.T) {
 	}
 }
 
-// TestATimedOutRequestIsForgotten: a request the gateway does not answer in
-// time fails gateway_timeout and leaves nothing pending; its late answer
-// records nothing.
-func TestATimedOutRequestIsForgotten(t *testing.T) {
+// TestAnOpenedTheHostDoesNotKeepIsClosedAgain: an "opened" the host will
+// not keep is answered 409 AND closed on the offer stream, so the gateway
+// keeps no preview the host has forgotten — a late answer to a request the
+// agent gave up on (gateway_timeout), an answer refused by maxOpen, and an
+// answer to no request the host knows. The abandoned request is held for
+// lateGrace only; maxPending agent requests in flight refuse the next at once.
+func TestAnOpenedTheHostDoesNotKeepIsClosedAgain(t *testing.T) {
 	gw := newFakeGateway(t, "b1")
-	rig := startHost(t, portsJSON(5173), HostConfig{AnswerWait: 200 * time.Millisecond}, TunnelConfig{URLs: []string{gw.url}})
+	// AnswerWait 1 s: long enough that the "refused" request below is still
+	// pending (not expired, which would make it an answer to an unknown
+	// request) on a loaded machine. Poll 1 h: no periodic wake-up, so each
+	// close must be delivered by its own (queueCloseLocked's broadcast).
+	rig := startHost(t, `{"ports": ["5173"], "maxOpen": 1}`, HostConfig{AnswerWait: time.Second, Poll: time.Hour}, TunnelConfig{URLs: []string{gw.url}})
 	gt := gw.next(5 * time.Second)
 	gt.offer(2 * time.Second)
-	if _, err := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@1", Port: 5173}); !errors.Is(err, ErrGatewayTimeout) {
+	expectClose := func(what, preview, window string) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case line := <-gt.lines:
+				if _, m := gt.decode(line); m.Type == wire.TypeClose {
+					if m.Request.Preview != preview || m.Request.Window != window {
+						t.Fatalf("%s: close %+v; want one of %s in %s", what, m.Request, preview, window)
+					}
+					return
+				}
+			case <-deadline:
+				t.Fatalf("%s: no close of %s was sent: the gateway keeps a preview the host forgot", what, preview)
+			}
+		}
+	}
+
+	// Late: the agent was told gateway_timeout before the answer came.
+	if _, err := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@4", Port: 5173}); !errors.Is(err, ErrGatewayTimeout) {
 		t.Fatalf("silent gateway: %v", err)
 	}
 	_, m := gt.offerOf(wire.TypeOpen, time.Second)
-	rig.h.mu.Lock()
-	n := len(rig.h.pending)
-	rig.h.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d request(s) pending after the timeout", n)
+	if st := gt.answerStatus(wire.OpenedPath, wire.Answer{RequestID: m.Request.ID, Preview: "late"}); st != http.StatusConflict {
+		t.Fatalf("late opened: %d, want 409", st)
 	}
-	gt.answer(wire.OpenedPath, wire.Answer{RequestID: m.Request.ID, Preview: "late"})
+	expectClose("late", "late", "@4")
 	if o := rig.h.Opens(); len(o) != 0 {
 		t.Fatalf("a late answer was recorded: %+v", o)
 	}
-	// maxPending in flight: the next request fails at once, sends nothing.
+
+	// Refused: maxOpen 1 is taken — an owner's click past it, and an
+	// agent's open answered anyway.
+	gt.answer(wire.OpenedPath, wire.Answer{Preview: "taken", Window: "@1", Port: 5173})
+	if st := gt.answerStatus(wire.OpenedPath, wire.Answer{Preview: "extra", Window: "@7", Port: 5173}); st != http.StatusConflict {
+		t.Fatalf("unsolicited past maxOpen: %d, want 409", st)
+	}
+	expectClose("unsolicited refused", "extra", "@7")
+	res := make(chan wire.Answer, 1)
+	go func() {
+		a, _ := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@5", Port: 5173})
+		res <- a
+	}()
+	_, m = gt.offerOf(wire.TypeOpen, time.Second)
+	if st := gt.answerStatus(wire.OpenedPath, wire.Answer{RequestID: m.Request.ID, Preview: "over"}); st != http.StatusConflict {
+		t.Fatalf("refused opened: %d, want 409", st)
+	}
+	if a := <-res; a.Error != "max_open" {
+		t.Fatalf("the agent's answer %+v; want max_open", a)
+	}
+	expectClose("refused", "over", "@5")
+
+	// Unknown: no such request.
+	if st := gt.answerStatus(wire.OpenedPath, wire.Answer{RequestID: "r999", Preview: "ghost", Window: "@6", Port: 5173}); st != http.StatusConflict {
+		t.Fatalf("unknown opened: %d, want 409", st)
+	}
+	expectClose("unknown", "ghost", "@6")
+	if o := rig.h.Opens(); len(o) != 1 || o[0].Preview != "taken" {
+		t.Fatalf("opens %+v; want taken alone", o)
+	}
+
+	// maxPending agent requests in flight: the next fails at once, sends nothing.
 	rig.h.mu.Lock()
 	for i := 0; i < maxPending; i++ {
 		rig.h.pending[fmt.Sprintf("fill%d", i)] = pendingReq{deadline: time.Now().Add(time.Hour)}
@@ -921,6 +1005,65 @@ func TestATimedOutRequestIsForgotten(t *testing.T) {
 		t.Fatalf("at maxPending: %v after %v; want gateway_timeout at once", err, time.Since(start))
 	}
 	gt.quiet(200 * time.Millisecond)
+}
+
+// TestRepeatedBootIDsDoNotGrowPending: GETs of the offer stream with a new
+// boot id each, over and over, re-announce each open at most once at a time:
+// pending stays at most the opens (not opens × GETs), and an agent request
+// still gets through.
+func TestRepeatedBootIDsDoNotGrowPending(t *testing.T) {
+	gw := newFakeGateway(t, "boot-0")
+	rig := startHost(t, portsJSON(5173), HostConfig{}, TunnelConfig{URLs: []string{gw.url}})
+	gt := gw.next(5 * time.Second)
+	gt.offer(2 * time.Second)
+	gt.answer(wire.OpenedPath, wire.Answer{Preview: "p1", Window: "@1", Port: 5173})
+	gt.answer(wire.OpenedPath, wire.Answer{Preview: "p2", Window: "@1", Port: 5173})
+	for i := 0; i < 300; i++ {
+		req, _ := http.NewRequest(http.MethodGet, wire.OfferPath, nil)
+		req.Header.Set(wire.GatewayBootHeader, fmt.Sprintf("storm-%d", i))
+		ctx, cancel := context.WithCancel(context.Background())
+		resp, err := gt.c.RoundTrip(req.WithContext(ctx))
+		if err == nil {
+			resp.Body.Close()
+		}
+		cancel()
+	}
+	rig.h.mu.Lock()
+	n := len(rig.h.pending)
+	rig.h.mu.Unlock()
+	if n > 2 {
+		t.Fatalf("%d requests pending after 300 boot-id GETs; want at most the 2 opens", n)
+	}
+	// A fresh stream still carries an agent request and its answer.
+	st := gt.openOffer("storm-299")
+	st.offer(2 * time.Second) // its config: it is the current stream now
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		rig.h.mu.Lock()
+		cur := rig.h.stream != nil
+		rig.h.mu.Unlock()
+		if cur || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	type res struct {
+		a   wire.Answer
+		err error
+	}
+	got := make(chan res, 1)
+	go func() {
+		a, err := rig.h.RequestOpen(context.Background(), wire.Request{Window: "@2", Port: 5173})
+		got <- res{a, err}
+	}()
+	_, m := st.offerOf(wire.TypeOpen, 3*time.Second)
+	for m.Request.Preview != "" { // skip any re-announce
+		_, m = st.offerOf(wire.TypeOpen, 3*time.Second)
+	}
+	st.answer(wire.OpenedPath, wire.Answer{RequestID: m.Request.ID, Preview: "p3"})
+	if r := <-got; r.err != nil || r.a.Preview != "p3" {
+		t.Fatalf("an agent request after the storm: %+v, %v", r.a, r.err)
+	}
 }
 
 // TestAPortLeavingTheListBetweenCheckAndDialIsRefused: previews.json drops
@@ -951,9 +1094,12 @@ func TestAPortLeavingTheListBetweenCheckAndDialIsRefused(t *testing.T) {
 }
 
 // TestHostClosesGoOutOnTheCurrentTunnelOnly: with a replaced tunnel still
-// draining beside the current one, a close the host decides (its port left
-// the list) is written on the CURRENT tunnel's offer stream, never on the
-// draining one's.
+// draining, a close the host decides (its port left the list) is never
+// written on the draining tunnel's offer stream. DETERMINISTIC: the current
+// tunnel's stream is closed first, so when the close is queued the draining
+// stream is the ONLY one awake to take it — it wakes (its config line
+// arrives) and must leave the close alone; the current tunnel's next stream
+// then carries it.
 func TestHostClosesGoOutOnTheCurrentTunnelOnly(t *testing.T) {
 	mesh := newFakeGateway(t, "b1")
 	mesh.refuse.Store(true)
@@ -968,24 +1114,39 @@ func TestHostClosesGoOutOnTheCurrentTunnelOnly(t *testing.T) {
 	mt := mesh.next(5 * time.Second)
 	mt.offer(2 * time.Second)
 	mt.answer(wire.OpenedPath, wire.Answer{Preview: "pa", Window: "@1", Port: 6006})
+	mt.offerCancel()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		rig.h.mu.Lock()
+		gone := rig.h.stream == nil
+		rig.h.mu.Unlock()
+		if gone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("instrument: the current tunnel's offer stream never ended")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	writePreviews(t, rig.file, portsJSON(5173))
-	_, cfg := mt.offerOf(wire.TypeConfig, 3*time.Second)
+	_, cfg := pt.offerOf(wire.TypeConfig, 3*time.Second) // the draining stream woke
 	if strings.Join(cfg.Config.Ports, ",") != "5173" {
 		t.Fatalf("config %+v", cfg.Config)
 	}
-	if _, cl := mt.offer(2 * time.Second); cl.Type != wire.TypeClose || cl.Request.Preview != "pa" {
-		t.Fatalf("on the current tunnel: %+v; want the close of pa", cl)
-	}
-	deadline := time.After(500 * time.Millisecond)
-	for {
+	quiet := time.After(300 * time.Millisecond)
+	for done := false; !done; {
 		select {
 		case line := <-pt.lines:
 			if _, m := pt.decode(line); m.Type == wire.TypeClose {
 				t.Fatalf("the draining tunnel's stream carried the close: %s", line)
 			}
-		case <-deadline:
-			return
+		case <-quiet:
+			done = true
 		}
+	}
+	nt := mt.openOffer("b1")
+	if _, cl := nt.offerOf(wire.TypeClose, 2*time.Second); cl.Request.Preview != "pa" {
+		t.Fatalf("on the current tunnel's next stream: %+v; want the close of pa", cl)
 	}
 }
 

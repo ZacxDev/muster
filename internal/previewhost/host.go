@@ -43,11 +43,20 @@ type Open struct {
 // The host cannot read the gateway's PREVIEW_TTL, so this is its own bound —
 // and it is also what ends opens across a long disconnect: an open recorded
 // before a disconnect of more than a day is older than this on reconnect.
+// It is measured in WALL time, so a host suspended for a day has had its
+// opens for a day (UNVERIFIED by a test: no test can suspend the process).
 const MaxOpenAge = 24 * time.Hour
 
-// maxPending bounds the requests awaiting an answer: a gateway that never
-// answers cannot grow the host's memory. Each also expires after AnswerWait.
+// maxPending bounds the agent requests awaiting an answer (re-announces are
+// apart: at most one per open, so at most maxOpen): a gateway that never
+// answers cannot grow the host's memory. Each expires after AnswerWait, or —
+// once the agent was told gateway_timeout — after lateGrace.
 const maxPending = 64
+
+// lateGrace is how long a request the agent gave up on (gateway_timeout) is
+// remembered, so a late "opened" for it is answered with a close rather than
+// leaving a preview the gateway keeps and the host has forgotten.
+const lateGrace = time.Minute
 
 // HostConfig configures a Host.
 type HostConfig struct {
@@ -358,7 +367,7 @@ func (h *Host) request(ctx context.Context, typ string, req wire.Request) (wire.
 		return wire.Answer{}, ErrGatewayNotConnected
 	}
 	h.expirePendingLocked()
-	if len(h.pending) >= maxPending {
+	if h.requestsPendingLocked() >= maxPending {
 		h.mu.Unlock()
 		return wire.Answer{}, ErrGatewayTimeout
 	}
@@ -376,14 +385,55 @@ func (h *Host) request(ctx context.Context, typ string, req wire.Request) (wire.
 	case a := <-ch:
 		return a, nil
 	case <-t.C:
-		// Forgotten: a late answer is then unknown and ignored, and the
-		// tool has already said gateway_timeout.
-		h.forget(req.ID)
+		// Abandoned, not forgotten: a late "opened" is then closed again
+		// (serveAnswer), since the tool has already said gateway_timeout.
+		h.abandon(req.ID)
 		return wire.Answer{}, ErrGatewayTimeout
 	case <-ctx.Done():
-		h.forget(req.ID)
+		h.abandon(req.ID)
 		return wire.Answer{}, context.Cause(ctx)
 	}
+}
+
+// abandon keeps a request nobody waits for any more for lateGrace.
+func (h *Host) abandon(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p, ok := h.pending[id]; ok {
+		p.answer, p.deadline = nil, h.now().Add(lateGrace)
+		h.pending[id] = p
+	}
+}
+
+// requestsPendingLocked counts the agent requests pending (not re-announces).
+func (h *Host) requestsPendingLocked() int {
+	n := 0
+	for _, p := range h.pending {
+		if p.reannoun == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// queueCloseLocked asks the gateway to close a preview the host will not
+// keep (an "opened" it refused, or one that came too late), on the current
+// offer stream now or at the next connect. A malformed id or window cannot
+// be named in a close and is only logged; the queue is bounded by
+// maxPending.
+func (h *Host) queueCloseLocked(preview, window string, port int, why string) {
+	if !validPreviewID(preview) || !validWindowID(window) {
+		h.logger.Printf("muster-mirror: previews: cannot close a malformed open from the gateway (%s)", why)
+		return
+	}
+	if len(h.closes) >= maxPending {
+		h.logger.Printf("muster-mirror: previews: close queue full; not closing preview %s (%s)", preview, why)
+		return
+	}
+	h.seq++
+	h.closes = append(h.closes, wire.Request{ID: "c" + strconv.FormatUint(h.seq, 10), Window: window, Port: port, Preview: preview})
+	h.logger.Printf("muster-mirror: previews: closing preview %s: %s", preview, why)
+	h.broadcastLocked()
 }
 
 func (h *Host) now() time.Time {

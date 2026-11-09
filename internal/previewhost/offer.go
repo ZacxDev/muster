@@ -183,8 +183,22 @@ func (h *Host) reannounceLocked() []wire.Offer {
 	var out []wire.Offer
 	now := h.now()
 	h.expirePendingLocked()
+	// One re-announce per open at a time: a gateway restarting again (or a
+	// GET with a new boot id, repeated) does not add another, so pending
+	// stays at most maxOpen re-announces plus maxPending requests.
+	inFlight := map[string]bool{}
+	for _, p := range h.pending {
+		if p.reannoun != "" {
+			inFlight[p.reannoun] = true
+		}
+	}
 	for _, o := range h.sortedOpensLocked() {
-		if now.Sub(o.Opened) >= MaxOpenAge {
+		if inFlight[o.Preview] {
+			continue
+		}
+		// WALL time (Round(0) drops the monotonic reading): a host asleep
+		// for a day has had its opens for a day.
+		if now.Round(0).Sub(o.Opened.Round(0)) >= MaxOpenAge {
 			delete(h.opens, o.Preview)
 			h.logger.Printf("muster-mirror: previews: dropped preview %s: open longer than %v", o.Preview, MaxOpenAge)
 			continue
@@ -293,6 +307,10 @@ func (h *Host) serveAnswer(w http.ResponseWriter, r *http.Request, opened bool) 
 	}
 	refused := ""
 	switch {
+	// 🔴 An "opened" the host does not keep — refused, too late for an agent
+	// that gave up, or for no request the host knows — is closed again:
+	// otherwise the gateway would keep a preview the host has forgotten (and
+	// would never close when its port leaves the list).
 	case opened && known:
 		var old Open
 		if p.reannoun != "" {
@@ -300,15 +318,28 @@ func (h *Host) serveAnswer(w http.ResponseWriter, r *http.Request, opened bool) 
 			delete(h.opens, p.reannoun)
 		}
 		if a.Error == "" {
-			refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: p.req.Window, Port: p.req.Port, Label: p.req.Label, Path: p.req.Path, Opened: old.Opened})
+			if p.answer == nil && p.reannoun == "" {
+				refused = "late"
+			} else {
+				refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: p.req.Window, Port: p.req.Port, Label: p.req.Label, Path: p.req.Path, Opened: old.Opened})
+			}
 			if refused != "" {
 				a.Error = refused // the tool sees why the host would not keep it
+				h.queueCloseLocked(a.Preview, p.req.Window, p.req.Port, "the host did not keep it: "+refused)
 			}
 		}
 	case opened && a.RequestID == "":
 		// The owner clicked an offer: the gateway tells the host unasked.
 		if a.Error == "" {
-			refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: a.Window, Port: a.Port})
+			if refused = h.recordOpenLocked(Open{Preview: a.Preview, Window: a.Window, Port: a.Port}); refused != "" {
+				h.queueCloseLocked(a.Preview, a.Window, a.Port, "the host did not keep it: "+refused)
+			}
+		}
+	case opened:
+		// An answer to no request the host knows (expired, or never made).
+		if a.Error == "" {
+			refused = "unknown_request"
+			h.queueCloseLocked(a.Preview, a.Window, a.Port, "an answer to no known request")
 		}
 	case !opened:
 		// A close by the agent's request, by the gateway itself (its

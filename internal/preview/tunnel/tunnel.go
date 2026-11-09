@@ -128,20 +128,31 @@ func interval(d time.Duration) time.Duration {
 // The client never follows a redirect (noredirect): one would re-send the
 // host token to the Location.
 //
-// 🔴 NOR DOES IT USE A PROXY (HTTP_PROXY and friends are ignored): on the
-// overlay-mesh endpoint the dial is plain ws:// — the mesh encrypts the hop —
-// so a proxy would receive the mpt_ bearer token in clear text, and the mesh
-// address is not reachable through one anyway. The public endpoint is the
-// gateway's own; nothing in phase 1 needs a proxy to reach it.
+// 🔴 A ws:// DIAL NEVER USES A PROXY (hostProxy): on the overlay-mesh
+// endpoint the dial is plain ws:// — the mesh encrypts the hop — so a proxy
+// would receive the mpt_ bearer token in clear text. A wss:// dial honours
+// the proxy environment as usual: TLS, end to end through the proxy's
+// CONNECT, keeps the token from it, and a host that can only reach the
+// internet through a proxy keeps its previews.
 func DialHost(ctx context.Context, endpoint string, hdr http.Header) (*websocket.Conn, *http.Response, error) {
 	tr := &http.Transport{
-		Proxy:        nil,
+		Proxy:        hostProxy,
 		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
 	return websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 		HTTPHeader: hdr.Clone(),
 		HTTPClient: noredirect.Client(&http.Client{Transport: tr}),
 	})
+}
+
+// hostProxy is DialHost's proxy rule: the environment's proxy for https
+// (wss://, which the WebSocket client dials as https), none for anything
+// else (ws://, dialled as http — in clear text).
+func hostProxy(req *http.Request) (*url.URL, error) {
+	if req.URL.Scheme != "https" {
+		return nil, nil
+	}
+	return http.ProxyFromEnvironment(req)
 }
 
 // HostOptions configures the host end of a tunnel.
