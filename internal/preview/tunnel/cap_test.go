@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,10 @@ import (
 // controlHandler serves the control streams the way a host does: GET
 // wire.OfferPath writes one line and stays open until the test ends, POST
 // wire.OpenedPath / wire.ClosedPath answer 204.
-func controlHandler(t *testing.T) http.Handler {
+func controlHandler(t *testing.T) http.Handler { return slowControlHandler(t, 0) }
+
+// slowControlHandler is controlHandler whose POST answers take slow.
+func slowControlHandler(t *testing.T, slow time.Duration) http.Handler {
 	t.Helper()
 	end := make(chan struct{})
 	t.Cleanup(func() { close(end) })
@@ -29,6 +33,7 @@ func controlHandler(t *testing.T) http.Handler {
 			case <-r.Context().Done():
 			}
 		case r.Method == http.MethodPost && (r.URL.Path == wire.OpenedPath || r.URL.Path == wire.ClosedPath):
+			time.Sleep(slow)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
@@ -201,6 +206,174 @@ func TestControlRequestsDoNotQueueBehindAFullCap(t *testing.T) {
 		cancel()
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("POST %s = %d", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestControlRequestsPastTheReserveQueue: with the offer stream open and every
+// upstream slot held, a burst of more control requests than ControlStreams
+// (six slow answers at once) all succeed — the ones past the reserve wait for
+// a stream rather than fail. This is what StrictMaxConcurrentStreams is for
+// now that Dial keeps data streams under the host's limit.
+func TestControlRequestsPastTheReserveQueue(t *testing.T) {
+	const n, burst = 2, ControlStreams + 2
+	echo := startTCP(t, echoUpstream)
+	p := newPair(t, pairOpts{
+		host:   HostOptions{MaxConns: n},
+		client: ClientOptions{MaxConns: n, DialWait: 300 * time.Millisecond},
+		allow:  []int{echo},
+		extra:  slowControlHandler(t, 200*time.Millisecond),
+	})
+	openOffer(t, p)
+	for range n {
+		conn, err := dialWithin(p, echo, 2*time.Second)
+		if err != nil {
+			t.Fatalf("filling the cap: %v", err)
+		}
+		defer conn.Close()
+	}
+	errs := make(chan error, burst)
+	var wg sync.WaitGroup
+	for range burst {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, wire.OpenedPath, strings.NewReader(`{}`))
+			resp, err := p.client.RoundTrip(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				errs <- errors.New(resp.Status)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	failed := 0
+	for err := range errs {
+		failed++
+		t.Logf("control request failed: %v", err)
+	}
+	if failed > 0 {
+		t.Fatalf("%d of %d concurrent control requests failed past the reserve of %d", failed, burst, ControlStreams)
+	}
+}
+
+// TestRefusedDialsFreeTheirSlot: refusals other than max_conns (a port off the
+// allowlist, nothing listening) return their slot at once, so repeating them
+// never eats the cap.
+func TestRefusedDialsFreeTheirSlot(t *testing.T) {
+	echo := startTCP(t, echoUpstream)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := portOf(t, ln.Addr())
+	ln.Close()
+	p := newPair(t, pairOpts{
+		client: ClientOptions{MaxConns: 2, DialWait: 300 * time.Millisecond},
+		allow:  []int{echo, dead},
+	})
+	for i := range 5 {
+		for _, port := range []int{echo + 1, dead} {
+			if _, err := dialWithin(p, port, 2*time.Second); err == nil || isMaxConns(err) {
+				t.Fatalf("round %d, :%d = %v, want a non-max_conns refusal", i, port, err)
+			}
+		}
+	}
+	if u := p.client.slots.inUse(); u != 0 {
+		t.Fatalf("%d slots in use after 10 refused dials, want 0", u)
+	}
+	for range 2 { // and the whole cap is still there
+		conn, err := dialWithin(p, echo, 2*time.Second)
+		if err != nil {
+			t.Fatalf("after the refusals: %v", err)
+		}
+		defer conn.Close()
+	}
+}
+
+// TestBackstopRetriesFreeTheirSlot: a Dial that the host's backstop keeps
+// refusing frees its gateway slot whether it ends on the wait's deadline or
+// on its caller's ctx. The gateway believes in 3 slots, the host has 1 and
+// it is held, so every Dial lands in the retry loop.
+func TestBackstopRetriesFreeTheirSlot(t *testing.T) {
+	echo := startTCP(t, echoUpstream)
+	p := newPair(t, pairOpts{
+		host:   HostOptions{MaxConns: 1},
+		client: ClientOptions{MaxConns: 3, DialWait: 300 * time.Millisecond},
+		allow:  []int{echo},
+	})
+	held, err := dialWithin(p, echo, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	for i := range 3 {
+		if _, err := dialWithin(p, echo, 5*time.Second); !isMaxConns(err) {
+			t.Fatalf("deadline case %d: %v, want max_conns", i, err)
+		}
+		if u := p.client.slots.inUse(); u != 1 {
+			t.Fatalf("deadline case %d: %d slots in use, want 1 (the held stream)", i, u)
+		}
+	}
+	for i := range 5 {
+		// The caller's ctx (110 ms) ends inside the 300 ms wait, between
+		// 25 ms retries.
+		if _, err := dialWithin(p, echo, 110*time.Millisecond); err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ctx case %d: %v, want the ctx's deadline", i, err)
+		}
+		if u := p.client.slots.inUse(); u != 1 {
+			t.Fatalf("ctx case %d: %d slots in use, want 1 (the held stream)", i, u)
+		}
+	}
+}
+
+// TestSetMaxConnsWakesAWaitingDial: a Dial waiting at the gateway's limit
+// takes a slot as soon as SetMaxConns raises the limit, not at the end of its
+// wait.
+func TestSetMaxConnsWakesAWaitingDial(t *testing.T) {
+	echo := startTCP(t, echoUpstream)
+	p := newPair(t, pairOpts{
+		host:   HostOptions{MaxConns: 3},
+		client: ClientOptions{MaxConns: 1, DialWait: 3 * time.Second},
+		allow:  []int{echo},
+	})
+	held, err := dialWithin(p, echo, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	time.AfterFunc(100*time.Millisecond, func() { p.client.SetMaxConns(2) })
+	t0 := time.Now()
+	conn, err := dialWithin(p, echo, 5*time.Second)
+	took := time.Since(t0)
+	if err != nil {
+		t.Fatalf("after SetMaxConns(2): %v (took %v)", err, took)
+	}
+	conn.Close()
+	if took > time.Second {
+		t.Fatalf("the waiting Dial took %v; the raised limit did not wake it", took)
+	}
+}
+
+// TestSetMaxConnsClamps: the limit stays within 1..wire.MaxConns, and below 1
+// is 1 (never the default, which could exceed the host's).
+func TestSetMaxConnsClamps(t *testing.T) {
+	var s slots
+	s.init(0)
+	if s.limit != 64 {
+		t.Errorf("init(0) = %d, want the default 64", s.limit)
+	}
+	for _, c := range []struct{ in, want int }{{-5, 1}, {0, 1}, {1, 1}, {7, 7}, {64, 64}, {65, 64}, {1000, 64}} {
+		s.setLimit(c.in)
+		if s.limit != c.want {
+			t.Errorf("setLimit(%d) = %d, want %d", c.in, s.limit, c.want)
 		}
 	}
 }

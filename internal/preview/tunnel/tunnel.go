@@ -311,8 +311,9 @@ type ClientOptions struct {
 	PingInterval time.Duration
 	// MaxConns is how many upstream connections Dial lets be open at once
 	// before it waits: the host's maxConns, which the gateway learns from the
-	// offer stream after the tunnel is up (SetMaxConns). 0 means
-	// wire.MaxConns, the cap.
+	// offer stream after the tunnel is up (SetMaxConns, which states the
+	// rule this must follow). 0 means wire.MaxConns, the cap; any other value
+	// is clamped into 1..wire.MaxConns as SetMaxConns does.
 	MaxConns int
 	// DialWait bounds how long Dial waits for a free upstream slot before
 	// refusing with max_conns; 0 means DefaultDialWait.
@@ -376,7 +377,10 @@ func NewClient(ctx context.Context, c *websocket.Conn, o ClientOptions) (*Client
 	// Wait for a free stream rather than fail: a raw ClientConn otherwise
 	// answers "client conn not usable" once the host's
 	// MAX_CONCURRENT_STREAMS are in use (measured; there is no second
-	// connection to fall over to).
+	// connection to fall over to). Data streams cannot get there (Dial's
+	// slots stop them at maxConns), so what this protects is a burst of
+	// more than ControlStreams control requests: they queue a round trip
+	// instead of failing (TestControlRequestsPastTheReserveQueue).
 	t2.StrictMaxConcurrentStreams = true
 	cc, err := t2.NewClientConn(nc)
 	if err != nil {
@@ -450,8 +454,18 @@ func (e *RefusedError) Error() string {
 }
 
 // SetMaxConns sets how many upstream connections Dial lets be open at once:
-// the host's maxConns, from its config on the offer stream. Values outside
-// 1..wire.MaxConns are clamped into it. Streams already open stay open.
+// the host's maxConns, from its config on the offer stream. n is clamped
+// into 1..wire.MaxConns: below 1 becomes 1, not the default, because a
+// limit this side believes is LARGER than the host's only turns waits into
+// host refusals, while a smaller one is merely slower. Streams already open
+// stay open; a Dial waiting for a slot sees a raised limit at once.
+//
+// 🔴 THE RULE FOR THE CALLER: this limit must never exceed the maxConns the
+// host's Serve was started with, which is fixed for the life of the tunnel
+// (its HTTP/2 SETTINGS were sent at the start). So call it at most with the
+// first config the offer stream carries; a later config with a different
+// maxConns means the host must reconnect for it to take effect, and until
+// then the gateway keeps the tunnel's original value.
 func (c *Client) SetMaxConns(n int) { c.slots.setLimit(n) }
 
 // Dial opens one CONNECT stream to the host's loopback port and returns it as
@@ -560,16 +574,26 @@ type slots struct {
 	changed chan struct{} // closed and replaced on every release or new limit
 }
 
+// clampConns puts n into 1..wire.MaxConns.
 func clampConns(n int) int {
-	if n <= 0 || n > wire.MaxConns {
-		return wire.MaxConns
-	}
-	return n
+	return min(max(n, 1), wire.MaxConns)
 }
 
+// init sets the starting limit: ClientOptions.MaxConns, where 0 means
+// wire.MaxConns (the default, before the host's config arrives).
 func (s *slots) init(n int) {
+	if n == 0 {
+		n = wire.MaxConns
+	}
 	s.limit = clampConns(n)
 	s.changed = make(chan struct{})
+}
+
+// inUse is how many slots are taken.
+func (s *slots) inUse() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used
 }
 
 func (s *slots) broadcastLocked() {
