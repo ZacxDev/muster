@@ -435,21 +435,62 @@ If the chief has no `mcp__hq__` tools it says so; check the four steps above
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through
 muster's [LLM proxy](officers.md#the-llm-proxy): its Claude Code calls
 `POST /llm/v1/messages` on the connect listener with its own muster token, and
-muster sends the request on with the server's key attached. Only the
-`docker compose` install's chief runtime turns this on.
+muster sends the request on with the server's key attached. The chief keeps
+its harness: the same Claude Code CLI, standing instructions and muster tools;
+only where its model calls go changes. Two runtimes turn this on:
+
+- **The `docker compose` install:** the chief's credential decides. No
+  `MUSTER_CHIEF_CLAUDE_TOKEN` means OpenRouter ([above](#on-the-docker-compose-install)).
+- **Kubernetes:** an explicit opt-in, `MUSTER_CHIEF_LLM=openrouter`. The
+  admin's `claude-code` chief's pod is then built with **no Claude account
+  token** and `CCD_LLM_ROUTE=muster` (its Claude Code calls
+  `$MUSTER_CONNECT_URL/llm` with its own muster token); a member's chief keeps
+  its Claude account. Boot is refused without `MUSTER_AGENT_PROVISIONER`,
+  `MUSTER_AGENT_KINDS` with `claude-code`, `MUSTER_AGENT_CONNECT_URL` or
+  `MUSTER_AGENT_OPENROUTER_KEY`, and beside `MUSTER_CHIEF_RUNTIME=compose`.
+  **Unset is the rollback**: the chief runs on its Claude account exactly as
+  before, and the proxy serves no chief.
+  **Turning it on or off** is two steps: set or unset the variable and restart
+  muster, then restart the chief (its agent page ⋯ → Stop, then Start, or
+  `chief_restart`; [below](#restarting-the-chief)). The pod's credential is
+  part of its spec, and muster rebuilds that spec from the current settings
+  only when it starts the chief or re-applies it (a model change on a running
+  chief re-applies it too). Until then a chief keeps the credential it had.
+  After turning it **off**, a chief still on the route is refused by the
+  proxy (it is no longer served) until that rebuild puts it back on its
+  account. The proxy serves only the chief the route rule puts on the route:
+  the admin's `claude-code` chief.
+
+What applies on both:
 
 - **Who is served.** Only the admin's chief, and only while it is on (Account →
   Chief): a chief you turned off is refused (403), and so is any other user's
   chief. Any other agent is refused as it always was.
-- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY` in `.env`. With it
-  empty, every request is refused (400) with a message naming it, and nothing
-  is sent.
-- **Changing it.** A credential change in `.env` (adding or removing
+- **Whose key.** The admin's, `MUSTER_AGENT_OPENROUTER_KEY`. With it empty, every
+  request is refused (400) with a message naming it, and nothing is sent (on
+  Kubernetes an empty key refuses boot instead).
+- **Changing it (Compose).** A credential change in `.env` (adding or removing
   `MUSTER_CHIEF_CLAUDE_TOKEN`) reaches a running chief when muster restarts
   (`docker compose up -d --wait`): muster re-applies the running chief's spec
   at boot, with no Off/On needed. A chief that is off, or stopped, stays so.
-- **Which model.** A setting, `deepseek/deepseek-v4.1-flash` by default. Every
-  request is pinned to it, whatever model the client asks for.
+- **Which model.** A setting, `MUSTER_CHIEF_LLM_MODEL`,
+  `deepseek/deepseek-v4.1-flash` by default. Every request is pinned to it,
+  whatever model the client asks for — Claude Code's background calls that
+  name a `haiku` model included.
+- **What Claude Code sends that the proxy handles.** Streaming and tool use
+  pass through as the Anthropic Messages API (OpenRouter's
+  Anthropic-compatible endpoint); the `beta=true` query and the
+  `anthropic-beta` header are forwarded; mid-conversation `system` entries,
+  which the provider refuses for these models, are folded into the adjacent
+  user turn; body fields outside the Messages API (OpenRouter's routing fields
+  above all) are dropped. Every path but `POST /llm/v1/messages` answers 404.
+  Measured on real Claude Code traffic, the only other call the CLI made was a
+  `HEAD /api/hello` connectivity check once per session. The session carries on
+  past its 404, which is counted in `muster_officer_llm_refused{reason="path"}`.
+  It made no `count_tokens` call.
+- **Not in use.** DeepSeek V4.1 Flash and V4 Pro both failed a 50-input shadow
+  backtest: they made the chief's decision on 44–56% of inputs, against a 90%
+  bar. So the chief stays on Claude.
 - **What it may spend.** muster sets **no budget** for the chief: no daily
   budget, no per-item cap. **Set a credit limit on the key itself**, in
   [OpenRouter's key settings](https://openrouter.ai/settings/keys): that limit

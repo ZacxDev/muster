@@ -60,6 +60,8 @@ AGENT_PLANE = "agent plane: needs muster running inside Kubernetes (docs/feature
 NOT_FORWARDED = {
     "MUSTER_TEST_LLM_UPSTREAM": "test only: the Compose smoke test's fake model; only tests/compose-chief.override.yml sets it",
     "MUSTER_CHIEF_SPEC_DIR": "the Compose file mounts the chief's spec volume at the runtime's default, /run/muster-spec",
+    "MUSTER_CHIEF_LLM": "the Kubernetes chief's switch onto the LLM proxy; muster refuses it beside MUSTER_CHIEF_RUNTIME=compose, "
+    "whose chief's credential decides instead",
     **{name: AGENT_PLANE for name in [
         "MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_AGENT_GATEWAY_MODEL",
         "MUSTER_AGENT_GATEWAY_PORT", "MUSTER_AGENT_RUNTIME_CONFIG", "MUSTER_AGENT_RUNTIME_INSTALL",
