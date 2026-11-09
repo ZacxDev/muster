@@ -59,6 +59,14 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/preview/wire": "the preview tunnel's protocol, landed ahead of its two " +
+		"consumers (the gateway binary and muster-mirror's -preview) so they can be " +
+		"built against one shape in parallel. It leaves this ledger when either links it.",
+
+	"internal/preview/tunnel": "the preview tunnel's transport, landed ahead of its two " +
+		"consumers (the gateway binary and muster-mirror's -preview) so they can be " +
+		"built against one shape in parallel. It leaves this ledger when either links it.",
+
 	"internal/officers/hqtest": "the in-process fake of HQ's officers API the officer runtime's " +
 		"tests drive (internal/officers, internal/api). Imported only by _test.go files: a fake HQ " +
 		"linked into the server would answer claims for officers no real HQ knows.",

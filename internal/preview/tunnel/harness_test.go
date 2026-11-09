@@ -162,6 +162,12 @@ func (e *edgeSim) relay(a net.Conn) {
 				break
 			}
 		}
+		if e.blackhole.Load() {
+			// A vanished peer sends no FIN: the other side must find out by
+			// its own pings, not by this relay passing the close along.
+			src.Close()
+			return
+		}
 		stop()
 	}
 	go cp(b, a)
