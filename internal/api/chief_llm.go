@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,7 +15,8 @@ import (
 // ---------------------------------------------------------------------------
 // THE CHIEF ON THE LLM PROXY
 //
-// The compose install's chief is a claude-code agent; when it runs on
+// The compose install's chief, or a Kubernetes deployment's admin chief with
+// MUSTER_CHIEF_LLM=openrouter, is a claude-code agent; when it runs on
 // OpenRouter rather than a Claude subscription, its Claude Code points
 // ANTHROPIC_BASE_URL at $MUSTER_CONNECT_URL/llm exactly as an officer's routine
 // instance does, and POST /llm/v1/messages admits it here.
@@ -22,8 +24,8 @@ import (
 // It is admitted exactly when EnableChiefLLM was called, the calling agent is
 // not a routine officer instance but its owner's chief (agentIsChief:
 // chiefPredicate on the agent's current row; a failed read is a 503),
-// that owner is the admin (authz.OperatorUserID — the compose runtime runs one
-// chief, the admin's), and that chief is ON (chiefActing, the gate the
+// that owner is the admin (ChiefLLMOwner — the compose runtime runs one
+// chief, the admin's, and the key is the admin's), and that chief is ON (chiefActing, the gate the
 // chief-only tools use). The agent authenticates as every caller of the route
 // does (requireConnectorAgent: its own token; the shared hook and service
 // tokens refused). On Compose (Extensions.ComposeChief set) it is admitted
@@ -78,14 +80,23 @@ type ChiefLLM struct {
 	// ""), and HTTP its transport: tests.
 	Upstream string
 	HTTP     *http.Client
+	// Routed is the spec builder's own predicate for whether an agent runs
+	// on the LLM route (agentprovision.ChiefLLMRouted over the server's
+	// rule). Off Compose it is asked on every request, and a chief it does
+	// not route — a gateway-kind chief, or a member's — is refused (403,
+	// nothing sent). nil there refuses every chief: the proxy never serves
+	// one no rule put on the route. On Compose the credential rule decides
+	// instead (ComposeChief.Credential).
+	Routed func(ctx context.Context, a agents.Agent) (bool, error)
 }
 
 // chiefLLMRuntime is the chief's proxy and its settings; nil on the Server
 // when EnableChiefLLM was never called.
 type chiefLLMRuntime struct {
-	px    *llmproxy.Proxy
-	model string
-	key   string
+	px     *llmproxy.Proxy
+	model  string
+	key    string
+	routed func(ctx context.Context, a agents.Agent) (bool, error)
 }
 
 // EnableChiefLLM puts the admin's chief on the LLM proxy. Call it after
@@ -110,7 +121,7 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	if err != nil {
 		return err
 	}
-	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, key: strings.TrimSpace(c.Key)}
+	s.chiefLLM = &chiefLLMRuntime{px: px, model: model, key: strings.TrimSpace(c.Key), routed: c.Routed}
 	if s.chiefLLM.key == "" {
 		s.logger.Printf("chief llm: ON for the admin's chief (%s), but MUSTER_AGENT_OPENROUTER_KEY is empty: every request "+
 			"is refused until it is set", model)
@@ -121,11 +132,17 @@ func (s *Server) EnableChiefLLM(c ChiefLLM) error {
 	return nil
 }
 
+// ChiefLLMOwner reports whether owner's chief may be served by the LLM proxy:
+// the admin's alone (the key is the admin's). The spec builder's rule on
+// Kubernetes (cmd/muster-server chiefllm.go) asks this same predicate, so no
+// chief is put on the route that the proxy would refuse.
+func ChiefLLMOwner(owner int64) bool { return owner == authz.OperatorUserID }
+
 // serveChiefLLM is POST /llm/v1/messages for agent a, which agentIsChief has
 // called its owner's chief (serveLLMMessages).
 func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.Agent) {
 	ctx := r.Context()
-	if agentOwnerID(a) != authz.OperatorUserID {
+	if !ChiefLLMOwner(agentOwnerID(a)) {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "not_admin").Inc()
 		s.logger.Printf("llm proxy: refused agent %d (%q): a chief, but not the admin's", a.ID, a.Name)
 		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", chiefNotAdminRefusal)
@@ -145,6 +162,8 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 		if key, ok = s.composeChiefLLMKey(w, ctx, a); !ok {
 			return
 		}
+	} else if !s.chiefLLMRouted(w, ctx, a) {
+		return
 	}
 	if key == "" {
 		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "no_key").Inc()
@@ -157,4 +176,35 @@ func (s *Server) serveChiefLLM(w http.ResponseWriter, r *http.Request, a agents.
 	s.chiefLLM.px.ServeMessages(w, r, llmproxy.Caller{Officer: chiefLLMLabel, InstanceLabel: chiefLLMLabel,
 		AgentID: a.ID, AgentName: a.Name, Model: s.chiefLLM.model, Key: key, Unbudgeted: true,
 		Title: "muster chief", KeyRemedy: chiefKeyRemedy})
+}
+
+// ChiefNotRoutedRefusal is the proxy's answer to a chief the route rule did
+// not put on the LLM route (off Compose): one that is not a claude-code chief.
+const ChiefNotRoutedRefusal = "this chief is not on the LLM route (only the admin's claude-code chief is, with " +
+	"MUSTER_CHIEF_LLM=openrouter): the LLM proxy does not serve it, and nothing was sent"
+
+// chiefLLMRouted asks ChiefLLM.Routed — the spec builder's predicate — whether
+// chief a is on the LLM route, writing the refusal when it is not (403, the
+// Compose subscription refusal's shape) or cannot be decided (503). ok is false
+// when the refusal was written.
+func (s *Server) chiefLLMRouted(w http.ResponseWriter, ctx context.Context, a agents.Agent) bool {
+	routed := false
+	var err error
+	if s.chiefLLM.routed != nil {
+		routed, err = s.chiefLLM.routed(ctx, a)
+	}
+	switch {
+	case err != nil:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "credential_error").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q): deciding its route: %v (nothing sent)", a.ID, a.Name, err)
+		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "the chief's route could not be decided; nothing was sent")
+		return false
+	case !routed:
+		metrics.OfficerLLMRefused.WithLabelValues(chiefLLMLabel, "not_routed").Inc()
+		s.logger.Printf("llm proxy: refused the chief agent %d (%q, kind %s): not on the LLM route (nothing sent)", a.ID, a.Name,
+			agents.ResolveKind(a.Kind))
+		llmproxy.Refuse(w, http.StatusForbidden, "permission_error", ChiefNotRoutedRefusal)
+		return false
+	}
+	return true
 }

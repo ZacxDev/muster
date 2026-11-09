@@ -72,6 +72,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// A host dispatch ended (host_dispatch.go): its owner, named explicitly
 		// because the reconciler's context carries no principal.
 		"(*Server).endHostDispatch → broadcastTo(owner)",
+		// A host dispatch's own session reported it done (host_dispatch_done.go):
+		// h.Owner is the row's owner, read under the mirror token's principal
+		// (row-level security), so it is that token's owner.
+		"(*Server).hostDispatchDone → broadcastTo(h.Owner)",
 		// A host's window listing moved a host dispatch (host_dispatch_reconcile.go):
 		// pctx is hostDispatchPrincipal(ctx, owner), the host's owner.
 		"(*Server).reconcileListing → broadcast(pctx)",

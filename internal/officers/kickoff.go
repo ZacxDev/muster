@@ -304,6 +304,10 @@ func ToolOffered(o Officer, tool string) bool {
 		return len(o.KubeClusters()) > 0
 	case ToolObsRaw:
 		return o.Tier == TierJudgement || o.Tier == TierRoutine
+	case ToolTaskList, ToolTaskGet:
+		// tasks.go: a task-reconciler officer's only (HQ also refuses a type
+		// without task_read)
+		return o.Type() == TaskReconcilerOfficerType
 	}
 	return false
 }

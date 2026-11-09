@@ -134,6 +134,12 @@ type Client struct {
 	http    *http.Client
 }
 
+// ErrHQAnswerTooLarge is a 2xx answer over maxHQBody: muster read only the
+// first maxHQBody bytes, so it is refused as a whole (never passed on cut,
+// where it reads as "not JSON"). Final for that request: the caller must ask
+// for less (a smaller page, a narrower filter), not retry.
+var ErrHQAnswerTooLarge = fmt.Errorf("officers: HQ's answer is over muster's %d-byte cap", maxHQBody)
+
 // DefaultHQTimeout bounds one HQ request.
 const DefaultHQTimeout = 15 * time.Second
 
@@ -202,8 +208,14 @@ func (c *Client) doCoded(ctx context.Context, method, path, contentType string, 
 		return nil, fmt.Errorf("%w: %s %s: %v", ErrHQUnavailable, method, path, scrubURLError(err))
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxHQBody))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxHQBody+1))
+	over := len(raw) > maxHQBody
+	if over {
+		raw = raw[:maxHQBody]
+	}
 	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300 && over:
+		return nil, fmt.Errorf("%w: %s %s", ErrHQAnswerTooLarge, method, path)
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return raw, nil
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:

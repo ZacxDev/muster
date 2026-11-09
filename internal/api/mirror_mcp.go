@@ -262,6 +262,13 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.dispatchHoldToolsOn() && !s.featureOff(features.TaskRouting) {
 		out = append(out, dispatchHoldToolDefs()...)
 	}
+	// agent_report_done — a HOST-SPAWNED agent saying it finished
+	// (host_dispatch_done.go) — with the host-dispatch store. Listed for every
+	// session (tools/list carries no session); the call binds it to the
+	// caller's own dispatch and refuses any other session.
+	if s.hostDispatches() != nil && !s.featureOff(features.TaskRouting) {
+		out = append(out, agentReportDoneToolDef())
+	}
 	return out
 }
 
@@ -318,6 +325,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// mirrored session again inside.
 			if text, ok := s.dispatchHoldTool(r.Context(), c, name, args); ok {
 				return text
+			}
+			// agent_report_done here is the host-dispatch form (listed only with
+			// the host-dispatch store): bound to THIS session's own dispatch.
+			if name == agentReportDoneTool {
+				return s.toolHostReportDone(r.Context(), t.Host, sid, e.Window, args)
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text
