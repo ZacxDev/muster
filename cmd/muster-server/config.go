@@ -176,6 +176,10 @@ const (
 	// envPluginTaskNamespaces lists the tag namespaces POST /plugin/v1/tasks
 	// accepts keys in (internal/api/plugin_tasks.go), comma-separated.
 	envPluginTaskNamespaces = "MUSTER_PLUGIN_TASK_NAMESPACES"
+	// envPluginOrigins lists the https origin patterns a viewer plugin may be
+	// given (plugins.ParseOrigins); a request whose Host is under one is refused
+	// 421 on every listener. Unset: nothing is refused.
+	envPluginOrigins = "MUSTER_PLUGIN_ORIGINS"
 	// SESSION ROUTING (internal/plugins/routes.go): "1" lets the chief hand a
 	// plugin message to one of its owner's sessions (route_to_session) and relay
 	// the session's answer. Needs the plugin interface on. Off, the routing
@@ -738,6 +742,8 @@ type config struct {
 	Plugins bool
 	// PluginTaskNamespaces is MUSTER_PLUGIN_TASK_NAMESPACES, split on commas.
 	PluginTaskNamespaces []string
+	// PluginOrigins is MUSTER_PLUGIN_ORIGINS, parsed (nil when unset).
+	PluginOrigins []plugins.OriginPattern
 	// SessionRouting is MUSTER_SESSION_ROUTING=1; RouteRelayAllow is
 	// MUSTER_ROUTE_RELAY_ALLOW, parsed (validate refuses one that does not parse).
 	SessionRouting     bool
@@ -1544,6 +1550,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.AgentGatewayPort = p
 	}
+
+	origins, err := plugins.ParseOrigins(getenv(envPluginOrigins))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s %w: want comma-separated https://<host> or https://*.<zone>", envPluginOrigins, err)
+	}
+	// muster's own public host under a plugin origin would refuse muster itself.
+	if u, perr := url.Parse(c.PublicURL); perr == nil && u.Host != "" && plugins.AnyMatchesHost(origins, u.Host) {
+		return config{}, fmt.Errorf("invalid %s: it covers %s's host %q, so muster would refuse its own pages (421)",
+			envPluginOrigins, envPublicURL, u.Host)
+	}
+	c.PluginOrigins = origins
 
 	w, err := stepup.ParseWindow(getenv(envStepUpWindow))
 	if err != nil {

@@ -91,6 +91,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Outcomes:      agentoutcome.NewPG(nil),
 		AgentWatchdog: agentoutcome.Thresholds{NoReply: time.Minute, Silent: time.Hour},
 		PublicURL:     "http://example.test",
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}},
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is

@@ -54,6 +54,15 @@ var (
 		Help: "Recovered panics by source.",
 	}, []string{"source"})
 
+	// PluginOriginRefusals counts requests refused 421 because their Host is
+	// under MUSTER_PLUGIN_ORIGINS (api.refusePluginOriginHosts). The refusal is
+	// outermost, so no access log line, span or http metric sees it; this is
+	// what does. Nonzero means something routes a plugin's host to muster.
+	PluginOriginRefusals = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "muster_plugin_origin_refusals_total",
+		Help: "Requests refused 421 because their Host is under MUSTER_PLUGIN_ORIGINS.",
+	})
+
 	// PushDelivery counts Web Push delivery attempts, one per DEVICE per
 	// notification, by result:
 	//   ok      — the push service accepted it (2xx)
