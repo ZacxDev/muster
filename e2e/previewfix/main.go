@@ -292,11 +292,11 @@ const attackPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><
 
 func appHandler(port int, lg *jsonLog) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, appPage, port)
 	})
-	mux.HandleFunc("/attack", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /attack", func(w http.ResponseWriter, r *http.Request) {
 		v := r.URL.Query().Get("victim")
 		if !strings.HasPrefix(v, "https://") {
 			http.Error(w, "victim must be an https URL", http.StatusBadRequest)
@@ -305,11 +305,11 @@ func appHandler(port int, lg *jsonLog) http.Handler {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, attackPage, port, html.EscapeString(v))
 	})
-	mux.HandleFunc("/secret", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /secret", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, "the secret of the app on %d\n", port)
 	})
-	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"pong":%d}`+"\n", port)
 	})
@@ -317,7 +317,7 @@ func appHandler(port int, lg *jsonLog) http.Handler {
 	// the request's Host, as a dev server's hot-reload socket checks it. The
 	// gateway rewrites the preview's Origin to http://localhost:<port> for
 	// exactly this (internal/previewgw wsrelay.go).
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -333,7 +333,7 @@ func appHandler(port int, lg *jsonLog) http.Handler {
 			}
 		}
 	})
-	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /sse", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		rc := http.NewResponseController(w)
