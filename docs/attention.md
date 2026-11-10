@@ -696,6 +696,41 @@ names and server instructions load at startup",
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
 
+### The preview tools (`/preview-mcp`)
+
+With [previews](design/previews.md#the-mcp-tools) on (`-preview` and a valid
+`previews.json`), the same endpoint serves a **second MCP server** at
+`http://127.0.0.1:47823/preview-mcp`, behind the same secret, the same
+`Origin` refusal and the same tmux-server check as `/mcp`. It answers
+everything itself and forwards nothing to muster, so a muster outage still
+fails the `muster` server loudly (502) while the preview tools work or fail
+on their own. Without previews the path is 404. Add a second entry with the
+same headers:
+
+```json
+"preview": {
+  "type": "http",
+  "url": "http://127.0.0.1:47823/preview-mcp",
+  "headers": {
+    "Authorization": "Bearer ${MUSTER_MIRROR_MCP_SECRET:-}",
+    "X-Muster-Pane": "${TMUX_PANE:-}",
+    "X-Muster-Tmux": "${TMUX:-}"
+  }
+}
+```
+
+The tools are `preview_open {port, label?, path?}`, `preview_list` and
+`preview_close {id}` (`mcp__preview__preview_*` in Claude Code). Each call is
+bound to the **window** the caller's pane is in, any pane of it, whatever runs
+there (no Claude Code session is needed). `preview_open` refuses a port off
+the allowlist, one nobody (or another user) listens on, and one that does not
+answer `HEAD /` within 5 s, all before the gateway is asked; it waits up to
+5 s for the gateway (`gateway_timeout`), and opening the same port from the
+same window again returns the same id. `preview_list` includes the previews
+the owner opened from an offer. A refusal is a tool error whose text is
+`{"error": "<code>", "message": "…"}`, the code from the design's table
+(plus `no_window` for a pane in no mirrored window).
+
 ### Stale tool definitions
 
 Claude Code loads an MCP tool's name at start and fetches its definition only

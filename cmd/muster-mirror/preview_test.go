@@ -193,7 +193,7 @@ func startPreviewLog(t *testing.T, pf previewFlags, defaultDaemon bool, refused 
 	var buf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	done := startPreview(ctx, pf, defaultDaemon, func() map[int]string { return refused }, "laptop", nil, log.New(&buf, "", 0))
+	done := startPreview(ctx, pf, defaultDaemon, func() map[int]string { return refused }, "laptop", nil, log.New(&buf, "", 0), nil)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -226,7 +226,7 @@ func TestStartPreviewLogsWhatItOffersOrWhyItIsOff(t *testing.T) {
 		t.Errorf("bad config log: %q", out)
 	}
 	var buf bytes.Buffer
-	done := startPreview(context.Background(), pf, true, func() map[int]string { panic("boom") }, "laptop", nil, log.New(&buf, "", 0))
+	done := startPreview(context.Background(), pf, true, func() map[int]string { panic("boom") }, "laptop", nil, log.New(&buf, "", 0), nil)
 	<-done
 	if !strings.Contains(buf.String(), "previews are OFF, mirroring continues: preview setup panicked: boom") {
 		t.Errorf("panic log: %q", buf.String())
@@ -478,5 +478,58 @@ func TestListPreviewsReadsTheProcSeamEndToEnd(t *testing.T) {
 	rc, _, errs = runWith(t, map[string]string{envPreviewFile: filepath.Join(root, "none.json")}, "-list", "-previews")
 	if rc != 1 || !strings.Contains(errs, "previews are off:") {
 		t.Fatalf("bad file: rc %d, %q", rc, errs)
+	}
+}
+
+// TestThePreviewToolsAreMountedOnlyWhenPreviewsAreOn: startPreview hands
+// the Host to its mount once the whole setup validated, and never when
+// previews are off (a missing previews.json, a per-tenant daemon); the
+// mount serves the three preview tools at /preview-mcp on the MCP endpoint,
+// which is 404 before it.
+func TestThePreviewToolsAreMountedOnlyWhenPreviewsAreOn(t *testing.T) {
+	file, token := previewFiles(t, `{"ports": ["5173"]}`)
+	good := previewFlags{On: true, URLs: "ws://192.0.2.7:9000/v1/host", TokenFile: token, File: file}
+	run := func(pf previewFlags, defaultDaemon bool) int {
+		var mounted atomic.Int32
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		<-startPreview(ctx, pf, defaultDaemon, func() map[int]string { return nil }, "laptop", nil, log.New(&bytes.Buffer{}, "", 0),
+			func(*previewhost.Host) { mounted.Add(1) })
+		return int(mounted.Load())
+	}
+	if n := run(good, true); n != 1 {
+		t.Fatalf("previews on: mounted %d time(s); want 1", n)
+	}
+	missing := good
+	missing.File = filepath.Join(t.TempDir(), "none.json")
+	if n := run(missing, true); n != 0 {
+		t.Fatalf("no previews.json: mounted %d time(s)", n)
+	}
+	if n := run(good, false); n != 0 {
+		t.Fatalf("a per-tenant daemon: mounted %d time(s)", n)
+	}
+
+	if previewMCPMount(nil, log.New(&bytes.Buffer{}, "", 0)) != nil {
+		t.Fatal("a mount with no MCP endpoint")
+	}
+	proxy := &mirrorhost.MCPProxy{Secret: strings.Repeat("s", 40)}
+	list := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, mirrorhost.PreviewMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		r.Header.Set("Authorization", "Bearer "+proxy.Secret)
+		w := httptest.NewRecorder()
+		proxy.ServeHTTP(w, r)
+		return w
+	}
+	if w := list(); w.Code != http.StatusNotFound {
+		t.Fatalf("before the mount: %d", w.Code)
+	}
+	var lg bytes.Buffer
+	previewMCPMount(proxy, log.New(&lg, "", 0))(previewhost.NewHost(previewhost.HostConfig{Logger: log.New(&bytes.Buffer{}, "", 0)}))
+	w := list()
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"preview_open"`) || !strings.Contains(w.Body.String(), `"preview_close"`) {
+		t.Fatalf("after the mount: %d %s", w.Code, w.Body)
+	}
+	if !strings.Contains(lg.String(), "preview tools are served at /preview-mcp") {
+		t.Fatalf("mount log %q", lg.String())
 	}
 }

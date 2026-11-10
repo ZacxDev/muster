@@ -400,13 +400,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 	var mcpSettled chan struct{}
+	var proxy *mirrorhost.MCPProxy
 	if *mcpListen != "" {
 		// 🔴 OPT-IN, SO NEVER FATAL: a port in use, a secret file with the wrong
 		// mode or anything else that stops the MCP endpoint is logged and the
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
+		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
@@ -422,7 +423,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// endpoint above, previews run on their own goroutine with a recover;
 		// a bad configuration, an unreachable gateway or a panic is logged and
 		// the host mirrors without them.
-		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger)
+		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger, previewMCPMount(proxy, logger))
 	case pf.URLs != "" || pf.TokenFile != "":
 		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
 	}
