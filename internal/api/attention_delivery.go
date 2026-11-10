@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -353,6 +354,8 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 func (s *Server) runDeliveredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
 	pc := &agents.PartCollector{}
+	// An answer delivered (chief_usage.go): the turn's trigger.
+	ctx = chiefusage.WithTrigger(ctx, chiefusage.Trigger{Kind: chiefusage.TriggerAnswer})
 	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, pc.Observe)
 	s.markAgentIdle(a.Name)
 	if agentgateway.Unsent(err) != "" {

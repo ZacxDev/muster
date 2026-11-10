@@ -47,7 +47,10 @@ var (
 //     card renderers, the cut rule, the spawn.
 func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	assertCallers(t, ".", "kickoffCopy", []string{"succession.go:toolSuccessionPropose"})
-	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal"})
+	// routing_rule_propose raises its card here too: its question is
+	// ruleCardQuestion over a plugins.RuleNew, which carries no kickoff (a
+	// rule is a match and an action copied from a plugin message).
+	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "routing_rules.go:toolRoutingRulePropose"})
 	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)

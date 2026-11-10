@@ -878,6 +878,12 @@ func TestAMentionGoesToTheLiveAgentNotTheChief(t *testing.T) {
 	if got := turnTexts(); len(got) != 1 || !strings.Contains(got[0], "m2: mentioned again") {
 		t.Fatalf("running agent: turns %q; want one carrying the mention", got)
 	}
+	// The usage page's record: each mention muster placed, by name (chief_usage.go).
+	var mentions int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM plugin_message_handling
+		WHERE owner_id = $1 AND handler = 'task_event_mention'`, f.owner).Scan(&mentions); err != nil || mentions != 2 {
+		t.Fatalf("task_event_mention handlings: %d (%v); want the two mentions", mentions, err)
+	}
 	if _, n := f.lastEvent(t, p.ID); n != 0 {
 		t.Fatalf("a mention stored %d task event(s) for the chief", n)
 	}

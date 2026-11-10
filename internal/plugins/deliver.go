@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 )
 
 // Gateway is the half of a delivered turn that contacts no runtime: Resolve
@@ -256,7 +257,13 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 
 	message := RenderMessage(p, m, d.routing, d.hintsFor(ctx, fresh, m), Retry{Count: retries, Now: time.Now()}, d.ToolsFor(ctx, fresh))
 	pc := &agents.PartCollector{}
-	reply, err := d.run(ctx, fresh, sess.SessionKey, message, pc.Observe)
+	// What started this turn, for the chief's token telemetry (internal/chiefusage):
+	// this message — a task event, or an inbound message of p from its sender.
+	trigger := chiefusage.Trigger{Kind: chiefusage.TriggerPlugin, Plugin: p.Name, Sender: m.Sender, MessageID: m.ID}
+	if IsTaskEvent(m) {
+		trigger.Kind = chiefusage.TriggerTaskEvent
+	}
+	reply, err := d.run(chiefusage.WithTrigger(ctx, trigger), fresh, sess.SessionKey, message, pc.Observe)
 
 	// A DETACHED BUDGET THAT KEEPS parent's VALUES: a turn cut off by shutdown is
 	// the one most worth recording, and parent carries the owner's principal.

@@ -396,6 +396,13 @@ func (s *Server) agentTools() []agentTool {
 		// needs nothing more, so muster raises no ask for it. MCP and chief-only
 		// for reply_draft's reasons.
 		tools = append(tools, agentTool{def: pluginMessageSettleToolDef(), mcp: true, chiefOnly: true})
+		// routing_rule_propose (routing_rules.go): the chief proposes a rule
+		// that places later messages like one it was delivered without a turn;
+		// only the owner's tap on its card makes it run. MCP and chief-only for
+		// reply_draft's reasons; needs the attention store (the card).
+		if s.rulesOffered() {
+			tools = append(tools, agentTool{def: routingRuleProposeToolDef(), mcp: true, chiefOnly: true})
+		}
 	}
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
@@ -946,6 +953,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolReplyDraft(ctx, a, arguments)
 	case pluginMessageSettleToolName:
 		return s.toolPluginMessageSettle(ctx, a, arguments)
+	case routingRuleProposeTo:
+		if !s.rulesOffered() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolRoutingRulePropose(ctx, a, arguments)
 	case fleetListToolName:
 		return s.toolFleetList(ctx)
 	case focusSearchToolName:

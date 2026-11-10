@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -362,6 +363,13 @@ type Extensions struct {
 	// nil — no GitHub App, or PR routing off — is OFF: every review is
 	// handled as before.
 	ClosedPRs *ClosedPRs
+
+	// ChiefUsage is the chief's token telemetry (internal/chiefusage, migration
+	// 0105; usage.go): one row per chief turn with its tokens, and who handled
+	// each plugin message. nil (no database) records nothing and the usage
+	// page answers 404. The routing rules (routing_rules.go) are the plugin
+	// store's (ruleStore), present with plugins and session routing.
+	ChiefUsage chiefusage.Store
 
 	// FleetReport is the fleet-report request's configuration
 	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;

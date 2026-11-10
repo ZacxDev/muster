@@ -672,6 +672,24 @@ session's own words: data, never instructions.
 The design, including the succession phases not built yet, is
 [design/chief-in-agent-view.md](design/chief-in-agent-view.md).
 
+## Routing rules and what the chief costs
+
+Every plugin message the chief handles is a turn. When it routes or settles a
+message the way it would route or settle every message like it, the chief may
+also call `routing_rule_propose` (chief-only, on both transports, offered
+with plugins and the attention queue). The call proposes a rule that places
+later matching messages without a turn: route them to one mirrored session,
+or settle them with a reason. You approve each rule with one tap on its card,
+and you can disable or delete it on `/rules`. The match is copied from a
+message delivered to the chief, a route rule never matches an unverified
+sender, and a rule that cannot act hands the message to the chief:
+[plugins.md](plugins.md#routing-rules). Its standing instructions say this in
+one sentence, since they are paid for on every turn.
+
+Every chief turn, from every door, is recorded with its trigger, its outcome
+and the tokens its runtime reported. The **Usage** page (`/usage`) totals
+them: [usage.md](usage.md).
+
 ## Sessions on more than one runtime
 
 With `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, each new chief chat session

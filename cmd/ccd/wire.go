@@ -27,8 +27,9 @@ func toolItem(it turnItem) podagent.NativeToolItem {
 }
 
 // writeResponse writes the turn. items is turnResult.Items (text segments and
-// tool calls in transcript order); the REPLY is its text segments.
-func writeResponse(w http.ResponseWriter, promptID string, items []turnItem, stream bool) {
+// tool calls in transcript order); the REPLY is its text segments. usage is
+// turnResult.Usage: the turn's tokens on response.completed, nil for none.
+func writeResponse(w http.ResponseWriter, promptID string, items []turnItem, usage *podagent.Usage, stream bool) {
 	reply := make([]podagent.ReplyItem, 0, len(items))
 	for _, it := range items {
 		if it.Tool != nil {
@@ -38,5 +39,5 @@ func writeResponse(w http.ResponseWriter, promptID string, items []turnItem, str
 		}
 		reply = append(reply, podagent.ReplyItem{Text: it.Text})
 	}
-	podagent.WriteResponse(w, promptID, reply, stream)
+	podagent.WriteResponseUsage(w, promptID, reply, usage, stream)
 }

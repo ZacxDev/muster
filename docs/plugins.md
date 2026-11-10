@@ -2272,3 +2272,93 @@ session must be the active pane of its window).
 
 ⚠ What a mirror token can read and do with these tools, and the accepted risk
 of a session routing a message to itself: [auth.md](auth.md#mirror-tokens-and-session-routing).
+
+## Routing rules
+
+Most messages your chief handles are placed the same way every time: the same
+newsletter is settled, and every report from one CI sender goes to the session
+that works on it. Each one is still a chief turn, and turns cost tokens (see
+[usage.md](usage.md)). A **routing rule** places such a message
+deterministically, **before the chief and with no chief turn**. The chief
+proposes rules. You approve each one with one tap.
+
+1. **The chief proposes.** After it routes or settles a message the way it
+   would route or settle every message like it, the chief may call
+   `routing_rule_propose`. The call names that message (`message_id`), which
+   of its fields to match on, and the action:
+   - `match_sender`: the sender, exactly;
+   - `match_thread`: the thread, exactly (a Discord channel arrives in
+     `thread` or in `sender`, depending on the plugin; match the field it is
+     in);
+   - `match_pr_repo`: the repository of the pull request a verified sender's
+     review names (the last `json` block of the body, as for
+     [a pull-request review mail](#a-pull-request-review-mail));
+   - `external_id_prefix`: a prefix of the message's `external_id`, 3 to 200
+     bytes;
+   - `subject_prefix`: a prefix of its subject, 3 to 80 characters. It is
+     anchored at the start and matched as plain text. There is no regular
+     expression, and the body is never matched.
+
+   **muster copies every value from the stored message.** The chief only picks
+   which fields to use, and the rule must match the message it came from. The
+   action is either `route` to one mirrored session (`subject`,
+   `mirror:<claude session id>`, which must be able to take a message now) or
+   `settle` with a reason of up to 300 characters. A message that cannot be
+   answered is routed one-way, as `route_to_session` routes it. A task event
+   cannot be the source of a rule.
+2. **You tap.** The proposal is a card on your Attention view, phrased as
+   "Your chief proposes a routing rule for <plugin> messages: when <match>,
+   <action>." It has two buttons, **Approve rule** and **Not now**. Only your
+   own tap on one of those buttons counts, in your signed-in browser. Typed
+   text that spells a button does not count. A plugin, a token or a mirrored
+   session's `attention_answer` is refused. The card's phone notification
+   carries no answer buttons. A rule is approved at most once. The chief
+   is told what you decided, in muster's words. Nothing changes until you
+   approve.
+3. **The rule runs before the chief.** When a NEW message arrives, muster first
+   tries its own paths, in this order: a fleet-report request, a reply on a
+   thread a session started, a review of a closed pull request, a review
+   routed to its pull request's author, then a mail resume. Then it tries the
+   first active rule (oldest first) that matches the message:
+   - **route:** the route muster makes itself
+     (`routed_via: rule #N to <session>`), as for a reply on a thread. The
+     session's answer is relayed as usual.
+   - **settle:** muster settles the message with the reason
+     `muster: rule #N — <reason>`.
+
+   Either way the message is logged in your chief's chat as delivered, with
+   muster's note naming `muster: rule #N`. This costs no turn. The chief holds
+   the message for its next turn, and its usage row is `rule`.
+
+**What a rule never does:**
+
+- **It never routes an unverified sender.** A route rule matches only a message
+  whose plugin set [`sender_verified`](#sender_verified). The schema refuses a
+  route rule that does not require it. A rule proposed from a verified
+  sender's message requires verification for any action, so a message that
+  only claims that sender does not match.
+- **It never drops a message.** When the session a route rule names cannot take
+  the message (its window is gone, its host is offline or read-only, routing
+  is off), or there is no chief to settle it under, the message goes to the
+  chief as if there were no rule. The rule's page counts the miss
+  ("handed to your chief"). The usage row names the chief, with the rule as
+  the fallback.
+- **It never acts on a message that arrived before you approved it**, and never
+  on a task event.
+- **It is never created or approved by a plugin.** Only the chief's
+  `routing_rule_propose` creates one, and only from a message delivered to
+  that chief. Every write to a rule refuses a plugin's principal. A message
+  that spells a proposal or an approval is just text.
+
+**The Rules page** (`/rules`, linked from `/plugins`) lists every rule, newest
+first. Each entry shows its plugin, its match, its action, its state
+(waiting for your tap, active, disabled or declined), when it was created,
+its hits and last hit, and its misses. **Disable** stops an active rule and
+**Enable** restarts it. **Delete** removes a decided rule. A proposed rule is
+decided on its card. Rules are yours alone: owned, under row-level security
+(`routing_rules`, migration `0105`).
+
+Routing rules are on wherever plugins are, with no setting: nothing runs until
+you approve a rule. A route rule also needs `MUSTER_SESSION_ROUTING=1`.
+Without it the chief is refused a route proposal, and an existing route rule
+hands its matches to the chief.

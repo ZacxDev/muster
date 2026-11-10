@@ -88,6 +88,10 @@ type Record struct {
 	QueueContent json.RawMessage `json:"content"`
 
 	Message struct {
+		// ID is an assistant record's API message id: the CLI writes one
+		// record per content block, each carrying the SAME message's usage, so
+		// a turn's tokens are summed once per id (cmd/ccd transcript.go).
+		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
 		// Model and Usage are an assistant record's (usage.go): its model id
 		// only marks the CLI's own "<synthetic>" records.
