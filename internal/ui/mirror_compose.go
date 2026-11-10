@@ -40,7 +40,8 @@ import (
 //
 // PHONE ERGONOMICS, which the browser suite measures at 390×844: the input is
 // 16px (text-base) — iOS zooms the page on focusing anything smaller and does
-// not zoom back; both controls are 44px touch targets; the form carries the
+// not zoom back; the box has its own full-width row above the buttons, which
+// are 40px touch targets (operator decision); the form carries the
 // safe-area inset. On the Terminal views it is the last thing in an h-dvh
 // column, so with interactive-widget=resizes-content it sits on top of the
 // on-screen keyboard rather than under it. On the Rendered view it is Pinned
@@ -148,7 +149,7 @@ type ComposerView struct {
 	// it (composer_reveal.go). Only the Rendered view sets it. A disabled
 	// composer is never collapsed (there is nothing to type).
 	Collapsible bool
-	// MoreInRow draws the session switcher's ⋯ button in the input row, beside
+	// MoreInRow draws the session switcher's ⋯ button in the button row, beside
 	// Send, instead of in the bar (switcherBarWith's moreElsewhere). Only the
 	// Rendered view sets it; it needs Switcher.
 	MoreInRow bool
@@ -205,8 +206,36 @@ const (
 	mirrorComposeDown  = "Not sent: you are offline."
 )
 
+// The composer's two rows (mirrorComposer): the box's, then the buttons'.
+//
+// Only the Rendered view's (collapsible) composer has the two rows. A Terminal
+// view's composer is ONE row (operator decision: the terminal keeps its
+// height): #mv-button-row holding the paperclip, the box, the mic and Send.
+const (
+	composerInputRowID  = "mv-input-row"
+	composerButtonRowID = "mv-button-row"
+)
+
+// composerButtonGap is the button row's spacing: tight (operator ask: "lower
+// the padding on all of the buttons to save a little bit of space"), with
+// every composer button a 40×40 target (min-h/min-w, so a split control can
+// still be wider) rather than 44 — TestComposerButtonsAre40px holds each
+// rendered button to it.
+//
+// 🔴 UNDER 360px THE GAP IS 2px, so the FULLY LOADED row fits a 320px phone:
+// the chief switch, the paperclip, "Type a message", the mic, Send and its
+// caret and the ⋯ are 7×40 = 280px, plus 7 gaps (the spacer is an item too),
+// against the 296px the form's 12px gutters leave — 322px at 6px, 294px at
+// 2px (e2e/tests/chief-in-view.spec.ts's 320×568 case).
+const composerButtonGap = "gap-1.5 max-[359px]:gap-0.5"
+
+// composerMoreClass is the session switcher's ⋯ when it is in the composer's
+// button row (MoreInRow): the bar's icon button at the row's 40px. The bar's
+// own buttons keep their 44px (switcherIconButtonClass).
+const composerMoreClass = "press group inline-flex h-10 w-10 shrink-0 items-center justify-center"
+
 // composerInputClass and composerSendIconClass are the composer's look: a 16px
-// input (iOS zooms the page on focusing anything smaller) and a 44×44 Send.
+// input (iOS zooms the page on focusing anything smaller) and a 40×40 Send.
 // Send is an icon button, a paper plane (sendIcon) named "Send" by aria-label
 // and title — every Send: the Rendered view's plain one, its split one beside
 // the Queue caret (composerSendSplitClass) and the agent chat's. The agent
@@ -219,7 +248,7 @@ const (
 // square would crush a word.
 const (
 	composerInputClass    = "composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"
-	composerSendIconClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition disabled:opacity-40"
+	composerSendIconClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition disabled:opacity-40"
 	composerSendClass     = "press min-h-[44px] shrink-0 rounded-xl bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
 )
 
@@ -247,7 +276,9 @@ const sendKeepsFocusJS = `function (b) {
     if (b) b.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
   }`
 
-// mirrorComposer is the composer's markup: a status line, then the input row.
+// mirrorComposer is the composer's markup: a status line, then the box's own
+// row above the button row (the Rendered view) or one row with both (a
+// Terminal view).
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
 	dictate, upload := v.Dictate, v.Upload
@@ -279,6 +310,22 @@ func mirrorComposer(v ComposerView) g.Node {
 	// collapse: the box starts collapsed on a touch screen (composerRevealCSS
 	// decides by the pointer; the attribute is only the state).
 	collapse := v.Collapsible && !off
+	// twoRows: the Rendered view's composer (Collapsible, read-only or not)
+	// puts the box on its own row above the buttons; every other is one row.
+	twoRows := v.Collapsible
+	box := Textarea(
+		ID("mv-input"),
+		Name("text"),
+		Rows("1"),
+		g.Attr("aria-label", v.Aria),
+		g.Attr("enterkeyhint", "send"),
+		g.If(boxOff, g.Attr("disabled", "")),
+		g.If(off && !boxOff, g.Attr("data-agent-off", "")),
+		g.If(off, g.Attr("title", v.Disabled)),
+		g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
+		Placeholder(placeholder),
+		Class(composerInputClass),
+	)
 	moreInRow := v.MoreInRow && v.Switcher != nil
 	menu := composerMenuSrc(v)
 	place := "flex-none"
@@ -370,43 +417,52 @@ func mirrorComposer(v ComposerView) g.Node {
 			hx("hx-boost", "false"),
 			// The safe-area inset is the LAST row's: the switcher's when it is
 			// drawn below (switcherBar), this row's otherwise.
-			Class("flex items-end gap-2 px-3 pt-2 "+formPad),
+			// 🔴 THE RENDERED VIEW: TWO ROWS, THE BOX ON ITS OWN ABOVE THE
+			// BUTTONS (operator ask: with a full row of buttons "there is not
+			// enough space for the actual text input", so the box "displays in a
+			// new horizontal space above"). The box's row (composerInputRowID) is
+			// the form's width; the button row (composerButtonRowID) is
+			// "[chief][📎][⌨][🎤] … [Send][⋯]". Collapsed (composer_reveal.go)
+			// the box's row is hidden whole and the button row is all there is.
+			// 🔴 A TERMINAL VIEW: ONE ROW (operator decision — the terminal
+			// keeps its height): "[📎][box][🎤][Send]", the paperclip still a
+			// button beside the box, never inside it.
+			g.If(twoRows, Class("flex flex-col gap-2 px-3 pt-2 "+formPad)),
+			g.If(!twoRows, Class("px-3 pt-2 "+formPad)),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
 			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
-			// The chief toggle, the row's FIRST control, left of the paperclip:
-			// where the box's text goes (view_chief.go).
-			g.If(v.Chief != nil, viewChiefToggle(v.Chief)),
-			// The paperclip sits INSIDE the input, on its left (attach.go).
-			attachFieldOrOff(upload, uploadOff, composerFieldMark(collapse), func(pad string, mark g.Node) g.Node {
-				return Textarea(
-					ID("mv-input"),
-					mark,
-					Name("text"),
-					Rows("1"),
-					g.Attr("aria-label", v.Aria),
-					g.Attr("enterkeyhint", "send"),
-					g.If(boxOff, g.Attr("disabled", "")),
-					g.If(off && !boxOff, g.Attr("data-agent-off", "")),
-					g.If(off, g.Attr("title", v.Disabled)),
-					g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
-					Placeholder(placeholder),
-					Class(composerInputClass+pad),
-				)
-			}),
-			// Collapsed: the row's room, so the buttons stay at its right.
-			g.If(collapse, composerSpacer()),
-			// "Type a message" — beside the mic (composer_reveal.go).
-			g.If(collapse, composerTextButton()),
-			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
-			g.If(dictateOff, dictateOffControl("mv-dictate-off")),
-			sendSplit(v.Queue, off),
-			// The chief's Send, shown only in chief mode (view_chief.go).
-			g.If(v.Chief != nil, viewChiefSend(v)),
-			// The session switcher's ⋯, in the row with Send (the Rendered view):
-			// AFTER Send, the row's last control (operator ask: "[input][mic]
-			// [send][⋯]"), so Send keeps its place beside the box and the mic.
-			g.If(moreInRow, switcherMoreButton(v.Switcher)),
+			g.If(twoRows, Div(
+				ID(composerInputRowID),
+				composerFieldMark(collapse),
+				Class("flex"),
+				box,
+			)),
+			Div(
+				ID(composerButtonRowID),
+				Class("flex items-end "+composerButtonGap),
+				// The chief toggle, the row's FIRST control, left of the paperclip:
+				// where the box's text goes (view_chief.go).
+				g.If(v.Chief != nil, viewChiefToggle(v.Chief)),
+				// The paperclip: a button of the row, never inside the box
+				// (attach.go), shown collapsed and open alike.
+				attachControlOrOff(upload, uploadOff),
+				// One row: the box, between the paperclip and the mic.
+				g.If(!twoRows, box),
+				// "Type a message" — right before the mic (composer_reveal.go).
+				g.If(collapse, composerTextButton()),
+				dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
+				g.If(dictateOff, dictateOffControl("mv-dictate-off")),
+				// Two rows: the row's room, so Send and the ⋯ stay at its right
+				// (in one row the box takes it).
+				g.If(twoRows, composerSpacer()),
+				sendSplit(v.Queue, off),
+				// The chief's Send, shown only in chief mode (view_chief.go).
+				g.If(v.Chief != nil, viewChiefSend(v)),
+				// The session switcher's ⋯, in the row with Send (the Rendered
+				// view): AFTER Send, the row's last control.
+				g.If(moreInRow, switcherMoreButtonIn(v.Switcher, composerMoreClass)),
+			),
 		),
 		g.If(off, P(ID("mv-readonly"), Class("px-3 pb-2 text-[11px] text-muted"), g.Text(v.Disabled))),
 		// 🔴 EVERY SCRIPT OF THE COMPOSER IS AFTER ITS FORM. One inside it lets
@@ -439,15 +495,17 @@ func mirrorComposer(v ComposerView) g.Node {
 // fixed-height app shell (a flex column, only the transcript scrolls), but its
 // height is the VISIBLE viewport's as composerPinScript measures it (100dvh
 // until it runs, or without script), and its bottom padding is the pinned
-// composer's height (4.5rem — one input row — until measured), so the
-// column's last child ends exactly where the composer starts.
-const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,4.5rem)]"
+// composer's height (7rem — the box's row over the button row, as a page
+// without script draws it — until measured), so the column's last child ends
+// exactly where the composer starts.
+const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,7rem)]"
 
 // pinnedShellSwitcherClass is pinnedShellClass for a pinned composer with the
-// session switcher below it: the same shell, its unmeasured room one input row
-// AND the switcher's 44px row (7rem), so a paint before composerPinScript has
-// measured still ends the column at about the composer's top.
-const pinnedShellSwitcherClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,7rem)]"
+// session switcher below it: the same shell, its unmeasured room the box's
+// row, the button row AND the switcher's 45px row (9.75rem), so a paint before
+// composerPinScript has measured still ends the column at about the
+// composer's top.
+const pinnedShellSwitcherClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,9.75rem)]"
 
 // composerPinScript keeps a Pinned composer at the bottom of what is on
 // screen, and the page's column sized to end above it.

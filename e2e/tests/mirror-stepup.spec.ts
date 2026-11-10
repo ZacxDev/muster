@@ -408,7 +408,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
       const b = (await el.boundingBox())!;
       expect(b.y + b.height, 'the composer is above the bottom of a 390×844 screen').toBeLessThanOrEqual(844);
       expect(b.x + b.width, 'the composer fits 390px').toBeLessThanOrEqual(390);
-      expect(b.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+      expect(b.height, 'a 40px touch target').toBeGreaterThanOrEqual(40);
     }
 
     // 1. FRESH: typed, tapped, pasted into the Claude pane; the composer clears

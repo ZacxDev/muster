@@ -514,61 +514,32 @@
 /*
  * The Rendered view's COLLAPSIBLE message box (internal/ui/composer_reveal.go).
  * On a touch screen (a coarse pointer) a form carrying data-mv-collapsed draws
- * no box — only "Type a message" (#mv-text) beside the mic, and a spacer that
- * keeps the buttons at the row's right. The box stays in the DOM (display:
- * none), so dictation and the draft still reach it. Revealing it is removing
- * the attribute. With a fine pointer the box is shown and the button never is.
+ * no box: its row ([data-mv-field], above the button row) is not drawn, and
+ * "Type a message" (#mv-text) is shown in the button row, right before the
+ * mic. The paperclip is a button of that row in both states (attach.go), so a
+ * file is attached without opening the box. The box stays in the DOM
+ * (display: none), so dictation and the draft still reach it. Revealing it is
+ * removing the attribute. With a fine pointer the box is shown and the button
+ * never is.
  */
-#mv-text,
-[data-mv-spacer] {
+#mv-text {
   display: none;
 }
 @media (pointer: coarse) {
   /*
-   * Revealed, the box shares its row with the mic, the ⋯ and the split Send,
-   * so on a phone it is narrow: its placeholder stays one line (ellipsed)
-   * rather than wrapping and making an EMPTY box two lines tall (measured 68px
-   * against one line's 44 at 390px wide, e2e/tests/composer-autosize.spec.ts).
-   * A fine pointer is unchanged.
+   * An EMPTY box stays one line: its placeholder is ellipsed rather than
+   * wrapped onto a second line on a narrow phone. A fine pointer is unchanged.
    */
   #mv-input::placeholder {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /*
-   * Collapsed, the BOX is hidden but its field's PAPERCLIP is not (operator
-   * ask: attach a file without opening the box and the keyboard): the field
-   * shrinks to the paperclip, which leaves the input's corner and is drawn
-   * as a 44px button in the mic's clothes at the row's start. Tapping it opens
-   * the file picker only; nothing focuses the box (attach.go). Without
-   * uploads the field IS the box, and is hidden whole.
-   */
   #mv-form[data-mv-collapsed] [data-mv-field] {
-    flex: none;
-  }
-  #mv-form[data-mv-collapsed] #mv-input {
     display: none;
-  }
-  #mv-form[data-mv-collapsed] #mv-attach,
-  #mv-form[data-mv-collapsed] #mv-attach-off {
-    position: static;
-    width: 44px;
-    height: 44px;
-    border-radius: 0.75rem;
-    background-color: rgb(var(--mu-s2));
-    box-shadow: inset 0 0 0 1px rgb(var(--mu-line));
-  }
-  #mv-form[data-mv-collapsed] #mv-attach svg,
-  #mv-form[data-mv-collapsed] #mv-attach-off svg {
-    width: 1.25rem;
-    height: 1.25rem;
   }
   #mv-form[data-mv-collapsed] #mv-text {
     display: inline-flex;
-  }
-  #mv-form[data-mv-collapsed] [data-mv-spacer] {
-    display: block;
   }
 }
 
