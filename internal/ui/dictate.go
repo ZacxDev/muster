@@ -132,7 +132,7 @@ const (
 )
 
 // dictateButtonClass is the mic's look: a 40px square target
-// (composerButtonSize), the composer's surface at rest, the danger colour
+// (the composer's 40px), the composer's surface at rest, the danger colour
 // while recording.
 const dictateButtonClass = "group hidden press min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition disabled:opacity-60 data-[state=recording]:bg-danger data-[state=recording]:text-on-accent data-[state=recording]:ring-0"
 

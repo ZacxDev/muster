@@ -65,10 +65,15 @@ func idsOf(ns []*html.Node) []string {
 // TestTheBoxHasItsOwnRowAboveTheButtonRow: the form draws exactly two rows, in
 // this order — the box's (#mv-input-row, holding the textarea and nothing
 // else) and the buttons' (#mv-button-row, holding every control and no box).
+// The Rendered view's composer only: a Terminal view's is one row
+// (TestTheTerminalComposerIsOneRow).
 // 🔴 A REGRESSION GUARD: at the base the form is ONE row, the box a sibling
 // of the mic and Send.
 func TestTheBoxHasItsOwnRowAboveTheButtonRow(t *testing.T) {
 	for name, page := range composerSurfaces(t) {
+		if name == "a Terminal view" {
+			continue
+		}
 		doc := parseFragment(t, page)
 		form := byID(doc, "mv-form")
 		if form == nil {
@@ -100,6 +105,40 @@ func TestTheBoxHasItsOwnRowAboveTheButtonRow(t *testing.T) {
 		}
 		if send := byID(buttonRow, "mv-send"); send == nil {
 			t.Errorf("%s: CONTROL: Send is not in the button row", name)
+		}
+	}
+}
+
+// TestTheTerminalComposerIsOneRow: on a Terminal view — a mirrored session's
+// and a dispatched agent's — the composer is ONE row (operator decision: the
+// terminal keeps its height): the form's only row is #mv-button-row, and it
+// holds, in order, the paperclip, the box, the mic and Send — the paperclip a
+// sibling of the box, never inside it. No box row is drawn.
+func TestTheTerminalComposerIsOneRow(t *testing.T) {
+	for name, page := range map[string]string{
+		"a mirrored session's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "w",
+			Composer: &ComposerView{SendPath: MirrorTerminalSendPath, Host: "tower", Session: "w", Upload: UploadPath, Dictate: TranscribePath}})),
+		"an agent's terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "keen-wren", RenderedHref: AgentPath("keen-wren"),
+			Composer: &ComposerView{SendPath: AgentSendPath("keen-wren"), Upload: UploadPath, Dictate: TranscribePath}})),
+	} {
+		doc := parseFragment(t, page)
+		form := byID(doc, "mv-form")
+		if form == nil {
+			t.Fatalf("%s: no composer form", name)
+		}
+		if rows := idsOf(elementChildren(form)); strings.Join(rows, " ") != "div#"+composerButtonRowID {
+			t.Errorf("%s: the form's rows are %v, want the one row #%s", name, rows, composerButtonRowID)
+			continue
+		}
+		var got []string
+		for _, c := range elementChildren(byID(form, composerButtonRowID)) {
+			got = append(got, c.Data+"#"+attrOf(c, "id"))
+		}
+		if want := "input#mv-file button#mv-attach textarea#mv-input button#mv-dictate button#mv-send"; strings.Join(got, " ") != want {
+			t.Errorf("%s: the row is %v, want %s", name, got, want)
+		}
+		if byID(doc, composerInputRowID) != nil {
+			t.Errorf("%s: a box row is drawn", name)
 		}
 	}
 }
@@ -176,15 +215,8 @@ func TestThePaperclipIsAButtonOfTheRowInBothStates(t *testing.T) {
 // that is never checked) fails rather than passing unseen. The bar's own ⋯
 // (a Terminal view's) keeps its 44px.
 func TestComposerButtonsAre40px(t *testing.T) {
-	if composerButtonSize != "min-h-[40px] min-w-[40px]" {
-		t.Fatalf("composerButtonSize = %q, want the operator's 40px", composerButtonSize)
-	}
 	is40 := func(cls string) bool {
-		sized := true
-		for _, c := range strings.Fields(composerButtonSize) {
-			sized = sized && hasClass(cls, c)
-		}
-		return sized || (hasClass(cls, "h-10") && hasClass(cls, "w-10"))
+		return (hasClass(cls, "min-h-[40px]") && hasClass(cls, "min-w-[40px]")) || (hasClass(cls, "h-10") && hasClass(cls, "w-10"))
 	}
 	is44 := func(cls string) bool {
 		for _, c := range []string{"min-h-[44px]", "min-w-[44px]", "h-11", "w-11"} {

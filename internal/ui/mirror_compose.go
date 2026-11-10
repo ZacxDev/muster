@@ -41,7 +41,7 @@ import (
 // PHONE ERGONOMICS, which the browser suite measures at 390×844: the input is
 // 16px (text-base) — iOS zooms the page on focusing anything smaller and does
 // not zoom back; the box has its own full-width row above the buttons, which
-// are 40px touch targets (composerButtonSize); the form carries the
+// are 40px touch targets (operator decision); the form carries the
 // safe-area inset. On the Terminal views it is the last thing in an h-dvh
 // column, so with interactive-widget=resizes-content it sits on top of the
 // on-screen keyboard rather than under it. On the Rendered view it is Pinned
@@ -207,22 +207,21 @@ const (
 )
 
 // The composer's two rows (mirrorComposer): the box's, then the buttons'.
+//
+// Only the Rendered view's (collapsible) composer has the two rows. A Terminal
+// view's composer is ONE row (operator decision: the terminal keeps its
+// height): #mv-button-row holding the paperclip, the box, the mic and Send.
 const (
 	composerInputRowID  = "mv-input-row"
 	composerButtonRowID = "mv-button-row"
 )
 
 // composerButtonGap is the button row's spacing: tight (operator ask: "lower
-// the padding on all of the buttons to save a little bit of space"), with the
-// buttons 40px targets (composerButtonSize) rather than 44.
+// the padding on all of the buttons to save a little bit of space"), with
+// every composer button a 40×40 target (min-h/min-w, so a split control can
+// still be wider) rather than 44 — TestComposerButtonsAre40px holds each
+// rendered button to it.
 const composerButtonGap = "gap-1.5"
-
-// composerButtonSize is EVERY composer button's target: 40×40 (operator
-// decision, down from 44), as min-h/min-w so a worded or split control can
-// still be wider. The classes below spell it out in full — Tailwind reads
-// class names from the source, so they cannot be built from this — and
-// TestComposerButtonsAre40px holds each of them to it.
-const composerButtonSize = "min-h-[40px] min-w-[40px]"
 
 // composerMoreClass is the session switcher's ⋯ when it is in the composer's
 // button row (MoreInRow): the bar's icon button at the row's 40px. The bar's
@@ -271,7 +270,9 @@ const sendKeepsFocusJS = `function (b) {
     if (b) b.addEventListener('mousedown', function (e) { if (e.button === 0) e.preventDefault(); });
   }`
 
-// mirrorComposer is the composer's markup: a status line, then the box's own row above the button row.
+// mirrorComposer is the composer's markup: a status line, then the box's own
+// row above the button row (the Rendered view) or one row with both (a
+// Terminal view).
 func mirrorComposer(v ComposerView) g.Node {
 	off := v.Disabled != ""
 	dictate, upload := v.Dictate, v.Upload
@@ -303,6 +304,22 @@ func mirrorComposer(v ComposerView) g.Node {
 	// collapse: the box starts collapsed on a touch screen (composerRevealCSS
 	// decides by the pointer; the attribute is only the state).
 	collapse := v.Collapsible && !off
+	// twoRows: the Rendered view's composer (Collapsible, read-only or not)
+	// puts the box on its own row above the buttons; every other is one row.
+	twoRows := v.Collapsible
+	box := Textarea(
+		ID("mv-input"),
+		Name("text"),
+		Rows("1"),
+		g.Attr("aria-label", v.Aria),
+		g.Attr("enterkeyhint", "send"),
+		g.If(boxOff, g.Attr("disabled", "")),
+		g.If(off && !boxOff, g.Attr("data-agent-off", "")),
+		g.If(off, g.Attr("title", v.Disabled)),
+		g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
+		Placeholder(placeholder),
+		Class(composerInputClass),
+	)
 	moreInRow := v.MoreInRow && v.Switcher != nil
 	menu := composerMenuSrc(v)
 	place := "flex-none"
@@ -394,35 +411,27 @@ func mirrorComposer(v ComposerView) g.Node {
 			hx("hx-boost", "false"),
 			// The safe-area inset is the LAST row's: the switcher's when it is
 			// drawn below (switcherBar), this row's otherwise.
-			// 🔴 TWO ROWS: THE BOX ON ITS OWN, THE BUTTONS BELOW IT (operator ask:
-			// with a full row of buttons "there is not enough space for the
-			// actual text input", so the box "displays in a new horizontal space
-			// above"). The box's row (composerInputRowID) is the form's width;
-			// the button row (composerButtonRowID) is
+			// 🔴 THE RENDERED VIEW: TWO ROWS, THE BOX ON ITS OWN ABOVE THE
+			// BUTTONS (operator ask: with a full row of buttons "there is not
+			// enough space for the actual text input", so the box "displays in a
+			// new horizontal space above"). The box's row (composerInputRowID) is
+			// the form's width; the button row (composerButtonRowID) is
 			// "[chief][📎][⌨][🎤] … [Send][⋯]". Collapsed (composer_reveal.go)
 			// the box's row is hidden whole and the button row is all there is.
-			Class("flex flex-col gap-2 px-3 pt-2 "+formPad),
+			// 🔴 A TERMINAL VIEW: ONE ROW (operator decision — the terminal
+			// keeps its height): "[📎][box][🎤][Send]", the paperclip still a
+			// button beside the box, never inside it.
+			g.If(twoRows, Class("flex flex-col gap-2 px-3 pt-2 "+formPad)),
+			g.If(!twoRows, Class("px-3 pt-2 "+formPad)),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
 			g.If(collapse, g.Attr(composerCollapsibleAttr, "")),
-			Div(
+			g.If(twoRows, Div(
 				ID(composerInputRowID),
 				composerFieldMark(collapse),
 				Class("flex"),
-				Textarea(
-					ID("mv-input"),
-					Name("text"),
-					Rows("1"),
-					g.Attr("aria-label", v.Aria),
-					g.Attr("enterkeyhint", "send"),
-					g.If(boxOff, g.Attr("disabled", "")),
-					g.If(off && !boxOff, g.Attr("data-agent-off", "")),
-					g.If(off, g.Attr("title", v.Disabled)),
-					g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
-					Placeholder(placeholder),
-					Class(composerInputClass),
-				),
-			),
+				box,
+			)),
 			Div(
 				ID(composerButtonRowID),
 				Class("flex items-end "+composerButtonGap),
@@ -432,12 +441,15 @@ func mirrorComposer(v ComposerView) g.Node {
 				// The paperclip: a button of the row, never inside the box
 				// (attach.go), shown collapsed and open alike.
 				attachControlOrOff(upload, uploadOff),
+				// One row: the box, between the paperclip and the mic.
+				g.If(!twoRows, box),
 				// "Type a message" — right before the mic (composer_reveal.go).
 				g.If(collapse, composerTextButton()),
 				dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 				g.If(dictateOff, dictateOffControl("mv-dictate-off")),
-				// The row's room, so Send and the ⋯ stay at its right.
-				composerSpacer(),
+				// Two rows: the row's room, so Send and the ⋯ stay at its right
+				// (in one row the box takes it).
+				g.If(twoRows, composerSpacer()),
 				sendSplit(v.Queue, off),
 				// The chief's Send, shown only in chief mode (view_chief.go).
 				g.If(v.Chief != nil, viewChiefSend(v)),

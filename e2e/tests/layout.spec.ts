@@ -57,7 +57,7 @@ test('no main page scrolls sideways at 360px', async ({ page }) => {
 // The board card's stretched link is excluded: its hit area is the whole card
 // (a ::after overlay), not the anchor's own box.
 // 🔴 ONE NAMED EXCEPTION: the message composers' buttons are 40×40 (operator
-// decision, internal/ui/mirror_compose.go composerButtonSize) — every control
+// decision, internal/ui/mirror_compose.go) — every control
 // of a mirrored composer's button row, and the agent chat's Send and mic by
 // id. They are held to 40, not waived.
 const controlsJS = `(() => {

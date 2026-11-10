@@ -118,6 +118,26 @@ func TestTheComposerDrawsANoticeTheServerGaveIt(t *testing.T) {
 // (composer_reveal.go), which the seam guards below take out of its form.
 var collapsibleBits = regexp.MustCompile(` data-mv-collapsible=""| data-mv-field=""|<button id="mv-text"[^>]*>.*?</button>`)
 
+// layoutFree is a composer form's markup reduced to its controls: its
+// element start tags in document order, the layout's <div>/<span> wrappers
+// and every class attribute dropped, the box's tag moved to the end.
+func layoutFree(form string) string {
+	var tags []string
+	box := ""
+	for _, m := range regexp.MustCompile(`<([a-z]+)\b([^>]*)>`).FindAllStringSubmatch(form, -1) {
+		if m[1] == "div" || m[1] == "span" {
+			continue
+		}
+		tag := "<" + m[1] + regexp.MustCompile(` class="[^"]*"`).ReplaceAllString(m[2], "") + ">"
+		if m[1] == "textarea" {
+			box = tag
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	return strings.Join(tags, "") + "\n" + box
+}
+
 func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 	const marker = "HTMLFormElement.prototype.submit.call(form);"
 	pages := map[string]string{
@@ -163,6 +183,13 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 		// The draft's key is the address too (composer_draft.go); that the box
 		// HAS one is part of the shape.
 		form = regexp.MustCompile(` data-draft-key="[^"]+"`).ReplaceAllString(form, ` data-draft-key="…"`)
+		// 🔴 THE LAYOUT DIFFERS ON PURPOSE (composer_rows_test.go): the
+		// Rendered view's box has its own row above the buttons, a Terminal
+		// view's composer is one row. So the shape compared is the form's
+		// CONTROLS — every element but the layout's divs and spans, without
+		// classes — with the box taken out of the sequence (its place is the
+		// layout's) and compared on its own.
+		form = layoutFree(form)
 		if shape == "" {
 			shape = form
 		} else if form != shape {

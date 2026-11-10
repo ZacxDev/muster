@@ -217,13 +217,14 @@ const chatBox: Box = { input: '#chat-input', mic: '#chat-dictate', note: '#chat-
 
 type BB = { x: number; y: number; width: number; height: number };
 // expectMicPlaced: the mic is a 40px target where its box puts it — on the
-// mirrored composer's button row, BELOW the box's own row (mirror_compose.go);
-// beside the box, on its row, everywhere else.
-function expectMicPlaced(box: Box, mb: BB, ib: BB, viewportWidth: number) {
+// Rendered view's button row, BELOW the box's own row (twoRows: the page
+// draws #mv-input-row; mirror_compose.go); beside the box, on its row,
+// everywhere else (a Terminal view's one-row composer, the agent chat, an ask).
+function expectMicPlaced(twoRows: boolean, mb: BB, ib: BB, viewportWidth: number) {
   expect(mb.height, 'a 40px target').toBeGreaterThanOrEqual(40);
   expect(mb.width, 'a 40px target').toBeGreaterThanOrEqual(40);
   expect(mb.x + mb.width, 'the mic fits the viewport').toBeLessThanOrEqual(viewportWidth);
-  if (box.input === '#mv-input') expect(mb.y, 'the mic is on the button row, below the box').toBeGreaterThanOrEqual(ib.y + ib.height - 0.5);
+  if (twoRows) expect(mb.y, 'the mic is on the button row, below the box').toBeGreaterThanOrEqual(ib.y + ib.height - 0.5);
   else expect(Math.abs(mb.y + mb.height - (ib.y + ib.height)), 'the mic sits on the box’s row').toBeLessThanOrEqual(2);
 }
 
@@ -236,7 +237,7 @@ async function dictate(page: Page, box: Box, viewportWidth: number): Promise<str
   await expect(mic, 'the script revealed the mic').toBeVisible();
   // A 40px target where its box puts it, on screen, and the page does not scroll sideways.
   const ib = (await input.boundingBox())!;
-  expectMicPlaced(box, (await mic.boundingBox())!, ib, viewportWidth);
+  expectMicPlaced((await page.locator('#mv-input-row').count()) > 0, (await mic.boundingBox())!, ib, viewportWidth);
   await noHorizontalScroll(page);
 
   await input.fill('please now');
@@ -671,7 +672,7 @@ test.describe('an ask’s answer boxes', () => {
     const input = page.locator(box.input);
     const mic = page.locator(box.mic);
     await expect(mic, 'the script revealed the mic').toBeVisible();
-    expectMicPlaced(box, (await mic.boundingBox())!, (await input.boundingBox())!, width);
+    expectMicPlaced((await page.locator('#mv-input-row').count()) > 0, (await mic.boundingBox())!, (await input.boundingBox())!, width);
     await noHorizontalScroll(page);
     await input.fill('please now');
     await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));

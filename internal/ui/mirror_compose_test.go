@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,11 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 		t.Errorf("the Rendered view's form is not the collapsible one, or the Terminal's is:\n%s\n%s", tf, vf)
 	}
 	vf = collapsibleBits.ReplaceAllString(vf, "")
+	// The layout differs on purpose (composer_rows_test.go: two rows on the
+	// Rendered view, one on a Terminal view), so the form's class is not
+	// compared.
+	noClass := regexp.MustCompile(` class="[^"]*"`)
+	tf, vf = noClass.ReplaceAllString(tf, ""), noClass.ReplaceAllString(vf, "")
 	if strings.Replace(tf, "/mirror/terminal/send", "/mirror/view/send", 1) != vf {
 		t.Errorf("the two composer forms differ in more than their route:\n%s\n%s", tf, vf)
 	}
