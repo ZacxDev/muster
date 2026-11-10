@@ -66,6 +66,9 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // Signed in as a GoTrue admin, against a real GoTrue (passkeys on, plugins on).
   'GET /account/passkeys': { where: 'signed-in', url: '/account/passkeys', ready: '#passkey-add' },
   'GET /plugins': { where: 'signed-in', url: '/plugins', ready: 'h1' },
+  // Routing rules and the chief's usage (routing_rules.go, usage.go): server-rendered lists.
+  'GET /rules': { where: 'signed-in', url: '/rules', ready: 'h1' },
+  'GET /usage': { where: 'signed-in', url: '/usage', ready: '[data-testid="usage-totals"]' },
   'GET /admin/invites': { where: 'signed-in', url: '/admin/invites', ready: '#invite-ttl' },
   'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
 };
