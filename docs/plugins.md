@@ -2402,7 +2402,7 @@ went away no longer waits: the card was cancelled, answered somewhere else,
 or expired after the attention queue's default 24 hours. muster declines that
 rule, so it frees its match for a new proposal and does not count toward the
 limit of 10 open proposals. Rules are yours alone: owned, under row-level security
-(`routing_rules`, migration `0106`).
+(`routing_rules`, migration `0107`).
 
 Routing rules are on wherever plugins are, with no setting: nothing runs until
 you approve a rule. A route rule also needs `MUSTER_SESSION_ROUTING=1`.

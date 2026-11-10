@@ -56,9 +56,9 @@ var accountsReset = []string{
 	`DELETE FROM flow_jobs WHERE owner_id <> 1`,
 	`DELETE FROM flow_runner_tokens WHERE owner_id <> 1`,
 	// Plugins (0015): a member's plugin cascades to its messages, drafts and
-	// routing rules (0106).
+	// routing rules (0107).
 	`DELETE FROM plugins WHERE owner_id <> 1`,
-	// The chief's telemetry (0106): owned rows naming no plugin, so they do not
+	// The chief's telemetry (0107): owned rows naming no plugin, so they do not
 	// cascade, and a member's would block the member's delete.
 	`DELETE FROM chief_turn_usage WHERE owner_id <> 1`,
 	`DELETE FROM plugin_message_handling WHERE owner_id <> 1`,
@@ -115,7 +115,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect for reset: %w", err)
 	}
-	// The chief's telemetry (0106) goes with the plugins: its rows name
+	// The chief's telemetry (0107) goes with the plugins: its rows name
 	// plugin messages by id, and RESTART IDENTITY hands those ids out again.
 	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_standing_grants, connector_audit,
 		flow_jobs, flow_runner_tokens, flow_requests, plugins, chief_turn_usage, plugin_message_handling RESTART IDENTITY CASCADE`)

@@ -298,7 +298,7 @@ BEGIN
         ALTER TABLE public.plugin_handoffs DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.plugin_handoffs ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0106 (routing_rules, chief_turn_usage, plugin_message_handling), when
+    -- 0107 (routing_rules, chief_turn_usage, plugin_message_handling), when
     -- this schema has them; same reason as 0011.
     IF to_regclass('public.routing_rules') IS NOT NULL THEN
         ALTER TABLE public.routing_rules NO FORCE ROW LEVEL SECURITY;

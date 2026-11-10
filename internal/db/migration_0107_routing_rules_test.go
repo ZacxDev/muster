@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestMigration0106RoutingRulesAndTelemetry: at version 105 none of the three
-// tables exists. After 0106, routing_rules refuses a rule with nothing to match
+// TestMigration0107RoutingRulesAndTelemetry: at version 106 none of the three
+// tables exists. After 0107, routing_rules refuses a rule with nothing to match
 // on, a route with no session (or with a reason), a settle with no reason, a
 // ROUTE THAT DOES NOT REQUIRE A VERIFIED SENDER, an active rule with no
 // approval time and a subject prefix under three characters; and stores a well-formed settle and route. chief_turn_usage refuses an unknown
@@ -14,19 +14,19 @@ import (
 // unknown handler, a rule hit with no rule, a rule id on a chief hand-off's
 // fallback that is not the chief's, and a second row for one message.
 // Re-applying the file changes nothing.
-func TestMigration0106RoutingRulesAndTelemetry(t *testing.T) {
+func TestMigration0107RoutingRulesAndTelemetry(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0106_routing_rules", 105)
+	pool := freshAt(ctx, t, "ms_0107_routing_rules", 106)
 	for _, tbl := range []string{"routing_rules", "chief_turn_usage", "plugin_message_handling"} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT to_regclass('public.'||$1) IS NOT NULL`, tbl).Scan(&has); err != nil || has {
-			t.Fatalf("control: at version 105 %s exists=%v (%v); want absent", tbl, has, err)
+			t.Fatalf("control: at version 106 %s exists=%v (%v); want absent", tbl, has, err)
 		}
 	}
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
 		VALUES (1, 'plugin-rules', 'Example inbox', 'pluginhash-rules', 'example') RETURNING id`)
 
-	applyThroughFrom(ctx, t, pool, 106)
+	applyThroughFrom(ctx, t, pool, 107)
 
 	rule := func(cols, vals string) error {
 		_, err := pool.Exec(ctx, `INSERT INTO routing_rules (owner_id, plugin_id, plugin_name, chief_agent, source_message, `+cols+`)
@@ -113,12 +113,12 @@ func TestMigration0106RoutingRulesAndTelemetry(t *testing.T) {
 		t.Errorf("a second row for one message: %v; want refused by plugin_message_handling_message", err)
 	}
 
-	if _, err := pool.Exec(ctx, readMigration(t, "0106_routing_rules_chief_usage.sql")); err != nil {
-		t.Fatalf("re-applying 0106: %v", err)
+	if _, err := pool.Exec(ctx, readMigration(t, "0107_routing_rules_chief_usage.sql")); err != nil {
+		t.Fatalf("re-applying 0107: %v", err)
 	}
 	var rules, turns, handlings int
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM routing_rules), (SELECT count(*) FROM chief_turn_usage),
 		(SELECT count(*) FROM plugin_message_handling)`).Scan(&rules, &turns, &handlings); err != nil || rules != 3 || turns != 1 || handlings != 2 {
-		t.Fatalf("after re-applying 0106: %d rules, %d turns, %d handlings (%v); want 3, 1, 2", rules, turns, handlings, err)
+		t.Fatalf("after re-applying 0107: %d rules, %d turns, %d handlings (%v); want 3, 1, 2", rules, turns, handlings, err)
 	}
 }

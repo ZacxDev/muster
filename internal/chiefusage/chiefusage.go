@@ -1,5 +1,5 @@
 // Package chiefusage is muster's record of what the owner's CHIEF costs and
-// what it is spared (migration 0106; docs/usage.md):
+// what it is spared (migration 0107; docs/usage.md):
 //
 //   - one row per chief turn (chief_turn_usage): what started it (Trigger),
 //     what it did (Outcome, from the tools it called) and the tokens its

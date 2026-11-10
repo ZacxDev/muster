@@ -365,7 +365,7 @@ type Extensions struct {
 	ClosedPRs *ClosedPRs
 
 	// ChiefUsage is the chief's token telemetry (internal/chiefusage, migration
-	// 0106; usage.go): one row per chief turn with its tokens, and who handled
+	// 0107; usage.go): one row per chief turn with its tokens, and who handled
 	// each plugin message. nil (no database) records nothing and the usage
 	// page answers 404. The routing rules (routing_rules.go) are the plugin
 	// store's (ruleStore), present with plugins and session routing.

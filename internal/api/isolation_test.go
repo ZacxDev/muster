@@ -426,7 +426,7 @@ var isolationClasses = map[string]routeClass{
 	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
 	"POST /plugin-handoffs":     classList,
 	"POST /plugins/{id}/revoke": classParam,
-	// Routing rules (routing_rules.go, 0106): the page lists the caller's own
+	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
 	// rules; each write names a rule by id, and another owner's is not found.
 	// The usage page reads the caller's own telemetry rows only.
 	"GET /rules":               classList,
@@ -952,7 +952,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	_, w.aPlugin2, err = ps.Create(ua, "iso-second", w.canary+" plugin", "iso")
 	must(err, "a second plugin")
-	// A's routing rules (0106), approved: the Rules page's write routes name
+	// A's routing rules (0107), approved: the Rules page's write routes name
 	// them by id (isoObjs.rule, ruleOff, ruleDel).
 	aRule := func(sender string, off bool) int64 {
 		r, err := ps.CreateRuleProposal(ua, plugins.RuleNew{PluginID: w.aPlugin2.ID, PluginName: w.aPlugin2.Name,
@@ -1386,7 +1386,7 @@ type isoObjs struct {
 	refTask                                   int64  // the reference refWrite is on (its retry/dismiss routes' {id})
 	ask                                       int64  // an attention ask's id (0025)
 	standing                                  int64  // a shared approval's id (0043)
-	// Routing rules (0106): one per write route, so the walk's order cannot
+	// Routing rules (0107): one per write route, so the walk's order cannot
 	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
 	// disabled (Enable's), ruleDel active (Delete's).
 	rule, ruleOff, ruleDel int64

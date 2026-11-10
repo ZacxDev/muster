@@ -7,7 +7,7 @@ chief. It is on whenever muster has a database. It needs no setting.
 
 ## What is recorded
 
-**One row per chief turn** (`chief_turn_usage`, migration `0106`):
+**One row per chief turn** (`chief_turn_usage`, migration `0107`):
 
 | Field | What it is |
 |---|---|
