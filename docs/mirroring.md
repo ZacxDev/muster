@@ -8,6 +8,10 @@ Mirroring is off unless the server runs with `MUSTER_MIRROR=1`, and it needs a
 database. When it is off, `GET /mirror/connect` and the mirror routes answer
 404, and nothing mirrored is drawn.
 
+A web server running in a mirrored window (a dev server an agent started) can
+be shown to you inside muster or in a new tab, through the preview gateway:
+see [previews.md](previews.md). It is off unless the host runs with `-preview`.
+
 ![A mirrored Claude Code window rendered as a chat](img/mirror-rendered.png)
 
 ## Mirrored sessions and dispatched agents

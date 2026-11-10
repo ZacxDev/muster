@@ -26,6 +26,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [previews.md](previews.md) — previews: a web server an agent runs on a mirrored host, served to you through the preview gateway (`muster-preview`), the `previews.json` allowlist and the agent's `preview_*` tools; what is built, its limits, error codes and what is not verified
 - [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
 - [officers.md](officers.md) — officers: standing, queue-driven Claude Code agents whose queue and charter live in HQ; muster wakes them, scales them to zero, and holds their HQ token
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
@@ -52,7 +53,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone
 - [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
-- [design/previews.md](design/previews.md) — proposed: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
+- [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)

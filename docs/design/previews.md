@@ -1,9 +1,12 @@
 # Design: previews — serving an agent's local web server to its owner
 
-**Status: proposed; the operator's decisions are made** (see
-[decisions](#decisions)). **Nothing here is implemented.** Every other section
-is the recommended design, and its [open questions](#open-questions) are for
-the operator.
+**Status: phase 1 (mirrored hosts, owner only) is built; phases 2 and 3 are
+proposed.** The operator's decisions are made (see [decisions](#decisions)).
+What was built is described in [previews.md](../previews.md), from the code.
+Where phase 1 came out differently from this page, the section carries an
+**As built** note or its row is corrected, and the code is the authority. The
+[open questions](#open-questions) are for the operator. Items marked
+**(with #574)** are in the open G3c pull request.
 
 This page proposes letting work running under muster — a Claude Code session
 **mirrored from a bare host**, and later a dispatched agent in a **pod** —
@@ -323,6 +326,9 @@ added with the pod path, in [phase 2](#d-provisioner-ingress-seam-phase-2).
   cannot post to the chief.
 - **Granting:** checkboxes on the create form; widening an existing token's set
   needs a fresh sign-in (step-up), narrowing does not.
+  **As built (#553, #560):** the set is fixed at mint; there is no route that
+  widens or narrows it. The choice is drawn only while `MUSTER_PLUGIN_ORIGINS`
+  is set, and a viewer-only token stores data scope `none`.
 - **Origin and entry URL:** a `viewer` token also carries **one origin
   pattern** (e.g. `https://*.musterchief.com`), chosen by the owner from the
   deployment's allowlist `MUSTER_PLUGIN_ORIGINS`, and **one entry URL** under
@@ -349,7 +355,10 @@ signed-in owner, and which session view they came from.
 3. The plugin's entry route **calls muster**:
    `POST /plugin/v1/handoffs/redeem {code}` → `200 {owner, target, purpose,
    stepped_up, minted_at}`. A code minted for another plugin, used, expired or
-   unknown is one `404`. The plugin removes the code from the address bar
+   unknown is one `404`. **As built (#560):** the answer names the owner as
+   `owner_id` (an identifier, never the login label), the target is
+   `{"mirror": {host, session, window}}` (no `agent` target in phase 1), and
+   the gateway accepts only purpose `view`. The plugin removes the code from the address bar
    at once: a plugin that sets a cookie redirects; a plugin that holds no
    cookie (the preview gateway's session page) renders the page directly from
    the entry route and strips the code with `history.replaceState`. Either way
@@ -396,7 +405,15 @@ How a plugin gets a way in from a session's view.
   `allow-same-origin` is safe because the frame's origin is not muster's.
 - **CSP:** the session view pages add `frame-src` with the origins in
   `MUSTER_PLUGIN_ORIGINS`; every other page is unchanged
-  (`internal/api/middleware.go:119-131`).
+  (`internal/api/middleware.go:119-131`). **As built (#563):** `frame-src` is
+  `'self'` plus the stored origins of **the owner's own live viewer plugins**
+  only (each once), not every pattern in `MUSTER_PLUGIN_ORIGINS`; a page with
+  no chip gets no `frame-src`.
+- **As built (#563): where the chip is.** On a mirrored window's
+  `/mirror/view` and `/mirror/terminal` only (a window with no rendered view
+  opens on the terminal); `/agents/{name}` draws none in phase 1. **Open**
+  opens a blank tab inside the tap, clears its `opener`, then mints and
+  navigates it, so a popup blocker refuses before a code is minted.
 - **The chip's placement is fixed**, so it does not shift the page's layout
   when it appears (the `cls.spec.ts` gate,
   [testing.md](../testing.md#the-browser-suite-e2e)).
@@ -554,6 +571,16 @@ which token redeems it. On a single-operator deployment that is one token. A
 deployment-wide plugin credential for many owners is
 [open question 1](#open-questions).
 
+**As built (#561, #553):** `/self` answers `200` for any live token, with its
+`capabilities`. The gateway treats a `200` whose `capabilities` lacks `viewer`
+**exactly like a `401`**. An owner with several tokens in the file is served
+while **any one** of them is live, and its previews close only when none is.
+An answer that gives no verdict (muster unreachable, a `5xx`, a `404`) keeps a
+token's last verdict for 9 checks; at the 10th in a row (about ten minutes)
+the token stops counting as live. `host-token create` resolves `<owner>` as a
+login against the live `/self` answers and stores `owner_id`, refusing a login
+two owners answer to.
+
 ### Host tokens
 
 `muster-preview host-token create <owner> <host>` prints an `mpt_` token
@@ -603,6 +630,14 @@ it is [open question 8](#open-questions).
    answers `200` and copies bytes; or `403` (`port_not_allowed`,
    `foreign_listener`), `502` (`refused`), `429` (`max_conns`).
    `MaxConcurrentStreams` is the host's `maxConns`.
+   **As built (#555):** the host's `MaxConcurrentStreams` is `maxConns + 4`
+   (`ControlStreams`: the offer stream and the open/close answers never queue
+   behind data), and `maxConns` counts `CONNECT` streams only. At the cap the
+   gateway's `Dial` **waits** up to 10 s (`DefaultDialWait`) for a free slot
+   and only then answers `429 max_conns`; the host's own `429` is a backstop
+   the gateway retries within the same wait. A host's `maxConns` is fixed for
+   the tunnel's life: a changed value makes the host reconnect, and the
+   gateway never raises a tunnel's limit past its first value.
 
 Both connections share the host's uplink, so a large download still competes
 with terminal bytes for bandwidth, though not for a TCP stream or a read loop.
@@ -632,6 +667,13 @@ With the stream window at 4 MiB and this page's host caps:
 
 The gateway creates the client connection before the host announces its own
 `maxConns`, so it sizes the window from the cap: (256 + 1) × 4 MiB = 1028 MiB.
+
+**As built (#555, #554):** phase 1 caps `maxConns` at **64** (`wire.MaxConns`,
+the default too), not 256, and sizes the windows over the control streams as
+well: 4 MiB per stream and (64 + 4 + 1) × 4 MiB = **276 MiB** per connection
+towards the browser, and, because the host's `x/net` server has the same
+hazard for uploads, 1 MiB and (64 + 4 + 1) × 1 MiB = **69 MiB** on the host.
+`TestFlowControlInvariantIsPinned` pins the numbers and the relationship.
 The host's `MaxConcurrentStreams` (its `maxConns`) is what keeps the number of
 paused streams within that bound. The memory column is a real cost of a large
 `maxConns`, paid only while readers are paused.
@@ -731,7 +773,10 @@ repository, not this one):
 - **The listener is this user's (Linux):** the listening socket's uid in
   `/proc/net/tcp` and `/proc/net/tcp6` equals muster-mirror's, else
   `foreign_listener`. On macOS the check is **UNVERIFIED** and off, and the offer
-  says so.
+  says so. **As built (#562):** off Linux the check and the listener reports
+  are off, but **the offer stream does not say so** (no wire field was added;
+  only the host's log says it). An unreadable `/proc` row fails closed as
+  `foreign_listener`.
 - **Its caps:** `maxConns` streams, `maxOpen` previews.
 
 ### Listener reports
@@ -757,7 +802,8 @@ How the host offers servers to the owner ([decision 9](#decisions)).
 - **Privacy:** the process name and port reach the gateway and its page, and
   **never muster**: muster stores nothing about offers. `"offer": false` in
   `previews.json` turns reports off; the agent tool still works.
-- macOS: **UNVERIFIED** (`lsof` would be the source); reports are off there.
+- macOS: **UNVERIFIED** (`lsof` would be the source); reports are off there
+  (and, as built, only the host's log says so).
 
 ### Host configuration: `previews.json`
 
@@ -787,9 +833,14 @@ allowlist that is empty, meaning nothing, until written.
   the log, and is never fatal.
 - **`offer`:** listener reports on (default) or off.
 - **`maxOpen`** (default 8, at most 32) and **`maxConns`** (default 64, at most
-  256).
+  256). **As built (#554):** `maxConns` is at most **64**; keys must be spelt
+  exactly (a case variant is refused).
 - **Not tied to `-interactive`:** exposing a loopback server is not typing
   into a pane. Re-read on change; previews on a port that left the list close.
+  **As built (#562):** re-read every 5 s; the **host** closes a port's
+  previews (telling the gateway on the offer stream), cuts their live
+  connections, and refuses new `CONNECT`s `port_not_allowed`. The gateway has
+  no rule of its own for it.
 
 ### The pod path (phase 2)
 
@@ -850,6 +901,25 @@ with the dialer "a `CONNECT` stream on that host's tunnel" or "the pod's gate":
 - **Long-lived connections** are re-checked every 30 s (cookie not expired,
   preview open, share link live) and closed on a failure; a WebSocket opened
   under an owner cookie is closed when that cookie expires.
+- **As built (#571):**
+  - **Cut on the event, not at a 30 s re-check.** Every proxied request and
+    relayed WebSocket runs under the preview's own context, which a close
+    (Close, `preview_close`, idle, TTL, a revoked host, an owner no longer
+    served) ends at once, and under a timer at the owner cookie's expiry.
+    WebSockets are closed `1008` with `preview_closed` or `session_expired`.
+  - **`Origin` is rewritten on WebSocket upgrades only**, as the bullet above
+    says (the first G3b head rewrote it on every request; the audit reverted
+    that). A plain request keeps the browser's `Origin`, matching
+    `X-Forwarded-Host`.
+  - The request also loses `CDN-Loop`; the response also loses every
+    `X-Muster-*` header (an app cannot forge the gateway's error code) and
+    `Clear-Site-Data` (which a browser applies to the whole registrable
+    domain). The `frame-ancestors` policy is a **second** CSP header, which
+    the browser enforces beside the app's own.
+  - The gateway's own errors are a fixed page plus `X-Muster-Preview-Error:
+    <code>`; an app's own errors, and its refusal of an upgrade, pass through
+    as the app sent them. A non-WebSocket `Upgrade` is `400 bad_upgrade`.
+    A quiet event stream gets no keepalive comment in a compressed body.
 - **HMR** clients connect to `location.host`; an app pinned to an explicit HMR
   host or port bypasses the preview. The tool description says so.
 
@@ -868,6 +938,15 @@ What muster's chip opens: `https://w.musterchief.com/__muster/enter?muster_code=
   header on the page's polls (every 5 s while visible) and its actions. It is
   never a cookie, so preview content on a sibling `p-` host cannot ride it,
   and a reload or an expired token means clicking muster's chip again.
+  **As built (#566):** the page token is not random and nothing stores it: it
+  is **HMAC-SHA256-signed and stateless** (`PREVIEW_SIGNING_KEY`, with a MAC
+  kind of its own so it is never accepted as an owner cookie), carrying owner,
+  host, window and expiry. The script reads it from a JSON boot element,
+  removes the element, and sends `Authorization: Bearer`.
+- **As built (#566, #571): the buttons.** Each offer and preview has **Open**
+  (this frame or tab) and **New tab** (a blank tab opened inside the click,
+  `opener` cleared, then navigated); an open preview also has **Close**,
+  `POST /__muster/close`, scoped to the page's window.
 - **Open** asks the gateway (with the page token) for a one-time preview entry
   code, then navigates the frame or a new tab to that preview's host
   ([auth](#auth-on-preview-origins)). Opening an offer is the moment the
@@ -903,7 +982,10 @@ What muster's chip opens: `https://w.musterchief.com/__muster/enter?muster_code=
   once. On expiry the next
   request (and any open WebSocket, at its next 30 s check) gets the gateway's
   "session expired: open the preview again from muster" page, and a fresh chip
-  click renews it.
+  click renews it. **As built (#566, #571):** `Max-Age=28800`; open requests
+  and WebSockets are cut **at** the expiry by a timer, not at a later check.
+  The entry code that mints the cookie is 60 s and single use, and is capped
+  at 64 unspent per owner and 4096 in all.
 - In a frame the cookie is third-party (`SameSite=None; Partitioned`); partitioned cookies work in Chromium,
   and Firefox partitions by default. **Safari and the Android app's WebView are
   UNVERIFIED** (the WebView refuses third-party cookies unless the app enables
@@ -950,6 +1032,19 @@ the others must hold without it:
    back to the same `Origin` rule for every non-`GET`. The cost: an app flow
    that comes back to the preview through another site in a frame (an OAuth
    redirect inside **Show here**) is refused, and works in a new tab.
+   **As built (#571):** the allowed top-level navigation is a `GET` or `HEAD`
+   with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`; a
+   navigation with `Sec-Fetch-Dest: iframe` passes **on `/__muster/check`
+   only**, which the gateway answers itself. **Show here** needs it: `w.`
+   navigates muster's frame to the entry route, which redirects to check in
+   one same-site chain; check's page then navigates on to the app with a
+   nonce'd `location.replace` (not a `303`), so the app's request is
+   same-origin. Everywhere else an iframe navigation is refused, so a sibling
+   preview cannot reach another preview's app from a hidden frame (measured in
+   Chromium by E1, #573: partitioning does not separate two previews opened in
+   the same frame, and Chromium attaches the victim's cookie). Chromium sends
+   no `Sec-Fetch-*` on a WebSocket handshake, so the `Origin` rule is what
+   defends WebSockets there.
 4. **Cookies an app sets are host-only.** The proxy removes `Domain` from every
    upstream `Set-Cookie` ([the proxy](#the-proxy)). It cannot stop preview
    **script** from setting a `Domain=musterchief.com` cookie, so: the gateway's
@@ -958,6 +1053,11 @@ the others must hold without it:
    exceeds 8 KiB (cookie bombing) gets a page that expires every cookie it
    names, at both the host and `Domain=musterchief.com`. A tossed cookie can
    still reach another preview's **app** as one of its own cookies.
+   **As built (#571):** the reset page answers **`431`** (`too_many_cookies`)
+   and expires each named cookie (up to 128) at **every path prefix** of the
+   request (up to 8), host-only and at `Domain=<zone>`, each **plain and
+   `Partitioned`** (at most 512 `Set-Cookie` headers); a `__Host-` cookie only
+   host-only at `/`.
 5. **No `Referer`.** Every `p-` and `w.` response sets
    `Referrer-Policy: no-referrer`, replacing the app's, so a preview's id does
    not leave in a `Referer`. It still appears in the `Origin` of the app's own
@@ -987,6 +1087,31 @@ Served **on the machine**, never through muster ([decision 11](#decisions)).
 | `preview_open` | `port` (1–65535), `label` (≤ 60, optional), `path` (starts with `/`, ≤ 512 bytes, optional) | `{id, port, label, state: "open"}`; it is listed on the gateway's session page for the caller's window | `previews_off`, `port_not_allowed`, `not_listening`, `foreign_listener`, `gateway_not_connected`, `gateway_timeout`, `max_open` |
 | `preview_list` | none | the caller's open previews | `previews_off` |
 | `preview_close` | `id` | `{closed: true}` | `not_found` (also another caller's) |
+
+**As built (#564):** a refusal is a tool result (`isError: true`) whose text
+is `{"error": "<code>", "message": "…"}`; only an unknown tool is a JSON-RPC
+error. Codes the table above lacks, all built:
+
+- `invalid_arguments` (every tool): arguments that do not validate;
+- `no_window` (every tool): the caller's pane is in no mirrored window;
+- `not_answering` (`preview_open`): the port accepted a connection but gave no
+  HTTP answer to `HEAD /` within 5 s (retryable; `not_listening` now means
+  nothing accepted the connection);
+- `gateway_error` (open, close): the gateway refused with something that is
+  not a well-formed code (`^[a-z_]{1,32}$`); a well-formed one is passed on,
+  and the message is always the host's own, never the gateway's text;
+- `cancelled` (open, close): the caller's own request ended first;
+- `preview_close` can also answer `previews_off`, `gateway_not_connected` and
+  `gateway_timeout`; `preview_list` answers only `previews_off`,
+  `invalid_arguments` and `no_window`.
+
+An existing open of the same (window, port) returns its id **before** any
+port check, so it keeps its id after its server stopped. The gateway's own
+answer codes on the offer stream include `host_offline`, `bad_port`,
+`bad_path`, `bad_window`, `bad_session`, `bad_request` and `internal`. The
+gateway's pages add `too_many_connections` (429) and `body_too_large` (413)
+**(with #574)**. Every code any side emits is tabled in
+[previews.md](../previews.md#error-codes).
 
 **On a host (phase 1).** `muster-mirror`'s loopback MCP listener, when
 `-preview` is on and `previews.json` loaded, serves a **second MCP server** at
@@ -1045,22 +1170,32 @@ alike, with the same arguments and errors.
 
 The gateway owns all preview state (its own Postgres or SQLite: `previews`,
 `shares`, `host_tokens`). muster holds none: no preview, offer or embed rows.
+**As built (#561):** the gateway has **no database**. Previews and entry codes
+live in memory (a restart forgets them, and each host re-announces its
+acknowledged opens, which get new ids); host tokens are a flock'd file in
+`STATE_DIR`.
 
 | event | what happens |
 |---|---|
 | `preview_open`, or **Open** on an offer | probe; record; listed on the session page |
-| `preview_close`, or **Close** on the session page | closed; connections end |
+| `preview_close`, or **Close** on the session page | closed; connections end. **As built (#571): at once** — every request, stream and WebSocket of it is cut, not at a 30 s re-check |
 | The host's tunnel drops | requests get a "host offline" page (503) |
-| Offline for 24 h | closed |
-| The window is gone (absent from the offer stream's window listing) for 10 minutes | closed |
-| The port leaves the allowlist | closed |
-| No request for `PREVIEW_IDLE` (default 2 h) | closed |
+| The window is gone (absent from the offer stream's window listing) for 10 minutes | closed. **(with #574)** checked by the 30 s sweep, so 10 to 10.5 min after; the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host (no listing) neither starts nor clears it |
+| No request for `PREVIEW_IDLE` (default 2 h) | closed (a request or WebSocket in flight counts as use; checked every 30 s) |
 | Open longer than `PREVIEW_TTL` (default 24 h) | closed; reopening mints a new id |
-| The host token is revoked | tunnel ends within 30 s; that host's previews close |
-| The plugin token is revoked or loses `viewer`, or the owner is disabled | muster's chip disappears and redeems fail; the gateway's minute-by-minute `GET /plugin/v1/self` gets a `401` and it closes that owner's previews and their share links within a minute; open owner cookies end with their previews |
+| The host token is revoked | tunnel ends within 30 s; that host's previews close (as built, #561: even if the host is offline at the check) |
+| The plugin token is revoked or loses `viewer`, or the owner is disabled | muster's chip disappears and redeems fail; the gateway's minute-by-minute `GET /plugin/v1/self` gets a `401` and it closes that owner's previews and their share links within a minute; open owner cookies end with their previews. **As built (#561):** a `200` without `viewer` counts as a `401`; with several tokens, the owner's previews close only once **no** token of the owner is live; ten checks in a row without a verdict also end a token |
 | The owner signs out in muster | nothing at once: open owner cookies end within 8 h (decisions [13](#decisions) and [19](#decisions)), and share links keep working until closed, revoked or expired ([decision 22](#decisions)) |
 | The agent is destroyed (phase 2) | its target read answers `404`; the gateway closes its previews within a minute |
 | The upstream stops answering | a "not answering" page (502); the preview stays open |
+| **As built (#571):** the owner cookie expires | its requests and WebSockets are cut at that moment (`1008 session_expired`) |
+
+**As built (#571): two rows are dropped.** "Offline for 24 h → closed" never
+binds: `PREVIEW_TTL` (default 24 h) closes every preview by then, and the
+host drops an open older than 24 h rather than re-announce it. "The port
+leaves the allowlist → closed" is the host's, not the gateway's: the host
+closes that port's previews itself and refuses its `CONNECT`s
+`port_not_allowed` ([host configuration](#host-configuration-previewsjson)).
 
 ## Limits and quotas
 
@@ -1070,11 +1205,11 @@ Following [limits.md](../limits.md#mirroring):
 |---|---|---|---|
 | per calling session | open previews | 4 | gateway |
 | per owner | open previews | 16 | gateway |
-| per host | open previews | 8 (`maxOpen`, ≤ 32) | host and gateway |
-| per host | concurrent upstream streams | 64 (`maxConns`, ≤ 256) | host |
+| per host | open previews | 8 (`maxOpen`, ≤ 32) | host and gateway. **As built (#571):** the gateway applies the host's `maxOpen` (8 until the host sends one) with **no 32 cap** of its own: the per-owner 16 binds first, and the host enforces its own ≤ 32 |
+| per host | concurrent upstream streams | 64 (`maxConns`, ≤ 64 as built) | host. **As built (#555):** the gateway holds a new stream up to 10 s for a slot, then answers `429 max_conns`; the host's `429` is a backstop |
 | per pod | concurrent upstream connections | 64 | gate |
-| per preview | concurrent client connections | 64 | gateway |
-| request body | size | 32 MiB (`PREVIEW_MAX_BODY`) | gateway |
+| per preview | concurrent client connections | 64 | gateway. **(with #574, the operator's decision):** counts requests and WebSockets **in flight** (a browser's connections are multiplexed behind the edge); the 65th waits up to the same dial wait (10 s) for a slot, then gets `429 too_many_connections`, before anything is dialled |
+| request body | size | 32 MiB (`PREVIEW_MAX_BODY`) | gateway. **(with #574):** `413 body_too_large`, at once for a declared length, as the body streams for a chunked one; WebSocket messages are not limited |
 | response | size | none; flow-controlled | — |
 | upstream headers | time | 60 s | gateway |
 | HTTP connection | idle | 5 min | gateway |
@@ -1108,6 +1243,27 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 Nothing named `MUSTER_PREVIEW_*` is read by muster-server: it has no preview
 listener, proxy or key.
 
+**As built** (the variables read today are in
+[configuration.md](../configuration.md#muster-preview-the-preview-gateway)):
+
+- `MUSTER_PLUGIN_ORIGINS` (#556, #563): a `*.<zone>` pattern covers every depth
+  below the zone, never the zone itself. The boot check that refuses a pattern
+  covering muster's own host knows **only `MUSTER_PUBLIC_URL`'s host**: a
+  pattern covering another name muster is reached at (an agent connect URL, an
+  in-cluster name, the name hosts dial) would `421` that traffic with no boot
+  error. `frame-src` gets the owner's live viewer plugins' origins, not the
+  whole list (seam (b) above).
+- `PREVIEW_DATABASE_URL` is **not built**: the gateway has no database
+  ([lifecycle](#lifecycle)). It reads `STATE_DIR` instead, for the host-token
+  file and its lock.
+- `PREVIEW_SIGNING_KEY` is at least 32 bytes and signs the owner cookies and
+  the page tokens (HMAC-SHA256, kind-separated).
+- `PREVIEW_TTL` and `PREVIEW_IDLE` are Go durations of at least `1m`.
+  `PREVIEW_MAX_BODY` **(with #574)** takes bytes or `KiB`/`MiB`/`GiB`, from
+  1 KiB to 1 GiB.
+- `PREVIEW_SHARES` and `PREVIEW_SHARE_MAX_TTL` (phase 3), and the phase-2
+  variables, are not read.
+
 ## Telemetry
 
 - **The gateway** ([telemetry.md](../telemetry.md) conventions): spans
@@ -1124,6 +1280,28 @@ listener, proxy or key.
 - **muster's seams:** `muster_plugin_handoffs_total{purpose,outcome}`.
 - **Privacy:** no path, query, header or body is logged, traced or labelled; no
   hand-off code, share token or host token appears anywhere but its hash.
+
+**As built:**
+
+- On `main` the gateway exports `muster_preview_tunnels{path}` (#561), on its
+  own registry at `/metrics` on the **mesh listener only**; muster adds
+  `muster_plugin_origin_refusals_total` beside the hand-off counter (#556).
+- **(with #574)** the gateway adds the three spans and
+  `muster_previews_open{kind}`, `muster_preview_requests_total`,
+  `muster_preview_dial_seconds`, `muster_preview_refusals_total{reason}`
+  (a code outside the known set counts as `other`), and **three metrics this
+  page did not list**, kept by the operator's decision:
+  `muster_preview_opens_total{opener}` (`agent`, `page`),
+  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
+  `window_gone`, `host_revoked`, `owner_not_served`) and
+  `muster_preview_response_seconds{kind}` (time to the app's response
+  headers). `preview.request` covers admitted requests only.
+- **Not built:** `muster_preview_bytes_total{kind,direction}`,
+  `muster_preview_offers{state}` ("state" is not defined here; define it
+  before building it), `muster_preview_share_redemptions_total` and the
+  `pod`/`share` label values (phases 2 and 3), and the host's
+  `host.preview.dial` and `host.preview.tool` spans. The host logs one line
+  per refused stream.
 
 ## Threat model
 
