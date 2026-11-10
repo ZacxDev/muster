@@ -15,7 +15,7 @@
 // (the CLI's own schema describes utilization as "Percentage of the window
 // used, 0-100"), plus a `limits` array whose per-model weekly rows carry
 // `scope.model.display_name`, `percent` and `resets_at`. One live call
-// (2026-11-10, a full-scope claude.ai login) answered 200 in exactly that shape,
+// (a full-scope claude.ai login) answered 200 in exactly that shape,
 // with `five_hour` null (no session window open) and dozens of other null keys.
 //
 // ⚠ UNVERIFIED FOR A `setup-token`. The pool's tokens are `claude setup-token`

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// liveShape is the shape the endpoint answered on 2026-11-10 (a full-scope
+// liveShape is the shape the endpoint answered to one live call (a full-scope
 // login), trimmed: most keys null, five_hour null (no session window open),
 // seven_day set, extra_usage a money block with a null utilization, and the
 // limits array.
