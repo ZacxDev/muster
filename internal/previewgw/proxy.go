@@ -292,7 +292,8 @@ func (g *Gateway) proxyError(w http.ResponseWriter, r *http.Request, err error) 
 // response or WebSocket is cut then — not at a later check.
 //
 // Before anything is dialled: at most MaxConnsPerPreview requests of the
-// preview in flight (useBegin), and a declared Content-Length within
+// preview in flight (useBegin; one more waits up to the dial wait for a slot,
+// then is refused 429), and a declared Content-Length within
 // PREVIEW_MAX_BODY. A body without one (chunked) is counted as it streams to
 // the app — never buffered — and refused 413 when it passes the limit
 // (upstreamError). Each admitted request is a preview.request span and a
@@ -302,7 +303,14 @@ func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id strin
 	sctx, span := telemetry.Start(r.Context(), "preview.request", attribute.String("muster.preview.kind", kindHost),
 		attribute.String("muster.preview.auth", authOwner))
 	rec := &statusRecorder{ResponseWriter: w}
+	left := false
 	defer func() {
+		if left {
+			// The browser gave up while waiting for a slot: never admitted,
+			// and nothing was written.
+			telemetry.End(span, "client_left")
+			return
+		}
 		st := rec.status
 		if tg.upgraded {
 			st = http.StatusSwitchingProtocols
@@ -317,17 +325,19 @@ func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id strin
 		}
 		telemetry.End(span, reason)
 	}()
-	p, code := g.useBegin(id)
-	switch code {
-	case "":
-	case codeTooManyConns:
+	p, code, left := g.useBegin(r.Context(), id)
+	switch {
+	case left:
+		return
+	case code == "":
+	case code == codeTooManyConns:
 		g.renderCode(rec, http.StatusTooManyRequests, code)
 		return
 	default:
 		g.renderCode(rec, http.StatusNotFound, code)
 		return
 	}
-	defer g.useEnd(id)
+	defer g.useEnd(p)
 	ws := isWebSocket(r)
 	if !ws && r.ContentLength > g.maxBody {
 		g.renderCode(rec, http.StatusRequestEntityTooLarge, codeBodyTooLarge)

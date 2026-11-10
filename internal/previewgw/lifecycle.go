@@ -34,10 +34,12 @@ const (
 	DefaultHostMaxOpen = 8
 	// MaxConnsPerPreview is the most requests and WebSockets one preview may
 	// have in flight at once (the design's 64 "concurrent client
-	// connections" per preview). One more is refused 429
-	// too_many_connections before anything is dialled. It binds when the
-	// host's own upstream slots (maxConns, at most 64) are full and requests
-	// queue for one: without it a page could queue without bound.
+	// connections" per preview). One more WAITS for a slot, for at most the
+	// dial wait (Options.DialWait, the same bound the host's own upstream
+	// slots use), and is then refused 429 too_many_connections — before
+	// anything is dialled. It binds when the host's own upstream slots
+	// (maxConns, at most 64) are full and requests queue for one: without it
+	// a page could queue without bound.
 	MaxConnsPerPreview = 64
 )
 
@@ -101,7 +103,8 @@ func (g *Gateway) newPreviewLocked(t *Tunnel, opener, window, session string, po
 	ctx, cancel := context.WithCancel(g.ctx)
 	g.previewBy[previewKey{t.key, window, port}] = id
 	p := &Preview{ID: id, OwnerID: t.key.owner, Host: t.key.host, Window: window, Session: session,
-		Port: port, Label: label, Path: path, Opened: now, lastUsed: now, ctx: ctx, cancel: cancel}
+		Port: port, Label: label, Path: path, Opened: now, lastUsed: now, ctx: ctx, cancel: cancel,
+		slots: make(chan struct{}, g.o.MaxConnsPerPreview)}
 	// A window the host's listing already lacks is gone from now.
 	t.mu.Lock()
 	if t.state.HaveWindows && !slices.Contains(t.state.Windows, window) {
@@ -199,31 +202,64 @@ func (g *Gateway) closeFromPage(c pageClaim, id string) bool {
 
 // useBegin marks one proxied request (or relayed WebSocket) of id in flight
 // and returns what it needs, or a refusal code: codePreviewClosed when the
-// preview is not open or its owner not served, codeTooManyConns when it
-// already has MaxConnsPerPreview in flight. useEnd must follow a use begun
-// (code ""), and only one: a refusal counts nothing.
-func (g *Gateway) useBegin(id string) (p Preview, code string) {
+// preview is not open, its owner is not served, or it closes while the
+// request waits; codeTooManyConns when it has MaxConnsPerPreview in flight
+// and none ends within the dial wait; left (and no code) when ctx — the
+// browser's request — ends first. useEnd(p) must follow a use begun (code ""
+// and !left), and only one: a refusal or an abandoned wait holds nothing.
+//
+// The wait holds no gateway lock: a slot is a token in p.slots, taken by a
+// send that blocks only this request. A waiter that gives up never took one,
+// so it cannot leak one; a close ends p.ctx, which wakes every waiter at once.
+func (g *Gateway) useBegin(ctx context.Context, id string) (p Preview, code string, left bool) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	pp, ok := g.previews[id]
 	if !ok || !g.liveOwnerLocked(pp.OwnerID) {
-		return Preview{}, codePreviewClosed
+		g.mu.Unlock()
+		return Preview{}, codePreviewClosed, false
 	}
-	if pp.active >= MaxConnsPerPreview {
-		return Preview{}, codeTooManyConns
+	slots, pctx := pp.slots, pp.ctx
+	g.mu.Unlock()
+
+	select {
+	case slots <- struct{}{}:
+	default:
+		wait := time.NewTimer(g.o.DialWait)
+		defer wait.Stop()
+		select {
+		case slots <- struct{}{}:
+		case <-pctx.Done():
+			return Preview{}, codePreviewClosed, false
+		case <-ctx.Done():
+			return Preview{}, "", true
+		case <-wait.C:
+			return Preview{}, codeTooManyConns, false
+		}
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// A close between the lookup and the slot (one that lost the select to a
+	// freed slot) — every close, an owner's included, deletes the preview.
+	if cur, ok := g.previews[id]; !ok || cur != pp {
+		<-slots
+		return Preview{}, codePreviewClosed, false
 	}
 	pp.active++
 	pp.lastUsed = g.clock.Now()
-	return *pp, ""
+	return *pp, "", false
 }
 
-// useEnd ends one in-flight use of id, begun by useBegin.
-func (g *Gateway) useEnd(id string) {
+// useEnd ends one in-flight use of p, begun by useBegin, and frees its slot.
+// active drops before the slot frees, so a waiter that takes it never counts
+// one more than the cap.
+func (g *Gateway) useEnd(p Preview) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	// The preview may have closed meanwhile; then nothing reads it again.
-	if pp, ok := g.previews[id]; ok {
+	if pp, ok := g.previews[p.ID]; ok {
 		pp.active--
 		pp.lastUsed = g.clock.Now()
 	}
+	g.mu.Unlock()
+	<-p.slots
 }

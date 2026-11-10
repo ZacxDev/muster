@@ -82,6 +82,7 @@ type Preview struct {
 
 	lastUsed  time.Time          // the last proxied request's start or end
 	active    int                // proxied requests and WebSockets in flight (at most MaxConnsPerPreview)
+	slots     chan struct{}      // one token per use in flight; its capacity is the cap (useBegin)
 	goneSince time.Time          // when its window left the host's listing; zero while listed
 	ctx       context.Context    // ends when the preview closes; every use of it runs under it
 	cancel    context.CancelFunc // ends ctx (deletePreviewLocked)

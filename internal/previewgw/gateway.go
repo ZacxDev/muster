@@ -63,10 +63,16 @@ type MusterAPI interface {
 
 // Options are the gateway's collaborators; zero values take real ones.
 type Options struct {
-	Clock    Clock
-	Log      *slog.Logger
-	Muster   MusterAPI // nil: NewMusterClient(cfg.MusterURL)
+	Clock  Clock
+	Log    *slog.Logger
+	Muster MusterAPI // nil: NewMusterClient(cfg.MusterURL)
+	// DialWait bounds both waits for capacity: a request waiting for one of
+	// its preview's MaxConnsPerPreview slots (useBegin), and a dial waiting
+	// for one of the host's maxConns upstream slots (the tunnel's Dial). Each
+	// refuses 429 when it passes; 0 means tunnel.DefaultDialWait.
 	DialWait time.Duration
+	// Tests only: the per-preview in-flight cap; 0 means MaxConnsPerPreview.
+	MaxConnsPerPreview int
 	// Tests only: the ping interval each tunnel's client uses.
 	PingInterval time.Duration
 	// Tests only: the browser-leg WebSocket ping and the quiet-SSE comment
@@ -135,6 +141,12 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	}
 	if o.StreamKeepalive <= 0 {
 		o.StreamKeepalive = StreamKeepalive
+	}
+	if o.DialWait <= 0 {
+		o.DialWait = tunnel.DefaultDialWait
+	}
+	if o.MaxConnsPerPreview <= 0 {
+		o.MaxConnsPerPreview = MaxConnsPerPreview
 	}
 	if o.Muster == nil {
 		o.Muster = NewMusterClient(cfg.MusterURL, "muster-preview/"+Version)

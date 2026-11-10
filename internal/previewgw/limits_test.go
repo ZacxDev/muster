@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/preview/wire"
+	"github.com/coder/websocket"
 )
 
 // ------------------------------------------------------------ helpers
@@ -31,58 +32,6 @@ func inFlight(e *gwEnv, id string) int {
 		return -1
 	}
 	return p.active
-}
-
-// holdApp is a loopback app: /hold blocks until release is closed (or the
-// request ends), /fail drops the connection without answering, anything
-// else answers 200 "ok". It counts the requests each path saw.
-type holdApp struct {
-	port    int
-	release chan struct{}
-	mu      sync.Mutex
-	seen    map[string]int
-}
-
-func newHoldApp(t *testing.T) *holdApp {
-	t.Helper()
-	a := &holdApp{release: make(chan struct{}), seen: map[string]int{}}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		a.mu.Lock()
-		a.seen[r.URL.Path]++
-		a.mu.Unlock()
-		switch r.URL.Path {
-		case "/hold":
-			w.WriteHeader(http.StatusOK)
-			w.(http.Flusher).Flush()
-			select {
-			case <-a.release:
-			case <-r.Context().Done():
-			}
-		case "/fail":
-			c, _, err := w.(http.Hijacker).Hijack()
-			if err == nil {
-				c.Close()
-			}
-		default:
-			_, _ = io.WriteString(w, "ok")
-		}
-	}))
-	t.Cleanup(func() {
-		select {
-		case <-a.release:
-		default:
-			close(a.release)
-		}
-		srv.Close()
-	})
-	a.port = srv.Listener.Addr().(*net.TCPAddr).Port
-	return a
-}
-
-func (a *holdApp) count(path string) int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.seen[path]
 }
 
 // syncOffers waits until every offer line sent on fh before it has been
@@ -104,111 +53,413 @@ func (e *gwEnv) syncOffers(t *testing.T, fh *fakeHost, owner int64, host string,
 
 // ------------------------------------------------------------ the tests
 
-// 🔴 A preview has at most 64 requests and WebSockets in flight. The host's
-// maxConns here is 7, so 7 of the 64 hold upstream streams and 57 queue for
-// a slot (the dial wait is long): the 65th request — and a WebSocket — are
-// refused 429 too_many_connections at once, never reaching the app. A slot
-// is released when a request is cancelled, and when requests complete; a
-// refusal holds none, and 70 requests the app drops (502) leak none.
-func TestAPreviewHasAtMost64RequestsInFlight(t *testing.T) {
-	const host = "alpha"
-	e := newGW(t, gwOpts{dialWait: 20 * time.Second, idle: 20 * time.Hour, ttl: 30 * time.Hour})
-	app := newHoldApp(t)
-	e.serve(4301, app.port)
-	fh := e.mustDial(t, dialOpts{listener: "public", token: e.mint(t, 1, host), hostName: host, maxConns: 7})
-	fh.offers <- wire.Offer{Type: wire.TypeConfig, Config: &wire.Config{Ports: []string{"4000-4999"}, Offer: true, MaxOpen: 8, MaxConns: 7}}
-	waitFor(t, "the config", func() bool { return e.tunnelFor(1, host).stateMaxConns() == 7 })
-	ls := []wire.Listener{{Port: 4301, Process: "vite", Window: "@1"}}
-	e.syncOffers(t, fh, 1, host, ls, "m1")
-	id, cookie, _ := e.admitIn(t, 1, host, "@1", 4301)
-	hdr := own(id, cookie)
-	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 200}}
-	t.Cleanup(client.CloseIdleConnections)
+// ------------------------------------------------------------ the per-preview cap
 
-	type held struct {
-		cancel context.CancelFunc
-		done   chan struct{}
-	}
-	hold := func() held {
-		ctx, cancel := context.WithCancel(context.Background())
-		h := held{cancel, make(chan struct{})}
-		go func() {
-			defer close(h.done)
-			req, _ := http.NewRequestWithContext(ctx, "GET", e.public.URL+"/hold", nil)
-			req.Host = pHost(id)
-			for k, vs := range hdr {
-				req.Header[k] = vs
-			}
-			resp, err := client.Do(req)
+// The per-preview cap's fixtures: a cap of 5 — not the default 64 — on a
+// host whose maxConns is 9, so every admitted request holds a real upstream
+// stream and the host's own slots are never what a request waits for; and
+// the harness's 300 ms dial wait.
+const (
+	capFixture      = 5
+	capHostMaxConns = 9
+	capWait         = 300 * time.Millisecond
+)
+
+// capApp is a loopback app: a WebSocket upgrade is accepted and held until
+// the browser leaves; /hold/<k> answers its headers and blocks until
+// release(k) (or the request ends); /fail drops the connection unanswered;
+// anything else answers 200 "ok", counted.
+type capApp struct {
+	port int
+	mu   sync.Mutex
+	rel  map[string]chan struct{}
+	oks  atomic.Int64
+}
+
+func newCapApp(t *testing.T) *capApp {
+	t.Helper()
+	a := &capApp{rel: map[string]chan struct{}{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if headerHasToken(r.Header, "Connection", "upgrade") {
+			c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 			if err != nil {
 				return
 			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}()
-		return h
-	}
-	var hs []held
-	for range 64 {
-		hs = append(hs, hold())
-	}
-	waitFor(t, "64 requests in flight", func() bool { return inFlight(e, id) == 64 })
+			defer c.CloseNow()
+			for {
+				if _, _, err := c.Read(r.Context()); err != nil {
+					return
+				}
+			}
+		}
+		if k, ok := strings.CutPrefix(r.URL.Path, "/hold/"); ok {
+			ch := a.ch(k)
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			select {
+			case <-ch:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		if r.URL.Path == "/fail" {
+			if c, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				c.Close()
+			}
+			return
+		}
+		a.oks.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(srv.Close)
+	a.port = srv.Listener.Addr().(*net.TCPAddr).Port
+	return a
+}
 
-	// A refusal is at once: a request still waiting after 3 s was admitted
-	// and queued for a host slot (status 0 below).
-	refused := func(what string) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, "GET", e.public.URL+"/x", nil)
-		req.Host = pHost(id)
-		for k, vs := range hdr {
+func (a *capApp) ch(k string) chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ch, ok := a.rel[k]
+	if !ok {
+		ch = make(chan struct{})
+		a.rel[k] = ch
+	}
+	return ch
+}
+
+func (a *capApp) release(k string) { close(a.ch(k)) }
+
+// capEnv is a gateway with the cap fixtures (dialWait: the dial wait; 0 is
+// capWait) and one open preview on a capApp.
+type capEnv struct {
+	*gwEnv
+	app    *capApp
+	id     string
+	hdr    http.Header
+	client *http.Client
+}
+
+func newCapEnv(t *testing.T, dialWait time.Duration) *capEnv {
+	t.Helper()
+	if dialWait == 0 {
+		dialWait = capWait
+	}
+	const host = "alpha"
+	e := newGW(t, gwOpts{dialWait: dialWait, idle: 20 * time.Hour, ttl: 30 * time.Hour, perPrev: capFixture})
+	app := newCapApp(t)
+	e.serve(4301, app.port)
+	fh := e.mustDial(t, dialOpts{listener: "public", token: e.mint(t, 1, host), hostName: host, maxConns: capHostMaxConns})
+	fh.offers <- wire.Offer{Type: wire.TypeConfig, Config: &wire.Config{Ports: []string{"4000-4999"}, Offer: true, MaxOpen: 8,
+		MaxConns: capHostMaxConns}}
+	waitFor(t, "the config", func() bool { return e.tunnelFor(1, host).stateMaxConns() == capHostMaxConns })
+	e.syncOffers(t, fh, 1, host, []wire.Listener{{Port: 4301, Process: "vite", Window: "@1"}}, "m1")
+	id, cookie, _ := e.admitIn(t, 1, host, "@1", 4301)
+	client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 200}}
+	t.Cleanup(client.CloseIdleConnections)
+	return &capEnv{gwEnv: e, app: app, id: id, hdr: own(id, cookie), client: client}
+}
+
+// result is one request's outcome: status 0 when it failed (err set).
+type result struct {
+	status int
+	code   string
+	body   string
+	err    error
+	took   time.Duration
+}
+
+// get sends GET path for the preview under ctx and delivers its outcome on
+// the channel it returns. A /hold/ response is delivered at its headers
+// (the body is drained afterwards, in the background).
+func (c *capEnv) get(ctx context.Context, path string) <-chan result {
+	out := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, "GET", c.public.URL+path, nil)
+		req.Host = pHost(c.id)
+		for k, vs := range c.hdr {
 			req.Header[k] = vs
 		}
-		st, code := 0, ""
-		if resp, err := client.Do(req); err == nil {
-			st, code = resp.StatusCode, resp.Header.Get(ErrorCodeHeader)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			out <- result{err: err, took: time.Since(start)}
+			return
+		}
+		r := result{status: resp.StatusCode, code: resp.Header.Get(ErrorCodeHeader), took: time.Since(start)}
+		if strings.HasPrefix(path, "/hold/") {
+			out <- r
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
+			return
 		}
-		if st != http.StatusTooManyRequests || code != "too_many_connections" {
-			t.Fatalf("%s: HTTP %d %s=%q; want 429 too_many_connections", what, st, ErrorCodeHeader, code)
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		r.body = string(b)
+		out <- r
+	}()
+	return out
+}
+
+// fill holds the cap: capFixture /hold/<i> requests, each answered (so in
+// flight upstream) before it returns.
+func (c *capEnv) fill(t *testing.T) {
+	t.Helper()
+	for i := range capFixture {
+		if r := <-c.get(context.Background(), "/hold/"+strconv.Itoa(i)); r.status != http.StatusOK {
+			t.Fatalf("holding request %d: HTTP %d %v", i, r.status, r.err)
 		}
 	}
-	refused("the 65th request")
-	if _, resp, err := e.wsDial(t, id, "/hmr", hdr, nil); err == nil || statusOf(resp) != http.StatusTooManyRequests ||
-		resp.Header.Get(ErrorCodeHeader) != "too_many_connections" {
-		t.Fatalf("a WebSocket past 64 in flight: %v HTTP %d; want 429 too_many_connections", err, statusOf(resp))
+	if n := inFlight(c.gwEnv, c.id); n != capFixture {
+		t.Fatalf("after filling the cap %d in flight; want %d", n, capFixture)
 	}
-	if n := app.count("/x") + app.count("/hmr"); n != 0 {
+}
+
+// pending reports that ch has no outcome yet, at d from now.
+func pending(ch <-chan result, d time.Duration) (result, bool) {
+	select {
+	case r := <-ch:
+		return r, false
+	case <-time.After(d):
+		return result{}, true
+	}
+}
+
+func recv(t *testing.T, what string, ch <-chan result) result {
+	t.Helper()
+	select {
+	case r := <-ch:
+		return r
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s: no outcome after 10 s", what)
+		return result{}
+	}
+}
+
+// 🔴 One request past a preview's cap WAITS for a slot: when one of the
+// requests in flight ends within the dial wait, the waiter is admitted and
+// answered by the app — it neither is refused nor goes past the cap.
+func TestOneRequestPastThePerPreviewCapWaitsForASlot(t *testing.T) {
+	c := newCapEnv(t, 0)
+	c.fill(t)
+	w := c.get(context.Background(), "/x")
+	if r, ok := pending(w, capWait/3); !ok {
+		t.Fatalf("the request past the cap was answered at once (HTTP %d %q %v); want it to wait for a slot", r.status, r.code, r.err)
+	}
+	if n := inFlight(c.gwEnv, c.id); n != capFixture {
+		t.Fatalf("while one waits %d in flight; want %d (the waiter holds no slot)", n, capFixture)
+	}
+	c.app.release("0")
+	r := recv(t, "the waiter", w)
+	if r.status != http.StatusOK || r.body != "ok" {
+		t.Fatalf("the waiter, after a slot freed: HTTP %d %s=%q %q; want the app's 200", r.status, ErrorCodeHeader, r.code, r.body)
+	}
+	if n := c.metric(t, `muster_preview_refusals_total{reason="too_many_connections"}`); n > 0 {
+		t.Fatalf("a waiter that got a slot counted %v refusals", n)
+	}
+}
+
+// 🔴 When none of the requests in flight ends, the one past the cap is
+// refused 429 too_many_connections after the dial wait — not at once, not
+// later — and the app never sees it; the refusal holds no slot and is
+// counted in muster_preview_refusals_total.
+func TestOneRequestPastThePerPreviewCapIsRefusedAfterTheWait(t *testing.T) {
+	c := newCapEnv(t, 0)
+	c.fill(t)
+	r := recv(t, "the request past the cap", c.get(context.Background(), "/x"))
+	if r.status != http.StatusTooManyRequests || r.code != "too_many_connections" {
+		t.Fatalf("the request past the cap: HTTP %d %s=%q %v; want 429 too_many_connections", r.status, ErrorCodeHeader, r.code, r.err)
+	}
+	if r.took < capWait-20*time.Millisecond || r.took > capWait+2*time.Second {
+		t.Fatalf("refused after %v; want after the %v dial wait", r.took, capWait)
+	}
+	if n := c.app.oks.Load(); n != 0 {
 		t.Fatalf("the app saw %d refused requests", n)
 	}
-	if n := inFlight(e, id); n != 64 {
-		t.Fatalf("after two refusals %d in flight; want 64 (a refusal holds no slot)", n)
+	if n := inFlight(c.gwEnv, c.id); n != capFixture {
+		t.Fatalf("after a refusal %d in flight; want %d (a refusal holds no slot)", n, capFixture)
 	}
-
-	hs[0].cancel()
-	<-hs[0].done
-	waitFor(t, "the cancelled request's slot to be released", func() bool { return inFlight(e, id) == 63 })
-	hs = append(hs[1:], hold())
-	waitFor(t, "the released slot to be taken again", func() bool { return inFlight(e, id) == 64 })
-	refused("the 65th request, again")
-
-	close(app.release)
-	for _, h := range hs {
-		<-h.done
+	if n := c.metric(t, `muster_preview_refusals_total{reason="too_many_connections"}`); n != 1 {
+		t.Fatalf("muster_preview_refusals_total{too_many_connections} = %v; want 1", n)
 	}
-	waitFor(t, "every slot to be released on completion", func() bool { return inFlight(e, id) == 0 })
-	for i := range 70 {
-		if a := e.do(t, "GET", pHost(id), "/fail", hdr, ""); a.status != http.StatusBadGateway {
-			t.Fatalf("failing request %d: HTTP %d; want 502", i+1, a.status)
+}
+
+// 🔴 A waiter whose browser leaves takes no slot with it: afterwards the
+// preview has room for exactly the cap — one freed slot admits exactly one
+// more, and the next waits and is refused. Failed requests (the app drops
+// them, 502) hold none either.
+func TestAWaiterThatLeavesHoldsNoSlot(t *testing.T) {
+	c := newCapEnv(t, 0)
+	c.fill(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	w := c.get(ctx, "/x")
+	if _, ok := pending(w, capWait/3); !ok {
+		t.Fatal("the request past the cap was answered at once; want it to wait")
+	}
+	cancel()
+	if r := recv(t, "the waiter that left", w); r.err == nil {
+		t.Fatalf("the waiter that left got HTTP %d; want its own cancellation", r.status)
+	}
+	time.Sleep(capWait) // past the dial wait the leaver would have had
+	if n := inFlight(c.gwEnv, c.id); n != capFixture {
+		t.Fatalf("after the waiter left %d in flight; want %d", n, capFixture)
+	}
+	if n := c.metric(t, `muster_preview_refusals_total{reason="too_many_connections"}`); n > 0 {
+		t.Fatalf("a waiter that left counted %v refusals; it was refused nothing", n)
+	}
+	c.app.release("0")
+	waitFor(t, "the finished request's slot to free", func() bool { return inFlight(c.gwEnv, c.id) == capFixture-1 })
+	if r := <-c.get(context.Background(), "/hold/again"); r.status != http.StatusOK {
+		t.Fatalf("the freed slot: HTTP %d %s=%q %v; want it admitted", r.status, ErrorCodeHeader, r.code, r.err)
+	}
+	if r := recv(t, "one past the cap again", c.get(context.Background(), "/x")); r.status != http.StatusTooManyRequests ||
+		r.code != "too_many_connections" {
+		t.Fatalf("one past the cap after the leaver: HTTP %d %s=%q; want 429 too_many_connections (capacity exactly %d)",
+			r.status, ErrorCodeHeader, r.code, capFixture)
+	}
+	for i := 1; i < capFixture; i++ {
+		c.app.release(strconv.Itoa(i))
+	}
+	c.app.release("again")
+	waitFor(t, "every slot to free", func() bool { return inFlight(c.gwEnv, c.id) == 0 })
+	for i := range 3 * capFixture {
+		if r := <-c.get(context.Background(), "/fail"); r.status != http.StatusBadGateway {
+			t.Fatalf("failing request %d: HTTP %d; want 502", i+1, r.status)
 		}
 	}
-	waitFor(t, "no slot held after 70 failed requests", func() bool { return inFlight(e, id) == 0 })
-	if a := e.do(t, "GET", pHost(id), "/x", hdr, ""); a.status != http.StatusOK || a.body != "ok" {
-		t.Fatalf("after the burst: HTTP %d %q; want the app's 200", a.status, a.body)
+	held := make([]<-chan result, 0, capFixture)
+	for i := range capFixture {
+		held = append(held, c.get(context.Background(), "/hold/f"+strconv.Itoa(i)))
 	}
-	if n := e.metric(t, `muster_preview_refusals_total{reason="too_many_connections"}`); n != 3 {
-		t.Fatalf("muster_preview_refusals_total{too_many_connections} = %v; want 3", n)
+	for i, h := range held {
+		if r := recv(t, "a slot after the failures", h); r.status != http.StatusOK {
+			t.Fatalf("slot %d after %d failed requests: HTTP %d %s=%q; want all %d free", i, 3*capFixture, r.status,
+				ErrorCodeHeader, r.code, capFixture)
+		}
+	}
+}
+
+// 🔴 Closing a preview releases its waiters at once, on the closed path
+// (404 preview_closed) — not after the dial wait. The dial wait here is
+// long, so a waiter left to it would still be waiting.
+func TestClosingAPreviewReleasesItsWaitersAtOnce(t *testing.T) {
+	const long = 20 * time.Second
+	c := newCapEnv(t, long)
+	c.fill(t)
+	ws := []<-chan result{c.get(context.Background(), "/x"), c.get(context.Background(), "/y")}
+	for _, w := range ws {
+		if _, ok := pending(w, 100*time.Millisecond); !ok {
+			t.Fatal("a request past the cap was answered at once; want it to wait")
+		}
+	}
+	if !c.g.closeFromPage(pageClaim{Owner: 1, Host: "alpha", Window: "@1"}, c.id) {
+		t.Fatal("Close found no preview")
+	}
+	for i, w := range ws {
+		r := recv(t, "a waiter of the closed preview", w)
+		if r.status != http.StatusNotFound || r.code != codePreviewClosed {
+			t.Fatalf("waiter %d after Close: HTTP %d %s=%q %v; want 404 %s", i, r.status, ErrorCodeHeader, r.code, r.err, codePreviewClosed)
+		}
+		if r.took > 3*time.Second {
+			t.Fatalf("waiter %d was released %v after it began; want promptly at the close, not at the %v dial wait", i, r.took, long)
+		}
+	}
+	if n := c.app.oks.Load(); n != 0 {
+		t.Fatalf("the app saw %d requests of the closed preview's waiters", n)
+	}
+}
+
+// 🔴 The close itself wakes a waiter — not the uses it cuts ending and
+// freeing their slots. The slots here are held by no request at all, so
+// nothing ends when the preview closes; the waiter must still be answered
+// preview_closed at once, not at the (long) dial wait.
+func TestAClosedPreviewWakesAWaiterItself(t *testing.T) {
+	const long = 20 * time.Second
+	c := newCapEnv(t, long)
+	c.g.mu.Lock()
+	slots := c.g.previews[c.id].slots
+	c.g.mu.Unlock()
+	for range capFixture {
+		slots <- struct{}{}
+	}
+	type begun struct {
+		code string
+		left bool
+		took time.Duration
+	}
+	out := make(chan begun, 1)
+	go func() {
+		start := time.Now()
+		_, code, left := c.g.useBegin(context.Background(), c.id)
+		out <- begun{code, left, time.Since(start)}
+	}()
+	select {
+	case b := <-out:
+		t.Fatalf("useBegin past the cap returned at once (%q); want it to wait", b.code)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !c.g.closeFromPage(pageClaim{Owner: 1, Host: "alpha", Window: "@1"}, c.id) {
+		t.Fatal("Close found no preview")
+	}
+	select {
+	case b := <-out:
+		if b.code != codePreviewClosed || b.left {
+			t.Fatalf("the waiter after Close: code %q left %v; want %s", b.code, b.left, codePreviewClosed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("the waiter was not woken by the close itself within 3 s (dial wait %v)", long)
+	}
+}
+
+// 🔴 WebSockets count against the same cap as requests: with the cap held
+// by WebSockets, a request waits and is refused after the dial wait, and so
+// is one more WebSocket; when one WebSocket ends, its slot admits a request.
+func TestWebSocketsCountAgainstThePerPreviewCap(t *testing.T) {
+	c := newCapEnv(t, 0)
+	var conns []*websocket.Conn
+	for i := range capFixture {
+		ws, _, err := c.wsDial(t, c.id, "/hmr", c.hdr, nil)
+		if err != nil {
+			t.Fatalf("WebSocket %d: %v", i, err)
+		}
+		conns = append(conns, ws)
+	}
+	t.Cleanup(func() {
+		for _, ws := range conns {
+			ws.CloseNow()
+		}
+	})
+	waitFor(t, "the WebSockets in flight", func() bool { return inFlight(c.gwEnv, c.id) == capFixture })
+	r := recv(t, "a request past WebSockets at the cap", c.get(context.Background(), "/x"))
+	if r.status != http.StatusTooManyRequests || r.code != "too_many_connections" || r.took < capWait-20*time.Millisecond {
+		t.Fatalf("a request with the cap held by WebSockets: HTTP %d %s=%q after %v; want 429 too_many_connections after the %v wait",
+			r.status, ErrorCodeHeader, r.code, r.took, capWait)
+	}
+	start := time.Now()
+	if _, resp, err := c.wsDial(t, c.id, "/hmr", c.hdr, nil); err == nil || statusOf(resp) != http.StatusTooManyRequests ||
+		resp.Header.Get(ErrorCodeHeader) != "too_many_connections" || time.Since(start) < capWait-20*time.Millisecond {
+		t.Fatalf("one more WebSocket: %v HTTP %d after %v; want 429 too_many_connections after the wait", err, statusOf(resp), time.Since(start))
+	}
+	conns[0].Close(websocket.StatusNormalClosure, "")
+	waitFor(t, "the ended WebSocket's slot to free", func() bool { return inFlight(c.gwEnv, c.id) == capFixture-1 })
+	if r := recv(t, "a request after a WebSocket ended", c.get(context.Background(), "/x")); r.status != http.StatusOK || r.body != "ok" {
+		t.Fatalf("a request after a WebSocket ended: HTTP %d %s=%q; want the app's 200", r.status, ErrorCodeHeader, r.code)
+	}
+}
+
+// The cap defaults to MaxConnsPerPreview (64), and that is what a preview
+// gets when nothing overrides it.
+func TestThePerPreviewCapDefaultsTo64(t *testing.T) {
+	if MaxConnsPerPreview != 64 {
+		t.Fatalf("MaxConnsPerPreview = %d; want the design's 64", MaxConnsPerPreview)
+	}
+	e := newGW(t, gwOpts{})
+	e.hostFor(t, 1, "alpha", wire.Listener{Port: 5173, Process: "vite", Window: "@1"})
+	id, _, _ := e.admitIn(t, 1, "alpha", "@1", 5173)
+	e.g.mu.Lock()
+	n := cap(e.g.previews[id].slots)
+	e.g.mu.Unlock()
+	if n != 64 {
+		t.Fatalf("a preview's cap is %d; want 64", n)
 	}
 }
 

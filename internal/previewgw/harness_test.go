@@ -167,6 +167,7 @@ type gwOpts struct {
 	ttl, idle time.Duration // Config.TTL, Config.Idle; 0 = the defaults
 	maxBody   int64         // Config.MaxBody; 0 = the default
 	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
+	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -191,7 +192,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	fc := newFakeClock(time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC))
 	g, err := New(cfg, Options{Clock: fc, Muster: NewMusterClient(fm.srv.URL, "test"), DialWait: o.dialWait,
-		PingInterval: time.Hour, StreamKeepalive: o.keepalive})
+		PingInterval: time.Hour, StreamKeepalive: o.keepalive, MaxConnsPerPreview: o.perPrev})
 	if err != nil {
 		t.Fatal(err)
 	}
