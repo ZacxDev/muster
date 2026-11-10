@@ -78,7 +78,13 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    WebSocket upgrades passed and responses unbuffered.
 4. **A host token:** `muster-preview host-token create [<owner>] <host>`,
    where `STATE_DIR` is mounted. `<host>` must be the name the host's mirror
-   token was minted for. The token is printed once.
+   token was minted for. The token is printed once. `<owner>` is a login as
+   muster's `GET /plugin/v1/self` names it for a token in
+   `PLUGIN_TOKENS_FILE`; the token is keyed on that owner's id, a login two
+   owners answer to (or none) is refused, and with exactly one owner it may be
+   left out. `host-token ls` lists the tokens and `host-token revoke <id>`
+   revokes one; a running gateway re-reads the file on every tunnel and every
+   30 s.
 5. **The host:** save the token to a file only this user can read
    (`chmod 600`), write `previews.json`, and run `muster-mirror` with
    `-preview`, `-preview-urls ws://<mesh address>:<port>/v1/host,wss://tunnel.<zone>/v1/host`,
@@ -281,7 +287,7 @@ the gateway's minute-by-minute check ([lifecycle](#lifecycle)).
 | per owner | 16 open previews | gateway | `max_open` |
 | per host | `maxOpen` open previews (1–32, default 8; the gateway uses 8 until the host sends its config) | host and gateway | `max_open` |
 | per host | `maxConns` upstream streams (1–64, default 64) | gateway, host as backstop | a new one waits up to **10 s** for a slot, then `429 max_conns` |
-| per preview | 64 requests and WebSockets in flight | gateway | one more waits up to the dial wait (10 s) for a slot, then `429 too_many_connections`, before anything is dialled |
+| per preview | 64 requests and WebSockets in flight | gateway | one more waits up to the dial wait (10 s) for a slot, then `429 too_many_connections`, before anything is dialled. An admitted request can then wait as long again for a host slot, so the worst case before a 429 is about twice the dial wait |
 | request body | `PREVIEW_MAX_BODY`, default 32 MiB (1 KiB to 1 GiB) | gateway | `413 body_too_large`: at once for a declared length, as the body streams for a chunked one. WebSocket messages are not bodies |
 | response | none (flow-controlled) | — | — |
 | app response headers | 60 s | gateway | `504 upstream_timeout` |
@@ -309,8 +315,8 @@ tokens are a file in `STATE_DIR`.
 | the host's tunnel drops | requests get `503 host_offline`; the preview stays open, and the page says the host is offline |
 | a port leaves the host's `previews.json` | the host closes that port's previews itself (and tells the gateway), cuts their live connections and refuses new `CONNECT`s `port_not_allowed` |
 | a bad `previews.json` | previews are off on the host: every preview closes, the tools answer `previews_off` |
-| the host token is revoked | at the next 30 s recheck the tunnel ends and that host's previews close, even if it is offline then |
-| the owner's plugin tokens all answer `401`, or `200` without `viewer` | at the next minute's `GET /plugin/v1/self` the owner's tunnels and previews close and new tunnels are refused; while any one of the owner's tokens is live the owner is still served |
+| the host token is revoked | at the next 30 s recheck the tunnel ends and that host's previews close, even if it is offline then; a new token for the same host name starts with none |
+| the owner's plugin tokens all answer `401`, or `200` without `viewer` | at the next minute's `GET /plugin/v1/self` the owner's tunnels and previews close and new tunnels are refused; while any one of the owner's tokens is live the owner is still served. An owner is not served at all before muster has answered for one of its tokens |
 | muster gives no verdict (unreachable, `5xx`, `404`) | a token keeps its last verdict for 9 checks; at the 10th in a row (about ten minutes) it stops counting as live |
 | the owner signs out of muster | nothing at once: the owner cookie works until it expires |
 | the gateway restarts | every preview is forgotten; each host re-announces its acknowledged opens (not ones older than 24 h) and gets **new** ids, so old preview addresses and cookies stop working |

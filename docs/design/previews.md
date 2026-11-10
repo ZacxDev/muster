@@ -1087,30 +1087,12 @@ Served **on the machine**, never through muster ([decision 11](#decisions)).
 | `preview_list` | none | the caller's open previews | `previews_off` |
 | `preview_close` | `id` | `{closed: true}` | `not_found` (also another caller's) |
 
-**As built (#564):** a refusal is a tool result (`isError: true`) whose text
-is `{"error": "<code>", "message": "…"}`; only an unknown tool is a JSON-RPC
-error. Codes the table above lacks, all built:
-
-- `invalid_arguments` (every tool): arguments that do not validate;
-- `no_window` (every tool): the caller's pane is in no mirrored window;
-- `not_answering` (`preview_open`): the port accepted a connection but gave no
-  HTTP answer to `HEAD /` within 5 s (retryable; `not_listening` now means
-  nothing accepted the connection);
-- `gateway_error` (open, close): the gateway refused with something that is
-  not a well-formed code (`^[a-z_]{1,32}$`); a well-formed one is passed on,
-  and the message is always the host's own, never the gateway's text;
-- `cancelled` (open, close): the caller's own request ended first;
-- `preview_close` can also answer `previews_off`, `gateway_not_connected` and
-  `gateway_timeout`; `preview_list` answers only `previews_off`,
-  `invalid_arguments` and `no_window`.
-
-An existing open of the same (window, port) returns its id **before** any
-port check, so it keeps its id after its server stopped. The gateway's own
-answer codes on the offer stream include `host_offline`, `bad_port`,
-`bad_path`, `bad_window`, `bad_session`, `bad_request` and `internal`. The
-gateway's pages add `too_many_connections` (429) and `body_too_large` (413)
-(#574). Every code any side emits is tabled in
-[previews.md](../previews.md#error-codes).
+**As built (#564):** the table names the codes above; the code also answers
+`invalid_arguments`, `no_window`, `not_answering` (it listens but gives no
+HTTP answer within 5 s), `gateway_error` and `cancelled`, as an `isError`
+tool result rather than a JSON-RPC error. An existing open of the same
+(window, port) returns its id before any port check. Every code any side
+emits is in [previews.md](../previews.md#error-codes).
 
 **On a host (phase 1).** `muster-mirror`'s loopback MCP listener, when
 `-preview` is on and `previews.json` loaded, serves a **second MCP server** at
@@ -1242,26 +1224,12 @@ fails (the gateway is in this module, as `cmd/muster-clankmail` is).
 Nothing named `MUSTER_PREVIEW_*` is read by muster-server: it has no preview
 listener, proxy or key.
 
-**As built** (the variables read today are in
-[configuration.md](../configuration.md#muster-preview-the-preview-gateway)):
-
-- `MUSTER_PLUGIN_ORIGINS` (#556, #563): a `*.<zone>` pattern covers every depth
-  below the zone, never the zone itself. The boot check that refuses a pattern
-  covering muster's own host knows **only `MUSTER_PUBLIC_URL`'s host**: a
-  pattern covering another name muster is reached at (an agent connect URL, an
-  in-cluster name, the name hosts dial) would `421` that traffic with no boot
-  error. `frame-src` gets the owner's live viewer plugins' origins, not the
-  whole list (seam (b) above).
-- `PREVIEW_DATABASE_URL` is **not built**: the gateway has no database
-  ([lifecycle](#lifecycle)). It reads `STATE_DIR` instead, for the host-token
-  file and its lock.
-- `PREVIEW_SIGNING_KEY` is at least 32 bytes and signs the owner cookies and
-  the page tokens (HMAC-SHA256, kind-separated).
-- `PREVIEW_TTL` and `PREVIEW_IDLE` are Go durations of at least `1m`.
-  `PREVIEW_MAX_BODY` (#574) takes bytes or `KiB`/`MiB`/`GiB`, from
-  1 KiB to 1 GiB.
-- `PREVIEW_SHARES` and `PREVIEW_SHARE_MAX_TTL` (phase 3), and the phase-2
-  variables, are not read.
+**As built:** the design listed `PREVIEW_DATABASE_URL`; the gateway has no
+database and reads `STATE_DIR` instead (#561). The `MUSTER_PLUGIN_ORIGINS`
+boot check covers only `MUSTER_PUBLIC_URL`'s host, not every name muster is
+reached at (#556). The phase-2 and phase-3 variables are not read. The
+variables read today are in
+[configuration.md](../configuration.md#muster-preview-the-preview-gateway).
 
 ## Telemetry
 
@@ -1280,31 +1248,14 @@ listener, proxy or key.
 - **Privacy:** no path, query, header or body is logged, traced or labelled; no
   hand-off code, share token or host token appears anywhere but its hash.
 
-**As built:**
-
-- On `main` the gateway exports `muster_preview_tunnels{path}` (#561), on its
-  own registry at `/metrics` on the **mesh listener only**; muster adds
-  `muster_plugin_origin_refusals_total` beside the hand-off counter (#556).
-- #574 adds the three spans and
-  `muster_previews_open{kind}`, `muster_preview_requests_total`,
-  `muster_preview_dial_seconds`, `muster_preview_refusals_total{reason}`
-  (every gateway page on `p-`, the plain `404` for a preview that is not
-  open, a non-`GET` entry, refused opens; a code outside the known set counts
-  as `other`), and **three metrics this
-  page did not list**, kept by the operator's decision:
-  `muster_preview_opens_total{opener}` (`agent`, `page`),
-  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
-  `window_gone`, `host_revoked`, `owner_not_served`) and
-  `muster_preview_response_seconds{kind}` (time to the app's response
-  headers, from when the request took its per-preview slot).
-  `preview.request` covers admitted requests only, and its reason is only a
-  code the gateway itself rendered, never read from the response.
-- **Not built:** `muster_preview_bytes_total{kind,direction}`,
-  `muster_preview_offers{state}` ("state" is not defined here; define it
-  before building it), `muster_preview_share_redemptions_total` and the
-  `pod`/`share` label values (phases 2 and 3), and the host's
-  `host.preview.dial` and `host.preview.tool` spans. The host logs one line
-  per refused stream.
+**As built:** the three spans and the design's other gateway metrics are
+built (#561, #574), plus three it did not list, kept by the operator's decision:
+`muster_preview_opens_total`, `muster_preview_closes_total{reason}` and
+`muster_preview_response_seconds`. Not built: `muster_preview_bytes_total`,
+`muster_preview_offers{state}` ("state" is undefined here), the share-link
+counter and label values (phase 3), and the host's `host.preview.dial` and
+`host.preview.tool` spans. The as-built list is in
+[previews.md](../previews.md#telemetry).
 
 ## Threat model
 
