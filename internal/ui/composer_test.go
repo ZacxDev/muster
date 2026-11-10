@@ -116,7 +116,7 @@ func TestTheComposerDrawsANoticeTheServerGaveIt(t *testing.T) {
 // address fields and the placeholder.
 // collapsibleBits are the Rendered view's collapsible box's own markup
 // (composer_reveal.go), which the seam guards below take out of its form.
-var collapsibleBits = regexp.MustCompile(` data-mv-collapsible=""| data-mv-field=""|<span data-mv-spacer=""[^>]*></span>|<button id="mv-text"[^>]*>.*?</button>`)
+var collapsibleBits = regexp.MustCompile(` data-mv-collapsible=""| data-mv-field=""|<button id="mv-text"[^>]*>.*?</button>`)
 
 func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 	const marker = "HTMLFormElement.prototype.submit.call(form);"
@@ -146,11 +146,12 @@ func TestEveryMessageBoxIsOneComposer(t *testing.T) {
 		// The form with everything that legitimately differs taken out.
 		form := formOf(page, "mv-form")
 		// 🔴 THE RENDERED VIEW'S BOX COLLAPSES ON A TOUCH SCREEN, and only its
-		// (composer_reveal.go): the form's state, the field's mark, the spacer
-		// and "Type a message" are its alone — asserted here, both ways, then
-		// taken out so the rest of the shape is still one composer.
+		// (composer_reveal.go): the form's state, the field's mark and "Type a
+		// message" are its alone — asserted here, both ways, then taken out so
+		// the rest of the shape is still one composer. (The button row's spacer
+		// is every composer's.)
 		collapsible := name == "a mirrored session's rendered view"
-		for _, bit := range []string{` data-mv-collapsible=""`, ` data-mv-field=""`, `<span data-mv-spacer=""`, `<button id="mv-text"`} {
+		for _, bit := range []string{` data-mv-collapsible=""`, ` data-mv-field=""`, `<button id="mv-text"`} {
 			if strings.Contains(form, bit) != collapsible {
 				t.Errorf("%s: %q present = %v, want %v", name, bit, !collapsible, collapsible)
 			}

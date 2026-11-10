@@ -131,9 +131,10 @@ const (
 	DictateEmpty       = "Nothing was recorded."
 )
 
-// dictateButtonClass is the mic's look: a 44px square target, the composer's
-// surface at rest, the danger colour while recording.
-const dictateButtonClass = "group hidden press min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition disabled:opacity-60 data-[state=recording]:bg-danger data-[state=recording]:text-on-accent data-[state=recording]:ring-0"
+// dictateButtonClass is the mic's look: a 40px square target
+// (composerButtonSize), the composer's surface at rest, the danger colour
+// while recording.
+const dictateButtonClass = "group hidden press min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition disabled:opacity-60 data-[state=recording]:bg-danger data-[state=recording]:text-on-accent data-[state=recording]:ring-0"
 
 // dictateControl is the mic button for the textarea inputID, reporting into
 // the note noteID. Nothing when path is "" (no speech-to-text service).
@@ -173,7 +174,7 @@ const DictateOffLabel = "Dictation is off on this server — how to turn it on"
 func dictateOffControl(id string) g.Node {
 	return A(ID(id), Href(FeatureHref(features.Dictation)), g.Attr("data-feature-off", features.Dictation),
 		g.Attr("aria-label", DictateOffLabel), g.Attr("title", DictateOffLabel),
-		Class("press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-muted opacity-50 ring-1 ring-inset ring-line transition hover:opacity-100"),
+		Class("press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-muted opacity-50 ring-1 ring-inset ring-line transition hover:opacity-100"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/><path d="M3 3l18 18"/></svg>`))
 }
 

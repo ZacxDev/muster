@@ -74,7 +74,7 @@ func TestBothMirrorViewsShareOneComposerAndOneConfirm(t *testing.T) {
 
 // TestTheComposerIsPhoneShaped: what the browser suite measures at 390×844,
 // pinned where a class rename would lose it — a 16px input (iOS zooms the page
-// on focusing a smaller one), 44px targets, and the safe-area inset on the form
+// on focusing a smaller one), a 44px box and 40px buttons, and the safe-area inset on the form
 // that is the bottom of the page. With a composer under it, the quick-key bar
 // no longer carries that inset (there would be a gap between the two).
 func TestTheComposerIsPhoneShaped(t *testing.T) {
@@ -99,8 +99,8 @@ func TestTheComposerIsPhoneShaped(t *testing.T) {
 	if strings.Contains(input, "text-sm") || strings.Contains(input, "text-xs") {
 		t.Errorf("the input is smaller than 16px: %s", input)
 	}
-	if !strings.Contains(tag(with, "mv-send"), "min-h-[44px]") {
-		t.Error("Send is not a 44px target")
+	if !strings.Contains(tag(with, "mv-send"), "min-h-[40px]") {
+		t.Error("Send is not a 40px target")
 	}
 	if !strings.Contains(tag(with, "mv-form"), "env(safe-area-inset-bottom)") {
 		t.Error("the composer does not carry the safe-area inset")

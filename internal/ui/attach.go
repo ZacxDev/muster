@@ -15,9 +15,9 @@ import (
 // FILE ATTACHMENTS IN THE COMPOSER (internal/uploads; internal/api's
 // uploads.go).
 //
-// A paperclip inside the input, on its left (and pasting an image, or dropping
-// a file on the composer) uploads the file at once; it then sits ABOVE the input as a
-// chip — a thumbnail for an image, an icon for anything else, its name and
+// The paperclip in the composer's button row (and pasting an image, or
+// dropping a file on the composer) uploads the file at once; it then sits
+// ABOVE the input as a chip — a thumbnail for an image, an icon for anything else, its name and
 // size, and × to take it off again (which revokes its link). On Send, each
 // chip's line (uploads.AgentLine: a short description and a muster-signed
 // link) is appended to the message, so the agent receives text it can act on
@@ -54,40 +54,23 @@ const (
 	AttachStillUploading = "Wait for the attachment to finish uploading."
 )
 
-// attachButtonClass is the paperclip's look: TRULY SMALL (operator decision) —
-// icon and tap area both 24px, absolutely placed INSIDE the input on its left
-// (attachField), its bottom on the first line's baseline box so it stays with
-// the last line as the box grows. The input is padded past it
-// (attachInputPad), so no text ever runs under it.
-const attachButtonClass = "press absolute bottom-2.5 left-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md text-fg2 transition hover:bg-s3 hover:text-fg disabled:opacity-60"
+// attachButtonClass is the paperclip's look: a 40px square in the mic's
+// clothes (dictateButtonClass), one of the controls of the composer's BUTTON
+// ROW, shown whether the box is collapsed or open (operator ask: "remove the
+// absolutely positioned attachment icon button from the text area and just
+// always show the dedicated attachment icon button"). It is never placed
+// inside the input, so the input carries no padding for it.
+const attachButtonClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3 hover:text-fg disabled:opacity-60"
 
-// attachInputPad is the input's left padding while the paperclip sits in it:
-// 36px, past the button's 6px inset plus its 24px, so text clears it by 6px.
-// (pl-* is emitted after px-*, so it wins over composerInputClass's px-3.)
-const attachInputPad = " pl-9"
-
-// attachField is the input with the paperclip inside it: one positioned box
-// that takes the input's place in the composer's row. Without uploads (path
-// "") it is the input alone, unpadded.
-//
-// mark is put on the OUTERMOST element of the field — the wrapper, or the bare
-// input — so the composer can address the field whole (composer_reveal.go's
-// data-mv-field); nil for nothing.
-func attachField(path string, mark g.Node, input func(pad string, mark g.Node) g.Node) g.Node {
-	if path == "" {
-		return input("", mark)
+// attachControlOrOff is the paperclip of the composer's button row:
+// attachControl, or — when attachments are off on this server (path "" and
+// off) — a MUTED paperclip in its place, linking to the feature's row on the
+// Features page. Nothing for neither.
+func attachControlOrOff(path string, off bool) g.Node {
+	if path == "" && off {
+		return attachOffControl()
 	}
-	return Div(mark, Class("relative flex min-w-0 flex-1"), attachControl(path), input(attachInputPad, nil))
-}
-
-// attachFieldOrOff is attachField, or — when attachments are off on this
-// server (off) — the input with a MUTED paperclip in the paperclip's place,
-// linking to the feature's row on the Features page.
-func attachFieldOrOff(path string, off bool, mark g.Node, input func(pad string, mark g.Node) g.Node) g.Node {
-	if path != "" || !off {
-		return attachField(path, mark, input)
-	}
-	return Div(mark, Class("relative flex min-w-0 flex-1"), attachOffControl(), input(attachInputPad, nil))
+	return attachControl(path)
 }
 
 // AttachOffLabel is the muted paperclip's accessible name.
@@ -98,7 +81,7 @@ func attachOffControl() g.Node {
 	return A(ID("mv-attach-off"), Href(FeatureHref(features.Attachments)), g.Attr("data-feature-off", features.Attachments),
 		g.Attr("aria-label", AttachOffLabel), g.Attr("title", AttachOffLabel),
 		Class(attachButtonClass+" opacity-40 hover:opacity-100"),
-		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`))
+		g.Raw(`<svg class="h-5 w-5"viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`))
 }
 
 // attachControl is the paperclip and its hidden file input. Nothing when path
@@ -114,7 +97,7 @@ func attachControl(path string) g.Node {
 			g.Attr("aria-hidden", "true")),
 		Button(ID("mv-attach"), Type("button"), g.Attr("data-upload", path),
 			g.Attr("aria-label", attachLabel), g.Attr("title", attachLabel), Class(attachButtonClass),
-			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`)),
+			g.Raw(`<svg class="h-5 w-5"viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`)),
 	})
 }
 

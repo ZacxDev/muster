@@ -96,9 +96,9 @@ func TestTheViewDrawsTheChiefModeOnlyWhenOffered(t *testing.T) {
 // textarea, label) by id, in document order — read with <noscript> removed.
 var formControlRE = regexp.MustCompile(`<(button|a|textarea|label)\b[^>]*\bid="([^"]+)"`)
 
-// TestTheChiefToggleIsTheRowsFirstControl: the toggle is the composer row's
-// FIRST control — before the paperclip (which sits inside the input's field),
-// the input, the keyboard button, the mic, Send and the ⋯ — on a Claude Code
+// TestTheChiefToggleIsTheRowsFirstControl: the toggle is the composer's
+// button row's FIRST control — before the paperclip, the keyboard button, the
+// mic, Send and the ⋯, below the box's own row — on a Claude Code
 // window with uploads and dictation, and on a disabled opencode one (no
 // paperclip there: a disabled composer draws none).
 func TestTheChiefToggleIsTheRowsFirstControl(t *testing.T) {
@@ -127,15 +127,13 @@ func TestTheChiefToggleIsTheRowsFirstControl(t *testing.T) {
 		if i, f := strings.Index(page, `<form id="mv-to-form"`), strings.Index(page, `<form id="mv-form"`); i < 0 || i > f {
 			t.Errorf("%s: the switch's own form is not drawn before (outside) the composer's", name)
 		}
-		if len(ids) < 3 || ids[0] != "mv-to" {
-			t.Fatalf("%s: the row's controls are %v, want mv-to first", name, ids)
+		// The box is on its own row above (composer_rows_test.go); the switch
+		// is the button row's first control.
+		if len(ids) < 3 || ids[0] != "mv-input" || ids[1] != "mv-to" {
+			t.Fatalf("%s: the form's controls are %v, want the box, then mv-to first in the button row", name, ids)
 		}
-		if name == "claude" {
-			if ids[1] != "mv-attach" || ids[2] != "mv-input" {
-				t.Errorf("%s: the paperclip and the input do not follow the toggle: %v", name, ids)
-			}
-		} else if ids[1] != "mv-input" {
-			t.Errorf("%s: the input does not follow the toggle: %v", name, ids)
+		if name == "claude" && ids[2] != "mv-attach" {
+			t.Errorf("%s: the paperclip does not follow the toggle: %v", name, ids)
 		}
 	}
 }
