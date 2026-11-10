@@ -698,7 +698,7 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 
 ### The preview tools (`/preview-mcp`)
 
-With [previews](design/previews.md#the-mcp-tools) on (`-preview` and a valid
+With [previews](previews.md) on (`-preview` and a valid
 `previews.json`), the same endpoint serves a **second MCP server** at
 `http://127.0.0.1:47823/preview-mcp`, behind the same secret, the same
 `Origin` refusal and the same tmux-server check as `/mcp`. It answers

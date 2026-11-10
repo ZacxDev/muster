@@ -467,7 +467,7 @@ func (s *Server) mirrorRefuse(w http.ResponseWriter, r *http.Request, p mirrorPe
 
 // mirrorStepUpPage answers a browser-submitted send whose sign-in is stale: the
 // plain confirm page, carrying the send in hidden fields.
-func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, problem string) {
+func (s *Server) mirrorStepUpPage(ctx context.Context, w http.ResponseWriter, p mirrorPending, problem string) {
 	fields := append([]ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}}, mirrorSendFields(p, p.nonce)...)
 	if p.again {
 		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
@@ -475,7 +475,7 @@ func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, proble
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
-		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
+		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
 		s.logger.Printf("mirror: render confirm page: %v", err)
 	}
 }
@@ -558,7 +558,7 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if p.nav {
-			s.mirrorStepUpPage(w, p, "")
+			s.mirrorStepUpPage(r.Context(), w, p, "")
 			return
 		}
 		refuseStale(w)
@@ -614,7 +614,7 @@ func (s *Server) handleMirrorConfirmSend(w http.ResponseWriter, r *http.Request)
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.mirrorStepUpPage(w, p, o.Error)
+		s.mirrorStepUpPage(r.Context(), w, p, o.Error)
 		return
 	}
 	s.mirrorDeliver(stepup.WithAuthTime(r.Context(), o.At), w, r, p)
@@ -671,14 +671,14 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
 			if p.nav {
-				s.mirrorStepUpPage(w, p, "")
+				s.mirrorStepUpPage(r.Context(), w, p, "")
 				return
 			}
 			refuseStale(w)
 			return
 		}
 		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
-			s.heldRefusal(w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
+			s.heldRefusal(r.Context(), w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
@@ -792,7 +792,8 @@ func (s *Server) messageKey(ctx context.Context, host, session, window string, t
 // refused because the same message may already have been delivered: 409 and
 // a page whose one form is the "Send again" the composer's script would have
 // drawn (ui.SendAgainPage). no-store: it carries the message.
-func (s *Server) sendAgainPage(w http.ResponseWriter, v ui.SendAgainView) {
+func (s *Server) sendAgainPage(ctx context.Context, w http.ResponseWriter, v ui.SendAgainView) {
+	v.Brand = s.uiBrand(ctx)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusConflict)
@@ -804,9 +805,9 @@ func (s *Server) sendAgainPage(w http.ResponseWriter, v ui.SendAgainView) {
 // heldRefusal answers a send refused by the hold (isHeldFor): to the script
 // 409, the reason and SendAgainHeader (it offers Send again); to a form the
 // browser submitted, sendAgainPage posting the same to action with fields.
-func (s *Server) heldRefusal(w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
+func (s *Server) heldRefusal(ctx context.Context, w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
 	if nav {
-		s.sendAgainPage(w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
+		s.sendAgainPage(ctx, w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
 		return
 	}
 	w.Header().Set(SendAgainHeader, "1")

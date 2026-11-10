@@ -114,7 +114,7 @@ func (s *Server) sendQueueEditStepUp(w http.ResponseWriter, r *http.Request, nex
 		if fields != nil {
 			fs = fields(r)
 		}
-		s.sendQueueStepUpPage(w, action(id), fs, q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, action(id), fs, q.back, o.Error)
 		return
 	}
 	next(w, r, stepup.WithAuthTime(r.Context(), o.At))
@@ -154,7 +154,7 @@ func (s *Server) sendQueueEdit(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		if nav {
-			s.sendQueueStepUpPage(w, ui.SendQueueEditPath(id)+"/confirm", nil, q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, ui.SendQueueEditPath(id)+"/confirm", nil, q.back, "")
 		} else {
 			refuseStale(w)
 		}
@@ -272,7 +272,7 @@ func (s *Server) sendQueueEditSave(w http.ResponseWriter, r *http.Request, ctx c
 	}
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		if nav {
-			s.sendQueueStepUpPage(w, ui.SendQueueEditSavePath(id)+"/confirm", sendQueueEditFields(r), q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, ui.SendQueueEditSavePath(id)+"/confirm", sendQueueEditFields(r), q.back, "")
 		} else {
 			refuseStale(w)
 		}
