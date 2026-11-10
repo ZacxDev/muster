@@ -18,28 +18,12 @@ import (
 // officer_ask_person — a success puts the item in `waiting` with no holder:
 // the instance's lease ENDS.
 //
-//	POST /officers/{id}/items/{item}/task-asks     (civ-hq#509, "Task asks")
-//	     {"instance", "note"?} -> 201 {ask, task_ask, item}
-//	     HQ reads the task, detector and rev from the ITEM's payload, picks the
-//	     person, writes the question and the options and (policy) posts the
-//	     evidence comment. The body cannot name a task, a person or an option.
-//	     Refusals: 400 invalid · 403 task_asks_off · 404 · 409 officer_shadow /
-//	     finding_void / task_ask_open / task_cooldown / task_asks_policy_invalid
-//	     / lease_lost / officer_disabled · 422 not_a_finding / no_recipient /
-//	     no_options / unknown_recipient / recipient_muted /
-//	     recipient_unreachable · 429 owner_daily_cap / rate_limited.
+//	POST /officers/{id}/items/{item}/task-asks     {"instance", "note"?}
+//	POST /officers/{id}/items/{item}/flood-blocks  {"instance", "to"?, "unit_ids", "action", "ttl_hours"}
 //
-//	POST /officers/{id}/items/{item}/flood-blocks  (civ-hq#510, "Flood remediation")
-//	     {"instance", "to"?, "unit_ids", "action": "managed_challenge", "ttl_hours"}
-//	     -> 201 {flood_block, ask, item}
-//	     HQ resolves the opaque unit ids to prefixes itself (the officer never
-//	     sees an address, never holds the Cloudflare token) and, on the
-//	     person's "Approve & challenge", writes HQ's one Cloudflare rule.
-//	     Refusals: 400 invalid · 403 · 404 · 409 lease_lost / flood_actuator_off
-//	     / flood_policy_invalid · 422 too_many_prefixes / not_a_prefix_unit /
-//	     not_a_bot_surge / unit_not_surging / unit_unknown / prefix_refused /
-//	     list_full / ttl_refused / not_an_approver (and the ask create's own) ·
-//	     503 flood_actuator_not_configured.
+// The route contract — what HQ derives, its limits and its refusal codes —
+// is HQ's, in HQ's officer docs (docs/OFFICERS.md, "Task asks" and "Flood
+// remediation"). It is not copied here: a copy would drift.
 //
 // WHO MAY CALL: muster offers each tool by officer TYPE NAME (ToolOffered:
 // task-reconciler, both pools; web-performance, its JUDGEMENT pool only —
@@ -49,9 +33,8 @@ import (
 // (409 lease_lost) — a flood proposal is also allowed on a WAITING item,
 // which a local "holds a live claim" check would wrongly refuse.
 //
-// 🔴 muster DOES NOT RE-CHECK HQ'S LIMITS (note length, ttl range, unit
-// count, prefix guardrails, rate limits): HQ enforces them and its 4xx, with
-// its code, is what the instance gets back. A copy here would drift. What
+// 🔴 muster DOES NOT RE-CHECK HQ'S LIMITS: HQ enforces them and its 4xx,
+// with its code, is what the instance gets back. What
 // muster DOES own is the body's SHAPE: it builds the body itself, so the
 // arguments are decoded STRICTLY — an argument muster does not know is
 // refused before HQ is called, never silently dropped (HQ's decoder would

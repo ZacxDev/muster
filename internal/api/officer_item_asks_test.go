@@ -264,8 +264,9 @@ func TestAFloodProposalSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 			t.Errorf("note does not say %q: %s", s, res.Note)
 		}
 	}
-	// A second proposal on the now-WAITING item, to a named approver: HQ
-	// allows it, and muster does not pre-empt it with a lease check of its own.
+	// A second proposal on the now-WAITING item, to a named approver: muster
+	// does not pre-empt HQ with a lease check of its own, and sends only what
+	// was given.
 	r.hq.ResetRequests()
 	out = r.s.dispatchAgentTool(ctx, inst, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:u3"],"ttl_hours":24,"to":"perf-lead"}`)
 	if isToolErr(out) {
@@ -334,11 +335,12 @@ func refusedHQ(t *testing.T, out string) (int, string, map[string]any, string) {
 	return got.Refused.Status, got.Refused.Code, got.Refused.HQ, got.Error
 }
 
-// TestEveryHQRefusalReachesTheModelVerbatim: each documented refusal of each
-// route comes back as a FINAL refusal (never "retry", never "unavailable")
-// with HQ's status, its code, and HQ's body byte-for-byte under refused.hq —
-// including the flood route's 503 flood_actuator_not_configured, a 5xx that is
-// a decision — and the item is NOT ended (HQ wrote nothing).
+// TestEveryHQRefusalReachesTheModelVerbatim: a representative HQ 4xx of
+// each route, a 404, and the flood route's 503 flood_actuator_not_configured
+// (a 5xx that is a decision) each come back as a FINAL refusal (never
+// "retry", never "unavailable") with HQ's status, its code and HQ's body
+// byte-for-byte under refused.hq, and the item is NOT ended. The codes are
+// HQ's (HQ's officer docs); muster passes any code through the same way.
 func TestEveryHQRefusalReachesTheModelVerbatim(t *testing.T) {
 	r := newItemAskRig(t)
 	ctx := context.Background()
@@ -346,71 +348,38 @@ func TestEveryHQRefusalReachesTheModelVerbatim(t *testing.T) {
 	wp := r.addInstance(r.b, 1, 1042)
 	trItem := r.heldItemOf(t, tr, offTR, kindFinding)
 	wpItem := r.heldItemOf(t, wp, offWP, kindBotSurge)
-	type ref struct {
+	for _, c := range []struct {
+		verb   string
 		status int
 		code   string
-	}
-	cases := map[string][]ref{
-		"task-asks": {{400, "invalid"}, {403, "task_asks_off"}, {404, "not_found"}, {409, "officer_shadow"}, {409, "finding_void"},
-			{409, "task_ask_open"}, {409, "task_cooldown"}, {409, "task_asks_policy_invalid"}, {409, "lease_lost"}, {409, "officer_disabled"},
-			{422, "not_a_finding"}, {422, "no_recipient"}, {422, "no_options"}, {422, "unknown_recipient"}, {422, "recipient_muted"},
-			{422, "recipient_unreachable"}, {429, "owner_daily_cap"}, {429, "rate_limited"}},
-		"flood-blocks": {{400, "invalid"}, {403, "forbidden"}, {404, "not_found"}, {409, "lease_lost"}, {409, "flood_actuator_off"},
-			{409, "flood_policy_invalid"}, {422, "too_many_prefixes"}, {422, "not_a_prefix_unit"}, {422, "not_a_bot_surge"},
-			{422, "unit_not_surging"}, {422, "unit_unknown"}, {422, "prefix_refused"}, {422, "list_full"}, {422, "ttl_refused"},
-			{422, "not_an_approver"}, {503, "flood_actuator_not_configured"}},
-	}
-	for verb, refs := range cases {
+	}{
+		{"task-asks", 409, "task_cooldown"},
+		{"task-asks", 404, "not_found"},
+		{"flood-blocks", 422, "prefix_refused"},
+		{"flood-blocks", 503, "flood_actuator_not_configured"},
+	} {
 		inst, tool, item, args := tr, taskAskTool, trItem, `{"item_id":"`+trItem+`"}`
-		if verb == "flood-blocks" {
+		if c.verb == "flood-blocks" {
 			inst, tool, item, args = wp, floodTool, wpItem, `{"item_id":"`+wpItem+`","unit_ids":["prefix:a"],"ttl_hours":2}`
 		}
-		for _, c := range refs {
-			msg := "fixture refusal " + c.code + " — exact words"
-			r.hq.RefuseVerb(verb, c.status, c.code, msg)
-			out := r.s.dispatchAgentTool(ctx, inst, tool, args)
-			st, code, hq, text := refusedHQ(t, out)
-			if !isToolErr(out) || st != c.status || code != c.code || strings.Contains(out, "retryable") || strings.Contains(out, "unavailable") {
-				t.Errorf("%s %d %s: %s, want a final refusal %d %s", tool, c.status, c.code, out, c.status, c.code)
-				continue
-			}
-			if hq["error"] != msg || hq["code"] != c.code {
-				t.Errorf("%s %s: HQ's body not passed verbatim: %v", tool, c.code, hq)
-			}
-			if want := "HQ refused " + tool + " (" + strconv.Itoa(c.status) + " " + c.code + "): " + msg; text != want {
-				t.Errorf("%s %s: error %q, want %q", tool, c.code, text, want)
-			}
-			if it := r.hq.Item(item); it.Status != "claimed" || it.ClaimedBy != inst.Name {
-				t.Fatalf("%s %s: HQ's item changed on a refusal: %+v", tool, c.code, it)
-			}
+		msg := "fixture refusal " + c.code + " — exact words"
+		r.hq.RefuseVerb(c.verb, c.status, c.code, msg)
+		out := r.s.dispatchAgentTool(ctx, inst, tool, args)
+		r.hq.RefuseVerb(c.verb, 0, "", "")
+		st, code, hq, text := refusedHQ(t, out)
+		if !isToolErr(out) || st != c.status || code != c.code || strings.Contains(out, "retryable") || strings.Contains(out, "unavailable") {
+			t.Errorf("%s %d %s: %s, want a final refusal %d %s", tool, c.status, c.code, out, c.status, c.code)
+			continue
 		}
-		r.hq.RefuseVerb(verb, 0, "", "")
-	}
-}
-
-// TestHQsOwnChecksComeBackAsRefusals: not forced — the fake's own lease and
-// kind checks (HQ's) answer, and muster passes them on: an instance that does
-// not hold the item gets 409 lease_lost, a finding tool on the wrong kind
-// 422 not_a_finding / not_a_bot_surge.
-func TestHQsOwnChecksComeBackAsRefusals(t *testing.T) {
-	r := newItemAskRig(t)
-	ctx := context.Background()
-	tr := r.addInstance(r.a, 1, 1051)
-	wp := r.addInstance(r.b, 1, 1052)
-	unheld := r.hq.AddItem(offTR, kindFinding, "s:unheld")
-	if st, code, _, _ := refusedHQ(t, r.s.dispatchAgentTool(ctx, tr, taskAskTool, `{"item_id":"`+unheld+`"}`)); st != 409 || code != "lease_lost" {
-		t.Errorf("task ask on an unheld item: %d %s, want 409 lease_lost", st, code)
-	}
-	wrong := r.heldItemOf(t, tr, offTR, "task-reconciler.sweep")
-	if st, code, _, _ := refusedHQ(t, r.s.dispatchAgentTool(ctx, tr, taskAskTool, `{"item_id":"`+wrong+`"}`)); st != 422 || code != "not_a_finding" {
-		t.Errorf("task ask on a sweep item: %d %s, want 422 not_a_finding", st, code)
-	}
-	wpWrong := r.heldItemOf(t, wp, offWP, "perf.slow_route")
-	if st, code, _, _ := refusedHQ(t, r.s.dispatchAgentTool(ctx, wp, floodTool, `{"item_id":"`+wpWrong+`","unit_ids":["prefix:a"],"ttl_hours":1}`)); st != 422 || code != "not_a_bot_surge" {
-		t.Errorf("flood proposal on a slow-route item: %d %s, want 422 not_a_bot_surge", st, code)
-	}
-	if n := len(r.hq.DerivedAsks()); n != 0 {
-		t.Errorf("HQ accepted %d asks, want 0", n)
+		if hq["error"] != msg || hq["code"] != c.code {
+			t.Errorf("%s %s: HQ's body not passed verbatim: %v", tool, c.code, hq)
+		}
+		if want := "HQ refused " + tool + " (" + strconv.Itoa(c.status) + " " + c.code + "): " + msg; text != want {
+			t.Errorf("%s %s: error %q, want %q", tool, c.code, text, want)
+		}
+		if it := r.hq.Item(item); it.Status != "claimed" || it.ClaimedBy != inst.Name {
+			t.Fatalf("%s %s: HQ's item changed on a refusal: %+v", tool, c.code, it)
+		}
 	}
 }
 

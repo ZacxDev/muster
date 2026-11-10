@@ -482,7 +482,7 @@ func TestAnOfficerToolAskEndsTheItemMeter(t *testing.T) {
 // judgement pool's only, and the item meter counts routine instances.)
 func TestAnOfficerTaskAskEndsTheItemMeter(t *testing.T) {
 	llmEndSeamKind(t, "task-reconciler:llm-taskasks", "llm-taskasks-agent-token-01234567", officers.ToolTaskAsk,
-		hqtest.KindTaskFinding, ``)
+		"task-reconciler.finding", ``)
 }
 
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
