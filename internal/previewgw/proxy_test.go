@@ -164,7 +164,8 @@ var codeRE = regexp.MustCompile(`^[a-z_]{1,32}$`)
 // X-Muster-* are all gone; the viewer's address is not forwarded; the app's
 // own cookie and Authorization pass; Host is localhost:<the preview's port>
 // (4174, not the app's real port), with the public host in
-// X-Forwarded-Host and https in X-Forwarded-Proto.
+// X-Forwarded-Host and https in X-Forwarded-Proto, and the browser's Origin
+// as it was (rewritten on WebSocket upgrades only).
 func TestCredentialsNeverReachTheApp(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	var rc recorder
@@ -205,8 +206,8 @@ func TestCredentialsNeverReachTheApp(t *testing.T) {
 	if got := r.Header.Get("Authorization"); got != "Bearer app-token" {
 		t.Errorf("Authorization %q; the app's own must pass", got)
 	}
-	if got := r.Header.Get("Origin"); got != "http://localhost:4174" {
-		t.Errorf("Origin %q; the preview's own origin must become http://localhost:4174", got)
+	if got := r.Header.Get("Origin"); got != "https://"+pHost(id) {
+		t.Errorf("Origin %q; a plain request keeps the browser's own, %q", got, "https://"+pHost(id))
 	}
 	if r.URL.RequestURI() != "/api?q=1" {
 		t.Errorf("the app saw %q; want /api?q=1", r.URL.RequestURI())

@@ -144,6 +144,7 @@ func (g *Gateway) applyOffer(t *Tunnel, m wire.Offer) {
 			// Capped at the tunnel's own value: lowering is merely slower,
 			// raising past what the host's server admits is not allowed.
 			limit = min(c.MaxConns, t.state.MaxConns)
+			t.connLimit = limit
 		}
 		t.mu.Unlock()
 		if limit > 0 {
@@ -252,7 +253,18 @@ func (g *Gateway) deletePreviewLocked(p *Preview) {
 		p.cancel()
 	}
 	delete(g.previews, p.ID)
-	delete(g.previewBy, previewKey{tunnelKey{p.OwnerID, p.Host}, p.Window, p.Port})
+	key := tunnelKey{p.OwnerID, p.Host}
+	delete(g.previewBy, previewKey{key, p.Window, p.Port})
+	// Its pooled idle connections would hold host slots until they time out:
+	// closed now, on every tunnel of the host (a draining one included). The
+	// pool is per tunnel, so the host's other previews' idle ones go too and
+	// are simply dialled again. Not under g.mu: closing a stream can wait on
+	// the tunnel's writer, and a stalled host must not hold the gateway's lock.
+	for t := range g.all {
+		if t.key == key && t.rt != nil {
+			go t.rt.CloseIdleConnections()
+		}
+	}
 }
 
 // queueAnswer hands a to t's answer worker, or closes t when its queue is

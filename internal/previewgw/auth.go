@@ -10,7 +10,11 @@ package previewgw
 //     bound to that preview and owner for OwnerCookieTTL, with a SameSite
 //     chosen from Sec-Fetch-Dest (cookie.go). It redirects to /__muster/check.
 //  3. /__muster/check goes on to the preview's start path if the cookie
-//     arrived, and otherwise says the browser blocks embedded previews.
+//     arrived, and otherwise says the browser blocks embedded previews. It
+//     goes on with a page whose script navigates (location.replace), not a
+//     redirect: a redirect would keep the app's request in w.'s same-site
+//     chain, and an iframe navigation that is not same-origin passes only on
+//     check itself (samesite.go). The page's own navigation is same-origin.
 //
 // Every other request on p-<id> needs that cookie. 🔴 A preview that does not
 // exist is 404 BEFORE anything else: an offer the owner never clicked Open on
@@ -24,10 +28,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"path"
 	"strings"
 	"time"
+
+	gm "maragu.dev/gomponents"
+	. "maragu.dev/gomponents/html"
 )
 
 const (
@@ -209,8 +217,7 @@ func (g *Gateway) previewHandler(id string) http.Handler {
 				g.renderCode(w, http.StatusForbidden, codeFrameBlocked)
 				return
 			}
-			g.gatewayPageHeaders(w)
-			http.Redirect(w, r, startPath(path), http.StatusSeeOther)
+			g.continueTo(w, startPath(path))
 			return
 		}
 		if !admitted {
@@ -240,4 +247,21 @@ func (g *Gateway) enterPreview(w http.ResponseWriter, r *http.Request, id string
 	}
 	http.SetCookie(w, ownerCookieHeader(v, r.Header.Get("Sec-Fetch-Dest")))
 	http.Redirect(w, r, checkPath, http.StatusSeeOther)
+}
+
+// continueTo is /__muster/check's answer for an admitted owner: a page whose
+// script (under the page's nonce) replaces it with target, a path on this
+// preview's host (startPath), plus a link for a browser without script. The
+// navigation is the page's own, so the request reaching the app is
+// same-origin.
+func (g *Gateway) continueTo(w http.ResponseWriter, target string) {
+	js, _ := json.Marshal(target) // escapes <, > and &: it cannot end the element
+	nonce := newNonce()
+	g.gatewayPageHeaders(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = page(nonce, "Opening the preview",
+		P(A(Href(target), gm.Text("Continue to the preview"))),
+		Script(gm.Attr("nonce", nonce), gm.Raw("location.replace("+string(js)+");")),
+	).Render(w)
 }

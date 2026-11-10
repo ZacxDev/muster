@@ -11,14 +11,20 @@ package previewgw
 //     gateway's cookies and muster_* cookies, Forwarded, every inbound
 //     X-Forwarded-*, X-Real-IP, CF-*, True-Client-IP, CDN-Loop, X-Muster-*.
 //     🔴 THE VIEWER'S ADDRESS IS NOT FORWARDED. The app's own cookies and
-//     Authorization pass. An Origin equal to the preview's own becomes
-//     http://localhost:<port>.
+//     Authorization pass. The browser's Origin passes as it is, matching
+//     X-Forwarded-Host and -Proto (an app comparing them for CSRF agrees);
+//     ONLY ON A WEBSOCKET UPGRADE does an Origin equal to the preview's own
+//     become http://localhost:<port> (wsrelay.go), for dev servers that
+//     compare it with Host.
 //   - Response: a Location at localhost / 127.0.0.1 / [::1] on the preview's
 //     port is rewritten to the preview's origin; every Set-Cookie loses
 //     Domain, and one named like a gateway cookie is dropped; frame-ancestors
 //     with muster's origin (a second CSP header, which a browser intersects
 //     with the app's); nosniff; Referrer-Policy no-referrer, REPLACING the
-//     app's; the app's Strict-Transport-Security dropped.
+//     app's; the app's Strict-Transport-Security dropped. Also dropped: every
+//     X-Muster-* header (an app cannot forge the gateway's error code) and
+//     Clear-Site-Data, which a browser applies to the whole registrable
+//     domain — every other preview, and w.
 //   - Errors: the gateway's own (host offline, nothing listening, timeouts)
 //     are a page naming a code (^[a-z_]{1,32}$) and nothing else — never an
 //     error's text. An app's own error is the app's response, as it sent it.
@@ -131,8 +137,10 @@ func dropRequestHeader(name string) bool {
 }
 
 // upstreamHeaders rewrites h (a copy of the browser's headers) into what the
-// app may see, for target tg (the request rules in this file's comment).
-func (g *Gateway) upstreamHeaders(h http.Header, tg *proxyTarget) {
+// app may see, for target tg (the request rules in this file's comment). ws
+// is true for a WebSocket upgrade, the only request whose Origin is
+// rewritten.
+func (g *Gateway) upstreamHeaders(h http.Header, tg *proxyTarget, ws bool) {
 	for k := range h {
 		if dropRequestHeader(k) {
 			delete(h, k)
@@ -143,7 +151,7 @@ func (g *Gateway) upstreamHeaders(h http.Header, tg *proxyTarget) {
 	} else {
 		h.Del("Cookie")
 	}
-	if h.Get("Origin") == g.previewOrigin(tg.id) {
+	if ws && h.Get("Origin") == g.previewOrigin(tg.id) {
 		h.Set("Origin", "http://"+tg.upstreamHost())
 	}
 	h.Set("X-Forwarded-Host", "p-"+tg.id+"."+g.cfg.Domain)
@@ -155,11 +163,17 @@ func (g *Gateway) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.URL.Scheme = "http"
 	pr.Out.URL.Host = tg.poolAddr()
 	pr.Out.Host = tg.upstreamHost()
-	g.upstreamHeaders(pr.Out.Header, tg)
+	g.upstreamHeaders(pr.Out.Header, tg, false)
 }
 
 // previewResponseHeaders applies the response rules to h, an app's headers.
 func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
+	for k := range h {
+		if strings.HasPrefix(strings.ToLower(k), "x-muster-") {
+			delete(h, k)
+		}
+	}
+	h.Del("Clear-Site-Data")
 	h.Del("Strict-Transport-Security")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -179,7 +193,12 @@ func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
 
 func (g *Gateway) modifyResponse(resp *http.Response) error {
 	g.previewResponseHeaders(resp.Header, targetOf(resp.Request.Context()))
-	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(strings.ToLower(ct), "text/event-stream") {
+	// The keepalive comment is plain text: inside a compressed body it would
+	// corrupt the stream, so a body with a Content-Encoding other than
+	// identity gets none.
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if ce := resp.Header.Get("Content-Encoding"); strings.HasPrefix(ct, "text/event-stream") &&
+		(ce == "" || strings.EqualFold(ce, "identity")) {
 		resp.Body = newSSEBody(resp.Body, g.keepalive)
 	}
 	return nil

@@ -10,7 +10,7 @@ package previewgw
 //     it is same-origin, user-initiated, or a GET navigation; a WebSocket must
 //     carry its own preview's Origin.
 //   - Cookie bombing (cookieBomb): a Cookie header past 8 KiB gets a page that
-//     expires every cookie it names.
+//     expires every cookie it names, at every path prefix of the request.
 //   - What reaches the app (forwardCookies): never the gateway's own cookies.
 
 import (
@@ -69,16 +69,21 @@ func headerHasToken(h http.Header, name, token string) bool {
 //     or without Fetch Metadata;
 //   - with Sec-Fetch-Site: same-origin and none (a typed or bookmarked URL)
 //     pass; otherwise only a GET or HEAD navigation (Sec-Fetch-Mode: navigate)
-//     whose destination is a document or an iframe passes. Refused: every
-//     same-site or cross-site subresource, fetch, form POST and WebSocket —
-//     preview A reaching preview B;
+//     whose destination is a document passes — or an iframe, on
+//     /__muster/check only. Refused: every same-site or cross-site
+//     subresource, fetch, form POST and WebSocket — preview A reaching
+//     preview B — and every other iframe navigation;
 //   - with no Sec-Fetch-Site (a browser that sends no Fetch Metadata), every
 //     method but GET and HEAD must carry the preview's own Origin.
 //
-// The iframe navigation is what muster's frame does (the session page on w.,
-// same-site, navigates its own frame here). Another site cannot use it to
-// show a preview: every preview response carries frame-ancestors with
-// muster's origin only (proxy.go).
+// 🔴 THE IFRAME NAVIGATION PASSES ON /__muster/check ONLY, which the gateway
+// answers itself and which never reaches the app. That is muster's frame
+// (Show here): w., same-site, navigates its frame to the entry route, which
+// redirects to check, all in one same-site chain. Check's page then navigates
+// on to the app itself (auth.go), which makes the app's request same-origin.
+// Allowed on any path, the iframe rule would let preview A's script load
+// p-B/<anything> in a hidden frame with B's cookie, unseen: frame-ancestors
+// stops it being SHOWN, not the request reaching B's app.
 func crossSiteRefusal(r *http.Request, origin string) string {
 	if isWebSocket(r) && r.Header.Get("Origin") != origin {
 		return codeCrossSite
@@ -95,8 +100,12 @@ func crossSiteRefusal(r *http.Request, origin string) string {
 	}
 	if readOnly && r.Header.Get("Sec-Fetch-Mode") == "navigate" {
 		switch r.Header.Get("Sec-Fetch-Dest") {
-		case "document", "iframe":
+		case "document":
 			return ""
+		case "iframe":
+			if r.URL.Path == checkPath {
+				return ""
+			}
 		}
 	}
 	return codeCrossSite
@@ -145,15 +154,68 @@ func cookieToken(s string) bool {
 	return true
 }
 
+// The cookie-bomb reset's bounds: the path prefixes it expires cookies at,
+// and the Set-Cookie headers it writes in all (so a crafted header cannot
+// make the answer large).
+const (
+	maxBombPaths      = 8
+	maxBombSetCookies = 512
+)
+
+// bombPaths are the paths a cookie sent with r can have been set at: every
+// prefix of r's path at a "/" boundary, shortest first ("/", "/app",
+// "/app/x" for /app/x), at most maxBombPaths. A prefix holding a character
+// a Path attribute cannot carry ends the list.
+func bombPaths(r *http.Request) []string {
+	out := []string{"/"}
+	p := r.URL.EscapedPath()
+	for i := 1; i <= len(p) && len(out) < maxBombPaths; i++ {
+		if i < len(p) && p[i] != '/' {
+			continue
+		}
+		pre := strings.TrimSuffix(p[:i], "/")
+		if pre == "" || pre == out[len(out)-1] {
+			continue
+		}
+		if strings.ContainsFunc(pre, func(c rune) bool { return c <= ' ' || c >= 0x7f || c == ';' || c == ',' }) {
+			break
+		}
+		out = append(out, pre)
+	}
+	return out
+}
+
 // cookieBomb answers a request whose Cookie header passed MaxCookieHeader: a
-// page that expires every cookie it names (up to maxBombNames), both
-// host-only and at Domain=<zone>, where a tossed cookie lives. A __Host-
-// cookie cannot carry Domain, so it is expired host-only only.
+// page that expires every cookie it names (up to maxBombNames) wherever one
+// of that name can live for this request — at every path prefix (bombPaths),
+// host-only and at Domain=<zone> (where a tossed cookie lives), each plain
+// and Partitioned (one tossed inside muster's frame is partitioned). A
+// __Host- cookie can carry neither Domain nor a Path other than /, so it is
+// expired host-only at / only. Shortest paths first, at most
+// maxBombSetCookies headers.
 func (g *Gateway) cookieBomb(w http.ResponseWriter, r *http.Request) {
-	for _, name := range cookieNames(r, maxBombNames) {
-		w.Header().Add("Set-Cookie", name+"=; Path=/; Max-Age=0; Secure")
-		if !strings.HasPrefix(name, "__Host-") {
-			w.Header().Add("Set-Cookie", name+"=; Path=/; Domain="+g.cfg.Domain+"; Max-Age=0; Secure")
+	names := cookieNames(r, maxBombNames)
+	n := 0
+	add := func(v string) {
+		if n < maxBombSetCookies {
+			w.Header().Add("Set-Cookie", v)
+			n++
+		}
+	}
+	for _, p := range bombPaths(r) {
+		for _, name := range names {
+			host := strings.HasPrefix(name, "__Host-")
+			if host && p != "/" {
+				continue
+			}
+			for _, dom := range []string{"", "; Domain=" + g.cfg.Domain} {
+				if host && dom != "" {
+					continue
+				}
+				v := name + "=; Path=" + p + dom + "; Max-Age=0; Secure"
+				add(v)
+				add(v + "; Partitioned")
+			}
 		}
 	}
 	g.renderCode(w, http.StatusRequestHeaderFieldsTooLarge, codeTooManyCookies)

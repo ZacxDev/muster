@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
+	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
 // DrainTimeout bounds how long a replaced tunnel keeps its open streams.
@@ -43,7 +44,8 @@ type Tunnel struct {
 
 	mu        sync.Mutex
 	state     HostState
-	streams   int
+	streams   int // open upstream streams, pooled idle ones included
+	connLimit int // the client's current upstream limit; 0 = wire.MaxConns
 	draining  bool
 	stopDrain func() bool
 }
@@ -179,12 +181,45 @@ func (t *Tunnel) dial(ctx context.Context, port int) (net.Conn, error) {
 
 // dialHeld dials port on t for a stream already counted in t.streams.
 func (t *Tunnel) dialHeld(ctx context.Context, port int) (net.Conn, error) {
+	t.closeIdleIfFull()
 	c, err := t.client.Dial(ctx, port)
 	if err != nil {
 		t.streamDone()
 		return nil, err
 	}
 	return &trackedConn{Conn: c, done: t.streamDone}, nil
+}
+
+// othersFullLocked reports whether the streams other than the one being
+// dialled hold every one of the host's upstream slots.
+func (t *Tunnel) othersFullLocked() bool {
+	limit := t.connLimit
+	if limit == 0 {
+		limit = wire.MaxConns
+	}
+	return t.streams-1 >= limit
+}
+
+// closeIdleIfFull makes sure the proxy's IDLE pooled connections never hold
+// the slots a dial waits for: every pooled connection is a stream holding
+// one of the host's maxConns, so a few of one preview's could otherwise
+// refuse every other preview of the host (429) until they time out. When
+// every slot is taken it closes t's idle pooled connections (all of the
+// host's previews'). A request that finishes while the dial waits does not
+// pool its connection either: after CloseIdleConnections the transport
+// closes connections that go idle, until its next request (which, if it
+// must dial, comes back here). This test holds that case:
+// TestIdlePooledConnectionsDoNotStarveAnotherPreview.
+func (t *Tunnel) closeIdleIfFull() {
+	if t.rt == nil {
+		return
+	}
+	t.mu.Lock()
+	full := t.othersFullLocked()
+	t.mu.Unlock()
+	if full {
+		t.rt.CloseIdleConnections()
+	}
 }
 
 // streamDone releases one stream; a draining tunnel with none left closes.

@@ -6,6 +6,8 @@ package previewgw
 // which every conforming client ignores. 🔴 ONLY AT AN EVENT BOUNDARY: after
 // a blank line, or before the first byte. An app paused in the middle of an
 // event gets nothing injected — a comment there would land inside the event.
+// A compressed body (a Content-Encoding other than identity) is never
+// wrapped: a plain-text comment inside it would corrupt it (proxy.go).
 
 import (
 	"bytes"

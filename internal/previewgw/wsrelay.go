@@ -42,7 +42,7 @@ func (g *Gateway) relayWebSocket(w http.ResponseWriter, r *http.Request, tg *pro
 			hdr[k] = append([]string(nil), vs...)
 		}
 	}
-	g.upstreamHeaders(hdr, tg)
+	g.upstreamHeaders(hdr, tg, true)
 	var subs []string
 	for _, v := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for _, s := range strings.Split(v, ",") {
@@ -160,9 +160,16 @@ func closeWithin(c *websocket.Conn, code websocket.StatusCode, reason string) {
 	}
 }
 
-// keepBrowserAlive pings the browser's leg every d until ctx ends. A ping
-// that is not answered is not an error here: the ping frame itself is the
-// traffic the edge needs, and a dead browser ends its pump.
+// minPingWait is the least time a browser has to answer a ping, whatever the
+// keepalive interval (tests run it at milliseconds).
+const minPingWait = 2 * time.Second
+
+// keepBrowserAlive pings the browser's leg every d until ctx ends. 🔴 A PING
+// THAT FAILS OR GOES UNANSWERED (within d, at least minPingWait) CLOSES THE
+// BROWSER'S LEG: a browser that vanished without a close (a sleeping laptop,
+// a dropped network) would otherwise hold the relay — and the app's leg, a
+// host slot, and the preview's in-flight use — open with nothing reading
+// it. Closing it ends the browser's pump, and the relay closes the app's leg.
 func keepBrowserAlive(ctx context.Context, c *websocket.Conn, d time.Duration) {
 	t := time.NewTicker(d)
 	defer t.Stop()
@@ -171,9 +178,13 @@ func keepBrowserAlive(ctx context.Context, c *websocket.Conn, d time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			pctx, cancel := context.WithTimeout(ctx, d)
-			_ = c.Ping(pctx)
+			pctx, cancel := context.WithTimeout(ctx, max(d, minPingWait))
+			err := c.Ping(pctx)
 			cancel()
+			if err != nil && ctx.Err() == nil {
+				c.CloseNow()
+				return
+			}
 		}
 	}
 }

@@ -19,8 +19,9 @@ import (
 // same-site fetch (cors), subresource (no-cors), WebSocket, form POST; and,
 // for a browser with no Fetch Metadata, a POST and a WebSocket with S's
 // Origin. S's cookie alone admits nothing on V. Positive controls on V
-// itself: same-origin, a typed URL (none), a top-level navigation, an
-// iframe navigation, and its own WebSocket all pass.
+// itself: same-origin, a typed URL (none), a top-level navigation, and its
+// own WebSocket all pass. (An iframe navigation passes on /__muster/check
+// only: TestASiblingsHiddenIframeIsRefusedAndShowHereStillWorks.)
 func TestASiblingPreviewTheVictimWasLoggedIntoIsRefused(t *testing.T) {
 	e := newGW(t, gwOpts{tokens: []string{"mpl_owner1", "mpl_owner2"}})
 	var victimApp recorder
@@ -92,7 +93,6 @@ func TestASiblingPreviewTheVictimWasLoggedIntoIsRefused(t *testing.T) {
 		{"same-origin POST", "POST", from("Sec-Fetch-Site", "same-origin", "Sec-Fetch-Mode", "cors", "Origin", "https://"+pHost(v))},
 		{"typed URL", "GET", from("Sec-Fetch-Site", "none", "Sec-Fetch-Mode", "navigate", "Sec-Fetch-Dest", "document")},
 		{"top-level navigation", "GET", from("Sec-Fetch-Site", "same-site", "Sec-Fetch-Mode", "navigate", "Sec-Fetch-Dest", "document")},
-		{"muster's frame", "GET", from("Sec-Fetch-Site", "same-site", "Sec-Fetch-Mode", "navigate", "Sec-Fetch-Dest", "iframe")},
 		{"no Fetch Metadata, GET", "GET", from()},
 		{"no Fetch Metadata, POST with its own Origin", "POST", from("Origin", "https://"+pHost(v))},
 	} {
@@ -112,8 +112,9 @@ func TestASiblingPreviewTheVictimWasLoggedIntoIsRefused(t *testing.T) {
 
 // A Cookie header past 8 KiB (cookie bombing) gets the reset page: 431
 // too_many_cookies, expiring every cookie it names host-only and at
-// Domain=<zone> (a __Host- cookie host-only only); the app is not reached.
-// 8192 bytes exactly is still proxied.
+// Domain=<zone> (a __Host- cookie host-only only), each plain and
+// Partitioned; the app is not reached. 8192 bytes exactly is still proxied.
+// (Deeper paths: TestACookieBombIsResetAtEveryPathPrefix.)
 func TestACookieBombGetsTheResetPage(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	var rc recorder
@@ -134,9 +135,13 @@ func TestACookieBombGetsTheResetPage(t *testing.T) {
 	}
 	want := []string{
 		OwnerCookie + "=; Path=/; Max-Age=0; Secure",
+		OwnerCookie + "=; Path=/; Max-Age=0; Secure; Partitioned",
 		"__Host-x=; Path=/; Max-Age=0; Secure",
+		"__Host-x=; Path=/; Max-Age=0; Secure; Partitioned",
 		"tossed=; Path=/; Max-Age=0; Secure",
+		"tossed=; Path=/; Max-Age=0; Secure; Partitioned",
 		"tossed=; Path=/; Domain=" + testDomain + "; Max-Age=0; Secure",
+		"tossed=; Path=/; Domain=" + testDomain + "; Max-Age=0; Secure; Partitioned",
 	}
 	if got := a.header.Values("Set-Cookie"); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("the reset page's Set-Cookie:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
