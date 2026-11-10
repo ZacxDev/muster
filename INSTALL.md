@@ -15,7 +15,8 @@ When it is done, the person has:
 - each of their machines (the hub, and any others) showing its tmux sessions in
   muster, so every Claude Code, Codex, opencode or Gemini CLI session running
   in tmux appears as a card they can read and answer (muster's message box
-  does not send to opencode yet; its Terminal view types into it);
+  sends to opencode only on a host that opts in with `-opencode-send`;
+  otherwise they type into its terminal);
 - muster installed on their phone's home screen, signed in, with notifications
   and voice dictation working;
 - a passing `muster doctor`.

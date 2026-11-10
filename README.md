@@ -200,7 +200,11 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
   chat view refuses to type into a waiting prompt, and there is no one-tap
   approve ([docs/sending-and-step-up.md](docs/sending-and-step-up.md)).
 - **Codex and Gemini CLI get no waiting push** and no ask tool: they are
-  terminal views. The message box does not send to opencode yet.
+  terminal views. The message box sends to opencode only on a host that opts
+  in (`-opencode-send`), to a session started with `muster-mirror opencode`,
+  through opencode's API and only while it is idle
+  ([docs/mirroring.md](docs/mirroring.md#sending-to-opencode)); otherwise type
+  into its terminal.
 - **It needs Tailscale**, plus Docker on one machine and tmux on every
   machine. muster sees only sessions inside tmux.
 - **It is a PWA, not a native app.** On iOS, install it to the Home Screen

@@ -613,7 +613,7 @@ tmux display-message -p -t <pane id> '#{pane_current_path}'
   **The message box does not send into it.** The host refuses every Send,
   Queue and Send now into a pane whose terminal runs opencode
   (`openCodeShape`, `internal/mirrorhost/paneguard.go`;
-  [mirroring.md](../mirroring.md#muster-does-not-send-to-opencode-yet)). So the
+  [mirroring.md](../mirroring.md#muster-never-types-into-opencode)). So the
   sheet's notice reads "terminal-only; muster cannot send messages to opencode
   yet". In muster, an opencode session can be watched and killed, and typed
   into through Live keys on its terminal. Live keys are an interactive
