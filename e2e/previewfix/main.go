@@ -21,7 +21,8 @@
 //	    hot-reload socket does) and an EventSource, the echo and the event
 //	    stream themselves, /api/ping, /secret (what a sibling preview must not
 //	    reach), and /attack?victim=<url> (a page that loads <url> in a hidden
-//	    iframe: a sibling preview reaching for another). Every request is one
+//	    iframe and opens a WebSocket to <url>'s host /ws: a sibling preview
+//	    reaching for another). Every request is one
 //	    JSON line in the log: which listener, the method and the path, so the
 //	    spec sees what reached an app and what never did.
 //
@@ -285,10 +286,22 @@ es.onerror=function(){if(sse.textContent==='sse: pending')sse.textContent='sse: 
 })();
 </script></body></html>`
 
-// attackPage loads the victim URL in a hidden iframe.
+// attackPage loads the victim URL in a hidden iframe and opens a WebSocket to
+// the victim's /ws (a hostile page's script reaching for another preview's
+// hot-reload socket), writing what came of it into #wsattack.
 const attackPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sibling %[1]d</title></head>
 <body><h1 id="attacker">sibling preview on %[1]d</h1>
-<iframe id="victim" hidden src="%[2]s"></iframe></body></html>`
+<p id="wsattack">wsattack: pending</p>
+<iframe id="victim" hidden src="%[2]s"></iframe>
+<script>
+(function(){
+var out=document.getElementById('wsattack');
+try{var s=new WebSocket('wss://'+new URL(document.getElementById('victim').src).host+'/ws');
+ s.onopen=function(){out.textContent='wsattack: open';};
+ s.onerror=function(){out.textContent='wsattack: error';};
+}catch(e){out.textContent='wsattack: threw '+e;}
+})();
+</script></body></html>`
 
 func appHandler(port int, lg *jsonLog) http.Handler {
 	mux := http.NewServeMux()

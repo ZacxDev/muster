@@ -229,16 +229,25 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   });
 });
 
-test.afterAll(async () => {
-  for (const { p } of procs.reverse()) {
-    if (p.exitCode === null && p.signalCode === null) {
-      const done = new Promise((r) => p.once('exit', r));
-      p.kill('SIGTERM');
-      await done;
-    }
+// stopProc sends SIGTERM and waits up to 5 s for the exit, then SIGKILLs.
+async function stopProc(p: ChildProcess): Promise<void> {
+  if (p.exitCode !== null || p.signalCode !== null) return;
+  const done = new Promise<boolean>((r) => p.once('exit', () => r(true)));
+  p.kill('SIGTERM');
+  const exited = await Promise.race([done, new Promise<boolean>((r) => setTimeout(() => r(false), 5_000))]);
+  if (!exited) {
+    p.kill('SIGKILL');
+    await done;
   }
-  for (const n of names) fix('rmplugin', OWNER, n);
-  await rig.stop();
+}
+
+test.afterAll(async () => {
+  try {
+    for (const { p } of procs.reverse()) await stopProc(p);
+    for (const n of names) fix('rmplugin', OWNER, n);
+  } finally {
+    await rig.stop();
+  }
 });
 
 // ready signs in, waits until the host lists the Claude window as one, and
@@ -369,19 +378,29 @@ test('the owner opens a window\'s dev server from muster: the chip\'s session pa
   const tabCookie = (await context.cookies(`https://p-${id2}.${ZONE_HOST}/`)).find((c) => c.name === '__Host-mp');
   expect([tabCookie?.sameSite, tabCookie?.partitionKey]).toEqual(['Strict', undefined]);
   facts.newTab = { enter: enter2, root: edge().filter(onPreview(id2)).find((r) => r.path === '/'), cookie: { sameSite: tabCookie?.sameSite } };
+
+  // Leave no preview open: Close id2 on the session page, so the next test
+  // finds both ports offered, as it does when it runs alone.
+  await expect(rowOf(tab, A)).toHaveAttribute('data-kind', 'preview', { timeout: 15_000 });
+  await rowOf(tab, A).locator(`button[data-close="${id2}"]`).click();
+  await expect(rowOf(tab, A), 'the New tab preview was closed').toHaveAttribute('data-kind', 'offer', { timeout: 15_000 });
+  await expect(rowOf(tab, B)).toHaveAttribute('data-kind', 'offer');
   await preview.close();
   await tab.close();
   await second.close();
 });
 
-test('a sibling preview\'s hidden iframe to another preview is refused (cross_site) and never reaches the victim\'s app, though the browser sent the victim\'s cookie', async ({ page }) => {
+test('a sibling preview\'s hidden iframe and WebSocket to another preview are refused (cross_site) and never reach the victim\'s app, though the browser sent the victim\'s cookie',async ({ page }) => {
   test.setTimeout(120_000);
   await ready(page);
 
   // The VICTIM: the app on A, opened in muster's frame (its cookie is the
   // frame's, partitioned under muster).
+  // Both ports are OFFERS here, alone (-g) or after the owner test, which
+  // closes every preview it opened: this test opens fresh previews either way.
   let framed = await showSessionPage(page);
-  await expect(rowOf(framed, A), allLogs()).toHaveCount(1, { timeout: 30_000 });
+  await expect(rowOf(framed, A), allLogs()).toHaveAttribute('data-kind', 'offer', { timeout: 30_000 });
+  await expect(rowOf(framed, B)).toHaveAttribute('data-kind', 'offer');
   await rowOf(framed, A).locator('button[data-how="here"]').click();
   await expect(framed.locator('#app')).toHaveText(`preview app on ${A}`);
   const victim = await previewFrame(page);
@@ -397,13 +416,15 @@ test('a sibling preview\'s hidden iframe to another preview is refused (cross_si
   // page loads the victim's /secret in a hidden iframe.
   await page.locator('#plugin-frame [data-plugin-close]').click();
   framed = await showSessionPage(page);
-  await expect(rowOf(framed, B)).toHaveCount(1, { timeout: 30_000 });
+  await expect(rowOf(framed, A)).toHaveAttribute('data-kind', 'preview', { timeout: 30_000 });
+  await expect(rowOf(framed, B)).toHaveAttribute('data-kind', 'offer');
   await rowOf(framed, B).locator('button[data-how="here"]').click();
   await expect(framed.locator('#app')).toHaveText(`preview app on ${B}`);
   const sibling = await previewFrame(page);
   expect(sibling.id).not.toBe(victim.id);
   const target = `https://p-${victim.id}.${ZONE_HOST}/secret`;
   const seen = edge().length; // the control's own /secret is before this
+  const victimWS = appHits(A, '/ws'); // the victim page's own echo socket
   await sibling.frame.evaluate((t) => location.assign('/attack?victim=' + encodeURIComponent(t)), target);
   await expect(framed.locator('#attacker')).toHaveText(`sibling preview on ${B}`);
 
@@ -417,8 +438,27 @@ test('a sibling preview\'s hidden iframe to another preview is refused (cross_si
   expect([refused!.status, refused!.code], 'the gateway refused the sibling\'s frame').toEqual([403, 'cross_site']);
   expect([refused!.sec_fetch_site, refused!.sec_fetch_mode, refused!.sec_fetch_dest]).toEqual(['same-site', 'navigate', 'iframe']);
   expect(refused!.cookies, 'the browser DID send the victim\'s cookie: only the gateway stood in the way').toContain('__Host-mp');
+
+  // The same page's WebSocket to the victim's /ws: Chromium sends a WebSocket
+  // handshake no Sec-Fetch-*, so only the gateway's Origin rule (the upgrade
+  // must carry the victim's own preview Origin) refuses it.
+  let wsRefused: EdgeRec | undefined;
+  await expect
+    .poll(() => (wsRefused = edge().slice(seen).filter(onPreview(victim.id)).find((r) => r.path === '/ws')) !== undefined, {
+      message: 'the sibling\'s WebSocket reached the gateway',
+      timeout: 15_000,
+    })
+    .toBe(true);
+  expect([wsRefused!.upgrade.toLowerCase(), wsRefused!.origin], 'a WebSocket upgrade from the sibling\'s origin').toEqual([
+    'websocket',
+    `https://p-${sibling.id}.${ZONE_HOST}`,
+  ]);
+  expect([wsRefused!.status, wsRefused!.code], 'the gateway refused the sibling\'s WebSocket').toEqual([403, 'cross_site']);
+  await expect(framed.locator('#wsattack')).toHaveText('wsattack: error');
   await page.waitForTimeout(500);
   expect(appHits(A, '/secret'), 'the victim\'s app never saw the sibling\'s request').toBe(before + 1);
+  expect(appHits(A, '/ws'), 'the victim\'s app never saw the sibling\'s WebSocket').toBe(victimWS);
   facts.sibling = refused;
+  facts.siblingWebSocket = wsRefused;
   console.log('FACTS (what the gateway was sent by Chromium):\n' + JSON.stringify(facts, null, 2));
 });
