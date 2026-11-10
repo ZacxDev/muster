@@ -25,7 +25,14 @@ type sseChunk struct {
 
 // sseBody wraps an event-stream body. A goroutine reads the app; Read hands
 // its chunks on, or a comment when none came for the interval and the stream
-// is at a boundary.
+// is at a boundary. 🔴 The goroutine starts on the FIRST Read, not here: at
+// the body's EOF the transport writes resp.Trailer from inside src.Read, and
+// ReverseProxy reads resp.Trailer between ModifyResponse and its first Read
+// (the Trailer: line). Started any earlier, the two race — a concurrent map
+// read and write, which kills the process. From the first Read on, the
+// goroutine's writes reach the proxy's goroutine only through b.ch, so a
+// reader that touches resp.Trailer only after Read returned the error
+// (trailerFilter) is ordered after them.
 type sseBody struct {
 	src   io.ReadCloser
 	every time.Duration
@@ -33,6 +40,7 @@ type sseBody struct {
 	stop  chan struct{}
 	once  sync.Once
 
+	started bool
 	pending []byte
 	tail    []byte // the last bytes passed on, enough to see a blank line
 	err     error
@@ -41,7 +49,6 @@ type sseBody struct {
 func newSSEBody(src io.ReadCloser, every time.Duration) *sseBody {
 	b := &sseBody{src: src, every: every, ch: make(chan sseChunk), stop: make(chan struct{}),
 		tail: []byte("\n\n")} // the start of a stream is a boundary
-	go b.read()
 	return b
 }
 
@@ -75,6 +82,10 @@ func (b *sseBody) pass(p []byte) {
 }
 
 func (b *sseBody) Read(p []byte) (int, error) {
+	if !b.started {
+		b.started = true
+		go b.read()
+	}
 	if len(b.pending) > 0 {
 		n := copy(p, b.pending)
 		b.pass(b.pending[:n])
