@@ -5,7 +5,8 @@ draws them in place of its own mark:
 
 - in the page header and the sidebar, on every signed-in page;
 - on the sign-in page;
-- as the favicon and the touch icon;
+- as the favicon and the touch icon, on every page muster serves (the
+  sign-in, invite, reset and claim pages included);
 - as the installed app's icons (the web app manifest);
 - as the icon of every Web Push notification;
 - in [`GET /api/instance`](#the-instance-document), which the apps read to show

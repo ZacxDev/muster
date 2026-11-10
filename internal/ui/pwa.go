@@ -3,6 +3,7 @@ package ui
 import (
 	"io"
 	"net/url"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -24,6 +25,23 @@ import (
 // (TestDocumentHeadsHaveOneSpelling, TestEveryDocumentLinksTheBrandIcon).
 func docHead(b Brand) g.Node {
 	return g.Group{manifestLink(), brandIconLinks(b)}
+}
+
+// DocHeadHTML is docHead as a raw string, for internal/api's hand-written
+// documents (writeAuthDocument: sign-in, claim, invite, reset, notice), the way
+// ThemeHeadHTML carries ThemeHead there. It renders docHead itself, so the
+// link markup has one spelling.
+//
+// The manifest link is included on those signed-out pages on purpose: the
+// manifest is the same for every caller and needs no session
+// (internal/api's TestPWAMetadataIsSessionIndependent), so linking it from a
+// signed-out page exposes nothing. A link does not change what a forward-auth
+// proxy lets through (docs/auth.md keeps /manifest.webmanifest behind its
+// sign-in): the browser's fetch of it is answered by the proxy like any other.
+func DocHeadHTML(b Brand) string {
+	var sb strings.Builder
+	_ = docHead(b).Render(&sb)
+	return sb.String()
 }
 
 // manifestLink is the <link rel=manifest>; documents get it through docHead.

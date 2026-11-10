@@ -185,7 +185,9 @@ func TestDocumentHeadsHaveOneSpelling(t *testing.T) {
 		}
 	}
 	want := []string{
-		"AgentDetailPage", "AgentTerminalPage", "MirrorViewPage", "NavDocument", "SendAgainPage",
+		// DocHeadHTML: internal/api's hand-written documents (writeAuthDocument),
+		// held from that side by TestEveryHandWrittenDocumentDrawsDocHead.
+		"AgentDetailPage", "AgentTerminalPage", "DocHeadHTML", "MirrorViewPage", "NavDocument", "SendAgainPage",
 		"SendQueueRetryConfirmPage", "StepUpFormPage", "TaskDetailPage", "TaskNotFoundPage", "shell",
 	}
 	if got := callersOf(t, ".", "docHead"); strings.Join(got, ",") != strings.Join(want, ",") {
