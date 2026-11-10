@@ -63,7 +63,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
 | `tiers` | none | Two pools of instances, routine and judgement, each with its own `model` and `max_instances`: [The two pools](#the-two-pools). Absent: one pool, as above. |
-| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). |
+| `llm` | none | Needs `tiers`. Lets the routine pool reach `tiers.routine.model` through muster's [LLM proxy](#the-llm-proxy), within `{"daily_budget_usd", "max_tokens_per_item"}`. Strict; it requires the officer's own key, `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (never the shared one). The judgement pool's own block is `tiers.judgement.llm` ([below](#the-judgement-pool-on-the-proxy)). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -174,11 +174,14 @@ three things in that session's `settings.json` at provision time (the pod's
   takes effect at the instance's next pod start: seed removes the model it set
   itself (the instance keeps its volume, so it would otherwise persist), back to
   the account default. A model changed by hand inside the pod is left alone.
-  A routine instance of an officer with an [`llm` block](#the-llm-proxy) gets
-  no model here: the proxy pins it.
+  An instance of a pool on the [LLM proxy](#the-llm-proxy) (routine beside
+  `llm`, judgement beside `tiers.judgement.llm`) gets no model here: the
+  proxy pins it.
 
-**The LLM route (`CCD_LLM_ROUTE=muster`).** A routine instance of an officer
-with an `llm` block — and no other pod — is put on the route: its pod is given
+**The LLM route (`CCD_LLM_ROUTE=muster`).** An instance of a pool on the
+proxy — a routine instance of an officer with an `llm` block, or a judgement
+instance of one with `tiers.judgement.llm` — and no other pod is put on the
+route: its pod is given
 `CCD_LLM_ROUTE=muster` and **no** `CLAUDE_CODE_OAUTH_TOKEN`. The image's
 entrypoint runs its credential check (`images/claude-code-agent/credentials.sh`,
 installed at `/usr/local/lib/cc/credentials.sh`) before it seeds or starts
@@ -2063,15 +2066,23 @@ Refused at boot, each naming the problem:
   rather than ranked);
 - a routine name (`-r<max>`, one character longer) over the namespace bound;
 - a provider model id (`vendor/model`) in either pool, except the routine
-  pool of an officer with an [`llm` block](#the-llm-proxy) — and, the other way
-  round, an `llm` block whose routine model is a Claude model.
+  pool of an officer with an [`llm` block](#the-llm-proxy) and the judgement
+  pool with its own `tiers.judgement.llm` — and, the other way round, an `llm`
+  block whose routine model is a Claude model, or a `tiers.judgement.llm`
+  beside a Claude judgement model;
+- `tiers.routine.llm` (the routine pool's block is the top-level `llm`);
+- a `tiers.judgement.llm` that the top-level `llm` would refuse (an unknown
+  key, a missing or out-of-range budget or cap, no
+  `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`), each named
+  `tiers.judgement.llm…`.
 
-**The models.** The judgement pool's `model` is always a Claude Code model,
-checked by the same rule as `model`. The routine pool's is a Claude model too
-(`haiku`, run on the Claude accounts like any instance) — unless the officer
-declares `llm`, when it MUST be a provider model id such as
-`deepseek/deepseek-v4.1-flash-1017`, and it is THE model the LLM proxy pins
-every routine request to. There is no second place a routine model is set.
+**The models.** Each pool's `model` is a Claude Code model (checked by the
+same rule as `model`, and run on the Claude accounts like any instance) —
+unless that pool is on the [LLM proxy](#the-llm-proxy): the routine pool when
+the officer declares `llm`, the judgement pool when it declares
+`tiers.judgement.llm`. Then it MUST be a provider model id such as
+`deepseek/deepseek-v4.1-flash-1017`, and it is THE model the proxy pins every
+request of that pool to. There is no second place a pool's model is set.
 
 ### The LLM proxy
 
@@ -2094,8 +2105,8 @@ One source for each value:
 | what | where |
 |---|---|
 | the model every routine request is pinned to | `tiers.routine.model` ([The two pools](#the-two-pools)). The model the client asked for is ignored (logged and audited as `requested_model`). Pinning the id pins the weights, not the serving stack: OpenRouter routes one id to several providers, and the one that served each request is logged and audited as `provider`. |
-| who may use the proxy | the routine pool's instances, `officer-<slug>-r<n>` for `n` within `tiers.routine.max_instances` (`officers.RoutineAgent`, the registry's own naming rule). A judgement instance, an `-r<n>` past the max, an untiered officer's instance and any other agent are refused (403). |
-| what it may spend | the `llm` block, below. |
+| who may use the proxy | the instances of a pool on the proxy (`officers.ProxyAgent`, the registry's own naming rule): the routine pool's `officer-<slug>-r<n>` (`n` within `tiers.routine.max_instances`) beside `llm`, and the judgement pool's `officer-<slug>-<n>` beside `tiers.judgement.llm`. An instance of a pool without a block, a name past its pool's max, an untiered officer's instance and any other agent are refused (403). |
+| what it may spend | the pool's own block: `llm` for the routine pool, `tiers.judgement.llm` for the judgement pool, below. Each pool has its own daily budget, and the two never mix. |
 
 | `llm` field | default | |
 |---|---|---|
@@ -2110,7 +2121,7 @@ boot refusal naming the officer and the variable. The deployment's shared
 does not depend on muster.
 
 Refused at boot, each naming the problem: `llm` without `tiers` (the proxy
-serves only a routine pool); `llm` beside a Claude routine model; a routine
+serves only a tiered officer's pools); `llm` beside a Claude routine model; a routine
 provider model id without `llm`;
 an unknown key in `llm` (`model` and an agent list included: they live in
 `tiers`); a missing or out-of-range budget or cap; no `MUSTER_OFFICER_OPENROUTER_KEY_<NAME>` (even with the shared key set); `llm` on a
@@ -2118,11 +2129,39 @@ server with no database (the budget is persisted) or no connector store (the
 proxy's door and audit trail).
 
 **The pod side** is the [LLM route](#the-instances-claude-code-session):
-each routine instance's pod is given `CCD_LLM_ROUTE=muster` and no
+each instance of a pool on the proxy is given `CCD_LLM_ROUTE=muster` and no
 subscription token. Its entrypoint then points Claude Code at exactly
 `$MUSTER_CONNECT_URL/llm`, with the pod's own muster token as the bearer. The
-session takes no model of its own, because the proxy pins it. The judgement
-pool's instances are not routed: they run on their Claude accounts as before.
+session takes no model of its own, because the proxy pins it. A pool not on
+the proxy is not routed: its instances run on their Claude accounts as
+before. The route changes no network rule: every officer instance, routed or
+not, has the same [egress-locked policy](#the-instances-network) (muster's
+connect port only), which the route needs and nothing more.
+
+#### The judgement pool on the proxy
+
+`tiers.judgement.llm` puts the **judgement** pool on the proxy too, with its
+own budget. Its fields, defaults and bounds are the top-level `llm`'s
+(`daily_budget_usd` required, `max_tokens_per_item` default 400000), it uses
+the same officer key (`MUSTER_OFFICER_OPENROUTER_KEY_<NAME>`), and
+`tiers.judgement.model` must then be a provider model id, the pin. It is
+independent of the routine pool's: the routine pool may stay on Claude
+(`haiku`), or be on the proxy with the top-level `llm`, each pool spending
+its own budget. `max_sessions_per_day`, `max_item_minutes` and every other
+judgement rule are unchanged.
+
+```json
+{"id": "triage:example-web", "hq_url": "https://hq.example.com/api/v1",
+ "tiers": {"routine":   {"model": "haiku", "max_instances": 2},
+           "judgement": {"model": "deepseek/deepseek-v4-pro", "max_instances": 1,
+                         "max_sessions_per_day": 30, "max_item_minutes": 45,
+                         "llm": {"daily_budget_usd": 20, "max_tokens_per_item": 2000000}}}}
+```
+
+A judgement instance on the proxy is everything a judgement instance is (the
+ship and kube tools when declared, the session and wall-time caps), on a
+provider model: what it does is bounded by that model as much as by its
+tools.
 
 **The chief** is the proxy's one other caller, when muster runs the chief on
 OpenRouter (the `docker compose` install's chief; see
@@ -2161,9 +2200,10 @@ any credential is read. For an admitted request, in order:
    that turn unchanged, or become a user turn of their own between two
    assistant turns, and a `tool_result` stays first in its turn. Every other
    message is sent as the client wrote it.
-3. **The budget.** The officer's booked spend for the UTC day is read from the
-   database (`officer_llm_usage`, migration 0075). At or over
-   `daily_budget_usd`, the request is refused with **400** and nothing is
+3. **The budget.** The officer POOL's booked spend for the UTC day is read
+   from the database (`officer_llm_usage`, migrations 0075 and 0108, by
+   officer, pool and day). At or over that pool's `daily_budget_usd`, the
+   request is refused with **400**, naming the pool, and nothing is
    sent. ⚠ The check is not a reservation: requests in flight together (several
    routine instances, or one instance's parallel calls) all pass while the
    spend is under the budget, so the day can end slightly over it, by at most
@@ -2237,7 +2277,8 @@ relayed scrubbed (a 401/403 body is replaced outright).
 
 #### Usage counters
 
-Per officer and routine instance (`instance` is `r<n>`, never the agent name;
+Per officer and proxied instance (`instance` is `r<n>` for a routine
+instance and `<n>` for a judgement one, never the agent name;
 both labels are bounded by `MUSTER_OFFICERS`). The chief is counted with
 `officer` and `instance` both `chief`, and has
 no `spent_today`, `budget` or `book_failures` series (it is never booked):
@@ -2248,19 +2289,19 @@ no `spent_today`, `budget` or `book_failures` series (it is never booked):
 | `muster_officer_llm_tokens_total{officer,instance,dir}` | `in` (uncached input), `cache_read`, `cache_write`, `out` |
 | `muster_officer_llm_cost_usd_total{officer,instance}` | USD booked against the budget |
 | `muster_officer_llm_cost_estimated_total{officer}` | requests booked from an estimate (no cost reported) |
-| `muster_officer_llm_spent_today_usd{officer}`, `muster_officer_llm_budget_usd{officer}` | the day's booked spend as last read or booked, and the budget |
+| `muster_officer_llm_spent_today_usd{officer,pool}`, `muster_officer_llm_budget_usd{officer,pool}` | per pool (`routine`, `judgement`): the day's booked spend as last read or booked, and the budget. `pool` was added with the judgement pool's budget; a query on `officer` alone now sums both pools |
 | `muster_officer_llm_refused_total{officer,reason}` | refused before any officer is charged: `path`, `not_routine`, `unconfigured`, `agents_read` (with the chief LLM on, the agents list could not be read to tell whether the caller is the chief; a 503, nothing sent) (`officer` is `none` for a non-officer caller); for the chief (`officer` `chief`): `not_admin`, `chief_off`, `no_key` |
 | `muster_officer_llm_upstream_auth_failures_total{officer,status}`, `muster_officer_llm_upstream_auth_failing{officer}` | the provider refusing the key |
 | `muster_officer_llm_book_failures_total{officer}` | usage that could not be written to the database; alert on any |
 
-The durable copy is `officer_llm_usage`: one row per officer, routine instance
+The durable copy is `officer_llm_usage`: one row per officer, pool, instance
 number and UTC day with requests, tokens by direction, USD and estimated requests.
 It has no item column: an item's cost is the per-item meter's (below).
 
 #### Item cost
 
-A routine instance's `officer_complete` (outcome `done`, `escalated` or
-`no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
+A proxied instance's `officer_complete` (routine or judgement; outcome
+`done`, `escalated` or `no_action`) sends HQ the item's cost in the same call: `cost_usd` = the USD
 its hold on the item booked through the proxy (each request's provider-reported
 cost, as the budget books it; rounded to the micro-dollar), `cost_from` =
 `muster:llm-proxy` (HQ's officer guide, "Item cost"). It rides the complete,
@@ -2281,8 +2322,10 @@ Code sends while a handler is still finishing still reads the cost. A second or 
 claim (a release, an ask, a lapsed lease) and a `needs_judgement` hand-off
 send none. The meter is in memory (`internal/llmproxy/items.go`).
 
-A judgement or untiered instance's Claude Code session has **no cost source
-muster reads**, so its complete sends none.
+An instance of a pool NOT on the proxy (a Claude judgement or routine pool,
+an untiered officer) has **no cost source muster reads**, so its complete
+sends none. Each instance's meter is its own: judgement `#1` and routine
+`r1` share a number, not a hold.
 
 Every complete sent without a cost writes one log line, which is how the
 known-vs-unknown ratio is measured:
@@ -2293,8 +2336,8 @@ officers: item cost omitted officer=<id> instance=<agent> item=<item id> outcome
 
 `reason` is one of `not_held`, `adopted`, `not_first_claim`,
 `attempts_unknown`, `no_requests`, `estimated`, `inflight`, `over_bound`,
-`handed_on` (needs_judgement) or `no_source` (not a routine instance of an
-`llm` officer).
+`handed_on` (needs_judgement) or `no_source` (not an instance of a pool on
+the proxy).
 
 ⚠ **HQ keeps a cost a later complete does not replace** (its complete
 coalesces `cost_usd` / `cost_from`). An item HQ re-opens after a costed
@@ -2308,7 +2351,10 @@ sends it again without the cost, and logs `completed item … without its cost`.
 
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image
-refuses the unknown field and does not boot). Migration 0075's own rollback is
+refuses the unknown field and does not boot). To an image from before the
+judgement pool's block, remove every `tiers.judgement.llm` first, then run
+migration 0108's rollback (in its header: an older image cannot book usage
+while 0108's key is in place), then roll back. Migration 0075's own rollback is
 in its header.
 
 ## Reading a cluster: officer_kube_read

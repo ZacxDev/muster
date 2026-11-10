@@ -60,6 +60,14 @@ type TierPool struct {
 	// claims is worked in a NEW Claude Code conversation
 	// (Officer.FreshSessionPerItem).
 	FreshSessionPerItem bool `json:"fresh_session_per_item,omitempty"`
+	// LLM, on the judgement pool only (tiers.judgement.llm), puts the pool on
+	// muster's LLM proxy with its own budget (llm.go, Officer.PoolLLM); its
+	// model is then a provider model id. The routine pool's block is the
+	// officer's top-level `llm` (Officer.LLM). Parsed by parseJudgementLLM.
+	LLM *LLM `json:"-"`
+	// llmRaw is the pool's declared `llm`, kept for the officer's parse, which
+	// holds the key's environment.
+	llmRaw json.RawMessage
 }
 
 // FreshSessionPerItem is THE rule for whether pool o works each item in a NEW
@@ -236,12 +244,27 @@ func parseTiers(raw json.RawMessage, withLLM bool) (*Tiers, error) {
 
 // parseTierPool reads one pool. providerOK admits a provider model id (the
 // routine pool beside `llm`); routine names the pool in that id's refusal.
+//
+// The judgement pool may carry its own `llm` block (tiers.judgement.llm): its
+// model is then a provider model id, and ONLY then. The routine pool's block
+// is the officer's top-level `llm`, so tiers.routine.llm is refused.
 func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, error) {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
-	var p TierPool
-	if err := dec.Decode(&p); err != nil {
-		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "image"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"? (both judgement only)}: %v`, err)
+	var w struct {
+		TierPool
+		LLM json.RawMessage `json:"llm"`
+	}
+	if err := dec.Decode(&w); err != nil {
+		return TierPool{}, fmt.Errorf(`must be {"model", "max_instances"?, "image"?, "fresh_session_per_item"?, "max_sessions_per_day"?, "max_item_minutes"?, "llm"? (all three judgement only)}: %v`, err)
+	}
+	p := w.TierPool
+	poolLLM := len(w.LLM) > 0 && string(w.LLM) != "null"
+	if poolLLM && routine {
+		return TierPool{}, errors.New("llm: the routine pool's LLM proxy block is the officer's top-level `llm`; move it there")
+	}
+	if poolLLM {
+		p.llmRaw, providerOK = w.LLM, true
 	}
 	p.Model, p.Image = strings.TrimSpace(p.Model), strings.TrimSpace(p.Image)
 	if p.Model == "" {
@@ -252,6 +275,12 @@ func parseTierPool(raw json.RawMessage, providerOK, routine bool) (TierPool, err
 	case routine && ProviderModel(p.Model):
 		return TierPool{}, fmt.Errorf("model %q is a provider model id, which a routine instance reaches only through the "+
 			"LLM proxy: declare the officer's `llm` block, or use a Claude model", p.Model)
+	case ProviderModel(p.Model):
+		return TierPool{}, fmt.Errorf("model %q is a provider model id, which a judgement instance reaches only through the "+
+			"LLM proxy: declare tiers.judgement.llm, or use a Claude model", p.Model)
+	case poolLLM:
+		return TierPool{}, fmt.Errorf("with llm, model must be a provider model id (<vendor>/<model>, e.g. "+
+			"deepseek/deepseek-v4.1-flash-1017): %q is a Claude model, which the proxy cannot serve", p.Model)
 	default:
 		if err := podagent.ValidModel(p.Model); err != nil {
 			return TierPool{}, err

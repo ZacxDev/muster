@@ -101,8 +101,11 @@ type Caller struct {
 	// Officer labels the caller in metrics, logs and the audit detail: the
 	// officer id, or "chief".
 	Officer string
-	// Instance is the routine instance's number in its pool, and
-	// InstanceLabel how it is named in metrics and logs (`r<n>`).
+	// Pool is the officer pool the instance is in (`routine` or
+	// `judgement`): each pool has its own budget, usage rows and meter.
+	Pool string
+	// Instance is the instance's number in its pool, and InstanceLabel how
+	// it is named in metrics and logs (`r<n>` routine, `<n>` judgement).
 	Instance         int
 	InstanceLabel    string
 	AgentID          int64
@@ -135,6 +138,7 @@ type Caller struct {
 // Usage is one request's metered usage, booked to the store.
 type Usage struct {
 	Officer    string
+	Pool       string
 	Instance   int
 	Day        time.Time // a UTC midnight
 	Input      int64
@@ -148,9 +152,10 @@ type Usage struct {
 // Store persists each officer's usage per instance and UTC day, so a restart
 // does not reset a budget.
 type Store interface {
-	// SpentToday is officer's booked USD on day, over every instance.
-	SpentToday(ctx context.Context, officer string, day time.Time) (float64, error)
-	// Book adds u (one request) to its (officer, instance, day) row.
+	// SpentToday is officer pool's booked USD on day, over every instance of
+	// that pool: each pool's budget is its own.
+	SpentToday(ctx context.Context, officer, pool string, day time.Time) (float64, error)
+	// Book adds u (one request) to its (officer, pool, instance, day) row.
 	Book(ctx context.Context, u Usage) error
 }
 
@@ -285,20 +290,22 @@ type noStore struct{}
 
 var errNoStore = errors.New("llmproxy: this proxy has no budget store")
 
-func (noStore) SpentToday(context.Context, string, time.Time) (float64, error) { return 0, errNoStore }
-func (noStore) Book(context.Context, Usage) error                              { return errNoStore }
+func (noStore) SpentToday(context.Context, string, string, time.Time) (float64, error) {
+	return 0, errNoStore
+}
+func (noStore) Book(context.Context, Usage) error { return errNoStore }
 
 // Claimed tells the per-item meter that instance of officer now holds item,
 // by a claim whose HQ attempts are not known (its cost is then unknown).
-func (p *Proxy) Claimed(officer string, instance int, item string) {
-	p.ClaimedAttempt(officer, instance, item, 0)
+func (p *Proxy) Claimed(officer, pool string, instance int, item string) {
+	p.ClaimedAttempt(officer, pool, instance, item, 0)
 }
 
 // ClaimedAttempt is Claimed by the claim HQ answered with attempts (its
 // item's `attempts`; 0 when not known): HQ's first claim (1) is the one whose
 // hold can know the item's cost (ItemCost).
-func (p *Proxy) ClaimedAttempt(officer string, instance int, item string, attempts int) {
-	p.items.claimed(instanceKey{officer, instance}, item, p.now(), attempts)
+func (p *Proxy) ClaimedAttempt(officer, pool string, instance int, item string, attempts int) {
+	p.items.claimed(instanceKey{officer, pool, instance}, item, p.now(), attempts)
 }
 
 // ItemCost is the USD instance of officer's hold on item has booked through
@@ -307,26 +314,27 @@ func (p *Proxy) ClaimedAttempt(officer string, instance int, item string, attemp
 // the hold is HQ's first claim of the item, claimed through muster, has
 // booked at least one request, none from the proxy's estimate, and none
 // still unbooked (items). Read it while the hold lasts: Ended clears it.
-func (p *Proxy) ItemCost(officer string, instance int, item string) (float64, bool) {
-	usd, why := p.ItemCostWhy(officer, instance, item)
+func (p *Proxy) ItemCost(officer, pool string, instance int, item string) (float64, bool) {
+	usd, why := p.ItemCostWhy(officer, pool, instance, item)
 	return usd, why == ""
 }
 
 // ItemCostWhy is ItemCost, with why the cost is not known instead of a bool:
 // "" when it is known, else one of the Cost* reasons.
-func (p *Proxy) ItemCostWhy(officer string, instance int, item string) (float64, string) {
-	return p.items.cost(instanceKey{officer, instance}, item)
+func (p *Proxy) ItemCostWhy(officer, pool string, instance int, item string) (float64, string) {
+	return p.items.cost(instanceKey{officer, pool, instance}, item)
 }
 
 // Ended tells the per-item meter that instance of officer no longer holds item.
-func (p *Proxy) Ended(officer string, instance int, item string) {
-	p.items.ended(instanceKey{officer, instance}, item, p.now())
+func (p *Proxy) Ended(officer, pool string, instance int, item string) {
+	p.items.ended(instanceKey{officer, pool, instance}, item, p.now())
 }
 
-// Sync is a wake-loop pass's view of officer's claims, read at at: holding
-// maps an instance number to the items HQ shows it claiming.
-func (p *Proxy) Sync(officer string, holding map[int][]string, at time.Time) {
-	p.items.sync(officer, holding, at)
+// Sync is a wake-loop pass's view of officer pool's claims, read at at:
+// holding maps an instance number of that pool to the items HQ shows it
+// claiming.
+func (p *Proxy) Sync(officer, pool string, holding map[int][]string, at time.Time) {
+	p.items.sync(officer, pool, holding, at)
 }
 
 // Day is the UTC day t falls on, as the store keys it.
@@ -370,7 +378,7 @@ var relayResponseHeaders = []string{"Content-Type", "Cache-Control", "Request-Id
 func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) {
 	start := p.now()
 	inst := c.InstanceLabel
-	k := instanceKey{c.Officer, c.Instance}
+	k := instanceKey{c.Officer, c.Pool, c.Instance}
 	rec := Record{Officer: c.Officer, Instance: inst, AgentID: c.AgentID, AgentName: c.AgentName, Model: c.Model}
 	finish := func(result string, status int) {
 		rec.Result, rec.Status, rec.Duration = result, status, p.now().Sub(start)
@@ -433,19 +441,19 @@ func (p *Proxy) ServeMessages(w http.ResponseWriter, r *http.Request, c Caller) 
 	// An Unbudgeted caller (the chief) skips the budget and the item cap
 	// entirely: the key's own credit limit is its cap (Caller.Unbudgeted).
 	if !c.Unbudgeted {
-		metrics.OfficerLLMBudget.WithLabelValues(c.Officer).Set(c.DailyBudgetUSD)
-		spent, err := p.store.SpentToday(r.Context(), c.Officer, day)
+		metrics.OfficerLLMBudget.WithLabelValues(c.Officer, c.Pool).Set(c.DailyBudgetUSD)
+		spent, err := p.store.SpentToday(r.Context(), c.Officer, c.Pool, day)
 		if err != nil {
 			p.log.Printf("llm proxy: officer %s: the day's spend could not be read (refusing, nothing sent): %v", c.Officer, err)
 			Refuse(w, http.StatusServiceUnavailable, "api_error", "the officer's budget could not be read just now; nothing was sent")
 			finish("refused_store", http.StatusServiceUnavailable)
 			return
 		}
-		metrics.OfficerLLMSpentToday.WithLabelValues(c.Officer).Set(spent)
+		metrics.OfficerLLMSpentToday.WithLabelValues(c.Officer, c.Pool).Set(spent)
 		if spent >= c.DailyBudgetUSD {
 			Refuse(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf(
-				"officer %s has spent its daily LLM budget ($%.4f of $%.2f, UTC day %s); nothing was sent. "+
-					"Stop here: the item stays queued.", c.Officer, spent, c.DailyBudgetUSD, day.Format("2006-01-02")))
+				"officer %s's %s pool has spent its daily LLM budget ($%.4f of $%.2f, UTC day %s); nothing was sent. "+
+					"Stop here: the item stays queued.", c.Officer, c.Pool, spent, c.DailyBudgetUSD, day.Format("2006-01-02")))
 			finish("refused_budget", http.StatusBadRequest)
 			return
 		}
@@ -703,7 +711,7 @@ func (p *Proxy) book(ctx context.Context, c Caller, k instanceKey, item string, 
 	}
 	p.items.add(k, item, u.tokens(), cost, estimated)
 	p.items.done(fl) // charged: no longer in flight (ItemCost)
-	err := p.store.Book(context.WithoutCancel(ctx), Usage{Officer: c.Officer, Instance: c.Instance, Day: day,
+	err := p.store.Book(context.WithoutCancel(ctx), Usage{Officer: c.Officer, Pool: c.Pool, Instance: c.Instance, Day: day,
 		Input: rec.Input, Output: rec.Output, CacheRead: rec.CacheRead, CacheWrite: rec.CacheWrite, CostUSD: cost, Estimated: estimated})
 	if err != nil {
 		metrics.OfficerLLMBookFailures.WithLabelValues(c.Officer).Inc()

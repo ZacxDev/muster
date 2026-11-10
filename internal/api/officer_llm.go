@@ -71,8 +71,12 @@ func (s *Server) handleLLMOtherPath(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
 	o, n, isOfficer := s.officerOf(a)
-	routine := isOfficer && officers.RoutineAgent(o, a.Name)
-	if s.chiefLLM != nil && !routine {
+	// proxied: a routine pool's instance beside the officer's `llm`, or a
+	// judgement pool's beside tiers.judgement.llm (officers.ProxyAgent, the one
+	// membership rule; it answers the pool, whose model and budget apply).
+	pool, _, proxied := officers.ProxyAgent(o, a.Name)
+	proxied = proxied && isOfficer
+	if s.chiefLLM != nil && !proxied {
 		_, chief, err := s.agentIsChief(r.Context(), a.ID)
 		if err != nil {
 			metrics.OfficerLLMRefused.WithLabelValues("none", "agents_read").Inc()
@@ -91,22 +95,24 @@ func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 		llmproxy.Refuse(w, http.StatusServiceUnavailable, "api_error", "no officer on this server declares `llm`")
 		return
 	}
-	if !routine {
+	if !proxied {
 		label := "none"
-		if isOfficer && o.LLM != nil {
+		if isOfficer && o.UsesLLMProxy() {
 			label = o.ID
 		}
 		metrics.OfficerLLMRefused.WithLabelValues(label, "not_routine").Inc()
-		s.logger.Printf("llm proxy: refused agent %d (%q): not a routine instance of an officer that declares `llm`", a.ID, a.Name)
+		s.logger.Printf("llm proxy: refused agent %d (%q): not an instance of an officer pool that declares `llm`", a.ID, a.Name)
 		llmproxy.Refuse(w, http.StatusForbidden, "permission_error",
-			"this agent is not a routine-tier instance of an officer that declares `llm`")
+			"this agent is not an instance of an officer pool on the LLM proxy (a routine pool beside `llm`, or a "+
+				"judgement pool with tiers.judgement.llm)")
 		return
 	}
-	// THE model pin is the routine pool's: tiers.routine.model.
-	p := o.Pool(officers.TierRoutine)
-	s.officerRT.llm.ServeMessages(w, r, llmproxy.Caller{Officer: o.ID, Instance: n, InstanceLabel: p.InstanceLabel(n),
-		AgentID: a.ID, AgentName: a.Name, Model: p.Model, DailyBudgetUSD: o.LLM.DailyBudgetUSD,
-		MaxTokensPerItem: o.LLM.MaxTokensPerItem, Key: o.LLM.Key()})
+	// THE model pin and the budget are the POOL's: tiers.<pool>.model and
+	// its `llm` block (Officer.PoolLLM).
+	l := pool.PoolLLM()
+	s.officerRT.llm.ServeMessages(w, r, llmproxy.Caller{Officer: o.ID, Pool: pool.Tier, Instance: n, InstanceLabel: pool.InstanceLabel(n),
+		AgentID: a.ID, AgentName: a.Name, Model: pool.Model, DailyBudgetUSD: l.DailyBudgetUSD,
+		MaxTokensPerItem: l.MaxTokensPerItem, Key: l.Key()})
 }
 
 // newLLMProxy builds the proxy when a declared officer has an `llm` block,
@@ -115,7 +121,7 @@ func (s *Server) serveLLMMessages(w http.ResponseWriter, r *http.Request) {
 func (s *Server) newLLMProxy(cfg OfficersConfig) (*llmproxy.Proxy, error) {
 	var on []officers.Officer
 	for _, o := range cfg.Officers {
-		if o.LLM != nil {
+		if o.UsesLLMProxy() {
 			on = append(on, o)
 		}
 	}
@@ -141,8 +147,12 @@ func (s *Server) newLLMProxy(cfg OfficersConfig) (*llmproxy.Proxy, error) {
 		return nil, err
 	}
 	for _, o := range on {
-		metrics.OfficerLLMBudget.WithLabelValues(o.ID).Set(o.LLM.DailyBudgetUSD)
-		s.logger.Printf("officers: %s may reach a model through the LLM proxy: %s", o.ID, o.LLM.String())
+		for _, p := range o.Pools() {
+			if l := p.PoolLLM(); l != nil {
+				metrics.OfficerLLMBudget.WithLabelValues(o.ID, p.Tier).Set(l.DailyBudgetUSD)
+				s.logger.Printf("officers: %s's %s pool may reach a model through the LLM proxy: %s", o.ID, p.Tier, l.String())
+			}
+		}
 	}
 	return px, nil
 }
@@ -177,11 +187,11 @@ func (s *Server) llmAudit(upstream string) func(ctx context.Context, rec llmprox
 // its item's `attempts` tells the meter whether this is HQ's first claim of
 // the item, the only hold whose cost can be the item's whole (claimAttempts).
 func (s *Server) llmClaimed(o officers.Officer, instance string, item officers.ItemID, claimBody []byte) {
-	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
+	if s.officerRT == nil || s.officerRT.llm == nil || !o.UsesLLMProxy() {
 		return
 	}
-	if n, ok := s.llmRoutineInstance(o, instance); ok {
-		s.officerRT.llm.ClaimedAttempt(o.ID, n, string(item), claimAttempts(claimBody))
+	if p, n, ok := s.llmProxyInstance(o, instance); ok {
+		s.officerRT.llm.ClaimedAttempt(o.ID, p, n, string(item), claimAttempts(claimBody))
 	}
 }
 
@@ -204,31 +214,33 @@ func claimAttempts(body []byte) int {
 // Why a complete sends no cost, beside the proxy meter's own reasons
 // (llmproxy.Cost*): the omitted-cost log line's reason.
 const (
-	costNoSource  = "no_source"  // not a routine instance of an `llm` officer: no cost source muster reads
+	costNoSource  = "no_source"  // not an instance of an officer pool on the LLM proxy: no cost source muster reads
 	costHandedOn  = "handed_on"  // needs_judgement: the item goes on to a judgement session
 	costOverBound = "over_bound" // above HQ's bound (a reporting error HQ refuses)
 )
 
-// llmItemCost is the cost a routine instance's complete of item reports to
+// llmItemCost is the cost a proxied instance's complete of item reports to
 // HQ (civ-hq docs/OFFICERS.md "Item cost"): what its hold booked through the
 // proxy, from muster:llm-proxy, or nil when that is not known to be the
 // item's whole cost — then NOTHING is sent, never a 0 — with why (a short
 // id, for the log line). Only a complete that finishes the item carries one:
-// needs_judgement hands it on to a judgement session, whose cost muster has
-// no source for, so the item's total is not known. A judgement or untiered
-// instance's Claude Code session has no cost source muster reads: nil.
+// needs_judgement hands it on to a judgement session, whose cost is not
+// this hold's, so the item's total is not known. An instance of a pool on
+// the proxy — routine beside `llm`, or judgement with tiers.judgement.llm —
+// has the proxy as its cost source; any other instance's Claude Code session
+// has none muster reads: nil.
 func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.ItemID, outcome string) (*officers.ItemCost, string) {
-	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
+	if s.officerRT == nil || s.officerRT.llm == nil || !o.UsesLLMProxy() {
 		return nil, costNoSource
 	}
-	n, ok := s.llmRoutineInstance(o, instance)
+	pool, n, ok := s.llmProxyInstance(o, instance)
 	if !ok {
 		return nil, costNoSource
 	}
 	if outcome == officers.OutcomeNeedsJudgement {
 		return nil, costHandedOn
 	}
-	usd, why := s.officerRT.llm.ItemCostWhy(o.ID, n, string(item))
+	usd, why := s.officerRT.llm.ItemCostWhy(o.ID, pool, n, string(item))
 	if why != "" {
 		return nil, why
 	}
@@ -242,39 +254,48 @@ func (s *Server) llmItemCost(o officers.Officer, instance string, item officers.
 }
 
 func (s *Server) llmEnded(o officers.Officer, instance string, item officers.ItemID) {
-	if s.officerRT == nil || s.officerRT.llm == nil || o.LLM == nil {
+	if s.officerRT == nil || s.officerRT.llm == nil || !o.UsesLLMProxy() {
 		return
 	}
-	if n, ok := s.llmRoutineInstance(o, instance); ok {
-		s.officerRT.llm.Ended(o.ID, n, string(item))
+	if p, n, ok := s.llmProxyInstance(o, instance); ok {
+		s.officerRT.llm.Ended(o.ID, p, n, string(item))
 	}
 }
 
-// llmRoutineInstance is the routine instance number of agent name, when it is
-// one of o's routine pool (officers.RoutineAgent): the meter counts routine
-// instances only, keyed by their number in that pool — a judgement instance
-// with the same number is not the same instance.
-func (s *Server) llmRoutineInstance(o officers.Officer, name string) (int, bool) {
-	if !officers.RoutineAgent(o, name) {
-		return 0, false
+// llmProxyInstance is the pool and instance number of agent name, when it is
+// an instance of one of o's pools on the proxy (officers.ProxyAgent): the
+// meter counts proxied instances only, keyed by pool and number — judgement
+// #1 and routine r1 are different instances.
+func (s *Server) llmProxyInstance(o officers.Officer, name string) (string, int, bool) {
+	p, n, ok := officers.ProxyAgent(o, name)
+	if !ok {
+		return "", 0, false
 	}
-	_, n, ok := s.officerRT.reg.ForAgentName(name)
-	return n, ok
+	return p.Tier, n, true
 }
 
 // llmSync is the wake loop's view of o's claimed items, for the per-item
 // meter (officers.Config.Observed).
 func llmSync(px *llmproxy.Proxy, reg *officers.Registry) func(o officers.Officer, claimed []officers.Item, at time.Time) {
 	return func(o officers.Officer, claimed []officers.Item, at time.Time) {
-		if o.LLM == nil {
+		if !o.UsesLLMProxy() {
 			return
 		}
-		holding := map[int][]string{}
-		for _, it := range claimed {
-			if io, n, ok := reg.ForAgentName(it.ClaimedBy); ok && io.ID == o.ID && officers.RoutineAgent(io, it.ClaimedBy) {
-				holding[n] = append(holding[n], string(it.ID))
+		holding := map[string]map[int][]string{}
+		for _, p := range o.Pools() {
+			if p.PoolLLM() != nil {
+				holding[p.Tier] = map[int][]string{}
 			}
 		}
-		px.Sync(o.ID, holding, at)
+		for _, it := range claimed {
+			if io, _, ok := reg.ForAgentName(it.ClaimedBy); ok && io.ID == o.ID {
+				if p, n, ok := officers.ProxyAgent(io, it.ClaimedBy); ok {
+					holding[p.Tier][n] = append(holding[p.Tier][n], string(it.ID))
+				}
+			}
+		}
+		for pool, h := range holding {
+			px.Sync(o.ID, pool, h, at)
+		}
 	}
 }

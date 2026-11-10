@@ -134,7 +134,8 @@ type Officer struct {
 	// (tiers.routine.model) through muster's LLM proxy (llm.go,
 	// internal/llmproxy), within the daily USD budget and per-item token cap
 	// it holds. It needs Tiers. nil (the default) refuses every proxy request
-	// for the officer.
+	// of the routine pool. The judgement pool's own block is
+	// Tiers.Judgement.LLM (tiers.judgement.llm); Officer.PoolLLM answers either.
 	LLM *LLM `json:"-"`
 	// Kube, when set, offers the officer's JUDGEMENT instances
 	// officer_kube_read over the clusters it names (kube.go). It needs Tiers.
@@ -545,6 +546,13 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.LLM = l
+	}
+	if o.Tiers != nil && o.Tiers.Judgement.llmRaw != nil {
+		l, err := parseJudgementLLM(o, o.Tiers.Judgement.llmRaw, getenv)
+		if err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
+		o.Tiers.Judgement.LLM, o.Tiers.Judgement.llmRaw = l, nil
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

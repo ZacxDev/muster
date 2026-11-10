@@ -95,11 +95,17 @@ type itemCostRig struct {
 // judgement ×1) against the HQ fake and a stub provider.
 func newItemCostRig(t *testing.T) *itemCostRig {
 	t.Helper()
+	return newItemCostRigWith(t, `"tiers":{"routine":{"model":"vendor/pinned-model","max_instances":2},"judgement":{"model":"opus","max_instances":1}},`+
+		`"llm":{"daily_budget_usd":5}`)
+}
+
+// newItemCostRigWith is newItemCostRig with the officer's tiers (and llm)
+// fields as given.
+func newItemCostRigWith(t *testing.T, fields string) *itemCostRig {
+	t.Helper()
 	r := &itemCostRig{hq: hqtest.New(map[string]string{costTok: costOff}), up: newCostProvider(t), logs: &bytes.Buffer{}}
 	t.Cleanup(r.hq.Close)
-	list, err := officers.Parse(`[{"id":"`+costOff+`","hq_url":"`+r.hq.BaseURL()+`",`+
-		`"tiers":{"routine":{"model":"vendor/pinned-model","max_instances":2},"judgement":{"model":"opus","max_instances":1}},`+
-		`"llm":{"daily_budget_usd":5}}]`, func(k string) string {
+	list, err := officers.Parse(`[{"id":"`+costOff+`","hq_url":"`+r.hq.BaseURL()+`",`+fields+`}]`, func(k string) string {
 		switch {
 		case k == officers.TokenEnvPrefix+officers.TokenEnvSuffix(costOff):
 			return costTok
@@ -276,7 +282,7 @@ func TestAnAlreadyYoursReclaimTheMeterDidNotHoldKnowsNoCost(t *testing.T) {
 	item := r.hq.AddTieredItem(costOff, "web.check", "node-restart", officers.TierRoutine)
 	r.claim(t, r1, item)
 	r.llm(t, r1, 0.0233)
-	r.s.officerRT.llm.Ended(costOff, 1, item) // the meter forgets the hold (a restart)
+	r.s.officerRT.llm.Ended(costOff, "routine", 1, item) // the meter forgets the hold (a restart)
 	if out := r.tool(t, r1, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) || !strings.Contains(out, "already_yours") {
 		t.Fatalf("r1 re-claims its own live item: %s, want muster's already-yours answer", out)
 	}
@@ -349,4 +355,26 @@ func TestAJudgementOrHandedOnCompleteSendsNoCost(t *testing.T) {
 		t.Errorf("judgement: complete bodies\n got %q\nwant [%s]", got, want)
 	}
 	r.omitted(t, j1.Name, judged, "done", "no_source")
+}
+
+// TestAJudgementProxyCompleteCarriesItsOwnCost: a judgement instance on the
+// proxy (tiers.judgement.llm) has the proxy as its cost source, and its meter
+// is its own: routine r1 and judgement #1 share a number, not a hold, so j1's
+// complete sends exactly its own request's cost.
+func TestAJudgementProxyCompleteCarriesItsOwnCost(t *testing.T) {
+	r := newItemCostRigWith(t, `"tiers":{"routine":{"model":"vendor/pinned-model","max_instances":2},`+
+		`"judgement":{"model":"vendor/judgement-model","max_instances":1,"llm":{"daily_budget_usd":9}}},"llm":{"daily_budget_usd":5}`)
+	r1, j1 := r.agent(t, costRoutine+"1"), r.agent(t, costJudge+"1")
+	routine := r.hq.AddTieredItem(costOff, "web.check", "node-r", officers.TierRoutine)
+	judged := r.hq.AddTieredItem(costOff, "web.alert", "node-j", officers.TierJudgement)
+	r.claim(t, r1, routine)
+	r.claim(t, j1, judged)
+	r.llm(t, r1, 0.0119)
+	r.llm(t, j1, 0.0381)
+	if got, want := r.complete(t, j1, judged, "done"), bodyWith(`"cost_from":"muster:llm-proxy","cost_usd":0.0381,`, j1.Name, "done"); len(got) != 1 || got[0] != want {
+		t.Errorf("judgement proxy complete bodies\n got %q\nwant [%s]", got, want)
+	}
+	if got, want := r.complete(t, r1, routine, "done"), bodyWith(`"cost_from":"muster:llm-proxy","cost_usd":0.0119,`, r1.Name, "done"); len(got) != 1 || got[0] != want {
+		t.Errorf("routine complete bodies\n got %q\nwant [%s]", got, want)
+	}
 }
