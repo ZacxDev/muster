@@ -11,11 +11,11 @@ func TestItemAskToolsAreOfferedByTypeName(t *testing.T) {
 		task, flood bool
 	}{
 		{"task-reconciler:hq", true, false},
-		{"web-performance:civitai-web", false, true},
+		{"web-performance:alpha-web", false, true},
 		{"web-performance:other", false, true},
 		{"release:alpha-web", false, false},
 		{"orchestration:fleet", false, false},
-		{"web-performance-x:civitai-web", false, false},
+		{"web-performance-x:alpha-web", false, false},
 		{"x-task-reconciler:hq", false, false},
 	} {
 		for _, tier := range []string{"", TierRoutine, TierJudgement} {

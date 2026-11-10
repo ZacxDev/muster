@@ -25,7 +25,7 @@ import (
 const (
 	taskAskTool   = "officer_task_ask"
 	floodTool     = "officer_flood_block_propose"
-	offWP         = "web-performance:civitai-web"
+	offWP         = "web-performance:alpha-web"
 	offWPTok      = "fixture-officer-token-webperf-6d0f"
 	kindFinding   = "task-reconciler.finding"
 	kindBotSurge  = "perf.bot_surge"
@@ -34,7 +34,7 @@ const (
 )
 
 // newItemAskRig is the rig over task-reconciler:hq (r.a) and
-// web-performance:civitai-web (r.b). The release officer's token is known to
+// web-performance:alpha-web (r.b). The release officer's token is known to
 // the fake too, so a request carrying it would be ACCEPTED as that officer —
 // which is what the token assertions below would catch.
 func newItemAskRig(t *testing.T) *officerRig {
@@ -125,7 +125,7 @@ func TestATaskAskSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 		t.Fatalf("%d HQ requests, want 1: %+v", len(reqs), reqs)
 	}
 	q := reqs[0]
-	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/task-reconciler:hq/items/"+item+"/task-asks" || q.Auth != "Bearer fixture-officer-token-taskrec-51ab" {
+	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/task-reconciler:hq/items/"+item+"/task-asks" || q.Auth != "Bearer "+offTRTok {
 		t.Fatalf("went %s %s with %q", q.Method, q.Path, q.Auth)
 	}
 	if got, want := normJSON(t, q.Body), normJSON(t, map[string]any{"instance": inst.Name, "note": "closed PR #12 matches the done-when"}); got != want {
@@ -176,7 +176,7 @@ func TestAFloodProposalSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 		t.Fatalf("%d HQ requests, want 1: %+v", len(reqs), reqs)
 	}
 	q := reqs[0]
-	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/web-performance:civitai-web/items/"+item+"/flood-blocks" || q.Auth != "Bearer fixture-officer-token-webperf-6d0f" {
+	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/web-performance:alpha-web/items/"+item+"/flood-blocks" || q.Auth != "Bearer "+offWPTok {
 		t.Fatalf("went %s %s with %q", q.Method, q.Path, q.Auth)
 	}
 	want := map[string]any{"instance": inst.Name, "unit_ids": []any{"prefix:u2", "prefix:u1"}, "action": "managed_challenge", "ttl_hours": 1.5}
@@ -234,7 +234,7 @@ func TestTheItemAskToolsRefuseLocallyWhatMusterOwns(t *testing.T) {
 		{tr, taskAskTool, `{"item_id":"1","to":"someone"}`},
 		{tr, taskAskTool, `{"item_id":"1","token":"x"}`},
 		{tr, taskAskTool, `{"item_id":"1","note":7}`},
-		{tr, taskAskTool, `{"item_id":"1","officer_id":"web-performance:civitai-web"}`},
+		{tr, taskAskTool, `{"item_id":"1","officer_id":"web-performance:alpha-web"}`},
 		{wp, floodTool, `{"item_id":"1","ttl_hours":1}`},
 		{wp, floodTool, `{"item_id":"1","unit_ids":[],"ttl_hours":1}`},
 		{wp, floodTool, `{"item_id":"1","unit_ids":"prefix:a","ttl_hours":1}`},
