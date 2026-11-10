@@ -142,7 +142,7 @@ func TestAQueuedRowWrittenForXIsNeverDeliveredToY(t *testing.T) {
 }
 
 // TestQueueingStoresTheSessionThePageShowed: the queue route stores the
-// form's agent_session with the row (the store keeps it: migration 0105, and
+// form's agent_session with the row (the store keeps it: migration 0106, and
 // internal/sendqueue's TestAQueuedRowKeepsTheSessionItWasWrittenFor).
 func TestQueueingStoresTheSessionThePageShowed(t *testing.T) {
 	q := &memQueue{}

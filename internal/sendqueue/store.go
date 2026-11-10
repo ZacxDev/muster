@@ -126,7 +126,7 @@ type Item struct {
 	Target Target
 	Body   string
 	// AgentSession is the agent session the page showed for the target when
-	// the message was queued (a hand-opened opencode pane's; migration 0105):
+	// the message was queued (a hand-opened opencode pane's; migration 0106):
 	// it is delivered only while the window still shows that session
 	// (mirror.ShownSession). "" for none (a Claude Code window, an older row).
 	AgentSession string

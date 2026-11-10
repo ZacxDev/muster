@@ -1,4 +1,4 @@
--- muster 0105 — THE SESSION A QUEUED MESSAGE WAS WRITTEN FOR
+-- muster 0106 — THE SESSION A QUEUED MESSAGE WAS WRITTEN FOR
 -- (docs/design/opencode-first-class.md, "Panes the launcher did not start").
 --
 --   send_queue.agent_session   the agent session (an opencode session id) the

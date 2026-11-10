@@ -490,3 +490,86 @@ test('a message queued for a hand-opened pane is refused, not delivered, after t
     writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
   }
 });
+
+// 🔴 THE SESSION A MESSAGE NAMES IS THE ONE SHOWN WHEN IT WAS PRESSED, not
+// the one the view shows when it is finally posted. A message pressed on @3,
+// held by a sign-in confirm while the pane switches to another session (the
+// view starts over on it, and its composer's session field follows), is
+// posted after the confirm still naming the session it was written for: it
+// is refused as moved and lands in neither session. A Send and a Queue alike.
+// REGRESSION TEST: at f726ef03 the post read the field as it stood then, and
+// the message was delivered to the session switched to.
+const switched = 'ses_0e2esendswitch01';
+for (const vp of viewports) {
+  for (const kind of ['send', 'queue'] as const) {
+    test(`a ${kind} pressed before the pane switches session names the session it was written for (${vp.name})`, async ({ page }) => {
+      test.setTimeout(90_000);
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await rig.login(page);
+      await page.goto(rig.origin + viewOf('@3'));
+      const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
+      await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+      // The server's stale answer for the first post, as the step-up case
+      // above: the message waits on the confirm.
+      const route = kind === 'send' ? '/mirror/view/send' : '/send-queue';
+      const refused = new Set<string>();
+      await page.route(
+        (u) => u.pathname === route,
+        async (r: Route) => {
+          const nonce = new URLSearchParams(r.request().postData() || '').get('nonce') || r.request().postData() || '';
+          if (!refused.has(nonce)) {
+            refused.add(nonce);
+            return r.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': '1', 'Content-Type': 'text/plain' }, body: 'confirm it is you' });
+          }
+          return r.continue();
+        },
+      );
+      await revealBox(page);
+      const text = `pressed before the switch ${kind} ${vp.name} ${Date.now()}`;
+      await page.locator('#mv-input').fill(text);
+      if (kind === 'send') {
+        await page.locator('#mv-send').click();
+        await expect(pendingOf(page, text)).toHaveAttribute('data-pending-send', 'stepup');
+      } else {
+        await page.locator('#mv-send-more').click();
+        await page.locator('#mv-queue-send').click();
+      }
+      await expect(page.locator('#term-confirm-password')).toBeVisible({ timeout: 10_000 });
+      // The pane switches; the view starts over on the other session.
+      writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
+      try {
+        await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+        await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
+        await page.locator('#term-confirm-password').fill(password);
+        await page.locator('#term-confirm-submit').click();
+        if (kind === 'send') {
+          const p = pendingOf(page, text);
+          await expect(p).toHaveAttribute('data-pending-send', 'failed', { timeout: 20_000 });
+          await expect(p).toContainText('shows another session now than the one this message was written for');
+        } else {
+          // Queued, naming @3's old session; the session switched to runs a
+          // turn, the queue tries the row, and the hub refuses it.
+          await expect(page.locator('#mv-queue [data-queue-id]', { hasText: text })).toHaveCount(1, { timeout: 20_000 });
+          op({ op: 'status', session: switched, status: 'busy' });
+          op({ op: 'status', session: switched, status: 'idle' });
+          const row = page.locator('#mv-queue [data-queue-id]', { hasText: text });
+          await expect
+            .poll(
+              async () => {
+                await page.goto(rig.origin + viewOf('@3'));
+                return row.getAttribute('data-queue-state');
+              },
+              { timeout: 40_000, intervals: [1_000] },
+            )
+            .toBe('failed');
+          await expect(row).toContainText('shows another session now than the one this message was written for');
+        }
+        // It never landed in the session switched to.
+        await page.waitForTimeout(2_000);
+        await expect(rowsOf(page, text)).toHaveCount(0);
+      } finally {
+        writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
+      }
+    });
+  }
+}

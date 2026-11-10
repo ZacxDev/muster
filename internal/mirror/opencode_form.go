@@ -87,8 +87,10 @@ const (
 	MaxFormQuestion    = 600
 	MaxFormLabel       = 200
 	MaxFormDescription = 400
-	// MaxFormOther bounds an answer of the person's own, in bytes: the card's
-	// box's own bound (askq.MaxFreeText), so what the box takes is taken.
+	// MaxFormOther bounds an answer of the person's own, in CHARACTERS
+	// (runes): the card's box holds askq.MaxFreeText of them (its maxlength,
+	// which counts UTF-16 units — never fewer than runes), so whatever the box
+	// lets a person type, in any script, is taken here too.
 	MaxFormOther = askq.MaxFreeText
 )
 
@@ -135,7 +137,7 @@ func NormalizeOpenCodeForm(f OpenCodeForm) (OpenCodeForm, bool) {
 // CheckOpenCodePicks is why picks cannot answer form f, nil when they can:
 // exactly one pick list per question, in the form's order, by its key; each
 // index one of that question's options, none twice; an answer of one's own
-// only on a question that takes one, within MaxFormOther bytes of text; a
+// only on a question that takes one, within MaxFormOther characters; a
 // single-select answered exactly once (an option or one's own), a
 // multi-select at least once. Applied by BOTH halves.
 func CheckOpenCodePicks(f OpenCodeForm, picks []OpenCodePick) error {
@@ -159,8 +161,8 @@ func CheckOpenCodePicks(f OpenCodeForm, picks []OpenCodePick) error {
 			switch {
 			case !q.Custom:
 				return fmt.Errorf("%w: question %d takes only its own options", ErrOpenCodeFormInvalid, i+1)
-			case len(p.Other) > MaxFormOther || !utf8.ValidString(p.Other) || strings.TrimSpace(p.Other) == "" || strings.ContainsFunc(p.Other, isControl):
-				return fmt.Errorf("%w: question %d: an answer of your own is at most %d bytes of text", ErrOpenCodeFormInvalid, i+1, MaxFormOther)
+			case !utf8.ValidString(p.Other) || utf8.RuneCountInString(p.Other) > MaxFormOther || strings.TrimSpace(p.Other) == "" || strings.ContainsFunc(p.Other, isControl):
+				return fmt.Errorf("%w: question %d: an answer of your own is at most %d characters of text", ErrOpenCodeFormInvalid, i+1, MaxFormOther)
 			}
 			n++
 		}

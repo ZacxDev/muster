@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// THE SESSION A QUEUED MESSAGE WAS WRITTEN FOR (migration 0105): stored with
+// THE SESSION A QUEUED MESSAGE WAS WRITTEN FOR (migration 0106): stored with
 // the row, read back, carried by a Retry; a row with none (every row before
 // the column, a Claude Code window's) reads "", and a value the wire would
 // not carry is refused before anything is stored.

@@ -97,12 +97,12 @@ const (
 	// one a queued message was stored with (PasteRefusalOpenCodeMoved). The
 	// hub refuses it against its list, and the host against the pane.
 	PasteRefusedOpenCodeMovedText = "Not sent: this opencode pane shows another session now than the one this " +
-		"message was written for, so nothing was sent. Check the view, then send it again."
+		"message was written for, so nothing was sent. To send it there, write it again while viewing the session shown now."
 	// PasteRefusedOpenCodeUnnamedText: a message for a hand-opened pane that
 	// names no session (a page or a queued message from before muster
 	// recorded one), which muster cannot tell is meant for the session shown.
 	PasteRefusedOpenCodeUnnamedText = "Not sent: muster can't tell which opencode session this message was written " +
-		"for (it was queued or typed on an older page), so nothing was sent. Check the view, then send it again."
+		"for (it was queued or typed on an older page), so nothing was sent. Reload the page, then write it again."
 )
 
 // AgentContext is an agent's context fill (Msg.Context): Tokens in context

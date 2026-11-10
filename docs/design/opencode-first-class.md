@@ -488,8 +488,11 @@ Each code is the composer's reason, in words (`mirror.AgentBindWords`).
 
 **A send never reaches another session than the view shows.** The composer
 carries the session its view is drawing (`agent_session`, kept equal to the
-stream's session by the page's script), and a queued row stores it
-(`send_queue.agent_session`, migration 0105). The hub refuses the send — a
+stream's session by the page's script). A message names the session shown
+when it was PRESSED, not the field as it stands when it is finally posted: one
+held behind a sign-in confirm can be posted after the view moved to another
+session (`composer_pending.go`, `p.shown`). A queued row stores it
+(`send_queue.agent_session`, migration 0106). The hub refuses the send — a
 person's, or a queued row's, which then fails rather than waiting — when its
 window list names another session now, and refuses a hand-opened pane's send
 that names none (an older page or row); a launcher-bound pane's send naming

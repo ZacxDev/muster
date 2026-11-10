@@ -172,6 +172,13 @@ var mirrorComposerJS = `
   (` + sendKeepsFocusJS + `)(send);
   var note = document.getElementById('mv-note');
   var nonce = document.getElementById('mv-nonce');
+  // shownEl: the session the view draws (AgentSessionField; a gated
+  // runtime's window only), which the view's script keeps current. 🔴 A
+  // message names the session shown WHEN IT WAS PRESSED (p.shown, read in
+  // start), never the field as it stands when the message is finally posted:
+  // a message held behind a refusal or a sign-in, or posted by the browser,
+  // can go out after the view moved on to another session.
+  var shownEl = form.querySelector('input[name="` + AgentSessionField + `"]');
   // The conversation (the Rendered view's).
   var log = document.getElementById('mv-log');
   function say(msg) { note.textContent = msg || ''; note.hidden = !msg; note.removeAttribute('data-ok'); }
@@ -274,6 +281,7 @@ var mirrorComposerJS = `
       if (!el.name || el.disabled || el.name === '` + SendAgainField + `') continue;
       if (el === input) b.append(el.name, p.text);
       else if (el === nonce) b.append(el.name, p.nonce);
+      else if (el === shownEl) b.append(el.name, p.shown);
       else b.append(el.name, el.value);
     }
     if (p.again) b.append('` + SendAgainField + `', '1');
@@ -299,6 +307,7 @@ var mirrorComposerJS = `
     input.value = p.text;
     shown();
     if (nonce) nonce.value = p.nonce;
+    if (shownEl) shownEl.value = p.shown;
     againField(!!p.again);
     // 🔴 The browser posts the line to ITS OWN route (p.to: the Queue's, the
     // chief's), never to whatever the form's action was left at — a chief
@@ -524,7 +533,8 @@ var mirrorComposerJS = `
   function retry(p) {
     if (input.value === p.text) clearBox();
     // A message that may have landed is sent again ON PURPOSE (again=1).
-    start({ text: p.text, typed: p.typed, queued: p.queued, to: p.to, again: p.again || p.state === 'unknown' });
+    // A retry is the SAME message: written for the session it was pressed in.
+    start({ text: p.text, typed: p.typed, queued: p.queued, to: p.to, again: p.again || p.state === 'unknown', shown: p.shown });
   }
 
   // ---- Matching a bubble to the row it stands for. ----
@@ -729,7 +739,8 @@ var mirrorComposerJS = `
     var chiefPath = form.getAttribute('data-chief-path');
     var p = { id: hex(8) || String(Date.now()) + String(Math.random()).slice(2), text: o.text, typed: o.typed, queued: !!o.queued, to: o.to, again: !!o.again,
       chief: !!(chiefPath && o.to && o.to.indexOf(chiefPath) === 0),
-      seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems() };
+      seq: seq, nonce: hex(16), state: blocker && !first ? 'held' : (o.queued ? 'queuing' : 'sending'), before: seenRows(), beforeCC: ccItems(),
+      shown: o.shown !== undefined ? o.shown : (shownEl ? shownEl.value : '') };
     live.push(p);
     hold(p);
     if (first) queue.unshift(p); else queue.push(p);
