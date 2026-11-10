@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -76,6 +77,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 
 	// Retrying a message the chief never confirmed (plugin_retry.go).
 	s.registerPluginRetryRoutes(mux)
+
+	// Viewer hand-off codes (plugin_handoffs.go): the owner's browser mints,
+	// the viewer plugin's token redeems. Off until MUSTER_PLUGIN_ORIGINS is set.
+	s.registerPluginHandoffRoutes(mux)
 
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
@@ -320,8 +325,12 @@ func (s *Server) handlePluginsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePluginCreate(w http.ResponseWriter, r *http.Request) {
-	tok, _, err := s.ext.Plugins.Create(r.Context(), strings.TrimSpace(r.PostFormValue("name")),
-		r.PostFormValue("label"), strings.TrimSpace(r.PostFormValue("data_scope")))
+	in, problem := s.pluginCreateInput(r)
+	if problem != "" {
+		s.renderPluginsPage(w, r, http.StatusBadRequest, "", problem)
+		return
+	}
+	tok, _, err := s.ext.Plugins.CreatePlugin(r.Context(), in)
 	switch {
 	case errors.Is(err, plugins.ErrInvalid):
 		s.renderPluginsPage(w, r, http.StatusBadRequest, "", strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "))
@@ -392,7 +401,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
 <label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where your chief is told to record anything durable from these messages</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="example-inbox" class="` + flowsInputClass + `">
-<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
@@ -408,6 +417,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString(`<li class="` + flowsCardClass + `" data-plugin-id="` + id + `">
 <span class="break-all text-sm font-semibold text-fg">` + esc(p.Label) + ` <span class="font-mono text-xs text-fg2">` + esc(p.Name) + `</span></span>
 <span class="text-xs text-fg2">scope ` + esc(p.DataScope) + ` · created ` + p.CreatedAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
+<span class="text-xs text-fg2" data-plugin-capabilities>` + esc(pluginCapabilitiesText(p)) + `</span>
 <span class="text-xs text-fg2"><span data-plugin-seen>` + seen + `</span> · <span data-plugin-queued="` + strconv.Itoa(queued[p.ID]) + `">` +
 			queuedText(queued[p.ID]) + `</span></span>
 `)
@@ -448,4 +458,71 @@ func queuedText(n int) string {
 		return "1 message waiting for your chief"
 	}
 	return strconv.Itoa(n) + " messages waiting for your chief"
+}
+
+// pluginCreateInput reads the create form. With no `capability` field (the
+// form while MUSTER_PLUGIN_ORIGINS is unset, and any older client) the token
+// gets messages alone, as every token did before capabilities. `viewer` is
+// accepted only while MUSTER_PLUGIN_ORIGINS is set, with an origin from it and
+// an entry URL under that origin (plugins.ValidViewerLink). The set is fixed
+// at mint: no route widens or narrows it.
+func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) {
+	in := plugins.NewPlugin{Name: strings.TrimSpace(r.PostFormValue("name")), Label: r.PostFormValue("label"),
+		DataScope: strings.TrimSpace(r.PostFormValue("data_scope"))}
+	for _, c := range r.PostForm["capability"] {
+		in.Capabilities = append(in.Capabilities, plugins.Capability(c))
+	}
+	if len(in.Capabilities) == 0 {
+		in.Capabilities = []plugins.Capability{plugins.CapMessages}
+	}
+	if !slices.Contains(in.Capabilities, plugins.CapViewer) {
+		return in, ""
+	}
+	if len(s.ext.PluginOrigins) == 0 {
+		return in, "This server does not offer viewer plugins (MUSTER_PLUGIN_ORIGINS is unset)."
+	}
+	origin, err := plugins.ValidViewerLink(s.ext.PluginOrigins, r.PostFormValue("origin"), r.PostFormValue("entry_url"))
+	if err != nil {
+		return in, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")
+	}
+	in.Origin, in.EntryURL = origin, strings.TrimSpace(r.PostFormValue("entry_url"))
+	return in, ""
+}
+
+// pluginViewerFieldsHTML is the create form's capability choice: drawn only
+// while MUSTER_PLUGIN_ORIGINS is set, with the origin select offering exactly
+// its patterns. Unset, the form is unchanged and mints messages tokens.
+func pluginViewerFieldsHTML(origins []plugins.OriginPattern) string {
+	if len(origins) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<fieldset class="flex flex-col gap-2" data-testid="plugin-capabilities">
+<legend class="text-sm font-medium text-fg">What it may do <span class="text-xs text-fg2">fixed once created</span></legend>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="messages" checked> Messages: bring messages to your chief</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="viewer"> Viewer: a chip on your session views that opens it as you</label>
+<label for="plugin-origin" class="text-sm font-medium text-fg">Viewer origin</label>
+<select id="plugin-origin" name="origin" class="` + flowsInputClass + `">`)
+	for _, o := range origins {
+		b.WriteString(`<option value="` + html.EscapeString(o.String()) + `">` + html.EscapeString(o.String()) + `</option>`)
+	}
+	b.WriteString(`</select>
+<label for="plugin-entry" class="text-sm font-medium text-fg">Viewer entry URL <span class="text-xs text-fg2">under the origin; where a hand-off is sent</span></label>
+<input id="plugin-entry" name="entry_url" maxlength="2048" inputmode="url" class="` + flowsInputClass + `">
+</fieldset>
+`)
+	return b.String()
+}
+
+// pluginCapabilitiesText is a plugin's capabilities as its card shows them.
+func pluginCapabilitiesText(p plugins.Plugin) string {
+	parts := make([]string, 0, len(p.Capabilities))
+	for _, c := range p.Capabilities {
+		parts = append(parts, string(c))
+	}
+	out := "can: " + strings.Join(parts, ", ")
+	if p.Origin != nil && p.EntryURL != nil {
+		out += " · viewer at " + *p.EntryURL
+	}
+	return out
 }

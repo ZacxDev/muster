@@ -27,7 +27,7 @@ func TestAuthenticateCarriesCapabilitiesAndTheOwnersLogin(t *testing.T) {
 	if !slices.Equal(p2.Capabilities, []Capability{CapMessages}) {
 		t.Fatalf("a newly minted token's capabilities = %v; want [messages]", p2.Capabilities)
 	}
-	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET capabilities = '{viewer}' WHERE id = `+strconv.FormatInt(p3.ID, 10))
+	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET capabilities = '{viewer}', origin = 'https://*.viewer.example.net', entry_url = 'https://w.viewer.example.net/enter' WHERE id = `+strconv.FormatInt(p3.ID, 10))
 
 	sys := authz.System(context.Background())
 	got2, err := s.Authenticate(sys, tok2)

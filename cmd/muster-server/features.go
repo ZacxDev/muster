@@ -129,8 +129,10 @@ func featureCatalog() []features.Feature {
 			Settings:    []string{envAskLogTextTTL, envAskLogClassify}},
 		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			Description: "External bots post messages to your chief; it drafts replies you approve.",
-			Enable:      []features.Var{is(envPlugins, "1")},
-			Settings:    []string{envPluginOrigins}},
+			Enable:      []features.Var{is(envPlugins, "1")}},
+		{ID: features.PluginViewers, Name: "Plugin viewers",
+			Description: "A viewer plugin's chip on your session views, opening its own origin as you.",
+			Enable:      []features.Var{v(envPluginOrigins, "origin patterns")}},
 		{ID: features.PluginTasks, Name: "Plugin tasks",
 			Description: "A plugin files one task per upstream record.",
 			Enable:      []features.Var{v(envPluginTaskNamespaces, "tag namespaces")}},
@@ -400,6 +402,8 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	pluginsOff := "the plugin interface is off (" + envPlugins + ")"
 	st[features.PluginTasks] = pick(len(c.PluginTaskNamespaces) > 0 && ext.Plugins != nil, len(c.PluginTaskNamespaces) > 0,
 		"", envPluginTaskNamespaces+" is set but "+pluginsOff, envPluginTaskNamespaces+" is unset")
+	st[features.PluginViewers] = pick(len(c.PluginOrigins) > 0 && ext.Plugins != nil, len(c.PluginOrigins) > 0,
+		"", envPluginOrigins+" is set but "+pluginsOff, envPluginOrigins+" is unset")
 	// Session and task routing are the chief's decisions: wired, they still do
 	// nothing without one, and both were asked for.
 	routed := func(wired, asked bool, name string) features.Status {

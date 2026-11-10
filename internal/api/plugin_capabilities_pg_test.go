@@ -57,7 +57,7 @@ func TestPluginCapabilitiesThroughTheRealStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET capabilities = '{viewer}' WHERE id = $1`, viewPlugin.ID)
+	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET capabilities = '{viewer}', origin = 'https://*.viewer.example.net', entry_url = 'https://w.viewer.example.net/enter' WHERE id = $1`, viewPlugin.ID)
 
 	srv := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "plugin-caps-operator-pw"}, log.New(io.Discard, "", 0))
 	srv.UseExtensions(Extensions{Users: users.NewPG(pool), Plugins: store})

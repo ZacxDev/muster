@@ -62,7 +62,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Chief session runtimes](#chief-session-runtimes) | a Claude model picker per chief session | a `claude-code` chief on Kubernetes | off | not in the Compose stack |
 | [Chief nudges](#chief-nudges) | the chief nudges stalled sessions (shadow mode first) | the chief on Kubernetes, an OpenRouter key | off | not in the Compose stack |
 | [Plugins](#plugins) | external systems (an inbox) reach your chief; reply drafts | **a plugin process you run**, the chief | off | 1 line + more |
-| ↳ [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
+| ↳ [Plugin viewers](#plugin-viewers), [Plugin tasks](#plugin-tasks), [Session routing](#session-routing), [Task routing](#task-routing), [PR mail routing](#pr-mail-routing), [Fleet reports](#fleet-reports), [Mail resume](#mail-resume) | what builds on plugins (session routing also works without them, for your own typed requests and tasks) | plugins, and mostly the chief | off | 1 line each |
 | [Memo relay](#memo-relay) | cairn memos delivered to dispatched agents | **cairn you host**, dispatch | off | not in the Compose stack |
 | [Approval router](#approval-router) | transcript links, router notifications, agent permission cards | **an external permission router you run** | off (standalone) | 3 lines |
 | [Officers](#officers) | standing agents fed by an HQ queue | **HQ**, dispatch | off | not in the Compose stack |
@@ -620,6 +620,18 @@ to your chief and send the replies you approve. [plugins.md](plugins.md).
   grammar is in [configuration.md](configuration.md#muster-server-optional-features).
 - **Check:** `plugins: ENABLED (MUSTER_PLUGINS=1) — …`; `/plugins` (no menu
   link) mints plugin tokens.
+
+### Plugin viewers
+
+A **viewer** plugin (such as a preview gateway) gets a chip on your session
+views that opens its own origin, signed in as you, through a one-time
+[hand-off code](plugins.md#viewer-hand-off).
+
+- **Needs** [plugins](#plugins), and an admin's allowlist of the origins a
+  viewer may be given: `MUSTER_PLUGIN_ORIGINS=https://*.<zone>` (its grammar is
+  in [configuration.md](configuration.md#muster-server-optional-features)). A
+  `Host` under it is refused on muster's own listeners.
+- **Check:** `plugin origins: ON …`; `/plugins` offers a Viewer checkbox.
 
 ### Plugin tasks
 

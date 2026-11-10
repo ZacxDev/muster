@@ -123,7 +123,9 @@ func newPluginsDoorServer(t *testing.T, store plugins.Store) (*Server, http.Hand
 	tf := newFakeAPITokens()
 	s := New(nil, AuthConfig{HookToken: tokTestHook, ServiceToken: pgnSvc, UIPassword: "plugins-test-operator-password"},
 		log.New(io.Discard, "", 0))
-	ext := Extensions{APITokens: tf, Users: stubUsers{}, Agents: pluginsTestAgents{}, Flows: principalFlows{}}
+	ext := Extensions{APITokens: tf, Users: stubUsers{}, Agents: pluginsTestAgents{}, Flows: principalFlows{},
+		// The viewer routes are on (plugin_handoffs.go), so the door tests reach them.
+		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}}}
 	if store != nil {
 		ext.Plugins = store
 	}
@@ -235,6 +237,9 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// Who the token is (plugin_capabilities_test.go): it reaches no store
 	// method past the token lookup.
 	{"/plugin/v1/self", "", "", http.StatusOK, http.MethodGet},
+	// A hand-off redeem (plugin_handoffs.go) needs viewer: this fixture's
+	// messages token is refused at the capability check.
+	{"/plugin/v1/handoffs/redeem", `{"code":"x"}`, "", http.StatusForbidden, ""},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
