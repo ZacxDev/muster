@@ -108,9 +108,19 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
 - **Pane to session**: the pane title, `OC | <title>` (a cut title ends in
   `…` and is a prefix match), against the server's ROOT sessions
   (`GET /api/session?parentID=null`); exactly one match or none. A
-  title-matched pane is view-only: a send needs the launcher record below,
-  which names the session deterministically
+  title-matched pane is sent to only when the host VERIFIES the binding
+  (a whole unique title, an open event stream, no contradicting `-s`, and the
+  session re-read at the moment of sending:
+  [Panes the launcher did not start](opencode-first-class.md#panes-the-launcher-did-not-start));
+  any other is view-only, saying why. The launcher record below names the
+  session deterministically
   ([designed](opencode-first-class.md#the-launcher-record)).
+- **Context readout**: the newest completed step's `input + cache.read +
+  cache.write`, its model, and the model's `limit.context` from `GET
+  /api/model`, on the view's stream (`Msg.Context`;
+  [phase 3](opencode-first-class.md#phase-3-model-and-costtoken-display)).
+- **Turn errors**: an idle window's latest turn, read from its messages, as
+  `Window.TurnError` (the queue's breaker holds on it).
 - **Messages**: `GET /api/session/{id}/message` (newest first, reversed),
   re-read when the event stream names the session, and every tenth poll
   regardless. Rendered by `opencodehost.Render`: prompts, final text, tool
@@ -177,9 +187,11 @@ below are what it sent, saved as `internal/opencodehost/opencodetest/testdata/as
   `Pending` the newest ask (`mirror.PendingPermission`: summary
   "<action>: <resources>", tool the action, choices `once reject`;
   `mirror.PendingQuestion`: the first question, "(and N more questions)",
-  tool `question`, and its option labels only when it is ONE single-select
-  question of at most 4 options whose labels the wire would not change). A
-  raised or settled ask sends the listing at once.
+  tool `question`, its form's id always, and its option labels only when it
+  is ONE single-select question of at most 4 options whose labels the wire
+  would not change). A raised or settled ask sends the listing at once. The
+  Rendered view answers the whole form by its id
+  ([Asks from the view](opencode-first-class.md#asks-from-the-view)).
 - **A stream gap holds the asks.** While the stream is down, and after a
   reconnect until each matched session's pending lists are re-read, the asks
   last known are reported as they are; the re-read is the one place an ask

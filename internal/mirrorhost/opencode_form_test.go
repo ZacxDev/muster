@@ -204,12 +204,14 @@ func TestASubagentsFormIsAnsweredInTheChildSession(t *testing.T) {
 		opencodetest.FixtureFormSession, opencodetest.FixtureChildSession), opencodetest.FixtureProceedForm, "frm_1a2aaa3d1001ChildSessionFrm")
 	raise(t, srv, b, child, "frm_1a2aaa3d1001ChildSessionFrm")
 	d.send(t, picksAnswer(1, "frm_1a2aaa3d1001ChildSessionFrm", mirror.OpenCodePick{Key: "q0", Picks: []int{0}}))
-	if m := answeredOf(t, d, 1); m.Error != "" {
-		t.Fatalf("refused: %+v", m)
-	}
+	m := answeredOf(t, d, 1)
+	// Where it went first: a reply to the wrong session is what this pins.
 	r := srv.Replies()
 	want := "/api/session/" + opencodetest.FixtureChildSession + "/form/frm_1a2aaa3d1001ChildSessionFrm/reply"
 	if len(r) != 1 || r[0].Path != want || !sameFormJSON(r[0].Body, `{"answer":{"q0":"Yes"}}`) {
 		t.Fatalf("replies %+v; want one to %s", r, want)
+	}
+	if m.Error != "" {
+		t.Fatalf("refused: %+v", m)
 	}
 }

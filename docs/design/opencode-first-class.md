@@ -1,7 +1,12 @@
 # opencode as a first-class runtime (API send first)
 
-**Status: proposed.** This is a design to read before any of it is built.
-Phase 1 (send from the Rendered view) follows as its own PR.
+**Status: partly built.** Phase 1 (the launcher and the API send) is built.
+Phase 3's context and model readout is built, and so are three things this
+design first left out: sending to a hand-opened pane whose binding the host
+verifies ([Panes the launcher did not start](#panes-the-launcher-did-not-start)),
+turn errors, and answering a whole question form from the Rendered view
+([Asks from the view](#asks-from-the-view)). Phase 2, phase 3's cost and
+phase 4 are not built. Each section below says which.
 
 [opencode.md](opencode.md) is the as-built reference: what muster relies on
 from opencode's server today (pairing, the read-only view, asks), with each
@@ -35,8 +40,11 @@ through opencode's own API, never through keystrokes:
 
 - typing into an opencode pane. The paste guard stays, and the Terminal
   view's composer stays refused there;
-- sending to a pane that was **not** started by the launcher. Those keep
-  today's title-matched view and stay view-only;
+- ~~sending to a pane that was **not** started by the launcher~~. The operator
+  asked for it later, and it is built for a pane whose title binds it
+  unambiguously and verifiably
+  ([below](#panes-the-launcher-did-not-start)); every other hand-opened
+  pane keeps the title-matched view and stays view-only, saying why;
 - interrupt/stop and suggested replies (see [Later](#later));
 - an opencode server other than the host's shared one (`--standalone`,
   `--server`): those are not viewed today either
@@ -69,19 +77,19 @@ feature; "—" means it stays out.
 | feature | CC today | opencode today | opencode target | phase |
 |---|---|---|---|---|
 | rendered view | transcript tail | API messages (title-matched) | same, plus launcher-bound panes | 1 |
-| send from the Rendered view | paste + Enter | refused ×3 | API `session.prompt`, launcher-bound panes only | 1 |
+| send from the Rendered view | paste + Enter | refused ×3 | API `session.prompt`, launcher-bound panes, and hand-opened panes whose binding is verified | 1, **built**; hand-opened **built** |
 | optimistic send / pending bubble / Not confirmed | yes | composer disabled | same contract; a retry is deduplicated by opencode (below) | 1 |
 | send queue ("when idle") | yes | no queue drawn | yes, gated on opencode's own status time | 1 |
 | attachments | `[attached: …]` line with a signed link (`docs/uploads.md`) | — | the same text line (the agent fetches it) | 1 |
 | dictation | inserts text in the box | box disabled | the same (browser-side only) | 1 |
-| answering asks | keys into the picker | API reply (`OpenCodeAnswer`) | unchanged | done |
+| answering asks | keys into the picker | API reply (`OpenCodeAnswer`), one short single-select only | the whole form from the view's card (`OpenCodeForms`, `OpenCodeReply.Picks`), and permissions | **built** |
 | attention queue, push | yes | yes | unchanged | done |
 | slash/command menu | host catalog + CC built-ins | menu shows **CC's** built-ins | `GET /api/command`, sent through `session.command` | 2 |
-| context readout | "124k context" (`internal/ui/mirror_view.go:644-659`) | none | context of the last turn / model limit | 3 |
-| model name | not shown | not shown | `model.id` from the assistant message | 3 |
+| context readout | "124k context" (`internal/ui/mirror_view.go:644-659`) | none | context of the last step / model limit | 3, **built** |
+| model name | not shown | not shown | `model.id` from the assistant message | 3, **built** |
 | cost | not shown | not shown | session `cost` (USD), as opencode reports it | 3 |
 | per-tool context cost | measured | estimate (`internal/cctranscript/toolctx.go:83`) | unchanged (later: step tokens) | — |
-| turn errors held by the queue | `TurnError` (`internal/mirror/turnerror.go:134`) | none | unchanged in phase 1 (later) | — |
+| turn errors held by the queue | `TurnError` (`internal/mirror/turnerror.go:134`) | none | `TurnError` from the session's messages (kind, time, quick count; never a usage limit) | **built** |
 | chief nudges | queued paste | notice only (`internal/api/chief_nudge.go:926-936`) | queued API send, bound panes only | 4 |
 | interrupt / stop | not in muster | — | `session.interrupt` | later |
 | suggested replies | yes | blocked (`internal/api/suggest.go:343`) | — | later |
@@ -448,6 +456,77 @@ What changes:
   `agentstate.go:135-137`);
 - the queue gets opencode's words (`send_queue.go:803`).
 
+## Panes the launcher did not start
+
+**Built** (the operator's later ask, lifting a non-goal). Nothing upstream
+names the session a TUI shows ([above](#which-session-a-tui-shows)), so a
+hand-opened pane's binding can only be the title match, made strict enough to
+send to and checked again at the moment of sending
+(`internal/mirrorhost/opencode_bind.go`). The host binds it — `Window.AgentBind
+"verified"`, a field of its own so that an older muster keeps such a pane
+view-only — when:
+
+- the TUI is a client of the shared server and the server answered its root
+  sessions;
+- the event stream is open, so the session list is current (each session
+  event re-reads it) — else `stream-down`;
+- the title is whole and exactly one root session carries it. A collision, or
+  a cut title starting two, is no match (no view, as before); a cut title
+  starting one is `title-cut`: a cut title names a prefix, and a subagent's
+  child session (not in the root list) can share it, typically when its task
+  description repeats the root's title;
+- the TUI's command line names no session or the same one — else
+  `argv-session`.
+
+Each code is the composer's reason, in words (`mirror.AgentBindWords`).
+
+**A send never reaches another session than the view shows.** Every gated
+paste now carries `Msg.AgentSession`, the session the hub's list names for
+the window. The host re-resolves the pane, re-reading its title, and refuses
+(`opencode-moved`) when the pane resolves to any other session, and refuses a
+verified pane's paste that names none (an older muster's). For a verified pane
+it then reads the session through the API (`GET /api/session/{id}`): it must
+still be a root session with the pane's title. Named residual gap: a child
+session titled exactly like a root session.
+
+The directory is not used: the reference measured it differing for 2 of 5
+correct matches ([opencode.md](opencode.md)), so a gate on it would refuse
+correct panes and add nothing a mismatch could not already be.
+
+## Asks from the view
+
+**Built.** The operator reported answering opencode's questions only from the
+raw terminal. Diagnosed against this host's own opencode server, read-only:
+
+- **The view drew no card at all** for an opencode ask: its live question
+  region listed only Claude Code's hook-registered questions
+  (`handleMirrorAsks`), and an opencode question showed only as a `question`
+  tool row.
+- **The Attention item offered no answer for most questions.** The host
+  offered options only for one single-select question of at most 4 options
+  each at most 40 runes (`offerable`), and the wire then dropped the ask's id
+  too (`CleanPending`). Of the 25 question-tool calls in the 40 newest root
+  sessions on the measured server, 18 asked 2 to 6 questions and 3 of the 7
+  single questions had an option longer than 40 characters: 21 of 25 could
+  only be answered in the terminal. The other 4 were answerable from Attention, but not from the view.
+- The pipeline itself worked: the asks were seen (`form.created`), and an
+  answer was never refused on the wire — the host's journal held no opencode
+  answer attempt at all over its retained span, consistent with no surface
+  offering one.
+
+As built: every question-tool form keeps its id on the wire (its options only
+when an Attention button can answer it). The view's region draws an opencode
+window's ask as the same card a Claude Code question gets: the whole form,
+read from the host on demand (`TypeOpenCodeForm` → `OpenCodeForm`, advertised
+as `Msg.OpenCodeForms`), and Allow once / Reject for a permission. A submit
+answers every question at once as `OpenCodeReply.Picks` — option indexes into
+the form the host sent, and an answer of one's own only where `custom` — which
+the hub checks against the ask the window waits on now, and the host checks
+again against the ask it holds, mapping each index to the option's value and
+posting to the session the ASK names (a subagent's child, for one under it).
+An Attention item for a form it cannot answer with a button says to open the
+session.
+
 ## Security
 
 **Gating.** A send to opencode passes exactly the gates of a Claude send:
@@ -639,6 +718,31 @@ confirmed, as a Claude paste does today. Its busy semantics ("immediately",
   opencode window and the absence of Claude's built-ins.
 
 ### Phase 3: model and cost/token display
+
+**Built, except the cost**, and not quite as drafted below. As built:
+
+- `opencodehost.Message` gains `model` and `tokens` (`usage.go`). The context
+  is `input + cache.read + cache.write` of the NEWEST assistant message whose
+  sum is above zero (a step still streaming has none), so the number means
+  what a Claude Code view's does: what the model was sent for the latest
+  request. opencode's `input` is net of the cache (measured in
+  `testdata/prompt-v2.0.32.json`: a turn's two steps read 3533 + 1792, then
+  91 + 5248). Output and reasoning are NOT added, as the TUI adds them: that
+  would make the two runtimes' numbers mean different things.
+- It does NOT ride `Event.Usage`: that would feed the tool-context ledger
+  (`toolctx.go`), and an opencode step's usage arrives only once the step
+  ends, after its tool results, so the ledger would attribute one call's
+  growth to the next. It is `Msg.Context` (`mirror.AgentContext`: tokens,
+  limit, model) on the view's stream instead, sent after the backfill and
+  whenever it moves; the page reads it as the header's readout,
+  "`<model> · 47k / 188k context`", with a tooltip saying how it is made.
+- The limit is `limit.context` of the model (provider and id) in `GET
+  /api/model`, read once per host every 10 minutes, and again at most once a
+  minute for a model the list lacks. A model it does not name shows the count
+  alone.
+- The cost is not built.
+
+The draft:
 
 - `opencodehost.Message` (`internal/opencodehost/message.go:8-28`) gains
   `model`, `cost` and `tokens`.
