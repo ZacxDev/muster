@@ -386,6 +386,8 @@ type llmItemsRig struct {
 	up   *llmProvider
 	tok  string
 	call func(tool, args string)
+	// dispatch runs a tool and returns its result, refusals included.
+	dispatch func(tool, args string) string
 }
 
 func newLLMItemsRig(t *testing.T, id, tok string) *llmItemsRig {
@@ -398,7 +400,9 @@ func newLLMItemsRig(t *testing.T, id, tok string) *llmItemsRig {
 	raw := `[{"id":"` + id + `","hq_url":"` + hq.BaseURL() + `",` + llmTiers(1) + `,"llm":{"daily_budget_usd":5,"max_tokens_per_item":2000}}]`
 	srv, h := llmOfficerServer(t, f, raw, up.URL, io.Discard)
 	a := startPoolInstance(t, f, srv, id, officers.TierRoutine, 1, tok)
-	return &llmItemsRig{h: h, hq: hq, up: up, tok: tok, call: func(tool, args string) {
+	return &llmItemsRig{h: h, hq: hq, up: up, tok: tok, dispatch: func(tool, args string) string {
+		return srv.dispatchAgentTool(context.Background(), a, tool, args)
+	}, call: func(tool, args string) {
 		t.Helper()
 		if out := srv.dispatchAgentTool(context.Background(), a, tool, args); isToolErr(out) {
 			t.Fatalf("%s %s: %s", tool, args, out)
@@ -476,11 +480,42 @@ func TestAnOfficerToolAskEndsTheItemMeter(t *testing.T) {
 		`,"to":"design-lead","question":"is the header right?"`)
 }
 
+// TestAnOfficerTaskAskEndsTheItemMeter: officer_task_ask creates an HQ ask,
+// which ends the lease as officer_ask_person's does, so it ends the held item
+// too. (officer_flood_block_propose has no such seam to pin: it is the
+// judgement pool's only, and the item meter counts routine instances.)
+func TestAnOfficerTaskAskEndsTheItemMeter(t *testing.T) {
+	llmEndSeamKind(t, "task-reconciler:llm-taskasks", "llm-taskasks-agent-token-01234567", officers.ToolTaskAsk,
+		"task-reconciler.finding", ``)
+}
+
+// TestARefusedOfficerTaskAskKeepsTheItemMeter: an officer_task_ask that HQ
+// refuses (a 4xx) wrote nothing and the lease stands, so the held item's
+// meter keeps counting: the request after it is still refused by the cap.
+func TestARefusedOfficerTaskAskKeepsTheItemMeter(t *testing.T) {
+	const id = "task-reconciler:llm-taskrefused"
+	r := newLLMItemsRig(t, id, "llm-taskrefused-agent-token-01234")
+	item := r.hq.AddTieredItem(id, "task-reconciler.finding", "a", officers.TierRoutine)
+	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
+	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)
+	r.hq.RefuseVerb("task-asks", http.StatusConflict, "task_cooldown", "fixture cooldown")
+	if out := r.dispatch(officers.ToolTaskAsk, `{"item_id":"`+item+`"}`); !isToolErr(out) || !strings.Contains(out, "task_cooldown") {
+		t.Fatalf("the refused task ask: %s", out)
+	}
+	r.expect(t, "after the refused task ask of "+item, http.StatusBadRequest)
+}
+
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
+	t.Helper()
+	llmEndSeamKind(t, id, tok, tool, "routine.check", extra)
+}
+
+// llmEndSeamKind is llmEndSeam on an item of kind.
+func llmEndSeamKind(t *testing.T, id, tok, tool, kind, extra string) {
 	t.Helper()
 	r := newLLMItemsRig(t, id, tok)
 	r.hq.AddMember("design-lead")
-	item := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
+	item := r.hq.AddTieredItem(id, kind, "a", officers.TierRoutine)
 	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
 	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)
 	r.call(tool, `{"item_id":"`+item+`"`+extra+`}`)

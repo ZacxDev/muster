@@ -662,6 +662,8 @@ listing and again at dispatch):
 | `officer_obs_queries` | `GET /officers/{id}/obs/queries` — HQ's named observability queries (each one's id, what its answer may claim, the arguments it takes) and HQ's caps. See [Observability queries](#observability-queries) |
 | `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
 | `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
+| `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers (both pools) only**: `POST …/items/{item}/task-asks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
+| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks`. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -918,6 +920,43 @@ waiting), `officer_disabled` or `too_many_open`; 410 on a finished item; 400
 checked before the item; 422 `unknown_recipient`, `recipient_muted` or
 `recipient_unreachable`; 429 `rate_limited`; 404 on an unknown item, with HQ's
 own message.
+
+### HQ-derived asks (`officer_task_ask`, `officer_flood_block_propose`)
+
+Two tools where the officer **proposes** and HQ asks a person, who
+**decides**. HQ applies the decision itself, with its own credentials. Each is
+one HQ call, made by muster with the officer's token; the instance never holds
+that token. Code: `internal/officers/item_asks.go`, `internal/api/officer_item_asks.go`.
+
+The route contract — what HQ derives from the item, its limits and its
+refusal codes — is HQ's: see HQ's officer docs (`docs/OFFICERS.md`, "Task asks"
+and "Flood remediation"). muster sends `POST …/items/{item}/task-asks`
+`{instance, note?}` and `POST …/items/{item}/flood-blocks` `{instance, to?,
+unit_ids, action: "managed_challenge", ttl_hours}`.
+
+- **Offered by officer type name** (`officers.ToolOffered`), and refused at
+  dispatch for any other agent. `officer_task_ask` is offered to both pools of
+  a task reconciler (and an untiered one). `officer_flood_block_propose` is
+  offered to a web-performance officer's **judgement pool only**, never its
+  routine pool or an untiered web-performance officer (operator decision). HQ enforces the
+  type **policy** (`task_asks`, `flood_actuator`); neither stands in for the
+  other.
+- **The lease is HQ's to check** (409 `lease_lost`), as for
+  `officer_ask_person`. muster does not check it locally: a flood proposal is
+  also allowed on an item already `waiting` on an ask.
+- 🔴 **A success ENDS the instance's lease** (an ordinary HQ ask: the item is
+  `waiting` with no holder). Transcript forwarding and the item meter stop for
+  the item, and the result's `note` says that **nothing has been applied
+  yet**: the instance must not claim the task changed or traffic was
+  challenged.
+- **muster builds the body, so it decodes strictly.** An argument it does not
+  know (`action`, a task id, a token, another officer) or a wrongly typed one
+  is refused before HQ is called. `action` is always `managed_challenge`,
+  muster's. It checks **none of HQ's limits**.
+- **Every HQ refusal reaches the model verbatim**: HQ's status and `code` in
+  the error text and `refused.code`, and HQ's body under `refused.hq`. This
+  includes the flood route's 503 `flood_actuator_not_configured`, which is a
+  final refusal, not "retry in a minute". An outage stays "HQ is unavailable".
 
 ### The first message
 

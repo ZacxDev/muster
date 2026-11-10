@@ -947,7 +947,8 @@ func (s *Server) protectedRefusal(a agents.Agent) string {
 // officerToolDefs are the tools an officer instance is offered. None takes an
 // officer: each acts for the caller's own (officerOf).
 func officerToolDefs() []agents.ToolDef {
-	return append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
+	defs := append(append(append(queueToolDefs(), shipToolDefs()...), kubeReadToolDef(), obsRawToolDef()), taskReadToolDefs()...)
+	return append(defs, itemAskToolDefs()...)
 }
 
 // queueToolDefs are every officer's queue tools and obs tools (and the
@@ -1139,6 +1140,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		return s.officerObsRaw(ctx, a, o, c, arguments), true
 	case officers.ToolTaskList, officers.ToolTaskGet:
 		return officerTaskRead(ctx, c, name, arguments), true // officer_tasks.go
+	case officers.ToolTaskAsk, officers.ToolFloodBlockPropose:
+		return s.officerItemAsk(ctx, c, o, a.Name, name, arguments), true // officer_item_asks.go
 	}
 	// The obs tools pass their arguments to HQ unchanged (officers.
 	// ObsQueryArgs) — but for a judgement instance's item_id, which is
@@ -1451,24 +1454,34 @@ func (s *Server) freshClaimRefusal(o officers.Officer, instance string, item off
 // body, so an instance can branch on lease_lost / unknown_recipient /
 // rate_limited without parsing it); officerToolResult's shapes otherwise.
 func askToolResult(body []byte, err error) string {
+	return itemAskToolResult(officers.ToolAskPerson, askedNote, body, err)
+}
+
+// itemAskToolResult is the answer of a tool whose success creates an HQ ask
+// on the item (officer_ask_person, officer_task_ask,
+// officer_flood_block_propose): HQ's JSON with note added on success; on a
+// 4xx (or a 5xx the route calls a decision) HQ's status, code and message,
+// with HQ's body verbatim under refused.hq; officerToolResult's shapes
+// otherwise (outage, retryable, too large).
+func itemAskToolResult(tool, note string, body []byte, err error) string {
 	if err == nil {
 		var out map[string]json.RawMessage
 		if json.Unmarshal(body, &out) != nil || out == nil {
-			return officerToolResult(officers.ToolAskPerson, body, nil)
+			return officerToolResult(tool, body, nil)
 		}
-		note, _ := json.Marshal(askedNote)
-		out["note"] = note
+		n, _ := json.Marshal(note)
+		out["note"] = n
 		return toolJSON(out)
 	}
 	status, msg, code, ok := officers.Refusal(err)
 	if !ok {
-		return officerToolResult(officers.ToolAskPerson, nil, err)
+		return officerToolResult(tool, nil, err)
 	}
 	head := strconv.Itoa(status)
 	if code != "" {
 		head += " " + code
 	}
-	text := fmt.Sprintf("HQ refused %s (%s)", officers.ToolAskPerson, head)
+	text := fmt.Sprintf("HQ refused %s (%s)", tool, head)
 	if msg != "" {
 		text += ": " + msg
 	}

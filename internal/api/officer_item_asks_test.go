@@ -1,0 +1,440 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/transcript"
+)
+
+// ---------------------------------------------------------------------------
+// THE HQ-DERIVED ASK TOOLS (officer_item_asks.go): officer_task_ask (civ-hq
+// #509, a task-reconciler officer's) and officer_flood_block_propose (civ-hq
+// #510, a web-performance officer's). One HQ call each, with the officer's own
+// token, which muster holds and the instance never sees; HQ derives the
+// person and applies the answer. Names, paths and codes are spelled as
+// literals on purpose: they are the contract.
+// ---------------------------------------------------------------------------
+
+const (
+	taskAskTool   = "officer_task_ask"
+	floodTool     = "officer_flood_block_propose"
+	offWP         = "web-performance:alpha-web"
+	offWPTok      = "fixture-officer-token-webperf-6d0f"
+	kindFinding   = "task-reconciler.finding"
+	kindBotSurge  = "perf.bot_surge"
+	wantFloodNote = "NO challenge is in place yet"
+	wantTaskNote  = "NOTHING has been applied to the task yet"
+)
+
+// newItemAskRig is the rig over task-reconciler:hq (r.a) and
+// web-performance:alpha-web (r.b), both TIERED as deployed (routine and
+// judgement pools); addInstance(o, n, …) adds a JUDGEMENT instance. The
+// release officer's token is known to the fake too, so a request carrying it
+// would be ACCEPTED as that officer — which the token assertions would catch.
+func newItemAskRig(t *testing.T) *officerRig {
+	t.Helper()
+	return newOfficerRigCfg(t, map[string]string{offTRTok: offTR, offWPTok: offWP, offATok: offA}, func(hqURL string) []officers.Officer {
+		tiers := `"tiers":{"routine":{"model":"haiku","max_instances":1},"judgement":{"model":"opus","max_instances":1}},"transcript":{"enabled":true}`
+		raw := `[{"id":"` + offTR + `","hq_url":"` + hqURL + `",` + tiers + `},{"id":"` + offWP + `","hq_url":"` + hqURL + `",` + tiers + `}]`
+		list, err := officers.Parse(raw, func(k string) string {
+			return map[string]string{
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offTR): offTRTok,
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offWP): offWPTok,
+			}[k]
+		}, "muster-agent-")
+		if err != nil {
+			t.Fatalf("parse the item-ask rig's officers: %v", err)
+		}
+		if len(list) != 2 || list[0].ID != offTR || list[1].ID != offWP {
+			t.Fatalf("the item-ask rig's officers: %+v", list)
+		}
+		return list
+	}, func(c *OfficersConfig) {
+		// muster's own lease tracking is observable through the transcript
+		// forwarder (officerItemEnded stops it); its loop never runs here.
+		c.TranscriptSource = emptyTranscripts{}
+		c.NoTranscriptRun = true
+	})
+}
+
+// emptyTranscripts is a transcript source with nothing to read.
+type emptyTranscripts struct{}
+
+func (emptyTranscripts) Read(context.Context, officers.Officer, string, transcript.Query) (cctranscript.Page, error) {
+	return cctranscript.Page{}, nil
+}
+
+// tracked reports whether muster still tracks inst's hold on item (the
+// transcript forwarder's active set, which officerItemEnded clears).
+func (r *officerRig) tracked(inst agents.Agent, item string) bool {
+	return r.s.officerRT.fwd.Active()[inst.Name] == officers.ItemID(item)
+}
+
+// TestTheFloodToolIsTheJudgementPoolsOnly (operator decision on #565): the
+// web-performance ROUTINE instance is not offered officer_flood_block_propose
+// (listing, session allowlist) and is refused when it calls it, before HQ;
+// the judgement instance is offered it. officer_task_ask stays in BOTH of the
+// task reconciler's pools.
+func TestTheFloodToolIsTheJudgementPoolsOnly(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	offers := func(a agents.Agent, tool string) (listed, allowed bool) {
+		listed = officerToolNameSet(r.s.MCPToolDefsFor(ctx, a))[tool]
+		sess, ok := r.s.OfficerClaudeCodeSession(a)
+		if !ok {
+			t.Fatalf("%s has no officer session", a.Name)
+		}
+		for _, m := range sess.AllowMCPTools {
+			allowed = allowed || m == tool
+		}
+		return
+	}
+	wpRoutine := r.addNamed(r.b.Pool(officers.TierRoutine).InstanceName(1), 1101)
+	wpJudge := r.addNamed(r.b.Pool(officers.TierJudgement).InstanceName(1), 1102)
+	trRoutine := r.addNamed(r.a.Pool(officers.TierRoutine).InstanceName(1), 1103)
+	trJudge := r.addNamed(r.a.Pool(officers.TierJudgement).InstanceName(1), 1104)
+	if o, _, ok := r.s.officerOf(wpRoutine); !ok || o.Tier != officers.TierRoutine {
+		t.Fatalf("%s does not resolve to the routine pool", wpRoutine.Name)
+	}
+	if l, a := offers(wpRoutine, floodTool); l || a {
+		t.Errorf("the web-performance routine instance: %s listed %v, allowed %v; want neither", floodTool, l, a)
+	}
+	if l, a := offers(wpJudge, floodTool); !l || !a {
+		t.Errorf("the web-performance judgement instance: %s listed %v, allowed %v; want both", floodTool, l, a)
+	}
+	for _, a := range []agents.Agent{trRoutine, trJudge} {
+		if l, al := offers(a, taskAskTool); !l || !al {
+			t.Errorf("%s: %s listed %v, allowed %v; want both", a.Name, taskAskTool, l, al)
+		}
+	}
+	item := r.hq.AddTieredItem(offWP, kindBotSurge, "s:routine", officers.TierRoutine)
+	r.hq.SetClaim(item, wpRoutine.Name, time.Now().Add(time.Hour))
+	r.hq.ResetRequests()
+	out := r.s.dispatchAgentTool(ctx, wpRoutine, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:a"],"ttl_hours":1}`)
+	if !isToolErr(out) || !strings.Contains(out, "is not one of officer") {
+		t.Errorf("the routine instance calling %s: %s, want the dispatch refusal", floodTool, out)
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Errorf("the routine instance's refused proposal reached HQ (%d requests)", n)
+	}
+}
+
+// heldItemOf adds an item of kind for officer and has inst claim it.
+func (r *officerRig) heldItemOf(t *testing.T, inst agents.Agent, officer, kind string) string {
+	t.Helper()
+	item := r.hq.AddItem(officer, kind, "subject:"+kind)
+	if out := r.s.dispatchAgentTool(context.Background(), inst, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) {
+		t.Fatalf("claim: %s", out)
+	}
+	r.hq.ResetRequests()
+	return item
+}
+
+func TestTheItemAskToolsAreOfferedByOfficerTypeOnly(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	tr := r.addInstance(r.a, 1, 1001)
+	wp := r.addInstance(r.b, 1, 1002)
+	for _, c := range []struct {
+		inst      agents.Agent
+		has, lack string
+	}{{tr, taskAskTool, floodTool}, {wp, floodTool, taskAskTool}} {
+		listed := officerToolNameSet(r.s.MCPToolDefsFor(ctx, c.inst))
+		sess, ok := r.s.OfficerClaudeCodeSession(c.inst)
+		if !ok {
+			t.Fatal("no officer session")
+		}
+		allowed := map[string]bool{}
+		for _, m := range sess.AllowMCPTools {
+			allowed[m] = true
+		}
+		if !listed[c.has] || !allowed[c.has] {
+			t.Errorf("%s: %s listed %v, allowed %v; want both", c.inst.Name, c.has, listed[c.has], allowed[c.has])
+		}
+		if listed[c.lack] || allowed[c.lack] {
+			t.Errorf("%s: %s listed %v, allowed %v; want neither", c.inst.Name, c.lack, listed[c.lack], allowed[c.lack])
+		}
+	}
+	// Called anyway: refused at dispatch, and HQ never sees it.
+	for _, c := range []struct {
+		who  string
+		a    agents.Agent
+		tool string
+	}{
+		{"the web-performance officer", wp, taskAskTool},
+		{"the task reconciler", tr, floodTool},
+		{"an ordinary agent", r.agent(t, officerOrdinaryID), taskAskTool},
+		{"an ordinary agent", r.agent(t, officerOrdinaryID), floodTool},
+		{"the chief", r.agent(t, officerChiefID), taskAskTool},
+		{"the chief", r.agent(t, officerChiefID), floodTool},
+	} {
+		r.hq.ResetRequests()
+		out := r.s.dispatchAgentTool(ctx, c.a, c.tool, `{"item_id":"1","unit_ids":["prefix:a"],"ttl_hours":1}`)
+		if !isToolErr(out) {
+			t.Errorf("%s calling %s: %s, want a refusal", c.who, c.tool, out)
+		}
+		if n := len(r.hq.Requests()); n != 0 {
+			t.Errorf("%s's refused %s reached HQ (%d requests)", c.who, c.tool, n)
+		}
+	}
+}
+
+// TestATaskAskSendsTheContractBodyWithTheOfficersToken: exactly one POST to
+// …/items/{item}/task-asks, authorised with the OFFICER's token (muster's,
+// never the instance's), its body exactly {instance, note} — instance the
+// calling agent's own name — and HQ's answer passed back with the note that
+// nothing is applied yet and the lease has ended.
+func TestATaskAskSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	inst := r.addInstance(r.a, 1, 1011)
+	item := r.heldItemOf(t, inst, offTR, kindFinding)
+	out := r.s.dispatchAgentTool(ctx, inst, taskAskTool, `{"item_id":"`+item+`","note":"closed PR #12 matches the done-when"}`)
+	if isToolErr(out) {
+		t.Fatalf("task ask: %s", out)
+	}
+	reqs := r.hq.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d HQ requests, want 1: %+v", len(reqs), reqs)
+	}
+	q := reqs[0]
+	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/task-reconciler:hq/items/"+item+"/task-asks" || q.Auth != "Bearer "+offTRTok {
+		t.Fatalf("went %s %s with %q", q.Method, q.Path, q.Auth)
+	}
+	if got, want := normJSON(t, q.Body), normJSON(t, map[string]any{"instance": inst.Name, "note": "closed PR #12 matches the done-when"}); got != want {
+		t.Fatalf("body:\n%s\nwant\n%s", got, want)
+	}
+	var res struct {
+		Ask     map[string]any `json:"ask"`
+		TaskAsk map[string]any `json:"task_ask"`
+		Item    map[string]any `json:"item"`
+		Note    string         `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	if r.tracked(inst, item) {
+		t.Error("muster still tracks the item after a successful task ask (the lease ended)")
+	}
+	if res.TaskAsk["task_id"] != "fixture-task-1" || res.Ask["to"] != "fixture-owner" || res.Item["status"] != "waiting" {
+		t.Errorf("result does not carry HQ's answer: %s", out)
+	}
+	for _, s := range []string{wantTaskNote, "ENDED", "do not heartbeat, complete or release"} {
+		if !strings.Contains(res.Note, s) {
+			t.Errorf("note does not say %q: %s", s, res.Note)
+		}
+	}
+	// No note given: the body carries none (HQ's note is optional).
+	inst2item := r.heldItemOf(t, inst, offTR, kindFinding)
+	if out := r.s.dispatchAgentTool(ctx, inst, taskAskTool, `{"item_id":`+inst2item+`}`); isToolErr(out) {
+		t.Fatalf("task ask with a numeric item id and no note: %s", out)
+	}
+	if got, want := normJSON(t, r.hq.Requests()[0].Body), normJSON(t, map[string]any{"instance": inst.Name}); got != want {
+		t.Fatalf("body without a note:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestAFloodProposalSendsTheContractBodyWithTheOfficersToken: exactly one
+// POST to …/flood-blocks with the officer's token, its body exactly
+// {instance, unit_ids, action: managed_challenge, ttl_hours[, to]} — the
+// action muster's, the ttl's number as given.
+func TestAFloodProposalSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	inst := r.addInstance(r.b, 1, 1021)
+	item := r.heldItemOf(t, inst, offWP, kindBotSurge)
+	out := r.s.dispatchAgentTool(ctx, inst, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:u2","prefix:u1"],"ttl_hours":1.5}`)
+	if isToolErr(out) {
+		t.Fatalf("proposal: %s", out)
+	}
+	reqs := r.hq.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d HQ requests, want 1: %+v", len(reqs), reqs)
+	}
+	q := reqs[0]
+	if q.Method != http.MethodPost || q.Path != "/api/v1/officers/web-performance:alpha-web/items/"+item+"/flood-blocks" || q.Auth != "Bearer "+offWPTok {
+		t.Fatalf("went %s %s with %q", q.Method, q.Path, q.Auth)
+	}
+	want := map[string]any{"instance": inst.Name, "unit_ids": []any{"prefix:u2", "prefix:u1"}, "action": "managed_challenge", "ttl_hours": 1.5}
+	if got, w := normJSON(t, q.Body), normJSON(t, want); got != w {
+		t.Fatalf("body:\n%s\nwant\n%s", got, w)
+	}
+	if !strings.Contains(string(q.Raw), `"ttl_hours":1.5`) {
+		t.Errorf("ttl_hours not sent as the number given: %s", q.Raw)
+	}
+	var res struct {
+		FloodBlock map[string]any `json:"flood_block"`
+		Item       map[string]any `json:"item"`
+		Note       string         `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	if res.FloodBlock["state"] != "pending" || res.Item["status"] != "waiting" {
+		t.Errorf("result does not carry HQ's answer: %s", out)
+	}
+	for _, s := range []string{wantFloodNote, "ENDED", "never say traffic was challenged"} {
+		if !strings.Contains(res.Note, s) {
+			t.Errorf("note does not say %q: %s", s, res.Note)
+		}
+	}
+	// A second proposal on the now-WAITING item, to a named approver: muster
+	// does not pre-empt HQ with a lease check of its own, and sends only what
+	// was given.
+	r.hq.ResetRequests()
+	out = r.s.dispatchAgentTool(ctx, inst, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:u3"],"ttl_hours":24,"to":"perf-lead"}`)
+	if isToolErr(out) {
+		t.Fatalf("second proposal on a waiting item: %s", out)
+	}
+	want = map[string]any{"instance": inst.Name, "unit_ids": []any{"prefix:u3"}, "action": "managed_challenge", "ttl_hours": 24, "to": "perf-lead"}
+	if got, w := normJSON(t, r.hq.Requests()[0].Body), normJSON(t, want); got != w {
+		t.Fatalf("second body:\n%s\nwant\n%s", got, w)
+	}
+}
+
+// TestTheItemAskToolsRefuseLocallyWhatMusterOwns: muster builds the body, so
+// an argument it does not know (a token, an action, a task, another officer)
+// or a wrongly typed one is refused before HQ is called — never dropped.
+func TestTheItemAskToolsRefuseLocallyWhatMusterOwns(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	tr := r.addInstance(r.a, 1, 1031)
+	wp := r.addInstance(r.b, 1, 1032)
+	for _, c := range []struct {
+		a          agents.Agent
+		tool, args string
+	}{
+		{tr, taskAskTool, `{}`},
+		{tr, taskAskTool, `{"item_id":""}`},
+		{tr, taskAskTool, `{"item_id":"1/../2"}`},
+		{tr, taskAskTool, `{"item_id":"1","task_id":"868aaaa01"}`},
+		{tr, taskAskTool, `{"item_id":"1","to":"someone"}`},
+		{tr, taskAskTool, `{"item_id":"1","token":"x"}`},
+		{tr, taskAskTool, `{"item_id":"1","note":7}`},
+		{tr, taskAskTool, `{"item_id":"1","officer_id":"web-performance:alpha-web"}`},
+		{wp, floodTool, `{"item_id":"1","ttl_hours":1}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":[],"ttl_hours":1}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":"prefix:a","ttl_hours":1}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":["prefix:a"]}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":["prefix:a"],"ttl_hours":"1"}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":["prefix:a"],"ttl_hours":1,"action":"block"}`},
+		{wp, floodTool, `{"item_id":"1","unit_ids":["prefix:a"],"ttl_hours":1,"prefixes":["1.2.3.0/24"]}`},
+		{wp, floodTool, `{"unit_ids":["prefix:a"],"ttl_hours":1}`},
+	} {
+		r.hq.ResetRequests()
+		out := r.s.dispatchAgentTool(ctx, c.a, c.tool, c.args)
+		if !isToolErr(out) {
+			t.Errorf("%s %s: %s, want a refusal", c.tool, c.args, out)
+		}
+		if n := len(r.hq.Requests()); n != 0 {
+			t.Errorf("%s %s reached HQ (%d requests)", c.tool, c.args, n)
+		}
+	}
+}
+
+// refusedHQ is a tool result's refused.{status, code} and HQ's own body.
+func refusedHQ(t *testing.T, out string) (int, string, map[string]any, string) {
+	t.Helper()
+	var got struct {
+		Error   string `json:"error"`
+		Refused struct {
+			Status int            `json:"status"`
+			Code   string         `json:"code"`
+			HQ     map[string]any `json:"hq"`
+		} `json:"refused"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %s", out)
+	}
+	return got.Refused.Status, got.Refused.Code, got.Refused.HQ, got.Error
+}
+
+// TestEveryHQRefusalReachesTheModelVerbatim: a representative HQ 4xx of
+// each route, a 404, and the flood route's 503 flood_actuator_not_configured
+// (a 5xx that is a decision) each come back as a FINAL refusal (never
+// "retry", never "unavailable") with HQ's status, its code and HQ's body
+// byte-for-byte under refused.hq, and muster does NOT end its own tracking of
+// the item (an HQ outage neither: the POST may or may not have committed,
+// and HQ's claim state, not muster's guess, settles it). The codes are
+// HQ's (HQ's officer docs); muster passes any code through the same way.
+func TestEveryHQRefusalReachesTheModelVerbatim(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	tr := r.addInstance(r.a, 1, 1041)
+	wp := r.addInstance(r.b, 1, 1042)
+	trItem := r.heldItemOf(t, tr, offTR, kindFinding)
+	wpItem := r.heldItemOf(t, wp, offWP, kindBotSurge)
+	for _, c := range []struct {
+		verb   string
+		status int
+		code   string
+	}{
+		{"task-asks", 409, "task_cooldown"},
+		{"task-asks", 404, "not_found"},
+		{"flood-blocks", 422, "prefix_refused"},
+		{"flood-blocks", 503, "flood_actuator_not_configured"},
+	} {
+		inst, tool, item, args := tr, taskAskTool, trItem, `{"item_id":"`+trItem+`"}`
+		if c.verb == "flood-blocks" {
+			inst, tool, item, args = wp, floodTool, wpItem, `{"item_id":"`+wpItem+`","unit_ids":["prefix:a"],"ttl_hours":2}`
+		}
+		msg := "fixture refusal " + c.code + " — exact words"
+		r.hq.RefuseVerb(c.verb, c.status, c.code, msg)
+		out := r.s.dispatchAgentTool(ctx, inst, tool, args)
+		r.hq.RefuseVerb(c.verb, 0, "", "")
+		st, code, hq, text := refusedHQ(t, out)
+		if !isToolErr(out) || st != c.status || code != c.code || strings.Contains(out, "retryable") || strings.Contains(out, "unavailable") {
+			t.Errorf("%s %d %s: %s, want a final refusal %d %s", tool, c.status, c.code, out, c.status, c.code)
+			continue
+		}
+		if hq["error"] != msg || hq["code"] != c.code {
+			t.Errorf("%s %s: HQ's body not passed verbatim: %v", tool, c.code, hq)
+		}
+		if want := "HQ refused " + tool + " (" + strconv.Itoa(c.status) + " " + c.code + "): " + msg; text != want {
+			t.Errorf("%s %s: error %q, want %q", tool, c.code, text, want)
+		}
+		if !r.tracked(inst, item) {
+			t.Errorf("%s %s: muster stopped tracking the item on a refusal", tool, c.code)
+		}
+	}
+	r.hq.SetDown(true)
+	for _, c := range []struct {
+		inst       agents.Agent
+		tool, args string
+		item       string
+	}{
+		{tr, taskAskTool, `{"item_id":"` + trItem + `"}`, trItem},
+		{wp, floodTool, `{"item_id":"` + wpItem + `","unit_ids":["prefix:a"],"ttl_hours":2}`, wpItem},
+	} {
+		if out := r.s.dispatchAgentTool(ctx, c.inst, c.tool, c.args); !strings.Contains(out, "unavailable") {
+			t.Errorf("%s with HQ down: %s, want unavailable", c.tool, out)
+		}
+		if !r.tracked(c.inst, c.item) {
+			t.Errorf("%s with HQ down: muster stopped tracking the item", c.tool)
+		}
+	}
+	r.hq.SetDown(false)
+}
+
+// TestAnOutageIsRetryNotARefusal: HQ down (a 503 with no decision code) is
+// "unavailable, try again" — not passed off as HQ's decision.
+func TestAnOutageIsRetryNotARefusal(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	wp := r.addInstance(r.b, 1, 1061)
+	item := r.heldItemOf(t, wp, offWP, kindBotSurge)
+	r.hq.SetDown(true)
+	out := r.s.dispatchAgentTool(ctx, wp, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:a"],"ttl_hours":1}`)
+	if !isToolErr(out) || !strings.Contains(out, "unavailable") || strings.Contains(out, "refused") {
+		t.Errorf("HQ down: %s, want unavailable", out)
+	}
+}
