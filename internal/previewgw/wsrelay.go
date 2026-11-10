@@ -22,11 +22,17 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // maxRefusalBody bounds the app's refusal body passed to the browser (the
 // WebSocket client reads at most this much of it anyway).
 const maxRefusalBody = 1024
+
+// wsAppEnded is preview.ws's reason when the app's leg ended first.
+const wsAppEnded = "app_ended"
 
 // wsCloseWait bounds the closing handshake with each leg.
 const wsCloseWait = 5 * time.Second
@@ -89,6 +95,12 @@ func (g *Gateway) relayWebSocket(w http.ResponseWriter, r *http.Request, tg *pro
 	}
 	defer br.CloseNow()
 	br.SetReadLimit(-1)
+	tg.upgraded = true
+	// preview.ws: the relay's life, from both legs up to its end, with why it
+	// ended (a closed word: the browser, the app, or the gateway's code).
+	_, span := telemetry.Start(ctx, "preview.ws", attribute.String("muster.preview.kind", kindHost))
+	reason := telemetry.ReasonClientLeft
+	defer func() { telemetry.End(span, reason) }()
 
 	// The pumps run on their own context: cancelling the one a coder/websocket
 	// read runs under drops its connection without a close frame, and the
@@ -106,10 +118,12 @@ func (g *Gateway) relayWebSocket(w http.ResponseWriter, r *http.Request, tg *pro
 		closeLike(up, err)
 		br.CloseNow()
 	case err := <-fromApp:
+		reason = wsAppEnded
 		closeLike(br, err)
 		up.CloseNow()
 	case <-ctx.Done():
 		_, code := upstreamError(ctx, context.Cause(ctx))
+		reason = refusalLabel(code)
 		br.Close(websocket.StatusPolicyViolation, code)
 		up.Close(websocket.StatusGoingAway, "")
 	}

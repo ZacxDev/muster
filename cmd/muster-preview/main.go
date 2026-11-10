@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/previewgw"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 func main() {
@@ -82,6 +83,15 @@ func serve(getenv func(string) string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	// Tracing (internal/telemetry): on only when an OTLP endpoint is set, as
+	// service muster-preview: the preview.request, preview.dial and
+	// preview.ws spans (docs/design/previews.md, "Telemetry").
+	flush, terr := telemetry.Setup(ctx, getenv, telemetry.Options{Service: "muster-preview", Version: previewgw.Version,
+		Logger: slog.NewLogLogger(log.Handler(), slog.LevelInfo)})
+	if terr != nil {
+		log.Warn("tracing stays off", "err", terr.Error())
+	}
+	defer func() { _ = flush(context.Background()) }()
 	if err := g.Run(ctx); err != nil {
 		log.Error("run", "err", err.Error())
 		return 1

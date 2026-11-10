@@ -165,7 +165,9 @@ type gwOpts struct {
 	tokens    []string // plugin tokens; default {"mpl_owner1"}
 	dialWait  time.Duration
 	ttl, idle time.Duration // Config.TTL, Config.Idle; 0 = the defaults
+	maxBody   int64         // Config.MaxBody; 0 = the default
 	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
+	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -184,13 +186,13 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	dir := t.TempDir()
 	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
-		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle}
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody}
 	if o.keepalive == 0 {
 		o.keepalive = time.Hour
 	}
 	fc := newFakeClock(time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC))
 	g, err := New(cfg, Options{Clock: fc, Muster: NewMusterClient(fm.srv.URL, "test"), DialWait: o.dialWait,
-		PingInterval: time.Hour, StreamKeepalive: o.keepalive})
+		PingInterval: time.Hour, StreamKeepalive: o.keepalive, MaxConnsPerPreview: o.perPrev})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +237,30 @@ func (e *gwEnv) gauge(t *testing.T, p Path) float64 {
 	}
 	t.Fatalf("muster_preview_tunnels{path=%q} not on /metrics:\n%s", p, b)
 	return 0
+}
+
+// metric reads one sample from /metrics on the mesh listener, as a scraper
+// would: series is its exact text up to the value (name{labels}). It
+// answers -1 for a series that is not there, so a test tells "0" from
+// "absent".
+func (e *gwEnv) metric(t *testing.T, series string) float64 {
+	t.Helper()
+	resp, err := http.Get(e.mesh.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, series+" "); ok {
+			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil {
+				t.Fatalf("metric line %q: %v", line, err)
+			}
+			return f
+		}
+	}
+	return -1
 }
 
 // ------------------------------------------------------------ fake host
