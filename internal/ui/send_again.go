@@ -13,6 +13,12 @@ import (
 // sendNonces.hold).
 const SendAgainField = "again"
 
+// AgentSessionField is the form field naming the agent session a view showed
+// when a message was written on it (a hand-opened opencode pane's): a send, or
+// the queued row it becomes, goes only while the window still shows that
+// session (mirror.ShownSession).
+const AgentSessionField = "agent_session"
+
 // SendAgainView is SendAgainPage's content.
 type SendAgainView struct {
 	// Action is the route the page posts to: the Send, Queue or Send now it

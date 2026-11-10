@@ -284,8 +284,15 @@ func (a openCodeAsk) pendingOf() *mirror.Pending {
 				p.Summary = mirror.OneLine(p.Summary, mirror.MaxPendingSummary-len([]rune(more))) + more
 			}
 		}
+		// Every question-tool form names its id: muster answers the WHOLE
+		// form from the view (opencode_form.go), and its options ride the
+		// list only when it is one short single-select (offerable), which an
+		// Attention item answers with a button.
+		if a.Kind == opencodehost.AskQuestion {
+			p.PromptID = a.ID
+		}
 		if labels, ok := a.offerable(); ok {
-			p.PromptID, p.Options = a.ID, strings.Join(labels, "\n")
+			p.Options = strings.Join(labels, "\n")
 		}
 		return mirror.CleanPending(p)
 	}
@@ -335,53 +342,32 @@ func (s *OpenCodeSource) answerAsk(ctx context.Context, promptID, choice string)
 	if !ok {
 		return fmt.Errorf("%w: it is no longer pending on this host", errOpenCodeGone)
 	}
-	cl, err := s.client()
-	if err != nil {
-		return fmt.Errorf("%w: %v", errOpenCodeUnreachable, err)
-	}
 	switch a.Kind {
 	case opencodehost.AskPermission:
 		if choice != string(opencodehost.PermissionOnce) && choice != string(opencodehost.PermissionReject) {
 			return fmt.Errorf("%w: not an answer muster sends a permission request", errOpenCodeGone)
 		}
-		err = cl.ReplyPermission(ctx, a.Session, a.ID, opencodehost.PermissionReply(choice))
+		cl, err := s.client()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errOpenCodeUnreachable, err)
+		}
+		return s.settleAnswer(promptID, cl.ReplyPermission(ctx, a.Session, a.ID, opencodehost.PermissionReply(choice)))
 	case opencodehost.AskQuestion:
+		// One of an offerable question's labels is that option's pick: the
+		// whole-form path answers it (opencode_form.go), the one way a
+		// question is answered.
 		labels, ok := a.offerable()
 		if !ok {
 			return fmt.Errorf("%w: this question is answered in the terminal", errOpenCodeGone)
 		}
-		value := ""
 		for i, l := range labels {
 			if l == choice {
-				value = a.Fields[0].Options[i].Value
+				return s.answerForm(ctx, promptID, []mirror.OpenCodePick{{Key: a.Fields[0].Key, Picks: []int{i}}})
 			}
 		}
-		if value == "" {
-			return fmt.Errorf("%w: not one of the question's options", errOpenCodeGone)
-		}
-		err = cl.ReplyForm(ctx, a.Session, a.ID, map[string]any{a.Fields[0].Key: value})
-	default:
-		return fmt.Errorf("%w: this form is answered in the terminal", errOpenCodeGone)
+		return fmt.Errorf("%w: not one of the question's options", errOpenCodeGone)
 	}
-	switch {
-	case err == nil:
-		s.mu.Lock()
-		delete(s.asks, promptID)
-		s.settled[promptID] = true
-		s.notifyLocked()
-		s.mu.Unlock()
-		return nil
-	case errors.Is(err, opencodehost.ErrAskSettled):
-		return fmt.Errorf("%w (%v)", errOpenCodeGone, err)
-	case errors.Is(err, opencodehost.ErrAnswerRefused):
-		// The server's 400: the ask is still pending; its field refused the value.
-		return fmt.Errorf("%w (%v)", errOpenCodeAnswerRefused, err)
-	case errors.Is(err, opencodehost.ErrUnauthorized):
-		return fmt.Errorf("%w (%v)", errOpenCodeUnreachable, err)
-	case isDialError(err):
-		return fmt.Errorf("%w (%v)", errOpenCodeUnreachable, err)
-	}
-	return fmt.Errorf("%w (%v)", errOpenCodeUnknown, err)
+	return fmt.Errorf("%w: this form is answered in the terminal", errOpenCodeGone)
 }
 
 // isDialError reports whether err is a failure to connect at all (nothing was
@@ -444,6 +430,22 @@ func (h *hostSide) answerOpenCode(m mirror.Msg) {
 		return
 	}
 	r := m.OpenCodeReply
+	if r != nil && len(r.Picks) > 0 {
+		// A whole form's answer (opencode_form.go): never with a Choice.
+		if r.Choice != "" || !mirror.ValidOpenCodeAskID(r.PromptID) {
+			reply(fmt.Errorf("%w: not an answer muster sends", errOpenCodeGone))
+			return
+		}
+		src, _ := h.openCodeSource()
+		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+		defer cancel()
+		if err := h.waitingOn(ctx, m, r.PromptID); err != nil {
+			reply(err)
+			return
+		}
+		reply(src.answerForm(ctx, r.PromptID, r.Picks))
+		return
+	}
 	if r == nil || !mirror.ValidOpenCodeAskID(r.PromptID) || r.Choice == "" {
 		reply(fmt.Errorf("%w: not an answer muster sends", errOpenCodeGone))
 		return

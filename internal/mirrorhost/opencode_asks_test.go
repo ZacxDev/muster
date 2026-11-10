@@ -16,12 +16,13 @@ import (
 
 // What muster can offer of an opencode question: one single-select question's
 // own option labels (the Yes/No form); a form of two questions names the
-// first and how many more, and offers nothing (the terminal answers it).
+// first and how many more, and offers no options — but names its id, which
+// the view answers the whole form by (opencode_form.go).
 func TestAnOpenCodeQuestionOffersItsOptionsOnlyWhenMusterCanAnswerIt(t *testing.T) {
 	srv, _, pane := askSource(t, "OC | Fixture session")
 	srv.EmitFrame(opencodetest.FixtureFrame("form.created", 0)) // two questions
 	waitUntil(t, "the questions", func() bool { return pane().Status == mirror.StatusWaiting })
-	if p := pane().Pending; p == nil || p.Summary != "Which database should the fixture use? (and 1 more question)" || p.Options != "" || p.PromptID != "" {
+	if p := pane().Pending; p == nil || p.Summary != "Which database should the fixture use? (and 1 more question)" || p.Options != "" || p.PromptID != opencodetest.FixtureQuestionsForm {
 		t.Fatalf("two questions: %+v", p)
 	}
 	srv.EmitFrame(opencodetest.FixtureFrame("form.replied", 0))
@@ -66,7 +67,9 @@ func TestAQuestionIsOfferedWholeOrNotAtAll(t *testing.T) {
 		if got, can := a.offerable(); can {
 			t.Errorf("%s: offered %q", name, got)
 		}
-		if p := a.pendingOf(); p.Options != "" || p.PromptID != "" {
+		// No options offered — but the question keeps its id, which the
+		// view's card answers the whole form by (opencode_form.go).
+		if p := a.pendingOf(); p.Options != "" || p.PromptID != "frm_case" {
 			t.Errorf("%s: its Pending offers %+v", name, p)
 		}
 	}

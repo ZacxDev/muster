@@ -100,6 +100,7 @@ const (
 	noticeOpenCodeSlash   = "opencode-slash"
 	noticeOpenCodeGone    = "opencode-gone"
 	noticeOpenCodeConflict = "opencode-conflict"
+	noticeOpenCodeMoved    = "opencode-moved"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -130,6 +131,7 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalOpenCodeSlash:   noticeOpenCodeSlash,
 	mirror.PasteRefusalOpenCodeGone:    noticeOpenCodeGone,
 	mirror.PasteRefusalOpenCodeConflict: noticeOpenCodeConflict,
+	mirror.PasteRefusalOpenCodeMoved:    noticeOpenCodeMoved,
 }
 
 // claudeGuardNotices is the notice for each kind of Claude prompt guard
@@ -197,6 +199,7 @@ var composerNotices = map[string]struct {
 	noticeOpenCodeSlash:     {mirror.PasteRefusedOpenCodeSlashText, false},
 	noticeOpenCodeGone:      {mirror.PasteRefusedOpenCodeGoneText, false},
 	noticeOpenCodeConflict:  {mirror.PasteRefusedOpenCodeConflictText, false},
+	noticeOpenCodeMoved:     {mirror.PasteRefusedOpenCodeMovedText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},

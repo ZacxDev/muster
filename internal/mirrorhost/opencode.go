@@ -97,6 +97,28 @@ func openCodeTUI(p procInfo) (tui, shared bool) {
 	return true, shared
 }
 
+// openCodeSessionArg is the session the TUI's command line names
+// (-s/--session <id>, or =<id>), "" for none.
+func openCodeSessionArg(argv []string) string {
+	if len(argv) > 0 {
+		argv = argv[1:]
+	}
+	for i := 0; i < len(argv); i++ {
+		name, value, hasValue := strings.Cut(argv[i], "=")
+		switch {
+		case name != "-s" && name != "--session":
+			if openCodeValueFlags[name] && !hasValue {
+				i++ // another flag's value is never read as -s
+			}
+		case hasValue:
+			return value
+		case i+1 < len(argv):
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
 // openCodeCLI is the opencode TUI in the tree at or below root, breadth-first
 // and bounded: the nearest that matches openCodeTUI AND whose stdin is tty,
 // the pane's terminal. false when there is none, or anything needed cannot
@@ -152,7 +174,7 @@ func (r openCodeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, child
 		}
 		ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: p.ID, PID: pid, Source: SourceProcess}
 		if r.src != nil {
-			r.src.resolve(&ap, shared, procs[pid].start, r.title)
+			r.src.resolve(&ap, shared, procs[pid].start, openCodeSessionArg(procs[pid].argv), r.title)
 		}
 		out[p.ID] = ap
 	}
@@ -213,12 +235,22 @@ type OpenCodeSource struct {
 	// sessionsErr is why the last read of them failed, at sessionsErrAt: a
 	// failure is remembered for sessionsMaxAge, so a server that hangs costs
 	// the listing ONE read timeout, not one per pane per refresh.
+	// sessionsCut: the last read hit the client's page bound with sessions
+	// still to come (opencodehost.Client.AllSessions' complete false), so the
+	// list is not every session and no title can be shown unique against it.
+	sessionsCut   bool
 	sessionsErr   error
 	sessionsErrAt time.Time
 	// readMu makes the read single-flight: concurrent listings and views wait
 	// for one read rather than each making their own.
 	readMu sync.Mutex
 	stale  bool
+	// staleGen counts the times stale was set (markStaleLocked): a read that
+	// began before the latest one does not clear it.
+	staleGen uint64
+	// afterRead, when set (a test's), runs between a sessions read and its
+	// result being kept: where an event can land mid-read.
+	afterRead func()
 	// busy and since are each session's status from the stream (since: when
 	// it last changed, Unix ms; the host's clock).
 	busy  map[string]bool
@@ -249,6 +281,12 @@ type OpenCodeSource struct {
 	// replies are the dispatch windows' sessions' final replies, as last read
 	// (opencode_outcome.go), by session id.
 	replies map[string]outcomeMemo
+	// turnErrs are the idle windows' sessions' latest turn errors, as last
+	// read (opencode_turnerror.go), by session id.
+	turnErrs map[string]turnErrorMemo
+	// models is the server's model list, for the context readout's limit
+	// (opencode_context.go).
+	models openCodeModels
 }
 
 // titleEvents are the events after which the root sessions' titles are read
@@ -365,7 +403,8 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	if s.down != "" {
 		s.logger.Printf("muster-mirror: opencode: reading %s again", cl.URL())
 	}
-	s.connected, s.down, s.stale, s.sessionsErr = true, "", true, nil
+	s.connected, s.down, s.sessionsErr = true, "", nil
+	s.markStaleLocked()
 	// The stream had a gap: what was asked or settled in it is unknown. The
 	// asks known before it are HELD until each matched session's pending
 	// lists are read again (seed); only that re-read drops one settled in it.
@@ -381,7 +420,7 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if titleEvents[e.Type] {
-		s.stale = true // the root sessions or their titles may have changed
+		s.markStaleLocked() // the sessions or their titles may have changed
 	}
 	if e.Type == opencodehost.EventSkipped {
 		// An event too large to read was skipped: treat it as a gap (what it
@@ -433,9 +472,11 @@ func (s *OpenCodeSource) state() string {
 	return s.down
 }
 
-// rootSessions is the root session list, re-read when stale or older than
-// sessionsMaxAge.
-func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
+// knownSessions is the server's session list — roots AND children (a
+// subagent's, ParentID set): the title match reads roots only, the binding's
+// uniqueness check every session (opencode_bind.go) — re-read when stale or
+// older than sessionsMaxAge.
+func (s *OpenCodeSource) knownSessions() ([]opencodehost.Session, error) {
 	cached := func() ([]opencodehost.Session, error, bool) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -455,35 +496,47 @@ func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
 	if list, err, ok := cached(); ok {
 		return list, err // another caller read them while this one waited
 	}
-	list, err := s.readSessions()
+	s.mu.Lock()
+	staleGen := s.staleGen
+	s.mu.Unlock()
+	list, complete, err := s.readSessions()
+	if s.afterRead != nil {
+		s.afterRead()
+	}
 	s.mu.Lock()
 	if err != nil {
 		s.sessionsErr, s.sessionsErrAt = err, s.now()
 	} else {
-		s.sessions, s.sessionsAt, s.stale, s.sessionsErr = list, s.now(), false, nil
+		s.sessions, s.sessionsAt, s.sessionsErr, s.sessionsCut = list, s.now(), nil, !complete
+		// 🔴 Only a list read AFTER the last session event is current: an
+		// event while this read was in flight (stale set meanwhile) keeps it
+		// stale, and the next use reads again.
+		if s.staleGen == staleGen {
+			s.stale = false
+		}
 	}
 	s.mu.Unlock()
 	return list, err
 }
 
-// readSessions reads the root sessions once, within 3 s.
-func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, error) {
+// readSessions reads every session once, within 3 s.
+func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, bool, error) {
 	cl, err := s.creds.Client()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 	defer cancel()
-	list, err := cl.Sessions(ctx)
+	list, complete, err := cl.AllSessions(ctx)
 	if err != nil {
 		if errors.Is(err, opencodehost.ErrUnauthorized) {
 			s.mu.Lock()
 			s.down = unauthorizedWhy
 			s.mu.Unlock()
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return list, nil
+	return list, complete, nil
 }
 
 // status is session id's status (StatusBusy or StatusIdle) and its time;
@@ -517,9 +570,11 @@ func (s *OpenCodeSource) client() (*opencodehost.Client, error) {
 }
 
 // resolve fills a claimed opencode pane's session and status: the session
-// its title names, when the server can be read and exactly one root session
-// matches.
-func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title func(string) (string, bool)) {
+// its launcher record names, else the one its title names, when the server
+// can be read and exactly one root session matches — and, for a title match,
+// whether that binding is verified enough to send to (verifyTitleBind; the
+// TUI's command line named sessionArg, "" for none).
+func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start, sessionArg string, title func(string) (string, bool)) {
 	oc := &OpenCodePane{}
 	ap.OpenCode = oc
 	// The person reads the same reason on the window's card (AgentNote): why
@@ -551,7 +606,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title
 	}
 	t, titleOK := title(ap.Pane)
 	oc.PaneTitle = t
-	sessions, err := s.rootSessions()
+	sessions, err := s.knownSessions()
 	if err != nil {
 		oc.Server = "the opencode server cannot be read: " + err.Error()
 		oc.NoView = oc.Server
@@ -574,6 +629,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title
 			return
 		}
 		ap.Gen, ap.Source = oc.Match.Session, SourceTitle
+		ap.Bind = s.verifyTitleBind(oc.Match, sessionArg, sessions)
 	}
 	ap.Status, ap.StatusSince = s.status(ap.Gen)
 	// What it waits on (opencode_asks.go): a pending permission request or
@@ -630,7 +686,7 @@ func ResolveOpenCodePane(s *OpenCodeSource, pane string, pid int, title string) 
 func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, title string) AgentPane {
 	ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: pane, PID: pid, Source: SourceProcess}
 	if s != nil {
-		s.resolve(&ap, true, start, func(string) (string, bool) { return title, true })
+		s.resolve(&ap, true, start, "", func(string) (string, bool) { return title, true })
 	}
 	return ap
 }
@@ -641,5 +697,12 @@ func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, 
 func (s *OpenCodeSource) sessionsChanged() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.markStaleLocked()
+}
+
+// markStaleLocked has the next read of the sessions go to the server, and
+// keeps any read already in flight from clearing that (staleGen). s.mu held.
+func (s *OpenCodeSource) markStaleLocked() {
 	s.stale = true
+	s.staleGen++
 }

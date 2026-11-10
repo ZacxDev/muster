@@ -25,7 +25,12 @@ import (
 //     -opencode-send, a token);
 //   - the window is listed (allowed) and the text a paste muster sends;
 //   - the window's pane, re-resolved NOW, runs opencode bound by its launcher
-//     record (AgentPane.Send) — never a title match;
+//     record (AgentPane.Send), or by a title match verified through
+//     opencode's API (AgentPane.Bind, opencode_bind.go) — never a bare title
+//     match;
+//   - it resolves to the very session muster named (Msg.AgentSession), which
+//     a verified pane's paste must name, and a verified pane's session is
+//     read again NOW (confirmTitleBind);
 //   - its session is idle since exactly the status time muster decided on
 //     (Msg.Since), with nothing pending;
 //   - the message does not start with one of opencode's slash commands, which
@@ -107,8 +112,21 @@ func (h *hostSide) sendOpenCode(m mirror.Msg) {
 		return
 	}
 	ag := wi.Agent
-	if ag == nil || ag.Runtime != mirror.RuntimeOpenCode || ag.Gen == "" || !ag.Send {
+	if ag == nil || ag.Runtime != mirror.RuntimeOpenCode || ag.Gen == "" {
 		reply(ocRefusal(mirror.PasteRefusalOpenCodeUnbound, mirror.PasteRefusedOpenCodeUnboundText), "", "")
+		return
+	}
+	// 🔴 Bound by its launcher record, or by verification (opencode_bind.go).
+	verified := !ag.Send && ag.Bind == mirror.AgentBindVerified
+	if !ag.Send && !verified {
+		reply(ocRefusal(mirror.PasteRefusalOpenCodeUnbound, mirror.AgentBindWords(ag.Bind)), "", "")
+		return
+	}
+	// 🔴 ONLY THE SESSION MUSTER NAMED: the one its list (and so the Rendered
+	// view) shows for the window. The pane, resolved NOW, must still show it;
+	// a pane bound by verification takes no paste that names none.
+	if (m.AgentSession != "" && m.AgentSession != ag.Gen) || (verified && m.AgentSession == "") {
+		reply(ocRefusal(mirror.PasteRefusalOpenCodeMoved, mirror.PasteRefusedOpenCodeMovedText), ag.Gen, "")
 		return
 	}
 	switch {
@@ -126,6 +144,16 @@ func (h *hostSide) sendOpenCode(m mirror.Msg) {
 	if err != nil {
 		reply(err, ag.Gen, "")
 		return
+	}
+	if verified {
+		title := ""
+		if ag.OpenCode != nil {
+			title = ag.OpenCode.Match.Title
+		}
+		if why, refusal := confirmTitleBind(ctx, cl, ag.Gen, title); why != "" {
+			reply(ocRefusal(refusal, why), ag.Gen, "")
+			return
+		}
 	}
 	if err := refuseSlashCommand(ctx, cl, ag.Gen, text); err != nil {
 		reply(err, ag.Gen, "")

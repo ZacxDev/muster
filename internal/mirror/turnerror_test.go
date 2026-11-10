@@ -56,10 +56,12 @@ func TestCleanHostLimit(t *testing.T) {
 	}
 }
 
-// TestATurnErrorRidesOnlyAnIdleClaudeWindowAndAtMostTheBound: NormalizeWindows
-// drops one on a busy, waiting or non-Claude window, and keeps it on at most
-// MaxTurnErrorWindows windows of a list, the most recent first.
-func TestATurnErrorRidesOnlyAnIdleClaudeWindowAndAtMostTheBound(t *testing.T) {
+// TestATurnErrorRidesOnlyAnIdleAgentWindowAndAtMostTheBound: NormalizeWindows
+// drops one on a busy or waiting window and on a window with no agent, keeps
+// it on an IDLE window of a runtime that reports turn errors — Claude Code
+// and opencode (RuntimeSpec.TurnErrors) — and on at most MaxTurnErrorWindows
+// windows of a list, the most recent first.
+func TestATurnErrorRidesOnlyAnIdleAgentWindowAndAtMostTheBound(t *testing.T) {
 	e := func(at int64) *TurnError { return &TurnError{Kind: TurnErrorLimit, At: at} }
 	in := []Window{
 		{Session: "a", ID: "@1", Claude: true, Status: StatusBusy, StatusSince: 1, TurnError: e(1)},
@@ -67,10 +69,12 @@ func TestATurnErrorRidesOnlyAnIdleClaudeWindowAndAtMostTheBound(t *testing.T) {
 		{Session: "a", ID: "@3", Command: "zsh", TurnError: e(1)},
 		{Session: "a", ID: "@4", Runtime: RuntimeOpenCode, Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
 		{Session: "a", ID: "@5", Claude: true, Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
+		{Session: "a", ID: "@6", Runtime: RuntimeOpenCode, Status: StatusBusy, StatusSince: 1, TurnError: e(1)},
+		{Session: "a", ID: "@7", Runtime: "hermes", Status: StatusIdle, StatusSince: 1, TurnError: e(1)},
 	}
 	for i, w := range NormalizeWindows(in, 0) {
-		if (w.ID == "@5") != (w.TurnError != nil) {
-			t.Fatalf("window %d (%s, %q) carries %+v; want only the idle Claude window's", i, w.ID, w.Status, w.TurnError)
+		if want := w.ID == "@4" || w.ID == "@5"; want != (w.TurnError != nil) {
+			t.Fatalf("window %d (%s, %q) carries %+v; want only the idle Claude Code and opencode windows'", i, w.ID, w.Status, w.TurnError)
 		}
 	}
 	var many []Window

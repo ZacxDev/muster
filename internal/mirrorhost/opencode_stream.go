@@ -99,8 +99,9 @@ func openCodeTokenNotice(health string) cctranscript.Event {
 }
 
 // openCodeMatchedNotice is the first line of every opencode view: how the
-// session was found, which the person must be able to see.
-func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
+// session was found, which the person must be able to see — and, on a host
+// that sends to opencode (sends), that a verified title match is sent to.
+func openCodeMatchedNotice(p AgentPane, sends bool) cctranscript.Event {
 	if p.Source == SourceLauncher {
 		// Bound by its launcher record (opencode_launch.go): muster sends to it.
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
@@ -110,6 +111,13 @@ func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
 	title := ""
 	if p.OpenCode != nil {
 		title = p.OpenCode.Match.Title
+	}
+	if p.Bind == mirror.AgentBindVerified && sends {
+		// A hand-opened pane whose title match was verified (opencode_bind.go).
+		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
+			Text: cctranscript.Cap("matched by title, verified: "+title, cctranscript.MaxTarget*4),
+			Output: "muster found this session by the pane's title and checked it with opencode's API. It sends to it " +
+				"through that API, never as keys, and only while the pane still shows this session."}
 	}
 	return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
 		Text: cctranscript.Cap("matched by title: "+title, cctranscript.MaxTarget*4),
@@ -141,6 +149,9 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		// (src.tokenHealthState): it redraws when the state changes, never
 		// for the countdown alone.
 		healthState string
+		// ctxSent is the context fill the view was last sent
+		// (opencode_context.go): a poll sends it again only when it moved.
+		ctxSent *mirror.AgentContext
 	)
 	send := h.viewSend(m, func() string { return id })
 	read := func(limit int) ([]opencodehost.Message, error) {
@@ -192,7 +203,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		if health := src.tokenHealth(); health != "" {
 			lines = append(lines, line([]cctranscript.Event{openCodeTokenNotice(health)}))
 		}
-		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p)}))
+		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p, h.openCodeSend())}))
 		var refs []cctranscript.PromptRef
 		for _, msg := range msgs {
 			ks := opencodehost.Render(msg)
@@ -223,6 +234,14 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		}
 		if err := send(batches); err != nil {
 			return err
+		}
+		// The context readout, after the Reset that hides it — as a marker
+		// of its own once the backfill is out, so the model list's read
+		// (contextLimit) never delays the open.
+		if ctxSent = src.agentContext(msgs); ctxSent != nil {
+			if err := send([]mirror.Msg{{Offset: offset, Busy: busy, Context: ctxSent}}); err != nil {
+				return err
+			}
 		}
 		if h.c.cfg.NoPromptIndex {
 			return nil
@@ -272,7 +291,17 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 				}
 			}
 			nb := st == mirror.StatusBusy
+			// The context readout, when it moved. A page with no step that
+			// reported usage (a page of 64 newer messages) keeps the last.
+			var moved *mirror.AgentContext
+			if c := src.agentContext(msgs); c != nil && !sameContext(c, ctxSent) {
+				moved, ctxSent = c, c
+			}
 			if len(out) == 0 {
+				if moved != nil {
+					busy = nb
+					return send([]mirror.Msg{{Offset: offset, Busy: nb, Context: moved}})
+				}
 				return sendBusy(&busy, nb, offset, send)
 			}
 			busy = nb
@@ -280,6 +309,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 			redactLines(out)
 			batches := mirror.BatchLines(out, 0)
 			batches[len(batches)-1].Offset = offset
+			batches[len(batches)-1].Context = moved
 			for i := range batches {
 				batches[i].Busy = busy
 			}

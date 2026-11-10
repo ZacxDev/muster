@@ -112,6 +112,10 @@ type HostView struct {
 	// -opencode-send, an opencode token): a message can be sent to its
 	// launcher-bound opencode windows (Window.AgentSend).
 	OpenCodeSend bool
+	// OpenCodeForms: the host advertised Msg.OpenCodeForms — it sends a
+	// pending opencode question's whole form and takes its answer
+	// (opencode_form.go).
+	OpenCodeForms bool
 	// PanePaste: the host advertised that a paste may target a session's active
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
@@ -455,6 +459,11 @@ type hostConn struct {
 	// tails are the subagent tail requests waiting for the host's
 	// subagent-tailed, by id (the same id space).
 	tails map[uint32]chan tailAnswer
+	// forms are the opencode form requests waiting for the host's
+	// opencode-formed, by id (the same id space; opencode_form.go).
+	forms map[uint32]chan formAnswer
+	// openCodeForms: the host advertised Msg.OpenCodeForms (opencode_form.go).
+	openCodeForms bool
 	// answers are the AskUserQuestion answers waiting for the host's
 	// answered, by id (the same id space).
 	answers map[uint32]chan error
@@ -499,7 +508,8 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentClose: hc.agentClose,
-			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode]})
+			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
+			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -742,7 +752,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
-		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{},
+		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}, forms: map[uint32]chan formAnswer{},
 		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}, closes: map[uint32]chan closeAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	hc.hostLimit = CleanHostLimit(hello.HostLimit)
@@ -761,6 +771,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Like the catalog: a read of the host's own transcripts, shown to its
 		// owner.
 		hc.subagentReport = hello.SubagentReport
+		// Reading a pending question's form is a read; answering it is gated
+		// on the runtime's answer switch below.
+		hc.openCodeForms = hello.OpenCodeForms
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
 		// So is the Escape that dismisses a picker.
@@ -1053,6 +1066,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.subagentTailed(m)
 				}
+			case TypeOpenCodeFormed:
+				if hc.version >= 2 {
+					hc.openCodeFormed(m)
+				}
 			case TypeAnswered:
 				if hc.version >= 2 {
 					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
@@ -1179,6 +1196,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.tails {
 		ch <- tailAnswer{err: ErrHostDisconnected}
 		delete(hc.tails, id)
+	}
+	for id, ch := range hc.forms {
+		ch <- formAnswer{err: ErrHostDisconnected}
+		delete(hc.forms, id)
 	}
 	for id, ch := range hc.resumes {
 		ch <- resumeAnswer{err: ErrHostDisconnected}

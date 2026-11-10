@@ -298,7 +298,8 @@ Code injected that is not negligible, such as a message typed while the tool
 ran or a diagnostics report. The tooltip says which case it was. An image is
 sized by its pixels: about width × height / 750 tokens, at most about 1600. A
 call whose next turn has not started yet shows no number. opencode rows show
-none either: muster reads neither their usage nor their output.
+none either: their badges read neither usage nor output (the header's readout
+does read opencode's usage, [below](#opencode-windows)).
 
 ![A Claude Code session's tool calls, each with the context it added](img/tool-context.png)
 
@@ -713,12 +714,14 @@ session matches. Two sessions with one title (opencode's default title, say)
 match nothing, and that window gets no view rather than a guess. A TUI started
 with `--standalone` or `--server` runs on another server and is never matched.
 
-The window opens a **read-only rendered view**: the session's prompts,
+The window opens a **rendered view**: the session's prompts,
 the agent's replies, and each tool call by its name and target (the command,
 the file). It never shows a tool's input or output, nor the model's reasoning.
-The view opens with a row saying how the session was found: "matched by
-title" (a heuristic: a renamed session, or a TUI that switched sessions, moves
-it), or "started by muster-mirror opencode" for a pane the launcher bound. Text appears once
+The view opens with a row saying how the session was found: "started by
+muster-mirror opencode" for a pane the launcher bound, "matched by title,
+verified" for a pane muster also sends to ([hand-opened
+panes](#hand-opened-opencode-panes)), or "matched by title" (a heuristic: a
+renamed session, or a TUI that switched sessions, moves it). Text appears once
 it is final (a reply streams in place upstream), and the view starts over when
 something it drew changes. The busy marker comes from the server's event
 stream (`session.status`). While that stream is down the status is unknown, and
@@ -728,9 +731,27 @@ When the token needs the person — a renewal is failing, it is within 3 days
 of expiry — the view's first row says so, in the same words `-list -opencode`
 prints (and the window's note, below).
 
-The composer of a title-matched window, or of any opencode window on a host
-that did not opt in, is disabled and says which. What the session **waits
-on** does reach muster (below).
+The composer of a window muster does not send to — a title match it could not
+verify, or any opencode window on a host that did not opt in — is disabled and
+says why. What the session **waits on** does reach muster (below).
+
+**The header** shows the session's model and how much context it fills, as
+"`<model> · 47k / 188k context`": the newest completed step's input + cache
+read + cache write tokens (what the model was sent for that request, the same
+count a Claude Code view shows), out of the model's context window from
+opencode's `GET /api/model` (`limit.context`). Output and reasoning are not
+counted: they are in the next request's input. opencode's own TUI adds them,
+so its figure reads higher. A model the list does not name shows the count
+alone; a session with no completed step shows nothing. The tooltip says how
+the number is made.
+
+**A turn that failed** is a row in the view, as before. The host also reports
+it with the window, as it does for Claude Code (`Window.TurnError`: the error's
+name, its time, and how many turns in a row each failed within 10 s of their
+prompt with no reply). So the send queue's circuit breaker holds after two
+such failures instead of sending into the same wall ("Held — the last 2
+messages each failed at once (api error); retries at …"). A usage limit is not
+derived from an opencode error: which errors are one was not measured.
 
 #### Sending to opencode
 
@@ -741,7 +762,16 @@ host):
 - the host's muster-mirror runs with `-interactive` and `-opencode-send`
   (`MUSTER_MIRROR_OPENCODE_SEND`, off by default) and holds an opencode token;
 - the pane was started with **`muster-mirror opencode`** (below), so the host
-  knows its session, not by its title;
+  knows its session, not by its title — or it is a [hand-opened
+  pane](#hand-opened-opencode-panes) whose title match the host verified;
+- the window still shows the session the message was **written for**: the
+  one your Rendered view was showing when you typed it, carried with the
+  message (and stored with it when you queue it). muster refuses it when the
+  window's session has changed since — a queued message then fails, saying
+  so, rather than landing in the new session — and the host refuses it again
+  if the pane shows any other at the moment it posts ("this opencode pane
+  shows another session now"). A message for a hand-opened pane that names no
+  session (typed on a page from before this, or queued then) is refused too;
 - the session is idle (a queued message waits until it is), with nothing it
   is waiting on;
 - your sign-in is fresh, as for every send.
@@ -768,6 +798,32 @@ warning. Outside tmux, or with
 If the TUI then switches to another session, the window's note says so, and a
 message still goes to the session the Rendered view shows (the one the pane
 was started on).
+
+#### Hand-opened opencode panes
+
+opencode reports no endpoint or event naming the session a TUI shows, so a
+pane `opencode` was started in by hand is bound by its title. The host sends to
+it when **all** of these hold, and says why when one does not:
+
+- the TUI runs on the host's own opencode server (no `--standalone`, no
+  `--server`) and the server answers with its sessions;
+- its event stream is open, so that list is current (every session event
+  makes the host read it again) — else "the opencode server's event stream is
+  not answering";
+- exactly **one** session carries the pane's title — counting subagents'
+  sessions as well as top-level ones — whether the title is whole or cut
+  (`…`, then every title starting with what precedes it). Two top-level
+  sessions sharing it are no match at all (no view). A subagent's session
+  sharing it keeps the view but is not sent to — "a subagent's opencode
+  session has the same title as this pane" — because the TUI can be showing
+  that subagent's session;
+- the TUI's own command line names no session, or names that one (`-s`) —
+  else "started on one session (its -s) but its title names another".
+
+At the moment of sending the host reads the title again, requires the session
+muster named, and reads that session from opencode's API once more: it must
+still be a top-level session whose title the pane shows. A session renamed,
+deleted or replaced since is refused, and nothing is posted.
 
 
 #### opencode's permission requests and questions
@@ -808,10 +864,18 @@ through opencode's API with its own token, never keys:
 
 - a permission request: **Allow once** or **Reject**. muster never sends
   "always", which widens the session's rules past the one call;
-- a question: one of its options, when it is **one single-select question**
-  of at most 4 options whose labels muster can show unchanged. A form of
-  several questions, a multi-select, or a free-text answer is answered in the
-  terminal.
+- a question, from the **Attention item**: one of its options, when it is
+  **one single-select question** of at most 4 options whose labels muster can
+  show unchanged; any other form's item says to open the session;
+- a question or a permission request, from the **session's Rendered view**:
+  a card at the end of the conversation, as a Claude Code question gets. A
+  question's card shows its whole form — every question, its options and
+  their descriptions, checkboxes for a multi-select, and a box for an answer
+  of your own — read from the host when the card is drawn; one Submit answers
+  them all. The answer names each option by its place in that form, and the
+  host maps it to the option's value for the session the ask came from.
+  A permission request's card offers Allow once and Reject. A phone
+  notification opens this view.
 
 The answer needs a sign-in from the last few minutes. muster re-checks, at the
 moment it sends, that the window still waits on exactly that ask and offers

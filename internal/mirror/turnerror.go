@@ -125,13 +125,14 @@ func CleanTurnError(e *TurnError) *TurnError {
 }
 
 // boundTurnError applies the TurnError rules to a normalised list: none on a
-// window that is not an IDLE Claude pane (a turn that ended has nothing to say
-// about one still running), each cleaned, and at most MaxTurnErrorWindows
-// kept — the most recent errors first, then list order.
+// window that is not an IDLE agent pane whose runtime reports how its turns
+// end (RuntimeSpec.TurnErrors: Claude Code, opencode) — a turn that ended has
+// nothing to say about one still running — each cleaned, and at most
+// MaxTurnErrorWindows kept — the most recent errors first, then list order.
 func boundTurnError(out []Window) {
 	var with []int
 	for i := range out {
-		if out[i].AgentRuntime() != RuntimeClaude || out[i].Status != StatusIdle {
+		if r, ok := out[i].Spec(); !ok || !r.TurnErrors || out[i].Status != StatusIdle {
 			out[i].TurnError = nil
 			continue
 		}
