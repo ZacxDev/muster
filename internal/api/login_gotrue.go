@@ -165,7 +165,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 </section>
 <script>` + ui.PasskeyJS + passkeySignInJS + `</script>`
 	}
-	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	inner := s.loginBrandHTML(context.Background()) + `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 ` + problemNode(problem) + `
 <label for="muster-email" class="text-sm font-medium text-fg">Email</label>
@@ -377,7 +377,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 `+s.accountDevicesSection(r)+`
 `+s.accountNotificationsSection(r)+`
 `+s.accountChiefSection(r)+`
-`+s.accountSuggestSection(r)+`</div>`)
+`+s.accountSuggestSection(r)+`
+`+s.accountBrandingSection(r)+`</div>`)
 }
 
 // --- the admin claim ------------------------------------------------------------

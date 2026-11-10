@@ -161,12 +161,12 @@ for (const vp of [
       expect(tb.x + tb.width, 'the switch fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
       await page.keyboard.press('Escape');
       await expect(agentMenu(page)).toBeHidden();
-      // The chat's own message box wears the composer's clothes: 16px, 44px.
+      // The chat's own message box wears the composer's clothes: 16px, a 44px box, a 40px Send.
       const chatInput = page.locator('#chat-input');
       await expect(chatInput).toBeVisible();
       expect(await chatInput.evaluate((e) => parseFloat(getComputedStyle(e).fontSize)), 'a 16px input').toBeGreaterThanOrEqual(16);
       expect((await chatInput.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-      expect((await page.locator('#chat-send').boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await page.locator('#chat-send').boundingBox())!.height).toBeGreaterThanOrEqual(40);
       // ⚠ AN INVARIANT GUARD, not the symptom: pressing Send does not take
       // focus from the box, so a phone's keyboard stays up and the first tap
       // sends (sendKeepsFocusJS; the symptom itself — a press that moves the
@@ -196,7 +196,7 @@ for (const vp of [
       await expect(input).toBeVisible();
       for (const el of [input, send]) {
         const b = (await el.boundingBox())!;
-        expect(b.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+        expect(b.height, 'a 40px target').toBeGreaterThanOrEqual(40);
         expect(b.x + b.width, 'the composer fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
         expect(b.y + b.height, 'the composer is on screen').toBeLessThanOrEqual(vp.use.viewport.height);
       }

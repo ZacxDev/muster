@@ -297,7 +297,29 @@ func (s *Server) sendPush(ctx context.Context, owner int64, p push.Payload) push
 	if !s.pushServed() || owner <= 0 {
 		return push.Report{}
 	}
+	if p.Type != push.TypeResolved {
+		p.Icon = s.pushIcon(ctx)
+	}
 	return s.ext.Push.SendTo(ctx, owner, p)
+}
+
+// defaultPushIcon is muster's own notification icon (web/static/sw.js draws
+// the same when a payload names none).
+const defaultPushIcon = "/static/icons/icon-192.png"
+
+// pushIcon is a Web Push notification's icon URL: the instance logo's 192 px
+// icon (versioned by its ETag) when one is set, muster's own icon otherwise.
+// Absolute under MUSTER_PUBLIC_URL when it is set, else a path on this server,
+// which a service worker resolves against its own origin.
+func (s *Server) pushIcon(ctx context.Context) string {
+	path := defaultPushIcon
+	if b := s.uiBrand(ctx); b.HasLogo() {
+		path = b.Icon192()
+	}
+	if base := strings.TrimRight(strings.TrimSpace(s.auth.PublicURL), "/"); base != "" {
+		path = base + path
+	}
+	return path
 }
 
 // forgetPushDevice removes the signing-out browser's own subscription (named by

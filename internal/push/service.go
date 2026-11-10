@@ -38,6 +38,12 @@ type Payload struct {
 	// AskActions: the server routes the signed ask actions, so payload v2
 	// offers them (PayloadV2.Actions). Payload v2 only.
 	AskActions bool `json:"-"`
+	// Icon is the notification's icon URL: the instance logo's 192 px icon
+	// when one is set, muster's own otherwise (internal/api sendPush stamps
+	// it; docs/branding.md). The service worker draws it, falling back to
+	// muster's icon when it is absent. BROWSER ONLY: payload v2 never carries
+	// it — the Android app reads the logo from GET /api/instance itself.
+	Icon string `json:"icon,omitempty"`
 }
 
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of

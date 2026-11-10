@@ -313,38 +313,26 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	}
 }
 
-// TestThePaperclipIsSmallAndInsideTheInput: the button is a 24px square,
-// absolutely placed inside a relative box that holds it and the input, BEFORE
-// the input; the input is padded past it. No uploads: no box, no padding.
-func TestThePaperclipIsSmallAndInsideTheInput(t *testing.T) {
-	for _, want := range []string{"absolute", "h-6", "w-6", "left-1.5", "bottom-2.5"} {
-		if !strings.Contains(" "+attachButtonClass+" ", " "+want+" ") {
-			t.Errorf("attachButtonClass lacks %s: %s", want, attachButtonClass)
+// TestTheBoxIsTheSameWithOrWithoutThePaperclip: the paperclip is a button of
+// the composer's button row (composer_rows_test.go), so the box wears exactly
+// composerInputClass whether uploads are on or off — no padding left for a
+// paperclip inside it. The old shape (a 24px paperclip absolutely placed in
+// the box, the box padded pl-9 past it) is gone.
+func TestTheBoxIsTheSameWithOrWithoutThePaperclip(t *testing.T) {
+	for name, v := range map[string]MirrorViewView{
+		"uploads on":  {Host: "host-a", Session: "main", Interactive: true, Upload: UploadPath},
+		"uploads off": {Host: "host-a", Session: "main", Interactive: true},
+	} {
+		box := byID(parseFragment(t, renderString(t, MirrorViewPage(v))), "mv-input")
+		if box == nil || attrOf(box, "class") != composerInputClass {
+			t.Errorf("%s: the box's class is not composerInputClass alone: %v", name, box)
 		}
-	}
-	for _, banned := range []string{"min-h-[44px]", "min-w-[44px]"} {
-		if strings.Contains(attachButtonClass, banned) {
-			t.Errorf("attachButtonClass still carries %s", banned)
-		}
-	}
-	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, Upload: UploadPath}))
-	// The Rendered view's field is marked data-mv-field (composer_reveal.go).
-	box := regexp.MustCompile(`<div data-mv-field="" class="relative flex min-w-0 flex-1"><input id="mv-file"[^>]*><button id="mv-attach"[^>]*class="` + regexp.QuoteMeta(attachButtonClass) + `"><svg class="h-4 w-4"[^>]*><path[^>]*/></svg></button><textarea id="mv-input"[^>]*class="` + regexp.QuoteMeta(composerInputClass+attachInputPad) + `"`)
-	if !box.MatchString(page) {
-		t.Errorf("the paperclip is not inside the input's box, before it, with the input padded:\n%s", page[strings.Index(page, `id="mv-form"`):][:1500])
-	}
-	if !strings.Contains(page, `class="`+composerInputClass+` pl-9"`) {
-		t.Error("the input is not padded past the paperclip (pl-9)")
-	}
-	off := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true}))
-	if strings.Contains(off, `relative flex min-w-0 flex-1`) || strings.Contains(off, composerInputClass+attachInputPad) || !strings.Contains(off, `class="`+composerInputClass+`"`) {
-		t.Error("CONTROL: with no uploads the input is still boxed or padded")
 	}
 }
 
 // TestSendIsASquareAndWordsKeepTheirPadding: EVERY Send — the plain one (the
 // agent chat page's, the no-Queue fallback of sendSplit) and the split one
-// beside the Queue caret — is a padless 44×44 icon square; the worded accent
+// beside the Queue caret — is a padless 40×40 icon square; the worded accent
 // button (composerSendClass: the ask card's Submit) keeps px-2.5, not the px-4
 // it was, and is still a 44px-tall target. And the pages draw them: the agent
 // chat's Send and a queue-less composer's.
@@ -353,7 +341,7 @@ func TestSendIsASquareAndWordsKeepTheirPadding(t *testing.T) {
 		t.Errorf("composerSendClass = %q", cls)
 	}
 	for name, cls := range map[string]string{"composerSendIconClass": composerSendIconClass, "composerSendSplitClass": composerSendSplitClass} {
-		if strings.Contains(cls, "px-") || !strings.Contains(cls, "min-h-[44px]") || !strings.Contains(cls, "min-w-[44px]") || !strings.Contains(cls, "justify-center") {
+		if strings.Contains(cls, "px-") || !strings.Contains(cls, "min-h-[40px]") || !strings.Contains(cls, "min-w-[40px]") || !strings.Contains(cls, "justify-center") {
 			t.Errorf("%s = %q", name, cls)
 		}
 	}

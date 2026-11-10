@@ -544,7 +544,7 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // Nothing when s is nil.
 //
 // moreElsewhere: the page draws the ⋯ BUTTON itself, outside the bar — the
-// Rendered view's composer, in its input row (ComposerView.MoreInRow) — so the
+// Rendered view's composer, in its button row (ComposerView.MoreInRow) — so the
 // bar leaves it out; the menu it opens, and the tag editor, are still the
 // bar's (they are popovers: where they sit in the document moves nothing).
 func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, false) }

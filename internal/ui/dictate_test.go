@@ -73,9 +73,9 @@ func TestEveryMessageBoxHasTheMicrophone(t *testing.T) {
 		if !regexp.MustCompile(`class="group hidden `).MatchString(tag) || strings.Contains(tag, "inline-flex") {
 			t.Errorf("%s: the mic is visible before any script runs: %s", name, tag)
 		}
-		// A 44px target.
-		if !strings.Contains(tag, "min-h-[44px]") || !strings.Contains(tag, "min-w-[44px]") {
-			t.Errorf("%s: the mic is not a 44px target: %s", name, tag)
+		// A 40px target.
+		if !strings.Contains(tag, "min-h-[40px]") || !strings.Contains(tag, "min-w-[40px]") {
+			t.Errorf("%s: the mic is not a 40px target: %s", name, tag)
 		}
 		if !strings.Contains(page, "window.__musterDictate") {
 			t.Errorf("%s: the microphone's script is not on the page", name)

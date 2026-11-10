@@ -15,6 +15,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix notifypref <owner-id> clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix branding clear
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix agentinfo <owner-id> <agent-id> → prints {name,kind,model,note_id,note_text,pending_note} as JSON
 //
@@ -60,6 +61,10 @@
 //	    so a spec that used the Account page's switch leaves the default behind.
 //	  - notifypref: clears the owner's notification preferences
 //	    (notify_preferences), the same way: off, the default, is left behind.
+//	  - branding: clears the instance's branding (instance_branding, 0105) —
+//	    the server's, not an owner's, so it takes no owner: nothing set, the
+//	    built-in mark, is left behind for every later spec on the shared
+//	    database.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
@@ -149,6 +154,15 @@ func run(args []string) error {
 			return fmt.Errorf("usage: notifypref <owner-id> clear")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM notify_preferences WHERE owner_id = $1`, owner); err != nil {
+			return err
+		}
+	case "branding":
+		// Clears the instance's branding (migration 0105): every server on this
+		// database draws the built-in mark again once its cache (30 s) lapses.
+		if len(args) != 2 || args[1] != "clear" {
+			return fmt.Errorf("usage: branding clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM instance_branding`); err != nil {
 			return err
 		}
 	case "agent":

@@ -39,7 +39,7 @@ func TestSendIsTheFaceAndQueueIsBehindTheCaret(t *testing.T) {
 	if !strings.Contains(send, `type="submit"`) || strings.Contains(send, "formaction") || !strings.Contains(send, `aria-label="Send" title="Send" class="`+composerSendSplitClass+`">`) {
 		t.Fatalf("Send: %s", send)
 	}
-	for _, a := range []string{`type="button"`, `popovertarget="mv-send-menu"`, `aria-haspopup="menu"`, `aria-expanded="false"`, `aria-controls="mv-send-menu"`, "min-h-[44px]", "min-w-[44px]"} {
+	for _, a := range []string{`type="button"`, `popovertarget="mv-send-menu"`, `aria-haspopup="menu"`, `aria-expanded="false"`, `aria-controls="mv-send-menu"`, "min-h-[40px]", "min-w-[40px]"} {
 		if !strings.Contains(more, a) {
 			t.Errorf("the caret lacks %s: %s", a, more)
 		}
@@ -133,7 +133,7 @@ func buttonByID(t *testing.T, page, id string) string {
 // one, its split one beside the Queue caret, and the agent chat's (page and
 // chief panel) — is an icon button: an inline aria-hidden svg drawn in
 // currentColor, no visible text, named "Send" by aria-label and title, a
-// 44×44 target. The ask card's Submit, which wears composerSendClass, keeps
+// 40×40 target. The ask card's Submit, which wears composerSendClass, keeps
 // its words; and the script's "Send again" takes that worded look rather than
 // copying the icon button's padless square.
 func TestSendIsAPaperPlane(t *testing.T) {
@@ -152,7 +152,7 @@ func TestSendIsAPaperPlane(t *testing.T) {
 		if got := strings.TrimSpace(visibleText(t, b)); got != "" {
 			t.Errorf("%s: Send shows text %q, want an icon only: %s", name, got, b)
 		}
-		for _, want := range []string{`type="submit"`, `aria-label="Send"`, `title="Send"`, "min-h-[44px]", "min-w-[44px]", "<svg ", `aria-hidden="true"`, "currentColor"} {
+		for _, want := range []string{`type="submit"`, `aria-label="Send"`, `title="Send"`, "min-h-[40px]", "min-w-[40px]", "<svg ", `aria-hidden="true"`, "currentColor"} {
 			if !strings.Contains(b, want) {
 				t.Errorf("%s: Send lacks %s: %s", name, want, b)
 			}

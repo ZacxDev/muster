@@ -314,7 +314,7 @@ self.addEventListener('push', (event) => {
     event.waitUntil(
       self.registration.showNotification(payload.title || 'muster', {
         body: payload.body || '',
-        icon: '/static/icons/icon-192.png',
+        icon: payload.icon || '/static/icons/icon-192.png',
         badge: '/static/icons/badge-72.png',
         tag: payload.tag || undefined,
         data: data,
@@ -324,6 +324,9 @@ self.addEventListener('push', (event) => {
     return;
   }
 
+  // payload.icon: the instance logo's icon when the server has one, else
+  // muster's (internal/api sendPush; docs/branding.md). Absent from a payload
+  // an older server sent, hence the fallback in both notification shapes.
   const title = payload.title || 'muster';
   const tag = payload.tag || payload.id || 'muster';
   // Always carry type + id on the notification data. payload.data may
@@ -339,7 +342,7 @@ self.addEventListener('push', (event) => {
   // button could POST to.
   const options = {
     body: payload.body || '',
-    icon: '/static/icons/icon-192.png',
+    icon: payload.icon || '/static/icons/icon-192.png',
     badge: '/static/icons/badge-72.png',
     tag: tag,
     data: data,

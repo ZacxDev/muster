@@ -25,6 +25,13 @@ package previewgw
 //     X-Muster-* header (an app cannot forge the gateway's error code) and
 //     Clear-Site-Data, which a browser applies to the whole registrable
 //     domain — every other preview, and w.
+//   - Trailers: an app's trailer named like a header these rules drop or
+//     replace (dropAppTrailer) is removed, declared (Trailer:) or not
+//     (net/http's TrailerPrefix sends it undeclared), from both the Trailer
+//     line the browser sees and the values after the body. ReverseProxy
+//     copies trailers into the response after the body, past the rules
+//     above, so without this an app's X-Muster-Preview-Error trailer would
+//     read as the gateway's code.
 //   - Errors: the gateway's own (host offline, nothing listening, timeouts)
 //     are a page naming a code (^[a-z_]{1,32}$) and nothing else — never an
 //     error's text. An app's own error is the app's response, as it sent it.
@@ -33,6 +40,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -173,10 +181,59 @@ func (g *Gateway) rewrite(pr *httputil.ProxyRequest) {
 	g.upstreamHeaders(pr.Out.Header, tg, false)
 }
 
+// musterHeader is true for an X-Muster-* name: the gateway's alone.
+func musterHeader(name string) bool { return strings.HasPrefix(strings.ToLower(name), "x-muster-") }
+
+// dropAppTrailer names an app trailer that never reaches the browser: an
+// X-Muster-* one, and every name previewResponseHeaders drops or rewrites —
+// those rules run on the header only, so as a trailer such a name would pass
+// them untouched. (RFC 9110 §6.5.1 forbids most of these as trailers, so a
+// conforming client ignores them there; the gateway does not rely on that.)
+func dropAppTrailer(name string) bool {
+	if musterHeader(name) {
+		return true
+	}
+	switch http.CanonicalHeaderKey(name) {
+	case "Clear-Site-Data", "Strict-Transport-Security", "Referrer-Policy", "X-Content-Type-Options",
+		"Content-Security-Policy", "Location", "Set-Cookie":
+		return true
+	}
+	return false
+}
+
+func stripAppTrailers(tr http.Header) {
+	for k := range tr {
+		if dropAppTrailer(k) {
+			delete(tr, k)
+		}
+	}
+}
+
+// trailerFilter strips resp's trailers once its body has ended. The
+// transport fills resp.Trailer's values — and adds any undeclared trailer —
+// inside the Read that reaches EOF (for an event stream, on sseBody's
+// goroutine, ordered before sseBody hands the EOF on). So the strip runs when
+// a Read here returns io.EOF: on the proxy's own goroutine, after every write
+// to the map and before ReverseProxy copies it. 🔴 Never on Close: before
+// EOF, sseBody's goroutine may still be inside src.Read writing the map (a
+// browser that left mid-stream), and ReverseProxy copies no trailers then.
+type trailerFilter struct {
+	io.ReadCloser
+	resp *http.Response
+}
+
+func (b *trailerFilter) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		stripAppTrailers(b.resp.Trailer)
+	}
+	return n, err
+}
+
 // previewResponseHeaders applies the response rules to h, an app's headers.
 func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
 	for k := range h {
-		if strings.HasPrefix(strings.ToLower(k), "x-muster-") {
+		if musterHeader(k) {
 			delete(h, k)
 		}
 	}
@@ -202,6 +259,11 @@ func (g *Gateway) modifyResponse(resp *http.Response) error {
 	tg := targetOf(resp.Request.Context())
 	g.m.responses.WithLabelValues(kindHost).Observe(time.Since(tg.start).Seconds())
 	g.previewResponseHeaders(resp.Header, tg)
+	// The declared trailers are keys already: ReverseProxy builds the
+	// browser's Trailer: line from them right after this returns. Stripped
+	// before any body wrapper exists, so nothing else can be touching
+	// resp.Trailer yet (sseBody's goroutine starts on its first Read).
+	stripAppTrailers(resp.Trailer)
 	// The keepalive comment is plain text: inside a compressed body it would
 	// corrupt the stream, so a body with a Content-Encoding other than
 	// identity gets none.
@@ -210,6 +272,9 @@ func (g *Gateway) modifyResponse(resp *http.Response) error {
 		(ce == "" || strings.EqualFold(ce, "identity")) {
 		resp.Body = newSSEBody(resp.Body, g.keepalive)
 	}
+	// Their values, and undeclared ones, come with the body's end. Outermost,
+	// so its strip runs on the proxy's own goroutine.
+	resp.Body = &trailerFilter{ReadCloser: resp.Body, resp: resp}
 	return nil
 }
 

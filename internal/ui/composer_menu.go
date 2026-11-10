@@ -52,12 +52,12 @@ import (
 
 // composerSendSplitClass is Send's look as the left half of the split button:
 // the plain Send's (composerSendIconClass) — the paper plane centred in a
-// 44×44 square — rounded on the left only, so with the caret's 44px square
+// 40×40 square — rounded on the left only, so with the caret's 40px square
 // (rounded on the right) the two read as one control of one height.
-const composerSendSplitClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-l-xl rounded-r-none bg-accent text-on-accent transition disabled:opacity-40"
+const composerSendSplitClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-l-xl rounded-r-none bg-accent text-on-accent transition disabled:opacity-40"
 
-// sendMoreClass is the caret: the right half, 44px square.
-const sendMoreClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-l-none rounded-r-xl border-l border-on-accent/30 bg-accent text-on-accent transition disabled:opacity-40"
+// sendMoreClass is the caret: the right half, 40px square.
+const sendMoreClass = "press inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-l-none rounded-r-xl border-l border-on-accent/30 bg-accent text-on-accent transition disabled:opacity-40"
 
 // sendSplit is the composer's Send control: Send alone, or — with a queue —
 // Send with the caret and its menu. Send is an icon button (sendIcon), named

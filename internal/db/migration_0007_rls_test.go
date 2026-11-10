@@ -154,10 +154,19 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 // are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
 var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
 
+// instanceTables are tables that belong to the SERVER, not to a user: no
+// owner_id, under forced row-level security with a scope_all policy only (the
+// system scope reads and writes them; a user's principal sees nothing). Their
+// policy is pinned by TestMigration0105InstanceBranding.
+//
+//   - instance_branding (0105, the instance's logo and name).
+var instanceTables = []string{"instance_branding"}
+
 // TestRLSCoversExactlyTheOwnedTables is the LEDGER: the set of public tables
 // with an owner_id column and the set carrying the owner_isolation policy must
 // be the same eleven, and the sets with RLS ENABLED and FORCED must be those
-// eleven plus the user-keyed account tables (0009) — and each owner_isolation
+// eleven plus the user-keyed account tables (0009) and the instance tables
+// (instanceTables) — and each owner_isolation
 // policy must have BOTH arms (the user and the scope-all) in USING and in WITH
 // CHECK, and each owner_id must default to the principal. It fails when a new
 // owned table arrives without RLS, and when RLS appears on a table that is in
@@ -179,7 +188,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 	}
 	want := rlsTables()
 	sort.Strings(want)
-	all := append(rlsTables(), userKeyedTables...)
+	all := append(append(rlsTables(), userKeyedTables...), instanceTables...)
 	sort.Strings(all)
 	for name, c := range map[string]struct {
 		got, want []string
