@@ -18,6 +18,8 @@ const (
 	codeBadUpgrade      = "bad_upgrade"
 	codeEntryUsed       = "entry_used"
 	codeFrameBlocked    = "frame_blocked"
+	codeTooManyConns    = "too_many_connections"
+	codeBodyTooLarge    = "body_too_large"
 )
 
 // ErrorCodeHeader names the code on every page the gateway answers for a p-
@@ -38,15 +40,19 @@ var codePages = map[string][2]string{
 	codeBadUpgrade:                     {"Not supported", "A preview relays WebSocket upgrades only."},
 	codeEntryUsed:                      {"This link has been used or has expired", "Open the preview again from its session page in muster."},
 	codeFrameBlocked:                   {"This browser blocks embedded previews", "Open it in a new tab from the session page in muster."},
+	codeTooManyConns:                   {"Too many connections to this preview", "Wait for its other requests to finish, or close other tabs of it."},
+	codeBodyTooLarge:                   {"This upload is too large", "A preview accepts request bodies up to the gateway's limit."},
 }
 
 // renderCode writes the gateway's own page for code: fixed text, the code
-// itself, and ErrorCodeHeader. An unknown code is not_answering's page.
+// itself, and ErrorCodeHeader. An unknown code is not_answering's page. Each
+// is counted in muster_preview_refusals_total{reason=code}.
 func (g *Gateway) renderCode(w http.ResponseWriter, status int, code string) {
 	txt, ok := codePages[code]
 	if !ok {
 		code, txt = codeNotAnswering, codePages[codeNotAnswering]
 	}
+	g.m.refused(code)
 	w.Header().Set(ErrorCodeHeader, code)
 	g.renderNotice(w, status, txt[0], txt[1]+" ("+code+")")
 }

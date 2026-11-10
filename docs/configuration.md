@@ -241,7 +241,8 @@ provisioner, and the server refuses to boot without them.
 ## Tracing (muster-server and muster-mirror)
 
 Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
-and do nothing at all when none is ([telemetry.md](telemetry.md)). These are the
+and do nothing at all when none is ([telemetry.md](telemetry.md)). The preview
+gateway, `muster-preview`, reads the same variables, as service `muster-preview`. These are the
 variables muster reads to decide that; the exporter and the SDK also read the
 standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and
 `OTEL_EXPORTER_OTLP_HEADERS` themselves; muster reads `OTEL_EXPORTER_OTLP_TIMEOUT`
@@ -658,12 +659,33 @@ the host's tunnel. What it does:
   expires every cookie it names, host-only and at `Domain=<PREVIEW_DOMAIN>`.
 - **Limits and lifecycle.** At most 4 open previews per window, 16 per owner,
   and the host's `maxOpen` per host (8 if it sent none), on an agent's
-  `preview_open` and on **Open** alike (`max_open`). A preview closes after
-  `PREVIEW_IDLE` with no request (an open WebSocket or stream counts as one),
-  and `PREVIEW_TTL` after it opened, whatever its use; its host is told.
+  `preview_open` and on **Open** alike (`max_open`). A preview has at most 64
+  requests and WebSockets in flight; one more is refused `429
+  too_many_connections` before anything is dialled. A request body is at most
+  `PREVIEW_MAX_BODY`: a larger `Content-Length` is refused `413
+  body_too_large` before anything is dialled, and a body without one is counted
+  as it streams to the app (never buffered) and refused the same way when it
+  passes the limit. A preview closes after `PREVIEW_IDLE` with no request (an
+  open WebSocket or stream counts as one), `PREVIEW_TTL` after it opened,
+  whatever its use, and 10 minutes after its window left the host's window
+  listing (a host that is offline sends no listing, so it neither starts nor
+  stops that clock); its host is told.
 - **No database.** Previews and entry codes are in memory; a restart closes
   the previews.
-- **Metric:** `muster_preview_tunnels{path}`.
+- **Metrics** (on the mesh listener's `/metrics`; every label is a closed
+  vocabulary, never a preview, host, owner, window, path or query):
+  `muster_preview_tunnels{path}`, `muster_previews_open{kind}`,
+  `muster_preview_opens_total{opener}` (`agent`, `page`),
+  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
+  `window_gone`, `host_revoked`, `owner_not_served`),
+  `muster_preview_refusals_total{reason}` (the gateway's own codes, `other` for
+  any outside them), `muster_preview_requests_total{kind,auth,code_class}`,
+  `muster_preview_response_seconds{kind}` (to the app's response headers) and
+  `muster_preview_dial_seconds{kind,outcome}`.
+- **Spans** (with an OTLP endpoint set; [tracing](#tracing-muster-server-and-muster-mirror)):
+  `preview.request` (kind, auth, path `mesh`|`public`, status class, the
+  gateway's code when it answered itself), `preview.dial` (outcome) and
+  `preview.ws` (why the relay ended). No path, query, header or body.
 
 | variable | default | required | what it does |
 |---|---|---|---|
@@ -677,6 +699,7 @@ the host's tunnel. What it does:
 | `PREVIEW_SIGNING_KEY` | none | yes | At least 32 bytes (`openssl rand -hex 32`). Signs the owner cookies (`__Host-mp`) and the session page's page tokens (HMAC-SHA256). Rotating it ends every owner cookie and open session page at once. |
 | `PREVIEW_TTL` | `24h` | no | A preview closes this long after it opened, in use or not; reopening mints a new id. A Go duration, at least `1m`. |
 | `PREVIEW_IDLE` | `2h` | no | A preview with no request for this long closes; an open WebSocket or streamed response counts as a request in progress. A Go duration, at least `1m`. |
+| `PREVIEW_MAX_BODY` | `32MiB` | no | The largest request body one proxied request may send; past it, `413 body_too_large`. Bytes, or a number with `KiB`, `MiB` or `GiB` (powers of 1024), from `1KiB` to `1GiB`. WebSocket messages are not bodies and are not limited. |
 
 ## Test and e2e harness
 

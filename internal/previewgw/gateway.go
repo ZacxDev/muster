@@ -98,8 +98,9 @@ type Gateway struct {
 	keepalive            time.Duration
 	proxy                http.Handler
 
-	reg          *prometheus.Registry
-	tunnelsGauge *prometheus.GaugeVec
+	reg     *prometheus.Registry
+	m       *gwMetrics
+	maxBody int64 // PREVIEW_MAX_BODY
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -129,6 +130,9 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	if cfg.Idle <= 0 {
 		cfg.Idle = DefaultIdle
 	}
+	if cfg.MaxBody <= 0 {
+		cfg.MaxBody = DefaultMaxBody
+	}
 	if o.StreamKeepalive <= 0 {
 		o.StreamKeepalive = StreamKeepalive
 	}
@@ -140,14 +144,6 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		return nil, err
 	}
 	reg := prometheus.NewRegistry()
-	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "muster_preview_tunnels",
-		Help: "Live host tunnels, draining ones included, by the listener they arrived on.",
-	}, []string{"path"})
-	reg.MustRegister(gauge)
-	for _, p := range []Path{PathMesh, PathPublic} {
-		gauge.WithLabelValues(string(p)) // both series exist from the start, at 0
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{
 		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster, sign: signer{key: cfg.SigningKey},
@@ -155,9 +151,10 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		failMesh:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		failPublic: newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		ttl:        cfg.TTL, idle: cfg.Idle, keepalive: o.StreamKeepalive,
-		reg:          reg,
-		tunnelsGauge: gauge,
-		ctx:          ctx, cancel: cancel,
+		reg:     reg,
+		m:       newMetrics(reg),
+		maxBody: cfg.MaxBody,
+		ctx:     ctx, cancel: cancel,
 		byKey:     map[tunnelKey]*Tunnel{},
 		all:       map[*Tunnel]struct{}{},
 		previews:  map[string]*Preview{},
@@ -260,7 +257,7 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 	}
 	np := 0
 	for _, owner := range gone {
-		np += g.closePreviewsLocked(owner, "")
+		np += g.closePreviewsLocked(owner, "", closeOwnerGone)
 	}
 	g.mu.Unlock()
 	for _, owner := range gone {
@@ -302,11 +299,11 @@ func (g *Gateway) Recheck() {
 	g.mu.Lock()
 	n := 0
 	for _, t := range revoked {
-		n += g.closePreviewsLocked(t.key.owner, t.key.host)
+		n += g.closePreviewsLocked(t.key.owner, t.key.host, closeRevoked)
 	}
 	for _, p := range g.previews {
 		if k := (tunnelKey{p.OwnerID, p.Host}); !valid[k] {
-			n += g.closePreviewsLocked(k.owner, k.host)
+			n += g.closePreviewsLocked(k.owner, k.host, closeRevoked)
 		}
 	}
 	g.mu.Unlock()
@@ -439,7 +436,7 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			g.log.Error("tunnel start failed", "host", rec.Host, "err", err.Error())
 			return
 		}
-		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx,
+		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx, m: g.m,
 			answers: make(chan pendingAnswer, answerQueue)}
 		t.rt = newUpstreamTransport(t)
 		if err := g.register(t); err != nil {

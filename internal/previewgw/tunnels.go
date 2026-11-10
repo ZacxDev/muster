@@ -14,8 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // DrainTimeout bounds how long a replaced tunnel keeps its open streams.
@@ -41,6 +44,7 @@ type Tunnel struct {
 	ctx       context.Context
 	answers   chan pendingAnswer // to answerWorker; bounded (answerQueue)
 	rt        *http.Transport    // the proxy's upstream connections on this tunnel (proxy.go)
+	m         *gwMetrics         // the gateway's; dials are measured here
 
 	mu        sync.Mutex
 	state     HostState
@@ -106,7 +110,7 @@ func (g *Gateway) register(t *Tunnel) error {
 	g.byKey[t.key] = t
 	g.all[t] = struct{}{}
 	g.mu.Unlock()
-	g.tunnelsGauge.WithLabelValues(string(t.path)).Inc()
+	g.m.tunnels.WithLabelValues(string(t.path)).Inc()
 	if old != nil {
 		g.log.Info("tunnel replaced", "host", t.key.host, "old_path", string(old.path), "new_path", string(t.path))
 		g.drain(old)
@@ -129,7 +133,7 @@ func (g *Gateway) unregister(t *Tunnel) {
 	}
 	t.mu.Unlock()
 	if was {
-		g.tunnelsGauge.WithLabelValues(string(t.path)).Dec()
+		g.m.tunnels.WithLabelValues(string(t.path)).Dec()
 	}
 }
 
@@ -179,15 +183,44 @@ func (t *Tunnel) dial(ctx context.Context, port int) (net.Conn, error) {
 	return t.dialHeld(ctx, port)
 }
 
-// dialHeld dials port on t for a stream already counted in t.streams.
+// dialHeld dials port on t for a stream already counted in t.streams. The
+// dial is a preview.dial span (under ctx's) and a muster_preview_dial_seconds
+// observation, by outcome.
 func (t *Tunnel) dialHeld(ctx context.Context, port int) (net.Conn, error) {
 	t.closeIdleIfFull()
+	start := time.Now()
+	ctx, span := telemetry.Start(ctx, "preview.dial", attribute.String("muster.preview.kind", kindHost),
+		attribute.String("muster.preview.path", string(t.path)))
 	c, err := t.client.Dial(ctx, port)
+	outcome := dialOutcome(ctx, err)
+	if t.m != nil {
+		t.m.dialed(time.Since(start), outcome)
+	}
+	telemetry.End(span, outcome)
 	if err != nil {
 		t.streamDone()
 		return nil, err
 	}
 	return &trackedConn{Conn: c, done: t.streamDone}, nil
+}
+
+// dialOutcome is a dial's closed outcome label: ok, the host's refusal
+// (one of wire's Reasons), host_offline, timeout, canceled or error.
+func dialOutcome(ctx context.Context, err error) string {
+	var re *tunnel.RefusedError
+	switch {
+	case err == nil:
+		return dialOK
+	case errors.As(err, &re) && re.Reason.Status() != 0:
+		return string(re.Reason)
+	case errors.Is(err, ErrHostOffline), errors.Is(err, tunnel.ErrClosed), errors.Is(err, tunnel.ErrPeerUnresponsive):
+		return dialHostOffline
+	case errors.Is(err, context.DeadlineExceeded):
+		return dialTimeout
+	case errors.Is(err, context.Canceled), ctx.Err() != nil:
+		return dialCanceled
+	}
+	return dialError
 }
 
 // othersFullLocked reports whether the streams other than the one being
