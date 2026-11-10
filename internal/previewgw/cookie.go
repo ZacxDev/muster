@@ -131,7 +131,6 @@ type pageClaim struct {
 	Window  string `json:"w"`
 	Session string `json:"s,omitempty"`
 	Expires int64  `json:"e"`
-	Nonce   string `json:"n"`
 }
 
 func (s signer) mintPageToken(c pageClaim, now time.Time) (string, error) {

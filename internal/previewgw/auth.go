@@ -26,6 +26,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
@@ -37,6 +38,9 @@ const (
 	// minted only for a valid page token, and expired ones are swept on every
 	// mint; a mint past the bound is refused rather than growing the map.
 	maxEntryCodes = 4096
+	// maxEntryCodesPerOwner bounds one owner's unspent entry codes, so one
+	// owner minting codes cannot fill maxEntryCodes and refuse everyone else.
+	maxEntryCodesPerOwner = 64
 )
 
 // Paths the gateway answers itself on p- and w. hosts.
@@ -66,12 +70,17 @@ func (g *Gateway) mintEntryCode(preview string, owner int64) (string, error) {
 	now := g.clock.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	mine := 0
 	for h, c := range g.codes {
 		if !now.Before(c.expires) {
 			delete(g.codes, h)
+			continue
+		}
+		if c.owner == owner {
+			mine++
 		}
 	}
-	if len(g.codes) >= maxEntryCodes {
+	if len(g.codes) >= maxEntryCodes || mine >= maxEntryCodesPerOwner {
 		return "", errTooManyCodes
 	}
 	g.codes[codeHash(code)] = entryCode{preview: preview, owner: owner, expires: now.Add(EntryCodeTTL)}
@@ -144,10 +153,22 @@ func (g *Gateway) ownerAdmitted(r *http.Request, id string, owner int64) bool {
 }
 
 // startPath is where /__muster/check sends an admitted owner: the preview's
-// own start path, or "/". A path that a browser would read as another host
-// ("//x", "/\x") is "/".
+// own start path, or "/". It holds the rule the host enforces on preview_open
+// (internal/previewhost checkOpenArgs): a single leading "/", then printable
+// ASCII without spaces or backslashes; anything else is "/". Without it a path
+// could reach the browser as "//x", another host: http.Redirect passes a path
+// it cannot parse ("/\t/x") through as is and the browser drops the tab, and it
+// path.Cleans one it can ("/./\x" becomes "/\x") and the browser reads "\" as
+// "/". The final check, that path.Clean does not start the path with "//", is
+// defence in depth: path.Clean collapses repeated slashes, so with the
+// character rule in front it does not fire today.
 func startPath(p string) string {
-	if p == "" || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.HasPrefix(p, `/\`) {
+	if p == "" || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") ||
+		strings.ContainsFunc(p, func(c rune) bool { return c <= ' ' || c >= 0x7f || c == '\\' }) {
+		return "/"
+	}
+	clean := path.Clean(p)
+	if strings.HasPrefix(clean, "//") {
 		return "/"
 	}
 	return p

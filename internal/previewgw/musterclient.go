@@ -196,8 +196,7 @@ type Handoff struct {
 			Window  string `json:"window"`
 		} `json:"mirror"`
 	} `json:"target"`
-	Purpose   string `json:"purpose"`
-	SteppedUp bool   `json:"stepped_up"`
+	Purpose string `json:"purpose"`
 }
 
 // Redeem spends a hand-off code with token (which must hold viewer).

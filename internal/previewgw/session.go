@@ -225,7 +225,7 @@ func (g *Gateway) enter(w http.ResponseWriter, r *http.Request) {
 		g.openFromMuster(w, http.StatusForbidden)
 		return
 	}
-	c := pageClaim{Owner: owner, Host: m.Host, Window: m.Window, Session: m.Session, Nonce: newNonce()}
+	c := pageClaim{Owner: owner, Host: m.Host, Window: m.Window, Session: m.Session}
 	pt, err := g.sign.mintPageToken(c, g.clock.Now())
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
