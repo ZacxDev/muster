@@ -1434,7 +1434,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
-		allowSameOriginFrame(w)
+		allowSameOriginFrame(w, "")
 	}
 	feat := s.shellFeatures(op.begin("nav"))
 	viewDocument(w)

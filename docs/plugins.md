@@ -122,6 +122,58 @@ Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
 `rate_limited` and `refused` on the mint, `redeemed` and `not_found` (purpose
 `unknown`) on the redeem.
 
+### The session-view chip
+
+Where a [hand-off](#viewer-hand-off) starts. On a mirrored window's two
+session views, `/mirror/view` and `/mirror/terminal`, muster draws a row under
+the header with **one chip per live `viewer` plugin of the owner**: the
+plugin's label, **Open** and **Show here**. A window with no rendered view
+opens on `/mirror/terminal`, so the chip is on both. An agent's pages
+(`/agents/{name}`) draw none.
+
+- **Drawn from the token rows alone.** A plugin draws a chip while its token is
+  live, has `viewer`, and its origin and entry URL still pass the server's
+  current `MUSTER_PLUGIN_ORIGINS` (the mint's own check). Revoke the token and
+  its chip is gone on the next load. Drawing the chip mints nothing.
+- **Both buttons mint at click time.** The page posts `POST /plugin-handoffs`
+  for that plugin and the window on screen, then goes to the URL it answers. A
+  refused mint (the token revoked since the page loaded, the window gone, the
+  rate cap) says why in the row and goes nowhere.
+- **Open** opens a blank tab within the tap itself, before minting. The tab's
+  `opener` is cleared while it is still blank, and only then is it sent to the
+  minted URL. So the plugin's page gets no `window.opener` handle on muster's
+  tab and no `Referer`, just as `rel="noopener noreferrer"` would give, and the
+  link carries those attributes too. Because the tab opens before the mint,
+  a popup blocker refuses at the tap: the row says the tab was blocked and no
+  code is minted. If the mint is refused, the blank tab is closed and the row
+  says why. An expired sign-in says to sign in again.
+- **One tap mints once**: a chip ignores taps until its mint has answered.
+- **Show here** loads the URL into a frame in a dialog over the page:
+
+  ```html
+  <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
+          allow="" referrerpolicy="no-referrer">
+  ```
+
+  There is no `allow-top-navigation`, so the plugin's content cannot navigate
+  muster's tab, and `allow=""` grants no camera, microphone or location.
+  `allow-same-origin` lets the plugin use its own origin's storage; it is not
+  muster's origin (a `Host` under `MUSTER_PLUGIN_ORIGINS` is refused `421`).
+  Closing the dialog unloads the plugin's page. A plugin that depends on a
+  cookie in the frame needs it to work as a third-party cookie
+  (`SameSite=None; Partitioned`); **Open** never does.
+- **The page's CSP** gains `frame-src 'self' <origin> …`, with each chipped
+  plugin's origin once, on those two views only. `'self'` stays: the
+  Rendered | Terminal switch frames the other view of muster's own origin.
+  Every other page's CSP is unchanged, and so are the two views' when there is
+  no chip.
+- **The row has a fixed height** and is drawn with the page, so nothing moves
+  once the page has loaded.
+- **Nothing is drawn**, and no `frame-src` is added, while
+  `MUSTER_PLUGIN_ORIGINS` is unset, plugins are off, the owner has no live
+  `viewer` plugin, or the window has no tmux window id (an older per-session
+  muster-mirror) for a hand-off to name.
+
 ## The plugin author's contract
 
 Every route takes `Authorization: Bearer mpl_…` and a JSON body, and answers
