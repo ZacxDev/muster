@@ -333,7 +333,9 @@ turn. A host starts nothing unless its muster-mirror has `-agent-spawn` and the
 repository is on its own `-agent-spawn-repos` list
 ([mirroring.md](mirroring.md#starting-agents-for-the-chief--agent-spawn)); an
 opencode start also needs that host's `-opencode-send` and an opencode token
-([sending to opencode](mirroring.md#sending-to-opencode)). Mirrored dispatch is
+([sending to opencode](mirroring.md#sending-to-opencode)), `opencode` on its
+tmux server's `PATH`, and an absolute path to its own muster-mirror binary (the
+launcher). Mirrored dispatch is
 part of `agent_dispatch`, so only the Kubernetes chief has it: the docker
 compose install's chief starts no agent, on a host or in a pod
 ([above](#on-the-docker-compose-install)). It never starts a cluster agent
