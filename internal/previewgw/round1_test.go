@@ -115,7 +115,10 @@ func TestAnswersUseOneWorkerPerTunnel(t *testing.T) {
 	for i := range 60 {
 		fh.offers <- wire.Offer{Type: wire.TypeOpen, Request: &wire.Request{ID: fmt.Sprint(i), Window: "@1", Port: 3000 + i}}
 	}
-	waitFor(t, "60 opens to be applied", func() bool { return len(e.g.Previews(1)) == 60 })
+	// Most of the 60 are refused by the open limits; refused or not, each is
+	// answered: the worker holds one answer and the other 59 wait in its queue.
+	tn := e.tunnelFor(1, "alpha")
+	waitFor(t, "60 opens to be applied", func() bool { return len(tn.answers) == 59 })
 	time.Sleep(50 * time.Millisecond)
 	if grew := runtime.NumGoroutine() - before; grew > 20 {
 		t.Fatalf("goroutines grew by %d for 60 unanswered opens; want a bounded worker, not one per line", grew)
@@ -124,8 +127,11 @@ func TestAnswersUseOneWorkerPerTunnel(t *testing.T) {
 
 // A host whose requests outrun the answer queue has its tunnel closed: with
 // the host never answering, the worker holds one answer and the queue 64, so
-// the 66th open closes the tunnel. Positive control: a host that answers
-// gets all 70 answers and keeps its tunnel.
+// the 66th open closes the tunnel. Positive control: a host that answers,
+// and never has more than answerQueue opens outstanding, gets all 70 answers
+// and keeps its tunnel. (Seventy opens in one burst would race the worker:
+// whether the queue overflows would depend on how many answers it had sent
+// by then, which is exactly the flood the guard is for.)
 func TestAFullAnswerQueueClosesTheTunnel(t *testing.T) {
 	t.Run("host never answers", func(t *testing.T) {
 		e := newGW(t, gwOpts{})
@@ -140,15 +146,24 @@ func TestAFullAnswerQueueClosesTheTunnel(t *testing.T) {
 		e := newGW(t, gwOpts{})
 		fh := e.mustDial(t, dialOpts{listener: "mesh", token: e.mint(t, 1, "alpha"), hostName: "alpha"})
 		tn := e.tunnelFor(1, "alpha")
-		for i := range 70 {
-			fh.offers <- wire.Offer{Type: wire.TypeOpen, Request: &wire.Request{ID: fmt.Sprint(i), Window: "@1", Port: 3000 + i}}
-		}
-		for range 70 {
-			select {
-			case <-fh.answers:
-			case <-time.After(5 * time.Second):
-				t.Fatal("an answer did not arrive")
+		// Batches of answerQueue: each batch fills the queue to its bound even
+		// if the worker has taken none yet, and is answered in full before the
+		// next is sent, so the queue can never overflow.
+		for sent := 0; sent < 70; {
+			batch := min(answerQueue, 70-sent)
+			for i := sent; i < sent+batch; i++ {
+				fh.offers <- wire.Offer{Type: wire.TypeOpen, Request: &wire.Request{ID: fmt.Sprint(i), Window: "@1", Port: 3000 + i}}
 			}
+			for range batch {
+				select {
+				case <-fh.answers:
+				case <-tn.Done():
+					t.Fatalf("the tunnel ended with at most %d opens outstanding", answerQueue)
+				case <-time.After(5 * time.Second):
+					t.Fatal("an answer did not arrive")
+				}
+			}
+			sent += batch
 		}
 		stillOpen(t, "the answering host's tunnel", tn.Done())
 	})

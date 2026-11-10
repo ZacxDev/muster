@@ -124,22 +124,29 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.MusterURL != "http://muster.svc:8080" || c.Listen != DefaultListen || c.MeshListen != ":9090" || len(c.PluginTokens) != 2 ||
-		string(c.SigningKey) != strings.Repeat("k", MinSigningKey) {
+		string(c.SigningKey) != strings.Repeat("k", MinSigningKey) || c.TTL != 24*time.Hour || c.Idle != 2*time.Hour {
 		t.Fatalf("config %+v", c)
 	}
+	if c, err := LoadConfig(env(map[string]string{"PREVIEW_TTL": "90m", "PREVIEW_IDLE": "17m"})); err != nil ||
+		c.TTL != 90*time.Minute || c.Idle != 17*time.Minute {
+		t.Fatalf("PREVIEW_TTL 90m, PREVIEW_IDLE 17m: %+v %v", c, err)
+	}
 	for name, over := range map[string]map[string]string{
-		"no muster url":     {"MUSTER_URL": ""},
-		"no public url":     {"MUSTER_PUBLIC_URL": ""},
-		"bad domain":        {"PREVIEW_DOMAIN": "Preview.Example"},
-		"domain with port":  {"PREVIEW_DOMAIN": "preview.example:443"},
-		"single label":      {"PREVIEW_DOMAIN": "localhost"},
-		"no state dir":      {"STATE_DIR": filepath.Join(dir, "missing")},
-		"same listeners":    {"PREVIEW_LISTEN": ":9090"},
-		"bad mesh listen":   {"PREVIEW_MESH_LISTEN": "9090"},
-		"no tokens file":    {"PLUGIN_TOKENS_FILE": ""},
-		"unreadable tokens": {"PLUGIN_TOKENS_FILE": filepath.Join(dir, "missing")},
-		"no signing key":    {"PREVIEW_SIGNING_KEY": ""},
-		"short signing key": {"PREVIEW_SIGNING_KEY": strings.Repeat("k", MinSigningKey-1)},
+		"no muster url":      {"MUSTER_URL": ""},
+		"no public url":      {"MUSTER_PUBLIC_URL": ""},
+		"bad domain":         {"PREVIEW_DOMAIN": "Preview.Example"},
+		"domain with port":   {"PREVIEW_DOMAIN": "preview.example:443"},
+		"single label":       {"PREVIEW_DOMAIN": "localhost"},
+		"no state dir":       {"STATE_DIR": filepath.Join(dir, "missing")},
+		"same listeners":     {"PREVIEW_LISTEN": ":9090"},
+		"bad mesh listen":    {"PREVIEW_MESH_LISTEN": "9090"},
+		"no tokens file":     {"PLUGIN_TOKENS_FILE": ""},
+		"unreadable tokens":  {"PLUGIN_TOKENS_FILE": filepath.Join(dir, "missing")},
+		"no signing key":     {"PREVIEW_SIGNING_KEY": ""},
+		"short signing key":  {"PREVIEW_SIGNING_KEY": strings.Repeat("k", MinSigningKey-1)},
+		"bad ttl":            {"PREVIEW_TTL": "a day"},
+		"ttl under a minute": {"PREVIEW_TTL": "59s"},
+		"bad idle":           {"PREVIEW_IDLE": "-2h"},
 	} {
 		if _, err := LoadConfig(env(over)); err == nil {
 			t.Errorf("%s: accepted", name)

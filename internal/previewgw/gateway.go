@@ -69,6 +69,9 @@ type Options struct {
 	DialWait time.Duration
 	// Tests only: the ping interval each tunnel's client uses.
 	PingInterval time.Duration
+	// Tests only: the browser-leg WebSocket ping and the quiet-SSE comment
+	// interval; 0 means StreamKeepalive.
+	StreamKeepalive time.Duration
 }
 
 // tokenState is what the gateway last learned about one plugin token.
@@ -91,6 +94,9 @@ type Gateway struct {
 	o     Options
 
 	failMesh, failPublic *failLimiter
+	ttl, idle            time.Duration
+	keepalive            time.Duration
+	proxy                http.Handler
 
 	reg          *prometheus.Registry
 	tunnelsGauge *prometheus.GaugeVec
@@ -117,6 +123,15 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
+	if cfg.TTL <= 0 {
+		cfg.TTL = DefaultTTL
+	}
+	if cfg.Idle <= 0 {
+		cfg.Idle = DefaultIdle
+	}
+	if o.StreamKeepalive <= 0 {
+		o.StreamKeepalive = StreamKeepalive
+	}
 	if o.Muster == nil {
 		o.Muster = NewMusterClient(cfg.MusterURL, "muster-preview/"+Version)
 	}
@@ -137,8 +152,9 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	g := &Gateway{
 		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster, sign: signer{key: cfg.SigningKey},
 		boot: hex.EncodeToString(b), o: o,
-		failMesh:     newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
-		failPublic:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		failMesh:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		failPublic: newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		ttl:        cfg.TTL, idle: cfg.Idle, keepalive: o.StreamKeepalive,
 		reg:          reg,
 		tunnelsGauge: gauge,
 		ctx:          ctx, cancel: cancel,
@@ -149,6 +165,7 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		codes:     map[string]entryCode{},
 		tokens:    make([]tokenState, len(cfg.PluginTokens)),
 	}
+	g.proxy = g.newProxy()
 	return g, nil
 }
 
@@ -162,12 +179,13 @@ func (g *Gateway) Boot() string { return g.boot }
 func (g *Gateway) Registry() *prometheus.Registry { return g.reg }
 
 // Start asks /self for every plugin token once, then starts the minute-by-
-// minute /self check and the 30 s host-token recheck.
+// minute /self check, the 30 s host-token recheck and the lifecycle sweep.
 func (g *Gateway) Start(ctx context.Context) {
 	g.CheckOwners(ctx)
 	g.stops = append(g.stops,
 		every(g.clock, SelfEvery, func() { g.CheckOwners(g.ctx) }),
-		every(g.clock, RecheckEvery, g.Recheck))
+		every(g.clock, RecheckEvery, g.Recheck),
+		every(g.clock, LifecycleEvery, g.sweep))
 }
 
 // Close stops the checks and ends every tunnel.
@@ -423,6 +441,7 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 		}
 		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx,
 			answers: make(chan pendingAnswer, answerQueue)}
+		t.rt = newUpstreamTransport(t)
 		if err := g.register(t); err != nil {
 			_ = cl.Close()
 			return

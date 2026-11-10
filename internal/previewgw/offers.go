@@ -75,6 +75,11 @@ type Preview struct {
 	Label   string
 	Path    string
 	Opened  time.Time
+
+	lastUsed time.Time          // the last proxied request's start or end
+	active   int                // proxied requests and WebSockets in flight
+	ctx      context.Context    // ends when the preview closes; every use of it runs under it
+	cancel   context.CancelFunc // ends ctx (deletePreviewLocked)
 }
 
 var previewIDEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
@@ -168,8 +173,8 @@ func (g *Gateway) applyOffer(t *Tunnel, m wire.Offer) {
 // (wire.Request): a re-announced open gets a new id, because ids are this
 // gateway's to mint, never the host's to choose.
 //
-// ⚠ NOT YET: the probe (a loopback dial and HEAD / before answering), the
-// open-preview limits and the lifecycle timers arrive with the proxy.
+// The open limits are newPreviewLocked's (lifecycle.go). The host probed the
+// port (a loopback dial and HEAD /) before it asked.
 func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 	a := wire.Answer{RequestID: r.ID, Window: r.Window, Port: r.Port}
 	if e := requestBounds(r); e != "" {
@@ -188,7 +193,7 @@ func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.byKey[t.key] != t || !g.liveOwnerLocked(t.key.owner) {
-		a.Error = "host_offline"
+		a.Error = codeHostOffline
 		return a
 	}
 	pk := previewKey{t.key, r.Window, r.Port}
@@ -196,19 +201,7 @@ func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 		a.Preview = id
 		return a
 	}
-	id, err := newPreviewID()
-	if err != nil {
-		a.Error = "internal"
-		return a
-	}
-	label := r.Label
-	if len(label) > maxLabel {
-		label = label[:maxLabel]
-	}
-	g.previewBy[pk] = id
-	g.previews[id] = &Preview{ID: id, OwnerID: t.key.owner, Host: t.key.host, Window: r.Window,
-		Session: r.Session, Port: r.Port, Label: label, Path: r.Path, Opened: g.clock.Now()}
-	a.Preview = id
+	a.Preview, a.Error = g.newPreviewLocked(t, r.Window, r.Session, r.Port, r.Label, r.Path)
 	return a
 }
 
@@ -252,7 +245,12 @@ type previewKey struct {
 	port   int
 }
 
+// deletePreviewLocked forgets p and ends its context, which cuts every
+// request and WebSocket of it in flight (lifecycle.go).
 func (g *Gateway) deletePreviewLocked(p *Preview) {
+	if p.cancel != nil {
+		p.cancel()
+	}
 	delete(g.previews, p.ID)
 	delete(g.previewBy, previewKey{tunnelKey{p.OwnerID, p.Host}, p.Window, p.Port})
 }

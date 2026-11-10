@@ -148,11 +148,24 @@ type gwEnv struct {
 	store  HostTokens
 	public *httptest.Server
 	mesh   *httptest.Server
+	// ports maps a port a fake host is asked to CONNECT to onto the real
+	// loopback port that serves it (int → int); an unmapped port is dialled
+	// as is. 5173 is mapped to appServer, so the offers the tests make at
+	// :5173 are listening, and an admitted request is answered by it.
+	ports sync.Map
+	// refuse makes a fake host refuse a CONNECT to a port with a reason
+	// (int → wire.Reason), as a real host's checks would.
+	refuse sync.Map
 }
 
+// serve makes a fake host's CONNECT to port reach real instead.
+func (e *gwEnv) serve(port, real int) { e.ports.Store(port, real) }
+
 type gwOpts struct {
-	tokens   []string // plugin tokens; default {"mpl_owner1"}
-	dialWait time.Duration
+	tokens    []string // plugin tokens; default {"mpl_owner1"}
+	dialWait  time.Duration
+	ttl, idle time.Duration // Config.TTL, Config.Idle; 0 = the defaults
+	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -171,10 +184,13 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	dir := t.TempDir()
 	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
-		Domain: testDomain, Listen: ":0", StateDir: dir}
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle}
+	if o.keepalive == 0 {
+		o.keepalive = time.Hour
+	}
 	fc := newFakeClock(time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC))
 	g, err := New(cfg, Options{Clock: fc, Muster: NewMusterClient(fm.srv.URL, "test"), DialWait: o.dialWait,
-		PingInterval: time.Hour})
+		PingInterval: time.Hour, StreamKeepalive: o.keepalive})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +200,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 		public: httptest.NewServer(g.PublicHandler()), mesh: httptest.NewServer(g.MeshHandler())}
 	t.Cleanup(e.public.Close)
 	t.Cleanup(e.mesh.Close)
+	e.serve(5173, appServer(t))
 	return e
 }
 
@@ -327,6 +344,13 @@ func (e *gwEnv) dialHost(t *testing.T, o dialOpts) (*fakeHost, *http.Response, e
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if why, ok := e.refuse.Load(port); ok {
+				wire.WriteRefusal(w, why.(wire.Reason))
+				return
+			}
+			if real, ok := e.ports.Load(port); ok {
+				port = real.(int)
+			}
 			up, err := net.DialTimeout("tcp", wire.ConnectAuthority(port), 2*time.Second)
 			if err != nil {
 				wire.WriteRefusal(w, wire.ReasonRefused)
@@ -419,6 +443,20 @@ func echoServer(t *testing.T) int {
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// appBody is what appServer answers: the app saw the request.
+const appBody = "app saw "
+
+// appServer is a loopback HTTP app answering 200 "app saw <path>" to every
+// request; it returns its port.
+func appServer(t *testing.T) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, appBody+r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
 // roundTrip writes msg on c and reads it back.

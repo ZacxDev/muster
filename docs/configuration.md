@@ -577,9 +577,8 @@ end to end, but does not encrypt it: send nothing secret.
 `muster-preview` is the gateway of [previews](design/previews.md#the-preview-gateway):
 each host running `muster-mirror -preview` opens one tunnel to it. The image
 ships it as `/muster-preview`; nothing runs it yet. It serves the session
-page and the owner's way onto a preview's host, but not the preview itself:
-the reverse proxy comes later, and an admitted request to a preview gets a
-placeholder `501`. What it does now:
+page, the owner's way onto a preview's host, and the preview itself through
+the host's tunnel. What it does:
 
 - **Two listeners.** `PREVIEW_LISTEN` is the public one (the host tunnel on
   `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; the session page on
@@ -630,9 +629,38 @@ placeholder `501`. What it does now:
   `p-<id>.<PREVIEW_DOMAIN>/__muster/enter`, which sets `__Host-mp`: signed
   with `PREVIEW_SIGNING_KEY`, bound to that preview and its owner, for 8 hours,
   never renewed except by a fresh chip click; `SameSite=Strict` for a new tab,
-  `SameSite=None; Partitioned` in muster's frame. **Open** on an offer creates
-  the preview and tells the host; before that click, a preview's name answers
-  404 and nothing is dialled.
+  `SameSite=None; Partitioned` in muster's frame. **Open** on an offer probes
+  the port (one `CONNECT` on the host's tunnel: nothing listening is
+  `not_listening`, a port the host refuses is its reason), then creates the
+  preview and tells the host; before that click, a preview's name answers
+  404 and nothing is dialled. **Close** on the page ends a preview at once:
+  its open connections are cut and its cookies stop admitting.
+- **The proxy.** An admitted request is proxied over HTTP/1.1 to the app on
+  the host's loopback port, streaming both ways (server-sent events and other
+  streamed responses are flushed as they arrive). The app sees
+  `Host: localhost:<port>`, the public host in `X-Forwarded-Host` and
+  `X-Forwarded-Proto: https`, and never the gateway's or muster's cookies,
+  `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-*`, `True-Client-IP` or
+  `X-Muster-*`; the viewer's address is not forwarded. Responses lose any
+  cookie `Domain`, the app's `Strict-Transport-Security` and its
+  `Referrer-Policy` (always `no-referrer`), and gain `frame-ancestors` with
+  `MUSTER_PUBLIC_URL`'s origin. WebSockets (HMR) are relayed message by
+  message, with a ping to the browser every 30 s; a quiet event stream gets a
+  `:` comment line after 30 s, only between events. An app's own error is the
+  app's response; the gateway's own (`host_offline`, `not_answering`,
+  `upstream_timeout`, `max_conns`, …) are a page naming the code only.
+- **Same-site defences.** Every preview shares one registrable domain, so a
+  request carrying a preview's cookie must be same-origin, a typed URL, or a
+  `GET` navigation of a document or frame (`Sec-Fetch-*`); anything else from
+  another site or another preview is refused `403 cross_site`. A WebSocket
+  must carry its own preview's `Origin`; without `Sec-Fetch-*`, so must every
+  method but `GET` and `HEAD`. A `Cookie` header over 8 KiB gets a page that
+  expires every cookie it names, host-only and at `Domain=<PREVIEW_DOMAIN>`.
+- **Limits and lifecycle.** At most 4 open previews per window, 16 per owner,
+  and the host's `maxOpen` per host (8 if it sent none), on an agent's
+  `preview_open` and on **Open** alike (`max_open`). A preview closes after
+  `PREVIEW_IDLE` with no request (an open WebSocket or stream counts as one),
+  and `PREVIEW_TTL` after it opened, whatever its use; its host is told.
 - **No database.** Previews and entry codes are in memory; a restart closes
   the previews.
 - **Metric:** `muster_preview_tunnels{path}`.
@@ -647,6 +675,8 @@ placeholder `501`. What it does now:
 | `PREVIEW_MESH_LISTEN` | none | no | The mesh listener's address; unset, there is none. Must differ from `PREVIEW_LISTEN`. A tunnel arriving here is on the `mesh` path. |
 | `STATE_DIR` | none | yes | A writable directory (a volume): `host-tokens.json` (each token's sha256, owner id and login label, host) and its lock `host-tokens.lock`. |
 | `PREVIEW_SIGNING_KEY` | none | yes | At least 32 bytes (`openssl rand -hex 32`). Signs the owner cookies (`__Host-mp`) and the session page's page tokens (HMAC-SHA256). Rotating it ends every owner cookie and open session page at once. |
+| `PREVIEW_TTL` | `24h` | no | A preview closes this long after it opened, in use or not; reopening mints a new id. A Go duration, at least `1m`. |
+| `PREVIEW_IDLE` | `2h` | no | A preview with no request for this long closes; an open WebSocket or streamed response counts as a request in progress. A Go duration, at least `1m`. |
 
 ## Test and e2e harness
 

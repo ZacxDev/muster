@@ -16,9 +16,8 @@ package previewgw
 // exist is 404 BEFORE anything else: an offer the owner never clicked Open on
 // has no preview, so its would-be host serves nothing and opens no stream.
 //
-// ⚠ NOT HERE YET (G3b): the reverse proxy behind the cookie check (a
-// placeholder answers instead), the Sec-Fetch-Site / Origin same-site
-// defences, the cookie-bomb page and the lifecycle timers.
+// Behind the cookie: the same-site defences (samesite.go) and the reverse
+// proxy (proxy.go).
 
 import (
 	"crypto/rand"
@@ -142,14 +141,18 @@ func (g *Gateway) previewOwner(id string) (owner int64, path string, ok bool) {
 }
 
 // ownerAdmitted reports whether r carries an owner cookie for preview id,
-// signed for its owner and unexpired.
-func (g *Gateway) ownerAdmitted(r *http.Request, id string, owner int64) bool {
+// signed for its owner and unexpired, and when it expires.
+func (g *Gateway) ownerAdmitted(r *http.Request, id string, owner int64) (time.Time, bool) {
+	now := g.clock.Now()
 	for _, c := range r.Cookies() {
-		if c.Name == OwnerCookie && g.sign.checkOwnerCookie(c.Value, id, owner, g.clock.Now()) {
-			return true
+		if c.Name != OwnerCookie {
+			continue
+		}
+		if exp, ok := g.sign.checkOwnerCookie(c.Value, id, owner, now); ok {
+			return exp, true
 		}
 	}
-	return false
+	return time.Time{}, false
 }
 
 // startPath is where /__muster/check sends an admitted owner: the preview's
@@ -174,55 +177,67 @@ func startPath(p string) string {
 	return p
 }
 
-// previewHandler serves p-<id>.<zone>.
+// previewHandler serves p-<id>.<zone>, in this order: 404 for a preview
+// that is not open (nothing is dialled); the entry route (its one-time code
+// is its credential, so neither check below applies); the cookie-bomb page;
+// the same-site check (samesite.go); the owner cookie; then the proxy.
 func (g *Gateway) previewHandler(id string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.gatewayPageHeaders(w)
 		owner, path, ok := g.previewOwner(id)
 		if !ok {
 			// No such preview (never opened, closed, or its owner no longer
 			// served): nothing here, and nothing is dialled.
+			g.gatewayPageHeaders(w)
 			http.NotFound(w, r)
 			return
 		}
-		switch r.URL.Path {
-		case enterPath:
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			who, ok := g.spendEntryCode(r.URL.Query().Get("g"), id)
-			if !ok {
-				g.renderNotice(w, http.StatusForbidden, "This link has been used or has expired",
-					"Open the preview again from its session page in muster.")
-				return
-			}
-			v, err := g.sign.mintOwnerCookie(id, who, g.clock.Now())
-			if err != nil {
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			http.SetCookie(w, ownerCookieHeader(v, r.Header.Get("Sec-Fetch-Dest")))
-			http.Redirect(w, r, checkPath, http.StatusSeeOther)
+		if r.URL.Path == enterPath {
+			g.enterPreview(w, r, id)
 			return
-		case checkPath:
-			if !g.ownerAdmitted(r, id, owner) {
-				g.renderNotice(w, http.StatusForbidden, "This browser blocks embedded previews",
-					"Open it in a new tab from the session page in muster.")
+		}
+		if cookieLen(r) > MaxCookieHeader {
+			g.cookieBomb(w, r)
+			return
+		}
+		if code := crossSiteRefusal(r, g.previewOrigin(id)); code != "" {
+			g.renderCode(w, http.StatusForbidden, code)
+			return
+		}
+		exp, admitted := g.ownerAdmitted(r, id, owner)
+		if r.URL.Path == checkPath {
+			if !admitted {
+				g.renderCode(w, http.StatusForbidden, codeFrameBlocked)
 				return
 			}
+			g.gatewayPageHeaders(w)
 			http.Redirect(w, r, startPath(path), http.StatusSeeOther)
 			return
 		}
-		if !g.ownerAdmitted(r, id, owner) {
-			g.renderNotice(w, http.StatusForbidden, "Session expired",
-				"Open the preview again from muster.")
+		if !admitted {
+			g.renderCode(w, http.StatusForbidden, codeSessionExpired)
 			return
 		}
-		// ⚠ PLACEHOLDER UNTIL G3b: the reverse proxy to the host's port goes
-		// here. Nothing is dialled yet.
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusNotImplemented)
-		_, _ = w.Write([]byte("preview admitted; the proxy is not built yet\n"))
+		g.serveAdmitted(w, r, id, exp)
 	})
+}
+
+// enterPreview spends an entry code and sets the owner cookie.
+func (g *Gateway) enterPreview(w http.ResponseWriter, r *http.Request, id string) {
+	g.gatewayPageHeaders(w)
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	who, ok := g.spendEntryCode(r.URL.Query().Get("g"), id)
+	if !ok {
+		g.renderCode(w, http.StatusForbidden, codeEntryUsed)
+		return
+	}
+	v, err := g.sign.mintOwnerCookie(id, who, g.clock.Now())
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, ownerCookieHeader(v, r.Header.Get("Sec-Fetch-Dest")))
+	http.Redirect(w, r, checkPath, http.StatusSeeOther)
 }

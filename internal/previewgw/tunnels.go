@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ type Tunnel struct {
 	client    *tunnel.Client
 	ctx       context.Context
 	answers   chan pendingAnswer // to answerWorker; bounded (answerQueue)
+	rt        *http.Transport    // the proxy's upstream connections on this tunnel (proxy.go)
 
 	mu        sync.Mutex
 	state     HostState
@@ -47,7 +49,12 @@ type Tunnel struct {
 }
 
 // Close ends the tunnel.
-func (t *Tunnel) Close() { _ = t.client.Close() }
+func (t *Tunnel) Close() {
+	if t.rt != nil {
+		t.rt.CloseIdleConnections()
+	}
+	_ = t.client.Close()
+}
 
 // Done is closed when the tunnel has ended.
 func (t *Tunnel) Done() <-chan struct{} { return t.client.Done() }
@@ -127,6 +134,11 @@ func (g *Gateway) unregister(t *Tunnel) {
 // drain stops new streams going to t (it is no longer the key's tunnel) and
 // closes it when its last stream ends, or after DrainTimeout.
 func (g *Gateway) drain(t *Tunnel) {
+	// Idle pooled upstream connections would hold the drain open, and serve
+	// nothing new: new requests go to the replacing tunnel.
+	if t.rt != nil {
+		t.rt.CloseIdleConnections()
+	}
 	t.mu.Lock()
 	t.draining = true
 	idle := t.streams == 0
@@ -153,6 +165,20 @@ func (g *Gateway) Dial(ctx context.Context, owner int64, host string, port int) 
 	if t == nil {
 		return nil, ErrHostOffline
 	}
+	return t.dialHeld(ctx, port)
+}
+
+// dial opens one upstream connection to port on t itself (the proxy's
+// transport for t), holding t open while it lives.
+func (t *Tunnel) dial(ctx context.Context, port int) (net.Conn, error) {
+	t.mu.Lock()
+	t.streams++
+	t.mu.Unlock()
+	return t.dialHeld(ctx, port)
+}
+
+// dialHeld dials port on t for a stream already counted in t.streams.
+func (t *Tunnel) dialHeld(ctx context.Context, port int) (net.Conn, error) {
 	c, err := t.client.Dial(ctx, port)
 	if err != nil {
 		t.streamDone()

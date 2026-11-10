@@ -6,6 +6,7 @@ package previewgw
 //	GET  /__muster/enter?muster_code=…&muster_plugin=…   redeem; render the page
 //	GET  /__muster/list   (Authorization: Bearer <page token>)  the list, as HTML
 //	POST /__muster/open   (Authorization: Bearer <page token>)  {preview} | {port} → {url}
+//	POST /__muster/close  (Authorization: Bearer <page token>)  {preview} → {closed}
 //	GET  /                "open this from muster"
 //
 // 🔴 w. NEVER SETS A COOKIE. The page's credential is a page token
@@ -19,9 +20,10 @@ package previewgw
 // (owner, host, window) the hand-off named. Another window's are not listed
 // and cannot be opened with this page's token.
 //
-// ⚠ G3b: Open on an offer records the preview and tells the host (G2's open
-// path, unsolicited), but the gateway-side probe and the open limits
-// (per window, per owner, per host) arrive with the proxy.
+// Open on an offer probes the port (one CONNECT on the host's tunnel) and is
+// held to the open limits (lifecycle.go) before it records the preview and
+// tells the host. Close ends a preview at once. The API routes answer an
+// error as a bare code (^[a-z_]{1,32}$), never an error's text.
 
 import (
 	"context"
@@ -39,12 +41,16 @@ import (
 	gm "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
 const (
-	listPath = "/__muster/list"
-	openPath = "/__muster/open"
+	listPath  = "/__muster/list"
+	openPath  = "/__muster/open"
+	closePath = "/__muster/close"
+	// ProbeWait bounds Open-on-offer's CONNECT probe.
+	ProbeWait = 5 * time.Second
 	// PollEvery is how often the session page refreshes its list while it is
 	// visible.
 	PollEvery = 5 * time.Second
@@ -54,10 +60,25 @@ const (
 	redeemTimeout = 10 * time.Second
 )
 
-var (
-	errTooManyCodes = errors.New("previewgw: too many unspent entry codes")
-	errNoSuchOffer  = errors.New("previewgw: no such offer in this window")
+var errTooManyCodes = errors.New("previewgw: too many unspent entry codes")
+
+// Codes the session page's API answers (besides the open codes).
+const (
+	codeNoSuchOffer   = "no_such_offer"
+	codeNoSuchPreview = "no_such_preview"
+	codeNotListening  = "not_listening"
+	codeProbeFailed   = "probe_failed"
+	codeBadRequest    = "bad_request"
+	codeUnauthorized  = "page_expired"
+	codeTooManyOpens  = "too_many_opens"
 )
+
+// apiError answers a session-page API call with a bare code.
+func apiError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(code))
+}
 
 // frameAncestor is MUSTER_PUBLIC_URL's origin (scheme://host[:port]): the
 // only page that may frame w. and the gateway's own p- pages.
@@ -144,12 +165,12 @@ func (g *Gateway) webHandler() http.Handler {
 			g.gatewayPageHeaders(w)
 			c, ok := g.pageClaimOf(r)
 			if !ok {
-				http.Error(w, "the page token is missing or expired", http.StatusUnauthorized)
+				apiError(w, http.StatusUnauthorized, codeUnauthorized)
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_ = g.windowList(c).Render(w)
-		case openPath:
+		case openPath, closePath:
 			g.gatewayPageHeaders(w)
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -157,7 +178,11 @@ func (g *Gateway) webHandler() http.Handler {
 			}
 			c, ok := g.pageClaimOf(r)
 			if !ok {
-				http.Error(w, "the page token is missing or expired", http.StatusUnauthorized)
+				apiError(w, http.StatusUnauthorized, codeUnauthorized)
+				return
+			}
+			if r.URL.Path == closePath {
+				g.closeRoute(w, r, c)
 				return
 			}
 			g.open(w, r, c)
@@ -319,7 +344,8 @@ func (g *Gateway) windowList(c pageClaim) gm.Node {
 			label = "preview"
 		}
 		items = append(items, Li(Data("kind", "preview"),
-			Span(Class("what"), gm.Text(label+" · :"+strconv.Itoa(p.Port))), buttons(Data("preview", p.ID))))
+			Span(Class("what"), gm.Text(label+" · :"+strconv.Itoa(p.Port))), buttons(Data("preview", p.ID)),
+			Button(Type("button"), Data("close", p.ID), gm.Text("Close"))))
 	}
 	for _, o := range s.offers {
 		items = append(items, Li(Data("kind", "offer"),
@@ -346,7 +372,7 @@ func (g *Gateway) open(w http.ResponseWriter, r *http.Request, c pageClaim) {
 	var in openIn
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil ||
 		(in.Preview == "") == (in.Port == 0) {
-		http.Error(w, `the body is {"preview": "<id>"} or {"port": <n>}`, http.StatusBadRequest)
+		apiError(w, http.StatusBadRequest, codeBadRequest)
 		return
 	}
 	id := in.Preview
@@ -356,23 +382,23 @@ func (g *Gateway) open(w http.ResponseWriter, r *http.Request, c pageClaim) {
 		ok = ok && p.OwnerID == c.Owner && p.Host == c.Host && p.Window == c.Window
 		g.mu.Unlock()
 		if !ok {
-			http.Error(w, "no such preview in this window", http.StatusNotFound)
+			apiError(w, http.StatusNotFound, codeNoSuchPreview)
 			return
 		}
 	} else {
-		var err error
-		if id, err = g.openOffer(c, in.Port); err != nil {
-			code := http.StatusNotFound
-			if errors.Is(err, ErrHostOffline) {
-				code = http.StatusServiceUnavailable
+		var code string
+		if id, code = g.openOffer(r.Context(), c, in.Port); code != "" {
+			st, ok := openStatus[code]
+			if !ok {
+				st = http.StatusInternalServerError
 			}
-			http.Error(w, err.Error(), code)
+			apiError(w, st, code)
 			return
 		}
 	}
 	code, err := g.mintEntryCode(id, c.Owner)
 	if err != nil {
-		http.Error(w, "too many pending opens; try again in a minute", http.StatusTooManyRequests)
+		apiError(w, http.StatusTooManyRequests, codeTooManyOpens)
 		return
 	}
 	u := "https://p-" + id + "." + g.cfg.Domain + enterPath + "?" + url.Values{"g": {code}}.Encode()
@@ -380,17 +406,83 @@ func (g *Gateway) open(w http.ResponseWriter, r *http.Request, c pageClaim) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"url": u, "preview": id})
 }
 
+// openStatus is the HTTP status of each Open-on-offer refusal code.
+var openStatus = map[string]int{
+	codeNoSuchOffer:                    http.StatusNotFound,
+	codeHostOffline:                    http.StatusServiceUnavailable,
+	codeMaxOpen:                        http.StatusConflict,
+	codeNotListening:                   http.StatusBadGateway,
+	codeProbeFailed:                    http.StatusBadGateway,
+	string(wire.ReasonPortNotAllowed):  http.StatusForbidden,
+	string(wire.ReasonForeignListener): http.StatusForbidden,
+	string(wire.ReasonMaxConns):        http.StatusTooManyRequests,
+}
+
+// closeRoute is Close: {preview} of the claim's window, closed at once.
+func (g *Gateway) closeRoute(w http.ResponseWriter, r *http.Request, c pageClaim) {
+	var in struct {
+		Preview string `json:"preview"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil || in.Preview == "" {
+		apiError(w, http.StatusBadRequest, codeBadRequest)
+		return
+	}
+	if !g.closeFromPage(c, in.Preview) {
+		apiError(w, http.StatusNotFound, codeNoSuchPreview)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"closed":true}` + "\n"))
+}
+
 // openOffer opens a preview of the offer (claim's window, port): it must be a
 // listener the host currently reports in that window. One preview per
-// (owner, host, window, port), as for an agent's open; a new one is told to
-// the host unsolicited (an Answer without a request id), so the agent's
-// preview_list includes it.
-func (g *Gateway) openOffer(c pageClaim, port int) (string, error) {
+// (owner, host, window, port), as for an agent's open: a repeat answers the
+// existing id. A new one must pass the open limits, then a CONNECT PROBE on
+// the host's tunnel (the host's own checks, and something listening), and
+// only then is it recorded and told to the host unsolicited (an Answer
+// without a request id), so the agent's preview_list includes it. It answers
+// the id, or a refusal code.
+func (g *Gateway) openOffer(ctx context.Context, c pageClaim, port int) (string, string) {
+	t, l, id, code := g.findOffer(c, port)
+	if code != "" || id != "" {
+		return id, code
+	}
+	pctx, cancel := context.WithTimeout(ctx, ProbeWait)
+	conn, err := t.dial(pctx, port)
+	cancel()
+	if err != nil {
+		return "", probeCode(err)
+	}
+	conn.Close()
+	// Re-checked after the probe: the tunnel may have gone, another open of
+	// the same offer may have won, or the limits filled meanwhile.
 	g.mu.Lock()
+	if g.byKey[t.key] != t || !g.liveOwnerLocked(c.Owner) {
+		g.mu.Unlock()
+		return "", codeHostOffline
+	}
+	if id, ok := g.previewBy[previewKey{t.key, c.Window, port}]; ok {
+		g.mu.Unlock()
+		return id, ""
+	}
+	id, code = g.newPreviewLocked(t, c.Window, c.Session, port, l.Process, "")
+	g.mu.Unlock()
+	if code != "" {
+		return "", code
+	}
+	g.queueAnswer(t, wire.OpenedPath, wire.Answer{Preview: id, Window: c.Window, Port: port})
+	return id, ""
+}
+
+// findOffer finds the claim's tunnel and its offer of port. It answers the
+// existing preview's id for a repeat, a refusal code, or neither (probe it).
+func (g *Gateway) findOffer(c pageClaim, port int) (*Tunnel, wire.Listener, string, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	t := g.byKey[tunnelKey{c.Owner, c.Host}]
 	if t == nil || !g.liveOwnerLocked(c.Owner) {
-		g.mu.Unlock()
-		return "", ErrHostOffline
+		return nil, wire.Listener{}, "", codeHostOffline
 	}
 	t.mu.Lock()
 	i := slices.IndexFunc(t.state.Listeners, func(l wire.Listener) bool { return l.Window == c.Window && l.Port == port })
@@ -400,25 +492,29 @@ func (g *Gateway) openOffer(c pageClaim, port int) (string, error) {
 	}
 	t.mu.Unlock()
 	if i < 0 {
-		g.mu.Unlock()
-		return "", errNoSuchOffer
+		return nil, l, "", codeNoSuchOffer
 	}
-	pk := previewKey{t.key, c.Window, port}
-	if id, ok := g.previewBy[pk]; ok {
-		g.mu.Unlock()
-		return id, nil
+	if id, ok := g.previewBy[previewKey{t.key, c.Window, port}]; ok {
+		return t, l, id, ""
 	}
-	id, err := newPreviewID()
-	if err != nil {
-		g.mu.Unlock()
-		return "", err
+	if g.openRefusedLocked(t, c.Window) {
+		return nil, l, "", codeMaxOpen
 	}
-	g.previewBy[pk] = id
-	g.previews[id] = &Preview{ID: id, OwnerID: c.Owner, Host: c.Host, Window: c.Window, Session: c.Session,
-		Port: port, Label: l.Process, Opened: g.clock.Now()}
-	g.mu.Unlock()
-	g.queueAnswer(t, wire.OpenedPath, wire.Answer{Preview: id, Window: c.Window, Port: port})
-	return id, nil
+	return t, l, "", ""
+}
+
+// probeCode is the refusal code of a failed probe.
+func probeCode(err error) string {
+	var re *tunnel.RefusedError
+	switch {
+	case errors.As(err, &re) && re.Reason == wire.ReasonRefused:
+		return codeNotListening
+	case errors.As(err, &re) && re.Reason != "":
+		return string(re.Reason)
+	case errors.Is(err, tunnel.ErrClosed), errors.Is(err, tunnel.ErrPeerUnresponsive):
+		return codeHostOffline
+	}
+	return codeProbeFailed
 }
 
 // sessionScript is the session page's whole script. It reads the page token
@@ -442,6 +538,10 @@ function poll(){if(dead||document.hidden)return;api('/__muster/list').then(funct
 timer=setInterval(poll,boot.poll_ms);
 document.addEventListener('visibilitychange',function(){if(!document.hidden)poll();});
 list.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||dead)return;
+ if(b.dataset.close){status.textContent='Closing…';status.className='note';
+  api('/__muster/close',{preview:b.dataset.close}).then(function(r){if(r.status===401){expired();throw 0;}
+   if(!r.ok)return r.text().then(function(t){throw t;});status.textContent='';poll();})
+  .catch(function(t){if(!dead){status.textContent=typeof t==='string'?t:'The preview could not be closed.';status.className='err';}});return;}
  var body=b.dataset.preview?{preview:b.dataset.preview}:{port:parseInt(b.dataset.port,10)};
  var tab=b.dataset.how==='tab'?window.open('','_blank'):null;if(tab)tab.opener=null;
  status.textContent='Opening…';status.className='note';
