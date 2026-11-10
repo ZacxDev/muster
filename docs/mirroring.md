@@ -612,7 +612,7 @@ box, a Claude Code send, an answer typed into Claude Code's question picker —
 it walks the pane's process tree from its root process, at that moment, and
 refuses when the tree holds:
 
-- an opencode on the pane's terminal ([below](#muster-does-not-send-to-opencode-yet));
+- an opencode on the pane's terminal ([below](#muster-never-types-into-opencode));
 - a terminal multiplexer client: `tmux`, `screen`, `dtach`, `abduco` or
   `zellij`. A tmux started inside the pane can show a session of another
   server, whose programs the host cannot see from this pane, so the host
@@ -630,7 +630,7 @@ types. It does not depend on the server's version. Shells, Claude Code and
 other programs are otherwise unaffected. A host with no `/proc` (macOS)
 cannot see processes, and types as before.
 
-### muster does not send to opencode yet
+### muster never types into opencode
 
 🔴 The same host guard refuses to type into a pane whose process tree holds
 [opencode](https://github.com/anomalyco/opencode): a process whose name or
@@ -1217,7 +1217,9 @@ yet.
 
 A host started with `-interactive` **and** `-agent-spawn`
 (`MUSTER_MIRROR_AGENT_SPAWN`), on its **default** tmux server, lets your chief
-start a Claude Code agent there — or, on a tenant's mirror that also opts in
+start a Claude Code agent there (or an opencode one, when the host also has
+`-opencode-send`, an opencode token, `opencode` on its tmux server's `PATH` and
+an absolute path to its muster-mirror binary, [above](#sending-to-opencode)) — or, on a tenant's mirror that also opts in
 with `-agent-spawn-tenant-server`, into that tenant's tmux server (below) ([design](design/chief-dispatch.md), section 3).
 It is off by default, because it starts a process on the host, and it does
 nothing until you also list repositories:
