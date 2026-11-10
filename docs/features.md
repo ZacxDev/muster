@@ -563,8 +563,9 @@ deletes it. [provisioner.md](provisioner.md).
 - **Not available in the Compose stack.** `docker-compose.yml` does not forward
   `MUSTER_AGENT_PROVISIONER`, `MUSTER_AGENT_GATEWAY`, `MUSTER_AGENT_KINDS` or the
   rest of the agent settings ([configuration.md](configuration.md#muster-server-agent-provisioning)),
-  since they cannot work there. In the Compose stack the sidebar says "Agent
-  dispatch not set up".
+  since they cannot work there. muster has no dispatch UI on any install (no
+  sidebar "+" and no hint in its place): a Kubernetes chief starts agents with
+  `agent_dispatch`, or `muster agent create` does.
 - **Check:** `agent provisioning: LIFECYCLE …` instead of `UNWIRED`.
 
 ### Agent gateway
