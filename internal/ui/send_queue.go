@@ -580,8 +580,8 @@ func sendQueueRetryForm(it SendQueueItem) g.Node {
 // SendQueueRetryConfirmPage is a whole document asking once before a message
 // that may already have been sent is queued again: the browser's own answer
 // to a Retry posted without the confirm (no script ran). It posts to action
-// with field=1.
-func SendQueueRetryConfirmPage(action, field, question, back string) g.Node {
+// with field=1. brand is the instance's, for the page's favicon.
+func SendQueueRetryConfirmPage(action, field, question, back string, brand Brand) g.Node {
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -589,7 +589,7 @@ func SendQueueRetryConfirmPage(action, field, question, back string) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(brand),
 				TitleEl(g.Text("Queue it again? · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),

@@ -217,7 +217,7 @@ func (s *Server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
 	if s.inviteRefusal(w, r) {
 		return
 	}
-	writeAuthDocument(w, http.StatusOK, "You are invited", fragmentForm(InvitePath, "You are invited to muster",
+	writeAuthDocument(w, http.StatusOK, s.uiBrand(r.Context()), "You are invited", fragmentForm(InvitePath, "You are invited to muster",
 		"Continue to set up your account.", "Continue", true, `<input type="hidden" name="step" value="open">`, "", ""))
 }
 
@@ -238,7 +238,7 @@ func (s *Server) renderInviteForm(w http.ResponseWriter, code int, token string,
 	if locked {
 		email = inv.Email
 	}
-	writeAuthDocument(w, code, "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Create your muster account</h1>
 <p class="text-sm text-fg2">You are joining as a member. This link works once.</p>
 `+problemNode(problem)+`
@@ -421,16 +421,16 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 	if s.inviteRefusal(w, r) {
 		return
 	}
-	renderResetForm(w, http.StatusOK, "", "")
+	s.renderResetForm(w, http.StatusOK, "", "")
 }
 
-func renderResetForm(w http.ResponseWriter, code int, token, problem string) {
+func (s *Server) renderResetForm(w http.ResponseWriter, code int, token, problem string) {
 	pw := func(id, name, label string) string {
 		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
 <input id="` + id + `" name="` + name + `" type="password" autocomplete="new-password" required
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, "Set a new password", fragmentForm(ResetPath, "Set a new password",
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Set a new password", fragmentForm(ResetPath, "Set a new password",
 		"This link works once.", "Set password", false,
 		pw("reset-password", "password", "New password (at least 12 characters)")+pw("reset-password2", "password2", "New password again"),
 		token, problem))
@@ -465,7 +465,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		if len(pw) >= gotrue.MinPasswordLength {
 			msg = "The two passwords are different."
 		}
-		renderResetForm(w, http.StatusBadRequest, token, msg)
+		s.renderResetForm(w, http.StatusBadRequest, token, msg)
 		return
 	}
 	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)

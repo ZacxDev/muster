@@ -29,6 +29,8 @@ type SendAgainView struct {
 	Button string
 	// BackHref is where Cancel goes: the view it came from.
 	BackHref string
+	// Brand is the instance's branding, for the page's favicon and touch icon.
+	Brand Brand
 }
 
 // SendAgainPage is a whole document with one form: the browser's own answer
@@ -49,7 +51,7 @@ func SendAgainPage(v SendAgainView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(v.Brand),
 				TitleEl(g.Text("Send it again? · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),

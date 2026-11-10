@@ -3,6 +3,7 @@ package ui
 import (
 	"io"
 	"net/url"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -13,7 +14,37 @@ import (
 // install button, app badge, and the composer a share or shortcut opens.
 // ---------------------------------------------------------------------------
 
-// manifestLink is the <link rel=manifest> every document carries.
+// docHead is the head furniture every document carries: the manifest link,
+// and the favicon and touch icon (brandIconLinks — the logo's when one is set,
+// muster's own otherwise).
+//
+// 🔴 ONE HELPER, SO A DOCUMENT CANNOT HAVE ONE WITHOUT THE OTHER. In 0.187.0
+// every document head spelled manifestLink() and only two of them also spelled
+// brandIconLinks, so the landing page (the chief's agent page) had no favicon
+// at all. Every document head calls this, and nothing else calls the two
+// (TestDocumentHeadsHaveOneSpelling, TestEveryDocumentLinksTheBrandIcon).
+func docHead(b Brand) g.Node {
+	return g.Group{manifestLink(), brandIconLinks(b)}
+}
+
+// DocHeadHTML is docHead as a raw string, for internal/api's hand-written
+// documents (writeAuthDocument: sign-in, claim, invite, reset, notice), the way
+// ThemeHeadHTML carries ThemeHead there. It renders docHead itself, so the
+// link markup has one spelling.
+//
+// The manifest link is included on those signed-out pages on purpose: the
+// manifest is the same for every caller and needs no session
+// (internal/api's TestPWAMetadataIsSessionIndependent), so linking it from a
+// signed-out page exposes nothing. A link does not change what a forward-auth
+// proxy lets through (docs/auth.md keeps /manifest.webmanifest behind its
+// sign-in): the browser's fetch of it is answered by the proxy like any other.
+func DocHeadHTML(b Brand) string {
+	var sb strings.Builder
+	_ = docHead(b).Render(&sb)
+	return sb.String()
+}
+
+// manifestLink is the <link rel=manifest>; documents get it through docHead.
 //
 // 🔴 crossorigin="use-credentials" IS LOAD-BEARING, AND THE REASON IS BLINK, NOT
 // THE EDGE. Chromium fetches the manifest in CORS mode with credentials OMITTED

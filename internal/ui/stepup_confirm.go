@@ -246,6 +246,8 @@ type StepUpFormView struct {
 	Window string
 	// Error is why the last attempt was not accepted; "" on the first showing.
 	Error string
+	// Brand is the instance's branding, for the page's favicon and touch icon.
+	Brand Brand
 }
 
 // StepUpFormPage is a whole document with one form: the password again, and
@@ -264,7 +266,7 @@ func StepUpFormPage(v StepUpFormView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(v.Brand),
 				TitleEl(g.Text("Confirm it's you · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),
