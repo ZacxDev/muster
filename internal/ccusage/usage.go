@@ -18,13 +18,27 @@
 // (a full-scope claude.ai login) answered 200 in exactly that shape,
 // with `five_hour` null (no session window open) and dozens of other null keys.
 //
-// ⚠ UNVERIFIED FOR A `setup-token`. The pool's tokens are `claude setup-token`
-// tokens, which the CLI mints inference-only (scope `user:inference`); the CLI
-// itself skips this call for a token without `user:profile`. What the endpoint
-// answers such a token is not measured here: a 401 or 403 is recorded on the
-// account ([KindUnauthorized], [KindForbidden]) and the account is not polled
-// again until its token changes, so a pool of inference-only tokens costs one
-// call per account, not one per interval.
+// 🔴 A `setup-token` IS REFUSED THERE. The pool's tokens are `claude
+// setup-token` tokens, which the CLI mints inference-only (scope
+// `user:inference`); the endpoint answers them 403 `permission_error` ("OAuth
+// token does not meet scope requirement user:profile"), measured against a
+// pool token, and it rate-limits hard (429 with a Retry-After of about an
+// hour). So an account's token gets ONE discovery call to it; a 2xx keeps the
+// endpoint for that token, a 401/403 retires it for that token for good.
+//
+// # The probe (every other token)
+//
+// [ProbeURL] is a minimal inference call — `POST /v1/messages`, max_tokens 1,
+// one user message, on [ProbeModel] — which a setup-token CAN make, and whose
+// answer carries the subscription's state in `anthropic-ratelimit-unified-*`
+// headers ([ParseRateLimitHeaders]): per window (`5h` five_hour, `7d`
+// seven_day, `7d_oi` seven_day_overage_included, `overage`; the CLI bundle's
+// own map) `-utilization` (a 0-1 FRACTION, stored here ×100 as a percent like
+// the endpoint's), `-reset` (unix seconds) and `-status`, plus the overall
+// `-status`, `-reset` and `-representative-claim`. A window whose headers are
+// absent is absent (a measured 200 carried 7d headers and no 5h ones). It costs
+// one output token of quota, so its default interval is 15 minutes, and an
+// account the pool marks rate-limited is not probed until its reset.
 //
 // 🔴 A READING HOLDS NO CREDENTIAL. The token is read from the account pool at
 // the moment of the call and sent in one header; no error, log line or stored
@@ -36,14 +50,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Endpoint is Claude Code's `/usage` endpoint (see the package doc).
 const Endpoint = "https://api.anthropic.com/api/oauth/usage"
+
+// ProbeURL and ProbeModel are the one-token probe (see the package doc).
+const (
+	ProbeURL   = "https://api.anthropic.com/v1/messages"
+	ProbeModel = "claude-haiku-4-5-20251001"
+	// anthropicVersion is the Messages API version the probe names.
+	anthropicVersion = "2023-06-01"
+)
+
+// Where a reading came from (Row.Source).
+const (
+	SourceUsageAPI         = "usage_api"
+	SourceRateLimitHeaders = "ratelimit_headers"
+)
 
 // BetaHeader is the anthropic-beta value the CLI sends with an OAuth bearer.
 const BetaHeader = "oauth-2025-04-20"
@@ -72,12 +103,19 @@ const (
 type Window struct {
 	Utilization *float64   `json:"utilization"`
 	ResetsAt    *time.Time `json:"resets_at"`
+	// Status is the window's own status from the probe's headers ("allowed",
+	// "allowed_warning", "rejected"); "" from the usage endpoint.
+	Status string `json:"status,omitempty"`
 }
 
-// Reading is one answer of the endpoint: its windows, by name. A window the
-// endpoint sent as null is absent.
+// Reading is one answer: its windows, by name (a window sent as null, or
+// with no headers, is absent), and — from the probe's headers only — the
+// overall status, the window that decides it and when it resets.
 type Reading struct {
-	Windows map[string]Window
+	Windows             map[string]Window
+	Status              string
+	RepresentativeClaim string
+	ResetsAt            *time.Time
 }
 
 // ErrNotUsage is a body that is not a usage answer: not a JSON object, or an
@@ -228,4 +266,78 @@ func safeWord(s string) string {
 		return "unknown"
 	}
 	return b.String()
+}
+
+// headerWindows is the CLI bundle's map from a window's name to its header
+// abbreviation.
+var headerWindows = [][2]string{{FiveHour, "5h"}, {SevenDay, "7d"}, {"seven_day_overage_included", "7d_oi"}, {"overage", "overage"}}
+
+const unifiedPrefix = "anthropic-ratelimit-unified-"
+
+// ParseRateLimitHeaders reads the `anthropic-ratelimit-unified-*` headers of a
+// Messages answer (see the package doc). ok is false when the answer carries
+// none of them. A garbage value is dropped (that value only): a utilization
+// that is not a finite number in [0, 100], a reset that is not unix seconds, a
+// status that is not a short word.
+func ParseRateLimitHeaders(h http.Header) (Reading, bool) {
+	r := Reading{Windows: map[string]Window{}}
+	any := false
+	for _, w := range headerWindows {
+		var win Window
+		if v, ok := headerNumber(h, unifiedPrefix+w[1]+"-utilization"); ok && v >= 0 && v <= 100 {
+			pct := math.Round(v*100*1e4) / 1e4
+			win.Utilization = &pct
+		}
+		if t, ok := headerUnix(h, unifiedPrefix+w[1]+"-reset"); ok {
+			win.ResetsAt = &t
+		}
+		win.Status = headerWord(h, unifiedPrefix+w[1]+"-status")
+		if win.Utilization != nil || win.ResetsAt != nil || win.Status != "" {
+			r.Windows[w[0]] = win
+			any = true
+		}
+	}
+	if s := headerWord(h, unifiedPrefix+"status"); s != "" {
+		r.Status, any = s, true
+	}
+	if c := headerWord(h, unifiedPrefix+"representative-claim"); c != "" {
+		r.RepresentativeClaim, any = c, true
+	}
+	if t, ok := headerUnix(h, unifiedPrefix+"reset"); ok {
+		r.ResetsAt, any = &t, true
+	}
+	return r, any
+}
+
+func headerNumber(h http.Header, name string) (float64, bool) {
+	v := strings.TrimSpace(h.Get(name))
+	if v == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	// NaN and ±Inf parse, and fail every caller's range check (a NaN compares
+	// false to both bounds).
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// headerUnix reads unix seconds between 2000 and 2200.
+func headerUnix(h http.Header, name string) (time.Time, bool) {
+	f, ok := headerNumber(h, name)
+	if !ok || f < 946684800 || f > 7258118400 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(math.Round(f)), 0).UTC(), true
+}
+
+var wordRE = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+
+func headerWord(h http.Header, name string) string {
+	v := strings.ToLower(strings.TrimSpace(h.Get(name)))
+	if !wordRE.MatchString(v) {
+		return ""
+	}
+	return v
 }

@@ -18,7 +18,7 @@ type ccUsageConfig struct {
 	// (MUSTER_CC_USAGE_POLL=1; off by default: it calls the provider's usage
 	// endpoint with each account's token).
 	On bool
-	// Interval is MUSTER_CC_USAGE_POLL_INTERVAL (ccusage.DefaultInterval, 5m,
+	// Interval is MUSTER_CC_USAGE_POLL_INTERVAL (ccusage.DefaultInterval, 15m,
 	// by default), from ccusage.MinInterval to ccusage.MaxInterval.
 	Interval time.Duration
 }

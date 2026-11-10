@@ -4,11 +4,17 @@
 --   cc_account_usage   one row per (owner, account) the usage poller has
 --       read: the latest GOOD reading's windows (`windows`, a JSON object
 --       {"five_hour": {"utilization": <percent>, "resets_at": "<RFC 3339>"},
---       "seven_day": {...}, ...}) and when it was taken (`read_at`), plus what
+--       "seven_day": {...}, ...}; a probe's window also carries its "status"),
+--       where it came from (`source`: 'usage_api', the endpoint Claude Code's
+--       /usage reads, or 'ratelimit_headers', a one-token probe's
+--       anthropic-ratelimit-unified-* headers), the probe's overall `status`
+--       and `representative_claim`, and when it was taken (`read_at`), plus what
 --       the latest attempt made of it — `checked_at`, `error_kind` and a short
 --       `error` sentence, the attempted token's fingerprint (`token_fp`: a
 --       401/403 holds only while the token is unchanged), the 429 streak and
---       the earliest next attempt (`next_poll_at`).
+--       the earliest next attempt (`next_poll_at`), and the usage endpoint's
+--       state for the current token (`usage_api`: '' untried, 'ok', 'refused')
+--       with its own rest after a 429 (`usage_api_next_at`).
 --
 -- 🔴 NUMBERS ONLY. No column holds a token, a response body or a header:
 -- `token_fp` is ccpool.Fingerprint (12 hex characters of a sha256), exactly
@@ -37,12 +43,21 @@ CREATE TABLE IF NOT EXISTS public.cc_account_usage (
                       CONSTRAINT cc_account_usage_account_check CHECK (account ~ '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$'),
     windows           JSONB       NOT NULL DEFAULT '{}'::jsonb
                       CONSTRAINT cc_account_usage_windows_check CHECK (jsonb_typeof(windows) = 'object'),
+    source            TEXT        NOT NULL DEFAULT ''
+                      CONSTRAINT cc_account_usage_source_check CHECK (source IN ('', 'usage_api', 'ratelimit_headers')),
+    status            TEXT        NOT NULL DEFAULT ''
+                      CONSTRAINT cc_account_usage_status_check CHECK (status ~ '^[a-z0-9_]{0,40}$'),
+    representative_claim TEXT     NOT NULL DEFAULT ''
+                      CONSTRAINT cc_account_usage_claim_check CHECK (representative_claim ~ '^[a-z0-9_]{0,40}$'),
+    usage_api         TEXT        NOT NULL DEFAULT ''
+                      CONSTRAINT cc_account_usage_usage_api_check CHECK (usage_api IN ('', 'ok', 'refused')),
+    usage_api_next_at TIMESTAMPTZ,
     read_at           TIMESTAMPTZ,
     checked_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- ccusage.Kinds.
     error_kind        TEXT        NOT NULL DEFAULT ''
                       CONSTRAINT cc_account_usage_error_kind_check
-                      CHECK (error_kind IN ('', 'no_token', 'unauthorized', 'forbidden', 'rate_limited', 'error')),
+                      CHECK (error_kind IN ('', 'no_token', 'unauthorized', 'forbidden', 'rate_limited', 'cooling', 'error')),
     error             TEXT        NOT NULL DEFAULT ''
                       CONSTRAINT cc_account_usage_error_cap CHECK (char_length(error) <= 300),
     token_fp          TEXT        NOT NULL DEFAULT ''

@@ -60,6 +60,9 @@ func (s *Server) requireUsageReader(next http.HandlerFunc) http.HandlerFunc {
 type ccUsageWindow struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    *string  `json:"resets_at"`
+	// Status is the window's own status from the probe's headers
+	// ("allowed", "allowed_warning", "rejected"); absent from the usage endpoint.
+	Status string `json:"status,omitempty"`
 }
 
 // ccUsageAccount is one account on the wire.
@@ -75,9 +78,17 @@ type ccUsageAccount struct {
 	// Error and ErrorKind say why the latest attempt produced no reading
 	// (ccusage.Kind*); absent after a good one. The numbers above are then the
 	// last good reading's.
-	Error     string         `json:"error,omitempty"`
-	ErrorKind string         `json:"error_kind,omitempty"`
-	UsedBy    ccusage.UsedBy `json:"used_by"`
+	Error     string `json:"error,omitempty"`
+	ErrorKind string `json:"error_kind,omitempty"`
+	// Source is where the numbers came from: "usage_api" (the endpoint
+	// Claude Code's /usage reads) or "ratelimit_headers" (a one-token probe's
+	// anthropic-ratelimit-unified-* headers); absent before the first reading.
+	Source string `json:"source,omitempty"`
+	// Status and RepresentativeClaim are the probe's overall status and the
+	// window deciding it; absent from the usage endpoint.
+	Status              string         `json:"status,omitempty"`
+	RepresentativeClaim string         `json:"representative_claim,omitempty"`
+	UsedBy              ccusage.UsedBy `json:"used_by"`
 }
 
 type ccUsageAnswer struct {
@@ -97,7 +108,7 @@ func rfc3339(t time.Time) *string {
 }
 
 func wireWindow(w ccusage.Window) ccUsageWindow {
-	out := ccUsageWindow{Utilization: w.Utilization}
+	out := ccUsageWindow{Utilization: w.Utilization, Status: w.Status}
 	if w.ResetsAt != nil {
 		out.ResetsAt = rfc3339(*w.ResetsAt)
 	}
@@ -151,6 +162,7 @@ func (s *Server) ccUsageAccounts(ctx context.Context, owner int64, now time.Time
 			}
 			a.ReadAt, a.CheckedAt = rfc3339(r.ReadAt), rfc3339(r.CheckedAt)
 			a.Error, a.ErrorKind = r.Error, r.ErrorKind
+			a.Source, a.Status, a.RepresentativeClaim = r.Source, r.Status, r.RepresentativeClaim
 		}
 		out = append(out, a)
 	}
@@ -227,6 +239,9 @@ func (s *Server) writeCCUsageSection(b *strings.Builder, r *http.Request) {
 		read := "never read"
 		if a.ReadAt != nil {
 			read = "read " + *a.ReadAt
+			if a.Source != "" {
+				read += " (" + a.Source + ")"
+			}
 		}
 		b.WriteString(`<span class="text-xs text-muted">` + html.EscapeString(read) + `</span>`)
 		if a.Error != "" {

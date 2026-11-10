@@ -15,15 +15,15 @@ func ccUsageEnv(kv map[string]string) func(string) string {
 // duration, or set with the poller off is a boot refusal naming the variable.
 func TestCCUsagePollerIsOffByDefaultAndBounded(t *testing.T) {
 	c, err := parseCCUsage(ccUsageEnv(nil))
-	if err != nil || c.On || c.Interval != 5*time.Minute {
-		t.Fatalf("unset: %+v %v; want off at 5m", c, err)
+	if err != nil || c.On || c.Interval != 15*time.Minute {
+		t.Fatalf("unset: %+v %v; want off at 15m", c, err)
 	}
-	c, err = parseCCUsage(ccUsageEnv(map[string]string{envCCUsagePoll: "1", envCCUsagePollInterval: "90s"}))
-	if err != nil || !c.On || c.Interval != 90*time.Second {
-		t.Fatalf("on at 90s: %+v %v", c, err)
+	c, err = parseCCUsage(ccUsageEnv(map[string]string{envCCUsagePoll: "1", envCCUsagePollInterval: "5m"}))
+	if err != nil || !c.On || c.Interval != 5*time.Minute {
+		t.Fatalf("on at 5m (the floor): %+v %v", c, err)
 	}
 	for _, bad := range []map[string]string{
-		{envCCUsagePoll: "1", envCCUsagePollInterval: "30s"},
+		{envCCUsagePoll: "1", envCCUsagePollInterval: "4m59s"},
 		{envCCUsagePoll: "1", envCCUsagePollInterval: "25h"},
 		{envCCUsagePoll: "1", envCCUsagePollInterval: "often"},
 		{envCCUsagePollInterval: "10m"},

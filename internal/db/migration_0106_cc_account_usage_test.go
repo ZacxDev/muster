@@ -32,6 +32,9 @@ func TestMigration0106CCAccountUsage(t *testing.T) {
 		`INSERT INTO cc_account_usage (owner_id, account, windows) VALUES (1, 'beta', '[1]')`,
 		`INSERT INTO cc_account_usage (owner_id, account) VALUES (1, 'Bad Name')`,
 		`INSERT INTO cc_account_usage (owner_id, account, rate_limit_streak) VALUES (1, 'beta', -1)`,
+		`INSERT INTO cc_account_usage (owner_id, account, source) VALUES (1, 'beta', 'guess')`,
+		`INSERT INTO cc_account_usage (owner_id, account, usage_api) VALUES (1, 'beta', 'maybe')`,
+		`INSERT INTO cc_account_usage (owner_id, account, status) VALUES (1, 'beta', 'Allowed; --')`,
 	} {
 		if _, err := pool.Exec(ctx, bad); err == nil {
 			t.Errorf("accepted %s", bad)

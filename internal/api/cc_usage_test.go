@@ -46,6 +46,7 @@ func newCCUsageFixture(t *testing.T) (http.Handler, *scopedTokens, *fakeCCUsage)
 	reset := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
 	store := &fakeCCUsage{rows: map[string]ccusage.Row{
 		"alpha": {Account: "alpha", ReadAt: time.Now().Add(-time.Minute), CheckedAt: time.Now().Add(-time.Minute),
+			Source: ccusage.SourceRateLimitHeaders, Status: "allowed", RepresentativeClaim: "seven_day", UsageAPI: ccusage.UsageAPIRefused,
 			TokenFP: "0123456789ab", Windows: map[string]ccusage.Window{
 				ccusage.FiveHour: {Utilization: pct(42), ResetsAt: &reset},
 				ccusage.SevenDay: {Utilization: pct(17.5), ResetsAt: &reset},
@@ -157,6 +158,12 @@ func TestCCAccountUsageAnswersNumbersAndWhoUsedIt(t *testing.T) {
 		t.Fatalf("answer: %+v", got)
 	}
 	a := got.Accounts[0]
+	if a.Source != ccusage.SourceRateLimitHeaders || a.Status != "allowed" || a.RepresentativeClaim != "seven_day" {
+		t.Fatalf("alpha source/status: %+v", a)
+	}
+	if strings.Contains(body, `"usage_api_next_at"`) || strings.Contains(body, `"usage_api":`) {
+		t.Fatalf("the answer carries the poller's internal state: %s", body)
+	}
 	if a.FiveHour == nil || *a.FiveHour.Utilization != 42 || *a.FiveHour.ResetsAt != "2026-11-10T20:00:00Z" ||
 		a.SevenDay == nil || *a.SevenDay.Utilization != 17.5 || a.Windows["seven_day_opus"].Utilization == nil || a.ReadAt == nil || a.Error != "" {
 		t.Fatalf("alpha: %+v", a)

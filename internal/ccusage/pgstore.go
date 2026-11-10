@@ -22,7 +22,8 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // Latest implements Store.
 func (s *PGStore) Latest(ctx context.Context, owner int64) (map[string]Row, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT account, windows, read_at, checked_at, error_kind, error, token_fp, rate_limit_streak, next_poll_at
+		SELECT account, windows, source, status, representative_claim, read_at, checked_at, error_kind, error, token_fp,
+		       usage_api, usage_api_next_at, rate_limit_streak, next_poll_at
 		FROM cc_account_usage WHERE owner_id = $1`, owner)
 	if err != nil {
 		return nil, err
@@ -32,8 +33,9 @@ func (s *PGStore) Latest(ctx context.Context, owner int64) (map[string]Row, erro
 	for rows.Next() {
 		var r Row
 		var raw []byte
-		var readAt, next *time.Time
-		if err := rows.Scan(&r.Account, &raw, &readAt, &r.CheckedAt, &r.ErrorKind, &r.Error, &r.TokenFP, &r.RateLimitStreak, &next); err != nil {
+		var readAt, next, apiNext *time.Time
+		if err := rows.Scan(&r.Account, &raw, &r.Source, &r.Status, &r.RepresentativeClaim, &readAt, &r.CheckedAt, &r.ErrorKind,
+			&r.Error, &r.TokenFP, &r.UsageAPI, &apiNext, &r.RateLimitStreak, &next); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(raw, &r.Windows); err != nil {
@@ -44,6 +46,9 @@ func (s *PGStore) Latest(ctx context.Context, owner int64) (map[string]Row, erro
 		}
 		if next != nil {
 			r.NextAt = *next
+		}
+		if apiNext != nil {
+			r.UsageAPINextAt = *apiNext
 		}
 		out[r.Account] = r
 	}
@@ -62,14 +67,17 @@ func (s *PGStore) Save(ctx context.Context, owner int64, r Row) error {
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO cc_account_usage (owner_id, account, windows, read_at, checked_at, error_kind, error, token_fp,
-		                              rate_limit_streak, next_poll_at, updated_at)
-		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, now())
+		                              rate_limit_streak, next_poll_at, source, status, representative_claim,
+		                              usage_api, usage_api_next_at, updated_at)
+		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
 		ON CONFLICT (owner_id, account) DO UPDATE SET
 			windows = EXCLUDED.windows, read_at = EXCLUDED.read_at, checked_at = EXCLUDED.checked_at,
+			source = EXCLUDED.source, status = EXCLUDED.status, representative_claim = EXCLUDED.representative_claim,
+			usage_api = EXCLUDED.usage_api, usage_api_next_at = EXCLUDED.usage_api_next_at,
 			error_kind = EXCLUDED.error_kind, error = EXCLUDED.error, token_fp = EXCLUDED.token_fp,
 			rate_limit_streak = EXCLUDED.rate_limit_streak, next_poll_at = EXCLUDED.next_poll_at, updated_at = now()`,
 		owner, r.Account, string(raw), nullTime(r.ReadAt), r.CheckedAt, r.ErrorKind, r.Error, r.TokenFP,
-		r.RateLimitStreak, nullTime(r.NextAt))
+		r.RateLimitStreak, nullTime(r.NextAt), r.Source, r.Status, r.RepresentativeClaim, r.UsageAPI, nullTime(r.UsageAPINextAt))
 	return err
 }
 

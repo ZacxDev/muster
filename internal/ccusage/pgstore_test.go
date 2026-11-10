@@ -39,8 +39,9 @@ func TestPGStoreRoundTripsAndKeepsOwnersApart(t *testing.T) {
 
 	reset := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
 	at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	in := Row{Account: "alpha", ReadAt: at, CheckedAt: at, TokenFP: "0123456789ab",
-		Windows: map[string]Window{FiveHour: {Utilization: f(42.5), ResetsAt: &reset}, SevenDay: {Utilization: f(3)}}}
+	in := Row{Account: "alpha", ReadAt: at, CheckedAt: at, TokenFP: "0123456789ab", Source: SourceRateLimitHeaders,
+		Status: "allowed", RepresentativeClaim: "seven_day", UsageAPI: UsageAPIRefused, UsageAPINextAt: reset,
+		Windows: map[string]Window{FiveHour: {Utilization: f(42.5), ResetsAt: &reset, Status: "allowed"}, SevenDay: {Utilization: f(3)}}}
 	if err := st.Save(ctx, 1, in); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,9 @@ func TestPGStoreRoundTripsAndKeepsOwnersApart(t *testing.T) {
 	}
 	g := got["alpha"]
 	if *g.Windows[FiveHour].Utilization != 42.5 || !g.Windows[FiveHour].ResetsAt.Equal(reset) || g.Windows[SevenDay].ResetsAt != nil ||
-		!g.ReadAt.Equal(at) || !g.NextAt.IsZero() || g.TokenFP != in.TokenFP {
+		!g.ReadAt.Equal(at) || !g.NextAt.IsZero() || g.TokenFP != in.TokenFP || g.Source != SourceRateLimitHeaders ||
+		g.Status != "allowed" || g.RepresentativeClaim != "seven_day" || g.UsageAPI != UsageAPIRefused ||
+		!g.UsageAPINextAt.Equal(reset) || g.Windows[FiveHour].Status != "allowed" {
 		t.Fatalf("round trip: %+v", g)
 	}
 	next := at.Add(time.Hour)

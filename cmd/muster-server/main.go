@@ -551,6 +551,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
 	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool, plane: plane}
+	// The usage poller does not probe an account the pool marks cooling down
+	// after a rate limit: the probe spends that account's quota.
+	if a.ccUsage != nil && ccPool != nil {
+		a.ccUsage.Cooling = ccPool.CoolingUntil
+	}
 	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, plane, logger)
 	if err != nil {
 		a.Close()
@@ -1737,9 +1742,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// The poller is refused at boot without its pool and database
 	// (ccUsageRefusal), so ON here is ON for real.
 	if ext.CCUsageInterval > 0 {
-		l.Printf("claude account usage: ON (%s=1) — every %s each of the admin's pooled Claude accounts is read from %s "+
-			"with its own token; numbers only, in cc_account_usage, served at %s", envCCUsagePoll, ext.CCUsageInterval,
-			ccusage.Endpoint, api.CCAccountUsagePath)
+		l.Printf("claude account usage: ON (%s=1) — every %s each of the admin's pooled Claude accounts is read with its own "+
+			"token, from %s when the token may use it, else from a one-token probe of %s (one output token of quota per read; "+
+			"never an account the pool marks cooling); numbers only, in cc_account_usage, served at %s", envCCUsagePoll,
+			ext.CCUsageInterval, ccusage.Endpoint, ccusage.ProbeURL, api.CCAccountUsagePath)
 	} else {
 		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)
 	}

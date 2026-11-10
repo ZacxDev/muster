@@ -1,6 +1,7 @@
 package ccusage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,29 +22,46 @@ import (
 const (
 	// KindNoToken: the account has no token to read with. No call is made.
 	KindNoToken = "no_token"
-	// KindUnauthorized: the endpoint answered 401. The account is NOT polled
-	// again until its token changes (a different fingerprint).
+	// KindUnauthorized: the PROBE answered 401 — the token cannot make an
+	// inference call at all. Not read again until its token changes.
 	KindUnauthorized = "unauthorized"
-	// KindForbidden: the endpoint answered 403 — expected for a token without
-	// the profile scope (see the package doc). Not polled again until its
-	// token changes.
+	// KindForbidden: the probe answered 403. Not read again until its token
+	// changes. (A 403 from the usage endpoint is not this: it only retires the
+	// endpoint for the token, Row.UsageAPI.)
 	KindForbidden = "forbidden"
-	// KindRateLimited: the endpoint answered 429. The account backs off
+	// KindRateLimited: the probe answered 429. The account backs off
 	// (Row.NextAt), doubling per consecutive 429, at least Retry-After.
 	KindRateLimited = "rate_limited"
-	// KindError: anything else (a 5xx, a network error, an answer that is not
-	// a usage answer). The next pass tries again.
+	// KindCooling: the account pool marks the account rate-limited (a turn on
+	// it hit its limit) and its cooldown has not ended, so it is not probed
+	// until then (Row.NextAt).
+	KindCooling = "cooling"
+	// KindError: anything else (a 5xx, a network error, an answer with no
+	// rate-limit headers). The next pass tries again.
 	KindError = "error"
 )
 
 // Kinds is every ErrorKind a row may hold ("" included), in the order the
 // migration's CHECK spells them (TestKindsMatchTheMigration).
-var Kinds = []string{"", KindNoToken, KindUnauthorized, KindForbidden, KindRateLimited, KindError}
+var Kinds = []string{"", KindNoToken, KindUnauthorized, KindForbidden, KindRateLimited, KindCooling, KindError}
 
-// Poll interval bounds and default (MUSTER_CC_USAGE_POLL_INTERVAL).
+// The usage endpoint's state for an account's CURRENT token (Row.UsageAPI).
 const (
-	DefaultInterval = 5 * time.Minute
-	MinInterval     = time.Minute
+	// UsageAPIUntried: never called with this token; the next read makes the
+	// one discovery call.
+	UsageAPIUntried = ""
+	// UsageAPIOK: a call with this token succeeded; it is read that way.
+	UsageAPIOK = "ok"
+	// UsageAPIRefused: the endpoint refused this token (401/403, a setup-token
+	// without the profile scope); it is never called with it again.
+	UsageAPIRefused = "refused"
+)
+
+// Poll interval bounds and default (MUSTER_CC_USAGE_POLL_INTERVAL). The probe
+// spends a token of quota per account per read, hence 15 minutes.
+const (
+	DefaultInterval = 15 * time.Minute
+	MinInterval     = 5 * time.Minute
 	MaxInterval     = 24 * time.Hour
 	// MaxBackoff caps a rate-limited account's wait.
 	MaxBackoff = 6 * time.Hour
@@ -55,10 +73,18 @@ const (
 // attempt made of it. Numbers and short reasons only: no token, no body.
 type Row struct {
 	Account string
-	// Windows and ReadAt are the latest GOOD reading (kept through later
-	// failed attempts); ReadAt zero for never.
+	// Windows, Source, Status, RepresentativeClaim and ReadAt are the latest
+	// GOOD reading (kept through later failed attempts); ReadAt zero for never.
 	Windows map[string]Window
-	ReadAt  time.Time
+	// Source is where the reading came from: SourceUsageAPI or
+	// SourceRateLimitHeaders ("" for none yet).
+	Source string
+	// Status and RepresentativeClaim are the probe's overall
+	// `anthropic-ratelimit-unified-status` / `-representative-claim` ("" from
+	// the usage endpoint).
+	Status              string
+	RepresentativeClaim string
+	ReadAt              time.Time
 	// CheckedAt is the latest attempt, good or not.
 	CheckedAt time.Time
 	// ErrorKind and Error say why the latest attempt produced no reading
@@ -66,10 +92,14 @@ type Row struct {
 	ErrorKind string
 	Error     string
 	// TokenFP is the ccpool.Fingerprint of the token the latest attempt used:
-	// a 401/403 holds only while the token is unchanged.
+	// a refusal, a backoff and UsageAPI hold only while the token is unchanged.
 	TokenFP string
-	// RateLimitStreak is the consecutive 429s; NextAt the earliest next attempt
-	// (zero: the next pass).
+	// UsageAPI is the usage endpoint's state for this token (UsageAPI*), and
+	// UsageAPINextAt when it may be called again after a 429 from it.
+	UsageAPI       string
+	UsageAPINextAt time.Time
+	// RateLimitStreak is the probe's consecutive 429s; NextAt the earliest next
+	// attempt of any kind (zero: the next pass).
 	RateLimitStreak int
 	NextAt          time.Time
 }
@@ -80,56 +110,59 @@ type Store interface {
 	Save(ctx context.Context, owner int64, r Row) error
 }
 
-// Result is one call of the endpoint.
+// Result is one call of the usage endpoint or of the probe.
 type Result struct {
 	// Status is the HTTP status; 0 when no answer came (Err set).
 	Status int
-	// Reading is the parsed answer of a 200.
-	Reading Reading
+	// Reading is the parsed answer: the usage endpoint's body on a 200, or the
+	// probe's rate-limit headers on any status (HasReading says it had them).
+	Reading    Reading
+	HasReading bool
 	// RetryAfter is a 429's Retry-After, when it stated seconds.
 	RetryAfter time.Duration
-	// Err is a transport failure or an unreadable 200. It never carries the token.
+	// Err is a transport failure or an unreadable 200. It never carries the
+	// token or a body.
 	Err error
 }
 
-// Fetcher calls the endpoint with one token.
+// Fetcher makes the two calls with one token.
 type Fetcher interface {
-	Fetch(ctx context.Context, token string) Result
+	// Usage calls the usage endpoint.
+	Usage(ctx context.Context, token string) Result
+	// Probe makes the one-token Messages call and reads its headers.
+	Probe(ctx context.Context, token string) Result
 }
 
 // HTTPFetcher is the real Fetcher.
 type HTTPFetcher struct {
 	Client *http.Client
-	// URL is the endpoint; "" is [Endpoint].
-	URL string
+	// URL and ProbeURL are the endpoints; "" is [Endpoint] / [ProbeURL].
+	URL      string
+	ProbeURL string
 }
 
-// Fetch implements Fetcher.
+func (f HTTPFetcher) client() *http.Client {
+	if f.Client != nil {
+		return f.Client
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+// do sends req with token and returns the status, headers and (bounded) body.
 //
 // 🔴 THE TOKEN IS IN ONE HEADER AND NOWHERE ELSE. A transport error from
 // net/http names the URL, never a header; even so, only its class is kept
 // (errClass), so no error this returns can carry anything the request held.
-func (f HTTPFetcher) Fetch(ctx context.Context, token string) Result {
-	u := f.URL
-	if u == "" {
-		u = Endpoint
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return Result{Err: errors.New("ccusage: build the request")}
-	}
+// No body is ever logged or returned in an error.
+func (f HTTPFetcher) do(ctx context.Context, req *http.Request, token string) (Result, http.Header, []byte) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", BetaHeader)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "muster-ccusage")
-	c := f.Client
-	if c == nil {
-		c = &http.Client{Timeout: 15 * time.Second}
-	}
-	resp, err := c.Do(req)
+	resp, err := f.client().Do(req)
 	if err != nil {
-		return Result{Err: fmt.Errorf("ccusage: request failed (%s)", errClass(ctx, err))}
+		return Result{Err: fmt.Errorf("ccusage: request failed (%s)", errClass(ctx, err))}, nil, nil
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBody+1))
@@ -139,11 +172,24 @@ func (f HTTPFetcher) Fetch(ctx context.Context, token string) Result {
 			res.RetryAfter = time.Duration(s) * time.Second
 		}
 	}
-	if resp.StatusCode != http.StatusOK {
-		return res
-	}
 	if err != nil {
 		res.Err = errors.New("ccusage: the answer could not be read")
+	}
+	return res, resp.Header, body
+}
+
+// Usage implements Fetcher.
+func (f HTTPFetcher) Usage(ctx context.Context, token string) Result {
+	u := f.URL
+	if u == "" {
+		u = Endpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return Result{Err: errors.New("ccusage: build the request")}
+	}
+	res, _, body := f.do(ctx, req, token)
+	if res.Status != http.StatusOK || res.Err != nil {
 		return res
 	}
 	if len(body) > MaxResponseBody {
@@ -155,7 +201,29 @@ func (f HTTPFetcher) Fetch(ctx context.Context, token string) Result {
 		res.Err = err
 		return res
 	}
-	res.Reading = r
+	res.Reading, res.HasReading = r, true
+	return res
+}
+
+// probeBody is the probe's request: one output token, one user message.
+var probeBody = []byte(`{"model":"` + ProbeModel + `","max_tokens":1,"messages":[{"role":"user","content":"."}]}`)
+
+// Probe implements Fetcher. The answer's body is read (and dropped) only so
+// the connection can be reused; its headers are the reading.
+func (f HTTPFetcher) Probe(ctx context.Context, token string) Result {
+	u := f.ProbeURL
+	if u == "" {
+		u = ProbeURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(probeBody))
+	if err != nil {
+		return Result{Err: errors.New("ccusage: build the request")}
+	}
+	req.Header.Set("anthropic-version", anthropicVersion)
+	res, h, _ := f.do(ctx, req, token)
+	if h != nil {
+		res.Reading, res.HasReading = ParseRateLimitHeaders(h)
+	}
 	return res
 }
 
@@ -181,6 +249,11 @@ type Poller struct {
 	Source ccpool.Source
 	Store  Store
 	Fetch  Fetcher
+	// Cooling is when the account pool's rate-limit cooldown for an account
+	// ends (ccpool.Pool.CoolingUntil; zero when it is not cooling). nil: no
+	// account is ever cooling. A read error is logged and treated as cooling
+	// for one interval: the probe spends quota, so it fails toward not probing.
+	Cooling func(ctx context.Context, owner int64, account string) (time.Time, error)
 	// Owner is the user whose accounts are read: the operator (user 1), whose
 	// environment pool this is. Members' own accounts are not polled.
 	Owner    int64
@@ -245,14 +318,24 @@ func (p *Poller) Pass(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		now := p.now()
+		var cooling time.Time
+		if p.Cooling != nil {
+			c, err := p.Cooling(ctx, p.Owner, n)
+			if err != nil {
+				p.logf("ccusage: account %s: read the pool's cooldown (not probing it this pass): %v", n, err)
+				c = now.Add(p.interval())
+			}
+			cooling = c
+		}
 		before := prev[n]
-		row, changed := Step(ctx, before, n, acc[n], p.now(), p.Interval, p.Fetch)
+		row, changed := Step(ctx, before, n, acc[n], now, StepConfig{Interval: p.Interval, CoolingUntil: cooling}, p.Fetch)
 		if !changed {
 			continue
 		}
 		if row.ErrorKind != before.ErrorKind || row.Error != before.Error {
 			if row.ErrorKind == "" {
-				p.logf("ccusage: account %s: reading again", n)
+				p.logf("ccusage: account %s: reading again (%s)", n, row.Source)
 			} else {
 				p.logf("ccusage: account %s: %s", n, row.Error)
 			}
@@ -264,18 +347,40 @@ func (p *Poller) Pass(ctx context.Context) error {
 	return nil
 }
 
+func (p *Poller) interval() time.Duration {
+	if p.Interval <= 0 {
+		return DefaultInterval
+	}
+	return p.Interval
+}
+
+// StepConfig is what Step needs beside the row: the poll interval, and when
+// the account pool's cooldown for the account ends (zero: not cooling).
+type StepConfig struct {
+	Interval     time.Duration
+	CoolingUntil time.Time
+}
+
 // Step is one account's turn of a pass, pure but for fetch: the row to save
 // and whether there is one (false: nothing was attempted, prev stands).
 //
 //   - No token: KindNoToken, no call.
-//   - A 401 or 403 on THIS token (same fingerprint): no call — a refusal is
-//     not retried until the token is replaced, so a dead or inference-only
-//     token costs one call, not one per interval.
-//   - A backoff still running (NextAt after now) on this token: no call.
-//   - Otherwise one call, and the row records what it answered. A good
-//     answer replaces the windows; a failed one keeps the last good windows
-//     and their ReadAt.
-func Step(ctx context.Context, prev Row, account, token string, now time.Time, interval time.Duration, fetch Fetcher) (Row, bool) {
+//   - A 401 or 403 from the PROBE on this token: no call until the token is
+//     replaced (a dead token costs one call, not one per interval).
+//   - A wait still running (NextAt after now) on this token: no call.
+//   - The usage endpoint first, when this token has never been tried on it
+//     (one discovery call) or a call with it succeeded. A 2xx is the reading
+//     (SourceUsageAPI). A 401/403 retires the endpoint for this token and a
+//     429 rests it until Retry-After; both fall through to the probe.
+//   - The probe, unless the pool marks the account cooling (KindCooling, no
+//     call until the cooldown ends). Its rate-limit headers are the reading
+//     (SourceRateLimitHeaders); an overall status `rejected` waits until its
+//     reset. A 429 backs off (Backoff, at least Retry-After).
+//
+// A failed attempt keeps the last good reading; a 429 whose headers carry a
+// reading stores it, since those numbers are current.
+func Step(ctx context.Context, prev Row, account, token string, now time.Time, cfg StepConfig, fetch Fetcher) (Row, bool) {
+	interval := cfg.Interval
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -287,6 +392,7 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, i
 		}
 		r.CheckedAt, r.TokenFP, r.ErrorKind = now, "", KindNoToken
 		r.Error = "the account has no token in the pool"
+		r.UsageAPI, r.UsageAPINextAt = UsageAPIUntried, time.Time{}
 		r.RateLimitStreak, r.NextAt = 0, time.Time{}
 		return r, true
 	}
@@ -298,49 +404,100 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, i
 		if now.Before(prev.NextAt) {
 			return prev, false
 		}
+	} else {
+		// A replaced token starts over: untried on the usage endpoint, no backoff.
+		r.UsageAPI, r.UsageAPINextAt = UsageAPIUntried, time.Time{}
+		r.RateLimitStreak, r.NextAt = 0, time.Time{}
 	}
-	// A replaced token starts with no backoff: every case below sets the
-	// streak and NextAt itself (a 429 on a new token counts from 1).
-	res := fetch.Fetch(ctx, token)
-	r.CheckedAt, r.TokenFP = now, fp
+	r.TokenFP = fp
+	r.CheckedAt = now
+	tried := false // whether this step called anything (else nothing changes but the note)
+
+	if r.UsageAPI != UsageAPIRefused && !now.Before(r.UsageAPINextAt) {
+		tried = true
+		res := fetch.Usage(ctx, token)
+		switch {
+		case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
+			r.UsageAPI, r.UsageAPINextAt = UsageAPIOK, time.Time{}
+			good(&r, res.Reading, SourceUsageAPI, now)
+			return r, true
+		case res.Status == http.StatusUnauthorized || res.Status == http.StatusForbidden:
+			r.UsageAPI = UsageAPIRefused
+		case res.Status == http.StatusTooManyRequests:
+			r.UsageAPINextAt = now.Add(maxDur(res.RetryAfter, interval))
+		}
+	}
+
+	if now.Before(cfg.CoolingUntil) {
+		r.ErrorKind = KindCooling
+		r.Error = "the account pool marks the account rate-limited until " + cfg.CoolingUntil.UTC().Format(time.RFC3339) + "; it is not probed until then"
+		r.NextAt = cfg.CoolingUntil
+		if !tried && prev.ErrorKind == KindCooling && prev.NextAt.Equal(r.NextAt) && prev.TokenFP == fp {
+			return prev, false
+		}
+		return r, true
+	}
+
+	res := fetch.Probe(ctx, token)
 	switch {
-	case res.Status == http.StatusOK && res.Err == nil:
-		r.Windows, r.ReadAt = res.Reading.Windows, now
-		r.ErrorKind, r.Error = "", ""
-		r.RateLimitStreak, r.NextAt = 0, time.Time{}
+	case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
+		good(&r, res.Reading, SourceRateLimitHeaders, now)
+		if res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
+			r.NextAt = *res.Reading.ResetsAt
+		}
+	case res.Status >= 200 && res.Status < 300 && res.Err == nil:
+		r.ErrorKind, r.RateLimitStreak, r.NextAt = KindError, 0, time.Time{}
+		r.Error = "the probe's answer carried no rate-limit headers"
 	case res.Status == http.StatusUnauthorized:
-		r.ErrorKind = KindUnauthorized
-		r.Error = "the usage endpoint refused the account's token (HTTP 401); it is not read again until the token is replaced"
-		r.RateLimitStreak, r.NextAt = 0, time.Time{}
+		r.ErrorKind, r.RateLimitStreak, r.NextAt = KindUnauthorized, 0, time.Time{}
+		r.Error = "the probe was refused (HTTP 401): the token cannot make an inference call; it is not read again until it is replaced"
 	case res.Status == http.StatusForbidden:
-		r.ErrorKind = KindForbidden
-		r.Error = "the usage endpoint refused the account's token (HTTP 403; a setup-token may lack the profile scope the endpoint needs); it is not read again until the token is replaced"
-		r.RateLimitStreak, r.NextAt = 0, time.Time{}
+		r.ErrorKind, r.RateLimitStreak, r.NextAt = KindForbidden, 0, time.Time{}
+		r.Error = "the probe was refused (HTTP 403); the token is not read again until it is replaced"
 	case res.Status == http.StatusTooManyRequests:
 		r.RateLimitStreak = prev.RateLimitStreak + 1
 		if fp != prev.TokenFP {
 			r.RateLimitStreak = 1
 		}
-		wait := Backoff(interval, r.RateLimitStreak, res.RetryAfter)
-		r.NextAt = now.Add(wait)
+		r.NextAt = now.Add(Backoff(interval, r.RateLimitStreak, res.RetryAfter))
+		if res.HasReading {
+			// The 429's own headers are current numbers: keep them.
+			r.Windows, r.Source, r.ReadAt = res.Reading.Windows, SourceRateLimitHeaders, now
+			r.Status, r.RepresentativeClaim = res.Reading.Status, res.Reading.RepresentativeClaim
+			if rs := res.Reading.ResetsAt; res.Reading.Status == "rejected" && rs != nil && rs.After(r.NextAt) {
+				r.NextAt = *rs // the account is out of quota: not probed until its window resets
+			}
+		}
 		r.ErrorKind = KindRateLimited
-		r.Error = fmt.Sprintf("the usage endpoint answered 429 (%d in a row); next read after %s", r.RateLimitStreak, r.NextAt.UTC().Format(time.RFC3339))
+		r.Error = fmt.Sprintf("the probe answered 429 (%d in a row); next read after %s", r.RateLimitStreak, r.NextAt.UTC().Format(time.RFC3339))
 	default:
-		r.ErrorKind = KindError
-		r.RateLimitStreak, r.NextAt = 0, time.Time{}
+		r.ErrorKind, r.RateLimitStreak, r.NextAt = KindError, 0, time.Time{}
 		switch {
-		case res.Err != nil && res.Status == http.StatusOK:
-			r.Error = "the usage endpoint's answer could not be read: " + res.Err.Error()
 		case res.Err != nil:
 			r.Error = res.Err.Error()
 		default:
-			r.Error = fmt.Sprintf("the usage endpoint answered HTTP %d", res.Status)
+			r.Error = fmt.Sprintf("the probe answered HTTP %d", res.Status)
 		}
 	}
 	if len(r.Error) > maxError {
 		r.Error = r.Error[:maxError]
 	}
 	return r, true
+}
+
+// good stores a reading on r and clears its error and backoff.
+func good(r *Row, rd Reading, source string, now time.Time) {
+	r.Windows, r.Source, r.ReadAt = rd.Windows, source, now
+	r.Status, r.RepresentativeClaim = rd.Status, rd.RepresentativeClaim
+	r.ErrorKind, r.Error = "", ""
+	r.RateLimitStreak, r.NextAt = 0, time.Time{}
+}
+
+func maxDur(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // Backoff is a rate-limited account's wait after its streak-th consecutive
