@@ -7,6 +7,7 @@ import { test, expect } from '../lib/fixtures';
 import { chiefSuccessionFakePort, chiefSuccessionGitHubPort, chiefSuccessionPort, dsn, repoRoot } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { revealBox } from '../lib/composer';
 
 // A SUCCESSION FROM A SESSION'S VIEW (docs/design/chief-in-agent-view.md,
 // phase 2), on the operator's click path: an opencode window's Rendered view,
@@ -277,6 +278,10 @@ for (const vp of [
       const predURL = page.url();
 
       await toChief(page);
+      // A hand-opened opencode pane whose title binds it is now SENT to
+      // (docs/design/opencode-first-class.md), so on a phone its message box
+      // is collapsed behind "Type a message", as a Claude Code window's is.
+      await revealBox(page);
       const input = page.locator('#mv-input');
       await expect(input).toBeEnabled();
       const line = `E2E-SUCC-${vp.key}-${stamp}: copy the kickoff out of this session and run it in a new opencode session with ${MODEL} in ${REPO}, replacing this one`;

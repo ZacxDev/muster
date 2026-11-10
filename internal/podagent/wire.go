@@ -69,6 +69,18 @@ type responseObject struct {
 	Object string       `json:"object"`
 	Status string       `json:"status"`
 	Output []outputItem `json:"output"`
+	// Usage is the turn's tokens (WriteResponseUsage), absent when unknown.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is a settled turn's token usage, in the Anthropic split muster's
+// client reads (internal/agents turnusage.go): uncached input, output, cache
+// read and cache creation, summed over the turn's API calls.
+type Usage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
 // NativeToolItem is one tool call the agent ran itself during the turn,
@@ -119,7 +131,14 @@ func buildResponse(id string, items []ReplyItem) responseObject {
 // own message item; muster joins items with a blank line); tool calls are
 // streamed as native tool items.
 func WriteResponse(w http.ResponseWriter, id string, items []ReplyItem, stream bool) {
+	WriteResponseUsage(w, id, items, nil, stream)
+}
+
+// WriteResponseUsage is WriteResponse with the turn's token usage on
+// response.completed's response (nil: none, as WriteResponse writes).
+func WriteResponseUsage(w http.ResponseWriter, id string, items []ReplyItem, usage *Usage, stream bool) {
 	resp := buildResponse(id, items)
+	resp.Usage = usage
 	if !stream {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
@@ -133,7 +152,7 @@ func WriteResponse(w http.ResponseWriter, id string, items []ReplyItem, stream b
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
 	}
 	inProgress := resp
-	inProgress.Status, inProgress.Output = "in_progress", []outputItem{}
+	inProgress.Status, inProgress.Output, inProgress.Usage = "in_progress", []outputItem{}, nil
 	emit("response.created", map[string]any{"type": "response.created", "response": inProgress})
 	// Text deltas and tool items in turn order. A text item's output_index is
 	// its index in resp.Output (the completed event's); tool items take the

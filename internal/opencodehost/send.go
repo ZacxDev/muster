@@ -170,9 +170,15 @@ func (c *Client) removeSession(ctx context.Context, path string) error {
 // of it as muster reads.
 type Model struct {
 	ID         string `json:"id"`
+	ModelID    string `json:"modelID,omitempty"`
 	ProviderID string `json:"providerID"`
 	Status     string `json:"status,omitempty"`
 	Enabled    *bool  `json:"enabled,omitempty"`
+	// Limit is the model's token limits (Model.Info.limit): Context, its
+	// context window, is the readout's denominator (usage.go).
+	Limit struct {
+		Context int64 `json:"context"`
+	} `json:"limit"`
 }
 
 // Models is GET /api/model: every model the server can run now. ⚠ Upstream

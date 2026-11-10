@@ -61,12 +61,25 @@ const brandingBodyLimit = branding.MaxUploadBytes + 64<<10
 // tell which guard answered.
 var errBodyTooLarge = &branding.Error{Code: "body_too_large", Msg: "the upload is larger than 1 MiB"}
 
-// The cache lifetimes. /brand/* is linked with ?v=<etag> everywhere muster
-// draws it, so a change is a new URL and a day's cache costs nothing; the
-// instance document is short so a renamed server shows within minutes.
+// The cache lifetimes. Every link muster publishes to /brand/* — the pages,
+// the manifest, Web Push and the instance document — carries ?v=<etag>
+// (ui.Brand.Versioned), so a new logo is a new URL.
+//
+// 🔴 ONLY THAT URL IS LONG-CACHED. A request whose v is the current ETag names
+// these exact bytes forever, so it is immutable for 30 days. A request with no
+// v, or a stale one, is answered with the current image under no-cache: a CDN
+// (which caches .png by default) or a browser must revalidate it, so a logo
+// changed or reset at the origin is never served old from an edge for a day.
+// The ETag still answers that revalidation with a 304. A 404 is no-cache too.
+// The instance document is short so a renamed server shows within minutes.
 const (
-	brandImageMaxAge = "public, max-age=86400"
-	instanceMaxAge   = "public, max-age=300"
+	// brandImageVersioned is 30 days, not the year static assets get: a logo is
+	// admin content that may be withdrawn, and a reset does not reach a copy a
+	// CDN or browser already holds, so the window a withdrawn logo stays
+	// reachable at its old ?v= URL is bounded by this.
+	brandImageVersioned   = "public, max-age=2592000, immutable"
+	brandImageUnversioned = "no-cache"
+	instanceMaxAge        = "public, max-age=300"
 	// brandCacheTTL is how long a server reuses the row it read. A write on
 	// this server refreshes it at once; another replica sees it within this.
 	brandCacheTTL = 30 * time.Second
@@ -145,8 +158,9 @@ type InstanceDoc struct {
 	Logo *InstanceLogo `json:"logo"`
 }
 
-// InstanceLogo is the logo's three images (paths on this server) and the ETag
-// that changes whenever any of them does.
+// InstanceLogo is the logo's three images (paths on this server, each with
+// ?v=<etag> exactly as the pages link them) and the ETag that changes
+// whenever any of them does.
 type InstanceLogo struct {
 	URL     string `json:"url"`
 	Icon192 string `json:"icon192"`
@@ -161,7 +175,8 @@ func instanceDoc(b branding.Branding) InstanceDoc {
 		d.Name = &name
 	}
 	if b.HasLogo() {
-		d.Logo = &InstanceLogo{URL: BrandLogoPath, Icon192: BrandIcon192Path, Icon512: BrandIcon512Path, ETag: b.ETag}
+		ub := ui.Brand{ETag: b.ETag}
+		d.Logo = &InstanceLogo{URL: ub.Versioned(BrandLogoPath), Icon192: ub.Versioned(BrandIcon192Path), Icon512: ub.Versioned(BrandIcon512Path), ETag: b.ETag}
 	}
 	return d
 }
@@ -206,7 +221,12 @@ func (s *Server) serveBrandImage(w http.ResponseWriter, r *http.Request, pick fu
 	}
 	etag := `"` + b.ETag + `"`
 	h.Set("ETag", etag)
-	h.Set("Cache-Control", brandImageMaxAge)
+	// A stale v is not redirected: it is the current image, revalidated.
+	if r.URL.Query().Get("v") == b.ETag {
+		h.Set("Cache-Control", brandImageVersioned)
+	} else {
+		h.Set("Cache-Control", brandImageUnversioned)
+	}
 	if etagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -413,10 +433,10 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 		sb.WriteString(problemNode(msg))
 	}
 	if b.HasLogo() {
-		v := "?v=" + url.QueryEscape(b.ETag)
+		ub := ui.Brand{ETag: b.ETag}
 		sb.WriteString(`<div class="flex items-center gap-4" data-testid="branding-preview">
-<img src="` + BrandLogoPath + v + `" alt="Current logo" class="h-12 w-auto max-w-[10rem] rounded bg-bg object-contain p-1 ring-1 ring-inset ring-edge">
-<img src="` + BrandIcon192Path + v + `" alt="App icon" width="48" height="48" class="h-12 w-12 rounded-lg bg-bg ring-1 ring-inset ring-edge">
+<img src="` + ub.Versioned(BrandLogoPath) + `" alt="Current logo" class="h-12 w-auto max-w-[10rem] rounded bg-bg object-contain p-1 ring-1 ring-inset ring-edge">
+<img src="` + ub.Versioned(BrandIcon192Path) + `" alt="App icon" width="48" height="48" class="h-12 w-12 rounded-lg bg-bg ring-1 ring-inset ring-edge">
 </div>`)
 	} else {
 		sb.WriteString(`<p class="text-sm text-fg2" data-testid="branding-default">No logo set: pages show the muster mark.</p>`)
@@ -446,7 +466,7 @@ func (s *Server) loginBrandHTML(ctx context.Context) string {
 	var sb strings.Builder
 	sb.WriteString(`<div data-testid="login-brand" class="mb-4 flex flex-col items-center gap-2">`)
 	if b.HasLogo() {
-		sb.WriteString(`<img data-brand-logo src="` + BrandLogoPath + `?v=` + url.QueryEscape(b.ETag) + `" alt="" class="h-16 w-auto max-w-[12rem] object-contain">`)
+		sb.WriteString(`<img data-brand-logo src="` + ui.Brand{ETag: b.ETag}.Versioned(BrandLogoPath) + `" alt="" class="h-16 w-auto max-w-[12rem] object-contain">`)
 	}
 	if b.Name != "" {
 		sb.WriteString(`<p data-brand-name class="text-center text-lg font-semibold text-fg">` + html.EscapeString(b.Name) + `</p>`)

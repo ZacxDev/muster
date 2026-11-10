@@ -261,6 +261,10 @@ func TestAVerifiedListedRequestIsAnsweredWithTheWindowsSessions(t *testing.T) {
 	if n := f.turns.count(); n != 0 {
 		t.Fatalf("the chief took %d turn(s); muster answers a fleet-report request itself", n)
 	}
+	// The usage page's record: muster's own path, by name (chief_usage.go).
+	if h, _, _ := handledBy(t, f.routeFixture, m.ID); h != "fleet_report" {
+		t.Fatalf("handled by %q, want fleet_report", h)
+	}
 	got, err := f.plugins.Message(f.asOwner, m.ID)
 	if err != nil || got.Status != plugins.StatusDelivered || got.AgentID == nil || *got.AgentID != f.chief.ID || got.SettleReason == nil {
 		t.Fatalf("the message %+v (%v); want delivered to the chief and settled", got, err)

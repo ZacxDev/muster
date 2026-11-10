@@ -180,6 +180,10 @@ func TestAReviewOfAMergedPullRequestIsSettledOnArrival(t *testing.T) {
 	if r := settleReason(t, f.gatedFixture, m.ID); r != want {
 		t.Fatalf("settle reason %q; want %q", r, want)
 	}
+	// The usage page's record: muster's own path, by name (chief_usage.go).
+	if h, _, _ := handledBy(t, f.routeFixture, m.ID); h != "closed_pr" {
+		t.Fatalf("handled by %q, want closed_pr", h)
+	}
 	if f.askedAbout(t, m) {
 		t.Fatal("a review of a merged pull request raised a \"not acted on\" ask")
 	}

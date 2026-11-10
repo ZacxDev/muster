@@ -93,11 +93,13 @@ func everyExtensionOn(t *testing.T) *Server {
 	t.Helper()
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{
-		Agents:        stubAgentsStore{},
-		Notes:         struct{ notes.Store }{},
-		Connectors:    struct{ connectors.Store }{},
-		Flows:         struct{ flows.Store }{},
-		Plugins:       struct{ plugins.Store }{},
+		Agents:     stubAgentsStore{},
+		Notes:      struct{ notes.Store }{},
+		Connectors: struct{ connectors.Store }{},
+		Flows:      struct{ flows.Store }{},
+		// The plugin store with its routing-rule half (routing_rules.go's
+		// ruleStore, found by assertion), so routing_rule_propose is offered.
+		Plugins:       rulesPluginStore{},
 		Focus:         struct{ focus.Store }{},
 		Routes:        struct{ plugins.RouteStore }{},
 		Routing:       &Routing{},
@@ -143,4 +145,11 @@ func TestNoChiefToolCollidesWithTheGatewayRuntimesBuiltins(t *testing.T) {
 		t.Errorf("muster's chief tools collide with the gateway runtime's built-ins (or each other): %v — every "+
 			"gateway-runtime turn would fail with \"client tool name conflict\"", got)
 	}
+}
+
+// rulesPluginStore is a plugin store stub that also has the routing-rule half
+// (ruleStore): every gate open includes the rules.
+type rulesPluginStore struct {
+	plugins.Store
+	ruleStore
 }

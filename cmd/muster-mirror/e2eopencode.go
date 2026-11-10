@@ -40,7 +40,15 @@ import (
 //     resolver reads, docs/design/opencode-first-class.md),
 //     {"op": "delay", "ms"} (the server admits each prompt at once and
 //     answers it ms later: a send the host cannot confirm),
-//     {"op": "failcommands", "on"} (GET /api/command answers 500);
+//     {"op": "failcommands", "on"} (GET /api/command answers 500),
+//     {"op": "models", "models": [{"provider", "id", "context"}]} (what GET
+//     /api/model lists: each model's limit.context, none for a context of 0),
+//     {"op": "frame", "frame"} (an event frame sent verbatim, keeping the
+//     pending asks in step: a form.created raises a question);
+//
+//   - every reply the fake server took (an answered ask) is written to
+//     <dir>/replies.json on each listing, [{"path", "body"}] in order, for the
+//     spec to read;
 //
 //   - MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE adds opencode windows, one a
 //     line:
@@ -109,7 +117,12 @@ func syncOpenCodeOps() {
 		}
 		e2eOpenCode.applied = n
 		var op struct {
-			Op      string         `json:"op"`
+			Op     string `json:"op"`
+			Models []struct {
+				Provider string `json:"provider"`
+				ID       string `json:"id"`
+				Context  int64  `json:"context"`
+			} `json:"models"`
 			ID      string         `json:"id"`
 			Title   string         `json:"title"`
 			Parent  string         `json:"parent"`
@@ -119,6 +132,7 @@ func syncOpenCodeOps() {
 			Window  string         `json:"window"`
 			MS      int            `json:"ms"`
 			On      bool           `json:"on"`
+			Frame   string         `json:"frame"`
 		}
 		if json.Unmarshal(sc.Bytes(), &op) != nil {
 			continue
@@ -149,7 +163,28 @@ func syncOpenCodeOps() {
 			srv.DelayPromptAnswers(time.Duration(op.MS) * time.Millisecond)
 		case "failcommands":
 			srv.FailCommands(op.On)
+		case "frame":
+			srv.EmitFrame(op.Frame)
+		case "models":
+			var ms []opencodetest.Model
+			for _, m := range op.Models {
+				ms = append(ms, opencodetest.Model{ProviderID: m.Provider, ID: m.ID, Context: m.Context, NoLimit: m.Context <= 0})
+			}
+			srv.SetModels(ms...)
 		}
+	}
+}
+
+// writeRepliesE2E writes the fake server's replies to <dir>/replies.json.
+func writeRepliesE2E() {
+	dir := os.Getenv("MUSTER_MIRROR_E2E_OPENCODE_DIR")
+	b, err := json.Marshal(e2eOpenCode.srv.Replies())
+	if dir == "" || err != nil {
+		return
+	}
+	tmp := filepath.Join(dir, ".replies.json.tmp")
+	if os.WriteFile(tmp, b, 0o644) == nil {
+		_ = os.Rename(tmp, filepath.Join(dir, "replies.json"))
 	}
 }
 
@@ -160,6 +195,7 @@ func openCodeWindowsE2E() []mirrorhost.WindowInfo {
 		return nil
 	}
 	syncOpenCodeOps()
+	writeRepliesE2E()
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil

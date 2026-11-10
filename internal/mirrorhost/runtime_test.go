@@ -55,7 +55,9 @@ func largestAgentList(t *testing.T, rt string) {
 			} else {
 				id := itoa(i) + "h"
 				w.Agent = &AgentPane{Runtime: rt, Status: mirror.StatusWaiting, StatusSince: math.MaxInt64,
-					Gen: id + strings.Repeat("a", 128-len(id)), Note: strings.Repeat("&", mirror.MaxAgentNote)}
+					Gen: id + strings.Repeat("a", 128-len(id)), Note: strings.Repeat("&", mirror.MaxAgentNote),
+					// The longest AgentBind code (a hand-opened pane's why).
+					Bind: mirror.AgentBindArgv}
 			}
 			out = append(out, w)
 		}
@@ -80,7 +82,8 @@ func largestAgentList(t *testing.T, rt string) {
 				notes++
 			}
 			if w.Runtime == rt {
-				if len(w.AgentSession) != 128 || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || w.Label == "" {
+				if len(w.AgentSession) != 128 || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || w.Label == "" ||
+					(rt == mirror.RuntimeOpenCode && w.AgentBind != mirror.AgentBindArgv) {
 					t.Fatalf("instrument check: a worst-case %s field was dropped by normalisation: %+v", rt, w)
 				}
 				agents++

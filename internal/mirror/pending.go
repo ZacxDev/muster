@@ -164,8 +164,12 @@ func CleanPending(p *Pending) *Pending {
 					out.PromptID, out.Choices = p.PromptID, strings.Join(cs, " ")
 				}
 			case p.Kind == PendingQuestion && strings.HasPrefix(p.PromptID, "frm_"):
+				// The id names the question whatever its options: the view
+				// answers the whole form by it (opencode_form.go). Its options
+				// ride along only when an Attention button can answer it.
+				out.PromptID = p.PromptID
 				if opts, ok := cleanOptions(p.OptionList()); ok {
-					out.PromptID, out.Options = p.PromptID, strings.Join(opts, "\n")
+					out.Options = strings.Join(opts, "\n")
 				}
 			}
 		}

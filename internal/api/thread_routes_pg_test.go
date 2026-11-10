@@ -236,6 +236,10 @@ func TestAReplyOnABoundThreadIsRoutedToItsSession(t *testing.T) {
 	if n := f.turns.count(); n != 0 {
 		t.Fatalf("the chief took %d turn(s); a route by thread takes none", n)
 	}
+	// The usage page's record: muster's own path, by name (chief_usage.go).
+	if h, _, _ := handledBy(t, f.routeFixture, m.ID); h != "thread" {
+		t.Fatalf("handled by %q, want thread", h)
+	}
 	if note := f.chiefDefaultSessionText(t); !strings.Contains(note, "is it green yet?") ||
 		!strings.Contains(note, "Route "+rs[0].RouteID) || !strings.Contains(note, "started thread 4242") {
 		t.Fatalf("the chief's conversation does not hold the message and its route: %q", note)

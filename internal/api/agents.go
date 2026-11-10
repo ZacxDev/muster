@@ -20,6 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -2003,6 +2004,8 @@ func (s *Server) runEnteredTurn(ctx context.Context, a agents.Agent, session age
 	defer clearOwnerTurn()
 	// The turn's own input, carried to its tool calls (turn_session.go).
 	ctx = withTurnInput(ctx, msg.ID)
+	// What started it, for the chief's token telemetry (chief_usage.go).
+	ctx = chiefusage.WithTrigger(ctx, turnTriggerFor(typedBy, about))
 
 	// Mark active immediately (a turn always starts thinking) so the agent
 	// shows in the notification panel's ACTIVE section before its first stream
@@ -2147,6 +2150,13 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// the one function every chat door's turn passes.
 	ctx, turn := s.outcomeTurn(ctx, a)
 	defer turn.close(&reply, &err)
+	// 🔴 THE CHIEF'S TOKEN TELEMETRY (chief_usage.go): every chief turn, from
+	// every door, is recorded here — its trigger (the door's), its outcome
+	// (the tools it called) and the tokens its runtime reported.
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a); usage != nil {
+		ctx, emit = ctx2, usage.observe(emit)
+		defer func() { usage.finish(ctx, err) }()
+	}
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)

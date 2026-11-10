@@ -645,6 +645,8 @@ func (s *Server) injectRoute(ctx context.Context, r plugins.Route, p plugins.Plu
 		by = routedByThread
 	case plugins.RouteViaPR:
 		by = routedByPR
+	case plugins.RouteViaRule:
+		by = routedByRule
 	default:
 		by = routedByOwner
 	}
@@ -700,6 +702,8 @@ const (
 	routedByOwner       = "your owner, from one of their mirrored sessions"
 	// routedByThread: a route by thread (routeByThread).
 	routedByThread = "muster, because it is a reply on a mail thread this session started"
+	// routedByRule: a route by an approved routing rule (routing_rules.go).
+	routedByRule = "muster, because it matches a routing rule your owner approved for this session"
 )
 
 // renderRoutedMessageBy is renderRoutedMessage naming who routed it (by: one of

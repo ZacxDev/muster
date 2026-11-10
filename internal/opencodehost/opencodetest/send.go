@@ -213,10 +213,14 @@ func SpawnCaptured(name string) json.RawMessage {
 }
 
 // Model is a model the fake lists (GET /api/model); Disabled lists it with
-// "enabled": false.
+// "enabled": false. Context, when above 0, is its limit.context (the
+// context readout's window); NoLimit lists it with no limit at all. Neither:
+// the captured entry's own limit.
 type Model struct {
 	ProviderID, ID string
 	Disabled       bool
+	Context        int64
+	NoLimit        bool
 }
 
 // SetModels sets what GET /api/model lists, each entry shaped as the real
@@ -274,6 +278,12 @@ func (s *Server) listModels(w http.ResponseWriter) {
 			e[k] = v
 		}
 		e["id"], e["modelID"], e["providerID"], e["name"], e["enabled"] = m.ID, m.ID, m.ProviderID, m.ID, !m.Disabled
+		switch {
+		case m.NoLimit:
+			delete(e, "limit")
+		case m.Context > 0:
+			e["limit"] = map[string]any{"context": m.Context, "output": 65536}
+		}
 		out = append(out, e)
 	}
 	writeJSON(w, map[string]any{"location": map[string]any{"directory": "/srv/fixture"}, "data": out})
