@@ -151,6 +151,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		SSOOrigins:      []string{"https://auth.example.test"},
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
+		CCUsage:         &fakeCCUsage{},
+		CCUsageInterval: time.Minute,
 		JobWorkspace:    stubJobWorkspace{},
 		AccountFailover: stubAccountFailover{},
 		Uploads:         &uploads.Service{},

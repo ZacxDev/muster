@@ -27,6 +27,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/ccusage"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
@@ -362,6 +363,9 @@ var isolationClasses = map[string]routeClass{
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
 	"POST /api/jobs":     classAdmin,
+	// Claude account usage (cc_usage.go): the service tier as user 1, or a
+	// personal token (account-usage or full) as its owner; owner-scoped reads.
+	"GET /api/cc-accounts/usage": classAdmin,
 
 	"DELETE /agent/approvals/{id}": classAgentToken,
 	"GET /agent/approvals/{id}":    classAgentToken,
@@ -1083,7 +1087,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "account pool")
 	ext := Extensions{
 		Kinds: isoKinds{pool: ccp, plane: plane}, Credentials: isoCredPage{PGStore: w.creds, plane: plane},
-		Notes: ns, Agents: as, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
+		CCUsage: ccusage.NewPG(pool),
+		Notes:   ns, Agents: as, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
 		PublicURL:   "http://muster.test",
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},

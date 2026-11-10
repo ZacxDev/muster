@@ -53,8 +53,8 @@ var wantMetrics = map[string][]string{
 	"muster_officer_llm_cost_estimated_total":         {"officer"},
 	"muster_officer_llm_upstream_auth_failures_total": {"officer", "status"},
 	"muster_officer_llm_upstream_auth_failing":        {"officer"},
-	"muster_officer_llm_spent_today_usd":              {"officer"},
-	"muster_officer_llm_budget_usd":                   {"officer"},
+	"muster_officer_llm_spent_today_usd":              {"officer", "pool"},
+	"muster_officer_llm_budget_usd":                   {"officer", "pool"},
 	"muster_officer_llm_book_failures_total":          {"officer"},
 	"muster_build_info":                               {"version"},
 	"muster_asks_total":                               {"kind"},
@@ -126,8 +126,8 @@ func gather(t *testing.T) map[string][]string {
 	OfficerLLMCostEstimated.WithLabelValues("example:area")
 	OfficerLLMUpstreamAuth.WithLabelValues("example:area", "401")
 	OfficerLLMUpstreamAuthFailing.WithLabelValues("example:area")
-	OfficerLLMSpentToday.WithLabelValues("example:area")
-	OfficerLLMBudget.WithLabelValues("example:area")
+	OfficerLLMSpentToday.WithLabelValues("example:area", "routine")
+	OfficerLLMBudget.WithLabelValues("example:area", "routine")
 	OfficerLLMBookFailures.WithLabelValues("example:area")
 	ObserveHTTP("GET /api/tasks/{id}", "GET", 200, 0)
 
