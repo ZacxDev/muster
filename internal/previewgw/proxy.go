@@ -25,6 +25,13 @@ package previewgw
 //     X-Muster-* header (an app cannot forge the gateway's error code) and
 //     Clear-Site-Data, which a browser applies to the whole registrable
 //     domain — every other preview, and w.
+//   - Trailers: an app's trailer named like a header these rules drop or
+//     replace (dropAppTrailer) is removed, declared (Trailer:) or not
+//     (net/http's TrailerPrefix sends it undeclared), from both the Trailer
+//     line the browser sees and the values after the body. ReverseProxy
+//     copies trailers into the response after the body, past the rules
+//     above, so without this an app's X-Muster-Preview-Error trailer would
+//     read as the gateway's code.
 //   - Errors: the gateway's own (host offline, nothing listening, timeouts)
 //     are a page naming a code (^[a-z_]{1,32}$) and nothing else — never an
 //     error's text. An app's own error is the app's response, as it sent it.
@@ -33,6 +40,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -173,10 +181,53 @@ func (g *Gateway) rewrite(pr *httputil.ProxyRequest) {
 	g.upstreamHeaders(pr.Out.Header, tg, false)
 }
 
+// musterHeader is true for an X-Muster-* name: the gateway's alone.
+func musterHeader(name string) bool { return strings.HasPrefix(strings.ToLower(name), "x-muster-") }
+
+// dropAppTrailer names an app trailer that never reaches the browser: an
+// X-Muster-* one, and every name previewResponseHeaders drops or rewrites —
+// those rules run on the header only, so as a trailer such a name would pass
+// them untouched. (RFC 9110 §6.5.1 forbids most of these as trailers, so a
+// conforming client ignores them there; the gateway does not rely on that.)
+func dropAppTrailer(name string) bool {
+	if musterHeader(name) {
+		return true
+	}
+	switch http.CanonicalHeaderKey(name) {
+	case "Clear-Site-Data", "Strict-Transport-Security", "Referrer-Policy", "X-Content-Type-Options",
+		"Content-Security-Policy", "Location", "Set-Cookie":
+		return true
+	}
+	return false
+}
+
+func stripAppTrailers(tr http.Header) {
+	for k := range tr {
+		if dropAppTrailer(k) {
+			delete(tr, k)
+		}
+	}
+}
+
+// trailerFilter strips resp's trailers when its body is closed. The
+// transport fills resp.Trailer's values — and adds any undeclared trailer —
+// at the body's EOF; ReverseProxy closes the body and only then copies
+// resp.Trailer to the browser.
+type trailerFilter struct {
+	io.ReadCloser
+	resp *http.Response
+}
+
+func (b *trailerFilter) Close() error {
+	err := b.ReadCloser.Close()
+	stripAppTrailers(b.resp.Trailer)
+	return err
+}
+
 // previewResponseHeaders applies the response rules to h, an app's headers.
 func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
 	for k := range h {
-		if strings.HasPrefix(strings.ToLower(k), "x-muster-") {
+		if musterHeader(k) {
 			delete(h, k)
 		}
 	}
@@ -210,6 +261,11 @@ func (g *Gateway) modifyResponse(resp *http.Response) error {
 		(ce == "" || strings.EqualFold(ce, "identity")) {
 		resp.Body = newSSEBody(resp.Body, g.keepalive)
 	}
+	// The declared trailers are keys already (ReverseProxy builds the Trailer
+	// line from them); their values, and undeclared ones, come with the body's
+	// end. Outermost, so the strip runs on the proxy's own goroutine.
+	stripAppTrailers(resp.Trailer)
+	resp.Body = &trailerFilter{ReadCloser: resp.Body, resp: resp}
 	return nil
 }
 
