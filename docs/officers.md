@@ -663,7 +663,7 @@ listing and again at dispatch):
 | `officer_obs_query` `{query_id, …}` | `POST /officers/{id}/obs/query` — runs ONE named query with the arguments it takes (the `args` `officer_obs_queries` lists; the tool's schema describes `query_id` only and is open, so HQ's decoder is the one schema). Never a raw query |
 | `officer_obs_raw` `{backend, query, start, end, step?, limit?, item_id?}` | **both pools of a tiered officer** (never an untiered one): `POST /officers/{id}/obs/raw` — the instance's own PromQL or LogQL for the item it holds, passed through with that item and the instance added. HQ refuses it unless the officer's type investigates, and today's HQ takes it for a judgement item only. See [Raw metrics and logs](#raw-metrics-and-logs-officer_obs_raw) |
 | `officer_task_ask` `{item_id, note?}` | **`task-reconciler:*` officers only**: `POST …/items/{item}/task-asks` `{instance, note?}` (civ-hq "Task asks") — on a `task-reconciler.finding` item, HQ asks the task's person to approve one action and applies their answer itself; HQ picks the person, the question and the options. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
-| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **`web-performance:*` officers only**: `POST …/items/{item}/flood-blocks` `{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` (civ-hq "Flood remediation") — on a `perf.bot_surge` item, proposes a Cloudflare managed challenge for a person to approve; HQ resolves the units and writes the rule. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
+| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | **the judgement pool of `web-performance:*` officers only**: `POST …/items/{item}/flood-blocks` `{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` (civ-hq "Flood remediation") — on a `perf.bot_surge` item, proposes a Cloudflare managed challenge for a person to approve; HQ resolves the units and writes the rule. **Ends the instance's lease.** See [HQ-derived asks](#hq-derived-asks-officer_task_ask-officer_flood_block_propose) |
 | `officer_merge_pr` `{pr}`, `officer_tag_release` `{item_id?}`, `officer_rollout_status`, `officer_mark_ready` `{pr}` | **shipping officers only** (a `ship` block): GitHub and HQ reads, then a squash merge, a release tag or a draft → ready conversion made by muster — see [Shipping officers](#shipping-officers) |
 | `officer_ci_logs` `{pr}` | **shipping officers with a `ci_logs` block only**: no HQ call. GitHub and Kubernetes reads by muster-server; the failed CI tasks of the officer's OWN pull request, with log excerpts — see [`officer_ci_logs {pr}`](#officer_ci_logs-pr) |
 
@@ -931,10 +931,13 @@ that token. Code: `internal/officers/item_asks.go`, `internal/api/officer_item_a
 | tool | offered to | HQ route | what HQ does |
 |---|---|---|---|
 | `officer_task_ask` `{item_id, note?}` | `task-reconciler:*` | `POST …/items/{item}/task-asks` `{instance, note?}` (civ-hq#509) | reads the task, detector and rev from the `task-reconciler.finding` item; asks the task's first HQ-member assignee (else its owner) with HQ's own options; posts one evidence comment if its policy says so; applies the answer **as the answering member** only if the task is unchanged, then closes the item |
-| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | `web-performance:*` | `POST …/items/{item}/flood-blocks` `{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` (civ-hq#510) | checks every guardrail on the `perf.bot_surge` item's opaque unit ids; asks the officer's owner (or `to`, a policy approver) to Approve & challenge or Reject; on Approve, resolves the units to prefixes and writes HQ's one Cloudflare rule until the ttl runs out |
+| `officer_flood_block_propose` `{item_id, unit_ids, ttl_hours, to?}` | `web-performance:*`, judgement pool only | `POST …/items/{item}/flood-blocks` `{instance, to?, unit_ids, action: "managed_challenge", ttl_hours}` (civ-hq#510) | checks every guardrail on the `perf.bot_surge` item's opaque unit ids; asks the officer's owner (or `to`, a policy approver) to Approve & challenge or Reject; on Approve, resolves the units to prefixes and writes HQ's one Cloudflare rule until the ttl runs out |
 
-- **Offered by officer type name** (`officers.ToolOffered`), in both pools of a
-  tiered officer, and refused at dispatch for any other agent. HQ enforces the
+- **Offered by officer type name** (`officers.ToolOffered`), and refused at
+  dispatch for any other agent. `officer_task_ask` is offered to both pools of
+  a task reconciler (and an untiered one). `officer_flood_block_propose` is
+  offered to a web-performance officer's **judgement pool only**, never its
+  routine pool or an untiered web-performance officer (operator decision). HQ enforces the
   type **policy** (`task_asks`, `flood_actuator`); neither stands in for the
   other.
 - **The lease is HQ's to check** (409 `lease_lost`), as for

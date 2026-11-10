@@ -34,16 +34,78 @@ const (
 )
 
 // newItemAskRig is the rig over task-reconciler:hq (r.a) and
-// web-performance:alpha-web (r.b). The release officer's token is known to
-// the fake too, so a request carrying it would be ACCEPTED as that officer —
-// which is what the token assertions below would catch.
+// web-performance:alpha-web (r.b), both TIERED as deployed (routine and
+// judgement pools); addInstance(o, n, …) adds a JUDGEMENT instance. The
+// release officer's token is known to the fake too, so a request carrying it
+// would be ACCEPTED as that officer — which the token assertions would catch.
 func newItemAskRig(t *testing.T) *officerRig {
 	t.Helper()
 	return newOfficerRigWith(t, map[string]string{offTRTok: offTR, offWPTok: offWP, offATok: offA}, func(hqURL string) []officers.Officer {
-		a := officers.Officer{ID: offTR, HQURL: hqURL, MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offTRTok)
-		b := officers.Officer{ID: offWP, HQURL: hqURL, MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offWPTok)
-		return []officers.Officer{a, b}
+		tiers := `"tiers":{"routine":{"model":"haiku","max_instances":1},"judgement":{"model":"opus","max_instances":1}}`
+		raw := `[{"id":"` + offTR + `","hq_url":"` + hqURL + `",` + tiers + `},{"id":"` + offWP + `","hq_url":"` + hqURL + `",` + tiers + `}]`
+		list, err := officers.Parse(raw, func(k string) string {
+			return map[string]string{
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offTR): offTRTok,
+				officers.TokenEnvPrefix + officers.TokenEnvSuffix(offWP): offWPTok,
+			}[k]
+		}, "muster-agent-")
+		if err != nil {
+			t.Fatalf("parse the item-ask rig's officers: %v", err)
+		}
+		if len(list) != 2 || list[0].ID != offTR || list[1].ID != offWP {
+			t.Fatalf("the item-ask rig's officers: %+v", list)
+		}
+		return list
 	})
+}
+
+// TestTheFloodToolIsTheJudgementPoolsOnly (operator decision on #565): the
+// web-performance ROUTINE instance is not offered officer_flood_block_propose
+// (listing, session allowlist) and is refused when it calls it, before HQ;
+// the judgement instance is offered it. officer_task_ask stays in BOTH of the
+// task reconciler's pools.
+func TestTheFloodToolIsTheJudgementPoolsOnly(t *testing.T) {
+	r := newItemAskRig(t)
+	ctx := context.Background()
+	offers := func(a agents.Agent, tool string) (listed, allowed bool) {
+		listed = officerToolNameSet(r.s.MCPToolDefsFor(ctx, a))[tool]
+		sess, ok := r.s.OfficerClaudeCodeSession(a)
+		if !ok {
+			t.Fatalf("%s has no officer session", a.Name)
+		}
+		for _, m := range sess.AllowMCPTools {
+			allowed = allowed || m == tool
+		}
+		return
+	}
+	wpRoutine := r.addNamed(r.b.Pool(officers.TierRoutine).InstanceName(1), 1101)
+	wpJudge := r.addNamed(r.b.Pool(officers.TierJudgement).InstanceName(1), 1102)
+	trRoutine := r.addNamed(r.a.Pool(officers.TierRoutine).InstanceName(1), 1103)
+	trJudge := r.addNamed(r.a.Pool(officers.TierJudgement).InstanceName(1), 1104)
+	if o, _, ok := r.s.officerOf(wpRoutine); !ok || o.Tier != officers.TierRoutine {
+		t.Fatalf("%s does not resolve to the routine pool", wpRoutine.Name)
+	}
+	if l, a := offers(wpRoutine, floodTool); l || a {
+		t.Errorf("the web-performance routine instance: %s listed %v, allowed %v; want neither", floodTool, l, a)
+	}
+	if l, a := offers(wpJudge, floodTool); !l || !a {
+		t.Errorf("the web-performance judgement instance: %s listed %v, allowed %v; want both", floodTool, l, a)
+	}
+	for _, a := range []agents.Agent{trRoutine, trJudge} {
+		if l, al := offers(a, taskAskTool); !l || !al {
+			t.Errorf("%s: %s listed %v, allowed %v; want both", a.Name, taskAskTool, l, al)
+		}
+	}
+	item := r.hq.AddTieredItem(offWP, kindBotSurge, "s:routine", officers.TierRoutine)
+	r.hq.SetClaim(item, wpRoutine.Name, time.Now().Add(time.Hour))
+	r.hq.ResetRequests()
+	out := r.s.dispatchAgentTool(ctx, wpRoutine, floodTool, `{"item_id":"`+item+`","unit_ids":["prefix:a"],"ttl_hours":1}`)
+	if !isToolErr(out) || !strings.Contains(out, "is not one of officer") {
+		t.Errorf("the routine instance calling %s: %s, want the dispatch refusal", floodTool, out)
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Errorf("the routine instance's refused proposal reached HQ (%d requests)", n)
+	}
 }
 
 // heldItemOf adds an item of kind for officer and has inst claim it.

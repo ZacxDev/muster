@@ -9,7 +9,7 @@ import (
 
 // The HQ-derived ask tools (officers/item_asks.go): officer_task_ask (a
 // task-reconciler officer's) and officer_flood_block_propose (a
-// web-performance officer's). Each is ONE HQ call with the officer's own
+// web-performance officer's JUDGEMENT pool only). Each is ONE HQ call with the officer's own
 // token, which only muster holds; the instance never sees it. HQ derives the
 // person, the question and the options, and HQ — never the officer — applies
 // the person's answer. Offered by officers.ToolOffered to the named type only,

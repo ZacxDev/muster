@@ -313,8 +313,10 @@ func ToolOffered(o Officer, tool string) bool {
 		// task_asks_off) and an item that is not a finding
 		return o.Type() == TaskReconcilerOfficerType
 	case ToolFloodBlockPropose:
-		// item_asks.go: HQ also refuses a type whose flood_actuator is off
-		return o.Type() == WebPerformanceOfficerType
+		// item_asks.go: the JUDGEMENT pool only (operator decision on
+		// muster#565) — never the routine pool, never an untiered officer.
+		// HQ also refuses a type whose flood_actuator is off.
+		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
 	}
 	return false
 }

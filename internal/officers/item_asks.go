@@ -42,7 +42,8 @@ import (
 //	     503 flood_actuator_not_configured.
 //
 // WHO MAY CALL: muster offers each tool by officer TYPE NAME (ToolOffered:
-// task-reconciler, web-performance); HQ enforces the type POLICY
+// task-reconciler, both pools; web-performance, its JUDGEMENT pool only —
+// operator decision on muster#565); HQ enforces the type POLICY
 // (task_asks, flood_actuator) and the lease. muster does NOT check the lease:
 // officer_ask_person does not either, and HQ's check is the authoritative one
 // (409 lease_lost) — a flood proposal is also allowed on a WAITING item,

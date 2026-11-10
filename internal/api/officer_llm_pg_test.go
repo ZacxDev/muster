@@ -476,18 +476,13 @@ func TestAnOfficerToolAskEndsTheItemMeter(t *testing.T) {
 		`,"to":"design-lead","question":"is the header right?"`)
 }
 
-// TestAnOfficerTaskAskEndsTheItemMeter and
-// TestAnOfficerFloodProposalEndsTheItemMeter: officer_task_ask and
-// officer_flood_block_propose create an HQ ask, which ends the lease as
-// officer_ask_person's does, so they end the held item too.
+// TestAnOfficerTaskAskEndsTheItemMeter: officer_task_ask creates an HQ ask,
+// which ends the lease as officer_ask_person's does, so it ends the held item
+// too. (officer_flood_block_propose has no such seam to pin: it is the
+// judgement pool's only, and the item meter counts routine instances.)
 func TestAnOfficerTaskAskEndsTheItemMeter(t *testing.T) {
 	llmEndSeamKind(t, "task-reconciler:llm-taskasks", "llm-taskasks-agent-token-01234567", officers.ToolTaskAsk,
 		hqtest.KindTaskFinding, ``)
-}
-
-func TestAnOfficerFloodProposalEndsTheItemMeter(t *testing.T) {
-	llmEndSeamKind(t, "web-performance:llm-floods", "llm-floods-agent-token-0123456789", officers.ToolFloodBlockPropose,
-		hqtest.KindBotSurge, `,"unit_ids":["prefix:a"],"ttl_hours":1`)
 }
 
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
