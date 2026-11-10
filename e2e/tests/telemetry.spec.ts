@@ -160,7 +160,13 @@ test('the document names its server trace, and the open is one trace from the pa
     performance.getEntriesByType('resource').filter((e) => /\/static\/vendor\/faro-/.test(e.name)).map((e) => e.startTime),
   );
   expect(bundles, 'both Faro bundles were loaded').toHaveLength(2);
-  for (const t of bundles) expect(t, 'a Faro bundle was requested after the open was usable').toBeGreaterThanOrEqual(v.usable_ms);
+  // usable_ms is the usable moment ROUNDED to a whole millisecond (faro.go's
+  // report; this first open's t0 is the navigation start, the timeline a
+  // resource's startTime is on), so it can sit up to 0.5 ms after the moment
+  // itself: a bundle requested 0.3 ms after usable read 126.9 against 127.
+  // Rounding the start the same way keeps the order exact — rounding is
+  // monotonic, so a start at or after usable rounds to at least usable_ms.
+  for (const t of bundles) expect(Math.round(t), `a Faro bundle was requested after the open was usable (start ${t})`).toBeGreaterThanOrEqual(v.usable_ms);
   // No transcript text reached the receiver (the page drew it: above).
   for (const p of faro.posts) expect(p.body.toString('utf8')).not.toContain('Synthetic answer');
 
