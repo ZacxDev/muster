@@ -17,6 +17,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [push.md](push.md) — Web Push and the installable app
+- [branding.md](branding.md) — the server's own logo and name: set by an admin on the Account page, drawn in the header, on the sign-in page, as the app and notification icon, and published at `GET /api/instance` for the apps
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
 - [chief-cookbook.md](chief-cookbook.md) — what to ask the chief: fleet summaries, who is on what, what needs you, routing a request or a task to a session, with real example replies

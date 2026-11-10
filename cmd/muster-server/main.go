@@ -63,6 +63,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
@@ -504,6 +505,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Each user's notification preferences (migration 0094): off for
 		// everyone until they turn one on; see internal/api notify_prefs.go.
 		ext.NotifyPrefs = notifypref.NewPG(a.pool)
+		// The instance's logo and name (migration 0105): nothing set until an
+		// admin uploads on the Account page; see internal/api branding.go.
+		ext.Branding = branding.NewPG(a.pool)
 		// Session state's episodes (migration 0073): off unless
 		// MUSTER_SESSION_STATE=1, and then independent of the chief's nudges.
 		if cfg.SessionState {

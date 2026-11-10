@@ -117,6 +117,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Suggest:         &suggest.Engine{},
 		ChiefPrefs:      &memChiefPrefs{},
 		NotifyPrefs:     &memNotifyPrefs{},
+		Branding:        &memBranding{},
 		ChiefNudge:      &ChiefNudges{},
 		ChiefNudges:     chiefnudge.NewPG(nil),
 		Episodes:        sessionstate.NewPG(nil),

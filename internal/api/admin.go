@@ -84,12 +84,7 @@ const AdminOnlyRefusal = "this page is for admins"
 // admin store is wired, and a write comes from muster's own pages.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
-		if p, ok := authz.From(r.Context()); !ok || p.Role != authz.RoleAdmin {
-			if isDocumentNavigation(r) {
-				s.renderNotice(w, r, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
-				return
-			}
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
+		if s.refuseNonAdmin(w, r) {
 			return
 		}
 		if !s.adminPagesServed() {
@@ -103,6 +98,39 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	})
+}
+
+// requireAdminRole is requireAdmin WITHOUT the account store: the
+// principal's role is admin, and a write comes from muster's own pages. It is
+// for the admin's settings that are not account management — the instance
+// branding (branding.go) — which a password-mode server, whose operator is
+// user 1 and an admin but which has no GoTrue, must reach too.
+func (s *Server) requireAdminRole(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseNonAdmin(w, r) {
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.isSameOrigin(r) {
+			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+			return
+		}
+		next(w, r)
+	})
+}
+
+// refuseNonAdmin answers a principal whose role is not admin — the notice for
+// a page, AdminOnlyRefusal for anything else — and reports whether it did.
+// The ONE role check requireAdmin and requireAdminRole share.
+func (s *Server) refuseNonAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if p, ok := authz.From(r.Context()); ok && p.Role == authz.RoleAdmin {
+		return false
+	}
+	if isDocumentNavigation(r) {
+		s.renderNotice(w, r, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
+		return true
+	}
+	s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
+	return true
 }
 
 func actorOf(r *http.Request) users.Actor {
