@@ -563,8 +563,9 @@ deletes it. [provisioner.md](provisioner.md).
 - **Not available in the Compose stack.** `docker-compose.yml` does not forward
   `MUSTER_AGENT_PROVISIONER`, `MUSTER_AGENT_GATEWAY`, `MUSTER_AGENT_KINDS` or the
   rest of the agent settings ([configuration.md](configuration.md#muster-server-agent-provisioning)),
-  since they cannot work there. Agents are started by a Kubernetes chief's
-  `agent_dispatch`.
+  since they cannot work there. On Kubernetes, agents are started by the
+  chief's `agent_dispatch` or by
+  [`muster agent create`](provisioner.md#creating-an-agent-without-the-chief).
 - **Check:** `agent provisioning: LIFECYCLE …` instead of `UNWIRED`.
 
 ### Agent gateway
