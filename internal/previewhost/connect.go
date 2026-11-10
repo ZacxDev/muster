@@ -66,14 +66,34 @@ func (h *Host) serveConnect(w http.ResponseWriter, r *http.Request) {
 	tunnel.Splice(w, r, up)
 }
 
-// check is the host's refusal for port, "" when it may be dialled.
+// check is the host's refusal for port as a CONNECT answers it, "" when it
+// may be dialled: refusal's code, with not_listening answered as refused.
 func (h *Host) check(port int) (wire.Reason, string) {
+	switch code, why := h.refusal(port); code {
+	case "":
+		return "", ""
+	case CodePortNotAllowed:
+		return wire.ReasonPortNotAllowed, why
+	case CodeNotListening:
+		return wire.ReasonRefused, why
+	default:
+		return wire.ReasonForeignListener, why
+	}
+}
+
+// refusal is the host's own refusal of port — the ONE check a CONNECT and an
+// agent's preview_open both make — as a tool error code ("" when port may be
+// exposed): previews off or the port not allowed (CodePortNotAllowed), then,
+// where this host can tell (Supported), nobody listening (CodeNotListening)
+// or another user's listener (CodeForeignListener, also when the listeners
+// cannot be read: FAIL CLOSED).
+func (h *Host) refusal(port int) (code, why string) {
 	cfg, on := h.config()
 	if !on {
-		return wire.ReasonPortNotAllowed, "previews are off"
+		return CodePortNotAllowed, "previews are off"
 	}
 	if err := cfg.Allows(port, h.hc.Refused); err != nil {
-		return wire.ReasonPortNotAllowed, err.Error()
+		return CodePortNotAllowed, err.Error()
 	}
 	if Supported() != nil {
 		return "", "" // the foreign_listener check is off here (UNVERIFIED off Linux)
@@ -81,18 +101,16 @@ func (h *Host) check(port int) (wire.Reason, string) {
 	l, err := ReadListeners(h.scanner.root())
 	if err != nil {
 		// FAIL CLOSED: whose listener holds the port cannot be read.
-		return wire.ReasonForeignListener, err.Error()
+		return CodeForeignListener, err.Error()
 	}
 	var ref *Refusal
 	switch err := CheckListener(l, port, h.hc.UID); {
 	case err == nil:
 		return "", ""
-	case errors.As(err, &ref) && ref.Code == CodeNotListening:
-		return wire.ReasonRefused, ref.Why
-	case errors.As(err, &ref) && ref.Code == CodeForeignListener:
-		return wire.ReasonForeignListener, ref.Why
+	case errors.As(err, &ref) && (ref.Code == CodeNotListening || ref.Code == CodeForeignListener):
+		return ref.Code, ref.Why
 	default:
-		return wire.ReasonForeignListener, err.Error()
+		return CodeForeignListener, err.Error()
 	}
 }
 

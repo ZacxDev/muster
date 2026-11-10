@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	// The zone database, built in: a usage-limit message names its reset in an
@@ -400,19 +401,23 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 	var mcpSettled chan struct{}
+	var proxy *mirrorhost.MCPProxy
+	var mcpUp atomic.Bool // the MCP endpoint is listening (startMCP succeeded)
 	if *mcpListen != "" {
 		// 🔴 OPT-IN, SO NEVER FATAL: a port in use, a secret file with the wrong
 		// mode or anything else that stops the MCP endpoint is logged and the
 		// host mirrors without it — mirroring is the job this process exists for.
 		// 🔴 AND NEVER IN THE WAY: it runs on its own goroutine, so however
 		// long setting it up takes, mirroring starts now.
-		proxy := &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
+		proxy = &mirrorhost.MCPProxy{URL: *url, Token: token, AllowHTTP: *allowHTTP, Logger: logger, Refresh: c.RefreshNow, Version: buildRevision}
 		mcpSettled = make(chan struct{})
 		go func() {
 			defer close(mcpSettled)
 			if err := startMCP(ctx, *mcpListen, *mcpSecretFile, backend, proxy, logger); err != nil {
 				logger.Printf("muster-mirror: the MCP endpoint is OFF, mirroring continues without it: %v", err)
+				return
 			}
+			mcpUp.Store(true)
 		}()
 	}
 	var previewDone chan struct{}
@@ -422,7 +427,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// endpoint above, previews run on their own goroutine with a recover;
 		// a bad configuration, an unreachable gateway or a panic is logged and
 		// the host mirrors without them.
-		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger)
+		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger, previewMCPMount(proxy, mcpSettled, &mcpUp, logger))
 	case pf.URLs != "" || pf.TokenFile != "":
 		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
 	}

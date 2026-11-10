@@ -59,6 +59,9 @@ const (
 	MCPSessionHeader = "X-Muster-Claude-Session"
 	// MCPPath is muster's mirrored-sessions MCP door.
 	MCPPath = "/mirror/mcp"
+	// PreviewMCPPath is the endpoint's second MCP server: the preview tools,
+	// served here and never forwarded (SetPreview).
+	PreviewMCPPath = "/preview-mcp"
 	// mcpMaxBody bounds one forwarded JSON-RPC message (muster's own bound).
 	mcpMaxBody = 64 << 10
 )
@@ -95,6 +98,64 @@ type MCPProxy struct {
 	// the rest are not (every Claude Code session on another tenant's server
 	// connects here).
 	outsiderLogged atomic.Bool
+
+	// preview is /preview-mcp's server (SetPreview); nil = not mounted.
+	preview atomic.Pointer[http.Handler]
+}
+
+// SetPreview mounts h at PreviewMCPPath, behind the same guard as /mcp
+// (guarded). muster-mirror calls it once previews are on: -preview and a
+// valid previews.json (cmd/muster-mirror's startPreview). Until then — and
+// for good when previews are off — that path is 404, like any other.
+//
+// 🔴 A SEPARATE SERVER, NOT AN APPEND TO MUSTER'S LIST: /mcp is forwarded
+// exactly as before, so a muster outage still fails the "muster" server
+// loudly (502) while the preview tools work or fail on their own.
+func (p *MCPProxy) SetPreview(h http.Handler) {
+	p.preview.Store(&h)
+}
+
+func (p *MCPProxy) previewHandler() http.Handler {
+	if h := p.preview.Load(); h != nil {
+		return *h
+	}
+	return nil
+}
+
+// CallerWindow is the tmux window ("@12") the caller's pane — its
+// X-Muster-Pane, ANY pane of the window — is in now, from a FRESH listing.
+// Unlike session it needs no Claude Code session in the pane: a preview
+// belongs to the window, whatever runs in it. The guard has already checked
+// the caller's tmux server (checkServer: pane ids are per server).
+func (p *MCPProxy) CallerWindow(r *http.Request) (string, error) {
+	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
+	if pane == "" {
+		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
+	}
+	if p.Windows == nil {
+		return "", errors.New("this host cannot resolve a tmux pane")
+	}
+	ws, err := p.Windows.Windows(r.Context())
+	if err != nil {
+		return "", fmt.Errorf("list windows: %w", err)
+	}
+	if id, ok := windowOfPane(ws, pane); ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("pane %s is in no window this host mirrors", describePane(pane))
+}
+
+// windowOfPane is the id of the window one of whose panes — the active one
+// or another in a split — is pane.
+func windowOfPane(ws []WindowInfo, pane string) (string, bool) {
+	for _, w := range ws {
+		for _, id := range w.PaneIDs() {
+			if id == pane {
+				return w.ID, true
+			}
+		}
+	}
+	return "", false
 }
 
 // MCPTarget is muster's /mirror/mcp URL for base.
@@ -219,7 +280,9 @@ func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 // in the model's context: `claude mcp list` shows "✔ Connected" and /mcp only
 // "⚠ no tools". So answerOutsider answers such a caller ITSELF, as muster's
 // own MCP server answers (internal/api's serveMCP), and FORWARDS NOTHING
-// upstream — no request of an outsider ever carries this host's mirror token:
+// upstream — no request of an outsider ever carries this host's mirror token.
+// /preview-mcp's outsiders get the same answer, named "muster-preview": pane
+// ids are per tmux server, so their pane would name another window here:
 //
 //   - `initialize`: a valid result (protocol negotiated as muster does, the
 //     tools capability, no instructions);
@@ -240,7 +303,7 @@ func (p *MCPProxy) checkServer(ctx context.Context, r *http.Request) error {
 // 🔴 ROUTING, NOT ENFORCEMENT: X-Muster-Tmux is a header the caller supplies,
 // so anything running as this Unix user can name any tmux server (and read
 // any tenant's secret). This keeps honest sessions on their own tenant.
-func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, why error) {
+func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, name string, why error) {
 	if p.outsiderLogged.CompareAndSwap(false, true) {
 		p.logf("muster-mirror: mcp: a caller outside this host's tmux server gets no tools (logged once): %v", why)
 	}
@@ -272,7 +335,7 @@ func (p *MCPProxy) answerOutsider(w http.ResponseWriter, r *http.Request, why er
 		mcpRPC(w, req.ID, map[string]any{
 			"protocolVersion": mirror.NegotiateMCPVersion(params.ProtocolVersion),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "muster", "version": p.serverVersion()},
+			"serverInfo":      map[string]any{"name": name, "version": p.serverVersion()},
 		}, 0, "")
 	case "ping":
 		// MCP requires an answer; muster's own server answers {} (serveMCP).
@@ -333,11 +396,33 @@ func derefClaude(c *ClaudePane) ClaudePane {
 	return *c
 }
 
+// ServeHTTP serves the endpoint's two MCP servers, each behind the same
+// guard (guarded): /mcp, muster's tools, forwarded (serveMuster); and, once
+// SetPreview mounted it, PreviewMCPPath, the preview tools, answered on this
+// machine and never forwarded (docs/design/previews.md, "The MCP tools"). Any
+// other path — /preview-mcp too while it is not mounted — is 404.
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" {
+	switch r.URL.Path {
+	case "/mcp":
+		p.guarded(w, r, "muster", p.serveMuster)
+	case PreviewMCPPath:
+		h := p.previewHandler()
+		if h == nil {
+			http.NotFound(w, r)
+			return
+		}
+		p.guarded(w, r, "muster-preview", h.ServeHTTP)
+	default:
 		http.NotFound(w, r)
-		return
 	}
+}
+
+// guarded is the ONE guard in front of both servers, in this order: a request
+// carrying an Origin is refused (403), one without this host's secret is
+// refused (401), anything but a POST gets the transport's 405, and a caller
+// from another tmux server is answered as a healthy server with no tools,
+// named name (answerOutsider). Only then is serve called.
+func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, serve http.HandlerFunc) {
 	if r.Header.Get("Origin") != "" {
 		mcpRefuse(w, http.StatusForbidden, "cross-origin requests are refused")
 		return
@@ -354,9 +439,14 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := p.checkServer(r.Context(), r); err != nil {
-		p.answerOutsider(w, r, err)
+		p.answerOutsider(w, r, name, err)
 		return
 	}
+	serve(w, r)
+}
+
+// serveMuster is /mcp past the guard: the request forwarded to muster.
+func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	target, err := MCPTarget(p.URL, p.AllowHTTP)
 	if err != nil {
 		mcpRefuse(w, http.StatusInternalServerError, err.Error())
