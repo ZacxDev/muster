@@ -86,6 +86,13 @@ func newSwitcherPin(e listEntry) *switcherPin {
 // arrow key too, closes it on Escape (focus back on the ⋯) and Tab, places it
 // above the button and keeps aria-expanded.
 func switcherMoreButton(s *Switcher) g.Node {
+	return switcherMoreButtonIn(s, switcherIconButtonClass)
+}
+
+// switcherMoreButtonIn is switcherMoreButton in the target class cls: the
+// bar's 44px icon button (switcherIconButtonClass), or the composer's 40px
+// when the ⋯ is in its button row (composerMoreClass).
+func switcherMoreButtonIn(s *Switcher, cls string) g.Node {
 	if s == nil || s.pin == nil {
 		return nil
 	}
@@ -98,7 +105,7 @@ func switcherMoreButton(s *Switcher) g.Node {
 		g.Attr("aria-controls", switcherMoreID),
 		g.Attr("aria-label", SwitcherMoreLabel),
 		g.Attr("title", SwitcherMoreLabel),
-		Class(switcherIconButtonClass),
+		Class(cls),
 		Span(
 			Class(switcherIconFaceClass+" group-aria-expanded:bg-s3 group-aria-expanded:text-fg"),
 			g.Raw(`<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.75"/><circle cx="10" cy="10" r="1.75"/><circle cx="16" cy="10" r="1.75"/></svg>`),

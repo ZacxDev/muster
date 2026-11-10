@@ -9,12 +9,13 @@ import (
 // input … show a text icon beside the mic … more space by default").
 //
 // The Rendered view's composer (ComposerView.Collapsible) is drawn with its box
-// COLLAPSED on a touch screen: the input row is the paperclip, "Type a
-// message" (#mv-text), the mic, Send and the session's ⋯. The paperclip stays
-// (web/css/input.css): a file is attached without opening the box, so without
-// raising the keyboard. Tapping "Type a message" reveals the box
-// and focuses it. Once revealed it stays open until the page is left — a send
-// does not collapse it again.
+// COLLAPSED on a touch screen: the composer is its button row alone — the
+// paperclip, "Type a message" (#mv-text), the mic, Send and the session's ⋯.
+// The paperclip is a button of that row in both states (attach.go): a file is
+// attached without opening the box, so without raising the keyboard. Tapping
+// "Type a message" reveals the box's own row ABOVE the button row
+// (mirrorComposer) and focuses the box. Once revealed it stays open until the
+// page is left — a send does not collapse it again.
 //
 // 🔴 DECIDED BY THE POINTER, IN CSS (web/css/input.css): `(pointer: coarse)`.
 // The server only marks the form collapsible and its script collapses it
@@ -62,10 +63,10 @@ const (
 // ComposerTextLabel is the "Type a message" button's accessible name.
 const ComposerTextLabel = "Type a message"
 
-// composerFieldMark is what the collapsed state shrinks: the box's field (the
-// box, or its wrapper with the paperclip) carries data-mv-field. Collapsed,
-// the box is hidden and the paperclip alone is left of the field. A composer
-// that cannot collapse carries nothing.
+// composerFieldMark is what the collapsed state hides: the box's row
+// (composerInputRowID) carries data-mv-field, and collapsed it is not drawn
+// at all, so the button row is the whole composer. A composer that cannot
+// collapse carries nothing.
 func composerFieldMark(collapse bool) g.Node {
 	if !collapse {
 		return nil
@@ -73,12 +74,14 @@ func composerFieldMark(collapse bool) g.Node {
 	return g.Attr("data-mv-field", "")
 }
 
-// composerSpacer is the collapsed row's room, so the buttons stay at its right.
+// composerSpacer is the button row's room between the controls at its left
+// (the chief switch, the paperclip, "Type a message", the mic) and Send and
+// the ⋯ at its right.
 func composerSpacer() g.Node {
 	return Span(g.Attr("data-mv-spacer", ""), g.Attr("aria-hidden", "true"), Class("min-w-0 flex-1"))
 }
 
-// composerTextButton is "Type a message": a keyboard, a 44px target in the
+// composerTextButton is "Type a message": a keyboard, a 40px target in the
 // mic's clothes, expanding the box it controls.
 func composerTextButton() g.Node {
 	return Button(
@@ -88,7 +91,7 @@ func composerTextButton() g.Node {
 		g.Attr("title", ComposerTextLabel),
 		g.Attr("aria-expanded", "false"),
 		g.Attr("aria-controls", "mv-input"),
-		Class("press min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3"),
+		Class("press min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition hover:bg-s3"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>`),
 	)
 }

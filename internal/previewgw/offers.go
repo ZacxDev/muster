@@ -59,9 +59,13 @@ type HostState struct {
 	// config that carried one (0 before then). A later config never raises
 	// it: the host's HTTP/2 server was started with its own value when it
 	// dialed, and a gateway limit above that only turns waits into refusals.
-	MaxConns  int
-	Windows   []string
-	Listeners []wire.Listener
+	MaxConns int
+	// Windows is the host's latest window listing; HaveWindows is whether it
+	// has sent one (an empty listing is omitted on the wire, so a nil Windows
+	// alone cannot tell "none" from "not yet").
+	Windows     []string
+	HaveWindows bool
+	Listeners   []wire.Listener
 }
 
 // Preview is one open preview, in memory only.
@@ -75,6 +79,13 @@ type Preview struct {
 	Label   string
 	Path    string
 	Opened  time.Time
+
+	lastUsed  time.Time          // the last proxied request's start or end
+	active    int                // proxied requests and WebSockets in flight (at most MaxConnsPerPreview)
+	slots     chan struct{}      // one token per use in flight; its capacity is the cap (useBegin)
+	goneSince time.Time          // when its window left the host's listing; zero while listed
+	ctx       context.Context    // ends when the preview closes; every use of it runs under it
+	cancel    context.CancelFunc // ends ctx (deletePreviewLocked)
 }
 
 var previewIDEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
@@ -139,15 +150,18 @@ func (g *Gateway) applyOffer(t *Tunnel, m wire.Offer) {
 			// Capped at the tunnel's own value: lowering is merely slower,
 			// raising past what the host's server admits is not allowed.
 			limit = min(c.MaxConns, t.state.MaxConns)
+			t.connLimit = limit
 		}
 		t.mu.Unlock()
 		if limit > 0 {
 			t.client.SetMaxConns(limit)
 		}
 	case wire.TypeWindows:
+		ws := append([]string(nil), m.Windows...)
 		t.mu.Lock()
-		t.state.Windows = append([]string(nil), m.Windows...)
+		t.state.Windows, t.state.HaveWindows = ws, true
 		t.mu.Unlock()
+		g.windowsListed(t, ws)
 	case wire.TypeListeners:
 		t.mu.Lock()
 		t.state.Listeners = append([]wire.Listener(nil), m.Listeners...)
@@ -168,8 +182,8 @@ func (g *Gateway) applyOffer(t *Tunnel, m wire.Offer) {
 // (wire.Request): a re-announced open gets a new id, because ids are this
 // gateway's to mint, never the host's to choose.
 //
-// ⚠ NOT YET: the probe (a loopback dial and HEAD / before answering), the
-// open-preview limits and the lifecycle timers arrive with the proxy.
+// The open limits are newPreviewLocked's (lifecycle.go). The host probed the
+// port (a loopback dial and HEAD /) before it asked.
 func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 	a := wire.Answer{RequestID: r.ID, Window: r.Window, Port: r.Port}
 	if e := requestBounds(r); e != "" {
@@ -188,7 +202,7 @@ func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.byKey[t.key] != t || !g.liveOwnerLocked(t.key.owner) {
-		a.Error = "host_offline"
+		a.Error = codeHostOffline
 		return a
 	}
 	pk := previewKey{t.key, r.Window, r.Port}
@@ -196,19 +210,10 @@ func (g *Gateway) openPreview(t *Tunnel, r wire.Request) wire.Answer {
 		a.Preview = id
 		return a
 	}
-	id, err := newPreviewID()
-	if err != nil {
-		a.Error = "internal"
-		return a
+	a.Preview, a.Error = g.newPreviewLocked(t, openerAgent, r.Window, r.Session, r.Port, r.Label, r.Path)
+	if a.Error != "" {
+		g.m.refused(a.Error)
 	}
-	label := r.Label
-	if len(label) > maxLabel {
-		label = label[:maxLabel]
-	}
-	g.previewBy[pk] = id
-	g.previews[id] = &Preview{ID: id, OwnerID: t.key.owner, Host: t.key.host, Window: r.Window,
-		Session: r.Session, Port: r.Port, Label: label, Path: r.Path, Opened: g.clock.Now()}
-	a.Preview = id
 	return a
 }
 
@@ -227,7 +232,7 @@ func (g *Gateway) closePreview(t *Tunnel, r wire.Request) wire.Answer {
 		return a
 	}
 	a.Port = p.Port
-	g.deletePreviewLocked(p)
+	g.deletePreviewLocked(p, closeHost)
 	return a
 }
 
@@ -252,9 +257,28 @@ type previewKey struct {
 	port   int
 }
 
-func (g *Gateway) deletePreviewLocked(p *Preview) {
+// deletePreviewLocked forgets p and ends its context, which cuts every
+// request and WebSocket of it in flight (lifecycle.go). reason is its
+// muster_preview_closes_total label. Every caller passes an open preview
+// (one it found in g.previews under the lock), so each close counts once.
+func (g *Gateway) deletePreviewLocked(p *Preview, reason string) {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	g.m.closed(reason)
 	delete(g.previews, p.ID)
-	delete(g.previewBy, previewKey{tunnelKey{p.OwnerID, p.Host}, p.Window, p.Port})
+	key := tunnelKey{p.OwnerID, p.Host}
+	delete(g.previewBy, previewKey{key, p.Window, p.Port})
+	// Its pooled idle connections would hold host slots until they time out:
+	// closed now, on every tunnel of the host (a draining one included). The
+	// pool is per tunnel, so the host's other previews' idle ones go too and
+	// are simply dialled again. Not under g.mu: closing a stream can wait on
+	// the tunnel's writer, and a stalled host must not hold the gateway's lock.
+	for t := range g.all {
+		if t.key == key && t.rt != nil {
+			go t.rt.CloseIdleConnections()
+		}
+	}
 }
 
 // queueAnswer hands a to t's answer worker, or closes t when its queue is
@@ -320,11 +344,11 @@ func (g *Gateway) Previews(owner int64) []Preview {
 
 // closePreviewsLocked deletes the previews matching (owner, host); host ""
 // matches every host of owner. It returns how many.
-func (g *Gateway) closePreviewsLocked(owner int64, host string) int {
+func (g *Gateway) closePreviewsLocked(owner int64, host, reason string) int {
 	n := 0
 	for _, p := range g.previews {
 		if p.OwnerID == owner && (host == "" || p.Host == host) {
-			g.deletePreviewLocked(p)
+			g.deletePreviewLocked(p, reason)
 			n++
 		}
 	}

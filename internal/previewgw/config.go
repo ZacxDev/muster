@@ -6,7 +6,9 @@
 //
 // The tunnel's protocol is internal/preview/wire and its transport
 // internal/preview/tunnel; this package is what runs them. The session page
-// and the reverse proxy are not here yet.
+// at w.<zone> is session.go, the owner's entry onto p-<id>.<zone> auth.go and
+// cookie.go, the reverse proxy behind that entry proxy.go (with wsrelay.go,
+// sse.go and samesite.go), and the open limits and lifecycle lifecycle.go.
 //
 // 🔴 NO DATABASE. Host tokens live in a flock'd file in STATE_DIR
 // (hosttokens.go), written by the CLI and re-read by the running gateway;
@@ -23,7 +25,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the gateway's configuration.
@@ -49,7 +53,35 @@ type Config struct {
 	MeshListen string
 	// StateDir holds the host-token file and its lock (STATE_DIR).
 	StateDir string
+	// SigningKey signs owner cookies and page tokens (PREVIEW_SIGNING_KEY),
+	// at least MinSigningKey bytes. Rotating it ends every owner cookie and
+	// page token already given out.
+	SigningKey []byte
+	// TTL closes a preview this long after it opened (PREVIEW_TTL); reopening
+	// mints a new id. Zero means DefaultTTL.
+	TTL time.Duration
+	// Idle closes a preview that has had no request for this long
+	// (PREVIEW_IDLE); an open connection counts as a request in progress.
+	// Zero means DefaultIdle.
+	Idle time.Duration
+	// MaxBody is the most request-body bytes one proxied request may send
+	// (PREVIEW_MAX_BODY); past it the request is refused 413 body_too_large.
+	// Zero means DefaultMaxBody.
+	MaxBody int64
 }
+
+// Lifecycle defaults (docs/design/previews.md, "Lifecycle").
+const (
+	DefaultTTL  = 24 * time.Hour
+	DefaultIdle = 2 * time.Hour
+)
+
+// DefaultMaxBody is PREVIEW_MAX_BODY's default (the design's 32 MiB), and
+// minMaxBody its least value.
+const (
+	DefaultMaxBody = 32 << 20
+	minMaxBody     = 1 << 10
+)
 
 // DefaultListen is PREVIEW_LISTEN's default.
 const DefaultListen = ":8080"
@@ -92,7 +124,61 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if c.StateDir, err = CheckStateDir(getenv("STATE_DIR")); err != nil {
 		return Config{}, err
 	}
+	// Never echoed in an error.
+	if k := getenv("PREVIEW_SIGNING_KEY"); len(k) < MinSigningKey {
+		return Config{}, fmt.Errorf("PREVIEW_SIGNING_KEY is required: at least %d bytes", MinSigningKey)
+	} else {
+		c.SigningKey = []byte(k)
+	}
+	if c.TTL, err = duration("PREVIEW_TTL", getenv("PREVIEW_TTL"), DefaultTTL); err != nil {
+		return Config{}, err
+	}
+	if c.Idle, err = duration("PREVIEW_IDLE", getenv("PREVIEW_IDLE"), DefaultIdle); err != nil {
+		return Config{}, err
+	}
+	if c.MaxBody, err = byteSize("PREVIEW_MAX_BODY", getenv("PREVIEW_MAX_BODY"), DefaultMaxBody); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// byteSize parses a size: a whole number of bytes, or one followed by KiB,
+// MiB or GiB (powers of 1024), between minMaxBody and 1 GiB; empty is def.
+func byteSize(name, v string, def int64) (int64, error) {
+	if v == "" {
+		return def, nil
+	}
+	bad := fmt.Errorf("%s must be a size from 1KiB to 1GiB: bytes, or a number with KiB, MiB or GiB (for example 32MiB), got %q", name, v)
+	num, mul := v, int64(1)
+	for _, u := range []struct {
+		suffix string
+		mul    int64
+	}{{"KiB", 1 << 10}, {"MiB", 1 << 20}, {"GiB", 1 << 30}} {
+		if n, ok := strings.CutSuffix(v, u.suffix); ok {
+			num, mul = n, u.mul
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || n > (1<<30)/mul {
+		return 0, bad
+	}
+	if n*mul < minMaxBody {
+		return 0, bad
+	}
+	return n * mul, nil
+}
+
+// duration parses a Go duration of at least a minute; empty is def.
+func duration(name, v string, def time.Duration) (time.Duration, error) {
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Minute {
+		return 0, fmt.Errorf("%s must be a duration of at least 1m (for example 2h), got %q", name, v)
+	}
+	return d, nil
 }
 
 // BaseURL validates an absolute http(s) base URL with no query, user or

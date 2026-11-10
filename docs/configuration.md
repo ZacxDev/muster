@@ -245,7 +245,8 @@ provisioner, and the server refuses to boot without them.
 ## Tracing (muster-server and muster-mirror)
 
 Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
-and do nothing at all when none is ([telemetry.md](telemetry.md)). These are the
+and do nothing at all when none is ([telemetry.md](telemetry.md)). The preview
+gateway, `muster-preview`, reads the same variables, as service `muster-preview`. These are the
 variables muster reads to decide that; the exporter and the SDK also read the
 standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and
 `OTEL_EXPORTER_OTLP_HEADERS` themselves; muster reads `OTEL_EXPORTER_OTLP_TIMEOUT`
@@ -580,13 +581,14 @@ end to end, but does not encrypt it: send nothing secret.
 
 `muster-preview` is the gateway of [previews](design/previews.md#the-preview-gateway):
 each host running `muster-mirror -preview` opens one tunnel to it. The image
-ships it as `/muster-preview`; nothing runs it yet, and this phase does not
-serve previews to a browser (the session page and the proxy come later).
-What it does now:
+ships it as `/muster-preview`; nothing runs it yet. It serves the session
+page, the owner's way onto a preview's host, and the preview itself through
+the host's tunnel. What it does:
 
 - **Two listeners.** `PREVIEW_LISTEN` is the public one (the host tunnel on
-  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; every other name in the zone
-  answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
+  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; the session page on
+  `w.<PREVIEW_DOMAIN>`; each open preview on `p-<id>.<PREVIEW_DOMAIN>`; every
+  other name in the zone answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
   only). A tunnel's path (`mesh` or `public`) is the listener it arrived on,
   never anything in the request. `/metrics` and `/healthz` are served on the
   mesh listener only.
@@ -618,18 +620,94 @@ What it does now:
 - **Revoked hosts.** A host whose token is revoked loses its previews at the
   next 30 s check even if it is offline then; a new token for the same host
   name starts with none.
-- **No database.** Previews are in memory; a restart closes them.
-- **Metric:** `muster_preview_tunnels{path}`.
+- **The session page.** muster's chip opens
+  `w.<PREVIEW_DOMAIN>/__muster/enter?muster_code=…&muster_plugin=…`. The
+  gateway redeems the code with the token in `PLUGIN_TOKENS_FILE` whose
+  `/plugin/v1/self` named that plugin id with `viewer` (no other token is ever
+  used) and renders the page directly. The page lists only the target
+  window's offers and previews, refreshes every 5 s with a 15-minute page token
+  held in its script, and strips the code from the address bar. **`w.` never
+  sets a cookie**; a reload shows "open this from muster". It is framed only by
+  `MUSTER_PUBLIC_URL`'s origin and sends no `Referer`. A host on the public
+  path is labelled "slow path (via Cloudflare)".
+- **The owner cookie.** **Open** gets a 60-second single-use entry code for
+  `p-<id>.<PREVIEW_DOMAIN>/__muster/enter`, which sets `__Host-mp`: signed
+  with `PREVIEW_SIGNING_KEY`, bound to that preview and its owner, for 8 hours,
+  never renewed except by a fresh chip click; `SameSite=Strict` for a new tab,
+  `SameSite=None; Partitioned` in muster's frame. **Open** on an offer probes
+  the port (one `CONNECT` on the host's tunnel: nothing listening is
+  `not_listening`, a port the host refuses is its reason), then creates the
+  preview and tells the host; before that click, a preview's name answers
+  404 and nothing is dialled. **Close** on the page ends a preview at once:
+  its open connections are cut and its cookies stop admitting.
+- **The proxy.** An admitted request is proxied over HTTP/1.1 to the app on
+  the host's loopback port, streaming both ways (server-sent events and other
+  streamed responses are flushed as they arrive). The app sees
+  `Host: localhost:<port>`, the public host in `X-Forwarded-Host` and
+  `X-Forwarded-Proto: https`, and never the gateway's or muster's cookies,
+  `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-*`, `True-Client-IP` or
+  `X-Muster-*`; the viewer's address is not forwarded. Responses lose any
+  cookie `Domain`, the app's `Strict-Transport-Security` and its
+  `Referrer-Policy` (always `no-referrer`), and gain `frame-ancestors` with
+  `MUSTER_PUBLIC_URL`'s origin. WebSockets (HMR) are relayed message by
+  message, with a ping to the browser every 30 s; a quiet event stream gets a
+  `:` comment line after 30 s, only between events. An app's own error is the
+  app's response; the gateway's own (`host_offline`, `not_answering`,
+  `upstream_timeout`, `max_conns`, …) are a page naming the code only.
+- **Same-site defences.** Every preview shares one registrable domain, so a
+  request carrying a preview's cookie must be same-origin, a typed URL, or a
+  `GET` navigation of a document or frame (`Sec-Fetch-*`); anything else from
+  another site or another preview is refused `403 cross_site`. A WebSocket
+  must carry its own preview's `Origin`; without `Sec-Fetch-*`, so must every
+  method but `GET` and `HEAD`. A `Cookie` header over 8 KiB gets a page that
+  expires every cookie it names, host-only and at `Domain=<PREVIEW_DOMAIN>`.
+- **Limits and lifecycle.** At most 4 open previews per window, 16 per owner,
+  and the host's `maxOpen` per host (8 if it sent none), on an agent's
+  `preview_open` and on **Open** alike (`max_open`). A preview has at most 64
+  requests and WebSockets in flight; one more waits for a slot, up to the
+  dial wait (10 s), and is then refused `429 too_many_connections`, before
+  anything is dialled. An admitted request can wait as long again for one of
+  the host's own upstream slots (`maxConns`) and is then refused `429
+  max_conns`, so the worst case before a 429 is about twice the dial wait.
+  A request body is at most `PREVIEW_MAX_BODY`: a larger `Content-Length` is refused `413
+  body_too_large` before anything is dialled, and a body without one is counted
+  as it streams to the app (never buffered) and refused the same way when it
+  passes the limit. A preview closes after `PREVIEW_IDLE` with no request (an
+  open WebSocket or stream counts as one), `PREVIEW_TTL` after it opened,
+  whatever its use, and 10 minutes after its window left the host's window
+  listing (a host that is offline sends no listing, so it neither starts nor
+  stops that clock); its host is told.
+- **No database.** Previews and entry codes are in memory; a restart closes
+  the previews.
+- **Metrics** (on the mesh listener's `/metrics`; every label is a closed
+  vocabulary, never a preview, host, owner, window, path or query):
+  `muster_preview_tunnels{path}`, `muster_previews_open{kind}`,
+  `muster_preview_opens_total{opener}` (`agent`, `page`),
+  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
+  `window_gone`, `host_revoked`, `owner_not_served`),
+  `muster_preview_refusals_total{reason}` (the gateway's own codes, among them
+  `no_such_preview` for a request to a preview that is not open, `other` for
+  any outside them), `muster_preview_requests_total{kind,auth,code_class}`,
+  `muster_preview_response_seconds{kind}` (from taking its slot to the app's
+  response headers) and `muster_preview_dial_seconds{kind,outcome}`.
+- **Spans** (with an OTLP endpoint set; [tracing](#tracing-muster-server-and-muster-mirror)):
+  `preview.request` (kind, auth, path `mesh`|`public`, status class, the
+  gateway's code when it answered itself), `preview.dial` (outcome) and
+  `preview.ws` (why the relay ended). No path, query, header or body.
 
 | variable | default | required | what it does |
 |---|---|---|---|
 | `MUSTER_URL` | none | yes | muster's API base URL, where `/plugin/v1/self` is served; may be an in-cluster address. |
-| `MUSTER_PUBLIC_URL` | none | yes | muster's public URL as browsers see it (the server's own `MUSTER_PUBLIC_URL`). Validated at start; the later session page puts its origin in `frame-ancestors`. Not derived from `MUSTER_URL`. |
+| `MUSTER_PUBLIC_URL` | none | yes | muster's public URL as browsers see it (the server's own `MUSTER_PUBLIC_URL`). Its origin is the only `frame-ancestors` source on `w.` and on the gateway's own `p-` pages, and the link back to muster. Not derived from `MUSTER_URL`. |
 | `PLUGIN_TOKENS_FILE` | none | yes | The owners' `mpl_` plugin tokens, one per line (blank lines skipped). Each must hold the `viewer` capability for its owner to be served. |
 | `PREVIEW_DOMAIN` | none | yes | The preview zone, a lowercase DNS name (for example `preview.example`): the public listener serves the host tunnel on `tunnel.<PREVIEW_DOMAIN>`. |
 | `PREVIEW_LISTEN` | `:8080` | no | The public listener's address. |
 | `PREVIEW_MESH_LISTEN` | none | no | The mesh listener's address; unset, there is none. Must differ from `PREVIEW_LISTEN`. A tunnel arriving here is on the `mesh` path. |
 | `STATE_DIR` | none | yes | A writable directory (a volume): `host-tokens.json` (each token's sha256, owner id and login label, host) and its lock `host-tokens.lock`. |
+| `PREVIEW_SIGNING_KEY` | none | yes | At least 32 bytes (`openssl rand -hex 32`). Signs the owner cookies (`__Host-mp`) and the session page's page tokens (HMAC-SHA256). Rotating it ends every owner cookie and open session page at once. |
+| `PREVIEW_TTL` | `24h` | no | A preview closes this long after it opened, in use or not; reopening mints a new id. A Go duration, at least `1m`. |
+| `PREVIEW_IDLE` | `2h` | no | A preview with no request for this long closes; an open WebSocket or streamed response counts as a request in progress. A Go duration, at least `1m`. |
+| `PREVIEW_MAX_BODY` | `32MiB` | no | The largest request body one proxied request may send; past it, `413 body_too_large`. Bytes, or a number with `KiB`, `MiB` or `GiB` (powers of 1024), from `1KiB` to `1GiB`. WebSocket messages are not bodies and are not limited. |
 
 ## Test and e2e harness
 
@@ -668,6 +746,7 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_MIRROR_E2E_REFRESH` | none (`5s`) | no | (`e2emirror`) How often the fake host re-reads its windows (`mirrorhost.Config.Refresh`), a Go duration. |
 | `MUSTER_MIRROR_E2E_SESSIONS` | none | no | (`e2emirror`) The fake tmux server's session names, comma-separated. |
 | `MUSTER_MIRROR_E2E_WINDOWS_FILE` | none | no | (`e2emirror`) A per-window fake. Each line is `session\|@id\|index\|active\|command\|activity\|transcript`. |
+| `MUSTER_MIRROR_E2E_PANE_PIDS` | none (`1`) | no | (`e2emirror`) `<window id>=<pid>,…`: each per-window fake window's pane root process (`#{pane_pid}`). A listener is offered as a preview in the window whose pane its process is or descends from, and that walk stops at pid 1, so a window left at `1` is offered nothing. |
 | `MUSTER_MIRROR_E2E_OPENCODE_DIR` | none | no | (`e2emirror`) Turns on a fake opencode v2 server inside the fake host, with a token it issued; each new line of `ops.jsonl` here puts a session or a message, sets a status, or rotates the server's password. |
 | `MUSTER_MIRROR_E2E_OPENCODE_WINDOWS_FILE` | none | no | (`e2emirror`) opencode windows added to a per-window fake. Each line is `session\|@id\|index\|active\|activity\|pane title`; the session is matched from the title by the real matcher. |
 | `MUSTER_MIRROR_E2E_QUERIES` | unset | no | (`e2emirror`) `1`: every attach writes the terminal queries a real tmux sends (Device Attributes, a cursor position report) and turns focus reporting on, so the page's terminal answers them on its own. |

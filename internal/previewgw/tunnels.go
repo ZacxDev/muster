@@ -10,10 +10,15 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
+	"github.com/ZacxDev/muster/internal/preview/wire"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // DrainTimeout bounds how long a replaced tunnel keeps its open streams.
@@ -38,16 +43,24 @@ type Tunnel struct {
 	client    *tunnel.Client
 	ctx       context.Context
 	answers   chan pendingAnswer // to answerWorker; bounded (answerQueue)
+	rt        *http.Transport    // the proxy's upstream connections on this tunnel (proxy.go)
+	m         *gwMetrics         // the gateway's; dials are measured here
 
 	mu        sync.Mutex
 	state     HostState
-	streams   int
+	streams   int // open upstream streams, pooled idle ones included
+	connLimit int // the client's current upstream limit; 0 = wire.MaxConns
 	draining  bool
 	stopDrain func() bool
 }
 
 // Close ends the tunnel.
-func (t *Tunnel) Close() { _ = t.client.Close() }
+func (t *Tunnel) Close() {
+	if t.rt != nil {
+		t.rt.CloseIdleConnections()
+	}
+	_ = t.client.Close()
+}
 
 // Done is closed when the tunnel has ended.
 func (t *Tunnel) Done() <-chan struct{} { return t.client.Done() }
@@ -97,7 +110,7 @@ func (g *Gateway) register(t *Tunnel) error {
 	g.byKey[t.key] = t
 	g.all[t] = struct{}{}
 	g.mu.Unlock()
-	g.tunnelsGauge.WithLabelValues(string(t.path)).Inc()
+	g.m.tunnels.WithLabelValues(string(t.path)).Inc()
 	if old != nil {
 		g.log.Info("tunnel replaced", "host", t.key.host, "old_path", string(old.path), "new_path", string(t.path))
 		g.drain(old)
@@ -120,13 +133,18 @@ func (g *Gateway) unregister(t *Tunnel) {
 	}
 	t.mu.Unlock()
 	if was {
-		g.tunnelsGauge.WithLabelValues(string(t.path)).Dec()
+		g.m.tunnels.WithLabelValues(string(t.path)).Dec()
 	}
 }
 
 // drain stops new streams going to t (it is no longer the key's tunnel) and
 // closes it when its last stream ends, or after DrainTimeout.
 func (g *Gateway) drain(t *Tunnel) {
+	// Idle pooled upstream connections would hold the drain open, and serve
+	// nothing new: new requests go to the replacing tunnel.
+	if t.rt != nil {
+		t.rt.CloseIdleConnections()
+	}
 	t.mu.Lock()
 	t.draining = true
 	idle := t.streams == 0
@@ -153,12 +171,88 @@ func (g *Gateway) Dial(ctx context.Context, owner int64, host string, port int) 
 	if t == nil {
 		return nil, ErrHostOffline
 	}
+	return t.dialHeld(ctx, port)
+}
+
+// dial opens one upstream connection to port on t itself (the proxy's
+// transport for t), holding t open while it lives.
+func (t *Tunnel) dial(ctx context.Context, port int) (net.Conn, error) {
+	t.mu.Lock()
+	t.streams++
+	t.mu.Unlock()
+	return t.dialHeld(ctx, port)
+}
+
+// dialHeld dials port on t for a stream already counted in t.streams. The
+// dial is a preview.dial span (under ctx's) and a muster_preview_dial_seconds
+// observation, by outcome.
+func (t *Tunnel) dialHeld(ctx context.Context, port int) (net.Conn, error) {
+	t.closeIdleIfFull()
+	start := time.Now()
+	ctx, span := telemetry.Start(ctx, "preview.dial", attribute.String("muster.preview.kind", kindHost),
+		attribute.String("muster.preview.path", string(t.path)))
 	c, err := t.client.Dial(ctx, port)
+	outcome := dialOutcome(ctx, err)
+	if t.m != nil {
+		t.m.dialed(time.Since(start), outcome)
+	}
+	telemetry.End(span, outcome)
 	if err != nil {
 		t.streamDone()
 		return nil, err
 	}
 	return &trackedConn{Conn: c, done: t.streamDone}, nil
+}
+
+// dialOutcome is a dial's closed outcome label: ok, the host's refusal
+// (one of wire's Reasons), host_offline, timeout, canceled or error.
+func dialOutcome(ctx context.Context, err error) string {
+	var re *tunnel.RefusedError
+	switch {
+	case err == nil:
+		return dialOK
+	case errors.As(err, &re) && re.Reason.Status() != 0:
+		return string(re.Reason)
+	case errors.Is(err, ErrHostOffline), errors.Is(err, tunnel.ErrClosed), errors.Is(err, tunnel.ErrPeerUnresponsive):
+		return dialHostOffline
+	case errors.Is(err, context.DeadlineExceeded):
+		return dialTimeout
+	case errors.Is(err, context.Canceled), ctx.Err() != nil:
+		return dialCanceled
+	}
+	return dialError
+}
+
+// othersFullLocked reports whether the streams other than the one being
+// dialled hold every one of the host's upstream slots.
+func (t *Tunnel) othersFullLocked() bool {
+	limit := t.connLimit
+	if limit == 0 {
+		limit = wire.MaxConns
+	}
+	return t.streams-1 >= limit
+}
+
+// closeIdleIfFull makes sure the proxy's IDLE pooled connections never hold
+// the slots a dial waits for: every pooled connection is a stream holding
+// one of the host's maxConns, so a few of one preview's could otherwise
+// refuse every other preview of the host (429) until they time out. When
+// every slot is taken it closes t's idle pooled connections (all of the
+// host's previews'). A request that finishes while the dial waits does not
+// pool its connection either: after CloseIdleConnections the transport
+// closes connections that go idle, until its next request (which, if it
+// must dial, comes back here). This test holds that case:
+// TestIdlePooledConnectionsDoNotStarveAnotherPreview.
+func (t *Tunnel) closeIdleIfFull() {
+	if t.rt == nil {
+		return
+	}
+	t.mu.Lock()
+	full := t.othersFullLocked()
+	t.mu.Unlock()
+	if full {
+		t.rt.CloseIdleConnections()
+	}
 }
 
 // streamDone releases one stream; a draining tunnel with none left closes.

@@ -325,64 +325,156 @@ test('a pasted image becomes a chip, an attachment alone is a message, and × ta
   expect(pasted).not.toContain(removedId!);
 });
 
-// THE PAPERCLIP IS TRULY SMALL AND INSIDE THE INPUT (operator decision), and
-// the session switcher sits below the input row — at a phone and a desktop
-// size. 🔴 A REGRESSION TEST: at the base the paperclip is a 44px button BESIDE
-// the input, and there is no #session-switcher.
+// THE BOX HAS ITS OWN ROW ABOVE THE BUTTONS, AND THE PAPERCLIP IS ONE OF THEM
+// (operator ask: with a full row of buttons "there is not enough space for the
+// actual text input", so the box opens "in a new horizontal space above"; the
+// paperclip that sat absolutely positioned inside the box is gone, the row's
+// own paperclip button always shown; the buttons 40px targets, not 44). At a
+// phone (390×844, touch: the box starts collapsed) and a desktop (1280×800, a
+// mouse: the box is always shown), each viewport set here, not by the config.
+// 🔴 A REGRESSION TEST: at the base the box shares ONE row with the mic, Send
+// and the ⋯ (so it is not above them and is far narrower than BOX_MIN_W), the
+// paperclip is a 24px button inside it, and the buttons are 44px.
+//
+// BOX_MIN_W: 320px. At 390 wide the form's content box is 366px (12px gutters),
+// and a box that SHARES a row with this composer's controls — the paperclip,
+// the mic, Send and its caret, at least 4 targets of 40px and their gaps — can
+// have at most 366 − 4·40 − 4·6 = 182px. 320 is reachable only on a row of its
+// own, and is what keeps a one-line placeholder from ellipsing on a phone.
+const BOX_MIN_W = 320;
+
+type Rect = { id: string; x: number; y: number; w: number; h: number };
+
+// composerGeometry reads, in ONE frame, the form, the box, the button row and
+// every drawn control of the form (a popover's menu items are not drawn).
+async function composerGeometry(page: Page) {
+  return page.evaluate(() => {
+    const r = (el: Element, id = ''): Rect => {
+      const b = el.getBoundingClientRect();
+      return { id, x: b.x, y: b.y, w: b.width, h: b.height };
+    };
+    const form = document.getElementById('mv-form')!;
+    const cs = getComputedStyle(form);
+    const controls = Array.from(form.querySelectorAll('button, a, label'))
+      .filter((el) => !el.closest('[popover]'))
+      .map((el) => r(el, el.id))
+      .filter((c) => c.w > 0 && c.h > 0);
+    return {
+      form: r(form, 'mv-form'),
+      padL: parseFloat(cs.paddingLeft),
+      padR: parseFloat(cs.paddingRight),
+      box: r(document.getElementById('mv-input')!, 'mv-input'),
+      // (A composer with no button row of its own — one row, the box in it —
+      // is measured against the form, so it fails the row assertions rather
+      // than throwing.)
+      row: r(document.getElementById('mv-button-row') ?? form, 'mv-button-row'),
+      controls,
+    };
+  });
+}
+
+// expectRowButtons40: every drawn control of the button row is a 40px target
+// (≥40, <44 — the operator's 40, not the old 44), with the paperclip and Send
+// among them (the positive control: a row read as empty would pass the loop).
+async function expectRowButtons40(page: Page, when: string) {
+  const { controls, row } = await composerGeometry(page);
+  const inRow = controls.filter((c) => c.y >= row.y - 0.5 && c.y + c.h <= row.y + row.h + 0.5);
+  const ids = inRow.map((c) => c.id);
+  expect(ids, `${when}: the paperclip is drawn in the button row`).toContain('mv-attach');
+  expect(ids, `${when}: Send is drawn in the button row`).toContain('mv-send');
+  for (const c of inRow) {
+    for (const [dim, v] of [['wide', c.w], ['tall', c.h]] as const) {
+      expect(Math.round(v), `${when}: #${c.id} is at least 40px ${dim}`).toBeGreaterThanOrEqual(40);
+      expect(Math.round(v), `${when}: #${c.id} is under 44px ${dim}`).toBeLessThan(44);
+    }
+  }
+}
+
+// expectBoxOwnRow: the box ends above the button row, spans the form's whole
+// content width, is at least BOX_MIN_W wide, and no control of the form
+// overlaps it.
+async function expectBoxOwnRow(page: Page, when: string) {
+  const m = await composerGeometry(page);
+  expect(m.box.y + m.box.h, `${when}: the box ends above the button row`).toBeLessThanOrEqual(m.row.y + 0.5);
+  expect(Math.abs(m.box.x - (m.form.x + m.padL)), `${when}: the box starts at the form's left gutter`).toBeLessThanOrEqual(1);
+  expect(Math.abs(m.box.w - (m.form.w - m.padL - m.padR)), `${when}: the box is the form's full content width`).toBeLessThanOrEqual(1);
+  expect(m.box.w, `${when}: the box is at least ${BOX_MIN_W}px wide`).toBeGreaterThanOrEqual(BOX_MIN_W);
+  expect(m.controls.map((c) => c.id), `${when}: the paperclip is among the controls checked for overlap`).toContain('mv-attach');
+  const b = m.box;
+  for (const c of m.controls) {
+    const overlaps = c.x < b.x + b.w && b.x < c.x + c.w && c.y < b.y + b.h && b.y < c.y + c.h;
+    expect(overlaps, `${when}: #${c.id} ${JSON.stringify(c)} overlaps the box ${JSON.stringify(b)}`).toBe(false);
+  }
+}
+
 for (const vp of [
   { name: 'phone 390×844', viewport: { width: 390, height: 844 }, mobile: true },
   { name: 'desktop 1280×800', viewport: { width: 1280, height: 800 }, mobile: false },
 ]) {
-  test(`${vp.name}: the paperclip is ~24px inside the input on its left, text clears it as the box grows, and the switcher is below`, async ({ browser }) => {
+  test(`${vp.name}: the paperclip is a 40px button of the row in both states; revealed, the box has its own full-width row above the buttons, overlapped by none; on screen with the keyboard; the switcher below`, async ({ browser }) => {
+    test.setTimeout(90_000);
     const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.mobile, isMobile: vp.mobile, storageState: { cookies: [], origins: [] } });
     const page = await ctx.newPage();
     try {
       await openView(page);
-      // On a phone the box — and the paperclip inside it — is collapsed until
-      // revealed (lib/composer.ts).
-      await revealBox(page);
       const input = page.locator('#mv-input');
       const clip = page.locator('#mv-attach');
-      const at = async () => ({ i: (await input.boundingBox())!, c: (await clip.boundingBox())! });
-      let { i, c } = await at();
-      // ~24px: icon and tap area.
-      expect(Math.round(c.width), 'the paperclip is 24px wide').toBe(24);
-      expect(Math.round(c.height), 'and 24px tall').toBe(24);
-      // Inside the input, on its left.
-      expect(c.x, 'inside the input (left edge)').toBeGreaterThanOrEqual(i.x);
-      expect(c.x + c.width, 'on the input\'s left side').toBeLessThan(i.x + 40);
-      expect(c.y, 'inside the input (top)').toBeGreaterThanOrEqual(i.y);
-      expect(c.y + c.height, 'inside the input (bottom)').toBeLessThanOrEqual(i.y + i.height);
-      // Text never runs under it: the input's content box starts past its right edge.
-      const padLeft = await input.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
-      expect(i.x + padLeft, 'the text starts right of the paperclip').toBeGreaterThan(c.x + c.width);
-      // The paperclip is the one the file input answers, and still works as a button.
-      await expect(clip).toBeEnabled();
-      // Typed into, the box grows (to its cap) and the paperclip stays inside it,
-      // on the last line; the text still starts past it.
-      const h0 = i.height;
+      const press = (l: ReturnType<Page['locator']>) => (vp.mobile ? l.tap() : l.click());
+      // pick opens the file picker from the paperclip and attaches through it:
+      // the picker the BUTTON opened is the one that attaches.
+      const pick = async (name: string) => {
+        const [chooser] = await Promise.all([page.waitForEvent('filechooser'), press(clip)]);
+        expect(chooser.isMultiple()).toBe(true);
+        await chooser.setFiles({ name, mimeType: 'image/png', buffer: PNG });
+        await expect(chips(page)).toHaveCount(1);
+        await chips(page).first().getByRole('button', { name: 'Remove attachment' }).click();
+        await expect(chips(page)).toHaveCount(0);
+      };
+
+      // AT REST. On a phone the box is collapsed behind "Type a message": the
+      // composer is its button row alone, the paperclip on screen in it.
+      if (vp.mobile) {
+        await expect(page.locator('#mv-text')).toBeVisible();
+        await expect(input).toBeHidden();
+        await expect(page.locator('#mv-input-row')).toBeHidden();
+      }
+      await expect(clip, 'the paperclip is on screen at rest').toBeVisible();
+      await expectRowButtons40(page, 'at rest');
+      // A tap opens the picker without opening the box (no keyboard). The
+      // picker is dismissed with nothing chosen: a file attached reveals the
+      // box (composer_reveal.go), and the reveal under test is the button's.
+      {
+        const [chooser] = await Promise.all([page.waitForEvent('filechooser'), press(clip)]);
+        expect(chooser.isMultiple()).toBe(true);
+        if (vp.mobile) await expect(input, 'the paperclip does not open the box').toBeHidden();
+        await expect(input, 'nor focus it').not.toBeFocused();
+        await chooser.setFiles([]);
+        await expect(chips(page)).toHaveCount(0);
+      }
+
+      // REVEALED: the box on its own row above the buttons, the paperclip still
+      // a button of the row.
+      await revealBox(page);
+      await expectBoxOwnRow(page, 'revealed');
+      await expectRowButtons40(page, 'revealed');
+      await expect(clip).toBeVisible();
+      await pick('revealed.png');
+      // Typed into, the box grows (up to its cap) — still above the row,
+      // still overlapped by nothing.
+      const h0 = (await input.boundingBox())!.height;
       await input.fill(Array.from({ length: 12 }, (_, n) => `line ${n + 1} of a message long enough to wrap on a phone screen`).join('\n'));
       await expect.poll(async () => (await input.boundingBox())!.height, { message: 'the box grows with its text' }).toBeGreaterThan(h0 * 2);
-      ({ i, c } = await at());
-      expect(i.height, 'up to 40% of the viewport').toBeLessThanOrEqual(Math.ceil(vp.viewport.height * 0.4) + 1);
-      expect(c.y + c.height, 'the paperclip is still inside the grown box').toBeLessThanOrEqual(i.y + i.height);
-      expect(c.y, 'at its bottom').toBeGreaterThan(i.y + i.height - 40);
-      expect(i.x + (await input.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft))), 'the text still starts right of it').toBeGreaterThan(c.x + c.width);
-      // A click on it reaches the file picker (the hidden input's click).
-      const chooser = page.waitForEvent('filechooser');
-      await clip.click();
-      await (await chooser).setFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: PNG });
-      await expect(chips(page)).toHaveCount(1);
-      await chips(page).first().getByRole('button', { name: 'Remove attachment' }).click();
+      expect((await input.boundingBox())!.height, 'up to 40% of the viewport').toBeLessThanOrEqual(Math.ceil(vp.viewport.height * 0.4) + 1);
+      await expectBoxOwnRow(page, 'grown');
       await input.fill('');
 
-      // The session switcher: below the input row, inside the pinned composer,
-      // on screen, and the page never scrolls sideways.
+      // The session switcher: below the composer's rows, inside the pinned
+      // composer, on screen, and the page never scrolls sideways.
       const bar = page.locator('#session-switcher');
       await expect(bar).toBeVisible();
       const form = (await page.locator('#mv-form').boundingBox())!;
       const b = (await bar.boundingBox())!;
-      expect(b.y, 'the switcher is below the input row').toBeGreaterThanOrEqual(form.y + form.height - 1);
+      expect(b.y, 'the switcher is below the button row').toBeGreaterThanOrEqual(form.y + form.height - 1);
       expect(b.y + b.height, 'and on screen').toBeLessThanOrEqual(vp.viewport.height + 1);
       expect(await page.locator('#mv-compose #session-switcher').count(), 'inside the pinned composer').toBe(1);
       const log = (await page.locator('#mv-log').boundingBox())!;
@@ -397,6 +489,47 @@ for (const vp of [
       await pickView(page, 'all');
       await expect(page.locator('#switcher-toggle').locator('[data-switcher-icon]:visible')).toHaveAttribute('data-switcher-icon', 'all');
       await expect(bar.locator('[data-switcher-list="all"] [data-switcher-current]')).toHaveAttribute('data-switcher-entry', 'mirror');
+
+      if (!vp.mobile) return;
+      // THE PHONE'S KEYBOARD (mirrored.spec's two kinds, on this taller
+      // composer). (1) It RESIZES the page: the box, its row and Send are on
+      // screen in the shorter viewport, the box still above the buttons.
+      const onScreen = async (bottom: number, why: string) => {
+        for (const el of [input, clip, page.locator('#mv-send')]) {
+          const r = (await el.boundingBox())!;
+          expect(r.y, `${why}: #${await el.getAttribute('id')} is not pushed off the top`).toBeGreaterThanOrEqual(0);
+          expect(r.y + r.height, `${why}: #${await el.getAttribute('id')} is above the screen's bottom (${bottom}px)`).toBeLessThanOrEqual(bottom + 0.5);
+        }
+      };
+      await input.tap();
+      await page.setViewportSize({ width: vp.viewport.width, height: 460 });
+      await expect.poll(async () => { const s = (await page.locator('#mv-send').boundingBox())!; return s.y + s.height; },
+        { message: 'in a keyboard-height viewport Send is on screen' }).toBeLessThanOrEqual(460.5);
+      await onScreen(460, 'in a keyboard-height viewport');
+      await expectBoxOwnRow(page, 'in a keyboard-height viewport');
+      await page.setViewportSize(vp.viewport);
+      await onScreen(vp.viewport.height, 'after the keyboard closed');
+      // (2) It OVERLAYS the page (iOS: the window keeps its height, the visual
+      // viewport shrinks): the composer rides on top of it.
+      const KB = 300;
+      await page.addInitScript((kb) => {
+        const vv = new EventTarget();
+        Object.defineProperties(vv, {
+          height: { get: () => window.innerHeight - kb },
+          width: { get: () => window.innerWidth },
+          offsetTop: { value: 0 },
+          offsetLeft: { value: 0 },
+          scale: { value: 1 },
+        });
+        Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => vv });
+      }, KB);
+      await page.reload();
+      await expect(input).toBeEnabled({ timeout: 20_000 });
+      await revealBox(page);
+      await expect.poll(async () => { const s = (await page.locator('#mv-send').boundingBox())!; return s.y + s.height; },
+        { message: 'with an overlaid keyboard the composer sits above it' }).toBeLessThanOrEqual(vp.viewport.height - KB + 0.5);
+      await onScreen(vp.viewport.height - KB, 'above an overlaid keyboard');
+      await expectBoxOwnRow(page, 'above an overlaid keyboard');
     } finally {
       await ctx.close();
     }

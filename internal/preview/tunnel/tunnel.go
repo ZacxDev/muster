@@ -480,12 +480,14 @@ func (e *RefusedError) Error() string {
 // host refusals, while a smaller one is merely slower. Streams already open
 // stay open; a Dial waiting for a slot sees a raised limit at once.
 //
-// 🔴 THE RULE FOR THE CALLER: this limit must never exceed the maxConns the
+// 🔴 NEVER ABOVE THE FIRST: the limit must never exceed the maxConns the
 // host's Serve was started with, which is fixed for the life of the tunnel
-// (its HTTP/2 SETTINGS were sent at the start). So call it at most with the
-// first config the offer stream carries; a later config with a different
-// maxConns means the host must reconnect for it to take effect, and until
-// then the gateway keeps the tunnel's original value.
+// (its HTTP/2 SETTINGS were sent at the start). The first call's value (the
+// host's first config on the offer stream) is therefore a CEILING this
+// client keeps itself: a later call may lower the limit, or raise it back up
+// to that ceiling, never past it. A host whose maxConns grew must reconnect
+// for the new value to take effect. ClientOptions.MaxConns is only the
+// provisional limit before the first call, not the ceiling.
 func (c *Client) SetMaxConns(n int) { c.slots.setLimit(n) }
 
 // Dial opens one CONNECT stream to the host's loopback port and returns it as
@@ -591,6 +593,7 @@ type slots struct {
 	mu      sync.Mutex
 	used    int
 	limit   int
+	ceiling int           // the first setLimit's value; 0 before it
 	changed chan struct{} // closed and replaced on every release or new limit
 }
 
@@ -621,9 +624,15 @@ func (s *slots) broadcastLocked() {
 	s.changed = make(chan struct{})
 }
 
+// setLimit sets the limit, clamped into 1..wire.MaxConns and never above the
+// first value it was given (SetMaxConns says why).
 func (s *slots) setLimit(n int) {
 	s.mu.Lock()
-	s.limit = clampConns(n)
+	n = clampConns(n)
+	if s.ceiling == 0 {
+		s.ceiling = n
+	}
+	s.limit = min(n, s.ceiling)
 	s.broadcastLocked()
 	s.mu.Unlock()
 }

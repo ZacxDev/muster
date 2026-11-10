@@ -361,7 +361,7 @@ for (const vp of [
       // with the queue's caret beside it, the split group.
       const sendBox = (await page.locator('#mv-send-group').count()) ? page.locator('#mv-send-group') : page.locator('#mv-send');
       const mb = (await more.boundingBox())!, sb = (await sendBox.boundingBox())!;
-      expect([Math.round(mb.width), Math.round(mb.height)], 'a 44px target').toEqual([44, 44]);
+      expect([Math.round(mb.width), Math.round(mb.height)], 'a 40px target').toEqual([40, 40]);
       await expect(page.locator('#mv-form #switcher-more-btn'), 'in the input row').toHaveCount(1);
       await expect(bar(page).locator('#switcher-more-btn'), 'not in the bar').toHaveCount(0);
       expect(Math.abs(mb.y + mb.height / 2 - (sb.y + sb.height / 2)), 'on Send\'s row').toBeLessThanOrEqual(2);

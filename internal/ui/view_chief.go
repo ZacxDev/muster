@@ -10,7 +10,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // THE VIEW'S CHIEF MODE (docs/design/chief-in-agent-view.md, phase 1): a
-// switch on a mirrored session's Rendered view composer — the input row's
+// switch on a mirrored session's Rendered view composer — the button row's
 // FIRST control, left of the paperclip — that sends the box's text to the
 // owner's CHIEF, about this session, instead of to the pane; and the chief
 // strip above the input row, where the chief's replies about this session
@@ -117,11 +117,11 @@ const (
 )
 
 // viewChiefToggleClass is the switch's look in agent mode: the mic's clothes
-// (dictateButtonClass), a 44px square — and, like the mic, no hover fill: a
+// (dictateButtonClass), a 40px square — and, like the mic, no hover fill: a
 // tap leaves a touch screen "hovering", and the switch would stay lit in agent
 // mode (measured in e2e/tests/chief-in-view.spec.ts). Chief mode is
 // viewChiefStyle's.
-const viewChiefToggleClass = "press relative inline-flex min-h-[44px] min-w-[44px] shrink-0 cursor-pointer items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition"
+const viewChiefToggleClass = "press relative inline-flex min-h-[40px] min-w-[40px] shrink-0 cursor-pointer items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition"
 
 // viewChiefOn is the ONE selector for "the composer is in chief mode" — the
 // switch's checkbox checked — followed by suffix.

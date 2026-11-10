@@ -388,6 +388,19 @@ export const brandingPort = port + 374;
 export const brandingMainPort = port + 375;
 export const brandingBrowserPort = port + 376;
 export const brandingGotruePort = Number(process.env.MUSTER_E2E_BRANDING_GOTRUE_PORT ?? port + 377);
+// tests/previews.spec.ts: the whole previews path — its own server (mirror
+// plugin, plugins and MUSTER_PLUGIN_ORIGINS on) and one fake host running
+// `-preview`; the REAL gateway (cmd/muster-preview: its public listener, which
+// browsers reach, and its mesh listener, which the host's tunnel dials); the
+// TLS edge in front of the public listener (e2e/previewfix edge), which the
+// browser's every preview name resolves to; and the dev app's two listeners
+// (e2e/previewfix app), the only ports the host's allowlist names.
+export const previewsPort = port + 380;
+export const previewsGatewayPort = port + 381;
+export const previewsMeshPort = port + 382;
+export const previewsEdgePort = port + 383;
+export const previewsAppPort = port + 384;
+export const previewsSiblingPort = port + 385;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

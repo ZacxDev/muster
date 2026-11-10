@@ -589,7 +589,7 @@ test('an interactive host offers the composer: a fresh sign-in sends into the pa
 // REGRESSION GUARD: red at the commit before the fix, where the composer is an
 // in-flow last child (position: static) and lands below the screen.
 //
-// Also the Terminal composer's phone checks (below), for this view: 44px
+// Also the Terminal composer's phone checks (below), for this view: 40px
 // targets, a 16px input, nothing wider than the screen, and on screen with the
 // keyboard up — both the kind that resizes the page and the kind that only
 // overlays it (iOS; played with a visualViewport shorter than the window).
@@ -645,7 +645,7 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   // As loaded: on screen, phone-shaped, and the transcript ends above it.
   await onScreen(H, 'as loaded');
   for (const el of [page.locator('#mv-input'), page.locator('#mv-send')]) {
-    expect((await el.boundingBox())!.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+    expect((await el.boundingBox())!.height, 'a 40px touch target').toBeGreaterThanOrEqual(40);
   }
   expect(await page.locator('#mv-input').evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'a 16px input: iOS zooms the page on anything smaller').toBeGreaterThanOrEqual(16);
   await endAboveComposer('as loaded');
@@ -700,10 +700,10 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   await endAboveComposer('above an overlaid keyboard');
   await noHorizontalScroll(page);
 
-  // A composer TALLER than the shell's no-script fallback reserve (4.5rem =
-  // 72px): a read-only host's composer carries its note. Only the MEASURED
-  // reserve (--mv-compose-h) keeps the transcript's end out from behind it —
-  // the 65px interactive composer above fits inside the fallback either way.
+  // A composer TALLER than the shell's no-script fallback reserve (read off
+  // the page: the body's padding with --mv-compose-h unset): a read-only
+  // host's composer carries its note. Only the MEASURED reserve
+  // (--mv-compose-h) keeps the transcript's end out from behind it.
   // A fresh page: the stubbed visualViewport above is that page's alone.
   await stopMirror();
   await startMirror(false, tr);
@@ -719,7 +719,16 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   const roLast = ro.locator('#mv-log [data-bubble="assistant"]').last();
   await expect(roLast).toContainText('answer number 30');
   const roH = (await ro.locator('#mv-compose').boundingBox())!.height;
-  expect(roH, 'the read-only composer is taller than the 72px fallback reserve (else this check cannot see the measurement)').toBeGreaterThan(72);
+  const fallback = await ro.evaluate(() => {
+    const root = document.documentElement;
+    const measured = root.style.getPropertyValue('--mv-compose-h');
+    root.style.removeProperty('--mv-compose-h');
+    const px = parseFloat(getComputedStyle(document.body).paddingBottom);
+    root.style.setProperty('--mv-compose-h', measured);
+    return px;
+  });
+  expect(fallback, 'the fallback reserve is read').toBeGreaterThan(0);
+  expect(roH, `the read-only composer is taller than the ${fallback}px fallback reserve (else this check cannot see the measurement)`).toBeGreaterThan(fallback);
   await expect
     .poll(async () => {
       const a = (await roLast.boundingBox())!;
@@ -794,7 +803,7 @@ for (const size of [
           const b = (await el.boundingBox())!;
           expect(b.y + b.height, 'the composer is above the bottom of the screen').toBeLessThanOrEqual(size.viewport.height);
           expect(b.x + b.width, 'the composer fits the width').toBeLessThanOrEqual(size.viewport.width);
-          expect(b.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+          expect(b.height, 'a 40px touch target').toBeGreaterThanOrEqual(40);
         }
         expect(await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), 'a 16px input: iOS zooms the page on anything smaller').toBeGreaterThanOrEqual(16);
         const keys = (await page.locator('#term-keys').boundingBox())!;

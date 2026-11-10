@@ -370,10 +370,59 @@ func TestSetMaxConnsClamps(t *testing.T) {
 	if s.limit != 64 {
 		t.Errorf("init(0) = %d, want the default 64", s.limit)
 	}
+	// Each case on a fresh limiter: the first value is also the ceiling
+	// (TestSetMaxConnsNeverRisesAboveTheFirst).
 	for _, c := range []struct{ in, want int }{{-5, 1}, {0, 1}, {1, 1}, {7, 7}, {64, 64}, {65, 64}, {1000, 64}} {
+		var s slots
+		s.init(0)
 		s.setLimit(c.in)
 		if s.limit != c.want {
 			t.Errorf("setLimit(%d) = %d, want %d", c.in, s.limit, c.want)
 		}
+	}
+}
+
+// TestSetMaxConnsNeverRisesAboveTheFirst: the host's Serve fixes its maxConns
+// for the tunnel's life, so the first SetMaxConns is a ceiling the client
+// keeps itself — a later, larger value is held at it; a smaller one lowers the
+// limit, and a later one may raise it back, up to the ceiling only. The
+// provisional ClientOptions.MaxConns (5 here, distinct from every value
+// below) is not the ceiling. Checked through Dial too: a third stream at a
+// ceiling of 2 is refused max_conns, though the host admits 9.
+func TestSetMaxConnsNeverRisesAboveTheFirst(t *testing.T) {
+	var s slots
+	s.init(5)
+	for _, c := range []struct{ in, want int }{{3, 3}, {11, 3}, {2, 2}, {3, 3}, {64, 3}} {
+		s.setLimit(c.in)
+		if s.limit != c.want {
+			t.Errorf("setLimit(%d) after a first of 3 = %d, want %d", c.in, s.limit, c.want)
+		}
+	}
+
+	echo := startTCP(t, echoUpstream)
+	p := newPair(t, pairOpts{
+		host:   HostOptions{MaxConns: 9},
+		client: ClientOptions{MaxConns: 5, DialWait: 200 * time.Millisecond},
+		allow:  []int{echo},
+	})
+	p.client.SetMaxConns(2)
+	p.client.SetMaxConns(7)
+	var held []net.Conn
+	defer func() {
+		for _, c := range held {
+			c.Close()
+		}
+	}()
+	for range 2 {
+		c, err := dialWithin(p, echo, 2*time.Second)
+		if err != nil {
+			t.Fatalf("a stream within the ceiling of 2: %v", err)
+		}
+		held = append(held, c)
+	}
+	_, err := p.client.Dial(context.Background(), echo)
+	var re *RefusedError
+	if !errors.As(err, &re) || re.Reason != wire.ReasonMaxConns {
+		t.Fatalf("a third stream after SetMaxConns(2) then (7): %v; want max_conns (the first value is the ceiling)", err)
 	}
 }

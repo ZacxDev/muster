@@ -94,11 +94,11 @@ test.describe('phone 390×844 touch', () => {
     await expect(textBtn(page)).toHaveAttribute('aria-expanded', 'false');
     await expect(textBtn(page)).toHaveAttribute('aria-controls', 'mv-input');
     // Beside the mic (the server has no dictation here: its muted mic), the
-    // ⋯ and Send in the same row, all 44px targets inside the screen.
+    // ⋯ and Send in the same row, all 40px targets inside the screen.
     const row = await Promise.all(['#mv-text', '#mv-dictate-off', '#switcher-more-btn', '#mv-send'].map((s) => page.locator(s).boundingBox()));
     for (const b of row) {
       expect(b, 'every control of the row is drawn').toBeTruthy();
-      expect(b!.height).toBeGreaterThanOrEqual(44);
+      expect(b!.height).toBeGreaterThanOrEqual(40);
       expect(b!.x + b!.width).toBeLessThanOrEqual(390);
     }
     const mid = (b: { y: number; height: number }) => b.y + b.height / 2;

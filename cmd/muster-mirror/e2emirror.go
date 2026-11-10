@@ -465,6 +465,24 @@ type windowFake struct {
 
 func windowFakePane(session, window string) string { return "%e2e-" + session + "-" + window }
 
+// windowFakePanePID is a window's pane root process (#{pane_pid}): from
+// MUSTER_MIRROR_E2E_PANE_PIDS ("<window id>=<pid>,…", re-read on every
+// listing), else 1. Previews (e2e/tests/previews.spec.ts) attribute a
+// listener to the window whose pane its process is or descends from
+// (internal/previewhost listeners.go), and that walk stops at pid 1, so a
+// window left at 1 is offered nothing: the spec names its dev app's real pid
+// here to put the app "in" a window.
+func windowFakePanePID(window string) int {
+	for _, kv := range strings.Split(os.Getenv("MUSTER_MIRROR_E2E_PANE_PIDS"), ",") {
+		if id, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok && id == window {
+			if pid, err := strconv.Atoi(v); err == nil && pid > 1 {
+				return pid
+			}
+		}
+	}
+	return 1
+}
+
 // Windows implements mirrorhost.WindowLister.
 func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	b, err := os.ReadFile(w.file)
@@ -480,7 +498,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		index, _ := strconv.Atoi(f[2])
 		activity, _ := strconv.ParseInt(f[5], 10, 64)
 		info := mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: f[4],
-			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
+			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: windowFakePanePID(f[1])}
 		if f[6] != "" {
 			st := windowFakeStatus(f[6])
 			status := mirror.NormalizeStatus(st.Status)
