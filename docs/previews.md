@@ -12,9 +12,6 @@ reasoning, the alternatives and the threat model are in the design,
 and the code are right, and the design carries an "As built" note. Every
 variable named here has its row in [configuration.md](configuration.md).
 
-Items marked **(with #574)** are in the open G3c pull request, not on `main`
-yet.
-
 ## The parts
 
 | part | where | what it does |
@@ -197,7 +194,7 @@ whole (`internal/previewgw/proxy.go`).
   `[::1]` on the preview's port is rewritten to the preview's origin;
   `Referrer-Policy: no-referrer` replaces the app's; the app's
   `Strict-Transport-Security`, every `X-Muster-*` header and `Clear-Site-Data`
-  are dropped; `X-Content-Type-Options: nosniff` is set; and a second
+  are dropped (from the response headers; HTTP trailers are not covered yet); `X-Content-Type-Options: nosniff` is set; and a second
   `Content-Security-Policy: frame-ancestors <MUSTER_PUBLIC_URL's origin>` is
   added, which the browser enforces beside the app's own.
 - **WebSockets** are relayed message by message (coder/websocket on both
@@ -284,8 +281,8 @@ the gateway's minute-by-minute check ([lifecycle](#lifecycle)).
 | per owner | 16 open previews | gateway | `max_open` |
 | per host | `maxOpen` open previews (1–32, default 8; the gateway uses 8 until the host sends its config) | host and gateway | `max_open` |
 | per host | `maxConns` upstream streams (1–64, default 64) | gateway, host as backstop | a new one waits up to **10 s** for a slot, then `429 max_conns` |
-| per preview | 64 requests and WebSockets in flight **(with #574)** | gateway | one more waits up to the dial wait (10 s) for a slot, then `429 too_many_connections`, before anything is dialled |
-| request body | `PREVIEW_MAX_BODY`, default 32 MiB **(with #574)** | gateway | `413 body_too_large`: at once for a declared length, as the body streams for a chunked one. WebSocket messages are not bodies |
+| per preview | 64 requests and WebSockets in flight | gateway | one more waits up to the dial wait (10 s) for a slot, then `429 too_many_connections`, before anything is dialled |
+| request body | `PREVIEW_MAX_BODY`, default 32 MiB (1 KiB to 1 GiB) | gateway | `413 body_too_large`: at once for a declared length, as the body streams for a chunked one. WebSocket messages are not bodies |
 | response | none (flow-controlled) | — | — |
 | app response headers | 60 s | gateway | `504 upstream_timeout` |
 | HTTP connection | 10 s for request headers, 5 min idle | gateway | closed |
@@ -308,7 +305,7 @@ tokens are a file in `STATE_DIR`.
 | the owner cookie expires (8 h) | the requests and WebSockets it admitted are cut at that moment (1008 `session_expired`); the next request gets `403 session_expired` |
 | no request for `PREVIEW_IDLE` (default 2 h; an open WebSocket or stream counts as in use) | closed at the next 30 s sweep; the host is told |
 | open longer than `PREVIEW_TTL` (default 24 h) | closed at the next 30 s sweep, in use or not; reopening mints a new id |
-| its window absent from the host's window listing for 10 min **(with #574)** | closed at the next sweep (so 10 to 10.5 min after); the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host neither starts nor clears it |
+| its window absent from the host's window listing for 10 min | closed at the next sweep (so 10 to 10.5 min after); the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host neither starts nor clears it |
 | the host's tunnel drops | requests get `503 host_offline`; the preview stays open, and the page says the host is offline |
 | a port leaves the host's `previews.json` | the host closes that port's previews itself (and tells the gateway), cuts their live connections and refuses new `CONNECT`s `port_not_allowed` |
 | a bad `previews.json` | previews are off on the host: every preview closes, the tools answer `previews_off` |
@@ -371,8 +368,8 @@ with no code.
 | 400 | `bad_upgrade` | an `Upgrade` that is not a WebSocket |
 | 403 | `entry_used` | an entry code that is unknown, spent, expired or another preview's |
 | 403 | `frame_blocked` | `/__muster/check` received no cookie: the browser blocks embedded previews (use **New tab**) |
-| 429 | `too_many_connections` | **(with #574)** 64 in flight and none freed within the wait |
-| 413 | `body_too_large` | **(with #574)** past `PREVIEW_MAX_BODY` |
+| 429 | `too_many_connections` | 64 in flight and none freed within the wait |
+| 413 | `body_too_large` | past `PREVIEW_MAX_BODY` |
 
 ### The session page's API on `w.<zone>`
 
@@ -418,25 +415,35 @@ fails.
 
 ## Telemetry
 
-On `main`:
+The gateway's metrics are on its own registry, served at `/metrics` on the
+mesh listener only (with `/healthz`); every label is a closed vocabulary
+(`internal/previewgw/metrics.go`):
 
-- the gateway: `muster_preview_tunnels{path}` (`mesh`, `public`; draining
-  tunnels included), on its own registry, served at `/metrics` on the mesh
-  listener only (with `/healthz`);
-- muster: `muster_plugin_handoffs_total{purpose,outcome}` and
-  `muster_plugin_origin_refusals_total`.
+- `muster_preview_tunnels{path}` (`mesh`, `public`; draining tunnels
+  included) and `muster_previews_open{kind}`;
+- `muster_preview_opens_total{opener}` (`agent`, `page`) and
+  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
+  `window_gone`, `host_revoked`, `owner_not_served`);
+- `muster_preview_refusals_total{reason}`: every page the gateway answers
+  itself on a `p-` host, the plain `404` for a preview that is not open
+  (`no_such_preview`), a non-`GET` entry (`method_not_allowed`), and refused
+  opens; a code outside the known set counts as `other`;
+- `muster_preview_requests_total{kind,auth,code_class}` for admitted requests;
+- `muster_preview_response_seconds{kind}`: time to the app's response
+  headers, measured from when the request took its per-preview slot (a wait
+  for one is not counted);
+- `muster_preview_dial_seconds{kind,outcome}`.
 
-**(with #574)** the gateway adds `muster_previews_open{kind}`,
-`muster_preview_opens_total{opener}` (`agent`, `page`),
-`muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
-`window_gone`, `host_revoked`, `owner_not_served`),
-`muster_preview_refusals_total{reason}`,
-`muster_preview_requests_total{kind,auth,code_class}`,
-`muster_preview_response_seconds{kind}` and
-`muster_preview_dial_seconds{kind,outcome}`, and the spans `preview.request`,
-`preview.dial` (its child) and `preview.ws`, exported only when an OTLP
-endpoint is set (service `muster-preview`). Every label is a closed
-vocabulary; no span or label carries a path, query, header or body.
+Spans (exported only when an OTLP endpoint is set; service
+`muster-preview`): `preview.request` for an admitted request (kind, auth, the
+tunnel's path, status class), `preview.dial` as its child, and `preview.ws`
+(why the relay ended: `client_left`, `app_ended`, or the gateway's code). A
+`preview.request`'s reason is only a code the gateway itself rendered, never
+read from response headers, so an app cannot mark its own request as a
+gateway error. No span or label carries a path, query, header or body.
+
+muster exports `muster_plugin_handoffs_total{purpose,outcome}` and
+`muster_plugin_origin_refusals_total`.
 
 Not built: `muster_preview_bytes_total`, `muster_preview_offers{state}`, and
 the host's `host.preview.dial` and `host.preview.tool` spans. The host logs

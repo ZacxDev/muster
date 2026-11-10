@@ -652,8 +652,10 @@ the host's tunnel. What it does:
   `upstream_timeout`, `max_conns`, …) are a page naming the code only.
 - **Same-site defences.** Every preview shares one registrable domain, so a
   request carrying a preview's cookie must be same-origin, a typed URL, or a
-  `GET` navigation of a document or frame (`Sec-Fetch-*`); anything else from
-  another site or another preview is refused `403 cross_site`. A WebSocket
+  `GET` or `HEAD` navigation of a document (`Sec-Fetch-*`). A navigation of a
+  frame passes only on `/__muster/check`, the gateway's own page that **Show
+  here** passes through; anything else from another site or another preview,
+  a hidden frame of another preview included, is refused `403 cross_site`. A WebSocket
   must carry its own preview's `Origin`; without `Sec-Fetch-*`, so must every
   method but `GET` and `HEAD`. A `Cookie` header over 8 KiB gets a page that
   expires every cookie it names, host-only and at `Domain=<PREVIEW_DOMAIN>`.

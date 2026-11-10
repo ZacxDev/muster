@@ -5,8 +5,7 @@ proposed.** The operator's decisions are made (see [decisions](#decisions)).
 What was built is described in [previews.md](../previews.md), from the code.
 Where phase 1 came out differently from this page, the section carries an
 **As built** note or its row is corrected, and the code is the authority. The
-[open questions](#open-questions) are for the operator. Items marked
-**(with #574)** are in the open G3c pull request.
+[open questions](#open-questions) are for the operator.
 
 This page proposes letting work running under muster — a Claude Code session
 **mirrored from a bare host**, and later a dispatched agent in a **pod** —
@@ -1110,7 +1109,7 @@ port check, so it keeps its id after its server stopped. The gateway's own
 answer codes on the offer stream include `host_offline`, `bad_port`,
 `bad_path`, `bad_window`, `bad_session`, `bad_request` and `internal`. The
 gateway's pages add `too_many_connections` (429) and `body_too_large` (413)
-**(with #574)**. Every code any side emits is tabled in
+(#574). Every code any side emits is tabled in
 [previews.md](../previews.md#error-codes).
 
 **On a host (phase 1).** `muster-mirror`'s loopback MCP listener, when
@@ -1180,7 +1179,7 @@ acknowledged opens, which get new ids); host tokens are a flock'd file in
 | `preview_open`, or **Open** on an offer | probe; record; listed on the session page |
 | `preview_close`, or **Close** on the session page | closed; connections end. **As built (#571): at once** — every request, stream and WebSocket of it is cut, not at a 30 s re-check |
 | The host's tunnel drops | requests get a "host offline" page (503) |
-| The window is gone (absent from the offer stream's window listing) for 10 minutes | closed. **(with #574)** checked by the 30 s sweep, so 10 to 10.5 min after; the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host (no listing) neither starts nor clears it |
+| The window is gone (absent from the offer stream's window listing) for 10 minutes | closed. **As built (#574):** checked by the 30 s sweep, so 10 to 10.5 min after; the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host (no listing) neither starts nor clears it |
 | No request for `PREVIEW_IDLE` (default 2 h) | closed (a request or WebSocket in flight counts as use; checked every 30 s) |
 | Open longer than `PREVIEW_TTL` (default 24 h) | closed; reopening mints a new id |
 | The host token is revoked | tunnel ends within 30 s; that host's previews close (as built, #561: even if the host is offline at the check) |
@@ -1208,8 +1207,8 @@ Following [limits.md](../limits.md#mirroring):
 | per host | open previews | 8 (`maxOpen`, ≤ 32) | host and gateway. **As built (#571):** the gateway applies the host's `maxOpen` (8 until the host sends one) with **no 32 cap** of its own: the per-owner 16 binds first, and the host enforces its own ≤ 32 |
 | per host | concurrent upstream streams | 64 (`maxConns`, ≤ 64 as built) | host. **As built (#555):** the gateway holds a new stream up to 10 s for a slot, then answers `429 max_conns`; the host's `429` is a backstop |
 | per pod | concurrent upstream connections | 64 | gate |
-| per preview | concurrent client connections | 64 | gateway. **(with #574, the operator's decision):** counts requests and WebSockets **in flight** (a browser's connections are multiplexed behind the edge); the 65th waits up to the same dial wait (10 s) for a slot, then gets `429 too_many_connections`, before anything is dialled |
-| request body | size | 32 MiB (`PREVIEW_MAX_BODY`) | gateway. **(with #574):** `413 body_too_large`, at once for a declared length, as the body streams for a chunked one; WebSocket messages are not limited |
+| per preview | concurrent client connections | 64 | gateway. **As built (#574, the operator's decision):** counts requests and WebSockets **in flight** (a browser's connections are multiplexed behind the edge); the 65th waits up to the same dial wait (10 s) for a slot, then gets `429 too_many_connections`, before anything is dialled |
+| request body | size | 32 MiB (`PREVIEW_MAX_BODY`) | gateway. **As built (#574):** `413 body_too_large`, at once for a declared length, as the body streams for a chunked one; WebSocket messages are not limited |
 | response | size | none; flow-controlled | — |
 | upstream headers | time | 60 s | gateway |
 | HTTP connection | idle | 5 min | gateway |
@@ -1259,7 +1258,7 @@ listener, proxy or key.
 - `PREVIEW_SIGNING_KEY` is at least 32 bytes and signs the owner cookies and
   the page tokens (HMAC-SHA256, kind-separated).
 - `PREVIEW_TTL` and `PREVIEW_IDLE` are Go durations of at least `1m`.
-  `PREVIEW_MAX_BODY` **(with #574)** takes bytes or `KiB`/`MiB`/`GiB`, from
+  `PREVIEW_MAX_BODY` (#574) takes bytes or `KiB`/`MiB`/`GiB`, from
   1 KiB to 1 GiB.
 - `PREVIEW_SHARES` and `PREVIEW_SHARE_MAX_TTL` (phase 3), and the phase-2
   variables, are not read.
@@ -1286,16 +1285,20 @@ listener, proxy or key.
 - On `main` the gateway exports `muster_preview_tunnels{path}` (#561), on its
   own registry at `/metrics` on the **mesh listener only**; muster adds
   `muster_plugin_origin_refusals_total` beside the hand-off counter (#556).
-- **(with #574)** the gateway adds the three spans and
+- #574 adds the three spans and
   `muster_previews_open{kind}`, `muster_preview_requests_total`,
   `muster_preview_dial_seconds`, `muster_preview_refusals_total{reason}`
-  (a code outside the known set counts as `other`), and **three metrics this
+  (every gateway page on `p-`, the plain `404` for a preview that is not
+  open, a non-`GET` entry, refused opens; a code outside the known set counts
+  as `other`), and **three metrics this
   page did not list**, kept by the operator's decision:
   `muster_preview_opens_total{opener}` (`agent`, `page`),
   `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
   `window_gone`, `host_revoked`, `owner_not_served`) and
   `muster_preview_response_seconds{kind}` (time to the app's response
-  headers). `preview.request` covers admitted requests only.
+  headers, from when the request took its per-preview slot).
+  `preview.request` covers admitted requests only, and its reason is only a
+  code the gateway itself rendered, never read from the response.
 - **Not built:** `muster_preview_bytes_total{kind,direction}`,
   `muster_preview_offers{state}` ("state" is not defined here; define it
   before building it), `muster_preview_share_redemptions_total` and the
@@ -1458,7 +1461,8 @@ turn it **red**, and must be watched red before it counts.
 - **The session page:** the entry route answers the page itself (no
   redirect) and its script calls `history.replaceState` to drop
   `muster_code`; a reload without a code shows "open from muster".
-- **Expiry and close reach an open WebSocket** within the recheck (the owner
+- **Expiry and close reach an open WebSocket** at once, at the close or the
+  cookie's expiry, not at a later re-check (the owner
   cookie's 8 h TTL passing on a test clock, a cookie minted 8 h + 1 s earlier
   refused and one minted 8 h − 1 s earlier accepted, the preview closed), with a positive control that
   stays open across several intervals before expiry.
