@@ -45,6 +45,28 @@ func (w *upWorld) rawUpload(t *testing.T, send, total int) net.Conn {
 	return c
 }
 
+// entered waits until the server has taken the upload into its in-flight
+// count. 🔴 settled alone would pass at once on a raw upload the handler has
+// not reached yet: zero in flight BEFORE it starts reads the same as zero after
+// it ended, and the store is then checked mid-write, its multipart upload
+// still (rightly) open.
+func (w *upWorld) entered(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		w.s.uploadLimits.mu.Lock()
+		n := w.s.uploadLimits.total
+		w.s.uploadLimits.mu.Unlock()
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upload never reached the server's in-flight count in 10s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // settled waits until no upload is in flight, then gives a failed write's
 // clean-up (and the fake's abort round trip) time to land.
 func (w *upWorld) settled(t *testing.T) {
@@ -74,6 +96,7 @@ func TestAFailedUploadOrphansNoMultipartUpload(t *testing.T) {
 	t.Run("client disconnects", func(t *testing.T) {
 		w := uploadServer(t, true, 100<<20)
 		c := w.rawUpload(t, big, 4*uploads.PartSize)
+		w.entered(t)
 		time.Sleep(200 * time.Millisecond) // the server is reading the second part
 		c.Close()
 		w.settled(t)
@@ -88,6 +111,7 @@ func TestAFailedUploadOrphansNoMultipartUpload(t *testing.T) {
 		w := uploadServer(t, true, 100<<20)
 		w.s.uploadLimits.readTimeout = 500 * time.Millisecond
 		_ = w.rawUpload(t, big, 4*uploads.PartSize) // and then nothing
+		w.entered(t)
 		w.settled(t)
 		if inc := w.objs.Incomplete(); len(inc) != 0 {
 			t.Errorf("incomplete multipart uploads left: %v", inc)
