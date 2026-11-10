@@ -27,9 +27,10 @@ import (
 // check (branding.PG.Apply), so a route wired without requireAdminRole would
 // still be refused here as it would be in production.
 type memBranding struct {
-	mu     sync.Mutex
-	b      branding.Branding
-	writes int
+	mu sync.Mutex
+	b  branding.Branding
+	// calls counts every Apply, refused or not; writes the ones that wrote.
+	calls, writes int
 }
 
 func (m *memBranding) Load(context.Context) (branding.Branding, error) {
@@ -39,6 +40,9 @@ func (m *memBranding) Load(context.Context) (branding.Branding, error) {
 }
 
 func (m *memBranding) Apply(ctx context.Context, c branding.Change) (branding.Branding, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
 	if !authz.IsAdmin(ctx) {
 		return branding.Branding{}, branding.ErrNotAdmin
 	}
@@ -62,6 +66,12 @@ func (m *memBranding) writeCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.writes
+}
+
+func (m *memBranding) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 // testMemberHeader picks the session's user in brandingServer: unset is the
@@ -194,7 +204,8 @@ func errCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 // own origin: 200. The admin's session from another origin: 403 (the
 // cross-origin refusal), not written. 🔴 The member's refusal is the ROUTE's
 // (requireAdminRole): the store would refuse too, with a 403 of the same
-// words, but the write count below proves no member request reached Apply.
+// words, so the CALL count below — Apply never entered, not merely refused —
+// is what tells the two guards apart.
 func TestBrandingWritesAreAnAdminsOnly(t *testing.T) {
 	_, h, mem, cookie := brandingServer(t)
 	logo := testLogoPNG(t, 24, 12)
@@ -218,8 +229,8 @@ func TestBrandingWritesAreAnAdminsOnly(t *testing.T) {
 			t.Errorf("%s as the admin, cross-origin: %d %s", name, rec.Code, rec.Body.String())
 		}
 	}
-	if n := mem.writeCount(); n != 0 {
-		t.Fatalf("a refused request wrote the branding %d time(s)", n)
+	if n := mem.callCount(); n != 0 {
+		t.Fatalf("a refused request reached the store %d time(s): the route's own guard did not refuse it", n)
 	}
 	// The control: the admin's own session writes.
 	if rec := routes["PUT"](who{cookie: cookie}); rec.Code != http.StatusOK {
