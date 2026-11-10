@@ -39,8 +39,9 @@ type JobCount struct {
 
 // OfficerOf says which officer pool an agent name is an instance of: the
 // officer id and its pool ("routine", "judgement", or "" for an untiered
-// officer). ok is false for any other agent.
-type OfficerOf func(name string) (officer, pool string, ok bool)
+// officer), and whether that pool reaches its model through muster's LLM
+// proxy (onProxy). ok is false for any other agent.
+type OfficerOf func(name string) (officer, pool string, onProxy, ok bool)
 
 // OfficerUse is the instances of one officer pool that ran on an account.
 type OfficerUse struct {
@@ -108,13 +109,21 @@ func Attribute(now time.Time, agentUses []AgentUse, jobs []JobCount, officerOf O
 		if u.CCAccount == "" {
 			continue
 		}
+		o, p, onProxy, isOfficer := officerOf(u.Name)
+		if isOfficer && onProxy {
+			// 🔴 A PROXIED INSTANCE USES NO CLAUDE ACCOUNT. Its pod holds no
+			// subscription token (the LLM route); the account its row still
+			// names is only the one it was created on, so counting it there
+			// would credit that account with work an OpenRouter key paid for.
+			continue
+		}
 		for i, w := range windows {
 			if u.LastActive.Before(now.Add(-w)) {
 				continue
 			}
 			a := get(u.CCAccount)
-			switch o, p, ok := officerOf(u.Name); {
-			case ok:
+			switch {
+			case isOfficer:
 				a.off[i][off{o, p}]++
 			case u.WorkerPool != "":
 				a.pool[i][u.WorkerPool]++

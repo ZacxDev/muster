@@ -2350,6 +2350,14 @@ The cost never fails a complete: when HQ refuses the complete that carries it
 with a 400 (an HQ from before item cost refuses the unknown fields), muster
 sends it again without the cost, and logs `completed item … without its cost`.
 
+**Rolling out the per-pool budget (migration 0110):** while the new pod has
+applied 0110 and an old pod is still serving, the old pod's LLM usage cannot
+be booked. Its requests are served, but each booking fails, is logged and is
+counted on `muster_officer_llm_book_failures_total{officer}`, and the day's
+budget under-reads by it. Watch the rollout complete before relying on the
+day's spend, and check that counter afterwards; the officer key's
+OpenRouter-side credit limit is the wall meanwhile.
+
 **Rollback order:** remove the `llm` and `tiers` blocks from `MUSTER_OFFICERS` before
 rolling muster-server back to an image that predates it (an older image
 refuses the unknown field and does not boot). To an image from before the

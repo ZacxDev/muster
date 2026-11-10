@@ -28,6 +28,21 @@
 -- the request is still served and the spend is lost (counted on
 -- muster_officer_llm_book_failures_total), so its budget under-reads.
 --
+-- 🔴 THIS HAPPENS ON EVERY FORWARD ROLLOUT TOO, NOT ONLY ON A ROLLBACK. The
+-- new pod applies this migration at boot, while the old pods still serve
+-- (a rolling update with maxUnavailable 0 keeps them until the new ones are
+-- ready). From that moment until each old pod exits, every LLM request an old
+-- pod proxies is served and its spend is NOT booked: each one logs
+-- "usage of $… could NOT be written" and counts on
+-- muster_officer_llm_book_failures_total{officer}, and the day's budget
+-- under-reads by those requests for every pod. The window is the rollout's
+-- own overlap (normally a pod start, minutes); the officer key's
+-- provider-side credit limit still bounds it. Watch the rollout complete
+-- (kubectl rollout status), then read that counter: anything it counted is
+-- spend the day's budget does not know about. Keeping the old constraint
+-- beside the new one is not possible: routine r1 and judgement #1 are both
+-- instance 1 on one day, which the old key cannot hold.
+--
 -- ROLLBACK, in this order: (1) remove every `tiers.judgement.llm` from
 -- MUSTER_OFFICERS (an older image refuses the unknown key and does not boot);
 -- (2) run the statements below (they delete the judgement pool's usage,

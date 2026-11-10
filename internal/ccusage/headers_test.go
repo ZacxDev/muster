@@ -84,3 +84,15 @@ func TestParseRateLimitHeadersDropsGarbage(t *testing.T) {
 		t.Fatalf("reading = %+v ok=%v; want no windows, no status, the claim and the reset", r, ok)
 	}
 }
+
+// TestParseRateLimitHeadersBoundsTheFraction: a fraction past the cap (the CLI
+// says it happens) is kept, up to twice the cap; beyond that it is garbage.
+func TestParseRateLimitHeadersBoundsTheFraction(t *testing.T) {
+	r, _ := ParseRateLimitHeaders(hdr("anthropic-ratelimit-unified-5h-utilization", "1.2", "anthropic-ratelimit-unified-7d-utilization", "2.5"))
+	if w := r.Windows[FiveHour]; w.Utilization == nil || *w.Utilization != 120 {
+		t.Fatalf("five_hour = %+v, want 120%%", w)
+	}
+	if _, ok := r.Windows[SevenDay]; ok {
+		t.Fatal("a fraction of 2.5 was read")
+	}
+}

@@ -274,6 +274,11 @@ var headerWindows = [][2]string{{FiveHour, "5h"}, {SevenDay, "7d"}, {"seven_day_
 
 const unifiedPrefix = "anthropic-ratelimit-unified-"
 
+// maxFraction bounds a header utilization. It is a 0-1 fraction, and the CLI
+// bundle's own schema says values above 1 occur when usage runs past a
+// window's cap; anything past 2 (twice the cap) is read as garbage.
+const maxFraction = 2.0
+
 // ParseRateLimitHeaders reads the `anthropic-ratelimit-unified-*` headers of a
 // Messages answer (see the package doc). ok is false when the answer carries
 // none of them. A garbage value is dropped (that value only): a utilization
@@ -284,7 +289,7 @@ func ParseRateLimitHeaders(h http.Header) (Reading, bool) {
 	any := false
 	for _, w := range headerWindows {
 		var win Window
-		if v, ok := headerNumber(h, unifiedPrefix+w[1]+"-utilization"); ok && v >= 0 && v <= 100 {
+		if v, ok := headerNumber(h, unifiedPrefix+w[1]+"-utilization"); ok && v >= 0 && v <= maxFraction {
 			pct := math.Round(v*100*1e4) / 1e4
 			win.Utilization = &pct
 		}

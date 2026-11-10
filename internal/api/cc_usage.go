@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // GET /api/cc-accounts/usage: each of the caller's Claude accounts' latest
@@ -170,16 +171,18 @@ func (s *Server) ccUsageAccounts(ctx context.Context, owner int64, now time.Time
 }
 
 // officerPoolOf is ccusage.OfficerOf over the declared officers: an instance's
-// officer id and pool ("" for an untiered officer).
-func (s *Server) officerPoolOf(name string) (string, string, bool) {
+// officer id and pool ("" for an untiered officer), and whether its pool is on
+// the LLM proxy (officers.ProxyAgent, the proxy's own membership rule).
+func (s *Server) officerPoolOf(name string) (string, string, bool, bool) {
 	if s.officerRT == nil {
-		return "", "", false
+		return "", "", false, false
 	}
 	o, _, ok := s.officerRT.reg.ForAgentName(name)
 	if !ok {
-		return "", "", false
+		return "", "", false, false
 	}
-	return o.ID, o.Tier, true
+	_, _, proxied := officers.ProxyAgent(o, name)
+	return o.ID, o.Tier, proxied, true
 }
 
 func (s *Server) handleCCAccountUsage(w http.ResponseWriter, r *http.Request) {

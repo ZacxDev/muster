@@ -381,3 +381,41 @@ func TestKindsMatchTheMigration(t *testing.T) {
 		}
 	}
 }
+
+// TestAGoodReadSetsTheNextReadSoARestartDoesNotProbeAtOnce: after a good read
+// the row carries NextAt (persisted), and a pass before it — a restarted
+// server's first — calls nothing; one at it reads again.
+func TestAGoodReadSetsTheNextReadSoARestartDoesNotProbeAtOnce(t *testing.T) {
+	fx := &scripted{}
+	r, _ := Step(context.Background(), Row{UsageAPI: UsageAPIRefused, TokenFP: ccpool.Fingerprint("tok")}, "alpha", "tok", t0, cfg(), fx)
+	if want := t0.Add(iv - iv/10); !r.NextAt.Equal(want) {
+		t.Fatalf("NextAt after a good read = %v, want %v", r.NextAt, want)
+	}
+	if _, ok := Step(context.Background(), r, "alpha", "tok", t0.Add(time.Minute), cfg(), fx); ok || fx.probN != 1 {
+		t.Fatalf("a read right after a good one probed again (probes %d)", fx.probN)
+	}
+	if _, ok := Step(context.Background(), r, "alpha", "tok", r.NextAt, cfg(), fx); !ok || fx.probN != 2 {
+		t.Fatalf("the read at NextAt did not probe (probes %d)", fx.probN)
+	}
+}
+
+// TestNoPoolMeansNoProbe: a poller with no Cooling source probes nothing
+// (it cannot tell an account out of quota), and says why; an unreadable
+// cooldown is not reported as the pool's rate-limit mark.
+func TestNoPoolMeansNoProbe(t *testing.T) {
+	src, err := ccpool.NewStatic(map[string]string{"alpha": "tok-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := &scripted{}
+	st := &memStore{}
+	p := &Poller{Source: src, Store: st, Fetch: fx, Owner: 1, Interval: iv, Logger: log.New(io.Discard, "", 0), Now: func() time.Time { return t0 }}
+	if err := p.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := st.Latest(context.Background(), 1)
+	if fx.probN != 0 || rows["alpha"].ErrorKind != KindCooling || !strings.Contains(rows["alpha"].Error, "could not be read") ||
+		strings.Contains(rows["alpha"].Error, "marks the account rate-limited") {
+		t.Fatalf("no pool: probes %d, row %+v", fx.probN, rows["alpha"])
+	}
+}

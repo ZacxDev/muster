@@ -319,17 +319,16 @@ func (p *Poller) Pass(ctx context.Context) error {
 			return ctx.Err()
 		}
 		now := p.now()
-		var cooling time.Time
-		if p.Cooling != nil {
-			c, err := p.Cooling(ctx, p.Owner, n)
-			if err != nil {
-				p.logf("ccusage: account %s: read the pool's cooldown (not probing it this pass): %v", n, err)
-				c = now.Add(p.interval())
-			}
-			cooling = c
+		sc := StepConfig{Interval: p.Interval}
+		switch c, err := p.cooling(ctx, n); {
+		case err != nil:
+			p.logf("ccusage: account %s: read the pool's cooldown (not probing it this pass): %v", n, err)
+			sc.CoolingUntil, sc.CoolingUnknown = now.Add(p.interval()), true
+		default:
+			sc.CoolingUntil = c
 		}
 		before := prev[n]
-		row, changed := Step(ctx, before, n, acc[n], now, StepConfig{Interval: p.Interval, CoolingUntil: cooling}, p.Fetch)
+		row, changed := Step(ctx, before, n, acc[n], now, sc, p.Fetch)
 		if !changed {
 			continue
 		}
@@ -347,6 +346,16 @@ func (p *Poller) Pass(ctx context.Context) error {
 	return nil
 }
 
+// cooling is the pool's cooldown for account. 🔴 WITH NO Cooling SOURCE IT IS
+// AN ERROR, so the account is not probed: the probe spends quota, and without
+// the pool muster cannot tell an account that is out of it.
+func (p *Poller) cooling(ctx context.Context, account string) (time.Time, error) {
+	if p.Cooling == nil {
+		return time.Time{}, errors.New("no account pool to read the cooldown from")
+	}
+	return p.Cooling(ctx, p.Owner, account)
+}
+
 func (p *Poller) interval() time.Duration {
 	if p.Interval <= 0 {
 		return DefaultInterval
@@ -359,6 +368,9 @@ func (p *Poller) interval() time.Duration {
 type StepConfig struct {
 	Interval     time.Duration
 	CoolingUntil time.Time
+	// CoolingUnknown: the pool's cooldown could not be read, and CoolingUntil
+	// is a stand-in one interval ahead (only the message differs).
+	CoolingUnknown bool
 }
 
 // Step is one account's turn of a pass, pure but for fetch: the row to save
@@ -419,7 +431,7 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 		switch {
 		case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
 			r.UsageAPI, r.UsageAPINextAt = UsageAPIOK, time.Time{}
-			good(&r, res.Reading, SourceUsageAPI, now)
+			good(&r, res.Reading, SourceUsageAPI, now, interval)
 			return r, true
 		case res.Status == http.StatusUnauthorized || res.Status == http.StatusForbidden:
 			r.UsageAPI = UsageAPIRefused
@@ -431,6 +443,9 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 	if now.Before(cfg.CoolingUntil) {
 		r.ErrorKind = KindCooling
 		r.Error = "the account pool marks the account rate-limited until " + cfg.CoolingUntil.UTC().Format(time.RFC3339) + "; it is not probed until then"
+		if cfg.CoolingUnknown {
+			r.Error = "the account pool's cooldown for the account could not be read; it is not probed this pass"
+		}
 		r.NextAt = cfg.CoolingUntil
 		if !tried && prev.ErrorKind == KindCooling && prev.NextAt.Equal(r.NextAt) && prev.TokenFP == fp {
 			return prev, false
@@ -441,7 +456,7 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 	res := fetch.Probe(ctx, token)
 	switch {
 	case res.Status >= 200 && res.Status < 300 && res.Err == nil && res.HasReading:
-		good(&r, res.Reading, SourceRateLimitHeaders, now)
+		good(&r, res.Reading, SourceRateLimitHeaders, now, interval)
 		if res.Reading.Status == "rejected" && res.Reading.ResetsAt != nil && res.Reading.ResetsAt.After(now) {
 			r.NextAt = *res.Reading.ResetsAt
 		}
@@ -486,11 +501,15 @@ func Step(ctx context.Context, prev Row, account, token string, now time.Time, c
 }
 
 // good stores a reading on r and clears its error and backoff.
-func good(r *Row, rd Reading, source string, now time.Time) {
+//
+// It also sets the next read (NextAt) one interval out, less a tenth so a
+// ticker's drift does not skip a whole interval: persisted, so a restarted
+// server does not read (and probe) every account at once.
+func good(r *Row, rd Reading, source string, now time.Time, interval time.Duration) {
 	r.Windows, r.Source, r.ReadAt = rd.Windows, source, now
 	r.Status, r.RepresentativeClaim = rd.Status, rd.RepresentativeClaim
 	r.ErrorKind, r.Error = "", ""
-	r.RateLimitStreak, r.NextAt = 0, time.Time{}
+	r.RateLimitStreak, r.NextAt = 0, now.Add(interval-interval/10)
 }
 
 func maxDur(a, b time.Duration) time.Duration {

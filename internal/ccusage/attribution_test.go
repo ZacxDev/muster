@@ -7,16 +7,20 @@ import (
 	"time"
 )
 
-func officerOfTest(name string) (string, string, bool) {
+func officerOfTest(name string) (string, string, bool, bool) {
 	switch {
 	case strings.HasPrefix(name, "officer-triage-web-r"):
-		return "triage:web", "routine", true
+		return "triage:web", "routine", false, true
 	case strings.HasPrefix(name, "officer-triage-web-"):
-		return "triage:web", "judgement", true
+		return "triage:web", "judgement", false, true
 	case strings.HasPrefix(name, "officer-release-web-"):
-		return "release:web", "", true
+		return "release:web", "", false, true
+	case strings.HasPrefix(name, "officer-cheap-web-r"):
+		return "cheap:web", "routine", false, true // its routine pool is on a Claude account
+	case strings.HasPrefix(name, "officer-cheap-web-"):
+		return "cheap:web", "judgement", true, true // its judgement pool is on the LLM proxy
 	}
-	return "", "", false
+	return "", "", false, false
 }
 
 // TestAttributeCountsWhoRanOnEachAccount: officer instances by officer and
@@ -37,7 +41,12 @@ func TestAttributeCountsWhoRanOnEachAccount(t *testing.T) {
 		{Name: "keen-wren", CCAccount: "alpha", LastActive: ago(Day - time.Minute)},
 		{Name: "chief", CCAccount: "alpha", LastActive: ago(Day + time.Minute)}, // week only
 		{Name: "old", CCAccount: "alpha", LastActive: ago(Week + time.Minute)},  // neither
-		{Name: "nowhere", CCAccount: "", LastActive: now},                       // no account
+		{Name: "nowhere", CCAccount: "", LastActive: now},
+		// A judgement instance on the LLM proxy holds no Claude token: its row's
+		// account is not one it uses, so it is counted nowhere; its officer's
+		// Claude-account routine pool is counted as usual.
+		{Name: "officer-cheap-web-1", CCAccount: "alpha", LastActive: now},
+		{Name: "officer-cheap-web-r1", CCAccount: "beta", LastActive: now}, // no account
 	}
 	jobs := []JobCount{
 		{CCAccount: "alpha", RequestedBy: "pr-review", Last24h: 4, Last7d: 9},
@@ -69,7 +78,7 @@ func TestAttributeCountsWhoRanOnEachAccount(t *testing.T) {
 		t.Fatalf("alpha 7d = %+v\nwant %+v", a.Last7d, want7)
 	}
 	b := got["beta"]
-	if !reflect.DeepEqual(b.Last24h.Officers, []OfficerUse{{Officer: "release:web", Instances: 1}}) || b.Last24h.Jobs[0].Jobs != 5 || b.Last24h.InteractiveAgents != 0 {
+	if !reflect.DeepEqual(b.Last24h.Officers, []OfficerUse{{Officer: "cheap:web", Pool: "routine", Instances: 1}, {Officer: "release:web", Instances: 1}}) || b.Last24h.Jobs[0].Jobs != 5 || b.Last24h.InteractiveAgents != 0 {
 		t.Fatalf("beta = %+v", b)
 	}
 }

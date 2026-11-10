@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 const ccUsageServiceToken = "cc-usage-test-service-token-0123456789abcdef"
@@ -203,5 +204,43 @@ func TestCCAccountUsageListsTheConfiguredAccounts(t *testing.T) {
 	}
 	if got.Accounts[0].FiveHour == nil || got.Accounts[1].FiveHour != nil || got.Accounts[1].ReadAt != nil || got.PollIntervalSeconds != 0 {
 		t.Fatalf("answer = %+v", got)
+	}
+}
+
+// TestAProxiedOfficerInstanceIsNotCreditedToItsAccount: officerPoolOf answers
+// onProxy for a judgement instance whose pool is on the LLM proxy (it holds no
+// Claude token) and not for the same officer's Claude-account routine
+// instance, so the usage answer counts only the latter on the account.
+func TestAProxiedOfficerInstanceIsNotCreditedToItsAccount(t *testing.T) {
+	list, err := officers.Parse(`[{"id":"`+jlOfficer+`","hq_url":"http://hq.invalid/api/v1",`+
+		`"tiers":{"routine":{"model":"haiku"},"judgement":{"model":"`+jlJudgementModel+`","llm":{"daily_budget_usd":20}}}}]`, jlEnv, "muster-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeCCUsage{rows: map[string]ccusage.Row{}, agents: []ccusage.AgentUse{
+		{Name: "officer-triage-example-web-1", CCAccount: "alpha", LastActive: time.Now()},
+		{Name: "officer-triage-example-web-r1", CCAccount: "alpha", LastActive: time.Now()},
+	}}
+	toks := newScopedTokens()
+	s := New(nil, AuthConfig{HookToken: tokTestHook, ServiceToken: ccUsageServiceToken}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{APITokens: toks, Users: stubUsers{}, CCUsage: store, Kinds: stubKinds{accounts: []string{"alpha"}, pick: "alpha"},
+		Agents: &officerAgents{}, Provisioner: stubProvisioner{}, SessionLiveness: stubLiveness{}, Connectors: presenceStore{}})
+	if _, err := s.EnableOfficers(OfficersConfig{Officers: list, LLMStore: nopLLMStore{}, InstallSession: discardSession}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, onProxy, ok := s.officerPoolOf("officer-triage-example-web-1"); !ok || !onProxy {
+		t.Fatalf("the judgement instance: onProxy=%v ok=%v, want both true", onProxy, ok)
+	}
+	if _, _, onProxy, ok := s.officerPoolOf("officer-triage-example-web-r1"); !ok || onProxy {
+		t.Fatalf("the routine instance: onProxy=%v ok=%v, want an officer instance off the proxy", onProxy, ok)
+	}
+	rec := ccUsageGet(s.Handler(), CCAccountUsagePath, map[string]string{"Authorization": "Bearer " + toks.addScoped(t, 1, apitokens.ScopeAccountUsage)})
+	var got ccUsageAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK || len(got.Accounts) != 1 {
+		t.Fatalf("GET: %d %s", rec.Code, rec.Body)
+	}
+	want := []ccusage.OfficerUse{{Officer: jlOfficer, Pool: officers.TierRoutine, Instances: 1}}
+	if o := got.Accounts[0].UsedBy.Last24h.Officers; len(o) != 1 || o[0] != want[0] {
+		t.Fatalf("alpha's officers = %+v, want only the routine instance %+v", o, want)
 	}
 }
