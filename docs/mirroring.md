@@ -1213,7 +1213,8 @@ yet.
 
 A host started with `-interactive` **and** `-agent-spawn`
 (`MUSTER_MIRROR_AGENT_SPAWN`), on its **default** tmux server, lets your chief
-start a Claude Code agent there — or, on a tenant's mirror that also opts in
+start a Claude Code agent there (or an opencode one, when the host also has
+`-opencode-send` and an opencode token, [above](#sending-to-opencode)) — or, on a tenant's mirror that also opts in
 with `-agent-spawn-tenant-server`, into that tenant's tmux server (below) ([design](design/chief-dispatch.md), section 3).
 It is off by default, because it starts a process on the host, and it does
 nothing until you also list repositories:
