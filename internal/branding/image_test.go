@@ -286,10 +286,39 @@ func TestProcessRefusesAPixelBombWithinTheSideCap(t *testing.T) {
 			t.Errorf("%s: Process = %v, want %s", name, err, ErrPixels.Code)
 		}
 	}
-	// The boundary: exactly MaxPixels is accepted as far as the pixel guard is
-	// concerned (header only, so it then fails as corrupt — not as a bomb).
-	if _, err := Process(headerOnlyPNG(4000, 4000)); !errors.Is(err, ErrCorrupt) {
-		t.Errorf("4000x4000 (exactly MaxPixels): Process = %v, want corrupt (past the pixel guard)", err)
+}
+
+// TestThePixelCapIs2048Squared pins the memory bound itself (MaxPixels'
+// comment: at 16 million pixels a normal-looking logo could OOM the server).
+// The numbers are literals, not MaxPixels, so raising the constant fails here.
+// Every input is a header with no pixels, so a refusal is the header check's:
+// just over the cap, in a square and in a wide shape that the side cap allows,
+// is too_many_pixels; exactly at it is past the pixel guard and fails only
+// when there turn out to be no pixels to decode (corrupt).
+func TestThePixelCapIs2048Squared(t *testing.T) {
+	cases := []struct {
+		w, h uint32
+		want *Error
+	}{
+		{2049, 2048, ErrPixels},  // 4,196,352
+		{2048, 2049, ErrPixels},  // 4,196,352
+		{4096, 1025, ErrPixels},  // 4,198,400, each side within 4096
+		{2048, 2048, ErrCorrupt}, // 4,194,304 exactly: past the guard
+		{4096, 1024, ErrCorrupt}, // 4,194,304 exactly, as a wide banner
+	}
+	for _, c := range cases {
+		if _, err := Process(headerOnlyPNG(c.w, c.h)); !errors.Is(err, c.want) {
+			t.Errorf("%dx%d (header only): Process = %v, want %s", c.w, c.h, err, c.want.Code)
+		}
+	}
+	// And a real just-over-cap image is refused by the same guard, not by
+	// a later one: it is a valid PNG within the upload and side caps.
+	over := pngOf(t, image.NewGray(image.Rect(0, 0, 2049, 2048)))
+	if len(over) > MaxUploadBytes {
+		t.Fatalf("control: the fixture is %d bytes, over the upload cap", len(over))
+	}
+	if _, err := Process(over); !errors.Is(err, ErrPixels) {
+		t.Errorf("a real 2049x2048 PNG: Process = %v, want %s", err, ErrPixels.Code)
 	}
 }
 

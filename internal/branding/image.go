@@ -34,6 +34,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"net/http"
+	"runtime/debug"
 	"sync"
 
 	xdraw "golang.org/x/image/draw"
@@ -42,18 +43,26 @@ import (
 
 // The limits Process enforces.
 //
-// ⚠ MaxPixels IS 16 MILLION, NOT 16 Mi (16,777,216), AND THE DIFFERENCE IS
-// WHAT MAKES IT REACHABLE. 16 Mi is exactly 4096×4096, so with both sides
-// already capped at MaxSide no image could ever exceed it and the guard would
-// never run. At 16,000,000 a 4096×3907 image (16,003,072 pixels) passes the
-// side check and is refused here (TestProcessRefusesAPixelBombWithinTheSideCap).
+// 🔴 MaxPixels IS THE MEMORY BOUND, AND IT IS SET BY MEASUREMENT. Decoding and
+// scaling cost memory per pixel, whatever the file's size: at the old cap of
+// 16,000,000 pixels a progressive CMYK JPEG of a few hundred KB peaked at
+// 560-580 MB RSS, past the server's 512 MiB limit. At 2048×2048 (4,194,304)
+// the worst accepted input measured ~119 MB peak RSS (the figures are on
+// processMu). A logo is stored at most LogoMaxSide (1024) on a side, so this
+// still takes a 2× source.
+//
+// ⚠ MaxSide STAYS ABOVE √MaxPixels SO THE PIXEL GUARD IS REACHABLE. Were the
+// sides capped at 2048 too, no image could exceed MaxPixels and the guard
+// would never run. At 4096 a wide 4096×1024 banner is accepted, and a
+// 4096×1025 or 2049×2048 image passes the side check and is refused here
+// (TestThePixelCapIs2048Squared).
 const (
 	// MaxUploadBytes is the largest upload accepted: 1 MiB.
 	MaxUploadBytes = 1 << 20
 	// MaxSide is the widest and tallest image accepted, in pixels.
 	MaxSide = 4096
-	// MaxPixels is the most pixels accepted (width × height).
-	MaxPixels = 16_000_000
+	// MaxPixels is the most pixels accepted (width × height): 2048×2048.
+	MaxPixels = 2048 * 2048
 	// LogoMaxSide is the longest side of the stored logo: a larger upload is
 	// scaled down to fit (never up). The header draws it about 28px tall; this
 	// keeps a crisp copy for high-density screens without storing megabytes.
@@ -81,7 +90,7 @@ var (
 	ErrUnsupported = &Error{"unsupported_type", "the file is not a PNG, JPEG or WebP image"}
 	ErrCorrupt     = &Error{"corrupt", "the image could not be read: it is truncated or damaged"}
 	ErrDimensions  = &Error{"too_wide", "the image is wider or taller than 4096 pixels"}
-	ErrPixels      = &Error{"too_many_pixels", "the image has more than 16 million pixels"}
+	ErrPixels      = &Error{"too_many_pixels", "the image has more than 4,194,304 pixels (2048×2048)"}
 )
 
 // Images is an accepted upload as muster stores and serves it: the logo and
@@ -105,9 +114,30 @@ const (
 	formatWebP
 )
 
-// processMu serialises Process. A permitted image can still take ~64 MB to
-// decode (16 million pixels × 4 bytes) plus the canvases; one upload at a time
-// bounds that, and uploads are an admin's rare action.
+// processMu serialises Process: one upload at a time, so the figures below
+// are the whole cost, not one of several. Uploads are an admin's rare action.
+//
+// Peak RSS of a fresh process running Process once on a 2048×2048 image
+// (MaxPixels), default GOGC, no GOMEMLIMIT: progressive CMYK JPEG ~119 MB;
+// 16-bit RGBA PNG, 8-bit RGBA PNG, baseline and progressive RGB JPEG, lossless
+// and lossy WebP ~116 MB each. A 4096×1024 image: ~64 MB, ~83 MB for a
+// progressive JPEG, ~119 MB for CMYK. (Measured by getrusage; the method and
+// the before/after table are in the commit that set MaxPixels.)
+//
+// Two phases make up that peak, and they are kept apart:
+//   - decoding: the pixels, plus a progressive JPEG's coefficients (4 bytes
+//     per pixel per colour component: ~64 MB for a 2048² CMYK one), plus the
+//     RGBA copy;
+//   - scaling: the RGBA copy, plus the scaler's scratch buffer (32 bytes per
+//     destination column per source row: 1024×2048×32 = 64 MB for the logo).
+//
+// Without a break between them the same 2048² inputs measured 119-187 MB
+// (CMYK the worst); Process hands the first phase's memory back
+// (debug.FreeOSMemory: a whole-process collection, which an admin's rare
+// upload can afford) before the second begins, so the peak is roughly the
+// larger phase, not their sum. The icons are scaled from the stored logo (at
+// most LogoMaxSide), not the full-size copy, which halves their scratch
+// buffers for a 2048² upload.
 var processMu sync.Mutex
 
 // Process validates data and returns the images to store, or one of the
@@ -138,33 +168,54 @@ func Process(data []byte) (Images, error) {
 
 	processMu.Lock()
 	defer processMu.Unlock()
-	src, err := decode(f, data)
+	rgba, err := decodeRGBA(f, data, cfg)
 	if err != nil {
-		return Images{}, ErrCorrupt
+		return Images{}, err
 	}
-	// A decoder whose pixels disagree with the header it reported has not
-	// been bounded by the checks above.
-	if b := src.Bounds(); b.Dx() != cfg.Width || b.Dy() != cfg.Height {
-		return Images{}, ErrCorrupt
-	}
-	// Every canvas below is drawn from this one copy: the decoded pixels,
-	// and nothing else of the file, on a fresh RGBA canvas. (RGBA, not the
-	// decoder's own type, also because the scaler's fast paths take it: a
-	// JPEG's YCbCr scaled directly took ~8 s for a 40×20 image under -race.)
-	rgba := image.NewRGBA(image.Rect(0, 0, cfg.Width, cfg.Height))
-	draw.Draw(rgba, rgba.Bounds(), src, src.Bounds().Min, draw.Src)
+	// The decoder's image and state are unreachable now; return their memory
+	// before the scaler asks for its own (processMu's comment has the figures).
+	debug.FreeOSMemory()
+	logo := fit(rgba, LogoMaxSide)
 	var out Images
-	if out.Logo, err = encodePNG(fit(rgba, LogoMaxSide)); err != nil {
+	if out.Logo, err = encodePNG(logo); err != nil {
 		return Images{}, err
 	}
-	if out.Icon192, err = encodePNG(square(rgba, Icon192)); err != nil {
+	// The icons are scaled from the logo, not from rgba: for an upload within
+	// LogoMaxSide they are the same image, and for a larger one the scaler's
+	// scratch buffer is sized by the logo's height, not the upload's.
+	if out.Icon192, err = encodePNG(square(logo, Icon192)); err != nil {
 		return Images{}, err
 	}
-	if out.Icon512, err = encodePNG(square(rgba, Icon512)); err != nil {
+	if out.Icon512, err = encodePNG(square(logo, Icon512)); err != nil {
 		return Images{}, err
 	}
 	out.ETag = ETagOf(out.Logo, out.Icon192, out.Icon512)
 	return out, nil
+}
+
+// decodeRGBA decodes data and copies its pixels onto a fresh RGBA canvas,
+// which every output is then drawn from: the decoded pixels and nothing else
+// of the file. (RGBA, not the decoder's own type, also because the scaler's
+// fast paths take it: a JPEG's YCbCr scaled directly took ~8 s for a 40×20
+// image under -race.) It is its own function so the decoder's image is out of
+// scope, and collectable, once it returns.
+func decodeRGBA(f format, data []byte, cfg image.Config) (*image.RGBA, error) {
+	src, err := decode(f, data)
+	if err != nil {
+		return nil, ErrCorrupt
+	}
+	// A DEFENSIVE INVARIANT, NOT REGRESSION-COVERED: the standard decoders
+	// return exactly the size their DecodeConfig reported, so no input
+	// reaches this branch and no test exercises it. It is kept because a
+	// decoder whose pixels disagreed with its header would not have been
+	// bounded by Process's size checks, and the canvas below would be sized
+	// by the header, not the pixels.
+	if b := src.Bounds(); b.Dx() != cfg.Width || b.Dy() != cfg.Height {
+		return nil, ErrCorrupt
+	}
+	rgba := image.NewRGBA(image.Rect(0, 0, cfg.Width, cfg.Height))
+	draw.Draw(rgba, rgba.Bounds(), src, src.Bounds().Min, draw.Src)
+	return rgba, nil
 }
 
 // ETagOf is the ETag of a stored logo and icons (Images.ETag).

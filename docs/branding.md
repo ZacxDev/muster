@@ -25,7 +25,8 @@ Open **Account** as an admin. The **Instance branding** section has:
   trimmed. Control characters and text-direction overrides are refused.
   Save an empty name to clear it.
 - **Logo**: a PNG, JPEG or WebP file, up to 1 MiB, and at most 4096 pixels on
-  each side and 16 million pixels in all. **Save branding** uploads it.
+  each side and 4,194,304 pixels (2048 × 2048) in all, so a 4096 × 1024
+  banner fits. **Save branding** uploads it.
 - **Reset logo to the muster mark** removes the logo and keeps the name.
 
 The section shows the current logo and the app icon made from it. A member's
@@ -44,7 +45,7 @@ The upload is never stored or served as sent. muster:
    read at all. SVG is refused (it is markup and can carry script), as are GIF,
    HTML and everything else.
 3. **Reads only the header first**: an image wider or taller than 4096 pixels,
-   or with more than 16,000,000 pixels, is refused **before** any pixel is
+   or with more than 4,194,304 pixels (2048 × 2048), is refused **before** any pixel is
    decoded. A small file can declare a huge image (a decompression bomb), and
    this is what keeps it from being decoded.
 4. **Decodes it** with that format's own decoder. A truncated or damaged file
@@ -59,8 +60,11 @@ Nothing of the original file survives except its pixels: no EXIF, no text
 chunks, no colour profile, and no bytes appended after the image (a file that
 is both a PNG and an HTML page loses the HTML).
 
-One upload is processed at a time. Decoding the largest permitted image takes
-about 64 MB of memory.
+One upload is processed at a time. Processing the largest permitted image
+peaks at about 120 MB of memory (measured: a 2048 × 2048 progressive CMYK
+JPEG; other formats about 116 MB). The pixel cap is what bounds it: memory
+grows with the pixel count, not the file size, and at the old cap of 16
+million pixels a progressive CMYK JPEG of a few hundred KB took 560-580 MB.
 
 | refusal | code | status |
 |---|---|---|
@@ -71,7 +75,7 @@ about 64 MB of memory.
 | not a PNG, JPEG or WebP | `unsupported_type` | 415 |
 | truncated or damaged | `corrupt` | 400 |
 | a side over 4096 pixels | `too_wide` | 400 |
-| over 16,000,000 pixels | `too_many_pixels` | 400 |
+| over 4,194,304 pixels | `too_many_pixels` | 400 |
 | the name is not valid UTF-8 | `name_invalid` | 400 |
 | the name is over 64 characters | `name_too_long` | 400 |
 | the name has a control or text-direction character | `name_control` | 400 |
