@@ -221,7 +221,13 @@ const (
 // every composer button a 40×40 target (min-h/min-w, so a split control can
 // still be wider) rather than 44 — TestComposerButtonsAre40px holds each
 // rendered button to it.
-const composerButtonGap = "gap-1.5"
+//
+// 🔴 UNDER 360px THE GAP IS 2px, so the FULLY LOADED row fits a 320px phone:
+// the chief switch, the paperclip, "Type a message", the mic, Send and its
+// caret and the ⋯ are 7×40 = 280px, plus 7 gaps (the spacer is an item too),
+// against the 296px the form's 12px gutters leave — 322px at 6px, 294px at
+// 2px (e2e/tests/chief-in-view.spec.ts's 320×568 case).
+const composerButtonGap = "gap-1.5 max-[359px]:gap-0.5"
 
 // composerMoreClass is the session switcher's ⋯ when it is in the composer's
 // button row (MoreInRow): the bar's icon button at the row's 40px. The bar's

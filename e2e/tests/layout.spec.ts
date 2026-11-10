@@ -57,9 +57,13 @@ test('no main page scrolls sideways at 360px', async ({ page }) => {
 // The board card's stretched link is excluded: its hit area is the whole card
 // (a ::after overlay), not the anchor's own box.
 // 🔴 ONE NAMED EXCEPTION: the message composers' buttons are 40×40 (operator
-// decision, internal/ui/mirror_compose.go) — every control
-// of a mirrored composer's button row, and the agent chat's Send and mic by
-// id. They are held to 40, not waived.
+// decision, internal/ui/mirror_compose.go), so they are held to 40 here, not
+// 44 — the agent chat's Send and mic by id (the pages audited here draw that
+// form), and a BUTTON or LINK of a mirrored composer's #mv-button-row (no page
+// audited here draws one; never its box, which stays held to 44). Where the
+// 40px hold is actually tested: internal/ui/composer_rows_test.go
+// (TestComposerButtonsAre40px) and e2e/tests/uploads.spec.ts (and the 320px
+// case in chief-in-view.spec.ts).
 const controlsJS = `(() => {
   const vis = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect();
     return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 0 && r.height > 0 &&
@@ -69,7 +73,8 @@ const controlsJS = `(() => {
   for (const e of document.querySelectorAll('a[href], button, select, input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, summary')) {
     if (!vis(e) || e.classList.contains('card-link')) continue;
     const r = e.getBoundingClientRect();
-    const min = (e.closest('#mv-button-row') && !e.closest('[popover]')) || composer.has(e.id) ? 40 : 44;
+    const rowButton = (e.tagName === 'BUTTON' || e.tagName === 'A') && e.closest('#mv-button-row') && !e.closest('[popover]');
+    const min = rowButton || composer.has(e.id) ? 40 : 44;
     if (r.width < min || r.height < min) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' ' + JSON.stringify((e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 30)));
   }
   return out;
