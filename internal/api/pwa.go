@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 
@@ -171,10 +170,9 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 // would put muster's mark back on the home screen of a branded server.
 func BrandedManifest(b ui.Brand) WebManifest {
 	m := Manifest()
-	v := "?v=" + url.QueryEscape(b.ETag)
 	m.Icons = []manifestImage{
-		{Src: BrandIcon192Path + v, Sizes: "192x192", Type: "image/png", Purpose: "any"},
-		{Src: BrandIcon512Path + v, Sizes: "512x512", Type: "image/png", Purpose: "any"},
+		{Src: b.Versioned(BrandIcon192Path), Sizes: "192x192", Type: "image/png", Purpose: "any"},
+		{Src: b.Versioned(BrandIcon512Path), Sizes: "512x512", Type: "image/png", Purpose: "any"},
 	}
 	return m
 }
