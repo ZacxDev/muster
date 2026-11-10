@@ -95,12 +95,16 @@ func (s signer) mintOwnerCookie(preview string, owner int64, now time.Time) (str
 // checkOwnerCookie reports whether v admits owner to preview at now: signed
 // with this key as an owner cookie, naming exactly that preview and owner, and
 // not yet expired (an expiry equal to now is expired).
-func (s signer) checkOwnerCookie(v, preview string, owner int64, now time.Time) bool {
+// It also answers when the cookie expires.
+func (s signer) checkOwnerCookie(v, preview string, owner int64, now time.Time) (time.Time, bool) {
 	var c ownerClaim
 	if !s.open(kindOwnerCookie, v, &c) {
-		return false
+		return time.Time{}, false
 	}
-	return c.Preview == preview && c.Owner == owner && now.Unix() < c.Expires
+	if c.Preview != preview || c.Owner != owner || now.Unix() >= c.Expires {
+		return time.Time{}, false
+	}
+	return time.Unix(c.Expires, 0), true
 }
 
 // ownerCookieHeader is the Set-Cookie for an owner cookie. Its SameSite

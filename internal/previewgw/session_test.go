@@ -341,8 +341,8 @@ func TestTheOwnerCookieIsBoundToItsPreviewAndOwner(t *testing.T) {
 	e := newGW(t, gwOpts{})
 	fh, _, id, code := e.openedPreview(t)
 	cookie := ownerCookieOf(t, e.useEntry(t, id, code, "document"))
-	if a := e.do(t, "GET", pHost(id), "/", withCookie(cookie), ""); a.status != http.StatusNotImplemented {
-		t.Fatalf("its own preview: HTTP %d; want admitted (the placeholder)", a.status)
+	if a := e.do(t, "GET", pHost(id), "/", withCookie(cookie), ""); a.status != http.StatusOK || a.body != appBody+"/" {
+		t.Fatalf("its own preview: HTTP %d %q; want admitted (the app's answer)", a.status, a.body)
 	}
 	other := agentOpen(t, fh, "r2", "@1", 8000)
 	if a := e.do(t, "GET", pHost(other), "/", withCookie(cookie), ""); a.status != http.StatusForbidden {
@@ -364,11 +364,12 @@ func TestTheOwnerCookieIsBoundToItsPreviewAndOwner(t *testing.T) {
 // The owner cookie lasts 8 h on the gateway's clock: 8 h − 1 s admitted,
 // 8 h + 1 s refused.
 func TestTheOwnerCookieExpiresAtEightHours(t *testing.T) {
-	e := newGW(t, gwOpts{})
+	// Idle and TTL past the test's 8 h, so only the cookie can end it.
+	e := newGW(t, gwOpts{idle: 11 * time.Hour, ttl: 13 * time.Hour})
 	_, _, id, code := e.openedPreview(t)
 	cookie := ownerCookieOf(t, e.useEntry(t, id, code, "document"))
 	e.clock.Advance(8*time.Hour - time.Second) // literal: the contract, not the constant
-	if a := e.do(t, "GET", pHost(id), "/", withCookie(cookie), ""); a.status != http.StatusNotImplemented {
+	if a := e.do(t, "GET", pHost(id), "/", withCookie(cookie), ""); a.status != http.StatusOK {
 		t.Fatalf("at 8h-1s: HTTP %d; want admitted", a.status)
 	}
 	e.clock.Advance(2 * time.Second)
@@ -495,14 +496,18 @@ func TestOffersExposeNothingBeforeOpen(t *testing.T) {
 	if a := e.do(t, "GET", pHost(id), "/", nil, ""); a.status != http.StatusForbidden {
 		t.Fatalf("the opened preview without a cookie: HTTP %d; want 403 (it exists now)", a.status)
 	}
-	// Positive control for the stream count: a dial through the tunnel counts.
+	// Open's probe is the first stream (and the positive control for the
+	// count above); one more dial is one more.
+	if n := fh.connects.Load(); n != 1 {
+		t.Fatalf("%d streams after Open; want 1 (its probe)", n)
+	}
 	c, err := e.g.Dial(context.Background(), 1, "alpha", echoServer(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Close()
-	if n := fh.connects.Load(); n != 1 {
-		t.Fatalf("positive control: %d streams after one dial; want 1", n)
+	if n := fh.connects.Load(); n != 2 {
+		t.Fatalf("%d streams after Open and one dial; want 2", n)
 	}
 }
 

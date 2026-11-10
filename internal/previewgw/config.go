@@ -7,7 +7,8 @@
 // The tunnel's protocol is internal/preview/wire and its transport
 // internal/preview/tunnel; this package is what runs them. The session page
 // at w.<zone> is session.go, the owner's entry onto p-<id>.<zone> auth.go and
-// cookie.go; the reverse proxy behind that entry is not here yet.
+// cookie.go, the reverse proxy behind that entry proxy.go (with wsrelay.go,
+// sse.go and samesite.go), and the open limits and lifecycle lifecycle.go.
 //
 // 🔴 NO DATABASE. Host tokens live in a flock'd file in STATE_DIR
 // (hosttokens.go), written by the CLI and re-read by the running gateway;
@@ -25,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config is the gateway's configuration.
@@ -54,7 +56,20 @@ type Config struct {
 	// at least MinSigningKey bytes. Rotating it ends every owner cookie and
 	// page token already given out.
 	SigningKey []byte
+	// TTL closes a preview this long after it opened (PREVIEW_TTL); reopening
+	// mints a new id. Zero means DefaultTTL.
+	TTL time.Duration
+	// Idle closes a preview that has had no request for this long
+	// (PREVIEW_IDLE); an open connection counts as a request in progress.
+	// Zero means DefaultIdle.
+	Idle time.Duration
 }
+
+// Lifecycle defaults (docs/design/previews.md, "Lifecycle").
+const (
+	DefaultTTL  = 24 * time.Hour
+	DefaultIdle = 2 * time.Hour
+)
 
 // DefaultListen is PREVIEW_LISTEN's default.
 const DefaultListen = ":8080"
@@ -103,7 +118,25 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	} else {
 		c.SigningKey = []byte(k)
 	}
+	if c.TTL, err = duration("PREVIEW_TTL", getenv("PREVIEW_TTL"), DefaultTTL); err != nil {
+		return Config{}, err
+	}
+	if c.Idle, err = duration("PREVIEW_IDLE", getenv("PREVIEW_IDLE"), DefaultIdle); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// duration parses a Go duration of at least a minute; empty is def.
+func duration(name, v string, def time.Duration) (time.Duration, error) {
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Minute {
+		return 0, fmt.Errorf("%s must be a duration of at least 1m (for example 2h), got %q", name, v)
+	}
+	return d, nil
 }
 
 // BaseURL validates an absolute http(s) base URL with no query, user or

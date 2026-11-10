@@ -59,7 +59,8 @@ func TestTheEntryCodeMapIsBoundedAcrossOwners(t *testing.T) {
 }
 
 // 🔴 /__muster/check never sends the owner to another host: a start path a
-// browser would read as "//evil.example" is "/". The paths are a host's to
+// browser would read as "//evil.example" is "/". (Check answers a page that
+// navigates with location.replace, not a redirect; checkTarget reads it.) The paths are a host's to
 // choose (the gateway accepts any leading "/"), so a hostile host could send
 // them. "/app/x?y=1" is the positive control: a plain path goes through.
 func TestTheCheckRedirectNeverLeavesThePreviewsHost(t *testing.T) {
@@ -98,8 +99,9 @@ func TestTheCheckRedirectNeverLeavesThePreviewsHost(t *testing.T) {
 		req.Header.Set("Cookie", OwnerCookie+"="+ck)
 		rec := httptest.NewRecorder()
 		e.g.PublicHandler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != c.want {
-			t.Errorf("start path %q: HTTP %d, Location %q; want 303 to %q", c.path, rec.Code, rec.Header().Get("Location"), c.want)
+		if got := checkTarget(rec.Body.String()); rec.Code != http.StatusOK || got != c.want || rec.Header().Get("Location") != "" {
+			t.Errorf("start path %q: HTTP %d, navigates to %q, Location %q; want 200 navigating to %q", c.path, rec.Code, got,
+				rec.Header().Get("Location"), c.want)
 		}
 	}
 }
