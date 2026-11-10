@@ -1,5 +1,8 @@
 # Design: start a tmux-backed session on a host from muster
 
+> **Superseded by [chief-dispatch.md](chief-dispatch.md); this page does not
+> describe current behaviour.** Kept as a record of the design.
+
 **Status: proposed; the design's decisions are made** (by the operator; see
 [decisions](#decisions)). **Nothing here is implemented.** The Agents list page
 it places the **New session** button on has since been retired, and so has the
@@ -607,7 +610,9 @@ tmux display-message -p -t <pane id> '#{pane_current_path}'
   runs may need more, such as `SSH_AUTH_SOCK` for git over SSH. They get it
   only through the copied session environment ([environment](#environment)),
   which is **UNVERIFIED** to be complete.
-- **What muster shows.** muster has a rendered view only for Claude Code, so
+- **What muster shows.** (Superseded: see the note at the top; for opencode
+  today, see [mirroring.md](../mirroring.md#sending-to-opencode).) muster has
+  a rendered view only for Claude Code, so
   an opencode session is **terminal-only**. The New session
   sheet says so next to the profile, and the redirect lands on the terminal.
   **The message box does not send into it.** The host refuses every Send,

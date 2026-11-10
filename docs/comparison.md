@@ -60,8 +60,7 @@ Where others are better:
   viewed ([limits.md](limits.md)). Windows is not listed. Happy's desktop app
   runs on macOS, Windows and Linux.
 - **Non-Claude agents.** Codex and Gemini CLI are terminal views only, and the
-  message box sends to opencode only on a host that opts in (`-opencode-send`),
-  to a session started with `muster-mirror opencode`
+  message box sends to opencode only on an opted-in host
   ([mirroring.md](mirroring.md#sending-to-opencode)).
 - **Voice.** muster's mic is dictation into the message box. Happy's voice
   agent holds a spoken conversation, reports back and takes approvals by voice.
