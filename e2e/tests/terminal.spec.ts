@@ -409,7 +409,9 @@ for (const vp of [
       expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
       expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(vp.use.viewport.width);
       expect(box.y, 'menu top edge').toBeGreaterThanOrEqual(0);
-      expect(box.y + box.height, 'the menu does not cover its ⋯').toBeLessThanOrEqual(mb.y + 0.5);
+      // Above or below its ⋯ (floating-menu.js takes the side that holds it,
+      // below first) — never over it.
+      expect(box.y + box.height <= mb.y + 0.5 || box.y >= mb.y + mb.height - 0.5, `the menu does not cover its ⋯ (menu ${JSON.stringify(box)}, ⋯ ${JSON.stringify(mb)})`).toBe(true);
       for (const it of await items.all()) expect((await it.boundingBox())!.height, 'a menu key is a 44px target').toBeGreaterThanOrEqual(44);
       await noHorizontalScroll(page);
       await page.keyboard.press('Escape');
@@ -481,7 +483,8 @@ test.describe('without the Popover API (390×844 touch)', () => {
     const box = (await menu.boundingBox())!;
     expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
     expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(390);
-    expect(box.y + box.height, 'placed above its ⋯, not over it').toBeLessThanOrEqual(mb.y + 0.5);
+    expect(box.y + box.height <= mb.y + 0.5 || box.y >= mb.y + mb.height - 0.5, `placed beside its ⋯ (above or below), not over it (menu ${JSON.stringify(box)}, ⋯ ${JSON.stringify(mb)})`).toBe(true);
+    expect(box.y + box.height, 'and on screen').toBeLessThanOrEqual(844 + 0.5);
     await noHorizontalScroll(page);
 
     // ^C, picked from the menu: exactly 0x03, and the menu closes.

@@ -232,24 +232,27 @@ async function expectOneSwitch(page: Page) {
 // press is the operator's press on a control: a tap on a touch screen.
 const press = (l: Locator, touch: boolean) => (touch ? l.tap() : l.click());
 
-// expectToggleFirst: the toggle is the composer row's FIRST control — left of
-// every other shown control of the form (the paperclip, the input, the mic,
-// Send, the ⋯) — and a 44px target.
+// expectToggleFirst: the toggle is the composer's button row's FIRST control —
+// left of every other shown control of that row (the paperclip, the mic, Send,
+// the ⋯) — and a 40px target. (The box is on its own row above the buttons,
+// mirror_compose.go; when shown, it ends above the toggle.)
 async function expectToggleFirst(page: Page) {
-  const boxes = await page.locator('#mv-form').evaluate((f) =>
-    Array.from(f.querySelectorAll('button, a, textarea, label'))
-      .filter((e) => (e as HTMLElement).offsetParent !== null && e.getBoundingClientRect().width > 0)
+  const boxes = await page.locator('#mv-button-row').evaluate((f) =>
+    Array.from(f.querySelectorAll('button, a, label'))
+      .filter((e) => (e as HTMLElement).offsetParent !== null && e.getBoundingClientRect().width > 0 && !e.closest('[popover]'))
       .map((e) => {
         const r = e.getBoundingClientRect();
-        return { id: e.id, x: r.x, r: r.right, w: r.width, h: r.height };
+        return { id: e.id, x: r.x, y: r.y, r: r.right, w: r.width, h: r.height };
       }),
   );
-  expect(boxes.length, JSON.stringify(boxes)).toBeGreaterThan(2);
+  expect(boxes.length, JSON.stringify(boxes)).toBeGreaterThan(1);
   const [first, ...rest] = [...boxes].sort((a, b) => a.x - b.x);
   expect(first.id, JSON.stringify(boxes)).toBe('mv-to');
   for (const b of rest) expect(b.x, `${b.id} starts after the toggle ends`).toBeGreaterThanOrEqual(first.r);
-  expect(first.w).toBeGreaterThanOrEqual(44);
-  expect(first.h).toBeGreaterThanOrEqual(44);
+  expect(first.w).toBeGreaterThanOrEqual(40);
+  expect(first.h).toBeGreaterThanOrEqual(40);
+  const box = await page.locator('#mv-input').boundingBox();
+  if (box) expect(box.y + box.height, 'the box ends above the toggle’s row').toBeLessThanOrEqual(first.y + 0.5);
 }
 
 // expectOneSend: exactly one submit button of the form is shown — id.

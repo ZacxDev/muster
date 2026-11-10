@@ -463,14 +463,14 @@ test.describe('desktop 1280×800', () => {
 test.describe('phone 390×844 touch', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test('the menu never covers the input — also on a viewport the keyboard shrank — and a tap inserts; the split button is two 44px targets', async ({ page }) => {
+  test('the menu never covers the input — also on a viewport the keyboard shrank — and a tap inserts; the split button is two 40px targets', async ({ page }) => {
     await openView(page);
     // Collapsed on a touch screen behind "Type a message" (lib/composer.ts).
     await revealBox(page);
     for (const id of ['#mv-send', '#mv-send-more']) {
       const b = (await page.locator(id).boundingBox())!;
-      expect(b.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
-      expect(b.width, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
+      expect(b.height, `${id} is a 40px target`).toBeGreaterThanOrEqual(40);
+      expect(b.width, `${id} is a 40px target`).toBeGreaterThanOrEqual(40);
       expect(b.x + b.width).toBeLessThanOrEqual(390);
     }
     const covers = async () => {

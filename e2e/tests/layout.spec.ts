@@ -56,15 +56,21 @@ test('no main page scrolls sideways at 360px', async ({ page }) => {
 // Every VISIBLE control a thumb is meant to hit is at least 44×44 CSS px.
 // The board card's stretched link is excluded: its hit area is the whole card
 // (a ::after overlay), not the anchor's own box.
+// 🔴 ONE NAMED EXCEPTION: the message composers' buttons are 40×40 (operator
+// decision, internal/ui/mirror_compose.go composerButtonSize) — every control
+// of a mirrored composer's button row, and the agent chat's Send and mic by
+// id. They are held to 40, not waived.
 const controlsJS = `(() => {
   const vis = (e) => { const s = getComputedStyle(e); const r = e.getBoundingClientRect();
     return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 0 && r.height > 0 &&
       r.right > 0 && r.left < innerWidth && !e.closest('[aria-hidden="true"]') && !e.closest('.sr-only'); };
+  const composer = new Set(['chat-send', 'chat-dictate', 'chat-dictate-off']);
   const out = [];
   for (const e of document.querySelectorAll('a[href], button, select, input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, summary')) {
     if (!vis(e) || e.classList.contains('card-link')) continue;
     const r = e.getBoundingClientRect();
-    if (r.width < 44 || r.height < 44) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' ' + JSON.stringify((e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 30)));
+    const min = (e.closest('#mv-button-row') && !e.closest('[popover]')) || composer.has(e.id) ? 40 : 44;
+    if (r.width < min || r.height < min) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' ' + JSON.stringify((e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 30)));
   }
   return out;
 })()`;
