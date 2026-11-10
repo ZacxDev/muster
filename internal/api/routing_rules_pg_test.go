@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -196,7 +197,7 @@ func TestASettleRuleHandlesALaterMessageWithNoChiefTurn(t *testing.T) {
 	}
 	card, err := f.srv.ext.Attention.Get(f.asOwner, r.AskID)
 	if err != nil || card.Status != attention.Open || strings.Join(card.Options, "|") != "Approve rule|Not now" ||
-		!strings.Contains(card.Question, `sender is "`+rulesSender+`" (verified sender), settle it: "a newsletter"`) {
+		!strings.Contains(card.Question, `when the sender is exactly "`+rulesSender+`" and its plugin verified it, settle it: "a newsletter"`) {
 		t.Fatalf("the card: %+v (%v)", card, err)
 	}
 
@@ -225,7 +226,7 @@ func TestASettleRuleHandlesALaterMessageWithNoChiefTurn(t *testing.T) {
 		t.Fatalf("the matching message: status %s reason %v; want delivered to the chief, settled %q", m.Status, m.SettleReason, want)
 	}
 	rows := f.chiefRows(t, m.ID)
-	if len(rows) != 1 || !strings.Contains(rows[0], "was settled by "+want+" (your owner's routing rule: when sender is") ||
+	if len(rows) != 1 || !strings.Contains(rows[0], "was settled by "+want+" (your owner's routing rule: when the sender is exactly") ||
 		!strings.Contains(rows[0], "No turn was spent") {
 		t.Fatalf("the chief's chat for the hit: %q", rows)
 	}
@@ -318,7 +319,7 @@ func TestARouteRuleRoutesAndFallsBackToTheChiefWhenTheSessionIsGone(t *testing.T
 func TestTheRulesPageListsAndDisablesARuleAndADisabledRuleIsSkipped(t *testing.T) {
 	f := newRulesFixture(t)
 	src := f.source(t, rulesSender, true)
-	r := f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "a newsletter", "subject_prefix": "Weekly digest"})
+	r := f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "a newsletter", "match_sender": true, "subject_prefix": "Weekly digest"})
 	if code := f.tapForm(t, r.AskID, "Approve rule"); code != http.StatusSeeOther {
 		t.Fatalf("the tap: %d", code)
 	}
@@ -327,7 +328,7 @@ func TestTheRulesPageListsAndDisablesARuleAndADisabledRuleIsSkipped(t *testing.T
 	page := f.call(t, "GET", routingRulesPath, nil, f.operator())
 	body := page.Body.String()
 	if page.Code != http.StatusOK || !strings.Contains(body, `data-rule-id="`+id+`" data-rule-state="active"`) ||
-		!strings.Contains(body, `When subject starts with &#34;Weekly digest&#34; (verified sender)`) ||
+		!strings.Contains(body, `When the sender is exactly &#34;`+rulesSender+`&#34; and its plugin verified it, the subject starts with &#34;Weekly digest&#34;`) ||
 		!strings.Contains(body, `settle: a newsletter`) || !strings.Contains(body, `data-rule-hits="1"`) {
 		t.Fatalf("the rules page: %d\n%s", page.Code, body)
 	}
@@ -484,6 +485,75 @@ func TestTheChiefProposesFromThePluginTurnItWasDelivered(t *testing.T) {
 	}
 }
 
+// TestARuleWhoseCardWentAwayStopsWaiting (round 1, 🟡1): the owner cancels a
+// rule's card (or it expires) — the Rules page no longer shows it waiting for
+// a tap, and the same match can be proposed again.
+func TestARuleWhoseCardWentAwayStopsWaiting(t *testing.T) {
+	f := newRulesFixture(t)
+	src := f.source(t, rulesSender, true)
+	r := f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "a newsletter", "match_sender": true})
+	if _, err := f.srv.cancelAsk(f.asOwner, r.AskID); err != nil {
+		t.Fatal(err)
+	}
+	page := f.call(t, "GET", routingRulesPath, nil, f.operator()).Body.String()
+	if !strings.Contains(page, `data-rule-id="`+strconv.FormatInt(r.ID, 10)+`" data-rule-state="declined"`) {
+		t.Fatalf("the rules page after the card was cancelled does not show the rule declined:\n%s", page)
+	}
+	again := f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "a newsletter", "match_sender": true})
+	if again.ID == r.ID || again.State != plugins.RuleProposed {
+		t.Fatalf("the same match proposed again: %+v", again)
+	}
+}
+
+// TestDeletingAProposedRuleWithdrawsItsCard (round 1, 🟡1 and 🟢): the Rules
+// page offers Delete on a rule still waiting for its tap; deleting it cancels
+// its card, so a later tap is refused rather than reaching the chief as a
+// plain answer.
+func TestDeletingAProposedRuleWithdrawsItsCard(t *testing.T) {
+	f := newRulesFixture(t)
+	src := f.source(t, rulesSender, true)
+	r := f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "a newsletter", "match_sender": true})
+	id := strconv.FormatInt(r.ID, 10)
+	page := f.call(t, "GET", routingRulesPath, nil, f.operator()).Body.String()
+	at := strings.Index(page, `data-rule-id="`+id+`"`)
+	end := strings.Index(page[at:], "</li>")
+	if at < 0 || end < 0 || !strings.Contains(page[at:at+end], `action="`+routingRulesPath+`/`+id+`/delete"`) {
+		t.Fatalf("the proposed rule's entry offers no Delete:\n%s", page)
+	}
+	b, hdr := form(url.Values{})
+	if w := f.call(t, "POST", routingRulesPath+"/"+id+"/delete", b, merge(hdr, f.operator())); w.Code != http.StatusSeeOther {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	card, err := f.srv.ext.Attention.Get(f.asOwner, r.AskID)
+	if err != nil || card.Status != attention.Cancelled {
+		t.Fatalf("the deleted rule's card: %s (%v); want cancelled", card.Status, err)
+	}
+	if code := f.tapForm(t, r.AskID, "Approve rule"); code == http.StatusSeeOther {
+		t.Fatal("a tap on a deleted rule's card was taken")
+	}
+	var answered int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM chat_messages WHERE agent_id = $1 AND content LIKE '%Approve rule%'`, f.chief.ID).Scan(&answered); err != nil || answered != 0 {
+		t.Fatalf("the tap reached the chief: %d (%v)", answered, err)
+	}
+}
+
+// TestARuleMustNameASenderOrAThread (round 1, 🟡2): a proposal on a prefix
+// alone — a route on a subject prefix, a settle on an external_id prefix — is
+// refused; the same prefix narrowing a sender is taken.
+func TestARuleMustNameASenderOrAThread(t *testing.T) {
+	f := newRulesFixture(t)
+	src := f.source(t, rulesSender, true)
+	for _, args := range []map[string]any{
+		{"message_id": src.ID, "action": "route", "subject": "mirror:" + routeSID, "subject_prefix": "Weekly digest"},
+		{"message_id": src.ID, "action": "settle", "reason": "noise", "external_id_prefix": "rules-src-"},
+	} {
+		if out := f.propose(t, args); out["rule_id"] != nil || !strings.Contains(fmt.Sprint(out["error"]), "match on the message's sender or its thread") {
+			t.Errorf("a prefix-only proposal %v: %v; want it refused", args, out)
+		}
+	}
+	f.mustPropose(t, map[string]any{"message_id": src.ID, "action": "settle", "reason": "noise", "match_sender": true, "external_id_prefix": "rules-src-"})
+}
+
 // TestRoutingRuleProposeRefusals: what the tool refuses, each with its reason,
 // recording nothing and raising no card.
 func TestRoutingRuleProposeRefusals(t *testing.T) {
@@ -506,7 +576,7 @@ func TestRoutingRuleProposeRefusals(t *testing.T) {
 			"match_sender": true}, RefusedWindowGone},
 		{"a message not delivered to the chief", map[string]any{"message_id": queued.ID, "action": "settle", "reason": "x", "match_sender": true},
 			"not a plugin message delivered to you"},
-		{"nothing to match on", map[string]any{"message_id": verified.ID, "action": "settle", "reason": "x"}, "match on at least one"},
+		{"nothing to match on", map[string]any{"message_id": verified.ID, "action": "settle", "reason": "x"}, "match on the message's sender or its thread"},
 	} {
 		out := f.propose(t, c.args)
 		if out["rule_id"] != nil || !strings.Contains(out["error"].(string)+" "+toolText0(out), c.want) {

@@ -2326,11 +2326,20 @@ proposes rules. You approve each one with one tap.
    - `match_thread`: the thread, exactly (a Discord channel arrives in
      `thread` or in `sender`, depending on the plugin; match the field it is
      in);
-   - `external_id_prefix`: a prefix of the message's `external_id`, 3 to 200
+   - `external_id_prefix`: a prefix of the message's `external_id`, 8 to 200
      bytes;
    - `subject_prefix`: a prefix of its subject, 3 to 80 characters. It is
      anchored at the start and matched as plain text. There is no regular
      expression, and the body is never matched.
+
+   **Every rule names who or where**: `match_sender` or `match_thread`, or
+   both. A prefix only narrows that match and never matches on its own, so a
+   short prefix shared by most of a plugin's mail cannot sweep it all up. The
+   `external_id` minimum of 8 bytes is the shortest prefix that names more than
+   a plugin's own id scheme (`msg-`, a date's `2026-`). The card says exactly
+   which senders a rule takes. On a sender, it says whether its plugin must
+   have verified that sender. On a thread alone, it says the rule takes any
+   sender: any one its plugin verified, or anyone at all.
 
    **muster copies every value from the stored message.** The chief only picks
    which fields to use, and the rule must match the message it came from. The
@@ -2387,8 +2396,12 @@ proposes rules. You approve each one with one tap.
 first. Each entry shows its plugin, its match, its action, its state
 (waiting for your tap, active, disabled or declined), when it was created,
 its hits and last hit, and its misses. **Disable** stops an active rule and
-**Enable** restarts it. **Delete** removes a decided rule. A proposed rule is
-decided on its card. Rules are yours alone: owned, under row-level security
+**Enable** restarts it. **Delete** removes a rule in any state. For a rule
+still waiting for your tap, it also withdraws the card. A proposal whose card
+went away no longer waits: the card was cancelled, answered somewhere else,
+or expired after the attention queue's default 24 hours. muster declines that
+rule, so it frees its match for a new proposal and does not count toward the
+limit of 10 open proposals. Rules are yours alone: owned, under row-level security
 (`routing_rules`, migration `0105`).
 
 Routing rules are on wherever plugins are, with no setting: nothing runs until

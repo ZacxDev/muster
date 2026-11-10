@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/chiefusage"
@@ -51,6 +52,16 @@ import (
 // for its next turn, at no turn's cost. Every outcome is a handling row for the
 // usage page: task_forward, task_route, task_board, or chief.
 // ---------------------------------------------------------------------------
+
+// The notes muster's triage passes where the chief passes its own: fixed,
+// muster's words, so the card and the forward say who placed the task.
+const (
+	triageBoardNote   = "muster placed this itself: no agent or session is on this task, so it is yours to decide."
+	triageForwardNote = "muster passed this on itself: the task was assigned upstream, and you are the agent working it."
+	// triageClaimTTL bounds the chief's session claim the triage holds: its
+	// three calls are server-side and short.
+	triageClaimTTL = 2 * time.Minute
+)
 
 // Task triage decisions.
 const (
@@ -121,9 +132,7 @@ func (s *Server) triageAssignedTask(ctx context.Context, p plugins.Plugin, n not
 	if s.pluginDeliverer == nil || s.ext.Attention == nil || s.ext.Agents == nil {
 		return false
 	}
-	settler, ok := s.ext.Plugins.(interface {
-		SettleQueuedTaskEventAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, reason, via string) error
-	})
+	settler, ok := s.ext.Plugins.(plugins.PRReviewSettler)
 	if !ok {
 		return false
 	}
@@ -136,32 +145,60 @@ func (s *Server) triageAssignedTask(ctx context.Context, p plugins.Plugin, n not
 		return false
 	}
 	d := decideTaskTriage(facts)
+	if d.kind == triageChief {
+		s.logger.Printf("task triage: task %d: ambiguous; to the chief", n.ID)
+		return false
+	}
+	// 🔴 CLAIM THE EVENT BEFORE ACTING, as every delivery to the chief does: the
+	// chief's session claim (the one a delivery holds for its whole turn), then
+	// the event itself, queued → delivering. A retry of the owner's queue
+	// (retryQueuedPluginMessages, on every draft claim) running meanwhile finds
+	// the claim held, or the event no longer queued, and delivers nothing — so
+	// the chief never acts on the event muster is placing (no second forward,
+	// no second card). Either refused: the chief's, as before.
+	claimant := "triage/" + strconv.FormatInt(m.ID, 10)
+	won, err := s.ext.Agents.ClaimKickoff(ctx, chief.ID, claimant, triageClaimTTL)
+	if err != nil || !won {
+		return false
+	}
+	defer func() {
+		if err := s.ext.Agents.ReleaseKickoffClaim(context.WithoutCancel(ctx), chief.ID, claimant); err != nil {
+			s.logger.Printf("task triage: task %d: release the chief's claim: %v", n.ID, err)
+		}
+	}()
+	if ok, err := s.ext.Plugins.BeginDelivery(ctx, m.ID, chief.ID); err != nil || !ok {
+		return false
+	}
+	if s.triageClaimed != nil {
+		s.triageClaimed() // a test's seam: a concurrent retry lands here
+	}
 	var out, handler, did string
 	switch d.kind {
 	case triageForward:
-		out, handler = s.toolTaskForward(ctx, chief, n.ID, ""), chiefusage.HandlerTaskForward
+		out, handler = s.toolTaskForward(ctx, chief, n.ID, triageForwardNote), chiefusage.HandlerTaskForward
 		did = "forwarded it to the agent working the task"
 	case triageRoute:
 		args, _ := json.Marshal(map[string]any{"task_id": n.ID, "subject": d.subject})
 		out, handler = s.toolRouteToSession(ctx, chief, string(args)), chiefusage.HandlerTaskRoute
 		did = "routed it to " + d.subject + ", the one session on it"
-	case triageBoard:
-		out, handler = s.toolTaskRouteAttention(ctx, chief, n.ID, ""), chiefusage.HandlerTaskBoard
-		did = "put it in front of your owner (no session or agent is on it)"
 	default:
-		s.logger.Printf("task triage: task %d: ambiguous; to the chief", n.ID)
-		return false
+		out, handler = s.toolTaskRouteAttention(ctx, chief, n.ID, triageBoardNote), chiefusage.HandlerTaskBoard
+		did = "put it in front of your owner (no session or agent is on it)"
 	}
 	if toolRefused(out) {
 		// The call refused (a window gone between the hint and the route, the
-		// queue full, …): nothing was done, so the chief decides, as before.
+		// queue full, …): nothing was done. The event goes back to the queue
+		// and the caller hands it to the chief, as before.
 		s.logger.Printf("task triage: task %d: the %s was refused (%s); to the chief", n.ID, d.kind, out)
+		if err := s.ext.Plugins.AbandonDelivery(context.WithoutCancel(ctx), m.ID, chief.ID); err != nil {
+			s.logger.Printf("task triage: task %d: requeue event %d: %v", n.ID, m.ID, err)
+		}
 		return false
 	}
 	reason := plugins.SettledByMuster + "task triage — " + did
-	if err := settler.SettleQueuedTaskEventAsMuster(ctx, chief.ID, n.OwnerID, m.ID, reason, "task-triage"); err != nil {
-		// Done, but another delivery took the event meanwhile: the chief holds
-		// it and finds the task already routed.
+	if ok, err := s.ext.Plugins.RecordDelivery(ctx, m.ID, chief.ID, plugins.StatusDelivered); err != nil || !ok {
+		s.logger.Printf("task triage: task %d: record event %d delivered (%v): %v", n.ID, m.ID, ok, err)
+	} else if err := settler.SettleAsMuster(ctx, m.ID, reason, "task-triage"); err != nil {
 		s.logger.Printf("task triage: task %d: settle event %d: %v", n.ID, m.ID, err)
 	} else if cur, err := s.ext.Plugins.Message(ctx, m.ID); err == nil {
 		note := "[muster] task event message_id " + strconv.FormatInt(m.ID, 10) + " (task #" + strconv.FormatInt(n.ID, 10) +

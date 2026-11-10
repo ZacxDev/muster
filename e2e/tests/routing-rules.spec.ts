@@ -189,7 +189,7 @@ for (const vp of [
       await page.goto(rig.origin + '/rules');
       const row = page.locator('[data-rule-id]').filter({ hasText: pluginName });
       await expect(row).toHaveAttribute('data-rule-state', 'active');
-      await expect(row.locator('[data-rule-match]')).toContainText(`sender is "${sender}" (verified sender)`);
+      await expect(row.locator('[data-rule-match]')).toContainText(`the sender is exactly "${sender}" and its plugin verified it`);
       const ruleID = await row.getAttribute('data-rule-id');
 
       // 3. A second message from that sender: settled by muster, NO chief turn.

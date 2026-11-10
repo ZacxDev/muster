@@ -179,6 +179,9 @@ type Server struct {
 	// sleeping past the row's deletion.
 	destroyInFlight sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
+	// triageClaimed, when set (tests only), runs inside the task triage once it
+	// has claimed the event and before it acts (task_triage.go).
+	triageClaimed func()
 	// taskForwardTurn starts the turn a task_forward hands an agent
 	// (task_routing.go); built by UseExtensions only when a gateway is wired
 	// (nil: the forward is stored and no turn starts).

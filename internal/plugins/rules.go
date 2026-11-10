@@ -61,7 +61,12 @@ const (
 
 // Rule bounds (the 0105 checks).
 const (
-	MinRulePrefix          = 3
+	MinRulePrefix = 3
+	// MinRuleExternalPrefix bounds an external_id prefix from below: a prefix
+	// only narrows a sender or thread match (anchored), and eight bytes is the
+	// shortest that names more than a plugin's own id scheme ("msg-", "t3_",
+	// a date's "2026-") — enough for a list, campaign or bot id.
+	MinRuleExternalPrefix  = 8
 	MaxRuleExternalPrefix  = 200
 	MaxRuleSubjectPrefix   = 80
 	MaxRuleSettleReason    = 300
@@ -76,10 +81,12 @@ type RuleMatch struct {
 	RequireVerified                               bool
 }
 
-// any reports whether m matches on anything at all.
-func (m RuleMatch) any() bool {
-	return m.Sender != "" || m.Thread != "" || m.ExternalPrefix != "" || m.SubjectPrefix != ""
-}
+// anchored reports whether m names WHO or WHERE: an exact sender or an exact
+// thread. 🔴 EVERY RULE IS ANCHORED: a prefix (external_id, subject) only
+// narrows one of those, never matches alone — a short prefix is shared by
+// most of a plugin's mail, and a route rule on a prefix alone would take any
+// verified sender.
+func (m RuleMatch) anchored() bool { return m.Sender != "" || m.Thread != "" }
 
 // Rule is one routing_rules row.
 type Rule struct {
@@ -159,9 +166,9 @@ func ProposeRule(p Plugin, m Message, req RuleRequest) (RuleNew, error) {
 		match.Thread = *m.Thread
 	}
 	if req.ExternalPrefix != "" {
-		if len(req.ExternalPrefix) < MinRulePrefix || len(req.ExternalPrefix) > MaxRuleExternalPrefix ||
+		if len(req.ExternalPrefix) < MinRuleExternalPrefix || len(req.ExternalPrefix) > MaxRuleExternalPrefix ||
 			!strings.HasPrefix(m.ExternalID, req.ExternalPrefix) {
-			return RuleNew{}, invalid("external_id_prefix must be %d to %d bytes that begin the message's external_id", MinRulePrefix, MaxRuleExternalPrefix)
+			return RuleNew{}, invalid("external_id_prefix must be %d to %d bytes that begin the message's external_id", MinRuleExternalPrefix, MaxRuleExternalPrefix)
 		}
 		match.ExternalPrefix = req.ExternalPrefix
 	}
@@ -172,8 +179,8 @@ func ProposeRule(p Plugin, m Message, req RuleRequest) (RuleNew, error) {
 		}
 		match.SubjectPrefix = req.SubjectPrefix
 	}
-	if !match.any() {
-		return RuleNew{}, invalid("match on at least one of the message's fields: its sender, thread, an external_id prefix or a subject prefix")
+	if !match.anchored() {
+		return RuleNew{}, invalid("match on the message's sender or its thread (match_sender or match_thread); an external_id or subject prefix only narrows one of them")
 	}
 	// A rule from a verified sender's message requires a verified sender, so a
 	// message that only CLAIMS that sender never matches it.
@@ -221,7 +228,7 @@ func hasUnsafe(s string) bool {
 // sender's; then every field r matches on must match exactly (the sender, the
 // thread) or as a prefix (external_id, the subject). The body is never read.
 func RuleMatches(r Rule, m Message) bool {
-	if r.State != RuleActive || r.ApprovedAt.IsZero() || m.PluginID != r.PluginID || IsTaskEvent(m) || !r.Match.any() {
+	if r.State != RuleActive || r.ApprovedAt.IsZero() || m.PluginID != r.PluginID || IsTaskEvent(m) || !r.Match.anchored() {
 		return false
 	}
 	if !m.CreatedAt.After(r.ApprovedAt) {
@@ -257,26 +264,67 @@ func FirstRuleMatch(rules []Rule, m Message) (Rule, bool) {
 
 // RuleSummary is r's match as one line ("sender is "a@x" (verified), subject
 // starts with "News"").
+//
+// 🔴 EXACT ABOUT THE SENDER, because that is what the owner approves: a rule
+// on a sender says whether the plugin must have verified it; a rule on a
+// thread alone says it takes ANY sender (verified, or not).
 func RuleSummary(r RuleMatch) string {
 	var parts []string
 	q := func(s string) string { return `"` + fence.Sanitize(s) + `"` }
-	if r.Sender != "" {
-		parts = append(parts, "sender is "+q(r.Sender))
+	switch {
+	case r.Sender != "" && r.RequireVerified:
+		parts = append(parts, "the sender is exactly "+q(r.Sender)+" and its plugin verified it")
+	case r.Sender != "":
+		parts = append(parts, "the sender is exactly "+q(r.Sender)+" (not verified: anyone can send as it)")
+	case r.RequireVerified:
+		parts = append(parts, "the sender is anyone its plugin verified")
+	default:
+		parts = append(parts, "the sender is anyone, verified or not")
 	}
 	if r.Thread != "" {
-		parts = append(parts, "thread is "+q(r.Thread))
+		parts = append(parts, "the thread is exactly "+q(r.Thread))
 	}
 	if r.ExternalPrefix != "" {
-		parts = append(parts, "external id starts with "+q(r.ExternalPrefix))
+		parts = append(parts, "the external id starts with "+q(r.ExternalPrefix))
 	}
 	if r.SubjectPrefix != "" {
-		parts = append(parts, "subject starts with "+q(r.SubjectPrefix))
+		parts = append(parts, "the subject starts with "+q(r.SubjectPrefix))
 	}
-	out := strings.Join(parts, ", ")
-	if r.RequireVerified {
-		out += " (verified sender)"
+	return strings.Join(parts, ", ")
+}
+
+// declineStaleProposalsTx declines owner's proposed rules whose card is no
+// longer open — answered elsewhere, cancelled, or past its expiry — so a card
+// that went away never leaves its rule waiting for a tap nobody can make, nor
+// holds a match or a slot of MaxOpenRuleProposals. Run, in its own
+// transaction, by every read that would count or show proposed rules.
+func declineStaleProposalsTx(ctx context.Context, tx pgx.Tx, owner int64) error {
+	rows, err := tx.Query(ctx, `UPDATE routing_rules r SET state = 'declined', decided_at = now()
+		WHERE r.owner_id = $1 AND r.state = 'proposed' AND NOT EXISTS (SELECT 1 FROM attention_asks a
+			WHERE a.id = r.ask_id AND a.owner_id = r.owner_id AND a.status = 'open' AND a.expires_at > now())
+		RETURNING r.id`, owner)
+	if err != nil {
+		return err
 	}
-	return out
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := audit(ctx, tx, "routing_rule.expired", RuleObject(id), map[string]any{"why": "its card is no longer open"}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ruleWriter is ctx's owner for a rule write, refusing a plugin's principal.
@@ -337,6 +385,10 @@ func (s *PGStore) CreateRuleProposal(ctx context.Context, n RuleNew) (Rule, erro
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('routing_rules:%s', $1::bigint), 0))`, owner); err != nil {
 			return err
 		}
+		// A proposal whose card went away holds neither its match nor a slot.
+		if err := declineStaleProposalsTx(ctx, tx, owner); err != nil {
+			return err
+		}
 		var same, open int
 		if err := tx.QueryRow(ctx, `SELECT
 			count(*) FILTER (WHERE plugin_id = $2 AND state IN ('proposed', 'active', 'disabled')
@@ -389,10 +441,15 @@ func (s *PGStore) RuleByAsk(ctx context.Context, askID int64) (Rule, error) {
 		ORDER BY id DESC LIMIT 1`, owner, askID))
 }
 
-// Rules is every rule of the principal's, newest first.
+// Rules is every rule of the principal's, newest first — a proposal whose
+// card is no longer open declined first (declineStaleProposalsTx), so the
+// page never shows one waiting for a tap nobody can make.
 func (s *PGStore) Rules(ctx context.Context) ([]Rule, error) {
 	owner, err := hostDispatchOwner(ctx, "routing rules")
 	if err != nil {
+		return nil, err
+	}
+	if err := s.inTx(ctx, func(tx pgx.Tx) error { return declineStaleProposalsTx(ctx, tx, owner) }); err != nil {
 		return nil, err
 	}
 	return s.rules(ctx, `SELECT `+ruleCols+` FROM routing_rules WHERE owner_id = $1 ORDER BY id DESC`, owner)
@@ -485,22 +542,23 @@ func (s *PGStore) SetRuleEnabled(ctx context.Context, id int64, on bool) error {
 	})
 }
 
-// DeleteRule deletes rule id of the principal's; ErrRuleNotFound when there is none.
-func (s *PGStore) DeleteRule(ctx context.Context, id int64) error {
+// DeleteRule deletes rule id of the principal's, in any state, and answers
+// the row as it was (its card, for a proposed one, is the caller's to cancel);
+// ErrRuleNotFound when there is none.
+func (s *PGStore) DeleteRule(ctx context.Context, id int64) (Rule, error) {
 	owner, err := ruleWriter(ctx)
 	if err != nil {
-		return err
+		return Rule{}, err
 	}
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM routing_rules WHERE id = $1 AND owner_id = $2`, id, owner)
-		if err != nil {
+	var r Rule
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if r, err = scanRule(tx.QueryRow(ctx, `DELETE FROM routing_rules WHERE id = $1 AND owner_id = $2 RETURNING `+ruleCols, id, owner)); err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return ErrRuleNotFound
-		}
-		return audit(ctx, tx, "routing_rule.deleted", RuleObject(id), nil)
+		return audit(ctx, tx, "routing_rule.deleted", RuleObject(id), map[string]any{"state": r.State})
 	})
+	return r, err
 }
 
 // RecordRuleHit counts one message rule id handled. The dispatch's principal

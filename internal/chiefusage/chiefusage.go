@@ -37,7 +37,14 @@ const (
 	TriggerView      = "view"       // a line the owner typed on a session's view
 	TriggerAnswer    = "answer"     // the owner's answer to the chief's question, delivered
 	TriggerHandBack  = "hand_back"  // a route handed back to the chief
-	TriggerOther     = "other"      // anything else (a nudge, a relay, a door this package does not know)
+	// TriggerSessionQuestion: one of the owner's mirrored sessions asked the
+	// chief a question (chief_ask), delivered as a turn.
+	TriggerSessionQuestion = "session_question"
+	// TriggerMachine: the machine message door (POST /api/agents/{name}/messages).
+	TriggerMachine = "machine"
+	// TriggerKickoff: the chief's first turn, handed over by the kickoff deliverer.
+	TriggerKickoff = "kickoff"
+	TriggerOther   = "other" // anything else (a nudge, a relay, a door this package does not know)
 )
 
 // Trigger is what started a chief turn: its kind and, for a plugin message or

@@ -19,7 +19,8 @@
 --   chief_turn_usage   one row per turn of an owner's CHIEF: what started it
 --       (trigger: a plugin message — its plugin, sender and id — a task event,
 --       an owner chat line, a line typed on a session's view, an answer, a
---       route's hand-back, other), what it did (outcome), and the tokens the
+--       session's question, a route's hand-back, the machine message door,
+--       the first turn, other), what it did (outcome), and the tokens the
 --       runtime reported for it (input, output, cache read, cache creation;
 --       usage_known false when the runtime reported none).
 --
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS public.routing_rules (
     plugin_name            TEXT        NOT NULL CHECK (char_length(plugin_name) BETWEEN 1 AND 40),
     match_sender           TEXT        CHECK (match_sender IS NULL OR char_length(match_sender) BETWEEN 1 AND 320),
     match_thread           TEXT        CHECK (match_thread IS NULL OR char_length(match_thread) BETWEEN 1 AND 200),
-    match_external_prefix  TEXT        CHECK (match_external_prefix IS NULL OR char_length(match_external_prefix) BETWEEN 3 AND 200),
+    match_external_prefix  TEXT        CHECK (match_external_prefix IS NULL OR char_length(match_external_prefix) BETWEEN 8 AND 200),
     match_subject_prefix   TEXT        CHECK (match_subject_prefix IS NULL OR char_length(match_subject_prefix) BETWEEN 3 AND 80),
     require_verified       BOOLEAN     NOT NULL DEFAULT false,
     action                 TEXT        NOT NULL CHECK (action IN ('route', 'settle')),
@@ -78,9 +79,8 @@ CREATE TABLE IF NOT EXISTS public.routing_rules (
     last_fallback_at       TIMESTAMPTZ,
     CONSTRAINT routing_rules_plugin_owner_fkey FOREIGN KEY (plugin_id, owner_id)
         REFERENCES public.plugins (id, owner_id) ON DELETE CASCADE,
-    -- something to match on besides the plugin
-    CONSTRAINT routing_rules_matches CHECK (num_nonnulls(match_sender, match_thread,
-        match_external_prefix, match_subject_prefix) >= 1),
+    -- WHO or WHERE: an exact sender or thread; a prefix only narrows one
+    CONSTRAINT routing_rules_matches CHECK (num_nonnulls(match_sender, match_thread) >= 1),
     -- a route names its session and no reason; a settle its reason and no session
     CONSTRAINT routing_rules_action_fields CHECK (
         (action = 'route' AND route_session IS NOT NULL AND settle_reason IS NULL) OR
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS public.chief_turn_usage (
     chief_agent            BIGINT      NOT NULL,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     trigger                TEXT        NOT NULL CHECK (trigger IN ('plugin', 'task_event', 'owner_chat', 'view',
-                                       'answer', 'hand_back', 'other')),
+                                       'answer', 'session_question', 'hand_back', 'machine', 'kickoff', 'other')),
     plugin_name            TEXT        NOT NULL DEFAULT '' CHECK (char_length(plugin_name) <= 40),
     sender                 TEXT        NOT NULL DEFAULT '' CHECK (char_length(sender) <= 320),
     plugin_message_id      BIGINT,

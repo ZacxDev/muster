@@ -41,7 +41,10 @@ func TestMigration0105RoutingRulesAndTelemetry(t *testing.T) {
 		{"match_sender, action, route_session", "'a@example.test', 'route', 'ses'", "routing_rules_route_verified"},
 		{"match_sender, action, settle_reason, state, decided_at", "'a@example.test', 'settle', 'noise', 'active', now()", "routing_rules_approved"},
 		{"match_sender, action, settle_reason, state", "'a@example.test', 'settle', 'noise', 'declined'", "routing_rules_decided"},
-		{"match_subject_prefix, action, settle_reason", "'ab', 'settle', 'noise'", "routing_rules_match_subject_prefix_check"},
+		{"match_sender, match_subject_prefix, action, settle_reason", "'a@example.test', 'ab', 'settle', 'noise'", "routing_rules_match_subject_prefix_check"},
+		{"match_sender, match_external_prefix, action, settle_reason", "'a@example.test', 'news-20', 'settle', 'noise'", "routing_rules_match_external_prefix_check"},
+		{"match_subject_prefix, action, settle_reason", "'Weekly digest', 'settle', 'noise'", "routing_rules_matches"},
+		{"match_external_prefix, action, settle_reason", "'news-2026-11', 'settle', 'noise'", "routing_rules_matches"},
 	} {
 		if err := rule(c.cols, c.vals); err == nil || !strings.Contains(err.Error(), c.constraint) {
 			t.Errorf("rule (%s) = (%s): %v; want refused by %s", c.cols, c.vals, err, c.constraint)
@@ -50,8 +53,8 @@ func TestMigration0105RoutingRulesAndTelemetry(t *testing.T) {
 	for _, c := range []struct{ cols, vals string }{
 		{"match_sender, action, settle_reason", "'news@example.test', 'settle', 'a newsletter'"},
 		{"match_thread, action, route_session, require_verified", "'thread-7', 'route', 'ses_0abc', true"},
-		{"match_external_prefix, match_subject_prefix, action, settle_reason, state, decided_at, approved_at",
-			"'news-', 'Review of', 'settle', 'reviews', 'active', now(), now()"},
+		{"match_thread, match_external_prefix, match_subject_prefix, action, settle_reason, state, decided_at, approved_at",
+			"'thread-9', 'news-2026-', 'Review of', 'settle', 'reviews', 'active', now(), now()"},
 	} {
 		if err := rule(c.cols, c.vals); err != nil {
 			t.Errorf("a well-formed rule (%s): %v; want stored", c.cols, err)

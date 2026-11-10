@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,7 +147,8 @@ func TestAnAssignmentNobodyIsOnGoesToTheBoardWithNoChiefTurn(t *testing.T) {
 		t.Fatalf("the chief took %d turn(s); the board needs none", n)
 	}
 	asks := f.asksAbout(t, id)
-	if len(asks) != 1 || asks[0].Asker.AgentID != f.chief.ID || !strings.HasPrefix(asks[0].Question, "Task #"+strconv.FormatInt(id, 10)+" needs you: Rotate the build key") {
+	if len(asks) != 1 || asks[0].Asker.AgentID != f.chief.ID || !strings.HasPrefix(asks[0].Question, "Task #"+strconv.FormatInt(id, 10)+" needs you: Rotate the build key") ||
+		!strings.Contains(asks[0].Question, "Your chief's note: "+triageBoardNote) {
 		t.Fatalf("the board ask: %+v", asks)
 	}
 	if m.Status != plugins.StatusDelivered || m.SettleReason == nil || !strings.HasPrefix(*m.SettleReason, "muster: task triage — put it in front of your owner") {
@@ -185,7 +187,7 @@ func TestTheBoardAsksOptionsAreTheChiefsOwn(t *testing.T) {
 			t.Fatalf("gated %v: muster's board ask: %+v, %d turns", gated, mine, f.turns.count())
 		}
 		// The chief's own call on the same task, for comparison.
-		out := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id, "note": ""})
+		out := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id, "note": triageBoardNote})
 		if toolRefused(out) {
 			t.Fatalf("gated %v: the chief's task_route_attention: %s", gated, out)
 		}
@@ -319,5 +321,38 @@ func TestTheTriageNeedsTheChiefTurnItReplaces(t *testing.T) {
 	id, m := f.assign(t, "Rotate the build key", "Rotate it.", false, 0)
 	if m.Status != plugins.StatusQueued || len(f.asksAbout(t, id)) != 0 {
 		t.Fatalf("with no deliverer: %s, %d asks; want queued and none", m.Status, len(f.asksAbout(t, id)))
+	}
+}
+
+// TestARetryDuringTheTriageDeliversNothingTwice (round 1, 🟡3): the owner's
+// queue retry (the one every draft claim runs) lands while the triage holds
+// the event — after its claim, before its action. The chief takes no turn on
+// it, and exactly one card and one handling come of it.
+func TestARetryDuringTheTriageDeliversNothingTwice(t *testing.T) {
+	f := newTriageFixture(t, false)
+	asPlugin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleMember, Via: authz.ViaPlugin})
+	retried := 0
+	f.srv.triageClaimed = func() {
+		retried++
+		f.srv.retryQueuedPluginMessages(httptest.NewRequest("POST", "/plugin/v1/drafts/claim", nil).WithContext(asPlugin), f.p)
+		f.srv.WaitForPluginDeliveries()
+	}
+	id, m := f.assign(t, "Rotate the build key", "Rotate it.", false, 0)
+	if retried != 1 {
+		t.Fatalf("the seam ran %d time(s); want once (the triage claimed and acted)", retried)
+	}
+	if n := f.turns.count(); n != 0 {
+		t.Fatalf("the retry handed the event to the chief: %d turn(s)", n)
+	}
+	if asks := f.asksAbout(t, id); len(asks) != 1 {
+		t.Fatalf("%d board asks, want exactly one", len(asks))
+	}
+	var handlings int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM plugin_message_handling WHERE owner_id = $1 AND plugin_message_id = $2`,
+		f.owner, m.ID).Scan(&handlings); err != nil || handlings != 1 || f.handled(t, m) != "task_board" {
+		t.Fatalf("handlings %d (%v), handler %q; want one, task_board", handlings, err, f.handled(t, m))
+	}
+	if m.Status != plugins.StatusDelivered || m.SettleReason == nil {
+		t.Fatalf("the event: %s, reason %v; want delivered and settled", m.Status, m.SettleReason)
 	}
 }

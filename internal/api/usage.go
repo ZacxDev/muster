@@ -71,6 +71,12 @@ func usageTriggerText(row chiefusage.TokenRow) string {
 		return "your answers to its questions"
 	case chiefusage.TriggerHandBack:
 		return "routes handed back"
+	case chiefusage.TriggerSessionQuestion:
+		return "your sessions' questions"
+	case chiefusage.TriggerMachine:
+		return "the machine message door"
+	case chiefusage.TriggerKickoff:
+		return "its first turn"
 	}
 	return "other"
 }

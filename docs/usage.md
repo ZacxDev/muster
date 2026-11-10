@@ -11,7 +11,7 @@ chief. It is on whenever muster has a database. It needs no setting.
 
 | Field | What it is |
 |---|---|
-| trigger | What started the turn: `plugin` (an inbound plugin message: its plugin, its sender and its id), `task_event` (a task muster handed the chief), `owner_chat` (a line you typed in the chief's chat), `view` (a line you typed on a session's view), `answer` (your answer to its question, delivered), `hand_back` (a route handed back), or `other`. |
+| trigger | What started the turn: `plugin` (an inbound plugin message: its plugin, its sender and its id), `task_event` (a task muster handed the chief), `owner_chat` (a line you typed in the chief's chat), `view` (a line you typed on a session's view), `answer` (your answer to its question, delivered), `session_question` (one of your mirrored sessions asked the chief with `chief_ask`), `hand_back` (a route handed back), `machine` (the machine message door, `POST /api/agents/{name}/messages`), `kickoff` (the chief's first turn), or `other`. |
 | outcome | What the turn did, from the tools it called: `routed` (route_to_session), `task` (task_create_gated, task_forward, agent_dispatch), `ask` (ask_owner, attention_ask, task_route_attention), `settled` (plugin_message_settle), `rule_proposed` (routing_rule_propose and nothing above), `other`, or `failed`. A turn that also proposed a routing rule is flagged `rule_proposed` too. |
 | tokens | Input, output, cache read and cache creation, **as the chief's runtime reported them** for the turn. |
 | usage_known | False when the runtime reported no usage. Such a turn shows as unknown, not as free. |

@@ -49,10 +49,25 @@ func TestRuleMatchesPinnedCases(t *testing.T) {
 		}), ruleMsg(func(m *Message) { m.SenderVerified = false }), false},
 		{"a route rule takes a verified sender", activeRule(func(r *Rule) { r.Action, r.SettleReason, r.RouteSession = RuleRoute, "", "ses-0001" }),
 			ruleMsg(nil), true},
-		{"an external_id prefix", activeRule(func(r *Rule) { r.Match = RuleMatch{ExternalPrefix: "news-2026-"} }), ruleMsg(nil), true},
-		{"an external_id prefix that is not one", activeRule(func(r *Rule) { r.Match = RuleMatch{ExternalPrefix: "ews-2026"} }), ruleMsg(nil), false},
-		{"a subject prefix", activeRule(func(r *Rule) { r.Match = RuleMatch{SubjectPrefix: "Weekly digest"} }), ruleMsg(nil), true},
-		{"a subject prefix in the middle is no prefix", activeRule(func(r *Rule) { r.Match = RuleMatch{SubjectPrefix: "digest:"} }), ruleMsg(nil), false},
+		{"an external_id prefix", activeRule(func(r *Rule) {
+			r.Match = RuleMatch{Sender: "digest@news.example.test", RequireVerified: true, ExternalPrefix: "news-2026-"}
+		}), ruleMsg(nil), true},
+		{"an external_id prefix ALONE matches nothing (unanchored)", activeRule(func(r *Rule) { r.Match = RuleMatch{ExternalPrefix: "news-2026-"} }), ruleMsg(nil), false},
+		{"a subject prefix ALONE matches nothing (unanchored)", activeRule(func(r *Rule) { r.Match = RuleMatch{SubjectPrefix: "Weekly digest"} }), ruleMsg(nil), false},
+		{"a ROUTE rule on a subject prefix alone takes no sender at all", activeRule(func(r *Rule) {
+			r.Action, r.SettleReason, r.RouteSession, r.Match = RuleRoute, "", "ses-0001", RuleMatch{SubjectPrefix: "Weekly digest", RequireVerified: true}
+		}), ruleMsg(nil), false},
+		{"a thread rule takes any sender on that thread", activeRule(func(r *Rule) { r.Match = RuleMatch{Thread: "thr-0042"} }),
+			ruleMsg(func(m *Message) { m.Sender, m.SenderVerified = "someone@else.example.test", false }), true},
+		{"an external_id prefix that is not one", activeRule(func(r *Rule) {
+			r.Match = RuleMatch{Sender: "digest@news.example.test", RequireVerified: true, ExternalPrefix: "ews-2026"}
+		}), ruleMsg(nil), false},
+		{"a subject prefix", activeRule(func(r *Rule) {
+			r.Match = RuleMatch{Sender: "digest@news.example.test", RequireVerified: true, SubjectPrefix: "Weekly digest"}
+		}), ruleMsg(nil), true},
+		{"a subject prefix in the middle is no prefix", activeRule(func(r *Rule) {
+			r.Match = RuleMatch{Sender: "digest@news.example.test", RequireVerified: true, SubjectPrefix: "digest:"}
+		}), ruleMsg(nil), false},
 		{"the thread", activeRule(func(r *Rule) { r.Match = RuleMatch{Thread: "thr-0042"} }), ruleMsg(nil), true},
 		{"no thread on the message", activeRule(func(r *Rule) { r.Match = RuleMatch{Thread: "thr-0042"} }), ruleMsg(func(m *Message) { m.Thread = nil }), false},
 		{"every field must match", activeRule(func(r *Rule) { r.Match.SubjectPrefix = "Monthly" }), ruleMsg(nil), false},
@@ -75,7 +90,9 @@ func TestFirstRuleMatchTakesTheOldestThatMatches(t *testing.T) {
 	disabled := activeRule(func(r *Rule) { r.ID, r.State = 10, RuleDisabled })
 	other := activeRule(func(r *Rule) { r.ID, r.Match.Sender = 11, "nobody@news.example.test" })
 	first := activeRule(func(r *Rule) { r.ID = 12 })
-	second := activeRule(func(r *Rule) { r.ID, r.Match = 13, RuleMatch{SubjectPrefix: "Weekly"} })
+	second := activeRule(func(r *Rule) {
+		r.ID, r.Match = 13, RuleMatch{Sender: "digest@news.example.test", RequireVerified: true, SubjectPrefix: "Weekly"}
+	})
 	got, ok := FirstRuleMatch([]Rule{disabled, other, first, second}, ruleMsg(nil))
 	if !ok || got.ID != 12 {
 		t.Fatalf("FirstRuleMatch = %d %v; want rule 12 (10 disabled, 11 another sender)", got.ID, ok)
@@ -111,10 +128,12 @@ func TestProposeRuleCopiesFromTheMessageAndRefusesWhatItCannotMatch(t *testing.T
 	}{
 		{"a route from an unverified sender", ruleMsg(func(m *Message) { m.SenderVerified = false }),
 			RuleRequest{MatchSender: true, Action: RuleRoute, Session: "ses-0001"}, "muster never routes an unverified sender by rule"},
-		{"nothing to match on", ruleMsg(nil), RuleRequest{Action: RuleSettle, Reason: "x"}, "match on at least one"},
-		{"a prefix that is not the message's", ruleMsg(nil), RuleRequest{ExternalPrefix: "other-", Action: RuleSettle, Reason: "x"}, "external_id_prefix"},
-		{"a two-byte prefix", ruleMsg(nil), RuleRequest{ExternalPrefix: "ne", Action: RuleSettle, Reason: "x"}, "external_id_prefix"},
-		{"a subject prefix that is not the message's", ruleMsg(nil), RuleRequest{SubjectPrefix: "Daily", Action: RuleSettle, Reason: "x"}, "subject_prefix"},
+		{"nothing to match on", ruleMsg(nil), RuleRequest{Action: RuleSettle, Reason: "x"}, "match on the message's sender or its thread"},
+		{"an external_id prefix alone", ruleMsg(nil), RuleRequest{ExternalPrefix: "news-2026-", Action: RuleSettle, Reason: "x"}, "match on the message's sender or its thread"},
+		{"a subject prefix alone", ruleMsg(nil), RuleRequest{SubjectPrefix: "Weekly digest", Action: RuleSettle, Reason: "x"}, "match on the message's sender or its thread"},
+		{"a prefix that is not the message's", ruleMsg(nil), RuleRequest{MatchSender: true, ExternalPrefix: "other-2026-", Action: RuleSettle, Reason: "x"}, "external_id_prefix"},
+		{"a seven-byte prefix", ruleMsg(nil), RuleRequest{MatchSender: true, ExternalPrefix: "news-20", Action: RuleSettle, Reason: "x"}, "external_id_prefix must be 8 to 200 bytes"},
+		{"a subject prefix that is not the message's", ruleMsg(nil), RuleRequest{MatchSender: true, SubjectPrefix: "Daily", Action: RuleSettle, Reason: "x"}, "subject_prefix"},
 		{"a thread the message lacks", ruleMsg(func(m *Message) { m.Thread = nil }), RuleRequest{MatchThread: true, Action: RuleSettle, Reason: "x"}, "no thread"},
 		{"a settle with no reason", ruleMsg(nil), RuleRequest{MatchSender: true, Action: RuleSettle}, "reason"},
 		{"a route with no session", ruleMsg(nil), RuleRequest{MatchSender: true, Action: RuleRoute}, "names the session"},
@@ -131,9 +150,19 @@ func TestProposeRuleCopiesFromTheMessageAndRefusesWhatItCannotMatch(t *testing.T
 
 // TestRuleSummaryNamesEveryField: the card and the Rules page read it.
 func TestRuleSummaryNamesEveryField(t *testing.T) {
-	got := RuleSummary(RuleMatch{Sender: "a@example.test", Thread: "t-1", ExternalPrefix: "news-", SubjectPrefix: "Weekly", RequireVerified: true})
-	want := `sender is "a@example.test", thread is "t-1", external id starts with "news-", subject starts with "Weekly" (verified sender)`
+	got := RuleSummary(RuleMatch{Sender: "a@example.test", Thread: "t-1", ExternalPrefix: "news-2026-", SubjectPrefix: "Weekly", RequireVerified: true})
+	want := `the sender is exactly "a@example.test" and its plugin verified it, the thread is exactly "t-1", the external id starts with "news-2026-", the subject starts with "Weekly"`
 	if got != want {
 		t.Fatalf("RuleSummary =\n%s\nwant\n%s", got, want)
+	}
+	// Exact about the sender in every case the owner can be shown.
+	for m, want := range map[RuleMatch]string{
+		{Sender: "a@example.test"}:             `the sender is exactly "a@example.test" (not verified: anyone can send as it)`,
+		{Thread: "t-1", RequireVerified: true}: `the sender is anyone its plugin verified, the thread is exactly "t-1"`,
+		{Thread: "t-1"}:                        `the sender is anyone, verified or not, the thread is exactly "t-1"`,
+	} {
+		if got := RuleSummary(m); got != want {
+			t.Errorf("RuleSummary(%+v) = %q, want %q", m, got, want)
+		}
 	}
 }

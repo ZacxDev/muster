@@ -75,7 +75,7 @@ type ruleStore interface {
 	ApproveRule(ctx context.Context, id int64) (plugins.Rule, error)
 	DeclineRule(ctx context.Context, id int64) (plugins.Rule, error)
 	SetRuleEnabled(ctx context.Context, id int64, on bool) error
-	DeleteRule(ctx context.Context, id int64) error
+	DeleteRule(ctx context.Context, id int64) (plugins.Rule, error)
 	RecordRuleHit(ctx context.Context, id int64) error
 	RecordRuleFallback(ctx context.Context, id int64) error
 	SettleQueuedAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, reason, via string) error
@@ -182,7 +182,8 @@ func (s *Server) runRule(ctx context.Context, st ruleStore, p plugins.Plugin, m 
 func routingRuleProposeToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routingRuleProposeTo,
 		Description: "Propose a routing rule from a plugin message delivered to you, so later messages like it skip you. " +
-			"muster copies the fields you pick from that message and, for each later match, routes it to one mirrored " +
+			"muster copies the fields you pick from that message (its sender or thread, optionally narrowed by a prefix) and, " +
+			"for each later match, routes it to one mirrored " +
 			"session (verified senders only) or settles it with your reason. Your owner approves it with one tap; until " +
 			"then nothing changes. Propose one only when you would place that kind of message the same way every time.",
 		Parameters: objSchema(map[string]any{
@@ -192,8 +193,8 @@ func routingRuleProposeToolDef() agents.ToolDef {
 			"reason":             strProp("settle: why such messages need nothing (at most 300 characters)."),
 			"match_sender":       map[string]any{"type": "boolean", "description": "Match the message's sender exactly."},
 			"match_thread":       map[string]any{"type": "boolean", "description": "Match the message's thread exactly."},
-			"external_id_prefix": strProp("Match external ids starting with this (a prefix of the message's own)."),
-			"subject_prefix":     strProp("Match subjects starting with this (a prefix of the message's own)."),
+			"external_id_prefix": strProp("Narrow it to external ids starting with this (8+ bytes, a prefix of the message's own)."),
+			"subject_prefix":     strProp("Narrow it to subjects starting with this (a prefix of the message's own)."),
 		}, "message_id", "action")}
 }
 
@@ -400,7 +401,15 @@ func (s *Server) ruleWrite(w http.ResponseWriter, r *http.Request, op string) {
 	case "enable":
 		err = st.SetRuleEnabled(r.Context(), id, true)
 	default:
-		err = st.DeleteRule(r.Context(), id)
+		var gone plugins.Rule
+		gone, err = st.DeleteRule(r.Context(), id)
+		// 🔴 A DELETED PROPOSAL'S CARD GOES WITH IT: left open, a later tap
+		// would find no rule and reach the chief as a plain answer.
+		if err == nil && gone.State == plugins.RuleProposed && gone.AskID > 0 && s.ext.Attention != nil {
+			if _, cerr := s.cancelAsk(r.Context(), gone.AskID); cerr != nil && !errors.Is(cerr, attention.ErrNotOpen) {
+				s.logger.Printf("rules: rule %d deleted; cancel its card %d: %v", id, gone.AskID, cerr)
+			}
+		}
 	}
 	switch {
 	case errors.Is(err, plugins.ErrRuleNotFound):
@@ -483,10 +492,9 @@ func (s *Server) renderRulesPage(w http.ResponseWriter, r *http.Request, code in
 			b.WriteString(`<form method="POST" action="` + routingRulesPath + `/` + id + `/enable"><button type="submit" class="` + flowsQuietButton + `" data-rule-enable>Enable</button></form>
 `)
 		}
-		if x.State != plugins.RuleProposed {
-			b.WriteString(`<form method="POST" action="` + routingRulesPath + `/` + id + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-rule-delete>Delete</button></form>
+		// Every rule can be deleted — a proposed one's card is withdrawn with it.
+		b.WriteString(`<form method="POST" action="` + routingRulesPath + `/` + id + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-rule-delete>Delete</button></form>
 `)
-		}
 		b.WriteString("</li>\n")
 	}
 	b.WriteString(`</ul>
