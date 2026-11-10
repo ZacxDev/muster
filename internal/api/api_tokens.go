@@ -161,6 +161,10 @@ const AgentCreateScopeRefusal = "creating agents needs a token of scope agent-cr
 // route other than POST /api/agents.
 const AgentCreateTokenRefusal = "an agent-create token reaches only " + apiAgentCreatePattern + "; use a full-access token for anything else"
 
+// AccountUsageTokenRefusal is the 403 body an account-usage token gets on any
+// route other than GET /api/cc-accounts/usage.
+const AccountUsageTokenRefusal = "an account-usage token reaches only GET " + CCAccountUsagePath + "; use a full-access token for anything else"
+
 // scopedTokenRefusal is the 403 body for a token of scope refused on the route
 // matched by pattern: ONE function, so each scope's sentence names what that
 // scope actually reaches and what to mint instead.
@@ -170,6 +174,8 @@ func scopedTokenRefusal(scope, pattern string) string {
 		return AgentCreateScopeRefusal
 	case scope == apitokens.ScopeAgentCreate:
 		return AgentCreateTokenRefusal
+	case scope == apitokens.ScopeAccountUsage:
+		return AccountUsageTokenRefusal
 	}
 	return ScopedTokenRefusal
 }
@@ -185,6 +191,9 @@ func scopedTokenRefusal(scope, pattern string) string {
 var tokenScopeRoutes = map[string]map[string]bool{
 	apitokens.ScopeSummary:     {"GET " + attentionSummaryPath: true},
 	apitokens.ScopeAgentCreate: {apiAgentCreatePattern: true},
+	// The account-usage scope (migration 0109): the one read a usage reader
+	// needs (cc_usage.go). A full token reaches it too.
+	apitokens.ScopeAccountUsage: {"GET " + CCAccountUsagePath: true},
 }
 
 // explicitScopeRoutes are the patterns a FULL token does not reach: each is
@@ -356,9 +365,10 @@ func (s *Server) handleAccountTokenRevoke(w http.ResponseWriter, r *http.Request
 
 // The scopes as the token page names them.
 const (
-	scopeLabelFull        = "Full access"
-	scopeLabelSummary     = "Bar summary only"
-	scopeLabelAgentCreate = "Create agents"
+	scopeLabelFull         = "Full access"
+	scopeLabelSummary      = "Bar summary only"
+	scopeLabelAgentCreate  = "Create agents"
+	scopeLabelAccountUsage = "Account usage only"
 )
 
 // scopeLabel is how the token list names a stored scope. An agent-create token
@@ -369,6 +379,8 @@ func scopeLabel(scope string) string {
 		return scopeLabelFull
 	case apitokens.ScopeAgentCreate:
 		return scopeLabelAgentCreate
+	case apitokens.ScopeAccountUsage:
+		return scopeLabelAccountUsage
 	}
 	return scopeLabelSummary
 }
@@ -411,6 +423,8 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 ` + scopeLabelSummary + ` (can read the Attention summary and nothing else)</label>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeAgentCreate + `" class="h-5 w-5">
 ` + scopeLabelAgentCreate + ` (reaches only POST /api/agents, and nothing else)</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="radio" name="scope" value="` + apitokens.ScopeAccountUsage + `" class="h-5 w-5">
+` + scopeLabelAccountUsage + ` (can read GET ` + CCAccountUsagePath + `, the utilization of your Claude accounts, and nothing else)</label>
 </fieldset>
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create token</button>
 </form>

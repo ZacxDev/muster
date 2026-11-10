@@ -245,6 +245,10 @@ var (
 		// serves the operator's agents and must be handed nobody else's. Running as
 		// the operator (not the system) is what makes row-level security say so.
 		"internal/memorelay.(*Relay).Run",
+		// The Claude account usage poller: it reads the OPERATOR's environment
+		// pool and keeps the readings as the operator's rows, so row-level
+		// security says they are nobody else's.
+		"internal/ccusage.(*Poller).Run",
 	}
 	// withPrincipalLedger: admit, and the send queue's delivery.
 	//

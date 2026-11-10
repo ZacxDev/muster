@@ -78,17 +78,52 @@ func (l LLM) String() string {
 // GoString is String, so %#v cannot print the key either.
 func (l LLM) GoString() string { return l.String() }
 
-// RoutineAgent is THE rule for whether agent name may use officer o's LLM
-// proxy: o declares `llm`, and name is an instance of o's ROUTINE pool — an
-// `-r<n>` within tiers.routine.max_instances, by the registry's own naming
-// rule (parseInstance). o may be either of the officer's pools. A judgement
-// instance, an untiered officer's instance, or any other name is not.
-func RoutineAgent(o Officer, name string) bool {
-	if o.LLM == nil || o.Tiers == nil {
-		return false
+// ProxyAgent is THE rule for whether agent name may use officer o's LLM
+// proxy: name is an instance of one of o's pools that has an `llm` block
+// (Officer.PoolLLM) — the routine pool with the officer's top-level `llm`, the
+// judgement pool with tiers.judgement.llm — by the registry's own naming rule
+// (parseInstance). It answers that pool (whose model the proxy pins and whose
+// block it spends) and the instance's number in it. An untiered officer's
+// instance, an instance of a pool without a block, or any other name is not.
+// o may be the officer or either of its pools.
+func ProxyAgent(o Officer, name string) (Officer, int, bool) {
+	if o.Tiers == nil || !o.UsesLLMProxy() {
+		return Officer{}, 0, false
 	}
-	p, _, ok := parseInstance(o, name)
+	p, n, ok := parseInstance(o, name)
+	if !ok || p.PoolLLM() == nil {
+		return Officer{}, 0, false
+	}
+	return p, n, true
+}
+
+// RoutineAgent reports whether name is a ROUTINE-pool instance of o on the
+// LLM proxy ([ProxyAgent] answering the routine pool).
+func RoutineAgent(o Officer, name string) bool {
+	p, _, ok := ProxyAgent(o, name)
 	return ok && p.Tier == TierRoutine
+}
+
+// PoolLLM is the `llm` block of the pool o is: the officer's top-level `llm`
+// for the routine pool, tiers.judgement.llm for the judgement pool, nil for an
+// untiered officer. o read as the officer itself is its judgement pool.
+func (o Officer) PoolLLM() *LLM {
+	if o.Tiers == nil {
+		return nil
+	}
+	switch o.Tier {
+	case TierRoutine:
+		return o.LLM
+	case TierJudgement:
+		return o.Tiers.Judgement.LLM
+	}
+	return nil
+}
+
+// UsesLLMProxy reports whether any of o's pools reaches its model through the
+// LLM proxy.
+func (o Officer) UsesLLMProxy() bool {
+	return o.LLM != nil || (o.Tiers != nil && o.Tiers.Judgement.LLM != nil)
 }
 
 // ProviderModel reports whether m is a provider model id (`<vendor>/<model>`,
@@ -105,9 +140,10 @@ type declaredLLM struct {
 	MaxTokensPerItem int64    `json:"max_tokens_per_item"`
 }
 
-// parseLLM reads officer o's `llm` block strictly, and its key through getenv.
-// o's tiers are already parsed: `llm` needs a routine pool, and that pool's
-// model must be a provider model id (parseTiers admits one only beside `llm`).
+// parseLLM reads officer o's top-level `llm` block (the ROUTINE pool's)
+// strictly, and its key through getenv. o's tiers are already parsed: `llm`
+// needs a routine pool, and that pool's model must be a provider model id
+// (parseTiers admits one only beside `llm`).
 func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM, error) {
 	if o.Tiers == nil {
 		return nil, errors.New("llm needs tiers.routine: the proxy serves only a routine pool's instances, and pins them to " +
@@ -117,32 +153,47 @@ func parseLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM,
 		return nil, fmt.Errorf("with llm, tiers.routine.model must be a provider model id (<vendor>/<model>, e.g. "+
 			"deepseek/deepseek-v4.1-flash-1017): %q is a Claude model, which the proxy cannot serve", m)
 	}
+	return parseLLMBlock(o.ID, "llm", "(the model is tiers.routine.model, and the routine instances are the routine pool's)", raw, getenv)
+}
+
+// parseJudgementLLM reads tiers.judgement.llm: the judgement pool's own block,
+// the same shape, bounds and key as the top-level `llm`. parseTierPool has
+// already required the judgement model to be a provider model id beside it.
+func parseJudgementLLM(o Officer, raw json.RawMessage, getenv func(string) string) (*LLM, error) {
+	return parseLLMBlock(o.ID, "tiers.judgement.llm", "(the model is tiers.judgement.model)", raw, getenv)
+}
+
+// parseLLMBlock is THE parser of an `llm` block, wherever it is declared
+// (where names it in every refusal): strict keys, a required budget in
+// (0, MaxLLMDailyBudgetUSD], the per-item cap's bounds, and the officer's own
+// key, MUSTER_OFFICER_OPENROUTER_KEY_<NAME> — one key per officer, whichever
+// pool spends it.
+func parseLLMBlock(id, where, modelNote string, raw json.RawMessage, getenv func(string) string) (*LLM, error) {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	var d declaredLLM
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("llm must be {\"daily_budget_usd\", \"max_tokens_per_item\"} (the model is tiers.routine.model, "+
-			"and the routine instances are the routine pool's): %v", err)
+		return nil, fmt.Errorf("%s must be {\"daily_budget_usd\", \"max_tokens_per_item\"} %s: %v", where, modelNote, err)
 	}
 	l := &LLM{MaxTokensPerItem: d.MaxTokensPerItem}
 	if d.DailyBudgetUSD == nil {
-		return nil, errors.New("llm.daily_budget_usd is required: the proxy refuses to spend without a cap")
+		return nil, fmt.Errorf("%s.daily_budget_usd is required: the proxy refuses to spend without a cap", where)
 	}
 	b := *d.DailyBudgetUSD
 	if math.IsNaN(b) || b <= 0 || b > MaxLLMDailyBudgetUSD {
-		return nil, fmt.Errorf("llm.daily_budget_usd %v is not in (0, %v]", b, MaxLLMDailyBudgetUSD)
+		return nil, fmt.Errorf("%s.daily_budget_usd %v is not in (0, %v]", where, b, MaxLLMDailyBudgetUSD)
 	}
 	l.DailyBudgetUSD = b
 	if l.MaxTokensPerItem == 0 {
 		l.MaxTokensPerItem = DefaultLLMMaxTokensPerItem
 	}
 	if l.MaxTokensPerItem < MinLLMMaxTokensPerItem || l.MaxTokensPerItem > MaxLLMMaxTokensPerItem {
-		return nil, fmt.Errorf("llm.max_tokens_per_item %d is not %d..%d", d.MaxTokensPerItem, MinLLMMaxTokensPerItem, MaxLLMMaxTokensPerItem)
+		return nil, fmt.Errorf("%s.max_tokens_per_item %d is not %d..%d", where, d.MaxTokensPerItem, MinLLMMaxTokensPerItem, MaxLLMMaxTokensPerItem)
 	}
-	k := strings.TrimSpace(getenv(LLMKeyEnvPrefix + TokenEnvSuffix(o.ID)))
+	k := strings.TrimSpace(getenv(LLMKeyEnvPrefix + TokenEnvSuffix(id)))
 	if k == "" {
-		return nil, fmt.Errorf("llm: %s%s is not set: an officer with llm needs its own OpenRouter key (give it a "+
-			"provider-side credit limit); the shared key is never used for it", LLMKeyEnvPrefix, TokenEnvSuffix(o.ID))
+		return nil, fmt.Errorf("%s: %s%s is not set: an officer with llm needs its own OpenRouter key (give it a "+
+			"provider-side credit limit); the shared key is never used for it", where, LLMKeyEnvPrefix, TokenEnvSuffix(id))
 	}
 	l.key = k
 	return l, nil

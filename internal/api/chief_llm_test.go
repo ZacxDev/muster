@@ -358,7 +358,7 @@ func TestTheChiefIsRefusedWhenTheAdminTurnedItOff(t *testing.T) {
 
 // notRoutineBody and unconfiguredBody are today's refusals, byte for byte.
 const (
-	notRoutineBody   = "{\"error\":{\"message\":\"muster llm proxy: this agent is not a routine-tier instance of an officer that declares `llm`\",\"type\":\"permission_error\"},\"type\":\"error\"}"
+	notRoutineBody   = "{\"error\":{\"message\":\"muster llm proxy: this agent is not an instance of an officer pool on the LLM proxy (a routine pool beside `llm`, or a judgement pool with tiers.judgement.llm)\",\"type\":\"permission_error\"},\"type\":\"error\"}"
 	unconfiguredBody = "{\"error\":{\"message\":\"muster llm proxy: no officer on this server declares `llm`\",\"type\":\"api_error\"},\"type\":\"error\"}"
 )
 

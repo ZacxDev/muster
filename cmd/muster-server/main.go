@@ -65,6 +65,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/ccusage"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
@@ -222,6 +223,8 @@ type app struct {
 	// memo relays cairn scope memos to the operator's agents; nil unless the
 	// relay's credential is set and a gateway exists. See buildMemoRelay.
 	memo *memorelay.Relay
+	// ccUsage is the Claude account usage poller (nil: MUSTER_CC_USAGE_POLL off).
+	ccUsage *ccusage.Poller
 	// chiefReapplied is closed when the boot re-apply of a running Compose
 	// chief is done; nil without the Compose chief runtime.
 	chiefReapplied <-chan struct{}
@@ -473,6 +476,19 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if credStore != nil {
 		ext.Credentials = credentialPage{PGStore: credStore, plane: plane}
 	}
+	// The Claude account usage poller (internal/ccusage): the operator's
+	// environment pool, read through the plane (the one place tokens come
+	// from), every MUSTER_CC_USAGE_POLL_INTERVAL. Off unless MUSTER_CC_USAGE_POLL.
+	if reason := cfg.ccUsageRefusal(a.pool != nil); reason != "" {
+		a.Close()
+		return nil, errors.New(reason)
+	}
+	if cfg.CCUsage.On {
+		a.ccUsage = &ccusage.Poller{Source: plane, Store: ccusage.NewPG(a.pool),
+			Fetch: ccusage.HTTPFetcher{Client: &http.Client{Timeout: 15 * time.Second}},
+			Owner: authz.OperatorUserID, Interval: cfg.CCUsage.Interval, Logger: logger}
+		ext.CCUsageInterval = cfg.CCUsage.Interval
+	}
 	// The focus summarizer: ScaleDown through OpenRouter, on the OWNER's
 	// OpenRouter key exactly as that owner's gateway pods get it (the plane: the
 	// environment's for an admin, the member's own otherwise, none refused).
@@ -506,6 +522,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Each user's notification preferences (migration 0094): off for
 		// everyone until they turn one on; see internal/api notify_prefs.go.
 		ext.NotifyPrefs = notifypref.NewPG(a.pool)
+		// Each Claude account's latest utilization (migration 0108), read by
+		// GET /api/cc-accounts/usage and Account → Credentials; written only
+		// by the poller (MUSTER_CC_USAGE_POLL), below.
+		ext.CCUsage = ccusage.NewPG(a.pool)
 		// The instance's logo and name (migration 0105): nothing set until an
 		// admin uploads on the Account page; see internal/api branding.go.
 		ext.Branding = branding.NewPG(a.pool)
@@ -532,6 +552,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		return nil, fmt.Errorf("claude account pool: %w", err)
 	}
 	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool, plane: plane}
+	// The usage poller does not probe an account the pool marks cooling down
+	// after a rate limit: the probe spends that account's quota.
+	if a.ccUsage != nil {
+		if ccPool == nil {
+			a.Close()
+			return nil, errors.New(envCCUsagePoll + " needs the claude-code account pool, whose rate-limit marks hold the probe; there is none")
+		}
+		a.ccUsage.Cooling = ccPool.CoolingUntil
+	}
 	prov, gw, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, plane, logger)
 	if err != nil {
 		a.Close()
@@ -1100,6 +1129,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// delivery record under it, so two replicas cannot both send one agent a memo.
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
+	}
+	// The usage poller is unguarded at replicas > 1: two pods each read every
+	// account once per interval (two calls instead of one), and the last
+	// write of a row wins — both are readings of the same account.
+	if a.ccUsage != nil {
+		go a.ccUsage.Run(ctx)
 	}
 	// The officer wake loop. Unguarded at replicas > 1 like the loops below:
 	// two pods would both start an instance, which is one Create winning on
@@ -1713,6 +1748,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("ask log: INERT — %s=1 but there is no database", envAskLog)
 	default:
 		l.Printf("ask log: OFF — %s is unset; nothing agents ask is recorded", envAskLog)
+	}
+	// The poller is refused at boot without its pool and database
+	// (ccUsageRefusal), so ON here is ON for real.
+	if ext.CCUsageInterval > 0 {
+		l.Printf("claude account usage: ON (%s=1) — every %s each of the admin's pooled Claude accounts is read with its own "+
+			"token, from %s when the token may use it, else from a one-token probe of %s (one output token of quota per read; "+
+			"never an account the pool marks cooling); numbers only, in cc_account_usage, served at %s", envCCUsagePoll,
+			ext.CCUsageInterval, ccusage.Endpoint, ccusage.ProbeURL, api.CCAccountUsagePath)
+	} else {
+		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)
 	}
 	switch {
 	case ext.Episodes != nil:

@@ -221,6 +221,15 @@ type Extensions struct {
 	// admin's). See credentials.go.
 	Credentials CredentialStore
 
+	// CCUsage is each Claude account's latest utilization and the attribution
+	// reads (internal/ccusage), behind GET /api/cc-accounts/usage and the
+	// usage section of Account → Credentials (cc_usage.go). nil: no database —
+	// the route answers 503 and the section is not drawn.
+	CCUsage CCUsageStore
+	// CCUsageInterval is the usage poller's interval; 0 when the poller is off
+	// (MUSTER_CC_USAGE_POLL unset): the readings then stay as they are.
+	CCUsageInterval time.Duration
+
 	// Connectors is the secure connector store. nil means the feature is off
 	// (no MUSTER_CONNECTOR_ENCRYPTION_KEY): every connector route answers 503 and
 	// the tab is not drawn. See internal/connectors and connectors.go.

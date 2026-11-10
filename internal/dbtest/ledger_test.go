@@ -135,6 +135,10 @@ var pgBackedPackages = []string{
 	// The account failover's event store (cc_account_failovers, 0066).
 	"internal/ccfailover",
 	"internal/ccpool",
+	// The Claude account usage store (cc_account_usage, 0108) and its
+	// attribution reads over agents and jobs: "one owner's readings are theirs"
+	// and "an agent counts in the window it was live in" are claims about SQL.
+	"internal/ccusage",
 	// The chief's on/off switch (migration 0060): "one user's choice is theirs
 	// alone" is a claim about row-level security.
 	"internal/chiefpref",

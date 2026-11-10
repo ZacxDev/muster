@@ -842,8 +842,9 @@ func (s *Server) WaitForOfficerReprompts() {
 //     under bypass, and kept: it names exactly the muster tools the instance
 //     is for, and holds if bypass is ever lifted.
 //   - Model: the officer's configured model (its pool's, for a tiered officer).
-//   - LLMRoute, with no Model: a routine instance of an officer that declares
-//     `llm` (below).
+//   - LLMRoute, with no Model: an instance of a pool on the LLM proxy — a
+//     routine instance beside `llm`, a judgement one with tiers.judgement.llm
+//     (below).
 //   - DisableAutoMemory: every officer instance (below).
 func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 	o, _, ok := s.officerOf(a)
@@ -866,11 +867,15 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 			allow = append(allow, d.Name)
 		}
 	}
-	// 🔴 A ROUTINE INSTANCE OF AN `llm` OFFICER IS ON THE LLM ROUTE, AND ONLY
-	// IT (officers.RoutineAgent, the proxy's own membership rule): its pod
+	// 🔴 AN INSTANCE OF A POOL ON THE PROXY IS ON THE LLM ROUTE, AND ONLY IT
+	// (officers.ProxyAgent, the proxy's own membership rule): a routine
+	// instance beside the officer's `llm`, or a judgement instance with
+	// tiers.judgement.llm. Its pod
 	// reaches its model through muster's proxy with its own muster token and
 	// carries no subscription token. It takes no session model: the proxy
-	// pins tiers.routine.model, and the pod spec refuses a provider id.
+	// pins its pool's model, and the pod spec refuses a provider id. Its
+	// network policy is every officer instance's (egress-locked, from
+	// BypassPermissions): the route changes no rule.
 	//
 	// 🔴 EVERY OFFICER INSTANCE RUNS WITH THE CLI'S AUTO-MEMORY OFF
 	// (DisableAutoMemory; operator decision 2026-11-06), whatever its pool and
@@ -880,7 +885,7 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// Image: the pool's own runner image when it declares one (checked against
 	// MUSTER_OFFICER_IMAGE_REGISTRIES at boot), else the deployment's.
 	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image}
-	if officers.RoutineAgent(o, a.Name) {
+	if _, _, proxied := officers.ProxyAgent(o, a.Name); proxied {
 		sess.LLMRoute = true
 		return sess, true
 	}

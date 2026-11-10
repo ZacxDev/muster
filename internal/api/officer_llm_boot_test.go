@@ -15,8 +15,10 @@ import (
 // nopLLMStore is an llmproxy.Store that holds nothing.
 type nopLLMStore struct{}
 
-func (nopLLMStore) SpentToday(context.Context, string, time.Time) (float64, error) { return 0, nil }
-func (nopLLMStore) Book(context.Context, llmproxy.Usage) error                     { return nil }
+func (nopLLMStore) SpentToday(context.Context, string, string, time.Time) (float64, error) {
+	return 0, nil
+}
+func (nopLLMStore) Book(context.Context, llmproxy.Usage) error { return nil }
 
 // TestEnableOfficersRefusesLLMWithoutAConnectorStore: the proxy's door is
 // requireConnectorAgent, which answers 503 to every request on a server with

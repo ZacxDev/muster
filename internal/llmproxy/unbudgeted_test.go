@@ -33,7 +33,7 @@ const chiefKey = "sk-or-v1-chiefowner-9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e
 func TestAnUnbudgetedCallerIsNeverRefusedByABudget(t *testing.T) {
 	const officer = "chief"
 	r := newRig(t, officer, streamOK(0.0123))
-	r.store.spent[officer+"|"+Day(r.p.now()).Format("2006-01-02")] = 1e6
+	r.store.spent[officer+"|"+""+"|"+Day(r.p.now()).Format("2006-01-02")] = 1e6
 	r.set(func(c *Caller) {
 		*c = Caller{Officer: officer, InstanceLabel: "chief", AgentID: 71, AgentName: "chief-agent",
 			Model: "example/chief-model", Key: chiefKey, Unbudgeted: true, Title: "muster chief"}
@@ -111,7 +111,7 @@ func TestAStorelessProxyServesUnbudgetedCallersAndRefusesABudgetedOne(t *testing
 		p.ServeMessages(w, req, c)
 		return w
 	}
-	budgeted := Caller{Officer: "nostore:officer", InstanceLabel: "r1", Model: "example/m", DailyBudgetUSD: 5, MaxTokensPerItem: 1000, Key: chiefKey}
+	budgeted := Caller{Officer: "nostore:officer", Pool: "routine", InstanceLabel: "r1", Model: "example/m", DailyBudgetUSD: 5, MaxTokensPerItem: 1000, Key: chiefKey}
 	if w := serve(budgeted); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "budget could not be read") {
 		t.Fatalf("a budgeted caller on a storeless proxy: %d %s, want the 503 refusal", w.Code, w.Body.String())
 	}

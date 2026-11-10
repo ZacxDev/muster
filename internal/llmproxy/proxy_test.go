@@ -34,7 +34,7 @@ const testKey = "sk-or-v1-test-0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a6978"
 
 type memStore struct {
 	mu      sync.Mutex
-	spent   map[string]float64 // officer|day -> usd
+	spent   map[string]float64 // officer|pool|day -> usd
 	booked  []Usage
 	readErr error
 	reads   int // SpentToday calls
@@ -42,20 +42,20 @@ type memStore struct {
 
 func newMemStore() *memStore { return &memStore{spent: map[string]float64{}} }
 
-func (m *memStore) SpentToday(_ context.Context, officer string, day time.Time) (float64, error) {
+func (m *memStore) SpentToday(_ context.Context, officer, pool string, day time.Time) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reads++
 	if m.readErr != nil {
 		return 0, m.readErr
 	}
-	return m.spent[officer+"|"+day.Format("2006-01-02")], nil
+	return m.spent[officer+"|"+pool+"|"+day.Format("2006-01-02")], nil
 }
 
 func (m *memStore) Book(_ context.Context, u Usage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spent[u.Officer+"|"+u.Day.Format("2006-01-02")] += u.CostUSD
+	m.spent[u.Officer+"|"+u.Pool+"|"+u.Day.Format("2006-01-02")] += u.CostUSD
 	m.booked = append(m.booked, u)
 	return nil
 }
@@ -187,7 +187,7 @@ func newRigAt(t *testing.T, officer string, up *upstream, upURL string) *rig {
 	t.Helper()
 	st := newMemStore()
 	logs := &syncBuffer{}
-	r := &rig{store: st, up: up, logs: logs, caller: Caller{Officer: officer, Instance: 1, InstanceLabel: "r1", AgentID: 7,
+	r := &rig{store: st, up: up, logs: logs, caller: Caller{Officer: officer, Pool: "routine", Instance: 1, InstanceLabel: "r1", AgentID: 7,
 		AgentName: "officer-x-y-r1", Model: "example/pinned-model", DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}}
 	p, err := New(Config{Upstream: upURL + "/api", Store: st, Logger: log.New(logs, "", 0), Audit: func(_ context.Context, rec Record) {
 		r.mu.Lock()
@@ -427,7 +427,7 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 	const officer = "items:cap"
 	r := newRig(t, officer, streamOK(0.0001))
 	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request counts 1000 + 7 = 1007 tokens (its 300 cache reads do not count)
-	r.p.Claimed(officer, 1, "item-a")
+	r.p.Claimed(officer, "routine", 1, "item-a")
 	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
 		resp, body := r.post(t)
 		if resp.StatusCode != want {
@@ -444,17 +444,17 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 		t.Errorf("refused_item_cap = %v, want 1", got)
 	}
 	// Another instance of the officer is not charged with this one's tokens.
-	if used, _ := r.p.items.used(instanceKey{officer, 2}); used != 0 {
+	if used, _ := r.p.items.used(instanceKey{officer, "routine", 2}); used != 0 {
 		t.Fatalf("instance 2 shows %d tokens", used)
 	}
 
 	// Re-claiming the SAME item keeps the count.
-	r.p.Claimed(officer, 1, "item-a")
+	r.p.Claimed(officer, "routine", 1, "item-a")
 	if resp, _ := r.post(t); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a re-claim of the capped item reset its count: %d", resp.StatusCode)
 	}
 	// A new item starts at zero.
-	r.p.Claimed(officer, 1, "item-b")
+	r.p.Claimed(officer, "routine", 1, "item-b")
 	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("first request on item-b: %d %s", resp.StatusCode, body)
 	}
@@ -465,30 +465,30 @@ func TestTheItemCapEndsARunawayTurnAndANewItemStartsAtZero(t *testing.T) {
 		t.Fatal("item-b's cap did not apply")
 	}
 	// A wake-loop read made BEFORE the claim does not undo it.
-	r.p.Sync(officer, map[int][]string{}, time.Now().Add(-time.Hour))
+	r.p.Sync(officer, "routine", map[int][]string{}, time.Now().Add(-time.Hour))
 	if resp, _ := r.post(t); resp.StatusCode != http.StatusBadRequest {
 		t.Fatal("a stale Sync reset the count of a claim it predates")
 	}
 	// HQ shows the instance still holding item-b: nothing changes.
-	r.p.Sync(officer, map[int][]string{1: {"item-b"}}, time.Now())
+	r.p.Sync(officer, "routine", map[int][]string{1: {"item-b"}}, time.Now())
 	if resp, _ := r.post(t); resp.StatusCode != http.StatusBadRequest {
 		t.Fatal("a Sync that shows the item still held reset its count")
 	}
 	// The lease lapsed: HQ shows the instance holding nothing; it starts again.
-	r.p.Sync(officer, map[int][]string{}, time.Now())
+	r.p.Sync(officer, "routine", map[int][]string{}, time.Now())
 	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("after the lease lapsed: %d %s", resp.StatusCode, body)
 	}
 	// Ended for an item it does not hold changes nothing; for the one it
 	// holds, the count restarts.
-	r.p.Claimed(officer, 1, "item-c")
+	r.p.Claimed(officer, "routine", 1, "item-c")
 	r.post(t)
-	r.p.Ended(officer, 1, "item-other")
-	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-c" || used != 1007 {
+	r.p.Ended(officer, "routine", 1, "item-other")
+	if used, item := r.p.items.used(instanceKey{officer, "routine", 1}); item != "item-c" || used != 1007 {
 		t.Fatalf("after an Ended for another item: %d on %q, want 1007 on item-c", used, item)
 	}
-	r.p.Ended(officer, 1, "item-c")
-	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "" || used != 0 {
+	r.p.Ended(officer, "routine", 1, "item-c")
+	if used, item := r.p.items.used(instanceKey{officer, "routine", 1}); item != "" || used != 0 {
 		t.Fatalf("after Ended: %d on %q, want 0 on no item", used, item)
 	}
 }
@@ -503,7 +503,7 @@ func TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding(t *testing.T) {
 	r := newRig(t, officer, streamOK(0.0001))
 	r.set(func(c *Caller) { c.MaxTokensPerItem = 2000 }) // each request counts 1007 tokens: the cap admits two
 
-	r.p.Sync(officer, map[int][]string{1: {"item-x"}, 2: {"item-y", "item-z"}}, time.Now())
+	r.p.Sync(officer, "routine", map[int][]string{1: {"item-x"}, 2: {"item-y", "item-z"}}, time.Now())
 	for i, want := range []int{http.StatusOK, http.StatusOK, http.StatusBadRequest} {
 		resp, body := r.post(t)
 		if resp.StatusCode != want {
@@ -513,23 +513,23 @@ func TestAWakeLoopReadAdoptsTheItemHQShowsAnInstanceHolding(t *testing.T) {
 			t.Fatalf("the cap refusal does not name the adopted item: %s", body)
 		}
 	}
-	if _, item := r.p.items.used(instanceKey{officer, 2}); item != "" {
+	if _, item := r.p.items.used(instanceKey{officer, "routine", 2}); item != "" {
 		t.Fatalf("instance 2, shown holding two items, adopted %q; want none", item)
 	}
 
 	// HQ shows the instance holding a different single item: the meter
 	// follows it, from zero.
-	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, time.Now())
-	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-w" || used != 0 {
+	r.p.Sync(officer, "routine", map[int][]string{1: {"item-w"}}, time.Now())
+	if used, item := r.p.items.used(instanceKey{officer, "routine", 1}); item != "item-w" || used != 0 {
 		t.Fatalf("after a read showing item-w held: %d on %q, want 0 on item-w", used, item)
 	}
 
 	// A read made BEFORE an end does not re-adopt the ended item.
 	readAt := time.Now()
 	time.Sleep(2 * time.Millisecond)
-	r.p.Ended(officer, 1, "item-w")
-	r.p.Sync(officer, map[int][]string{1: {"item-w"}}, readAt)
-	if _, item := r.p.items.used(instanceKey{officer, 1}); item != "" {
+	r.p.Ended(officer, "routine", 1, "item-w")
+	r.p.Sync(officer, "routine", map[int][]string{1: {"item-w"}}, readAt)
+	if _, item := r.p.items.used(instanceKey{officer, "routine", 1}); item != "" {
 		t.Fatalf("a read predating the end re-adopted %q", item)
 	}
 }
@@ -760,7 +760,7 @@ func TestAProviderThatCannotBeReachedBooksNothing(t *testing.T) {
 	r := newRigAt(t, officer, nil, dead)
 	// A budget one pessimistic estimate of this body would exhaust.
 	r.set(func(c *Caller) { c.DailyBudgetUSD = 0.004 })
-	r.p.Claimed(officer, 1, "item-a")
+	r.p.Claimed(officer, "routine", 1, "item-a")
 	for i := 1; i <= 3; i++ {
 		resp, body := r.post(t)
 		if resp.StatusCode != http.StatusBadGateway || strings.Contains(body, "daily LLM budget") {
@@ -770,10 +770,10 @@ func TestAProviderThatCannotBeReachedBooksNothing(t *testing.T) {
 	if b := r.store.bookings(); len(b) != 0 {
 		t.Fatalf("bookings = %+v, want none: nothing reached the provider", b)
 	}
-	if spent, _ := r.store.SpentToday(context.Background(), officer, Day(time.Now())); spent != 0 {
+	if spent, _ := r.store.SpentToday(context.Background(), officer, "routine", Day(time.Now())); spent != 0 {
 		t.Fatalf("spent today = %v, want 0", spent)
 	}
-	if used, _ := r.p.items.used(instanceKey{officer, 1}); used != 0 {
+	if used, _ := r.p.items.used(instanceKey{officer, "routine", 1}); used != 0 {
 		t.Fatalf("the item count = %d, want 0", used)
 	}
 	if got := testutil.ToFloat64(metrics.OfficerLLMCostEstimated.WithLabelValues(officer)); got != 0 {
@@ -826,20 +826,20 @@ func TestCacheReadsDoNotCountTowardTheItemCap(t *testing.T) {
 		}
 	})
 	r.set(func(c *Caller) { c.MaxTokensPerItem = 10_000 })
-	r.p.Claimed(officer, 1, "item-a")
+	r.p.Claimed(officer, "routine", 1, "item-a")
 	for i := 1; i <= 3; i++ {
 		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: %d %s; a million cache-read tokens counted toward a 10000-token item cap", i, resp.StatusCode, body)
 		}
 	}
-	if used, item := r.p.items.used(instanceKey{officer, 1}); item != "item-a" || used != 3*(1000+50+7) {
+	if used, item := r.p.items.used(instanceKey{officer, "routine", 1}); item != "item-a" || used != 3*(1000+50+7) {
 		t.Fatalf("item count = %d on %q, want %d on item-a (no cache reads)", used, item, 3*(1000+50+7))
 	}
 	b := r.store.bookings()
 	if len(b) != 3 || b[0].CacheRead != 1_000_000 || b[0].CostUSD != 0.01 {
 		t.Fatalf("bookings = %+v, want three with their cache reads and the provider's cost", b)
 	}
-	if spent, _ := r.store.SpentToday(context.Background(), officer, Day(time.Now())); spent < 0.0299 || spent > 0.0301 {
+	if spent, _ := r.store.SpentToday(context.Background(), officer, "routine", Day(time.Now())); spent < 0.0299 || spent > 0.0301 {
 		t.Fatalf("spent today = %v, want 0.03: cache reads are still charged", spent)
 	}
 }
@@ -907,7 +907,7 @@ func TestATurnHoldingNoItemIsNotRefusedByTheItemCap(t *testing.T) {
 	// are charged to it, its first request goes through, and its second is
 	// refused naming the item.
 	r.set(func(c *Caller) { c.DailyBudgetUSD = 5 })
-	r.p.Claimed(officer, 1, "item-a")
+	r.p.Claimed(officer, "routine", 1, "item-a")
 	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("first request on item-a: %d %s; the no-item tokens were charged to the item", resp.StatusCode, body)
 	}

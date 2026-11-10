@@ -176,6 +176,7 @@ func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString(`<p class="text-sm text-fg2">Your agents run only on the credentials you add here. Each is stored encrypted and is never shown again.</p></section>`)
 		s.writeCredentialSections(&b, r)
 	}
+	s.writeCCUsageSection(&b, r)
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
 	s.writeNavDocument(w, r, code, "Credentials", ui.NavAccount, true, b.String())
 }

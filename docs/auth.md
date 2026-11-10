@@ -375,13 +375,17 @@ Two endpoints help with personal tokens:
   only token that reaches that route: a **full-access token is refused there**,
   so the CLI's ordinary token cannot create agents. `muster agent create`
   reads it from `MUSTER_AGENT_CREATE_TOKEN`.
+- **Account usage only** (`account-usage`): [`GET /api/cc-accounts/usage`](jobs.md#get-apicc-accountsusage),
+  your Claude accounts' utilization and who used them, and **nothing else**
+  (every other route answers **403**). Give it to a service that should read
+  that and hold nothing else. A full-access token reaches the route too.
 
 The allowed routes are one list in `internal/api/api_tokens.go`
 (`tokenScopeRoutes`), checked where every personal token is admitted, so a
 route added later is refused to a narrower token until someone adds it
 there; a route listed in `explicitScopeRoutes` is refused to a full token too.
 The token page and `muster token ls` (`"scope": "full"`, `"summary"` or
-`"agent-create"`) show each token's scope, and `muster whoami` shows the
+`"agent-create"`, `"account-usage"`) show each token's scope, and `muster whoami` shows the
 presented (full) token's.
 
 From the CLI these are `muster whoami`, `muster token ls` and

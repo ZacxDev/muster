@@ -490,16 +490,17 @@ var (
 		Name: "muster_officer_llm_upstream_auth_failing",
 		Help: "1 while the provider refuses the officer's LLM key (its last answer was 401/403), else 0.",
 	}, []string{"officer"})
-	// OfficerLLMSpentToday and OfficerLLMBudget are the officer's USD spend
-	// this UTC day (as last read or booked) and its daily budget.
+	// OfficerLLMSpentToday and OfficerLLMBudget are one officer POOL's USD
+	// spend this UTC day (as last read or booked) and its daily budget: the
+	// routine and the judgement pool each have their own (pool label).
 	OfficerLLMSpentToday = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "muster_officer_llm_spent_today_usd",
-		Help: "USD an officer's LLM proxy requests have booked this UTC day, as last read or booked.",
-	}, []string{"officer"})
+		Help: "USD an officer pool's LLM proxy requests have booked this UTC day, as last read or booked.",
+	}, []string{"officer", "pool"})
 	OfficerLLMBudget = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "muster_officer_llm_budget_usd",
-		Help: "An officer's daily LLM budget in USD (MUSTER_OFFICERS llm.daily_budget_usd).",
-	}, []string{"officer"})
+		Help: "An officer pool's daily LLM budget in USD (MUSTER_OFFICERS llm / tiers.judgement.llm daily_budget_usd).",
+	}, []string{"officer", "pool"})
 	// OfficerLLMBookFailures counts usage that could not be written to the
 	// database. The spend still counts in memory until the next read, but a
 	// restart would forget it: alert on any.

@@ -53,30 +53,30 @@ func TestAnItemsCostIsTheSumOfItsOwnRequestsOnly(t *testing.T) {
 		}
 	}
 
-	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	r.p.ClaimedAttempt(officer, "routine", 1, "item-a", 1)
 	as(1)
 	post() // 0.0137 → item-a
 	as(2)
 	post() // 0.0523 → no item (instance 2 holds none)
 	as(1)
 	post() // 0.0291 → item-a
-	r.p.ClaimedAttempt(officer, 2, "item-b", 1)
+	r.p.ClaimedAttempt(officer, "routine", 2, "item-b", 1)
 	as(2)
 	post() // 0.0419 → item-b
 
-	if got, ok := r.p.ItemCost(officer, 1, "item-a"); !ok || !near(got, 0.0428) {
+	if got, ok := r.p.ItemCost(officer, "routine", 1, "item-a"); !ok || !near(got, 0.0428) {
 		t.Errorf("item-a's cost = %v (known %v), want 0.0428: its own two requests", got, ok)
 	}
-	if got, ok := r.p.ItemCost(officer, 2, "item-b"); !ok || !near(got, 0.0419) {
+	if got, ok := r.p.ItemCost(officer, "routine", 2, "item-b"); !ok || !near(got, 0.0419) {
 		t.Errorf("item-b's cost = %v (known %v), want 0.0419: its own request, not the one made holding nothing", got, ok)
 	}
-	if got, ok := r.p.ItemCost(officer, 1, "item-b"); ok {
+	if got, ok := r.p.ItemCost(officer, "routine", 1, "item-b"); ok {
 		t.Errorf("instance 1 (holding item-a) reports a cost %v for item-b", got)
 	}
-	if got, ok := r.p.ItemCost(officer, 2, "item-a"); ok {
+	if got, ok := r.p.ItemCost(officer, "routine", 2, "item-a"); ok {
 		t.Errorf("instance 2 (holding item-b) reports a cost %v for item-a", got)
 	}
-	if got, ok := r.p.ItemCost("items:another-officer", 1, "item-a"); ok {
+	if got, ok := r.p.ItemCost("items:another-officer", "routine", 1, "item-a"); ok {
 		t.Errorf("another officer's instance 1 reports a cost %v for item-a", got)
 	}
 }
@@ -91,18 +91,18 @@ func TestAnItemsCostIsNotChargedARequestAdmittedUnderAnotherHold(t *testing.T) {
 	costs := []float64{0.0613, 0.0419}
 	r = newRig(t, officer, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n == 1 { // mid-request: the hold changes under it
-			r.p.Ended(officer, 1, "item-a")
-			r.p.ClaimedAttempt(officer, 1, "item-b", 1)
+			r.p.Ended(officer, "routine", 1, "item-a")
+			r.p.ClaimedAttempt(officer, "routine", 1, "item-b", 1)
 		}
 		costsInOrder(costs...)(w, req, n)
 	})
-	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	r.p.ClaimedAttempt(officer, "routine", 1, "item-a", 1)
 	for i := 0; i < 2; i++ {
 		if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: %d %s", i+1, resp.StatusCode, body)
 		}
 	}
-	if got, ok := r.p.ItemCost(officer, 1, "item-b"); !ok || !near(got, 0.0419) {
+	if got, ok := r.p.ItemCost(officer, "routine", 1, "item-b"); !ok || !near(got, 0.0419) {
 		t.Errorf("item-b's cost = %v (known %v), want 0.0419: not the request admitted under item-a", got, ok)
 	}
 }
@@ -132,7 +132,7 @@ func TestAnItemsCostIsUnknownWhileARequestUnderItIsInFlight(t *testing.T) {
 			}
 		}
 	})
-	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	r.p.ClaimedAttempt(officer, "routine", 1, "item-a", 1)
 	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("request 1: %d %s", resp.StatusCode, body)
 	}
@@ -142,13 +142,13 @@ func TestAnItemsCostIsUnknownWhileARequestUnderItIsInFlight(t *testing.T) {
 		r.post(t)
 	}()
 	<-midStream
-	got, why := r.p.ItemCostWhy(officer, 1, "item-a")
+	got, why := r.p.ItemCostWhy(officer, "routine", 1, "item-a")
 	close(release)
 	<-done
 	if why != CostInFlight {
 		t.Errorf("with request 2 in flight: cost %v, reason %q; want unknown because %q (request 2 is not booked yet)", got, why, CostInFlight)
 	}
-	if got, ok := r.p.ItemCost(officer, 1, "item-a"); !ok || !near(got, 0.51) {
+	if got, ok := r.p.ItemCost(officer, "routine", 1, "item-a"); !ok || !near(got, 0.51) {
 		t.Errorf("after request 2 is booked: cost %v (known %v), want 0.51", got, ok)
 	}
 }
@@ -182,11 +182,11 @@ func TestAnItemsCostIsKnownOnceItsRequestIsChargedBeforeTheHandlerReturns(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := Caller{Officer: officer, Instance: 1, InstanceLabel: "r1", AgentName: "officer-x-r1", Model: "example/pinned-model",
+	c := Caller{Officer: officer, Pool: "routine", Instance: 1, InstanceLabel: "r1", AgentName: "officer-x-r1", Model: "example/pinned-model",
 		DailyBudgetUSD: 5, MaxTokensPerItem: 1_000_000, Key: testKey}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { p.ServeMessages(w, req, c) }))
 	t.Cleanup(srv.Close)
-	p.ClaimedAttempt(officer, 1, "item-a", 1)
+	p.ClaimedAttempt(officer, "routine", 1, "item-a", 1)
 
 	done := make(chan struct{})
 	go func() {
@@ -198,7 +198,7 @@ func TestAnItemsCostIsKnownOnceItsRequestIsChargedBeforeTheHandlerReturns(t *tes
 		}
 	}()
 	<-st.booked
-	got, why := p.ItemCostWhy(officer, 1, "item-a")
+	got, why := p.ItemCostWhy(officer, "routine", 1, "item-a")
 	close(st.release)
 	<-done
 	if why != "" || !near(got, 0.0389) {
@@ -220,14 +220,14 @@ func TestARequestNeverBookedLeavesFlightWhenItsHandlerReturns(t *testing.T) {
 		}
 		streamOK(0.0151)(w, req, n)
 	})
-	r.p.ClaimedAttempt(officer, 1, "item-a", 1)
+	r.p.ClaimedAttempt(officer, "routine", 1, "item-a", 1)
 	if resp, body := r.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("request 1: %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := r.post(t); resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("request 2: %d, want the provider's 500 relayed", resp.StatusCode)
 	}
-	if got, why := r.p.ItemCostWhy(officer, 1, "item-a"); why != "" || !near(got, 0.0151) {
+	if got, why := r.p.ItemCostWhy(officer, "routine", 1, "item-a"); why != "" || !near(got, 0.0151) {
 		t.Errorf("after an unbooked request's handler returned: cost %v (unknown because %q), want 0.0151 known", got, why)
 	}
 }
@@ -248,51 +248,51 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 	}
 	unknown := func(why string, n int, item, reason string) {
 		t.Helper()
-		if got, r := r.p.ItemCostWhy(officer, n, item); r != reason {
+		if got, r := r.p.ItemCostWhy(officer, "routine", n, item); r != reason {
 			t.Errorf("%s: cost %v, reason %q; want unknown because %q", why, got, r, reason)
 		}
 	}
 
 	// Held, first claim, but no request booked yet: no evidence, not a 0.
-	r.p.ClaimedAttempt(officer, 1, "item-none", 1)
+	r.p.ClaimedAttempt(officer, "routine", 1, "item-none", 1)
 	unknown("a first claim with no request booked", 1, "item-none", CostNoRequests)
 
 	// HQ's second claim of the item: an earlier hold may have spent on it.
-	r.p.ClaimedAttempt(officer, 2, "item-second", 2)
+	r.p.ClaimedAttempt(officer, "routine", 2, "item-second", 2)
 	post(2)
 	unknown("HQ's second claim (attempts 2)", 2, "item-second", CostNotFirstClaim)
 
 	// No attempts from HQ (an HQ without the field, or muster's already-yours
 	// answer for an item the meter did not hold).
-	r.p.ClaimedAttempt(officer, 3, "item-noattempts", 0)
+	r.p.ClaimedAttempt(officer, "routine", 3, "item-noattempts", 0)
 	post(3)
 	unknown("a claim with no attempts", 3, "item-noattempts", CostAttemptsUnknown)
 
 	// Adopted from a wake-loop read (a claim muster did not see: a restart).
-	r.p.Sync(officer, map[int][]string{4: {"item-adopted"}}, time.Now())
+	r.p.Sync(officer, "routine", map[int][]string{4: {"item-adopted"}}, time.Now())
 	post(4)
 	unknown("an item adopted from HQ's claimed list", 4, "item-adopted", CostAdopted)
 
 	// A first claim, then HQ's re-claim of it (its lease lapsed): unknown.
-	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 1)
+	r.p.ClaimedAttempt(officer, "routine", 5, "item-reclaimed", 1)
 	post(5)
-	r.p.ClaimedAttempt(officer, 5, "item-reclaimed", 2)
+	r.p.ClaimedAttempt(officer, "routine", 5, "item-reclaimed", 2)
 	unknown("a first claim re-claimed after a lapse (attempts 2)", 5, "item-reclaimed", CostNotFirstClaim)
 
 	// Ended: the meter no longer holds it.
-	r.p.ClaimedAttempt(officer, 6, "item-ended", 1)
+	r.p.ClaimedAttempt(officer, "routine", 6, "item-ended", 1)
 	post(6)
-	r.p.Ended(officer, 6, "item-ended")
+	r.p.Ended(officer, "routine", 6, "item-ended")
 	unknown("an ended hold", 6, "item-ended", CostNotHeld)
 
 	// A request the provider reported no cost for is booked from the proxy's
 	// pessimistic estimate: not a measured cost, so the item's is unknown.
 	est := newRig(t, officer, streamOK(nil))
-	est.p.ClaimedAttempt(officer, 1, "item-estimated", 1)
+	est.p.ClaimedAttempt(officer, "routine", 1, "item-estimated", 1)
 	if resp, body := est.post(t); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the estimated request: %d %s", resp.StatusCode, body)
 	}
-	if got, why := est.p.ItemCostWhy(officer, 1, "item-estimated"); why != CostEstimated {
+	if got, why := est.p.ItemCostWhy(officer, "routine", 1, "item-estimated"); why != CostEstimated {
 		t.Errorf("a hold with a request booked from the estimate: cost %v, reason %q; want unknown because %q", got, why, CostEstimated)
 	}
 	// An estimated request, THEN one with a reported cost: still unknown (the
@@ -304,24 +304,24 @@ func TestAnItemsCostIsUnknownUnlessThisHoldMeteredAllOfIt(t *testing.T) {
 		}
 		streamOK(cost)(w, req, n)
 	})
-	mixed.p.ClaimedAttempt(officer, 1, "item-mixed", 1)
+	mixed.p.ClaimedAttempt(officer, "routine", 1, "item-mixed", 1)
 	for i := 0; i < 2; i++ {
 		if resp, body := mixed.post(t); resp.StatusCode != http.StatusOK {
 			t.Fatalf("mixed request %d: %d %s", i+1, resp.StatusCode, body)
 		}
 	}
-	if got, why := mixed.p.ItemCostWhy(officer, 1, "item-mixed"); why != CostEstimated {
+	if got, why := mixed.p.ItemCostWhy(officer, "routine", 1, "item-mixed"); why != CostEstimated {
 		t.Errorf("an estimated request then a reported one: cost %v, reason %q; want unknown because %q", got, why, CostEstimated)
 	}
 
 	// The positive control, with the same requests: a first claim, metered
 	// whole, is known — and stays known through muster's already-yours
 	// re-claim of the item it holds (no new HQ claim, attempts unknown).
-	r.p.ClaimedAttempt(officer, 7, "item-known", 1)
+	r.p.ClaimedAttempt(officer, "routine", 7, "item-known", 1)
 	post(7)
 	post(7)
-	r.p.ClaimedAttempt(officer, 7, "item-known", 0)
-	if got, ok := r.p.ItemCost(officer, 7, "item-known"); !ok || !near(got, 2*0.0367) {
+	r.p.ClaimedAttempt(officer, "routine", 7, "item-known", 0)
+	if got, ok := r.p.ItemCost(officer, "routine", 7, "item-known"); !ok || !near(got, 2*0.0367) {
 		t.Errorf("the positive control: cost %v (known %v), want 0.0734", got, ok)
 	}
 }

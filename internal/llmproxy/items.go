@@ -45,8 +45,11 @@ type items struct {
 	m  map[instanceKey]*held
 }
 
+// instanceKey is one instance: an officer, its POOL and its number there —
+// judgement #1 and routine r1 are different instances.
 type instanceKey struct {
 	officer  string
+	pool     string
 	instance int
 }
 
@@ -147,14 +150,14 @@ func (t *items) ended(k instanceKey, item string, at time.Time) {
 // claim or end). If HQ shows it holding the meter's item, its count is kept.
 // Otherwise, if HQ shows it holding exactly one item, the meter adopts that
 // item from zero; if HQ shows none or several, it holds nothing.
-func (t *items) sync(officer string, holding map[int][]string, at time.Time) {
+func (t *items) sync(officer, pool string, holding map[int][]string, at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for n := range holding {
-		t.get(instanceKey{officer, n}) // an instance the meter has not seen (a restart) can be adopted too
+		t.get(instanceKey{officer, pool, n}) // an instance the meter has not seen (a restart) can be adopted too
 	}
 	for k, h := range t.m {
-		if k.officer != officer || h.since.After(at) {
+		if k.officer != officer || k.pool != pool || h.since.After(at) {
 			continue
 		}
 		its := holding[k.instance]

@@ -637,6 +637,9 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerAPITokenRoutes(mux)
 	// The machine job API (jobs.go): the service tier only.
 	s.registerJobRoutes(mux)
+	// Claude account utilization (cc_usage.go): the service tier or an
+	// account-usage token.
+	s.registerCCUsageRoutes(mux)
 	// Paired devices (the Android app, Phase 1): the pairing code, Account →
 	// Devices, and the /api/device/* tier (devices.go).
 	s.registerDeviceRoutes(mux)

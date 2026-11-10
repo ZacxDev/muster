@@ -385,6 +385,8 @@ var routeVias = map[authz.Via][]string{
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
 		"GET /api/jobs/{id}",
+		// Claude account usage (cc_usage.go): the service tier or a personal token.
+		"GET /api/cc-accounts/usage",
 		"GET /api/tasks",
 		"GET /api/whoami",
 		"PATCH /api/tasks/{id}/status",
@@ -426,6 +428,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/flows/jobs/{id}/cancel",
 		// The attention summary (attention_summary.go): a personal token ONLY.
 		"GET /api/attention/summary",
+		// Claude account usage (cc_usage.go): a full or account-usage token.
+		"GET /api/cc-accounts/usage",
 	},
 	// A browser-flow RUNNER token (0012) opens exactly the runner door.
 	authz.ViaRunner: {

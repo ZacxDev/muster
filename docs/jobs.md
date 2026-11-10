@@ -639,6 +639,105 @@ one line per move: `ccfailover: agent <name> (id <n>): account_failover from
 alpha to beta, reason rate_limited, resets <time>`. None of them carries a
 token.
 
+## Claude account usage
+
+With `MUSTER_CC_USAGE_POLL=1`, muster reads each of the admin's pooled Claude
+accounts' **subscription utilization** every `MUSTER_CC_USAGE_POLL_INTERVAL`
+(default 15 minutes, at least 5) and keeps the latest reading per account
+(`cc_account_usage`, migration 0108; numbers only). Members' own accounts are
+not read. The code is `internal/ccusage`. Each reading records its `source`.
+
+**`usage_api`: the endpoint Claude Code's `/usage` reads.** Read from the CLI's
+bundle (2.1.289): `GET https://api.anthropic.com/api/oauth/usage` with the
+account's token as `Authorization: Bearer` and `anthropic-beta:
+oauth-2025-04-20`. It answers `five_hour` and `seven_day` (and, when the
+account has them, `seven_day_opus`, `seven_day_sonnet` and others), each null or
+`{"utilization": <percent, 0-100>, "resets_at": "<RFC 3339>"}`, plus a `limits`
+array whose per-model weekly rows muster reads as `seven_day_model:<name>`.
+🔴 **A `claude setup-token` is refused there** (403 `permission_error`: the
+token lacks the `user:profile` scope; measured against a pool token), and the
+endpoint rate-limits hard (429, `Retry-After` about an hour). So each token
+gets **one discovery call**: a 2xx keeps the endpoint for that token, a 401/403
+retires it for that token for good, and a 429 rests it for its `Retry-After`.
+
+**`ratelimit_headers`: a one-token probe**, for every token the endpoint does
+not serve. It is `POST https://api.anthropic.com/v1/messages` (`anthropic-version:
+2023-06-01`, the same bearer and beta header) on `claude-haiku-4-5-20251001`
+with `max_tokens: 1` and one user message. Its answer's
+`anthropic-ratelimit-unified-*` headers are the reading. The window names
+follow the CLI bundle's map (`5h` → `five_hour`, `7d` → `seven_day`, `7d_oi` →
+`seven_day_overage_included`, `overage`). Each window has `-utilization`, a 0–1
+**fraction** that muster stores ×100 as a percent like the endpoint's, `-reset`
+(unix seconds) and `-status`. The answer also carries the overall `-status`,
+`-reset` and `-representative-claim`. A window whose headers are absent is
+absent: a measured answer carried 7d headers and no 5h ones. ⚠ **The probe
+spends one output token of the account's quota per read**, which is why the
+default interval is 15 minutes. An account the pool marks **rate-limited**
+(cooling down after a turn hit its limit) is **not probed until its cooldown
+ends** (`error_kind` `cooling`). The response body is never read past its
+bytes, logged or stored.
+
+| the probe answers | muster |
+|---|---|
+| 2xx with the headers | stores the windows, `status`, `representative_claim` and `read_at`; an overall status `rejected` holds the account until its reset |
+| 401, 403 | records `unauthorized` / `forbidden`; the token cannot make an inference call, and the account is not read again until its token changes (the row keeps the token's 12-character fingerprint, never the token) |
+| 429 | records `rate_limited` and waits the interval doubled per 429 in a row, at least `Retry-After`, at most 6 hours, or until the window's reset when its headers say `rejected`; the 429's own headers are kept as the reading |
+| anything else, or a 2xx without the headers | records `error`; the next pass tries again |
+| (no token) | records `no_token` and calls nothing |
+
+A failed read keeps the last good numbers and their `read_at`. A usage refusal
+does **not** mark the account in the pool: selection and the failover read only
+what an agent's own turns report.
+
+### `GET /api/cc-accounts/usage`
+
+Read-only. It answers the **service tier** (`MUSTER_SERVICE_TOKEN` and
+`X-Muster-Actor`, as for the job API; the admin's accounts), or a personal
+token of scope **`account-usage`** (minted at `/account/tokens` as "Account
+usage only"; it reaches this route and nothing else) or `full` (the token's
+owner's accounts). Every other credential is refused: 401 with none, a wrong
+one or the hook token, 403 for a bar-summary or agent-create token or a service
+call without an actor.
+
+```json
+{"accounts": [
+  {"account": "alpha",
+   "five_hour": {"utilization": 42, "resets_at": "2026-11-10T20:00:00Z"},
+   "seven_day": {"utilization": 17.5, "resets_at": "2026-11-15T09:00:00Z"},
+   "windows": {"seven_day_opus": {"utilization": 3, "resets_at": "2026-11-15T09:00:00Z"}},
+   "read_at": "2026-11-10T18:20:00Z", "checked_at": "2026-11-10T18:20:00Z",
+   "source": "ratelimit_headers", "status": "allowed", "representative_claim": "seven_day",
+   "used_by": {
+     "last_24h": {"officers": [{"officer": "triage:example-web", "pool": "routine", "instances": 2}],
+                  "jobs": [{"requested_by": "pr-review", "jobs": 4}],
+                  "pool_workers": [{"pool": "reviewers", "workers": 3}],
+                  "interactive_agents": 1},
+     "last_7d": {"officers": [], "jobs": [], "pool_workers": [], "interactive_agents": 0}}}],
+ "poll_interval_seconds": 900, "generated_at": "2026-11-10T18:21:00Z"}
+```
+
+- `account` is the account's name as muster shows it everywhere (the pool's
+  name, never an e-mail). Every configured account is listed, read or not; one
+  never read has null windows.
+- `error` and `error_kind` (absent after a good read) say why the latest
+  attempt produced no reading; the numbers are then the last good ones.
+- `source` is `usage_api` or `ratelimit_headers` (above). From the probe, each
+  window also has its `status`, and the account has its overall `status` and
+  `representative_claim` (the window that decides it).
+- `used_by` counts, per window: **officer instances** by officer and pool
+  (`pool` absent for an untiered officer), **jobs** by `requested_by` (the
+  service caller's `X-Muster-Actor`), **pool workers** by pool (their work is
+  the jobs) and every other `claude-code` agent as **interactive** (the chief
+  included). An agent counts when it is live now or stopped inside the window;
+  a job when it was created inside it.
+- ⚠ An agent is counted on the account it is on **now**: one an [account
+  failover](#account-failover) moved inside the window counts on its new
+  account only. A job counts on the account its last turn ran on.
+- `poll_interval_seconds` is 0 with the poller off; the numbers then never move.
+
+The same readings are drawn on **Account → Credentials** ("Claude account
+usage"), for the admin and for a member alike.
+
 ## Reading a job
 
 ```

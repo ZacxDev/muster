@@ -985,6 +985,14 @@ func TestATokensScopeIsStoredAndReadBack(t *testing.T) {
 	if _, err := w.pool.Exec(sysCtx(), `UPDATE api_tokens SET scope = 'agent-create-all' WHERE id = $1`, acRec.ID); err == nil {
 		t.Fatal("the database accepted scope 'agent-create-all'; api_tokens_scope_check must refuse it")
 	}
+	// Migration 0109: the account-usage scope is stored and read back.
+	au, auRec, err := w.s.Create(as(w.a, authz.RoleMember), "usage", 0, ScopeAccountUsage)
+	if err != nil || auRec.Scope != ScopeAccountUsage {
+		t.Fatalf("an account-usage mint: %+v %v", auRec, err)
+	}
+	if got, err := w.s.Authenticate(sysCtx(), au); err != nil || got.Scope != ScopeAccountUsage {
+		t.Fatalf("Authenticate an account-usage token: %+v %v", got, err)
+	}
 	// A row written without the column (an older image's INSERT) is full.
 	var dflt string
 	if err := w.pool.QueryRow(sysCtx(), `SELECT column_default || '/' || is_nullable FROM information_schema.columns
@@ -1000,7 +1008,10 @@ func TestCleanScopeAcceptsAgentCreate(t *testing.T) {
 	if got, err := CleanScope("agent-create"); err != nil || got != ScopeAgentCreate {
 		t.Fatalf(`CleanScope("agent-create") = %q, %v; want %q`, got, err, ScopeAgentCreate)
 	}
-	for _, bad := range []string{"agent_create", "Agent-Create", "agents"} {
+	if got, err := CleanScope("account-usage"); err != nil || got != ScopeAccountUsage {
+		t.Fatalf(`CleanScope("account-usage") = %q, %v; want %q`, got, err, ScopeAccountUsage)
+	}
+	for _, bad := range []string{"agent_create", "Agent-Create", "agents", "account_usage", "usage"} {
 		if _, err := CleanScope(bad); !errors.Is(err, ErrBadScope) {
 			t.Errorf("CleanScope(%q): %v; want ErrBadScope", bad, err)
 		}
