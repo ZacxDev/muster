@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,12 +27,69 @@ const testDomain = "preview.example"
 
 // ------------------------------------------------------------ fake muster
 
-// fakeMuster answers GET /plugin/v1/self per token, as muster does.
+// The session page's tests' muster: its public URL (frame-ancestors is its
+// ORIGIN, so it carries a port and a path the origin must keep and drop) and
+// the gateway's signing key.
+const (
+	testPublicURL    = "https://muster.example.net:8443/base"
+	testPublicOrigin = "https://muster.example.net:8443"
+	testSigningKey   = "0123456789abcdef0123456789abcdef-test"
+)
+
+// fakeMuster answers GET /plugin/v1/self per token, and POST
+// /plugin/v1/handoffs/redeem as muster does: the token must hold viewer
+// (else 403), a code is spent once and only by the token it was minted for
+// (else 404).
 type fakeMuster struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	by    map[string]fakeSelf
-	calls atomic.Int64
+	srv      *httptest.Server
+	mu       sync.Mutex
+	by       map[string]fakeSelf
+	handoffs map[string]fakeHandoff // code → minted for
+	calls    atomic.Int64
+	redeems  atomic.Int64
+}
+
+type fakeHandoff struct {
+	token string
+	body  map[string]any
+}
+
+// handoff mints a code in the fake muster for token, as POST
+// /plugin-handoffs would for (owner, host, window).
+func (f *fakeMuster) handoff(token string, owner int64, host, session, window string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	code := fmt.Sprintf("code-%d-%s", len(f.handoffs)+1, window)
+	f.handoffs[code] = fakeHandoff{token, map[string]any{"owner_id": owner, "purpose": "view", "stepped_up": false,
+		"minted_at": "2000-01-02T03:04:05Z",
+		"target":    map[string]any{"mirror": map[string]string{"host": host, "session": session, "window": window}}}}
+	return code
+}
+
+func (f *fakeMuster) redeem(w http.ResponseWriter, r *http.Request) {
+	f.redeems.Add(1)
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.by[tok]
+	if !ok || a.status != http.StatusOK {
+		http.Error(w, "this route takes a plugin token", http.StatusUnauthorized)
+		return
+	}
+	if !a.self.HasViewer() {
+		http.Error(w, "this plugin token lacks the viewer capability", http.StatusForbidden)
+		return
+	}
+	var in struct{ Code string }
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	h, ok := f.handoffs[in.Code]
+	if !ok || h.token != tok {
+		http.Error(w, `{"error":"no such hand-off code"}`, http.StatusNotFound)
+		return
+	}
+	delete(f.handoffs, in.Code)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(h.body)
 }
 
 type fakeSelf struct {
@@ -40,8 +98,12 @@ type fakeSelf struct {
 }
 
 func newFakeMuster(t *testing.T) *fakeMuster {
-	f := &fakeMuster{by: map[string]fakeSelf{}}
+	f := &fakeMuster{by: map[string]fakeSelf{}, handoffs: map[string]fakeHandoff{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/plugin/v1/handoffs/redeem" && r.Method == http.MethodPost {
+			f.redeem(w, r)
+			return
+		}
 		if r.URL.Path != "/plugin/v1/self" || r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
@@ -108,7 +170,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 		o.dialWait = 300 * time.Millisecond
 	}
 	dir := t.TempDir()
-	cfg := Config{MusterURL: fm.srv.URL, PublicURL: "https://muster.example", PluginTokens: o.tokens,
+	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
 		Domain: testDomain, Listen: ":0", StateDir: dir}
 	fc := newFakeClock(time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC))
 	g, err := New(cfg, Options{Clock: fc, Muster: NewMusterClient(fm.srv.URL, "test"), DialWait: o.dialWait,

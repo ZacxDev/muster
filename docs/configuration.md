@@ -576,13 +576,15 @@ end to end, but does not encrypt it: send nothing secret.
 
 `muster-preview` is the gateway of [previews](design/previews.md#the-preview-gateway):
 each host running `muster-mirror -preview` opens one tunnel to it. The image
-ships it as `/muster-preview`; nothing runs it yet, and this phase does not
-serve previews to a browser (the session page and the proxy come later).
-What it does now:
+ships it as `/muster-preview`; nothing runs it yet. It serves the session
+page and the owner's way onto a preview's host, but not the preview itself:
+the reverse proxy comes later, and an admitted request to a preview gets a
+placeholder `501`. What it does now:
 
 - **Two listeners.** `PREVIEW_LISTEN` is the public one (the host tunnel on
-  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; every other name in the zone
-  answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
+  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; the session page on
+  `w.<PREVIEW_DOMAIN>`; each open preview on `p-<id>.<PREVIEW_DOMAIN>`; every
+  other name in the zone answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
   only). A tunnel's path (`mesh` or `public`) is the listener it arrived on,
   never anything in the request. `/metrics` and `/healthz` are served on the
   mesh listener only.
@@ -614,18 +616,37 @@ What it does now:
 - **Revoked hosts.** A host whose token is revoked loses its previews at the
   next 30 s check even if it is offline then; a new token for the same host
   name starts with none.
-- **No database.** Previews are in memory; a restart closes them.
+- **The session page.** muster's chip opens
+  `w.<PREVIEW_DOMAIN>/__muster/enter?muster_code=…&muster_plugin=…`. The
+  gateway redeems the code with the token in `PLUGIN_TOKENS_FILE` whose
+  `/plugin/v1/self` named that plugin id with `viewer` (no other token is ever
+  used) and renders the page directly. The page lists only the target
+  window's offers and previews, refreshes every 5 s with a 15-minute page token
+  held in its script, and strips the code from the address bar. **`w.` never
+  sets a cookie**; a reload shows "open this from muster". It is framed only by
+  `MUSTER_PUBLIC_URL`'s origin and sends no `Referer`. A host on the public
+  path is labelled "slow path (via Cloudflare)".
+- **The owner cookie.** **Open** gets a 60-second single-use entry code for
+  `p-<id>.<PREVIEW_DOMAIN>/__muster/enter`, which sets `__Host-mp`: signed
+  with `PREVIEW_SIGNING_KEY`, bound to that preview and its owner, for 8 hours,
+  never renewed except by a fresh chip click; `SameSite=Strict` for a new tab,
+  `SameSite=None; Partitioned` in muster's frame. **Open** on an offer creates
+  the preview and tells the host; before that click, a preview's name answers
+  404 and nothing is dialled.
+- **No database.** Previews and entry codes are in memory; a restart closes
+  the previews.
 - **Metric:** `muster_preview_tunnels{path}`.
 
 | variable | default | required | what it does |
 |---|---|---|---|
 | `MUSTER_URL` | none | yes | muster's API base URL, where `/plugin/v1/self` is served; may be an in-cluster address. |
-| `MUSTER_PUBLIC_URL` | none | yes | muster's public URL as browsers see it (the server's own `MUSTER_PUBLIC_URL`). Validated at start; the later session page puts its origin in `frame-ancestors`. Not derived from `MUSTER_URL`. |
+| `MUSTER_PUBLIC_URL` | none | yes | muster's public URL as browsers see it (the server's own `MUSTER_PUBLIC_URL`). Its origin is the only `frame-ancestors` source on `w.` and on the gateway's own `p-` pages, and the link back to muster. Not derived from `MUSTER_URL`. |
 | `PLUGIN_TOKENS_FILE` | none | yes | The owners' `mpl_` plugin tokens, one per line (blank lines skipped). Each must hold the `viewer` capability for its owner to be served. |
 | `PREVIEW_DOMAIN` | none | yes | The preview zone, a lowercase DNS name (for example `preview.example`): the public listener serves the host tunnel on `tunnel.<PREVIEW_DOMAIN>`. |
 | `PREVIEW_LISTEN` | `:8080` | no | The public listener's address. |
 | `PREVIEW_MESH_LISTEN` | none | no | The mesh listener's address; unset, there is none. Must differ from `PREVIEW_LISTEN`. A tunnel arriving here is on the `mesh` path. |
 | `STATE_DIR` | none | yes | A writable directory (a volume): `host-tokens.json` (each token's sha256, owner id and login label, host) and its lock `host-tokens.lock`. |
+| `PREVIEW_SIGNING_KEY` | none | yes | At least 32 bytes (`openssl rand -hex 32`). Signs the owner cookies (`__Host-mp`) and the session page's page tokens (HMAC-SHA256). Rotating it ends every owner cookie and open session page at once. |
 
 ## Test and e2e harness
 

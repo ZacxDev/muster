@@ -6,7 +6,8 @@
 //
 // The tunnel's protocol is internal/preview/wire and its transport
 // internal/preview/tunnel; this package is what runs them. The session page
-// and the reverse proxy are not here yet.
+// at w.<zone> is session.go, the owner's entry onto p-<id>.<zone> auth.go and
+// cookie.go; the reverse proxy behind that entry is not here yet.
 //
 // 🔴 NO DATABASE. Host tokens live in a flock'd file in STATE_DIR
 // (hosttokens.go), written by the CLI and re-read by the running gateway;
@@ -49,6 +50,10 @@ type Config struct {
 	MeshListen string
 	// StateDir holds the host-token file and its lock (STATE_DIR).
 	StateDir string
+	// SigningKey signs owner cookies and page tokens (PREVIEW_SIGNING_KEY),
+	// at least MinSigningKey bytes. Rotating it ends every owner cookie and
+	// page token already given out.
+	SigningKey []byte
 }
 
 // DefaultListen is PREVIEW_LISTEN's default.
@@ -91,6 +96,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if c.StateDir, err = CheckStateDir(getenv("STATE_DIR")); err != nil {
 		return Config{}, err
+	}
+	// Never echoed in an error.
+	if k := getenv("PREVIEW_SIGNING_KEY"); len(k) < MinSigningKey {
+		return Config{}, fmt.Errorf("PREVIEW_SIGNING_KEY is required: at least %d bytes", MinSigningKey)
+	} else {
+		c.SigningKey = []byte(k)
 	}
 	return c, nil
 }
