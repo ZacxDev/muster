@@ -613,6 +613,9 @@ type MirrorTranscript struct {
 	// since TakeContext last reported it.
 	usage *cctranscript.Usage
 	fresh bool
+	// agentCtx is the context fill a runtime reported beside its events
+	// (SetAgentContext); it wins over usage.
+	agentCtx *mirror.AgentContext
 	// asks is the AskUserQuestion calls drawn as question cards (mirror_ask.go),
 	// with their questions: a result for one redraws its card. Bounded with
 	// calls (forget).
@@ -672,7 +675,7 @@ func (t *MirrorTranscript) Reset() {
 	t.Subagents, t.cards, t.subs = false, nil, nil
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.Resumed = false
-	t.usage, t.fresh = nil, false
+	t.usage, t.fresh, t.agentCtx = nil, false, nil
 	t.ledger, t.costs = cctranscript.ToolContext{}, nil
 	t.queued, t.queuedDrawn = nil, false
 }
@@ -753,20 +756,59 @@ func (t *MirrorTranscript) appendRow(toolID, state string, row g.Node) []MirrorO
 }
 
 // ContextView is the header's context-usage readout (mirrorViewBatch.Context):
-// the latest turn's context, as a count ("124k context").
+// the latest turn's context, as a count ("124k context") — and, from a
+// runtime that reports them beside its events (opencode: SetAgentContext),
+// its model and the model's context window ("big-pickle · 5k / 262k
+// context"). The count means one thing for every runtime: the tokens the
+// latest model request was sent (input + cache read + cache write).
 type ContextView struct {
 	Tokens int64  `json:"tokens"`
+	Limit  int64  `json:"limit,omitempty"`
+	Model  string `json:"model,omitempty"`
 	Label  string `json:"label"`
+	// Title is the readout's tooltip, "" for the page's own ("Context used").
+	Title string `json:"title,omitempty"`
 }
 
-// TakeContext is the context readout when Ops has drawn a newer one since the
-// last call, else nil — so a batch carries it only when it changed.
+// AgentContextTitle is the tooltip of a readout a runtime reported
+// (SetAgentContext): how its number is derived.
+const AgentContextTitle = "Context used by the latest model request: its input + cache read + cache write tokens, " +
+	"as the agent reports them (output is not counted: it is in the next request's input), of the model's context window."
+
+// TakeContext is the context readout when Ops (or SetAgentContext) has drawn
+// a newer one since the last call, else nil — so a batch carries it only
+// when it changed.
 func (t *MirrorTranscript) TakeContext() *ContextView {
-	if !t.fresh || t.usage == nil {
+	if !t.fresh {
 		return nil
 	}
-	t.fresh = false
-	return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
+	switch {
+	case t.agentCtx != nil:
+		t.fresh = false
+		c := t.agentCtx
+		label := tokenCount(c.Tokens)
+		if c.Limit > 0 {
+			label += " / " + tokenCount(c.Limit)
+		}
+		label += " context"
+		if c.Model != "" {
+			label = c.Model + " · " + label
+		}
+		return &ContextView{Tokens: c.Tokens, Limit: c.Limit, Model: c.Model, Label: label, Title: AgentContextTitle}
+	case t.usage != nil:
+		t.fresh = false
+		return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
+	}
+	return nil
+}
+
+// SetAgentContext records the context fill a runtime reported beside its
+// events (mirror.Msg.Context, cleaned): the readout TakeContext reports
+// next. nil leaves the readout as it is.
+func (t *MirrorTranscript) SetAgentContext(c *mirror.AgentContext) {
+	if c = mirror.CleanAgentContext(c); c != nil {
+		t.agentCtx, t.fresh = c, true
+	}
 }
 
 // tokenCount is n tokens, short: 950, 12k, 124k, 1M, 1.2M.
@@ -1237,6 +1279,7 @@ func mirrorViewScript() g.Node {
     // muster or host sends none and the readout stays hidden.
     if (m.context && m.context.label) {
       ctxEl.textContent = m.context.label;
+      ctxEl.title = m.context.title || 'Context used';
       ctxEl.hidden = false;
     }
     (m.ops || []).forEach(function (op) {

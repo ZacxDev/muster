@@ -16,7 +16,7 @@ import (
 func TestThePageAndTheHubAgreeOnWhatCanBeSent(t *testing.T) {
 	seen := map[bool]int{}
 	for _, sends := range []bool{false, true} {
-		for _, window := range []string{"@1", "@2"} { // bound, unbound (both idle)
+		for _, window := range []string{"@1", "@2", "@5", "@6"} { // bound, unbound, verified, cut title (all idle)
 			r, raw := ocSendHost(t, sends, true)
 			var e mirror.SessionView
 			hosts := r.svc.Hosts(asUser(1))
@@ -51,7 +51,7 @@ func TestThePageAndTheHubAgreeOnWhatCanBeSent(t *testing.T) {
 	}
 	// Positive control: the matrix holds cases of BOTH outcomes, so agreement
 	// is not "both always refuse".
-	if seen[true] != 1 || seen[false] != 3 {
-		t.Fatalf("instrument check: sendable/blocked cases %v, want 1 and 3", seen)
+	if seen[true] != 2 || seen[false] != 6 {
+		t.Fatalf("instrument check: sendable/blocked cases %v, want 2 and 6", seen)
 	}
 }

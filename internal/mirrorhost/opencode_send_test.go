@@ -308,7 +308,15 @@ func TestTheHostRefusesAGatedSendItCannotMake(t *testing.T) {
 		{"a slash command while the commands cannot be read", "/review", mirror.PasteRefusalOpenCodeSlash, "", true, nil, func(srv *opencodetest.Server, _ *OpenCodeSource) {
 			srv.FailCommands(true)
 		}},
-		{"an unbound pane", "hi", mirror.PasteRefusalOpenCodeUnbound, mirror.PasteRefusedOpenCodeUnboundText, true, nil, func(_ *opencodetest.Server, src *OpenCodeSource) {
+		// No record, and the title names TWO sessions: no binding at all.
+		{"an unbound pane", "hi", mirror.PasteRefusalOpenCodeUnbound, mirror.PasteRefusedOpenCodeUnboundText, true, nil, func(srv *opencodetest.Server, src *OpenCodeSource) {
+			src.SetLaunches("", "")
+			srv.PutSession("ses_fixtureTwin", "Bound session", "")
+			src.sessionsChanged()
+		}},
+		// No record, a verified title match — and a paste naming NO session
+		// (an older muster's): refused, never posted to the title's session.
+		{"a verified pane, a paste naming no session", "hi", mirror.PasteRefusalOpenCodeMoved, mirror.PasteRefusedOpenCodeMovedText, true, nil, func(_ *opencodetest.Server, src *OpenCodeSource) {
 			src.SetLaunches("", "")
 		}},
 	}

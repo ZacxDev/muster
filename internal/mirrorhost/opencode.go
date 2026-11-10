@@ -97,6 +97,28 @@ func openCodeTUI(p procInfo) (tui, shared bool) {
 	return true, shared
 }
 
+// openCodeSessionArg is the session the TUI's command line names
+// (-s/--session <id>, or =<id>), "" for none.
+func openCodeSessionArg(argv []string) string {
+	if len(argv) > 0 {
+		argv = argv[1:]
+	}
+	for i := 0; i < len(argv); i++ {
+		name, value, hasValue := strings.Cut(argv[i], "=")
+		switch {
+		case name != "-s" && name != "--session":
+			if openCodeValueFlags[name] && !hasValue {
+				i++ // another flag's value is never read as -s
+			}
+		case hasValue:
+			return value
+		case i+1 < len(argv):
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
 // openCodeCLI is the opencode TUI in the tree at or below root, breadth-first
 // and bounded: the nearest that matches openCodeTUI AND whose stdin is tty,
 // the pane's terminal. false when there is none, or anything needed cannot
@@ -152,7 +174,7 @@ func (r openCodeRuntime) LocatePanes(panes []pane, procs map[int]procInfo, child
 		}
 		ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: p.ID, PID: pid, Source: SourceProcess}
 		if r.src != nil {
-			r.src.resolve(&ap, shared, procs[pid].start, r.title)
+			r.src.resolve(&ap, shared, procs[pid].start, openCodeSessionArg(procs[pid].argv), r.title)
 		}
 		out[p.ID] = ap
 	}
@@ -249,6 +271,12 @@ type OpenCodeSource struct {
 	// replies are the dispatch windows' sessions' final replies, as last read
 	// (opencode_outcome.go), by session id.
 	replies map[string]outcomeMemo
+	// turnErrs are the idle windows' sessions' latest turn errors, as last
+	// read (opencode_turnerror.go), by session id.
+	turnErrs map[string]turnErrorMemo
+	// models is the server's model list, for the context readout's limit
+	// (opencode_context.go).
+	models openCodeModels
 }
 
 // titleEvents are the events after which the root sessions' titles are read
@@ -517,9 +545,11 @@ func (s *OpenCodeSource) client() (*opencodehost.Client, error) {
 }
 
 // resolve fills a claimed opencode pane's session and status: the session
-// its title names, when the server can be read and exactly one root session
-// matches.
-func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title func(string) (string, bool)) {
+// its launcher record names, else the one its title names, when the server
+// can be read and exactly one root session matches — and, for a title match,
+// whether that binding is verified enough to send to (verifyTitleBind; the
+// TUI's command line named sessionArg, "" for none).
+func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start, sessionArg string, title func(string) (string, bool)) {
 	oc := &OpenCodePane{}
 	ap.OpenCode = oc
 	// The person reads the same reason on the window's card (AgentNote): why
@@ -574,6 +604,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start string, title
 			return
 		}
 		ap.Gen, ap.Source = oc.Match.Session, SourceTitle
+		ap.Bind = s.verifyTitleBind(oc.Match, sessionArg)
 	}
 	ap.Status, ap.StatusSince = s.status(ap.Gen)
 	// What it waits on (opencode_asks.go): a pending permission request or
@@ -630,7 +661,7 @@ func ResolveOpenCodePane(s *OpenCodeSource, pane string, pid int, title string) 
 func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, title string) AgentPane {
 	ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: pane, PID: pid, Source: SourceProcess}
 	if s != nil {
-		s.resolve(&ap, true, start, func(string) (string, bool) { return title, true })
+		s.resolve(&ap, true, start, "", func(string) (string, bool) { return title, true })
 	}
 	return ap
 }

@@ -149,7 +149,7 @@ func PasteGuardRefusal(err error) string {
 	switch pr.Refusal {
 	case PasteRefusalMultiplexer, PasteRefusalUnchecked, PasteRefusalOpenCode,
 		PasteRefusalOpenCodeOff, PasteRefusalOpenCodeUnbound, PasteRefusalOpenCodeNotIdle,
-		PasteRefusalOpenCodeSlash, PasteRefusalOpenCodeGone, PasteRefusalOpenCodeConflict:
+		PasteRefusalOpenCodeSlash, PasteRefusalOpenCodeGone, PasteRefusalOpenCodeConflict, PasteRefusalOpenCodeMoved:
 		return pr.Refusal
 	}
 	return ""
@@ -439,7 +439,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// Only a Rendered-view send can be one: the Terminal composer's paste
 	// (AnyPane) still meets the host's paste guard, which never types into
 	// opencode.
-	gated, since := "", int64(0)
+	gated, since, agentSession := "", int64(0), ""
 	if !anyPane {
 		if err := hc.gatedSendCheck(session, windowID); err != nil {
 			return err
@@ -448,14 +448,14 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 		// on, which the host checks again at the moment it posts. A QUEUED
 		// paste (ExpectTurn) is SUPERSEDED, as on Claude Code: nothing was
 		// sent, and the row is decided on again.
-		if rt, st, s, ok := hc.gatedStatus(session, windowID); ok {
+		if rt, st, s, as, ok := hc.gatedStatus(session, windowID); ok {
 			if st != StatusIdle || s <= 0 {
 				if o.Expect != nil {
 					return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
 				}
 				return &OpenCodeNotIdleError{Status: st}
 			}
-			gated, since = rt, s
+			gated, since, agentSession = rt, s, as
 		}
 	}
 	// 🔴 THE CLAUDE PROMPT GUARD, SERVER HALF: a Claude Code window the host
@@ -487,7 +487,8 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err != nil {
 		return err
 	}
-	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, messageID: OpenCodeMessageID(owner, o.Key), dispatch: o.Dispatch})
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gatedPaste{runtime: gated, since: since, agentSession: agentSession,
+		messageID: OpenCodeMessageID(owner, o.Key), dispatch: o.Dispatch})
 	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
 	// next message would be pasted after it and submitted with it as one turn,
 	// so it is recorded like a paste that may have reached the window.
@@ -636,6 +637,9 @@ type gatedPaste struct {
 	runtime   string
 	since     int64
 	messageID string
+	// agentSession is the session the window list names for the window
+	// (Msg.AgentSession): the only one the host may post to.
+	agentSession string
 	// dispatch is the paste's host dispatch (ForDispatch), stamped on the
 	// message for the host's tag check; 0 for none.
 	dispatch int64
@@ -666,7 +670,7 @@ func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text
 	m := Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane, Dispatch: g.dispatch}
 	wait := pasteTimeout
 	if r, ok := LookupRuntime(g.runtime); ok && r.GatedSend {
-		m.Runtime, m.Since, m.MessageID, wait = r.Name, g.since, g.messageID, r.PasteTimeout
+		m.Runtime, m.Since, m.MessageID, m.AgentSession, wait = r.Name, g.since, g.messageID, g.agentSession, r.PasteTimeout
 	}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)

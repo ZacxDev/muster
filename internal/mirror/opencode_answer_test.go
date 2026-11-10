@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -58,10 +59,10 @@ func TestAnOpenCodeAnswerReachesItsHost(t *testing.T) {
 		t.Fatalf("the host received %d answers", len(got))
 	}
 	if m := got[0]; m.Runtime != mirror.RuntimeOpenCode || m.Window != "@1" || m.Ask != nil || m.OpenCodeReply == nil ||
-		*m.OpenCodeReply != (mirror.OpenCodeReply{PromptID: "per_1", Choice: "reject"}) {
+		!reflect.DeepEqual(*m.OpenCodeReply, mirror.OpenCodeReply{PromptID: "per_1", Choice: "reject"}) {
 		t.Fatalf("the permission's answer: %+v (%+v)", m, m.OpenCodeReply)
 	}
-	if m := got[1]; m.Window != "@3" || *m.OpenCodeReply != (mirror.OpenCodeReply{PromptID: "frm_1", Choice: "Yes"}) {
+	if m := got[1]; m.Window != "@3" || !reflect.DeepEqual(*m.OpenCodeReply, mirror.OpenCodeReply{PromptID: "frm_1", Choice: "Yes"}) {
 		t.Fatalf("the question's answer: %+v", m.OpenCodeReply)
 	}
 }
@@ -154,10 +155,12 @@ func TestAnOpenCodeWindowsPendingOnTheWire(t *testing.T) {
 	want := []*mirror.Pending{
 		{Kind: "permission", Summary: "bash: ls", Tool: "bash", PromptID: "per_1", Choices: "once reject"},
 		{Kind: "question", Summary: "Proceed?", PromptID: "frm_1", Options: "Yes\nNo"},
-		{Kind: "question", Summary: "Pick"},
+		// Options the wire would cut or cannot tell apart are not offered,
+		// but the question keeps its id: the view answers its whole form.
+		{Kind: "question", Summary: "Pick", PromptID: "frm_1"},
 		nil,
 		{Kind: "permission", Summary: "x"},
-		{Kind: "question", Summary: "Pick"},
+		{Kind: "question", Summary: "Pick", PromptID: "frm_1"},
 		nil,
 		{Summary: "Q"},
 	}

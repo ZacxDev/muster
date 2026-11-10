@@ -328,6 +328,21 @@ type Msg struct {
 	// posted under (OpenCodeMessageID): the same send retried posts the same
 	// id, and opencode admits it once.
 	MessageID string `json:"messageID,omitempty"`
+	// AgentSession (paste, with Runtime) is the session muster's window list
+	// names for the window (Window.AgentSession) — the one its Rendered view
+	// shows — and so the ONLY session the host may post to: it refuses
+	// (PasteRefusalOpenCodeMoved) when the pane resolves to any other now,
+	// and refuses a pane bound by verification (Window.AgentBind) when the
+	// paste names none. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host
+	// ignores it and sends only to launcher-bound panes, as before; an older
+	// muster never sends it, and so never reaches a verified pane.
+	AgentSession string `json:"agentSession,omitempty"`
+	// Context (events) is the agent's context fill for the view's header
+	// readout, from a runtime that reports it beside its events (opencode:
+	// AgentContext). Sent when it changed, and on the batch that ends a
+	// Reset's backfill. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older muster
+	// ignores it (no readout, as before); an older host never sends it.
+	Context *AgentContext `json:"context,omitempty"`
 	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
 	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
@@ -379,6 +394,16 @@ type Msg struct {
 	// an older muster ignores it; an older host never sets it, so muster sends
 	// it no opencode message and the composer says why.
 	OpenCodeSend bool `json:"openCodeSend,omitempty"`
+	// OpenCodeForms (hello) is the host ADVERTISING that it sends a pending
+	// opencode question's whole form (TypeOpenCodeForm → TypeOpenCodeFormed,
+	// Form) and takes its answer as OpenCodeReply.Picks (opencode_form.go):
+	// an -interactive v2 host that holds an opencode token. 🔴 NO VERSION
+	// BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster ignores it; an
+	// older host never sets it, so muster never asks it for a form.
+	OpenCodeForms bool `json:"openCodeForms,omitempty"`
+	// Form (opencode-formed) is the form asked for; nil with Error set when
+	// refused.
+	Form *OpenCodeForm `json:"form,omitempty"`
 	// OpenCodeReply (answer, with Runtime "opencode") is the opencode ask to
 	// answer and how: the PromptID muster showed (Pending.PromptID) and one of
 	// its offered answers (Pending.Offers). An older host, which never
@@ -623,6 +648,19 @@ type Window struct {
 	// keeps it (NormalizeWindows). A title-matched opencode pane never has it,
 	// and is view-only. Backward-compatible both ways, like AgentSession.
 	AgentSend bool `json:"agentSend,omitempty"`
+	// AgentBind is how a window of a gated-send runtime that is NOT AgentSend
+	// (an opencode pane muster's launcher did not start) is bound to its
+	// session, as a closed code (agentbind.go): AgentBindVerified — its host
+	// verified the binding through opencode's own API and sends to it, but
+	// only to a paste that names that very session (Msg.AgentSession) — or
+	// why it is not sent to (AgentBindTitleCut, AgentBindArgv,
+	// AgentBindStream). "" for none: a launcher-bound window, a window with
+	// no view, any other runtime's, and every window of an older host.
+	// 🔴 A SEPARATE FIELD FROM AgentSend ON PURPOSE, BACKWARD-COMPATIBLE BOTH
+	// WAYS: an older muster ignores it, so such a pane stays view-only there
+	// (and its pastes, which name no session, are refused by the host); an
+	// older host never sets it.
+	AgentBind string `json:"agentBind,omitempty"`
 	// LastMessage is when the Claude Code conversation in the window last had
 	// a MESSAGE — the newest timestamp of a user or assistant row in its
 	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
@@ -1098,6 +1136,7 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !onWire || !r.GatedSend || w.AgentSession == "" {
 			w.AgentSend = false
 		}
+		w.AgentBind = cleanAgentBind(w, onWire && r.GatedSend)
 		// A note says why a window has no rendered view (or what its runtime's
 		// credential needs): a window of a runtime on the wire, or a window
 		// with NO Claude view whose pane runs Claude Code all the same (the
@@ -1347,6 +1386,7 @@ func (w Window) Equal(o Window) bool {
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession && w.AgentSend == o.AgentSend &&
+		w.AgentBind == o.AgentBind &&
 		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
 		w.LiveCopy == o.LiveCopy && w.Dispatch == o.Dispatch
 }
@@ -1421,6 +1461,10 @@ const (
 	// another session. muster forgets that first try, so the next send is a
 	// new message.
 	PasteRefusalOpenCodeConflict = "opencode-conflict"
+	// PasteRefusalOpenCodeMoved: the pane resolves now to another session
+	// than the one the paste named (Msg.AgentSession), or a pane bound by
+	// verification was sent a paste naming none.
+	PasteRefusalOpenCodeMoved = "opencode-moved"
 	// PasteRefusalOpenCodeUnconfirmed: the host posted the message and heard
 	// no answer: it MAY have been admitted (muster reads it as
 	// ErrPasteUnconfirmed).

@@ -17,8 +17,12 @@ import (
 
 const ocSendSID = "ses_e5d559cd5ffecrpBJHzHzu6wl9"
 
+// ocSendSIDHand is the session of the hand-opened windows @5 and @6.
+const ocSendSIDHand = "ses_e5d559cd5ffeHandOpenedPane1"
+
 // ocSendWindows: work:@1 a launcher-bound opencode window, idle since 111;
-// @2 a title-matched (unbound) one, idle; @3 a bound one, busy; @4 Claude Code.
+// @2 a title-matched (unbound) one from an older host (no AgentBind), idle;
+// @3 a bound one, busy; @4 Claude Code; @5 and @6 below.
 func ocSendWindows() []mirror.Window {
 	return []mirror.Window{
 		{Session: "work", ID: "@1", Index: 0, Active: true, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSID, AgentSend: true,
@@ -27,6 +31,12 @@ func ocSendWindows() []mirror.Window {
 		{Session: "work", ID: "@3", Index: 2, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSID, AgentSend: true,
 			Status: mirror.StatusBusy, StatusSince: 113},
 		{Session: "work", ID: "@4", Index: 3, Claude: true, Status: mirror.StatusIdle, StatusSince: 114},
+		// @5 a hand-opened pane its host VERIFIED (opencode_bind.go), idle;
+		// @6 one whose title is cut, which its host does not send to.
+		{Session: "work", ID: "@5", Index: 4, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSIDHand, AgentBind: mirror.AgentBindVerified,
+			Status: mirror.StatusIdle, StatusSince: 115},
+		{Session: "work", ID: "@6", Index: 5, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSIDHand, AgentBind: mirror.AgentBindTitleCut,
+			Status: mirror.StatusIdle, StatusSince: 116},
 	}
 }
 

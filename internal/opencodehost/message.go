@@ -26,6 +26,28 @@ type Message struct {
 	Name    string `json:"name,omitempty"`
 	Command string `json:"command,omitempty"`
 	Status  string `json:"status,omitempty"`
+	// Model and Tokens: assistant (usage.go). Tokens is nil until the step
+	// has reported its usage (a step still streaming has none).
+	Model  *MessageModel `json:"model,omitempty"`
+	Tokens *Tokens       `json:"tokens,omitempty"`
+}
+
+// MessageModel is the model an assistant message ran on.
+type MessageModel struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+}
+
+// Tokens is an assistant message's token counts, as opencode reports them
+// (Session.Message.Assistant.tokens at 6ec5682).
+type Tokens struct {
+	Input     int64 `json:"input"`
+	Output    int64 `json:"output"`
+	Reasoning int64 `json:"reasoning"`
+	Cache     struct {
+		Read  int64 `json:"read"`
+		Write int64 `json:"write"`
+	} `json:"cache"`
 }
 
 // Content is one item of an assistant message's content: text, reasoning

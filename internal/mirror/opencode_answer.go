@@ -36,6 +36,10 @@ type OpenCodeReply struct {
 	// Choice is the answer: one of OpenCodePermissionChoices for a permission
 	// request, one of the question's option labels for a form.
 	Choice string `json:"choice"`
+	// Picks is a whole form's answer (opencode_form.go) in place of Choice:
+	// one per question, sent only to a host that advertised OpenCodeForms
+	// (an older host, which reads Choice alone, refuses an empty one).
+	Picks []OpenCodePick `json:"picks,omitempty"`
 }
 
 // The refusals a host names on answered for an opencode ask (Msg.Refusal).
@@ -105,6 +109,12 @@ func (h *Hub) AnswerOpenCodeAsk(ctx context.Context, owner int64, host, session,
 	if p := hc.pendingOf(session, windowID); p == nil || (p.Kind != PendingPermission && p.Kind != PendingQuestion) || p.PromptID != promptID || !p.Offers(choice) {
 		return fmt.Errorf("%w: %w", ErrAskNotSent, ErrOpenCodeAskGone)
 	}
+	return h.relayOpenCodeAnswer(ctx, hc, session, windowID, OpenCodeReply{PromptID: promptID, Choice: choice})
+}
+
+// relayOpenCodeAnswer sends answer r to the opencode window (session,
+// windowID) of hc and waits for the host's outcome.
+func (h *Hub) relayOpenCodeAnswer(ctx context.Context, hc *hostConn, session, windowID string, r OpenCodeReply) error {
 	hc.mu.Lock()
 	hc.next++
 	id := hc.next
@@ -117,7 +127,7 @@ func (h *Hub) AnswerOpenCodeAsk(ctx context.Context, owner int64, host, session,
 		hc.mu.Unlock()
 	}()
 	m := Msg{Type: TypeAnswer, ID: id, Session: session, Window: windowID, Runtime: RuntimeOpenCode,
-		OpenCodeReply: &OpenCodeReply{PromptID: promptID, Choice: choice}}
+		OpenCodeReply: &r}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("%w: %w", ErrOpenCodeAnswerUnknown, err)
 	}

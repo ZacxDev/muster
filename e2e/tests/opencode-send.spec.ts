@@ -24,8 +24,15 @@ import { revealBox } from '../lib/composer';
 const rig = new MirrorRig(openCodeSendPort, 'e2e-ocsend', { MUSTER_SEND_QUEUE_IDLE: '1s' });
 const bound = 'ses_0e2esend1a2b3c4d';
 const titled = 'ses_0e2esend5e6f7a8b';
+// The opencode parity windows (docs/design/opencode-first-class.md): @4 a
+// hand-opened pane whose title opencode CUT (never sent to), @5 a session with
+// a step's token counts and two quick failed turns, @6 a session that asks.
+const cut = 'ses_0e2esendcut00001';
+const ctxSession = 'ses_0e2esendctx00001';
+const askSession = 'ses_0e2esendask00001';
 const t0 = Math.floor(Date.now() / 1000);
 let ops = '';
+let ocDir = '';
 let ocWindows = '';
 let offHost = '';
 let stopOff: (() => Promise<void>) | undefined;
@@ -36,16 +43,62 @@ function op(o: Record<string, unknown>) {
 
 function windowsLine(boundTitle: string) {
   // sess|id|index|active|activity|pane title
-  return `oc|@2|0|1|${t0 - 10}|${boundTitle}\noc|@3|1|0|${t0 - 20}|OC | Title-matched fixture session\n`;
+  return (
+    `oc|@2|0|1|${t0 - 10}|${boundTitle}\noc|@3|1|0|${t0 - 20}|OC | Title-matched fixture session\n` +
+    `oc|@4|2|0|${t0 - 30}|OC | A long hand-opened fixture session ti…\n` +
+    `oc|@5|3|0|${t0 - 40}|OC | Context fixture session\n` +
+    `oc|@6|4|0|${t0 - 50}|OC | Asking fixture session\n`
+  );
 }
 
 test.beforeAll(async ({ browser }) => {
   test.setTimeout(180_000);
   await rig.start();
   const dir = fs.mkdtempSync(path.join(rig.dir, 'opencode-'));
+  ocDir = dir;
   ops = path.join(dir, 'ops.jsonl');
   op({ op: 'session', id: bound, title: 'Bound fixture session' });
   op({ op: 'session', id: titled, title: 'Title-matched fixture session' });
+  op({ op: 'session', id: cut, title: 'A long hand-opened fixture session title, past the cut' });
+  op({ op: 'session', id: ctxSession, title: 'Context fixture session' });
+  op({ op: 'session', id: askSession, title: 'Asking fixture session' });
+  // @5: a completed step's usage on fixture-model (input 3517 + cache read
+  // 41203 + cache write 2089 = 46809 in context; output 611 is not), whose
+  // window GET /api/model says is 187500 — then two turns that each failed at
+  // once with no reply.
+  op({ op: 'models', models: [{ provider: 'fixture-provider', id: 'fixture-model', context: 187500 }] });
+  op({ op: 'message', session: ctxSession, message: { id: 'msg_0e2ectx01', type: 'user', text: 'measure the fixture', time: { created: 1700000000001 } } });
+  op({
+    op: 'message',
+    session: ctxSession,
+    message: {
+      id: 'msg_0e2ectx02',
+      type: 'assistant',
+      agent: 'build',
+      model: { id: 'fixture-model', providerID: 'fixture-provider' },
+      finish: 'stop',
+      time: { created: 1700000000002, completed: 1700000000900 },
+      tokens: { input: 3517, output: 611, reasoning: 97, cache: { read: 41203, write: 2089 } },
+      content: [{ type: 'text', text: 'Measured.' }],
+    },
+  });
+  for (const [n, at] of [
+    [3, 1700000100000],
+    [5, 1700000200000],
+  ]) {
+    op({ op: 'message', session: ctxSession, message: { id: `msg_0e2ectx0${n}`, type: 'user', text: `try ${n}`, time: { created: at } } });
+    op({
+      op: 'message',
+      session: ctxSession,
+      message: {
+        id: `msg_0e2ectx0${n + 1}`,
+        type: 'idle',
+        outcome: 'failed',
+        error: { name: 'APIError', data: { message: 'fixture provider overloaded' } },
+        time: { created: at + 1234 },
+      },
+    });
+  }
   // No status op: a session that has never run is idle WITH a status time
   // (mirrorhost's OpenCodeSource), so it takes a send before its first turn.
   op({ op: 'bind', session: 'oc', window: '@2', id: bound });
@@ -180,7 +233,7 @@ test('a message queued while opencode works is sent once it is idle', async ({ p
   await expect(rowsOf(page, text), 'delivered once idle').toHaveCount(1, { timeout: 30_000 });
 });
 
-test('each refusal says why: a slash command, a title-matched window, a host that did not opt in', async ({ page }) => {
+test('each refusal says why: a slash command, a hand-opened pane whose title is cut, a host that did not opt in', async ({ page }) => {
   await openBound(page);
   const text = '/review the fixture branch';
   await send(page, text);
@@ -189,9 +242,11 @@ test('each refusal says why: a slash command, a title-matched window, a host tha
   await expect(p).toContainText('that is an opencode slash command');
   await expect(rowsOf(page, text)).toHaveCount(0);
 
-  await page.goto(rig.origin + viewOf('@3'));
+  // A hand-opened pane is sent to only when its binding is verified: a title
+  // opencode cut names only a prefix, so @4 stays refused, saying so.
+  await page.goto(rig.origin + viewOf('@4'));
   await expect(page.locator('#mv-input')).toBeDisabled({ timeout: 20_000 });
-  await expect(page.locator('#mv-readonly')).toContainText("wasn't started with `muster-mirror opencode`");
+  await expect(page.locator('#mv-readonly')).toContainText('title is cut short');
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   await page.goto(rig.origin + viewOf('@2', offHost, 'off'));
@@ -248,3 +303,133 @@ test('a bound pane whose title shows another session warns, and its send still l
   await expect(rowsOf(page, text)).toHaveCount(1, { timeout: 20_000 });
   writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
 });
+
+// ---------------------------------------------------------------------------
+// OPENCODE PARITY (docs/design/opencode-first-class.md): each at a phone's
+// viewport AND a desktop's, set explicitly — the suite's default is the
+// phone's, which alone would hide a desktop-only break.
+//
+// 🔴 REGRESSION TESTS. On origin/main: a hand-opened pane's composer is
+// disabled; an opencode view has no context readout and no failed-turn hold;
+// an opencode question has no card in the view (only the terminal answers it).
+
+const viewports = [
+  { name: 'phone', width: 390, height: 844 },
+  { name: 'desktop', width: 1280, height: 800 },
+];
+
+for (const vp of viewports) {
+  test(`a hand-opened pane verified by its title sends, and the message reaches its own session (${vp.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@3'));
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first(), `the verified notice (mirror log:\n${rig.log})`).toContainText(
+      'matched by title, verified: Title-matched fixture session',
+      { timeout: 20_000 },
+    );
+    await revealBox(page);
+    await expect(page.locator('#mv-input')).toBeEnabled();
+    await expect(page.locator('#mv-readonly')).toHaveCount(0);
+    const text = `hand-opened ${vp.name} ${Date.now()}`;
+    await send(page, text);
+    await expect(rowsOf(page, text), 'the row in the session the pane shows').toHaveCount(1, { timeout: 20_000 });
+    // And in no other session: the launcher-bound one's view never shows it.
+    await page.goto(rig.origin + viewOf('@2'));
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('started by muster-mirror opencode', { timeout: 20_000 });
+    await expect(rowsOf(page, text)).toHaveCount(0);
+  });
+
+  test(`a hand-opened pane whose binding is ambiguous stays refused, saying why (${vp.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@4'));
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('matched by title: A long hand-opened', {
+      timeout: 20_000,
+    });
+    await expect(page.locator('#mv-input')).toBeDisabled();
+    await expect(page.locator('#mv-readonly')).toContainText("title is cut short, so it names only the start of a session's title");
+  });
+
+  test(`an opencode view shows its model, context readout and failed turns (${vp.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@5'));
+    // 46809 of 187500, on fixture-model — worked out from the fake's numbers.
+    const ctx = page.locator('#mv-context');
+    await expect(ctx, `the readout (mirror log:\n${rig.log})`).toHaveText('fixture-model · 47k / 188k context', { timeout: 20_000 });
+    await expect(ctx).toBeVisible();
+    await expect(ctx).toHaveAttribute('title', /input \+ cache read \+ cache write/);
+    // The failed turns: their rows, and the queue holding instead of sending
+    // into the same failure (its circuit breaker, as for Claude Code).
+    await expect(page.locator('#mv-log [data-mirror-error]', { hasText: 'fixture provider overloaded' })).toHaveCount(2);
+    await revealBox(page);
+    const text = `held for opencode ${vp.name} ${Date.now()}`;
+    await page.locator('#mv-input').fill(text);
+    await page.locator('#mv-send-more').click();
+    await page.locator('#mv-queue-send').click();
+    await expect(page.locator('#mv-queue [data-queue-id]', { hasText: text })).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator('#mv-queue-waiting')).toContainText('Held — the last 2 messages each failed at once (api error)', { timeout: 20_000 });
+    await page.waitForTimeout(2_500);
+    await expect(rowsOf(page, text), 'held: not sent').toHaveCount(0);
+  });
+
+  test(`an opencode question is answered from the view, and the fake receives exactly that answer for that session (${vp.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    const form = `frm_0e2eask${vp.name}0001`;
+    const field = (key: string, title: string, description: string, type: string, labels: string[]) => ({
+      key,
+      title,
+      description,
+      type,
+      options: labels.map((l) => ({ value: l, label: l })),
+      custom: true,
+    });
+    const frame = {
+      id: `evt_0e2eask${vp.name}`,
+      type: 'form.created',
+      location: { directory: '/srv/fixture' },
+      data: {
+        form: {
+          id: form,
+          sessionID: askSession,
+          title: 'Questions',
+          metadata: { kind: 'question' },
+          fields: [
+            field('q0', 'Database', 'Which database should the fixture use?', 'string', ['Postgres (Recommended)', 'SQLite']),
+            field('q1', 'Extras', 'Which extras?', 'multiselect', ['cache', 'metrics']),
+          ],
+        },
+      },
+    };
+    op({ op: 'frame', frame: JSON.stringify(frame) });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@6'));
+    const card = page.locator(`[data-ask-live][data-ask-tool="${form}"]`);
+    await expect(card, `the card (mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
+    await expect(card).toContainText('opencode is asking');
+    await expect(card).toContainText('Which database should the fixture use?');
+    await expect(card).toContainText('Which extras?');
+    await card.locator('input[name="a0"][value="SQLite"]').check();
+    await card.locator('input[name="a1"][value="metrics"]').check();
+    const answered = page.waitForResponse((r) => r.url().endsWith('/mirror/view/ask') && r.request().method() === 'POST');
+    await card.locator('[data-ask-submit]').click();
+    const resp = await answered;
+    expect(resp.status(), 'the answer was relayed').toBe(200);
+    expect(await resp.text()).toContain('Answered here — opencode has it.');
+    // The window stops waiting, and its next poll takes the card away.
+    await expect(page.locator(`[data-ask-live][data-ask-tool="${form}"]`)).toHaveCount(0, { timeout: 20_000 });
+    // The fake server's own record of the reply: exactly this form, in exactly
+    // this session, with exactly these values — once.
+    const replies = () => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(ocDir, 'replies.json'), 'utf8')) as { Path: string; Body: string }[];
+      } catch {
+        return [];
+      }
+    };
+    await expect.poll(() => replies().filter((r) => r.Path.includes(form)).length, { timeout: 20_000 }).toBe(1);
+    const mine = replies().filter((r) => r.Path.includes(form));
+    expect(mine[0].Path).toBe(`/api/session/${askSession}/form/${form}/reply`);
+    expect(JSON.parse(mine[0].Body)).toEqual({ answer: { q0: 'SQLite', q1: ['metrics'] } });
+  });
+}

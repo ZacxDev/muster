@@ -16,14 +16,16 @@ import (
 //
 //   - the host ADVERTISED the send (Msg.OpenCodeSend: -interactive,
 //     -opencode-send, a token) — else the runtime's SendOff;
-//   - the window is one its host sends to (Window.AgentSend: launcher-bound)
-//     — else Unbound;
+//   - the window is one its host sends to (Window.AgentSend: launcher-bound,
+//     or Window.AgentBind verified: a hand-opened pane its host bound through
+//     opencode's API) — else Unbound, in the host's reason's words;
 //   - the window is IDLE with a status time — else *OpenCodeNotIdleError (a
 //     queued paste is superseded instead).
 //
-// The paste then carries the runtime, the StatusSince it was decided on and
-// the message id (OpenCodeMessageID), and the host checks every one of these
-// again at the moment it posts.
+// The paste then carries the runtime, the StatusSince it was decided on, the
+// session the window list names (Msg.AgentSession: the only one the host may
+// post to) and the message id (OpenCodeMessageID), and the host checks every
+// one of these again at the moment it posts.
 
 // openCodePasteTimeout is how long a gated send to opencode waits for its
 // host: the host's own post is bounded well inside it (mirrorhost's
@@ -124,16 +126,17 @@ func (hc *hostConn) gatedSendCheck(session, id string) error {
 		if !hc.gatedSends[r.Name] {
 			return r.SendOff()
 		}
-		if !w.AgentSend {
-			return r.Unbound()
+		if !agentSendsTo(w.AgentSend, w.AgentBind) {
+			return unboundErr(r, w.AgentBind)
 		}
 	}
 	return nil
 }
 
-// gatedStatus is the runtime, Status and StatusSince hc lists for (session,
-// window id), and whether that window runs a runtime with a gated send.
-func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, since int64, ok bool) {
+// gatedStatus is the runtime, Status, StatusSince and AgentSession hc lists
+// for (session, window id), and whether that window runs a runtime with a
+// gated send.
+func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, since int64, agentSession string, ok bool) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	for _, w := range hc.windows {
@@ -141,10 +144,23 @@ func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, sin
 			continue
 		}
 		if r, ok := w.Spec(); ok && r.GatedSend {
-			return r.Name, w.Status, w.StatusSince, true
+			return r.Name, w.Status, w.StatusSince, w.AgentSession, true
 		}
 	}
-	return "", "", 0, false
+	return "", "", 0, "", false
+}
+
+// unboundErr is r's Unbound refusal, saying why in bind's words
+// (AgentBindWords) when the host gave a reason.
+func unboundErr(r RuntimeSpec, bind string) error {
+	err := r.Unbound()
+	var pr *PasteRefusedError
+	if errors.As(err, &pr) {
+		cp := *pr
+		cp.Why = AgentBindWords(bind)
+		return &cp
+	}
+	return err
 }
 
 // SendsOn reports whether h's host advertised r's gated send (r.Sends).
@@ -167,8 +183,8 @@ func SendBlocked(h HostView, e SessionView) string {
 	switch {
 	case !h.SendsOn(r):
 		err = r.SendOff()
-	case !e.AgentSend:
-		err = r.Unbound()
+	case !agentSendsTo(e.AgentSend, e.AgentBind):
+		err = unboundErr(r, e.AgentBind)
 	default:
 		return ""
 	}

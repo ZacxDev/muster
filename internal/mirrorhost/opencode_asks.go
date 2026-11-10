@@ -284,8 +284,15 @@ func (a openCodeAsk) pendingOf() *mirror.Pending {
 				p.Summary = mirror.OneLine(p.Summary, mirror.MaxPendingSummary-len([]rune(more))) + more
 			}
 		}
+		// Every question-tool form names its id: muster answers the WHOLE
+		// form from the view (opencode_form.go), and its options ride the
+		// list only when it is one short single-select (offerable), which an
+		// Attention item answers with a button.
+		if a.Kind == opencodehost.AskQuestion {
+			p.PromptID = a.ID
+		}
 		if labels, ok := a.offerable(); ok {
-			p.PromptID, p.Options = a.ID, strings.Join(labels, "\n")
+			p.Options = strings.Join(labels, "\n")
 		}
 		return mirror.CleanPending(p)
 	}
@@ -444,6 +451,22 @@ func (h *hostSide) answerOpenCode(m mirror.Msg) {
 		return
 	}
 	r := m.OpenCodeReply
+	if r != nil && len(r.Picks) > 0 {
+		// A whole form's answer (opencode_form.go): never with a Choice.
+		if r.Choice != "" || !mirror.ValidOpenCodeAskID(r.PromptID) {
+			reply(fmt.Errorf("%w: not an answer muster sends", errOpenCodeGone))
+			return
+		}
+		src, _ := h.openCodeSource()
+		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+		defer cancel()
+		if err := h.waitingOn(ctx, m, r.PromptID); err != nil {
+			reply(err)
+			return
+		}
+		reply(src.answerForm(ctx, r.PromptID, r.Picks))
+		return
+	}
 	if r == nil || !mirror.ValidOpenCodeAskID(r.PromptID) || r.Choice == "" {
 		reply(fmt.Errorf("%w: not an answer muster sends", errOpenCodeGone))
 		return

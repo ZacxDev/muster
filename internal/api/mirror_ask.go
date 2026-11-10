@@ -279,6 +279,11 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var vs []ui.MirrorAskLiveView
+	// An opencode window's ask, read live from its host (mirror_opencode_ask.go).
+	if p, ok := openCodePending(h, e); ok {
+		v, _ := s.openCodeCard(r.Context(), h, e, p)
+		vs = append(vs, v)
+	}
 	if e.ClaudeSession != "" {
 		for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
 			vs = append(vs, questionCard(h, e, x))
@@ -417,6 +422,12 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		refuseStale(w)
+		return
+	}
+	if rt, ok := e.Spec(); ok && rt.PendingNamesAsk {
+		// An opencode window's ask: relayed through its host's API
+		// (mirror_opencode_ask.go), never typed.
+		s.handleOpenCodeAskAnswer(w, r, h, e)
 		return
 	}
 	tool := r.PostFormValue("tool")

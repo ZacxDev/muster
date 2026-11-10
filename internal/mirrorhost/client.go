@@ -419,6 +419,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
 	hello.OpenCodeAnswer = conn.openCodeAnswer()
+	// The same gate: the whole form is sent to a muster that can answer it.
+	hello.OpenCodeForms = conn.openCodeAnswer()
 	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	hello.AgentSpawn = conn.agentSpawnRuntimes()
@@ -536,6 +538,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
 					go traced(m, conn.catalog)
+				}
+			case mirror.TypeOpenCodeForm:
+				if conn.version >= 2 {
+					go traced(m, conn.openCodeForm)
 				}
 			case mirror.TypeSubagentTail:
 				if conn.subagentReport() {
@@ -712,6 +718,9 @@ func (h *hostSide) read() (listing, bool) {
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
 	h.turnEnd.attach(raw)
+	if src, ok := h.openCodeSource(); ok {
+		src.attachTurnErrors(raw) // opencode_turnerror.go
+	}
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
 	if h.version >= 2 {

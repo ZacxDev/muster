@@ -303,7 +303,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.QueuedList {
 			b.Ops = append(b.Ops, drawn.QueuedOps(m.Queued)...)
 		}
-		// After Ops: Ops is what records the usage TakeContext reports.
+		// After Ops: Ops is what records the usage TakeContext reports — and
+		// a runtime's own report (opencode's, beside its events) after it.
+		drawn.SetAgentContext(m.Context)
 		b.Context = drawn.TakeContext()
 		if m.Gen != "" {
 			curGen = m.Gen
