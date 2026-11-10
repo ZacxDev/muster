@@ -13,7 +13,7 @@ import (
 )
 
 // PGStore is Store on chief_turn_usage and plugin_message_handling (migration
-// 0105), under row-level security, reading routing_rules for the rules'
+// 0106), under row-level security, reading routing_rules for the rules'
 // impact. Numbers, tags and ids only: no column holds a prompt, a reply or a
 // message body.
 type PGStore struct{ pool *pgxpool.Pool }

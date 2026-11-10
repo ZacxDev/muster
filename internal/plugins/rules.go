@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/fence"
 )
 
-// ROUTING RULES (migration 0105; docs/plugins.md#routing-rules): a
+// ROUTING RULES (migration 0106; docs/plugins.md#routing-rules): a
 // deterministic match on an inbound message and what muster does with a
 // message it matches — route it to one mirrored session, or settle it with a
 // reason — WITHOUT a chief turn.
@@ -59,7 +59,7 @@ const (
 	RuleDeclined = "declined"
 )
 
-// Rule bounds (the 0105 checks).
+// Rule bounds (the 0106 checks).
 const (
 	MinRulePrefix = 3
 	// MinRuleExternalPrefix bounds an external_id prefix from below: a prefix

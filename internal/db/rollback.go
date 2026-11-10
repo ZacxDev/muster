@@ -231,7 +231,7 @@ const pluginHandoffsMigrationVersion = 104
 // when routing_rules exists (the one migration creates all three). Its body is
 // idempotent. 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at
 // merge.
-const routingRulesMigrationVersion = 105
+const routingRulesMigrationVersion = 106
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

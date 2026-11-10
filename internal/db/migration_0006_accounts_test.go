@@ -119,7 +119,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - notify_preferences (0094, the per-user notification preferences).
 //   - chief_proposals (0100, a session continuing one the owner viewed).
 //   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
-//   - routing_rules, chief_turn_usage, plugin_message_handling (0105, the
+//   - routing_rules, chief_turn_usage, plugin_message_handling (0106, the
 //     chief's routing rules and its token telemetry).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
@@ -249,7 +249,7 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"plugin_handoffs|plugin_handoffs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_handoffs|plugin_handoffs_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
-	// 0105: a rule is its owner's, for one of their plugins; the telemetry
+	// 0106: a rule is its owner's, for one of their plugins; the telemetry
 	// rows name nothing but their owner (a row outlives what it counted).
 	"routing_rules|routing_rules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"routing_rules|routing_rules_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",

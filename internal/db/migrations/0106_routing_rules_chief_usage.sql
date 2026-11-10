@@ -1,4 +1,4 @@
--- muster 0105 — ROUTING RULES AND CHIEF TOKEN TELEMETRY (docs/plugins.md#routing-rules,
+-- muster 0106 — ROUTING RULES AND CHIEF TOKEN TELEMETRY (docs/plugins.md#routing-rules,
 -- docs/usage.md; the stores are internal/plugins/rules.go and
 -- internal/chiefusage, the server internal/api/routing_rules.go and usage.go).
 --
@@ -46,7 +46,7 @@
 --
 -- ROLLBACK (after rolling the image back; an older image never reads them):
 --   DROP TABLE IF EXISTS public.routing_rules, public.chief_turn_usage, public.plugin_message_handling;
---   DELETE FROM schema_migrations WHERE version = 105;
+--   DELETE FROM schema_migrations WHERE version = 106;
 
 SET LOCAL lock_timeout = '3s';
 
