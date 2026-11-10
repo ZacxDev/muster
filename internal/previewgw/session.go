@@ -388,6 +388,7 @@ func (g *Gateway) open(w http.ResponseWriter, r *http.Request, c pageClaim) {
 	} else {
 		var code string
 		if id, code = g.openOffer(r.Context(), c, in.Port); code != "" {
+			g.m.refused(code)
 			st, ok := openStatus[code]
 			if !ok {
 				st = http.StatusInternalServerError
@@ -466,7 +467,7 @@ func (g *Gateway) openOffer(ctx context.Context, c pageClaim, port int) (string,
 		g.mu.Unlock()
 		return id, ""
 	}
-	id, code = g.newPreviewLocked(t, c.Window, c.Session, port, l.Process, "")
+	id, code = g.newPreviewLocked(t, openerPage, c.Window, c.Session, port, l.Process, "")
 	g.mu.Unlock()
 	if code != "" {
 		return "", code

@@ -42,8 +42,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/ZacxDev/muster/internal/preview/tunnel"
 	"github.com/ZacxDev/muster/internal/preview/wire"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 const (
@@ -69,9 +72,13 @@ var (
 
 // proxyTarget is where one admitted request goes, carried in its context.
 type proxyTarget struct {
-	id   string
-	port int
-	t    *Tunnel
+	id    string
+	port  int
+	t     *Tunnel
+	start time.Time // when the request took its slot (muster_preview_response_seconds)
+	// upgraded: the browser's leg of a WebSocket was accepted (a 101 the
+	// response writer never sees: the connection is hijacked).
+	upgraded bool
 }
 
 type targetKey struct{}
@@ -192,7 +199,9 @@ func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
 }
 
 func (g *Gateway) modifyResponse(resp *http.Response) error {
-	g.previewResponseHeaders(resp.Header, targetOf(resp.Request.Context()))
+	tg := targetOf(resp.Request.Context())
+	g.m.responses.WithLabelValues(kindHost).Observe(time.Since(tg.start).Seconds())
+	g.previewResponseHeaders(resp.Header, tg)
 	// The keepalive comment is plain text: inside a compressed body it would
 	// corrupt the stream, so a body with a Content-Encoding other than
 	// identity gets none.
@@ -251,7 +260,11 @@ func upstreamError(ctx context.Context, err error) (int, string) {
 	}
 	var re *tunnel.RefusedError
 	var ne net.Error
+	var tooLarge *http.MaxBytesError
 	switch {
+	case errors.As(err, &tooLarge):
+		// The body passed PREVIEW_MAX_BODY while being streamed to the app.
+		return http.StatusRequestEntityTooLarge, codeBodyTooLarge
 	case errors.Is(err, ErrHostOffline), errors.Is(err, tunnel.ErrClosed), errors.Is(err, tunnel.ErrPeerUnresponsive):
 		return http.StatusServiceUnavailable, codeHostOffline
 	case errors.As(err, &re):
@@ -277,33 +290,118 @@ func (g *Gateway) proxyError(w http.ResponseWriter, r *http.Request, err error) 
 // exp) to preview id. The request runs under a context that ends when the
 // preview closes or the cookie expires, whichever is first, so a long-lived
 // response or WebSocket is cut then — not at a later check.
+//
+// Before anything is dialled: at most MaxConnsPerPreview requests of the
+// preview in flight (useBegin; one more waits up to the dial wait for a slot,
+// then is refused 429), and a declared Content-Length within
+// PREVIEW_MAX_BODY. A body without one (chunked) is counted as it streams to
+// the app — never buffered — and refused 413 when it passes the limit
+// (upstreamError). Each admitted request is a preview.request span and a
+// muster_preview_requests_total count; neither carries its path or query.
 func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id string, exp time.Time) {
-	p, ok := g.useBegin(id)
-	if !ok {
-		g.renderCode(w, http.StatusNotFound, codePreviewClosed)
+	tg := &proxyTarget{id: id}
+	sctx, span := telemetry.Start(r.Context(), "preview.request", attribute.String("muster.preview.kind", kindHost),
+		attribute.String("muster.preview.auth", authOwner))
+	rec := &statusRecorder{ResponseWriter: w}
+	left := false
+	defer func() {
+		if left {
+			// The browser gave up while waiting for a slot: never admitted,
+			// and nothing was written.
+			telemetry.End(span, "client_left")
+			return
+		}
+		st := rec.status
+		if tg.upgraded {
+			st = http.StatusSwitchingProtocols
+		} else if st == 0 {
+			st = http.StatusOK // a handler that wrote nothing: net/http answers 200
+		}
+		g.m.requests.WithLabelValues(kindHost, authOwner, codeClass(st)).Inc()
+		span.SetAttributes(attribute.String("muster.preview.status_class", codeClass(st)))
+		// The reason is the code the gateway itself rendered (renderCode
+		// records it on rec), never read back from the response headers: an
+		// app's trailers land there too, and an app must not be able to mark
+		// its own request's span as a gateway error.
+		reason := ""
+		if rec.code != "" {
+			reason = refusalLabel(rec.code)
+		}
+		telemetry.End(span, reason)
+	}()
+	p, code, left := g.useBegin(r.Context(), id)
+	switch {
+	case left:
+		return
+	case code == "":
+	case code == codeTooManyConns:
+		g.renderCode(rec, http.StatusTooManyRequests, code)
+		return
+	default:
+		g.renderCode(rec, http.StatusNotFound, code)
 		return
 	}
-	defer g.useEnd(id)
+	defer g.useEnd(p)
+	// The response clock starts with the slot taken: a wait for one is not
+	// the app's latency (muster_preview_response_seconds).
+	tg.start = time.Now()
+	ws := isWebSocket(r)
+	if !ws && r.ContentLength > g.maxBody {
+		g.renderCode(rec, http.StatusRequestEntityTooLarge, codeBodyTooLarge)
+		return
+	}
 	g.mu.Lock()
 	t := g.byKey[tunnelKey{p.OwnerID, p.Host}]
 	g.mu.Unlock()
 	if t == nil {
-		g.renderCode(w, http.StatusServiceUnavailable, codeHostOffline)
+		g.renderCode(rec, http.StatusServiceUnavailable, codeHostOffline)
 		return
 	}
-	ctx, cancel := context.WithCancelCause(r.Context())
+	span.SetAttributes(attribute.String("muster.preview.path", string(t.path)))
+	ctx, cancel := context.WithCancelCause(sctx)
 	defer cancel(nil)
 	defer context.AfterFunc(p.ctx, func() { cancel(errPreviewClosed) })()
 	defer g.clock.AfterFunc(exp.Sub(g.clock.Now()), func() { cancel(errSessionExpired) })()
-	tg := &proxyTarget{id: id, port: p.Port, t: t}
+	tg.port, tg.t = p.Port, t
 	r = r.WithContext(context.WithValue(ctx, targetKey{}, tg))
+	if !ws && r.Body != nil && r.Body != http.NoBody {
+		// w, not rec: MaxBytesReader tells net/http's own ResponseWriter to
+		// close the connection after a body that passed the limit.
+		r.Body = http.MaxBytesReader(w, r.Body, g.maxBody)
+	}
 	switch {
-	case isWebSocket(r):
-		g.relayWebSocket(w, r, tg)
+	case ws:
+		g.relayWebSocket(rec, r, tg)
 	case headerHasToken(r.Header, "Connection", "upgrade"):
 		// Only WebSocket upgrades are relayed (and Origin-checked).
-		g.renderCode(w, http.StatusBadRequest, codeBadUpgrade)
+		g.renderCode(rec, http.StatusBadRequest, codeBadUpgrade)
 	default:
-		g.proxy.ServeHTTP(w, r)
+		g.proxy.ServeHTTP(rec, r)
 	}
 }
+
+// statusRecorder notes the status an admitted request was answered with,
+// and the code when the gateway answered it itself.
+// Unwrap hands net/http's flusher and hijacker (http.ResponseController,
+// coder/websocket) the real ResponseWriter.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	code   string // the code of the gateway's own page, when renderCode wrote one
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 && code >= 200 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
