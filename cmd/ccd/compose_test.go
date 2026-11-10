@@ -71,7 +71,31 @@ func fakeComposeChild() int {
 		}
 		fmt.Fprint(w, "event: two\ndata: second\n\n")
 	})
-	ln, err := net.Listen("tcp", os.Getenv("CCD_LISTEN"))
+	// SO_REUSEPORT: the harness holds this port bound (reservedAddr), so the
+	// child must be allowed to share it. Sharing would also let two children
+	// listen at once, which an exclusive bind used to refuse; the lock keeps
+	// that refusal: a second child while the first lives exits 1.
+	if p := os.Getenv("CCD_TEST_CHILD_LOCK"); p != "" {
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake child:", err)
+			return 1
+		}
+		if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			fmt.Fprintln(os.Stderr, "fake child: another child is still running:", err)
+			return 1
+		}
+	}
+	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
+		var serr error
+		if err := c.Control(func(fd uintptr) {
+			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		}); err != nil {
+			return err
+		}
+		return serr
+	}}
+	ln, err := lc.Listen(context.Background(), "tcp", os.Getenv("CCD_LISTEN"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake child:", err)
 		return 1
@@ -107,14 +131,33 @@ type composeHarness struct {
 	cleanupErr func(n int) error
 }
 
-func freeAddr(t *testing.T) string {
+// reservedAddr is a loopback port held for the whole test: a socket bound to
+// it with SO_REUSEPORT and never listening. 🔴 Not a port found free and
+// released: between that release and the child's bind (and again across every
+// restart, while no child holds it) any other process — CI runs the packages
+// at once — could take it, and every start then dies "address already in use"
+// until the wait gives up. A bound socket keeps the port out of everyone
+// else's bind(0) and connect(), while the fake child, binding it with
+// SO_REUSEPORT as the same user, may still listen there. Nothing connects to
+// the reservation: only a listening socket accepts.
+func reservedAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	return ln.Addr().String()
+	t.Cleanup(func() { unix.Close(fd) })
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	sa, err := unix.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(sa.(*unix.SockaddrInet4).Port))
 }
 
 func newComposeHarness(t *testing.T) *composeHarness {
@@ -137,9 +180,10 @@ func newComposeHarness(t *testing.T) *composeHarness {
 		return runAsCLI(context.Background(), nil, []string{"CCD_TEST_AS=ccd"}, "", os.Args[0], "compose-epoch", d, e)
 	}
 	s.argv = []string{os.Args[0]}
-	s.childAddr = freeAddr(t)
+	s.childAddr = reservedAddr(t)
 	s.baseEnv = append(os.Environ(), "CCD_TEST_AS=composechild", "CCD_TEST_ENV_DUMP="+h.envDump,
-		"CCD_TEST_HEALTH_FILE="+h.health, "CCD_TEST_RELEASE="+h.release, envSpecDir+"="+h.dir)
+		"CCD_TEST_HEALTH_FILE="+h.health, "CCD_TEST_RELEASE="+h.release, envSpecDir+"="+h.dir,
+		"CCD_TEST_CHILD_LOCK="+filepath.Join(tmp, "child.lock"))
 	s.poll, s.stopGrace, s.healthTimeout = 30*time.Millisecond, 3*time.Second, time.Second
 	s.backoffMin, s.backoffMax = 50*time.Millisecond, 100*time.Millisecond
 	s.logf = func(f string, a ...any) {
