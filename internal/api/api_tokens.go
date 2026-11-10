@@ -191,7 +191,7 @@ func scopedTokenRefusal(scope, pattern string) string {
 var tokenScopeRoutes = map[string]map[string]bool{
 	apitokens.ScopeSummary:     {"GET " + attentionSummaryPath: true},
 	apitokens.ScopeAgentCreate: {apiAgentCreatePattern: true},
-	// The account-usage scope (migration 0107): the one read a usage reader
+	// The account-usage scope (migration 0109): the one read a usage reader
 	// needs (cc_usage.go). A full token reaches it too.
 	apitokens.ScopeAccountUsage: {"GET " + CCAccountUsagePath: true},
 }

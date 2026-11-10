@@ -26,20 +26,24 @@ type Brand struct {
 	// Name is the display name, "" for none.
 	Name string
 	// ETag names the logo's images, "" for no logo. It is the ?v= on every
-	// link to them, so a new logo is a new URL and no cache shows the old one.
+	// link to them (Versioned), so a new logo is a new URL and no cache shows
+	// the old one: /brand/* is long-cached only at the URL whose v is the
+	// current ETag (internal/api serveBrandImage).
 	ETag string
 }
 
 // HasLogo reports whether a logo is set.
 func (b Brand) HasLogo() bool { return b.ETag != "" }
 
-// versioned is path with the logo's ETag as its ?v=.
-func (b Brand) versioned(path string) string { return path + "?v=" + url.QueryEscape(b.ETag) }
+// Versioned is path with the logo's ETag as its ?v= — the one spelling of a
+// link to a /brand/ image: the pages, the manifest, Web Push and the instance
+// document all use it.
+func (b Brand) Versioned(path string) string { return path + "?v=" + url.QueryEscape(b.ETag) }
 
 // Icon192 is the 192 px icon a page links: the logo's, or muster's own.
 func (b Brand) Icon192() string {
 	if b.HasLogo() {
-		return b.versioned(BrandIcon192Path)
+		return b.Versioned(BrandIcon192Path)
 	}
 	return web.Asset("/static/icons/icon-192.png")
 }
@@ -51,7 +55,7 @@ func brandMark(b Brand) g.Node {
 		return wordmark()
 	}
 	return g.Group{
-		g.If(b.HasLogo(), Img(g.Attr("data-brand-logo", ""), Src(b.versioned(BrandLogoPath)), Alt(""),
+		g.If(b.HasLogo(), Img(g.Attr("data-brand-logo", ""), Src(b.Versioned(BrandLogoPath)), Alt(""),
 			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))),
 		g.If(b.Name != "", Span(g.Attr("data-brand-name", ""), Class("truncate"), g.Text(b.Name))),
 	}

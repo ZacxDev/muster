@@ -128,6 +128,7 @@ GET /plugin/v1/self
 GET /plugin/v1/tasks
 GET /plugins
 GET /readyz
+GET /rules
 GET /send-queue
 GET /sessions/tags
 GET /share
@@ -160,6 +161,7 @@ GET /ui/tasks/review-count
 GET /ui/tasks/{id}/card
 GET /ui/tasks/{id}/edit
 GET /uploads/{id}/file
+GET /usage
 GET /{$}
 PATCH /agent/task/status
 PATCH /api/tasks/{id}
@@ -273,6 +275,9 @@ POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject
 POST /plugins/messages/{id}/retry
 POST /plugins/{id}/revoke
+POST /rules/{id}/delete
+POST /rules/{id}/disable
+POST /rules/{id}/enable
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result

@@ -5,21 +5,21 @@ import (
 	"testing"
 )
 
-// TestMigration0106CCAccountUsage: a database at 0105 has no
-// cc_account_usage; at 0106 it does, empty (nothing backfilled), one row per
+// TestMigration0108CCAccountUsage: a database at 0107 has no
+// cc_account_usage; at 0108 it does, empty (nothing backfilled), one row per
 // (owner, account), and its CHECKs refuse what the poller never writes — an
 // unknown error kind, a fingerprint that is not 12 hex (a whole token, say)
 // and a windows value that is not an object. Re-applying the body (db.RLSOn)
 // is harmless, and the header's ROLLBACK block runs as written.
-func TestMigration0106CCAccountUsage(t *testing.T) {
+func TestMigration0108CCAccountUsage(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0106_cc_account_usage", 105)
+	pool := freshAt(ctx, t, "ms_0108_cc_account_usage", 107)
 	if _, err := pool.Exec(ctx, `SELECT 1 FROM cc_account_usage`); err == nil || !strings.Contains(err.Error(), "cc_account_usage") {
-		t.Fatalf("control: before 0106 cc_account_usage exists: %v", err)
+		t.Fatalf("control: before 0108 cc_account_usage exists: %v", err)
 	}
-	applyThroughFrom(ctx, t, pool, 106)
+	applyThroughFrom(ctx, t, pool, 108)
 	if n := countRows(ctx, t, pool, "cc_account_usage"); n != 0 {
-		t.Fatalf("0106 backfilled %d row(s)", n)
+		t.Fatalf("0108 backfilled %d row(s)", n)
 	}
 	mustExec(ctx, t, pool, `INSERT INTO cc_account_usage (owner_id, account, windows, token_fp)
 		VALUES (1, 'alpha', '{"five_hour": {"utilization": 12, "resets_at": "2026-11-10T20:00:00Z"}}', '0123456789ab')`)
@@ -40,13 +40,13 @@ func TestMigration0106CCAccountUsage(t *testing.T) {
 			t.Errorf("accepted %s", bad)
 		}
 	}
-	if _, err := pool.Exec(ctx, readMigration(t, "0106_cc_account_usage.sql")); err != nil {
-		t.Fatalf("re-applying 0106: %v", err)
+	if _, err := pool.Exec(ctx, readMigration(t, "0108_cc_account_usage.sql")); err != nil {
+		t.Fatalf("re-applying 0108: %v", err)
 	}
 	if n := countRows(ctx, t, pool, "cc_account_usage"); n != 1 {
-		t.Fatalf("re-applying 0106 left %d rows, want the 1 written", n)
+		t.Fatalf("re-applying 0108 left %d rows, want the 1 written", n)
 	}
-	for _, q := range asksRollbackSQL(t, "0106_cc_account_usage.sql") {
+	for _, q := range asksRollbackSQL(t, "0108_cc_account_usage.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}

@@ -68,6 +68,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ccusage"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
@@ -521,7 +522,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Each user's notification preferences (migration 0094): off for
 		// everyone until they turn one on; see internal/api notify_prefs.go.
 		ext.NotifyPrefs = notifypref.NewPG(a.pool)
-		// Each Claude account's latest utilization (migration 0106), read by
+		// Each Claude account's latest utilization (migration 0108), read by
 		// GET /api/cc-accounts/usage and Account → Credentials; written only
 		// by the poller (MUSTER_CC_USAGE_POLL), below.
 		ext.CCUsage = ccusage.NewPG(a.pool)
@@ -709,6 +710,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.sessionRoutingEnabled() && a.pool != nil && ext.Routes == nil {
 		ext.Routes = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		ext.Routing = sessionRouting(cfg)
+	}
+	// The chief's token telemetry (internal/chiefusage; the usage page): with
+	// a database, always — it records numbers and tags only, owner-scoped.
+	if a.pool != nil {
+		ext.ChiefUsage = chiefusage.NewPG(a.pool)
 	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {

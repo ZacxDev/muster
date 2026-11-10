@@ -13,6 +13,12 @@ import (
 // sendNonces.hold).
 const SendAgainField = "again"
 
+// AgentSessionField is the form field naming the agent session a view showed
+// when a message was written on it (a hand-opened opencode pane's): a send, or
+// the queued row it becomes, goes only while the window still shows that
+// session (mirror.ShownSession).
+const AgentSessionField = "agent_session"
+
 // SendAgainView is SendAgainPage's content.
 type SendAgainView struct {
 	// Action is the route the page posts to: the Send, Queue or Send now it
@@ -29,6 +35,8 @@ type SendAgainView struct {
 	Button string
 	// BackHref is where Cancel goes: the view it came from.
 	BackHref string
+	// Brand is the instance's branding, for the page's favicon and touch icon.
+	Brand Brand
 }
 
 // SendAgainPage is a whole document with one form: the browser's own answer
@@ -49,7 +57,7 @@ func SendAgainPage(v SendAgainView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(v.Brand),
 				TitleEl(g.Text("Send it again? · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				faroHead(),

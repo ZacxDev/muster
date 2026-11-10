@@ -277,7 +277,7 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>`
-	writeAuthDocument(w, code, "Sign in", inner)
+	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Sign in", inner)
 }
 
 // problemNode renders a server-authored failure message, or nothing.
@@ -303,7 +303,7 @@ func problemNode(problem string) string {
 // Every such page deletes the mirrored views' snapshots in this browser
 // (ui.SnapPurgeHTML): a sign-out lands here, and so does any sign-in, so one
 // user's cached conversations never outlive their session on a shared device.
-func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
+func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
 <head>
@@ -311,6 +311,7 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 ` + ui.ThemeHeadHTML() + `
+` + ui.DocHeadHTML(brand) + `
 <meta name="robots" content="noindex">
 <title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">

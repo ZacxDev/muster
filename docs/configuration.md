@@ -298,7 +298,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
 | `MUSTER_MIRROR_MCP_LISTEN` | none (off) | no | A loopback address with a numeric port (`127.0.0.1:<port>` or `[::1]:<port>`; not port 0 or a service name, so the endpoint is where the address says) on which to serve this host's Claude Code sessions muster's attention and task tools as an MCP endpoint (`http://<addr>/mcp`); any other address is refused. Optional: if it cannot start, the host logs why and mirrors without it. See [attention.md](attention.md#mirrored-claude-code-sessions). |
 | `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
-| `MUSTER_MIRROR_PREVIEW` | off | no | **Previews** (`-preview`): keep a tunnel to the preview gateway and serve an allowlisted loopback web server started in a mirrored window to its owner through it ([design](design/previews.md#host-configuration-previewsjson)). The endpoints are dialled in order, each given 3 s for the TCP connect, the WebSocket upgrade and the version answer; on a later endpoint the earlier ones are re-tried every 5 minutes; all failing, the list is retried with a jittered backoff (1 s to 60 s). Each upstream connection dials only `127.0.0.1`, then `[::1]`, on the requested port. `previews.json` is re-read every 5 s: a preview on a port that left the list closes. On the default tmux server's daemon only. A missing or invalid allowlist, token or endpoint turns previews off with a logged reason; an unreachable gateway is retried; neither is ever fatal, and mirroring goes on. `muster-mirror -list -previews` prints the listener reports it would send. With `MUSTER_MIRROR_MCP_LISTEN` set, the MCP endpoint also serves the agent's preview tools at `/preview-mcp` ([attention.md](attention.md#the-preview-tools-preview-mcp)). |
+| `MUSTER_MIRROR_PREVIEW` | off | no | **Previews** (`-preview`): keep a tunnel to the preview gateway and serve an allowlisted loopback web server started in a mirrored window to its owner through it ([previews.md](previews.md)). The endpoints are dialled in order, each given 3 s for the TCP connect, the WebSocket upgrade and the version answer; on a later endpoint the earlier ones are re-tried every 5 minutes; all failing, the list is retried with a jittered backoff (1 s to 60 s). Each upstream connection dials only `127.0.0.1`, then `[::1]`, on the requested port. `previews.json` is re-read every 5 s: a preview on a port that left the list closes. On the default tmux server's daemon only. A missing or invalid allowlist, token or endpoint turns previews off with a logged reason; an unreachable gateway is retried; neither is ever fatal, and mirroring goes on. `muster-mirror -list -previews` prints the listener reports it would send. With `MUSTER_MIRROR_MCP_LISTEN` set, the MCP endpoint also serves the agent's preview tools at `/preview-mcp` ([attention.md](attention.md#the-preview-tools-preview-mcp)). |
 | `MUSTER_MIRROR_PREVIEW_URLS` | none | with `MUSTER_MIRROR_PREVIEW` | The preview gateway's host-tunnel endpoints, `ws://` or `wss://`, comma-separated **in dial order**: the overlay-mesh endpoint first, then the public one. At most 4. |
 | `MUSTER_MIRROR_PREVIEW_TOKEN_FILE` | none | with `MUSTER_MIRROR_PREVIEW` | The file holding this host's preview gateway token (`mpt_…`). A symlink or a file group or others can read is refused. |
 | `MUSTER_MIRROR_PREVIEW_FILE` | `$XDG_CONFIG_HOME/muster-mirror/previews.json` | no | The allowlist, `{"ports": ["5173", "8000-8099"], "offer": true, "maxOpen": 8, "maxConns": 64}`: single ports or inclusive ranges within 1024–65535; `offer` turns listener reports on (default) or off; `maxOpen` 1–32 (default 8); `maxConns` 1–64 (default 64). Unknown keys, and keys not spelt exactly (`maxconns`), are refused. The `-mcp-listen` port and the opencode server's port are never exposed, even when listed. Listener reports and the other-user check read `/proc`, so they are Linux only; on macOS they are off and the log says so. |
@@ -306,7 +306,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_WRITE_HOOK_CONFIG` | off | no | Set it on the host's managed `muster-mirror` service only (or pass `-write-hook-config`). It makes the daemon record its URL and token file path for `muster-mirror ask` when it starts. |
 | `MUSTER_MIRROR_HOOK_CONFIG` | `~/.muster/mirror-hook.json` | no | Where `muster-mirror` records its URL, token file path (never the token) and tmux server's socket path for `muster-mirror ask`. A `muster-mirror@<tenant>` unit sets it to `~/.muster/mirror-hook.d/<tenant>.json`; the hook reads every file there plus the default one, and uses the one whose tmux server is the session's ([mirroring.md](mirroring.md)). A daemon given `MUSTER_MIRROR_TMUX_SOCKET`/`MUSTER_MIRROR_TMUX_SOCKET_PATH` or an explicit `MUSTER_MIRROR_HOOK_CONFIG` refuses to overwrite the default record when it names another tmux server (the default daemon itself always rewrites it), and every daemon refuses to write any other record without a token file (`MUSTER_MIRROR_TOKEN_FILE`). Given to the hook itself, it reads that one record only. |
 | `MUSTER_MIRROR_OPENCODE_TOKEN_FILE` | `~/.muster/opencode-token` | no | The opencode pair token, `{url, token}`, mode 0600: written by `muster-mirror opencode-pair`, read and renewed by the daemon. A file others can read, a symlink or a non-loopback url is refused. Missing = opencode windows have no rendered view. See [mirroring.md](mirroring.md#opencodes-token-muster-mirror-opencode-pair). |
-| `MUSTER_MIRROR_OPENCODE_SEND` | off | no | With `MUSTER_MIRROR_INTERACTIVE` and an opencode token: lets muster **send a message to an opencode session** on this host through the opencode server's API (`-opencode-send`), from the Rendered view and the send queue — only to a pane started with `muster-mirror opencode`, only while its session is idle, behind a fresh sign-in. Keys are never typed into opencode. Whatever the agent there may run, a message from muster can ask it to ([opencode](design/opencode.md#as-built-the-api-send)). |
+| `MUSTER_MIRROR_OPENCODE_SEND` | off | no | With `MUSTER_MIRROR_INTERACTIVE` and an opencode token: lets muster **send a message to an opencode session** on this host through the opencode server's API (`-opencode-send`), from the Rendered view and the send queue — only to a pane started with `muster-mirror opencode`, or a hand-opened pane whose title binding the host verifies (a title exactly one session carries, on an open event stream; [mirroring](mirroring.md#hand-opened-opencode-panes)), only while its session is idle, behind a fresh sign-in. Keys are never typed into opencode. Whatever the agent there may run, a message from muster can ask it to ([opencode](design/opencode.md#as-built-the-api-send)). |
 | `MUSTER_MIRROR_OPENCODE_READ_ONLY` | off | no | The daemon reads the opencode token file, and re-reads it every minute, but **never renews** it (`-opencode-read-only`). Every `muster-mirror@<tenant>` unit sets it, so on a machine with several muster servers exactly one daemon (tenant `default`'s) renews the token. |
 | `MUSTER_MIRROR_AGENT_SPAWN` | off | no | With `MUSTER_MIRROR_INTERACTIVE`, on the default tmux server (or a tenant's, with `MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER`): lets your chief **start a Claude Code agent on this host** (`-agent-spawn`), in a fresh git worktree of a repository on `MUSTER_MIRROR_AGENT_SPAWN_REPOS` and a window in tmux session `agents`. It starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ([mirroring](mirroring.md)). |
 | `MUSTER_MIRROR_AGENT_SPAWN_TENANT_SERVER` | none | no | On a `muster-mirror@<tenant>` unit: opt in to `-agent-spawn` on that tenant's tmux server (`-agent-spawn-tenant-server`). It must name the same server as the unit's `MUSTER_MIRROR_TMUX_SOCKET` (a socket name) or `MUSTER_MIRROR_TMUX_SOCKET_PATH` (an absolute path); naming any other server refuses every spawn, and without it a tenant's mirror refuses every spawn. The tenant's tmux server must already run: the host never starts it ([mirroring](mirroring.md#starting-agents-on-a-tenants-tmux-server)). |
@@ -581,121 +581,11 @@ end to end, but does not encrypt it: send nothing secret.
 
 ## muster-preview (the preview gateway)
 
-`muster-preview` is the gateway of [previews](design/previews.md#the-preview-gateway):
-each host running `muster-mirror -preview` opens one tunnel to it. The image
-ships it as `/muster-preview`; nothing runs it yet. It serves the session
-page, the owner's way onto a preview's host, and the preview itself through
-the host's tunnel. What it does:
-
-- **Two listeners.** `PREVIEW_LISTEN` is the public one (the host tunnel on
-  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; the session page on
-  `w.<PREVIEW_DOMAIN>`; each open preview on `p-<id>.<PREVIEW_DOMAIN>`; every
-  other name in the zone answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
-  only). A tunnel's path (`mesh` or `public`) is the listener it arrived on,
-  never anything in the request. `/metrics` and `/healthz` are served on the
-  mesh listener only.
-- **Host tokens.** `muster-preview host-token create [<owner>] <host>` prints
-  an `mpt_` token once; `host-token ls` and `host-token revoke <id>` as for
-  mirror tokens. `<owner>` is an owner's login as muster's
-  `GET /plugin/v1/self` names it for a token in `PLUGIN_TOKENS_FILE`; the
-  token is keyed on that owner's id, and a login two owners answer to, or none,
-  is refused. With exactly one owner, `<owner>` may be left out. A token
-  registers only its own host. Run these where `STATE_DIR` is mounted: the
-  gateway re-reads the file on every tunnel and every 30 s, so a revoked
-  token's tunnel ends within 30 s.
-- **Checks on a tunnel.** An unknown `X-Muster-Preview-Version` is refused
-  `426` with the range spoken. Ten failed token checks a minute from one peer
-  (the mesh listener's `X-Real-IP`, the public listener's `CF-Connecting-IP`,
-  else the TCP peer) get `429` instead of `401`. A valid token is never
-  refused by that limit.
-- **One tunnel per owner and host.** A newer tunnel takes new streams at once;
-  the older closes when its last stream ends, or 60 s later.
-- **Owners.** Every minute (and at start) it calls `GET /plugin/v1/self` for
-  each token in `PLUGIN_TOKENS_FILE`. A `401`, or a `200` whose
-  `capabilities` lacks `viewer`, closes that owner's tunnels and previews once
-  none of the owner's tokens is live, and its new tunnels are refused `403`
-  until one is. An owner is not served before muster has answered for one of
-  its tokens. Any other outcome (muster unreachable, `5xx`, `404` because
-  plugins are off) keeps a token's last verdict for 9 checks in a row; at the
-  10th (about ten minutes) the token is no longer live and its owner closes as
-  above. One later live answer serves the owner again.
-- **Revoked hosts.** A host whose token is revoked loses its previews at the
-  next 30 s check even if it is offline then; a new token for the same host
-  name starts with none.
-- **The session page.** muster's chip opens
-  `w.<PREVIEW_DOMAIN>/__muster/enter?muster_code=…&muster_plugin=…`. The
-  gateway redeems the code with the token in `PLUGIN_TOKENS_FILE` whose
-  `/plugin/v1/self` named that plugin id with `viewer` (no other token is ever
-  used) and renders the page directly. The page lists only the target
-  window's offers and previews, refreshes every 5 s with a 15-minute page token
-  held in its script, and strips the code from the address bar. **`w.` never
-  sets a cookie**; a reload shows "open this from muster". It is framed only by
-  `MUSTER_PUBLIC_URL`'s origin and sends no `Referer`. A host on the public
-  path is labelled "slow path (via Cloudflare)".
-- **The owner cookie.** **Open** gets a 60-second single-use entry code for
-  `p-<id>.<PREVIEW_DOMAIN>/__muster/enter`, which sets `__Host-mp`: signed
-  with `PREVIEW_SIGNING_KEY`, bound to that preview and its owner, for 8 hours,
-  never renewed except by a fresh chip click; `SameSite=Strict` for a new tab,
-  `SameSite=None; Partitioned` in muster's frame. **Open** on an offer probes
-  the port (one `CONNECT` on the host's tunnel: nothing listening is
-  `not_listening`, a port the host refuses is its reason), then creates the
-  preview and tells the host; before that click, a preview's name answers
-  404 and nothing is dialled. **Close** on the page ends a preview at once:
-  its open connections are cut and its cookies stop admitting.
-- **The proxy.** An admitted request is proxied over HTTP/1.1 to the app on
-  the host's loopback port, streaming both ways (server-sent events and other
-  streamed responses are flushed as they arrive). The app sees
-  `Host: localhost:<port>`, the public host in `X-Forwarded-Host` and
-  `X-Forwarded-Proto: https`, and never the gateway's or muster's cookies,
-  `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-*`, `True-Client-IP` or
-  `X-Muster-*`; the viewer's address is not forwarded. Responses lose any
-  cookie `Domain`, the app's `Strict-Transport-Security` and its
-  `Referrer-Policy` (always `no-referrer`), and gain `frame-ancestors` with
-  `MUSTER_PUBLIC_URL`'s origin. WebSockets (HMR) are relayed message by
-  message, with a ping to the browser every 30 s; a quiet event stream gets a
-  `:` comment line after 30 s, only between events. An app's own error is the
-  app's response; the gateway's own (`host_offline`, `not_answering`,
-  `upstream_timeout`, `max_conns`, …) are a page naming the code only.
-- **Same-site defences.** Every preview shares one registrable domain, so a
-  request carrying a preview's cookie must be same-origin, a typed URL, or a
-  `GET` navigation of a document or frame (`Sec-Fetch-*`); anything else from
-  another site or another preview is refused `403 cross_site`. A WebSocket
-  must carry its own preview's `Origin`; without `Sec-Fetch-*`, so must every
-  method but `GET` and `HEAD`. A `Cookie` header over 8 KiB gets a page that
-  expires every cookie it names, host-only and at `Domain=<PREVIEW_DOMAIN>`.
-- **Limits and lifecycle.** At most 4 open previews per window, 16 per owner,
-  and the host's `maxOpen` per host (8 if it sent none), on an agent's
-  `preview_open` and on **Open** alike (`max_open`). A preview has at most 64
-  requests and WebSockets in flight; one more waits for a slot, up to the
-  dial wait (10 s), and is then refused `429 too_many_connections`, before
-  anything is dialled. An admitted request can wait as long again for one of
-  the host's own upstream slots (`maxConns`) and is then refused `429
-  max_conns`, so the worst case before a 429 is about twice the dial wait.
-  A request body is at most `PREVIEW_MAX_BODY`: a larger `Content-Length` is refused `413
-  body_too_large` before anything is dialled, and a body without one is counted
-  as it streams to the app (never buffered) and refused the same way when it
-  passes the limit. A preview closes after `PREVIEW_IDLE` with no request (an
-  open WebSocket or stream counts as one), `PREVIEW_TTL` after it opened,
-  whatever its use, and 10 minutes after its window left the host's window
-  listing (a host that is offline sends no listing, so it neither starts nor
-  stops that clock); its host is told.
-- **No database.** Previews and entry codes are in memory; a restart closes
-  the previews.
-- **Metrics** (on the mesh listener's `/metrics`; every label is a closed
-  vocabulary, never a preview, host, owner, window, path or query):
-  `muster_preview_tunnels{path}`, `muster_previews_open{kind}`,
-  `muster_preview_opens_total{opener}` (`agent`, `page`),
-  `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
-  `window_gone`, `host_revoked`, `owner_not_served`),
-  `muster_preview_refusals_total{reason}` (the gateway's own codes, among them
-  `no_such_preview` for a request to a preview that is not open, `other` for
-  any outside them), `muster_preview_requests_total{kind,auth,code_class}`,
-  `muster_preview_response_seconds{kind}` (from taking its slot to the app's
-  response headers) and `muster_preview_dial_seconds{kind,outcome}`.
-- **Spans** (with an OTLP endpoint set; [tracing](#tracing-muster-server-and-muster-mirror)):
-  `preview.request` (kind, auth, path `mesh`|`public`, status class, the
-  gateway's code when it answered itself), `preview.dial` (outcome) and
-  `preview.ws` (why the relay ended). No path, query, header or body.
+`muster-preview` is the gateway of [previews](previews.md): each host running
+`muster-mirror -preview` opens one tunnel to it. The image ships it as
+`/muster-preview`; nothing runs it yet. What it does, its limits, lifecycle,
+error codes and metrics are in [previews.md](previews.md); its variables are
+below.
 
 | variable | default | required | what it does |
 |---|---|---|---|

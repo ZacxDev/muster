@@ -1,4 +1,4 @@
--- muster 0106 — EACH POOLED CLAUDE ACCOUNT'S LATEST SUBSCRIPTION UTILIZATION
+-- muster 0108 — EACH POOLED CLAUDE ACCOUNT'S LATEST SUBSCRIPTION UTILIZATION
 -- (internal/ccusage).
 --
 --   cc_account_usage   one row per (owner, account) the usage poller has
@@ -25,12 +25,12 @@
 -- accounts' usage. rollback/rls_off.sql turns it off with the rest, and
 -- --rls-on re-applies this file (db.RLSOn), so every statement is idempotent.
 --
--- Must apply after 0105 (the contiguity test refuses a gap).
+-- Must apply after 0107 (the contiguity test refuses a gap).
 --
 -- ROLLBACK (after rolling the image back; an older image never reads the
 -- table):
 --   DROP TABLE IF EXISTS public.cc_account_usage;
---   DELETE FROM schema_migrations WHERE version = 106;
+--   DELETE FROM schema_migrations WHERE version = 108;
 
 SET LOCAL lock_timeout = '3s';
 

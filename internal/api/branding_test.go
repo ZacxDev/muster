@@ -355,8 +355,8 @@ func TestTheHtmxFormIsSentBackToTheAccountPage(t *testing.T) {
 
 // TestTheInstanceDocumentIsPublic: GET /api/instance answers anonymously,
 // cacheable for five minutes: name and logo null on a server with nothing
-// set; after the admin's upload, the name and the three paths with the ETag
-// the images are served under.
+// set; after the admin's upload, the name and the three paths, each versioned
+// by the ETag the images are served under.
 func TestTheInstanceDocumentIsPublic(t *testing.T) {
 	_, h, mem, cookie := brandingServer(t)
 	rec := get(h, InstancePath, nil, false)
@@ -370,7 +370,7 @@ func TestTheInstanceDocumentIsPublic(t *testing.T) {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
 	}
 	etag := mem.b.ETag
-	want := `{"name":"Team Example","logo":{"url":"/brand/logo.png","icon192":"/brand/icon-192.png","icon512":"/brand/icon-512.png","etag":"` + etag + `"}}`
+	want := `{"name":"Team Example","logo":{"url":"/brand/logo.png?v=` + etag + `","icon192":"/brand/icon-192.png?v=` + etag + `","icon512":"/brand/icon-512.png?v=` + etag + `","etag":"` + etag + `"}}`
 	if got := strings.TrimSpace(get(h, InstancePath, nil, false).Body.String()); got != want {
 		t.Fatalf("after the upload:\n%s\nwant\n%s", got, want)
 	}
@@ -383,7 +383,7 @@ func TestTheInstanceDocumentIsPublic(t *testing.T) {
 
 // TestTheBrandImagesCarryTheirOwnHeaders: each /brand/ image is 404 (not
 // cached) until a logo is set; then 200 image/png with nosniff, a CSP of
-// default-src 'none', a day's public cache and the ETag — the stored PNG's
+// default-src 'none', a year's immutable cache at its versioned URL and the ETag — the stored PNG's
 // exact bytes, at its exact size — and a matching If-None-Match (strong,
 // weak, in a list, or *) answers 304 with no body, a stale one 200.
 func TestTheBrandImagesCarryTheirOwnHeaders(t *testing.T) {
@@ -403,7 +403,7 @@ func TestTheBrandImagesCarryTheirOwnHeaders(t *testing.T) {
 		rec := get(h, p+"?v="+b.ETag, nil, false)
 		hd := rec.Header()
 		if rec.Code != http.StatusOK || hd.Get("Content-Type") != "image/png" || hd.Get("X-Content-Type-Options") != "nosniff" ||
-			hd.Get("Content-Security-Policy") != "default-src 'none'" || hd.Get("Cache-Control") != "public, max-age=86400" || hd.Get("ETag") != etag {
+			hd.Get("Content-Security-Policy") != "default-src 'none'" || hd.Get("Cache-Control") != "public, max-age=2592000, immutable" || hd.Get("ETag") != etag {
 			t.Errorf("%s: %d %v", p, rec.Code, hd)
 		}
 		if !bytes.Equal(rec.Body.Bytes(), stored[p]) {
@@ -500,6 +500,36 @@ func TestPagesDrawTheBrandAndFallBack(t *testing.T) {
 		t.Fatalf("clearing the name: %d %s", rec.Code, rec.Body.String())
 	}
 	defaults("after the reset")
+}
+
+// TestTheFaviconAPageLinksIsServed: the favicon a page links is a file the
+// server serves, with no session — muster's own with nothing set, the logo's
+// once one is uploaded. Every document now links one (ui.docHead), so a link
+// to a missing file would be a broken icon on every page of an unbranded
+// server. (An invariant guard: no build ever linked a missing icon.)
+func TestTheFaviconAPageLinksIsServed(t *testing.T) {
+	_, h, _, cookie := brandingServer(t)
+	icon := func(when string) {
+		t.Helper()
+		page := get(h, "/tasks", cookie, true).Body.String()
+		const open = `rel="icon" type="image/png" sizes="192x192" href="`
+		i := strings.Index(page, open)
+		if i < 0 {
+			t.Fatalf("%s: the page links no favicon", when)
+		}
+		href := page[i+len(open):]
+		href = strings.ReplaceAll(href[:strings.IndexByte(href, '"')], "&amp;", "&")
+		rec := get(h, href, nil, false)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" || rec.Body.Len() == 0 {
+			t.Errorf("%s: GET %s without a session: %d %q (%d bytes), want a 200 PNG",
+				when, href, rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len())
+		}
+	}
+	icon("nothing set")
+	if rec := putLogo(t, h, who{cookie: cookie}, "", testLogoPNG(t, 24, 12)); rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	icon("with a logo")
 }
 
 // TestOnlyAnAdminsAccountPageHasTheBrandingSection: the section, its form and

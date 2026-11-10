@@ -498,6 +498,9 @@ says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
 
+When you route or settle a message the way you would every message like it, you may
+also call ` + "`routing_rule_propose`" + ` so later ones skip you; your owner approves it.
+
 Feedback and incoming tasks: route first. Before you file feedback, or decide what
 happens to a task event, look for the live session already on it: the block headed
 "Sessions that may already be on this" when the turn has one, and ` + "`focus_search`" + `
@@ -755,6 +758,9 @@ message replaces your pending one. Some messages cannot be answered — their tu
 says so — and a draft for one is refused.
 
 When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
+
+When you route or settle a message the way you would every message like it, you may
+also call ` + "`mcp__muster__routing_rule_propose`" + ` so later ones skip you; your owner approves it.
 
 Feedback and incoming tasks: route first. Before you file feedback, or decide what
 happens to a task event, look for the live session already on it: the block headed

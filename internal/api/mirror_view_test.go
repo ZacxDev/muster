@@ -121,9 +121,19 @@ func (f *fakeMirror) PasteWindow(ctx context.Context, host, session, window, tex
 		*o.Window = resolved
 	}
 	var sup error
-	if o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {
+	// The hub's own rule for a gated window (mirror.ShownSessionCheck): the
+	// send goes only while the window shows the session it was written for.
+	for _, w := range f.windows {
+		if w.Session == session && w.ID == resolved {
+			if rt, ok := w.Spec(); ok && rt.GatedSend {
+				sup = mirror.ShownSessionCheck(o.Shown, w.AgentSession, w.AgentSend)
+			}
+		}
+	}
+	if sup == nil && o.Expect != nil && f.agentState != nil && (f.agentState.Since != o.Expect.Since || f.agentState.Pasted != o.Expect.Pasted) {
 		sup = &mirror.SupersededError{Pasted: f.agentState.Pasted}
 	}
+	f.shown = append(f.shown, o.Shown)
 	f.mu.Unlock()
 	if sup != nil {
 		return sup

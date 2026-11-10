@@ -218,6 +218,25 @@ type MirrorAskLiveView struct {
 	// card replaces it.
 	Sent        string
 	SentShowing bool
+	// Agent names who asks ("" is Claude): an opencode window's card says
+	// "opencode" (internal/api's opencode cards).
+	Agent string
+	// NoOther: the card offers no answer of one's own (an opencode
+	// permission request: Allow once or Reject only); NoOtherFor the same for
+	// question i alone (an opencode question that takes only its options).
+	NoOther    bool
+	NoOtherFor []bool
+	// ByIndex: each option's value is its place in the question ("0", "1",
+	// …), not its label — an opencode card, answered by index.
+	ByIndex bool
+}
+
+// agent is who asks, as the card names it.
+func (v MirrorAskLiveView) agent() string {
+	if v.Agent == "" {
+		return "Claude"
+	}
+	return v.Agent
 }
 
 // askTerminalLink is the card's link to the window's terminal.
@@ -227,7 +246,7 @@ func askTerminalLink(v MirrorAskLiveView) g.Node {
 
 // MirrorAskLive is one card of the live region.
 func MirrorAskLive(v MirrorAskLiveView) g.Node {
-	label := "Claude is asking"
+	label := v.agent() + " is asking"
 	status := func(cls, text string, link bool) g.Node {
 		return P(g.Attr("role", "status"), Class("text-xs "+cls), g.Text(text), g.If(link, g.Group{g.Text(" "), askTerminalLink(v)}))
 	}
@@ -257,7 +276,7 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 		}
 	case AskStateAnswered:
 		label = "answered here"
-		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — Claude has it.", false)}
+		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — "+v.agent()+" has it.", false)}
 	case AskStateAnsweredTerminal:
 		label = "answered in the terminal"
 		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-muted", "Answered in the terminal.", false)}
@@ -296,7 +315,7 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 		g.Attr("data-ask-row", MirrorAskRowID(v.ToolID)),
 		g.Attr("data-ask-state", v.State),
 		g.Attr("data-ask-sent", sent),
-		g.Attr("aria-label", "Claude is asking"),
+		g.Attr("aria-label", v.agent()+" is asking"),
 		Class(askCardClass),
 		askCardHead(label),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"), body),
@@ -357,8 +376,12 @@ func askForm(v MirrorAskLiveView) g.Node {
 		opts := make([]g.Node, 0, len(q.Options)+1)
 		for j, o := range q.Options {
 			id := base + "-" + idx + "-" + strconv.Itoa(j)
+			value := o.Label
+			if v.ByIndex {
+				value = strconv.Itoa(j)
+			}
 			opts = append(opts, Label(For(id), Class("flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-s2"),
-				Input(Type(kind), ID(id), Name(name), Value(o.Label),
+				Input(Type(kind), ID(id), Name(name), Value(value),
 					Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 				Span(Class("flex min-w-0 flex-col"),
 					Span(Class("break-words text-fg"), g.Text(o.Label)),
@@ -368,7 +391,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 		}
 		// A question the terminal draws with previews has no row for an
 		// answer of one's own (askq.Question.Previews): no "Other" here either.
-		if !q.Previews() {
+		if !q.Previews() && !v.NoOther && !(i < len(v.NoOtherFor) && v.NoOtherFor[i]) {
 			otherID := base + "-" + idx + "-other"
 			opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
 				Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),

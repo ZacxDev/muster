@@ -644,7 +644,7 @@ token.
 With `MUSTER_CC_USAGE_POLL=1`, muster reads each of the admin's pooled Claude
 accounts' **subscription utilization** every `MUSTER_CC_USAGE_POLL_INTERVAL`
 (default 15 minutes, at least 5) and keeps the latest reading per account
-(`cc_account_usage`, migration 0106; numbers only). Members' own accounts are
+(`cc_account_usage`, migration 0108; numbers only). Members' own accounts are
 not read. The code is `internal/ccusage`. Each reading records its `source`.
 
 **`usage_api`: the endpoint Claude Code's `/usage` reads.** Read from the CLI's

@@ -148,6 +148,11 @@ type ClaudePane struct {
 	// API (mirror.Window.AgentSend): an opencode pane its launcher record
 	// binds (SourceLauncher). Never for Claude Code, whose send is a paste.
 	Send bool
+	// Bind is how a TITLE-matched opencode pane's binding came out
+	// (mirror.Window.AgentBind, opencode_bind.go): mirror.AgentBindVerified —
+	// the host sends to it, to a paste naming its session — or why it does
+	// not. "" for every other pane.
+	Bind string
 	// ConfigDir is the Claude Code config dir this pane's CLI writes under
 	// (ClaudeLocator.configDirOf); "" for another runtime's pane. Not on the
 	// wire: what the host reads the CLI's own files from (its shell snapshots).

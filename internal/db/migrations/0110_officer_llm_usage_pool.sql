@@ -1,4 +1,4 @@
--- muster 0108 — THE OFFICER LLM PROXY'S USAGE, PER POOL (internal/llmproxy).
+-- muster 0110 — THE OFFICER LLM PROXY'S USAGE, PER POOL (internal/llmproxy).
 -- docs/officers.md "The LLM proxy".
 --
 --   officer_llm_usage.pool   'routine' or 'judgement': which of the officer's
@@ -19,7 +19,7 @@
 -- Not re-applied by db.RLSOn (re-applying 0075 creates nothing: its table
 -- already exists, so its old UNIQUE is not re-added).
 --
--- Must apply after 0107 (the contiguity test refuses a gap).
+-- Must apply after 0109 (the contiguity test refuses a gap).
 --
 -- 🔴 AN OLDER IMAGE CANNOT BOOK USAGE OVER THIS. Its Book is
 -- `ON CONFLICT (owner_id, officer, instance, day)`, which needs a unique
@@ -37,7 +37,7 @@
 --   ALTER TABLE public.officer_llm_usage ADD CONSTRAINT officer_llm_usage_one_row UNIQUE (owner_id, officer, instance, day);
 --   DROP INDEX IF EXISTS public.officer_llm_usage_officer_pool_day;
 --   ALTER TABLE public.officer_llm_usage DROP COLUMN IF EXISTS pool;
---   DELETE FROM schema_migrations WHERE version = 108;
+--   DELETE FROM schema_migrations WHERE version = 110;
 
 SET LOCAL lock_timeout = '3s';
 

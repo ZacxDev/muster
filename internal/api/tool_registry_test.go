@@ -34,6 +34,9 @@ var (
 		// with no gate, so first in the registry.
 		"ask_owner",
 		"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle",
+		// The chief's routing-rule proposal (routing_rules.go): a card the
+		// owner taps; chief-only.
+		"routing_rule_propose",
 		"fleet_list", "focus_search", "sessions_overview", "session_context", "fleet_report",
 		// The attention queue (attention_tools.go): every agent asks and works the
 		// owner's tasks; the chief alone lists the queue.
@@ -56,7 +59,7 @@ var (
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"ask_owner", "task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search",
+	chiefOnlyLedger = []string{"ask_owner", "task_create_gated", "reply_draft", "plugin_message_settle", "routing_rule_propose", "fleet_list", "focus_search",
 		"sessions_overview", "session_context", "fleet_report", "attention_list", "answer_session_question"}
 )
 

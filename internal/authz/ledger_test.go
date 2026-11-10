@@ -305,6 +305,11 @@ var (
 		// restart left queued) is read and run as its owner, through
 		// authz.ViaJobQueue, after jobs.PGStore.Heads read the head under System.
 		"internal/api.(*Server).jobPrincipal",
+		// The chief's routing-rule proposal (routing_rules.go): the SAME owner,
+		// its door narrowed from a plugin delivery turn's authz.ViaPlugin to
+		// authz.ViaAgent, so the rule store (which refuses every plugin
+		// principal) records the chief's own write. Never a new user id.
+		"internal/api.chiefWriteContext",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{

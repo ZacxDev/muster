@@ -133,6 +133,12 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",
+		// Routing rules (routing_rules.go) and the usage page (usage.go).
+		"GET /rules",
+		"POST /rules/{id}/disable",
+		"POST /rules/{id}/enable",
+		"POST /rules/{id}/delete",
+		"GET /usage",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",

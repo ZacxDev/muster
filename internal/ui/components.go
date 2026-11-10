@@ -250,8 +250,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				Meta(Name("apple-mobile-web-app-status-bar-style"), Content("black-translucent")),
 				Meta(Name("apple-mobile-web-app-title"), Content("muster")),
 				TitleEl(g.Text("muster")),
-				manifestLink(),
-				brandIconLinks(feat.Brand),
+				docHead(feat.Brand),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				// idiomorph: morph-style swaps so live list updates patch the DOM

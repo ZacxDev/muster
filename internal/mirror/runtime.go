@@ -53,6 +53,10 @@ type RuntimeSpec struct {
 	// ViewNeedsSession: a window of it has a rendered view only once its
 	// host names the conversation (Window.AgentSession).
 	ViewNeedsSession bool
+	// TurnErrors: an idle window of it carries how its latest turn ended in
+	// an error (Window.TurnError, turnerror.go) — read from Claude Code's
+	// transcript, or opencode's session messages.
+	TurnErrors bool
 	// Answers reads, from a host's hello, whether it answers this runtime's
 	// asks itself. nil: it answers none.
 	Answers func(hello Msg) bool
@@ -99,12 +103,13 @@ const RuntimeOpenCode = "opencode"
 var runtimes = []RuntimeSpec{
 	{
 		Name: RuntimeClaude, Kind: KindClaudeCode,
-		Caps: Capabilities{View: true, Send: true, Prompts: true},
+		Caps:       Capabilities{View: true, Send: true, Prompts: true},
+		TurnErrors: true,
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
 		Caps:   Capabilities{View: true, Send: true, Prompts: true},
-		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true,
+		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true, TurnErrors: true,
 		// It answers asks (OpenCodeAnswer), and sends through its API
 		// (OpenCodeSend), never keys.
 		Answers:      func(m Msg) bool { return m.OpenCodeAnswer },

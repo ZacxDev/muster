@@ -68,7 +68,7 @@ const (
 	// deliberately, at /account/tokens.
 	ScopeAgentCreate = "agent-create"
 	// ScopeAccountUsage reaches GET /api/cc-accounts/usage and nothing else
-	// (migration 0107): the read-only view of the owner's Claude accounts'
+	// (migration 0109): the read-only view of the owner's Claude accounts'
 	// utilization, for a service that should read that and reach nothing else.
 	ScopeAccountUsage = "account-usage"
 )

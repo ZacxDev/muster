@@ -222,10 +222,14 @@ jobs:
       # -race -cover internal/api took 460-575 s on main's runs and passed 600 s
       # on a runner that was slower across every package (agentprovision 123 s vs
       # 91 s), panicking mid-suite with nothing hung. A real hang still fails here.
+      # ⚠ RAISED TO 30m (PR #572): by then internal/api took 1093 s on main
+      # (run 42870914465) and 1179 s on that branch (run 42866998195), against the
+      # 1200 s cap; two runs of the branch rebased onto main then panicked at
+      # 1200 s mid-suite with nothing hung (running tests: 0-1 s each).
       - name: go test, and assert nothing skipped (one run)
         run: |
           set -o pipefail
-          go test -race -cover -timeout 20m -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
+          go test -race -cover -timeout 30m -json ./... | python3 -u tests/verdict.py --echo summary --require TestEveryRouteIsClassifiedForIsolation --require TestNoRouteLetsOneUserReachAnothersData --require TestAnotherUsersWritesNeverReachYourEventStream
 
       # The e2e aggregate's leg binder (e2e/pick-legs.mjs) is an instrument
       # too: its choice and its refusals, each on a synthetic artifact tree.

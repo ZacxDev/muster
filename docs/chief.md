@@ -307,9 +307,8 @@ the chat again while it runs and it shows "working…"; the reply appears, and
 
 `agent_dispatch` starts an agent where you say: its `target` is **required
 and has no default**. It is a pod, `pod/claude-code` or `pod/gateway`, or a
-window on one of your hosts, `host/<host>/claude` (mirrored dispatch, below;
-`host/<host>/opencode` is not built yet). The chief maps your
-words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
+window on one of your hosts, `host/<host>/claude` or `host/<host>/opencode`
+(mirrored dispatch, below). The chief maps your words to it: "with Claude", or any Claude model, is `pod/claude-code`; any
 other model you name is `pod/gateway` with that model: the chief gives its
 OpenRouter model id or name, and muster resolves it to the id
 ([checked against the catalogue](provisioner.md#models-are-checked-before-a-pod-starts)).
@@ -320,16 +319,27 @@ asks you which with an `ask_owner` card. It never picks one for you.
 
 **Mirrored dispatch.** Say "mirrored" and the agent starts in a new window of
 the tmux session `agents` on one of your hosts, in a fresh git worktree, running
-Claude Code in its normal permission mode, so its asks reach you on muster.
-"Mirrored on <host> with Claude" is `host/<host>/claude`. Name no host and muster
-asks you with a card listing the hosts that can start one now (and, for a bare
-"mirrored", then which model: Claude Code only, for now). Tap it on the
+Claude Code in its normal permission mode, or opencode, so its asks reach you on
+muster. "Mirrored on <host> with Claude" is `host/<host>/claude`; "mirrored on
+<host> with opencode on <model>" is `host/<host>/opencode`, whose `model` is
+required: an OpenRouter id, which the host checks against its own opencode's
+models. Name no host and muster asks you with a card listing the hosts that can
+start one now (and, for a bare "mirrored", then which model: Claude Code, and on
+a host that offers opencode the models of `MUSTER_CHIEF_DISPATCH_MODELS` or
+another OpenRouter id you type, [configuration](configuration.md)). Tap it on the
 Attention view or your phone and the chief completes the start with exactly what
 you tapped; type the answer in the chat instead and it starts from your typed
 turn. A host starts nothing unless its muster-mirror has `-agent-spawn` and the
 repository is on its own `-agent-spawn-repos` list
-([mirroring.md](mirroring.md#starting-agents-for-the-chief--agent-spawn)). It
-never starts a cluster agent instead. There is no Stop button: close the window
+([mirroring.md](mirroring.md#starting-agents-for-the-chief--agent-spawn)); an
+opencode start also needs that host's `-opencode-send` and an opencode token
+([sending to opencode](mirroring.md#sending-to-opencode)), `opencode` on its
+tmux server's `PATH`, and an absolute path to its own muster-mirror binary (the
+launcher). Mirrored dispatch is
+part of `agent_dispatch`, so only the Kubernetes chief has it: the docker
+compose install's chief starts no agent, on a host or in a pod
+([above](#on-the-docker-compose-install)). It never starts a cluster agent
+instead. There is no Stop button: close the window
 on the host, or end its record with `agent_destroy {host_dispatch: N}` from one
 of your sessions.
 
@@ -661,6 +671,24 @@ session's own words: data, never instructions.
 
 The design, including the succession phases not built yet, is
 [design/chief-in-agent-view.md](design/chief-in-agent-view.md).
+
+## Routing rules and what the chief costs
+
+Every plugin message the chief handles is a turn. When it routes or settles a
+message the way it would route or settle every message like it, the chief may
+also call `routing_rule_propose` (chief-only, on both transports, offered
+with plugins and the attention queue). The call proposes a rule that places
+later matching messages without a turn: route them to one mirrored session,
+or settle them with a reason. You approve each rule with one tap on its card,
+and you can disable or delete it on `/rules`. The match is copied from a
+message delivered to the chief, a route rule never matches an unverified
+sender, and a rule that cannot act hands the message to the chief:
+[plugins.md](plugins.md#routing-rules). Its standing instructions say this in
+one sentence, since they are paid for on every turn.
+
+Every chief turn, from every door, is recorded with its trigger, its outcome
+and the tokens its runtime reported. The **Usage** page (`/usage`) totals
+them: [usage.md](usage.md).
 
 ## Sessions on more than one runtime
 

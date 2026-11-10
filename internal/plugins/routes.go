@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -277,15 +278,25 @@ const RouteViaMCP = "mcp"
 // head commit HeadSHA — the review ROUND, which the route row records
 // (Route.PRHeadSHA). String never spells HeadSHA: routed_via names the pull
 // request and session, the round is its own field.
+//
+// RouteViaRule is muster itself too, because the message matched the owner's
+// approved routing rule Rule, which names Session (rules.go).
 type RouteOrigin struct {
 	Via, Host, Session, Thread, PR, HeadSHA string
+	Rule                                    int64
 }
 
+// RouteViaRule is RouteOrigin.Via for a route an approved routing rule made
+// (rules.go; internal/api routing_rules.go).
+const RouteViaRule = "rule"
+
 // ByMuster reports whether muster itself made the route (RouteViaThread,
-// RouteViaPR): the route takes a QUEUED message, handing it to the chief in
-// its own transaction (CreateRouteFrom), and a route that cannot be injected
-// owes the chief its hand-back.
-func (o RouteOrigin) ByMuster() bool { return o.Via == RouteViaThread || o.Via == RouteViaPR }
+// RouteViaPR, RouteViaRule): the route takes a QUEUED message, handing it to
+// the chief in its own transaction (CreateRouteFrom), and a route that cannot
+// be injected owes the chief its hand-back.
+func (o RouteOrigin) ByMuster() bool {
+	return o.Via == RouteViaThread || o.Via == RouteViaPR || o.Via == RouteViaRule
+}
 
 // String is the origin as the audit row's routed_via spells it:
 // "mcp from <host>/<session>", "thread <thread> started by <session>",
@@ -298,6 +309,8 @@ func (o RouteOrigin) String() string {
 		return o.Via + " " + o.Thread + " started by " + o.Session
 	case RouteViaPR:
 		return o.Via + " " + o.PR + " authored by " + o.Session
+	case RouteViaRule:
+		return o.Via + " #" + strconv.FormatInt(o.Rule, 10) + " to " + o.Session
 	}
 	return o.Via
 }
@@ -368,11 +381,12 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 // takes a queued message, handing it to the chief in the same transaction:
 // docs/plugins.md#a-reply-on-a-thread-a-session-started.
 //
-// 🔴 A no_reply MESSAGE IS ROUTED ONE-WAY BY THE CHIEF ONLY (origin zero). Every
-// other origin — the owner's door, a route by thread or pull request — still
-// refuses it (ErrNoReply), as does a TASK EVENT (IsTaskEvent: its task is
-// routed with task_id instead). The route is marked one_way in its row, so its
-// answer can only ever go to the chief.
+// 🔴 A no_reply MESSAGE IS ROUTED ONE-WAY BY THE CHIEF ONLY (origin zero) — and
+// by an approved routing rule (RouteViaRule), which does what the chief's
+// route_to_session would. Every other origin — the owner's door, a route by
+// thread or pull request — still refuses it (ErrNoReply), as does a TASK EVENT
+// (IsTaskEvent: its task is routed with task_id instead). The route is marked
+// one_way in its row, so its answer can only ever go to the chief.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -401,7 +415,7 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound
 		}
-		if m.NoReply && (origin.Via != "" || IsTaskEvent(m)) {
+		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule) || IsTaskEvent(m)) {
 			return ErrNoReply
 		}
 		if inFlight != nil {

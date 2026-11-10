@@ -386,6 +386,77 @@ func TestAppResponsesCannotSpeakForTheGateway(t *testing.T) {
 	}
 }
 
+// 🔴 Nor as a TRAILER: ReverseProxy copies an app's trailers into the
+// response after the body, past the header rules. An app declaring
+// X-Muster-Preview-Error (and Clear-Site-Data, Set-Cookie) in Trailer:, or
+// sending them undeclared (net/http's TrailerPrefix), gets none of them to
+// the browser — not in the declared list, not as a value. Its own trailer
+// (X-App-Trailer, declared and undeclared) is the positive control: it
+// passes, so the browser leg does read trailers.
+func TestAppTrailersCannotSpeakForTheGateway(t *testing.T) {
+	forged := []string{ErrorCodeHeader, "X-Muster-Owner", "Clear-Site-Data", "Set-Cookie"}
+	for _, declared := range []bool{true, false} {
+		e := newGW(t, gwOpts{})
+		var rc recorder
+		_, id, cookie, _ := e.admitted(t, 4373, rc.start(t, func(w http.ResponseWriter, r *http.Request) {
+			names := append([]string{"X-App-Trailer"}, forged...)
+			if declared {
+				w.Header().Set("Trailer", strings.Join(names, ", "))
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "app body")
+			w.(http.Flusher).Flush()
+			for _, k := range names {
+				v := codePreviewClosed
+				if k == "X-App-Trailer" {
+					v = "t17"
+				}
+				if !declared {
+					k = http.TrailerPrefix + k
+				}
+				w.Header().Set(k, v)
+			}
+		}))
+		req, err := http.NewRequest("GET", e.public.URL+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = pHost(id)
+		for k, vs := range own(id, cookie) {
+			req.Header[k] = vs
+		}
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		announced := make([]string, 0, len(resp.Trailer))
+		for k := range resp.Trailer { // the Trailer: line, before the body
+			announced = append(announced, k)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(b) != "app body" {
+			t.Fatalf("declared=%v: HTTP %d %q; want the app's response", declared, resp.StatusCode, b)
+		}
+		if got := resp.Trailer.Get("X-App-Trailer"); got != "t17" {
+			t.Fatalf("declared=%v: the app's own trailer %q; want t17 (the browser leg must carry trailers)", declared, got)
+		}
+		for _, k := range forged {
+			for _, a := range announced {
+				if strings.EqualFold(a, k) {
+					t.Errorf("declared=%v: the app's %s trailer was announced to the browser (Trailer: %v)", declared, k, announced)
+				}
+			}
+			if v := resp.Trailer.Values(k); len(v) != 0 {
+				t.Errorf("declared=%v: the app's %s trailer %q reached the browser", declared, k, v)
+			}
+			if v := resp.Header.Values(k); len(v) != 0 {
+				t.Errorf("declared=%v: the app's %s trailer %q reached the browser as a header", declared, k, v)
+			}
+		}
+	}
+}
+
 // 🔴 A browser leg that stops answering pings is closed, and with it the
 // app's leg: the browser here never reads, so it never answers a ping, and
 // the app sees its connection end. (TestAQuietWebSocketIsPingedOnTheBrowserLeg

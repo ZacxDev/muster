@@ -119,10 +119,13 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - notify_preferences (0094, the per-user notification preferences).
 //   - chief_proposals (0100, a session continuing one the owner viewed).
 //   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
-//   - cc_account_usage (0106, each pooled Claude account's latest utilization).
+//   - routing_rules, chief_turn_usage, plugin_message_handling (0107, the
+//     chief's routing rules and its token telemetry).
+//   - cc_account_usage (0108, each pooled Claude account's latest utilization).
 var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
+	"routing_rules", "chief_turn_usage", "plugin_message_handling"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -198,7 +201,7 @@ var wantForeignKeys = []string{
 	// 0093: a host dispatch is its owner's; its task is unlinked when deleted.
 	"host_dispatches|host_dispatches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
-	// 0106: an account's usage reading is its owner's.
+	// 0108: an account's usage reading is its owner's.
 	"cc_account_usage|cc_account_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0094: one notification-preferences row per user.
 	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
@@ -249,6 +252,12 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
 	"plugin_handoffs|plugin_handoffs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_handoffs|plugin_handoffs_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	// 0107: a rule is its owner's, for one of their plugins; the telemetry
+	// rows name nothing but their owner (a row outlives what it counted).
+	"routing_rules|routing_rules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"routing_rules|routing_rules_plugin_owner_fkey|FOREIGN KEY (plugin_id, owner_id) REFERENCES plugins(id, owner_id) ON DELETE CASCADE",
+	"chief_turn_usage|chief_turn_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_message_handling|plugin_message_handling_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0027: a PLAIN key, its owner checked by plugin_messages_task_is_owners (a
 	// composite onto notes would block 0006's re-run; see the migration).
 	"plugin_messages|plugin_messages_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",

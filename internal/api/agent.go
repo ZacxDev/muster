@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
@@ -396,6 +397,13 @@ func (s *Server) agentTools() []agentTool {
 		// needs nothing more, so muster raises no ask for it. MCP and chief-only
 		// for reply_draft's reasons.
 		tools = append(tools, agentTool{def: pluginMessageSettleToolDef(), mcp: true, chiefOnly: true})
+		// routing_rule_propose (routing_rules.go): the chief proposes a rule
+		// that places later messages like one it was delivered without a turn;
+		// only the owner's tap on its card makes it run. MCP and chief-only for
+		// reply_draft's reasons; needs the attention store (the card).
+		if s.rulesOffered() {
+			tools = append(tools, agentTool{def: routingRuleProposeToolDef(), mcp: true, chiefOnly: true})
+		}
 	}
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
@@ -829,12 +837,25 @@ func (s *Server) turnPrincipal(ctx context.Context, a agents.Agent, via authz.Vi
 // the owner's (the machine message door): with its muster tools when
 // gatewayTurnTools answers ok for it (runTurnWithTools, which owns the toolless
 // fallback for an image without /v1/responses), else the toolless Chat.
-func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, text string, via authz.Via) (string, error) {
+func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, text string, via authz.Via) (reply string, err error) {
+	// 🔴 THE CHIEF'S TOKEN TELEMETRY on this door too (chief_usage.go): a
+	// chief turn started here — the machine message door, the kickoff — is
+	// recorded as chatTurn records every other, tagged with its door.
+	trigger := chiefusage.TriggerMachine
+	if via == authz.ViaKickoff {
+		trigger = chiefusage.TriggerKickoff
+	}
+	ctx = chiefusage.WithTrigger(ctx, chiefusage.Trigger{Kind: trigger})
+	var emit agents.StreamEmit
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a); usage != nil {
+		ctx, emit = ctx2, usage.observe(nil)
+		defer func() { usage.finish(ctx, err) }()
+	}
 	tctx, tt, ok := s.gatewayTurnTools(withTurnSession(ctx, sessionKey), a, via)
 	if !ok {
 		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, nil)
 	}
-	return s.runTurnWithTools(tctx, a, sessionKey, text, tt, nil)
+	return s.runTurnWithTools(tctx, a, sessionKey, text, tt, emit)
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls
@@ -946,6 +967,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolReplyDraft(ctx, a, arguments)
 	case pluginMessageSettleToolName:
 		return s.toolPluginMessageSettle(ctx, a, arguments)
+	case routingRuleProposeTo:
+		if !s.rulesOffered() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolRoutingRulePropose(ctx, a, arguments)
 	case fleetListToolName:
 		return s.toolFleetList(ctx)
 	case focusSearchToolName:

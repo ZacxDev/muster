@@ -985,7 +985,7 @@ func TestATokensScopeIsStoredAndReadBack(t *testing.T) {
 	if _, err := w.pool.Exec(sysCtx(), `UPDATE api_tokens SET scope = 'agent-create-all' WHERE id = $1`, acRec.ID); err == nil {
 		t.Fatal("the database accepted scope 'agent-create-all'; api_tokens_scope_check must refuse it")
 	}
-	// Migration 0107: the account-usage scope is stored and read back.
+	// Migration 0109: the account-usage scope is stored and read back.
 	au, auRec, err := w.s.Create(as(w.a, authz.RoleMember), "usage", 0, ScopeAccountUsage)
 	if err != nil || auRec.Scope != ScopeAccountUsage {
 		t.Fatalf("an account-usage mint: %+v %v", auRec, err)

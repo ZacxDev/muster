@@ -12,7 +12,7 @@ import (
 )
 
 // TestPGStoreRoundTripsAndKeepsOwnersApart runs the store against real
-// Postgres (migration 0106): a row round-trips (windows, nil times, the
+// Postgres (migration 0108): a row round-trips (windows, nil times, the
 // streak), an upsert replaces it, and a member's principal neither reads nor
 // writes the operator's rows.
 func TestPGStoreRoundTripsAndKeepsOwnersApart(t *testing.T) {

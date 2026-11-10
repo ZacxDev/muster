@@ -361,9 +361,9 @@ func TestHTTPFetcherSendsBothCallsAndKeepsTheTokenOut(t *testing.T) {
 }
 
 // TestKindsMatchTheMigration: the error kinds the poller writes are exactly
-// the ones migration 0106's CHECK admits.
+// the ones migration 0108's CHECK admits.
 func TestKindsMatchTheMigration(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "db", "migrations", "0106_cc_account_usage.sql"))
+	b, err := os.ReadFile(filepath.Join("..", "db", "migrations", "0108_cc_account_usage.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,12 +372,12 @@ func TestKindsMatchTheMigration(t *testing.T) {
 		quoted = append(quoted, "'"+k+"'")
 	}
 	if want := "CHECK (error_kind IN (" + strings.Join(quoted, ", ") + "))"; !strings.Contains(string(b), want) {
-		t.Fatalf("migration 0106 does not spell %s", want)
+		t.Fatalf("migration 0108 does not spell %s", want)
 	}
 	for _, want := range []string{"CHECK (source IN ('', '" + SourceUsageAPI + "', '" + SourceRateLimitHeaders + "'))",
 		"CHECK (usage_api IN ('', '" + UsageAPIOK + "', '" + UsageAPIRefused + "'))"} {
 		if !strings.Contains(string(b), want) {
-			t.Fatalf("migration 0106 does not spell %s", want)
+			t.Fatalf("migration 0108 does not spell %s", want)
 		}
 	}
 }

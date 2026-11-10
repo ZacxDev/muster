@@ -5,7 +5,8 @@ draws them in place of its own mark:
 
 - in the page header and the sidebar, on every signed-in page;
 - on the sign-in page;
-- as the favicon and the touch icon;
+- as the favicon and the touch icon, on every page muster serves (the
+  sign-in, invite, reset and claim pages included);
 - as the installed app's icons (the web app manifest);
 - as the icon of every Web Push notification;
 - in [`GET /api/instance`](#the-instance-document), which the apps read to show
@@ -86,7 +87,7 @@ million pixels a progressive CMYK JPEG of a few hundred KB took 560-580 MB.
 | route | who | what it does |
 |---|---|---|
 | `GET /api/instance` | anyone | The [instance document](#the-instance-document). `Cache-Control: public, max-age=300`. |
-| `GET /brand/logo.png`, `/brand/icon-192.png`, `/brand/icon-512.png` | anyone | The images. 404 when no logo is set. |
+| `GET /brand/logo.png`, `/brand/icon-192.png`, `/brand/icon-512.png` | anyone | The images, cached by URL (below). 404 when no logo is set. |
 | `PUT /api/instance/branding` | an admin's browser session | `multipart/form-data`: `logo` (a file, optional) and `name` (optional; empty clears it). At least one must be sent. Answers with the instance document. |
 | `DELETE /api/instance/branding/logo` | an admin's browser session | Removes the logo and keeps the name. Answers with the instance document. |
 
@@ -98,11 +99,31 @@ Each image is served with:
 
 - `Content-Type: image/png` and `X-Content-Type-Options: nosniff`;
 - `Content-Security-Policy: default-src 'none'`;
-- `Cache-Control: public, max-age=86400`;
-- an `ETag`. A request whose `If-None-Match` names it gets 304.
+- an `ETag`. A request whose `If-None-Match` names it gets 304;
+- a `Cache-Control` chosen by the URL:
+  - `?v=<the current etag>`: `public, max-age=2592000, immutable`. That URL
+    names those exact bytes, so it may be cached for 30 days;
+  - no `v`, or a `v` that is not the current etag: `no-cache`. The current
+    image is still served (a stale `v` is not redirected), but a browser or a
+    CDN must revalidate it before reusing it, and the `ETag` answers that with
+    a 304;
+  - a 404 (no logo set): `no-cache`.
 
-muster's own pages link the images with `?v=<etag>`, so a new logo is a new URL
-and no cache shows the old one.
+Every link muster publishes to the images carries `?v=<etag>`: its pages, the
+web app manifest, Web Push notification icons and the
+[instance document](#the-instance-document). A new logo is a new URL, so no
+cache shows the old one.
+
+Resetting or replacing a logo does **not** purge copies already cached under
+its old `?v=` URL: a browser or CDN that fetched it may keep serving that URL
+for up to 30 days. Nothing muster publishes links it any more, but the bytes
+stay reachable by anyone who has the old URL. To withdraw a logo at once,
+also purge `/brand/*` at your CDN.
+
+Without the `no-cache` on an unversioned URL, a CDN in front of muster (most
+cache `.png` by default) keeps serving the previous logo for as long as the
+old lifetime allowed — even after the logo is reset and the origin answers
+404.
 
 ### The instance document
 
@@ -113,9 +134,9 @@ an app that has not signed in yet:
 {
   "name": "Team Example",
   "logo": {
-    "url": "/brand/logo.png",
-    "icon192": "/brand/icon-192.png",
-    "icon512": "/brand/icon-512.png",
+    "url": "/brand/logo.png?v=3f2a9c1d0b7e4a65",
+    "icon192": "/brand/icon-192.png?v=3f2a9c1d0b7e4a65",
+    "icon512": "/brand/icon-512.png?v=3f2a9c1d0b7e4a65",
     "etag": "3f2a9c1d0b7e4a65"
   }
 }
@@ -123,9 +144,14 @@ an app that has not signed in yet:
 
 - `name` is `null` when no name is set.
 - `logo` is `null` when no logo is set.
-- The paths are on the same server. `etag` is the first 16 hex digits of a
-  sha256 over the three images, and it changes whenever any of them does. A
-  client that caches the images should compare it.
+- The paths are on the same server, and each carries `?v=<etag>` exactly as
+  muster's pages link it. Fetch them as given, query string included: that is
+  the URL a cache may keep, and it always answers with the images `etag`
+  names. A path with the query dropped still answers with the current image,
+  but `no-cache`.
+- `etag` is the first 16 hex digits of a sha256 over the three images, and it
+  changes whenever any of them does. A client that caches the images should
+  compare it.
 
 These field names are a contract with the Android app's server switcher.
 

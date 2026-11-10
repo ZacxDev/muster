@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -136,6 +137,9 @@ func newRouteFixtureWith(t *testing.T, extra ...func(ext *Extensions)) *routeFix
 		ext.APITokens = apitokens.NewPG(pool)
 		g.notes = notes.NewPG(pool)
 		ext.Notes = g.notes
+		// The chief's telemetry (chief_usage.go): who handled each message
+		// (handledBy reads it back).
+		ext.ChiefUsage = chiefusage.NewPG(pool)
 		for _, e := range extra {
 			e(ext)
 		}

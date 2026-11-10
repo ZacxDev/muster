@@ -110,6 +110,12 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		default:
 			v.Agent = rt.Kind
 		}
+		// The session the view shows rides every message written on it
+		// (ui.AgentSessionField): a gated send goes only while the window
+		// still shows it.
+		if rt.GatedSend {
+			v.AgentSession = e.AgentSession
+		}
 	}
 	// The rename offer, when the conversation has moved on from its name.
 	v.Drift = s.mirrorDrift(r, e, v.SessionName)
@@ -303,7 +309,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		if m.QueuedList {
 			b.Ops = append(b.Ops, drawn.QueuedOps(m.Queued)...)
 		}
-		// After Ops: Ops is what records the usage TakeContext reports.
+		// After Ops: Ops is what records the usage TakeContext reports — and
+		// a runtime's own report (opencode's, beside its events) after it.
+		drawn.SetAgentContext(m.Context)
 		b.Context = drawn.TakeContext()
 		if m.Gen != "" {
 			curGen = m.Gen
@@ -439,6 +447,11 @@ type mirrorPending struct {
 	// again: the person's explicit "Send again" (form field again=1) of a
 	// message that may have landed (sendNonces.hold).
 	again bool
+	// agentSession is the agent session the page's view showed when the
+	// message was written (form field agent_session, ui.AgentSessionField):
+	// a gated send goes only while the window still shows it
+	// (mirror.ShownSession). "" for none (an older page, a Claude window).
+	agentSession string
 }
 
 // refuse answers a send that is not delivered: to the composer's script the
@@ -454,7 +467,7 @@ func (s *Server) mirrorRefuse(w http.ResponseWriter, r *http.Request, p mirrorPe
 
 // mirrorStepUpPage answers a browser-submitted send whose sign-in is stale: the
 // plain confirm page, carrying the send in hidden fields.
-func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, problem string) {
+func (s *Server) mirrorStepUpPage(ctx context.Context, w http.ResponseWriter, p mirrorPending, problem string) {
 	fields := append([]ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}}, mirrorSendFields(p, p.nonce)...)
 	if p.again {
 		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
@@ -462,7 +475,7 @@ func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, proble
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
-		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
+		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
 		s.logger.Printf("mirror: render confirm page: %v", err)
 	}
 }
@@ -473,7 +486,20 @@ func mirrorSendFields(p mirrorPending, nonce string) []ui.ComposerField {
 	if p.window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
 	}
-	return append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+	if p.agentSession != "" {
+		fields = append(fields, ui.ComposerField{Name: ui.AgentSessionField, Value: p.agentSession})
+	}
+	return fields
+}
+
+// shownSessionField is the request's agent_session field (ui.AgentSessionField)
+// when it is a session id the wire carries, else "".
+func shownSessionField(r *http.Request) string {
+	if v := r.PostFormValue(ui.AgentSessionField); mirror.ValidAgentSession(v) {
+		return v
+	}
+	return ""
 }
 
 // mirrorSendPath is the send route of a target's composer.
@@ -505,7 +531,8 @@ func (s *Server) mirrorSendForm(w http.ResponseWriter, r *http.Request, target m
 		return h, p, false
 	}
 	return h, mirrorPending{e: e, window: window, text: r.PostFormValue("text"), nonce: r.PostFormValue("nonce"),
-		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1"}, true
+		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1",
+		agentSession: shownSessionField(r)}, true
 }
 
 // mirrorSend is BOTH send routes: paste the text into a pane of the window and
@@ -531,7 +558,7 @@ func (s *Server) mirrorSend(w http.ResponseWriter, r *http.Request, target mirro
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if p.nav {
-			s.mirrorStepUpPage(w, p, "")
+			s.mirrorStepUpPage(r.Context(), w, p, "")
 			return
 		}
 		refuseStale(w)
@@ -587,7 +614,7 @@ func (s *Server) handleMirrorConfirmSend(w http.ResponseWriter, r *http.Request)
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.mirrorStepUpPage(w, p, o.Error)
+		s.mirrorStepUpPage(r.Context(), w, p, o.Error)
 		return
 	}
 	s.mirrorDeliver(stepup.WithAuthTime(r.Context(), o.At), w, r, p)
@@ -644,14 +671,14 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			// The plugin's own check of the same gate (it does not rely on the
 			// one above): the same answer.
 			if p.nav {
-				s.mirrorStepUpPage(w, p, "")
+				s.mirrorStepUpPage(r.Context(), w, p, "")
 				return
 			}
 			refuseStale(w)
 			return
 		}
 		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
-			s.heldRefusal(w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
+			s.heldRefusal(r.Context(), w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
@@ -765,7 +792,8 @@ func (s *Server) messageKey(ctx context.Context, host, session, window string, t
 // refused because the same message may already have been delivered: 409 and
 // a page whose one form is the "Send again" the composer's script would have
 // drawn (ui.SendAgainPage). no-store: it carries the message.
-func (s *Server) sendAgainPage(w http.ResponseWriter, v ui.SendAgainView) {
+func (s *Server) sendAgainPage(ctx context.Context, w http.ResponseWriter, v ui.SendAgainView) {
+	v.Brand = s.uiBrand(ctx)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusConflict)
@@ -777,9 +805,9 @@ func (s *Server) sendAgainPage(w http.ResponseWriter, v ui.SendAgainView) {
 // heldRefusal answers a send refused by the hold (isHeldFor): to the script
 // 409, the reason and SendAgainHeader (it offers Send again); to a form the
 // browser submitted, sendAgainPage posting the same to action with fields.
-func (s *Server) heldRefusal(w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
+func (s *Server) heldRefusal(ctx context.Context, w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
 	if nav {
-		s.sendAgainPage(w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
+		s.sendAgainPage(ctx, w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
 		return
 	}
 	w.Header().Set(SendAgainHeader, "1")
@@ -796,7 +824,7 @@ func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bo
 		return false, errUnconfirmedRepeat
 	}
 	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce, p.again)
-	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key))
+	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key), mirror.ShownSession(p.agentSession))
 	if !repeat {
 		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, key, err)
 	}

@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGStore is Store on officer_llm_usage (migrations 0075, and 0108 for its
+// PGStore is Store on officer_llm_usage (migrations 0075, and 0110 for its
 // per-pool key), under row-level
 // security: ctx must act as the officer's owner (the request's principal is
 // the calling instance's owner, which is its officer's), and the row lands

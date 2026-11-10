@@ -97,7 +97,8 @@
     "tests/chief-succession.spec.ts": 40.0,
     "tests/chief-end-session.spec.ts": 30.0,
     "tests/plugin-chip.spec.ts": 20.0,
-    "tests/previews.spec.ts": 30.0
+    "tests/previews.spec.ts": 30.0,
+    "tests/routing-rules.spec.ts": 30.0
   },
   "legs": {
     "1": [
@@ -151,7 +152,8 @@
       "tests/mcp-dispatch.spec.ts",
       "tests/agent-chat-markdown.spec.ts",
       "tests/plugin-chip.spec.ts",
-      "tests/previews.spec.ts"
+      "tests/previews.spec.ts",
+      "tests/routing-rules.spec.ts"
     ],
     "2": [
       "tests/chief-succession.spec.ts",

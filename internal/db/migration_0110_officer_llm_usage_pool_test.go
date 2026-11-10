@@ -5,18 +5,18 @@ import (
 	"testing"
 )
 
-// TestMigration0108KeysOfficerLLMUsageByPool: a database at 0107 holding a
-// routine usage row arrives at 0108 with that row read as 'routine'; from then
+// TestMigration0110KeysOfficerLLMUsageByPool: a database at 0109 holding a
+// routine usage row arrives at 0110 with that row read as 'routine'; from then
 // on the judgement pool's instance 1 and the routine pool's r1 each hold a row
 // for one officer and day, a second row for the same (pool, instance, day) is
 // still refused, and an unknown pool is refused. The header's rollback runs as
 // written and restores the old key.
-func TestMigration0108KeysOfficerLLMUsageByPool(t *testing.T) {
+func TestMigration0110KeysOfficerLLMUsageByPool(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0108_llm_pool", 107)
+	pool := freshAt(ctx, t, "ms_0110_llm_pool", 109)
 	mustExec(ctx, t, pool, `INSERT INTO officer_llm_usage (owner_id, officer, instance, day, requests, cost_usd)
 		VALUES (1, 'triage:example-web', 1, '2026-01-02', 3, 0.25)`)
-	applyThroughFrom(ctx, t, pool, 108)
+	applyThroughFrom(ctx, t, pool, 110)
 
 	var p string
 	if err := pool.QueryRow(ctx, `SELECT pool FROM officer_llm_usage WHERE officer = 'triage:example-web'`).Scan(&p); err != nil || p != "routine" {
@@ -44,7 +44,7 @@ func TestMigration0108KeysOfficerLLMUsageByPool(t *testing.T) {
 		t.Fatalf("judgement spend = %v (%v), want 1.0", usd, err)
 	}
 
-	for _, q := range asksRollbackSQL(t, "0108_officer_llm_usage_pool.sql") {
+	for _, q := range asksRollbackSQL(t, "0110_officer_llm_usage_pool.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}

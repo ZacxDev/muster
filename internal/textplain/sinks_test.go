@@ -157,7 +157,7 @@ var apiExempt = map[string]exemption{
 	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
 	"push_routes.go Server.pushPreferencesForm e.Label":              {1, whyStatic},
 	"features.go featureRow f.Description":                           {1, "a feature's fixed catalog description (cmd/muster-server features.go), never author text"},
-	"cc_usage.go Server.writeCCUsageSection a.Source":                {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0106), escaped; never author text"},
+	"cc_usage.go Server.writeCCUsageSection a.Source":                {2, "a usage reading's source, one of two fixed words (ccusage.Source*, CHECKed by migration 0108), escaped; never author text"},
 }
 
 // pushEmitters are the only functions that may hand a notification to a push

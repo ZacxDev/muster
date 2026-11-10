@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGStore is Store on cc_account_usage (migration 0106), plus the attribution
+// PGStore is Store on cc_account_usage (migration 0108), plus the attribution
 // reads over agents and jobs. Every query names the owner: the tables are under
 // row-level security, which scopes a user principal on its own, and the owner
 // predicate keeps a scope-all caller from merging two owners' accounts of one
