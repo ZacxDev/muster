@@ -99,8 +99,9 @@ func openCodeTokenNotice(health string) cctranscript.Event {
 }
 
 // openCodeMatchedNotice is the first line of every opencode view: how the
-// session was found, which the person must be able to see.
-func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
+// session was found, which the person must be able to see — and, on a host
+// that sends to opencode (sends), that a verified title match is sent to.
+func openCodeMatchedNotice(p AgentPane, sends bool) cctranscript.Event {
 	if p.Source == SourceLauncher {
 		// Bound by its launcher record (opencode_launch.go): muster sends to it.
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
@@ -111,7 +112,7 @@ func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
 	if p.OpenCode != nil {
 		title = p.OpenCode.Match.Title
 	}
-	if p.Bind == mirror.AgentBindVerified {
+	if p.Bind == mirror.AgentBindVerified && sends {
 		// A hand-opened pane whose title match was verified (opencode_bind.go).
 		return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode,
 			Text: cctranscript.Cap("matched by title, verified: "+title, cctranscript.MaxTarget*4),
@@ -202,7 +203,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		if health := src.tokenHealth(); health != "" {
 			lines = append(lines, line([]cctranscript.Event{openCodeTokenNotice(health)}))
 		}
-		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p)}))
+		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p, h.openCodeSend())}))
 		var refs []cctranscript.PromptRef
 		for _, msg := range msgs {
 			ks := opencodehost.Render(msg)

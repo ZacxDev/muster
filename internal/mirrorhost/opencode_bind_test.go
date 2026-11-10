@@ -285,3 +285,15 @@ func TestAnUnverifiedHandOpenedPaneIsRefusedInItsOwnWords(t *testing.T) {
 		t.Fatalf("admitted %+v", p)
 	}
 }
+
+// TestAVerifiedPanesViewSaysItIsSentTo: on a host that sends to opencode, the
+// view's first row says the title match was verified and is sent to.
+func TestAVerifiedPanesViewSaysItIsSentTo(t *testing.T) {
+	d, _, _ := handHost(t)
+	d.send(t, mirror.Msg{Type: mirror.TypeWatch, ID: 4, Session: "o", Window: "@7"})
+	waitUntil(t, "the backfill", func() bool { evs, _, _ := watchEvents(d, 4); return len(evs) >= 1 })
+	evs, _, _ := watchEvents(d, 4)
+	if !strings.HasPrefix(evs[0].Text, "matched by title, verified: Alpha fixture") || !strings.Contains(evs[0].Output, "only while the pane still shows this session") {
+		t.Fatalf("the first row: %+v", evs[0])
+	}
+}

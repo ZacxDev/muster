@@ -64,8 +64,9 @@ test.beforeAll(async ({ browser }) => {
   op({ op: 'session', id: askSession, title: 'Asking fixture session' });
   // @5: a completed step's usage on fixture-model (input 3517 + cache read
   // 41203 + cache write 2089 = 46809 in context; output 611 is not), whose
-  // window GET /api/model says is 187500 — then two turns that each failed at
-  // once with no reply.
+  // window GET /api/model says is 187500. Its failed turns are added by the
+  // test that reads them (the queue's breaker holds for a minute from when
+  // muster first sees the window's status).
   op({ op: 'models', models: [{ provider: 'fixture-provider', id: 'fixture-model', context: 187500 }] });
   op({ op: 'message', session: ctxSession, message: { id: 'msg_0e2ectx01', type: 'user', text: 'measure the fixture', time: { created: 1700000000001 } } });
   op({
@@ -82,23 +83,6 @@ test.beforeAll(async ({ browser }) => {
       content: [{ type: 'text', text: 'Measured.' }],
     },
   });
-  for (const [n, at] of [
-    [3, 1700000100000],
-    [5, 1700000200000],
-  ]) {
-    op({ op: 'message', session: ctxSession, message: { id: `msg_0e2ectx0${n}`, type: 'user', text: `try ${n}`, time: { created: at } } });
-    op({
-      op: 'message',
-      session: ctxSession,
-      message: {
-        id: `msg_0e2ectx0${n + 1}`,
-        type: 'idle',
-        outcome: 'failed',
-        error: { name: 'APIError', data: { message: 'fixture provider overloaded' } },
-        time: { created: at + 1234 },
-      },
-    });
-  }
   // No status op: a session that has never run is idle WITH a status time
   // (mirrorhost's OpenCodeSource), so it takes a send before its first turn.
   op({ op: 'bind', session: 'oc', window: '@2', id: bound });
@@ -352,6 +336,29 @@ for (const vp of viewports) {
 
   test(`an opencode view shows its model, context readout and failed turns (${vp.name})`, async ({ page }) => {
     await page.setViewportSize({ width: vp.width, height: vp.height });
+    // Two turns that each failed at once with no reply (2345 ms and 1234 ms
+    // after their prompts), then a fresh idle — so the breaker's minute
+    // starts now.
+    const base = vp.name === 'phone' ? 1700000100000 : 1700000300000;
+    for (const [i, at, after] of [
+      [1, base, 2345],
+      [2, base + 50000, 1234],
+    ]) {
+      op({ op: 'message', session: ctxSession, message: { id: `msg_0e2ef${vp.name}u${i}`, type: 'user', text: `try ${i}`, time: { created: at } } });
+      op({
+        op: 'message',
+        session: ctxSession,
+        message: {
+          id: `msg_0e2ef${vp.name}i${i}`,
+          type: 'idle',
+          outcome: 'failed',
+          error: { name: 'APIError', data: { message: 'fixture provider overloaded' } },
+          time: { created: at + after },
+        },
+      });
+    }
+    op({ op: 'status', session: ctxSession, status: 'busy' });
+    op({ op: 'status', session: ctxSession, status: 'idle' });
     await rig.login(page);
     await page.goto(rig.origin + viewOf('@5'));
     // 46809 of 187500, on fixture-model — worked out from the fake's numbers.
@@ -361,14 +368,16 @@ for (const vp of viewports) {
     await expect(ctx).toHaveAttribute('title', /input \+ cache read \+ cache write/);
     // The failed turns: their rows, and the queue holding instead of sending
     // into the same failure (its circuit breaker, as for Claude Code).
-    await expect(page.locator('#mv-log [data-mirror-error]', { hasText: 'fixture provider overloaded' })).toHaveCount(2);
+    const errors = page.locator('#mv-log [data-mirror-error]', { hasText: 'fixture provider overloaded' });
+    await expect(errors.first()).toBeVisible({ timeout: 20_000 });
+    expect(await errors.count()).toBeGreaterThanOrEqual(2);
     await revealBox(page);
     const text = `held for opencode ${vp.name} ${Date.now()}`;
     await page.locator('#mv-input').fill(text);
     await page.locator('#mv-send-more').click();
     await page.locator('#mv-queue-send').click();
     await expect(page.locator('#mv-queue [data-queue-id]', { hasText: text })).toHaveCount(1, { timeout: 10_000 });
-    await expect(page.locator('#mv-queue-waiting')).toContainText('Held — the last 2 messages each failed at once (api error)', { timeout: 20_000 });
+    await expect(page.locator('#mv-queue-waiting')).toContainText(/Held — the last \d+ messages each failed at once \(api error\)/, { timeout: 20_000 });
     await page.waitForTimeout(2_500);
     await expect(rowsOf(page, text), 'held: not sent').toHaveCount(0);
   });
