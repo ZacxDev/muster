@@ -509,7 +509,7 @@ func TestThePreviewToolsAreMountedOnlyWhenPreviewsAreOn(t *testing.T) {
 		t.Fatalf("a per-tenant daemon: mounted %d time(s)", n)
 	}
 
-	if previewMCPMount(nil, log.New(&bytes.Buffer{}, "", 0)) != nil {
+	if previewMCPMount(nil, nil, nil, log.New(&bytes.Buffer{}, "", 0)) != nil {
 		t.Fatal("a mount with no MCP endpoint")
 	}
 	proxy := &mirrorhost.MCPProxy{Secret: strings.Repeat("s", 40)}
@@ -523,13 +523,42 @@ func TestThePreviewToolsAreMountedOnlyWhenPreviewsAreOn(t *testing.T) {
 	if w := list(); w.Code != http.StatusNotFound {
 		t.Fatalf("before the mount: %d", w.Code)
 	}
-	var lg bytes.Buffer
-	previewMCPMount(proxy, log.New(&lg, "", 0))(previewhost.NewHost(previewhost.HostConfig{Logger: log.New(&bytes.Buffer{}, "", 0)}))
+	lg := &lockedBuf{}
+	settled := make(chan struct{})
+	var up atomic.Bool
+	previewMCPMount(proxy, settled, &up, log.New(lg, "", 0))(previewhost.NewHost(previewhost.HostConfig{Logger: log.New(&bytes.Buffer{}, "", 0)}))
 	w := list()
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"preview_open"`) || !strings.Contains(w.Body.String(), `"preview_close"`) {
 		t.Fatalf("after the mount: %d %s", w.Code, w.Body)
 	}
-	if !strings.Contains(lg.String(), "preview tools are served at /preview-mcp") {
-		t.Fatalf("mount log %q", lg.String())
+	// Nothing is claimed before the endpoint settles; then the truth.
+	time.Sleep(50 * time.Millisecond)
+	if lg.String() != "" {
+		t.Fatalf("logged before the MCP endpoint settled: %q", lg.String())
+	}
+	up.Store(true)
+	close(settled)
+	waitLog(t, lg, "preview tools are served at /preview-mcp")
+
+	// The endpoint failed to start: the log says the tools are NOT served.
+	lg2 := &lockedBuf{}
+	failed := make(chan struct{})
+	close(failed)
+	previewMCPMount(&mirrorhost.MCPProxy{}, failed, new(atomic.Bool), log.New(lg2, "", 0))(previewhost.NewHost(previewhost.HostConfig{Logger: log.New(&bytes.Buffer{}, "", 0)}))
+	waitLog(t, lg2, "preview tools are NOT served: the MCP endpoint is off")
+	if strings.Contains(lg2.String(), "served at") {
+		t.Fatalf("claimed served with the endpoint off: %q", lg2.String())
+	}
+}
+
+// waitLog waits up to 5 s for lg to hold want.
+func waitLog(t *testing.T, lg *lockedBuf, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(lg.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("log %q lacks %q", lg.String(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -48,11 +48,11 @@ const (
 		"optionally a label (at most 60 bytes) and the path to open (starting with /, at most 512 bytes). " +
 		"The preview belongs to your tmux window; your owner finds it in muster on this session's page — no URL is returned. " +
 		"Opening the same port again returns the same id. " +
-		"Errors: previews_off, invalid_arguments, no_window, port_not_allowed, not_listening, not_answering (it listens but gave no HTTP answer within 5 s: retry once it is up), foreign_listener, gateway_not_connected, gateway_timeout, max_open."
+		"Errors: previews_off, invalid_arguments, no_window, port_not_allowed, not_listening, not_answering (it listens but gave no HTTP answer within 5 s: retry once it is up), foreign_listener, gateway_not_connected, gateway_timeout, max_open, gateway_error (another refusal by the gateway), cancelled (your call ended first)."
 	toolListDescription = "List the previews open for your tmux window: the ones you opened with preview_open and the ones your owner opened from an offer. " +
 		"Errors: previews_off, invalid_arguments, no_window."
 	toolCloseDescription = "Close one of your tmux window's previews by its id (from preview_open or preview_list). " +
-		"Errors: not_found (no such preview, or another window's), previews_off, invalid_arguments, no_window, gateway_not_connected, gateway_timeout."
+		"Errors: not_found (no such preview, or another window's), previews_off, invalid_arguments, no_window, gateway_not_connected, gateway_timeout, gateway_error, cancelled."
 )
 
 // Tool error codes beyond the host's refusals (CodePortNotAllowed, …) and
@@ -60,6 +60,8 @@ const (
 const (
 	CodePreviewsOff = "previews_off"
 	CodeNotFound    = "not_found"
+	// CodeMaxOpen: the gateway's (or this host's) open limit.
+	CodeMaxOpen = "max_open"
 	// CodeNotAnswering: this user listens on the port and the loopback dial
 	// connected, but no HTTP answer came within ProbeWait (a server still
 	// starting, or not HTTP). Not CodeNotListening: retrying can succeed.
@@ -68,6 +70,12 @@ const (
 	// result the model reads and can correct (muster's own convention),
 	// not a failed request.
 	CodeInvalidArguments = "invalid_arguments"
+	// CodeCancelled: the caller's own request ended (its client gave up or
+	// disconnected) before the open finished — not the gateway's doing.
+	CodeCancelled = "cancelled"
+	// CodeGatewayError: the gateway refused with something that is not a
+	// well-formed code (gatewayCode).
+	CodeGatewayError = "gateway_error"
 	// CodeNoWindow: the caller's pane is in no window this host mirrors, so
 	// the preview would belong to no one (not in the design's table: a
 	// session outside a mirrored window has nothing to bind a preview to).
@@ -327,9 +335,12 @@ func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError,
 		return nil, terr, nil
 	}
 	k := openKey{win, port}
+	// A second open of the same (window, port) waits here for the first;
+	// the waits are serial (each then finds the first's id, or makes its own
+	// attempt), bounded only by the caller's own request.
 	release, err := s.claim(r.Context(), k)
 	if err != nil {
-		return nil, refuse(ErrGatewayTimeout.Error(), "gave up waiting for another open of port %d: %v", port, err), nil
+		return nil, refuse(CodeCancelled, "the call ended while waiting for another open of port %d to finish", port), nil
 	}
 	defer release()
 	if o, ok := s.openOf(win, port); ok {
@@ -352,20 +363,24 @@ func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError,
 		return nil, refuse(CodeNotListening, "nothing on this machine accepted a connection on port %d: %v", port, err), nil
 	}
 	ans, err := s.Host.RequestOpen(r.Context(), wire.Request{Window: win, Port: port, Label: a.Label, Path: a.Path})
-	if terr := gatewayRefusal(err, "open port "+strconv.Itoa(port)); terr != nil {
+	if terr := gatewayRefusal(r.Context(), err, "open port "+strconv.Itoa(port)); terr != nil {
 		return nil, terr, nil
 	}
 	if ans.Error != "" {
-		return nil, refuse(ans.Error, "the preview gateway refused to open port %d: %s", port, ans.Error), nil
+		return nil, gatewayAnswerRefusal(ans.Error), nil
 	}
 	return previewResult{ID: ans.Preview, Port: port, Label: a.Label, Path: a.Path, State: "open"}, nil, nil
 }
 
-// gatewayRefusal is RequestOpen's or RequestClose's error as a tool error.
-func gatewayRefusal(err error, what string) *toolError {
+// gatewayRefusal is RequestOpen's or RequestClose's error as a tool error;
+// the caller's own request ending (ctx) is CodeCancelled, not the gateway's
+// timeout.
+func gatewayRefusal(ctx context.Context, err error, what string) *toolError {
 	switch {
 	case err == nil:
 		return nil
+	case ctx.Err() != nil:
+		return refuse(CodeCancelled, "the call ended before the preview gateway answered; could not %s", what)
 	case errors.Is(err, ErrGatewayNotConnected):
 		return refuse(ErrGatewayNotConnected.Error(), "this host is not connected to the preview gateway; could not %s", what)
 	case errors.Is(err, ErrGatewayTimeout):
@@ -373,6 +388,46 @@ func gatewayRefusal(err error, what string) *toolError {
 	default:
 		return refuse(ErrGatewayTimeout.Error(), "could not %s: %v", what, err)
 	}
+}
+
+// gatewayMessages is the fixed message of each refusal code the gateway (or
+// the host, refusing to record the gateway's open) is known to answer with.
+var gatewayMessages = map[string]string{
+	CodeMaxOpen:        "the preview limit is reached (per window, per owner or per host); close a preview first",
+	CodePortNotAllowed: "the port is not on this host's allowlist",
+	CodePreviewsOff:    "previews are off on this host",
+	CodeNotFound:       "the preview gateway has no such preview",
+	"bad_answer":       "the preview gateway's answer was malformed",
+}
+
+// gatewayAnswerRefusal is the gateway's refusal as a tool error. 🔴 NOTHING
+// THE GATEWAY WROTE REACHES THE MODEL: its text is free-form, and a
+// compromised or buggy gateway must not get words into the agent's context.
+// The code is taken only when it is a well-formed code (^[a-z_]{1,32}$),
+// else CodeGatewayError; the message is this host's own, fixed per code.
+func gatewayAnswerRefusal(code string) *toolError {
+	if !gatewayCode(code) {
+		code = CodeGatewayError
+	}
+	msg, ok := gatewayMessages[code]
+	if !ok {
+		msg = "the preview gateway refused"
+	}
+	return &toolError{Code: code, Message: msg}
+}
+
+// gatewayCode says whether s is a well-formed refusal code: 1-32 bytes of
+// lower-case letters and underscores.
+func gatewayCode(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if !(c >= 'a' && c <= 'z' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // claim takes (window, port) for one open at a time; release frees it.
@@ -497,11 +552,11 @@ func (s *MCPServer) close(r *http.Request, raw json.RawMessage) (any, *toolError
 		return nil, refuse(CodeNotFound, "no preview %q is open for this window", a.ID), nil
 	}
 	ans, err := s.Host.RequestClose(r.Context(), wire.Request{Window: win, Port: o.Port, Preview: o.Preview})
-	if terr := gatewayRefusal(err, "close preview "+o.Preview); terr != nil {
+	if terr := gatewayRefusal(r.Context(), err, "close preview "+o.Preview); terr != nil {
 		return nil, terr, nil
 	}
 	if ans.Error != "" {
-		return nil, refuse(ans.Error, "the preview gateway refused to close preview %s: %s", o.Preview, ans.Error), nil
+		return nil, gatewayAnswerRefusal(ans.Error), nil
 	}
 	return map[string]any{"closed": true}, nil, nil
 }

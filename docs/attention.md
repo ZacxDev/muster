@@ -731,7 +731,7 @@ that refuses the connection (`not_listening`), one another user listens on
 (`foreign_listener`), and one that accepts the connection but gives no HTTP
 answer to `HEAD /` within 5 s (`not_answering`: retry once the server is
 up); it then waits up to 5 s for the gateway (`gateway_not_connected`,
-`gateway_timeout`, or the gateway's own `max_open`). `preview_list` includes
+`gateway_timeout`, or the gateway's own `max_open`; any other gateway refusal is passed on only as a well-formed code, else `gateway_error`, and always with this host's own message, never the gateway's text). A call whose own request ends first is `cancelled`. `preview_list` includes
 the previews the owner opened from an offer; `preview_close` of another
 window's id is `not_found`. Every refusal — arguments that do not validate
 (`invalid_arguments`) and a pane in no mirrored window (`no_window`)
