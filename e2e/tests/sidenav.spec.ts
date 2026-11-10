@@ -298,6 +298,11 @@ for (const size of [
 // SAFE-AREA INSET THE COST IS LARGER: the inset moves to the bar, so the input
 // row drops to pb-2 and keeps none of it — with a 34px inset the conversation
 // loses 53px, not 41 (here, in emulation, the inset is 0).
+//
+// ⚠ THE TERMINAL'S FLOOR IS 36 ROWS, NOT 37, SINCE THE COMPOSER'S TWO ROWS
+// (ui/mirror_compose.go: the box on its own row above the 40px button row) — a
+// deliberate row: the Terminal view draws the same composer, now 48px taller
+// (CI measured 36 at 390×844). The header is unchanged.
 test.describe('phone header', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('adding the hamburger wraps no header and takes no height from the log or the terminal', async ({ page }) => {
@@ -309,7 +314,7 @@ test.describe('phone header', () => {
     await page.goto(origin + termOf('@1'));
     await expect(page.locator('#term-status')).toHaveText('Connected');
     expect((await box(page, 'body > header')).height, 'the terminal header wraps no further').toBeLessThanOrEqual(105);
-    await expect.poll(() => page.locator('#term .xterm-rows > div').count(), { message: 'the terminal keeps its rows' }).toBeGreaterThanOrEqual(37);
+    await expect.poll(() => page.locator('#term .xterm-rows > div').count(), { message: 'the terminal keeps its rows' }).toBeGreaterThanOrEqual(36);
   });
 
   // An expired session on a mirrored view is now noticed by the nav's badge
