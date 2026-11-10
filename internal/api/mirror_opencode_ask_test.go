@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -27,9 +30,9 @@ const ocAskSID = "ses_e5d55c179ffe6MEUqkUCZbHWA9"
 // is set); it records each form read and each answer.
 type ocFormMirror struct {
 	*fakeMirror
-	perm    bool
+	perm bool
 	// custom, when set, is the form the host sends in place of form().
-	custom *mirror.OpenCodeForm
+	custom  *mirror.OpenCodeForm
 	forms   bool
 	mu      sync.Mutex
 	reads   []string
@@ -199,6 +202,41 @@ func TestAnOlderHostsOpenCodeQuestionSaysWhy(t *testing.T) {
 	_, card := mirrorGet(t, s, ts, asksPath)
 	if !strings.Contains(card, html_(openCodeCardNoForms)) || strings.Contains(card, "data-ask-submit") {
 		t.Fatalf("the card:\n%s", card)
+	}
+}
+
+// TestEveryQuestionsFullBoxOfCJKTextFits: a form of mirror.MaxFormQuestions
+// free-text questions, each answered with a full box (askq.MaxFreeText
+// characters) of three-byte text — 9 bytes each url-encoded — is taken and
+// relayed whole, not refused as too large.
+//
+// 🔴 REGRESSION TEST. At 5c4c3e4e the answer form's bound was a fixed 64 KiB:
+// four full boxes of CJK text came to about 73.8 KB and got a 413.
+func TestEveryQuestionsFullBoxOfCJKTextFits(t *testing.T) {
+	m := newOCFormMirror(false)
+	f := mirror.OpenCodeForm{PromptID: ocAskForm}
+	full := strings.Repeat("字", askq.MaxFreeText)
+	args := []string{}
+	var want []mirror.OpenCodePick
+	for i := range mirror.MaxFormQuestions {
+		key, idx := fmt.Sprintf("q%d", i), strconv.Itoa(i)
+		f.Questions = append(f.Questions, mirror.OpenCodeQuestion{Key: key, Header: "Why " + idx, Question: "Say why, part " + idx, Custom: true})
+		args = append(args, "a"+idx, askq.OtherValue, "o"+idx, full)
+		want = append(want, mirror.OpenCodePick{Key: key, Other: full})
+	}
+	m.custom = &f
+	s, ts := viewServer(t, m.fakeMirror)
+	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
+	form := answerForm(ocAskForm, args...)
+	if n := len(form.Encode()); n <= 64<<10*2 {
+		t.Fatalf("the fixture's body is %d bytes: it must overshoot twice the old 64 KiB bound to test anything", n)
+	}
+	resp, body := answerReq(t, s, ts, form, "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%d full boxes of CJK text: %d %.200q", mirror.MaxFormQuestions, resp.StatusCode, body)
+	}
+	if _, picks := m.got(); len(picks) != 1 || !reflect.DeepEqual(picks[0], want) {
+		t.Fatalf("relayed %d pick lists; want the %d answers whole", len(picks), len(want))
 	}
 }
 

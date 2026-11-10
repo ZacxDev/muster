@@ -79,8 +79,21 @@ const (
 	// mirrorAskBodyMax bounds a registration's body: the questions within
 	// askq's bounds fit with room to spare.
 	mirrorAskBodyMax = 256 << 10
-	// mirrorAskFormMax bounds an answer form.
-	mirrorAskFormMax = 64 << 10
+	// mirrorAskFormMax bounds an answer form, derived so that the largest
+	// form a card can submit always fits: every question (an opencode form's
+	// MaxFormQuestions, or askq.MaxQuestions) with a FULL answer box of
+	// askq.MaxFreeText characters, url-encoded at the worst bytes per
+	// character a box can hold: a three-byte character is "%XX%XX%XX", 9
+	// bytes (a four-byte one is 12, but takes two of the box's UTF-16 units,
+	// so a box holds half as many), plus mirrorAskFormOverhead for the
+	// picks, ids and names. A full box of CJK text on every question is
+	// about 144 KiB; a fixed 64 KiB refused four of them with a 413.
+	mirrorAskFormMax = max(mirror.MaxFormQuestions, askq.MaxQuestions)*askq.MaxFreeText*mirrorAskEncodedChar + mirrorAskFormOverhead
+	// mirrorAskEncodedChar is the url-encoded size of a three-byte character.
+	mirrorAskEncodedChar = 9
+	// mirrorAskFormOverhead covers a form's other fields: host, session,
+	// window, tool, nonce, and each question's picks and field names.
+	mirrorAskFormOverhead = 16 << 10
 	// mirrorAskShownFor is how long a resolved question stays listed in the
 	// live region's poll, whatever the conversation shows. The page hides a
 	// listed card once its conversation holds the call's result row (which it

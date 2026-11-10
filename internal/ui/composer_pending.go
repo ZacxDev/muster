@@ -297,7 +297,9 @@ var mirrorComposerJS = `
   function native(p) {
     // The page is leaving with p: nothing after it is posted from here (the
     // draft, saved just below, has them all).
-    handedOff = { p: p, box: input.value, action: form.getAttribute('action') };
+    // shown: the session field as it stood (the view's), which the post below
+    // overwrites with p's and Back restores.
+    handedOff = { p: p, box: input.value, action: form.getAttribute('action'), shown: shownEl ? shownEl.value : '' };
     var d = D();
     if (d) d.sent(input);
     if (p.el) p.el.remove();
@@ -686,6 +688,7 @@ var mirrorComposerJS = `
     fit();
     if (nonce) renew();
     againField(false);
+    if (shownEl) shownEl.value = h.shown;
     form.setAttribute('action', h.action);
     if (st !== null && st.indexOf(p.text) < 0) { release(p); saveBox(); settle(p); return; }
     if (bubbled(p)) { p.state = 'sending'; draw(p); }
@@ -696,7 +699,7 @@ var mirrorComposerJS = `
   // queue: the messages not posted yet, in order. current: the one out now.
   // blocker: a refused message the ones in queue wait behind.
   // handedOff: the message handed to the browser's own submit ({p, box,
-  // action}), if any. seqN: the order of the presses (the draft saves in it).
+  // action, shown}), if any. seqN: the order of the presses (the draft saves in it).
   var queue = [], current = null, blocker = null, handedOff = false, seqN = 0;
   function paintQueue() {
     queue.forEach(function (p) {

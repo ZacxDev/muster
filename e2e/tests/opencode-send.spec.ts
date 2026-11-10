@@ -573,3 +573,101 @@ for (const vp of viewports) {
     });
   }
 }
+
+// THE TWO OTHER CARRIERS OF THE PRESS-TIME SESSION (composer_pending.go): a
+// Retry is the same message, so it names the session the message was
+// written for, not the one the view shows when Retry is pressed; and a
+// message handed to the browser's own submit (native: the page's fetch
+// failed) posts that session too, not the field as the view left it. Each
+// post's agent_session is read off the wire, and the message lands in neither
+// session.
+const postedSession = (body: string | null) => new URLSearchParams(body || '').get('agent_session');
+for (const vp of viewports) {
+  test(`a Retry after the pane switches session names the session it was written for (${vp.name})`, async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@3'));
+    const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
+    await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+    // The first post is refused (nothing delivered): the bubble fails, with Retry.
+    const posted: (string | null)[] = [];
+    await page.route(
+      (u) => u.pathname === '/mirror/view/send',
+      async (r: Route) => {
+        posted.push(postedSession(r.request().postData()));
+        if (posted.length === 1) return r.fulfill({ status: 409, headers: { 'Content-Type': 'text/plain' }, body: 'fixture: not now' });
+        return r.continue();
+      },
+    );
+    await revealBox(page);
+    const text = `retried after the switch ${vp.name} ${Date.now()}`;
+    await page.locator('#mv-input').fill(text);
+    await page.locator('#mv-send').click();
+    const p = pendingOf(page, text);
+    await expect(p).toHaveAttribute('data-pending-send', 'failed', { timeout: 20_000 });
+    await expect(p).toContainText('fixture: not now');
+    writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
+    try {
+      await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+      await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
+      await p.locator('[data-pending-retry]').click();
+      await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(2);
+      expect(posted, 'the press and its Retry both name the session the message was written for').toEqual([titled, titled]);
+      await expect(p).toHaveAttribute('data-pending-send', 'failed', { timeout: 20_000 });
+      await expect(p).toContainText('shows another session now than the one this message was written for');
+      await page.waitForTimeout(2_000);
+      await expect(rowsOf(page, text)).toHaveCount(0);
+    } finally {
+      writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
+    }
+  });
+
+  test(`a message handed to the browser's own submit after the pane switches session names the session it was written for (${vp.name})`, async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await rig.login(page);
+    await page.goto(rig.origin + viewOf('@3'));
+    const notice = page.locator('#mv-log [data-notice-row="opencode"]').first();
+    await expect(notice).toContainText('matched by title, verified: Title-matched fixture session', { timeout: 20_000 });
+    // The page's own post is held, then fails as a network error would: the
+    // composer hands the message to the browser's own form submit.
+    const posted: { session: string | null; xhr: boolean }[] = [];
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(
+      (u) => u.pathname === '/mirror/view/send',
+      async (r: Route) => {
+        const xhr = !!r.request().headers()['x-requested-with'];
+        posted.push({ session: postedSession(r.request().postData()), xhr });
+        if (xhr && posted.length === 1) {
+          await held;
+          return r.abort('failed');
+        }
+        return r.continue();
+      },
+    );
+    await revealBox(page);
+    const text = `handed off after the switch ${vp.name} ${Date.now()}`;
+    await page.locator('#mv-input').fill(text);
+    await page.locator('#mv-send').click();
+    await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(1);
+    writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
+    try {
+      await expect(notice).toContainText('matched by title, verified: Switched fixture session', { timeout: 30_000 });
+      await expect(page.locator(`input[name="agent_session"]`)).toHaveValue(switched);
+      release();
+      await expect.poll(() => posted.length, { timeout: 20_000 }).toBe(2);
+      expect(posted, "the page's post and the browser's own both name the session the message was written for").toEqual([
+        { session: titled, xhr: true },
+        { session: titled, xhr: false },
+      ]);
+      await page.waitForLoadState('load');
+      await page.goto(rig.origin + viewOf('@3'));
+      await page.waitForTimeout(2_000);
+      await expect(rowsOf(page, text)).toHaveCount(0);
+    } finally {
+      writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
+    }
+  });
+}
