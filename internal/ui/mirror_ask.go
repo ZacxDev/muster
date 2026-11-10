@@ -222,8 +222,13 @@ type MirrorAskLiveView struct {
 	// "opencode" (internal/api's opencode cards).
 	Agent string
 	// NoOther: the card offers no answer of one's own (an opencode
-	// permission request: Allow once or Reject only).
-	NoOther bool
+	// permission request: Allow once or Reject only); NoOtherFor the same for
+	// question i alone (an opencode question that takes only its options).
+	NoOther    bool
+	NoOtherFor []bool
+	// ByIndex: each option's value is its place in the question ("0", "1",
+	// …), not its label — an opencode card, answered by index.
+	ByIndex bool
 }
 
 // agent is who asks, as the card names it.
@@ -371,8 +376,12 @@ func askForm(v MirrorAskLiveView) g.Node {
 		opts := make([]g.Node, 0, len(q.Options)+1)
 		for j, o := range q.Options {
 			id := base + "-" + idx + "-" + strconv.Itoa(j)
+			value := o.Label
+			if v.ByIndex {
+				value = strconv.Itoa(j)
+			}
 			opts = append(opts, Label(For(id), Class("flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-s2"),
-				Input(Type(kind), ID(id), Name(name), Value(o.Label),
+				Input(Type(kind), ID(id), Name(name), Value(value),
 					Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 				Span(Class("flex min-w-0 flex-col"),
 					Span(Class("break-words text-fg"), g.Text(o.Label)),
@@ -382,7 +391,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 		}
 		// A question the terminal draws with previews has no row for an
 		// answer of one's own (askq.Question.Previews): no "Other" here either.
-		if !q.Previews() && !v.NoOther {
+		if !q.Previews() && !v.NoOther && !(i < len(v.NoOtherFor) && v.NoOtherFor[i]) {
 			otherID := base + "-" + idx + "-other"
 			opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
 				Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),

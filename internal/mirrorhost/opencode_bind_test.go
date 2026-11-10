@@ -330,3 +330,62 @@ func TestACutTitleBindsVerifiedAndTakesASend(t *testing.T) {
 		t.Fatalf("admitted %+v; want one, to the long session", p)
 	}
 }
+
+// TestAListCutShortIsNeverVerified: when the last read of the sessions hit
+// the client's page bound with sessions still to come (sessionsCut), a title
+// unique in what was read is NOT verified — list-cut, the composer's reason.
+// The control is the same pane on a whole list.
+//
+// 🔴 REGRESSION TEST. At 2afa5ab8 the cut list was taken for every session.
+func TestAListCutShortIsNeverVerified(t *testing.T) {
+	srv, src := ocServer(t, map[string]string{"ses_fixtureA": "Fix the flaky fixture"})
+	streamUp(t, srv, src)
+	procs, children, root := ocPaneTable(t, "opencode")
+	locate := func() AgentPane {
+		return openCodeRuntime{proc: root, src: src, title: titled("OC | Fix the flaky fixture")}.LocatePanes(ocPane, procs, children)["%1"]
+	}
+	if ap := locate(); ap.Bind != mirror.AgentBindVerified {
+		t.Fatalf("the control, a whole list: bind %q", ap.Bind)
+	}
+	src.mu.Lock()
+	src.sessionsCut = true
+	src.mu.Unlock()
+	if ap := locate(); ap.Gen != "ses_fixtureA" || ap.Bind != mirror.AgentBindListCut {
+		t.Fatalf("a cut list: gen %q bind %q; want list-cut", ap.Gen, ap.Bind)
+	}
+	if w := mirror.AgentBindWords(mirror.AgentBindListCut); !strings.Contains(w, "holds more sessions than muster reads") {
+		t.Fatalf("the words: %q", w)
+	}
+}
+
+// TestAnEventDuringASessionsReadKeepsTheListStale: a session event that
+// lands while a read of the sessions is in flight leaves the list stale, so
+// the next use reads again — the read that began before it never clears it.
+//
+// 🔴 REGRESSION TEST. At 2afa5ab8 the read set stale=false over it.
+func TestAnEventDuringASessionsReadKeepsTheListStale(t *testing.T) {
+	srv, src := ocServer(t, map[string]string{"ses_fixtureA": "Fix the flaky fixture"})
+	streamUp(t, srv, src)
+	src.sessionsChanged()
+	src.afterRead = func() { src.sessionsChanged() } // the event, mid-read
+	if _, err := src.knownSessions(); err != nil {
+		t.Fatal(err)
+	}
+	src.afterRead = nil
+	src.mu.Lock()
+	stale := src.stale
+	src.mu.Unlock()
+	if !stale {
+		t.Fatal("an event during the read was lost: the list reads as current")
+	}
+	// The control: a read with no event during it leaves the list current.
+	if _, err := src.knownSessions(); err != nil {
+		t.Fatal(err)
+	}
+	src.mu.Lock()
+	stale = src.stale
+	src.mu.Unlock()
+	if stale {
+		t.Fatal("control: a quiet read left the list stale")
+	}
+}

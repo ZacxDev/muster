@@ -109,6 +109,8 @@ type sendQueueTarget struct {
 	e    mirror.SessionView
 	// listed: an entry the host lists now.
 	listed bool
+	// agentSession is the request's agent_session field (shownSessionField).
+	agentSession string
 }
 
 func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, v url.Values) (sendQueueTarget, bool) {
@@ -123,6 +125,9 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 		return q, false
 	}
 	q.h, q.e, q.listed = h, e, listed
+	if as := v.Get(ui.AgentSessionField); mirror.ValidAgentSession(as) {
+		q.agentSession = as
+	}
 	q.t = sendqueue.Target{Host: h.Host, Session: e.Session, Window: e.Window}
 	q.back = mirrorRef(e).ViewPath()
 	return q, true
@@ -215,7 +220,9 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		s.heldRefusal(w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
 		return
 	}
-	it := sendqueue.Item{Target: q.t, Body: text}
+	// The session the page showed (a hand-opened opencode pane's): the row is
+	// delivered only while the window still shows it (mirror.ShownSession).
+	it := sendqueue.Item{Target: q.t, Body: text, AgentSession: q.agentSession}
 	it.StepUpAt, _ = stepup.AuthTime(ctx)
 	// A paste the hub remembers (a Send just now) holds this message too, and
 	// is stored with it so that a restart does not forget it.
@@ -279,6 +286,9 @@ func sendQueueAddFields(q sendQueueTarget, text string, again bool) []ui.Compose
 		fields = append(fields, ui.ComposerField{Name: "window", Value: q.e.Window})
 	}
 	fields = append(fields, ui.ComposerField{Name: "text", Value: text})
+	if as := q.agentSession; as != "" {
+		fields = append(fields, ui.ComposerField{Name: ui.AgentSessionField, Value: as})
+	}
 	if again {
 		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
 	}
@@ -930,7 +940,7 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	// one id.
 	key := sendQueueNonce(it.ID)
 	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
-		append(opts, mirror.MessageKey(key))...)
+		append(opts, mirror.MessageKey(key), mirror.ShownSession(it.AgentSession))...)
 	if !repeat {
 		s.settleHeld(ctx, it.Target.Host, it.Target.Session, it.Target.Window, mirror.PasteClaude, it.Body, key, err)
 	}

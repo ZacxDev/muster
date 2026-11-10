@@ -22,10 +22,16 @@ import (
 //   - the window is IDLE with a status time — else *OpenCodeNotIdleError (a
 //     queued paste is superseded instead).
 //
-// The paste then carries the runtime, the StatusSince it was decided on, the
-// session the window list names (Msg.AgentSession: the only one the host may
-// post to) and the message id (OpenCodeMessageID), and the host checks every
-// one of these again at the moment it posts.
+//   - the session the message was WRITTEN FOR (ShownSession: the page's view
+//     when it was typed, or the one a queued row was stored with) is the one
+//     the window's list names now; a hand-opened pane's message naming none
+//     is refused (ShownSessionCheck) — a person's and a queued row's alike,
+//     never superseded, so a row whose window moved on fails visibly.
+//
+// The paste then carries the runtime, the StatusSince it was decided on, that
+// session (Msg.AgentSession: the only one the host may post to) and the
+// message id (OpenCodeMessageID), and the host checks every one of these
+// again at the moment it posts, against the pane re-resolved then.
 
 // openCodePasteTimeout is how long a gated send to opencode waits for its
 // host: the host's own post is bounded well inside it (mirrorhost's
@@ -134,9 +140,9 @@ func (hc *hostConn) gatedSendCheck(session, id string) error {
 }
 
 // gatedStatus is the runtime, Status, StatusSince and AgentSession hc lists
-// for (session, window id), and whether that window runs a runtime with a
-// gated send.
-func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, since int64, agentSession string, ok bool) {
+// for (session, window id), whether it is launcher-bound (AgentSend), and
+// whether that window runs a runtime with a gated send.
+func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, since int64, agentSession string, launcher, ok bool) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	for _, w := range hc.windows {
@@ -144,10 +150,31 @@ func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, sin
 			continue
 		}
 		if r, ok := w.Spec(); ok && r.GatedSend {
-			return r.Name, w.Status, w.StatusSince, w.AgentSession, true
+			return r.Name, w.Status, w.StatusSince, w.AgentSession, w.AgentSend, true
 		}
 	}
-	return "", "", 0, "", false
+	return "", "", 0, "", false, false
+}
+
+// ErrOpenCodeMoved: the window shows another session now than the one the
+// message was written in view of, or a hand-opened pane's message named
+// none. Nothing was sent.
+var ErrOpenCodeMoved = errors.New("mirror: muster did not send it: the opencode window shows another session than the one the message was written for")
+
+// ShownSessionCheck is THE rule (the hub applies it; internal/api's fake
+// mirror plays it): the refusal of a gated send that named shown (the
+// session the sender's view showed; "" none) to a window whose list names
+// listed — launcher-bound (launcher) or not — nil when it may go: shown is
+// the listed session, or, for a launcher-bound window only, none is named
+// (an older page or row: the launcher's record names the session).
+func ShownSessionCheck(shown, listed string, launcher bool) error {
+	switch {
+	case shown != "" && shown != listed:
+		return &PasteRefusedError{Why: PasteRefusedOpenCodeMovedText, Refusal: PasteRefusalOpenCodeMoved, Cause: ErrOpenCodeMoved}
+	case shown == "" && !launcher:
+		return &PasteRefusedError{Why: PasteRefusedOpenCodeUnnamedText, Refusal: PasteRefusalOpenCodeMoved, Cause: ErrOpenCodeMoved}
+	}
+	return nil
 }
 
 // unboundErr is r's Unbound refusal, saying why in bind's words

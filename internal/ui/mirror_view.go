@@ -45,7 +45,12 @@ type MirrorViewView struct {
 	// DraftUser is the signed-in user, the first part of the message box's
 	// draft key (composer_draft.go).
 	DraftUser int64
-	Host      string
+	// AgentSession is the agent session the view shows (a gated runtime's
+	// window, Window.AgentSession; "" for any other): the composer's
+	// AgentSessionField, which the page's script keeps equal to the session
+	// its stream draws.
+	AgentSession string
+	Host         string
 	// HostIcon is Host's icon key (HostIconFor), the one its cards draw.
 	HostIcon string
 	Session  string
@@ -182,6 +187,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// room by default, the ⋯ beside the message controls).
 		Collapsible: true, MoreInRow: true}
 	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
+	// The session the view shows rides every message written here (a gated
+	// runtime's window): the script keeps it the one the stream draws.
+	if v.AgentSession != "" {
+		composer.Extra = append(composer.Extra, ComposerField{Name: AgentSessionField, Value: v.AgentSession})
+	}
 	shell := pinnedShellClass
 	if v.Switcher != nil {
 		shell = pinnedShellSwitcherClass
@@ -1277,6 +1287,9 @@ func mirrorViewScript() g.Node {
     if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
     // Context usage: only a batch whose usage changed carries it; an older
     // muster or host sends none and the readout stays hidden.
+    // The session this view draws (a gated runtime's: its gen) rides every
+    // message written here (AgentSessionField), so a send names what was shown.
+    if (m.gen) { var shownEl = document.querySelector('input[name="` + AgentSessionField + `"]'); if (shownEl) shownEl.value = m.gen; }
     if (m.context && m.context.label) {
       ctxEl.textContent = m.context.label;
       ctxEl.title = m.context.title || 'Context used';

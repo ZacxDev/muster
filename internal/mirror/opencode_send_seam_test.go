@@ -40,7 +40,8 @@ func TestThePageAndTheHubAgreeOnWhatCanBeSent(t *testing.T) {
 				}
 			}()
 			ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
-			err := r.svc.PasteWindow(ctx, "h", "work", window, "hello", mirror.PasteClaude)
+			// As the page sends it: naming the session its view shows.
+			err := r.svc.PasteWindow(ctx, "h", "work", window, "hello", mirror.PasteClaude, mirror.ShownSession(e.AgentSession))
 			cancel()
 			if hubOK := err == nil; hubOK != pageOK {
 				t.Fatalf("sends %v window %s: the page says sendable %v (%q), the hub %v (%v)",

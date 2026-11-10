@@ -221,23 +221,30 @@ type Session struct {
 	} `json:"time"`
 }
 
-// maxSessionPages bounds a Sessions read (sessionPage sessions a page).
-const (
-	maxSessionPages = 20
-	sessionPage     = 100
-)
+// maxSessionPages bounds a Sessions read (sessionPage sessions a page). A var
+// only so a test can reach the bound.
+var maxSessionPages = 20
+
+const sessionPage = 100
 
 // Sessions is every ROOT session the server knows (GET /api/session,
 // parentID=null), newest first, at most maxSessionPages pages.
-func (c *Client) Sessions(ctx context.Context) ([]Session, error) { return c.sessions(ctx, true) }
+func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
+	out, _, err := c.sessions(ctx, true)
+	return out, err
+}
 
 // AllSessions is every session the server knows, ROOTS AND CHILDREN (a
 // subagent's: ParentID set) — GET /api/session with no parentID filter,
 // measured to list both — newest first, at most maxSessionPages pages.
-func (c *Client) AllSessions(ctx context.Context) ([]Session, error) { return c.sessions(ctx, false) }
+// complete is false when the bound cut the list short (its last page still
+// named a next one): what it holds is then NOT every session.
+func (c *Client) AllSessions(ctx context.Context) (list []Session, complete bool, err error) {
+	return c.sessions(ctx, false)
+}
 
-// sessions is Sessions (roots) or AllSessions.
-func (c *Client) sessions(ctx context.Context, roots bool) ([]Session, error) {
+// sessions is Sessions (roots) or AllSessions, and whether the list is whole.
+func (c *Client) sessions(ctx context.Context, roots bool) ([]Session, bool, error) {
 	var out []Session
 	filter := func(q url.Values) url.Values {
 		if roots {
@@ -254,16 +261,17 @@ func (c *Client) sessions(ctx context.Context, roots bool) ([]Session, error) {
 			} `json:"cursor"`
 		}
 		if err := c.get(ctx, "/api/session", q, &resp); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, resp.Data...)
 		if len(resp.Data) < sessionPage || resp.Cursor.Next == nil || *resp.Cursor.Next == "" {
-			break
+			return out, true, nil
 		}
 		// A cursor carries its own order; the two cannot be combined.
 		q = filter(url.Values{"limit": {strconv.Itoa(sessionPage)}, "cursor": {*resp.Cursor.Next}})
 	}
-	return out, nil
+	// 🔴 The bound ran out with a page still to come: NOT the whole list.
+	return out, false, nil
 }
 
 // Running is the sessions running now (GET /api/session/active).

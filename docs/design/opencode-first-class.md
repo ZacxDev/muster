@@ -478,14 +478,24 @@ view-only — when:
   as the start of a cut title, is `title-shared`: a TUI can show a child
   session, and its title is then the pane's. A cut title that starts exactly
   one session binds;
+- the whole session list was read: one cut short at the client's page bound
+  (its last page still naming a next one) shows nothing unique — else
+  `list-cut`;
 - the TUI's command line names no session or the same one — else
   `argv-session`.
 
 Each code is the composer's reason, in words (`mirror.AgentBindWords`).
 
-**A send never reaches another session than the view shows.** Every gated
-paste now carries `Msg.AgentSession`, the session the hub's list names for
-the window. The host re-resolves the pane, re-reading its title, and refuses
+**A send never reaches another session than the view shows.** The composer
+carries the session its view is drawing (`agent_session`, kept equal to the
+stream's session by the page's script), and a queued row stores it
+(`send_queue.agent_session`, migration 0105). The hub refuses the send — a
+person's, or a queued row's, which then fails rather than waiting — when its
+window list names another session now, and refuses a hand-opened pane's send
+that names none (an older page or row); a launcher-bound pane's send naming
+none still goes, its record naming the session (`mirror.ShownSessionCheck`).
+The paste then carries that session as `Msg.AgentSession`. The host
+re-resolves the pane, re-reading its title, and refuses
 (`opencode-moved`) when the pane resolves to any other session, and refuses a
 verified pane's paste that names none (an older muster's). For a verified pane
 it then reads the session through the API (`GET /api/session/{id}`): it must

@@ -328,9 +328,10 @@ type Msg struct {
 	// posted under (OpenCodeMessageID): the same send retried posts the same
 	// id, and opencode admits it once.
 	MessageID string `json:"messageID,omitempty"`
-	// AgentSession (paste, with Runtime) is the session muster's window list
-	// names for the window (Window.AgentSession) — the one its Rendered view
-	// shows — and so the ONLY session the host may post to: it refuses
+	// AgentSession (paste, with Runtime) is the session the message was
+	// written for — the sender's view's, or a queued row's — which the hub has
+	// checked is the one its window list names now (ShownSessionCheck); so
+	// the ONLY session the host may post to: it refuses
 	// (PasteRefusalOpenCodeMoved) when the pane resolves to any other now,
 	// and refuses a pane bound by verification (Window.AgentBind) when the
 	// paste names none. 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host

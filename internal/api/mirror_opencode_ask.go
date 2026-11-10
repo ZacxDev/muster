@@ -3,7 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -88,6 +92,58 @@ func permissionQuestion(p *mirror.Pending) askq.Question {
 	return q
 }
 
+// permissionForm is a permission request's card as a form: one question,
+// Allow once or Reject, no answer of one's own.
+func permissionForm(p *mirror.Pending) mirror.OpenCodeForm {
+	q := mirror.OpenCodeQuestion{Key: "decision", Header: openCodePermissionHeader, Question: p.Summary}
+	for _, o := range openCodePermissionOptions {
+		q.Options = append(q.Options, mirror.OpenCodeOption{Label: o.label})
+	}
+	return mirror.OpenCodeForm{PromptID: p.PromptID, Questions: []mirror.OpenCodeQuestion{q}}
+}
+
+// formPicks is a card's submit as the picks that answer form — for question
+// i, the values a<i> are the chosen options' INDEXES (the card's ByIndex), or
+// askq.OtherValue whose text is o<i> — checked against the form
+// (mirror.CheckOpenCodePicks: one answer each, in range, one's own only where
+// the question takes one), and the answers as the card shows them, keyed by
+// question text. An API answer goes to opencode as given: newlines included.
+func formPicks(f mirror.OpenCodeForm, v url.Values) ([]mirror.OpenCodePick, map[string]string, error) {
+	picks := make([]mirror.OpenCodePick, 0, len(f.Questions))
+	answers := make(map[string]string, len(f.Questions))
+	for i, q := range f.Questions {
+		idx := strconv.Itoa(i)
+		p := mirror.OpenCodePick{Key: q.Key}
+		var shown []string
+		other := false
+		for _, val := range v["a"+idx] {
+			if val == askq.OtherValue {
+				other = true
+				continue
+			}
+			j, err := strconv.Atoi(val)
+			if err != nil || strconv.Itoa(j) != val || j < 0 || j >= len(q.Options) {
+				return nil, nil, fmt.Errorf("question %d: %q is not one of its options", i+1, val)
+			}
+			p.Picks = append(p.Picks, j)
+			shown = append(shown, q.Options[j].Label)
+		}
+		if other {
+			p.Other = strings.TrimSpace(v.Get("o" + idx))
+			if p.Other == "" {
+				return nil, nil, fmt.Errorf("question %d: type your own answer, or choose an option", i+1)
+			}
+			shown = append(shown, p.Other)
+		}
+		picks = append(picks, p)
+		answers[q.Question] = strings.Join(shown, askq.MultiJoin)
+	}
+	if err := mirror.CheckOpenCodePicks(f, picks); err != nil {
+		return nil, nil, errors.New(strings.TrimPrefix(err.Error(), mirror.ErrOpenCodeFormInvalid.Error()+": "))
+	}
+	return picks, answers, nil
+}
+
 // formQuestions is form's questions as the card draws them.
 func formQuestions(f mirror.OpenCodeForm) []askq.Question {
 	out := make([]askq.Question, 0, len(f.Questions))
@@ -105,10 +161,14 @@ func formQuestions(f mirror.OpenCodeForm) []askq.Question {
 // host, and the form it answers (zero for a permission request, or when the
 // host could not send one: the card then says why it cannot be answered).
 func (s *Server) openCodeCard(ctx context.Context, h mirror.HostView, e mirror.SessionView, p *mirror.Pending) (ui.MirrorAskLiveView, mirror.OpenCodeForm) {
-	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: p.PromptID, State: ui.AskStatePending, WindowName: e.DisplayTitle(), Agent: openCodeAgentName}
+	// ByIndex: every option is answered by its place in the form, never by a
+	// label (two options can read alike; the host maps an index to a value).
+	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: p.PromptID, State: ui.AskStatePending, WindowName: e.DisplayTitle(), Agent: openCodeAgentName,
+		ByIndex: true}
 	var form mirror.OpenCodeForm
 	if p.Kind == mirror.PendingPermission {
 		v.Questions, v.NoOther = []askq.Question{permissionQuestion(p)}, true
+		form = permissionForm(p)
 	} else {
 		f, err := s.openCodeFormOf(ctx, h, e, p.PromptID)
 		if err != nil {
@@ -119,11 +179,10 @@ func (s *Server) openCodeCard(ctx context.Context, h mirror.HostView, e mirror.S
 			}
 		} else {
 			form, v.Questions = f, formQuestions(f)
-			// A question that takes no answer of one's own has no "Other".
+			// A question that takes no answer of one's own has no "Other" —
+			// that question only: the others keep theirs.
 			for _, q := range f.Questions {
-				if !q.Custom {
-					v.NoOther = true
-				}
+				v.NoOtherFor = append(v.NoOtherFor, !q.Custom)
 			}
 		}
 	}
@@ -165,7 +224,7 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
-	choices, answers, err := askq.FromForm(v.Questions, r.PostForm)
+	picks, answers, err := formPicks(form, r.PostForm)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -173,22 +232,13 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 	// The page is not the wait's owner: the hub bounds it.
 	ctx := context.WithoutCancel(r.Context())
 	if p.Kind == mirror.PendingPermission {
-		c := choices[0]
-		if c.Other != "" || len(c.Picks) != 1 {
-			http.Error(w, "choose Allow once or Reject", http.StatusBadRequest)
-			return
-		}
 		a, can := s.ext.Mirror.(openCodeAnswerer)
 		if !can {
 			http.Error(w, mirror.ErrOpenCodeAnswerUnsupported.Error(), http.StatusConflict)
 			return
 		}
-		err = a.AnswerOpenCodeAsk(ctx, h.Host, e.Session, e.Window, p.PromptID, openCodePermissionOptions[c.Picks[0]].choice)
+		err = a.AnswerOpenCodeAsk(ctx, h.Host, e.Session, e.Window, p.PromptID, openCodePermissionOptions[picks[0].Picks[0]].choice)
 	} else {
-		picks := make([]mirror.OpenCodePick, 0, len(choices))
-		for i, c := range choices {
-			picks = append(picks, mirror.OpenCodePick{Key: form.Questions[i].Key, Picks: c.Picks, Other: c.Other})
-		}
 		f, can := s.ext.Mirror.(openCodeFormer)
 		if !can {
 			http.Error(w, mirror.ErrOpenCodeFormsUnsupported.Error(), http.StatusConflict)

@@ -448,7 +448,16 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 		// on, which the host checks again at the moment it posts. A QUEUED
 		// paste (ExpectTurn) is SUPERSEDED, as on Claude Code: nothing was
 		// sent, and the row is decided on again.
-		if rt, st, s, as, ok := hc.gatedStatus(session, windowID); ok {
+		if rt, st, s, as, launcher, ok := hc.gatedStatus(session, windowID); ok {
+			// 🔴 ONLY THE SESSION THE PAGE SHOWED (ShownSession): the send, or
+			// the queued row, names the session its view was drawing, and the
+			// window must show that one NOW; a hand-opened pane's paste that
+			// names none (an older page, an older row) goes nowhere. Refused
+			// in words — never superseded, so a queued row whose window moved
+			// on fails visibly instead of waiting to land in another session.
+			if err := ShownSessionCheck(o.Shown, as, launcher); err != nil {
+				return err
+			}
 			if st != StatusIdle || s <= 0 {
 				if o.Expect != nil {
 					return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
@@ -562,7 +571,16 @@ type PasteOptions struct {
 	Key string
 	// Dispatch is the host dispatch the paste is for (ForDispatch), 0 none.
 	Dispatch int64
+	// Shown is the agent session the sender's view was showing for the
+	// window (ShownSession), "" for none named.
+	Shown string
 }
+
+// ShownSession names the agent session (Window.AgentSession) the sender's
+// view was showing when the message was written — the composer's, or the one
+// a queued row was stored with. A gated send goes only while the window shows
+// exactly that session (ShownSessionCheck); "" names none.
+func ShownSession(id string) PasteOption { return func(o *PasteOptions) { o.Shown = id } }
 
 // PasteOptionsOf applies opts. A PasteWindow implementation reads its options
 // through it (the hub, and internal/api's test fakes).
@@ -637,8 +655,10 @@ type gatedPaste struct {
 	runtime   string
 	since     int64
 	messageID string
-	// agentSession is the session the window list names for the window
-	// (Msg.AgentSession): the only one the host may post to.
+	// agentSession is the session the window list names for the window —
+	// which ShownSessionCheck has just required to be the one the message was
+	// written for, when one was named (Msg.AgentSession): the only one the
+	// host may post to.
 	agentSession string
 	// dispatch is the paste's host dispatch (ForDispatch), stamped on the
 	// message for the host's tag check; 0 for none.

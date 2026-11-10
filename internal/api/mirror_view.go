@@ -110,6 +110,12 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		default:
 			v.Agent = rt.Kind
 		}
+		// The session the view shows rides every message written on it
+		// (ui.AgentSessionField): a gated send goes only while the window
+		// still shows it.
+		if rt.GatedSend {
+			v.AgentSession = e.AgentSession
+		}
 	}
 	// The rename offer, when the conversation has moved on from its name.
 	v.Drift = s.mirrorDrift(r, e, v.SessionName)
@@ -441,6 +447,11 @@ type mirrorPending struct {
 	// again: the person's explicit "Send again" (form field again=1) of a
 	// message that may have landed (sendNonces.hold).
 	again bool
+	// agentSession is the agent session the page's view showed when the
+	// message was written (form field agent_session, ui.AgentSessionField):
+	// a gated send goes only while the window still shows it
+	// (mirror.ShownSession). "" for none (an older page, a Claude window).
+	agentSession string
 }
 
 // refuse answers a send that is not delivered: to the composer's script the
@@ -475,7 +486,20 @@ func mirrorSendFields(p mirrorPending, nonce string) []ui.ComposerField {
 	if p.window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
 	}
-	return append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+	if p.agentSession != "" {
+		fields = append(fields, ui.ComposerField{Name: ui.AgentSessionField, Value: p.agentSession})
+	}
+	return fields
+}
+
+// shownSessionField is the request's agent_session field (ui.AgentSessionField)
+// when it is a session id the wire carries, else "".
+func shownSessionField(r *http.Request) string {
+	if v := r.PostFormValue(ui.AgentSessionField); mirror.ValidAgentSession(v) {
+		return v
+	}
+	return ""
 }
 
 // mirrorSendPath is the send route of a target's composer.
@@ -507,7 +531,8 @@ func (s *Server) mirrorSendForm(w http.ResponseWriter, r *http.Request, target m
 		return h, p, false
 	}
 	return h, mirrorPending{e: e, window: window, text: r.PostFormValue("text"), nonce: r.PostFormValue("nonce"),
-		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1"}, true
+		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1",
+		agentSession: shownSessionField(r)}, true
 }
 
 // mirrorSend is BOTH send routes: paste the text into a pane of the window and
@@ -798,7 +823,7 @@ func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bo
 		return false, errUnconfirmedRepeat
 	}
 	key := s.messageKey(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.nonce, p.again)
-	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key))
+	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target, mirror.MessageKey(key), mirror.ShownSession(p.agentSession))
 	if !repeat {
 		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, key, err)
 	}

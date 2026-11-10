@@ -760,9 +760,14 @@ host):
 - the pane was started with **`muster-mirror opencode`** (below), so the host
   knows its session, not by its title — or it is a [hand-opened
   pane](#hand-opened-opencode-panes) whose title match the host verified;
-- the pane, at the moment the host posts, still shows the very session muster's
-  list names for the window (the one the Rendered view shows); the host refuses
-  any other ("this opencode pane shows another session now");
+- the window still shows the session the message was **written for**: the
+  one your Rendered view was showing when you typed it, carried with the
+  message (and stored with it when you queue it). muster refuses it when the
+  window's session has changed since — a queued message then fails, saying
+  so, rather than landing in the new session — and the host refuses it again
+  if the pane shows any other at the moment it posts ("this opencode pane
+  shows another session now"). A message for a hand-opened pane that names no
+  session (typed on a page from before this, or queued then) is refused too;
 - the session is idle (a queued message waits until it is), with nothing it
   is waiting on;
 - your sign-in is fresh, as for every send.

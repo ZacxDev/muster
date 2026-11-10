@@ -32,6 +32,9 @@ const (
 	// AgentBindArgv: the TUI was started on one session (its -s/--session)
 	// and its title names another.
 	AgentBindArgv = "argv-session"
+	// AgentBindListCut: the server holds more sessions than muster reads, so
+	// no title can be shown unique against them.
+	AgentBindListCut = "list-cut"
 	// AgentBindStream: the opencode server's event stream is not open, so the
 	// session list the title was matched against may be stale.
 	AgentBindStream = "stream-down"
@@ -71,6 +74,8 @@ func AgentBindWords(code string) string {
 		return PasteRefusedOpenCodeArgvText
 	case AgentBindStream:
 		return PasteRefusedOpenCodeStreamText
+	case AgentBindListCut:
+		return PasteRefusedOpenCodeListCutText
 	}
 	return PasteRefusedOpenCodeUnboundText
 }
@@ -82,12 +87,22 @@ const (
 		"or start it with `muster-mirror opencode`."
 	PasteRefusedOpenCodeArgvText = "Not sent: this opencode was started on one session (its -s) but its title names " +
 		"another, so muster can't be sure which it shows. Type it in the terminal, or start it with `muster-mirror opencode`."
+	PasteRefusedOpenCodeListCutText = "Not sent: the opencode server holds more sessions than muster reads, so it " +
+		"can't be sure no other session shares this pane's title. Type it in the terminal, or start it with " +
+		"`muster-mirror opencode`."
 	PasteRefusedOpenCodeStreamText = "Not sent: muster can't confirm which session this opencode shows right now, " +
 		"because the opencode server's event stream is not answering. Try again in a moment."
-	// PasteRefusedOpenCodeMovedText: the pane resolves to another session
-	// than the one muster named (PasteRefusalOpenCodeMoved).
-	PasteRefusedOpenCodeMovedText = "Not sent: this opencode pane shows another session now than the one muster " +
-		"showed you, so nothing was sent. Check the view, then send it again."
+	// PasteRefusedOpenCodeMovedText: the window shows another session now
+	// than the one the message was written in view of — the page's, or the
+	// one a queued message was stored with (PasteRefusalOpenCodeMoved). The
+	// hub refuses it against its list, and the host against the pane.
+	PasteRefusedOpenCodeMovedText = "Not sent: this opencode pane shows another session now than the one this " +
+		"message was written for, so nothing was sent. Check the view, then send it again."
+	// PasteRefusedOpenCodeUnnamedText: a message for a hand-opened pane that
+	// names no session (a page or a queued message from before muster
+	// recorded one), which muster cannot tell is meant for the session shown.
+	PasteRefusedOpenCodeUnnamedText = "Not sent: muster can't tell which opencode session this message was written " +
+		"for (it was queued or typed on an older page), so nothing was sent. Check the view, then send it again."
 )
 
 // AgentContext is an agent's context fill (Msg.Context): Tokens in context

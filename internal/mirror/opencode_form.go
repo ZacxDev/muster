@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
@@ -86,8 +87,9 @@ const (
 	MaxFormQuestion    = 600
 	MaxFormLabel       = 200
 	MaxFormDescription = 400
-	// MaxFormOther bounds an answer of the person's own, in bytes.
-	MaxFormOther = 2000
+	// MaxFormOther bounds an answer of the person's own, in bytes: the card's
+	// box's own bound (askq.MaxFreeText), so what the box takes is taken.
+	MaxFormOther = askq.MaxFreeText
 )
 
 // ErrOpenCodeFormInvalid wraps every refusal of a form or of its picks.
@@ -110,6 +112,7 @@ func NormalizeOpenCodeForm(f OpenCodeForm) (OpenCodeForm, bool) {
 			return OpenCodeForm{}, false
 		}
 		keys[q.Key] = true
+		labels := map[string]bool{}
 		nq := OpenCodeQuestion{Key: q.Key, Header: cleanLine(q.Header, MaxFormHeader), Question: cleanLine(q.Question, MaxFormQuestion),
 			Multiple: q.Multiple, Custom: q.Custom}
 		if nq.Question == "" {
@@ -117,9 +120,11 @@ func NormalizeOpenCodeForm(f OpenCodeForm) (OpenCodeForm, bool) {
 		}
 		for _, o := range q.Options {
 			l := cleanLine(o.Label, MaxFormLabel)
-			if l == "" {
+			if l == "" || labels[l] {
+				// Two options a person cannot tell apart are not offered.
 				return OpenCodeForm{}, false
 			}
+			labels[l] = true
 			nq.Options = append(nq.Options, OpenCodeOption{Label: l, Description: cleanLine(o.Description, MaxFormDescription)})
 		}
 		out.Questions = append(out.Questions, nq)

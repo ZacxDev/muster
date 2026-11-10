@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -87,7 +88,8 @@ func TestAGatedPasteNamesTheSessionTheListShows(t *testing.T) {
 			raw.write(t, mirror.Msg{Type: mirror.TypePasted, ID: raw.of(mirror.TypePaste)[0].ID})
 		}()
 		ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
-		if err := r.svc.PasteWindow(ctx, "h", "work", window, "hello", mirror.PasteClaude, mirror.MessageKey("nonce-aaaaaaaaaaaaaaaa")); err != nil {
+		if err := r.svc.PasteWindow(ctx, "h", "work", window, "hello", mirror.PasteClaude, mirror.MessageKey("nonce-aaaaaaaaaaaaaaaa"),
+			mirror.ShownSession(session)); err != nil {
 			t.Fatal(err)
 		}
 		cancel()
@@ -180,6 +182,16 @@ func TestPicksAreCheckedAgainstTheForm(t *testing.T) {
 	if err := mirror.CheckOpenCodePicks(f, ok); err != nil {
 		t.Fatalf("the control: %v", err)
 	}
+	// What the card's box takes is taken: its bound is the box's, and an API
+	// answer may run over lines.
+	if mirror.MaxFormOther != askq.MaxFreeText {
+		t.Fatalf("MaxFormOther %d, the box's bound %d", mirror.MaxFormOther, askq.MaxFreeText)
+	}
+	for name, other := range map[string]string{"at the bound": strings.Repeat("x", askq.MaxFreeText), "over two lines": "first\nsecond"} {
+		if err := mirror.CheckOpenCodePicks(f, []mirror.OpenCodePick{{Key: "q0", Other: other}, ok[1]}); err != nil {
+			t.Errorf("an answer of one's own %s: %v", name, err)
+		}
+	}
 	strict := fixtureForm()
 	strict.Questions[0].Custom = false
 	for name, c := range map[string]struct {
@@ -220,7 +232,10 @@ func TestAFormPastItsBoundsIsNotAnswered(t *testing.T) {
 	noid.PromptID = "nope"
 	bare := fixtureForm()
 	bare.Questions[0].Options, bare.Questions[0].Custom = nil, false
-	for name, f := range map[string]mirror.OpenCodeForm{"too many options": many, "a repeated key": dup, "no ask id": noid, "nothing to answer": bare} {
+	alike := fixtureForm()
+	alike.Questions[1].Options[1].Label = "cache"
+	for name, f := range map[string]mirror.OpenCodeForm{"too many options": many, "a repeated key": dup, "no ask id": noid, "nothing to answer": bare,
+		"two options a person cannot tell apart": alike} {
 		if _, ok := mirror.NormalizeOpenCodeForm(f); ok {
 			t.Errorf("%s: accepted", name)
 		}

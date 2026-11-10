@@ -28,6 +28,8 @@ const ocAskSID = "ses_e5d55c179ffe6MEUqkUCZbHWA9"
 type ocFormMirror struct {
 	*fakeMirror
 	perm    bool
+	// custom, when set, is the form the host sends in place of form().
+	custom *mirror.OpenCodeForm
 	forms   bool
 	mu      sync.Mutex
 	reads   []string
@@ -75,6 +77,9 @@ func (m *ocFormMirror) OpenCodeForm(ctx context.Context, host, session, window, 
 	if promptID != ocAskForm {
 		return mirror.OpenCodeForm{}, mirror.ErrOpenCodeAskGone
 	}
+	if m.custom != nil {
+		return *m.custom, nil
+	}
 	return m.form(), nil
 }
 
@@ -108,7 +113,7 @@ func TestTheViewDrawsAnOpenCodeQuestionWhole(t *testing.T) {
 	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
 	_, card := mirrorGet(t, s, ts, asksPath)
 	for _, want := range []string{`data-ask-tool="` + ocAskForm + `"`, "opencode is asking", "Which database should the fixture use?",
-		"Postgres (Recommended)", "the default", "SQLite", "Which extras?", `type="checkbox"`, `value="metrics"`, "Type your own answer", "data-ask-submit"} {
+		"Postgres (Recommended)", "the default", "SQLite", "Which extras?", `type="checkbox"`, `name="a1" value="1"`, "Type your own answer", "data-ask-submit"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the card lacks %q:\n%s", want, card)
 		}
@@ -128,7 +133,7 @@ func TestAnOpenCodeQuestionsSubmitRelaysThatAskByIndex(t *testing.T) {
 	m := newOCFormMirror(false)
 	s, ts := viewServer(t, m.fakeMirror)
 	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
-	resp, body := answerReq(t, s, ts, answerForm(ocAskForm, "a0", "SQLite", "a1", "metrics", "a1", "__other__", "o1", "tracing"), "", "")
+	resp, body := answerReq(t, s, ts, answerForm(ocAskForm, "a0", "1", "a1", "1", "a1", "__other__", "o1", "tracing"), "", "")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Answered here — opencode has it.") {
 		t.Fatalf("answer = %d:\n%s", resp.StatusCode, body)
 	}
@@ -146,11 +151,11 @@ func TestAnOpenCodePermissionCardRelaysOnceOrReject(t *testing.T) {
 	s, ts := viewServer(t, m.fakeMirror)
 	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
 	_, card := mirrorGet(t, s, ts, asksPath)
-	if !strings.Contains(card, "bash: rm -rf build") || !strings.Contains(card, `value="Allow once"`) || !strings.Contains(card, `value="Reject"`) ||
+	if !strings.Contains(card, "bash: rm -rf build") || !strings.Contains(card, "Allow once") || !strings.Contains(card, `name="a0" value="1"`) ||
 		strings.Contains(card, "Type your own answer") || strings.Contains(card, "always") {
 		t.Fatalf("the permission card:\n%s", card)
 	}
-	if resp, body := answerReq(t, s, ts, answerForm(ocAskPerm, "a0", "Reject"), "", ""); resp.StatusCode != http.StatusOK {
+	if resp, body := answerReq(t, s, ts, answerForm(ocAskPerm, "a0", "1"), "", ""); resp.StatusCode != http.StatusOK {
 		t.Fatalf("answer = %d:\n%s", resp.StatusCode, body)
 	}
 	if calls, _ := m.got(); len(calls) != 1 || calls[0] != "ws main @1 "+ocAskPerm+" reject" {
@@ -169,10 +174,11 @@ func TestAnOpenCodeSubmitForAnotherAskIsRefused(t *testing.T) {
 		form url.Values
 		code int
 	}{
-		"another ask's id":          {answerForm("frm_1a2aaa3d1001lEte0g1lyG1pFi", "a0", "SQLite", "a1", "cache"), http.StatusConflict},
-		"no id":                     {answerForm("", "a0", "SQLite", "a1", "cache"), http.StatusConflict},
-		"a label it does not offer": {answerForm(ocAskForm, "a0", "MySQL", "a1", "cache"), http.StatusBadRequest},
-		"a question unanswered":     {answerForm(ocAskForm, "a0", "SQLite"), http.StatusBadRequest},
+		"another ask's id":          {answerForm("frm_1a2aaa3d1001lEte0g1lyG1pFi", "a0", "1", "a1", "0"), http.StatusConflict},
+		"no id":                     {answerForm("", "a0", "1", "a1", "0"), http.StatusConflict},
+		"a label, not an index":     {answerForm(ocAskForm, "a0", "SQLite", "a1", "0"), http.StatusBadRequest},
+		"an index past the options": {answerForm(ocAskForm, "a0", "2", "a1", "0"), http.StatusBadRequest},
+		"a question unanswered":     {answerForm(ocAskForm, "a0", "1"), http.StatusBadRequest},
 	} {
 		if resp, body := answerReq(t, s, ts, c.form, "", ""); resp.StatusCode != c.code {
 			t.Errorf("%s: %d, want %d:\n%s", name, resp.StatusCode, c.code, body)
@@ -193,5 +199,48 @@ func TestAnOlderHostsOpenCodeQuestionSaysWhy(t *testing.T) {
 	_, card := mirrorGet(t, s, ts, asksPath)
 	if !strings.Contains(card, html_(openCodeCardNoForms)) || strings.Contains(card, "data-ask-submit") {
 		t.Fatalf("the card:\n%s", card)
+	}
+}
+
+// mixedForm: q0 takes only its options; q1 has none and takes only an answer
+// of one's own (free text).
+func mixedForm() mirror.OpenCodeForm {
+	return mirror.OpenCodeForm{PromptID: ocAskForm, Questions: []mirror.OpenCodeQuestion{
+		{Key: "q0", Header: "Branch", Question: "Which branch?", Options: []mirror.OpenCodeOption{{Label: "main"}, {Label: "next"}}},
+		{Key: "q1", Header: "Why", Question: "Say why, in your words", Custom: true},
+	}}
+}
+
+// TestAMixedFormKeepsEachQuestionsOwnAnswerBox: a question that takes only
+// its options has no "Other"; the free-text-only question beside it keeps
+// its box — so the form can be answered — and its answer goes as typed,
+// newlines included (an API answer, not a terminal's one line).
+//
+// 🔴 REGRESSION TEST. At 2afa5ab8 one question without "custom" took the box
+// off EVERY question of the card: the free-text question could not be
+// answered at all.
+func TestAMixedFormKeepsEachQuestionsOwnAnswerBox(t *testing.T) {
+	m := newOCFormMirror(false)
+	f := mixedForm()
+	m.custom = &f
+	s, ts := viewServer(t, m.fakeMirror)
+	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
+	_, card := mirrorGet(t, s, ts, asksPath)
+	if strings.Contains(card, `name="o0"`) || !strings.Contains(card, `name="o1"`) {
+		t.Fatalf("the card's answer boxes: want none on q0, one on q1:\n%s", card)
+	}
+	resp, body := answerReq(t, s, ts, answerForm(ocAskForm, "a0", "1", "a1", "__other__", "o1", "it builds\nand it ships"), "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("answer = %d:\n%s", resp.StatusCode, body)
+	}
+	_, picks := m.got()
+	want := []mirror.OpenCodePick{{Key: "q0", Picks: []int{1}}, {Key: "q1", Other: "it builds\nand it ships"}}
+	if len(picks) != 1 || !reflect.DeepEqual(picks[0], want) {
+		t.Fatalf("relayed %+v; want %+v", picks, want)
+	}
+	// An answer of one's own on the question that takes none: refused, saying so.
+	resp, body = answerReq(t, s, ts, answerForm(ocAskForm, "a0", "__other__", "o0", "main-ish", "a1", "__other__", "o1", "x"), "", "")
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "takes only its own options") {
+		t.Fatalf("one's own answer where none is taken: %d %q", resp.StatusCode, body)
 	}
 }

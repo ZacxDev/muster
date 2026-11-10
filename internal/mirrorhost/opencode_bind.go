@@ -30,6 +30,9 @@ import (
 //     at all (MatchTitle: no view); a CHILD session sharing it — exactly, or
 //     as the start of a cut title — is AgentBindTitleShared: a TUI can show
 //     a subagent's session, whose title the pane then carries;
+//   - the server's whole session list was read: one cut short at the
+//     client's page bound (opencodehost.Client.AllSessions, complete false)
+//     cannot show a title unique (AgentBindListCut);
 //   - the TUI's own command line names no session, or names that very one
 //     (its -s/--session): a TUI started on one session whose title names
 //     another is ambiguous (AgentBindArgv).
@@ -38,10 +41,12 @@ import (
 // is re-made at the moment of sending, from the pane's title read NOW
 // (sendOpenCode re-resolves the window), and the send is refused unless:
 //
-//   - the paste names the session muster's window list names for the window
-//     (Msg.AgentSession: the one the Rendered view shows) and the pane still
-//     resolves to exactly it (PasteRefusalOpenCodeMoved otherwise; a paste
-//     naming none — an older muster — is refused for such a pane);
+//   - the paste names the session the message was WRITTEN FOR
+//     (Msg.AgentSession): the sender's view's when it was typed, or the one a
+//     queued row was stored with, which muster's hub has already required its
+//     window list to name (mirror.ShownSessionCheck) — and the pane, read
+//     NOW, still resolves to exactly it (PasteRefusalOpenCodeMoved otherwise;
+//     a paste naming none — an older muster — is refused for such a pane);
 //   - a fresh read of that session through opencode's API (GET
 //     /api/session/{id}) finds it a root session whose title is still the
 //     pane's (confirmTitleBind).
@@ -62,9 +67,14 @@ func (s *OpenCodeSource) verifyTitleBind(m opencodehost.Match, sessionArg string
 		}
 	}
 	s.mu.Lock()
-	connected := s.connected
+	connected, cut := s.connected, s.sessionsCut
 	s.mu.Unlock()
-	if !connected {
+	switch {
+	case cut:
+		// 🔴 The list stopped at the client's bound with sessions still to
+		// come: a title unique in it may not be unique — never verified.
+		return mirror.AgentBindListCut
+	case !connected:
 		return mirror.AgentBindStream
 	}
 	return mirror.AgentBindVerified

@@ -64,6 +64,8 @@ test.beforeAll(async ({ browser }) => {
   op({ op: 'session', id: 'ses_0e2esendcutkid01', title: 'A long hand-opened fixture session ti (@general subagent)', parent: cut });
   op({ op: 'session', id: ctxSession, title: 'Context fixture session' });
   op({ op: 'session', id: askSession, title: 'Asking fixture session' });
+  // The session @3's pane switches to in the queued-then-switched case.
+  op({ op: 'session', id: 'ses_0e2esendswitch01', title: 'Switched fixture session' });
   // @5: a completed step's usage on fixture-model (input 3517 + cache read
   // 41203 + cache write 2089 = 46809 in context; output 611 is not), whose
   // window GET /api/model says is 187500. Its failed turns are added by the
@@ -420,8 +422,9 @@ for (const vp of viewports) {
     await expect(card).toContainText('opencode is asking');
     await expect(card).toContainText('Which database should the fixture use?');
     await expect(card).toContainText('Which extras?');
-    await card.locator('input[name="a0"][value="SQLite"]').check();
-    await card.locator('input[name="a1"][value="metrics"]').check();
+    // Options are answered by their place in the form, never a label.
+    await card.locator('input[name="a0"][value="1"]').check();
+    await card.locator('input[name="a1"][value="1"]').check();
     const answered = page.waitForResponse((r) => r.url().endsWith('/mirror/view/ask') && r.request().method() === 'POST');
     await card.locator('[data-ask-submit]').click();
     const resp = await answered;
@@ -444,3 +447,42 @@ for (const vp of viewports) {
     expect(JSON.parse(mine[0].Body)).toEqual({ answer: { q0: 'SQLite', q1: ['metrics'] } });
   });
 }
+
+// 🔴 A MESSAGE QUEUED FOR ONE SESSION IS NEVER DELIVERED TO ANOTHER: queued
+// on @3 while its session works, then the hand-opened pane switches to
+// another session (its title moves) and goes idle. The row fails, saying the
+// pane shows another session now — and lands in neither session.
+// REGRESSION TEST: at 2afa5ab8 it was delivered to the session switched to.
+test('a message queued for a hand-opened pane is refused, not delivered, after the pane switches session', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await rig.login(page);
+  await page.goto(rig.origin + viewOf('@3'));
+  await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('matched by title, verified: Title-matched fixture session', {
+    timeout: 20_000,
+  });
+  op({ op: 'status', session: titled, status: 'busy' });
+  await expect(page.locator('#mv-working')).toBeVisible({ timeout: 20_000 });
+  await revealBox(page);
+  const text = `queued then switched ${Date.now()}`;
+  await page.locator('#mv-input').fill(text);
+  await page.locator('#mv-send-more').click();
+  await page.locator('#mv-queue-send').click();
+  const row = page.locator('#mv-queue [data-queue-id]', { hasText: text });
+  await expect(row).toHaveCount(1, { timeout: 10_000 });
+  // The pane now shows another session, and is idle.
+  writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
+  op({ op: 'status', session: titled, status: 'idle' });
+  try {
+    await expect
+      .poll(async () => (await page.request.get(rig.origin + viewOf('@3'))).text(), { timeout: 30_000, intervals: [500] })
+      .toContain('shows another session now than the one this message was written for');
+    await page.goto(rig.origin + viewOf('@3'));
+    await expect(page.locator('#mv-queue [data-queue-id]', { hasText: text })).toHaveAttribute('data-queue-state', 'failed');
+    // Delivered to neither: the switched-to session's view has no row for it.
+    await expect(page.locator('#mv-log [data-notice-row="opencode"]').first()).toContainText('Switched fixture session', { timeout: 20_000 });
+    await expect(rowsOf(page, text)).toHaveCount(0);
+  } finally {
+    writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session'));
+  }
+});

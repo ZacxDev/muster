@@ -132,6 +132,8 @@ type fakeMirror struct {
 	// noHosts: Hosts lists nothing — a hub that has not seen the host (a
 	// fresh process before the host reconnects).
 	noHosts bool
+	// shown is the mirror.ShownSession each PasteWindow named, in order.
+	shown []string
 }
 
 // HostToken answers f.hostTok for the host's owner.

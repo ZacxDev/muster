@@ -235,12 +235,22 @@ type OpenCodeSource struct {
 	// sessionsErr is why the last read of them failed, at sessionsErrAt: a
 	// failure is remembered for sessionsMaxAge, so a server that hangs costs
 	// the listing ONE read timeout, not one per pane per refresh.
+	// sessionsCut: the last read hit the client's page bound with sessions
+	// still to come (opencodehost.Client.AllSessions' complete false), so the
+	// list is not every session and no title can be shown unique against it.
+	sessionsCut   bool
 	sessionsErr   error
 	sessionsErrAt time.Time
 	// readMu makes the read single-flight: concurrent listings and views wait
 	// for one read rather than each making their own.
 	readMu sync.Mutex
 	stale  bool
+	// staleGen counts the times stale was set (markStaleLocked): a read that
+	// began before the latest one does not clear it.
+	staleGen uint64
+	// afterRead, when set (a test's), runs between a sessions read and its
+	// result being kept: where an event can land mid-read.
+	afterRead func()
 	// busy and since are each session's status from the stream (since: when
 	// it last changed, Unix ms; the host's clock).
 	busy  map[string]bool
@@ -393,7 +403,8 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	if s.down != "" {
 		s.logger.Printf("muster-mirror: opencode: reading %s again", cl.URL())
 	}
-	s.connected, s.down, s.stale, s.sessionsErr = true, "", true, nil
+	s.connected, s.down, s.sessionsErr = true, "", nil
+	s.markStaleLocked()
 	// The stream had a gap: what was asked or settled in it is unknown. The
 	// asks known before it are HELD until each matched session's pending
 	// lists are read again (seed); only that re-read drops one settled in it.
@@ -409,7 +420,7 @@ func (s *OpenCodeSource) event(e opencodehost.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if titleEvents[e.Type] {
-		s.stale = true // the root sessions or their titles may have changed
+		s.markStaleLocked() // the sessions or their titles may have changed
 	}
 	if e.Type == opencodehost.EventSkipped {
 		// An event too large to read was skipped: treat it as a gap (what it
@@ -485,35 +496,47 @@ func (s *OpenCodeSource) knownSessions() ([]opencodehost.Session, error) {
 	if list, err, ok := cached(); ok {
 		return list, err // another caller read them while this one waited
 	}
-	list, err := s.readSessions()
+	s.mu.Lock()
+	staleGen := s.staleGen
+	s.mu.Unlock()
+	list, complete, err := s.readSessions()
+	if s.afterRead != nil {
+		s.afterRead()
+	}
 	s.mu.Lock()
 	if err != nil {
 		s.sessionsErr, s.sessionsErrAt = err, s.now()
 	} else {
-		s.sessions, s.sessionsAt, s.stale, s.sessionsErr = list, s.now(), false, nil
+		s.sessions, s.sessionsAt, s.sessionsErr, s.sessionsCut = list, s.now(), nil, !complete
+		// 🔴 Only a list read AFTER the last session event is current: an
+		// event while this read was in flight (stale set meanwhile) keeps it
+		// stale, and the next use reads again.
+		if s.staleGen == staleGen {
+			s.stale = false
+		}
 	}
 	s.mu.Unlock()
 	return list, err
 }
 
 // readSessions reads every session once, within 3 s.
-func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, error) {
+func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, bool, error) {
 	cl, err := s.creds.Client()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 	defer cancel()
-	list, err := cl.AllSessions(ctx)
+	list, complete, err := cl.AllSessions(ctx)
 	if err != nil {
 		if errors.Is(err, opencodehost.ErrUnauthorized) {
 			s.mu.Lock()
 			s.down = unauthorizedWhy
 			s.mu.Unlock()
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return list, nil
+	return list, complete, nil
 }
 
 // status is session id's status (StatusBusy or StatusIdle) and its time;
@@ -674,5 +697,12 @@ func ResolveOpenCodePaneStarted(s *OpenCodeSource, pane string, pid int, start, 
 func (s *OpenCodeSource) sessionsChanged() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.markStaleLocked()
+}
+
+// markStaleLocked has the next read of the sessions go to the server, and
+// keeps any read already in flight from clearing that (staleGen). s.mu held.
+func (s *OpenCodeSource) markStaleLocked() {
 	s.stale = true
+	s.staleGen++
 }
