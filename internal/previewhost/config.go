@@ -10,16 +10,22 @@
 //   - procnet.go: this host's listening sockets, from /proc/net/tcp{,6}, with
 //     the uid that owns each (the foreign_listener check);
 //   - listeners.go: the listener reports, attributing an allowlisted listener
-//     to the tmux window whose pane runs it.
+//     to the tmux window whose pane runs it;
 //
-// It imports the standard library only. The process table it walks comes in
-// as a function (ProcTable): muster-mirror passes mirrorhost's, the same seam
-// the Claude Code locator reads, so this package does not link mirrorhost and
-// mirrorhost may later link it.
+// and how it serves the gateway (this part imports the tunnel transport,
+// internal/preview/tunnel; the rest is the standard library and
+// internal/preview/wire):
 //
-// Nothing here dials, listens or serves: the tunnel to the gateway is a later
-// change. With -preview set, muster-mirror loads and validates this
-// configuration and logs what it would offer.
+//   - connect.go: the tunnel's CONNECT streams (the port alone, the checks
+//     above, then 127.0.0.1 and ::1);
+//   - offer.go and host.go: the offer stream (config, window listing and
+//     reports, each sent only on change; open and close requests; the
+//     re-announce on a gateway restart) and the state it is served from;
+//   - dial.go: the tunnel to the gateway, mesh endpoint first.
+//
+// The process table it walks comes in as a function (ProcTable): muster-mirror
+// passes mirrorhost's, the same seam the Claude Code locator reads, so this
+// package does not link mirrorhost and mirrorhost may later link it.
 package previewhost
 
 import (
@@ -30,16 +36,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/ZacxDev/muster/internal/preview/wire"
 )
 
-// Caps on previews.json's numbers. MaxConns is the gateway-wide cap: the
-// gateway sizes each tunnel's HTTP/2 connection window from it before the host
-// announces its own maxConns, so a host may not ask for more.
+// Caps on previews.json's numbers. maxConns has no constant here: its cap and
+// default are wire.MaxConns, the one source the gateway sizes each tunnel's
+// HTTP/2 connection window from before the host announces its own maxConns,
+// so a host may not ask for more.
 const (
-	DefaultMaxOpen  = 8
-	MaxMaxOpen      = 32
-	DefaultMaxConns = 64
-	MaxMaxConns     = 64
+	DefaultMaxOpen = 8
+	MaxMaxOpen     = 32
 )
 
 // FileName is previews.json's name in muster-mirror's config directory.
@@ -150,7 +157,7 @@ func Parse(b []byte) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	c := Config{Ports: ports, Offer: true, MaxOpen: DefaultMaxOpen, MaxConns: DefaultMaxConns}
+	c := Config{Ports: ports, Offer: true, MaxOpen: DefaultMaxOpen, MaxConns: wire.MaxConns}
 	if s.Offer != nil {
 		c.Offer = *s.Offer
 	}
@@ -161,8 +168,8 @@ func Parse(b []byte) (Config, error) {
 		c.MaxOpen = *s.MaxOpen
 	}
 	if s.MaxConns != nil {
-		if *s.MaxConns < 1 || *s.MaxConns > MaxMaxConns {
-			return Config{}, fmt.Errorf(`"maxConns" %d is outside 1-%d`, *s.MaxConns, MaxMaxConns)
+		if *s.MaxConns < 1 || *s.MaxConns > wire.MaxConns {
+			return Config{}, fmt.Errorf(`"maxConns" %d is outside 1-%d`, *s.MaxConns, wire.MaxConns)
 		}
 		c.MaxConns = *s.MaxConns
 	}
