@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -19,9 +20,11 @@ import (
 // lets GET/HEAD on exactly these two paths and /static/icons/*.png through
 // WITHOUT a session (Chrome's WebAPK icon hasher never sends cookies; without
 // the bypass a phone install degrades to a plain shortcut with no share target
-// and no shortcuts). Both handlers read nothing from the request, and the
-// manifest is a constant built once from constants.
-// TestPWAMetadataIsSessionIndependent pins that.
+// and no shortcuts). Both handlers read nothing from the request's identity:
+// the manifest is a constant built once from constants, or — on a server with
+// a logo — that constant with the logo's icons, the SERVER's branding, which
+// is the same for every caller (branding.go; its /brand/ icons are public
+// too). TestPWAMetadataIsSessionIndependent pins that.
 // ---------------------------------------------------------------------------
 
 type manifestImage struct {
@@ -145,11 +148,46 @@ var manifestJSON = func() []byte {
 	return b.Bytes()
 }()
 
-// handleManifest serves the web app manifest from the document root.
-func (s *Server) handleManifest(w http.ResponseWriter, _ *http.Request) {
+// handleManifest serves the web app manifest from the document root: the
+// constant above, or — when the instance has a logo (branding.go) — the same
+// manifest with the logo's icons.
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(manifestJSON)
+	body := manifestJSON
+	if b := s.uiBrand(r.Context()); b.HasLogo() {
+		body = brandedManifestJSON(b)
+	}
+	_, _ = w.Write(body)
+}
+
+// BrandedManifest is Manifest with the instance logo's icons in place of
+// muster's: the 192 and 512 px squares, purpose "any".
+//
+// ⚠ NO MASKABLE ICON. A maskable icon must keep its subject inside the
+// central safe zone, and the logo's icons are letterboxed to the edges, so a
+// launcher's mask could cut the logo; the browser draws an "any" icon on a
+// plate of its own instead. muster's own maskable icons are dropped too: they
+// would put muster's mark back on the home screen of a branded server.
+func BrandedManifest(b ui.Brand) WebManifest {
+	m := Manifest()
+	v := "?v=" + url.QueryEscape(b.ETag)
+	m.Icons = []manifestImage{
+		{Src: BrandIcon192Path + v, Sizes: "192x192", Type: "image/png", Purpose: "any"},
+		{Src: BrandIcon512Path + v, Sizes: "512x512", Type: "image/png", Purpose: "any"},
+	}
+	return m
+}
+
+func brandedManifestJSON(b ui.Brand) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(BrandedManifest(b)); err != nil {
+		return manifestJSON
+	}
+	return buf.Bytes()
 }
 
 // swBuildPlaceholder is the literal sw.js carries where the build goes.

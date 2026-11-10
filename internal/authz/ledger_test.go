@@ -114,6 +114,14 @@ var (
 		// claim-link visitor — there is no principal to run as yet. One helper,
 		// so the whole package is this one site.
 		"internal/users.sys",
+		// Instance branding (migration 0105): the server's ONE row, which no user
+		// owns. instance_branding is under FORCE row-level security with a
+		// scope_all policy only, so it is read as the system (Load: the sign-in
+		// page and the public /brand/ images have no user at all) and written as
+		// the system (Apply) only after Apply has checked the caller is an admin.
+		// Nothing per-user is read or handed on.
+		"internal/branding.(*PG).Load",
+		"internal/branding.(*PG).Apply",
 		// Accounts PR 6: a personal API token's lookup by hash. Like
 		// agentByToken, it is how the request's user is LEARNED (api_tokens is
 		// under FORCE RLS); only the row's user_id is handed on.

@@ -149,6 +149,12 @@ var isolationClasses = map[string]routeClass{
 	"GET /sw.js":                            classPublic,
 	"POST /login":                           classPublic,
 	"POST /logout":                          classPublic,
+	// Instance branding (branding.go): the server's public name and logo,
+	// read before sign-in; nothing per-user.
+	"GET /api/instance":       classPublic,
+	"GET /brand/logo.png":     classPublic,
+	"GET /brand/icon-192.png": classPublic,
+	"GET /brand/icon-512.png": classPublic,
 	// accounts PR 4: the admin claim (token in a form field) and the account page.
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
@@ -240,6 +246,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /admin/users/{id}/reset-link":      classAdminOnly,
 	"POST /admin/users/{id}/role":            classAdminOnly,
 	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
+	// Instance branding's writes (branding.go, requireAdminRole): an admin's
+	// session only, in either sign-in mode.
+	"PUT /api/instance/branding":         classAdminOnly,
+	"DELETE /api/instance/branding/logo": classAdminOnly,
 
 	"GET /{$}":                   classList,
 	"GET /agents":                classList,
