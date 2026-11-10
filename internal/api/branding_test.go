@@ -547,11 +547,12 @@ func (c *capturePush) SendTo(_ context.Context, _ int64, p push.Payload) push.Re
 	return push.Report{}
 }
 
-// TestPushCarriesTheLogoIconWhenSet: every notification sendPush delivers
-// names an icon — muster's own with nothing set (absolute under
+// TestPushCarriesTheLogoIconWhenSet: every Web Push notification sendPush
+// delivers names an icon — muster's own with nothing set (absolute under
 // MUSTER_PUBLIC_URL), the logo's 192 px icon versioned by its ETag once one
-// is — in the browser's JSON; the native payload (v2) carries the icon and
-// its ETag only for a logo. A "resolved" carries none: it shows nothing.
+// is. The native payload (v2) carries no icon either way: the Android app
+// reads the logo from GET /api/instance. A "resolved" carries none: it shows
+// nothing.
 func TestPushCarriesTheLogoIconWhenSet(t *testing.T) {
 	s := New(nil, AuthConfig{PublicURL: "https://muster.example.com/"}, log.New(io.Discard, "", 0))
 	mem, cp := &memBranding{}, &capturePush{}
@@ -566,16 +567,20 @@ func TestPushCarriesTheLogoIconWhenSet(t *testing.T) {
 		}
 		return cp.got[0]
 	}
-	p := send()
-	if p.Icon != "https://muster.example.com/static/icons/icon-192.png" || p.IconETag != "" {
-		t.Fatalf("nothing set: icon %q etag %q", p.Icon, p.IconETag)
+	noIconInV2 := func(p push.Payload) {
+		t.Helper()
+		if v2, _ := json.Marshal(p.V2()); strings.Contains(string(v2), "icon") {
+			t.Fatalf("the native payload carries an icon: %s", v2)
+		}
 	}
-	if v2 := p.V2(); v2.Icon != "" || v2.IconETag != "" {
-		t.Fatalf("nothing set: the native payload carries an icon: %+v", v2)
+	p := send()
+	if p.Icon != "https://muster.example.com/static/icons/icon-192.png" {
+		t.Fatalf("nothing set: icon %q", p.Icon)
 	}
 	if js, _ := json.Marshal(p); !strings.Contains(string(js), `"icon":"https://muster.example.com/static/icons/icon-192.png"`) {
 		t.Fatalf("the browser JSON: %s", js)
 	}
+	noIconInV2(p)
 
 	img, err := branding.Process(testLogoPNG(t, 24, 12))
 	if err != nil {
@@ -584,14 +589,10 @@ func TestPushCarriesTheLogoIconWhenSet(t *testing.T) {
 	mem.b = branding.Branding{Logo: img.Logo, Icon192: img.Icon192, Icon512: img.Icon512, ETag: img.ETag}
 	s.brand = brandCache{} // as if the TTL had passed
 	p = send()
-	want := "https://muster.example.com/brand/icon-192.png?v=" + img.ETag
-	if p.Icon != want || p.IconETag != img.ETag {
-		t.Fatalf("with a logo: icon %q etag %q, want %q", p.Icon, p.IconETag, want)
+	if want := "https://muster.example.com/brand/icon-192.png?v=" + img.ETag; p.Icon != want {
+		t.Fatalf("with a logo: icon %q, want %q", p.Icon, want)
 	}
-	v2, _ := json.Marshal(p.V2())
-	if !strings.Contains(string(v2), `"icon":"`+want+`","icon_etag":"`+img.ETag+`"`) {
-		t.Fatalf("the native payload: %s", v2)
-	}
+	noIconInV2(p)
 
 	cp.got = nil
 	s.sendPush(ctx, 1, push.Payload{Type: push.TypeResolved, Tag: "x"})

@@ -7,7 +7,7 @@ draws them in place of its own mark:
 - on the sign-in page;
 - as the favicon and the touch icon;
 - as the installed app's icons (the web app manifest);
-- as the icon of every notification (Web Push, and the Android app's pushes);
+- as the icon of every Web Push notification;
 - in [`GET /api/instance`](#the-instance-document), which the apps read to show
   which server is which.
 
@@ -132,10 +132,9 @@ ETag) when a logo is set, and muster's own icon otherwise. With
 `MUSTER_PUBLIC_URL` set the URL is absolute; without it, it is a path on the
 server, which the service worker resolves against its own origin.
 
-The Android app's payload (v2) gains `icon` and `icon_etag` only when a logo is
-set. Both are additive: an older app ignores them. An icon URL longer than
-512 bytes, or holding a character JSON would escape, is left out, and the app
-draws its own icon.
+The Android app's push payload (v2) carries no icon: the app reads the logo
+from [`GET /api/instance`](#the-instance-document) itself, when it starts, when
+a server is added, and every 15 minutes.
 
 ## Behind an edge that signs people in
 

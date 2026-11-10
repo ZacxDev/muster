@@ -298,7 +298,7 @@ func (s *Server) sendPush(ctx context.Context, owner int64, p push.Payload) push
 		return push.Report{}
 	}
 	if p.Type != push.TypeResolved {
-		p.Icon, p.IconETag = s.pushIcon(ctx)
+		p.Icon = s.pushIcon(ctx)
 	}
 	return s.ext.Push.SendTo(ctx, owner, p)
 }
@@ -307,21 +307,19 @@ func (s *Server) sendPush(ctx context.Context, owner int64, p push.Payload) push
 // the same when a payload names none).
 const defaultPushIcon = "/static/icons/icon-192.png"
 
-// pushIcon is a notification's icon URL and the logo's ETag: the instance
-// logo's 192 px icon (versioned by its ETag) when one is set, muster's own
-// icon and "" otherwise. Absolute under MUSTER_PUBLIC_URL when it is set — the
-// Android app fetches it outside any page — else a path on this server, which
-// a service worker resolves against its own origin.
-func (s *Server) pushIcon(ctx context.Context) (string, string) {
-	b := s.uiBrand(ctx)
-	path, etag := defaultPushIcon, ""
-	if b.HasLogo() {
-		path, etag = b.Icon192(), b.ETag
+// pushIcon is a Web Push notification's icon URL: the instance logo's 192 px
+// icon (versioned by its ETag) when one is set, muster's own icon otherwise.
+// Absolute under MUSTER_PUBLIC_URL when it is set, else a path on this server,
+// which a service worker resolves against its own origin.
+func (s *Server) pushIcon(ctx context.Context) string {
+	path := defaultPushIcon
+	if b := s.uiBrand(ctx); b.HasLogo() {
+		path = b.Icon192()
 	}
 	if base := strings.TrimRight(strings.TrimSpace(s.auth.PublicURL), "/"); base != "" {
 		path = base + path
 	}
-	return path, etag
+	return path
 }
 
 // forgetPushDevice removes the signing-out browser's own subscription (named by
