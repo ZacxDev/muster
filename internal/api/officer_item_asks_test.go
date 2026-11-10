@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/transcript"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,8 +42,8 @@ const (
 // would be ACCEPTED as that officer — which the token assertions would catch.
 func newItemAskRig(t *testing.T) *officerRig {
 	t.Helper()
-	return newOfficerRigWith(t, map[string]string{offTRTok: offTR, offWPTok: offWP, offATok: offA}, func(hqURL string) []officers.Officer {
-		tiers := `"tiers":{"routine":{"model":"haiku","max_instances":1},"judgement":{"model":"opus","max_instances":1}}`
+	return newOfficerRigCfg(t, map[string]string{offTRTok: offTR, offWPTok: offWP, offATok: offA}, func(hqURL string) []officers.Officer {
+		tiers := `"tiers":{"routine":{"model":"haiku","max_instances":1},"judgement":{"model":"opus","max_instances":1}},"transcript":{"enabled":true}`
 		raw := `[{"id":"` + offTR + `","hq_url":"` + hqURL + `",` + tiers + `},{"id":"` + offWP + `","hq_url":"` + hqURL + `",` + tiers + `}]`
 		list, err := officers.Parse(raw, func(k string) string {
 			return map[string]string{
@@ -56,7 +58,25 @@ func newItemAskRig(t *testing.T) *officerRig {
 			t.Fatalf("the item-ask rig's officers: %+v", list)
 		}
 		return list
+	}, func(c *OfficersConfig) {
+		// muster's own lease tracking is observable through the transcript
+		// forwarder (officerItemEnded stops it); its loop never runs here.
+		c.TranscriptSource = emptyTranscripts{}
+		c.NoTranscriptRun = true
 	})
+}
+
+// emptyTranscripts is a transcript source with nothing to read.
+type emptyTranscripts struct{}
+
+func (emptyTranscripts) Read(context.Context, officers.Officer, string, transcript.Query) (cctranscript.Page, error) {
+	return cctranscript.Page{}, nil
+}
+
+// tracked reports whether muster still tracks inst's hold on item (the
+// transcript forwarder's active set, which officerItemEnded clears).
+func (r *officerRig) tracked(inst agents.Agent, item string) bool {
+	return r.s.officerRT.fwd.Active()[inst.Name] == officers.ItemID(item)
 }
 
 // TestTheFloodToolIsTheJudgementPoolsOnly (operator decision on #565): the
@@ -202,6 +222,9 @@ func TestATaskAskSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
 		t.Fatalf("not JSON: %s", out)
 	}
+	if r.tracked(inst, item) {
+		t.Error("muster still tracks the item after a successful task ask (the lease ended)")
+	}
 	if res.TaskAsk["task_id"] != "fixture-task-1" || res.Ask["to"] != "fixture-owner" || res.Item["status"] != "waiting" {
 		t.Errorf("result does not carry HQ's answer: %s", out)
 	}
@@ -339,7 +362,9 @@ func refusedHQ(t *testing.T, out string) (int, string, map[string]any, string) {
 // each route, a 404, and the flood route's 503 flood_actuator_not_configured
 // (a 5xx that is a decision) each come back as a FINAL refusal (never
 // "retry", never "unavailable") with HQ's status, its code and HQ's body
-// byte-for-byte under refused.hq, and the item is NOT ended. The codes are
+// byte-for-byte under refused.hq, and muster does NOT end its own tracking of
+// the item (an HQ outage neither: the POST may or may not have committed,
+// and HQ's claim state, not muster's guess, settles it). The codes are
 // HQ's (HQ's officer docs); muster passes any code through the same way.
 func TestEveryHQRefusalReachesTheModelVerbatim(t *testing.T) {
 	r := newItemAskRig(t)
@@ -377,10 +402,27 @@ func TestEveryHQRefusalReachesTheModelVerbatim(t *testing.T) {
 		if want := "HQ refused " + tool + " (" + strconv.Itoa(c.status) + " " + c.code + "): " + msg; text != want {
 			t.Errorf("%s %s: error %q, want %q", tool, c.code, text, want)
 		}
-		if it := r.hq.Item(item); it.Status != "claimed" || it.ClaimedBy != inst.Name {
-			t.Fatalf("%s %s: HQ's item changed on a refusal: %+v", tool, c.code, it)
+		if !r.tracked(inst, item) {
+			t.Errorf("%s %s: muster stopped tracking the item on a refusal", tool, c.code)
 		}
 	}
+	r.hq.SetDown(true)
+	for _, c := range []struct {
+		inst       agents.Agent
+		tool, args string
+		item       string
+	}{
+		{tr, taskAskTool, `{"item_id":"` + trItem + `"}`, trItem},
+		{wp, floodTool, `{"item_id":"` + wpItem + `","unit_ids":["prefix:a"],"ttl_hours":2}`, wpItem},
+	} {
+		if out := r.s.dispatchAgentTool(ctx, c.inst, c.tool, c.args); !strings.Contains(out, "unavailable") {
+			t.Errorf("%s with HQ down: %s, want unavailable", c.tool, out)
+		}
+		if !r.tracked(c.inst, c.item) {
+			t.Errorf("%s with HQ down: muster stopped tracking the item", c.tool)
+		}
+	}
+	r.hq.SetDown(false)
 }
 
 // TestAnOutageIsRetryNotARefusal: HQ down (a 503 with no decision code) is

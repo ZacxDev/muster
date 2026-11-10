@@ -42,7 +42,7 @@ func itemAskToolDefs() []agents.ToolDef {
 				"You do NOT choose the task, the person, the question or the options: HQ derives them from the item. HQ — never you — applies the person's answer. " +
 				"On success NOTHING has been applied yet, so never claim the task was changed. " +
 				"🔴 Success ENDS your lease on the item (it becomes waiting): stop working it — do not heartbeat, complete or release it. " +
-				"HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call.",
+				"HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call. If muster says HQ is unavailable, the request may still have committed: check the item (officer_items) for an open ask before retrying, so you do not ask twice.",
 			Parameters: objSchema(map[string]any{
 				"item_id": item,
 				"note":    strProp("Optional: your own words, shown last in the ask and labelled as yours. Never a credential."),
@@ -52,7 +52,7 @@ func itemAskToolDefs() []agents.ToolDef {
 				"Name the item's unit ids exactly as the item gives them — never an address; HQ resolves them. muster sends action managed_challenge. " +
 				"Only the person's approval makes HQ — never you — apply the challenge, so on success NOTHING is in place yet: never claim traffic was challenged or blocked. " +
 				"🔴 Success ENDS your lease on the item (it becomes waiting): stop working it — do not heartbeat, complete or release it. " +
-				"HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call.",
+				"HQ owns every limit; a refusal comes back verbatim with HQ's status, code and message, and nothing was written. Do not retry an identical refused call. If muster says HQ is unavailable, the request may still have committed: check the item (officer_items) for an open ask before retrying, so you do not ask twice.",
 			Parameters: objSchema(map[string]any{
 				"item_id": item,
 				"unit_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1,
