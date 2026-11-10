@@ -251,8 +251,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				Meta(Name("apple-mobile-web-app-title"), Content("muster")),
 				TitleEl(g.Text("muster")),
 				manifestLink(),
-				Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href(web.Asset("/static/icons/icon-192.png"))),
-				Link(Rel("apple-touch-icon"), Href(web.Asset("/static/icons/icon-192.png"))),
+				brandIconLinks(feat.Brand),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				// idiomorph: morph-style swaps so live list updates patch the DOM
@@ -295,7 +294,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					// desktop (lg+); full width on mobile (slide-out sidebar).
 					Div(
 						Class("lg:pl-72"),
-						header(feat.Push),
+						header(feat.Push, feat.Brand),
 						pushStatusMessage(),
 						Main(
 							// Width comes from contentWidth() — the SAME helper the header
@@ -676,7 +675,7 @@ func proseWidth() string {
 // push affordances follow the same rule: with no VAPID keys (push false) the
 // Enable button is not drawn, because tapping it would ask for the OS
 // permission and then fail on a 503.
-func header(push bool) g.Node {
+func header(push bool, brand Brand) g.Node {
 	return Header(
 		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
 		Div(
@@ -689,11 +688,12 @@ func header(push bool) g.Node {
 			// appScript's initPage binds the same #sidebar-open on every page.
 			sidebarOpenButton(),
 			// Brand wordmark links home. Boosted (Task 3) so tapping it does an
-			// AJAX body-swap to / rather than a full reload.
+			// AJAX body-swap to / rather than a full reload. An instance with
+			// branding draws its logo and name instead (brandMark).
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
-				Class("inline-flex min-h-[44px] items-center text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
-				wordmark(),
+				Class("inline-flex min-h-[44px] min-w-0 items-center gap-2 text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
+				brandMark(brand),
 			),
 			Span(Class("flex-1")),
 			// "Enable notifications" affordance. Hidden by default; the PWA client
@@ -923,7 +923,7 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			// content header's beside it.
 			Div(
 				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
-				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
+				Span(Class("inline-flex min-w-0 items-center gap-2 text-lg font-semibold tracking-tight"), brandMark(feat.Brand)),
 				Span(Class("flex-1")),
 				// The command palette's other way in (palette.go): the same box
 				// the session switcher's magnifier opens.

@@ -297,7 +297,31 @@ func (s *Server) sendPush(ctx context.Context, owner int64, p push.Payload) push
 	if !s.pushServed() || owner <= 0 {
 		return push.Report{}
 	}
+	if p.Type != push.TypeResolved {
+		p.Icon, p.IconETag = s.pushIcon(ctx)
+	}
 	return s.ext.Push.SendTo(ctx, owner, p)
+}
+
+// defaultPushIcon is muster's own notification icon (web/static/sw.js draws
+// the same when a payload names none).
+const defaultPushIcon = "/static/icons/icon-192.png"
+
+// pushIcon is a notification's icon URL and the logo's ETag: the instance
+// logo's 192 px icon (versioned by its ETag) when one is set, muster's own
+// icon and "" otherwise. Absolute under MUSTER_PUBLIC_URL when it is set — the
+// Android app fetches it outside any page — else a path on this server, which
+// a service worker resolves against its own origin.
+func (s *Server) pushIcon(ctx context.Context) (string, string) {
+	b := s.uiBrand(ctx)
+	path, etag := defaultPushIcon, ""
+	if b.HasLogo() {
+		path, etag = b.Icon192(), b.ETag
+	}
+	if base := strings.TrimRight(strings.TrimSpace(s.auth.PublicURL), "/"); base != "" {
+		path = base + path
+	}
+	return path, etag
 }
 
 // forgetPushDevice removes the signing-out browser's own subscription (named by

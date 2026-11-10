@@ -274,12 +274,12 @@ test('an attention notification is shown with its tag and link, and its resolved
     await navigator.serviceWorker.ready;
   });
   await worker.evaluate(() => {
-    type Note = { title: string; body: string; tag: string; url: string; open: boolean; close: () => void };
+    type Note = { title: string; body: string; tag: string; url: string; icon: string; open: boolean; close: () => void };
     const sink: Note[] = [];
     (self as unknown as { __notes: Note[] }).__notes = sink;
     const reg = (self as unknown as { registration: ServiceWorkerRegistration }).registration;
     reg.showNotification = async (title: string, o?: NotificationOptions) => {
-      const n: Note = { title, body: o?.body ?? '', tag: o?.tag ?? '', url: (o?.data || {}).url, open: true, close: () => (n.open = false) };
+      const n: Note = { title, body: o?.body ?? '', tag: o?.tag ?? '', url: (o?.data || {}).url, icon: o?.icon ?? '', open: true, close: () => (n.open = false) };
       sink.push(n);
     };
     reg.getNotifications = (async (f?: { tag?: string }) =>
@@ -293,19 +293,25 @@ test('an attention notification is shown with its tag and link, and its resolved
   const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
   const shown = () =>
     worker.evaluate(() =>
-      (self as unknown as { __notes: { title: string; body: string; tag: string; url: string; open: boolean }[] }).__notes.map((n) => ({
-        title: n.title, body: n.body, tag: n.tag, url: n.url, open: n.open,
+      (self as unknown as { __notes: { title: string; body: string; tag: string; url: string; icon: string; open: boolean }[] }).__notes.map((n) => ({
+        title: n.title, body: n.body, tag: n.tag, url: n.url, icon: n.icon, open: n.open,
       })),
     );
   const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
 
   await deliver(
-    '{"type":"attention","id":"ask-41","title":"worker-7 is asking","body":"Deploy the importer now? More detail below.","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"}}',
+    '{"type":"attention","id":"ask-41","title":"worker-7 is asking","body":"Deploy the importer now? More detail below.","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"},"icon":"/static/icons/icon-192.png"}',
   );
-  const note = { title: 'worker-7 is asking', body: 'Deploy the importer now? More detail below.', tag: 'attention-ask-41', url: '/attention/open/ask-41' };
+  const note = { title: 'worker-7 is asking', body: 'Deploy the importer now? More detail below.', tag: 'attention-ask-41', url: '/attention/open/ask-41', icon: '/static/icons/icon-192.png' };
   await expect.poll(shown).toEqual([{ ...note, open: true }]);
   await deliver('{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}');
   await expect.poll(shown).toEqual([{ ...note, open: false }]);
+  // A server with a logo names its icon (internal/api sendPush,
+  // docs/branding.md): the worker draws THAT, not muster's.
+  await deliver(
+    '{"type":"attention","id":"ask-42","title":"t","body":"b","tag":"attention-ask-42","data":{"url":"/attention/open/ask-42"},"icon":"/brand/icon-192.png?v=0123456789abcdef"}',
+  );
+  await expect.poll(async () => (await shown()).find((n) => n.tag === 'attention-ask-42')?.icon).toBe('/brand/icon-192.png?v=0123456789abcdef');
 });
 
 
@@ -443,7 +449,7 @@ test('tapping an attention notification follows its tap route in the open tab', 
   await tap.deliverAndTap(
     'session-0011223344556677',
     '{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws",' +
-      '"tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}',
+      '"tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"},"icon":"/static/icons/icon-192.png"}',
   );
   await page.waitForURL(origin + '/attention#session-0011223344556677');
   expect(tap.opened, 'the tab went through the tap route').toContain('/attention/open/session-0011223344556677');

@@ -317,7 +317,9 @@ origins that sign-in passes through. muster serves them at
 - **No credential.** The app reads the list before the first sign-in, and so
   before pairing. Your proxy must therefore let `/api/device/` through without
   its own sign-in, which the device routes need anyway. Let **only**
-  `/api/device/` through: everything else stays behind the proxy's sign-in.
+  `/api/device/` through: everything else stays behind the proxy's sign-in. (Optionally `/api/instance` and `/brand/` too, so the app
+  shows the server's [name and logo](branding.md) before signing in; they hold
+  nothing per-user.)
 - **Keep `/manifest.webmanifest` behind the sign-in.** The app checks whether
   the proxy's session is still alive by fetching that file without following
   redirects: muster serves it with no session of its own, so only the proxy

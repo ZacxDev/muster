@@ -194,6 +194,7 @@ func NavDocument(v NavDocumentView) g.Node {
 				ThemeHead(),
 				Meta(Name("robots"), Content("noindex")),
 				manifestLink(),
+				brandIconLinks(v.Feat.Brand),
 				TitleEl(g.Text(v.Title+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
@@ -214,7 +215,7 @@ func navColumnBody(v NavDocumentView) g.Node {
 			Class("lg:pl-72"),
 			// The shell's own header (hamburger + wordmark), without the push
 			// affordances: their script is the shell's, not this page's.
-			header(false),
+			header(false, v.Feat.Brand),
 			Main(
 				g.Attr("data-nav-document", ""),
 				Class("mx-auto w-full max-w-sm px-4 pb-[calc(4rem+env(safe-area-inset-bottom))] pt-6"),

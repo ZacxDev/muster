@@ -38,6 +38,41 @@ type Payload struct {
 	// AskActions: the server routes the signed ask actions, so payload v2
 	// offers them (PayloadV2.Actions). Payload v2 only.
 	AskActions bool `json:"-"`
+	// Icon is the notification's icon URL: the instance logo's 192 px icon
+	// when one is set, muster's own otherwise (internal/api sendPush stamps
+	// it; docs/branding.md). The service worker draws it, falling back to
+	// muster's icon when it is absent.
+	Icon string `json:"icon,omitempty"`
+	// IconETag is the instance logo's ETag, "" with no logo. Payload v2 only:
+	// it is what tells the app Icon is a logo worth caching.
+	IconETag string `json:"-"`
+}
+
+// MaxNativeIcon is the longest icon URL payload v2 carries, in bytes; a
+// longer one (a very long MUSTER_PUBLIC_URL) is left out, and the app draws
+// its own icon.
+const MaxNativeIcon = 512
+
+// nativeIconOK reports whether payload v2 may carry icon: non-empty, at most
+// MaxNativeIcon bytes, and every byte one JSON writes as itself.
+//
+// 🔴 THE CAP IS ON THE BYTES SENT, SO NO BYTE MAY GROW. encoding/json writes
+// `<`, `>` and `&` as six-byte \u escapes (and a quote, a backslash, a control
+// or a non-ASCII byte longer too), so a 512-byte URL of them would be 3 KiB on
+// the wire and push the worst-case ask's QUESTION out of the record
+// (TestTheWorstCaseAskStillFitsWithTheLongestIcon measured 5088 bytes). A URL
+// muster builds never holds them; one that does is left out.
+func nativeIconOK(icon string) bool {
+	if icon == "" || len(icon) > MaxNativeIcon {
+		return false
+	}
+	for i := 0; i < len(icon); i++ {
+		c := icon[i]
+		if c <= ' ' || c >= 0x7f || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			return false
+		}
+	}
+	return true
 }
 
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
@@ -80,6 +115,12 @@ type PayloadV2 struct {
 	Update bool `json:"update,omitempty"`
 	// Actions are the ask's signed actions (see above); none otherwise.
 	Actions []V2Action `json:"actions,omitempty"`
+	// Icon and IconETag are the instance logo's 192 px icon (an absolute URL
+	// when MUSTER_PUBLIC_URL is set, else a path on this server) and its
+	// ETag, present only when the instance has a logo (docs/branding.md).
+	// Additive: an app that predates them ignores both.
+	Icon     string `json:"icon,omitempty"`
+	IconETag string `json:"icon_etag,omitempty"`
 }
 
 // The action wire ids payload v2 may name: the app's table, exact strings
@@ -225,6 +266,9 @@ func (p Payload) V2() PayloadV2 {
 		return v
 	}
 	v.Title, v.Body, v.URL, v.Update = CutClusters(p.Title, MaxNativeTitle), CutClusters(p.Body, MaxNativeBody), p.Data["url"], p.Update
+	if p.IconETag != "" && nativeIconOK(p.Icon) {
+		v.Icon, v.IconETag = p.Icon, p.IconETag
+	}
 	if p.Ask != nil {
 		v.Ask = &V2Ask{ID: p.Ask.ID, Options: chips(p.Ask.Options), Suggestions: chips(p.Ask.Suggestions)}
 		if p.AskActions {

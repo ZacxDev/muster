@@ -381,6 +381,13 @@ export const pluginChipPort = port + 372;
 // (mirror plugin, plugins and MUSTER_PLUGIN_ORIGINS on) and one fake host, so
 // the Rendered and Terminal views are measured WITH the chip row.
 export const clsChipPort = port + 373;
+// tests/branding.spec.ts: the instance branding — a password-mode server of
+// its own (the admin's upload), and a gotrue-mode pair with its own GoTrue
+// compose project (a member's Account page).
+export const brandingPort = port + 374;
+export const brandingMainPort = port + 375;
+export const brandingBrowserPort = port + 376;
+export const brandingGotruePort = Number(process.env.MUSTER_E2E_BRANDING_GOTRUE_PORT ?? port + 377);
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

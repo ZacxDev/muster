@@ -33,6 +33,10 @@ With the Compose stack, every optional server variable below is set in `.env`:
 agent-provisioning ones, which need Kubernetes. [features.md](features.md) says
 which variables each feature needs, and how to check it is on.
 
+Some settings are made in the UI and kept in the database, not in the
+environment, so they have no row here: an admin sets the server's logo and
+display name on the Account page ([branding.md](branding.md)).
+
 The server checks its configuration at boot and refuses to start on an invalid
 or contradictory combination. After it starts, it logs one line per feature
 saying whether that feature is on, off or degraded, and why.
