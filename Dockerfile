@@ -127,12 +127,20 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpat
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w" -o /muster-clankmail ./cmd/muster-clankmail
 
+# The preview gateway (docs/configuration.md, "muster-preview"): a separate
+# process, run from this same image with the container command
+# `/muster-preview` (and its host-token subcommands through `kubectl exec`/
+# `docker exec`). It never runs inside muster-server.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags="-s -w" -o /muster-preview ./cmd/muster-preview
+
 # --- Stage 3: minimal runtime ------------------------------------------------
 # distroless/static includes CA certificates, which the GitHub calls need.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /muster-server /muster-server
 COPY --from=build /muster-migrate /muster-migrate
 COPY --from=build /muster-clankmail /muster-clankmail
+COPY --from=build /muster-preview /muster-preview
 # 🔴 THE PATH IS api.defaultAgentCLIPath, AND THE CONSTANT'S COMMENT SAYS THE
 # LAYOUT IS SET "IN THE SAME REPO AS THIS CONSTANT". This line is what makes
 # that sentence true. Read at request time by GET /agent/muster; never executed
