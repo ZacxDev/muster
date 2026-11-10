@@ -148,9 +148,8 @@ the stop left a process running (["Turning it off"](#turning-the-chief-on-or-off
   Apple-silicon Mac without emulation). muster itself runs on both.
 - **No Terminal view**: muster has no exec into the container. Its output is in
   `docker compose logs chief` on the server.
-- **No other agents**: `agent_dispatch` is not offered. muster has no dispatch
-  UI on any install (no sidebar "+", no hint in its place); agents are started
-  by a Kubernetes chief or `muster agent create`. Agent dispatch needs Kubernetes.
+- **No other agents**: `agent_dispatch` is not offered. Agent dispatch needs
+  Kubernetes.
 - **`muster chief replace` is refused** (409): there is one kind here.
 - **No HQ server**: the published image has no `hq` binary.
 
