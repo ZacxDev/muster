@@ -797,24 +797,24 @@ pane `opencode` was started in by hand is bound by its title. The host sends to
 it when **all** of these hold, and says why when one does not:
 
 - the TUI runs on the host's own opencode server (no `--standalone`, no
-  `--server`) and the server answers with its root sessions;
+  `--server`) and the server answers with its sessions;
 - its event stream is open, so that list is current (every session event
   makes the host read it again) — else "the opencode server's event stream is
   not answering";
-- the pane's title is **whole** and exactly one root session has it. Two
-  sessions sharing a title, or a cut title (`…`) that starts two, are no match
-  at all (no view); a cut title that starts one keeps its view but is not sent
-  to — "title is cut short" — because a subagent's session, which the root
-  list does not hold, can share the start of a title;
+- exactly **one** session carries the pane's title — counting subagents'
+  sessions as well as top-level ones — whether the title is whole or cut
+  (`…`, then every title starting with what precedes it). Two top-level
+  sessions sharing it are no match at all (no view). A subagent's session
+  sharing it keeps the view but is not sent to — "a subagent's opencode
+  session has the same title as this pane" — because the TUI can be showing
+  that subagent's session;
 - the TUI's own command line names no session, or names that one (`-s`) —
   else "started on one session (its -s) but its title names another".
 
 At the moment of sending the host reads the title again, requires the session
 muster named, and reads that session from opencode's API once more: it must
-still be a root session with the pane's title. A session renamed, deleted or
-replaced since is refused, and nothing is posted. One gap remains: a
-subagent's session titled exactly like a root session cannot be told apart
-from it.
+still be a top-level session whose title the pane shows. A session renamed,
+deleted or replaced since is refused, and nothing is posted.
 
 
 #### opencode's permission requests and questions

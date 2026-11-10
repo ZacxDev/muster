@@ -32,10 +32,11 @@ func ocSendWindows() []mirror.Window {
 			Status: mirror.StatusBusy, StatusSince: 113},
 		{Session: "work", ID: "@4", Index: 3, Claude: true, Status: mirror.StatusIdle, StatusSince: 114},
 		// @5 a hand-opened pane its host VERIFIED (opencode_bind.go), idle;
-		// @6 one whose title is cut, which its host does not send to.
+		// @6 one whose title a subagent's session shares, which its host does not
+		// send to.
 		{Session: "work", ID: "@5", Index: 4, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSIDHand, AgentBind: mirror.AgentBindVerified,
 			Status: mirror.StatusIdle, StatusSince: 115},
-		{Session: "work", ID: "@6", Index: 5, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSIDHand, AgentBind: mirror.AgentBindTitleCut,
+		{Session: "work", ID: "@6", Index: 5, Runtime: mirror.RuntimeOpenCode, AgentSession: ocSendSIDHand, AgentBind: mirror.AgentBindTitleShared,
 			Status: mirror.StatusIdle, StatusSince: 116},
 	}
 }

@@ -25,7 +25,8 @@ const rig = new MirrorRig(openCodeSendPort, 'e2e-ocsend', { MUSTER_SEND_QUEUE_ID
 const bound = 'ses_0e2esend1a2b3c4d';
 const titled = 'ses_0e2esend5e6f7a8b';
 // The opencode parity windows (docs/design/opencode-first-class.md): @4 a
-// hand-opened pane whose title opencode CUT (never sent to), @5 a session with
+// hand-opened pane whose CUT title a subagent's session also starts with
+// (ambiguous: never sent to), @5 a session with
 // a step's token counts and two quick failed turns, @6 a session that asks.
 const cut = 'ses_0e2esendcut00001';
 const ctxSession = 'ses_0e2esendctx00001';
@@ -60,6 +61,7 @@ test.beforeAll(async ({ browser }) => {
   op({ op: 'session', id: bound, title: 'Bound fixture session' });
   op({ op: 'session', id: titled, title: 'Title-matched fixture session' });
   op({ op: 'session', id: cut, title: 'A long hand-opened fixture session title, past the cut' });
+  op({ op: 'session', id: 'ses_0e2esendcutkid01', title: 'A long hand-opened fixture session ti (@general subagent)', parent: cut });
   op({ op: 'session', id: ctxSession, title: 'Context fixture session' });
   op({ op: 'session', id: askSession, title: 'Asking fixture session' });
   // @5: a completed step's usage on fixture-model (input 3517 + cache read
@@ -217,7 +219,7 @@ test('a message queued while opencode works is sent once it is idle', async ({ p
   await expect(rowsOf(page, text), 'delivered once idle').toHaveCount(1, { timeout: 30_000 });
 });
 
-test('each refusal says why: a slash command, a hand-opened pane whose title is cut, a host that did not opt in', async ({ page }) => {
+test('each refusal says why: a slash command, a hand-opened pane a subagent shares the title of, a host that did not opt in', async ({ page }) => {
   await openBound(page);
   const text = '/review the fixture branch';
   await send(page, text);
@@ -226,11 +228,11 @@ test('each refusal says why: a slash command, a hand-opened pane whose title is 
   await expect(p).toContainText('that is an opencode slash command');
   await expect(rowsOf(page, text)).toHaveCount(0);
 
-  // A hand-opened pane is sent to only when its binding is verified: a title
-  // opencode cut names only a prefix, so @4 stays refused, saying so.
+  // A hand-opened pane is sent to only when its binding is verified: @4's cut
+  // title is also the start of a subagent's session's, so it stays refused.
   await page.goto(rig.origin + viewOf('@4'));
   await expect(page.locator('#mv-input')).toBeDisabled({ timeout: 20_000 });
-  await expect(page.locator('#mv-readonly')).toContainText('title is cut short');
+  await expect(page.locator('#mv-readonly')).toContainText("a subagent's opencode session has the same title as this pane");
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   await page.goto(rig.origin + viewOf('@2', offHost, 'off'));
@@ -331,7 +333,7 @@ for (const vp of viewports) {
       timeout: 20_000,
     });
     await expect(page.locator('#mv-input')).toBeDisabled();
-    await expect(page.locator('#mv-readonly')).toContainText("title is cut short, so it names only the start of a session's title");
+    await expect(page.locator('#mv-readonly')).toContainText("a subagent's opencode session has the same title as this pane (or one that starts the same way)");
   });
 
   test(`an opencode view shows its model, context readout and failed turns (${vp.name})`, async ({ page }) => {

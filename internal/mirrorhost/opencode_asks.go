@@ -342,53 +342,32 @@ func (s *OpenCodeSource) answerAsk(ctx context.Context, promptID, choice string)
 	if !ok {
 		return fmt.Errorf("%w: it is no longer pending on this host", errOpenCodeGone)
 	}
-	cl, err := s.client()
-	if err != nil {
-		return fmt.Errorf("%w: %v", errOpenCodeUnreachable, err)
-	}
 	switch a.Kind {
 	case opencodehost.AskPermission:
 		if choice != string(opencodehost.PermissionOnce) && choice != string(opencodehost.PermissionReject) {
 			return fmt.Errorf("%w: not an answer muster sends a permission request", errOpenCodeGone)
 		}
-		err = cl.ReplyPermission(ctx, a.Session, a.ID, opencodehost.PermissionReply(choice))
+		cl, err := s.client()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errOpenCodeUnreachable, err)
+		}
+		return s.settleAnswer(promptID, cl.ReplyPermission(ctx, a.Session, a.ID, opencodehost.PermissionReply(choice)))
 	case opencodehost.AskQuestion:
+		// One of an offerable question's labels is that option's pick: the
+		// whole-form path answers it (opencode_form.go), the one way a
+		// question is answered.
 		labels, ok := a.offerable()
 		if !ok {
 			return fmt.Errorf("%w: this question is answered in the terminal", errOpenCodeGone)
 		}
-		value := ""
 		for i, l := range labels {
 			if l == choice {
-				value = a.Fields[0].Options[i].Value
+				return s.answerForm(ctx, promptID, []mirror.OpenCodePick{{Key: a.Fields[0].Key, Picks: []int{i}}})
 			}
 		}
-		if value == "" {
-			return fmt.Errorf("%w: not one of the question's options", errOpenCodeGone)
-		}
-		err = cl.ReplyForm(ctx, a.Session, a.ID, map[string]any{a.Fields[0].Key: value})
-	default:
-		return fmt.Errorf("%w: this form is answered in the terminal", errOpenCodeGone)
+		return fmt.Errorf("%w: not one of the question's options", errOpenCodeGone)
 	}
-	switch {
-	case err == nil:
-		s.mu.Lock()
-		delete(s.asks, promptID)
-		s.settled[promptID] = true
-		s.notifyLocked()
-		s.mu.Unlock()
-		return nil
-	case errors.Is(err, opencodehost.ErrAskSettled):
-		return fmt.Errorf("%w (%v)", errOpenCodeGone, err)
-	case errors.Is(err, opencodehost.ErrAnswerRefused):
-		// The server's 400: the ask is still pending; its field refused the value.
-		return fmt.Errorf("%w (%v)", errOpenCodeAnswerRefused, err)
-	case errors.Is(err, opencodehost.ErrUnauthorized):
-		return fmt.Errorf("%w (%v)", errOpenCodeUnreachable, err)
-	case isDialError(err):
-		return fmt.Errorf("%w (%v)", errOpenCodeUnreachable, err)
-	}
-	return fmt.Errorf("%w (%v)", errOpenCodeUnknown, err)
+	return fmt.Errorf("%w: this form is answered in the terminal", errOpenCodeGone)
 }
 
 // isDialError reports whether err is a failure to connect at all (nothing was

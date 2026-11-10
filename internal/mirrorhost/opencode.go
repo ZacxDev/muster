@@ -461,9 +461,11 @@ func (s *OpenCodeSource) state() string {
 	return s.down
 }
 
-// rootSessions is the root session list, re-read when stale or older than
-// sessionsMaxAge.
-func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
+// knownSessions is the server's session list — roots AND children (a
+// subagent's, ParentID set): the title match reads roots only, the binding's
+// uniqueness check every session (opencode_bind.go) — re-read when stale or
+// older than sessionsMaxAge.
+func (s *OpenCodeSource) knownSessions() ([]opencodehost.Session, error) {
 	cached := func() ([]opencodehost.Session, error, bool) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -494,7 +496,7 @@ func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
 	return list, err
 }
 
-// readSessions reads the root sessions once, within 3 s.
+// readSessions reads every session once, within 3 s.
 func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, error) {
 	cl, err := s.creds.Client()
 	if err != nil {
@@ -502,7 +504,7 @@ func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, error) {
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 	defer cancel()
-	list, err := cl.Sessions(ctx)
+	list, err := cl.AllSessions(ctx)
 	if err != nil {
 		if errors.Is(err, opencodehost.ErrUnauthorized) {
 			s.mu.Lock()
@@ -581,7 +583,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start, sessionArg s
 	}
 	t, titleOK := title(ap.Pane)
 	oc.PaneTitle = t
-	sessions, err := s.rootSessions()
+	sessions, err := s.knownSessions()
 	if err != nil {
 		oc.Server = "the opencode server cannot be read: " + err.Error()
 		oc.NoView = oc.Server
@@ -604,7 +606,7 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, start, sessionArg s
 			return
 		}
 		ap.Gen, ap.Source = oc.Match.Session, SourceTitle
-		ap.Bind = s.verifyTitleBind(oc.Match, sessionArg)
+		ap.Bind = s.verifyTitleBind(oc.Match, sessionArg, sessions)
 	}
 	ap.Status, ap.StatusSince = s.status(ap.Gen)
 	// What it waits on (opencode_asks.go): a pending permission request or

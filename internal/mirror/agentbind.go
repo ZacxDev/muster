@@ -25,9 +25,10 @@ const (
 	// AgentBindVerified: the host sends to the window's session, to a paste
 	// naming it.
 	AgentBindVerified = "verified"
-	// AgentBindTitleCut: the pane's title is cut ("…"), so it names only the
-	// start of a session title.
-	AgentBindTitleCut = "title-cut"
+	// AgentBindTitleShared: another session — a subagent's child session —
+	// carries the pane's title too (exactly, or as the start of a cut title),
+	// and a TUI can show a child session.
+	AgentBindTitleShared = "title-shared"
 	// AgentBindArgv: the TUI was started on one session (its -s/--session)
 	// and its title names another.
 	AgentBindArgv = "argv-session"
@@ -64,8 +65,8 @@ func agentSendsTo(agentSend bool, bind string) bool {
 // launcher's.
 func AgentBindWords(code string) string {
 	switch code {
-	case AgentBindTitleCut:
-		return PasteRefusedOpenCodeTitleCutText
+	case AgentBindTitleShared:
+		return PasteRefusedOpenCodeTitleSharedText
 	case AgentBindArgv:
 		return PasteRefusedOpenCodeArgvText
 	case AgentBindStream:
@@ -76,9 +77,9 @@ func AgentBindWords(code string) string {
 
 // The refusals of a hand-opened opencode pane muster does not send to.
 const (
-	PasteRefusedOpenCodeTitleCutText = "Not sent: this opencode pane's title is cut short, so it names only the start of a " +
-		"session's title, and muster can't be sure which session it shows. Type it in the terminal, or start it with " +
-		"`muster-mirror opencode`."
+	PasteRefusedOpenCodeTitleSharedText = "Not sent: a subagent's opencode session has the same title as this pane " +
+		"(or one that starts the same way), so muster can't be sure which session it shows. Type it in the terminal, " +
+		"or start it with `muster-mirror opencode`."
 	PasteRefusedOpenCodeArgvText = "Not sent: this opencode was started on one session (its -s) but its title names " +
 		"another, so muster can't be sure which it shows. Type it in the terminal, or start it with `muster-mirror opencode`."
 	PasteRefusedOpenCodeStreamText = "Not sent: muster can't confirm which session this opencode shows right now, " +

@@ -109,7 +109,8 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   `…` and is a prefix match), against the server's ROOT sessions
   (`GET /api/session?parentID=null`); exactly one match or none. A
   title-matched pane is sent to only when the host VERIFIES the binding
-  (a whole unique title, an open event stream, no contradicting `-s`, and the
+  (a title — whole, or a cut prefix — that exactly one session carries,
+  children included; an open event stream; no contradicting `-s`; and the
   session re-read at the moment of sending:
   [Panes the launcher did not start](opencode-first-class.md#panes-the-launcher-did-not-start));
   any other is view-only, saying why. The launcher record below names the

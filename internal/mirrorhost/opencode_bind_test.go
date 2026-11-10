@@ -31,10 +31,19 @@ func streamUp(t *testing.T, srv *opencodetest.Server, src *OpenCodeSource) {
 // the shared server whose whole title names exactly one root session, its
 // command line naming none or that very one, the stream open: verified, the
 // window listed AgentBind "verified" (and NOT AgentSend: that is the
-// launcher's). And each ambiguous case is not verified, with its own code.
+// launcher's). A CUT title whose prefix starts exactly one session — of every
+// session, roots and children — binds too. And each ambiguous case is not
+// verified, with its own code: a child (subagent's) session sharing the whole
+// title, or the start of a cut one.
 func TestAWholeUniqueTitleOnAnOpenStreamBindsVerified(t *testing.T) {
-	titles := map[string]string{"ses_fixtureA": "Fix the flaky fixture", "ses_fixtureB": "Write the release notes for the fixture project now"}
+	titles := map[string]string{"ses_fixtureA": "Fix the flaky fixture", "ses_fixtureB": "Write the release notes for the fixture project now",
+		"ses_fixtureC": "Shared with a subagent", "ses_fixtureD": "Investigate the failing fixture tests in the backend"}
 	srv, src := ocServer(t, titles)
+	// Children (subagents' sessions): one titled exactly like C, one whose
+	// title starts like D's cut title, and one unrelated under A.
+	srv.PutSession("ses_fixtureKidC", "Shared with a subagent", "ses_fixtureC")
+	srv.PutSession("ses_fixtureKidD", "Investigate the failing fixture tests (@explore subagent)", "ses_fixtureD")
+	srv.PutSession("ses_fixtureKidA", "Unrelated subagent work", "ses_fixtureA")
 	streamUp(t, srv, src)
 	locate := func(title string, argv ...string) AgentPane {
 		t.Helper()
@@ -51,7 +60,9 @@ func TestAWholeUniqueTitleOnAnOpenStreamBindsVerified(t *testing.T) {
 		{"argv naming it with =", "OC | Fix the flaky fixture", []string{"--session=ses_fixtureA"}, "ses_fixtureA", mirror.AgentBindVerified},
 		{"argv naming ANOTHER session", "OC | Fix the flaky fixture", []string{"--session", "ses_fixtureB"}, "ses_fixtureA", mirror.AgentBindArgv},
 		// opencode cuts a title at 37 characters and adds "…".
-		{"a cut title, the start of one session", "OC | Write the release notes for the fix…", nil, "ses_fixtureB", mirror.AgentBindTitleCut},
+		{"a cut title, the start of one session", "OC | Write the release notes for the fix…", nil, "ses_fixtureB", mirror.AgentBindVerified},
+		{"a whole title a child session shares", "OC | Shared with a subagent", nil, "ses_fixtureC", mirror.AgentBindTitleShared},
+		{"a cut title a child session starts with", "OC | Investigate the failing fixture te…", nil, "ses_fixtureD", mirror.AgentBindTitleShared},
 	} {
 		ap := locate(c.title, c.argv...)
 		if ap.Gen != c.gen || ap.Bind != c.bind || ap.Send || ap.Source != SourceTitle {
@@ -257,6 +268,8 @@ func TestAVerifiedSendReadsTheSessionAgainFirst(t *testing.T) {
 		name, id, title, refusal string
 	}{
 		{"the same session, the same title", "ses_fixtureAlpha", "Alpha fixture", ""},
+		{"the same session, a cut title it starts with", "ses_fixtureAlpha", "Alpha fix…", ""},
+		{"a cut title it does not start with", "ses_fixtureAlpha", "Beta fix…", mirror.PasteRefusalOpenCodeMoved},
 		{"renamed since", "ses_fixtureAlpha", "Alpha fixture (old)", mirror.PasteRefusalOpenCodeMoved},
 		{"a child session", "ses_fixtureKid", "Alpha fixture kid", mirror.PasteRefusalOpenCodeMoved},
 		{"gone", "ses_fixtureNone", "Alpha fixture", mirror.PasteRefusalOpenCodeGone},
@@ -268,18 +281,20 @@ func TestAVerifiedSendReadsTheSessionAgainFirst(t *testing.T) {
 	}
 }
 
-// TestAnUnverifiedHandOpenedPaneIsRefusedInItsOwnWords: a cut title keeps
-// the view but is refused at the host with its code's words, nothing posted.
+// TestAnUnverifiedHandOpenedPaneIsRefusedInItsOwnWords: a cut title a
+// subagent's session starts with too keeps the view but is refused at the
+// host with its code's words, nothing posted.
 func TestAnUnverifiedHandOpenedPaneIsRefusedInItsOwnWords(t *testing.T) {
 	d, srv, b := handHost(t)
 	srv.PutSession("ses_fixtureLong", "A long fixture title that opencode cuts in the pane", "")
+	srv.PutSession("ses_fixtureLongKid", "A long fixture title that opencode cuts (@general subagent)", "ses_fixtureLong")
 	b.src.sessionsChanged()
 	b.set("OC | A long fixture title that opencode cut…")
 	// The host re-resolves the pane at the moment of sending: no listing needed.
 	_, since := b.src.status("ses_fixtureLong")
 	d.send(t, namedPaste(1, "hi", since, "msg_fixtureone", "ses_fixtureLong"))
-	if m := pastedOf(t, d, 1); m.Refusal != mirror.PasteRefusalOpenCodeUnbound || m.Error != mirror.PasteRefusedOpenCodeTitleCutText {
-		t.Fatalf("answered %+v; want the cut title's refusal", m)
+	if m := pastedOf(t, d, 1); m.Refusal != mirror.PasteRefusalOpenCodeUnbound || m.Error != mirror.PasteRefusedOpenCodeTitleSharedText {
+		t.Fatalf("answered %+v; want the shared title's refusal", m)
 	}
 	if p := srv.Prompts(); len(p) != 0 {
 		t.Fatalf("admitted %+v", p)
@@ -295,5 +310,23 @@ func TestAVerifiedPanesViewSaysItIsSentTo(t *testing.T) {
 	evs, _, _ := watchEvents(d, 4)
 	if !strings.HasPrefix(evs[0].Text, "matched by title, verified: Alpha fixture") || !strings.Contains(evs[0].Output, "only while the pane still shows this session") {
 		t.Fatalf("the first row: %+v", evs[0])
+	}
+}
+
+// TestACutTitleBindsVerifiedAndTakesASend: a hand-opened pane whose title
+// opencode CUT, starting exactly one session, is sent to — that session.
+func TestACutTitleBindsVerifiedAndTakesASend(t *testing.T) {
+	d, srv, b := handHost(t)
+	srv.PutSession("ses_fixtureLong", "A long fixture title that opencode cuts in the pane", "")
+	b.src.sessionsChanged()
+	b.set("OC | A long fixture title that opencode cut…")
+	waitUntil(t, "the new session timed idle", func() bool { st, at := b.src.status("ses_fixtureLong"); return st == mirror.StatusIdle && at > 0 })
+	_, since := b.src.status("ses_fixtureLong")
+	d.send(t, namedPaste(1, "to the long one", since, "msg_fixtureone", "ses_fixtureLong"))
+	if m := pastedOf(t, d, 1); m.Error != "" {
+		t.Fatalf("refused: %+v", m)
+	}
+	if p := srv.Prompts(); len(p) != 1 || p[0].Session != "ses_fixtureLong" {
+		t.Fatalf("admitted %+v; want one, to the long session", p)
 	}
 }

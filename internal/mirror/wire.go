@@ -653,7 +653,7 @@ type Window struct {
 	// session, as a closed code (agentbind.go): AgentBindVerified — its host
 	// verified the binding through opencode's own API and sends to it, but
 	// only to a paste that names that very session (Msg.AgentSession) — or
-	// why it is not sent to (AgentBindTitleCut, AgentBindArgv,
+	// why it is not sent to (AgentBindTitleShared, AgentBindArgv,
 	// AgentBindStream). "" for none: a launcher-bound window, a window with
 	// no view, any other runtime's, and every window of an older host.
 	// 🔴 A SEPARATE FIELD FROM AgentSend ON PURPOSE, BACKWARD-COMPATIBLE BOTH

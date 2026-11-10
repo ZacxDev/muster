@@ -466,15 +466,18 @@ send to and checked again at the moment of sending
 "verified"`, a field of its own so that an older muster keeps such a pane
 view-only — when:
 
-- the TUI is a client of the shared server and the server answered its root
-  sessions;
+- the TUI is a client of the shared server and the server answered its
+  session list — every session, roots AND children (`GET /api/session` with no
+  `parentID` filter lists both);
 - the event stream is open, so the session list is current (each session
   event re-reads it) — else `stream-down`;
-- the title is whole and exactly one root session carries it. A collision, or
-  a cut title starting two, is no match (no view, as before); a cut title
-  starting one is `title-cut`: a cut title names a prefix, and a subagent's
-  child session (not in the root list) can share it, typically when its task
-  description repeats the root's title;
+- exactly one session — of all of them, roots and children — carries the
+  title: the whole title, or for a title opencode cut with `…`, every title
+  that starts with what precedes it. Two root sessions sharing it are no match
+  (no view, as before). A child (a subagent's session) sharing it, exactly or
+  as the start of a cut title, is `title-shared`: a TUI can show a child
+  session, and its title is then the pane's. A cut title that starts exactly
+  one session binds;
 - the TUI's command line names no session or the same one — else
   `argv-session`.
 
@@ -486,10 +489,11 @@ the window. The host re-resolves the pane, re-reading its title, and refuses
 (`opencode-moved`) when the pane resolves to any other session, and refuses a
 verified pane's paste that names none (an older muster's). For a verified pane
 it then reads the session through the API (`GET /api/session/{id}`): it must
-still be a root session with the pane's title. Named residual gap: a child
-session titled exactly like a root session.
+still be a root session whose title the pane's carries (the same rule, a cut
+title its prefix). Counting children in the uniqueness check is what closes
+the gap of a child titled like a root: that case is `title-shared`, refused.
 
-The directory is not used: the reference measured it differing for 2 of 5
+The directory is not used: the reference measured it differing for some
 correct matches ([opencode.md](opencode.md)), so a gate on it would refuse
 correct panes and add nothing a mismatch could not already be.
 
@@ -503,16 +507,15 @@ raw terminal. Diagnosed against this host's own opencode server, read-only:
   (`handleMirrorAsks`), and an opencode question showed only as a `question`
   tool row.
 - **The Attention item offered no answer for most questions.** The host
-  offered options only for one single-select question of at most 4 options
+  offered options only for one single-select question of at most 4 options,
   each at most 40 runes (`offerable`), and the wire then dropped the ask's id
-  too (`CleanPending`). Of the 25 question-tool calls in the 40 newest root
-  sessions on the measured server, 18 asked 2 to 6 questions and 3 of the 7
-  single questions had an option longer than 40 characters: 21 of 25 could
-  only be answered in the terminal. The other 4 were answerable from Attention, but not from the view.
-- The pipeline itself worked: the asks were seen (`form.created`), and an
-  answer was never refused on the wire — the host's journal held no opencode
-  answer attempt at all over its retained span, consistent with no surface
-  offering one.
+  too (`CleanPending`). The question tool commonly asks several questions in
+  one call, and its option labels often run past 40 characters, so a typical
+  question could only be answered in the terminal; the rest were answerable
+  from Attention, but never from the view.
+- The pipeline itself worked: the asks were seen (`form.created`), and no
+  answer was refused on the wire. The host's own log showed no opencode
+  answer being attempted, consistent with no surface offering one.
 
 As built: every question-tool form keeps its id on the wire (its options only
 when an Attention button can answer it). The view's region draws an opencode

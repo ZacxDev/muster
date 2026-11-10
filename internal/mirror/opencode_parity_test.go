@@ -31,7 +31,7 @@ func TestAgentBindRidesOnlyAGatedWindowNamingItsSession(t *testing.T) {
 	}
 	in := []mirror.Window{
 		oc("@1", ocSendSID, mirror.AgentBindVerified, false),
-		oc("@2", ocSendSID, mirror.AgentBindTitleCut, false),
+		oc("@2", ocSendSID, mirror.AgentBindTitleShared, false),
 		oc("@3", ocSendSID, "a-newer-code", false),
 		oc("@4", "", mirror.AgentBindVerified, false),       // no session
 		oc("@5", ocSendSID, mirror.AgentBindVerified, true), // launcher-bound: no code
@@ -39,7 +39,7 @@ func TestAgentBindRidesOnlyAGatedWindowNamingItsSession(t *testing.T) {
 		{Session: "s", ID: "@7", Claude: true, ClaudeSession: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d", AgentBind: mirror.AgentBindVerified},
 		{Session: "s", ID: "@8", Runtime: "hermes", AgentSession: ocSendSID, AgentBind: mirror.AgentBindVerified},
 	}
-	want := map[string]string{"@1": mirror.AgentBindVerified, "@2": mirror.AgentBindTitleCut, "@3": "a-newer-code"}
+	want := map[string]string{"@1": mirror.AgentBindVerified, "@2": mirror.AgentBindTitleShared, "@3": "a-newer-code"}
 	for _, w := range mirror.NormalizeWindows(in, 0) {
 		if w.AgentBind != want[w.ID] {
 			t.Errorf("%s: AgentBind %q, want %q", w.ID, w.AgentBind, want[w.ID])
@@ -52,11 +52,11 @@ func TestAgentBindRidesOnlyAGatedWindowNamingItsSession(t *testing.T) {
 // (no code) or a code this muster does not know says the launcher's.
 func TestEachUnboundCodeIsRefusedInItsOwnWords(t *testing.T) {
 	for code, want := range map[string]string{
-		mirror.AgentBindTitleCut: "Not sent: this opencode pane's title is cut short, so it names only the start of a session's title, and muster can't be sure which session it shows. Type it in the terminal, or start it with `muster-mirror opencode`.",
-		mirror.AgentBindArgv:     "Not sent: this opencode was started on one session (its -s) but its title names another, so muster can't be sure which it shows. Type it in the terminal, or start it with `muster-mirror opencode`.",
-		mirror.AgentBindStream:   "Not sent: muster can't confirm which session this opencode shows right now, because the opencode server's event stream is not answering. Try again in a moment.",
-		"":                       mirror.PasteRefusedOpenCodeUnboundText,
-		"a-newer-code":           mirror.PasteRefusedOpenCodeUnboundText,
+		mirror.AgentBindTitleShared: "Not sent: a subagent's opencode session has the same title as this pane (or one that starts the same way), so muster can't be sure which session it shows. Type it in the terminal, or start it with `muster-mirror opencode`.",
+		mirror.AgentBindArgv:        "Not sent: this opencode was started on one session (its -s) but its title names another, so muster can't be sure which it shows. Type it in the terminal, or start it with `muster-mirror opencode`.",
+		mirror.AgentBindStream:      "Not sent: muster can't confirm which session this opencode shows right now, because the opencode server's event stream is not answering. Try again in a moment.",
+		"":                          mirror.PasteRefusedOpenCodeUnboundText,
+		"a-newer-code":              mirror.PasteRefusedOpenCodeUnboundText,
 	} {
 		if got := mirror.AgentBindWords(code); got != want {
 			t.Errorf("AgentBindWords(%q) = %q", code, got)
@@ -67,7 +67,7 @@ func TestEachUnboundCodeIsRefusedInItsOwnWords(t *testing.T) {
 	defer cancel()
 	err := r.svc.PasteWindow(ctx, "h", "work", "@6", "hello", mirror.PasteClaude)
 	var pr *mirror.PasteRefusedError
-	if !errors.Is(err, mirror.ErrOpenCodeUnbound) || !errors.As(err, &pr) || pr.Why != mirror.PasteRefusedOpenCodeTitleCutText ||
+	if !errors.Is(err, mirror.ErrOpenCodeUnbound) || !errors.As(err, &pr) || pr.Why != mirror.PasteRefusedOpenCodeTitleSharedText ||
 		mirror.PasteGuardRefusal(err) != mirror.PasteRefusalOpenCodeUnbound {
 		t.Fatalf("the hub refused @6 with %v", err)
 	}

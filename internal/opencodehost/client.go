@@ -229,9 +229,23 @@ const (
 
 // Sessions is every ROOT session the server knows (GET /api/session,
 // parentID=null), newest first, at most maxSessionPages pages.
-func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
+func (c *Client) Sessions(ctx context.Context) ([]Session, error) { return c.sessions(ctx, true) }
+
+// AllSessions is every session the server knows, ROOTS AND CHILDREN (a
+// subagent's: ParentID set) — GET /api/session with no parentID filter,
+// measured to list both — newest first, at most maxSessionPages pages.
+func (c *Client) AllSessions(ctx context.Context) ([]Session, error) { return c.sessions(ctx, false) }
+
+// sessions is Sessions (roots) or AllSessions.
+func (c *Client) sessions(ctx context.Context, roots bool) ([]Session, error) {
 	var out []Session
-	q := url.Values{"parentID": {"null"}, "limit": {strconv.Itoa(sessionPage)}, "order": {"desc"}}
+	filter := func(q url.Values) url.Values {
+		if roots {
+			q.Set("parentID", "null")
+		}
+		return q
+	}
+	q := filter(url.Values{"limit": {strconv.Itoa(sessionPage)}, "order": {"desc"}})
 	for page := 0; page < maxSessionPages; page++ {
 		var resp struct {
 			Data   []Session `json:"data"`
@@ -247,7 +261,7 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 			break
 		}
 		// A cursor carries its own order; the two cannot be combined.
-		q = url.Values{"parentID": {"null"}, "limit": {strconv.Itoa(sessionPage)}, "cursor": {*resp.Cursor.Next}}
+		q = filter(url.Values{"limit": {strconv.Itoa(sessionPage)}, "cursor": {*resp.Cursor.Next}})
 	}
 	return out, nil
 }
