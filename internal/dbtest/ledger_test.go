@@ -128,6 +128,10 @@ var pgBackedPackages = []string{
 	// "a revoked token / a disabled owner stops authenticating" are claims
 	// about SQL and row-level security.
 	"internal/apitokens",
+	// Instance branding (migration 0105): "only an admin writes" and "a user's
+	// principal sees nothing" are claims about the store's check and row-level
+	// security.
+	"internal/branding",
 	// The account failover's event store (cc_account_failovers, 0066).
 	"internal/ccfailover",
 	"internal/ccpool",
