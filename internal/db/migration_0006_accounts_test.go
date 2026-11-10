@@ -204,6 +204,8 @@ var wantForeignKeys = []string{
 	"chief_proposals|chief_proposals_host_dispatch_id_fkey|FOREIGN KEY (host_dispatch_id) REFERENCES host_dispatches(id)",
 	"asks|asks_episode_owner_fkey|FOREIGN KEY (episode_id, owner_id) REFERENCES session_episodes(id, owner_id) ON DELETE SET NULL (episode_id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0105: the instance's branding names the admin who changed it last.
+	"instance_branding|instance_branding_updated_by_fkey|FOREIGN KEY (updated_by) REFERENCES users(id)",
 	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
