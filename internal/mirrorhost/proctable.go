@@ -26,6 +26,21 @@ func ProcTable(root string) (map[int]ProcEntry, error) {
 	return out, err
 }
 
+// PaneIDs is every pane id ("%7") of the window: its active pane's first,
+// then the others the listing read.
+func (w WindowInfo) PaneIDs() []string {
+	out := []string{}
+	if w.Pane != "" {
+		out = append(out, w.Pane)
+	}
+	for _, p := range w.panes {
+		if p.ID != "" {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
 // PanePIDs is the root process (#{pane_pid}) of every pane of the window: its
 // active pane's first, then the others the listing read.
 func (w WindowInfo) PanePIDs() []int {

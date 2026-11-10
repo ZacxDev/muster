@@ -696,6 +696,49 @@ names and server instructions load at startup",
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
 
+### The preview tools (`/preview-mcp`)
+
+With [previews](design/previews.md#the-mcp-tools) on (`-preview` and a valid
+`previews.json`), the same endpoint serves a **second MCP server** at
+`http://127.0.0.1:47823/preview-mcp`, behind the same secret, the same
+`Origin` refusal and the same tmux-server check as `/mcp`. It answers
+everything itself and forwards nothing to muster, so a muster outage still
+fails the `muster` server loudly (502) while the preview tools work or fail
+on their own. Without previews the path is 404. Add a second entry with the
+same headers:
+
+```json
+"preview": {
+  "type": "http",
+  "url": "http://127.0.0.1:47823/preview-mcp",
+  "headers": {
+    "Authorization": "Bearer ${MUSTER_MIRROR_MCP_SECRET:-}",
+    "X-Muster-Pane": "${TMUX_PANE:-}",
+    "X-Muster-Tmux": "${TMUX:-}"
+  }
+}
+```
+
+The tools are `preview_open {port, label?, path?}`, `preview_list` and
+`preview_close {id}` (`mcp__preview__preview_*` in Claude Code). Each call is
+bound to the **window** the caller's pane is in, any pane of it, whatever runs
+there (no Claude Code session is needed). Opening the same port from the
+same window again returns the same id, even after its server stopped (a
+preview whose server stops answering stays open, and `preview_list` still
+shows it). A **new** `preview_open` is refused, before the gateway is asked,
+for a port off the allowlist (`port_not_allowed`), one nobody listens on or
+that refuses the connection (`not_listening`), one another user listens on
+(`foreign_listener`), and one that accepts the connection but gives no HTTP
+answer to `HEAD /` within 5 s (`not_answering`: retry once the server is
+up); it then waits up to 5 s for the gateway (`gateway_not_connected`,
+`gateway_timeout`, or the gateway's own `max_open`; any other gateway refusal is passed on only as a well-formed code, else `gateway_error`, and always with this host's own message, never the gateway's text). A call whose own request ends first is `cancelled`. `preview_list` includes
+the previews the owner opened from an offer; `preview_close` of another
+window's id is `not_found`. Every refusal — arguments that do not validate
+(`invalid_arguments`) and a pane in no mirrored window (`no_window`)
+included — is a tool error the model reads, whose text is
+`{"error": "<code>", "message": "…"}`; previews turned off by a bad
+`previews.json` are `previews_off`. An unknown tool name is a JSON-RPC error.
+
 ### Stale tool definitions
 
 Claude Code loads an MCP tool's name at start and fetches its definition only
