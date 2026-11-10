@@ -372,6 +372,11 @@ export const chiefSuccessionGitHubPort = port + 364;
 // (+366: chief-succession takes +362..+365.)
 export const chiefEndSessionPort = port + 366;
 export const chiefEndSessionFakePort = port + 367;
+// tests/plugin-chip.spec.ts: a viewer plugin's chip on a mirrored window's
+// session views — its own server (mirror plugin on, MUSTER_PLUGINS=1,
+// MUSTER_PLUGIN_ORIGINS set) and one fake host. Its plugin's entry page is
+// played by the spec (page.route), so it needs no port of its own.
+export const pluginChipPort = port + 372;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

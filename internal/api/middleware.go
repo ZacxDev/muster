@@ -144,7 +144,7 @@ const permissionsPolicy = "microphone=(self)"
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'"))
+		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'", ""))
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -154,19 +154,25 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
-// source: 'none' for every response but allowSameOriginFrame's.
-func contentSecurityPolicy(frameAncestors string) string {
+// source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
+// not empty, is a frame-src directive's sources; "" writes none, so the
+// policy is exactly what it was before plugins could be framed (child frames
+// then fall back to default-src 'self').
+func contentSecurityPolicy(frameAncestors, frameSrc string) string {
 	connectSrc := "'self'"
 	if telemetryConnectSrc != "" {
 		connectSrc += " " + telemetryConnectSrc
 	}
-	return "default-src 'self'; " +
+	csp := "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; " +
 		"connect-src " + connectSrc + "; " +
-		"frame-ancestors " + frameAncestors + "; " +
-		"base-uri 'self'; " +
+		"frame-ancestors " + frameAncestors + "; "
+	if frameSrc != "" {
+		csp += "frame-src " + frameSrc + "; "
+	}
+	return csp + "base-uri 'self'; " +
 		"form-action 'self'"
 }
 
@@ -176,8 +182,14 @@ func contentSecurityPolicy(frameAncestors string) string {
 // X-Frame-Options SAMEORIGIN in place of the 'none' / DENY every other
 // response keeps. An uploaded file is served with a sandbox CSP, so its origin
 // is opaque, not 'self': it cannot frame these either.
-func allowSameOriginFrame(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))
+//
+// frameSrc is what the page itself may frame: "" (no frame-src, so
+// default-src 'self') on every page but a mirrored window's two session views,
+// which pass viewerFrameSrc — 'self' plus the origins of the owner's live
+// viewer plugins, for the session-view chip's Show here frame
+// (docs/plugins.md#the-session-view-chip).
+func allowSameOriginFrame(w http.ResponseWriter, frameSrc string) {
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'", frameSrc))
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 }
 

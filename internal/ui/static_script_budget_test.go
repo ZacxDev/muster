@@ -47,6 +47,10 @@ func scriptedDocuments(t *testing.T, f Features) map[string]string {
 	out["compose"] = renderRaw(t, ComposePage(f, "a shared body"))
 	out["task detail"] = renderRaw(t, g.NodeFunc(func(w io.Writer) error { return RenderTaskDetail(w, detailFixture(), f) }))
 	out["agent detail"] = renderRaw(t, g.NodeFunc(func(w io.Writer) error { return RenderAgentDetail(w, sampleAgentDetailView(), f) }))
+	// A mirrored window's Rendered view with a viewer plugin's chip
+	// (plugin_chip.go), the one page that links plugin-chip.js.
+	out["mirror view +plugin chip"] = renderRaw(t, MirrorViewPage(MirrorViewView{Host: "ws", Session: "main", Window: "@1", Nav: NavChrome{Feat: f},
+		Plugins: &PluginChips{MintPath: "/plugin-handoffs", Host: "ws", Window: "@1", Chips: []PluginChip{{ID: 1, Label: "Example"}}}}))
 	return out
 }
 
