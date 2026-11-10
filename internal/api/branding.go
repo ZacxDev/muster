@@ -66,14 +66,18 @@ var errBodyTooLarge = &branding.Error{Code: "body_too_large", Msg: "the upload i
 // (ui.Brand.Versioned), so a new logo is a new URL.
 //
 // 🔴 ONLY THAT URL IS LONG-CACHED. A request whose v is the current ETag names
-// these exact bytes forever, so it is immutable for a year. A request with no
+// these exact bytes forever, so it is immutable for 30 days. A request with no
 // v, or a stale one, is answered with the current image under no-cache: a CDN
 // (which caches .png by default) or a browser must revalidate it, so a logo
 // changed or reset at the origin is never served old from an edge for a day.
 // The ETag still answers that revalidation with a 304. A 404 is no-cache too.
 // The instance document is short so a renamed server shows within minutes.
 const (
-	brandImageVersioned   = "public, max-age=31536000, immutable"
+	// brandImageVersioned is 30 days, not the year static assets get: a logo is
+	// admin content that may be withdrawn, and a reset does not reach a copy a
+	// CDN or browser already holds, so the window a withdrawn logo stays
+	// reachable at its old ?v= URL is bounded by this.
+	brandImageVersioned   = "public, max-age=2592000, immutable"
 	brandImageUnversioned = "no-cache"
 	instanceMaxAge        = "public, max-age=300"
 	// brandCacheTTL is how long a server reuses the row it read. A write on

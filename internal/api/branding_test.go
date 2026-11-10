@@ -403,7 +403,7 @@ func TestTheBrandImagesCarryTheirOwnHeaders(t *testing.T) {
 		rec := get(h, p+"?v="+b.ETag, nil, false)
 		hd := rec.Header()
 		if rec.Code != http.StatusOK || hd.Get("Content-Type") != "image/png" || hd.Get("X-Content-Type-Options") != "nosniff" ||
-			hd.Get("Content-Security-Policy") != "default-src 'none'" || hd.Get("Cache-Control") != "public, max-age=31536000, immutable" || hd.Get("ETag") != etag {
+			hd.Get("Content-Security-Policy") != "default-src 'none'" || hd.Get("Cache-Control") != "public, max-age=2592000, immutable" || hd.Get("ETag") != etag {
 			t.Errorf("%s: %d %v", p, rec.Code, hd)
 		}
 		if !bytes.Equal(rec.Body.Bytes(), stored[p]) {

@@ -136,9 +136,11 @@ test.describe('the admin', () => {
 
     const instance = await (await page.request.get(origin + '/api/instance')).json();
     expect(instance.name).toBe('Team Example');
-    expect(instance.logo.url).toBe('/brand/logo.png');
     const etag: string = instance.logo.etag;
     expect(etag).toMatch(/^[0-9a-f]{16}$/);
+    expect(instance.logo.url).toBe('/brand/logo.png?v=' + etag);
+    expect(instance.logo.icon192).toBe('/brand/icon-192.png?v=' + etag);
+    expect(instance.logo.icon512).toBe('/brand/icon-512.png?v=' + etag);
 
     // The header (and the sidebar) draw the logo — loaded — and the name.
     await page.goto(origin + '/tasks');
@@ -157,6 +159,11 @@ test.describe('the admin', () => {
     const icon = await page.request.get(origin + '/brand/icon-512.png?v=' + etag);
     expect(icon.status()).toBe(200);
     expect(icon.headers()['content-type']).toBe('image/png');
+    expect(icon.headers()['cache-control']).toBe('public, max-age=2592000, immutable');
+    // An unversioned URL must be revalidated, so a CDN never serves an old logo.
+    const bare = await page.request.get(origin + '/brand/icon-512.png');
+    expect(bare.status()).toBe(200);
+    expect(bare.headers()['cache-control']).toBe('no-cache');
 
     // The sign-in page, with no session at all, draws the logo and the name.
     const anon = await browser.newContext({ storageState: { cookies: [], origins: [] } });

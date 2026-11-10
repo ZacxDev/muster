@@ -101,8 +101,8 @@ Each image is served with:
 - `Content-Security-Policy: default-src 'none'`;
 - an `ETag`. A request whose `If-None-Match` names it gets 304;
 - a `Cache-Control` chosen by the URL:
-  - `?v=<the current etag>`: `public, max-age=31536000, immutable`. That URL
-    names those exact bytes, so it may be cached for a year;
+  - `?v=<the current etag>`: `public, max-age=2592000, immutable`. That URL
+    names those exact bytes, so it may be cached for 30 days;
   - no `v`, or a `v` that is not the current etag: `no-cache`. The current
     image is still served (a stale `v` is not redirected), but a browser or a
     CDN must revalidate it before reusing it, and the `ETag` answers that with
@@ -113,6 +113,12 @@ Every link muster publishes to the images carries `?v=<etag>`: its pages, the
 web app manifest, Web Push notification icons and the
 [instance document](#the-instance-document). A new logo is a new URL, so no
 cache shows the old one.
+
+Resetting or replacing a logo does **not** purge copies already cached under
+its old `?v=` URL: a browser or CDN that fetched it may keep serving that URL
+for up to 30 days. Nothing muster publishes links it any more, but the bytes
+stay reachable by anyone who has the old URL. To withdraw a logo at once,
+also purge `/brand/*` at your CDN.
 
 Without the `no-cache` on an unversioned URL, a CDN in front of muster (most
 cache `.png` by default) keeps serving the previous logo for as long as the

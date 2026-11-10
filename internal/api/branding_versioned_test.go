@@ -58,11 +58,11 @@ func TestTheInstanceDocumentLinksVersionedImages(t *testing.T) {
 }
 
 const (
-	wantImmutable = "public, max-age=31536000, immutable"
+	wantImmutable = "public, max-age=2592000, immutable"
 	wantNoCache   = "no-cache"
 )
 
-// TestTheBrandImagesAreCachedByTheirURL: /brand/* is immutable for a year
+// TestTheBrandImagesAreCachedByTheirURL: /brand/* is immutable for 30 days
 // only at the URL that names the current logo (?v=<current etag>); with no v,
 // or a stale one, it is the current image under no-cache, so a CDN or browser
 // revalidates (and the ETag still answers 304). Each case is checked on a
