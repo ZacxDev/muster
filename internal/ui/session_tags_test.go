@@ -178,7 +178,8 @@ func TestTheRenderedViewsBoxIsCollapsibleBehindTypeAMessage(t *testing.T) {
 	if strings.Contains(form, `data-mv-collapsed`) || !strings.Contains(view, "form.setAttribute('data-mv-collapsed', '')") {
 		t.Errorf("the box is collapsed by the markup, or the script does not collapse it")
 	}
-	if !regexp.MustCompile(`<textarea id="mv-input" data-mv-field="" name="text"`).MatchString(form) {
+	// The collapsible field is the box's own row, holding the box.
+	if !regexp.MustCompile(`<div id="` + composerInputRowID + `" data-mv-field="" class="[^"]*"><textarea id="mv-input" name="text"`).MatchString(form) {
 		t.Errorf("the box is not in the form as the collapsible field:\n%s", form)
 	}
 	btn := regexp.MustCompile(`<button id="mv-text" type="button" aria-label="Type a message" title="Type a message" aria-expanded="false" aria-controls="mv-input"[^>]*>`).FindStringIndex(form)

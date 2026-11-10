@@ -232,24 +232,27 @@ async function expectOneSwitch(page: Page) {
 // press is the operator's press on a control: a tap on a touch screen.
 const press = (l: Locator, touch: boolean) => (touch ? l.tap() : l.click());
 
-// expectToggleFirst: the toggle is the composer row's FIRST control — left of
-// every other shown control of the form (the paperclip, the input, the mic,
-// Send, the ⋯) — and a 44px target.
+// expectToggleFirst: the toggle is the composer's button row's FIRST control —
+// left of every other shown control of that row (the paperclip, the mic, Send,
+// the ⋯) — and a 40px target. (The box is on its own row above the buttons,
+// mirror_compose.go; when shown, it ends above the toggle.)
 async function expectToggleFirst(page: Page) {
-  const boxes = await page.locator('#mv-form').evaluate((f) =>
-    Array.from(f.querySelectorAll('button, a, textarea, label'))
-      .filter((e) => (e as HTMLElement).offsetParent !== null && e.getBoundingClientRect().width > 0)
+  const boxes = await page.locator('#mv-button-row').evaluate((f) =>
+    Array.from(f.querySelectorAll('button, a, label'))
+      .filter((e) => (e as HTMLElement).offsetParent !== null && e.getBoundingClientRect().width > 0 && !e.closest('[popover]'))
       .map((e) => {
         const r = e.getBoundingClientRect();
-        return { id: e.id, x: r.x, r: r.right, w: r.width, h: r.height };
+        return { id: e.id, x: r.x, y: r.y, r: r.right, w: r.width, h: r.height };
       }),
   );
-  expect(boxes.length, JSON.stringify(boxes)).toBeGreaterThan(2);
+  expect(boxes.length, JSON.stringify(boxes)).toBeGreaterThan(1);
   const [first, ...rest] = [...boxes].sort((a, b) => a.x - b.x);
   expect(first.id, JSON.stringify(boxes)).toBe('mv-to');
   for (const b of rest) expect(b.x, `${b.id} starts after the toggle ends`).toBeGreaterThanOrEqual(first.r);
-  expect(first.w).toBeGreaterThanOrEqual(44);
-  expect(first.h).toBeGreaterThanOrEqual(44);
+  expect(first.w).toBeGreaterThanOrEqual(40);
+  expect(first.h).toBeGreaterThanOrEqual(40);
+  const box = await page.locator('#mv-input').boundingBox();
+  if (box) expect(box.y + box.height, 'the box ends above the toggle’s row').toBeLessThanOrEqual(first.y + 0.5);
 }
 
 // expectOneSend: exactly one submit button of the form is shown — id.
@@ -652,6 +655,61 @@ test('(c) a chief line whose post fails is resubmitted by the browser to the chi
     await expect.poll(() => docs, { timeout: 15_000 }).not.toEqual([]);
     expect(docs, 'the browser resubmitted to').toEqual([CHIEF_ROUTE]);
     await expect.poll(() => chiefTurns(line), { timeout: 30_000 }).toBe(1);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// THE FULLY LOADED BUTTON ROW FITS A 320px PHONE (review round 1). On the
+// send host's window every control the Rendered view's button row can hold is
+// drawn — the chief switch, the paperclip (muted here: no uploads), "Type a
+// message", the mic (muted: no dictation), Send with the Queue caret, and the
+// session's ⋯ — and at 320×568 (touch) every one is inside the screen and at
+// least 40px both ways, with the box collapsed and then open. (Here, not in
+// uploads.spec: only this rig offers the chief, so only here is the row
+// fully loaded.)
+// 🔴 A REGRESSION TEST: at 5b3be41a the row needed 316px against the 296 the
+// form's gutters leave, and the ⋯ ended past the screen's right edge.
+test('320×568 touch: the fully loaded button row fits the screen, collapsed and open, every target 40px', async ({ browser }) => {
+  test.setTimeout(90_000);
+  const W = 320;
+  const ctx = await browser.newContext({
+    viewport: { width: W, height: 568 },
+    hasTouch: true,
+    isMobile: true,
+    storageState: { cookies: await signedInCookies(browser), origins: [] },
+  });
+  try {
+    const page = await ctx.newPage();
+    await page.goto(`${rig.origin}/mirror/view?host=${encodeURIComponent(sendHost)}&session=ocs&window=${encodeURIComponent('@2')}`);
+    await expect(page.locator('#mv-send')).toBeEnabled({ timeout: 20_000 });
+    const fits = async (when: string, want: string[]) => {
+      const cs = await page.locator('#mv-button-row').evaluate((row) =>
+        Array.from(row.querySelectorAll('button, a, label'))
+          .filter((e) => !e.closest('[popover]'))
+          .map((e) => {
+            const r = e.getBoundingClientRect();
+            return { id: e.id, l: r.left, r: r.right, w: r.width, h: r.height };
+          })
+          .filter((c) => c.w > 0 && c.h > 0),
+      );
+      const ids = cs.map((c) => c.id);
+      // The positive control: the row is the fully loaded one.
+      for (const id of want) expect(ids, `${when}: #${id} is drawn in the row`).toContain(id);
+      for (const c of cs) {
+        expect(c.l, `${when}: #${c.id} starts inside the screen ${JSON.stringify(c)}`).toBeGreaterThanOrEqual(-0.5);
+        expect(c.r, `${when}: #${c.id} ends inside the ${W}px screen ${JSON.stringify(c)}`).toBeLessThanOrEqual(W + 0.5);
+        expect(Math.round(c.w), `${when}: #${c.id} is at least 40px wide`).toBeGreaterThanOrEqual(40);
+        expect(Math.round(c.h), `${when}: #${c.id} is at least 40px tall`).toBeGreaterThanOrEqual(40);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), `${when}: no sideways scroll`).toBeLessThanOrEqual(W);
+    };
+    const full = ['mv-to', 'mv-attach-off', 'mv-dictate-off', 'mv-send', 'mv-send-more', 'switcher-more-btn'];
+    await expect(page.locator('#mv-text'), 'collapsed behind “Type a message”').toBeVisible();
+    await fits('collapsed', [...full, 'mv-text']);
+    await page.locator('#mv-text').tap();
+    await expect(page.locator('#mv-input')).toBeVisible();
+    await fits('open', full);
   } finally {
     await ctx.close();
   }
