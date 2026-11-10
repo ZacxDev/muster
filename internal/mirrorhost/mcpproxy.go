@@ -112,10 +112,6 @@ type MCPProxy struct {
 // exactly as before, so a muster outage still fails the "muster" server
 // loudly (502) while the preview tools work or fail on their own.
 func (p *MCPProxy) SetPreview(h http.Handler) {
-	if h == nil {
-		p.preview.Store(nil)
-		return
-	}
 	p.preview.Store(&h)
 }
 

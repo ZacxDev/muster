@@ -7,6 +7,7 @@ package previewhost
 
 import (
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -100,6 +101,44 @@ func TestPreviewOpenAsksTheGatewayForTheCallersWindow(t *testing.T) {
 	}
 }
 
+// TestAnOpenPreviewKeepsItsIDAfterItsServerStops: once (window, port) is
+// open, opening it again returns its id even though its web server has
+// stopped (and its port is no longer listened on) — the design's Lifecycle
+// keeps a preview whose upstream stops answering open, and preview_list
+// still lists it, so the two tools agree. Nothing is probed or asked of the
+// gateway for it. The control: the same dead port from ANOTHER window is a
+// new open, and is refused not_listening.
+func TestAnOpenPreviewKeepsItsIDAfterItsServerStops(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	srv := &http.Server{Handler: http.NotFoundHandler()}
+	go func() { _ = srv.Serve(ln) }()
+	m := startMCPRig(t, portsJSON(port), HostConfig{})
+	ch := m.openAsync(t, "%1", map[string]any{"port": port, "label": "app"})
+	m.answerNextOpen(t, "p-live", "")
+	if o := recv(t, ch); o.Body["id"] != "p-live" {
+		t.Fatalf("first open %+v", o)
+	}
+	must(t, srv.Close()) // the server stops; nothing listens on the port
+	probes := m.probes.Load()
+	o := callTool(t, m.s, "%1", ToolOpen, map[string]any{"port": port})
+	if o.IsError || o.Body["id"] != "p-live" || o.Body["label"] != "app" || o.Body["state"] != "open" {
+		t.Fatalf("again after the server stopped: %+v; want p-live", o)
+	}
+	l := callTool(t, m.s, "%1", ToolList, map[string]any{})
+	if ps := l.Body["previews"].([]any); len(ps) != 1 || ps[0].(map[string]any)["id"] != "p-live" {
+		t.Fatalf("preview_list disagrees: %v", l.Body)
+	}
+	if n := m.probes.Load(); n != probes {
+		t.Fatalf("probed an open preview again")
+	}
+	m.gt.quiet(300 * time.Millisecond)
+	if got := callTool(t, m.s, "%2", ToolOpen, map[string]any{"port": port}).code(t); got != CodeNotListening {
+		t.Fatalf("control, another window: %q; want not_listening", got)
+	}
+}
+
 // TestPreviewOpenIsIdempotentPerWindowAndPort: opening the same port from
 // the same window again — from another pane of it too, and two at once —
 // returns the same id and asks the gateway nothing more.
@@ -167,8 +206,8 @@ func TestPreviewOpenRefusesEachWayTheDesignNames(t *testing.T) {
 
 	// The gateway's own refusal.
 	ch := m.openAsync(t, "%1", map[string]any{"port": ok})
-	m.answerNextOpen(t, "", CodeMaxOpen)
-	if got := recv(t, ch).code(t); got != CodeMaxOpen {
+	m.answerNextOpen(t, "", "max_open")
+	if got := recv(t, ch).code(t); got != "max_open" {
 		t.Fatalf("the gateway's max_open came back as %q", got)
 	}
 	// A pane in no mirrored window.
@@ -177,27 +216,59 @@ func TestPreviewOpenRefusesEachWayTheDesignNames(t *testing.T) {
 	}
 }
 
+// silentServer accepts connections on 127.0.0.1 and never writes a byte: a
+// server still starting, or one that is not HTTP and waits for its own
+// protocol's first word.
+func silentServer(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { c.Close() })
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
 // TestTheProbeRefusesAPortWithNoWebServer: /proc says this user listens on
-// the port (so the listener check passes), yet the probe finds nothing that
-// answers HTTP — no listener at all, or one that does not speak HTTP — and
-// the open is not_listening, with nothing asked of the gateway. The control,
-// a web server answering 404, is asked.
+// the port (so the listener check passes), yet the probe finds no web
+// server, and nothing is asked of the gateway. Two codes, by what the dial
+// met: nothing accepting the connection is not_listening; a connection that
+// gives no HTTP answer — bytes that are not HTTP, or silence for the whole
+// 5 s probe (and not much longer) — is not_answering, which a retry can
+// fix. The control, a web server answering 404, is asked.
 func TestTheProbeRefusesAPortWithNoWebServer(t *testing.T) {
 	dead := freePort(t)
 	echo, _ := echoServer(t, "127.0.0.1:0") // a TCP server that is not HTTP
+	silent := silentServer(t)
 	web := webServer(t)
 	uid := os.Getuid()
-	proc := newProcFixture(t, tcpHeader+fixtureRow(0, dead, uid, 1)+fixtureRow(1, echo, uid, 2)+fixtureRow(2, web, uid, 3), "")
-	m := startMCPRig(t, portsJSON(dead, echo, web), HostConfig{Proc: proc.root})
-	for _, port := range []int{dead, echo} {
-		o := callTool(t, m.s, "%1", ToolOpen, map[string]any{"port": port})
-		if got := o.code(t); got != CodeNotListening || !strings.Contains(o.Body["message"].(string), "answered HTTP") {
-			t.Errorf("port %d: %v; want the probe's not_listening", port, o.Body)
+	proc := newProcFixture(t, tcpHeader+fixtureRow(0, dead, uid, 1)+fixtureRow(1, echo, uid, 2)+fixtureRow(2, web, uid, 3)+fixtureRow(3, silent, uid, 4), "")
+	m := startMCPRig(t, portsJSON(dead, echo, web, silent), HostConfig{Proc: proc.root})
+	for _, c := range []struct {
+		name string
+		port int
+		want string
+	}{{"no listener", dead, CodeNotListening}, {"not HTTP", echo, CodeNotAnswering}, {"silent", silent, CodeNotAnswering}} {
+		start := time.Now()
+		o := callTool(t, m.s, "%1", ToolOpen, map[string]any{"port": c.port})
+		took := time.Since(start)
+		if got := o.code(t); got != c.want {
+			t.Errorf("%s (port %d): %q %v; want %s", c.name, c.port, got, o.Body["message"], c.want)
+		}
+		if c.name == "silent" && (took < ProbeWait-500*time.Millisecond || took > ProbeWait+3*time.Second) {
+			t.Errorf("silent: answered after %v; want after the %v probe", took, ProbeWait)
 		}
 	}
 	m.gt.quiet(300 * time.Millisecond)
-	if n := m.probes.Load(); n != 2 {
-		t.Fatalf("%d probes; want 2", n)
+	if n := m.probes.Load(); n != 3 {
+		t.Fatalf("%d probes; want 3", n)
 	}
 	ch := m.openAsync(t, "%1", map[string]any{"port": web})
 	m.answerNextOpen(t, "p-web", "")

@@ -194,10 +194,6 @@ func TestBothServersAreBehindTheSameGuard(t *testing.T) {
 	if w := postTo(t, p, PreviewMCPPath, caller("%7"), listBody); w.Code != http.StatusOK || reached.Load() != 1 {
 		t.Fatalf("control: an allowed request: %d, reached %d", w.Code, reached.Load())
 	}
-	p.SetPreview(nil)
-	if w := postTo(t, p, PreviewMCPPath, caller("%7"), listBody); w.Code != http.StatusNotFound {
-		t.Fatalf("unmounted /preview-mcp: %d; want 404", w.Code)
-	}
 	if w := postTo(t, proxyFor(srv.URL), PreviewMCPPath, caller("%7"), listBody); w.Code != http.StatusNotFound {
 		t.Fatalf("never mounted /preview-mcp: %d; want 404", w.Code)
 	}

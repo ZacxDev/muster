@@ -48,11 +48,11 @@ const (
 		"optionally a label (at most 60 bytes) and the path to open (starting with /, at most 512 bytes). " +
 		"The preview belongs to your tmux window; your owner finds it in muster on this session's page — no URL is returned. " +
 		"Opening the same port again returns the same id. " +
-		"Errors: previews_off, port_not_allowed, not_listening, foreign_listener, gateway_not_connected, gateway_timeout, max_open."
+		"Errors: previews_off, invalid_arguments, no_window, port_not_allowed, not_listening, not_answering (it listens but gave no HTTP answer within 5 s: retry once it is up), foreign_listener, gateway_not_connected, gateway_timeout, max_open."
 	toolListDescription = "List the previews open for your tmux window: the ones you opened with preview_open and the ones your owner opened from an offer. " +
-		"Errors: previews_off."
+		"Errors: previews_off, invalid_arguments, no_window."
 	toolCloseDescription = "Close one of your tmux window's previews by its id (from preview_open or preview_list). " +
-		"Errors: not_found (no such preview, or another window's), previews_off, gateway_not_connected, gateway_timeout."
+		"Errors: not_found (no such preview, or another window's), previews_off, invalid_arguments, no_window, gateway_not_connected, gateway_timeout."
 )
 
 // Tool error codes beyond the host's refusals (CodePortNotAllowed, …) and
@@ -60,7 +60,14 @@ const (
 const (
 	CodePreviewsOff = "previews_off"
 	CodeNotFound    = "not_found"
-	CodeMaxOpen     = "max_open"
+	// CodeNotAnswering: this user listens on the port and the loopback dial
+	// connected, but no HTTP answer came within ProbeWait (a server still
+	// starting, or not HTTP). Not CodeNotListening: retrying can succeed.
+	CodeNotAnswering = "not_answering"
+	// CodeInvalidArguments: a tool's arguments do not validate — a tool
+	// result the model reads and can correct (muster's own convention),
+	// not a failed request.
+	CodeInvalidArguments = "invalid_arguments"
 	// CodeNoWindow: the caller's pane is in no window this host mirrors, so
 	// the preview would belong to no one (not in the design's table: a
 	// session outside a mirrored window has nothing to bind a preview to).
@@ -187,7 +194,7 @@ func (s *MCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		switch {
 		case bad != nil:
-			writeRPC(w, req.ID, nil, -32602, bad.Error())
+			writeToolResult(w, req.ID, refuse(CodeInvalidArguments, "%v", bad), true)
 		case terr != nil:
 			writeToolResult(w, req.ID, terr, true)
 		default:
@@ -286,14 +293,18 @@ func (s *MCPServer) window(r *http.Request) (string, *toolError) {
 	return id, nil
 }
 
-// open is preview_open, in this order: previews on; the arguments; the
-// caller's window; the host's own refusal (Host.refusal, the check a CONNECT
-// makes: the port on the allowlist and not always-refused, then this user
-// listening on it — port_not_allowed, not_listening, foreign_listener), all
-// before anything is dialled or the gateway asked; an acknowledged open of
-// the same (window, port) answered as is (idempotent); the probe (a loopback
-// dial and HEAD /, within ProbeWait); then the gateway, through the offer
-// stream (Host.RequestOpen: gateway_not_connected, gateway_timeout, or the
+// open is preview_open, in this order: previews on; the arguments
+// (invalid_arguments); the caller's window (no_window); then, FIRST of all
+// checks on the port, an acknowledged open of the same (window, port),
+// answered with its id as is — idempotent per (caller, port), and in
+// agreement with preview_list: a preview whose upstream stopped answering
+// stays open (the design's Lifecycle). Only a NEW open goes on to the host's
+// own refusal (Host.refusal, the check a CONNECT makes: port_not_allowed,
+// not_listening, foreign_listener), all before anything is dialled or the
+// gateway asked; the probe (a loopback dial and HEAD /, within ProbeWait:
+// a refused dial is not_listening, a connection with no HTTP answer
+// not_answering); then the gateway, through the offer stream
+// (Host.RequestOpen: gateway_not_connected, gateway_timeout, or the
 // gateway's own refusal such as max_open).
 func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError, error) {
 	if terr := s.on(); terr != nil {
@@ -321,11 +332,11 @@ func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError,
 		return nil, refuse(ErrGatewayTimeout.Error(), "gave up waiting for another open of port %d: %v", port, err), nil
 	}
 	defer release()
-	if code, why := s.Host.refusal(port); code != "" {
-		return nil, refuse(code, "%s", why), nil
-	}
 	if o, ok := s.openOf(win, port); ok {
 		return resultOf(o), nil, nil
+	}
+	if code, why := s.Host.refusal(port); code != "" {
+		return nil, refuse(code, "%s", why), nil
 	}
 	probe := s.probe
 	if probe == nil {
@@ -334,8 +345,11 @@ func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError,
 	pctx, cancel := context.WithTimeout(r.Context(), ProbeWait)
 	err = probe(pctx, port)
 	cancel()
-	if err != nil {
-		return nil, refuse(CodeNotListening, "nothing on this machine answered HTTP on port %d within %v: %v", port, ProbeWait, err), nil
+	switch {
+	case errors.Is(err, errNoAnswer):
+		return nil, refuse(CodeNotAnswering, "port %d is listened on, but gave no HTTP answer within %v (%v); retry once the server is up", port, ProbeWait, err), nil
+	case err != nil:
+		return nil, refuse(CodeNotListening, "nothing on this machine accepted a connection on port %d: %v", port, err), nil
 	}
 	ans, err := s.Host.RequestOpen(r.Context(), wire.Request{Window: win, Port: port, Label: a.Label, Path: a.Path})
 	if terr := gatewayRefusal(err, "open port "+strconv.Itoa(port)); terr != nil {
@@ -494,14 +508,28 @@ func (s *MCPServer) close(r *http.Request, raw json.RawMessage) (any, *toolError
 
 // probeHTTP is preview_open's probe: a loopback dial of port (127.0.0.1,
 // then ::1, as a CONNECT dials) and HEAD /, answered. ANY HTTP answer counts
-// (a 404 or a 500 is a web server); a refused dial, or bytes that are not an
-// HTTP response, or nothing by ctx's deadline, do not. Never a proxy, never a
-// redirect followed: one request, on the loopback connection it dialled.
+// (a 404 or a 500 is a web server). A refused dial is returned as is
+// (not_listening); a connection that gives bytes that are not an HTTP
+// response, or nothing by ctx's deadline, wraps errNoAnswer (not_answering).
+// Never a proxy, never a redirect followed: one request, on the loopback
+// connection it dialled.
 func probeHTTP(ctx context.Context, port int) error {
 	c, err := dialLoopback(ctx, port)
 	if err != nil {
 		return err
 	}
+	if err := headRoot(ctx, c, port); err != nil {
+		return fmt.Errorf("%w: %v", errNoAnswer, err)
+	}
+	return nil
+}
+
+// errNoAnswer is a probe that connected but got no HTTP answer in time
+// (not_answering), as against a dial that was refused (not_listening).
+var errNoAnswer = errors.New("connected, but no HTTP answer")
+
+// headRoot sends HEAD / on c and reads one HTTP response.
+func headRoot(ctx context.Context, c net.Conn, port int) error {
 	defer c.Close()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = c.SetDeadline(dl)
@@ -515,7 +543,7 @@ func probeHTTP(ctx context.Context, port int) error {
 	req, _ := http.NewRequest(http.MethodHead, "http://"+host+"/", nil)
 	resp, err := http.ReadResponse(bufio.NewReader(c), req)
 	if err != nil {
-		return fmt.Errorf("no HTTP answer: %w", err)
+		return err
 	}
 	resp.Body.Close()
 	return nil

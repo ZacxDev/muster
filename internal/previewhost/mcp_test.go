@@ -184,8 +184,11 @@ func TestPreviewMCPAnswersTheProtocolItself(t *testing.T) {
 }
 
 // TestPreviewOpenRefusesBadArguments: a missing or out-of-range port, a long
-// label or path, a path that is not a path, and an unknown argument are
-// invalid params — never sent anywhere.
+// label or path, a path that is not a path, an unknown argument, and
+// preview_list / preview_close arguments that do not validate are each a
+// TOOL result with isError and invalid_arguments — which the model reads and
+// can correct — not a JSON-RPC error; nothing is probed. (An unknown tool
+// stays a JSON-RPC -32602: TestPreviewMCPAnswersTheProtocolItself.)
 func TestPreviewOpenRefusesBadArguments(t *testing.T) {
 	h := NewHost(HostConfig{Config: Config{Ports: mustPorts(t, "5173")}, Logger: log.New(io.Discard, "", 0)})
 	var probes atomic.Int32
@@ -198,8 +201,22 @@ func TestPreviewOpenRefusesBadArguments(t *testing.T) {
 		`{"port":5173,"url":"http://x"}`,
 	} {
 		r := rpc(t, s, "%1", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_open","arguments":`+args+`}}`)
-		if r.Error == nil || r.Error.Code != -32602 {
-			t.Errorf("%s: %s; want invalid params", args, r.Raw)
+		if r.Error != nil {
+			t.Errorf("%s: a JSON-RPC error %s; want an isError tool result", args, r.Raw)
+			continue
+		}
+		if got := r.tool(t).code(t); got != CodeInvalidArguments {
+			t.Errorf("%s: %q; want invalid_arguments", args, got)
+		}
+	}
+	for _, c := range []struct{ tool, args string }{{"preview_list", `{"x":1}`}, {"preview_close", `{}`}, {"preview_close", `{"id":7}`}} {
+		r := rpc(t, s, "%1", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+c.tool+`","arguments":`+c.args+`}}`)
+		if r.Error != nil {
+			t.Errorf("%s %s: a JSON-RPC error %s; want an isError tool result", c.tool, c.args, r.Raw)
+			continue
+		}
+		if got := r.tool(t).code(t); got != CodeInvalidArguments {
+			t.Errorf("%s %s: %q; want invalid_arguments", c.tool, c.args, got)
 		}
 	}
 	if n := probes.Load(); n != 0 {

@@ -722,14 +722,22 @@ same headers:
 The tools are `preview_open {port, label?, path?}`, `preview_list` and
 `preview_close {id}` (`mcp__preview__preview_*` in Claude Code). Each call is
 bound to the **window** the caller's pane is in, any pane of it, whatever runs
-there (no Claude Code session is needed). `preview_open` refuses a port off
-the allowlist, one nobody (or another user) listens on, and one that does not
-answer `HEAD /` within 5 s, all before the gateway is asked; it waits up to
-5 s for the gateway (`gateway_timeout`), and opening the same port from the
-same window again returns the same id. `preview_list` includes the previews
-the owner opened from an offer. A refusal is a tool error whose text is
-`{"error": "<code>", "message": "…"}`, the code from the design's table
-(plus `no_window` for a pane in no mirrored window).
+there (no Claude Code session is needed). Opening the same port from the
+same window again returns the same id, even after its server stopped (a
+preview whose server stops answering stays open, and `preview_list` still
+shows it). A **new** `preview_open` is refused, before the gateway is asked,
+for a port off the allowlist (`port_not_allowed`), one nobody listens on or
+that refuses the connection (`not_listening`), one another user listens on
+(`foreign_listener`), and one that accepts the connection but gives no HTTP
+answer to `HEAD /` within 5 s (`not_answering`: retry once the server is
+up); it then waits up to 5 s for the gateway (`gateway_not_connected`,
+`gateway_timeout`, or the gateway's own `max_open`). `preview_list` includes
+the previews the owner opened from an offer; `preview_close` of another
+window's id is `not_found`. Every refusal — arguments that do not validate
+(`invalid_arguments`) and a pane in no mirrored window (`no_window`)
+included — is a tool error the model reads, whose text is
+`{"error": "<code>", "message": "…"}`; previews turned off by a bad
+`previews.json` are `previews_off`. An unknown tool name is a JSON-RPC error.
 
 ### Stale tool definitions
 
