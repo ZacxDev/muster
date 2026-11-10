@@ -62,6 +62,9 @@ const (
 	// openCodeTerminalText: the ask is not one muster answers (several
 	// questions, a multi-select, a free-text form, too many options).
 	openCodeTerminalText = "muster can't answer this one from here: answer it in the terminal."
+	// openCodeViewText: a question muster answers in the session's view, not
+	// with a button here.
+	openCodeViewText = "Open the session to answer it: its view shows the whole question."
 	// openCodeOfflineText: the host is offline.
 	openCodeOfflineText = "The host is offline: answer it in the terminal."
 )
@@ -114,6 +117,10 @@ func (s *Server) openCodeItem(it *attentionItem, e mirror.SessionView, p *mirror
 		}
 	}
 	switch {
+	case len(offered) == 0 && p.Kind == mirror.PendingQuestion && p.PromptID != "" && answers && !it.Offline:
+		// A whole form (several questions, a multi-select, long options):
+		// the session's view answers it (mirror_opencode_ask.go).
+		ask.why = openCodeViewText
 	case len(offered) == 0:
 		ask.why = openCodeTerminalText
 	case it.Offline:

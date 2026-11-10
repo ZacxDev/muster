@@ -147,18 +147,27 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirror/hub.go Hub.Hosts ×2",
 		"internal/mirror/hub.go hostConn.target ×1",
 		"internal/mirror/hub.go hostConn.targetRuntime ×1",
-		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×3",
+		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×2",
+		"internal/mirror/opencode_answer.go Hub.relayOpenCodeAnswer ×1",
+		// An opencode question's whole form (opencode_form.go): opencode's
+		// own wire, the window checked to be opencode's.
+		"internal/mirror/opencode_form.go Hub.AnswerOpenCodeForm ×1",
+		"internal/mirror/opencode_form.go Hub.OpenCodeForm ×1",
+		"internal/mirror/opencode_form.go Hub.openCodeAskWindow ×1",
 		// An opencode dispatch's final reply rides only an opencode window: it
 		// is opencode's own wire (outcomes.go), the runtime with no muster tool.
 		"internal/mirror/outcomes.go NormalizeOutcomes ×1",
 		"internal/mirror/runtime.go (declarations) ×4",
 		"internal/mirror/transcript.go hostConn.claudeWaiting ×1",
-		"internal/mirror/turnerror.go boundTurnError ×1",
+		// (boundTurnError asks RuntimeSpec.TurnErrors now: Claude Code and
+		// opencode both report how a turn ended.)
 		"internal/mirror/wire.go (declarations) ×1",
 		"internal/mirror/wire.go Window.AgentRuntime ×1",
 		"internal/mirrorhost/opencode.go ResolveOpenCodePaneStarted ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
 		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",
+		// The form request and answer check the window is opencode's NOW.
+		"internal/mirrorhost/opencode_form.go hostSide.waitingOn ×1",
 		// The host reading an opencode dispatch window's final reply checks the
 		// window is opencode's (opencode_outcome.go).
 		"internal/mirrorhost/opencode_outcome.go OpenCodeSource.dispatchOutcomes ×1",
@@ -166,6 +175,9 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirrorhost/opencode_send.go hostSide.sendOpenCode ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeGone ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeWindow ×1",
+		// The host reading an idle opencode window's turn error checks the
+		// window is opencode's (opencode_turnerror.go).
+		"internal/mirrorhost/opencode_turnerror.go OpenCodeSource.attachTurnErrors ×1",
 		"internal/mirrorhost/runtime.go claudeRuntime.Name ×1",
 		"internal/mirrorhost/runtime.go openCodeRuntime.Name ×1",
 		"internal/mirrorhost/transcript.go hostSide.watch ×1",

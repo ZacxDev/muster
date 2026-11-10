@@ -120,7 +120,7 @@ func TestTheTenantSpawnOptInReachesTheHost(t *testing.T) {
 	prevC := runContext
 	t.Cleanup(func() { runContext = prevC })
 	for _, c := range []struct{ optIn, want string }{
-		{"teamq", `STARTING AGENTS IS ON (-agent-spawn): your chief may start claude in tmux session "agents" on the tenant tmux server "teamq"`},
+		{"teamq", `STARTING AGENTS IS ON (-agent-spawn): your chief may start claude (or opencode, with -opencode-send and a token) in tmux session "agents" on the tenant tmux server "teamq"`},
 		{"", "-agent-spawn is set but this host starts no agent: not the default tmux server"},
 	} {
 		runContext = func() (context.Context, context.CancelFunc) {

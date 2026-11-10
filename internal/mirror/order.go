@@ -59,6 +59,9 @@ type SessionView struct {
 	// through its runtime's gated send (launcher-bound opencode). SendWhy says,
 	// with the host's hello, whether a send can go and why not.
 	AgentSend bool
+	// AgentBind is Window.AgentBind: how a hand-opened pane of a gated-send
+	// runtime is bound (verified: sent to), or why it is not sent to.
+	AgentBind string
 	// LiveCopy is the session id of another transcript of the entry's Claude
 	// Code conversation that is still running elsewhere (Window.LiveCopy), ""
 	// for none. LiveCopyWarning is its words.
@@ -411,7 +414,7 @@ func (h HostView) Entries() []SessionView {
 			// prints and decides the Idle section by.
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.CardActivity(), w.Claude, w.ClaudeSession
 			e.Runtime, e.AgentSession, e.AgentNote, e.LiveCopy = w.Runtime, w.AgentSession, w.AgentNote, w.LiveCopy
-			e.AgentSend = w.AgentSend
+			e.AgentSend, e.AgentBind = w.AgentSend, w.AgentBind
 			e.Dispatch = w.Dispatch
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
