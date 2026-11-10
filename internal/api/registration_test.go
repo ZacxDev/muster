@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccfailover"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
@@ -133,6 +134,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		PRSessions: stubPRSessions{},
 		ClosedPRs:  &ClosedPRs{},
+		ChiefUsage: struct{ chiefusage.Store }{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
 			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.

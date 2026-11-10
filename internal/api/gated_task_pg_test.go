@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -56,6 +57,8 @@ func newGatedFixtureWith(t *testing.T, extra func(g *gatedFixture, ext *Extensio
 		ext.Focus, ext.FocusSummarizer = g.focus, g.summ
 		// The attention queue: its tools join the registry the ledgers pin.
 		ext.Attention = attention.NewPG(pool)
+		// The chief's telemetry (chief_usage.go): who handled each message.
+		ext.ChiefUsage = chiefusage.NewPG(pool)
 		if extra != nil {
 			extra(g, ext)
 		}

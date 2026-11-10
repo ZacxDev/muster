@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -289,7 +290,8 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 		defer cancel()
 		defer release()
 		defer s.turns.leave(chief.ID)
-		parts, err := s.answerTurn(tctx, chief, sess, text, nil)
+		// A session's question to the chief (chief_usage.go): the turn's trigger.
+		parts, err := s.answerTurn(chiefusage.WithTrigger(tctx, chiefusage.Trigger{Kind: chiefusage.TriggerSessionQuestion}), chief, sess, text, nil)
 		bctx, bcancel := context.WithTimeout(context.WithoutCancel(tctx), 15*time.Second)
 		defer bcancel()
 		if reason := agentgateway.Unsent(err); reason != "" {

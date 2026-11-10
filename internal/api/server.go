@@ -179,6 +179,9 @@ type Server struct {
 	// sleeping past the row's deletion.
 	destroyInFlight sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
+	// triageClaimed, when set (tests only), runs inside the task triage once it
+	// has claimed the event and before it acts (task_triage.go).
+	triageClaimed func()
 	// taskForwardTurn starts the turn a task_forward hands an agent
 	// (task_routing.go); built by UseExtensions only when a gateway is wired
 	// (nil: the forward is stored and no turn starts).
@@ -715,6 +718,10 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.
 	s.registerPluginRoutes(mux)
+	// Routing rules (routing_rules.go): /rules, 404 with plugins off; and the
+	// chief's usage page (usage.go): /usage, 404 without a database.
+	s.registerRoutingRuleRoutes(mux)
+	s.registerUsageRoutes(mux)
 	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.

@@ -1766,6 +1766,13 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	if err != nil {
 		return a, err
 	}
+	// A routing rule's card (routing_rules.go): the same tap, the same rules —
+	// the owner's door, a tapped button, once — approving or declining it.
+	if note == nil {
+		if note, err = s.ruleForAnswer(ctx, id, answer, src); err != nil {
+			return a, err
+		}
+	}
 	if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {

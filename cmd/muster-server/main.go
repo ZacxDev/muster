@@ -67,6 +67,7 @@ import (
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/chiefpref"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
@@ -684,6 +685,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.sessionRoutingEnabled() && a.pool != nil && ext.Routes == nil {
 		ext.Routes = plugins.NewPG(a.pool).WithAgentDenyWords(cfg.FlowAgentDenyWords)
 		ext.Routing = sessionRouting(cfg)
+	}
+	// The chief's token telemetry (internal/chiefusage; the usage page): with
+	// a database, always — it records numbers and tags only, owner-scoped.
+	if a.pool != nil {
+		ext.ChiefUsage = chiefusage.NewPG(a.pool)
 	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {

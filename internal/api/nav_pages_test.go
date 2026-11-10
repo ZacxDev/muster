@@ -36,6 +36,8 @@ var apiNavWriters = []string{
 	"renderAskPage",         // /attention/asks/{id} (one ask, an app screen)
 	"renderPluginsPage",     // /plugins
 	"renderFlowsPage",       // /flows
+	"renderRulesPage",       // /rules (the chief's routing rules)
+	"handleUsagePage",       // /usage (what the chief costs)
 	"writeAdminDocument",    // /admin/users, /admin/invites
 	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
 }
@@ -369,6 +371,8 @@ var apiNavSecret = map[string]bool{
 	"renderAsksPage":        false, // the queue; the shell beside it has Faro already
 	"renderAskPage":         false, // one ask and its answer box
 	"renderNotice":          false, // one sentence
+	"renderRulesPage":       false, // the owner's rules: matches, actions, counts; no secret
+	"handleUsagePage":       false, // token counts and senders the owner already sees; no secret
 }
 
 // TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this

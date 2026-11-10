@@ -126,6 +126,10 @@ func TestAReviewOfAnOnlineSessionsPRIsRoutedToIt(t *testing.T) {
 	if n := f.turns.count(); n != 0 {
 		t.Fatalf("the chief took %d turn(s); a route by pull request takes none", n)
 	}
+	// The usage page's record: muster's own path, by name (chief_usage.go).
+	if h, _, _ := handledBy(t, f.routeFixture, m.ID); h != "pr_route" {
+		t.Fatalf("handled by %q, want pr_route", h)
+	}
 	if note := f.chiefDefaultSessionText(t); !strings.Contains(note, "finding 1: a nil map write") || !strings.Contains(note, "Route "+rs[0].RouteID) {
 		t.Fatalf("the chief's conversation does not hold the message and its route: %q", note)
 	}
@@ -246,6 +250,10 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 			}
 			if turn := f.lastTurn(); strings.Contains(turn, plugins.AuthorHeader) || strings.Contains(turn, "pr-author") {
 				t.Fatalf("an unmatched review's turn names an author:\n%s", turn)
+			}
+			// The usage page's record: a chief turn (chief_usage.go).
+			if h, _, fb := handledBy(t, f.routeFixture, m.ID); h != "chief" || fb != 0 {
+				t.Fatalf("handled by %q fallback %d, want chief", h, fb)
 			}
 		})
 	}

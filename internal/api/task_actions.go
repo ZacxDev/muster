@@ -59,16 +59,29 @@ type chiefTaskAction struct {
 // forwardTarget is the agent task_forward would pass task taskID's change to:
 // the newest running agent on it that is not the chief itself, or nil.
 func (s *Server) forwardTarget(ctx context.Context, chief agents.Agent, taskID int64) (*agents.Agent, error) {
+	all, err := s.forwardTargets(ctx, chief, taskID)
+	if err != nil || len(all) == 0 {
+		return nil, err
+	}
+	return &all[0], nil
+}
+
+// forwardTargets is every agent task_forward could pass task taskID's change
+// to, newest first: THE one predicate (agentCanBeSent, never the chief), which
+// forwardTarget takes the first of and the task triage (task_triage.go)
+// counts.
+func (s *Server) forwardTargets(ctx context.Context, chief agents.Agent, taskID int64) ([]agents.Agent, error) {
 	on, err := s.liveOnTask(ctx, agentOwnerID(chief), taskID)
 	if err != nil {
 		return nil, err
 	}
+	var out []agents.Agent
 	for i := range on { // newest first
 		if on[i].ID != chief.ID && agentCanBeSent(on[i].Status) {
-			return &on[i], nil
+			out = append(out, on[i])
 		}
 	}
-	return nil, nil
+	return out, nil
 }
 
 // chiefMayDispatch reports whether owner's chief may start an agent with

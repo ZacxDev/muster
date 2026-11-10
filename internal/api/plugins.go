@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -267,17 +268,39 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 // closed — settled by muster (settleClosedPRReview), else to the session that
 // authored the pull request it reviews (routeByPR), else — when that session's window is gone
 // and the gate allows it — to that session RESUMED (startMailResume, which
-// falls back to the chief itself), or else to the owner's chief. A route is
+// falls back to the chief itself), else by the first approved routing rule
+// that matches it (applyRoutingRules: routing_rules.go says why it comes
+// last), or else to the owner's chief. A route is
 // made detached from the request, as the chief's delivery is: a client that
 // hangs up once the route has taken the message must not cut off its
 // injection or its record in the chief's conversation, or the message is the
 // chief's while the chief never sees it.
+//
+// Who handled it is recorded for the usage page (chief_usage.go): the path's
+// name, the rule, or the chief — with the rule that matched and could not act.
 func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
 	ctx := context.WithoutCancel(r.Context())
-	if s.answerFleetReport(ctx, p, m) || s.routeByThread(ctx, p, m) || s.settleClosedPRReview(ctx, p, m) ||
-		s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
+	for _, path := range []struct {
+		handler string
+		take    func(context.Context, plugins.Plugin, plugins.Message) bool
+	}{
+		{chiefusage.HandlerFleetReport, s.answerFleetReport},
+		{chiefusage.HandlerThread, s.routeByThread},
+		{chiefusage.HandlerClosedPR, s.settleClosedPRReview},
+		{chiefusage.HandlerPRRoute, s.routeByPR},
+		{chiefusage.HandlerMailResume, s.startMailResume},
+	} {
+		if path.take(ctx, p, m) {
+			s.recordHandling(ctx, p, m, path.handler, 0, 0)
+			return
+		}
+	}
+	handled, rule, fallback := s.applyRoutingRules(ctx, p, m)
+	if handled {
+		s.recordHandling(ctx, p, m, chiefusage.HandlerRule, rule, 0)
 		return
 	}
+	s.recordHandling(ctx, p, m, chiefusage.HandlerChief, 0, fallback)
 	s.deliverPluginMessage(r, p, m)
 }
 
@@ -437,6 +460,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	// that moved the drafts: no draft notification older than that can still
 	// be pending. The fragment never reached this server, so only the
 	// page can.
+	b.WriteString(`<p class="text-sm text-fg2" data-testid="plugins-rules-usage">Messages your chief would place the same way every time can skip it: <a href="` +
+		routingRulesPath + `" class="text-accent underline">Routing rules</a>. What your chief costs: <a href="` + usagePath + `" class="text-accent underline">Usage</a>.</p>
+`)
 	b.WriteString(`<p class="text-sm text-fg2" data-testid="plugins-drafts-moved">Reply drafts are decided on the <a href="` + attentionPath + `?` +
 		asksTabParam + `=` + asksTabDrafts + `" class="text-accent underline">Asks page</a>, under Reply drafts.</p>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>

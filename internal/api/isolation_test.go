@@ -426,6 +426,14 @@ var isolationClasses = map[string]routeClass{
 	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
 	"POST /plugin-handoffs":     classList,
 	"POST /plugins/{id}/revoke": classParam,
+	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
+	// rules; each write names a rule by id, and another owner's is not found.
+	// The usage page reads the caller's own telemetry rows only.
+	"GET /rules":               classList,
+	"POST /rules/{id}/disable": classParam,
+	"POST /rules/{id}/enable":  classParam,
+	"POST /rules/{id}/delete":  classParam,
+	"GET /usage":               classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
@@ -944,6 +952,21 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	_, w.aPlugin2, err = ps.Create(ua, "iso-second", w.canary+" plugin", "iso")
 	must(err, "a second plugin")
+	// A's routing rules (0107), approved: the Rules page's write routes name
+	// them by id (isoObjs.rule, ruleOff, ruleDel).
+	aRule := func(sender string, off bool) int64 {
+		r, err := ps.CreateRuleProposal(ua, plugins.RuleNew{PluginID: w.aPlugin2.ID, PluginName: w.aPlugin2.Name,
+			Match: plugins.RuleMatch{Sender: sender + "@iso.example.test"}, Action: plugins.RuleSettle, SettleReason: w.canary + " rule",
+			ChiefAgent: w.a.agent.ID, SourceMessage: 1})
+		must(err, "a rule "+sender)
+		_, err = ps.ApproveRule(ua, r.ID)
+		must(err, "approve a rule "+sender)
+		if off {
+			must(ps.SetRuleEnabled(ua, r.ID, false), "disable a rule "+sender)
+		}
+		return r.ID
+	}
+	aRuleOn, aRuleOff, aRuleDel := aRule("on", false), aRule("off", true), aRule("del", false)
 	// A's agent was handed a message (the canary in its body) and drafted a
 	// reply (the canary in it too): the object the draft routes name. Through
 	// A's FIRST plugin, the one whose token the walk holds, so A's own result
@@ -1026,7 +1049,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
-		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID}
+		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1035,7 +1058,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
-		device: ghostID, refWrite: ghostID, refTask: ghostID}
+		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1363,6 +1386,10 @@ type isoObjs struct {
 	refTask                                   int64  // the reference refWrite is on (its retry/dismiss routes' {id})
 	ask                                       int64  // an attention ask's id (0025)
 	standing                                  int64  // a shared approval's id (0043)
+	// Routing rules (0107): one per write route, so the walk's order cannot
+	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
+	// disabled (Enable's), ruleDel active (Delete's).
+	rule, ruleOff, ruleDel int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1394,6 +1421,12 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.runnerTok, 10)
 	case strings.HasPrefix(path, "/plugins/{id}"):
 		id = strconv.FormatInt(o.plugin, 10)
+	case strings.HasPrefix(path, "/rules/{id}/enable"):
+		id = strconv.FormatInt(o.ruleOff, 10)
+	case strings.HasPrefix(path, "/rules/{id}/delete"):
+		id = strconv.FormatInt(o.ruleDel, 10)
+	case strings.HasPrefix(path, "/rules/{id}"):
+		id = strconv.FormatInt(o.rule, 10)
 	case strings.HasPrefix(path, "/plugins/drafts/{id}") || strings.HasPrefix(path, "/plugin/v1/drafts/{id}"):
 		id = strconv.FormatInt(o.draft, 10)
 	case strings.HasPrefix(path, "/plugin/v1/task-writes/{id}"):

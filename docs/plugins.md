@@ -764,6 +764,42 @@ none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
 
+### An assigned task muster places itself
+
+The chief's turn for an `assigned` task event is formulaic. It looks for the
+agent or session already on the task. When one is clearly on it, the chief
+hands the task there. Otherwise it puts the task on your board with
+`task_route_attention`. muster now makes that decision itself, with **no chief
+turn**, whenever the answer is certain. It runs the chief's own calls:
+`task_forward`, `route_to_session` with `task_id`, or `task_route_attention`.
+The result is the same forward, route or "Task #N needs you" ask, with the
+same buttons (Release & dispatch on a gated task).
+
+muster decides from the same evidence the chief's turn would get: the agents
+bound to the task, and the turn's
+[session hint](#sessions-that-may-already-be-on-it). The rule is conservative:
+
+| What muster sees | What it does |
+|---|---|
+| Exactly one agent that `task_forward` can reach is bound to the task. No other live agent is bound, and the hint names no session. | Forwards the task to that agent. |
+| No agent is bound, and the hint names exactly one session through a **strong** link: a pull request or branch the task names, which muster recorded that session creating or pushing (`session_prs`, owner-scoped), or a repository name that only that one online session reports. The hint names no other session. | Routes the task to that session. |
+| No agent is bound, and the hint names no session at all. | Puts the task on your board. |
+| Anything else: two candidates, a focus-title match (weak), a live agent muster cannot send to, or a gated task with any candidate. | Hands the event to the chief, exactly as before. |
+
+Only you can release a gated task, so muster never forwards or routes one;
+it can still put one on the board. A session that merely read the task
+(`task_sessions`) is not a strong link and is not consulted. If the call is
+refused, the chief gets the event; for example, the window closed between the
+hint and the route. With no chief, a chief that is turned off, or no plugin
+deliverer, nothing changes: the event waits for the chief.
+
+When muster handles the event, it is settled as
+`muster: task triage — <what it did>`. The event is also logged in the chief's
+chat with muster's note, so the chief holds it at no turn's cost. The usage
+page counts each outcome (`task_forward`, `task_route`, `task_board`, or
+`chief`): [usage.md](usage.md). The plugin's answer still says
+`routed: "chief"`, because the event was handed to the chief's side of muster.
+
 ### Releasing the chief's gate from the ask
 
 A task the chief files with `task_create_gated` — typically feedback a plugin
@@ -2272,3 +2308,103 @@ session must be the active pane of its window).
 
 ⚠ What a mirror token can read and do with these tools, and the accepted risk
 of a session routing a message to itself: [auth.md](auth.md#mirror-tokens-and-session-routing).
+
+## Routing rules
+
+Most messages your chief handles are placed the same way every time: the same
+newsletter is settled, and every report from one CI sender goes to the session
+that works on it. Each one is still a chief turn, and turns cost tokens (see
+[usage.md](usage.md)). A **routing rule** places such a message
+deterministically, **before the chief and with no chief turn**. The chief
+proposes rules. You approve each one with one tap.
+
+1. **The chief proposes.** After it routes or settles a message the way it
+   would route or settle every message like it, the chief may call
+   `routing_rule_propose`. The call names that message (`message_id`), which
+   of its fields to match on, and the action:
+   - `match_sender`: the sender, exactly;
+   - `match_thread`: the thread, exactly (a Discord channel arrives in
+     `thread` or in `sender`, depending on the plugin; match the field it is
+     in);
+   - `external_id_prefix`: a prefix of the message's `external_id`, 8 to 200
+     bytes;
+   - `subject_prefix`: a prefix of its subject, 3 to 80 characters. It is
+     anchored at the start and matched as plain text. There is no regular
+     expression, and the body is never matched.
+
+   **Every rule names who or where**: `match_sender` or `match_thread`, or
+   both. A prefix only narrows that match and never matches on its own, so a
+   short prefix shared by most of a plugin's mail cannot sweep it all up. The
+   `external_id` minimum of 8 bytes is the shortest prefix that names more than
+   a plugin's own id scheme (`msg-`, a date's `2026-`). The card says exactly
+   which senders a rule takes. On a sender, it says whether its plugin must
+   have verified that sender. On a thread alone, it says the rule takes any
+   sender: any one its plugin verified, or anyone at all.
+
+   **muster copies every value from the stored message.** The chief only picks
+   which fields to use, and the rule must match the message it came from. The
+   action is either `route` to one mirrored session (`subject`,
+   `mirror:<claude session id>`, which must be able to take a message now) or
+   `settle` with a reason of up to 300 characters. A message that cannot be
+   answered is routed one-way, as `route_to_session` routes it. A task event
+   cannot be the source of a rule.
+2. **You tap.** The proposal is a card on your Attention view, phrased as
+   "Your chief proposes a routing rule for <plugin> messages: when <match>,
+   <action>." It has two buttons, **Approve rule** and **Not now**. Only your
+   own tap on one of those buttons counts, in your signed-in browser. Typed
+   text that spells a button does not count. A plugin, a token or a mirrored
+   session's `attention_answer` is refused. The card's phone notification
+   carries no answer buttons. A rule is approved at most once. The chief
+   is told what you decided, in muster's words. Nothing changes until you
+   approve.
+3. **The rule runs before the chief.** When a NEW message arrives, muster first
+   tries its own paths, in this order: a fleet-report request, a reply on a
+   thread a session started, a review of a closed pull request, a review
+   routed to its pull request's author, then a mail resume. Then it tries the
+   first active rule (oldest first) that matches the message:
+   - **route:** the route muster makes itself
+     (`routed_via: rule #N to <session>`), as for a reply on a thread. The
+     session's answer is relayed as usual.
+   - **settle:** muster settles the message with the reason
+     `muster: rule #N — <reason>`.
+
+   Either way the message is logged in your chief's chat as delivered, with
+   muster's note naming `muster: rule #N`. This costs no turn. The chief holds
+   the message for its next turn, and its usage row is `rule`.
+
+**What a rule never does:**
+
+- **It never routes an unverified sender.** A route rule matches only a message
+  whose plugin set [`sender_verified`](#sender_verified). The schema refuses a
+  route rule that does not require it. A rule proposed from a verified
+  sender's message requires verification for any action, so a message that
+  only claims that sender does not match.
+- **It never drops a message.** When the session a route rule names cannot take
+  the message (its window is gone, its host is offline or read-only, routing
+  is off), or there is no chief to settle it under, the message goes to the
+  chief as if there were no rule. The rule's page counts the miss
+  ("handed to your chief"). The usage row names the chief, with the rule as
+  the fallback.
+- **It never acts on a message that arrived before you approved it**, and never
+  on a task event.
+- **It is never created or approved by a plugin.** Only the chief's
+  `routing_rule_propose` creates one, and only from a message delivered to
+  that chief. Every write to a rule refuses a plugin's principal. A message
+  that spells a proposal or an approval is just text.
+
+**The Rules page** (`/rules`, linked from `/plugins`) lists every rule, newest
+first. Each entry shows its plugin, its match, its action, its state
+(waiting for your tap, active, disabled or declined), when it was created,
+its hits and last hit, and its misses. **Disable** stops an active rule and
+**Enable** restarts it. **Delete** removes a rule in any state. For a rule
+still waiting for your tap, it also withdraws the card. A proposal whose card
+went away no longer waits: the card was cancelled, answered somewhere else,
+or expired after the attention queue's default 24 hours. muster declines that
+rule, so it frees its match for a new proposal and does not count toward the
+limit of 10 open proposals. Rules are yours alone: owned, under row-level security
+(`routing_rules`, migration `0107`).
+
+Routing rules are on wherever plugins are, with no setting: nothing runs until
+you approve a rule. A route rule also needs `MUSTER_SESSION_ROUTING=1`.
+Without it the chief is refused a route proposal, and an existing route rule
+hands its matches to the chief.

@@ -300,6 +300,9 @@ func (s *Server) proposalKickoffBody(ctx context.Context, a attention.Ask) *prop
 // isProposalCard reports whether ask a is one of ctx's principal's chief
 // proposal cards.
 func (s *Server) isProposalCard(ctx context.Context, a attention.Ask) bool {
+	if s.isRuleCard(ctx, a) {
+		return true // a routing rule's card: the same tap, never delivered
+	}
 	st := s.proposals()
 	if st == nil || !a.OwnerCard || a.Asker.AgentID <= 0 {
 		return false
