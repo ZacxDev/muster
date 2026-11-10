@@ -196,6 +196,7 @@ func (g *Gateway) previewHandler(id string) http.Handler {
 			// No such preview (never opened, closed, or its owner no longer
 			// served): nothing here, and nothing is dialled.
 			g.gatewayPageHeaders(w)
+			g.m.refused(codeNoSuchPreview)
 			http.NotFound(w, r)
 			return
 		}
@@ -232,6 +233,7 @@ func (g *Gateway) previewHandler(id string) http.Handler {
 func (g *Gateway) enterPreview(w http.ResponseWriter, r *http.Request, id string) {
 	g.gatewayPageHeaders(w)
 	if r.Method != http.MethodGet {
+		g.m.refused(codeMethodNotAllowed)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -242,6 +244,7 @@ func (g *Gateway) enterPreview(w http.ResponseWriter, r *http.Request, id string
 	}
 	v, err := g.sign.mintOwnerCookie(id, who, g.clock.Now())
 	if err != nil {
+		g.m.refused(codeInternal)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

@@ -53,6 +53,9 @@ func (g *Gateway) renderCode(w http.ResponseWriter, status int, code string) {
 		code, txt = codeNotAnswering, codePages[codeNotAnswering]
 	}
 	g.m.refused(code)
+	if rec, ok := w.(*statusRecorder); ok {
+		rec.code = code // the span's reason: the gateway's own code, never a header
+	}
 	w.Header().Set(ErrorCodeHeader, code)
 	g.renderNotice(w, status, txt[0], txt[1]+" ("+code+")")
 }

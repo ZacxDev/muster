@@ -660,9 +660,12 @@ the host's tunnel. What it does:
 - **Limits and lifecycle.** At most 4 open previews per window, 16 per owner,
   and the host's `maxOpen` per host (8 if it sent none), on an agent's
   `preview_open` and on **Open** alike (`max_open`). A preview has at most 64
-  requests and WebSockets in flight; one more is refused `429
-  too_many_connections` before anything is dialled. A request body is at most
-  `PREVIEW_MAX_BODY`: a larger `Content-Length` is refused `413
+  requests and WebSockets in flight; one more waits for a slot, up to the
+  dial wait (10 s), and is then refused `429 too_many_connections`, before
+  anything is dialled. An admitted request can wait as long again for one of
+  the host's own upstream slots (`maxConns`) and is then refused `429
+  max_conns`, so the worst case before a 429 is about twice the dial wait.
+  A request body is at most `PREVIEW_MAX_BODY`: a larger `Content-Length` is refused `413
   body_too_large` before anything is dialled, and a body without one is counted
   as it streams to the app (never buffered) and refused the same way when it
   passes the limit. A preview closes after `PREVIEW_IDLE` with no request (an
@@ -678,10 +681,11 @@ the host's tunnel. What it does:
   `muster_preview_opens_total{opener}` (`agent`, `page`),
   `muster_preview_closes_total{reason}` (`host`, `page`, `idle`, `ttl`,
   `window_gone`, `host_revoked`, `owner_not_served`),
-  `muster_preview_refusals_total{reason}` (the gateway's own codes, `other` for
+  `muster_preview_refusals_total{reason}` (the gateway's own codes, among them
+  `no_such_preview` for a request to a preview that is not open, `other` for
   any outside them), `muster_preview_requests_total{kind,auth,code_class}`,
-  `muster_preview_response_seconds{kind}` (to the app's response headers) and
-  `muster_preview_dial_seconds{kind,outcome}`.
+  `muster_preview_response_seconds{kind}` (from taking its slot to the app's
+  response headers) and `muster_preview_dial_seconds{kind,outcome}`.
 - **Spans** (with an OTLP endpoint set; [tracing](#tracing-muster-server-and-muster-mirror)):
   `preview.request` (kind, auth, path `mesh`|`public`, status class, the
   gateway's code when it answered itself), `preview.dial` (outcome) and

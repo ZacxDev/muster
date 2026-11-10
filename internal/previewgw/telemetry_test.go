@@ -3,12 +3,15 @@ package previewgw
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -292,5 +295,91 @@ func TestPreviewSpansCarryNoPathQueryOrHeader(t *testing.T) {
 	}
 	if ws := byName["preview.ws"]; len(ws) != 1 || attrs(ws[0])["muster.reason"] != "client_left" {
 		t.Errorf("preview.ws spans %+v; want one, ended by the browser (client_left)", ws)
+	}
+}
+
+// 🔴 The bare net/http answers on a p- host are refusals too, counted under
+// their own codes: a request to a preview that is not open (never opened, or
+// closed) is no_such_preview, a non-GET entry is method_not_allowed. The 404
+// stays net/http's plain one (no code page, no ErrorCodeHeader).
+func TestBareRefusalsOnAPreviewHostAreCounted(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	_, id, cookie, _ := e.admitted(t, 4371, appServer(t))
+	if a := e.do(t, "POST", pHost(id), enterPath+"?g=x", nil, "x"); a.status != http.StatusMethodNotAllowed {
+		t.Fatalf("POST to the entry route: HTTP %d; want 405", a.status)
+	}
+	never, err := newPreviewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := e.do(t, "GET", pHost(never), "/", nil, ""); a.status != http.StatusNotFound {
+		t.Fatalf("a never-opened preview: HTTP %d; want 404", a.status)
+	}
+	if !e.g.closeFromPage(pageClaim{Owner: 1, Host: "alpha", Window: "@1"}, id) {
+		t.Fatal("Close found no preview")
+	}
+	if a := e.do(t, "GET", pHost(id), "/", own(id, cookie), ""); a.status != http.StatusNotFound {
+		t.Fatalf("a closed preview: HTTP %d; want 404", a.status)
+	}
+	wantMetric(t, e, `muster_preview_refusals_total{reason="method_not_allowed"}`, 1)
+	wantMetric(t, e, `muster_preview_refusals_total{reason="no_such_preview"}`, 2)
+	for _, c := range []string{"no_such_preview", "method_not_allowed", "internal"} {
+		if got := refusalLabel(c); got != c {
+			t.Errorf("refusalLabel(%q) = %q; want it in the vocabulary", c, got)
+		}
+	}
+}
+
+// 🔴 A preview.request span's reason is the gateway's own code, never a
+// header the app wrote: an app sending X-Muster-Preview-Error:
+// preview_closed — as a trailer, which net/http's ReverseProxy copies into
+// the response's header map after the body, past the response rules — does
+// not mark its span as an error with that reason. Control: a request the
+// gateway refuses itself (body_too_large) carries its code.
+func TestAnAppCannotSetItsSpansReason(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	defer telemetry.Use(tp)()
+	e := newGW(t, gwOpts{maxBody: 5000})
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Trailer", ErrorCodeHeader)
+		w.Header().Set(ErrorCodeHeader, codePreviewClosed)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+		w.Header().Set(ErrorCodeHeader, codePreviewClosed)
+	}))
+	t.Cleanup(app.Close)
+	_, id, cookie, _ := e.admitted(t, 4372, app.Listener.Addr().(*net.TCPAddr).Port)
+	reqSpans := func() []tracetest.SpanStub {
+		var out []tracetest.SpanStub
+		for _, s := range exp.GetSpans() {
+			if s.Name == "preview.request" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	reasonOf := func(s tracetest.SpanStub) string {
+		for _, kv := range s.Attributes {
+			if kv.Key == "muster.reason" {
+				return kv.Value.Emit()
+			}
+		}
+		return ""
+	}
+	if a := e.do(t, "GET", pHost(id), "/", own(id, cookie), ""); a.status != http.StatusOK {
+		t.Fatalf("HTTP %d", a.status)
+	}
+	waitFor(t, "the preview.request span", func() bool { return len(reqSpans()) == 1 })
+	s := reqSpans()[0]
+	if r := reasonOf(s); r != "ok" || s.Status.Code == otelcodes.Error {
+		t.Fatalf("the app's own 200 span: reason %q status %v %q; want ok, not an error", r, s.Status.Code, s.Status.Description)
+	}
+	if a := e.do(t, "POST", pHost(id), "/", own(id, cookie), strings.Repeat("x", 5001)); a.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("an overlong body: HTTP %d", a.status)
+	}
+	waitFor(t, "the refused request's span", func() bool { return len(reqSpans()) == 2 })
+	if r := reasonOf(reqSpans()[1]); r != codeBodyTooLarge {
+		t.Fatalf("the refused request's span reason %q; want %s", r, codeBodyTooLarge)
 	}
 }

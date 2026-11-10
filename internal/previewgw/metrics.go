@@ -46,6 +46,15 @@ const (
 // refusalOther is the refusals label of a code outside refusalCodes.
 const refusalOther = "other"
 
+// Refusals a p- host answers with a bare net/http page, not a code page of
+// its own (renderCode), but counts all the same: a request for a preview
+// that is not open (404, codeNoSuchPreview), a non-GET entry (405), and an
+// owner cookie that could not be minted (500).
+const (
+	codeMethodNotAllowed = "method_not_allowed"
+	codeInternal         = "internal"
+)
+
 // refusalCodes is the refusals label vocabulary: every code the gateway can
 // refuse or fail a p- request or an open with. A host's CONNECT refusal is
 // already one of wire's four Reasons (wire.RefusalOf), but nothing reaching
@@ -56,7 +65,8 @@ var refusalCodes = func() map[string]bool {
 		m[c] = true
 	}
 	for _, c := range []string{codeMaxOpen, codeNotListening, codeProbeFailed, codeNoSuchOffer,
-		"bad_port", "bad_path", "bad_window", "bad_session", "internal",
+		codeNoSuchPreview, codeMethodNotAllowed, codeInternal,
+		"bad_port", "bad_path", "bad_window", "bad_session",
 		string(wire.ReasonRefused)} {
 		m[c] = true
 	}
@@ -123,7 +133,7 @@ func newMetrics(reg *prometheus.Registry) *gwMetrics {
 		}, []string{"reason"}),
 		refusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "muster_preview_refusals_total",
-			Help: "Preview requests and opens the gateway refused or failed itself, by code.",
+			Help: "Preview requests and opens the gateway refused or failed itself, by code (a request for a preview that is not open: no_such_preview).",
 		}, []string{"reason"}),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "muster_preview_requests_total",
@@ -131,7 +141,7 @@ func newMetrics(reg *prometheus.Registry) *gwMetrics {
 		}, []string{"kind", "auth", "code_class"}),
 		responses: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "muster_preview_response_seconds",
-			Help:    "Time from an admitted request to the app's response headers, by kind.",
+			Help:    "Time from an admitted request taking its slot to the app's response headers, by kind.",
 			Buckets: latencyBuckets,
 		}, []string{"kind"}),
 		dials: prometheus.NewHistogramVec(prometheus.HistogramOpts{

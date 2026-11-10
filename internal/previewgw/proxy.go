@@ -75,7 +75,7 @@ type proxyTarget struct {
 	id    string
 	port  int
 	t     *Tunnel
-	start time.Time // when the request was admitted (muster_preview_response_seconds)
+	start time.Time // when the request took its slot (muster_preview_response_seconds)
 	// upgraded: the browser's leg of a WebSocket was accepted (a 101 the
 	// response writer never sees: the connection is hijacked).
 	upgraded bool
@@ -299,7 +299,7 @@ func (g *Gateway) proxyError(w http.ResponseWriter, r *http.Request, err error) 
 // (upstreamError). Each admitted request is a preview.request span and a
 // muster_preview_requests_total count; neither carries its path or query.
 func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id string, exp time.Time) {
-	tg := &proxyTarget{id: id, start: time.Now()}
+	tg := &proxyTarget{id: id}
 	sctx, span := telemetry.Start(r.Context(), "preview.request", attribute.String("muster.preview.kind", kindHost),
 		attribute.String("muster.preview.auth", authOwner))
 	rec := &statusRecorder{ResponseWriter: w}
@@ -319,9 +319,13 @@ func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id strin
 		}
 		g.m.requests.WithLabelValues(kindHost, authOwner, codeClass(st)).Inc()
 		span.SetAttributes(attribute.String("muster.preview.status_class", codeClass(st)))
+		// The reason is the code the gateway itself rendered (renderCode
+		// records it on rec), never read back from the response headers: an
+		// app's trailers land there too, and an app must not be able to mark
+		// its own request's span as a gateway error.
 		reason := ""
-		if c := rec.Header().Get(ErrorCodeHeader); c != "" {
-			reason = refusalLabel(c)
+		if rec.code != "" {
+			reason = refusalLabel(rec.code)
 		}
 		telemetry.End(span, reason)
 	}()
@@ -338,6 +342,9 @@ func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	defer g.useEnd(p)
+	// The response clock starts with the slot taken: a wait for one is not
+	// the app's latency (muster_preview_response_seconds).
+	tg.start = time.Now()
 	ws := isWebSocket(r)
 	if !ws && r.ContentLength > g.maxBody {
 		g.renderCode(rec, http.StatusRequestEntityTooLarge, codeBodyTooLarge)
@@ -373,12 +380,14 @@ func (g *Gateway) serveAdmitted(w http.ResponseWriter, r *http.Request, id strin
 	}
 }
 
-// statusRecorder notes the status an admitted request was answered with.
+// statusRecorder notes the status an admitted request was answered with,
+// and the code when the gateway answered it itself.
 // Unwrap hands net/http's flusher and hijacker (http.ResponseController,
 // coder/websocket) the real ResponseWriter.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	code   string // the code of the gateway's own page, when renderCode wrote one
 }
 
 func (s *statusRecorder) WriteHeader(code int) {

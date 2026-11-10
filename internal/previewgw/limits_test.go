@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,12 +64,15 @@ const (
 	capFixture      = 5
 	capHostMaxConns = 9
 	capWait         = 300 * time.Millisecond
+	// capSlow is how long /slow takes to answer its headers.
+	capSlow = 410 * time.Millisecond
 )
 
 // capApp is a loopback app: a WebSocket upgrade is accepted and held until
 // the browser leaves; /hold/<k> answers its headers and blocks until
 // release(k) (or the request ends); /fail drops the connection unanswered;
-// anything else answers 200 "ok", counted.
+// /slow answers its headers after capSlow; anything else answers 200 "ok",
+// counted.
 type capApp struct {
 	port int
 	mu   sync.Mutex
@@ -100,6 +104,11 @@ func newCapApp(t *testing.T) *capApp {
 			case <-ch:
 			case <-r.Context().Done():
 			}
+			return
+		}
+		if r.URL.Path == "/slow" {
+			time.Sleep(capSlow)
+			_, _ = io.WriteString(w, "slow")
 			return
 		}
 		if r.URL.Path == "/fail" {
@@ -707,5 +716,114 @@ func TestUpstreamErrorMapsAnOverlongBody(t *testing.T) {
 	}
 	if st, code := upstreamError(context.Background(), errors.New("x")); st != http.StatusBadGateway || code != codeNotAnswering {
 		t.Fatalf("control: another error: %d %s; want 502 not_answering", st, code)
+	}
+}
+
+// 🔴 muster_preview_response_seconds starts its clock when the request takes
+// its slot, as its Help says: a request that waited 730 ms for one (not the
+// 300 ms harness wait, not capSlow) is observed at its app's latency, not at
+// the wait plus it. Control: an app that takes capSlow (410 ms) to answer
+// its headers IS observed at about that, so the clock is not simply started
+// late.
+func TestResponseSecondsExcludeTheWaitForASlot(t *testing.T) {
+	const waited = 730 * time.Millisecond
+	c := newCapEnv(t, 3*time.Second)
+	sum := func() float64 { return c.metric(t, `muster_preview_response_seconds_sum{kind="host"}`) }
+	c.fill(t)
+	before := sum()
+	w := c.get(context.Background(), "/x")
+	if _, ok := pending(w, waited); !ok {
+		t.Fatal("the request past the cap was answered at once; want it to wait for a slot")
+	}
+	c.app.release("0")
+	r := recv(t, "the waiter", w)
+	if r.status != http.StatusOK || r.took < waited {
+		t.Fatalf("the waiter: HTTP %d after %v; want the app's 200 after at least %v", r.status, r.took, waited)
+	}
+	if n := c.metric(t, `muster_preview_response_seconds_count{kind="host"}`); n != capFixture+1 {
+		t.Fatalf("response_seconds_count = %v; want %d (the holders and the waiter)", n, capFixture+1)
+	}
+	if d := sum() - before; d >= waited.Seconds()/2 {
+		t.Fatalf("the waiter was observed at %.3f s; want its app's latency, not the %v it waited for a slot", d, waited)
+	}
+	before = sum()
+	if r := recv(t, "the slow request", c.get(context.Background(), "/slow")); r.status != http.StatusOK {
+		t.Fatalf("/slow: HTTP %d %v", r.status, r.err)
+	}
+	if d := sum() - before; d < capSlow.Seconds() || d > capSlow.Seconds()+2 {
+		t.Fatalf("an app answering its headers after %v was observed at %.3f s; want about that", capSlow, d)
+	}
+}
+
+// 🔴 Churn: 200 concurrent useBegin calls on a preview with a cap of 5 and
+// a 50 ms wait — a third of them leaving at a random moment, every admitted
+// one ending after a random hold — with the preview closed mid-flight, 20
+// rounds. Afterwards the preview's slot channel is EMPTY: no path (fast,
+// waited, left, refused, closed, or a slot taken after the close) keeps a
+// token. A slot taken after the close is the re-check branch of useBegin,
+// whose own token return this test is the only one to reach: delete it and
+// tokens leak here.
+func TestUseBeginUnderChurnLeaksNoSlot(t *testing.T) {
+	c := newCapEnv(t, 50*time.Millisecond)
+	var total [4]int64
+	for round := range 20 {
+		pctx, pcancel := context.WithCancel(c.g.ctx)
+		now := c.g.clock.Now()
+		p := &Preview{ID: fmt.Sprintf("churn%d", round), OwnerID: 1, Host: "alpha", Window: "@9", Port: 4999,
+			Opened: now, lastUsed: now, ctx: pctx, cancel: pcancel, slots: make(chan struct{}, capFixture)}
+		c.g.mu.Lock()
+		c.g.previews[p.ID] = p
+		c.g.mu.Unlock()
+		var wg sync.WaitGroup
+		var admitted, left, refused, closed atomic.Int64
+		for i := range 200 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if i%3 == 0 {
+					time.AfterFunc(time.Duration(rand.Int64N(int64(60*time.Millisecond))), cancel)
+				}
+				got, code, gone := c.g.useBegin(ctx, p.ID)
+				switch {
+				case gone:
+					left.Add(1)
+				case code == codePreviewClosed:
+					closed.Add(1)
+				case code != "":
+					refused.Add(1)
+				default:
+					admitted.Add(1)
+					time.Sleep(time.Duration(rand.Int64N(int64(3 * time.Millisecond))))
+					c.g.useEnd(got)
+				}
+			}()
+		}
+		// Mid-flight; every fifth round past the 50 ms wait, so some uses are
+		// refused before the close.
+		closeAt := time.Duration(10+rand.Int64N(30)) * time.Millisecond
+		if round%5 == 4 {
+			closeAt += 50 * time.Millisecond
+		}
+		time.Sleep(closeAt)
+		c.g.mu.Lock()
+		c.g.deletePreviewLocked(p, closePage)
+		c.g.mu.Unlock()
+		wg.Wait()
+		if n := len(p.slots); n != 0 {
+			t.Fatalf("round %d: %d slot tokens left after every use ended (admitted %d, left %d, refused %d, closed %d)",
+				round, n, admitted.Load(), left.Load(), refused.Load(), closed.Load())
+		}
+		total[0] += admitted.Load()
+		total[1] += left.Load()
+		total[2] += refused.Load()
+		total[3] += closed.Load()
+	}
+	// The battery reached every outcome, not only the happy one.
+	for i, what := range []string{"admitted", "left", "refused", "closed"} {
+		if total[i] == 0 {
+			t.Errorf("no use was %s in 20 rounds (admitted, left, refused, closed: %v)", what, total)
+		}
 	}
 }
