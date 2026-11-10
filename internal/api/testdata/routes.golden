@@ -31,6 +31,7 @@ DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /api/device
 DELETE /api/device/push
+DELETE /api/instance/branding/logo
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
@@ -71,6 +72,7 @@ GET /api/directories
 GET /api/doctor
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
+GET /api/instance
 GET /api/jobs/{id}
 GET /api/openrouter/models
 GET /api/projects
@@ -92,6 +94,9 @@ GET /attention/items
 GET /attention/open/{key}
 GET /auth/claim
 GET /auth/reset
+GET /brand/icon-192.png
+GET /brand/icon-512.png
+GET /brand/logo.png
 GET /connectors
 GET /events
 GET /f/{id}
@@ -302,3 +307,4 @@ POST /ui/connector-requests/{id}/deny
 POST /uploads
 POST /uploads/{id}/revoke
 PUT /api/device/push
+PUT /api/instance/branding

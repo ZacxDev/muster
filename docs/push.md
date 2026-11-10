@@ -185,7 +185,10 @@ as **payload v2**:
 
 - **The manifest** (`/manifest.webmanifest`) declares a standalone display, any
   and maskable icons at 192 and 512 px, and two narrow screenshots. Neither the
-  manifest nor `/sw.js` needs a session.
+  manifest nor `/sw.js` needs a session. On a server with a [logo](branding.md) its icons are the logo's
+  192 and 512 px squares (purpose `any`, no maskable icon), and every
+  Web Push notification's `icon` is the logo's too. The Android payload (v2)
+  carries no icon; the app reads the logo from `GET /api/instance`.
 - **An Install button** appears when the browser offers installation, and never
   inside an installed app.
 - **The service worker** (`/sw.js`) is stamped with the build version, so each

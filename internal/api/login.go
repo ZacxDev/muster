@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"html"
 	"net/http"
 	"net/url"
@@ -266,7 +267,7 @@ func clearSiteCaches(w http.ResponseWriter) {
 // renderLoginPage writes the whole document. Hand-written rather than composed,
 // for the independence reason at the top of this file.
 func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem string) {
-	inner := `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	inner := s.loginBrandHTML(context.Background()) + `<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 <p class="text-sm text-fg2">Enter the operator password to continue.</p>
 ` + problemNode(problem) + `

@@ -48,6 +48,10 @@ type Features struct {
 	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
 	SnapUser  int64
 	SnapBuild string
+	// Brand is the instance's logo and name (brand.go): the header's and the
+	// sidebar's brand, and the shell's favicon. The zero value draws the
+	// wordmark and muster's own icons.
+	Brand Brand
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

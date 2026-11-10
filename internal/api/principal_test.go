@@ -81,6 +81,12 @@ var publicRoutes = []string{
 	// The Android shell's sign-in origins: read before the first sign-in (so
 	// before pairing) with no credential; configuration only (device_web.go).
 	"GET /api/device/web",
+	// Instance branding (branding.go): the server's name and logo, read on the
+	// sign-in page and by the apps before they sign in; nothing per-user.
+	"GET /api/instance",
+	"GET /brand/logo.png",
+	"GET /brand/icon-192.png",
+	"GET /brand/icon-512.png",
 	"GET /metrics",
 	// ⚠ NOT UNAUTHENTICATED: the mirror plugin's host connection. No muster door
 	// admits it and no request Principal is attached — internal/mirror
@@ -186,6 +192,10 @@ var routeVias = map[authz.Via][]string{
 		"POST /admin/invites",
 		"POST /admin/invites/{id}/revoke",
 		"POST /admin/users/{id}/disable",
+		// Instance branding's writes: requireAdminRole is requireSession plus
+		// the same role check (branding.go).
+		"PUT /api/instance/branding",
+		"DELETE /api/instance/branding/logo",
 		"POST /admin/users/{id}/enable",
 		"POST /admin/users/{id}/reset-link",
 		"POST /admin/users/{id}/role",

@@ -183,7 +183,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// this page cannot be scrolled to bring it back (composerPinScript).
 		Pinned: true, Switcher: v.Switcher,
 		// The box collapsed on a touch screen behind "Type a message", and the
-		// session's ⋯ in the input row (composer_reveal.go; operator ask: more
+		// session's ⋯ in the button row (composer_reveal.go; operator ask: more
 		// room by default, the ⋯ beside the message controls).
 		Collapsible: true, MoreInRow: true}
 	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused

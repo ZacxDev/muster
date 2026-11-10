@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,12 +27,69 @@ const testDomain = "preview.example"
 
 // ------------------------------------------------------------ fake muster
 
-// fakeMuster answers GET /plugin/v1/self per token, as muster does.
+// The session page's tests' muster: its public URL (frame-ancestors is its
+// ORIGIN, so it carries a port and a path the origin must keep and drop) and
+// the gateway's signing key.
+const (
+	testPublicURL    = "https://muster.example.net:8443/base"
+	testPublicOrigin = "https://muster.example.net:8443"
+	testSigningKey   = "0123456789abcdef0123456789abcdef-test"
+)
+
+// fakeMuster answers GET /plugin/v1/self per token, and POST
+// /plugin/v1/handoffs/redeem as muster does: the token must hold viewer
+// (else 403), a code is spent once and only by the token it was minted for
+// (else 404).
 type fakeMuster struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	by    map[string]fakeSelf
-	calls atomic.Int64
+	srv      *httptest.Server
+	mu       sync.Mutex
+	by       map[string]fakeSelf
+	handoffs map[string]fakeHandoff // code → minted for
+	calls    atomic.Int64
+	redeems  atomic.Int64
+}
+
+type fakeHandoff struct {
+	token string
+	body  map[string]any
+}
+
+// handoff mints a code in the fake muster for token, as POST
+// /plugin-handoffs would for (owner, host, window).
+func (f *fakeMuster) handoff(token string, owner int64, host, session, window string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	code := fmt.Sprintf("code-%d-%s", len(f.handoffs)+1, window)
+	f.handoffs[code] = fakeHandoff{token, map[string]any{"owner_id": owner, "purpose": "view", "stepped_up": false,
+		"minted_at": "2000-01-02T03:04:05Z",
+		"target":    map[string]any{"mirror": map[string]string{"host": host, "session": session, "window": window}}}}
+	return code
+}
+
+func (f *fakeMuster) redeem(w http.ResponseWriter, r *http.Request) {
+	f.redeems.Add(1)
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.by[tok]
+	if !ok || a.status != http.StatusOK {
+		http.Error(w, "this route takes a plugin token", http.StatusUnauthorized)
+		return
+	}
+	if !a.self.HasViewer() {
+		http.Error(w, "this plugin token lacks the viewer capability", http.StatusForbidden)
+		return
+	}
+	var in struct{ Code string }
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	h, ok := f.handoffs[in.Code]
+	if !ok || h.token != tok {
+		http.Error(w, `{"error":"no such hand-off code"}`, http.StatusNotFound)
+		return
+	}
+	delete(f.handoffs, in.Code)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(h.body)
 }
 
 type fakeSelf struct {
@@ -40,8 +98,12 @@ type fakeSelf struct {
 }
 
 func newFakeMuster(t *testing.T) *fakeMuster {
-	f := &fakeMuster{by: map[string]fakeSelf{}}
+	f := &fakeMuster{by: map[string]fakeSelf{}, handoffs: map[string]fakeHandoff{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/plugin/v1/handoffs/redeem" && r.Method == http.MethodPost {
+			f.redeem(w, r)
+			return
+		}
 		if r.URL.Path != "/plugin/v1/self" || r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
@@ -86,11 +148,26 @@ type gwEnv struct {
 	store  HostTokens
 	public *httptest.Server
 	mesh   *httptest.Server
+	// ports maps a port a fake host is asked to CONNECT to onto the real
+	// loopback port that serves it (int → int); an unmapped port is dialled
+	// as is. 5173 is mapped to appServer, so the offers the tests make at
+	// :5173 are listening, and an admitted request is answered by it.
+	ports sync.Map
+	// refuse makes a fake host refuse a CONNECT to a port with a reason
+	// (int → wire.Reason), as a real host's checks would.
+	refuse sync.Map
 }
 
+// serve makes a fake host's CONNECT to port reach real instead.
+func (e *gwEnv) serve(port, real int) { e.ports.Store(port, real) }
+
 type gwOpts struct {
-	tokens   []string // plugin tokens; default {"mpl_owner1"}
-	dialWait time.Duration
+	tokens    []string // plugin tokens; default {"mpl_owner1"}
+	dialWait  time.Duration
+	ttl, idle time.Duration // Config.TTL, Config.Idle; 0 = the defaults
+	maxBody   int64         // Config.MaxBody; 0 = the default
+	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
+	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -108,11 +185,14 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 		o.dialWait = 300 * time.Millisecond
 	}
 	dir := t.TempDir()
-	cfg := Config{MusterURL: fm.srv.URL, PublicURL: "https://muster.example", PluginTokens: o.tokens,
-		Domain: testDomain, Listen: ":0", StateDir: dir}
+	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody}
+	if o.keepalive == 0 {
+		o.keepalive = time.Hour
+	}
 	fc := newFakeClock(time.Date(2000, 1, 2, 3, 4, 5, 0, time.UTC))
 	g, err := New(cfg, Options{Clock: fc, Muster: NewMusterClient(fm.srv.URL, "test"), DialWait: o.dialWait,
-		PingInterval: time.Hour})
+		PingInterval: time.Hour, StreamKeepalive: o.keepalive, MaxConnsPerPreview: o.perPrev})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +202,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 		public: httptest.NewServer(g.PublicHandler()), mesh: httptest.NewServer(g.MeshHandler())}
 	t.Cleanup(e.public.Close)
 	t.Cleanup(e.mesh.Close)
+	e.serve(5173, appServer(t))
 	return e
 }
 
@@ -156,6 +237,30 @@ func (e *gwEnv) gauge(t *testing.T, p Path) float64 {
 	}
 	t.Fatalf("muster_preview_tunnels{path=%q} not on /metrics:\n%s", p, b)
 	return 0
+}
+
+// metric reads one sample from /metrics on the mesh listener, as a scraper
+// would: series is its exact text up to the value (name{labels}). It
+// answers -1 for a series that is not there, so a test tells "0" from
+// "absent".
+func (e *gwEnv) metric(t *testing.T, series string) float64 {
+	t.Helper()
+	resp, err := http.Get(e.mesh.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, series+" "); ok {
+			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil {
+				t.Fatalf("metric line %q: %v", line, err)
+			}
+			return f
+		}
+	}
+	return -1
 }
 
 // ------------------------------------------------------------ fake host
@@ -265,6 +370,13 @@ func (e *gwEnv) dialHost(t *testing.T, o dialOpts) (*fakeHost, *http.Response, e
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if why, ok := e.refuse.Load(port); ok {
+				wire.WriteRefusal(w, why.(wire.Reason))
+				return
+			}
+			if real, ok := e.ports.Load(port); ok {
+				port = real.(int)
+			}
 			up, err := net.DialTimeout("tcp", wire.ConnectAuthority(port), 2*time.Second)
 			if err != nil {
 				wire.WriteRefusal(w, wire.ReasonRefused)
@@ -357,6 +469,20 @@ func echoServer(t *testing.T) int {
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// appBody is what appServer answers: the app saw the request.
+const appBody = "app saw "
+
+// appServer is a loopback HTTP app answering 200 "app saw <path>" to every
+// request; it returns its port.
+func appServer(t *testing.T) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, appBody+r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
 // roundTrip writes msg on c and reads it back.

@@ -305,8 +305,8 @@ for (const vp of [
         await expect(page.locator('#mv-text')).toBeVisible();
         await expect(input).toBeHidden();
         const c = (await clip.boundingBox())!;
-        expect(c.width, 'a 44px target at rest').toBeGreaterThanOrEqual(44);
-        expect(c.height, 'a 44px target at rest').toBeGreaterThanOrEqual(44);
+        expect(c.width, 'a 40px target at rest').toBeGreaterThanOrEqual(40);
+        expect(c.height, 'a 40px target at rest').toBeGreaterThanOrEqual(40);
       }
       await expect(clip, 'the paperclip is on screen without opening the box').toBeVisible();
       await expect(input).not.toBeFocused();

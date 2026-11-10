@@ -732,9 +732,14 @@ func moduleRoot(t *testing.T) string {
 //     container), used by its admin subcommands. muster-server never serves it,
 //     and muster never calls a plugin. (Its /health is a plain handler, not a
 //     mux pattern.)
+//   - e2e/previewfix: the previews browser spec's fixture (e2e/tests/previews.spec.ts):
+//     the "dev server" a mirrored window runs, reached only on loopback through the
+//     preview gateway. A test tool in no shipped binary (internal/modulegate's
+//     ledger says so).
 var otherServerRoutes = map[string][]string{
 	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
 	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify"},
+	"e2e/previewfix":           {"GET /{$}", "GET /api/ping", "GET /attack", "GET /secret", "GET /sse", "GET /ws"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

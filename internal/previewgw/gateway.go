@@ -54,24 +54,36 @@ const (
 	listenIdleTimeout       = 5 * time.Minute
 )
 
-// SelfAsker is the one muster call the gateway makes (MusterClient.Self).
-type SelfAsker interface {
+// MusterAPI is the muster calls the gateway makes (MusterClient): /self per
+// plugin token, and redeeming a hand-off code for the session page.
+type MusterAPI interface {
 	Self(ctx context.Context, token string) (Self, SelfVerdict, error)
+	Redeem(ctx context.Context, token, code string) (Handoff, error)
 }
 
 // Options are the gateway's collaborators; zero values take real ones.
 type Options struct {
-	Clock    Clock
-	Log      *slog.Logger
-	Muster   SelfAsker // nil: NewMusterClient(cfg.MusterURL)
+	Clock  Clock
+	Log    *slog.Logger
+	Muster MusterAPI // nil: NewMusterClient(cfg.MusterURL)
+	// DialWait bounds both waits for capacity: a request waiting for one of
+	// its preview's MaxConnsPerPreview slots (useBegin), and a dial waiting
+	// for one of the host's maxConns upstream slots (the tunnel's Dial). Each
+	// refuses 429 when it passes; 0 means tunnel.DefaultDialWait.
 	DialWait time.Duration
+	// Tests only: the per-preview in-flight cap; 0 means MaxConnsPerPreview.
+	MaxConnsPerPreview int
 	// Tests only: the ping interval each tunnel's client uses.
 	PingInterval time.Duration
+	// Tests only: the browser-leg WebSocket ping and the quiet-SSE comment
+	// interval; 0 means StreamKeepalive.
+	StreamKeepalive time.Duration
 }
 
 // tokenState is what the gateway last learned about one plugin token.
 type tokenState struct {
 	owner    int64 // from the last 200; 0 before any
+	plugin   int64 // the token's plugin id, from the last 200; muster_plugin names it
 	verdict  SelfVerdict
 	unknowns int // consecutive checks without a verdict
 }
@@ -82,14 +94,19 @@ type Gateway struct {
 	clock Clock
 	log   *slog.Logger
 	store HostTokens
-	mc    SelfAsker
+	mc    MusterAPI
+	sign  signer
 	boot  string
 	o     Options
 
 	failMesh, failPublic *failLimiter
+	ttl, idle            time.Duration
+	keepalive            time.Duration
+	proxy                http.Handler
 
-	reg          *prometheus.Registry
-	tunnelsGauge *prometheus.GaugeVec
+	reg     *prometheus.Registry
+	m       *gwMetrics
+	maxBody int64 // PREVIEW_MAX_BODY
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -100,6 +117,7 @@ type Gateway struct {
 	all          map[*Tunnel]struct{}
 	previews     map[string]*Preview
 	previewBy    map[previewKey]string // (owner, host, window, port) → id
+	codes        map[string]entryCode  // sha256(entry code) → what it admits (auth.go)
 	tokens       []tokenState          // parallel to cfg.PluginTokens
 	recheckFails int
 }
@@ -112,6 +130,24 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
+	if cfg.TTL <= 0 {
+		cfg.TTL = DefaultTTL
+	}
+	if cfg.Idle <= 0 {
+		cfg.Idle = DefaultIdle
+	}
+	if cfg.MaxBody <= 0 {
+		cfg.MaxBody = DefaultMaxBody
+	}
+	if o.StreamKeepalive <= 0 {
+		o.StreamKeepalive = StreamKeepalive
+	}
+	if o.DialWait <= 0 {
+		o.DialWait = tunnel.DefaultDialWait
+	}
+	if o.MaxConnsPerPreview <= 0 {
+		o.MaxConnsPerPreview = MaxConnsPerPreview
+	}
 	if o.Muster == nil {
 		o.Muster = NewMusterClient(cfg.MusterURL, "muster-preview/"+Version)
 	}
@@ -120,29 +156,25 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		return nil, err
 	}
 	reg := prometheus.NewRegistry()
-	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "muster_preview_tunnels",
-		Help: "Live host tunnels, draining ones included, by the listener they arrived on.",
-	}, []string{"path"})
-	reg.MustRegister(gauge)
-	for _, p := range []Path{PathMesh, PathPublic} {
-		gauge.WithLabelValues(string(p)) // both series exist from the start, at 0
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{
-		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster,
+		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster, sign: signer{key: cfg.SigningKey},
 		boot: hex.EncodeToString(b), o: o,
-		failMesh:     newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
-		failPublic:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
-		reg:          reg,
-		tunnelsGauge: gauge,
-		ctx:          ctx, cancel: cancel,
+		failMesh:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		failPublic: newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
+		ttl:        cfg.TTL, idle: cfg.Idle, keepalive: o.StreamKeepalive,
+		reg:     reg,
+		m:       newMetrics(reg),
+		maxBody: cfg.MaxBody,
+		ctx:     ctx, cancel: cancel,
 		byKey:     map[tunnelKey]*Tunnel{},
 		all:       map[*Tunnel]struct{}{},
 		previews:  map[string]*Preview{},
 		previewBy: map[previewKey]string{},
+		codes:     map[string]entryCode{},
 		tokens:    make([]tokenState, len(cfg.PluginTokens)),
 	}
+	g.proxy = g.newProxy()
 	return g, nil
 }
 
@@ -156,12 +188,13 @@ func (g *Gateway) Boot() string { return g.boot }
 func (g *Gateway) Registry() *prometheus.Registry { return g.reg }
 
 // Start asks /self for every plugin token once, then starts the minute-by-
-// minute /self check and the 30 s host-token recheck.
+// minute /self check, the 30 s host-token recheck and the lifecycle sweep.
 func (g *Gateway) Start(ctx context.Context) {
 	g.CheckOwners(ctx)
 	g.stops = append(g.stops,
 		every(g.clock, SelfEvery, func() { g.CheckOwners(g.ctx) }),
-		every(g.clock, RecheckEvery, g.Recheck))
+		every(g.clock, RecheckEvery, g.Recheck),
+		every(g.clock, LifecycleEvery, g.sweep))
 }
 
 // Close stops the checks and ends every tunnel.
@@ -218,10 +251,11 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 				g.log.Warn("plugin token check failed; keeping its last verdict", "token", i+1, "consecutive", n, "err", reason)
 			}
 		case SelfLive:
-			g.tokens[i] = tokenState{owner: a.Self.OwnerID, verdict: SelfLive}
+			g.tokens[i] = tokenState{owner: a.Self.OwnerID, plugin: a.Self.PluginID, verdict: SelfLive}
 		case SelfDead:
 			if a.Self.OwnerID > 0 {
 				g.tokens[i].owner = a.Self.OwnerID
+				g.tokens[i].plugin = a.Self.PluginID
 			}
 			g.tokens[i].verdict = SelfDead
 			g.tokens[i].unknowns = 0
@@ -235,7 +269,7 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 	}
 	np := 0
 	for _, owner := range gone {
-		np += g.closePreviewsLocked(owner, "")
+		np += g.closePreviewsLocked(owner, "", closeOwnerGone)
 	}
 	g.mu.Unlock()
 	for _, owner := range gone {
@@ -277,11 +311,11 @@ func (g *Gateway) Recheck() {
 	g.mu.Lock()
 	n := 0
 	for _, t := range revoked {
-		n += g.closePreviewsLocked(t.key.owner, t.key.host)
+		n += g.closePreviewsLocked(t.key.owner, t.key.host, closeRevoked)
 	}
 	for _, p := range g.previews {
 		if k := (tunnelKey{p.OwnerID, p.Host}); !valid[k] {
-			n += g.closePreviewsLocked(k.owner, k.host)
+			n += g.closePreviewsLocked(k.owner, k.host, closeRevoked)
 		}
 	}
 	g.mu.Unlock()
@@ -295,18 +329,27 @@ func (g *Gateway) Recheck() {
 
 // ---------------------------------------------------------------- serving
 
-// PublicHandler serves the public listener (PREVIEW_LISTEN): the host tunnel
-// on tunnel.<domain>, and 404 for everything else (the session page and the
-// previews arrive with the proxy). It serves no /metrics or /healthz: those
-// are on the mesh listener, which the edge never reaches.
+// PublicHandler serves the public listener (PREVIEW_LISTEN), by Host: the
+// host tunnel on tunnel.<domain>, the session page on w.<domain>
+// (session.go), each open preview on p-<id>.<domain> (auth.go), and 404 for
+// everything else. It serves no /metrics or /healthz: those are on the mesh
+// listener, which the edge never reaches.
 func (g *Gateway) PublicHandler() http.Handler {
 	host := g.hostTunnel(PathPublic)
+	web := g.webHandler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if requestHost(r) == "tunnel."+g.cfg.Domain && r.URL.Path == wire.HostPath {
+		switch rh := requestHost(r); {
+		case rh == "tunnel."+g.cfg.Domain && r.URL.Path == wire.HostPath:
 			host.ServeHTTP(w, r)
-			return
+		case rh == "w."+g.cfg.Domain:
+			web.ServeHTTP(w, r)
+		default:
+			if id := g.previewIDOf(rh); id != "" {
+				g.previewHandler(id).ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	})
 }
 
@@ -405,8 +448,9 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			g.log.Error("tunnel start failed", "host", rec.Host, "err", err.Error())
 			return
 		}
-		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx,
+		t := &Tunnel{key: tunnelKey{rec.OwnerID, rec.Host}, tokenHash: rec.Hash, path: p, client: cl, ctx: g.ctx, m: g.m,
 			answers: make(chan pendingAnswer, answerQueue)}
+		t.rt = newUpstreamTransport(t)
 		if err := g.register(t); err != nil {
 			_ = cl.Close()
 			return

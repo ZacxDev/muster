@@ -215,6 +215,19 @@ interface Box {
 const mvBox: Box = { input: '#mv-input', mic: '#mv-dictate', note: '#mv-dictate-note', send: '#mv-send' };
 const chatBox: Box = { input: '#chat-input', mic: '#chat-dictate', note: '#chat-dictate-note', send: '#chat-send' };
 
+type BB = { x: number; y: number; width: number; height: number };
+// expectMicPlaced: the mic is a 40px target where its box puts it — on the
+// Rendered view's button row, BELOW the box's own row (twoRows: the page
+// draws #mv-input-row; mirror_compose.go); beside the box, on its row,
+// everywhere else (a Terminal view's one-row composer, the agent chat, an ask).
+function expectMicPlaced(twoRows: boolean, mb: BB, ib: BB, viewportWidth: number) {
+  expect(mb.height, 'a 40px target').toBeGreaterThanOrEqual(40);
+  expect(mb.width, 'a 40px target').toBeGreaterThanOrEqual(40);
+  expect(mb.x + mb.width, 'the mic fits the viewport').toBeLessThanOrEqual(viewportWidth);
+  if (twoRows) expect(mb.y, 'the mic is on the button row, below the box').toBeGreaterThanOrEqual(ib.y + ib.height - 0.5);
+  else expect(Math.abs(mb.y + mb.height - (ib.y + ib.height)), 'the mic sits on the box’s row').toBeLessThanOrEqual(2);
+}
+
 // dictate types `before|after` with the caret at the bar, records about a
 // second, stops, and checks the transcript landed AT THE CARET with the caret
 // after it and the box focused. Returns the box's final value.
@@ -222,13 +235,9 @@ async function dictate(page: Page, box: Box, viewportWidth: number): Promise<str
   const input = page.locator(box.input);
   const mic = page.locator(box.mic);
   await expect(mic, 'the script revealed the mic').toBeVisible();
-  // A 44px target in the input row, on screen, and the page does not scroll sideways.
-  const mb = (await mic.boundingBox())!;
+  // A 40px target where its box puts it, on screen, and the page does not scroll sideways.
   const ib = (await input.boundingBox())!;
-  expect(mb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-  expect(mb.width, 'a 44px target').toBeGreaterThanOrEqual(44);
-  expect(mb.x + mb.width, 'the mic fits the viewport').toBeLessThanOrEqual(viewportWidth);
-  expect(Math.abs(mb.y + mb.height - (ib.y + ib.height)), 'the mic sits on the input row').toBeLessThanOrEqual(2);
+  expectMicPlaced((await page.locator('#mv-input-row').count()) > 0, (await mic.boundingBox())!, ib, viewportWidth);
   await noHorizontalScroll(page);
 
   await input.fill('please now');
@@ -656,19 +665,14 @@ test.describe('an ask’s answer boxes', () => {
     return () => n;
   }
 
-  // fill is dictate() above for a routed /transcribe: the mic on the box's
-  // row, a 44px target, no sideways scroll; `please |now` → the text at the
-  // caret, the box focused, and nothing posted but the recording.
+  // fill is dictate() above for a routed /transcribe: the mic where its box
+  // puts it, a 40px target, no sideways scroll; `please |now` → the text at
+  // the caret, the box focused, and nothing posted but the recording.
   async function fill(page: Page, box: Box, width: number, posted: () => number, sent: () => number) {
     const input = page.locator(box.input);
     const mic = page.locator(box.mic);
     await expect(mic, 'the script revealed the mic').toBeVisible();
-    const mb = (await mic.boundingBox())!;
-    const ib = (await input.boundingBox())!;
-    expect(mb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
-    expect(mb.width, 'a 44px target').toBeGreaterThanOrEqual(44);
-    expect(mb.x + mb.width, 'the mic fits the viewport').toBeLessThanOrEqual(width);
-    expect(Math.abs(mb.y + mb.height - (ib.y + ib.height)), 'the mic sits on the box’s row').toBeLessThanOrEqual(2);
+    expectMicPlaced((await page.locator('#mv-input-row').count()) > 0, (await mic.boundingBox())!, (await input.boundingBox())!, width);
     await noHorizontalScroll(page);
     await input.fill('please now');
     await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));

@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/ccfailover"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/chiefnudge"
@@ -313,6 +314,12 @@ type Extensions struct {
 	// notifications". nil (no database): off for everyone, and the Account
 	// page draws no switch.
 	NotifyPrefs notifypref.Store
+
+	// Branding is the instance's logo and display name (internal/branding,
+	// migration 0105; branding.go, docs/branding.md). nil (no database): no
+	// branding — every page draws the built-in mark, GET /api/instance
+	// answers nothing set, /brand/* 404 and the writes answer 503.
+	Branding branding.Store
 
 	// ChiefNudge is the chief's STALL NUDGES' configuration (MUSTER_CHIEF_NUDGES,
 	// chief_nudge.go; docs/chief-nudges.md) and ChiefNudges its decisions

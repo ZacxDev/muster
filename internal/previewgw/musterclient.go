@@ -175,6 +175,66 @@ func ResolveOwner(login string, answers []SelfAnswer) (Self, error) {
 	return Self{}, fmt.Errorf("the login %q is ambiguous: owners %s all answer to it; a login is a label, not an identifier", login, strings.Join(ids, ", "))
 }
 
+// PurposeView is the only hand-off purpose the session page accepts in this
+// phase (share links, purpose "share", are phase 3).
+const PurposeView = "view"
+
+// ErrHandoffRefused is Redeem's error when muster will not spend the code:
+// unknown, used, expired or another plugin's (404), or the token cannot
+// redeem at all (401, 403).
+var ErrHandoffRefused = errors.New("muster refused the hand-off code")
+
+// Handoff is POST /plugin/v1/handoffs/redeem's answer (internal/api
+// plugin_handoffs.go). 🔴 The owner is owner_id — an identifier, never the
+// login label.
+type Handoff struct {
+	OwnerID int64 `json:"owner_id"`
+	Target  struct {
+		Mirror *struct {
+			Host    string `json:"host"`
+			Session string `json:"session"`
+			Window  string `json:"window"`
+		} `json:"mirror"`
+	} `json:"target"`
+	Purpose string `json:"purpose"`
+}
+
+// Redeem spends a hand-off code with token (which must hold viewer).
+func (m *MusterClient) Redeem(ctx context.Context, token, code string) (Handoff, error) {
+	body, _ := json.Marshal(map[string]string{"code": code})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.Base+"/plugin/v1/handoffs/redeem", strings.NewReader(string(body)))
+	if err != nil {
+		return Handoff{}, errors.New("bad muster request")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if m.UA != "" {
+		req.Header.Set("User-Agent", m.UA)
+	}
+	resp, err := m.HTTP.Do(req)
+	if err != nil {
+		return Handoff{}, fmt.Errorf("muster hand-off redeem: %s", transportReason(err))
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return Handoff{}, errors.New("muster hand-off redeem: reading the answer failed")
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden:
+		return Handoff{}, ErrHandoffRefused
+	default:
+		return Handoff{}, fmt.Errorf("muster hand-off redeem: HTTP %d", resp.StatusCode)
+	}
+	var h Handoff
+	if err := json.Unmarshal(b, &h); err != nil || h.OwnerID <= 0 {
+		return Handoff{}, errors.New("muster hand-off redeem: the answer does not parse")
+	}
+	return h, nil
+}
+
 // SelfAnswer is one token's /self result.
 type SelfAnswer struct {
 	Self    Self

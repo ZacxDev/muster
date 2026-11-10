@@ -206,6 +206,8 @@ type Server struct {
 	// attention is the attention queue's process state (attention.go): the
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
+	// brand is the instance branding's cached row (branding.go).
+	brand brandCache
 	// jobLanes runs one machine job per agent at a time (jobs.go); ownJobs is
 	// the jobs this process accepted and has not finished; jobSecond
 	// is a test seam for a job's timeout unit (zero: a real second); jobNow is
@@ -625,6 +627,9 @@ func (s *Server) registerAll(mux Mux) {
 	// login), and the admin pages (requireAdmin).
 	s.registerInviteRoutes(mux)
 	s.registerAdminRoutes(mux)
+	// Instance branding (branding.go): the public instance document and
+	// logo images, and the admin's writes (requireAdminRole).
+	s.registerBrandingRoutes(mux)
 	// Personal API tokens (accounts PR 6): /api/whoami, /api/tokens, /account/tokens.
 	s.registerAPITokenRoutes(mux)
 	// The machine job API (jobs.go): the service tier only.
@@ -833,7 +838,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	return ui.Features{Connectors: s.ext.Connectors != nil && !s.featureOff(features.Connectors),
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed() && !s.featureOff(features.Push),
 		Attention: s.ext.Attention != nil,
-		SnapUser: p.UserID, SnapBuild: BuildVersion}
+		SnapUser:  p.UserID, SnapBuild: BuildVersion, Brand: s.uiBrand(ctx)}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the
