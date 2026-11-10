@@ -25,8 +25,17 @@ package previewgw
 //     X-Muster-* header (an app cannot forge the gateway's error code) and
 //     Clear-Site-Data, which a browser applies to the whole registrable
 //     domain — every other preview, and w.
+//   - 1xx: an app's informational response (103 Early Hints, a 100) reaches
+//     the browser without the rules above — ReverseProxy forwards it from an
+//     httptrace Got1xxResponse hook, before ModifyResponse exists for it — so
+//     the Transport installs a hook of its own that removes every field
+//     dropAppNonFinal names from the 1xx header IN PLACE (filter1xx). Ours
+//     is the newer trace on the outbound context, and httptrace runs the
+//     newer hook first, on the same map, before ReverseProxy's copies it to
+//     the browser (and clears what it copied, so nothing lingers into the
+//     final response's headers). A Link passes.
 //   - Trailers: an app's trailer named like a header these rules drop or
-//     replace (dropAppTrailer) is removed, declared (Trailer:) or not
+//     replace (dropAppNonFinal) is removed, declared (Trailer:) or not
 //     (net/http's TrailerPrefix sends it undeclared), from both the Trailer
 //     line the browser sees and the values after the body. ReverseProxy
 //     copies trailers into the response after the body, past the rules
@@ -44,7 +53,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -132,6 +143,7 @@ func (g *Gateway) newProxy() *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: g.rewrite,
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			r = r.WithContext(httptrace.WithClientTrace(r.Context(), filter1xx()))
 			return targetOf(r.Context()).t.rt.RoundTrip(r)
 		}),
 		FlushInterval:  -1,
@@ -184,12 +196,14 @@ func (g *Gateway) rewrite(pr *httputil.ProxyRequest) {
 // musterHeader is true for an X-Muster-* name: the gateway's alone.
 func musterHeader(name string) bool { return strings.HasPrefix(strings.ToLower(name), "x-muster-") }
 
-// dropAppTrailer names an app trailer that never reaches the browser: an
-// X-Muster-* one, and every name previewResponseHeaders drops or rewrites —
-// those rules run on the header only, so as a trailer such a name would pass
-// them untouched. (RFC 9110 §6.5.1 forbids most of these as trailers, so a
-// conforming client ignores them there; the gateway does not rely on that.)
-func dropAppTrailer(name string) bool {
+// dropAppNonFinal names an app field outside its final response header — a
+// trailer, or a 1xx response's header — that never reaches the browser: an
+// X-Muster-* one, and every name previewResponseHeaders drops or rewrites.
+// Those rules run on the final header only, so there such a name would pass
+// them untouched. (RFC 9110 §6.5.1 forbids most of these as trailers, and a
+// browser acts on little of a 103 but its Link, so a conforming client
+// ignores them there; the gateway does not rely on that.)
+func dropAppNonFinal(name string) bool {
 	if musterHeader(name) {
 		return true
 	}
@@ -203,10 +217,31 @@ func dropAppTrailer(name string) bool {
 
 func stripAppTrailers(tr http.Header) {
 	for k := range tr {
-		if dropAppTrailer(k) {
+		if dropAppNonFinal(k) {
 			delete(tr, k)
 		}
 	}
+}
+
+// filter1xx is the outbound request's trace: it removes the fields
+// dropAppNonFinal names from an app's 1xx header in place. It must be the
+// NEWER trace on the context than ReverseProxy's (installed in the
+// Transport, after ReverseProxy installed its own): httptrace's compose calls
+// the newer hook, then the older, with the same map, so this runs before
+// ReverseProxy's hook copies the header to the browser. Its error is never
+// returned (compose returns the older hook's), and it returns none.
+// 🔴 A new trace per request: WithClientTrace composes INTO the trace it is
+// given (it rewrites its hook fields), so a shared one would chain every
+// request's ReverseProxy hook onto every later request.
+func filter1xx() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{Got1xxResponse: func(_ int, h textproto.MIMEHeader) error {
+		for k := range h {
+			if dropAppNonFinal(k) {
+				delete(h, k)
+			}
+		}
+		return nil
+	}}
 }
 
 // trailerFilter strips resp's trailers once its body has ended. The

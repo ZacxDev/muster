@@ -9,7 +9,7 @@ import (
 
 // Every name an app may not send as a trailer, and that the check is on the
 // name's case-insensitive form; an app's other trailers pass.
-func TestDropAppTrailerNames(t *testing.T) {
+func TestDropAppNonFinalNames(t *testing.T) {
 	for name, want := range map[string]bool{
 		"X-Muster-Preview-Error":    true,
 		"x-muster-owner":            true,
@@ -25,8 +25,8 @@ func TestDropAppTrailerNames(t *testing.T) {
 		"Server-Timing":             false,
 		"X-Muster":                  false, // no dash: not the gateway's prefix
 	} {
-		if got := dropAppTrailer(name); got != want {
-			t.Errorf("dropAppTrailer(%q) = %v; want %v", name, got, want)
+		if got := dropAppNonFinal(name); got != want {
+			t.Errorf("dropAppNonFinal(%q) = %v; want %v", name, got, want)
 		}
 	}
 }
