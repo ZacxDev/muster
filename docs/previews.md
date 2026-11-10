@@ -75,7 +75,11 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    `PREVIEW_DOMAIN`, `STATE_DIR`, `PREVIEW_SIGNING_KEY` (at least 32 bytes),
    `PREVIEW_LISTEN`, and `PREVIEW_MESH_LISTEN` for the mesh endpoint. The
    edge must send `*.<zone>` to the public listener with `Host` intact,
-   WebSocket upgrades passed and responses unbuffered.
+   WebSocket upgrades passed and responses unbuffered. 🔴 It must also
+   **overwrite** `CF-Connecting-IP` (and the mesh relay `X-Real-IP`) with the
+   real client address: the failed-token throttle counts per that header, so
+   one a client could set itself would let a token guesser dodge the `429`
+   (the token's 256 bits remain the real defence).
 4. **A host token:** `muster-preview host-token create [<owner>] <host>`,
    where `STATE_DIR` is mounted. `<host>` must be the name the host's mirror
    token was minted for. The token is printed once. `<owner>` is a login as
@@ -107,7 +111,13 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
 1024–65535; `offer` (default `true`) turns the listener reports on;
 `maxOpen` is 1–32 (default 8); `maxConns` is 1–64 (default 64). Keys must be
 spelt exactly. A missing, empty or invalid file turns previews off with a
-logged reason and is never fatal; the file is re-read every 5 s
+logged reason and is never fatal. 🔴 **At startup that is final:** a file (or
+token file, or `-preview-urls`) that does not validate when `muster-mirror`
+starts leaves previews off until `muster-mirror` restarts; the file is not
+re-read, no tunnel is dialled, and `/preview-mcp` is not mounted, so the
+agent has no preview tools at all (`cmd/muster-mirror/preview.go`). Once
+previews have started, the file is re-read every 5 s, and a file that turns
+invalid then turns previews off (`previews_off`) until it is fixed
 (`internal/previewhost/config.go`, `host.go`). `-preview` runs on the default
 tmux server's daemon only.
 
@@ -200,9 +210,20 @@ whole (`internal/previewgw/proxy.go`).
   `[::1]` on the preview's port is rewritten to the preview's origin;
   `Referrer-Policy: no-referrer` replaces the app's; the app's
   `Strict-Transport-Security`, every `X-Muster-*` header and `Clear-Site-Data`
-  are dropped (from the response headers; HTTP trailers are not covered yet); `X-Content-Type-Options: nosniff` is set; and a second
+  are dropped; `X-Content-Type-Options: nosniff` is set; and a second
   `Content-Security-Policy: frame-ancestors <MUSTER_PUBLIC_URL's origin>` is
   added, which the browser enforces beside the app's own.
+- **App trailers:** a trailer named `X-Muster-*` (any case), or like any
+  header the rules above drop or rewrite (`Clear-Site-Data`,
+  `Strict-Transport-Security`, `Referrer-Policy`, `X-Content-Type-Options`,
+  `Content-Security-Policy`, `Location`, `Set-Cookie`), is removed from the
+  announced `Trailer:` line, and its value, declared or sent undeclared with
+  net/http's `TrailerPrefix`, is stripped when the body ends. Other trailers
+  pass (`dropAppTrailer`, `internal/previewgw/proxy.go`).
+- ⚠ **Known gap: 1xx responses.** These rules run on the final response
+  only (`ModifyResponse`). An app's informational responses (such as
+  `103 Early Hints`) are forwarded by `httputil.ReverseProxy` with their
+  headers unfiltered.
 - **WebSockets** are relayed message by message (coder/websocket on both
   legs, no read limit, compression off), the app's leg dialled first so an
   app's refusal reaches the browser as the app sent it. The browser leg is
@@ -294,7 +315,7 @@ the gateway's minute-by-minute check ([lifecycle](#lifecycle)).
 | HTTP connection | 10 s for request headers, 5 min idle | gateway | closed |
 | entry codes | 64 unspent per owner, 4096 in all | gateway | `429 too_many_opens` |
 | hand-off codes | 60 a minute per owner | muster | `429` |
-| failed host-token checks | 10 a minute per peer | gateway | `429` instead of `401` (a valid token is never refused) |
+| failed host-token checks | 10 a minute per peer: `X-Real-IP` on the mesh listener, `CF-Connecting-IP` on the public one, else the TCP peer (the edge must overwrite that header) | gateway | `429` instead of `401` (a valid token is never refused) |
 
 A repeat open of an existing (owner, host, window, port) returns the same id
 and counts nothing.
@@ -314,7 +335,7 @@ tokens are a file in `STATE_DIR`.
 | its window absent from the host's window listing for 10 min | closed at the next sweep (so 10 to 10.5 min after); the clock starts when the listing arrives, a window absent at open counts from the open, and an offline host neither starts nor clears it |
 | the host's tunnel drops | requests get `503 host_offline`; the preview stays open, and the page says the host is offline |
 | a port leaves the host's `previews.json` | the host closes that port's previews itself (and tells the gateway), cuts their live connections and refuses new `CONNECT`s `port_not_allowed` |
-| a bad `previews.json` | previews are off on the host: every preview closes, the tools answer `previews_off` |
+| `previews.json` turns invalid while previews run | previews are off on the host: every preview closes, the tools answer `previews_off`, until the file is fixed. (Invalid at startup: previews never start and there are no tools until `muster-mirror` restarts.) |
 | the host token is revoked | at the next 30 s recheck the tunnel ends and that host's previews close, even if it is offline then; a new token for the same host name starts with none |
 | the owner's plugin tokens all answer `401`, or `200` without `viewer` | at the next minute's `GET /plugin/v1/self` the owner's tunnels and previews close and new tunnels are refused; while any one of the owner's tokens is live the owner is still served. An owner is not served at all before muster has answered for one of its tokens |
 | muster gives no verdict (unreachable, `5xx`, `404`) | a token keeps its last verdict for 9 checks; at the 10th in a row (about ten minutes) it stops counting as live |
@@ -334,7 +355,7 @@ over 64 KiB HTTP 413.
 
 | code | tools | meaning |
 |---|---|---|
-| `previews_off` | all | `previews.json` is missing or invalid |
+| `previews_off` | all | `previews.json` became missing or invalid after previews started |
 | `invalid_arguments` | all | the arguments do not validate (port 1–65535; label ≤ 60 bytes, no control characters; path ≤ 512 bytes, one leading `/`, printable ASCII without spaces or backslashes; no unknown fields; `id` required) |
 | `no_window` | all | the caller's pane is in no window this host mirrors |
 | `port_not_allowed` | open | off the allowlist, or an always-refused port |
@@ -348,11 +369,14 @@ over 64 KiB HTTP 413.
 | `cancelled` | open, close | the caller's own request ended first |
 | `gateway_error` | open, close | the gateway refused with something that is not a well-formed code |
 
-Any other well-formed code the gateway answers is passed on as is, with the
-message "the preview gateway refused": `host_offline` (the tunnel was
-replaced or the owner is not served), `bad_port`, `bad_path`, `bad_window`,
-`bad_session`, `bad_request`, `internal` (`internal/previewgw/offers.go`,
-`lifecycle.go`).
+A well-formed code the gateway answers is passed on as is. Five have a
+fixed message of the host's own (`max_open`, `port_not_allowed`,
+`previews_off`, `not_found`, `bad_answer`); every other gets "the preview
+gateway refused", among them `host_offline` (the tunnel was replaced or the
+owner is not served), `bad_port`, `bad_path`, `bad_window`, `bad_session`,
+`bad_request` and `internal` (`internal/previewgw/offers.go`, `lifecycle.go`).
+Either way no text the gateway wrote reaches the model
+(`internal/previewhost/mcp.go`).
 
 ### The gateway's pages on `p-<id>.<zone>`
 
@@ -404,7 +428,7 @@ fails.
 | side | status | meaning |
 |---|---|---|
 | gateway, host dial | `426` + `X-Muster-Preview-Version-Range: 1-1` | an unknown protocol version |
-| gateway, host dial | `401`, then `429` | a bad host token; the 11th failure a minute from one peer |
+| gateway, host dial | `401`, then `429` | a bad host token; the 11th failure a minute from one peer (keyed on `X-Real-IP` on the mesh listener, `CF-Connecting-IP` on the public one, else the TCP peer; `internal/previewgw/throttle.go`) |
 | gateway, host dial | `403` | the token registers another host name, or its owner is not served |
 | gateway, host dial | `503` | the host-token file cannot be read |
 | host, `CONNECT` | `403 port_not_allowed`, `403 foreign_listener`, `502 refused`, `429 max_conns` | in `X-Muster-Preview-Reason` (`internal/preview/wire/wire.go`); `max_conns` from the host is a backstop the gateway retries within its wait |
@@ -417,7 +441,8 @@ fails.
 | any request with a `Host` under `MUSTER_PLUGIN_ORIGINS` | `421` |
 | `POST /plugin-handoffs` | `404` (not your plugin or window), `403` (its origin left `MUSTER_PLUGIN_ORIGINS`), `429` (60 a minute) |
 | `POST /plugin/v1/handoffs/redeem` | `404` for an unknown, used, expired or another plugin's code; `403` without `viewer` |
-| both, while plugins are off or `MUSTER_PLUGIN_ORIGINS` is unset | the typed `feature_disabled` 404 (`plugin-viewers`) |
+| both, while plugins are off | the typed `feature_disabled` 404, feature `plugins` |
+| both, while plugins are on and `MUSTER_PLUGIN_ORIGINS` is unset | the typed `feature_disabled` 404, feature `plugin-viewers` |
 
 ## Telemetry
 
