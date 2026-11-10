@@ -476,11 +476,31 @@ func TestAnOfficerToolAskEndsTheItemMeter(t *testing.T) {
 		`,"to":"design-lead","question":"is the header right?"`)
 }
 
+// TestAnOfficerTaskAskEndsTheItemMeter and
+// TestAnOfficerFloodProposalEndsTheItemMeter: officer_task_ask and
+// officer_flood_block_propose create an HQ ask, which ends the lease as
+// officer_ask_person's does, so they end the held item too.
+func TestAnOfficerTaskAskEndsTheItemMeter(t *testing.T) {
+	llmEndSeamKind(t, "task-reconciler:llm-taskasks", "llm-taskasks-agent-token-01234567", officers.ToolTaskAsk,
+		hqtest.KindTaskFinding, ``)
+}
+
+func TestAnOfficerFloodProposalEndsTheItemMeter(t *testing.T) {
+	llmEndSeamKind(t, "web-performance:llm-floods", "llm-floods-agent-token-0123456789", officers.ToolFloodBlockPropose,
+		hqtest.KindBotSurge, `,"unit_ids":["prefix:a"],"ttl_hours":1`)
+}
+
 func llmEndSeam(t *testing.T, id, tok, tool, extra string) {
+	t.Helper()
+	llmEndSeamKind(t, id, tok, tool, "routine.check", extra)
+}
+
+// llmEndSeamKind is llmEndSeam on an item of kind.
+func llmEndSeamKind(t *testing.T, id, tok, tool, kind, extra string) {
 	t.Helper()
 	r := newLLMItemsRig(t, id, tok)
 	r.hq.AddMember("design-lead")
-	item := r.hq.AddTieredItem(id, "routine.check", "a", officers.TierRoutine)
+	item := r.hq.AddTieredItem(id, kind, "a", officers.TierRoutine)
 	r.call(officers.ToolClaim, `{"item_id":"`+item+`"}`)
 	r.expect(t, "on item "+item, http.StatusOK, http.StatusOK, http.StatusBadRequest)
 	r.call(tool, `{"item_id":"`+item+`"`+extra+`}`)

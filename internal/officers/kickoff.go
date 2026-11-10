@@ -308,6 +308,13 @@ func ToolOffered(o Officer, tool string) bool {
 		// tasks.go: a task-reconciler officer's only (HQ also refuses a type
 		// without task_read)
 		return o.Type() == TaskReconcilerOfficerType
+	case ToolTaskAsk:
+		// item_asks.go: HQ also refuses a type without task_asks (403
+		// task_asks_off) and an item that is not a finding
+		return o.Type() == TaskReconcilerOfficerType
+	case ToolFloodBlockPropose:
+		// item_asks.go: HQ also refuses a type whose flood_actuator is off
+		return o.Type() == WebPerformanceOfficerType
 	}
 	return false
 }

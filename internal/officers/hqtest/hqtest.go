@@ -222,6 +222,93 @@ type Server struct {
 	// TaskRoutesAbsent makes the task routes answer as an HQ without them
 	// does: its router's catch-all 404 not_found "no such route".
 	TaskRoutesAbsent bool
+	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks):
+	// verbRefusal[verb], when set, is answered by that route instead
+	// (RefuseVerb); derivedAsks is every one accepted, in order.
+	verbRefusal map[string]*refusal
+	derivedAsks []DerivedAsk
+}
+
+// DerivedAsk is one accepted POST …/items/{item}/task-asks or
+// …/flood-blocks: the verb, and the body as HQ decoded it.
+type DerivedAsk struct {
+	Verb, Officer, Item string
+	Body                map[string]any
+}
+
+// The item kinds the two derived-ask routes take (civ-hq).
+const (
+	KindTaskFinding = "task-reconciler.finding"
+	KindBotSurge    = "perf.bot_surge"
+)
+
+// RefuseVerb makes item route verb ("task-asks", "flood-blocks") answer
+// status {error, code} (status 0: serve normally).
+func (s *Server) RefuseVerb(verb string, status int, code, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.verbRefusal == nil {
+		s.verbRefusal = map[string]*refusal{}
+	}
+	if status == 0 {
+		delete(s.verbRefusal, verb)
+		return
+	}
+	s.verbRefusal[verb] = &refusal{status: status, code: code, error: msg}
+}
+
+// DerivedAsks returns the accepted task asks and flood proposals, in order.
+func (s *Server) DerivedAsks() []DerivedAsk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]DerivedAsk(nil), s.derivedAsks...)
+}
+
+// derivedAsk serves task-asks and flood-blocks as civ-hq does, as far as
+// muster can get it wrong: a forced refusal wins; unknown body fields are a
+// 400 (HQ's decodeOfficerBody); the item must be of the route's kind (422);
+// the instance must hold its live lease (409 lease_lost) — or, for a flood
+// proposal, the item may already be waiting; then the item is WAITING with
+// no holder (an ordinary §5h ask) and 201.
+func (s *Server) derivedAsk(w http.ResponseWriter, officer string, it *Item, verb, instance string, live bool, body map[string]any, now time.Time) {
+	if f := s.verbRefusal[verb]; f != nil {
+		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
+		return
+	}
+	allowed := map[string]bool{"instance": true, "note": true}
+	kind, kindCode := KindTaskFinding, "not_a_finding"
+	if verb == "flood-blocks" {
+		allowed = map[string]bool{"instance": true, "to": true, "unit_ids": true, "action": true, "ttl_hours": true}
+		kind, kindCode = KindBotSurge, "not_a_bot_surge"
+	}
+	for k := range body {
+		if !allowed[k] {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k, "code": "invalid"})
+			return
+		}
+	}
+	if verb == "flood-blocks" && body["action"] != "managed_challenge" {
+		s.write(w, http.StatusBadRequest, map[string]any{"error": "action must be \"managed_challenge\"", "code": "invalid"})
+		return
+	}
+	if it.Kind != kind {
+		s.write(w, http.StatusUnprocessableEntity, map[string]any{"error": "item is a " + it.Kind, "code": kindCode})
+		return
+	}
+	held := live && it.ClaimedBy == instance && instance != ""
+	if !held && !(verb == "flood-blocks" && it.Status == "waiting") {
+		s.write(w, http.StatusConflict, map[string]any{"error": "this instance does not hold a live lease on the item", "code": "lease_lost"})
+		return
+	}
+	s.derivedAsks = append(s.derivedAsks, DerivedAsk{Verb: verb, Officer: officer, Item: it.ID, Body: body})
+	n := len(s.derivedAsks)
+	it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "waiting", "", nil, now
+	ask := map[string]any{"id": n, "state": "open", "to": "fixture-owner"}
+	if verb == "flood-blocks" {
+		s.write(w, http.StatusCreated, map[string]any{"flood_block": map[string]any{"id": n, "state": "pending", "unit_ids": body["unit_ids"]}, "ask": ask, "item": *it})
+		return
+	}
+	s.write(w, http.StatusCreated, map[string]any{"ask": ask, "task_ask": map[string]any{"ask_id": n, "task_id": "fixture-task-1", "task_rev": 3}, "item": *it})
 }
 
 // RefuseCompletes makes every complete answer status {error, code} (status 0:
@@ -1072,6 +1159,8 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.transcript(w, officer, it, instance, live, body)
 	case "asks":
 		s.ask(w, officer, it, instance, live, body, now)
+	case "task-asks", "flood-blocks":
+		s.derivedAsk(w, officer, it, verb, instance, live, body, now)
 	case "release":
 		if it.Status != "claimed" || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
