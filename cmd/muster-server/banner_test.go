@@ -450,6 +450,10 @@ var bannerLedger = []string{
 	// with its answer — transcript text, kept for the text TTL — so the log
 	// must say whether it is.
 	envAskLog,
+	// THE CLAUDE ACCOUNT USAGE POLLER IS LEDGERED: ON, muster-server calls the
+	// provider's usage endpoint with every pooled account's token, every
+	// interval — so the log must say whether it does.
+	envCCUsagePoll,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -470,6 +474,8 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
+		"whose OFF line names " + envCCUsagePoll,
 	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
 	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
 		"log off, whose OFF line names " + envAskLog,
@@ -876,6 +882,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
 		AskLog: askLogConfig{On: true, TextTTL: 72 * time.Hour},
+		// The usage poller: the banner branches on ext.CCUsageInterval (below).
+		CCUsage: ccUsageConfig{On: true, Interval: 5 * time.Minute},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,
@@ -930,6 +938,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
+		CCUsageInterval: 5 * time.Minute,
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut

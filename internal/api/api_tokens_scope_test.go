@@ -180,8 +180,9 @@ func TestATokenOfAnUnknownScopeReachesNothing(t *testing.T) {
 // reach — is pinned the same way.
 func TestTheScopeAllowlistIsExactlyTheSummaryRoute(t *testing.T) {
 	want := map[string]map[string]bool{
-		"summary":      {"GET /api/attention/summary": true},
-		"agent-create": {"POST /api/agents": true},
+		"summary":       {"GET /api/attention/summary": true},
+		"agent-create":  {"POST /api/agents": true},
+		"account-usage": {"GET /api/cc-accounts/usage": true},
 	}
 	if !reflect.DeepEqual(tokenScopeRoutes, want) {
 		t.Fatalf("tokenScopeRoutes = %v; want %v", tokenScopeRoutes, want)

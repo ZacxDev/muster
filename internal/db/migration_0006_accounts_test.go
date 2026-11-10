@@ -119,7 +119,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - notify_preferences (0094, the per-user notification preferences).
 //   - chief_proposals (0100, a session continuing one the owner viewed).
 //   - plugin_handoffs (0104, a viewer plugin's one-time hand-off codes).
-var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - cc_account_usage (0106, each pooled Claude account's latest utilization).
+var ownedAfter0006 = []string{"agent_focus", "asks", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials"}
 
@@ -197,6 +198,8 @@ var wantForeignKeys = []string{
 	// 0093: a host dispatch is its owner's; its task is unlinked when deleted.
 	"host_dispatches|host_dispatches_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"host_dispatches|host_dispatches_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
+	// 0106: an account's usage reading is its owner's.
+	"cc_account_usage|cc_account_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0094: one notification-preferences row per user.
 	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0100: a proposal is its owner's; its successor is a host dispatch.

@@ -282,6 +282,12 @@ const (
 	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
 	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
 
+	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
+	// account usage"; ccusage_config.go parses them): its switch (off by
+	// default) and its interval.
+	envCCUsagePoll         = "MUSTER_CC_USAGE_POLL"
+	envCCUsagePollInterval = "MUSTER_CC_USAGE_POLL_INTERVAL"
+
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
 	// AgentTextRefusal). Configuration, not source: this repository is public.
@@ -798,6 +804,9 @@ type config struct {
 
 	// AskLog is the ask log's configuration (asklog_config.go).
 	AskLog askLogConfig
+
+	// CCUsage is the Claude account usage poller's (ccusage_config.go).
+	CCUsage ccUsageConfig
 
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry), without
@@ -1717,6 +1726,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
+		return config{}, err
+	}
+	if c.CCUsage, err = parseCCUsage(getenv); err != nil {
 		return config{}, err
 	}
 	c.ChiefNudgeIdle = chiefnudge.DefaultIdle
