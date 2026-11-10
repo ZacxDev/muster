@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
@@ -172,7 +173,11 @@ var previewStartHook func()
 // on its own goroutine. done is closed when it has stopped (or found previews
 // off). The host lists backend's windows itself every poll — its one window
 // source — so previews work whether or not muster is connected.
-func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, hostName string, backend mirrorhost.Backend, logger *log.Logger) (done chan struct{}) {
+//
+// mount, when not nil, is called with the Host once previews are on — after
+// the whole setup validated, before the tunnel is dialled — and never when
+// they are off: how the preview tools come to be served (previewMCPMount).
+func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refused previewhost.AlwaysRefused, hostName string, backend mirrorhost.Backend, logger *log.Logger, mount func(*previewhost.Host)) (done chan struct{}) {
 	done = make(chan struct{})
 	go func() {
 		defer close(done)
@@ -217,9 +222,39 @@ func startPreview(ctx context.Context, pf previewFlags, defaultDaemon bool, refu
 			}
 		}
 		h := previewhost.NewHost(hc)
+		if mount != nil {
+			mount(h)
+		}
 		h.Run(ctx, previewhost.TunnelConfig{URLs: setup.URLs, Token: setup.Token, HostName: hostName})
 	}()
 	return done
+}
+
+// previewMCPMount mounts the preview tools on proxy (-mcp-listen's
+// endpoint, nil when it is off) at mirrorhost.PreviewMCPPath: a second MCP
+// server beside /mcp, answered on this machine (previewhost.MCPServer), each
+// call bound to the window its caller's pane is in. nil without an endpoint.
+//
+// The endpoint starts on its own goroutine and may fail (settled closes when
+// it has started or failed; up says which), so the log line waits for that
+// and says what is TRUE: served, or not served because the endpoint is off.
+// The mount itself is made at once either way — with no listener it is
+// unreachable, and it costs nothing.
+func previewMCPMount(proxy *mirrorhost.MCPProxy, settled <-chan struct{}, up *atomic.Bool, logger *log.Logger) func(*previewhost.Host) {
+	if proxy == nil {
+		return nil
+	}
+	return func(h *previewhost.Host) {
+		proxy.SetPreview(&previewhost.MCPServer{Host: h, Caller: proxy.CallerWindow, Version: proxy.Version})
+		go func() {
+			<-settled
+			if up.Load() {
+				logger.Printf("muster-mirror: the preview tools are served at %s on the MCP endpoint", mirrorhost.PreviewMCPPath)
+			} else {
+				logger.Printf("muster-mirror: the preview tools are NOT served: the MCP endpoint is off")
+			}
+		}()
+	}
 }
 
 // previewWindowsOf is each window's id and pane roots.

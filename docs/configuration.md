@@ -291,7 +291,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
 | `MUSTER_MIRROR_MCP_LISTEN` | none (off) | no | A loopback address with a numeric port (`127.0.0.1:<port>` or `[::1]:<port>`; not port 0 or a service name, so the endpoint is where the address says) on which to serve this host's Claude Code sessions muster's attention and task tools as an MCP endpoint (`http://<addr>/mcp`); any other address is refused. Optional: if it cannot start, the host logs why and mirrors without it. See [attention.md](attention.md#mirrored-claude-code-sessions). |
 | `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
-| `MUSTER_MIRROR_PREVIEW` | off | no | **Previews** (`-preview`): keep a tunnel to the preview gateway and serve an allowlisted loopback web server started in a mirrored window to its owner through it ([design](design/previews.md#host-configuration-previewsjson)). The endpoints are dialled in order, each given 3 s for the TCP connect, the WebSocket upgrade and the version answer; on a later endpoint the earlier ones are re-tried every 5 minutes; all failing, the list is retried with a jittered backoff (1 s to 60 s). Each upstream connection dials only `127.0.0.1`, then `[::1]`, on the requested port. `previews.json` is re-read every 5 s: a preview on a port that left the list closes. On the default tmux server's daemon only. A missing or invalid allowlist, token or endpoint turns previews off with a logged reason; an unreachable gateway is retried; neither is ever fatal, and mirroring goes on. `muster-mirror -list -previews` prints the listener reports it would send. |
+| `MUSTER_MIRROR_PREVIEW` | off | no | **Previews** (`-preview`): keep a tunnel to the preview gateway and serve an allowlisted loopback web server started in a mirrored window to its owner through it ([design](design/previews.md#host-configuration-previewsjson)). The endpoints are dialled in order, each given 3 s for the TCP connect, the WebSocket upgrade and the version answer; on a later endpoint the earlier ones are re-tried every 5 minutes; all failing, the list is retried with a jittered backoff (1 s to 60 s). Each upstream connection dials only `127.0.0.1`, then `[::1]`, on the requested port. `previews.json` is re-read every 5 s: a preview on a port that left the list closes. On the default tmux server's daemon only. A missing or invalid allowlist, token or endpoint turns previews off with a logged reason; an unreachable gateway is retried; neither is ever fatal, and mirroring goes on. `muster-mirror -list -previews` prints the listener reports it would send. With `MUSTER_MIRROR_MCP_LISTEN` set, the MCP endpoint also serves the agent's preview tools at `/preview-mcp` ([attention.md](attention.md#the-preview-tools-preview-mcp)). |
 | `MUSTER_MIRROR_PREVIEW_URLS` | none | with `MUSTER_MIRROR_PREVIEW` | The preview gateway's host-tunnel endpoints, `ws://` or `wss://`, comma-separated **in dial order**: the overlay-mesh endpoint first, then the public one. At most 4. |
 | `MUSTER_MIRROR_PREVIEW_TOKEN_FILE` | none | with `MUSTER_MIRROR_PREVIEW` | The file holding this host's preview gateway token (`mpt_…`). A symlink or a file group or others can read is refused. |
 | `MUSTER_MIRROR_PREVIEW_FILE` | `$XDG_CONFIG_HOME/muster-mirror/previews.json` | no | The allowlist, `{"ports": ["5173", "8000-8099"], "offer": true, "maxOpen": 8, "maxConns": 64}`: single ports or inclusive ranges within 1024–65535; `offer` turns listener reports on (default) or off; `maxOpen` 1–32 (default 8); `maxConns` 1–64 (default 64). Unknown keys, and keys not spelt exactly (`maxconns`), are refused. The `-mcp-listen` port and the opencode server's port are never exposed, even when listed. Listener reports and the other-user check read `/proc`, so they are Linux only; on macOS they are off and the log says so. |
@@ -571,6 +571,61 @@ which `/health` reports.
 
 ⚠ **The hub can read direct messages.** ClankMail authenticates every message
 end to end, but does not encrypt it: send nothing secret.
+
+## muster-preview (the preview gateway)
+
+`muster-preview` is the gateway of [previews](design/previews.md#the-preview-gateway):
+each host running `muster-mirror -preview` opens one tunnel to it. The image
+ships it as `/muster-preview`; nothing runs it yet, and this phase does not
+serve previews to a browser (the session page and the proxy come later).
+What it does now:
+
+- **Two listeners.** `PREVIEW_LISTEN` is the public one (the host tunnel on
+  `tunnel.<PREVIEW_DOMAIN>`, path `/v1/host`; every other name in the zone
+  answers 404), `PREVIEW_MESH_LISTEN` the overlay-mesh one (the host tunnel
+  only). A tunnel's path (`mesh` or `public`) is the listener it arrived on,
+  never anything in the request. `/metrics` and `/healthz` are served on the
+  mesh listener only.
+- **Host tokens.** `muster-preview host-token create [<owner>] <host>` prints
+  an `mpt_` token once; `host-token ls` and `host-token revoke <id>` as for
+  mirror tokens. `<owner>` is an owner's login as muster's
+  `GET /plugin/v1/self` names it for a token in `PLUGIN_TOKENS_FILE`; the
+  token is keyed on that owner's id, and a login two owners answer to, or none,
+  is refused. With exactly one owner, `<owner>` may be left out. A token
+  registers only its own host. Run these where `STATE_DIR` is mounted: the
+  gateway re-reads the file on every tunnel and every 30 s, so a revoked
+  token's tunnel ends within 30 s.
+- **Checks on a tunnel.** An unknown `X-Muster-Preview-Version` is refused
+  `426` with the range spoken. Ten failed token checks a minute from one peer
+  (the mesh listener's `X-Real-IP`, the public listener's `CF-Connecting-IP`,
+  else the TCP peer) get `429` instead of `401`. A valid token is never
+  refused by that limit.
+- **One tunnel per owner and host.** A newer tunnel takes new streams at once;
+  the older closes when its last stream ends, or 60 s later.
+- **Owners.** Every minute (and at start) it calls `GET /plugin/v1/self` for
+  each token in `PLUGIN_TOKENS_FILE`. A `401`, or a `200` whose
+  `capabilities` lacks `viewer`, closes that owner's tunnels and previews once
+  none of the owner's tokens is live, and its new tunnels are refused `403`
+  until one is. An owner is not served before muster has answered for one of
+  its tokens. Any other outcome (muster unreachable, `5xx`, `404` because
+  plugins are off) keeps a token's last verdict for 9 checks in a row; at the
+  10th (about ten minutes) the token is no longer live and its owner closes as
+  above. One later live answer serves the owner again.
+- **Revoked hosts.** A host whose token is revoked loses its previews at the
+  next 30 s check even if it is offline then; a new token for the same host
+  name starts with none.
+- **No database.** Previews are in memory; a restart closes them.
+- **Metric:** `muster_preview_tunnels{path}`.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `MUSTER_URL` | none | yes | muster's API base URL, where `/plugin/v1/self` is served; may be an in-cluster address. |
+| `MUSTER_PUBLIC_URL` | none | yes | muster's public URL as browsers see it (the server's own `MUSTER_PUBLIC_URL`). Validated at start; the later session page puts its origin in `frame-ancestors`. Not derived from `MUSTER_URL`. |
+| `PLUGIN_TOKENS_FILE` | none | yes | The owners' `mpl_` plugin tokens, one per line (blank lines skipped). Each must hold the `viewer` capability for its owner to be served. |
+| `PREVIEW_DOMAIN` | none | yes | The preview zone, a lowercase DNS name (for example `preview.example`): the public listener serves the host tunnel on `tunnel.<PREVIEW_DOMAIN>`. |
+| `PREVIEW_LISTEN` | `:8080` | no | The public listener's address. |
+| `PREVIEW_MESH_LISTEN` | none | no | The mesh listener's address; unset, there is none. Must differ from `PREVIEW_LISTEN`. A tunnel arriving here is on the `mesh` path. |
+| `STATE_DIR` | none | yes | A writable directory (a volume): `host-tokens.json` (each token's sha256, owner id and login label, host) and its lock `host-tokens.lock`. |
 
 ## Test and e2e harness
 
