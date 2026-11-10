@@ -473,6 +473,10 @@ test('a message queued for a hand-opened pane is refused, not delivered, after t
   // The pane now shows another session, and is idle.
   writeFileAtomic(ocWindows, windowsLine('OC | Bound fixture session').replace('OC | Title-matched fixture session', 'OC | Switched fixture session'));
   op({ op: 'status', session: titled, status: 'idle' });
+  // The session switched to runs a turn and ends it: a status newer than the
+  // one the row waited behind, so the queue tries to deliver it.
+  op({ op: 'status', session: 'ses_0e2esendswitch01', status: 'busy' });
+  op({ op: 'status', session: 'ses_0e2esendswitch01', status: 'idle' });
   try {
     await expect
       .poll(async () => (await page.request.get(rig.origin + viewOf('@3'))).text(), { timeout: 30_000, intervals: [500] })
