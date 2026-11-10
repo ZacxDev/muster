@@ -31,6 +31,20 @@ var _ PRReviewSettler = (*PGStore)(nil)
 
 // SettleQueuedAsMuster: see PRReviewSettler.
 func (s *PGStore) SettleQueuedAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, reason, via string) error {
+	return s.settleQueuedAsMuster(ctx, chiefID, ownerID, messageID, reason, via, true)
+}
+
+// SettleQueuedTaskEventAsMuster is SettleQueuedAsMuster for a task event the
+// task triage placed (internal/api task_triage.go) WITHOUT counting a delivery
+// attempt: no attempt was made, and the attempt stamp (last_attempt_at) is the
+// anchor "the chief acted on this event" is measured from (chiefActedOn) — a
+// stamp written after the triage's own routing would put the task back on
+// "Task to route".
+func (s *PGStore) SettleQueuedTaskEventAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, reason, via string) error {
+	return s.settleQueuedAsMuster(ctx, chiefID, ownerID, messageID, reason, via, false)
+}
+
+func (s *PGStore) settleQueuedAsMuster(ctx context.Context, chiefID, ownerID, messageID int64, reason, via string, attempt bool) error {
 	if chiefID <= 0 || ownerID <= 0 {
 		return invalid("the agent has no owner")
 	}
@@ -52,8 +66,10 @@ func (s *PGStore) SettleQueuedAsMuster(ctx context.Context, chiefID, ownerID, me
 			return ErrNotFound
 		}
 		if _, err := tx.Exec(ctx, `UPDATE plugin_messages SET status = 'delivered', agent_id = $2, delivered_at = now(),
-			attempts = attempts + 1, last_attempt_at = now(), settle_reason = coalesce(settle_reason, $3) WHERE id = $1`,
-			messageID, chiefID, reason); err != nil {
+			attempts = attempts + CASE WHEN $4 THEN 1 ELSE 0 END,
+			last_attempt_at = CASE WHEN $4 THEN now() ELSE last_attempt_at END,
+			settle_reason = coalesce(settle_reason, $3) WHERE id = $1`,
+			messageID, chiefID, reason, attempt); err != nil {
 			return err
 		}
 		if err := audit(ctx, tx, "plugin.delivered", MessageObject(messageID), map[string]any{

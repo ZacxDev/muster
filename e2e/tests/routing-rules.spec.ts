@@ -41,6 +41,10 @@ const rig = new MirrorRig(routingRulesPort, 'e2e-rules', {
   MUSTER_AGENT_OPENROUTER_KEY: 'sk-or-v1-FAKE-e2e-not-a-real-key',
   MUSTER_E2E_AGENT_ENDPOINT: `http://127.0.0.1:${routingRulesFakePort}`,
   MUSTER_PLUGINS: '1',
+  // The task triage (task_triage.go): a plugin's task, assigned and routed to
+  // the chief, that muster puts on the board itself.
+  MUSTER_TASK_ROUTING: '1',
+  MUSTER_PLUGIN_TASK_NAMESPACES: 'tracker',
   // The card is an attention ask, which asks for suggested replies: pointed at
   // the fake runtime (which answers 404), so nothing real is ever called.
   MUSTER_E2E_SUGGEST_URL: `http://127.0.0.1:${routingRulesFakePort}/v1/chat/completions`,
@@ -50,6 +54,8 @@ let chiefMade = false;
 // pluginTurns: every chief turn the runtime was asked for a plugin message
 // (the first request of a turn: no function_call_output in its input).
 const pluginTurns: string[] = [];
+// requests: every /v1/responses request the runtime got, any turn.
+let requests = 0;
 const asked: string[] = [];
 
 const sse = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
@@ -70,6 +76,7 @@ function script(body: { input?: { type?: string; content?: string; output?: stri
   const input = body.input ?? [];
   const first = input.find((i) => i.type === 'message')?.content ?? '';
   const outputs = input.filter((i) => i.type === 'function_call_output').map((i) => i.output ?? '');
+  requests++;
   asked.push(first.slice(0, 300));
   if (outputs.length > 0) return { text: 'CHIEF-PROPOSED: ' + outputs[0].slice(0, 300) };
   const id = /message_id (\d+)/.exec(first)?.[1];
@@ -230,6 +237,29 @@ for (const vp of [
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, 'the usage page scrolls sideways').toBeLessThanOrEqual(0);
       await page.screenshot({ path: info.outputPath(`usage-${vp.key}.png`), fullPage: true });
+
+      // 6. THE TASK TRIAGE: an assigned task nobody is on reaches the board
+      // as the chief's own "Task #N needs you" card, with NO chief turn.
+      const before = requests;
+      const title = `Rotate the ${vp.key} build key ${stamp}`;
+      const filed = await plugin.post('/plugin/v1/tasks', {
+        data: { key: `tracker:e2e-${vp.key}-${stamp}`, create: { title, body: 'Rotate it before Friday.' },
+          comment: 'upstream: assigned to you', route_to_chief: true, notice: 'assigned' },
+      });
+      expect(filed.status(), await filed.text()).toBe(201);
+      const taskID = ((await filed.json()) as { id: number }).id;
+      await page.goto(rig.origin + '/attention');
+      const board = page.locator('li[data-attention-item]').filter({ hasText: `Task #${taskID} needs you: ${title}` });
+      await expect(board).toBeVisible({ timeout: 30_000 });
+      await board.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: info.outputPath(`task-board-${vp.key}.png`) });
+      await page.waitForTimeout(1000);
+      expect(requests, 'the board card cost no chief turn').toBe(before);
+      // Routed by muster: not left on the queue as a task to route.
+      await page.reload();
+      await expect(page.locator('li[data-attention-item][data-kind="task"]').filter({ hasText: `Task #${taskID}:` })).toHaveCount(0);
+      await page.goto(rig.origin + '/usage');
+      await expect(page.locator(`[data-usage-source="${pluginName}"]`)).toContainText('1 by muster');
       await plugin.dispose();
     });
   });

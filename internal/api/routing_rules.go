@@ -192,7 +192,6 @@ func routingRuleProposeToolDef() agents.ToolDef {
 			"reason":             strProp("settle: why such messages need nothing (at most 300 characters)."),
 			"match_sender":       map[string]any{"type": "boolean", "description": "Match the message's sender exactly."},
 			"match_thread":       map[string]any{"type": "boolean", "description": "Match the message's thread exactly."},
-			"match_pr_repo":      map[string]any{"type": "boolean", "description": "Match the repository of the pull request the review names."},
 			"external_id_prefix": strProp("Match external ids starting with this (a prefix of the message's own)."),
 			"subject_prefix":     strProp("Match subjects starting with this (a prefix of the message's own)."),
 		}, "message_id", "action")}
@@ -212,7 +211,6 @@ func (s *Server) toolRoutingRulePropose(ctx context.Context, a agents.Agent, arg
 		Reason           string `json:"reason"`
 		MatchSender      bool   `json:"match_sender"`
 		MatchThread      bool   `json:"match_thread"`
-		MatchPRRepo      bool   `json:"match_pr_repo"`
 		ExternalIDPrefix string `json:"external_id_prefix"`
 		SubjectPrefix    string `json:"subject_prefix"`
 	}
@@ -227,7 +225,7 @@ func (s *Server) toolRoutingRulePropose(ctx context.Context, a agents.Agent, arg
 	if err != nil {
 		return toolErr("the message's plugin is gone")
 	}
-	req := plugins.RuleRequest{MatchSender: in.MatchSender, MatchThread: in.MatchThread, MatchPRRepo: in.MatchPRRepo,
+	req := plugins.RuleRequest{MatchSender: in.MatchSender, MatchThread: in.MatchThread,
 		ExternalPrefix: in.ExternalIDPrefix, SubjectPrefix: in.SubjectPrefix, Action: in.Action, Reason: in.Reason}
 	target := ""
 	if in.Action == plugins.RuleRoute {

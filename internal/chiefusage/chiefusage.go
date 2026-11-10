@@ -176,13 +176,20 @@ const (
 	HandlerPRRoute          = "pr_route"
 	HandlerMailResume       = "mail_resume"
 	HandlerTaskEventMention = "task_event_mention"
-	HandlerRule             = "rule"
-	HandlerChief            = "chief"
+	// The task triage (internal/api task_triage.go): an assignment muster
+	// placed itself — forwarded to the agent on the task, routed to the one
+	// session on it, or put on the owner's board.
+	HandlerTaskForward = "task_forward"
+	HandlerTaskRoute   = "task_route"
+	HandlerTaskBoard   = "task_board"
+	HandlerRule        = "rule"
+	HandlerChief       = "chief"
 )
 
 // MusterHandlers are the handlers that are muster's own deterministic paths
 // (neither a rule nor the chief).
-var MusterHandlers = []string{HandlerFleetReport, HandlerThread, HandlerClosedPR, HandlerPRRoute, HandlerMailResume, HandlerTaskEventMention}
+var MusterHandlers = []string{HandlerFleetReport, HandlerThread, HandlerClosedPR, HandlerPRRoute, HandlerMailResume, HandlerTaskEventMention,
+	HandlerTaskForward, HandlerTaskRoute, HandlerTaskBoard}
 
 // Handling is who handled one inbound plugin message. RuleID is set exactly
 // for HandlerRule; FallbackRuleID for HandlerChief when a rule matched and its

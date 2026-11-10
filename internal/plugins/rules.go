@@ -12,7 +12,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
-	"github.com/ZacxDev/muster/internal/prroute"
 )
 
 // ROUTING RULES (migration 0105; docs/plugins.md#routing-rules): a
@@ -73,13 +72,13 @@ const (
 // RuleMatch is what a rule matches on: each field "" when not matched on.
 // RequireVerified: the message's sender must be one its plugin verified.
 type RuleMatch struct {
-	Sender, Thread, PRRepo, ExternalPrefix, SubjectPrefix string
-	RequireVerified                                       bool
+	Sender, Thread, ExternalPrefix, SubjectPrefix string
+	RequireVerified                               bool
 }
 
 // any reports whether m matches on anything at all.
 func (m RuleMatch) any() bool {
-	return m.Sender != "" || m.Thread != "" || m.PRRepo != "" || m.ExternalPrefix != "" || m.SubjectPrefix != ""
+	return m.Sender != "" || m.Thread != "" || m.ExternalPrefix != "" || m.SubjectPrefix != ""
 }
 
 // Rule is one routing_rules row.
@@ -101,9 +100,9 @@ type Rule struct {
 // RuleRequest is what the chief asks for, about message it was delivered:
 // which of its fields to match on, and the action.
 type RuleRequest struct {
-	MatchSender, MatchThread, MatchPRRepo bool
-	ExternalPrefix, SubjectPrefix         string
-	Action                                string
+	MatchSender, MatchThread      bool
+	ExternalPrefix, SubjectPrefix string
+	Action                        string
 	// Session: a route's Claude session id (the caller resolved it).
 	Session string
 	// Reason: a settle's reason.
@@ -159,13 +158,6 @@ func ProposeRule(p Plugin, m Message, req RuleRequest) (RuleNew, error) {
 		}
 		match.Thread = *m.Thread
 	}
-	if req.MatchPRRepo {
-		ref, ok := prroute.ParseMail(m.Body)
-		if !ok || !m.SenderVerified {
-			return RuleNew{}, invalid("the message is not a verified sender's review naming a pull request, so there is no repository to match on")
-		}
-		match.PRRepo = ref.Repo
-	}
 	if req.ExternalPrefix != "" {
 		if len(req.ExternalPrefix) < MinRulePrefix || len(req.ExternalPrefix) > MaxRuleExternalPrefix ||
 			!strings.HasPrefix(m.ExternalID, req.ExternalPrefix) {
@@ -181,7 +173,7 @@ func ProposeRule(p Plugin, m Message, req RuleRequest) (RuleNew, error) {
 		match.SubjectPrefix = req.SubjectPrefix
 	}
 	if !match.any() {
-		return RuleNew{}, invalid("match on at least one of the message's fields: its sender, thread, pull request's repository, an external_id prefix or a subject prefix")
+		return RuleNew{}, invalid("match on at least one of the message's fields: its sender, thread, an external_id prefix or a subject prefix")
 	}
 	// A rule from a verified sender's message requires a verified sender, so a
 	// message that only CLAIMS that sender never matches it.
@@ -227,9 +219,7 @@ func hasUnsafe(s string) bool {
 // ACTIVE rule, only a message of its plugin stored AFTER it was approved, never
 // a task event; a route rule — and a rule that requires it — only a verified
 // sender's; then every field r matches on must match exactly (the sender, the
-// thread), as a prefix (external_id, the subject), or — the repository of the
-// pull request a verified sender's review names (prroute.ParseMail, the last
-// json block of the body) — ignoring case.
+// thread) or as a prefix (external_id, the subject). The body is never read.
 func RuleMatches(r Rule, m Message) bool {
 	if r.State != RuleActive || r.ApprovedAt.IsZero() || m.PluginID != r.PluginID || IsTaskEvent(m) || !r.Match.any() {
 		return false
@@ -251,15 +241,6 @@ func RuleMatches(r Rule, m Message) bool {
 	}
 	if r.Match.SubjectPrefix != "" && !strings.HasPrefix(m.Subject, r.Match.SubjectPrefix) {
 		return false
-	}
-	if r.Match.PRRepo != "" {
-		if !m.SenderVerified {
-			return false
-		}
-		ref, ok := prroute.ParseMail(m.Body)
-		if !ok || !strings.EqualFold(ref.Repo, r.Match.PRRepo) {
-			return false
-		}
 	}
 	return true
 }
@@ -284,9 +265,6 @@ func RuleSummary(r RuleMatch) string {
 	}
 	if r.Thread != "" {
 		parts = append(parts, "thread is "+q(r.Thread))
-	}
-	if r.PRRepo != "" {
-		parts = append(parts, "a review of a pull request in "+q(r.PRRepo))
 	}
 	if r.ExternalPrefix != "" {
 		parts = append(parts, "external id starts with "+q(r.ExternalPrefix))
@@ -313,14 +291,14 @@ func ruleWriter(ctx context.Context) (int64, error) {
 	return p.UserID, nil
 }
 
-const ruleCols = `id, owner_id, plugin_id, plugin_name, coalesce(match_sender, ''), coalesce(match_thread, ''), coalesce(match_pr_repo, ''),
+const ruleCols = `id, owner_id, plugin_id, plugin_name, coalesce(match_sender, ''), coalesce(match_thread, ''),
 	coalesce(match_external_prefix, ''), coalesce(match_subject_prefix, ''), require_verified, action, coalesce(route_session, ''),
 	coalesce(settle_reason, ''), state, chief_agent, source_message, coalesce(ask_id, 0), created_at, coalesce(decided_at, 'epoch'),
 	coalesce(approved_at, 'epoch'), hits, fallbacks, coalesce(last_hit_at, 'epoch'), coalesce(last_fallback_at, 'epoch')`
 
 func scanRule(row pgx.Row) (Rule, error) {
 	var r Rule
-	err := row.Scan(&r.ID, &r.Owner, &r.PluginID, &r.PluginName, &r.Match.Sender, &r.Match.Thread, &r.Match.PRRepo,
+	err := row.Scan(&r.ID, &r.Owner, &r.PluginID, &r.PluginName, &r.Match.Sender, &r.Match.Thread,
 		&r.Match.ExternalPrefix, &r.Match.SubjectPrefix, &r.Match.RequireVerified, &r.Action, &r.RouteSession, &r.SettleReason,
 		&r.State, &r.ChiefAgent, &r.SourceMessage, &r.AskID, &r.CreatedAt, &r.DecidedAt, &r.ApprovedAt, &r.Hits, &r.Fallbacks,
 		&r.LastHitAt, &r.LastFallbackAt)
@@ -362,10 +340,10 @@ func (s *PGStore) CreateRuleProposal(ctx context.Context, n RuleNew) (Rule, erro
 		var same, open int
 		if err := tx.QueryRow(ctx, `SELECT
 			count(*) FILTER (WHERE plugin_id = $2 AND state IN ('proposed', 'active', 'disabled')
-				AND coalesce(match_sender, '') = $3 AND coalesce(match_thread, '') = $4 AND coalesce(match_pr_repo, '') = $5
-				AND coalesce(match_external_prefix, '') = $6 AND coalesce(match_subject_prefix, '') = $7),
+				AND coalesce(match_sender, '') = $3 AND coalesce(match_thread, '') = $4
+				AND coalesce(match_external_prefix, '') = $5 AND coalesce(match_subject_prefix, '') = $6),
 			count(*) FILTER (WHERE state = 'proposed')
-			FROM routing_rules WHERE owner_id = $1`, owner, n.PluginID, n.Match.Sender, n.Match.Thread, n.Match.PRRepo,
+			FROM routing_rules WHERE owner_id = $1`, owner, n.PluginID, n.Match.Sender, n.Match.Thread,
 			n.Match.ExternalPrefix, n.Match.SubjectPrefix).Scan(&same, &open); err != nil {
 			return err
 		}
@@ -377,10 +355,10 @@ func (s *PGStore) CreateRuleProposal(ctx context.Context, n RuleNew) (Rule, erro
 		}
 		var err error
 		r, err = scanRule(tx.QueryRow(ctx, `INSERT INTO routing_rules (owner_id, plugin_id, plugin_name, match_sender, match_thread,
-			match_pr_repo, match_external_prefix, match_subject_prefix, require_verified, action, route_session, settle_reason,
+			match_external_prefix, match_subject_prefix, require_verified, action, route_session, settle_reason,
 			chief_agent, source_message, ask_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING `+ruleCols,
-			owner, n.PluginID, n.PluginName, nullStr(n.Match.Sender), nullStr(n.Match.Thread), nullStr(n.Match.PRRepo),
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+ruleCols,
+			owner, n.PluginID, n.PluginName, nullStr(n.Match.Sender), nullStr(n.Match.Thread),
 			nullStr(n.Match.ExternalPrefix), nullStr(n.Match.SubjectPrefix), n.Match.RequireVerified, n.Action,
 			nullStr(n.RouteSession), nullStr(n.SettleReason), n.ChiefAgent, n.SourceMessage, nullable(n.AskID, 0)))
 		if err != nil {

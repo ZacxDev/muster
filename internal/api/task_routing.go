@@ -767,6 +767,11 @@ func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note
 		return err // ErrTaskEventIDTaken included: the caller answers it 409
 	}
 	if created {
+		// An assignment muster can place itself (task_triage.go): no chief turn.
+		if event == noticeAssigned && s.triageAssignedTask(context.WithoutCancel(ctx), p, n, m) {
+			s.attentionChanged(n.OwnerID, unroutedTaskKey(m.ID))
+			return nil
+		}
 		s.recordHandling(ctx, p, m, chiefusage.HandlerChief, 0, 0)
 		s.deliverPluginMessage(r, p, m)
 		s.attentionChanged(n.OwnerID, unroutedTaskKey(m.ID))

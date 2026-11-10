@@ -9,8 +9,7 @@ import (
 // tables exists. After 0105, routing_rules refuses a rule with nothing to match
 // on, a route with no session (or with a reason), a settle with no reason, a
 // ROUTE THAT DOES NOT REQUIRE A VERIFIED SENDER, an active rule with no
-// approval time and a pull-request repository that is not owner/repo; and
-// stores a well-formed settle and route. chief_turn_usage refuses an unknown
+// approval time and a subject prefix under three characters; and stores a well-formed settle and route. chief_turn_usage refuses an unknown
 // trigger or outcome and negative tokens; plugin_message_handling refuses an
 // unknown handler, a rule hit with no rule, a rule id on a chief hand-off's
 // fallback that is not the chief's, and a second row for one message.
@@ -42,7 +41,6 @@ func TestMigration0105RoutingRulesAndTelemetry(t *testing.T) {
 		{"match_sender, action, route_session", "'a@example.test', 'route', 'ses'", "routing_rules_route_verified"},
 		{"match_sender, action, settle_reason, state, decided_at", "'a@example.test', 'settle', 'noise', 'active', now()", "routing_rules_approved"},
 		{"match_sender, action, settle_reason, state", "'a@example.test', 'settle', 'noise', 'declined'", "routing_rules_decided"},
-		{"match_pr_repo, action, settle_reason", "'not a repo', 'settle', 'noise'", "routing_rules_match_pr_repo_check"},
 		{"match_subject_prefix, action, settle_reason", "'ab', 'settle', 'noise'", "routing_rules_match_subject_prefix_check"},
 	} {
 		if err := rule(c.cols, c.vals); err == nil || !strings.Contains(err.Error(), c.constraint) {
@@ -52,8 +50,8 @@ func TestMigration0105RoutingRulesAndTelemetry(t *testing.T) {
 	for _, c := range []struct{ cols, vals string }{
 		{"match_sender, action, settle_reason", "'news@example.test', 'settle', 'a newsletter'"},
 		{"match_thread, action, route_session, require_verified", "'thread-7', 'route', 'ses_0abc', true"},
-		{"match_pr_repo, match_subject_prefix, action, settle_reason, state, decided_at, approved_at",
-			"'acme/widgets', 'Review of', 'settle', 'reviews', 'active', now(), now()"},
+		{"match_external_prefix, match_subject_prefix, action, settle_reason, state, decided_at, approved_at",
+			"'news-', 'Review of', 'settle', 'reviews', 'active', now(), now()"},
 	} {
 		if err := rule(c.cols, c.vals); err != nil {
 			t.Errorf("a well-formed rule (%s): %v; want stored", c.cols, err)

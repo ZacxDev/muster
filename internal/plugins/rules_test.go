@@ -30,10 +30,8 @@ func activeRule(mut func(*Rule)) Rule {
 }
 
 // TestRuleMatchesPinnedCases is the matcher's table, each case a literal: the
-// fields that match exactly, by prefix, or (the reviewed pull request's
-// repository) ignoring case; and every case that must NOT match.
+// fields that match exactly or by prefix; and every case that must NOT match.
 func TestRuleMatchesPinnedCases(t *testing.T) {
-	reviewBody := "Review below.\n```json\n{\"repo\":\"Acme-Labs/Widgets\",\"pr\":12,\"head_sha\":\"0123456789abcdef0123456789abcdef01234567\"}\n```\n"
 	for _, c := range []struct {
 		name string
 		rule Rule
@@ -58,12 +56,6 @@ func TestRuleMatchesPinnedCases(t *testing.T) {
 		{"the thread", activeRule(func(r *Rule) { r.Match = RuleMatch{Thread: "thr-0042"} }), ruleMsg(nil), true},
 		{"no thread on the message", activeRule(func(r *Rule) { r.Match = RuleMatch{Thread: "thr-0042"} }), ruleMsg(func(m *Message) { m.Thread = nil }), false},
 		{"every field must match", activeRule(func(r *Rule) { r.Match.SubjectPrefix = "Monthly" }), ruleMsg(nil), false},
-		{"the reviewed pull request's repository, ignoring case", activeRule(func(r *Rule) { r.Match = RuleMatch{PRRepo: "acme-labs/widgets"} }),
-			ruleMsg(func(m *Message) { m.Body = reviewBody }), true},
-		{"another repository", activeRule(func(r *Rule) { r.Match = RuleMatch{PRRepo: "acme-labs/gadgets"} }),
-			ruleMsg(func(m *Message) { m.Body = reviewBody }), false},
-		{"a repository claimed by an unverified sender", activeRule(func(r *Rule) { r.Match = RuleMatch{PRRepo: "acme-labs/widgets"} }),
-			ruleMsg(func(m *Message) { m.Body, m.SenderVerified = reviewBody, false }), false},
 		{"a DISABLED rule", activeRule(func(r *Rule) { r.State = RuleDisabled }), ruleMsg(nil), false},
 		{"a PROPOSED rule", activeRule(func(r *Rule) { r.State, r.ApprovedAt = RuleProposed, time.Time{} }), ruleMsg(nil), false},
 		{"a message stored BEFORE the approval", activeRule(nil), ruleMsg(func(m *Message) { m.CreatedAt = ruleT0.Add(-time.Second) }), false},
@@ -124,7 +116,6 @@ func TestProposeRuleCopiesFromTheMessageAndRefusesWhatItCannotMatch(t *testing.T
 		{"a two-byte prefix", ruleMsg(nil), RuleRequest{ExternalPrefix: "ne", Action: RuleSettle, Reason: "x"}, "external_id_prefix"},
 		{"a subject prefix that is not the message's", ruleMsg(nil), RuleRequest{SubjectPrefix: "Daily", Action: RuleSettle, Reason: "x"}, "subject_prefix"},
 		{"a thread the message lacks", ruleMsg(func(m *Message) { m.Thread = nil }), RuleRequest{MatchThread: true, Action: RuleSettle, Reason: "x"}, "no thread"},
-		{"a repository the message does not name", ruleMsg(nil), RuleRequest{MatchPRRepo: true, Action: RuleSettle, Reason: "x"}, "no repository"},
 		{"a settle with no reason", ruleMsg(nil), RuleRequest{MatchSender: true, Action: RuleSettle}, "reason"},
 		{"a route with no session", ruleMsg(nil), RuleRequest{MatchSender: true, Action: RuleRoute}, "names the session"},
 		{"an unknown action", ruleMsg(nil), RuleRequest{MatchSender: true, Action: "drop"}, `action is "route" or "settle"`},
@@ -140,8 +131,8 @@ func TestProposeRuleCopiesFromTheMessageAndRefusesWhatItCannotMatch(t *testing.T
 
 // TestRuleSummaryNamesEveryField: the card and the Rules page read it.
 func TestRuleSummaryNamesEveryField(t *testing.T) {
-	got := RuleSummary(RuleMatch{Sender: "a@example.test", Thread: "t-1", PRRepo: "acme/widgets", ExternalPrefix: "news-", SubjectPrefix: "Weekly", RequireVerified: true})
-	want := `sender is "a@example.test", thread is "t-1", a review of a pull request in "acme/widgets", external id starts with "news-", subject starts with "Weekly" (verified sender)`
+	got := RuleSummary(RuleMatch{Sender: "a@example.test", Thread: "t-1", ExternalPrefix: "news-", SubjectPrefix: "Weekly", RequireVerified: true})
+	want := `sender is "a@example.test", thread is "t-1", external id starts with "news-", subject starts with "Weekly" (verified sender)`
 	if got != want {
 		t.Fatalf("RuleSummary =\n%s\nwant\n%s", got, want)
 	}

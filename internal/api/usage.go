@@ -188,9 +188,10 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 	section("Rules", "usage-rules")
 	empty(len(rep.Rules), "No approved routing rules.")
 	for _, ri := range rep.Rules {
-		est := "nothing to estimate from: no chief turn for these messages before the rule"
+		est := "estimated tokens avoided: none to estimate from (no chief turn for these messages before the rule)"
 		if ri.BeforeTurns > 0 {
-			est = "about " + num(ri.Avoided) + " tokens saved (" + num(ri.AvgBefore) + " a turn, averaged over " + num(ri.BeforeTurns) + " turns before it)"
+			est = "estimated tokens avoided: about " + num(ri.Avoided) + " (an estimate, not a measurement: " + num(ri.AvgBefore) +
+				" a turn, averaged over " + num(ri.BeforeTurns) + " turns before it)"
 		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-usage-rule="` + strconv.FormatInt(ri.RuleID, 10) + `" data-avoided="` + strconv.FormatInt(ri.Avoided, 10) + `">
 <span class="break-words text-sm font-semibold text-fg">Rule #` + strconv.FormatInt(ri.RuleID, 10) + ` <span class="font-mono text-xs text-fg2">` + esc(ri.Plugin) + `</span> · ` + esc(ri.State) + `</span>
@@ -199,7 +200,7 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 `)
 	}
 	b.WriteString(`</ul>
-<p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. The estimate multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
+<p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. "Estimated tokens avoided" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
 <a href="` + routingRulesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Routing rules</a>
 </section>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Usage", "", false, b.String())

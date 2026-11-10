@@ -764,6 +764,42 @@ none: an action before that does not count. So a new event for a task already
 in progress is listed again until the chief routes it, and a queued event can
 reappear on the list after a later failed attempt to hand it over.
 
+### An assigned task muster places itself
+
+The chief's turn for an `assigned` task event is formulaic. It looks for the
+agent or session already on the task. When one is clearly on it, the chief
+hands the task there. Otherwise it puts the task on your board with
+`task_route_attention`. muster now makes that decision itself, with **no chief
+turn**, whenever the answer is certain. It runs the chief's own calls:
+`task_forward`, `route_to_session` with `task_id`, or `task_route_attention`.
+The result is the same forward, route or "Task #N needs you" ask, with the
+same buttons (Release & dispatch on a gated task).
+
+muster decides from the same evidence the chief's turn would get: the agents
+bound to the task, and the turn's
+[session hint](#sessions-that-may-already-be-on-it). The rule is conservative:
+
+| What muster sees | What it does |
+|---|---|
+| Exactly one agent that `task_forward` can reach is bound to the task. No other live agent is bound, and the hint names no session. | Forwards the task to that agent. |
+| No agent is bound, and the hint names exactly one session through a **strong** link: a pull request or branch the task names, which muster recorded that session creating or pushing (`session_prs`, owner-scoped), or a repository name that only that one online session reports. The hint names no other session. | Routes the task to that session. |
+| No agent is bound, and the hint names no session at all. | Puts the task on your board. |
+| Anything else: two candidates, a focus-title match (weak), a live agent muster cannot send to, or a gated task with any candidate. | Hands the event to the chief, exactly as before. |
+
+Only you can release a gated task, so muster never forwards or routes one;
+it can still put one on the board. A session that merely read the task
+(`task_sessions`) is not a strong link and is not consulted. If the call is
+refused, the chief gets the event; for example, the window closed between the
+hint and the route. With no chief, a chief that is turned off, or no plugin
+deliverer, nothing changes: the event waits for the chief.
+
+When muster handles the event, it is settled as
+`muster: task triage — <what it did>`. The event is also logged in the chief's
+chat with muster's note, so the chief holds it at no turn's cost. The usage
+page counts each outcome (`task_forward`, `task_route`, `task_board`, or
+`chief`): [usage.md](usage.md). The plugin's answer still says
+`routed: "chief"`, because the event was handed to the chief's side of muster.
+
 ### Releasing the chief's gate from the ask
 
 A task the chief files with `task_create_gated` — typically feedback a plugin
@@ -2290,9 +2326,6 @@ proposes rules. You approve each one with one tap.
    - `match_thread`: the thread, exactly (a Discord channel arrives in
      `thread` or in `sender`, depending on the plugin; match the field it is
      in);
-   - `match_pr_repo`: the repository of the pull request a verified sender's
-     review names (the last `json` block of the body, as for
-     [a pull-request review mail](#a-pull-request-review-mail));
    - `external_id_prefix`: a prefix of the message's `external_id`, 3 to 200
      bytes;
    - `subject_prefix`: a prefix of its subject, 3 to 80 characters. It is

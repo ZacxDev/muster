@@ -39,7 +39,9 @@ handled it:
 - one of muster's own paths, with no chief turn: `fleet_report`, `thread`
   (a reply on a thread a session started), `closed_pr` (a review of a merged
   or closed pull request), `pr_route` (a review routed to the session that
-  wrote the pull request), `mail_resume`, or `task_event_mention`;
+  wrote the pull request), `mail_resume`, `task_event_mention`, or the
+  [task triage](plugins.md#an-assigned-task-muster-places-itself) of an
+  assigned task: `task_forward`, `task_route` or `task_board`;
 - `rule`: an approved [routing rule](plugins.md#routing-rules), with its id;
 - `chief`: a chief turn. When a rule matched but its session could not take
   the message, the row also names that rule as the fallback.
@@ -64,8 +66,9 @@ Pick a window: the last 7 days or the last 30. The page shows:
   started them and, for a plugin, which plugin.
 - **Costliest senders.** The ten plugin senders whose messages cost the chief
   the most tokens.
-- **Rules.** Each approved rule: its hits in the window and in all, and an
-  estimate of the tokens it saved.
+- **Rules.** Each approved rule: its hits in the window and in all, and its
+  **estimated tokens avoided**. The page labels this figure as an estimate,
+  not a measurement.
 
 The estimate takes a rule's hits in the window and multiplies them by the
 average total tokens of the chief's turns for that rule's plugin before the

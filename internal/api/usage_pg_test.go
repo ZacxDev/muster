@@ -68,7 +68,7 @@ func TestTheUsagePageRendersTheWindowsTotals(t *testing.T) {
 		// The rule's estimate: 1 hit in the window × the average of the two
 		// known turns before it (4000 and 1000, one outside the window): 2500.
 		`data-usage-rule="` + strconv.FormatInt(rule, 10) + `" data-avoided="2500"`,
-		`about 2,500 tokens saved (2,500 a turn, averaged over 2 turns before it)`,
+		`estimated tokens avoided: about 2,500 (an estimate, not a measurement: 2,500 a turn, averaged over 2 turns before it)`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the 7-day page lacks %q", want)

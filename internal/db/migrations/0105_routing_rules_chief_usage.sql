@@ -4,9 +4,9 @@
 --
 --   routing_rules   one row per rule the chief PROPOSED: the plugin it is for
 --       (composite FK, so a rule cannot name another owner's plugin), what it
---       matches (exact sender, exact thread, the reviewed pull request's
---       repository, a prefix of external_id, a prefix of the subject — each
---       NULL when not matched on; at least one is set), whether the sender
+--       matches (exact sender, exact thread, a prefix of external_id, a prefix
+--       of the subject — each NULL when not matched on; at least one is set),
+--       whether the sender
 --       must be verified, and its action: 'route' to the mirrored session
 --       route_session, or 'settle' with settle_reason. state is 'proposed'
 --       until the owner's one tap on its card (ask_id) makes it 'active' or
@@ -25,7 +25,8 @@
 --
 --   plugin_message_handling   one row per inbound plugin message: who handled
 --       it — muster's own deterministic paths (fleet_report, thread,
---       closed_pr, pr_route, mail_resume, task_event_mention), an approved
+--       closed_pr, pr_route, mail_resume, task_event_mention, and the task
+--       triage's task_forward, task_route and task_board), an approved
 --       rule (rule, with rule_id), or the chief (chief; fallback_rule_id set
 --       when a rule matched and its session could not take it).
 --
@@ -57,7 +58,6 @@ CREATE TABLE IF NOT EXISTS public.routing_rules (
     plugin_name            TEXT        NOT NULL CHECK (char_length(plugin_name) BETWEEN 1 AND 40),
     match_sender           TEXT        CHECK (match_sender IS NULL OR char_length(match_sender) BETWEEN 1 AND 320),
     match_thread           TEXT        CHECK (match_thread IS NULL OR char_length(match_thread) BETWEEN 1 AND 200),
-    match_pr_repo          TEXT        CHECK (match_pr_repo IS NULL OR match_pr_repo ~ '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$'),
     match_external_prefix  TEXT        CHECK (match_external_prefix IS NULL OR char_length(match_external_prefix) BETWEEN 3 AND 200),
     match_subject_prefix   TEXT        CHECK (match_subject_prefix IS NULL OR char_length(match_subject_prefix) BETWEEN 3 AND 80),
     require_verified       BOOLEAN     NOT NULL DEFAULT false,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS public.routing_rules (
     CONSTRAINT routing_rules_plugin_owner_fkey FOREIGN KEY (plugin_id, owner_id)
         REFERENCES public.plugins (id, owner_id) ON DELETE CASCADE,
     -- something to match on besides the plugin
-    CONSTRAINT routing_rules_matches CHECK (num_nonnulls(match_sender, match_thread, match_pr_repo,
+    CONSTRAINT routing_rules_matches CHECK (num_nonnulls(match_sender, match_thread,
         match_external_prefix, match_subject_prefix) >= 1),
     -- a route names its session and no reason; a settle its reason and no session
     CONSTRAINT routing_rules_action_fields CHECK (
@@ -166,7 +166,8 @@ CREATE TABLE IF NOT EXISTS public.plugin_message_handling (
     plugin_name            TEXT        NOT NULL DEFAULT '' CHECK (char_length(plugin_name) <= 40),
     sender                 TEXT        NOT NULL DEFAULT '' CHECK (char_length(sender) <= 320),
     handler                TEXT        NOT NULL CHECK (handler IN ('fleet_report', 'thread', 'closed_pr', 'pr_route',
-                                       'mail_resume', 'task_event_mention', 'rule', 'chief')),
+                                       'mail_resume', 'task_event_mention', 'task_forward', 'task_route',
+                                       'task_board', 'rule', 'chief')),
     rule_id                BIGINT,
     fallback_rule_id       BIGINT,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
