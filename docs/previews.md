@@ -219,11 +219,17 @@ whole (`internal/previewgw/proxy.go`).
   `Content-Security-Policy`, `Location`, `Set-Cookie`), is removed from the
   announced `Trailer:` line, and its value, declared or sent undeclared with
   net/http's `TrailerPrefix`, is stripped when the body ends. Other trailers
-  pass (`dropAppTrailer`, `internal/previewgw/proxy.go`).
-- ⚠ **Known gap: 1xx responses.** These rules run on the final response
-  only (`ModifyResponse`). An app's informational responses (such as
-  `103 Early Hints`) are forwarded by `httputil.ReverseProxy` with their
-  headers unfiltered.
+  pass (`dropAppNonFinal`, `internal/previewgw/proxy.go`).
+- **App 1xx responses** (such as `103 Early Hints`) are forwarded, minus the
+  same names as trailers: `X-Muster-*`, `Clear-Site-Data`,
+  `Strict-Transport-Security`, `Referrer-Policy`, `X-Content-Type-Options`,
+  `Content-Security-Policy`, `Location` and `Set-Cookie` (dropped whole, not
+  stripped of its `Domain`) never reach the browser on one; a `Link` and other
+  fields pass. `httputil.ReverseProxy` forwards a 1xx from its own
+  `httptrace` hook, outside `ModifyResponse`, so the gateway's transport adds
+  a newer hook that filters the 1xx header in place before ReverseProxy's
+  copies it (`filter1xx`). Nothing of a 1xx carries into the final
+  response's headers.
 - **WebSockets** are relayed message by message (coder/websocket on both
   legs, no read limit, compression off), the app's leg dialled first so an
   app's refusal reaches the browser as the app sent it. The browser leg is
