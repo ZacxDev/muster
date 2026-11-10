@@ -63,6 +63,10 @@ var QuickKeys = []QuickKey{
 
 // AgentTerminalView is the data the terminal page renders.
 type AgentTerminalView struct {
+	// Plugins is the owner's viewer plugins' chip row (plugin_chip.go), under
+	// the header: a mirrored window's Terminal view only (an agent's has none
+	// in this phase); nil for none.
+	Plugins     *PluginChips
 	Name        string
 	DisplayName string
 	// SessionName is the session's name (internal/sessionname): the header
@@ -370,6 +374,8 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
 				mirrorHostBanner("term-host-note", v.Offline, v.Note),
+				// The owner's viewer plugins (plugin_chip.go): a fixed-height row.
+				pluginChipRow(v.Plugins),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),

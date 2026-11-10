@@ -631,7 +631,9 @@ views that opens its own origin, signed in as you, through a one-time
   viewer may be given: `MUSTER_PLUGIN_ORIGINS=https://*.<zone>` (its grammar is
   in [configuration.md](configuration.md#muster-server-optional-features)). A
   `Host` under it is refused on muster's own listeners.
-- **Check:** `plugin origins: ON …`; `/plugins` offers a Viewer checkbox.
+- **Check:** `plugin origins: ON …`; `/plugins` offers a Viewer checkbox; a
+  viewer plugin's [chip](plugins.md#the-session-view-chip) is on a mirrored
+  window's Rendered and Terminal views.
 
 ### Plugin tasks
 

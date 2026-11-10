@@ -317,7 +317,11 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
-	allowSameOriginFrame(w)
+	// The owner's viewer plugins' chips, and the frame-src their Show here
+	// needs (plugin_chip.go); none and "" while the seam is off.
+	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
+	v.Plugins = pluginChips(vp, h.Host, e.Window)
+	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
