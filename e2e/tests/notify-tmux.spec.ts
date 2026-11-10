@@ -402,14 +402,22 @@ for (const vp of [
       // are re-fetched live (an SSE event, the minute's tick), and a swap
       // landing between a separate write and read measured the real short
       // name (CI run 42565032895, desktop). Layout is forced by the reads.
-      const m = await sideRow(w).evaluate((a, s) => {
+      // 🔴 The row is FOUND in that evaluate too, not handed in by a locator:
+      // a locator's evaluate resolves the element in one round trip and runs
+      // the function in a second, so a swap between them hands the function
+      // the replaced row — detached, every box 0 — and the row "fits" (0 ≤
+      // the sidebar) while the name "is cut" read 0 > 0 (a desktop CI run).
+      const m = await page.evaluate(({ sel, s }) => {
+        const rows = document.querySelectorAll(sel);
+        if (rows.length !== 1) throw new Error(`${rows.length} sidebar rows match ${sel}, want 1`);
+        const a = rows[0] as HTMLElement;
         const name = a.querySelector('[data-nav-name]') as HTMLElement, tmux = a.querySelector('[data-nav-tmux]') as HTMLElement;
         name.textContent = s.repeat(3);
         tmux.textContent = s.repeat(3);
         const side = document.getElementById('sidebar')!.getBoundingClientRect(), r = a.getBoundingClientRect();
         const cut = (el: HTMLElement) => ({ sw: el.scrollWidth, cw: el.clientWidth, ov: getComputedStyle(el).textOverflow });
         return { row: r.right, side: side.right, name: cut(name), tmux: cut(tmux), sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
-      }, long);
+      }, { sel: `#sidebar-agents-list a[data-nav-agent="mirror"][href*="window=%40${w}"]`, s: long });
       expect(m.row, 'the row fits the sidebar').toBeLessThanOrEqual(m.side + 0.5);
       for (const [sel, cut] of [['[data-nav-name]', m.name], ['[data-nav-tmux]', m.tmux]] as const) {
         expect(cut.sw, `${sel} is cut`).toBeGreaterThan(cut.cw);
