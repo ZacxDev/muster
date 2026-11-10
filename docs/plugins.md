@@ -51,7 +51,7 @@ A plugin token opens only the routes its **capabilities** allow:
 | capability | opens |
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
-| `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](design/previews.md#capabilities-on-a-plugin-token) build on |
+| `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
