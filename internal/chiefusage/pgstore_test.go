@@ -81,7 +81,9 @@ func TestRecordTurnAndHandlingStoreWhatTheyAreGiven(t *testing.T) {
 // number of the 7-day report as a literal — the tokens-avoided estimate
 // included: rule A's two hits × the average of the three known turns for its
 // plugin and sender before it was approved (6500, 2600 and 100000 — that last
-// one older than the window, which the average still reads), 36367.
+// one older than the window, which the average still reads), 36367 — never
+// another sender's turn before it (7000) nor the sender's turn after it
+// (90000).
 func TestTheReportsAggregatesArePinned(t *testing.T) {
 	s, pool := pgUsage(t)
 	sys := authz.System(context.Background())
@@ -124,7 +126,12 @@ func TestTheReportsAggregatesArePinned(t *testing.T) {
 	turn(2, now.Add(-240*time.Hour), "plugin", "usage-mail", digest, true, 100000, 0, 0, 0)     // outside the window, before the rule
 	turn(2, now.Add(-24*time.Hour), "plugin", "usage-mail", others, true, 300, 50, 0, 0)        // 350
 	turn(2, now.Add(-24*time.Hour), "owner_chat", "", "", true, 2000, 400, 10000, 1000)         // 13400
-	turn(3, now.Add(-24*time.Hour), "plugin", "usage-mail", digest, true, 999999, 0, 0, 0)      // another owner's
+	// The two the estimate must leave out (mutation sweep: without them a
+	// mutant dropping either filter survived): another sender's turn BEFORE
+	// the rule, and the rule's own sender's turn AFTER it.
+	turn(2, now.Add(-60*time.Hour), "plugin", "usage-mail", others, true, 7000, 0, 0, 0)   // 7000, before, another sender
+	turn(2, now.Add(-12*time.Hour), "plugin", "usage-mail", digest, true, 90000, 0, 0, 0)  // 90000, the sender, after the rule
+	turn(3, now.Add(-24*time.Hour), "plugin", "usage-mail", digest, true, 999999, 0, 0, 0) // another owner's
 	handled := func(msg int64, plugin, handler string, rule, fallback any, at time.Time) {
 		t.Helper()
 		if _, err := pool.Exec(sys, `INSERT INTO plugin_message_handling (owner_id, plugin_message_id, plugin_name, handler, rule_id, fallback_rule_id, created_at)
@@ -149,26 +156,26 @@ func TestTheReportsAggregatesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantTotals := Totals{Turns: 5, UnknownTurns: 1, Tokens: Tokens{Input: 3800, Output: 750, CacheRead: 17000, CacheCreation: 1300},
+	wantTotals := Totals{Turns: 7, UnknownTurns: 1, Tokens: Tokens{Input: 100800, Output: 750, CacheRead: 17000, CacheCreation: 1300},
 		Messages: 8, ByRule: 2, ByMuster: 2, ByChief: 4, Fallbacks: 1}
 	if rep.Totals != wantTotals {
 		t.Errorf("totals = %+v\nwant     %+v", rep.Totals, wantTotals)
 	}
-	if rep.Totals.Tokens.Total() != 22850 || rep.Totals.WithoutChiefPercent() != 50 {
-		t.Errorf("total tokens %d, %d%% without the chief; want 22850, 50%%", rep.Totals.Tokens.Total(), rep.Totals.WithoutChiefPercent())
+	if rep.Totals.Tokens.Total() != 119850 || rep.Totals.WithoutChiefPercent() != 50 {
+		t.Errorf("total tokens %d, %d%% without the chief; want 119850, 50%%", rep.Totals.Tokens.Total(), rep.Totals.WithoutChiefPercent())
 	}
 	wantSources := []Source{{Plugin: "usage-mail", Messages: 6, ByRule: 2, ByMuster: 1, ByChief: 3},
 		{Plugin: "review-mail", Messages: 1, ByMuster: 1}, {Plugin: "usage-other", Messages: 1, ByChief: 1}}
 	if !reflect.DeepEqual(rep.Sources, wantSources) {
 		t.Errorf("sources = %+v\nwant      %+v", rep.Sources, wantSources)
 	}
-	wantBySource := []TokenRow{{Trigger: "owner_chat", Turns: 1, Tokens: Tokens{Input: 2000, Output: 400, CacheRead: 10000, CacheCreation: 1000}},
-		{Trigger: "plugin", Plugin: "usage-mail", Turns: 4, Tokens: Tokens{Input: 1800, Output: 350, CacheRead: 7000, CacheCreation: 300}}}
+	wantBySource := []TokenRow{{Trigger: "plugin", Plugin: "usage-mail", Turns: 6, Tokens: Tokens{Input: 98800, Output: 350, CacheRead: 7000, CacheCreation: 300}},
+		{Trigger: "owner_chat", Turns: 1, Tokens: Tokens{Input: 2000, Output: 400, CacheRead: 10000, CacheCreation: 1000}}}
 	if !reflect.DeepEqual(rep.BySource, wantBySource) {
 		t.Errorf("by source = %+v\nwant        %+v", rep.BySource, wantBySource)
 	}
-	wantSenders := []TokenRow{{Trigger: "plugin", Plugin: "usage-mail", Sender: digest, Turns: 3, Tokens: Tokens{Input: 1500, Output: 300, CacheRead: 7000, CacheCreation: 300}},
-		{Trigger: "plugin", Plugin: "usage-mail", Sender: others, Turns: 1, Tokens: Tokens{Input: 300, Output: 50}}}
+	wantSenders := []TokenRow{{Trigger: "plugin", Plugin: "usage-mail", Sender: digest, Turns: 4, Tokens: Tokens{Input: 91500, Output: 300, CacheRead: 7000, CacheCreation: 300}},
+		{Trigger: "plugin", Plugin: "usage-mail", Sender: others, Turns: 2, Tokens: Tokens{Input: 7300, Output: 50}}}
 	if !reflect.DeepEqual(rep.TopSenders, wantSenders) {
 		t.Errorf("top senders = %+v\nwant          %+v", rep.TopSenders, wantSenders)
 	}
@@ -186,8 +193,8 @@ func TestTheReportsAggregatesArePinned(t *testing.T) {
 	for _, d := range rep.Days {
 		sum.Turns, sum.Messages, sum.Tokens = sum.Turns+d.Turns, sum.Messages+d.Messages, sum.Tokens.Add(d.Tokens)
 	}
-	if sum.Turns != 5 || sum.Messages != 8 || sum.Tokens.Total() != 22850 {
-		t.Errorf("the days sum to %d turns, %d messages, %d tokens; want 5, 8, 22850", sum.Turns, sum.Messages, sum.Tokens.Total())
+	if sum.Turns != 7 || sum.Messages != 8 || sum.Tokens.Total() != 119850 {
+		t.Errorf("the days sum to %d turns, %d messages, %d tokens; want 7, 8, 119850", sum.Turns, sum.Messages, sum.Tokens.Total())
 	}
 	// Owner 3 sees its one turn and nothing of owner 2's.
 	rep3, err := s.Report(as(3), since)
