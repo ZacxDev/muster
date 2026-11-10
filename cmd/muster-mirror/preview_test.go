@@ -186,11 +186,14 @@ func TestAlwaysRefusedPortsAreTheMCPAndOpencodePorts(t *testing.T) {
 	}
 }
 
-// startPreviewLog runs startPreview to completion and returns its log.
+// startPreviewLog runs startPreview with an already-ended context — so it
+// validates, logs and returns without dialling — and returns its log.
 func startPreviewLog(t *testing.T, pf previewFlags, defaultDaemon bool, refused map[int]string) string {
 	t.Helper()
 	var buf bytes.Buffer
-	done := startPreview(pf, defaultDaemon, func() map[int]string { return refused }, log.New(&buf, "", 0))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := startPreview(ctx, pf, defaultDaemon, func() map[int]string { return refused }, "laptop", nil, log.New(&buf, "", 0))
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -199,17 +202,17 @@ func startPreviewLog(t *testing.T, pf previewFlags, defaultDaemon bool, refused 
 	return buf.String()
 }
 
-// TestStartPreviewLogsWhatItWouldOfferOrWhyItIsOff: a valid configuration is
-// logged with its numbers and an always-refused port it lists is named; a bad
-// one is logged as OFF with its reason; a panic inside is recovered and logged
-// as OFF, never crashing the host.
-func TestStartPreviewLogsWhatItWouldOfferOrWhyItIsOff(t *testing.T) {
+// TestStartPreviewLogsWhatItOffersOrWhyItIsOff: a valid configuration is
+// logged with its numbers and endpoints and an always-refused port it lists
+// is named; a bad one is logged as OFF with its reason; a panic inside is
+// recovered and logged as OFF, never crashing the host.
+func TestStartPreviewLogsWhatItOffersOrWhyItIsOff(t *testing.T) {
 	file, token := previewFiles(t, `{"ports": ["5173", "40000-50000"], "maxOpen": 4}`)
 	pf := previewFlags{On: true, URLs: "ws://192.0.2.7:9000/v1/host", TokenFile: token, File: file}
 	out := startPreviewLog(t, pf, true, map[int]string{47823: "muster-mirror's MCP endpoint (-mcp-listen)"})
 	for _, want := range []string{
-		"previews are configured (ports 5173,40000-50000, maxOpen 4, maxConns 64",
-		"endpoints ws://192.0.2.7:9000/v1/host) but this release does not dial the gateway yet",
+		"previews are ON (ports 5173,40000-50000, maxOpen 4, maxConns 64",
+		"dialling ws://192.0.2.7:9000/v1/host",
 		"port 47823 is on the allowlist but is muster-mirror's MCP endpoint (-mcp-listen), and is always refused",
 	} {
 		if !strings.Contains(out, want) {
@@ -223,24 +226,22 @@ func TestStartPreviewLogsWhatItWouldOfferOrWhyItIsOff(t *testing.T) {
 		t.Errorf("bad config log: %q", out)
 	}
 	var buf bytes.Buffer
-	done := startPreview(pf, true, func() map[int]string { panic("boom") }, log.New(&buf, "", 0))
+	done := startPreview(context.Background(), pf, true, func() map[int]string { panic("boom") }, "laptop", nil, log.New(&buf, "", 0))
 	<-done
 	if !strings.Contains(buf.String(), "previews are OFF, mirroring continues: preview setup panicked: boom") {
 		t.Errorf("panic log: %q", buf.String())
 	}
 }
 
-// TestPreviewNeverStopsOrDialsAnything is -preview through run: with a bad
-// previews.json the host still dials muster and says previews are OFF; with a
-// valid one it says what it would offer — and in neither case does anything
-// connect to the gateway endpoint. The gateway's counter is shown to count
-// (one dial of our own, after) so its zero means something.
-func TestPreviewNeverStopsOrDialsAnything(t *testing.T) {
+// countingGateway is a TCP listener that counts connections and closes each:
+// a gateway endpoint that is up at the TCP level and answers nothing.
+func countingGateway(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
 	gw, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer gw.Close()
+	t.Cleanup(func() { gw.Close() })
 	var accepts atomic.Int32
 	go func() {
 		for {
@@ -252,37 +253,52 @@ func TestPreviewNeverStopsOrDialsAnything(t *testing.T) {
 			c.Close()
 		}
 	}()
-	gwURL := "ws://" + gw.Addr().String() + "/v1/host"
+	return "ws://" + gw.Addr().String() + "/v1/host", &accepts
+}
+
+// TestPreviewNeverStopsMirroring is -preview through run: with the gateway
+// unreachable (its endpoint dialled — the counter shows the host really
+// tried — and every dial failing), with a bad previews.json, and with the
+// preview goroutine panicking, the host dials muster AFTER the preview code
+// has done its worst, and exits 0.
+func TestPreviewNeverStopsMirroring(t *testing.T) {
 	goodFile, token := previewFiles(t, `{"ports": ["5173"]}`)
-	for _, c := range []struct {
-		name, file, want string
-	}{
-		{"bad previews.json", filepath.Join(t.TempDir(), "missing.json"), "previews are OFF, mirroring continues:"},
-		{"valid", goodFile, "but this release does not dial the gateway yet"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			rc, errs := runUntilDialled(t, map[string]string{envPreview: "1", envPreviewURLs: gwURL, envPreviewTokenFile: token, envPreviewFile: c.file})
-			if rc != 0 || !strings.Contains(errs, c.want) {
-				t.Fatalf("rc %d, log lacks %q:\n%s", rc, c.want, errs)
-			}
-		})
-	}
-	if n := accepts.Load(); n != 0 {
-		t.Fatalf("something dialled the gateway endpoint %d time(s)", n)
-	}
-	// Positive control: the counter sees a dial.
-	conn, err := net.Dial("tcp", gw.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for accepts.Load() != 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if n := accepts.Load(); n != 1 {
-		t.Fatalf("instrument: our own dial counted %d, want 1", n)
-	}
+	t.Run("gateway unreachable", func(t *testing.T) {
+		gwURL, accepts := countingGateway(t)
+		rc, errs := runUntil(t, map[string]string{envPreview: "1", envPreviewURLs: gwURL, envPreviewTokenFile: token, envPreviewFile: goodFile},
+			func() bool { return accepts.Load() >= 1 })
+		if rc != 0 || !strings.Contains(errs, "previews are ON") || !strings.Contains(errs, "no gateway endpoint answered") {
+			t.Fatalf("rc %d, log:\n%s", rc, errs)
+		}
+	})
+	t.Run("bad previews.json", func(t *testing.T) {
+		gwURL, accepts := countingGateway(t)
+		rc, errs := runUntil(t, map[string]string{envPreview: "1", envPreviewURLs: gwURL, envPreviewTokenFile: token, envPreviewFile: filepath.Join(t.TempDir(), "missing.json")}, nil)
+		if rc != 0 || !strings.Contains(errs, "previews are OFF, mirroring continues:") {
+			t.Fatalf("rc %d, log:\n%s", rc, errs)
+		}
+		if n := accepts.Load(); n != 0 {
+			t.Fatalf("previews are off yet the gateway was dialled %d time(s)", n)
+		}
+	})
+	t.Run("the preview goroutine panics", func(t *testing.T) {
+		panicked := make(chan struct{})
+		previewStartHook = func() { close(panicked); panic("boom") }
+		t.Cleanup(func() { previewStartHook = nil })
+		gwURL, _ := countingGateway(t)
+		rc, errs := runUntil(t, map[string]string{envPreview: "1", envPreviewURLs: gwURL, envPreviewTokenFile: token, envPreviewFile: goodFile},
+			func() bool {
+				select {
+				case <-panicked:
+					return true
+				default:
+					return false
+				}
+			})
+		if rc != 0 || !strings.Contains(errs, "preview setup panicked: boom") {
+			t.Fatalf("rc %d, log:\n%s", rc, errs)
+		}
+	})
 }
 
 // TestPreviewFlagsWithoutPreviewSayTheyDoNothing: the endpoints or token set
@@ -301,21 +317,38 @@ func TestPreviewFlagsWithoutPreviewSayTheyDoNothing(t *testing.T) {
 // for it to dial /mirror/connect, stops it, and returns its status and log.
 func runUntilDialled(t *testing.T, extra map[string]string) (int, string) {
 	t.Helper()
+	return runUntil(t, extra, nil)
+}
+
+// runUntil is runUntilDialled that first waits for first() (nil: nothing),
+// then for a dial of /mirror/connect made AFTER first() held: proof that
+// mirroring goes on after whatever first() waited for.
+// backend, when given, replaces the fake tmux (default listBackend).
+func runUntil(t *testing.T, extra map[string]string, first func() bool, backend ...mirrorhost.Backend) (int, string) {
+	t.Helper()
+	var armed atomic.Bool
+	armed.Store(first == nil)
 	dialled := make(chan struct{}, 1)
 	muster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/mirror/connect" {
+		if r.URL.Path == "/mirror/connect" && armed.Load() {
 			select {
 			case dialled <- struct{}{}:
 			default:
 			}
 		}
-		http.Error(w, "no", http.StatusUnauthorized)
+		// 503, not 401: an unauthorized host waits a minute to redial, and
+		// this needs the redial that proves mirroring went on.
+		http.Error(w, "no", http.StatusServiceUnavailable)
 	}))
 	defer muster.Close()
 	prevB, prevC := newTmuxBackend, runContext
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { newTmuxBackend, runContext = prevB, prevC; cancel() })
-	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return listBackend{} }
+	var b mirrorhost.Backend = listBackend{}
+	if len(backend) > 0 {
+		b = backend[0]
+	}
+	newTmuxBackend = func(string, string, string) mirrorhost.Backend { return b }
 	runContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	env := map[string]string{envURL: muster.URL, envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop", envAllowHTTP: "1"}
 	for k, v := range extra {
@@ -330,11 +363,27 @@ func runUntilDialled(t *testing.T, extra map[string]string) (int, string) {
 		rc, _, errs := runWith(t, env)
 		done <- result{rc, errs}
 	}()
+	if first != nil {
+		deadline := time.Now().Add(15 * time.Second)
+		for !first() {
+			select {
+			case r := <-done:
+				t.Fatalf("run ended early: rc %d %s", r.rc, r.errs)
+			case <-time.After(10 * time.Millisecond):
+			}
+			if time.Now().After(deadline) {
+				cancel()
+				t.Fatal("the awaited preview event never happened")
+			}
+		}
+		armed.Store(true)
+	}
 	select {
 	case <-dialled:
 	case r := <-done:
 		t.Fatalf("run ended before dialling muster: rc %d %s", r.rc, r.errs)
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
+		cancel()
 		t.Fatal("the host never dialled muster")
 	}
 	cancel()

@@ -60,7 +60,7 @@ func TestAGoodPreviewsFileLoadsWithItsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Offer || c.MaxOpen != DefaultMaxOpen || c.MaxConns != DefaultMaxConns || c.Ports.String() != "1024,5173,8000-8099,65535" {
+	if !c.Offer || c.MaxOpen != DefaultMaxOpen || c.MaxConns != 64 || c.Ports.String() != "1024,5173,8000-8099,65535" {
 		t.Fatalf("defaults: %+v (ports %s)", c, c.Ports)
 	}
 	c, err = Parse([]byte(`{"ports": ["3000"], "offer": false, "maxOpen": 3, "maxConns": 7}`))

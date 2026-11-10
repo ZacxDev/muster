@@ -71,12 +71,13 @@ const (
 // wantNoRedirectSites is every noredirect.Client call in the mirror binary,
 // by file (relative to the module root): the ledger.
 var wantNoRedirectSites = map[string]int{
-	"cmd/muster-mirror/ask.go":        1, // the AskUserQuestion hook → muster /mirror/ask (mirror token)
-	"internal/askq/hook.go":           1, // the hook's request, whatever client it was given
-	"internal/mirrorhost/client.go":   1, // the tunnel's WebSocket connect (mirror token)
-	"internal/mirrorhost/mcpproxy.go": 1, // the MCP proxy's forward (mirror token)
-	"internal/opencodehost/client.go": 1, // the opencode server client (pair token / password)
-	"internal/telemetry/telemetry.go": 1, // the OTLP trace exporter (OTEL_EXPORTER_OTLP_HEADERS)
+	"cmd/muster-mirror/ask.go":          1, // the AskUserQuestion hook → muster /mirror/ask (mirror token)
+	"internal/askq/hook.go":             1, // the hook's request, whatever client it was given
+	"internal/mirrorhost/client.go":     1, // the tunnel's WebSocket connect (mirror token)
+	"internal/mirrorhost/mcpproxy.go":   1, // the MCP proxy's forward (mirror token)
+	"internal/opencodehost/client.go":   1, // the opencode server client (pair token / password)
+	"internal/preview/tunnel/tunnel.go": 1, // the preview tunnel's WebSocket dial (mpt_ host token)
+	"internal/telemetry/telemetry.go":   1, // the OTLP trace exporter (OTEL_EXPORTER_OTLP_HEADERS)
 }
 
 // listedPkg is one package of `go list -deps -export -json`.
