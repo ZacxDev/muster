@@ -54,16 +54,18 @@ const (
 	listenIdleTimeout       = 5 * time.Minute
 )
 
-// SelfAsker is the one muster call the gateway makes (MusterClient.Self).
-type SelfAsker interface {
+// MusterAPI is the muster calls the gateway makes (MusterClient): /self per
+// plugin token, and redeeming a hand-off code for the session page.
+type MusterAPI interface {
 	Self(ctx context.Context, token string) (Self, SelfVerdict, error)
+	Redeem(ctx context.Context, token, code string) (Handoff, error)
 }
 
 // Options are the gateway's collaborators; zero values take real ones.
 type Options struct {
 	Clock    Clock
 	Log      *slog.Logger
-	Muster   SelfAsker // nil: NewMusterClient(cfg.MusterURL)
+	Muster   MusterAPI // nil: NewMusterClient(cfg.MusterURL)
 	DialWait time.Duration
 	// Tests only: the ping interval each tunnel's client uses.
 	PingInterval time.Duration
@@ -72,6 +74,7 @@ type Options struct {
 // tokenState is what the gateway last learned about one plugin token.
 type tokenState struct {
 	owner    int64 // from the last 200; 0 before any
+	plugin   int64 // the token's plugin id, from the last 200; muster_plugin names it
 	verdict  SelfVerdict
 	unknowns int // consecutive checks without a verdict
 }
@@ -82,7 +85,8 @@ type Gateway struct {
 	clock Clock
 	log   *slog.Logger
 	store HostTokens
-	mc    SelfAsker
+	mc    MusterAPI
+	sign  signer
 	boot  string
 	o     Options
 
@@ -100,6 +104,7 @@ type Gateway struct {
 	all          map[*Tunnel]struct{}
 	previews     map[string]*Preview
 	previewBy    map[previewKey]string // (owner, host, window, port) → id
+	codes        map[string]entryCode  // sha256(entry code) → what it admits (auth.go)
 	tokens       []tokenState          // parallel to cfg.PluginTokens
 	recheckFails int
 }
@@ -130,7 +135,7 @@ func New(cfg Config, o Options) (*Gateway, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &Gateway{
-		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster,
+		cfg: cfg, clock: o.Clock, log: o.Log, store: HostTokens{Dir: cfg.StateDir}, mc: o.Muster, sign: signer{key: cfg.SigningKey},
 		boot: hex.EncodeToString(b), o: o,
 		failMesh:     newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
 		failPublic:   newFailLimiter(FailLimit, FailWindow, o.Clock.Now),
@@ -141,6 +146,7 @@ func New(cfg Config, o Options) (*Gateway, error) {
 		all:       map[*Tunnel]struct{}{},
 		previews:  map[string]*Preview{},
 		previewBy: map[previewKey]string{},
+		codes:     map[string]entryCode{},
 		tokens:    make([]tokenState, len(cfg.PluginTokens)),
 	}
 	return g, nil
@@ -218,10 +224,11 @@ func (g *Gateway) CheckOwners(ctx context.Context) {
 				g.log.Warn("plugin token check failed; keeping its last verdict", "token", i+1, "consecutive", n, "err", reason)
 			}
 		case SelfLive:
-			g.tokens[i] = tokenState{owner: a.Self.OwnerID, verdict: SelfLive}
+			g.tokens[i] = tokenState{owner: a.Self.OwnerID, plugin: a.Self.PluginID, verdict: SelfLive}
 		case SelfDead:
 			if a.Self.OwnerID > 0 {
 				g.tokens[i].owner = a.Self.OwnerID
+				g.tokens[i].plugin = a.Self.PluginID
 			}
 			g.tokens[i].verdict = SelfDead
 			g.tokens[i].unknowns = 0
@@ -295,18 +302,27 @@ func (g *Gateway) Recheck() {
 
 // ---------------------------------------------------------------- serving
 
-// PublicHandler serves the public listener (PREVIEW_LISTEN): the host tunnel
-// on tunnel.<domain>, and 404 for everything else (the session page and the
-// previews arrive with the proxy). It serves no /metrics or /healthz: those
-// are on the mesh listener, which the edge never reaches.
+// PublicHandler serves the public listener (PREVIEW_LISTEN), by Host: the
+// host tunnel on tunnel.<domain>, the session page on w.<domain>
+// (session.go), each open preview on p-<id>.<domain> (auth.go), and 404 for
+// everything else. It serves no /metrics or /healthz: those are on the mesh
+// listener, which the edge never reaches.
 func (g *Gateway) PublicHandler() http.Handler {
 	host := g.hostTunnel(PathPublic)
+	web := g.webHandler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if requestHost(r) == "tunnel."+g.cfg.Domain && r.URL.Path == wire.HostPath {
+		switch rh := requestHost(r); {
+		case rh == "tunnel."+g.cfg.Domain && r.URL.Path == wire.HostPath:
 			host.ServeHTTP(w, r)
-			return
+		case rh == "w."+g.cfg.Domain:
+			web.ServeHTTP(w, r)
+		default:
+			if id := g.previewIDOf(rh); id != "" {
+				g.previewHandler(id).ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	})
 }
 

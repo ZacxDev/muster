@@ -109,7 +109,8 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := map[string]string{"MUSTER_URL": "http://muster.svc:8080/", "MUSTER_PUBLIC_URL": "https://muster.example",
-		"PLUGIN_TOKENS_FILE": tf, "PREVIEW_DOMAIN": "preview.example", "STATE_DIR": dir, "PREVIEW_MESH_LISTEN": ":9090"}
+		"PLUGIN_TOKENS_FILE": tf, "PREVIEW_DOMAIN": "preview.example", "STATE_DIR": dir, "PREVIEW_MESH_LISTEN": ":9090",
+		"PREVIEW_SIGNING_KEY": strings.Repeat("k", MinSigningKey)}
 	env := func(over map[string]string) func(string) string {
 		return func(k string) string {
 			if v, ok := over[k]; ok {
@@ -122,7 +123,8 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MusterURL != "http://muster.svc:8080" || c.Listen != DefaultListen || c.MeshListen != ":9090" || len(c.PluginTokens) != 2 {
+	if c.MusterURL != "http://muster.svc:8080" || c.Listen != DefaultListen || c.MeshListen != ":9090" || len(c.PluginTokens) != 2 ||
+		string(c.SigningKey) != strings.Repeat("k", MinSigningKey) {
 		t.Fatalf("config %+v", c)
 	}
 	for name, over := range map[string]map[string]string{
@@ -136,6 +138,8 @@ func TestLoadConfig(t *testing.T) {
 		"bad mesh listen":   {"PREVIEW_MESH_LISTEN": "9090"},
 		"no tokens file":    {"PLUGIN_TOKENS_FILE": ""},
 		"unreadable tokens": {"PLUGIN_TOKENS_FILE": filepath.Join(dir, "missing")},
+		"no signing key":    {"PREVIEW_SIGNING_KEY": ""},
+		"short signing key": {"PREVIEW_SIGNING_KEY": strings.Repeat("k", MinSigningKey-1)},
 	} {
 		if _, err := LoadConfig(env(over)); err == nil {
 			t.Errorf("%s: accepted", name)
