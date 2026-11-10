@@ -67,8 +67,11 @@ func (w *upWorld) entered(t *testing.T) {
 	}
 }
 
-// settled waits until no upload is in flight, then gives a failed write's
-// clean-up (and the fake's abort round trip) time to land.
+// settled waits until no upload is in flight. A failed write's clean-up (the
+// store's abort round trip, then the service's clean-up) runs inside the
+// store call, before the handler leaves the count, so zero in flight means it
+// has landed; no grace period is added, so a clean-up that ever went
+// asynchronous would fail here rather than be waited out.
 func (w *upWorld) settled(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -84,7 +87,6 @@ func (w *upWorld) settled(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(200 * time.Millisecond)
 }
 
 // TestAFailedUploadOrphansNoMultipartUpload: a multipart write (a file over

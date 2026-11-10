@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,7 +75,11 @@ func fakeComposeChild() int {
 	// SO_REUSEPORT: the harness holds this port bound (reservedAddr), so the
 	// child must be allowed to share it. Sharing would also let two children
 	// listen at once, which an exclusive bind used to refuse; the lock keeps
-	// that refusal: a second child while the first lives exits 1.
+	// that refusal: a second child while the first lives exits 1. 🔴 lock
+	// must stay reachable until the child ends (the KeepAlive after Serve): an
+	// unreachable *os.File is closed by its finalizer at the next GC, and the
+	// flock goes with the fd.
+	var lock *os.File
 	if p := os.Getenv("CCD_TEST_CHILD_LOCK"); p != "" {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
@@ -85,6 +90,7 @@ func fakeComposeChild() int {
 			fmt.Fprintln(os.Stderr, "fake child: another child is still running:", err)
 			return 1
 		}
+		lock = f
 	}
 	lc := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
 		var serr error
@@ -110,6 +116,7 @@ func fakeComposeChild() int {
 		os.Exit(0)
 	}()
 	_ = http.Serve(ln, mux)
+	runtime.KeepAlive(lock)
 	return 1
 }
 
