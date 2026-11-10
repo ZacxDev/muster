@@ -54,6 +54,7 @@ var sessionNameCallers = []string{
 	"sessions_overview.go Server.repoHints",                      // a hint naming a session by its repo (#500)
 	"sessions_overview.go Server.liveSessions",                   // the chief's sessions_overview and the session hints
 	"task_actions.go Server.chiefTaskActions",                    // task_forward's label
+	"task_claims.go Server.knownMirrorSession",                   // the name a session claims a task under (the board's claim chip)
 	"task_routing.go Server.handTaskToChief",                     // a task event's agents (plugins)
 	"terminal.go Server.handleAgentTerminalPage",                 // an agent's terminal page's header and <title>
 	"view_chief.go Server.sessionSubject",                        // the subject's title: the chief's turn header and session_context
@@ -109,6 +110,7 @@ var noTmuxAddress = map[string]string{
 	"sessions_overview.go Server.repoHints":                      "a chief hint",
 	"sessions_overview.go Server.liveSessions":                   "a chief tool",
 	"task_actions.go Server.chiefTaskActions":                    "a chief tool",
+	"task_claims.go Server.knownMirrorSession":                   "a board chip, not a notification",
 	"task_routing.go Server.handTaskToChief":                     "a task event for plugins",
 	"terminal.go Server.handleAgentTerminalPage":                 "a page header, not a notification",
 	"view_chief.go Server.sessionSubject":                        "the chief's turn header and a chief tool (it is given the place itself)",

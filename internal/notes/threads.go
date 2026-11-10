@@ -162,6 +162,14 @@ type SessionLink struct {
 	// neither bounding the other — comparing LastSeenAt against the retention window
 	// produces a confident answer and the wrong one.
 	DetailSeen bool `json:"detailSeen"`
+	// ClaimedAt is when this session CLAIMED the task (migration 0111): it picked
+	// the task up through muster's task tools (a status write to in_progress that
+	// carried its id). nil when it has not, or when the task was set back to open
+	// since (the unclaim). ClaimedBy is the name the claim was made under. A
+	// claim is the request's fact, never inferred from focus or transcript text;
+	// what it does is notes.Claims.
+	ClaimedAt *time.Time `json:"claimedAt,omitempty"`
+	ClaimedBy string     `json:"claimedBy,omitempty"`
 }
 
 // TaskLink is the REVERSE view — one task a given session touched — backing

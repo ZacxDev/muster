@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -51,6 +52,9 @@ const (
 	// maxRefComments is how many upstream comments a snapshot keeps: the
 	// newest, by created_at. More are dropped, never refused.
 	maxRefComments = 50
+	// maxRefClaimants is how many upstream claimants a snapshot keeps (the
+	// first ones sent); more are dropped, never refused.
+	maxRefClaimants = 20
 	// maxRefLabelRunes bounds status_label (plain text, shown verbatim).
 	maxRefLabelRunes = 100
 	// maxRefRevRunes bounds rev; maxRefIDRunes a comment id; maxRefAuthorRunes
@@ -92,7 +96,17 @@ type pluginRefIn struct {
 	// Creator is OPTIONAL: the upstream's display name for whoever created the
 	// record. One line of plain text, cut at maxRefAuthorRunes like a comment
 	// author; the task notifications name it (taskRefFragment).
-	Creator  string `json:"creator"`
+	Creator string `json:"creator"`
+	// Claimants is OPTIONAL: who the upstream says is working the record
+	// beyond the owner (an assignee who is not the owner, an agent that took
+	// it). Cut, never refused: at most maxRefClaimants, each name one line of
+	// plain text; a kind other than person/agent, and a session id that is not
+	// one, are dropped; a claimant with no name is dropped (notes.Claims).
+	Claimants []struct {
+		Kind    string `json:"kind"`
+		Name    string `json:"name"`
+		Session string `json:"session"`
+	} `json:"claimants"`
 	Comments []struct {
 		ID        string `json:"id"`
 		Author    string `json:"author"`
@@ -223,6 +237,23 @@ func (ref pluginRefIn) snapshot(key string) notes.RefSnapshot {
 	if snap.Title == "" {
 		snap.Title = key
 	}
+	for _, c := range ref.Claimants {
+		name := plainLabel(c.Name, maxRefAuthorRunes)
+		if name == "" {
+			continue
+		}
+		if len(snap.Claimants) == maxRefClaimants {
+			break
+		}
+		cl := notes.RefClaimant{Name: name}
+		if c.Kind == "person" || c.Kind == "agent" {
+			cl.Kind = c.Kind
+		}
+		if mirror.ValidClaudeSession(c.Session) {
+			cl.Session = c.Session
+		}
+		snap.Claimants = append(snap.Claimants, cl)
+	}
 	for _, c := range ref.Comments {
 		created, _ := time.Parse(time.RFC3339, c.CreatedAt)
 		snap.Comments = append(snap.Comments, notes.RefComment{
@@ -333,6 +364,11 @@ func (s *Server) applyReference(ctx context.Context, p plugins.Plugin, key strin
 	}
 	if up.Created {
 		s.taskCreatedEffects(ctx, up.Note, "api", nil)
+	}
+	if up.Applied && !up.Unchanged {
+		// The upstream's claimants whose session muster knows join the task's
+		// thread (task_claims.go); the claim itself is the snapshot's.
+		s.linkUpstreamClaimants(ctx, up.Note)
 	}
 	statusMoved := false
 	if up.Applied && up.Note.Status != snap.Status {

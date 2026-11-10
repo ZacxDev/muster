@@ -971,6 +971,9 @@ func noteCard(v TaskCardView) g.Node {
 				taskProvenanceChip(n),
 				// A plugin task REFERENCE (task_refs.go): its upstream's label.
 				taskRefChip(n),
+				// Who CLAIMED it (task_claims.go): a session's explicit pickup or
+				// the upstream's claimant.
+				taskClaimChip(n),
 				// Task-thread COUNT only (migration 0023) — one chip, beside the
 				// provenance chip and reusing its classes. The per-session detail is
 				// one tap away on the detail page.

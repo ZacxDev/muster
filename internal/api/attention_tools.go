@@ -862,6 +862,12 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 		return toolErr("%s", why)
 	}
 	n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, c.refOrigin())), writerTaskTool, in.ID, in.Status)
+	if err == nil || errors.Is(err, errQueuedUpstream) {
+		// A mirrored session picking the task up claims it; open releases
+		// every claim (task_claims.go).
+		s.claimOnStatus(ctx, writerTaskTool, in.ID, in.Status,
+			claimant{session: c.asker.MirrorSession, name: c.asker.Label, host: c.asker.MirrorHost})
+	}
 	if errors.Is(err, errQueuedUpstream) {
 		return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
 	}

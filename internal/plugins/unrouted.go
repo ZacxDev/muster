@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -52,8 +53,46 @@ func sqlStringList(names []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// dispositioned: settled, or the chief acted on it (chiefActed, retry.go).
-const dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + `)`
+// dispositioned: settled, the chief acted on it (chiefActed, retry.go), or its
+// pull-request review route was superseded by a newer round
+// (supersededByNewerRound).
+var dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + ` OR ` + supersededByNewerRound + `)`
+
+// PRRouteSuperseded is the error a review round's route ends with when a
+// LATER-ARRIVING round (another head commit) of the same pull request was
+// routed to the same session (internal/api's supersedePRRoutes). "Newer"
+// means later by arrival, not a newer commit. SupersededRouteError is the
+// whole error, naming the newer round's route: the ONE spelling the writer
+// uses and supersededByNewerRound parses.
+const PRRouteSuperseded = "superseded by a newer review round"
+
+// SupersededRouteError is the error of a route superseded by route newer.
+func SupersededRouteError(newer string) string { return PRRouteSuperseded + " (route " + newer + ")" }
+
+// supersededByNewerRound: message m's review route ended ONLY because a newer
+// review round of the same pull request superseded it (SupersededRouteError),
+// and that newer round's route is another message's. Such a message is
+// handled whether or not its own paste was sent (operator decision, 0.191):
+// the newer round carries the review now, so the newer MESSAGE is the one
+// that answers for it — when the newer route itself fails for a real reason,
+// its message raises the "not acted on" ask (it is undispositioned), and a
+// newer route superseded in turn hands that to ITS successor. One ask, on the
+// newest message, never one per round.
+var supersededByNewerRound = `EXISTS (SELECT 1 FROM session_routes r JOIN session_routes n
+		ON n.route_id = substring(r.error FROM '` + supersededErrorPattern() + `')
+	WHERE r.plugin_message_id = m.id AND r.state = 'failed'
+	  AND n.plugin_message_id IS NOT NULL AND n.plugin_message_id <> m.id)`
+
+// supersededErrorPattern is SupersededRouteError as a POSIX regex whose one
+// group is the newer route's id (routeIDPattern's shape). It panics (at
+// package init) if the constant could break out of the SQL literal.
+func supersededErrorPattern() string {
+	p := `^` + regexp.QuoteMeta(PRRouteSuperseded) + ` \(route (` + strings.Trim(routeIDPattern.String(), "^$") + `)\)$`
+	if strings.ContainsRune(p, '\'') {
+		panic("plugins: PRRouteSuperseded must not contain a quote")
+	}
+	return p
+}
 
 // unroutedDue is whether message m is due an ask as of the cutoff $1: it came
 // through one of ThreadPlugins, awaits a disposition, was delivered at or before

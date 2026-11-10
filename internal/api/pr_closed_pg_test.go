@@ -238,15 +238,21 @@ func TestAReviewTheChiefHoldsRaisesNoAskOnceItsPullRequestIsMerged(t *testing.T)
 	}
 }
 
-func TestASupersededUnsentRoundRaisesNoAskOnceItsPullRequestIsClosed(t *testing.T) {
+func TestAFailedSupersedingRoundRaisesNoAskOnceItsPullRequestIsClosed(t *testing.T) {
 	f := newPRFixture(t)
 	gh := f.withPRStates(prOpen)
 	f.authored(t, f.asOwner, routeSID, prCreated())
-	newerMsg := f.review(t, "closed-super-newer-1", prSender, true, part(1, 1, shaRoundB))
+	supersededMsg := f.review(t, "closed-super-newer-1", prSender, true, part(1, 1, shaRoundB))
+	superseded := f.oneRoute(t, supersededMsg)
+	newerMsg := f.review(t, "closed-super-older-1", prSender, true, part(1, 1, shaRoundA))
 	newer := f.oneRoute(t, newerMsg)
-	f.oneRoute(t, f.review(t, "closed-super-older-1", prSender, true, part(1, 1, shaRoundA)))
-	if got := f.routeState(t, newer.RouteID); got.State != plugins.RouteFailed || !strings.HasPrefix(got.Error, prRouteSuperseded) {
+	if got := f.routeState(t, superseded.RouteID); got.State != plugins.RouteFailed || !strings.HasPrefix(got.Error, prRouteSuperseded) {
 		t.Fatalf("fixture: the queued round is %s %q; want superseded", got.State, got.Error)
+	}
+	// The superseding round's route fails for a real reason, so ITS message is
+	// the one due an ask (the superseded one is handled: supersededByNewerRound).
+	if _, err := f.plugins.FailRoute(f.asOwner, newer.RouteID, "the window moved on", ""); err != nil {
+		t.Fatal(err)
 	}
 	gh.set(prClosed)
 	if !f.sweptWithNoAsk(t, newerMsg) {

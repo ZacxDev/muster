@@ -39,6 +39,11 @@ import (
 //     recorded that session creating or pushing (session_prs), or the task
 //     naming the repository only that one online session reports — and names
 //     no other session, strong or weak (a focus-title match is weak);
+//   - CLAIMED: a session or the task's upstream has CLAIMED the task
+//     (notes.Claims: a session's explicit pickup, or a reference whose
+//     snapshot names claimants or is in progress) and the forward above does
+//     not apply: nothing is placed — no "needs you" card, no chief turn —
+//     because someone is already on it;
 //   - BOARD: no agent is bound and the hint names no session at all.
 //
 // Everything else is the chief's, exactly as before: two candidates, a weak
@@ -50,7 +55,7 @@ import (
 // The event is then settled by muster ("muster: task triage — …") and logged
 // in the chief's chat with muster's note (Deliverer.Handed): the chief holds it
 // for its next turn, at no turn's cost. Every outcome is a handling row for the
-// usage page: task_forward, task_route, task_board, or chief.
+// usage page: task_forward, task_route, task_board, task_claimed, or chief.
 // ---------------------------------------------------------------------------
 
 // The notes muster's triage passes where the chief passes its own: fixed,
@@ -68,6 +73,7 @@ const (
 	triageForward = "forward"
 	triageRoute   = "route"
 	triageBoard   = "board"
+	triageClaimed = "claimed"
 	triageChief   = "chief"
 )
 
@@ -78,6 +84,8 @@ type triageFacts struct {
 	gated          bool
 	forward, stuck int
 	hints          []plugins.SessionHint
+	// claims is who claimed the task (notes.Claims); empty when nobody has.
+	claims []notes.Claim
 }
 
 // triageDecision is a triage's outcome: its kind and, for a route, the session.
@@ -97,13 +105,17 @@ func strongHint(h plugins.SessionHint) bool {
 // pinned one by one.
 func decideTaskTriage(f triageFacts) triageDecision {
 	chief := triageDecision{kind: triageChief}
-	if f.stuck > 0 || f.forward > 1 {
-		return chief
+	if f.forward == 1 && f.stuck == 0 && len(f.hints) == 0 && !f.gated {
+		return triageDecision{kind: triageForward}
 	}
-	if f.forward == 1 {
-		if len(f.hints) == 0 && !f.gated {
-			return triageDecision{kind: triageForward}
-		}
+	// A claimed task needs no placing: someone is on it. Ahead of every case
+	// but the clean forward (the agent working it still hears of it), so
+	// neither a card nor a chief turn (which would card it) comes of its
+	// assignment.
+	if len(f.claims) > 0 {
+		return triageDecision{kind: triageClaimed}
+	}
+	if f.stuck > 0 || f.forward > 0 {
 		return chief
 	}
 	var strong []plugins.SessionHint
@@ -181,6 +193,12 @@ func (s *Server) triageAssignedTask(ctx context.Context, p plugins.Plugin, n not
 		args, _ := json.Marshal(map[string]any{"task_id": n.ID, "subject": d.subject})
 		out, handler = s.toolRouteToSession(ctx, chief, string(args)), chiefusage.HandlerTaskRoute
 		did = "routed it to " + d.subject + ", the one session on it"
+	case triageClaimed:
+		// Nothing to call: the task leaves "Task to route" as the chief's own
+		// routing would take it off (recordTaskRouted), and no card is raised.
+		s.recordTaskRouted(ctx, n, triageClaimedTool)
+		out, handler = toolJSON(map[string]any{"task_id": n.ID, "claimed": true}), chiefusage.HandlerTaskClaimed
+		did = "left it alone: it is already claimed by " + claimNames(facts.claims)
 	default:
 		out, handler = s.toolTaskRouteAttention(ctx, chief, n.ID, triageBoardNote), chiefusage.HandlerTaskBoard
 		did = "put it in front of your owner (no session or agent is on it)"
@@ -217,6 +235,13 @@ func (s *Server) triageAssignedTask(ctx context.Context, p plugins.Plugin, n not
 func (s *Server) triageFactsFor(ctx context.Context, chief agents.Agent, n notes.Note, m plugins.Message) (triageFacts, bool) {
 	var f triageFacts
 	_, f.gated = notes.GateReason(n.Tags)
+	// The task as it stands now, with its thread: the claims are read from it.
+	cur, err := s.ext.Notes.Get(ctx, n.ID)
+	if err != nil {
+		s.logger.Printf("task triage: task %d: read it: %v", n.ID, err)
+		return f, false
+	}
+	f.claims = notes.Claims(cur)
 	targets, err := s.forwardTargets(ctx, chief, n.ID)
 	if err != nil {
 		s.logger.Printf("task triage: task %d: agents on it: %v", n.ID, err)
@@ -239,6 +264,19 @@ func (s *Server) triageFactsFor(ctx context.Context, chief agents.Agent, n notes
 		f.hints = hint(ctx, chief, m).Sessions
 	}
 	return f, true
+}
+
+// triageClaimedTool is the routing the triage records for a claimed task
+// (task.chief_routed's tool): it takes the task off "Task to route".
+const triageClaimedTool = "task_triage_claimed"
+
+// claimNames is claims' names, comma-separated, for a sentence.
+func claimNames(claims []notes.Claim) string {
+	names := make([]string, 0, len(claims))
+	for _, c := range claims {
+		names = append(names, c.Who)
+	}
+	return strings.Join(names, ", ")
 }
 
 // toolRefused reports whether a tool's answer is a refusal ({"error": …}).

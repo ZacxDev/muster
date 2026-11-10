@@ -45,6 +45,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// agent's (or the row's) owner.
 		"(*Server).writeChiefNote → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
+		// A claim made or released after a status write (task_claims.go): ctx
+		// is that write's — the machine route's, the card's or the task tool's
+		// principal — who owns the task (the write itself read it under RLS).
+		"(*Server).claimOnStatus → broadcast(ctx)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",
 		"(*Server).dismissTask → broadcast(ctx)",

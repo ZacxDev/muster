@@ -99,7 +99,8 @@
     "tests/plugin-chip.spec.ts": 20.0,
     "tests/previews.spec.ts": 30.0,
     "tests/routing-rules.spec.ts": 30.0,
-    "tests/tail-clamp.spec.ts": 40.0
+    "tests/tail-clamp.spec.ts": 40.0,
+    "tests/task-claims.spec.ts": 4.0
   },
   "legs": {
     "1": [
@@ -210,7 +211,8 @@
       "tests/chief-ux.spec.ts",
       "tests/agent-outcomes.spec.ts",
       "tests/waiting-composer.spec.ts",
-      "tests/tail-clamp.spec.ts"
+      "tests/tail-clamp.spec.ts",
+      "tests/task-claims.spec.ts"
     ]
   }
 }

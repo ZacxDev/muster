@@ -156,8 +156,15 @@ func TestANewerRoundSupersedesAnAlreadyDeliveredRoundWithNoAsk(t *testing.T) {
 // a newer head's review was routed but before that one's paste was sent,
 // supersedes the newer route (the supersede orders by arrival, not by head).
 // The newer review never reached the session, so muster must NOT settle its
-// message: it stays unsettled and the "not acted on" ask still fires, or the
-// newer review would be lost with no ask and no hand-back.
+// message: it stays unsettled.
+//
+// ⚠ IT NO LONGER RAISES THE "NOT ACTED ON" ASK (operator decision, 0.191): a
+// route that failed only because a newer round superseded it is handled, and
+// the superseding round's message answers for the review (the ask fires on IT
+// when its own route fails for a real reason —
+// TestASupersedingRouteThatFailsRaisesTheAskOnTheNewestMessage). That trades
+// away this case's ask: the session got the late OLDER head's review, not the
+// newer one's. Recorded in the PR that made the decision.
 func TestALateOlderRoundDoesNotSettleAQueuedNewerRound(t *testing.T) {
 	f := newPRFixture(t)
 	f.authored(t, f.asOwner, routeSID, prCreated())
@@ -179,8 +186,8 @@ func TestALateOlderRoundDoesNotSettleAQueuedNewerRound(t *testing.T) {
 	if r := settleReason(t, f.gatedFixture, newerMsg.ID); r != "" {
 		t.Fatalf("a superseded review whose paste was never sent was settled by muster: %q; want unsettled", r)
 	}
-	if !f.askedAbout(t, newerMsg) {
-		t.Fatal("a superseded review whose paste was never sent raised no \"not acted on\" ask")
+	if f.askedAbout(t, newerMsg) {
+		t.Fatal("a review superseded by a newer round raised a \"not acted on\" ask; the superseding round answers for it")
 	}
 }
 

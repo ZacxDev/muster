@@ -569,11 +569,10 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	return r, t, ""
 }
 
-// prRouteSuperseded is the error a review round's route ends with when a
-// LATER-ARRIVING round (another head commit) of the same pull request was
-// routed to the same session (supersedePRRoutes). "Newer" means later by
-// arrival, not a newer commit.
-const prRouteSuperseded = "superseded by a newer review round"
+// prRouteSuperseded is plugins.PRRouteSuperseded: the error a review round's
+// route ends with when a LATER-ARRIVING round of the same pull request was
+// routed to the same session (supersedePRRoutes).
+const prRouteSuperseded = plugins.PRRouteSuperseded
 
 // supersedePRRoutes ends every route of ANOTHER review round of origin's pull
 // request that arrived before route newer and is still open for origin's
@@ -592,13 +591,14 @@ const prRouteSuperseded = "superseded by a newer review round"
 //   - already delivered: the session has it, and the later round replaces it,
 //     so its route need not wait out its 4-hour deadline.
 //
-// No hand-back either way, and the chief is not told. But only a route whose
-// paste was SENT is settled by muster (plugins.PGStore.SupersedeRoute): one
-// whose paste was not sent never reached the session — it may be the NEWER
-// head, superseded by a late older one — so its message stays unsettled and
-// the "not acted on" ask (plugins.UnroutedAskAfter) still raises it. A route
-// whose paste is still being made by its own injection (no row yet) is left to
-// that injection.
+// No hand-back either way, and the chief is not told. Only a route whose paste
+// was SENT is settled by muster (plugins.PGStore.SupersedeRoute); one whose
+// paste was not sent stays unsettled, but it raises no "not acted on" ask
+// either (operator decision, 0.191): a route that failed only because a newer
+// round superseded it is handled, and the NEWER round's message answers for
+// the review — its own route failing for a real reason raises the ask on it
+// (plugins' supersededByNewerRound). A route whose paste is still being made by
+// its own injection (no row yet) is left to that injection.
 func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, origin plugins.RouteOrigin) {
 	older, err := s.ext.Routes.OlderOpenPRRoutes(ctx, newer.RouteID, origin)
 	if err != nil {
@@ -611,9 +611,9 @@ func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, ori
 			// Still being queued by its own injection, which decides its fate.
 			continue
 		}
-		why := prRouteSuperseded + " (route " + newer.RouteID + ")"
+		why := plugins.SupersededRouteError(newer.RouteID)
 		settle := plugins.SettledByMuster + "a review round of " + origin.PR + " for the session that authored it (route " +
-			o.RouteID + "), " + prRouteSuperseded + " (route " + newer.RouteID + ")"
+			o.RouteID + "), " + plugins.SupersededRouteError(newer.RouteID)
 		if _, done, err := s.ext.Routes.SupersedeRoute(ctx, o.RouteID, why, settle); err != nil || !done {
 			if err != nil {
 				s.logger.Printf("routes: %s: supersede: %v", o.RouteID, err)

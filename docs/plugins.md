@@ -468,6 +468,7 @@ fresh snapshot. muster never calls the plugin: the plugin claims the queue.
 | `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
 | `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
 | `reference.creator` | Optional. The upstream's display name for whoever created the record. The task's [notifications](push.md) name it (`by A. Person`). One line of plain text, cut at 200 characters. Leave it out when the upstream has none. A muster from before this field refuses it like any unknown field (`400`), so send it only to a muster that documents it. |
+| `reference.claimants` | Optional. Who the upstream says is **working** the record, beyond you (the owner the reference was filed for): `[{"kind": "person"\|"agent", "name": "…", "session": "…"}]` — an assignee who is not you, an agent that took the record. `name` is required (one line, cut at 200 characters; a claimant without one is dropped); a `kind` other than `person` or `agent` is dropped, and so is a `session` that is not a coding-agent session id. At most 20 are kept. A non-empty list makes the task [claimed](tasks.md#claims); a claimant whose `session` is one of your mirrored sessions a host lists now is also linked to the task (`worked`). Leave it out (or send `[]`) when nobody else is on it. A muster from before this field refuses it (`400`), so send it only to a muster that documents it. |
 | `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
 | `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
 | `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
@@ -782,6 +783,7 @@ bound to the task, and the turn's
 | What muster sees | What it does |
 |---|---|
 | Exactly one agent that `task_forward` can reach is bound to the task. No other live agent is bound, and the hint names no session. | Forwards the task to that agent. |
+| Otherwise, the task is [**claimed**](tasks.md#claims): a session picked it up through muster's task tools, or its reference's upstream names a claimant or is in progress. | Leaves it alone: **no** "needs you" card and no chief turn. Settled `muster: task triage — left it alone: it is already claimed by <who>`; it leaves "Task to route". |
 | No agent is bound, and the hint names exactly one session through a **strong** link: a pull request or branch the task names, which muster recorded that session creating or pushing (`session_prs`, owner-scoped), or a repository name that only that one online session reports. The hint names no other session. | Routes the task to that session. |
 | No agent is bound, and the hint names no session at all. | Puts the task on your board. |
 | Anything else: two candidates, a focus-title match (weak), a live agent muster cannot send to, or a gated task with any candidate. | Hands the event to the chief, exactly as before. |
@@ -796,8 +798,10 @@ deliverer, nothing changes: the event waits for the chief.
 When muster handles the event, it is settled as
 `muster: task triage — <what it did>`. The event is also logged in the chief's
 chat with muster's note, so the chief holds it at no turn's cost. The usage
-page counts each outcome (`task_forward`, `task_route`, `task_board`, or
-`chief`): [usage.md](usage.md). The plugin's answer still says
+page counts each outcome (`task_forward`, `task_route`, `task_board`,
+`task_claimed`, or `chief`): [usage.md](usage.md). The chief's own
+`task_route_attention` on a claimed task raises no card either: it answers
+`"claimed": true` with `claimed_by`, and routes the task off "Task to route". The plugin's answer still says
 `routed: "chief"`, because the event was handed to the chief's side of muster.
 
 ### Releasing the chief's gate from the ask
@@ -1492,7 +1496,12 @@ for both). Live, not any state: a draft rejected, superseded, expired or
 failed, and a route timed out or failed, ended without an answer, so the
 message is back where it started — except a
 [pull-request review](#a-pull-request-review-mail) the session had (its paste
-was sent), which muster settles itself when its route ends.
+was sent), which muster settles itself when its route ends, and a review whose
+route failed **only** because a newer review round of the same pull request
+superseded it (`superseded by a newer review round (route rt_…)`, naming a
+route of another message): that one is dispositioned, and the newer round's
+message raises the ask instead if its own route fails for a real reason. An
+ask already open for such a message is closed by the sweep.
 
 A **settle** is the chief's `plugin_message_settle {message_id, reason}`: its
 judgement that the message needs nothing more (a notice, a status update, a
@@ -1930,9 +1939,16 @@ routing is on.
    `muster: `), so it never becomes a
    ["not acted on" ask](#a-message-the-chief-does-not-act-on). A superseded
    round whose paste was **not** sent (still queued, being sent) is **not**
-   settled: the session never had it, so its message stays unsettled and the
-   "not acted on" ask still raises it — a late older review can never silently
-   swallow a newer one. A review whose paste was **never** delivered by its
+   settled — the session never had it — but it raises **no** "not acted on"
+   ask either: a route that failed only because a newer round superseded it
+   counts as handled, and the **newer round's message** answers for the
+   review. When the newer round's own route fails for a real reason (the
+   window closed, the queue was full), the ask is raised on **that** message,
+   the newest; a newer round superseded in turn passes this on to its own
+   successor, so there is one ask, never one per round. ⚠ Because order is by
+   arrival, a late review of an older head that supersedes a newer head's
+   unsent route leaves the newer head's review with no ask: the session has
+   the older review. A review whose paste was **never** delivered by its
    deadline — still queued, cancelled, or failed — goes back to the chief as
    any route does. Every other route (the chief's, the owner's, a route by
    thread) is unchanged. A review route made before `0070` has no round: it is
@@ -1969,8 +1985,8 @@ Where it is checked:
 - **when its route would be handed back** — a review timed out or superseded
   before its paste was sent: settled instead of going back to the chief;
 - **when the ["not acted on" ask](#a-message-the-chief-does-not-act-on) is
-  due** — a review the chief holds, or a superseded round never pasted:
-  settled instead of asked about.
+  due** — a review the chief holds, or the newest round whose own route
+  failed: settled instead of asked about.
 
 **Only a closed answer settles.** These are all **unknown**, and an unknown
 review is handled exactly as above, so a review of an open pull request is

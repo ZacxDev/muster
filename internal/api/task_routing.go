@@ -302,6 +302,14 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if !ok {
 		return toolErr("%s", chiefDispatchNoTask)
 	}
+	// 🔴 A CLAIMED TASK GETS NO "NEEDS YOU" CARD (notes.Claims): a session or
+	// the upstream is already on it. The call still routes the task (it leaves
+	// "Task to route"), and says who claimed it.
+	if claims := notes.Claims(n); len(claims) > 0 {
+		s.recordTaskRouted(ctx, n, taskRouteAttentionTool)
+		return toolJSON(map[string]any{"task_id": n.ID, "claimed": true, "claimed_by": claims,
+			"next": "No card was raised: " + claimNames(claims) + " already claimed this task, so it is not your owner's to place. Nothing to do."})
+	}
 	acts, budget, withheld, err := s.chiefTaskActions(ctx, a, n)
 	if err != nil {
 		s.logger.Printf("task routing: the actions on task %d: %v", taskID, err)
