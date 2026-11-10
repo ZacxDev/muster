@@ -230,6 +230,19 @@ func waitClosed(t *testing.T, e *gwEnv, fh *fakeHost, id string) {
 	}
 }
 
+// settled waits until no request of preview id is in flight: the handler
+// records the end of a use after the client already has its response, and a
+// fake-clock advance before that would move the use's end with it.
+func settled(t *testing.T, e *gwEnv, id string) {
+	t.Helper()
+	waitFor(t, "the request's end to be recorded", func() bool {
+		e.g.mu.Lock()
+		defer e.g.mu.Unlock()
+		p, ok := e.g.previews[id]
+		return ok && p.active == 0
+	})
+}
+
 func isOpen(e *gwEnv, id string) bool {
 	for _, p := range e.g.Previews(1) {
 		if p.ID == id {
@@ -252,6 +265,7 @@ func TestAnIdlePreviewCloses(t *testing.T) {
 		if a := e.do(t, "GET", pHost(id), "/", own(id, cookie), ""); a.status != 200 {
 			t.Fatalf("HTTP %d", a.status)
 		}
+		settled(t, e, id)
 		e.clock.Advance(37 * time.Minute)
 		if !isOpen(e, id) {
 			t.Fatal("closed before the idle period passed")
@@ -266,6 +280,7 @@ func TestAnIdlePreviewCloses(t *testing.T) {
 		if a := e.do(t, "GET", pHost(id), "/", own(id, cookie), ""); a.status != 200 {
 			t.Fatalf("HTTP %d", a.status)
 		}
+		settled(t, e, id)
 		e.clock.Advance(37 * time.Minute) // 57m from the open, 37m from the request
 		if !isOpen(e, id) {
 			t.Fatal("closed though a request came 37m ago")
@@ -287,11 +302,7 @@ func TestAnIdlePreviewCloses(t *testing.T) {
 		}
 		wsEcho(t, c, "still here")
 		c.Close(websocket.StatusNormalClosure, "")
-		waitFor(t, "the WebSocket's end", func() bool {
-			e.g.mu.Lock()
-			defer e.g.mu.Unlock()
-			return e.g.previews[id].active == 0
-		})
+		settled(t, e, id)
 		e.clock.Advance(37 * time.Minute)
 		if !isOpen(e, id) {
 			t.Fatal("closed less than the idle period after the WebSocket ended")
