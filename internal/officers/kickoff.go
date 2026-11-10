@@ -317,6 +317,11 @@ func ToolOffered(o Officer, tool string) bool {
 		// muster#565) — never the routine pool, never an untiered officer.
 		// HQ also refuses a type whose flood_actuator is off.
 		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
+	case ToolPRContext:
+		// pr_context.go: the JUDGEMENT pool only, as the flood tool — the
+		// pool that reads compare diffs and attributes. HQ also refuses a
+		// type without pr_context_read.
+		return o.Type() == WebPerformanceOfficerType && o.Tier == TierJudgement
 	}
 	return false
 }

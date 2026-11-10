@@ -222,6 +222,12 @@ type Server struct {
 	// TaskRoutesAbsent makes the task routes answer as an HQ without them
 	// does: its router's catch-all 404 not_found "no such route".
 	TaskRoutesAbsent bool
+	// PRContextReadOff makes the PR context route answer 403
+	// pr_context_read_off (the officer's type has no pr_context_read), and
+	// PRContextAbsent as an HQ without the route does (404 not_found). Else
+	// the route answers PR 7251 and 404 pr_not_visible for any other.
+	PRContextReadOff bool
+	PRContextAbsent  bool
 	// The HQ-derived asks (civ-hq#509 task-asks, civ-hq#510 flood-blocks):
 	// verbRefusal[verb], when set, is answered by that route instead
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
@@ -878,6 +884,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.write(w, http.StatusOK, map[string]any{"task": map[string]any{"id": parts[2]}, "comments": []any{}, "statuses": []any{"to do", "complete"}, "done_statuses": []any{"complete"}})
+	case len(parts) == 4 && parts[1] == "prs" && parts[3] == "context" && r.Method == http.MethodGet:
+		// civ-hq's officer PR context route (web-performance author
+		// attribution P3): one fixed PR, 7251; any other is outside the range.
+		switch {
+		case s.PRContextAbsent:
+			s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		case s.PRContextReadOff:
+			s.write(w, http.StatusForbidden, map[string]any{"error": "the officer's type does not read PR context", "code": "pr_context_read_off"})
+		case parts[2] != "7251":
+			s.write(w, http.StatusNotFound, map[string]any{"error": "PR " + parts[2] + " is in no compare range named by one of your live items", "code": "pr_not_visible"})
+		default:
+			s.write(w, http.StatusOK, map[string]any{"pr": 7251, "pr_key": "acme/widgets#7251", "item": r.URL.Query().Get("item"), "use": "attribution evidence only"})
+		}
 	case len(parts) == 3 && parts[1] == "obs":
 		s.obs(w, officer, parts[2], r.Method, body)
 	case len(parts) == 2 && parts[1] == "ask-images" && r.Method == http.MethodPost:
