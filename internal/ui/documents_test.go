@@ -156,10 +156,10 @@ var standaloneDocuments = []documentRenderer{
 		fn: "SendQueueRetryConfirmPage", label: "the send queue's retry confirm page (no script)",
 		render: func(w io.Writer) error {
 			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "May already have been sent. <b>Again</b>?",
-				"/mirror/view?host=laptop&session=main").Render(w)
+				"/mirror/view?host=laptop&session=main", Brand{}).Render(w)
 		},
 		renderEmpty: func(w io.Writer) error {
-			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "", "/agents").Render(w)
+			return SendQueueRetryConfirmPage("/send-queue/7/retry", "confirm", "", "/agents", Brand{}).Render(w)
 		},
 	},
 	{

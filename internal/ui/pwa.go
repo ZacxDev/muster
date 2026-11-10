@@ -13,7 +13,20 @@ import (
 // install button, app badge, and the composer a share or shortcut opens.
 // ---------------------------------------------------------------------------
 
-// manifestLink is the <link rel=manifest> every document carries.
+// docHead is the head furniture every document carries: the manifest link,
+// and the favicon and touch icon (brandIconLinks — the logo's when one is set,
+// muster's own otherwise).
+//
+// 🔴 ONE HELPER, SO A DOCUMENT CANNOT HAVE ONE WITHOUT THE OTHER. In 0.187.0
+// every document head spelled manifestLink() and only two of them also spelled
+// brandIconLinks, so the landing page (the chief's agent page) had no favicon
+// at all. Every document head calls this, and nothing else calls the two
+// (TestDocumentHeadsHaveOneSpelling, TestEveryDocumentLinksTheBrandIcon).
+func docHead(b Brand) g.Node {
+	return g.Group{manifestLink(), brandIconLinks(b)}
+}
+
+// manifestLink is the <link rel=manifest>; documents get it through docHead.
 //
 // 🔴 crossorigin="use-credentials" IS LOAD-BEARING, AND THE REASON IS BLINK, NOT
 // THE EDGE. Chromium fetches the manifest in CORS mode with credentials OMITTED

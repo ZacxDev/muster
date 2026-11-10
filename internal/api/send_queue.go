@@ -198,7 +198,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		case !g.stale:
 			refuse(g.status, g.msg, g.notice)
 		case nav:
-			s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, text, again), q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, sendQueueAddFields(q, text, again), q.back, "")
 		default:
 			refuseStale(w)
 		}
@@ -212,7 +212,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	// without the person's Send again (isHeldFor): queued, it would be pasted
 	// a second time when the window goes idle.
 	if s.isHeldFor(ctx, q.t.Host, q.t.Session, q.t.Window, mirror.PasteClaude, text, again) {
-		s.heldRefusal(w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
+		s.heldRefusal(r.Context(), w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
 		return
 	}
 	it := sendqueue.Item{Target: q.t, Body: text}
@@ -288,11 +288,11 @@ func sendQueueAddFields(q sendQueueTarget, text string, again bool) []ui.Compose
 // sendQueueStepUpPage answers a browser-submitted queue (or Retry) whose
 // sign-in is stale: the plain confirm page, carrying what was waiting in
 // hidden fields, which posts to action.
-func (s *Server) sendQueueStepUpPage(w http.ResponseWriter, action string, fields []ui.ComposerField, back, problem string) {
+func (s *Server) sendQueueStepUpPage(ctx context.Context, w http.ResponseWriter, action string, fields []ui.ComposerField, back, problem string) {
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: action, Fields: fields,
-		BackHref: back, Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
+		BackHref: back, Window: stepup.WindowText(), Error: problem, Brand: s.uiBrand(ctx)}).Render(w); err != nil {
 		s.logger.Printf("sendqueue: render confirm page: %v", err)
 	}
 }
@@ -323,7 +323,7 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text"), r.PostFormValue(ui.SendAgainField) == "1"), q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text"), r.PostFormValue(ui.SendAgainField) == "1"), q.back, o.Error)
 		return
 	}
 	s.sendQueueAdd(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -595,7 +595,7 @@ func (s *Server) handleSendQueueRetryConfirm(w http.ResponseWriter, r *http.Requ
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, o.Error)
+		s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, o.Error)
 		return
 	}
 	s.sendQueueRetry(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -677,7 +677,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 			formDocument(w)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := ui.SendQueueRetryConfirmPage(ui.SendQueueRetryPath(id), SendQueueRetryConfirmField,
-				SendQueueMayHaveSent, q.back).Render(w); err != nil {
+				SendQueueMayHaveSent, q.back, s.uiBrand(ctx)).Render(w); err != nil {
 				s.logger.Printf("sendqueue: render retry confirm page: %v", err)
 			}
 			return
@@ -691,7 +691,7 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 		case !g.stale:
 			refuse(g.status, g.msg, g.notice)
 		case nav:
-			s.sendQueueStepUpPage(w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, "")
+			s.sendQueueStepUpPage(r.Context(), w, sendQueueRetryConfirmPath(id), sendQueueRetryFields(r), q.back, "")
 		default:
 			refuseStale(w)
 		}

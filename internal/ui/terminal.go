@@ -307,7 +307,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(v.Nav.Feat.Brand),
 				TitleEl(g.Text("Terminal · "+terminalDocName(title, v.TitleQualifier, named)+" · muster")),
 				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),

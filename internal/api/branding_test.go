@@ -502,6 +502,36 @@ func TestPagesDrawTheBrandAndFallBack(t *testing.T) {
 	defaults("after the reset")
 }
 
+// TestTheFaviconAPageLinksIsServed: the favicon a page links is a file the
+// server serves, with no session — muster's own with nothing set, the logo's
+// once one is uploaded. Every document now links one (ui.docHead), so a link
+// to a missing file would be a broken icon on every page of an unbranded
+// server. (An invariant guard: no build ever linked a missing icon.)
+func TestTheFaviconAPageLinksIsServed(t *testing.T) {
+	_, h, _, cookie := brandingServer(t)
+	icon := func(when string) {
+		t.Helper()
+		page := get(h, "/tasks", cookie, true).Body.String()
+		const open = `rel="icon" type="image/png" sizes="192x192" href="`
+		i := strings.Index(page, open)
+		if i < 0 {
+			t.Fatalf("%s: the page links no favicon", when)
+		}
+		href := page[i+len(open):]
+		href = strings.ReplaceAll(href[:strings.IndexByte(href, '"')], "&amp;", "&")
+		rec := get(h, href, nil, false)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" || rec.Body.Len() == 0 {
+			t.Errorf("%s: GET %s without a session: %d %q (%d bytes), want a 200 PNG",
+				when, href, rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len())
+		}
+	}
+	icon("nothing set")
+	if rec := putLogo(t, h, who{cookie: cookie}, "", testLogoPNG(t, 24, 12)); rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	icon("with a logo")
+}
+
 // TestOnlyAnAdminsAccountPageHasTheBrandingSection: the section, its form and
 // its reset button are on the admin's Account page and not on a member's.
 func TestOnlyAnAdminsAccountPageHasTheBrandingSection(t *testing.T) {

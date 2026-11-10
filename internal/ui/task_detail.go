@@ -52,7 +52,7 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(feat.Brand),
 				TitleEl(g.Text(heading+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),

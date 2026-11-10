@@ -253,7 +253,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
-				manifestLink(),
+				docHead(feat.Brand),
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
