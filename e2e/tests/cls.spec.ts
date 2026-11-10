@@ -5,7 +5,7 @@ import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import {
-  baseURL, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
+  baseURL, clsChipPort, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
   clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, onboardingPort, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
@@ -803,6 +803,69 @@ test.describe('signed-in pages in gotrue mode', () => {
           const r = await measure(page, signedURL + p.url, p.ready);
           console.log(`[cls ${vp.name}] ${route} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${route}`, r));
+        }
+      } finally {
+        await ctx.close();
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});
+
+// --- THE SESSION VIEWS WITH A VIEWER PLUGIN CHIP (internal/ui/plugin_chip.go):
+// the chip row is drawn with the page at a fixed height, so the Rendered and
+// Terminal views shift no more with it than without. Only this server (and
+// plugin-chip.spec's) sets MUSTER_PLUGIN_ORIGINS; the viewer plugin is minted
+// through the real /plugins form and removed after.
+const chipZone = 'https://*.viewer.example.net';
+const crig = new MirrorRig(clsChipPort, 'e2e-clschip', { MUSTER_PLUGINS: '1', MUSTER_PLUGIN_ORIGINS: chipZone });
+let chipPluginName = '';
+
+test.describe('the session views with a viewer plugin chip', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+  test.beforeAll(async () => {
+    test.setTimeout(180_000);
+    await crig.start();
+    const now = Math.floor(Date.now() / 1000);
+    const tr = crig.transcript(cc.prompt('measure the chip') + cc.reply('Measured.'), 'chip');
+    const windows = crig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\nwork|@2|2|0|zsh|${now - 120}|\n`, 'windows');
+    await crig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  });
+
+  test.afterAll(async () => {
+    if (chipPluginName) pluginfix('rmplugin', '1', chipPluginName);
+    await crig.stop();
+  });
+
+  test(`the Rendered and Terminal views with the chip shift less than ${BAR}, at both sizes`, async ({ browser }) => {
+    test.setTimeout(180_000);
+    const q = (w: string) => `host=${encodeURIComponent(crig.host)}&session=work&window=${encodeURIComponent(w)}`;
+    const bad: string[] = [];
+    for (const vp of viewports) {
+      const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
+      try {
+        const page = await ctx.newPage();
+        await signIn(page, crig.origin);
+        await crig.waitListed(page, 'data-mirror-claude');
+        if (!chipPluginName) {
+          chipPluginName = 'e2e-clschip-' + Date.now().toString(36);
+          const form = new URLSearchParams({ name: chipPluginName, label: 'Example viewer', data_scope: 'example', origin: chipZone,
+            entry_url: 'https://w.viewer.example.net/__muster/enter' });
+          form.append('capability', 'viewer');
+          const r = await page.request.post(crig.origin + '/plugins', {
+            headers: { Origin: crig.origin, 'Content-Type': 'application/x-www-form-urlencoded' }, data: form.toString() });
+          expect(r.status(), 'the viewer plugin was minted').toBe(200);
+        }
+        await page.addInitScript(clsInit);
+        for (const [label, url, ready] of [
+          ['VIEW with a chip', `/mirror/view?${q('@1')}`, '#mv-log [data-bubble="user"]'],
+          ['TERMINAL with a chip', `/mirror/terminal?${q('@2')}`, '#term'],
+        ] as const) {
+          const r = await measure(page, crig.origin + url, ready);
+          // The state measured: the chip row is there.
+          await expect(page.locator('#plugin-chips [data-plugin-chip]'), `${label}: the chip is drawn`).toHaveCount(1);
+          console.log(`[cls ${vp.name}] ${label} ${r.total}`);
+          if (r.total >= BAR) bad.push(report(`${vp.name} ${label}`, r));
         }
       } finally {
         await ctx.close();

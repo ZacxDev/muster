@@ -3,6 +3,8 @@ package ui
 import (
 	"strconv"
 
+	"github.com/ZacxDev/muster/internal/textplain"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -14,16 +16,31 @@ import (
 // a one-time hand-off at CLICK time (POST /plugin-handoffs, aimed at this
 // window) and go to the entry URL it answers; drawing the chip mints nothing.
 //
-//   - 🔴 Open is a target=_blank link with rel="noopener noreferrer": the
-//     plugin's page gets no window.opener handle on muster's tab, and no
-//     Referer (muster's own Referrer-Policy is no-referrer as well).
+//   - 🔴 Open opens its tab SYNCHRONOUSLY, inside the tap (window.open of
+//     about:blank), and only then mints; the tab is sent to the minted URL
+//     once it answers. A popup blocker (Safari's among them, which drops a tab
+//     opened after an await) therefore refuses at the tap, before any code is
+//     minted, and the row says so. A refused mint closes the blank tab and the
+//     row says why. NOOPENER IS KEPT BY HAND: window.open with "noopener"
+//     returns no handle to navigate, so the tab is opened with one, its
+//     opener is set to null while it is still about:blank (same-origin with
+//     muster, so muster may), and only then is it navigated — so the plugin's
+//     page sees window.opener === null, as rel="noopener" would give. What is
+//     not the same: the tab stays in muster's browsing context group (no
+//     process isolation from it), which hands the plugin no reference to
+//     muster's window. Referrer: the blank document inherits muster's
+//     Referrer-Policy no-referrer, so the plugin gets no Referer. The link
+//     still carries target=_blank rel="noopener noreferrer" for what its
+//     markup says (a middle-click opens nothing of the plugin's).
 //   - 🔴 Show here's frame is sandboxed WITHOUT allow-top-navigation, so the
 //     plugin's content cannot navigate muster's tab; allow="" grants it no
 //     camera, microphone or location; referrerpolicy="no-referrer".
 //     allow-same-origin is safe because the frame's origin is the plugin's,
 //     never muster's (a Host under MUSTER_PLUGIN_ORIGINS is refused 421).
 //   - The row has a FIXED height and is server-drawn with the page, so it
-//     moves nothing once the page has loaded (the cls.spec.ts gate).
+//     moves nothing once the page has loaded: cls.spec.ts measures both views
+//     WITH a chip ("the session views with a viewer plugin chip").
+//   - One tap mints once: a chip is busy (data-busy) until its mint answers.
 //   - The page's CSP carries frame-src 'self' <the plugins' origins> only
 //     while this is drawn (api's allowSameOriginFrame).
 
@@ -53,24 +70,26 @@ func pluginChipRow(c *PluginChips) g.Node {
 	}
 	chips := make([]g.Node, 0, len(c.Chips))
 	for _, p := range c.Chips {
+		// The owner's own label, plained like every title muster draws.
+		label := textplain.Title(p.Label)
 		chips = append(chips, Div(
 			g.Attr("data-plugin-chip", strconv.FormatInt(p.ID, 10)),
-			g.Attr("data-plugin-label", p.Label),
+			g.Attr("data-plugin-label", label),
 			Class("flex shrink-0 items-center gap-1 rounded-full bg-s2 py-0.5 pl-3 pr-1 ring-1 ring-inset ring-line"),
-			Span(Class("max-w-[10rem] truncate font-semibold text-fg"), g.Text(p.Label)),
+			Span(Class("max-w-[10rem] truncate font-semibold text-fg"), g.Text(label)),
 			A(
 				g.Attr("data-plugin-open", ""),
 				Href("#"),
 				Target("_blank"),
 				Rel("noopener noreferrer"),
-				g.Attr("aria-label", "Open "+p.Label+" in a new tab"),
+				g.Attr("aria-label", "Open "+label+" in a new tab"),
 				Class("press inline-flex min-h-[44px] items-center rounded-full px-2 font-semibold text-accent hover:bg-s1"),
 				g.Text("Open"),
 			),
 			Button(
 				Type("button"),
 				g.Attr("data-plugin-show", ""),
-				g.Attr("aria-label", "Show "+p.Label+" here"),
+				g.Attr("aria-label", "Show "+label+" here"),
 				Class("press inline-flex min-h-[44px] items-center rounded-full px-2 font-semibold text-accent hover:bg-s1"),
 				g.Text("Show here"),
 			),
@@ -109,15 +128,16 @@ func pluginChipRow(c *PluginChips) g.Node {
 	}
 }
 
-// pluginChipScriptSrc mints at click time and sends the browser on: Open
-// follows its own link once the minted URL is its href (still inside the
-// click's user activation, so it is not a blocked popup); Show here loads it
-// into the dialog's frame. A refused mint (a revoked token, the window gone,
-// the rate cap) says why in the row and goes nowhere.
+// pluginChipScriptSrc mints at click time and sends the browser on (see the
+// file comment for Open's tab). A refused mint (a revoked token, the window
+// gone, the rate cap), an expired sign-in and a blocked tab each say why in
+// the row and go nowhere.
 var pluginChipScriptSrc = staticJS("plugin-chip", `
 (function () {
   if (window.__musterPluginChip) return;
   window.__musterPluginChip = true;
+  var SIGN_IN = 'Your sign-in has expired: reload the page and sign in again.';
+  var BLOCKED = 'The browser blocked the new tab. Allow pop-ups for this site, or use Show here.';
   function row() { return document.getElementById('plugin-chips'); }
   function say(msg) {
     var e = document.getElementById('plugin-chip-error');
@@ -130,10 +150,14 @@ var pluginChipScriptSrc = staticJS("plugin-chip", `
     var body = { plugin: Number(chip.getAttribute('data-plugin-chip')),
       target: { mirror: { host: r.getAttribute('data-host'), window: r.getAttribute('data-window') } } };
     return fetch(r.getAttribute('data-mint'), {
-      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'manual',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(body)
     }).then(function (res) {
+      // An expired session is sent to the sign-in page: a redirect, or an
+      // HTML page that is not this route's JSON.
+      var json = (res.headers.get('Content-Type') || '').indexOf('application/json') === 0;
+      if (res.type === 'opaqueredirect' || res.status === 401 || !json) throw new Error(SIGN_IN);
       return res.json().catch(function () { return {}; }).then(function (b) {
         if (!res.ok || !b || typeof b.url !== 'string') throw new Error((b && b.error) || ('the hand-off was refused (' + res.status + ')'));
         return b.url;
@@ -141,11 +165,6 @@ var pluginChipScriptSrc = staticJS("plugin-chip", `
     });
   }
   function dialog() { return document.getElementById('plugin-frame'); }
-  function closeFrame() {
-    var d = dialog();
-    if (!d) return;
-    if (d.open) d.close();
-  }
   document.addEventListener('close', function (ev) {
     var d = dialog();
     if (ev.target !== d) return;
@@ -156,24 +175,26 @@ var pluginChipScriptSrc = staticJS("plugin-chip", `
   document.addEventListener('click', function (ev) {
     var t = ev.target;
     if (!t || !t.closest) return;
-    if (t.closest('[data-plugin-close]')) { closeFrame(); return; }
+    if (t.closest('[data-plugin-close]')) { var d0 = dialog(); if (d0 && d0.open) d0.close(); return; }
     var open = t.closest('[data-plugin-open]');
     var show = t.closest('[data-plugin-show]');
     var chip = (open || show) && (open || show).closest('[data-plugin-chip]');
     if (!chip) return;
-    if (open && open.getAttribute('data-ready') === '1') {
-      // The second, scripted click: the browser follows the minted href.
-      open.removeAttribute('data-ready');
-      setTimeout(function () { open.setAttribute('href', '#'); }, 0);
-      return;
-    }
     ev.preventDefault();
+    if (chip.hasAttribute('data-busy')) return;
     say('');
+    var tab = null;
+    if (open) {
+      // Inside the tap, before any await (see the file comment).
+      tab = window.open('about:blank', '_blank');
+      if (!tab) { say(BLOCKED); return; }
+      try { tab.opener = null; } catch (e) {}
+    }
+    chip.setAttribute('data-busy', '');
     mint(chip).then(function (url) {
-      if (open) {
-        open.setAttribute('href', url);
-        open.setAttribute('data-ready', '1');
-        open.click();
+      if (tab) {
+        if (tab.closed) { say(BLOCKED); return; }
+        tab.location.replace(url);
         return;
       }
       var d = dialog();
@@ -181,7 +202,10 @@ var pluginChipScriptSrc = staticJS("plugin-chip", `
       document.getElementById('plugin-frame-title').textContent = chip.getAttribute('data-plugin-label') || 'Plugin';
       f.src = url;
       if (!d.open) d.showModal();
-    }).catch(function (e) { say(e && e.message ? e.message : 'the hand-off failed'); });
+    }).catch(function (e) {
+      if (tab) { try { tab.close(); } catch (x) {} }
+      say(e && e.message ? e.message : 'the hand-off failed');
+    }).then(function () { chip.removeAttribute('data-busy'); });
   });
 })();
 `)

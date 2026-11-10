@@ -377,6 +377,10 @@ export const chiefEndSessionFakePort = port + 367;
 // MUSTER_PLUGIN_ORIGINS set) and one fake host. Its plugin's entry page is
 // played by the spec (page.route), so it needs no port of its own.
 export const pluginChipPort = port + 372;
+// cls.spec.ts "the session views with a viewer plugin chip": its own server
+// (mirror plugin, plugins and MUSTER_PLUGIN_ORIGINS on) and one fake host, so
+// the Rendered and Terminal views are measured WITH the chip row.
+export const clsChipPort = port + 373;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

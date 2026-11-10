@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -27,12 +28,13 @@ const (
 type chipStore struct {
 	plugins.Store
 	ps    []plugins.Plugin
+	err   error
 	lists int
 }
 
 func (c *chipStore) List(context.Context) ([]plugins.Plugin, error) {
 	c.lists++
-	return c.ps, nil
+	return c.ps, c.err
 }
 
 func viewerRow(id int64, label, origin, entry string, caps ...plugins.Capability) plugins.Plugin {
@@ -220,5 +222,32 @@ func TestTheCSPWithoutFrameSrcIsTheOneBefore(t *testing.T) {
 	}
 	if got := contentSecurityPolicy("'self'", ""); got != cspBeforeSelf {
 		t.Errorf("'self': %q", got)
+	}
+}
+
+// TestAPluginListErrorDrawsNoChipAndLeavesTheCSP: the store failing to list
+// is logged and the views render as without plugins — no chip, the switch's
+// own CSP — rather than failing the page or framing anything. The control is
+// the same rows with no error, which do draw.
+func TestAPluginListErrorDrawsNoChipAndLeavesTheCSP(t *testing.T) {
+	for _, broken := range []bool{false, true} {
+		_, get, st := chipServer(t, chipZone, viewerRow(3, "Live", chipZone, "https://w.viewer.example.net/e"))
+		if broken {
+			st.err = errors.New("the plugin store is down")
+		}
+		resp, page := get(ref("scratch2", "@7").ViewPath())
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("broken=%v: GET view = %d, want 200", broken, resp.StatusCode)
+		}
+		csp, ids := resp.Header.Get("Content-Security-Policy"), chipIDs(page)
+		switch {
+		case broken && (len(ids) != 0 || csp != cspBeforeSelf):
+			t.Errorf("a List error drew chips %v with CSP %q; want none and\n %q", ids, csp, cspBeforeSelf)
+		case !broken && (len(ids) != 1 || !strings.Contains(csp, "frame-src")):
+			t.Errorf("CONTROL: no error drew chips %v with CSP %q; want one and a frame-src", ids, csp)
+		}
+		if st.lists == 0 {
+			t.Errorf("broken=%v: the store was never asked", broken)
+		}
 	}
 }

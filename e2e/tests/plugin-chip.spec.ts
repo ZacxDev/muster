@@ -155,9 +155,27 @@ test('a viewer plugin chip on both session views: Open lands on the entry page i
   expect(landings[0].referer, 'no Referer reaches the plugin').toBeUndefined();
   await tab.close();
 
+  // A BLOCKED TAB says so, visibly, and mints nothing: Open opens its tab
+  // inside the tap, so a blocker refuses there (played: window.open answers
+  // null, as a blocking browser's does).
+  await page.evaluate(() => {
+    (window as unknown as { __open: typeof window.open }).__open = window.open;
+    window.open = () => null;
+  });
+  await open.click();
+  await expect(page.locator('#plugin-chip-error')).toBeVisible();
+  await expect(page.locator('#plugin-chip-error')).toContainText('blocked the new tab');
+  await page.waitForTimeout(500);
+  expect(landings, 'a blocked tab minted no code').toHaveLength(1);
+  await page.evaluate(() => {
+    window.open = (window as unknown as { __open: typeof window.open }).__open;
+  });
+
   // SHOW HERE: the dialog's frame, with exactly the sandbox set and no
-  // top-navigation, lands on the entry page (CSP frame-src lets it load).
-  await chip.locator('[data-plugin-show]').click();
+  // top-navigation, lands on the entry page (CSP frame-src lets it load). A
+  // double tap mints ONCE (the chip is busy until its mint answers).
+  await chip.locator('[data-plugin-show]').dblclick();
+  await expect(page.locator('#plugin-chip-error'), 'the blocked message cleared on the next tap').toBeHidden();
   const frameEl = page.locator('#plugin-frame iframe');
   await expect(page.locator('#plugin-frame')).toBeVisible();
   await expect(frameEl).toHaveAttribute('sandbox', SANDBOX);
@@ -166,7 +184,8 @@ test('a viewer plugin chip on both session views: Open lands on the entry page i
   expect(await frameEl.getAttribute('sandbox')).not.toContain('allow-top-navigation');
   const framed = page.frameLocator('#plugin-frame iframe');
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
-  expect(landings).toHaveLength(2);
+  await page.waitForTimeout(500);
+  expect(landings, 'a double tap minted once').toHaveLength(2);
   expect(landings[1].url.searchParams.get('muster_code'), 'a fresh code per click').not.toBe(landings[0].url.searchParams.get('muster_code'));
   // The plugin's content cannot navigate muster's tab.
   await framed.locator('body').evaluate(() => {
@@ -199,6 +218,17 @@ test('a viewer plugin chip on both session views: Open lands on the entry page i
   const [tab2] = await Promise.all([context.waitForEvent('page'), tchip.locator('[data-plugin-open]').click()]);
   await expect(tab2.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
   await tab2.close();
+
+  // AN EXPIRED SIGN-IN: the mint is sent to the sign-in page; the row says to
+  // sign in again rather than "refused (200)", and the blank tab is closed.
+  const pagesBefore = context.pages().length;
+  await context.clearCookies();
+  await page.locator(`#plugin-chips [data-plugin-chip="${id}"] [data-plugin-show]`).click();
+  await expect(page.locator('#plugin-chip-error')).toContainText('sign in again');
+  await page.locator(`#plugin-chips [data-plugin-chip="${id}"] [data-plugin-open]`).click();
+  await expect(page.locator('#plugin-chip-error')).toContainText('sign in again');
+  await expect.poll(() => context.pages().length, { message: 'the blank tab of a refused Open is closed' }).toBe(pagesBefore);
+  await rig.login(page);
 
   // Any other page: no frame-src.
   const other = await page.goto(origin + '/tasks');

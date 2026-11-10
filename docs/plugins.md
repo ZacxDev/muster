@@ -139,9 +139,15 @@ opens on `/mirror/terminal`, so the chip is on both. An agent's pages
   for that plugin and the window on screen, then goes to the URL it answers. A
   refused mint (the token revoked since the page loaded, the window gone, the
   rate cap) says why in the row and goes nowhere.
-- **Open** is a `target="_blank"` link with `rel="noopener noreferrer"`: the
-  plugin's page opens in a new tab with no `window.opener` handle on muster's
-  tab and no `Referer`.
+- **Open** opens a blank tab within the tap itself, before minting. The tab's
+  `opener` is cleared while it is still blank, and only then is it sent to the
+  minted URL. So the plugin's page gets no `window.opener` handle on muster's
+  tab and no `Referer`, just as `rel="noopener noreferrer"` would give, and the
+  link carries those attributes too. Because the tab opens before the mint,
+  a popup blocker refuses at the tap: the row says the tab was blocked and no
+  code is minted. If the mint is refused, the blank tab is closed and the row
+  says why. An expired sign-in says to sign in again.
+- **One tap mints once**: a chip ignores taps until its mint has answered.
 - **Show here** loads the URL into a frame in a dialog over the page:
 
   ```html
