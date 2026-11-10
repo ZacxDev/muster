@@ -17,6 +17,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -766,6 +767,12 @@ func (s *Server) handTaskToChief(r *http.Request, p plugins.Plugin, n notes.Note
 		return err // ErrTaskEventIDTaken included: the caller answers it 409
 	}
 	if created {
+		// An assignment muster can place itself (task_triage.go): no chief turn.
+		if event == noticeAssigned && s.triageAssignedTask(context.WithoutCancel(ctx), p, n, m) {
+			s.attentionChanged(n.OwnerID, unroutedTaskKey(m.ID))
+			return nil
+		}
+		s.recordHandling(ctx, p, m, chiefusage.HandlerChief, 0, 0)
 		s.deliverPluginMessage(r, p, m)
 		s.attentionChanged(n.OwnerID, unroutedTaskKey(m.ID))
 	}
@@ -844,6 +851,8 @@ func (s *Server) routeMention(ctx context.Context, p plugins.Plugin, n notes.Not
 		// deliver it again — at least once, never lost.
 		s.logger.Printf("task routing: complete the mention reservation %d: %v", m.ID, cerr)
 	}
+	// Placed by muster, never the chief (the usage page, chief_usage.go).
+	s.recordHandling(bctx, p, m, chiefusage.HandlerTaskEventMention, 0, 0)
 	return to, nil
 }
 

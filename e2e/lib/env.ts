@@ -401,6 +401,12 @@ export const previewsMeshPort = port + 382;
 export const previewsEdgePort = port + 383;
 export const previewsAppPort = port + 384;
 export const previewsSiblingPort = port + 385;
+// tests/routing-rules.spec.ts: routing rules and the usage page — its own
+// server (plugins on, a gateway chief) and the spec's FAKE runtime (the
+// scripted chief, which proposes a rule). No mirror host. (+386: previews.spec
+// takes +380..+385.)
+export const routingRulesPort = port + 386;
+export const routingRulesFakePort = port + 387;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

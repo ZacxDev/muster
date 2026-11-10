@@ -11,6 +11,10 @@
 --
 -- The column is the wire's ValidAgentSession shape. Nothing else changes:
 -- the table's row-level security covers it as it covers every column.
+--
+-- IF NOT EXISTS: every migration is idempotent, because the skipped-migration
+-- recovery (db.ApplyByHandCommand) re-runs a file whose effect may already be
+-- there. A re-run adds no second CHECK: the clause rides on the skipped ADD.
 
-ALTER TABLE send_queue ADD COLUMN agent_session text
+ALTER TABLE send_queue ADD COLUMN IF NOT EXISTS agent_session text
     CHECK (agent_session IS NULL OR agent_session ~ '^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$');

@@ -202,6 +202,10 @@ func TestMailForAnEndedThreadSessionResumesItAndIsRoutedThere(t *testing.T) {
 	if n := f.turns.count(); n != 0 {
 		t.Fatalf("the chief took %d turn(s), want 0", n)
 	}
+	// The usage page's record: muster's own path, by name (chief_usage.go).
+	if h, _, _ := handledBy(t, f.routeFixture, m.ID); h != "mail_resume" {
+		t.Fatalf("handled by %q, want mail_resume", h)
+	}
 	if rows := f.resumeRows(t, m); len(rows) != 1 || rows[0] != (resumeRow{state: plugins.ResumeDelivered, host: "tower", window: "@9", spawned: true}) {
 		t.Fatalf("mail_resumes: %+v", rows)
 	}

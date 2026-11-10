@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -328,6 +329,8 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 
 	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+	// The owner's answer, delivered (chief_usage.go): the turn's trigger.
+	tctx = chiefusage.WithTrigger(tctx, chiefusage.Trigger{Kind: chiefusage.TriggerAnswer})
 	parts, err := s.answerTurn(tctx, ag, sess, renderAttentionAnswer(a), nil)
 	if reason := agentgateway.Unsent(err); reason != "" {
 		// Provably nothing reached the runtime: queued again, for the sweep.
@@ -353,6 +356,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 func (s *Server) runDeliveredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
 	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
 	pc := &agents.PartCollector{}
+	// The trigger is the caller's (an owner's answer, a session's question).
 	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, pc.Observe)
 	s.markAgentIdle(a.Name)
 	if agentgateway.Unsent(err) != "" {

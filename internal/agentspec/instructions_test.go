@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "42ad9091ad877157819406e819d4445cbb0cb285b08d363acd86de4a220df45e",
+			want: "5f17a57746b9e9240681e4b732a26ec5e4428392f46f66dfd323ff93ea5d779d",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "8b174267dae6a12dccd7e1426545b4506ee255846cb33b21c1b5520cbea95756",
+			want: "f79ff5b68a8c1a980cddedb8ccbbcd3003a3d3577195e7b905cf5da27f8acbce",
 			min:  1000,
 		},
 		{
@@ -792,6 +792,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`agent_dispatch`", "`mcp__muster__agent_dispatch`",
 		"`task_route_attention`", "`mcp__muster__task_route_attention`",
 		"`ask_owner`", "`mcp__muster__ask_owner`",
+		"`routing_rule_propose`", "`mcp__muster__routing_rule_propose`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")

@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // The session transcript is the ONE place ccd reads a reply from.
@@ -62,6 +64,53 @@ type turnResult struct {
 	Err *apiError
 	// Complete reports that the turn's turn_duration record was seen.
 	Complete bool
+	// Usage is the turn's tokens: each main-conversation API call's usage
+	// counted ONCE (the CLI repeats it on every block record of the call; the
+	// largest output count is kept, as a block written mid-stream can carry a
+	// partial one — see addUsage for the key). nil when no record of the turn
+	// carried usage. Subagent (sidechain) records are not counted: they are not this
+	// conversation's turn.
+	Usage *podagent.Usage
+	// usageByMsg is the per-message usage Usage is summed from.
+	usageByMsg map[string]podagent.Usage
+	usageOrder []string
+}
+
+// addUsage records rec's usage under its API call's key.
+func (r *turnResult) addUsage(rec cctranscript.Record) {
+	u := rec.Message.Usage
+	if u == nil || rec.IsAPIError || rec.Message.Model == "<synthetic>" {
+		return
+	}
+	if r.usageByMsg == nil {
+		r.usageByMsg = map[string]podagent.Usage{}
+	}
+	// One API call's key: its message id AND its input side (uncached input,
+	// cache read, cache creation), which every block record of that call
+	// repeats and the next call — its context larger — does not. The id alone
+	// is not enough: a transcript whose ids were normalised (the fixtures) or
+	// left out would fold distinct calls into one. Output is not in the key: a
+	// block written mid-stream can carry a smaller output count than the last.
+	id := rec.Message.ID + ":" + strconv.FormatInt(u.InputTokens, 10) + ":" + strconv.FormatInt(u.CacheReadInputTokens, 10) +
+		":" + strconv.FormatInt(u.CacheCreationInputTokens, 10)
+	cur, seen := r.usageByMsg[id]
+	if !seen {
+		r.usageOrder = append(r.usageOrder, id)
+	}
+	cur.InputTokens = max(cur.InputTokens, u.InputTokens)
+	cur.OutputTokens = max(cur.OutputTokens, u.OutputTokens)
+	cur.CacheReadInputTokens = max(cur.CacheReadInputTokens, u.CacheReadInputTokens)
+	cur.CacheCreationInputTokens = max(cur.CacheCreationInputTokens, u.CacheCreationInputTokens)
+	r.usageByMsg[id] = cur
+	var sum podagent.Usage
+	for _, k := range r.usageOrder {
+		m := r.usageByMsg[k]
+		sum.InputTokens += m.InputTokens
+		sum.OutputTokens += m.OutputTokens
+		sum.CacheReadInputTokens += m.CacheReadInputTokens
+		sum.CacheCreationInputTokens += m.CacheCreationInputTokens
+	}
+	r.Usage = &sum
 }
 
 // turnItem is one Items entry: a text segment (Tool nil) or a tool call.
@@ -153,6 +202,7 @@ func extractTurn(r io.Reader, promptID string) (turnResult, error) {
 				}
 			}
 		case "assistant":
+			res.addUsage(rec)
 			for _, b := range rec.Blocks() {
 				switch b.Type {
 				case "text":

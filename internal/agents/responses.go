@@ -183,6 +183,9 @@ type responsesResponse struct {
 	ID     string                `json:"id"`
 	Status string                `json:"status"`
 	Output []responsesOutputItem `json:"output"`
+	// Usage is the turn's token usage as the runtime reported it
+	// (turnusage.go), nil when it reported none.
+	Usage *responsesUsage `json:"usage,omitempty"`
 }
 
 func (r *responsesResponse) messageText() string {
@@ -328,6 +331,11 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
 	out, err := parseResponsesSSE(activityBody(ctx, resp.Body), emit)
+	if out != nil {
+		// The request's tokens, into the turn's sink when its caller keeps one
+		// (WithTurnUsage): each request of a tool loop adds its own.
+		addTurnUsage(ctx, out.Usage)
+	}
 	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
 		// 🔴 THE CLIENT'S OWN TIMEOUT, NOT THE CALLER'S DEADLINE (ctx is alive).
 		// net/http's timeout error matches context.DeadlineExceeded, and the
@@ -543,6 +551,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 		Index    int    `json:"output_index"`
 		Response struct {
 			Output []responsesOutputItem `json:"output"`
+			Usage  *responsesUsage       `json:"usage"`
 		} `json:"response"`
 		Item responsesOutputItem `json:"item"`
 	}
@@ -575,7 +584,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 	case kind == "response.completed" || kind == "response.incomplete":
 		// response.incomplete (a length stop) is terminal too, and its output is
 		// the answer as far as it got.
-		r := &responsesResponse{Status: "completed", Output: env.Response.Output}
+		r := &responsesResponse{Status: "completed", Output: env.Response.Output, Usage: env.Response.Usage}
 		*final = r
 	case kind == "response.output_text.delta":
 		if emit != nil && env.Delta != "" {
