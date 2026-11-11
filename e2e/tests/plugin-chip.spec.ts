@@ -433,6 +433,19 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(panel).toBeHidden();
   expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
 
+  // 🔴 BACK STILL REACHES THE DOCK AFTER FULL SCREEN HAS BEEN USED: full
+  // screen wrapped this window's musterBack, and with full screen gone the
+  // wrapper must hand the press to the dock's close (the touch layout draws
+  // the dock here). A wrapper answering false would leave Back unable to
+  // close the dock for the rest of the page.
+  const dockOpen = () => page.evaluate(() => !!(document.getElementById('switcher-dock') as HTMLDialogElement | null)?.open);
+  await page.locator('#switcher-toggle').tap();
+  await expect.poll(dockOpen, 'the dock opened').toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'Back closed the dock through the wrapper').toBe(true);
+  await expect.poll(dockOpen, 'the dock closed').toBe(false);
+  await expect.poll(async () => (await msgs()).slice(-2), 'the dock\'s own claim pair').toEqual([CLAIM_ON, CLAIM_OFF]);
+  const settled = (await msgs()).length;
+
   // CLOSE from full screen (reopened: its tap, with the header hidden, is a
   // script's) releases the claim with it.
   await page.locator('#preview-toggle-row').click();
@@ -441,7 +454,7 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(panel).toHaveAttribute('data-preview-full', '');
   await page.evaluate(() => (document.querySelector('#preview-panel [data-preview-close]') as HTMLElement).click());
   await expect(panel).toBeHidden();
-  expect((await msgs()).slice(-2)).toEqual([CLAIM_ON, CLAIM_OFF]);
+  expect((await msgs()).slice(settled)).toEqual([CLAIM_ON, CLAIM_OFF]);
 
   // A WIDE SCREEN in the app (a tablet): the side panel goes the whole width.
   await page.setViewportSize({ width: 1024, height: 768 });
