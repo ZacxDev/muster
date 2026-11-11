@@ -7,24 +7,24 @@ import (
 	"testing"
 )
 
-// TestMigration0113WordmarkAndAppIcon: a database at 0112 holding a branding
+// TestMigration0114WordmarkAndAppIcon: a database at 0113 holding a branding
 // row (written as an older image writes it) has none of the new columns (the
-// control); at 0113 that row reads logo_shows_name false — "draw the name", as
+// control); at 0114 that row reads logo_shows_name false — "draw the name", as
 // before — and no app icon, and so does a row inserted without the columns.
 // NULL logo_shows_name, half an app icon and an app icon with no logo are
 // refused by name. With an app icon set, the header's ROLLBACK runs as
 // written, leaves none of the columns, and puts back the ETag of the LOGO's
 // icons (what an older image serves); the file then applies again.
-func TestMigration0113WordmarkAndAppIcon(t *testing.T) {
+func TestMigration0114WordmarkAndAppIcon(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0113_wordmark", 112)
+	pool := freshAt(ctx, t, "ms_0114_wordmark", 113)
 	mustExec(ctx, t, pool, `INSERT INTO instance_branding (name) VALUES ('Team Example')`)
 	for _, col := range []string{"logo_shows_name", "appicon192_png", "appicon512_png"} {
 		if _, err := pool.Exec(ctx, `SELECT `+col+` FROM instance_branding`); err == nil {
-			t.Fatalf("control: before 0113 %s exists", col)
+			t.Fatalf("control: before 0114 %s exists", col)
 		}
 	}
-	applyThroughFrom(ctx, t, pool, 113)
+	applyThroughFrom(ctx, t, pool, 114)
 
 	read := func() (shows, icon bool) {
 		t.Helper()
@@ -65,7 +65,7 @@ func TestMigration0113WordmarkAndAppIcon(t *testing.T) {
 		t.Errorf("clearing the logo under an app icon: %v, want instance_branding_app_icon_needs_logo", err)
 	}
 
-	for _, q := range asksRollbackSQL(t, "0113_instance_branding_wordmark_app_icon.sql") {
+	for _, q := range asksRollbackSQL(t, "0114_instance_branding_wordmark_app_icon.sql") {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatalf("rollback %q: %v", q, err)
 		}
@@ -83,7 +83,7 @@ func TestMigration0113WordmarkAndAppIcon(t *testing.T) {
 	if want := hex.EncodeToString(sum[:])[:16]; etag != want {
 		t.Errorf("after the rollback logo_etag = %s, want %s: the sha256 over the logo and ITS icons", etag, want)
 	}
-	applyThroughFrom(ctx, t, pool, 113)
+	applyThroughFrom(ctx, t, pool, 114)
 	if shows, icon := read(); shows || icon {
 		t.Errorf("re-applied after the rollback: logo_shows_name=%v app icon=%v", shows, icon)
 	}

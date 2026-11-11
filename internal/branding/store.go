@@ -23,10 +23,10 @@ type Branding struct {
 	// icons — so it changes when the app icon is set or removed, too.
 	ETag string
 	// HasAppIcon reports that the served icons were drawn from a separate app
-	// icon upload (ProcessIcon), not from the logo (migration 0113).
+	// icon upload (ProcessIcon), not from the logo (migration 0114).
 	HasAppIcon bool
 	// LogoShowsName is the admin's statement that the logo already spells the
-	// name (a wordmark), so the pages draw the logo alone (migration 0113). It
+	// name (a wordmark), so the pages draw the logo alone (migration 0114). It
 	// is kept when the logo is reset, and means nothing while no logo is set.
 	LogoShowsName bool
 	UpdatedAt     time.Time
@@ -135,7 +135,7 @@ func (s Stored) Resolve() Branding {
 	return b
 }
 
-// PG is Store on instance_branding (migrations 0105, 0113).
+// PG is Store on instance_branding (migrations 0105, 0114).
 type PG struct{ pool *pgxpool.Pool }
 
 // NewPG is Store over pool.

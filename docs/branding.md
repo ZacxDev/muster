@@ -246,7 +246,7 @@ apps should show the server's name and icon before signing in. Keep
 
 ## Where it is kept
 
-One row in `instance_branding` (migrations `0105` and `0113`,
+One row in `instance_branding` (migrations `0105` and `0114`,
 [schema.md](schema.md)): the name, the logo and the icons made from it, the
 app icon's two icons, the ETag, the logo-shows-the-name setting, when it last
 changed and which admin changed it. The table belongs to the server, not to a user: it has no `owner_id`.
@@ -264,7 +264,7 @@ write. A second replica shows a change within 30 seconds.
 
 Roll the image back first.
 
-To roll back only `0113` (the app icon and the logo-shows-the-name setting),
+To roll back only `0114` (the app icon and the logo-shows-the-name setting),
 run its header's statements. An older image never reads those columns: it
 draws the name beside the logo and serves the logo's own icons. The first
 statement puts back the ETag of the logo's icons, so it matches what that
@@ -277,11 +277,11 @@ ALTER TABLE public.instance_branding DROP CONSTRAINT IF EXISTS instance_branding
 ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS appicon512_png;
 ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS appicon192_png;
 ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS logo_shows_name;
-DELETE FROM schema_migrations WHERE version = 113;
+DELETE FROM schema_migrations WHERE version = 114;
 ```
 
 An image older than `0105` never reads the table and draws muster's own mark.
-To remove all the data (after rolling back `0113`):
+To remove all the data (after rolling back `0114`):
 
 ```sql
 DROP TABLE IF EXISTS public.instance_branding;

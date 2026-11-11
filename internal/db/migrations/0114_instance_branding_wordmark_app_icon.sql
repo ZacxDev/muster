@@ -1,4 +1,4 @@
--- muster 0113 — A WORDMARK LOGO, AND AN APP ICON OF ITS OWN (internal/branding;
+-- muster 0114 — A WORDMARK LOGO, AND AN APP ICON OF ITS OWN (internal/branding;
 -- docs/branding.md#a-logo-that-spells-the-name, #an-app-icon-of-its-own).
 --
 --   instance_branding.logo_shows_name   an admin's statement that the logo is
@@ -22,7 +22,7 @@
 --       from the logo, which removing the app icon serves again.
 --
 -- New columns on a table that is not owned (0105): its forced scope_all
--- policy covers them, and nothing re-applies it. Must apply after 0112 (the
+-- policy covers them, and nothing re-applies it. Must apply after 0113 (the
 -- contiguity test refuses a gap). The number was the next free one on main
 -- when written; it may need renumbering at merge. Idempotent.
 --
@@ -33,7 +33,7 @@
 --   ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS appicon512_png;
 --   ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS appicon192_png;
 --   ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS logo_shows_name;
---   DELETE FROM schema_migrations WHERE version = 113;
+--   DELETE FROM schema_migrations WHERE version = 114;
 
 SET LOCAL lock_timeout = '3s';
 
