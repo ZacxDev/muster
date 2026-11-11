@@ -157,6 +157,12 @@ type GitHub interface {
 	// Commit is a commit's tree and parents.
 	Commit(ctx context.Context, sha string) (tree string, parents []string, err error)
 	PRsForCommit(ctx context.Context, sha string) ([]PR, error)
+	// RecentlyClosedPRs is the closed pull requests into base, most recently
+	// updated first: ONE page of recentClosedPRs, never more. GitHub fills a
+	// pull request's merge_commit_sha when it merges, while commits/{sha}/pulls
+	// can still answer [] for that merge minutes later; a merge just made is
+	// the most recently updated, so it is on this page.
+	RecentlyClosedPRs(ctx context.Context, base string) ([]PR, error)
 	Merge(ctx context.Context, n int, sha string) (string, error)
 	CreateTag(ctx context.Context, name, message, sha string, t Tagger) (string, error)
 	CreateRef(ctx context.Context, ref, sha string) error
@@ -345,13 +351,18 @@ type restPR struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"base"`
-	MergeCommitSHA string    `json:"merge_commit_sha"`
-	CreatedAt      time.Time `json:"created_at"`
-	Body           string    `json:"body"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	// MergedAt is what says "merged" in a LIST answer: GitHub sends
+	// `merged` only on GET pulls/{n}, never in pulls?… nor in
+	// commits/{sha}/pulls (MEASURED: has("merged") false there, true on
+	// pulls/{n}), so a list entry read through Merged alone is never merged.
+	MergedAt  *time.Time `json:"merged_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	Body      string     `json:"body"`
 }
 
 func (r restPR) pr() PR {
-	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged, Mergeable: r.Mergeable, Title: r.Title,
+	p := PR{Number: r.Number, NodeID: r.NodeID, State: r.State, Draft: r.Draft, Merged: r.Merged || r.MergedAt != nil, Mergeable: r.Mergeable, Title: r.Title,
 		Author: r.User.Login, AuthorType: r.User.Type, HeadRef: r.Head.Ref, HeadSHA: r.Head.SHA, BaseRef: r.Base.Ref,
 		MergeCommitSHA: r.MergeCommitSHA, CreatedAt: r.CreatedAt, Body: r.Body}
 	if r.Head.Repo != nil {
@@ -630,6 +641,31 @@ func (g *REST) PRsForCommit(ctx context.Context, sha string) ([]PR, error) {
 	var rs []restPR
 	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/commits/"+url.PathEscape(sha)+"/pulls?per_page=100", "", nil, &rs,
 		"reading the pull requests of "+sha); err != nil {
+		return nil, err
+	}
+	var out []PR
+	for _, r := range rs {
+		out = append(out, r.pr())
+	}
+	return out, nil
+}
+
+// recentClosedPRs is how many of the most recently updated closed pull
+// requests RecentlyClosedPRs reads (one page). The pulls list DOES paginate
+// (MEASURED: a Link header with rel="next"/"last", and page=2 answers the
+// next per_page pull requests, unlike git/refs), so this is a deliberate
+// single page, not a truncation the endpoint imposes: a merge falls off it
+// only once this many closed pull requests into base were updated after it,
+// and a miss is a refusal, never a pass.
+const recentClosedPRs = 30
+
+// RecentlyClosedPRs implements GitHub.
+func (g *REST) RecentlyClosedPRs(ctx context.Context, base string) ([]PR, error) {
+	q := url.Values{"state": {"closed"}, "base": {base}, "sort": {"updated"}, "direction": {"desc"},
+		"per_page": {strconv.Itoa(recentClosedPRs)}}
+	var rs []restPR
+	if err := g.do(ctx, http.MethodGet, g.repoPath()+"/pulls?"+q.Encode(), "", nil, &rs,
+		"listing the pull requests closed into "+base); err != nil {
 		return nil, err
 	}
 	var out []PR
