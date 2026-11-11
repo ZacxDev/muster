@@ -344,6 +344,58 @@ func (h *Host) Opens() []Open {
 	return out
 }
 
+// WindowSummary is what one window has to preview now (Summary).
+type WindowSummary struct {
+	// Offered is the window's listener reports with no open preview on their
+	// port: the offers the gateway's session page lists (it lists an open
+	// port as its preview, not again as an offer).
+	Offered int
+	// Open is the window's open previews.
+	Open int
+}
+
+// Summary is, per tmux window id, what the host has to preview there NOW —
+// what muster-mirror reports to muster so the session views show their
+// Preview button only while there is something to open (docs/previews.md).
+// Windows with nothing are absent.
+//
+// 🔴 NIL WHILE NO GATEWAY TUNNEL SERVES AN OFFER STREAM: without one the
+// session page can show nothing but "the host is offline", so there is
+// nothing to offer from muster. The opens the host keeps across a dropped
+// tunnel (to re-announce them) come back with the tunnel. And nil while
+// previews are off (every open preview was closed and no listener is
+// reported then anyway).
+func (h *Host) Summary() map[string]WindowSummary {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stream == nil || h.disabled != "" {
+		return nil
+	}
+	open := map[string]map[int]bool{}
+	out := map[string]WindowSummary{}
+	for _, o := range h.opens {
+		if open[o.Window] == nil {
+			open[o.Window] = map[int]bool{}
+		}
+		open[o.Window][o.Port] = true
+		s := out[o.Window]
+		s.Open++
+		out[o.Window] = s
+	}
+	for _, l := range h.reports {
+		if open[l.Window][l.Port] {
+			continue
+		}
+		s := out[l.Window]
+		s.Offered++
+		out[l.Window] = s
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // RequestOpen writes an agent's open on the offer stream and waits for the
 // gateway's answer (AnswerWait). req.ID is assigned here. The answer's Error
 // is the gateway's tool error ("max_open", …); an acknowledged open is

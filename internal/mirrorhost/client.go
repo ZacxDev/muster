@@ -117,6 +117,12 @@ type Config struct {
 	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
 	// build); no flag sets it.
 	NoWork bool
+	// Previews reports, per tmux window id, what the host's preview side
+	// offers and has open now (mirror/previews.go): cmd/muster-mirror's
+	// -preview hands in its previewhost.Host's summary. nil — no -preview, or
+	// previews not (yet) on — sends no previews message, so muster draws no
+	// Preview button. Called on every refresh; it must not block.
+	Previews func() map[string]mirror.WindowPreviews
 	// FakeSpawn, when set, REPLACES the agent spawn (agentspawn.go) with a
 	// fixture's: this host advertises FakeSpawnRuntimes and answers each
 	// agent-spawn with what FakeSpawn returns. FOR THE BROWSER SUITE ONLY
@@ -472,6 +478,11 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			return err
 		}
 	}
+	if len(first.previews) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypePreviews, Previews: first.previews}); err != nil {
+			return err
+		}
+	}
 	if beforeRefreshHook != nil {
 		beforeRefreshHook(conn)
 	}
@@ -666,6 +677,10 @@ type listing struct {
 	// id (opencode_outcome.go), on a message of its own like work
 	// (mirror/outcomes.go).
 	outcomes map[string]mirror.WindowOutcome
+	// previews is each window's live preview counts by window id
+	// (Config.Previews), on a message of its own like work
+	// (mirror/previews.go).
+	previews map[string]mirror.WindowPreviews
 	// hostLimit is the usage limit across all the host's Claude windows
 	// (turnend.go's hostLimitOf); nil for none. It rides the hello and
 	// sessions messages beside the windows.
@@ -731,6 +746,9 @@ func (h *hostSide) read() (listing, bool) {
 		if !h.c.cfg.NoWork {
 			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
 			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
+		}
+		if h.c.cfg.Previews != nil {
+			l.previews = mirror.NormalizePreviews(h.c.cfg.Previews(), windows)
 		}
 	}
 	if src, ok := h.openCodeSource(); ok {
@@ -1110,6 +1128,11 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 	}
 	if !mirror.OutcomesEqual(now.outcomes, last.outcomes) {
 		if err := h.send(mirror.Msg{Type: mirror.TypeOutcomes, Outcomes: now.outcomes}); err != nil {
+			return false
+		}
+	}
+	if !maps.Equal(now.previews, last.previews) {
+		if err := h.send(mirror.Msg{Type: mirror.TypePreviews, Previews: now.previews}); err != nil {
 			return false
 		}
 	}

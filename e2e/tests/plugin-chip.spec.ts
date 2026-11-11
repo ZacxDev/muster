@@ -1,26 +1,31 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { BrowserContext, Page, Route } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, pluginChipPort, repoRoot } from '../lib/env';
 import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost';
 
-// THE SESSION-VIEW CHIP (docs/plugins.md#the-session-view-chip), on the
-// operator's click path: a REAL muster-server with the mirror plugin, plugins
-// and MUSTER_PLUGIN_ORIGINS on, a REAL muster-mirror (`-tags e2emirror`) with a
-// Claude Code window (@1) and a shell (@2), and a viewer plugin minted through
-// the real /plugins form.
+// THE SESSION VIEWS' PREVIEW BUTTON AND PANEL (docs/plugins.md#the-session-view-chip),
+// on the operator's click path: a REAL muster-server with the mirror plugin,
+// plugins and MUSTER_PLUGIN_ORIGINS on, a REAL muster-mirror (`-tags
+// e2emirror`) with a Claude Code window (@1) and a shell (@2), and a viewer
+// plugin minted through the real /plugins form. What each window has to
+// preview is PLAYED by the host's MUSTER_MIRROR_E2E_PREVIEWS_FILE (the real
+// -preview source is previews.spec.ts's), and travels the real previews
+// message to muster.
 //
 // ⚠ WHAT IS PLAYED: the plugin's ENTRY PAGE. Its URL is https under an
 // invented zone, so the browser's requests to it are answered by page.route
 // here — which, like a real plugin's entry route, REDEEMS the code with the
 // plugin's own token (POST /plugin/v1/handoffs/redeem on the real server) and
-// draws what it learned. So a landing proves the whole hand-off: the chip
+// draws what it learned. So a landing proves the whole hand-off: the panel
 // minted at click time, the browser went to the entry URL with muster_code and
 // muster_plugin, and the code was good for this owner and this window.
 //
 // 🔴 ONLY THIS SPEC'S SERVER HAS MUSTER_PLUGIN_ORIGINS SET, and afterAll
 // removes the plugins it made (pluginfix rmplugin), so no other spec on the
-// shared database draws a chip.
+// shared database draws a Preview button.
 const ZONE = 'https://*.viewer.example.net';
 const ENTRY = 'https://w.viewer.example.net/__muster/enter';
 const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals';
@@ -38,6 +43,10 @@ const fix = (...args: string[]) =>
 const q = (win: string) => `host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent(win)}`;
 const viewOf = (win: string) => `/mirror/view?${q(win)}`;
 const termOf = (win: string) => `/mirror/terminal?${q(win)}`;
+let previewsFile = '';
+// playPreviews is what the host reports each window has to preview, as
+// `<window> <offered> <open>` lines (e2emirror.go).
+const playPreviews = (lines: string) => fs.writeFileSync(previewsFile, lines);
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
@@ -45,7 +54,9 @@ test.beforeAll(async () => {
   const now = Math.floor(Date.now() / 1000);
   const tr = rig.transcript(cc.prompt('the prompt of the chip window') + cc.reply('Answered.'), 'one');
   const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\nwork|@2|2|0|zsh|${now - 120}|\n`, 'windows');
-  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  previewsFile = path.join(rig.dir, 'previews-played');
+  playPreviews('@1 2 1\n@2 1 0\n');
+  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms', MUSTER_MIRROR_E2E_PREVIEWS_FILE: previewsFile });
 });
 
 test.afterAll(async () => {
@@ -119,74 +130,72 @@ document.getElementById('fake-referrer').textContent = 'referrer:' + (document.r
   return landings;
 }
 
-test('a viewer plugin chip on both session views: Open lands on the entry page in a new tab with no opener, Show here frames it sandboxed, the view swap still frames this origin, and a revoked token draws none', async ({ page, context }) => {
-  test.setTimeout(120_000);
+// buttonFor polls until the button's own route answers the button for win
+// (present) or nothing (absent): the host's report reached muster.
+async function buttonFor(page: Page, win: string, present: boolean): Promise<void> {
+  await expect
+    .poll(async () => (await (await page.request.get(origin + `/ui/mirror/preview-button?${q(win)}`)).text()).includes('id="preview-toggle"'), {
+      message: `the host's report for ${win} reached muster (muster-mirror log:\n${rig.log})`,
+      timeout: 20_000,
+    })
+    .toBe(present);
+}
+
+test('the Preview button on both session views: drawn only while the window has something to preview, its panel frames the plugin sandboxed, New tab lands with no opener, the view swap still frames this origin, and a revoked token draws none', async ({ page, context }) => {
+  test.setTimeout(150_000);
   await ready(page);
   const { token, id } = await mintViewer(page, 'Example viewer');
   const landings = await playEntry(context, token);
+  await buttonFor(page, '@1', true);
 
-  // The Rendered view: one chip, and the CSP frames the plugin's origin and
-  // this one.
+  // The Rendered view: the button in the header, counting @1's 2 offers and
+  // 1 open preview; the CSP frames the plugin's origin and this one.
   const resp = await page.goto(origin + viewOf('@1'));
   expect(resp!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
   await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the prompt of the chip window');
-  const chip = page.locator(`#plugin-chips [data-plugin-chip="${id}"]`);
-  await expect(chip).toHaveCount(1);
-  await expect(page.locator('#plugin-chips [data-plugin-chip]')).toHaveCount(1);
-  await expect(chip).toContainText('Example viewer');
-  const open = chip.locator('[data-plugin-open]');
-  await expect(open).toHaveAttribute('target', '_blank');
-  await expect(open).toHaveAttribute('rel', 'noopener noreferrer');
+  const toggle = page.locator('header #preview-toggle-row');
+  await expect(toggle).toHaveCount(1);
+  await expect(toggle).toHaveAttribute('data-preview-count', '3');
+  await expect(toggle).toHaveAttribute('aria-label', 'Preview: 1 preview open, 2 servers to preview');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  // At this phone width it is in the header's SECOND row, under the title,
+  // and the header row's own button is not drawn (operator decision: the
+  // title keeps its width).
+  await expect(page.locator('#preview-toggle')).toBeHidden();
+  const box = (await toggle.boundingBox())!;
+  const title = (await page.locator('header h1').first().boundingBox())!;
+  expect(box.y + box.height / 2, 'the button is below the title').toBeGreaterThan(title.y + title.height);
+  expect(Math.round(box.height), 'a 20px pill in the second row').toBe(20);
+  // Its tap goes to it, not to the title's hit area over the same row.
+  const hit = await page.evaluate(([x, y]) => (document.elementFromPoint(x, y) as Element | null)?.closest('[data-preview-toggle]')?.id ?? 'none', [box.x + box.width / 2, box.y + box.height / 2]);
+  expect(hit, 'the second-row button is on top at its centre').toBe('preview-toggle-row');
+  // No row above the chat any more.
+  await expect(page.locator('#plugin-chips')).toHaveCount(0);
+  await expect(page.locator('#preview-panel')).toBeHidden();
+  await expect(page.locator('#preview-panel')).toHaveAttribute('data-plugin', String(id));
+  const newTab = page.locator('#preview-panel [data-preview-newtab]');
+  await expect(newTab).toHaveAttribute('target', '_blank');
+  await expect(newTab).toHaveAttribute('rel', 'noopener noreferrer');
   // Nothing is minted to draw it.
   expect(landings, 'no landing before a click').toHaveLength(0);
 
-  // OPEN: a new tab, minted at the click, on the entry page with muster_code
-  // and muster_plugin; the plugin redeems it for THIS window; no opener.
-  const [tab] = await Promise.all([context.waitForEvent('page'), open.click()]);
-  await expect(tab.locator('#fake-entry')).toBeVisible();
-  const landed = new URL(tab.url());
-  expect(landed.origin + landed.pathname).toBe(ENTRY);
-  expect(landed.searchParams.get('muster_plugin')).toBe(String(id));
-  expect(landed.searchParams.get('muster_code') ?? '').toMatch(/^.{20,}$/);
-  await expect(tab.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
-  await expect(tab.locator('#fake-opener')).toHaveText('opener:none');
-  await expect(tab.locator('#fake-referrer')).toHaveText('referrer:none');
-  expect(landings).toHaveLength(1);
-  expect(landings[0].referer, 'no Referer reaches the plugin').toBeUndefined();
-  await tab.close();
-
-  // A BLOCKED TAB says so, visibly, and mints nothing: Open opens its tab
-  // inside the tap, so a blocker refuses there (played: window.open answers
-  // null, as a blocking browser's does).
-  await page.evaluate(() => {
-    (window as unknown as { __open: typeof window.open }).__open = window.open;
-    window.open = () => null;
-  });
-  await open.click();
-  await expect(page.locator('#plugin-chip-error')).toBeVisible();
-  await expect(page.locator('#plugin-chip-error')).toContainText('blocked the new tab');
-  await page.waitForTimeout(500);
-  expect(landings, 'a blocked tab minted no code').toHaveLength(1);
-  await page.evaluate(() => {
-    window.open = (window as unknown as { __open: typeof window.open }).__open;
-  });
-
-  // SHOW HERE: the dialog's frame, with exactly the sandbox set and no
-  // top-navigation, lands on the entry page (CSP frame-src lets it load). A
-  // double tap mints ONCE (the chip is busy until its mint answers).
-  await chip.locator('[data-plugin-show]').dblclick();
-  await expect(page.locator('#plugin-chip-error'), 'the blocked message cleared on the next tap').toBeHidden();
-  const frameEl = page.locator('#plugin-frame iframe');
-  await expect(page.locator('#plugin-frame')).toBeVisible();
+  // THE PANEL: the button opens it (the whole screen at this width), its
+  // frame — exactly the sandbox set, no top-navigation — lands on the entry
+  // page for THIS window.
+  await toggle.click();
+  const panel = page.locator('#preview-panel');
+  await expect(panel).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const pbox = (await panel.boundingBox())!;
+  expect([Math.round(pbox.x), Math.round(pbox.width)], 'the panel is the whole screen on a phone').toEqual([0, 390]);
+  const frameEl = page.locator('#preview-panel iframe');
   await expect(frameEl).toHaveAttribute('sandbox', SANDBOX);
   await expect(frameEl).toHaveAttribute('allow', '');
   await expect(frameEl).toHaveAttribute('referrerpolicy', 'no-referrer');
   expect(await frameEl.getAttribute('sandbox')).not.toContain('allow-top-navigation');
-  const framed = page.frameLocator('#plugin-frame iframe');
+  const framed = page.frameLocator('#preview-panel iframe');
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
-  await page.waitForTimeout(500);
-  expect(landings, 'a double tap minted once').toHaveLength(2);
-  expect(landings[1].url.searchParams.get('muster_code'), 'a fresh code per click').not.toBe(landings[0].url.searchParams.get('muster_code'));
+  expect(landings).toHaveLength(1);
   // The plugin's content cannot navigate muster's tab.
   await framed.locator('body').evaluate(() => {
     try {
@@ -197,49 +206,133 @@ test('a viewer plugin chip on both session views: Open lands on the entry page i
   });
   await page.waitForTimeout(300);
   expect(new URL(page.url()).pathname, 'the framed plugin could not navigate the top window').toBe('/mirror/view');
-  await page.locator('#plugin-frame [data-plugin-close]').click();
-  await expect(page.locator('#plugin-frame')).toBeHidden();
+
+  // NEW TAB: minted at the click, on the entry page with muster_code and
+  // muster_plugin, redeemed for THIS window, no opener. A double tap mints
+  // and opens ONCE.
+  const tabs = context.pages().length;
+  const [tab] = await Promise.all([context.waitForEvent('page'), newTab.dblclick()]);
+  await expect(tab.locator('#fake-entry')).toBeVisible();
+  const landed = new URL(tab.url());
+  expect(landed.origin + landed.pathname).toBe(ENTRY);
+  expect(landed.searchParams.get('muster_plugin')).toBe(String(id));
+  expect(landed.searchParams.get('muster_code') ?? '').toMatch(/^.{20,}$/);
+  await expect(tab.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(tab.locator('#fake-opener')).toHaveText('opener:none');
+  await expect(tab.locator('#fake-referrer')).toHaveText('referrer:none');
+  await page.waitForTimeout(500);
+  expect(landings, 'a double tap minted once').toHaveLength(2);
+  expect(context.pages().length, 'a double tap opened one tab').toBe(tabs + 1);
+  expect(landings[1].url.searchParams.get('muster_code'), 'a fresh code per click').not.toBe(landings[0].url.searchParams.get('muster_code'));
+  expect(landings[1].referer, 'no Referer reaches the plugin').toBeUndefined();
+  await tab.close();
+
+  // A BLOCKED TAB says so, visibly, and mints nothing.
+  await page.evaluate(() => {
+    (window as unknown as { __open: typeof window.open }).__open = window.open;
+    window.open = () => null;
+  });
+  await newTab.click();
+  await expect(page.locator('#preview-error')).toBeVisible();
+  await expect(page.locator('#preview-error')).toContainText('blocked the new tab');
+  await page.waitForTimeout(500);
+  expect(landings, 'a blocked tab minted no code').toHaveLength(2);
+  await page.evaluate(() => {
+    window.open = (window as unknown as { __open: typeof window.open }).__open;
+  });
+
+  // CLOSE unloads the plugin's page and gives the button back its state.
+  await page.locator('#preview-panel [data-preview-close]').click();
+  await expect(panel).toBeHidden();
+  await expect(frameEl).toHaveAttribute('src', 'about:blank');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
   // POSITIVE CONTROL for 'self' in frame-src: the Rendered | Terminal switch
-  // still opens this origin's other view in its frame, on this page.
+  // still opens this origin's other view in its frame, which draws the button
+  // too, aimed at the same window.
   await page.locator('#view-terminal').click();
   await expect(page.locator('iframe[data-muster-view]')).toBeVisible();
-  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term')).toHaveCount(1);
-  // The Terminal view draws the chip too, aimed at the same window.
-  await expect(page.frameLocator('iframe[data-muster-view]').locator(`#plugin-chips[data-window="@1"] [data-plugin-chip="${id}"]`)).toHaveCount(1);
+  const term = page.frameLocator('iframe[data-muster-view]');
+  await expect(term.locator('#term')).toHaveCount(1);
+  await expect(term.locator('#preview-panel[data-window="@1"]')).toHaveCount(1);
+  await expect(term.locator('#preview-toggle-row')).toHaveCount(1);
 
-  // A window with NO rendered view opens on /mirror/terminal: the chip is
-  // there, aimed at that window, and its Open lands for it.
+  // A window with NO rendered view opens on /mirror/terminal: the button is
+  // there, aimed at that window, and its panel's New tab lands for it.
   const t = await page.goto(origin + viewOf('@2'));
   expect(new URL(page.url()).pathname).toBe('/mirror/terminal');
   expect(t!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
-  const tchip = page.locator(`#plugin-chips[data-window="@2"] [data-plugin-chip="${id}"]`);
-  await expect(tchip).toHaveCount(1);
-  const [tab2] = await Promise.all([context.waitForEvent('page'), tchip.locator('[data-plugin-open]').click()]);
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('data-preview-count', '1');
+  await expect(page.locator('#preview-panel')).toHaveAttribute('data-window', '@2');
+  await page.locator('#preview-toggle-row').click();
+  await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
+  const [tab2] = await Promise.all([context.waitForEvent('page'), page.locator('#preview-panel [data-preview-newtab]').click()]);
   await expect(tab2.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
   await tab2.close();
 
-  // AN EXPIRED SIGN-IN: the mint is sent to the sign-in page; the row says to
-  // sign in again rather than "refused (200)", and the blank tab is closed.
+  // AN EXPIRED SIGN-IN: the mint is sent to the sign-in page; the panel says
+  // to sign in again, and the blank tab is closed.
   const pagesBefore = context.pages().length;
   await context.clearCookies();
-  await page.locator(`#plugin-chips [data-plugin-chip="${id}"] [data-plugin-show]`).click();
-  await expect(page.locator('#plugin-chip-error')).toContainText('sign in again');
-  await page.locator(`#plugin-chips [data-plugin-chip="${id}"] [data-plugin-open]`).click();
-  await expect(page.locator('#plugin-chip-error')).toContainText('sign in again');
-  await expect.poll(() => context.pages().length, { message: 'the blank tab of a refused Open is closed' }).toBe(pagesBefore);
+  await page.locator('#preview-panel [data-preview-newtab]').click();
+  await expect(page.locator('#preview-error')).toContainText('sign in again');
+  await expect.poll(() => context.pages().length, { message: 'the blank tab of a refused New tab is closed' }).toBe(pagesBefore);
   await rig.login(page);
 
   // Any other page: no frame-src.
   const other = await page.goto(origin + '/tasks');
   expect(other!.headers()['content-security-policy']).not.toContain('frame-src');
 
-  // REVOKED: the chip is gone and the views' CSP has no frame-src again.
+  // REVOKED: no slot, no panel, no frame-src.
   const rv = await page.request.post(origin + `/plugins/${id}/revoke`, { headers: { Origin: origin }, maxRedirects: 0 });
   expect(rv.status(), await rv.text()).toBe(303);
-  for (const path of [viewOf('@1'), termOf('@2')]) {
-    const r = await page.goto(origin + path);
-    expect(r!.headers()['content-security-policy'], path).not.toContain('frame-src');
-    await expect(page.locator('#plugin-chips'), path).toHaveCount(0);
+  for (const p of [viewOf('@1'), termOf('@2')]) {
+    const r = await page.goto(origin + p);
+    expect(r!.headers()['content-security-policy'], p).not.toContain('frame-src');
+    await expect(page.locator('#preview-slot'), p).toHaveCount(0);
+    await expect(page.locator('#preview-panel'), p).toHaveCount(0);
   }
+});
+
+test('the Preview button follows the host: hidden while the window has nothing to preview, it appears and goes on an open page as the host\'s report moves, and the sidebar marks the window meanwhile', async ({ page }) => {
+  test.setTimeout(120_000);
+  await ready(page);
+  await mintViewer(page, 'Live viewer');
+  playPreviews('');
+  await buttonFor(page, '@1', false);
+
+  // NOTHING TO PREVIEW: no button on either view, and no sidebar mark.
+  await page.goto(origin + viewOf('@1'));
+  await expect(page.locator('#preview-slot')).toHaveCount(1);
+  await expect(page.locator('#preview-slot-row')).toHaveCount(1);
+  await expect(page.locator('[data-preview-toggle]')).toHaveCount(0);
+  await expect(page.locator('#mv-log [data-bubble="user"]').first()).toBeVisible();
+  // The geometry the button must not move when it appears: the title, the
+  // header, and where the conversation starts.
+  const geometry = () =>
+    page.evaluate(() => {
+      const r = (q: string) => {
+        const b = document.querySelector(q)!.getBoundingClientRect();
+        return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+      };
+      return { title: r('header h1'), header: r('header'), log: r('#mv-log') };
+    });
+  const before = await geometry();
+  const nav = () => page.request.get(origin + '/ui/nav/agents').then((r) => r.text());
+  expect(await nav()).not.toContain('data-nav-preview');
+
+  // The host reports an offer: the open page's button appears at the slot's
+  // next poll, with no reload, and the sidebar marks @1 alone.
+  playPreviews('@1 1 0\n');
+  await expect(page.locator('#preview-toggle-row'), 'the button appeared live').toHaveAttribute('data-preview-count', '1', { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle-row')).toBeVisible();
+  expect(await geometry(), 'the title (its width included), the header and the conversation did not move when the button appeared').toEqual(before);
+  const marked = mirroredEntries(await nav()).filter((e) => e.markup.includes('data-nav-preview'));
+  expect(marked.map((e) => entryMatches(e.markup, 'data-mirror-claude'))).toEqual([true]);
+
+  // And goes when the host has nothing again.
+  playPreviews('@1 0 0\n');
+  await expect(page.locator('#preview-toggle-row'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(nav, { timeout: 20_000 }).not.toContain('data-nav-preview');
+  playPreviews('@1 2 1\n@2 1 0\n');
 });

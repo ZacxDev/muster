@@ -514,9 +514,17 @@ var isolationClasses = map[string]routeClass{
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
 	// send carries host and session in its FORM, which fill() also sets.
-	"GET /mirror/view":       classMirror,
-	"GET /mirror/view/ws":    classMirror,
-	"POST /mirror/view/send": classMirror,
+	"GET /mirror/view": classMirror,
+	// A session view's Preview button (plugin_chip.go): the window's counts,
+	// addressed like the view (?host=&session=&window=), read from the hub's
+	// OWNER-SCOPED host list. NOT an object route (namesObject): it answers an
+	// empty 200 alike for a window with nothing to preview, one it does not
+	// list and one of another owner's, by design — so it cannot tell A's
+	// window from a ghost even to A, and the walk holds it to the stricter
+	// rule instead: no identifier of A's in an outsider's answer.
+	"GET /ui/mirror/preview-button": classMirror,
+	"GET /mirror/view/ws":           classMirror,
+	"POST /mirror/view/send":        classMirror,
 	// The Terminal view's composer: the same handler, the same form fields.
 	"POST /mirror/terminal/send": classMirror,
 	// Drag-to-scroll: the same address fields, plus `lines`.
@@ -1490,7 +1498,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	if path == "/static/" {
 		path = "/static/app.css"
 	}
-	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" ||
+	if strings.HasPrefix(path, "/mirror/terminal") || strings.HasPrefix(path, "/mirror/view") || path == "/mirror/confirm-send" || path == "/ui/mirror/preview-button" ||
 		path == "/send-queue" || path == "/send-queue/confirm" || path == "/attention/opencode/answer" {
 		if method == http.MethodPost {
 			// `kind` and `password` are the plain confirm page's own fields.

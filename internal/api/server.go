@@ -666,6 +666,8 @@ func (s *Server) registerAll(mux Mux) {
 	// The sidebar's agent list (nav_agents.go): a partial every nav document loads.
 	mux.HandleFunc("GET "+ui.NavAgentsPath, s.requireSession(s.handleNavAgents))
 	mux.HandleFunc("GET "+ui.NavWaitingPath, s.requireSession(s.handleNavWaiting))
+	// A session view's Preview button (plugin_chip.go), which its slot polls.
+	mux.HandleFunc("GET "+ui.PreviewButtonPath, s.requireSession(s.handlePreviewButton))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))

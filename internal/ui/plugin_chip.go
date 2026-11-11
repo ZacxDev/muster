@@ -1,155 +1,351 @@
 package ui
 
 import (
+	"io"
+	"net/url"
 	"strconv"
+	"strings"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/textplain"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
 
-// THE SESSION-VIEW CHIP (docs/plugins.md#the-session-view-chip;
-// docs/design/previews.md seam (b)): one static chip per live viewer plugin of
-// the owner, on a mirrored window's Rendered and Terminal views. Each has
-// Open (a new tab) and Show here (a sandboxed frame over the page). Both mint
-// a one-time hand-off at CLICK time (POST /plugin-handoffs, aimed at this
-// window) and go to the entry URL it answers; drawing the chip mints nothing.
+// THE SESSION VIEWS' PREVIEW BUTTON AND PANEL (docs/plugins.md#the-session-view-chip;
+// docs/previews.md): the owner's live viewer plugin (the preview gateway),
+// opened from a mirrored window's Rendered and Terminal views — and ONLY while
+// that window has something to preview (operator decision: a control above
+// every chat whether or not anything was running was noise).
 //
-//   - 🔴 Open opens its tab SYNCHRONOUSLY, inside the tap (window.open of
+//   - THE BUTTON: "Preview" and a count (the window's offers plus its open
+//     previews, mirror.WindowPreviews, which the window's host reports),
+//     drawn only while that count is above zero. From `sm` (640px) up it is
+//     in the header row, beside the Rendered | Terminal switch. 🔴 BELOW `sm`
+//     IT IS IN THE HEADER'S SECOND ROW (the status line under the title) —
+//     operator decision: at a phone's width the header row holds no room for
+//     another 44px button, and taking it would leave the title a few pixels.
+//     There it is a 20px pill, the height the row already has, so neither the
+//     title row nor the header grows when it appears; its hit area is 44px
+//     tall (a ::before over the header's padding, above the title's own hit
+//     area). TWO SLOTS, one per place, each `display:none` at the other's
+//     width and each re-reading its button (PreviewButtonPath, Place) every
+//     previewPollEvery only while the tab is shown AND the page is at its
+//     width — so one request per tick, and the page holds no event stream.
+//   - THE PANEL opens on the button: the plugin's page (the gateway's session
+//     page) in a sandboxed frame, a side panel beside the conversation from
+//     `sm` up and the whole screen below it — where everything behind it is
+//     made inert while it is open, so Tab stays in it. Close (or Escape, when
+//     no other dialog or popover is open to take it) unloads the page. "New
+//     tab" in its header is the hand-off in a new tab instead.
+//   - Both mint a one-time hand-off at CLICK time (POST /plugin-handoffs,
+//     aimed at this window) and go to the entry URL it answers; drawing the
+//     button mints nothing. One mint at a time.
+//   - 🔴 New tab opens its tab SYNCHRONOUSLY, inside the tap (window.open of
 //     about:blank), and only then mints; the tab is sent to the minted URL
 //     once it answers. A popup blocker (Safari's among them, which drops a tab
 //     opened after an await) therefore refuses at the tap, before any code is
-//     minted, and the row says so. A refused mint closes the blank tab and the
-//     row says why. NOOPENER IS KEPT BY HAND: window.open with "noopener"
-//     returns no handle to navigate, so the tab is opened with one, its
-//     opener is set to null while it is still about:blank (same-origin with
-//     muster, so muster may), and only then is it navigated — so the plugin's
-//     page sees window.opener === null, as rel="noopener" would give. What is
-//     not the same: the tab stays in muster's browsing context group (no
-//     process isolation from it), which hands the plugin no reference to
-//     muster's window. Referrer: the blank document inherits muster's
-//     Referrer-Policy no-referrer, so the plugin gets no Referer. The link
-//     still carries target=_blank rel="noopener noreferrer" for what its
-//     markup says (a middle-click opens nothing of the plugin's).
-//   - 🔴 Show here's frame is sandboxed WITHOUT allow-top-navigation, so the
+//     minted, and the panel says so. A refused mint closes the blank tab and
+//     says why. NOOPENER IS KEPT BY HAND: window.open with "noopener" returns
+//     no handle to navigate, so the tab is opened with one, its opener is set
+//     to null while it is still about:blank (same-origin with muster, so
+//     muster may), and only then is it navigated — so the plugin's page sees
+//     window.opener === null, as rel="noopener" would give. What is not the
+//     same: the tab stays in muster's browsing context group (no process
+//     isolation from it), which hands the plugin no reference to muster's
+//     window. Referrer: the blank document inherits muster's Referrer-Policy
+//     no-referrer, so the plugin gets no Referer. The link still carries
+//     target=_blank rel="noopener noreferrer" for what its markup says.
+//   - 🔴 The panel's frame is sandboxed WITHOUT allow-top-navigation, so the
 //     plugin's content cannot navigate muster's tab; allow="" grants it no
 //     camera, microphone or location; referrerpolicy="no-referrer".
 //     allow-same-origin is safe because the frame's origin is the plugin's,
 //     never muster's (a Host under MUSTER_PLUGIN_ORIGINS is refused 421).
-//   - The row has a FIXED height and is server-drawn with the page, so it
-//     moves nothing once the page has loaded: cls.spec.ts measures both views
-//     WITH a chip ("the session views with a viewer plugin chip").
-//   - One tap mints once: a chip is busy (data-busy) until its mint answers.
-//   - The page's CSP carries frame-src 'self' <the plugins' origins> only
-//     while this is drawn (api's allowSameOriginFrame).
+//   - 🔴 THE PAGE'S CSP CARRIES frame-src 'self' <the plugins' origins>
+//     WHENEVER THE SLOT IS DRAWN — the owner has a live viewer plugin — and
+//     not only while the count is above zero: the button can appear after the
+//     page loaded, and its panel must then be allowed to frame the plugin
+//     (api's allowSameOriginFrame). With no live viewer plugin nothing here is
+//     drawn, nothing polls, and the CSP is the switch's own.
+//   - The panel is position:fixed, and the button takes room only inside a
+//     row that already has its height (the header row's 44px controls, the
+//     second row's 20px), so neither moves the conversation: the views with a
+//     live preview are measured by cls.spec.ts, and plugin-chip.spec.ts
+//     measures the title and the header unchanged when the button appears
+//     at a phone's width.
 
-// PluginChipSandbox is Show here's frame's sandbox, exactly: no
+// PluginChipSandbox is the panel's frame's sandbox, exactly: no
 // allow-top-navigation of any kind.
 const PluginChipSandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
 
-// PluginChip is one viewer plugin's chip.
+// PreviewButtonPath is the header button's refresh: GET with the window's
+// host, session and window, answering PreviewButton for its counts NOW.
+const PreviewButtonPath = "/ui/mirror/preview-button"
+
+// previewPollEvery is how often the slot re-reads the button while the tab is
+// shown. The host reports its counts every refresh (5 s) after its own 5 s
+// listener scan, so this is the same order of delay.
+const previewPollEvery = "10s"
+
+// PreviewPlace is where a Preview button is drawn: the header row (from `sm`
+// up) or the header's second row (below `sm`).
+type PreviewPlace string
+
+const (
+	PreviewInHeader PreviewPlace = "header"
+	PreviewInRow    PreviewPlace = "row"
+)
+
+// PreviewPlaceOf is the place a query's `place` names; anything else is the
+// header.
+func PreviewPlaceOf(s string) PreviewPlace {
+	if s == string(PreviewInRow) {
+		return PreviewInRow
+	}
+	return PreviewInHeader
+}
+
+// PreviewButtonSrc is PreviewButtonPath for one window's button at place.
+func PreviewButtonSrc(host, session, window string, place PreviewPlace) string {
+	q := url.Values{}
+	q.Set("host", host)
+	q.Set("session", session)
+	q.Set("window", window)
+	q.Set("place", string(place))
+	return PreviewButtonPath + "?" + q.Encode()
+}
+
+// PluginChip is one live viewer plugin the panel can open.
 type PluginChip struct {
 	ID    int64
 	Label string
 }
 
-// PluginChips is a session view's chip row: the plugins, the mint route and
-// the window every hand-off is aimed at. nil draws nothing.
+// PluginChips is a session view's preview control: the owner's live viewer
+// plugins (newest first), the mint route, the window every hand-off is aimed
+// at, and what that window has to preview now. nil draws nothing.
 type PluginChips struct {
-	MintPath     string
-	Host, Window string
-	Chips        []PluginChip
+	MintPath              string
+	Host, Session, Window string
+	Chips                 []PluginChip
+	// Previews is the window's counts when the page was drawn
+	// (mirror.SessionView.Previews): the button's first state.
+	Previews mirror.WindowPreviews
 }
 
-// pluginChipRow is the row under the header, and the one frame dialog its
-// Show here buttons share.
-func pluginChipRow(c *PluginChips) g.Node {
-	if c == nil || len(c.Chips) == 0 {
+// on: there is a plugin to open, so the slot, the panel and the frame-src
+// are drawn.
+func (c *PluginChips) on() bool { return c != nil && len(c.Chips) > 0 }
+
+// previewWords is what a window has to preview, as words: "1 preview open,
+// 2 servers to preview".
+func previewWords(p mirror.WindowPreviews) string {
+	var parts []string
+	plural := func(n int, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return strconv.Itoa(n) + " " + many
+	}
+	if p.Open > 0 {
+		parts = append(parts, plural(p.Open, "preview open", "previews open"))
+	}
+	if p.Offered > 0 {
+		parts = append(parts, plural(p.Offered, "server to preview", "servers to preview"))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// previewCount is a count as drawn: "99+" past it.
+func previewCount(n int) string {
+	if n > mirror.MaxPreviewCount {
+		return strconv.Itoa(mirror.MaxPreviewCount) + "+"
+	}
+	return strconv.Itoa(n)
+}
+
+const previewIcon = `<svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>`
+
+// PreviewButton is the Preview button for a window's counts p at place: nil
+// while it has nothing to preview. It carries no htmx wiring (the slot does),
+// so a swapped-in button never re-arms a trigger. The two places' buttons have
+// their own ids (preview-toggle, preview-toggle-row) and share
+// data-preview-toggle, which the panel's script reads.
+func PreviewButton(p mirror.WindowPreviews, place PreviewPlace) g.Node {
+	if p.IsZero() {
 		return nil
 	}
-	chips := make([]g.Node, 0, len(c.Chips))
-	for _, p := range c.Chips {
-		// The owner's own label, plained like every title muster draws.
-		label := textplain.Title(p.Label)
-		chips = append(chips, Div(
-			g.Attr("data-plugin-chip", strconv.FormatInt(p.ID, 10)),
-			g.Attr("data-plugin-label", label),
-			Class("flex shrink-0 items-center gap-1 rounded-full bg-s2 py-0.5 pl-3 pr-1 ring-1 ring-inset ring-line"),
-			Span(Class("max-w-[10rem] truncate font-semibold text-fg"), g.Text(label)),
-			A(
-				g.Attr("data-plugin-open", ""),
-				Href("#"),
-				Target("_blank"),
-				Rel("noopener noreferrer"),
-				g.Attr("aria-label", "Open "+label+" in a new tab"),
-				Class("press inline-flex min-h-[44px] items-center rounded-full px-2 font-semibold text-accent hover:bg-s1"),
-				g.Text("Open"),
-			),
-			Button(
-				Type("button"),
-				g.Attr("data-plugin-show", ""),
-				g.Attr("aria-label", "Show "+label+" here"),
-				Class("press inline-flex min-h-[44px] items-center rounded-full px-2 font-semibold text-accent hover:bg-s1"),
-				g.Text("Show here"),
-			),
-		))
+	words := previewWords(p)
+	id, cls, icon := "preview-toggle",
+		"press relative inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent",
+		previewIcon
+	badge := "inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent"
+	if place == PreviewInRow {
+		badge = "inline-flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none tabular-nums text-on-accent"
+		// 20px tall with -2px margins above and below: it lays out as 16px,
+		// the status line's own height, so the row — and the title row above
+		// it, which the header centres with it — does not move when it
+		// appears. The ::before is its 44px
+		// thumb target (centred on it, so it reaches over the header's
+		// padding, not the title row's text), z-20 above the title's z-10 hit
+		// area (mirrorTitleHitClass), which spans this row too.
+		id = "preview-toggle-row"
+		cls = "press relative z-20 -my-0.5 inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-s2 px-2 text-[11px] font-semibold leading-none text-fg ring-1 ring-inset ring-line aria-expanded:ring-2 aria-expanded:ring-accent " +
+			"before:absolute before:-inset-x-1 before:top-1/2 before:h-11 before:-translate-y-1/2 before:content-['']"
+		icon = strings.Replace(previewIcon, `class="h-5 w-5 shrink-0"`, `class="h-3.5 w-3.5 shrink-0"`, 1)
 	}
+	return Button(
+		Type("button"),
+		ID(id),
+		g.Attr("data-preview-toggle", string(place)),
+		g.Attr("data-preview-count", strconv.Itoa(p.Total())),
+		g.Attr("aria-controls", "preview-panel"),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-label", "Preview: "+words),
+		g.Attr("title", "Preview: "+words),
+		Class(cls),
+		g.Raw(icon),
+		g.If(place == PreviewInHeader, Span(g.Text("Preview"))),
+		Span(g.Attr("aria-hidden", "true"), Class(badge), g.Text(previewCount(p.Total()))),
+	)
+}
+
+// RenderPreviewButton writes PreviewButton(p, place) (nothing at zero).
+func RenderPreviewButton(w io.Writer, p mirror.WindowPreviews, place PreviewPlace) error {
+	n := PreviewButton(p, place)
+	if n == nil {
+		return nil
+	}
+	return n.Render(w)
+}
+
+// previewWide is the slots' width test: the page is at `sm` (640px) or
+// wider — Tailwind's sm, a min-width on the viewport, which innerWidth is.
+const previewWide = "window.innerWidth>=640"
+
+// previewButtonSlot is the slot for place: the button as the page was drawn,
+// re-read every previewPollEvery while the tab is shown and the page is at
+// the place's width. Hidden at the other width, and while empty (empty:hidden:
+// an empty slot takes no room and adds no gap to its row).
+func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
+	if !c.on() {
+		return nil
+	}
+	id, cls, at := "preview-slot", "inline-flex shrink-0 empty:hidden max-sm:hidden", previewWide
+	if place == PreviewInRow {
+		id, cls, at = "preview-slot-row", "ml-auto inline-flex shrink-0 empty:hidden sm:hidden", "!("+previewWide+")"
+	}
+	return Span(
+		ID(id),
+		Class(cls),
+		hx("hx-get", PreviewButtonSrc(c.Host, c.Session, c.Window, place)),
+		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden&&"+at+"]"),
+		hx("hx-swap", "innerHTML"),
+		hx("hx-target", "this"),
+		PreviewButton(c.Previews, place),
+	)
+}
+
+// previewPanel is the panel the button opens (closed), and its script.
+func previewPanel(c *PluginChips) g.Node {
+	if !c.on() {
+		return nil
+	}
+	first := c.Chips[0]
+	// More than one live viewer plugin: the panel's header picks which one
+	// it shows (newest first, the first chosen).
+	var picker g.Node
+	if len(c.Chips) > 1 {
+		opts := make([]g.Node, 0, len(c.Chips))
+		for _, p := range c.Chips {
+			opts = append(opts, Option(Value(strconv.FormatInt(p.ID, 10)), g.Text(textplain.Title(p.Label))))
+		}
+		picker = Select(g.Attr("data-preview-plugin", ""), g.Attr("aria-label", "Plugin"),
+			Class("min-h-[44px] max-w-[9rem] shrink-0 truncate rounded-lg bg-s2 px-2 text-xs text-fg ring-1 ring-inset ring-line"),
+			g.Group(opts))
+	}
+	btn := "press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-3 text-sm font-semibold hover:bg-s2"
 	return g.Group{
-		Div(
-			ID("plugin-chips"),
+		Aside(
+			ID("preview-panel"),
+			g.Attr("hidden", ""),
+			g.Attr("aria-labelledby", "preview-panel-title"),
 			g.Attr("data-mint", c.MintPath),
 			g.Attr("data-host", c.Host),
 			g.Attr("data-window", c.Window),
-			g.Attr("aria-label", "Plugins"),
-			Class("flex h-12 shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden border-b border-line px-2 text-xs"),
-			g.Group(chips),
-			Span(ID("plugin-chip-error"), g.Attr("role", "status"), g.Attr("hidden", ""), Class("min-w-0 truncate text-danger")),
-		),
-		Dialog(
-			ID("plugin-frame"),
-			g.Attr("aria-labelledby", "plugin-frame-title"),
-			Class("mx-auto mb-0 mt-auto h-[85dvh] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl bg-s1 p-0 text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60 sm:m-auto sm:rounded-2xl [&[open]]:flex"),
-			Div(Class("flex h-12 shrink-0 items-center gap-2 border-b border-line pl-4 pr-1"),
-				H2(ID("plugin-frame-title"), Class("min-w-0 flex-1 truncate text-sm font-semibold")),
-				Button(Type("button"), g.Attr("data-plugin-close", ""),
-					Class("press inline-flex min-h-[44px] items-center rounded-lg px-3 text-sm font-semibold text-fg2 hover:bg-s2"),
-					g.Text("Close")),
+			g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
+			// The whole screen below `sm`; a side panel from `sm` up, over
+			// the conversation's right part and under nothing (z-40: above
+			// the page, below the sidebar's overlay and the dialogs).
+			Class("fixed inset-0 z-40 flex-col bg-s1 text-fg shadow-2xl ring-1 ring-line [&:not([hidden])]:flex sm:left-auto sm:w-[min(40rem,60vw)] sm:border-l sm:border-line"),
+			Div(Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-4 pr-1"),
+				H2(ID("preview-panel-title"), Class("min-w-0 flex-1 truncate text-sm font-semibold"), g.Text("Preview")),
+				picker,
+				A(
+					g.Attr("data-preview-newtab", ""),
+					Href("#"),
+					Target("_blank"),
+					Rel("noopener noreferrer"),
+					g.Attr("aria-label", "Open the preview in a new tab"),
+					Class(btn+" text-accent"),
+					g.Text("New tab"),
+				),
+				Button(Type("button"), g.Attr("data-preview-close", ""), g.Attr("aria-label", "Close the preview"),
+					Class(btn+" text-fg2"), g.Text("Close")),
 			),
+			P(ID("preview-error"), g.Attr("role", "status"), g.Attr("hidden", ""),
+				Class("shrink-0 border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words")),
 			IFrame(
 				g.Attr("sandbox", PluginChipSandbox),
 				g.Attr("allow", ""),
 				g.Attr("referrerpolicy", "no-referrer"),
-				g.Attr("title", "Plugin"),
+				g.Attr("title", "Preview"),
 				Class("min-h-0 w-full flex-1 border-0 bg-bg"),
 			),
 		),
-		staticScript(pluginChipScriptSrc),
+		staticScript(previewPanelScriptSrc),
 	}
 }
 
-// pluginChipScriptSrc mints at click time and sends the browser on (see the
-// file comment for Open's tab). A refused mint (a revoked token, the window
-// gone, the rate cap), an expired sign-in and a blocked tab each say why in
-// the row and go nowhere.
-var pluginChipScriptSrc = staticJS("plugin-chip", `
+// previewPanelScriptSrc opens and closes the panel, mints at click time and
+// sends the frame or the new tab on (see the file comment for the tab). A
+// refused mint (a revoked token, the window gone, the rate cap), an expired
+// sign-in and a blocked tab each say why in the panel and go nowhere.
+var previewPanelScriptSrc = staticJS("preview-panel", `
 (function () {
-  if (window.__musterPluginChip) return;
-  window.__musterPluginChip = true;
+  if (window.__musterPreviewPanel) return;
+  window.__musterPreviewPanel = true;
   var SIGN_IN = 'Your sign-in has expired: reload the page and sign in again.';
-  var BLOCKED = 'The browser blocked the new tab. Allow pop-ups for this site, or use Show here.';
-  function row() { return document.getElementById('plugin-chips'); }
+  var BLOCKED = 'The browser blocked the new tab. Allow pop-ups for this site, or use the preview here.';
+  var busy = false;
+  function panel() { return document.getElementById('preview-panel'); }
+  // The button on screen: the header's, or the second row's below sm.
+  function toggles() { return document.querySelectorAll('[data-preview-toggle]'); }
+  function toggle() {
+    var ts = toggles();
+    for (var i = 0; i < ts.length; i++) if (ts[i].getClientRects().length) return ts[i];
+    return null;
+  }
+  function frame() { return panel().querySelector('iframe'); }
   function say(msg) {
-    var e = document.getElementById('plugin-chip-error');
+    var e = document.getElementById('preview-error');
     if (!e) return;
     e.textContent = msg || '';
     e.hidden = !msg;
   }
-  function mint(chip) {
-    var r = row();
-    var body = { plugin: Number(chip.getAttribute('data-plugin-chip')),
-      target: { mirror: { host: r.getAttribute('data-host'), window: r.getAttribute('data-window') } } };
-    return fetch(r.getAttribute('data-mint'), {
+  function expanded() {
+    var ts = toggles(), p = panel(), on = p && !p.hidden ? 'true' : 'false';
+    for (var i = 0; i < ts.length; i++) ts[i].setAttribute('aria-expanded', on);
+  }
+  function plugin() {
+    var p = panel(), s = p.querySelector('[data-preview-plugin]');
+    return Number(s ? s.value : p.getAttribute('data-plugin'));
+  }
+  function mint() {
+    var p = panel();
+    var body = { plugin: plugin(), target: { mirror: { host: p.getAttribute('data-host'), window: p.getAttribute('data-window') } } };
+    return fetch(p.getAttribute('data-mint'), {
       method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'manual',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(body)
@@ -164,48 +360,102 @@ var pluginChipScriptSrc = staticJS("plugin-chip", `
       });
     });
   }
-  function dialog() { return document.getElementById('plugin-frame'); }
-  document.addEventListener('close', function (ev) {
-    var d = dialog();
-    if (ev.target !== d) return;
-    // The plugin's page ends with the dialog: nothing of it runs on hidden.
-    var f = d.querySelector('iframe');
-    if (f) f.src = 'about:blank';
-  }, true);
+  function show() {
+    if (busy) return;
+    busy = true;
+    say('');
+    mint().then(function (url) {
+      if (!panel().hidden) frame().src = url;
+    }).catch(function (e) {
+      say(e && e.message ? e.message : 'the hand-off failed');
+    }).then(function () { busy = false; });
+  }
+  // FULL SCREEN (below sm) the panel is all there is: everything behind it is
+  // made inert, so Tab cannot reach a control it covers. Only what this set
+  // inert is restored. Beside the page (sm and up) nothing is: the
+  // conversation stays usable next to it.
+  var inerted = [];
+  function shield() {
+    var p = panel(), full = p && !p.hidden && window.innerWidth < 640;
+    if (full && !inerted.length) {
+      var kids = document.body.children;
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k === p || k.contains(p) || k.tagName === 'SCRIPT' || k.inert) continue;
+        k.inert = true;
+        inerted.push(k);
+      }
+    } else if (!full && inerted.length) {
+      inerted.forEach(function (k) { k.inert = false; });
+      inerted = [];
+    }
+  }
+  window.addEventListener('resize', shield);
+  function open() {
+    var p = panel();
+    if (!p.hidden) return;
+    p.hidden = false;
+    shield();
+    expanded();
+    var c = p.querySelector('[data-preview-close]');
+    if (c) c.focus();
+    show();
+  }
+  function close() {
+    var p = panel();
+    if (!p || p.hidden) return;
+    p.hidden = true;
+    shield();
+    // The plugin's page ends with the panel: nothing of it runs on hidden.
+    frame().src = 'about:blank';
+    say('');
+    expanded();
+    var t = toggle();
+    if (t) t.focus();
+  }
+  function newTab() {
+    if (busy) return;
+    say('');
+    // Inside the tap, before any await (see the file comment).
+    var tab = window.open('about:blank', '_blank');
+    if (!tab) { say(BLOCKED); return; }
+    try { tab.opener = null; } catch (e) {}
+    busy = true;
+    mint().then(function (url) {
+      if (tab.closed) { say(BLOCKED); return; }
+      tab.location.replace(url);
+    }).catch(function (e) {
+      try { tab.close(); } catch (x) {}
+      say(e && e.message ? e.message : 'the hand-off failed');
+    }).then(function () { busy = false; });
+  }
   document.addEventListener('click', function (ev) {
     var t = ev.target;
-    if (!t || !t.closest) return;
-    if (t.closest('[data-plugin-close]')) { var d0 = dialog(); if (d0 && d0.open) d0.close(); return; }
-    var open = t.closest('[data-plugin-open]');
-    var show = t.closest('[data-plugin-show]');
-    var chip = (open || show) && (open || show).closest('[data-plugin-chip]');
-    if (!chip) return;
+    if (!t || !t.closest || !panel()) return;
+    if (t.closest('[data-preview-toggle]')) { ev.preventDefault(); if (panel().hidden) open(); else close(); return; }
+    if (t.closest('[data-preview-close]')) { ev.preventDefault(); close(); return; }
+    if (t.closest('[data-preview-newtab]')) { ev.preventDefault(); newTab(); }
+  });
+  document.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (t && t.matches && t.matches('[data-preview-plugin]') && !panel().hidden) show();
+  });
+  // Escape closes the panel only when it is the panel's: not one another
+  // handler already took, and not while another dialog or popover is open
+  // (Escape is that one's to close).
+  function otherOpen() {
+    if (document.querySelector('dialog[open]')) return true;
+    try { return !!document.querySelector(':popover-open'); } catch (e) { return false; }
+  }
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || ev.defaultPrevented || !panel() || panel().hidden || otherOpen()) return;
     ev.preventDefault();
-    if (chip.hasAttribute('data-busy')) return;
-    say('');
-    var tab = null;
-    if (open) {
-      // Inside the tap, before any await (see the file comment).
-      tab = window.open('about:blank', '_blank');
-      if (!tab) { say(BLOCKED); return; }
-      try { tab.opener = null; } catch (e) {}
-    }
-    chip.setAttribute('data-busy', '');
-    mint(chip).then(function (url) {
-      if (tab) {
-        if (tab.closed) { say(BLOCKED); return; }
-        tab.location.replace(url);
-        return;
-      }
-      var d = dialog();
-      var f = d.querySelector('iframe');
-      document.getElementById('plugin-frame-title').textContent = chip.getAttribute('data-plugin-label') || 'Plugin';
-      f.src = url;
-      if (!d.open) d.showModal();
-    }).catch(function (e) {
-      if (tab) { try { tab.close(); } catch (x) {} }
-      say(e && e.message ? e.message : 'the hand-off failed');
-    }).then(function () { chip.removeAttribute('data-busy'); });
+    close();
+  });
+  // The slot's refresh swaps the button in fresh: keep it saying whether the
+  // panel is open.
+  document.addEventListener('htmx:afterSwap', function (ev) {
+    if (ev.target && (ev.target.id === 'preview-slot' || ev.target.id === 'preview-slot-row')) expanded();
   });
 })();
 `)

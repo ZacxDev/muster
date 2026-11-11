@@ -526,7 +526,7 @@ func pluginViewerFieldsHTML(origins []plugins.OriginPattern) string {
 	b.WriteString(`<fieldset class="flex flex-col gap-2" data-testid="plugin-capabilities">
 <legend class="text-sm font-medium text-fg">What it may do <span class="text-xs text-fg2">fixed once created</span></legend>
 <label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="messages" checked> Messages: bring messages to your chief</label>
-<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="viewer"> Viewer: a chip on your session views that opens it as you</label>
+<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input type="checkbox" name="capability" value="viewer"> Viewer: a Preview button on your session views that opens it as you</label>
 <label for="plugin-origin" class="text-sm font-medium text-fg">Viewer origin</label>
 <select id="plugin-origin" name="origin" class="` + flowsInputClass + `">`)
 	for _, o := range origins {

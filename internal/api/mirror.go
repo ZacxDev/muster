@@ -134,7 +134,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			TmuxAt: at, TmuxCode: code,
 			SessionName: name, ManualName: focused[focus.MirrorSubject(m.SessionKey())].Name.Manual, Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, LiveCopy: m.LiveCopyWarning(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
-			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), FocusKey: m.SessionKey(), Repo: m.Repo, Work: m.Work, Color: m.Color,
+			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), FocusKey: m.SessionKey(), Repo: m.Repo, Work: m.Work, Previews: m.Previews, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
 			HostIcon: ui.HostIconFor(ranks, m.Host), ChiefDispatch: m.Dispatch})
 	}
@@ -317,10 +317,10 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
-	// The owner's viewer plugins' chips, and the frame-src their Show here
+	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
 	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
-	v.Plugins = pluginChips(vp, h.Host, e.Window)
+	v.Plugins = pluginChips(vp, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)

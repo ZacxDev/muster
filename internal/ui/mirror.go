@@ -122,6 +122,11 @@ type MirrorCardView struct {
 	// (mirror.SessionView.Work): its sidebar row's count (navWork), display only. The zero value — nothing running, or a host that did not
 	// say — draws no count.
 	Work mirror.WindowWork
+	// Previews is what the window has to preview now
+	// (mirror.SessionView.Previews): its sidebar row's preview mark
+	// (navPreview). The zero value — nothing, or a host that did not say —
+	// draws none.
+	Previews mirror.WindowPreviews
 	// Color is the window's tmux identity colour (mirror.SessionView.Color,
 	// lowercase #rrggbb), "" for none: the sidebar row's left edge is tinted
 	// with it (identity_color.go). None — or anything that is not a wire

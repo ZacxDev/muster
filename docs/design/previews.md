@@ -431,6 +431,22 @@ offer is not visible in muster's own view until the owner opens the plugin's
 chip, and muster raises no notice when one appears. In exchange muster stores
 nothing about previews, offers or the processes behind them.
 
+**As built (later): the chip became a Preview button shown only while there
+is something to preview.** Operator decision: a chip row above every chat,
+whether or not anything ran, was noise. The host now tells muster, on its own
+mirror connection (not through the gateway, so no new gateway→muster seam),
+how many offers and open previews each window has: two counts per window, no
+port or process, kept in memory with the window list and never stored. The
+session views draw a header **Preview** button with that count only while it
+is above zero (and the owner has a live viewer plugin), which opens the
+session page in a side panel (whole screen on a phone) with **New tab** beside
+it; the sidebar marks such windows. So the "no per-preview chip" cost above is
+now partly paid: muster shows *that* a window has something to preview, still
+not *what*. `frame-src` follows the live viewer plugins alone, so a button that
+appears after the page loaded can frame its panel. The current behaviour is
+[plugins.md](../plugins.md#the-session-view-chip) and
+[previews.md](../previews.md#what-muster-is-told).
+
 For previews, the chip opens the gateway's **session page** at
 `w.musterchief.com`, which lists that window's offers and open previews
 ([the gateway's session page](#the-gateways-session-page)).

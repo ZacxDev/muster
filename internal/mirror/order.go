@@ -80,6 +80,10 @@ type SessionView struct {
 	// Work is what the entry's Claude Code session has running now
 	// (HostView.Work, work.go); the zero value when its host did not say.
 	Work WindowWork
+	// Previews is what the entry's window has to preview now
+	// (HostView.Previews, previews.go); the zero value when its host did not
+	// say — which draws no Preview button and no sidebar mark.
+	Previews WindowPreviews
 	// Color is the entry's tmux identity colour, lowercase #rrggbb
 	// (HostView.Colors, work.go), "" when its host did not say.
 	Color string
@@ -418,6 +422,7 @@ func (h HostView) Entries() []SessionView {
 			e.Dispatch = w.Dispatch
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
+			e.Previews = h.Previews[w.ID]
 			if h.StatusReport {
 				e.Status, e.StatusSince = w.Status, w.StatusSince
 			}

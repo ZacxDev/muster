@@ -124,31 +124,57 @@ Counted in `muster_plugin_handoffs_total{purpose,outcome}`: `minted`,
 
 ### The session-view chip
 
-Where a [hand-off](#viewer-hand-off) starts. On a mirrored window's two
-session views, `/mirror/view` and `/mirror/terminal`, muster draws a row under
-the header with **one chip per live `viewer` plugin of the owner**: the
-plugin's label, **Open** and **Show here**. A window with no rendered view
-opens on `/mirror/terminal`, so the chip is on both. An agent's pages
+Where a [hand-off](#viewer-hand-off) starts. (The heading keeps its old name
+so links to it hold; the chip row it named is gone.) On a mirrored window's
+two session views, `/mirror/view` and `/mirror/terminal`, the header carries a
+**Preview** button beside the Rendered | Terminal switch, and it opens the
+owner's live `viewer` plugin in a panel. A window with no rendered view opens
+on `/mirror/terminal`, so the button is on both. An agent's pages
 (`/agents/{name}`) draw none.
 
-- **Drawn from the token rows alone.** A plugin draws a chip while its token is
+- **Where it sits.** From `sm` (640 px) up, in the header row beside the
+  switch: an icon, "Preview" and the count. Below `sm`, in the header's
+  **second row** (the status line under the title), as a small pill with the
+  count and a 44 px tap target, so the title keeps its whole width; it lays
+  out at that row's own height, so neither the title nor the header moves
+  when it appears. Each place has its own slot, polled only at its width.
+
+- **Only while the window has something to preview.** The window's host
+  reports, per tmux window, how many of its web servers it offers and how many
+  previews of it are open ([previews.md](previews.md#what-you-do)); the button
+  is drawn only while that sum is above zero, and shows it as a count. A window
+  with nothing, and every window of a host that does not report (an older
+  `muster-mirror`, or one without `-preview`), draws no button.
+- **And only while a plugin would mint.** A plugin counts while its token is
   live, has `viewer`, and its origin and entry URL still pass the server's
-  current `MUSTER_PLUGIN_ORIGINS` (the mint's own check). Revoke the token and
-  its chip is gone on the next load. Drawing the chip mints nothing.
-- **Both buttons mint at click time.** The page posts `POST /plugin-handoffs`
-  for that plugin and the window on screen, then goes to the URL it answers. A
-  refused mint (the token revoked since the page loaded, the window gone, the
-  rate cap) says why in the row and goes nowhere.
-- **Open** opens a blank tab within the tap itself, before minting. The tab's
-  `opener` is cleared while it is still blank, and only then is it sent to the
-  minted URL. So the plugin's page gets no `window.opener` handle on muster's
-  tab and no `Referer`, just as `rel="noopener noreferrer"` would give, and the
-  link carries those attributes too. Because the tab opens before the mint,
-  a popup blocker refuses at the tap: the row says the tab was blocked and no
-  code is minted. If the mint is refused, the blank tab is closed and the row
-  says why. An expired sign-in says to sign in again.
-- **One tap mints once**: a chip ignores taps until its mint has answered.
-- **Show here** loads the URL into a frame in a dialog over the page:
+  current `MUSTER_PLUGIN_ORIGINS` (the mint's own check). With none, nothing
+  is drawn at all, whatever the host reports. Drawing the button mints
+  nothing.
+- **It follows the host live.** The button's slot re-reads
+  `GET /ui/mirror/preview-button` every 10 s while the tab is shown, so it
+  appears and goes on an open page as the host's counts move (the host reports
+  them on its 5 s refresh, after its own 5 s listener scan). That route answers
+  nothing for a window with nothing to preview (without reading the plugin
+  store), and nothing once the plugin's token is revoked.
+- **The panel.** The button opens the plugin's page in a sandboxed frame: a
+  side panel over the right of the page from `sm` (640 px) up, the whole
+  screen below it. **Close** or Escape closes it and unloads the page. Its
+  header has **New tab**, the same hand-off in a new tab. With more than one
+  live viewer plugin the header also has a picker (newest first).
+- **Both mint at click time.** The page posts `POST /plugin-handoffs` for that
+  plugin and the window on screen, then goes to the URL it answers. A refused
+  mint (the token revoked since the page loaded, the window gone, the rate
+  cap) says why in the panel and goes nowhere. One mint at a time: a tap while
+  one is in flight is ignored.
+- **New tab** opens a blank tab within the tap itself, before minting. The
+  tab's `opener` is cleared while it is still blank, and only then is it sent
+  to the minted URL. So the plugin's page gets no `window.opener` handle on
+  muster's tab and no `Referer`, just as `rel="noopener noreferrer"` would
+  give, and the link carries those attributes too. Because the tab opens
+  before the mint, a popup blocker refuses at the tap: the panel says the tab
+  was blocked and no code is minted. If the mint is refused, the blank tab is
+  closed and the panel says why. An expired sign-in says to sign in again.
+- **The panel's frame:**
 
   ```html
   <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
@@ -159,20 +185,29 @@ opens on `/mirror/terminal`, so the chip is on both. An agent's pages
   muster's tab, and `allow=""` grants no camera, microphone or location.
   `allow-same-origin` lets the plugin use its own origin's storage; it is not
   muster's origin (a `Host` under `MUSTER_PLUGIN_ORIGINS` is refused `421`).
-  Closing the dialog unloads the plugin's page. A plugin that depends on a
-  cookie in the frame needs it to work as a third-party cookie
-  (`SameSite=None; Partitioned`); **Open** never does.
-- **The page's CSP** gains `frame-src 'self' <origin> …`, with each chipped
-  plugin's origin once, on those two views only. `'self'` stays: the
-  Rendered | Terminal switch frames the other view of muster's own origin.
-  Every other page's CSP is unchanged, and so are the two views' when there is
-  no chip.
-- **The row has a fixed height** and is drawn with the page, so nothing moves
-  once the page has loaded.
-- **Nothing is drawn**, and no `frame-src` is added, while
+  A plugin that depends on a cookie in the frame needs it to work as a
+  third-party cookie (`SameSite=None; Partitioned`); **New tab** never does.
+- **The page's CSP** gains `frame-src 'self' <origin> …`, with each live viewer
+  plugin's origin once, on those two views only — whenever the owner has one,
+  **not only while the button shows**: the button can appear after the page
+  loaded, and its panel must then be allowed to frame the plugin. `'self'`
+  stays: the Rendered | Terminal switch frames the other view of muster's own
+  origin. Every other page's CSP is unchanged, and so are the two views' when
+  there is no live viewer plugin.
+- **Nothing moves.** The button's first state is drawn with the page, and the
+  panel is `position: fixed`, so neither shifts the conversation.
+- **Nothing is drawn**, nothing polls, and no `frame-src` is added, while
   `MUSTER_PLUGIN_ORIGINS` is unset, plugins are off, the owner has no live
   `viewer` plugin, or the window has no tmux window id (an older per-session
   muster-mirror) for a hand-off to name.
+- **The sidebar** marks a window that has something to preview with a small
+  browser-window glyph on its row, the counts in words its name and tooltip,
+  under the button's own gate: only while the owner has a live viewer plugin
+  (read once per list, and not at all with plugins or
+  `MUSTER_PLUGIN_ORIGINS` off).
+- **Escape** closes the panel only when no other dialog or popover is open.
+  **Full screen** (below `sm`) everything behind the panel is made inert while
+  it is open, so Tab stays in it; that is undone on close.
 
 ## The plugin author's contract
 

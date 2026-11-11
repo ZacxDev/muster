@@ -129,6 +129,8 @@ type fakeMirror struct {
 	hostTok map[string]int64
 	// work is the host's per-window work counts (HostView.Work); nil = none.
 	work map[string]mirror.WindowWork
+	// previews is HostView.Previews (plugin_chip_test.go); nil = none.
+	previews map[string]mirror.WindowPreviews
 	// noHosts: Hosts lists nothing — a hub that has not seen the host (a
 	// fresh process before the host reconnects).
 	noHosts bool
@@ -200,6 +202,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll
 	hv.Work = f.work
+	hv.Previews = f.previews
 	if f.windows != nil {
 		// A per-window host: its per-session view is derived from its windows,
 		// exactly as the hub derives it.

@@ -21,9 +21,10 @@ import { cc, entryMatches, mirroredEntries, MirrorRig } from '../lib/mirrorhost'
 // a real Chromium. Everything on the path is the real binary:
 //
 //   muster-server (mirror plugin, plugins, MUSTER_PLUGIN_ORIGINS) with a viewer
-//   plugin minted through the real /plugins form → its chip on the session view
-//   → the REAL gateway (cmd/muster-preview), whose plugin token is that
-//   plugin's and whose session page redeems the chip's hand-off with muster →
+//   plugin minted through the real /plugins form → the session view's Preview
+//   button (shown because the host REPORTS this window's offers to muster) and
+//   its side panel → the REAL gateway (cmd/muster-preview), whose plugin token is that
+//   plugin's and whose session page redeems the panel's hand-off with muster →
 //   the REAL muster-mirror (`-tags e2emirror`: only tmux is played) running
 //   `-preview`, whose tunnel to the gateway carries the CONNECT streams, whose
 //   /proc walk finds the dev app's listeners and offers them → the dev app
@@ -77,6 +78,9 @@ const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
 const view = `/mirror/view?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent('@1')}`;
+// @2: a shell window with no listener in it — nothing to preview.
+const quietTerm = `/mirror/terminal?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent('@2')}`;
+const buttonSrc = (win: string) => `/ui/mirror/preview-button?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent(win)}`;
 
 type EdgeRec = {
   host: string;
@@ -217,7 +221,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   fs.writeFileSync(previewsJSON, JSON.stringify({ ports: [String(A), String(B)], offer: true }), { mode: 0o600 });
   const now = Math.floor(Date.now() / 1000);
   const tr = rig.transcript(cc.prompt('start the dev server') + cc.reply('It is listening.'), 'one');
-  const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\n`, 'windows');
+  const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\nwork|@2|2|0|zsh|${now - 120}|\n`, 'windows');
   await rig.startHost({
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
     MUSTER_MIRROR_E2E_REFRESH: '300ms',
@@ -250,8 +254,9 @@ test.afterAll(async () => {
   }
 });
 
-// ready signs in, waits until the host lists the Claude window as one, and
-// opens its Rendered view.
+// ready signs in, waits until the host lists the Claude window as one and
+// reports something to preview in it (the button's own poll answers it), and
+// opens its Rendered view, whose header then draws the Preview button.
 async function ready(page: Page): Promise<void> {
   await rig.login(page);
   await expect
@@ -263,16 +268,24 @@ async function ready(page: Page): Promise<void> {
       { message: `the Claude window listed\n${allLogs()}`, timeout: 20_000 },
     )
     .toBe(1);
+  await expect
+    .poll(async () => (await (await page.request.get(origin + buttonSrc('@1'))).text()).includes('id="preview-toggle"'), {
+      message: `the host reported @1's offers to muster\n${allLogs()}`,
+      timeout: 30_000,
+    })
+    .toBe(true);
   await page.goto(origin + view);
-  await expect(page.locator(`#plugin-chips [data-plugin-chip="${pluginId}"]`)).toHaveCount(1);
+  await expect(page.locator('#preview-toggle-row')).toHaveCount(1);
+  await expect(page.locator('#preview-panel')).toHaveAttribute('data-plugin', String(pluginId));
 }
 
-// showSessionPage opens the chip's Show here frame on the gateway's session
+// showSessionPage opens the Preview button's panel on the gateway's session
 // page.
 async function showSessionPage(page: Page) {
-  await page.locator(`#plugin-chips [data-plugin-chip="${pluginId}"] [data-plugin-show]`).click();
-  await expect(page.locator('#plugin-frame')).toBeVisible();
-  const framed = page.frameLocator('#plugin-frame iframe');
+  await page.locator('#preview-toggle-row').click();
+  await expect(page.locator('#preview-panel')).toBeVisible();
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('aria-expanded', 'true');
+  const framed = page.frameLocator('#preview-panel iframe');
   await expect(framed.locator('h1'), allLogs()).toHaveText('Previews');
   return framed;
 }
@@ -291,11 +304,11 @@ async function previewFrame(page: Page): Promise<{ frame: Frame; id: string }> {
 
 const facts: Record<string, unknown> = {};
 
-test('the owner opens a window\'s dev server from muster: the chip\'s session page offers it, Show here renders it with a working WebSocket and event stream, Close cuts the frame off at its next request, and New tab works', async ({ page, context }) => {
+test('the owner opens a window\'s dev server from muster: the Preview button\'s panel offers it, renders it with a working WebSocket and event stream, Close cuts the frame off at its next request, and New tab works', async ({ page, context }) => {
   test.setTimeout(150_000);
   await ready(page);
 
-  // SHOW HERE: the chip's frame lands on the gateway's session page (the
+  // THE PANEL: its frame lands on the gateway's session page (the
   // hand-off redeemed with muster), which offers both of the app's listeners
   // in this window under the listening process's name.
   const framed = await showSessionPage(page);
@@ -347,12 +360,14 @@ test('the owner opens a window\'s dev server from muster: the chip\'s session pa
   expect(frameCookie!.partitionKey, 'the frame\'s owner cookie is partitioned under muster').toBeTruthy();
   facts.showHere = { enter, check, root, ws, sse, cookie: { sameSite: frameCookie!.sameSite, partitionKey: frameCookie!.partitionKey } };
 
-  // CLOSE, on the session page — in a tab of its own, from the chip's Open on
-  // a second muster tab: this tab's frame now shows the preview (and its
-  // dialog is modal), and stays open to be refused below.
+  // CLOSE, on the session page — in a tab of its own, from the panel's New
+  // tab on a second muster tab: this tab's panel now shows the preview, and
+  // stays open to be refused below.
   const second = await context.newPage();
   await second.goto(origin + view);
-  const [tab] = await Promise.all([context.waitForEvent('page'), second.locator(`#plugin-chips [data-plugin-chip="${pluginId}"] [data-plugin-open]`).click()]);
+  await second.locator('#preview-toggle-row').click();
+  await expect(second.locator('#preview-panel')).toBeVisible();
+  const [tab] = await Promise.all([context.waitForEvent('page'), second.locator('#preview-panel [data-preview-newtab]').click()]);
   await expect(tab.locator('h1')).toHaveText('Previews');
   await expect(rowOf(tab, A)).toHaveAttribute('data-kind', 'preview');
   await rowOf(tab, A).locator(`button[data-close="${id}"]`).click();
@@ -414,7 +429,8 @@ test('a sibling preview\'s hidden iframe and WebSocket to another preview are re
 
   // The SIBLING: the app on B, opened in the same frame (same partition), whose
   // page loads the victim's /secret in a hidden iframe.
-  await page.locator('#plugin-frame [data-plugin-close]').click();
+  await page.locator('#preview-panel [data-preview-close]').click();
+  await expect(page.locator('#preview-panel')).toBeHidden();
   framed = await showSessionPage(page);
   await expect(rowOf(framed, A)).toHaveAttribute('data-kind', 'preview', { timeout: 30_000 });
   await expect(rowOf(framed, B)).toHaveAttribute('data-kind', 'offer');
@@ -461,4 +477,51 @@ test('a sibling preview\'s hidden iframe and WebSocket to another preview are re
   facts.sibling = refused;
   facts.siblingWebSocket = wsRefused;
   console.log('FACTS (what the gateway was sent by Chromium):\n' + JSON.stringify(facts, null, 2));
+});
+
+test('nothing to preview, no Preview button: a window with no listener draws none on the real host\'s report, the sidebar marks only the window that has one, and Close unloads the panel', async ({ page }) => {
+  test.setTimeout(90_000);
+  await ready(page);
+
+  // The sidebar (overlay on this page): @1 is marked, @2 is not.
+  const nav = await (await page.request.get(origin + '/ui/nav/agents')).text();
+  const rows = mirroredEntries(nav).filter((e) => e.markup.includes(`host=${encodeURIComponent(rig.host)}&`));
+  const row = (win: string) => rows.find((e) => e.markup.includes(`window=${encodeURIComponent(win)}`));
+  expect(row('@1')?.markup, 'CONTROL: the window with offers is marked').toMatch(/data-nav-preview="[1-9]/);
+  expect(row('@2'), 'the quiet window is listed').toBeTruthy();
+  expect(row('@2')!.markup, 'the quiet window is not marked').not.toContain('data-nav-preview');
+
+  // @2's Terminal view: the slot and panel are there (the owner has a live
+  // viewer plugin), the button is not; its poll answers nothing.
+  const resp = await page.goto(origin + quietTerm);
+  expect(new URL(page.url()).pathname).toBe('/mirror/terminal');
+  expect(resp!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
+  await expect(page.locator('#preview-slot')).toHaveCount(1);
+  await expect(page.locator('#preview-toggle-row')).toHaveCount(0);
+  expect((await (await page.request.get(origin + buttonSrc('@2'))).text()).trim()).toBe('');
+
+  // @1 (the control): the button; the panel opens and Close unloads it.
+  await page.goto(origin + view);
+  await showSessionPage(page);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#preview-panel')).toBeHidden();
+  await expect(page.locator('#preview-panel iframe')).toHaveAttribute('src', 'about:blank');
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('aria-expanded', 'false');
+
+  // A DESKTOP's width: the button is in the header row, right beside the
+  // Rendered | Terminal switch, and the second row's is not drawn.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(origin + view);
+  const head = page.locator('#preview-toggle');
+  await expect(head).toBeVisible();
+  await expect(head).toContainText('Preview');
+  await expect(page.locator('#preview-toggle-row')).toBeHidden();
+  const b = (await head.boundingBox())!;
+  const sw = (await page.locator('header nav[aria-label="View"]').boundingBox())!;
+  expect(sw.x - (b.x + b.width), 'beside the switch: one header gap').toBeLessThanOrEqual(12);
+  expect(sw.x - (b.x + b.width)).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(b.y + b.height / 2 - (sw.y + sw.height / 2)), 'on the switch\'s row').toBeLessThanOrEqual(2);
+  await head.click();
+  await expect(page.locator('#preview-panel')).toBeVisible();
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
 });

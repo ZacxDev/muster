@@ -17,23 +17,29 @@ variable named here has its row in [configuration.md](configuration.md).
 | part | where | what it does |
 |---|---|---|
 | **the gateway**, `muster-preview` | its own process (the image ships `/muster-preview`; no deploy file runs it yet) | owns the preview zone: the session page on `w.<zone>`, each preview on `p-<id>.<zone>`, the hosts' tunnel endpoint on `tunnel.<zone>` and on an overlay-mesh listener. Holds the tunnels, the owner cookie and the reverse proxy. A [plugin](plugins.md) with an `mpl_` token |
-| **the host side**, `muster-mirror -preview` | each mirrored host | keeps one tunnel to the gateway, reads `previews.json` (the allowlist), answers the tunnel's `CONNECT` streams by dialling loopback, and reports this user's listeners in mirrored windows as **offers** |
+| **the host side**, `muster-mirror -preview` | each mirrored host | keeps one tunnel to the gateway, reads `previews.json` (the allowlist), answers the tunnel's `CONNECT` streams by dialling loopback, reports this user's listeners in mirrored windows as **offers**, and tells muster how many offers and open previews each window has ([below](#what-muster-is-told)) |
 | **the agent's tools**, `/preview-mcp` | the host's loopback MCP endpoint (`-mcp-listen`) | `preview_open`, `preview_list`, `preview_close`, answered by `muster-mirror` itself. Nothing on this path reaches muster ([attention.md](attention.md#the-preview-tools-preview-mcp)) |
-| **muster's seams** | `muster-server` | the plugin [capabilities](plugins.md#capabilities) (`messages`, `viewer`), the one-time [viewer hand-off](plugins.md#viewer-hand-off) (mint and redeem), the [session-view chip](plugins.md#the-session-view-chip) with its `frame-src`, and `MUSTER_PLUGIN_ORIGINS` with its `421` |
+| **muster's seams** | `muster-server` | the plugin [capabilities](plugins.md#capabilities) (`messages`, `viewer`), the one-time [viewer hand-off](plugins.md#viewer-hand-off) (mint and redeem), the session views' [Preview button](plugins.md#the-session-view-chip) with its panel and `frame-src`, and `MUSTER_PLUGIN_ORIGINS` with its `421` |
 
 muster-server carries no preview byte and stores nothing about previews,
 offers or the processes behind them. Its only previews state is the plugin
-token (with its capabilities, origin and entry URL) and the short-lived
-hand-off codes.
+token (with its capabilities, origin and entry URL), the short-lived
+hand-off codes, and, in memory with each connected host's window list, two
+counts per window (below).
 
 ## What you do
 
 1. **On a mirrored window's page** (`/mirror/view` or `/mirror/terminal`),
-   the gateway's chip shows under the header: its label, **Open** and
-   **Show here**. Either one mints a hand-off code at the click and goes to
-   the gateway's **session page**, `https://w.<zone>/__muster/enter`:
-   **Open** in a new tab, **Show here** in a frame in a dialog over the page.
-   An agent's page (`/agents/{name}`) has no chip in this phase.
+   while the window has a server to preview or a preview open, the header
+   has a **Preview** button with that count, beside the Rendered | Terminal
+   switch (on a phone, in the header's second row, under the title); the
+   sidebar marks the window's row too. The button opens a panel
+   (a side panel on a wide screen, the whole screen on a phone) that mints a
+   hand-off code at the click and shows the gateway's **session page**,
+   `https://w.<zone>/__muster/enter`, in its frame; the panel's **New tab**
+   does the same in a new tab. With nothing to preview there is no button
+   ([plugins.md](plugins.md#the-session-view-chip)). An agent's page
+   (`/agents/{name}`) has none in this phase.
 2. **The session page** lists, for that window only: its **offers**
    (`<process> · :<port>`, a server this user runs in one of the window's
    panes on an allowlisted port) and its **open previews** (`<label> · :<port>`).
@@ -52,7 +58,7 @@ hand-off codes.
    The port is offered again if its server still runs.
 
 A reload of the session page, or a page token past its 15 minutes, says
-"Open this from muster": click the chip again. An agent's `preview_open`
+"Open this from muster": open the Preview panel again. An agent's `preview_open`
 appears on the page at its next refresh; no URL is ever given to the agent.
 
 ## Setting it up
@@ -202,6 +208,22 @@ every 5 s, so offers work whether or not muster is connected.
 `muster-mirror -list -previews` prints what this host would offer and dials
 nothing.
 
+### What muster is told
+
+On its own window-list connection to muster (not through the gateway), the
+host sends a `previews` message: per tmux window id, `offered` (its offers
+with no open preview, exactly the offers the session page lists) and `open`
+(its open previews), counts only, after its window list and again whenever
+they change, on the mirror's 5 s refresh. A window with nothing is left out;
+an empty map clears them. The counts are reported **only while a gateway
+tunnel serves the offer stream** and previews are on: with no tunnel the
+session page could only say the host is offline. muster keeps them in memory
+with the host's window list, drops them when the host disconnects, and draws
+the Preview button and the sidebar mark from them
+(`internal/previewhost/host.go`'s `Summary`, `internal/mirror/previews.go`). An
+older `muster-mirror` never sends one, so its windows show no button; an
+older muster drops the message ([mirroring.md](mirroring.md#rolling-upgrades)).
+
 ### The proxy
 
 `httputil.ReverseProxy` with every write flushed, HTTP/1.1 over a `CONNECT`
@@ -278,7 +300,7 @@ enforces.
   cookie (`internal/previewgw/session.go`, `cookie.go`).
 - **The owner cookie** `__Host-mp`: `Secure`, `HttpOnly`, `Path=/`,
   host-only, HMAC-signed `{preview, owner, expires}`, `Max-Age` **8 hours**,
-  **never renewed** except by a fresh hand-off from the chip. Its `SameSite`
+  **never renewed** except by a fresh hand-off from the Preview panel. Its `SameSite`
   follows `Sec-Fetch-Dest` on the entry request: `iframe` gets
   `SameSite=None; Partitioned`, anything else (a new tab, or a browser
   without Fetch Metadata) `SameSite=Strict`. It admits only the preview and
@@ -300,7 +322,7 @@ enforces.
 - **No `Referer`:** every gateway page and every proxied response carries
   `Referrer-Policy: no-referrer`. Gateway pages are framed only by
   `MUSTER_PUBLIC_URL`'s origin and use a nonce-only script and style CSP.
-- **The chip's frame** (muster's side) is sandboxed without
+- **The panel's frame** (muster's side) is sandboxed without
   `allow-top-navigation`, with `allow=""` and `referrerpolicy="no-referrer"`;
   the session views' `frame-src` names only the origins of the owner's own
   live viewer plugins ([plugins.md](plugins.md#the-session-view-chip)).
@@ -507,9 +529,9 @@ Chromium.
 
 | request | `Sec-Fetch-Site` / `-Mode` / `-Dest` | cookie sent | gateway |
 |---|---|---|---|
-| **Show here**: `p-/__muster/enter` from `w.` in muster's frame | `same-site` / `navigate` / `iframe` | none | 303 |
-| **Show here**: `p-/__muster/check` (the redirect) | `same-site` / `navigate` / `iframe` | `__Host-mp` | 200 |
-| **Show here**: the app's `/` (check's `location.replace`) | `same-origin` / `navigate` / `iframe` | `__Host-mp` | 200 |
+| **The panel**: `p-/__muster/enter` from `w.` in muster's frame | `same-site` / `navigate` / `iframe` | none | 303 |
+| **The panel**: `p-/__muster/check` (the redirect) | `same-site` / `navigate` / `iframe` | `__Host-mp` | 200 |
+| **The panel**: the app's `/` (check's `location.replace`) | `same-origin` / `navigate` / `iframe` | `__Host-mp` | 200 |
 | the app's WebSocket | **none sent** | `__Host-mp`, its own `Origin` | 101 |
 | the app's `EventSource` | `same-origin` / `cors` / `empty` | `__Host-mp` | 200 |
 | **New tab**: `p-/__muster/enter`, then the app | `same-site` / `navigate` / `document`, then `same-origin` | none, then `__Host-mp` | 303, then 200 |
@@ -531,8 +553,8 @@ Chromium.
 
 - **Phase 2 (pods)** and **phase 3 (share links)** are not built: no `ccd`
   gate, no `agent_targets` capability, no `/plugin-handoffs/confirm`, no
-  `__Host-mps` (the name is only reserved). The chip is on mirrored windows
-  only.
+  `__Host-mps` (the name is only reserved). The Preview button is on
+  mirrored windows only.
 - **Off Linux** (macOS) the listener reports and the `foreign_listener` check
   are off, and only the host's log says so: the offer stream does not.
 - **The real edge in front of the gateway is untested** with the built
@@ -543,7 +565,7 @@ Chromium.
   same-LAN best case ([the spike's go/no-go](design/previews.md#the-spikes-gono-go)).
 - **Browsers other than Chromium**, Safari and the Android app's WebView,
   are unchecked; in a browser that refuses partitioned cookies in a frame,
-  **Show here** lands on `frame_blocked` and **New tab** works.
+  the Preview panel lands on `frame_blocked` and **New tab** works.
 - **No deployment** runs the gateway yet; there is no compose service or
   manifest for it.
 - A tunnel's ping timeout equals its 30 s interval, so a pong queued behind a

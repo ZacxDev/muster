@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
 	"github.com/ZacxDev/muster/internal/previewhost"
@@ -254,6 +255,29 @@ func previewMCPMount(proxy *mirrorhost.MCPProxy, settled <-chan struct{}, up *at
 				logger.Printf("muster-mirror: the preview tools are NOT served: the MCP endpoint is off")
 			}
 		}()
+	}
+}
+
+// previewSummary is mirrorhost.Config.Previews for -preview: the Host's
+// per-window counts (previewhost.Host.Summary) once startPreview has built it
+// — the pointer is stored by its mount, before the tunnel is dialled — and
+// nil before that and whenever previews are off, so muster then draws no
+// Preview button.
+func previewSummary(host *atomic.Pointer[previewhost.Host]) func() map[string]mirror.WindowPreviews {
+	return func() map[string]mirror.WindowPreviews {
+		h := host.Load()
+		if h == nil {
+			return nil
+		}
+		sum := h.Summary()
+		if len(sum) == 0 {
+			return nil
+		}
+		out := make(map[string]mirror.WindowPreviews, len(sum))
+		for w, s := range sum {
+			out[w] = mirror.WindowPreviews{Offered: s.Offered, Open: s.Open}
+		}
+		return out
 	}
 }
 

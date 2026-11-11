@@ -105,6 +105,12 @@ import (
 // request, which is what an older muster-mirror does: muster must then offer
 // the built-in commands alone.
 //
+// LIVE PREVIEWS: with MUSTER_MIRROR_E2E_PREVIEWS_FILE the host reports the
+// per-window preview counts that file holds (mirrorhost.Config.Previews), re-
+// read on every refresh, one `<window id> <offered> <open>` line per window; a
+// missing or empty file is none. So a spec turns a window's Preview button on
+// and off without a preview gateway (previews.spec.ts drives the real one).
+//
 // THE REFRESH: MUSTER_MIRROR_E2E_REFRESH (a Go duration) is how often the host
 // re-reads its windows, instead of mirrorhost's 5 s default, so the send-queue
 // spec waits for a status flip to reach muster rather than for a fixed 5 s
@@ -125,6 +131,13 @@ func init() {
 	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
 	e2eNoSubagents = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_SUBAGENTS") == "1" }
 	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
+	e2ePreviews = func() func() map[string]mirror.WindowPreviews {
+		f := os.Getenv("MUSTER_MIRROR_E2E_PREVIEWS_FILE")
+		if f == "" {
+			return nil
+		}
+		return func() map[string]mirror.WindowPreviews { return e2ePreviewsOf(f) }
+	}
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
 			b = &scrollFake{Backend: b, file: f, pos: map[string]int{}}
@@ -908,4 +921,26 @@ func (w windowFake) CancelAsk(ctx context.Context, pane string) (bool, error) {
 	_ = f.Close()
 	_ = os.Remove(transcript + ".picker.json")
 	return true, werr
+}
+
+// e2ePreviewsOf reads MUSTER_MIRROR_E2E_PREVIEWS_FILE (see the file comment);
+// a line that does not parse is skipped.
+func e2ePreviewsOf(path string) map[string]mirror.WindowPreviews {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out map[string]mirror.WindowPreviews
+	for _, line := range strings.Split(string(b), "\n") {
+		var w string
+		var offered, open int
+		if n, _ := fmt.Sscanf(strings.TrimSpace(line), "%s %d %d", &w, &offered, &open); n != 3 {
+			continue
+		}
+		if out == nil {
+			out = map[string]mirror.WindowPreviews{}
+		}
+		out[w] = mirror.WindowPreviews{Offered: offered, Open: open}
+	}
+	return out
 }

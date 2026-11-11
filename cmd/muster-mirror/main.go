@@ -76,6 +76,12 @@ var e2eNoSubagents func() bool
 // (mirrorhost.Config.NoWork). nil in every other build.
 var e2eNoWork func() bool
 
+// e2ePreviews, in a browser-test build, is the per-window preview counts the
+// host reports (mirrorhost.Config.Previews) when the spec plays them
+// (e2emirror.go's MUSTER_MIRROR_E2E_PREVIEWS_FILE); nil when it does not — and
+// in every shipped binary, whose counts come from -preview alone.
+var e2ePreviews func() func() map[string]mirror.WindowPreviews
+
 // e2eRefresh, in a browser-test build, is how often the host re-reads its
 // windows (mirrorhost.Config.Refresh; 0 = mirrorhost's default) — so a spec
 // waiting for a status flip to reach muster waits a fraction of a second, not
@@ -382,6 +388,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			spawnRoots = append(spawnRoots, expandHome(r))
 		}
 	}
+	// The preview side's per-window counts (previews.go's previewSummary),
+	// read on every refresh: nil until -preview's Host exists — and for good
+	// when previews are off.
+	var previewHost atomic.Pointer[previewhost.Host]
+	previews := previewSummary(&previewHost)
+	if e2ePreviews != nil {
+		if f := e2ePreviews(); f != nil {
+			previews = f
+		}
+	}
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
@@ -393,6 +409,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
 		NoWork:        e2eNoWork != nil && e2eNoWork(),
+		Previews:      previews,
 		Refresh:       refreshOverride(),
 		FakeSpawn:     e2eSpawn, FakeSpawnRuntimes: e2eSpawnRuntimes,
 	})
@@ -427,7 +444,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// endpoint above, previews run on their own goroutine with a recover;
 		// a bad configuration, an unreachable gateway or a panic is logged and
 		// the host mirrors without them.
-		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger, previewMCPMount(proxy, mcpSettled, &mcpUp, logger))
+		mcpMount := previewMCPMount(proxy, mcpSettled, &mcpUp, logger)
+		previewDone = startPreview(ctx, pf, isDefaultDaemon(*socket, *socketPath, getenv), alwaysRefusedPorts(*mcpListen, ocCreds), *host, backend, logger, func(h *previewhost.Host) {
+			previewHost.Store(h)
+			if mcpMount != nil {
+				mcpMount(h)
+			}
+		})
 	case pf.URLs != "" || pf.TokenFile != "":
 		logger.Printf("muster-mirror: -preview-urls / -preview-token-file have no effect without -preview: previews are off")
 	}

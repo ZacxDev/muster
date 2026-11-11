@@ -63,9 +63,9 @@ var QuickKeys = []QuickKey{
 
 // AgentTerminalView is the data the terminal page renders.
 type AgentTerminalView struct {
-	// Plugins is the owner's viewer plugins' chip row (plugin_chip.go), under
-	// the header: a mirrored window's Terminal view only (an agent's has none
-	// in this phase); nil for none.
+	// Plugins is the owner's viewer plugins and the window's preview counts:
+	// the header's Preview button and its panel (plugin_chip.go); nil for
+	// none.
 	Plugins     *PluginChips
 	Name        string
 	DisplayName string
@@ -352,10 +352,14 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
 								g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
 							sessionTagsHeadNode(v.TagTarget, v.Tags)),
-						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
-							// What typing here really reaches (InteractiveNote).
-							g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
-							g.Text("Not connected")),
+						// The status line; below `sm` the Preview button is at its
+						// end (plugin_chip.go), so the title keeps its width.
+						Div(Class("flex min-w-0 items-center gap-2"),
+							P(ID("term-status"), Class("min-w-0 flex-1 truncate text-xs text-muted"), g.Attr("aria-live", "polite"),
+								// What typing here really reaches (InteractiveNote).
+								g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
+								g.Text("Not connected")),
+							previewButtonSlot(v.Plugins, PreviewInRow)),
 						updatingChip("term-updating", "bottom-0 right-0"),
 					),
 					// Fit width: shown only while the far side is wider than this
@@ -369,13 +373,16 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
+					// The window's Preview button, while it has something to
+					// preview (plugin_chip.go).
+					previewButtonSlot(v.Plugins, PreviewInHeader),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
 				mirrorHostBanner("term-host-note", v.Offline, v.Note),
-				// The owner's viewer plugins (plugin_chip.go): a fixed-height row.
-				pluginChipRow(v.Plugins),
+				// The Preview button's panel, closed (plugin_chip.go).
+				previewPanel(v.Plugins),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),
