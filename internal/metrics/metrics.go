@@ -321,11 +321,12 @@ var (
 	//   http_4xx  — the dashboard answered 4xx (a bad token is 401/403)
 	//   http_5xx  — the dashboard answered 5xx
 	//   http_other — any other status but 204 (a 200, a refused redirect)
+	//   canceled  — muster was shutting down mid-push
 	// 🔴 `reason` is that closed vocabulary (ccusage.PushReason*): never a URL,
 	// a status code or an account name.
 	CCUsagePushFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_cc_usage_push_failures_total",
-		Help: "Claude account usage pushes that failed, by reason (build|timeout|transport|http_4xx|http_5xx|http_other).",
+		Help: "Claude account usage pushes that failed, by reason (build|timeout|transport|http_4xx|http_5xx|http_other|canceled).",
 	}, []string{"reason"})
 )
 

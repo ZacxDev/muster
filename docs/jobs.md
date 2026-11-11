@@ -765,9 +765,13 @@ Content-Type: application/json
 - The dashboard answers **`204`**. Anything else — a 4xx, a 5xx, another 2xx,
   a redirect (never followed: it would re-send the bearer), no answer in 10
   seconds, a transport error, or readings the store could not give — is logged
-  (the status or the error's class only: never the token, the body or the
-  answer) and counted in `muster_cc_usage_push_failures_total{reason}`
-  (`http_4xx`, `http_5xx`, `http_other`, `timeout`, `transport`, `build`). It
+  (the status or the error's class only, never the token or the body; on a
+  4xx, also the first 512 bytes of the dashboard's answer as one line, control
+  characters made spaces, at most 200 characters, the token redacted, so a
+  refusal such as a cap exceeded says why) and counted in
+  `muster_cc_usage_push_failures_total{reason}` (`http_4xx`, `http_5xx`,
+  `http_other`, `timeout`, `transport`, `build`, or `canceled` when muster
+  was shutting down mid-push). It
   is not retried: the next cycle's push carries newer readings.
 - Boot is refused when the URL is set with the poller off, without the token,
   or not `https` (plain `http` is allowed only to a loopback host, for tests),

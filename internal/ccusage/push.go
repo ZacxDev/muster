@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/noredirect"
@@ -32,6 +33,8 @@ const (
 	PushReason4xx       = "http_4xx"
 	PushReason5xx       = "http_5xx"
 	PushReasonOther     = "http_other"
+	// PushReasonCanceled: muster was shutting down mid-push.
+	PushReasonCanceled = "canceled"
 )
 
 // CheckPushURL is why u cannot be the push target, or nil. It must be an
@@ -123,13 +126,13 @@ func (p *Pusher) Push(ctx context.Context) string {
 	return reason
 }
 
-func (p *Pusher) push(ctx context.Context, now time.Time) string {
-	body, err := p.Body(ctx, now)
+func (p *Pusher) push(parent context.Context, now time.Time) string {
+	body, err := p.Body(parent, now)
 	if err != nil {
 		p.logf("ccusage: push: the readings could not be assembled: %v", err)
 		return PushReasonBuild
 	}
-	ctx, cancel := context.WithTimeout(ctx, p.timeout())
+	ctx, cancel := context.WithTimeout(parent, p.timeout())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, p.URL, bytes.NewReader(body))
 	if err != nil {
@@ -146,6 +149,11 @@ func (p *Pusher) push(ctx context.Context, now time.Time) string {
 			p.logf("ccusage: push: the dashboard answered a redirect, which is not followed")
 			return PushReasonOther
 		}
+		if parent.Err() != nil {
+			// muster is shutting down: not the dashboard's fault, nor a timeout.
+			p.logf("ccusage: push: canceled (shutting down)")
+			return PushReasonCanceled
+		}
 		var ne interface{ Timeout() bool }
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
 			p.logf("ccusage: push: failed (timeout after %s)", p.timeout())
@@ -154,13 +162,16 @@ func (p *Pusher) push(ctx context.Context, now time.Time) string {
 		p.logf("ccusage: push: failed (transport error)")
 		return PushReasonTransport
 	}
+	answer, _ := io.ReadAll(io.LimitReader(resp.Body, maxPushAnswer))
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNoContent:
 		return ""
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		p.logf("ccusage: push: the dashboard answered HTTP %d", resp.StatusCode)
+		// A 4xx says why (a cap exceeded, a bad token): its answer is logged as
+		// one sanitized line, the token redacted should the dashboard echo it.
+		p.logf("ccusage: push: the dashboard answered HTTP %d: %s", resp.StatusCode, sanitizeAnswer(answer, p.Token))
 		return PushReason4xx
 	case resp.StatusCode >= 500 && resp.StatusCode < 600:
 		p.logf("ccusage: push: the dashboard answered HTTP %d", resp.StatusCode)
@@ -169,6 +180,37 @@ func (p *Pusher) push(ctx context.Context, now time.Time) string {
 		p.logf("ccusage: push: the dashboard answered HTTP %d, want 204", resp.StatusCode)
 		return PushReasonOther
 	}
+}
+
+// maxPushAnswer and maxPushAnswerRunes bound the logged 4xx answer: the
+// bytes read, and the runes kept after sanitizing.
+const (
+	maxPushAnswer      = 512
+	maxPushAnswerRunes = 200
+)
+
+// sanitizeAnswer is a dashboard's answer as one log line: token redacted,
+// control characters (newlines included) made spaces, at most
+// maxPushAnswerRunes runes ("(empty)" for none).
+func sanitizeAnswer(b []byte, token string) string {
+	s := strings.ToValidUTF8(string(b), "?")
+	if token != "" {
+		s = strings.ReplaceAll(s, token, "[redacted]")
+	}
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > maxPushAnswerRunes {
+		s = string(r[:maxPushAnswerRunes]) + "…"
+	}
+	if s == "" {
+		return "(empty)"
+	}
+	return s
 }
 
 // PushAfterPass is Push as a Poller.AfterPass.

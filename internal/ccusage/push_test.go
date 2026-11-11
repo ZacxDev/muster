@@ -23,7 +23,7 @@ const (
 	pushTestBody  = `{"source_instance":"example","read_at":"2026-11-10T18:00:00Z","accounts":[{"account":"BODY-SENTINEL-alpha"}]}`
 )
 
-var pushReasons = []string{PushReasonBuild, PushReasonTimeout, PushReasonTransport, PushReason4xx, PushReason5xx, PushReasonOther}
+var pushReasons = []string{PushReasonBuild, PushReasonTimeout, PushReasonTransport, PushReason4xx, PushReason5xx, PushReasonOther, PushReasonCanceled}
 
 func pushCounts() map[string]float64 {
 	out := map[string]float64{}
@@ -40,6 +40,7 @@ type pushTarget struct {
 	mu     sync.Mutex
 	status int
 	delay  time.Duration
+	answer string // the answer body; "" echoes the Authorization header
 	reqs   []*http.Request
 	bodies [][]byte
 }
@@ -57,6 +58,10 @@ func (p *pushTarget) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(p.status)
+	if p.answer != "" {
+		_, _ = w.Write([]byte(p.answer))
+		return
+	}
 	_, _ = w.Write([]byte("echo " + r.Header.Get("Authorization")))
 }
 
@@ -259,5 +264,60 @@ func TestRunCallsAfterPassOncePerPass(t *testing.T) {
 		if n != i+1 {
 			t.Fatalf("AfterPass call %d came after pass %d (calls %v), want one per pass", i+1, n, seen)
 		}
+	}
+}
+
+// TestA4xxAnswerIsLoggedAsOneSanitizedLine: a dashboard's 4xx answer (a cap
+// exceeded) reaches the log as one line: its sentence kept, control
+// characters made spaces, the token redacted, cut at 200 runes. The request
+// body never appears.
+func TestA4xxAnswerIsLoggedAsOneSanitizedLine(t *testing.T) {
+	answer := "too many accounts: 21 > 20\nsecond line\x07 echo Bearer " + pushTestToken + " " + strings.Repeat("é", 400)
+	tgt := &pushTarget{status: http.StatusBadRequest, answer: answer}
+	srv := httptest.NewServer(tgt)
+	defer srv.Close()
+	var logs bytes.Buffer
+	if r := newPusher(srv.URL, &logs).Push(context.Background()); r != PushReason4xx {
+		t.Fatalf("reason %q, want %q", r, PushReason4xx)
+	}
+	out := logs.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("%d log lines, want one: %q", len(lines), out)
+	}
+	line := lines[0]
+	if !strings.Contains(line, "HTTP 400: too many accounts: 21 > 20 second line  echo Bearer [redacted] é") {
+		t.Fatalf("the answer is not in the log as one sanitized line: %q", line)
+	}
+	for _, secret := range []string{pushTestToken, "BODY-SENTINEL", "\x07"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("the log carries %q: %q", secret, line)
+		}
+	}
+	_, logged, _ := strings.Cut(line, "HTTP 400: ")
+	if n := len([]rune(logged)); n != maxPushAnswerRunes+1 { // the runes kept, then "…"
+		t.Fatalf("the logged answer is %d runes, want %d (cut, plus the ellipsis): %q", n, maxPushAnswerRunes+1, logged)
+	}
+	if !strings.HasSuffix(logged, "é…") {
+		t.Fatalf("the cut is not on a rune boundary: %q", logged)
+	}
+}
+
+// TestAPushCutShortByShutdownIsCanceledNotTimeout: the parent context ending
+// mid-push (muster shutting down) counts as canceled, never timeout.
+func TestAPushCutShortByShutdownIsCanceledNotTimeout(t *testing.T) {
+	tgt := &pushTarget{status: http.StatusNoContent, delay: 300 * time.Millisecond}
+	srv := httptest.NewServer(tgt)
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	p := newPusher(srv.URL, io.Discard)
+	p.Timeout = 5 * time.Second
+	before := pushCounts()
+	if r := p.Push(ctx); r != PushReasonCanceled {
+		t.Fatalf("reason %q, want %q", r, PushReasonCanceled)
+	}
+	if after := pushCounts(); after[PushReasonCanceled] != before[PushReasonCanceled]+1 || after[PushReasonTimeout] != before[PushReasonTimeout] {
+		t.Fatalf("counts %v → %v, want one canceled and no timeout", before, after)
 	}
 }
