@@ -233,6 +233,118 @@ type Server struct {
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
 	verbRefusal map[string]*refusal
 	derivedAsks []DerivedAsk
+	// The usage route (PUT /officers/{id}/usage): UsageAbsent is an HQ
+	// without it (404 not_found, its router's catch-all); usagePuts is every
+	// accepted PUT, in order, and usageRows the buckets upserted by
+	// (officer, instance, session, hour) — the last PUT's counts replace.
+	UsageAbsent bool
+	usagePuts   []UsagePut
+	usageRows   map[string][2]int64
+}
+
+// UsagePut is one accepted PUT /officers/{id}/usage: the officer the token
+// acted for, and the body's exact bytes.
+type UsagePut struct {
+	Officer string
+	Raw     []byte
+}
+
+// UsagePuts returns the accepted usage PUTs, in order.
+func (s *Server) UsagePuts() []UsagePut {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsagePut(nil), s.usagePuts...)
+}
+
+// UsageRows is how many buckets the usage route holds (after upserts).
+func (s *Server) UsageRows() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.usageRows)
+}
+
+// Usage route limits, as HQ states them.
+const (
+	maxUsageBuckets = 1000
+	maxUsageBody    = 256 << 10
+)
+
+// usage is PUT /officers/{id}/usage, to the contract: the body decoded
+// strictly (an unknown field is a 400, as HQ's decoder), instance required,
+// pool routine | judgement | "", generated_at RFC 3339, every bucket's hour on
+// the hour and its counts present and non-negative; 413 past the body or
+// bucket cap. 204, each bucket upserted.
+func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
+	if s.UsageAbsent {
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	}
+	if len(raw) > maxUsageBody {
+		s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "usage body over 256 KiB", "code": "too_large"})
+		return
+	}
+	var body struct {
+		Instance    *string `json:"instance"`
+		Pool        *string `json:"pool"`
+		Account     *string `json:"account"`
+		GeneratedAt *string `json:"generated_at"`
+		Buckets     []struct {
+			Session             string `json:"session"`
+			Hour                string `json:"hour"`
+			Turns               *int64 `json:"turns"`
+			APICalls            *int64 `json:"api_calls"`
+			InputTokens         *int64 `json:"input_tokens"`
+			OutputTokens        *int64 `json:"output_tokens"`
+			CacheReadTokens     *int64 `json:"cache_read_tokens"`
+			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
+		} `json:"buckets"`
+	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		invalid("usage body: " + err.Error())
+		return
+	}
+	if body.Instance == nil || *body.Instance == "" || body.Pool == nil || body.Account == nil || body.GeneratedAt == nil || body.Buckets == nil {
+		invalid("instance, pool, account, generated_at and buckets are required")
+		return
+	}
+	if p := *body.Pool; p != "" && p != "routine" && p != "judgement" {
+		invalid("pool must be routine, judgement or empty")
+		return
+	}
+	if _, err := time.Parse(time.RFC3339, *body.GeneratedAt); err != nil {
+		invalid("generated_at is not RFC 3339")
+		return
+	}
+	if len(body.Buckets) > maxUsageBuckets {
+		s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "over 1000 buckets", "code": "too_large"})
+		return
+	}
+	rows := map[string][2]int64{}
+	for _, b := range body.Buckets {
+		h, err := time.Parse(time.RFC3339, b.Hour)
+		if b.Session == "" || err != nil || !h.Equal(h.Truncate(time.Hour)) {
+			invalid("a bucket needs a session and an hour on the hour")
+			return
+		}
+		for _, n := range []*int64{b.Turns, b.APICalls, b.InputTokens, b.OutputTokens, b.CacheReadTokens, b.CacheCreationTokens} {
+			if n == nil || *n < 0 {
+				invalid("a bucket's counts are required and non-negative")
+				return
+			}
+		}
+		rows[officer+"|"+*body.Instance+"|"+b.Session+"|"+h.UTC().Format(time.RFC3339)] = [2]int64{*b.Turns, *b.APICalls}
+	}
+	if s.usageRows == nil {
+		s.usageRows = map[string][2]int64{}
+	}
+	for k, v := range rows {
+		s.usageRows[k] = v
+	}
+	s.usagePuts = append(s.usagePuts, UsagePut{Officer: officer, Raw: append([]byte(nil), raw...)})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // DerivedAsk is one accepted POST …/items/{item}/task-asks or
@@ -903,6 +1015,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.askImage(w, officer, r, raw)
 	case len(parts) == 2 && parts[1] == "claim-next" && r.Method == http.MethodPost && s.ClaimNext:
 		s.claimNext(w, officer, body, now)
+	case len(parts) == 2 && parts[1] == "usage" && r.Method == http.MethodPut:
+		s.usage(w, officer, raw)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})

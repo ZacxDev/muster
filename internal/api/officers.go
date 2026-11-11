@@ -27,6 +27,7 @@ import (
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
+	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/officership"
 	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -73,6 +74,10 @@ type officerRuntime struct {
 	// fwd forwards instances' transcripts to HQ (internal/officers/transcript);
 	// nil when no declared officer enables `transcript`.
 	fwd *transcript.Forwarder
+	// usage pushes every instance's Claude usage to HQ
+	// (internal/officers/usage, officer_usage.go); nil when the agent gateway
+	// cannot read it.
+	usage *usage.Collector
 	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
 	// when no declared officer has an `llm` block.
 	llm *llmproxy.Proxy
@@ -226,6 +231,14 @@ type OfficersConfig struct {
 	// (tests drive Tick).
 	TranscriptInterval time.Duration
 	NoTranscriptRun    bool
+	// UsageSource replaces where an instance's Claude usage is read (tests);
+	// nil is each instance's ccd through the agent gateway
+	// (agentgateway.Gateway.Usage). UsageInterval replaces the collector's
+	// cadence (tests); 0 is usage.DefaultInterval. NoUsageRun skips running
+	// its loop (tests drive Tick).
+	UsageSource   usage.Source
+	UsageInterval time.Duration
+	NoUsageRun    bool
 	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
 	// when an officer declares `llm`. LLMUpstream replaces the provider's API
 	// base and LLMHTTP its transport (tests); ""/nil is production.
@@ -320,6 +333,10 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
+	uc, err := s.newUsageCollector(cfg, hq)
+	if err != nil {
+		return nil, err
+	}
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
@@ -363,7 +380,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, llm: px, judgement: judgement, now: now, kube: kube,
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:      officers.NewReadBudget(officers.ReadsPerItem, now),
 		claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
@@ -375,6 +392,11 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		// Ends with the server's streams (EndStreams, at shutdown).
 		ctx := s.streams.context()
 		safeGo(s.logger, "officer transcript forwarder", func() { fwd.Run(ctx) })
+	}
+	if uc != nil && !cfg.NoUsageRun {
+		// Ends with the server's streams (EndStreams, at shutdown).
+		ctx := s.streams.context()
+		safeGo(s.logger, "officer usage collector", func() { uc.Run(ctx) })
 	}
 	for _, o := range reg.All() {
 		repo := "none"
@@ -802,11 +824,20 @@ func failureKind(err error) string {
 // Stop implements officers.Fleet: scale instance n to zero (agent and volume
 // kept). A claim it still holds is released by the loop's next pass, which
 // sees its holder down.
+//
+// Its Claude usage is pushed to HQ first (usage.Collector.Flush), while its
+// ccd can still answer: the collector reads only up instances, so without it
+// the hour the instance stopped in would sit partial at HQ until it next
+// runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
+// whatever the push does.
 func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error {
 	octx := f.s.officerPrincipal(ctx, o.Owner)
 	a, err := f.s.ext.Agents.GetByName(octx, o.InstanceName(n))
 	if err != nil {
 		return err
+	}
+	if rt := f.s.officerRT; rt != nil && rt.usage != nil {
+		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
 	return f.s.ext.Provisioner.Stop(octx, a.ID)

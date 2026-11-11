@@ -422,6 +422,17 @@ var (
 		Name: "muster_officer_transcript_events_total",
 		Help: "Officer transcript events forwarded to HQ, by result (posted or a drop reason).",
 	}, []string{"result"})
+	// OfficerUsagePush counts the officer usage collector's per-instance
+	// attempts (internal/officers/usage), by result: pushed (HQ answered
+	// 2xx), ccd_unsupported (the instance's ccd predates GET /v1/usage),
+	// ccd_failed (the read failed), hq_not_found (HQ answered 404: an HQ
+	// without the route, or an unknown officer), hq_refused (any other 4xx),
+	// hq_unavailable (5xx, a timeout, no answer), skipped (a pre-stop flush
+	// that could not start within its budget).
+	OfficerUsagePush = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_usage_push_total",
+		Help: "Officer instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
+	}, []string{"result"})
 )
 
 // The officer LLM proxy (internal/llmproxy, POST /llm/v1/messages on the

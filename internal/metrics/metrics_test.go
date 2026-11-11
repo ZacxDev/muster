@@ -46,6 +46,7 @@ var wantMetrics = map[string][]string{
 	"muster_officer_cap_refusal_withheld":             nil,
 	"muster_officer_judgement_cap_reached":            nil,
 	"muster_officer_transcript_events_total":          {"result"},
+	"muster_officer_usage_push_total":                 {"result"},
 	"muster_officer_llm_requests_total":               {"instance", "officer", "result"},
 	"muster_officer_llm_refused_total":                {"officer", "reason"},
 	"muster_officer_llm_tokens_total":                 {"dir", "instance", "officer"},
@@ -121,6 +122,7 @@ func gather(t *testing.T) map[string][]string {
 	MemoRelayDeliveries.WithLabelValues("delivered")
 	CCUsagePushFailures.WithLabelValues("timeout")
 	OfficerTranscriptEvents.WithLabelValues("posted")
+	OfficerUsagePush.WithLabelValues("pushed")
 	OfficerLLMRequests.WithLabelValues("example:area", "1", "ok")
 	OfficerLLMRefused.WithLabelValues("none", "path")
 	OfficerLLMTokens.WithLabelValues("example:area", "1", "in")

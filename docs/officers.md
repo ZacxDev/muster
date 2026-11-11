@@ -1829,6 +1829,128 @@ transcripts is a boot refusal.
 muster-server back to an image that predates it — an older image refuses the
 unknown field and does not boot.
 
+## Claude usage to HQ
+
+Every declared officer's instances have their Claude usage — API calls,
+tokens and turns, per session and UTC hour — pushed to the officer's HQ. It
+needs no configuration (it is off only when the agent gateway cannot read an
+instance's usage, which the boot log says).
+
+**What is measured** is the instance's own Claude Code transcripts, counted by
+the instance pod's `ccd` on `GET /v1/usage?since=<unix seconds>`
+(bearer-authenticated like `/v1/transcript`; the answer carries counts only,
+never transcript text). `ccd` reads every `*.jsonl` under
+`<CLAUDE_CONFIG_DIR>/projects/`, at any depth, last modified at or after
+`since`. A file's session is the first path element under its project
+directory, so `<project>/<session>.jsonl` and a subagent's
+`<project>/<session>/subagents/<x>.jsonl` both count on `<session>`. Only
+complete lines are read (a line still being written is left for the next
+read); a line that does not decode is skipped.
+
+| field | what it counts |
+|---|---|
+| `api_calls` | assistant records — subagent (sidechain) records included, as they are this instance's spend — one per API call, at the hour of the call's FIRST record |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | those calls' `message.usage`, each call's largest value of each field |
+| `turns` | distinct `promptId`s of main-conversation (non-sidechain) `user` records, at the hour first seen; a subagent's prompt is not a turn |
+
+**The dedup rule.** The CLI writes one assistant record per content block
+(thinking, text, tool use), each repeating the same API call's usage. A call
+is counted once, keyed by `message.id` + `input_tokens` +
+`cache_read_input_tokens` + `cache_creation_input_tokens` — the id alone
+would fold two calls a transcript gave the same id; output is not in the key
+because a block written mid-stream can carry a smaller output count than the
+last. Each field keeps the call's largest value. An API-error record
+(`isApiErrorMessage`) and a `<synthetic>` record are not calls. It is the same
+rule a turn's own usage is counted by (`cmd/ccd/callusage.go`).
+
+**The hour truncation.** `ccd` truncates `since` DOWN to the UTC hour (and
+clamps it to at most 48 hours ago, on an hour boundary), and answers
+`{"since": "<the window's start>", "buckets": [...]}`. HQ REPLACES a bucket
+on every push, so the oldest hour must be whole: a partial one would
+overwrite a complete one. A call or prompt first seen before the window stays
+in the hour it began.
+
+**The push** is `PUT {hq_url}/officers/{id}/usage` with the officer's token:
+
+```json
+{"instance": "officer-review-example-web-r1", "pool": "routine", "account": "",
+ "generated_at": "2026-11-10T14:05:00Z",
+ "buckets": [{"session": "…", "hour": "2026-11-10T13:00:00Z", "turns": 2, "api_calls": 31,
+   "input_tokens": 410, "output_tokens": 9822, "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
+```
+
+`pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
+each bucket by (officer, instance, session, hour), replacing its counts, and
+answers 204 (400 invalid, 403 another officer's token, 404 an unknown officer
+or an HQ without the route, 413 over 256 KiB or 1000 buckets). More than 1000
+buckets: the newest 1000 are sent, and the cut is logged.
+
+⚠ **`account` is the account the instance is on AT PUSH TIME** — its agent
+row's, `""` for a pool on the LLM proxy. An account failover moves the
+instance, and every hour in the window is then reported on the new account,
+including hours it ran on the old one.
+
+**When.** Every 10 minutes, for every instance the wake loop's own view says
+exists and is up, with `since` = now − 25 hours (so a muster restart or an HQ
+outage of up to a day loses nothing). And once more just before the wake loop
+scales an instance to zero, while its `ccd` can still answer — best-effort,
+at most 10 s, and its failure never fails the stop. The pod volume is kept,
+so the transcripts survive a scale-down, but ⚠ **hours older than 25 hours
+when an instance comes back up are never pushed**: an instance that was
+stopped mid-hour with a failed final push, and stays down past a day, leaves
+that hour as HQ last saw it.
+
+**Failures.** Nothing is retried within a tick; the next tick's push covers
+it. A `ccd` without the route (an older image: 404) is skipped and logged
+once per instance. HQ answering 404 is logged once per officer, and pushes
+continue. Every attempt is counted on
+`muster_officer_usage_push_total{result}`: `pushed`, `ccd_unsupported`,
+`ccd_failed`, `hq_not_found`, `hq_refused` (another 4xx), `hq_unavailable`
+(5xx, a timeout, no answer), `skipped` (a pre-stop push that could not start
+within its 10 s). An HQ refusal is logged by its status, never its body.
+
+**Deploy.** The instance pods need a `ccd` that serves `GET /v1/usage`, i.e.
+a restart onto a `claude-code-agent` image from this version or later; until
+then each instance is skipped (one log line each). HQ's route may land before
+or after muster's: until it does, HQ answers 404 and the pushes are dropped.
+
+**Checking one hour by hand.** Run against one session's files in the pod
+(its own transcript and its subagents'), for a UTC hour given as a
+timestamp prefix. It applies the same rules: complete lines only, the same
+call key, each call at the hour of its first record, the field maxima, and
+non-sidechain prompts. The CLI writes timestamps in UTC (`…Z`), which the
+prefix match relies on.
+
+```sh
+cat > /tmp/hour.jq <<'EOF'
+def calls: [ .[] | select(.type == "assistant" and .message.usage != null
+                          and (.isApiErrorMessage != true) and .message.model != "<synthetic>") ]
+  | group_by([.message.id, (.message.usage.input_tokens // 0),
+              (.message.usage.cache_read_input_tokens // 0), (.message.usage.cache_creation_input_tokens // 0)])
+  | map({first: (map(.timestamp) | min),
+         input: (map(.message.usage.input_tokens // 0) | max),
+         output: (map(.message.usage.output_tokens // 0) | max),
+         cache_read: (map(.message.usage.cache_read_input_tokens // 0) | max),
+         cache_creation: (map(.message.usage.cache_creation_input_tokens // 0) | max)})
+  | map(select(.first | startswith($h)));
+def turns: [ .[] | select(.type == "user" and (.isSidechain != true) and (.promptId // "") != "") ]
+  | group_by(.promptId) | map(map(.timestamp) | min) | map(select(startswith($h))) | length;
+calls as $c
+| {hour: $h, turns: turns, api_calls: ($c | length),
+   input_tokens: ($c | map(.input) | add // 0), output_tokens: ($c | map(.output) | add // 0),
+   cache_read_tokens: ($c | map(.cache_read) | add // 0),
+   cache_creation_tokens: ($c | map(.cache_creation) | add // 0)}
+EOF
+cd "$CLAUDE_CONFIG_DIR/projects/<project>"
+for f in <session>.jsonl <session>/subagents/*.jsonl; do
+  [ -f "$f" ] && jq -cRs 'split("\n") | .[:-1][] | fromjson? // empty' "$f"   # drops a line still being written
+done | jq -s --arg h 2026-11-10T13 -f /tmp/hour.jq
+```
+
+It prints that hour's bucket for the session, to compare with HQ's. (The
+recipe pools the call keys across the session's files, where `ccd` keys each
+file on its own; API message ids are unique, so the two agree.)
+
 ## Tiers and the LLM proxy
 
 ### The two pools
@@ -2546,7 +2668,8 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 /officers/{id}/preflight` (`{"wal": {"last_archived_time", "last_failed_time",
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
-([Transcript to HQ](#transcript-to-hq)). `ccd ask-image` uses `POST
+([Transcript to HQ](#transcript-to-hq)). Every officer uses `PUT
+/officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)). `ccd ask-image` uses `POST
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
 `officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
 officer may use `GET /officers/{id}/obs/queries` and `POST
@@ -2562,6 +2685,8 @@ is live — the holder's own included, which `officer_claim` turns into a
 heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
 across officers), the captain route's body rules, the transcript route's
 (limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), the
+usage route's (a strict decoder, the pool values, hours on the hour, 413 past
+256 KiB or 1000 buckets, the upsert; `UsageAbsent` plays an HQ without it), the
 asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
 input limits — deadline, image and option counts, option and question length —
 before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,
