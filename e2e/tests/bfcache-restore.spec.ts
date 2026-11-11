@@ -864,11 +864,23 @@ test.describe('mirrored', () => {
 
   for (const width of [390, 1280]) {
     test(`the Rendered view restored at ${width}px does not shift`, async () => {
+      // ⚠ A TRANSCRIPT THAT FILLS THE LOG. A chat log shorter than its box
+      // sits at its BOTTOM (web/css/input.css, operator decision on #589), so
+      // there a reply arriving moves every earlier bubble UP by its height —
+      // a messaging app's behaviour, and a layout shift by the Layout
+      // Instability API (measured: 0.018 at 390px on this fixture). What this
+      // case guards is the RESTORE: in a full log stuck to its end, the reply
+      // that came meanwhile scrolls in, which is no shift.
+      let filler = '';
+      for (let i = 0; i < 12; i++) filler += cc.prompt(`filler prompt ${width}-${i}`) + cc.reply(`Filler answer ${width}-${i}.`);
+      fs.appendFileSync(trPath, filler);
       const { ctx, page } = await mirrorPage(width, [clsInit]);
       try {
         await page.goto(rig.origin + view());
         await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+        await expect(page.locator('#mv-log')).toContainText(`Filler answer ${width}-11.`, { timeout: 10_000 });
         await settle(page);
+        expect(await page.locator('#mv-log').evaluate((l) => l.scrollHeight - l.clientHeight), 'control: the log is full (it scrolls)').toBeGreaterThan(0);
         const doc = await docOf(page);
         await page.evaluate(() => addEventListener('pagehide', () => {
           const S = (window as any).__cls;

@@ -739,6 +739,10 @@ included — is a tool error the model reads, whose text is
 `{"error": "<code>", "message": "…"}`; previews turned off by a bad
 `previews.json` are `previews_off`. An unknown tool name is a JSON-RPC error.
 
+Its `initialize` also carries server instructions (`serverInstructions` in
+`internal/previewhost/mcp.go`). A caller from another tmux server still gets
+no instructions and no tools.
+
 ### Stale tool definitions
 
 Claude Code loads an MCP tool's name at start and fetches its definition only

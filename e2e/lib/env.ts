@@ -407,6 +407,10 @@ export const previewsSiblingPort = port + 385;
 // takes +380..+385.)
 export const routingRulesPort = port + 386;
 export const routingRulesFakePort = port + 387;
+// The tail-first bubble clamp (tail-clamp.spec.ts): its own server (the e2eterm
+// binary, mirror plugin on) and one fake mirrored host, for the mirrored view,
+// the agent chat page and the chief panel.
+export const tailClampPort = port + 388;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

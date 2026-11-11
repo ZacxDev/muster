@@ -437,13 +437,37 @@
 }
 
 /*
+ * Chat logs are bottom-aligned: a transcript shorter than its log sits at the
+ * log's BOTTOM, by the composer, as in a messaging app — on every chat surface
+ * (the mirrored view's #mv-log, the agent chat page's and the chief panel's
+ * #chat-log). It is also what lets a tail-first reply open with its end in
+ * place in a short transcript (bubble_clamp.go): there is always scroll to
+ * give back what the bubble grows.
+ *
+ * A zero-height ::before flex item takes all the free space (margin-bottom:
+ * auto), so it works whatever the first child is — hidden or not. Its
+ * margin-top cancels the log's gap-3 (0.75rem) between it and the first
+ * child, so a transcript that FILLS the log (free space 0, auto margin 0) is
+ * laid out exactly as before. Change the two together.
+ */
+#mv-log::before,
+#chat-log::before {
+  content: "";
+  flex: none;
+  margin-top: -0.75rem;
+  margin-bottom: auto;
+}
+
+/*
  * Chat bubble clamp (internal/ui/bubble_clamp.go). Outside every @layer on
  * purpose: these are attribute selectors with no class, and only a layer's
  * class candidates are what Tailwind matches against the views.
- * - [data-clamp]          : a bubble the script measured as over ~12 lines;
+ * - [data-clamp]          : a bubble the script measured as over ~15 lines;
  *                           its max-height animates between clamped and full.
  * - [data-clamp="closed"] : the clamped state; the bottom fades out (a mask,
  *                           so it fades over any bubble's background).
+ * - [data-clamp-from="tail"][data-clamp="closed"] : an agent's reply, clamped
+ *                           tail-first: its END shows, so the TOP fades in.
  */
 [data-clamp] {
   overflow: hidden;
@@ -457,6 +481,10 @@
   cursor: pointer;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+[data-clamp-from="tail"][data-clamp="closed"] {
+  -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   [data-clamp] {

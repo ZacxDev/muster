@@ -124,6 +124,34 @@ func webServer(t *testing.T) int {
 
 // ------------------------------------------------------------- protocol
 
+// TestPreviewMCPInitializeCarriesInstructions: initialize carries the server
+// instructions that teach an agent previews exist (Claude Code shows them in
+// every session's system prompt even when it defers the tools). The WHOLE
+// text is pinned, whitespace-normalised, as a literal: a reword must change
+// this test on purpose.
+func TestPreviewMCPInitializeCarriesInstructions(t *testing.T) {
+	s := &MCPServer{Host: NewHost(HostConfig{Logger: log.New(io.Discard, "", 0)}), Caller: testCaller}
+	r := rpc(t, s, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	var init struct {
+		Instructions *string `json:"instructions"`
+	}
+	if err := json.Unmarshal(r.Result, &init); err != nil || init.Instructions == nil {
+		t.Fatalf("initialize carries no instructions: %s", r.Raw)
+	}
+	const want = "muster's preview tools (on the `preview` MCP server: preview_open, preview_list, preview_close) " +
+		"show your owner a web page you serve on this machine. When you start a web or dev server your owner " +
+		"should look at, bind it to loopback (127.0.0.1) on a port this host allows; if preview_open answers " +
+		"port_not_allowed, its message usually lists the allowed ports: restart the server on one of them. " +
+		"Once it answers HTTP, call preview_open{port, label} with a short label, and tell your owner it is " +
+		"ready on this session's page in muster: no URL is returned, so do not make one up. Servers " +
+		"on allowed ports are usually also offered to your owner automatically; preview_open is how you name " +
+		"one and open it on purpose. Call preview_close{id} when it is no longer needed."
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if got := norm(*init.Instructions); got != norm(want) {
+		t.Fatalf("instructions:\n got %q\nwant %q", got, norm(want))
+	}
+}
+
 // TestPreviewMCPAnswersTheProtocolItself: initialize names muster-preview and
 // negotiates as muster does, ping answers {}, a notification is 202 with no
 // body, tools/list is EXACTLY the three tools, an unknown method is "method

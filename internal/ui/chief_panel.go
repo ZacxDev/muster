@@ -401,10 +401,16 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			// ⚠ IT IS ALSO WHAT MAKES THE CHAT LAZY. This script is several hundred
 			// lines including a markdown renderer; putting it in the shell would charge
 			// every page load in the app for a panel most of them never open.
+			// 🔴 THE BUBBLE CLAMP, SO A LONG CHIEF REPLY SHOWS ITS END: the panel's
+			// bubbles are chatBubbleOf's, so a reply carries data-clamp-from="tail"
+			// and is drawn with its last lines, "Show more" above it
+			// (bubble_clamp.go). Before agentChatScript, so the transcript the
+			// swap brought in is clamped before that script pins the log to its
+			// end. Re-executable like it: a second open only rescans, and its
+			// observers (bound once, on <body>) clamp every #chat-log refresh.
+			bubbleClampScript(),
 			agentChatScript(v.Chat.Name),
 			DispatchCardGuard(),
-			// ⚠ NO bubbleClampScript HERE, deliberately: the panel's bubbles are
-			// never clamped (bubble_clamp.go).
 		),
 	}
 }
