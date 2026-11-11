@@ -850,22 +850,14 @@ func (g *Gates) mainCIGreen(ctx context.Context, head string) error {
 	if direct == nil {
 		return nil
 	}
-	prs, err := g.GH.PRsForCommit(ctx, head)
+	pr, ok, err := (&mergeFinder{gh: g.GH, base: g.Ship.Base}).find(ctx, head)
 	if err != nil {
-		return refuse(GateMainCI, "%v; and the pull request of %s could not be read: %v", direct, short(head), err)
+		return refuse(GateMainCI, "%v; and %v", direct, err)
 	}
-	pr, ok := mergeOf(prs, head)
 	if !ok {
-		recent, err := g.GH.RecentlyClosedPRs(ctx, g.Ship.Base)
-		if err != nil {
-			return refuse(GateMainCI, "%v; GitHub names no pull request for %s yet, and the pull requests closed into %s could not be read: %v",
-				direct, short(head), g.Ship.Base, err)
-		}
-		if pr, ok = mergeOf(recent, head); !ok {
-			return refuse(GateMainCI, "the checks are not green on %s's head %s, and it is no pull request's merge "+
-				"(neither GitHub's pull requests of the commit nor the %d most recently updated closed into %s merged as it): %v",
-				g.Ship.Base, short(head), recentClosedPRs, g.Ship.Base, direct)
-		}
+		return refuse(GateMainCI, "the checks are not green on %s's head %s, and it is no pull request's merge "+
+			"(neither GitHub's pull requests of the commit nor the %d most recently updated closed into %s merged as it): %v",
+			g.Ship.Base, short(head), recentClosedPRs, g.Ship.Base, direct)
 	}
 	if err := g.checksGreen(ctx, pr.HeadSHA); err != nil {
 		return refuse(GateMainCI, "%s is #%d's merge, and its head's checks are not green: %v", short(head), pr.Number, err)
@@ -885,7 +877,46 @@ func (g *Gates) mainCIGreen(ctx context.Context, head string) error {
 	return nil
 }
 
-// mergeOf is the pull request among prs that was merged AS sha.
+// mergeFinder finds the pull request merged AS a commit into base. It is the
+// ONE way main_ci and the revert finder (openRevert) find a merge. Two
+// sources, in turn: GitHub's commit→pull request association
+// (commits/{sha}/pulls), then, when that names no merge of the commit, the
+// most recently updated closed pull requests into base. The association lags
+// a merge by minutes, while merge_commit_sha is set by the merge itself. The
+// closed list is read at most once per finder, however many commits it is
+// asked about.
+type mergeFinder struct {
+	gh     GitHub
+	base   string
+	closed []PR
+	read   bool
+}
+
+// find is the pull request merged as sha. ok false with a nil error: neither
+// source names one.
+func (m *mergeFinder) find(ctx context.Context, sha string) (PR, bool, error) {
+	prs, err := m.gh.PRsForCommit(ctx, sha)
+	if err != nil {
+		return PR{}, false, fmt.Errorf("the pull request of %s could not be read: %v", short(sha), err)
+	}
+	if pr, ok := mergeOf(prs, sha); ok {
+		return pr, true, nil
+	}
+	if !m.read {
+		closed, err := m.gh.RecentlyClosedPRs(ctx, m.base)
+		if err != nil {
+			return PR{}, false, fmt.Errorf("GitHub names no pull request for %s yet, and the pull requests closed into %s could not be read: %v",
+				short(sha), m.base, err)
+		}
+		m.closed, m.read = closed, true
+	}
+	pr, ok := mergeOf(m.closed, sha)
+	return pr, ok, nil
+}
+
+// mergeOf is the pull request among prs that was merged AS sha. Merged is
+// required, not implied by the sha: a closed but UNMERGED pull request still
+// carries a merge_commit_sha (GitHub's test merge), with merged_at null.
 func mergeOf(prs []PR, sha string) (PR, bool) {
 	for _, pr := range prs {
 		if pr.Merged && pr.MergeCommitSHA == sha {

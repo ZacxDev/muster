@@ -33,6 +33,8 @@ type fakeGH struct {
 	refErr     error
 	// existingRefs answer ErrRefExists on create.
 	existingRefs map[string]bool
+	// mergedInto is every head MergeInto merged into a branch, in order.
+	mergedInto []string
 
 	merged      []int
 	mergedSHA   []string
@@ -195,6 +197,9 @@ func (f *fakeGH) CreateCommit(_ context.Context, _, tree string, parents []strin
 	return "revert-of-" + parents[0], nil
 }
 func (f *fakeGH) MergeInto(_ context.Context, base, head, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mergedInto = append(f.mergedInto, head)
 	return "merged-" + head, nil
 }
 func (f *fakeGH) OpenPR(_ context.Context, _, head, base, _ string) (int, error) { return 900, nil }

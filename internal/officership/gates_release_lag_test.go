@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,10 +43,46 @@ type lagGitHub struct {
 	listQry []string
 }
 
-// listPR is a pull request as a LIST answer spells it: no `merged`.
+// listPR is a pull request merged into main as a LIST answer spells it: no
+// `merged`.
 func listPR(n int, mergeSHA, head string) map[string]any {
-	return map[string]any{"number": n, "state": "closed", "merged_at": "2026-01-02T03:04:05Z", "merge_commit_sha": mergeSHA,
-		"head": map[string]any{"ref": "officer/x", "sha": head}, "base": map[string]any{"ref": "main"}}
+	return listPRInto(n, mergeSHA, head, "main", "closed", true)
+}
+
+// listPRInto is listPR with its base, state and merged-ness chosen. An
+// unmerged one has NO merged_at, but still a merge_commit_sha, as GitHub
+// sends for a closed-unmerged pull request (its test merge).
+func listPRInto(n int, mergeSHA, head, base, state string, merged bool) map[string]any {
+	p := map[string]any{"number": n, "state": state, "merge_commit_sha": mergeSHA,
+		"head": map[string]any{"ref": "officer/x", "sha": head}, "base": map[string]any{"ref": base}}
+	if merged {
+		p["merged_at"] = "2026-01-02T03:04:05Z"
+	}
+	return p
+}
+
+// pullsList is the pulls list's answer to q, as GitHub filters it: only
+// state (unless "all") and base (when given), and at most per_page entries.
+// closed is in "most recently updated first" order already.
+func (f *lagGitHub) pullsList(q url.Values) []map[string]any {
+	out := []map[string]any{}
+	state := q.Get("state")
+	if state == "" {
+		state = "open" // GitHub's default
+	}
+	for _, p := range f.closed {
+		if state != "all" && p["state"] != state {
+			continue
+		}
+		if b := q.Get("base"); b != "" && p["base"].(map[string]any)["ref"] != b {
+			continue
+		}
+		out = append(out, p)
+	}
+	if n, err := strconv.Atoi(q.Get("per_page")); err == nil && n < len(out) {
+		out = out[:n]
+	}
+	return out
 }
 
 func (f *lagGitHub) serve(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +104,7 @@ func (f *lagGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		out = append([]map[string]any{}, f.assoc...)
 	case "/pulls":
 		f.listQry = append(f.listQry, r.URL.RawQuery)
-		out = append([]map[string]any{}, f.closed...)
+		out = f.pullsList(r.URL.Query())
 	case "/git/commits/" + lagHead:
 		out = map[string]any{"tree": map[string]any{"sha": "tree-merged"}, "parents": []any{map[string]any{"sha": fxPrevTag}}}
 	case "/git/commits/" + lagPRHead:
@@ -131,11 +169,59 @@ func TestMainCIStillRefusesWhenNoClosedPullRequestMergedAsTheHead(t *testing.T) 
 	g, done := lagGates(t, f)
 	defer done()
 	err := g.mainCIGreen(context.Background(), lagHead)
-	want := "refused by gate main_ci: the checks are not green on main's head 5988daa1ca47, and it is no pull request's merge " +
-		"(neither GitHub's pull requests of the commit nor the 30 most recently updated closed into main merged as it): " +
-		"refused by gate checks: on 5988daa1ca47: ci / build=missing, ci / e2e=missing, ci / lint=missing"
-	if err == nil || err.Error() != want {
-		t.Fatalf("err = %v\nwant %s", err, want)
+	if err == nil || err.Error() != lagNoMerge {
+		t.Fatalf("err = %v\nwant %s", err, lagNoMerge)
+	}
+}
+
+// lagNoMerge is main_ci's refusal when neither source names a merge of
+// lagHead.
+const lagNoMerge = "refused by gate main_ci: the checks are not green on main's head 5988daa1ca47, and it is no pull request's merge " +
+	"(neither GitHub's pull requests of the commit nor the 30 most recently updated closed into main merged as it): " +
+	"refused by gate checks: on 5988daa1ca47: ci / build=missing, ci / e2e=missing, ci / lint=missing"
+
+// TestMainCIRefusesAClosedButUnmergedPullRequestWhoseTestMergeIsTheHead:
+// a pull request closed WITHOUT merging still carries a merge_commit_sha
+// (GitHub's test merge; merged_at null). Even with that sha equal to head,
+// the same tree and green checks on its head, it vouches for nothing.
+func TestMainCIRefusesAClosedButUnmergedPullRequestWhoseTestMergeIsTheHead(t *testing.T) {
+	f := &lagGitHub{prTree: "tree-merged", closed: []map[string]any{listPRInto(lagPR, lagHead, lagPRHead, "main", "closed", false)}}
+	g, done := lagGates(t, f)
+	defer done()
+	err := g.mainCIGreen(context.Background(), lagHead)
+	if err == nil || err.Error() != lagNoMerge {
+		t.Fatalf("a closed but UNMERGED pull request whose test merge is head was taken as head's merge: err = %v\nwant %s", err, lagNoMerge)
+	}
+}
+
+// TestMainCIRefusesAMergeIntoAnotherBase: a pull request merged into ANOTHER
+// base as head (same tree, green checks) is not on the closed list into the
+// base, so it vouches for nothing. The fake filters by the query's base, so
+// a list read without it would return the pull request.
+func TestMainCIRefusesAMergeIntoAnotherBase(t *testing.T) {
+	f := &lagGitHub{prTree: "tree-merged", closed: []map[string]any{listPRInto(lagPR, lagHead, lagPRHead, "release", "closed", true)}}
+	g, done := lagGates(t, f)
+	defer done()
+	err := g.mainCIGreen(context.Background(), lagHead)
+	if err == nil || err.Error() != lagNoMerge {
+		t.Fatalf("a pull request merged into another base was taken as head's merge: err = %v\nwant %s", err, lagNoMerge)
+	}
+}
+
+// TestMainCIFallbackReadsOnlyClosedPullRequests: a full page of open pull
+// requests into the base, updated after the merge, does not push the merge
+// off the one page read. The fake filters by the query's state and per_page,
+// so a read of every state would see only the open ones.
+func TestMainCIFallbackReadsOnlyClosedPullRequests(t *testing.T) {
+	var prs []map[string]any
+	for i := 0; i < 30; i++ {
+		prs = append(prs, listPRInto(lagPR+10+i, lagOther, "dddddddddddddddddddddddddddddddddddddddd", "main", "open", false))
+	}
+	f := &lagGitHub{prTree: "tree-merged", closed: append(prs, listPR(lagPR, lagHead, lagPRHead))}
+	g, done := lagGates(t, f)
+	defer done()
+	if err := g.mainCIGreen(context.Background(), lagHead); err != nil {
+		t.Fatalf("the merge, behind 30 open pull requests updated after it, was refused: %v", err)
 	}
 }
 

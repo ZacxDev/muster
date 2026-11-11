@@ -1527,7 +1527,10 @@ On `not_live` or `unhealthy`, per `rollback`:
 - `pr`: open a revert pull request from `<prefix>revert-<tag>` (`-2`, `-3`, … if
   that branch exists) that reverts the
   officer's own squash merges in the release, newest first (each a 3-way merge
-  GitHub computes, so later commits are kept); escalate with its number.
+  GitHub computes, so later commits are kept); escalate with its number. A
+  merge is found the way gate 6 finds one (its `merge_commit_sha`, from the
+  association, then the recently closed list), so a merge the association
+  does not name yet is still reverted.
 - `auto`: as `pr`, then merge it through `officer_merge_pr`'s gates (CI and
   review must pass on the revert) and tag it through the release gates minus
   the in-flight, rate, quiet-hours and HQ-enabled gates (the release being

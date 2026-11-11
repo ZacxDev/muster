@@ -470,21 +470,22 @@ func (w *Watcher) openRevert(ctx context.Context, rel TagOutcome) (int, error) {
 		pr  PR
 	}
 	var own []merged
+	// The same finder main_ci uses: the association lags a merge, and the
+	// newest merge in the release (the likeliest cause) is the one it lags.
+	finder := &mergeFinder{gh: w.GH, base: w.Ship.Base}
 	for i := len(cmp.Commits) - 1; i >= 0; i-- {
 		sha := cmp.Commits[i]
-		prs, err := w.GH.PRsForCommit(ctx, sha)
+		p, ok, err := finder.find(ctx, sha)
 		if err != nil {
 			return 0, err
 		}
-		for _, p := range prs {
-			if p.Merged && p.MergeCommitSHA == sha && strings.EqualFold(p.Author, bot) {
-				// 🔴 AN AUTOMATIC REVERT IS NEVER REVERTED AUTOMATICALLY (round-1
-				// F1): that would re-ship the change it removed.
-				if strings.HasPrefix(p.HeadRef, w.Ship.BranchPrefix+"revert-") {
-					return 0, fmt.Errorf("%s holds #%d, itself an automatic revert; it is never reverted automatically", rel.Tag, p.Number)
-				}
-				own = append(own, merged{sha, p})
+		if ok && strings.EqualFold(p.Author, bot) {
+			// 🔴 AN AUTOMATIC REVERT IS NEVER REVERTED AUTOMATICALLY (round-1
+			// F1): that would re-ship the change it removed.
+			if strings.HasPrefix(p.HeadRef, w.Ship.BranchPrefix+"revert-") {
+				return 0, fmt.Errorf("%s holds #%d, itself an automatic revert; it is never reverted automatically", rel.Tag, p.Number)
 			}
+			own = append(own, merged{sha, p})
 		}
 	}
 	if len(own) == 0 {
