@@ -295,7 +295,9 @@ func (s *Server) RunClaimSweep(ctx context.Context, interval time.Duration) {
 // owner's online hosts lists now, with its host and the name muster shows for
 // it.
 func (s *Server) knownMirrorSession(ctx context.Context, sid string) (host, name string, ok bool) {
-	if s.ext.Mirror == nil {
+	// A CLAUDE session only: mirrorSessionOf also binds an opencode caller's
+	// key, which no claimant names.
+	if s.ext.Mirror == nil || !mirror.ValidClaudeSession(sid) {
 		return "", "", false
 	}
 	for _, h := range s.ext.Mirror.Hosts(ctx) {

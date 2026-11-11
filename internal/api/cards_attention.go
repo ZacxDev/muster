@@ -102,8 +102,10 @@ func (s *Server) cardAttention(ctx context.Context) cardAttentionIndex {
 	return x
 }
 
-// claudeSessionWindow is the address of host's window running Claude session
-// sid, in its active pane or a split (the MCP door's rule, mirrorSessionOf).
+// claudeSessionWindow is the address of host's window running the mirrored
+// session sid names — a Claude session, in its active pane or a split, or a
+// mirrored opencode session's key (the MCP door's rule,
+// mirror.Window.RunsMCPCaller).
 func claudeSessionWindow(hosts []mirror.HostView, host, sid string) (ui.MirrorRef, bool) {
 	e, ok := claudeSessionEntry(hosts, host, sid)
 	if !ok {
@@ -120,7 +122,7 @@ func claudeSessionEntry(hosts []mirror.HostView, host, sid string) (mirror.Sessi
 			continue
 		}
 		for _, w := range h.Windows {
-			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
+			if w.RunsMCPCaller(sid) {
 				return mirror.SessionView{Host: h.Host, Session: w.Session, Window: w.ID, Index: w.Index, Label: w.Label, Online: h.Online}, true
 			}
 		}

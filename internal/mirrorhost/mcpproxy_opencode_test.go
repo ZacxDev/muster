@@ -202,33 +202,155 @@ func TestOpenCodeThroughTheEndpoint(t *testing.T) {
 	}
 }
 
-// TestTheOpenCodeMarkerOpensNothingElse: the marker is honoured on
-// /preview-mcp only. On /mcp — muster's tools — an opencode-marked caller
-// outside this host's tmux server is the outsider it always was (no tools,
-// nothing forwarded); and on /preview-mcp a caller with no marker and no tmux
-// server is still the outsider, whatever session its call names.
-func TestTheOpenCodeMarkerOpensNothingElse(t *testing.T) {
-	up, srv := newUpstream(t, func(w http.ResponseWriter) { _, _ = io.WriteString(w, musterTools) })
-	p := ocProxy(srv.URL)
-	if got := toolNames(t, postTo(t, p, "/mcp", ocHeaders(), listBody)); len(got) != 0 {
-		t.Fatalf("/mcp lists %v to an opencode-marked outsider", got)
+// jsonAnswer is an upstream answering body as muster does (application/json).
+func jsonAnswer(body string) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
 	}
-	if r := decodeReply(t, "call", postTo(t, p, "/mcp", ocHeaders(), proxyCall)); r.Error == nil {
-		t.Fatalf("/mcp answered an opencode-marked outsider's call: %s", r.Result)
+}
+
+// ocMusterCall is a muster tools/call (attention_ask) naming session sid in
+// its _meta ("": no _meta).
+func ocMusterCall(sid string) string {
+	params := map[string]any{"name": "attention_ask", "arguments": map[string]any{"question": "q?"}}
+	if sid != "" {
+		params["_meta"] = map[string]any{"ai.opencode/sessionID": sid}
+	}
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params})
+	return string(b)
+}
+
+// TestAnOpenCodeCallToMusterIsBoundToItsSession: on /mcp, opencode's service
+// — the secret and the marker, no tmux server — is forwarded: initialize and
+// tools/list marked as opencode's and with no session; a tools/call bound by
+// the SAME rule as the preview tools (a launcher binding, a verified title
+// binding, a child session's root) and forwarded with that window's session
+// KEY and no Claude session. Pane headers beside the marker change nothing.
+//
+// 🔴 REGRESSION TEST: at the base an opencode-marked caller on /mcp was the
+// outsider (no tools, nothing forwarded).
+func TestAnOpenCodeCallToMusterIsBoundToItsSession(t *testing.T) {
+	up, srv := newUpstream(t, jsonAnswer(musterTools))
+	p := ocProxy(srv.URL)
+	if got := toolNames(t, postTo(t, p, "/mcp", ocHeaders(), listBody)); !slices.Equal(got, []string{"attention_ask", "task_get"}) {
+		t.Fatalf("opencode's tools/list on /mcp: %v; want muster's list", got)
+	}
+	if up.n() != 1 {
+		t.Fatalf("tools/list reached muster %d time(s)", up.n())
+	}
+	first := up.calls[0]
+	if first.Header.Get(MCPClientHeader) != MCPClientOpenCode || first.Header.Get(MCPSessionHeader) != "" || first.Header.Get(MCPAgentSessionHeader) != "" {
+		t.Fatalf("tools/list forwarded with client %q, session %q, agent session %q", first.Header.Get(MCPClientHeader),
+			first.Header.Get(MCPSessionHeader), first.Header.Get(MCPAgentSessionHeader))
+	}
+	withPanes := caller("%7")
+	withPanes[MCPClientHeader] = MCPClientOpenCode
+	for i, c := range []struct {
+		hdr       map[string]string
+		sid, want string
+	}{
+		{ocHeaders(), "ses_launch", "opencode:ses_launch"},
+		{ocHeaders(), "ses_title", "opencode:ses_title"},
+		{ocHeaders(), "ses_grand", "opencode:ses_launch"},
+		{withPanes, "ses_child", "opencode:ses_launch"},
+	} {
+		if w := postTo(t, p, "/mcp", c.hdr, ocMusterCall(c.sid)); w.Code != http.StatusOK {
+			t.Fatalf("session %q: %d %s", c.sid, w.Code, w.Body)
+		}
+		r := up.calls[up.n()-1]
+		if up.n() != i+2 || r.Header.Get(MCPAgentSessionHeader) != c.want || r.Header.Get(MCPSessionHeader) != "" ||
+			r.Header.Get(MCPClientHeader) != MCPClientOpenCode || r.Header.Get("Authorization") != "Bearer "+proxyToken {
+			t.Fatalf("session %q forwarded as agent %q, claude %q, client %q (%d calls); want agent %q, no claude session",
+				c.sid, r.Header.Get(MCPAgentSessionHeader), r.Header.Get(MCPSessionHeader), r.Header.Get(MCPClientHeader), up.n(), c.want)
+		}
+		if up.body[up.n()-1] != ocMusterCall(c.sid) {
+			t.Fatalf("the body was changed: %s", up.body[up.n()-1])
+		}
+	}
+}
+
+// TestAnOpenCodeCallToMusterNoWindowShowsFailsClosed: on /mcp, a call naming
+// no session, an id no window shows, a title match muster does not send to, a
+// session two windows show, or a CLAUDE session's id is the binding's own
+// refusal — a tool error, NOT forwarded — never the pane's Claude session.
+func TestAnOpenCodeCallToMusterNoWindowShowsFailsClosed(t *testing.T) {
+	up, srv := newUpstream(t, jsonAnswer(musterTools))
+	p := ocProxy(srv.URL)
+	withPanes := caller("%7")
+	withPanes[MCPClientHeader] = MCPClientOpenCode
+	for _, hdr := range []map[string]string{ocHeaders(), withPanes} {
+		for sid, why := range map[string]string{
+			"":               "names no session",
+			"ses_unknown":    "is in no window this host mirrors",
+			"ses_orphan":     "is in no window this host mirrors",
+			"ses_unverified": "its binding is not verified",
+			"ses_twice":      "is shown in 2 windows",
+			proxySID:         "is in no window this host mirrors",
+		} {
+			if text := toolErrorText(t, postTo(t, p, "/mcp", hdr, ocMusterCall(sid))); !strings.Contains(text, why) {
+				t.Errorf("session %q: %s; want it to say %q", sid, text, why)
+			}
+		}
 	}
 	if up.n() != 0 {
-		t.Fatalf("an opencode-marked outsider reached muster %d time(s)", up.n())
+		t.Fatalf("an unbound opencode call reached muster %d time(s)", up.n())
+	}
+}
+
+// TestTheOpenCodeMarkerOpensNothingElse: the marker is honoured on the two MCP
+// servers' paths only — any other path is 404, marked or not, and nothing is
+// forwarded. A request WITHOUT it is checked exactly as before: a caller
+// outside this host's tmux server (no pane headers) is the outsider, and a
+// Claude Code pane's call is forwarded with its Claude session and neither
+// opencode header — whatever opencode-looking headers it sends itself.
+func TestTheOpenCodeMarkerOpensNothingElse(t *testing.T) {
+	up, srv := newUpstream(t, jsonAnswer(musterTools))
+	p := ocProxy(srv.URL)
+	for _, path := range []string{"/", "/mcp/", "/mirror/mcp", "/preview-mcp/x", "/MCP"} {
+		if w := postTo(t, p, path, ocHeaders(), listBody); w.Code != http.StatusNotFound {
+			t.Errorf("an opencode-marked request to %s: %d, want 404", path, w.Code)
+		}
+	}
+	if up.n() != 0 {
+		t.Fatalf("a marked request to another path reached muster %d time(s)", up.n())
 	}
 	bare := map[string]string{"Authorization": "Bearer " + proxySecret}
-	if got := toolNames(t, postTo(t, p, PreviewMCPPath, bare, listBody)); len(got) != 0 {
-		t.Fatalf("an unmarked caller outside the tmux server lists %v", got)
+	odd := ocHeaders()
+	odd[MCPClientHeader] = "opencode-ish"
+	for name, hdr := range map[string]map[string]string{"no marker, no pane": bare, "another marker value": odd} {
+		if got := toolNames(t, postTo(t, p, "/mcp", hdr, listBody)); len(got) != 0 {
+			t.Errorf("%s: /mcp lists %v", name, got)
+		}
+		if r := decodeReply(t, "call", postTo(t, p, "/mcp", hdr, ocMusterCall("ses_launch"))); r.Error == nil {
+			t.Errorf("%s: /mcp answered a call naming a shown session: %s", name, r.Result)
+		}
+		if got := toolNames(t, postTo(t, p, PreviewMCPPath, hdr, listBody)); len(got) != 0 {
+			t.Errorf("%s: /preview-mcp lists %v", name, got)
+		}
 	}
-	if r := decodeReply(t, "call", postTo(t, p, PreviewMCPPath, bare, ocCall("ses_launch"))); r.Error == nil {
-		t.Fatalf("an unmarked outsider's call naming a shown session was answered: %s", r.Result)
+	if up.n() != 0 {
+		t.Fatalf("an unmarked outsider reached muster %d time(s)", up.n())
 	}
-	// The control: the same marked request on /preview-mcp is served.
-	if got := toolNames(t, postTo(t, p, PreviewMCPPath, ocHeaders(), listBody)); len(got) != 3 {
-		t.Fatalf("control: an opencode caller on /preview-mcp lists %v", got)
+	// A Claude Code pane naming an opencode session in _meta AND sending the
+	// proxy's own upstream header itself: bound by its pane, as before.
+	cc := caller("%7")
+	cc[MCPAgentSessionHeader] = "opencode:ses_launch"
+	if w := postTo(t, p, "/mcp", cc, ocMusterCall("ses_launch")); w.Code != http.StatusOK {
+		t.Fatalf("a Claude Code call: %d %s", w.Code, w.Body)
+	}
+	r := up.calls[up.n()-1]
+	if r.Header.Get(MCPSessionHeader) != proxySID || r.Header.Get(MCPAgentSessionHeader) != "" || r.Header.Get(MCPClientHeader) != "" {
+		t.Fatalf("a Claude Code call forwarded as claude %q, agent %q, client %q", r.Header.Get(MCPSessionHeader),
+			r.Header.Get(MCPAgentSessionHeader), r.Header.Get(MCPClientHeader))
+	}
+	// And one with no pane header in this tmux server is refused here, as before.
+	noPane := map[string]string{"Authorization": "Bearer " + proxySecret, MCPTmuxHeader: proxyTMUX}
+	if text := toolErrorText(t, postTo(t, p, "/mcp", noPane, ocMusterCall("ses_launch"))); !strings.Contains(text, "name the calling session: send "+MCPPaneHeader) {
+		t.Fatalf("a call with no pane: %s", text)
+	}
+	if up.n() != 1 {
+		t.Fatalf("%d forwarded, want 1", up.n())
 	}
 }
 
