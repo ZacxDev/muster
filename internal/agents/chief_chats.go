@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -155,17 +156,26 @@ func (s *PGStore) SetArchived(ctx context.Context, agentID, sessionID int64, arc
 // primary right now; nothing was changed.
 var ErrFreshPrimaryBusy = errors.New("a fresh primary is already being made")
 
+// freshPrimaryLockWait bounds FreshPrimary's wait for the primary row's lock:
+// long enough for any chat write holding it, short of a request timeout.
+const freshPrimaryLockWait = 5 * time.Second
+
 // FreshPrimary implements ChatStore.
 //
-// 🔴 THE OLD DEFAULT ROW IS LOCKED FIRST, WITHOUT WAITING (FOR UPDATE NOWAIT):
-// a second fresh-primary call for the agent while the first holds the row gets
-// ErrFreshPrimaryBusy at once and changes nothing. (Waiting would not have
-// replaced the first's new primary either: under READ COMMITTED the waiter's
-// re-check finds the old row no longer the default and reads no row at all, so
-// it failed — a 500 — after the first committed.) A call that reads no default
-// row once it has one to lock is answered the same way. So one call wins, never
-// two primaries; the partial unique index (chat_sessions_one_default) is the
-// backstop.
+// 🔴 THE OLD DEFAULT ROW IS LOCKED FIRST, WITH A BOUNDED WAIT
+// (freshPrimaryLockWait, lock_timeout) — NOT NOWAIT. Ordinary chat writes
+// hold that row's locks for a moment: a chat_messages insert takes FOR KEY
+// SHARE through its foreign key, and AddChatMessage's `UPDATE chat_sessions
+// SET updated_at` a row lock. NOWAIT answered "a fresh primary is already being
+// made" whenever a delivery was being written (PR #609 round 2 N2); the wait
+// lets those finish, and the switch then runs.
+//
+// A second fresh-primary call (another process: in one process the handler's
+// guard refuses it first) waits behind the first; once the first commits, its
+// re-check under READ COMMITTED finds the old row no longer the default and
+// reads no row — ErrFreshPrimaryBusy, changing nothing. So does a wait that
+// runs out (55P03). One call wins, never two primaries; the partial unique
+// index (chat_sessions_one_default) is the backstop.
 func (s *PGStore) FreshPrimary(ctx context.Context, agentID int64, agentName, runtime, model string) (ChatSession, ChatSession, error) {
 	if runtime != SessionRuntimeLegacy {
 		m, err := ValidateSessionRuntime(runtime, model)
@@ -181,8 +191,11 @@ func (s *PGStore) FreshPrimary(ctx context.Context, agentID int64, agentName, ru
 		return ChatSession{}, ChatSession{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", freshPrimaryLockWait.Milliseconds())); err != nil {
+		return ChatSession{}, ChatSession{}, err
+	}
 	old, err := scanSession(tx.QueryRow(ctx,
-		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id = $1 AND is_default FOR UPDATE NOWAIT`, agentID))
+		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id = $1 AND is_default FOR UPDATE`, agentID))
 	var pg *pgconn.PgError
 	switch {
 	case errors.As(err, &pg) && pg.Code == "55P03": // lock_not_available

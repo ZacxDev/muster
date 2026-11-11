@@ -60,10 +60,17 @@ func (s *Server) deliverySession(ctx context.Context, a agents.Agent) (agents.Ch
 	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 }
 
-// DeliverySession is deliverySession for another package's deliverer (the
-// memo relay, memorelay.Relay.SetSession).
-func (s *Server) DeliverySession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
-	return s.deliverySession(ctx, a)
+// DeliveryRoute is deliverySession for another package's deliverer (the memo
+// relay, memorelay.Relay.SetSession), with ctx carrying that session's route
+// (withSessionRoute) — so a send that takes no route of its own (the memo
+// relay's gw.Send) reaches the session's ccd lane, pinned when it is the
+// primary, rather than ccd's original CLI.
+func (s *Server) DeliveryRoute(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error) {
+	sess, err := s.deliverySession(ctx, a)
+	if err != nil {
+		return ctx, sess, err
+	}
+	return withSessionRoute(ctx, a, sess), sess, nil
 }
 
 // sessionRoute returns ctx carrying the route of a's session sessionKey

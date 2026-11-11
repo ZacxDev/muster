@@ -921,7 +921,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if a.memo != nil {
 		// A memo to the chief goes to its primary chat (memorelay.SetSession).
-		a.memo.SetSession(srv.DeliverySession)
+		a.memo.SetSession(srv.DeliveryRoute)
 	}
 
 	// The feature registry (features.go): evaluated once, from what was wired.

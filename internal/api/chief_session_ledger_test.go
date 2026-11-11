@@ -18,7 +18,7 @@ import (
 var chiefSessionPickers = map[string]bool{
 	"DefaultSession": true, "LatestOrCreateSession": true, "CreateSession": true, "CreateSessionOn": true,
 	"FreshPrimary": true, "primarySession": true, "deliverySession": true, "chiefPrimaryID": true,
-	"sessionFor": true, "DeliverySession": true, "SetSession": true,
+	"sessionFor": true, "DeliveryRoute": true, "SetSession": true,
 }
 
 // TestEveryChiefSessionPickerIsLedgered is THE LEDGER behind primarySession's
@@ -92,10 +92,10 @@ func TestEveryChiefSessionPickerIsLedgered(t *testing.T) {
 		// opencode's own sessions (an opencode server's API), not chat_sessions rows.
 		"cmd/muster-mirror/opencode_launch.go runOpenCodeLaunch → CreateSession":                    "NOT-A-DELIVERY (an opencode session)",
 		"internal/mirrorhost/agentspawn_opencode.go (*openCodeSpawn).createSession → CreateSession": "NOT-A-DELIVERY (an opencode session)",
-		"internal/memorelay/relay.go (*Relay).deliver → sessionFor":                                 "PRIMARY (a memo: SetSession is api.Server.DeliverySession)",
+		"internal/memorelay/relay.go (*Relay).deliver → sessionFor":                                 "PRIMARY (a memo: SetSession is api.Server.DeliveryRoute)",
 		"internal/memorelay/relay.go (*Relay).sessionFor → LatestOrCreateSession":                   "ONE-PLACE (no SetSession: a relay built without a server)",
-		"internal/api/session_runtime.go (*Server).DeliverySession → deliverySession":               "ONE-PLACE (the memo relay's hook)",
-		"cmd/muster-server/main.go buildApp → SetSession":                                           "ONE-PLACE (wires the memo relay to DeliverySession)",
+		"internal/api/session_runtime.go (*Server).DeliveryRoute → deliverySession":                 "ONE-PLACE (the memo relay's hook)",
+		"cmd/muster-server/main.go buildApp → SetSession":                                           "ONE-PLACE (wires the memo relay to DeliveryRoute)",
 		"internal/agents/chief_chats.go (*PGStore).SetArchived → DefaultSession":                    "ONE-PLACE (elects a primary before archiving, F4)",
 		"internal/agents/pgstore.go (*PGStore).DefaultSession → CreateSession":                      "ONE-PLACE (every session archived: a new primary)",
 	}

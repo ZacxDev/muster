@@ -832,7 +832,7 @@ The chief has one **primary chat** and any number of **side chats**.
   The chief page and the chief panel open on it. On a `claude-code` chief whose
   primary is a `ccd` lane (after a **Fresh primary**), that lane is **pinned**
   (`X-Muster-CC-Pinned`): `ccd` never stops its CLI for another session and does
-  not count it against `CCD_MAX_SESSIONS`, so a delivery always gets its CLI.
+  not count it against `CCD_MAX_SESSIONS`, so a delivery always gets its CLI. When the pin moves (another fresh primary), `ccd` stops the least recently used idle lanes until the unpinned ones fit the cap again, and a former primary still finishing its handover is stopped when that turn ends: the cap is exceeded only by the one pinned CLI. Memos reach the primary on its own route (its lane), like every other delivery.
 - **A side chat** is a conversation of its own, for a question you do not want
   in the primary's context. It starts with a fresh context and nothing is ever
   delivered to it. On a `claude-code` chief it runs in a Claude Code CLI of its

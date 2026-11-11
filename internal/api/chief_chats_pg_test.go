@@ -537,13 +537,16 @@ func TestAFreshPrimaryIsAtomicForAConcurrentDelivery(t *testing.T) {
 	}
 	time.Sleep(5 * time.Millisecond)
 	oldGot, fresh, err := cs.FreshPrimary(ctx, f.chief.ID, f.chief.Name, "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
 	mu.Lock()
 	switchDone = true
 	mu.Unlock()
+	// 🔴 THE WRITERS ARE WAITED FOR BEFORE ANY FAILURE ENDS THE TEST: a
+	// t.Fatal with them still running had them log after the test completed,
+	// which panics the whole test binary (PR #609 round 2 N2).
 	wg.Wait()
+	if err != nil {
+		t.Fatalf("a fresh primary during ordinary deliveries: %v", err)
+	}
 	if oldGot.ID != old.ID || oldGot.ArchivedAt == nil || oldGot.IsDefault {
 		t.Fatalf("FreshPrimary's old primary: %+v, want %d archived and not primary", oldGot, old.ID)
 	}

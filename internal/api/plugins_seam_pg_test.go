@@ -364,6 +364,14 @@ func (f *laterRoundRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if f.dial {
 		// The response below is the last thing this runtime ever serves: the next
 		// request dials a closed port, as after a pod restart.
+		//
+		// 🔴 THE LISTENER IS CLOSED BEFORE A BYTE OF THE RESPONSE IS WRITTEN. It
+		// used to be closed after the Flush, and the client — which sends
+		// request 2 the moment it has read request 1's answer — could dial
+		// inside that gap and reach a live listener (a flake under load, PR #609
+		// round 2). Closing a listener leaves this accepted connection open, so
+		// request 1 is still answered; "Connection: close" ends it after.
+		_ = f.srv.Listener.Close()
 		w.Header().Set("Connection", "close")
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -371,7 +379,6 @@ func (f *laterRoundRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"agent_get_task\",\"arguments\":\"{}\"}]}}\n\n")
 	if f.dial {
 		w.(http.Flusher).Flush()
-		_ = f.srv.Listener.Close()
 	}
 }
 

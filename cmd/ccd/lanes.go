@@ -113,7 +113,12 @@ import (
 //     cap, and an unpinned one is refused or evicts only among the unpinned;
 //   - ONE lane is pinned at a time — a turn that pins its lane unpins every
 //     other (after a fresh primary the old primary's lane becomes an ordinary
-//     one), so the cap is exceeded by at most one CLI;
+//     one) — and an unpinning that leaves more unpinned lanes than the cap
+//     stops the least recently used idle ones until it does not (trimLocked),
+//     as does every release. So the cap is exceeded by the ONE pinned CLI, and
+//     beyond that only while every excess lane is held by a turn: each is
+//     stopped as soon as the turn holding it releases it (PR #609 round 2 N1 —
+//     before, each pin move left one more CLI running for good);
 //   - pinning is the LATEST turn's word, not fixed for the lane's life: a turn
 //     without the header unpins its lane (an old primary unarchived and talked
 //     to as a side chat).
@@ -663,15 +668,37 @@ func (l *lanes) unpinnedLocked() int {
 // setPinnedLocked records the latest turn's word on whether ln is pinned: a
 // pin unpins every other lane (one pinned lane at a time). Caller holds l.mu.
 func (l *lanes) setPinnedLocked(ln *lane, pinned bool) {
+	unpinned := ln.pinned && !pinned
 	if pinned {
 		for _, o := range l.set {
 			if o != ln && o.pinned {
 				log.Printf("ccd: session %s (%s) is no longer pinned: %s (%s) is", o.id, o.key, ln.id, ln.key)
 				o.pinned = false
+				unpinned = true
 			}
 		}
 	}
 	ln.pinned = pinned
+	if unpinned {
+		l.trimLocked()
+	}
+}
+
+// trimLocked stops the least recently used idle unpinned lanes no turn holds
+// while more unpinned lanes run than the cap allows — the excess an unpinning
+// leaves (setPinnedLocked). A lane a turn holds is never taken
+// (pickEvictLocked); release trims again once its turn is over. Caller holds
+// l.mu; each stop is lane.stop's bounded teardown, as release's is.
+func (l *lanes) trimLocked() {
+	for l.max > 0 && l.unpinnedLocked() > l.max {
+		ev, _ := l.pickEvictLocked(false)
+		if ev == nil {
+			return
+		}
+		delete(l.set, ev.id)
+		log.Printf("ccd: stopping idle session %s (%s): more sessions run than the cap (%d) since the pinned primary moved", ev.id, ev.key, l.max)
+		ev.stop()
+	}
 }
 
 // stuckLaneAfter is stuckAfter's default.
@@ -757,6 +784,8 @@ func (l *lanes) release(ln *lane) {
 		log.Printf("ccd: stopping check session %s (%s): its turn is over and a check's CLI is never kept", ln.id, ln.key)
 		ln.stop()
 	}
+	// An excess an unpinning left while every candidate was held (trimLocked).
+	l.trimLocked()
 }
 
 func (l *lanes) newLane(id, key, model, workdir string) *lane {

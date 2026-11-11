@@ -179,9 +179,10 @@ type Config struct {
 
 // Relay delivers memos. Build it with [New].
 type Relay struct {
-	// session picks the chat session a memo turn runs in (SetSession); nil:
-	// the agent's latest.
-	session  func(ctx context.Context, a agents.Agent) (agents.ChatSession, error)
+	// session picks the chat session a memo turn runs in, and the context it is
+	// sent under — carrying that session's route (SetSession); nil: the
+	// agent's latest, on ctx as it is.
+	session  func(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error)
 	agents   agents.Store
 	taskRepo func(context.Context, int64) (string, error)
 	gw       Gateway
@@ -611,14 +612,19 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 		r.count(familyDelivery, ResultUnresolved)
 		return
 	}
-	sess, err := r.sessionFor(ctx, a)
+	// 🔴 SENT UNDER THE SESSION'S ROUTE (sctx): ccd routes a turn by its
+	// X-Muster-CC-Session header, never by the body's session key, so without
+	// it a memo to a chief whose primary is a lane was pasted into ccd's
+	// ORIGINAL CLI — after a fresh primary, the archived conversation (PR #609
+	// round 2 N3).
+	sctx, sess, err := r.sessionFor(ctx, a)
 	if err != nil {
 		r.count(familyDelivery, ResultNoSession)
 		return
 	}
 
 	message := Render(scope, batch)
-	reply, err := r.send(ctx, a, target, sess.SessionKey, message)
+	reply, err := r.send(sctx, a, target, sess.SessionKey, message)
 	if result := unsent(err); result != "" {
 		r.count(familyDelivery, result)
 		return
@@ -699,19 +705,22 @@ func (r *Relay) Hold(a agents.Agent) (release func()) {
 	return r.hold(a)
 }
 
-// SetSession sets how the relay picks the chat session a memo turn runs in:
-// cmd/muster-server passes api.Server.DeliverySession, so a memo for the CHIEF
-// (classify has no chief exclusion) goes to its PRIMARY chat — never a side
-// chat, which "latest" can be — and any other agent's to its latest, as before.
-// Call it before Start.
-func (r *Relay) SetSession(fn func(ctx context.Context, a agents.Agent) (agents.ChatSession, error)) {
+// SetSession sets how the relay picks the chat session a memo turn runs in,
+// and the context it is sent under: cmd/muster-server passes
+// api.Server.DeliveryRoute, so a memo for the CHIEF (classify has no chief
+// exclusion) goes to its PRIMARY chat — never a side chat, which "latest" can
+// be — on that chat's route (its ccd lane, pinned), and any other agent's to
+// its latest, as before. Call it before Start.
+func (r *Relay) SetSession(fn func(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error)) {
 	r.session = fn
 }
 
-// sessionFor is the chat session a memo turn for a runs in (SetSession).
-func (r *Relay) sessionFor(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+// sessionFor is the chat session a memo turn for a runs in and the context to
+// send it under (SetSession).
+func (r *Relay) sessionFor(ctx context.Context, a agents.Agent) (context.Context, agents.ChatSession, error) {
 	if r.session != nil {
 		return r.session(ctx, a)
 	}
-	return r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	sess, err := r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	return ctx, sess, err
 }
