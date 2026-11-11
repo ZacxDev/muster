@@ -64,7 +64,43 @@ const (
 	PreviewMCPPath = "/preview-mcp"
 	// mcpMaxBody bounds one forwarded JSON-RPC message (muster's own bound).
 	mcpMaxBody = 64 << 10
+	// MCPClientHeader names the MCP client when its headers cannot name a
+	// pane; MCPClientOpenCode is opencode's value (OpenCodeCaller).
+	MCPClientHeader   = "X-Muster-Client"
+	MCPClientOpenCode = "opencode"
 )
+
+// AN OPENCODE CALLER OF THE PREVIEW TOOLS (docs/design/previews.md, "opencode
+// callers"). opencode resolves a remote MCP server's headers ONCE, when its
+// config loads, inside the one background service every opencode TUI on the
+// host is a client of — so X-Muster-Pane / X-Muster-Tmux, if it sent them,
+// would name the SERVICE's pane for every session. What opencode does send
+// per session is the calling session's id, in every tools/call's
+// params._meta["ai.opencode/sessionID"]. So its MCP entry sends the static
+// header X-Muster-Client: opencode, and a /preview-mcp request carrying it is
+// resolved by that session id instead of by pane (CallerWindow):
+//
+//   - the guard's tmux-server check is not applied to it (the service runs
+//     outside any pane); the secret, Origin and POST checks are, unchanged.
+//     /mcp — muster's own tools — never takes this path: it needs a Claude
+//     Code session (session()), and an opencode-marked request there is
+//     checked exactly as before;
+//   - initialize and tools/list carry no session id and need none: they are
+//     answered as for any caller (the instructions and the three tools);
+//   - a tools/call is bound to the ONE window of this host whose active pane
+//     runs an opencode TUI bound — by its launcher record, or a verified title
+//     binding — to that session, or to the nearest ancestor of it (a
+//     subagent's child session calls with its own id). No session id, an id
+//     no such window shows, or two windows showing it: no window, and the
+//     call fails (no_window). Never the service's pane, never a guess.
+//   - pane headers on an opencode-marked request are IGNORED: they can only
+//     be the service's own, which is exactly the wrong answer.
+//
+// 🔴 A SELECTOR, NOT A CREDENTIAL. The session id is the caller's own claim.
+// It is believed only among THIS host's mirrored windows, behind the same
+// per-host secret, so a forged id can at most bind a preview to ANOTHER of
+// the same owner's windows on this host — the reach a Claude Code caller
+// already has by naming another pane. An id no window shows binds nothing.
 
 // MCPProxy is the local endpoint's handler.
 type MCPProxy struct {
@@ -93,6 +129,11 @@ type MCPProxy struct {
 	// Version is what an `initialize` this endpoint answers itself names as
 	// the server's version (answerOutsider); "" reads "dev".
 	Version string
+	// OpenCodeAncestors is an opencode session's parent, its parent's, …
+	// nearest first (OpenCodeSource.Ancestors): how a subagent's child
+	// session finds the window showing its root. nil: only a session a
+	// window shows itself is found.
+	OpenCodeAncestors func(id string) []string
 
 	// outsiderLogged: the first caller from another tmux server is logged,
 	// the rest are not (every Claude Code session on another tenant's server
@@ -122,12 +163,26 @@ func (p *MCPProxy) previewHandler() http.Handler {
 	return nil
 }
 
-// CallerWindow is the tmux window ("@12") the caller's pane — its
-// X-Muster-Pane, ANY pane of the window — is in now, from a FRESH listing.
-// Unlike session it needs no Claude Code session in the pane: a preview
+// OpenCodeCaller reports whether r is marked as opencode's
+// (X-Muster-Client: opencode).
+func OpenCodeCaller(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get(MCPClientHeader)), MCPClientOpenCode)
+}
+
+// CallerWindow is the tmux window ("@12") a preview tool's caller is in now,
+// from a FRESH listing. agentSession is the calling agent session the call
+// itself names (opencode's params._meta["ai.opencode/sessionID"]; "" none).
+//
+// An opencode-marked request (OpenCodeCaller) is resolved by agentSession
+// alone (openCodeWindow). Any other is resolved by its pane — its
+// X-Muster-Pane, ANY pane of the window — and agentSession is not read:
+// unlike session it needs no Claude Code session in the pane, as a preview
 // belongs to the window, whatever runs in it. The guard has already checked
-// the caller's tmux server (checkServer: pane ids are per server).
-func (p *MCPProxy) CallerWindow(r *http.Request) (string, error) {
+// such a caller's tmux server (checkServer: pane ids are per server).
+func (p *MCPProxy) CallerWindow(r *http.Request, agentSession string) (string, error) {
+	if OpenCodeCaller(r) {
+		return p.openCodeWindow(r.Context(), agentSession)
+	}
 	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
 	if pane == "" {
 		return "", fmt.Errorf("name the calling session: send %s: ${TMUX_PANE:-} from inside the mirrored tmux server", MCPPaneHeader)
@@ -156,6 +211,71 @@ func windowOfPane(ws []WindowInfo, pane string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// maxOpenCodeAncestors bounds how far up a child session's parents the
+// window is looked for.
+const maxOpenCodeAncestors = 8
+
+// openCodeWindow is the window of this host showing opencode session sid —
+// or, when none shows it, the nearest of its ancestors that one shows
+// (OpenCodeAncestors) — through a binding muster sends on (boundOpenCode).
+// 🔴 FAILS CLOSED: no id, an id no window shows, or a session two windows
+// show is an error, never a fallback.
+func (p *MCPProxy) openCodeWindow(ctx context.Context, sid string) (string, error) {
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return "", errors.New(`this opencode call names no session (params._meta["ai.opencode/sessionID"]), so its window is unknown`)
+	}
+	if p.Windows == nil {
+		return "", errors.New("this host cannot resolve an opencode session")
+	}
+	ws, err := p.Windows.Windows(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list windows: %w", err)
+	}
+	ids := []string{sid}
+	if p.OpenCodeAncestors != nil {
+		for _, a := range p.OpenCodeAncestors(sid) {
+			if len(ids) > maxOpenCodeAncestors {
+				break
+			}
+			ids = append(ids, a)
+		}
+	}
+	unbound := ""
+	for _, id := range ids {
+		var found []string
+		for _, w := range ws {
+			a := w.Agent
+			if a == nil || a.Runtime != mirror.RuntimeOpenCode || a.Gen != id {
+				continue
+			}
+			if !boundOpenCode(a) {
+				unbound = w.ID
+				continue
+			}
+			found = append(found, w.ID)
+		}
+		switch len(found) {
+		case 0:
+		case 1:
+			return found[0], nil
+		default:
+			return "", fmt.Errorf("opencode session %s is shown in %d windows (%s), so which one called is unknown", strconv.Quote(id), len(found), strings.Join(found, ", "))
+		}
+	}
+	if unbound != "" {
+		return "", fmt.Errorf("window %s shows opencode session %s, but its binding is not verified (muster does not send to it either)", unbound, strconv.Quote(sid))
+	}
+	return "", fmt.Errorf("opencode session %s is in no window this host mirrors", strconv.Quote(sid))
+}
+
+// boundOpenCode reports whether an opencode pane's session is one muster
+// sends to: bound by its launcher record (Send), or by a verified title
+// binding. A title match that is only view-only binds no preview either.
+func boundOpenCode(a *AgentPane) bool {
+	return a.Send || a.Bind == mirror.AgentBindVerified
 }
 
 // MCPTarget is muster's /mirror/mcp URL for base.
@@ -404,14 +524,14 @@ func derefClaude(c *ClaudePane) ClaudePane {
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/mcp":
-		p.guarded(w, r, "muster", p.serveMuster)
+		p.guarded(w, r, "muster", false, p.serveMuster)
 	case PreviewMCPPath:
 		h := p.previewHandler()
 		if h == nil {
 			http.NotFound(w, r)
 			return
 		}
-		p.guarded(w, r, "muster-preview", h.ServeHTTP)
+		p.guarded(w, r, "muster-preview", true, h.ServeHTTP)
 	default:
 		http.NotFound(w, r)
 	}
@@ -422,7 +542,12 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // refused (401), anything but a POST gets the transport's 405, and a caller
 // from another tmux server is answered as a healthy server with no tools,
 // named name (answerOutsider). Only then is serve called.
-func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, serve http.HandlerFunc) {
+//
+// opencodeOK (the preview server only): an opencode-marked request
+// (OpenCodeCaller) skips the tmux-server check — opencode's service runs
+// outside any pane, and its calls are bound by session id instead
+// (openCodeWindow), which only finds this host's own windows.
+func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, opencodeOK bool, serve http.HandlerFunc) {
 	if r.Header.Get("Origin") != "" {
 		mcpRefuse(w, http.StatusForbidden, "cross-origin requests are refused")
 		return
@@ -438,9 +563,11 @@ func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if err := p.checkServer(r.Context(), r); err != nil {
-		p.answerOutsider(w, r, name, err)
-		return
+	if !(opencodeOK && OpenCodeCaller(r)) {
+		if err := p.checkServer(r.Context(), r); err != nil {
+			p.answerOutsider(w, r, name, err)
+			return
+		}
 	}
 	serve(w, r)
 }

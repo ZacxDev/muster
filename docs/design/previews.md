@@ -106,10 +106,19 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
   capped.
 - **An owner-typed port.** Openers are the agent's tool and the host's offer
   ([decision 9](#decisions)).
-- **Gateway-kind agents, the compose driver, opencode sessions** as agent
-  openers: no in-pod gate for the first two, and opencode has no muster tools
-  ([mirroring.md](../mirroring.md)). An opencode window's listeners are still
-  **offered** (decision 9 needs no tool).
+- **Gateway-kind agents and the compose driver** as agent openers: there is
+  no in-pod gate for either.
+  *As built:* **opencode sessions are openers.** opencode's one shared
+  service cannot name a pane, so its `/preview-mcp` entry sends
+  `X-Muster-Client: opencode`, and each call is bound by the session id
+  opencode puts in `params._meta["ai.opencode/sessionID"]`. That id resolves
+  to the one window showing that session, or its nearest ancestor, through a
+  binding muster sends on, and anything else is `no_window`. The id is a
+  selector among this host's own windows behind the same secret, not a
+  credential ([attention.md](../attention.md#opencode-sessions),
+  `internal/mirrorhost/mcpproxy.go`). opencode still has no muster tools
+  (`/mcp`). An opencode window's listeners are also **offered**, as before
+  (decision 9 needs no tool).
 - **Making preview content safe.** It is untrusted, and is kept away.
 - **TLS to the upstream.** Plain HTTP on loopback; TLS ends at the edge.
 

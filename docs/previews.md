@@ -98,10 +98,16 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    [attention.md](attention.md#the-preview-tools-preview-mcp). A session that
    connected before this sees the tools only after it reconnects. The
    server's `initialize` carries instructions telling the agent when and how
-   to use `preview_open`. A runtime that shows MCP server instructions to the
-   model (Claude Code) needs nothing more; an opencode session is told
-   through the host's own configuration instead (its opencode MCP entry for
-   this server, and a line in its AGENTS.md).
+   to use `preview_open`. Claude Code and opencode both show a server's
+   instructions to the model, so neither needs more.
+   **opencode** takes a different entry, in opencode's config under `mcp`:
+   `"type": "remote"`, the same URL, `"oauth": false`, and two headers, the
+   secret (`"Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}"`)
+   and the static `"X-Muster-Client": "opencode"`. It sends no pane headers.
+   Each call is bound to the window showing the opencode session the call
+   names, and fails with `no_window` when no window shows it
+   ([attention.md](attention.md#opencode-sessions)). Restart opencode's
+   service after adding it: it reads its MCP config once.
 
 ```json
 {
