@@ -223,21 +223,14 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
-	// answeredHere answers a second submit of an ask answered here already
-	// (the listing still names it): the answered card, never relayed twice.
-	answeredHere := func() bool {
-		a, ok := s.openCodeAnsweredCard(r, h, e, tool)
-		if ok {
-			att.end("duplicate")
-			s.writeAskLive(w, http.StatusOK, a)
-		}
-		return ok
-	}
 	v, form := s.openCodeCard(r.Context(), h, e, p)
 	att.shape(v.Questions, nil)
 	if v.Unanswerable != "" {
-		// The form read is refused as gone once opencode has the answer.
-		if answeredHere() {
+		// The form read is refused as gone once opencode has the answer: a
+		// second submit of an ask answered here gets the answered card.
+		if a, ok := s.openCodeAnsweredCard(r, h, e, tool); ok {
+			att.end("duplicate")
+			s.writeAskLive(w, http.StatusOK, a)
 			return
 		}
 		att.end("unanswerable")
@@ -250,7 +243,11 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if answeredHere() {
+	if a, ok := s.openCodeAnsweredCard(r, h, e, tool); ok {
+		// Answered here already (the listing still names it): the answered
+		// card, never relayed twice.
+		att.end("duplicate")
+		s.writeAskLive(w, http.StatusOK, a)
 		return
 	}
 	for _, pk := range picks {
