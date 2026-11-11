@@ -37,6 +37,9 @@ type Store interface {
 	// Revoke revokes one of the principal's plugins, reporting whether it has
 	// such a plugin at all. Revoking twice keeps the first time.
 	Revoke(ctx context.Context, id int64) (bool, error)
+	// SetDraftChecks turns CapDraftChecks on or off for a live plugin, keeping
+	// its token and row; off lapses its drafts awaiting a check.
+	SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error)
 	// Authenticate resolves a token to its plugin and stamps last_seen_at. A
 	// revoked or unknown token, and one whose owner is disabled, are ErrBadToken.
 	Authenticate(ctx context.Context, token string) (Plugin, error)
@@ -345,6 +348,80 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 		return audit(ctx, tx, "plugin.revoked", Object(id), nil)
 	})
 	return found, err
+}
+
+// SetDraftChecks turns CapDraftChecks on or off for the principal's LIVE
+// plugin id, changing that one capability and no other (and the same token:
+// the plugin keeps its row — its rules, chief session, queued messages and
+// drafts). It is the ONE writer of plugins.capabilities after the mint.
+// Turning it on needs CapMessages (validCapabilities, the mint's rule). A
+// plugin that already has the asked state changes nothing (changed false, no
+// audit row). ErrNotFound for none, another owner's (row-level security) or
+// a revoked one.
+//
+// 🔴 TURNING IT OFF STRANDS NO DRAFT: every one of the plugin's drafts still
+// awaiting its check LAPSES in the same transaction (check_state 'lapsed', as
+// LapseDraftCheck does at its deadline), so it is an ordinary pending draft the
+// owner may approve; lapsed is them, for internal/api to ask the owner about.
+// Audited: plugin.capability.changed {capability, old, new}, and a
+// plugin.draft.check_lapsed per draft.
+func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := scanPlugin(tx.QueryRow(ctx, `SELECT `+pluginCols+` FROM plugins WHERE id = $1 AND revoked_at IS NULL FOR UPDATE`, id))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		p = cur
+		if cur.Has(CapDraftChecks) == on {
+			return nil
+		}
+		want := []Capability{}
+		for _, c := range cur.Capabilities {
+			if c != CapDraftChecks {
+				want = append(want, c)
+			}
+		}
+		if on {
+			want = append(want, CapDraftChecks)
+		}
+		caps, err := validCapabilities(want)
+		if err != nil {
+			return err
+		}
+		if p, err = scanPlugin(tx.QueryRow(ctx, `UPDATE plugins SET capabilities = $2 WHERE id = $1 RETURNING `+pluginCols, id, caps)); err != nil {
+			return err
+		}
+		changed = true
+		if err := audit(ctx, tx, "plugin.capability.changed", Object(id), map[string]any{
+			"capability": string(CapDraftChecks), "old": cur.Capabilities, "new": caps}); err != nil {
+			return err
+		}
+		if on {
+			return nil
+		}
+		rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'lapsed', checked_at = now()
+			WHERE id IN (SELECT d.id FROM plugin_reply_drafts d JOIN plugin_messages m ON m.id = d.message_id
+			              WHERE m.plugin_id = $1 AND d.status = 'pending' AND d.check_state = 'awaiting'
+			              ORDER BY d.id FOR UPDATE OF d)
+			RETURNING `+draftCols, id)
+		if err != nil {
+			return err
+		}
+		if lapsed, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) }); err != nil {
+			return err
+		}
+		for _, d := range lapsed {
+			if err := audit(ctx, tx, "plugin.draft.check_lapsed", DraftObject(d.ID), map[string]any{
+				"why": "the plugin's draft_checks was turned off"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return p, changed, lapsed, err
 }
 
 func (s *PGStore) Authenticate(ctx context.Context, token string) (Plugin, error) {

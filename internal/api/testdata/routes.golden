@@ -277,6 +277,7 @@ POST /plugins
 POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject
 POST /plugins/messages/{id}/retry
+POST /plugins/{id}/draft-checks
 POST /plugins/{id}/revoke
 POST /rules/{id}/delete
 POST /rules/{id}/disable

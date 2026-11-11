@@ -130,6 +130,7 @@ var routeVias = map[authz.Via][]string{
 		// A viewer hand-off's mint (plugin_handoffs.go).
 		"POST /plugin-handoffs",
 		"POST /plugins/{id}/revoke",
+		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",

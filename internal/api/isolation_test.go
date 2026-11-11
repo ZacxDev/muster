@@ -430,6 +430,9 @@ var isolationClasses = map[string]routeClass{
 	// plugin and host are refused by TestAHandoffNamesOnlyTheOwnersPluginAndWindow.
 	"POST /plugin-handoffs":     classList,
 	"POST /plugins/{id}/revoke": classParam,
+	// Checks replies on an existing plugin names A's plugin by id: B's session
+	// must get the ghost's 404 (row-level security).
+	"POST /plugins/{id}/draft-checks": classParam,
 	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
 	// rules; each write names a rule by id, and another owner's is not found.
 	// The usage page reads the caller's own telemetry rows only.

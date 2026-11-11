@@ -59,14 +59,30 @@ A plugin token opens only the routes its **capabilities** allow:
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
-token is minted: nothing widens or narrows it.
+token is minted, with one exception: `draft_checks`, which you can turn on or
+off for an existing plugin (below).
 
 On `/plugins`, the `messages`/`viewer` choice is drawn only while
 `MUSTER_PLUGIN_ORIGINS` is set
 ([configuration.md](configuration.md#muster-server-optional-features)); without
 it every new token gets `messages`. The **Checks replies** box adds
-`draft_checks`, whatever that variable says. An existing token cannot gain it:
-mint a new one and revoke the old. A `viewer` token also carries:
+`draft_checks`, whatever that variable says.
+
+An existing plugin can gain or lose `draft_checks` with no new token. Each live
+plugin with `messages` has a **Turn on Checks replies** (or **Turn off**) button
+on its `/plugins` card (`POST /plugins/{id}/draft-checks`, `on=1` or `0`). The
+plugin keeps its row and its token, so its routing rules, chief session, queued
+messages and drafts all stay. The button is gated like **Revoke**: a signed-in
+session and a same-origin form, with no fresh sign-in, because it changes
+nothing an outside party is sent and you still approve every reply. Only the
+plugin's owner can use it (another owner's plugin answers 404). It needs
+`messages`, as at mint. Each change writes a `plugin.capability.changed` audit
+row with the old and new sets. Turning it **off** lapses every draft of the
+plugin still awaiting a check, as its deadline would. Each becomes an ordinary
+pending draft, and you get the usual push, noting that the plugin no longer
+checks replies.
+
+A `viewer` token also carries:
 
 - an **origin**, one of the server's `MUSTER_PLUGIN_ORIGINS` patterns, chosen
   from a list;
