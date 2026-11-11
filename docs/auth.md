@@ -65,8 +65,16 @@ Passkeys are GoTrue's own WebAuthn passkeys, proxied through muster. They are
 offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 
 - muster refuses any assertion without user verification.
-- A passkey is an **additional** way in. The password stays mandatory, and a
-  password reset removes all of the user's passkeys.
+- A passkey is an **additional** way in. The password stays mandatory.
+- A password reset **keeps** the user's passkeys by default. The reset page has
+  an unticked box, **Also remove all my passkeys (a device was lost or
+  stolen)**. Tick it and the reset deletes every passkey before it sets the
+  password. If any passkey cannot be deleted, the password is not set and the
+  person needs a new reset link. Either way, the reset still ends every
+  session, revokes the user's API tokens and paired phones, and writes the
+  `user.password_reset` audit row. The row's detail records `remove_passkeys`,
+  and when the box was ticked, `passkeys_removed` (how many). The box shows
+  only when this server serves passkeys.
 - You manage your passkeys at **Account → Passkeys** (`/account/passkeys`).
   Adding one needs a sign-in from the last five minutes.
 - Signing in with a passkey needs no username.

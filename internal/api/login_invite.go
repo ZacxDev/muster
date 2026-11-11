@@ -421,19 +421,35 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 	if s.inviteRefusal(w, r) {
 		return
 	}
-	s.renderResetForm(w, http.StatusOK, "", "")
+	s.renderResetForm(w, r, http.StatusOK, "", "", false)
 }
 
-func (s *Server) renderResetForm(w http.ResponseWriter, code int, token, problem string) {
+// resetRemovePasskeysField is the reset form's opt-in to remove every passkey
+// too. Unticked unless the person ticked it on a form that came back with a
+// problem.
+const resetRemovePasskeysField = "remove_passkeys"
+
+// resetRemovePasskeysLabel is that checkbox's label.
+const resetRemovePasskeysLabel = "Also remove all my passkeys (a device was lost or stolen)"
+
+func (s *Server) renderResetForm(w http.ResponseWriter, r *http.Request, code int, token, problem string, removePasskeys bool) {
 	pw := func(id, name, label string) string {
 		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
 <input id="` + id + `" name="` + name + `" type="password" autocomplete="new-password" required
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
-	writeAuthDocument(w, code, s.uiBrand(context.Background()), "Set a new password", fragmentForm(ResetPath, "Set a new password",
-		"This link works once.", "Set password", false,
-		pw("reset-password", "password", "New password (at least 12 characters)")+pw("reset-password2", "password2", "New password again"),
-		token, problem))
+	fields := pw("reset-password", "password", "New password (at least 12 characters)") + pw("reset-password2", "password2", "New password again")
+	// Offered only where this server serves passkeys: elsewhere nobody has one.
+	if s.passkeysServed(r.Context()) {
+		checked := ""
+		if removePasskeys {
+			checked = " checked"
+		}
+		fields += `<label for="reset-remove-passkeys" class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input id="reset-remove-passkeys" type="checkbox" name="` +
+			resetRemovePasskeysField + `" value="1"` + checked + `> ` + html.EscapeString(resetRemovePasskeysLabel) + `</label>`
+	}
+	writeAuthDocument(w, code, s.uiBrand(r.Context()), "Set a new password", fragmentForm(ResetPath, "Set a new password",
+		"This link works once.", "Set password", false, fields, token, problem))
 }
 
 // handleResetSubmit exchanges the recovery token SERVER-SIDE (GoTrue /verify),
@@ -454,6 +470,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, pw, pw2 := postedLinkToken(r), r.FormValue("password"), r.FormValue("password2")
+	removePasskeys := r.PostFormValue(resetRemovePasskeysField) != ""
 	if token == "" {
 		s.renderInvalidInvite(w, r)
 		return
@@ -465,7 +482,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		if len(pw) >= gotrue.MinPasswordLength {
 			msg = "The two passwords are different."
 		}
-		s.renderResetForm(w, http.StatusBadRequest, token, msg)
+		s.renderResetForm(w, r, http.StatusBadRequest, token, msg, removePasskeys)
 		return
 	}
 	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)
@@ -520,23 +537,37 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// Recorded like a sign-out-everywhere, so a request that resolved before
 	// this point is refused when it registers after it (recordReset).
 	s.gt.recordReset(u.ID, c.Subject, cut)
-	// 🔴 AND EVERY PASSKEY GOES, BEFORE THE PASSWORD IS SET. A reset is what
-	// someone does after a credential leaked or a device was lost; a passkey on
-	// that device is a credential too, and the cutoff above only ends SESSIONS —
-	// a passkey would sign the thief straight back in. Deleted through GoTrue's
-	// admin API (list, then each). FAIL CLOSED: if any may remain, the password
-	// is not set and the person is told to ask for a new link — the sessions are
-	// already ended, which is the safe half (TestAResetDeletesEveryPasskey).
-	if n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject); err != nil {
-		s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
-		s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
-		return
-	} else if n > 0 {
-		s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
-		s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
+	// 🔴 PASSKEYS ARE KEPT UNLESS THE PERSON TICKED "Also remove all my
+	// passkeys". A reset is also what someone does after simply FORGETTING the
+	// password, and deleting every passkey then took away a way in they still had
+	// (TestAResetWithoutTheBoxKeepsThePasskeys). The cutoff above only ends
+	// SESSIONS, so a passkey on a lost or stolen device would sign the thief
+	// straight back in — that is what the box is for, and only the person
+	// knows which case theirs is. Ticked: every passkey goes, BEFORE the
+	// password is set, through GoTrue's admin API (list, then each). FAIL
+	// CLOSED: if any may remain, the password is not set and the person is told
+	// to ask for a new link — the sessions are already ended, which is the safe
+	// half (TestAResetDeletesEveryPasskey,
+	// TestAResetFailsClosedWhenPasskeysCannotBeRemoved). Unticked: GoTrue's
+	// passkey API is not called at all
+	// (TestAResetWithoutTheBoxNeverCallsThePasskeyAPI).
+	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
+	if removePasskeys {
+		n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject)
+		if err != nil {
+			s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
+			s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+			return
+		}
+		if n > 0 {
+			s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
+			s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
+		}
+		audit["passkeys_removed"] = n
 	}
-	// The audit row (actor: the user; the client address in the detail)
-	// commits only if GoTrue set the password.
+	// The audit row (actor: the user; the client address, and whether the
+	// passkeys were removed and how many, in the detail) commits only if GoTrue
+	// set the password.
 	//
 	// ⚠ NO /logout OF THE RECOVERY SESSION AFTERWARDS. It always answered 403
 	// against the real GoTrue: the admin password change already revokes the
@@ -544,7 +575,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// and the cutoff above refuses their access tokens
 	// (TestAResetRevokesTheUsersOtherSessions).
 	if err := s.gt.Accounts.Audited(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset",
-		users.UserObject(u.ID), map[string]any{"ip": ip}, func() error {
+		users.UserObject(u.ID), audit, func() error {
 			return s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw)
 		}); err != nil {
 		s.logger.Printf("reset: setting the password for user %d failed: %v", u.ID, err)

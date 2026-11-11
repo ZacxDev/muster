@@ -159,7 +159,7 @@ test('add a passkey, sign in with it, outlive the access token, sign out everywh
   await replay.close();
 });
 
-test('a member: invite → passkey offer; no-UV and disabled refused; a reset deletes the passkey (real GoTrue)', async ({ page, browser }) => {
+test('a member: invite → passkey offer; no-UV and disabled refused; a reset keeps the passkey unless the box is ticked (real GoTrue)', async ({ page, browser }) => {
   test.setTimeout(180_000);
   const memberEmail = `pk-member-${Date.now()}@example.com`;
   const memberPW = 'e2e-member-password-not-a-real-one';
@@ -230,15 +230,32 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset de
   await expect(mp.locator('#passkey-signin-status')).toContainText('not accepted');
   await expect(mp).toHaveURL(/\/login/);
 
-  // Enabled again, then reset: the reset deletes the member's passkeys, so the
-  // credential still on the device is refused by GoTrue.
+  // Enabled again, then a reset with "Also remove all my passkeys" left
+  // unticked (the default): the passkey is KEPT, and still signs in against
+  // the real GoTrue (whose admin password change does not touch passkeys).
   await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Enable' }).click();
   await expect(page.locator(`[data-user-email="${memberEmail}"] [data-user-state]`)).toHaveText('active');
+  await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Reset link' }).click();
+  await mp.goto(await page.locator('#once-link').inputValue());
+  await expect(mp.locator('#reset-remove-passkeys'), 'the box is offered, unticked').not.toBeChecked();
+  await mp.fill('#reset-password', 'e2e-member-kept-password-not-real');
+  await mp.fill('#reset-password2', 'e2e-member-kept-password-not-real');
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await mp.goto(browserURL + '/account/passkeys');
+  await expect(mp.locator('[data-passkey-id]'), 'an unticked reset kept the passkey').toHaveCount(1);
+  await signOut(mp);
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.locator('#passkey-signin').click()]);
+  await signOut(mp);
+
+  // Reset again WITH the box ticked: the reset deletes the member's passkeys,
+  // so the credential still on the device is refused by GoTrue.
+  await page.goto(browserURL + '/admin/users');
   await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Reset link' }).click();
   const resetLink = await page.locator('#once-link').inputValue();
   await mp.goto(resetLink);
   await mp.fill('#reset-password', 'e2e-member-new-password-not-real');
   await mp.fill('#reset-password2', 'e2e-member-new-password-not-real');
+  await mp.check('#reset-remove-passkeys');
   await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
   await mp.goto(browserURL + '/account/passkeys');
   await expect(mp.locator('#passkey-none'), 'the reset removed the passkey').toBeVisible();
