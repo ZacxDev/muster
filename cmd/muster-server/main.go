@@ -752,6 +752,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
+	// The usage pusher (MUSTER_CC_USAGE_PUSH_URL): after each poll cycle the
+	// readings, exactly as GET /api/cc-accounts/usage answers the admin, are
+	// PUT to the dashboard. parseCCUsagePush refused it without the poller.
+	if a.ccUsage != nil && cfg.CCUsage.Push.URL != "" {
+		push := cfg.CCUsage.Push
+		a.ccUsage.AfterPass = (&ccusage.Pusher{URL: push.URL, Token: push.Token, Logger: logger,
+			Client: &http.Client{Timeout: ccusage.PushTimeout},
+			Body: func(ctx context.Context, now time.Time) ([]byte, error) {
+				return srv.CCUsagePushBody(ctx, authz.OperatorUserID, push.Instance, now)
+			}}).PushAfterPass
+	}
 	if cfg.goTrueConfigured() && a.pool != nil {
 		srv.UseGoTrue(goTrueAuth(cfg, a.pool))
 	}
@@ -1756,6 +1767,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"token, from %s when the token may use it, else from a one-token probe of %s (one output token of quota per read; "+
 			"never an account the pool marks cooling); numbers only, in cc_account_usage, served at %s", envCCUsagePoll,
 			ext.CCUsageInterval, ccusage.Endpoint, ccusage.ProbeURL, api.CCAccountUsagePath)
+		if a.cfg.CCUsage.Push.URL != "" {
+			l.Printf("claude account usage push: ON (%s) — after each poll cycle the readings are PUT to the configured URL "+
+				"as source_instance %q (expects 204; a failure is logged and counted, and the next cycle pushes again)",
+				envCCUsagePushURL, a.cfg.CCUsage.Push.Instance)
+		} else {
+			l.Printf("claude account usage push: OFF — %s is unset", envCCUsagePushURL)
+		}
 	} else {
 		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)
 	}

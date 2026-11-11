@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -183,6 +185,29 @@ func (s *Server) officerPoolOf(name string) (string, string, bool, bool) {
 	}
 	_, _, proxied := officers.ProxyAgent(o, name)
 	return o.ID, o.Tier, proxied, true
+}
+
+// ccUsagePush is the usage pusher's body (MUSTER_CC_USAGE_PUSH_URL): the
+// accounts exactly as GET /api/cc-accounts/usage answers the admin (the same
+// ccUsageAccounts, so the two cannot drift), under the instance's label.
+type ccUsagePush struct {
+	SourceInstance string           `json:"source_instance"`
+	ReadAt         string           `json:"read_at"`
+	Accounts       []ccUsageAccount `json:"accounts"`
+}
+
+// CCUsagePushBody is the usage pusher's request body at now for owner (the
+// operator, whose pool the poller reads), labelled instance. ctx must act as
+// owner. An error is the store's; the body is then not built.
+func (s *Server) CCUsagePushBody(ctx context.Context, owner int64, instance string, now time.Time) ([]byte, error) {
+	if s.ext.CCUsage == nil {
+		return nil, errors.New("this server keeps no Claude account usage (no database)")
+	}
+	accts, err := s.ccUsageAccounts(ctx, owner, now)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(ccUsagePush{SourceInstance: instance, ReadAt: now.UTC().Format(time.RFC3339), Accounts: accts})
 }
 
 func (s *Server) handleCCAccountUsage(w http.ResponseWriter, r *http.Request) {
