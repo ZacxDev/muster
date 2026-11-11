@@ -54,6 +54,14 @@ const (
 	// for the session's life. A ccd that predates it IGNORES it and starts the
 	// CLI with the chief's full tool set (docs/chief-nudges.md, "Rolling out").
 	HeaderCCToolless = "X-Muster-CC-Toolless"
+	// HeaderCCPinned, "1", marks an explicit session (HeaderCCSession) as the
+	// chief's PRIMARY chat (internal/api withRoute, chief_chats.go): ccd never
+	// stops its CLI to make room for another session, and does not count it
+	// against CCD_MAX_SESSIONS, so a delivery to the primary always gets its
+	// CLI. One lane is pinned at a time: the latest turn that says so pins its
+	// lane and unpins any other (a fresh primary's old one). A ccd that predates
+	// it ignores it and treats the lane like any other.
+	HeaderCCPinned = "X-Muster-CC-Pinned"
 	// HeaderCCNewConversation, "1", on a turn of the agent's ORIGINAL CLI (no
 	// HeaderCCSession): ccd starts a NEW conversation in that CLI before it
 	// pastes the turn — the CLI's /clear, whose new session ccd records as the
@@ -122,7 +130,7 @@ func applyTurnRoute(req *http.Request) {
 	if !ok {
 		return
 	}
-	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCNewConversation} {
+	for _, name := range []string{HeaderCCSession, HeaderCCModel, HeaderCCWorkdir, HeaderCCEphemeral, HeaderCCToolless, HeaderCCPinned, HeaderCCNewConversation} {
 		if v := r.Header.Get(name); v != "" {
 			req.Header.Set(name, v)
 		}

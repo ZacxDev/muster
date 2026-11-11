@@ -60,6 +60,12 @@ func (s *Server) deliverySession(ctx context.Context, a agents.Agent) (agents.Ch
 	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 }
 
+// DeliverySession is deliverySession for another package's deliverer (the
+// memo relay, memorelay.Relay.SetSession).
+func (s *Server) DeliverySession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+	return s.deliverySession(ctx, a)
+}
+
 // sessionRoute returns ctx carrying the route of a's session sessionKey
 // (agents.TurnRoute), for the transport to put on every request of the turn.
 //
@@ -118,6 +124,12 @@ func withRoute(ctx context.Context, a agents.Agent, sess agents.ChatSession, che
 		if check {
 			h.Set(agents.HeaderCCEphemeral, "1")
 			h.Set(agents.HeaderCCToolless, "1")
+		} else if sess.IsDefault {
+			// 🔴 THE PRIMARY'S LANE IS PINNED (PR #609 round 1 F1): after a fresh
+			// primary a claude-code chief's primary is a ccd lane like a side
+			// chat's, and an unpinned lane can be evicted or refused at the cap —
+			// every delivery would then queue behind the owner's side chats.
+			h.Set(agents.HeaderCCPinned, "1")
 		}
 	default:
 		return ctx

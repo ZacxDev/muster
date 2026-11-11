@@ -1220,24 +1220,42 @@ func routeNote(r plugins.Route, what string) string {
 	return "[muster] Route " + r.RouteID + " (" + item + " → " + r.TargetKind + ":" + r.TargetKey + "): " + what
 }
 
-// routeChiefSession is the conversation of r's chief that hears about r: the
-// chief's PRIMARY chat (primarySession), for every kind of route — a message
-// route while its plugin's chief is still r's (a one-way one whatever its
-// plugin now names: it OWES its answer, deliverRouteAnswer), a task route, and
-// a request route. ok is false when there is none to tell.
+// routeChiefSession is the conversation of r's chief that hears about r:
 //
-// 🔴 NEVER A SIDE CHAT, AND NOT THE CHAT THE REQUEST WAS ASKED IN. A route's
-// note, answer and hand-back are deliveries, and deliveries go to the primary
-// only (chief_chats.go): a request route asked from a side chat used to answer
-// there (its ChiefSessionID), and a message route answered in whatever session
-// its plugin last recorded — after a fresh primary, the archived one. The
-// request's own line is still named in the note (routeNote's "their chat
-// message N"), so where it was asked is not lost.
+//   - a REQUEST route: the chat the owner asked in (its ChiefSessionID) — a
+//     side chat included (operator decision, PR #609 round 1 Q1: the request
+//     is that chat's own thread) — while it is still r's chief's and NOT
+//     archived; otherwise the chief's PRIMARY chat;
+//   - a task route, and a message route while its plugin's chief is still r's
+//     (a one-way one whatever its plugin now names: it OWES its answer,
+//     deliverRouteAnswer): the PRIMARY chat (primarySession) — not the session
+//     the plugin last recorded, which after a fresh primary is the archived one.
+//
+// ok is false when there is none to tell.
 func (s *Server) routeChiefSession(ctx context.Context, r plugins.Route) (int64, bool) {
 	if r.AgentID == nil || s.ext.Agents == nil {
 		return 0, false
 	}
-	if !r.IsRequest() && !r.IsTask() && !r.OneWay {
+	if r.IsRequest() {
+		sess, err := s.ext.Agents.GetSession(ctx, r.ChiefSessionID)
+		if err == nil && sess.AgentID == *r.AgentID && sess.ArchivedAt == nil {
+			return sess.ID, true
+		}
+		why := "it is another agent's"
+		switch {
+		case err != nil:
+			why = "it cannot be read (" + err.Error() + ")"
+		case sess.AgentID == *r.AgentID:
+			why = "it is archived"
+		}
+		id, ok := s.chiefPrimaryID(ctx, *r.AgentID)
+		if ok {
+			s.logger.Printf("routes: %s: the chief chat the owner asked in (%d) is not usable — %s; using the primary chat %d",
+				r.RouteID, r.ChiefSessionID, why, id)
+		}
+		return id, ok
+	}
+	if !r.IsTask() && !r.OneWay {
 		// A message route is told only while its plugin's chief is still r's.
 		if _, ok := s.pluginChiefSession(ctx, r); !ok {
 			return 0, false

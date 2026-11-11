@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // THE CHIEF'S PRIMARY AND SIDE CHATS (migration 0114; docs/chief.md).
@@ -120,6 +123,19 @@ func (s *PGStore) ListChats(ctx context.Context, agentID int64) ([]ChatListing, 
 
 // SetArchived implements ChatStore.
 func (s *PGStore) SetArchived(ctx context.Context, agentID, sessionID int64, archived bool) (ChatSession, error) {
+	// 🔴 A PRIMARY IS ELECTED FIRST when the agent has none (F4): otherwise the
+	// session archived here could be the one the next delivery's election
+	// picks. The election skips archived sessions, and the session it picks is
+	// then refused below as the primary.
+	if archived {
+		var name string
+		if err := s.pool.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name); err != nil {
+			return ChatSession{}, err
+		}
+		if _, err := s.DefaultSession(ctx, agentID, name); err != nil {
+			return ChatSession{}, err
+		}
+	}
 	cur, err := scanSession(s.pool.QueryRow(ctx,
 		`SELECT `+sessionCols+` FROM chat_sessions WHERE id = $1 AND agent_id = $2`, sessionID, agentID))
 	if err != nil {
@@ -135,13 +151,20 @@ func (s *PGStore) SetArchived(ctx context.Context, agentID, sessionID int64, arc
 		RETURNING `+sessionCols, sessionID, agentID, archived))
 }
 
+// ErrFreshPrimaryBusy: another fresh primary of the same agent holds its
+// primary right now; nothing was changed.
+var ErrFreshPrimaryBusy = errors.New("a fresh primary is already being made")
+
 // FreshPrimary implements ChatStore.
 //
-// 🔴 THE OLD DEFAULT ROW IS LOCKED FIRST (FOR UPDATE), so two fresh-primary
-// calls for one agent serialize: the second waits, then finds the FIRST's
-// new session as the default and replaces that one — never two primaries, and
-// never a request that archives a session another request just made primary
-// without seeing it. The partial unique index (chat_sessions_one_default) is the
+// 🔴 THE OLD DEFAULT ROW IS LOCKED FIRST, WITHOUT WAITING (FOR UPDATE NOWAIT):
+// a second fresh-primary call for the agent while the first holds the row gets
+// ErrFreshPrimaryBusy at once and changes nothing. (Waiting would not have
+// replaced the first's new primary either: under READ COMMITTED the waiter's
+// re-check finds the old row no longer the default and reads no row at all, so
+// it failed — a 500 — after the first committed.) A call that reads no default
+// row once it has one to lock is answered the same way. So one call wins, never
+// two primaries; the partial unique index (chat_sessions_one_default) is the
 // backstop.
 func (s *PGStore) FreshPrimary(ctx context.Context, agentID int64, agentName, runtime, model string) (ChatSession, ChatSession, error) {
 	if runtime != SessionRuntimeLegacy {
@@ -159,8 +182,14 @@ func (s *PGStore) FreshPrimary(ctx context.Context, agentID int64, agentName, ru
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	old, err := scanSession(tx.QueryRow(ctx,
-		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id = $1 AND is_default FOR UPDATE`, agentID))
-	if err != nil {
+		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id = $1 AND is_default FOR UPDATE NOWAIT`, agentID))
+	var pg *pgconn.PgError
+	switch {
+	case errors.As(err, &pg) && pg.Code == "55P03": // lock_not_available
+		return ChatSession{}, ChatSession{}, ErrFreshPrimaryBusy
+	case errors.Is(err, pgx.ErrNoRows):
+		return ChatSession{}, ChatSession{}, ErrFreshPrimaryBusy
+	case err != nil:
 		return ChatSession{}, ChatSession{}, fmt.Errorf("read the primary: %w", err)
 	}
 	old, err = scanSession(tx.QueryRow(ctx,

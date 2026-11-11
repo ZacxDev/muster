@@ -180,6 +180,10 @@ type Turn struct {
 	// that session ran on as muster knew it, "" unknown.
 	SessionID int64
 	Model     string
+	// ContextTokens is the context the turn's LAST model request was sent
+	// (agents.TurnUsage.Context) — what the chief chat's chip shows; valid when
+	// Known.
+	ContextTokens int64
 }
 
 // SessionContext is a chat session's context fill as its LATEST recorded turn

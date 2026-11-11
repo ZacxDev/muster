@@ -24,6 +24,9 @@ func TestTheLaneHeadersAreMustersHeaders(t *testing.T) {
 	if headerCCEphemeral != agents.HeaderCCEphemeral {
 		t.Fatalf("ccd reads a throwaway check as %q, muster marks it %q", headerCCEphemeral, agents.HeaderCCEphemeral)
 	}
+	if headerCCPinned != agents.HeaderCCPinned {
+		t.Fatalf("ccd reads a pinned lane as %q, muster pins one with %q", headerCCPinned, agents.HeaderCCPinned)
+	}
 	if headerCCNewConversation != agents.HeaderCCNewConversation {
 		t.Fatalf("ccd reads a new conversation as %q, muster asks for one with %q", headerCCNewConversation, agents.HeaderCCNewConversation)
 	}

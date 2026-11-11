@@ -914,16 +914,37 @@ func (s *PGStore) DefaultSession(ctx context.Context, agentID int64, agentName s
 	if _, err := s.LatestOrCreateSession(ctx, agentID, agentName); err != nil {
 		return ChatSession{}, err
 	}
-	_, err = s.pool.Exec(ctx, `
+	// 🔴 NEVER AN ARCHIVED SESSION (0114): the primary is never archived
+	// (chat_sessions_primary_not_archived), so electing one failed the CHECK —
+	// and every delivery to the agent with it, for as long as the agent had no
+	// default (PR #609 round 1 F4).
+	elect := func() error {
+		_, err := s.pool.Exec(ctx, `
 		UPDATE chat_sessions SET is_default = true
 		WHERE id = (
 			SELECT id FROM chat_sessions
-			WHERE agent_id = $1
+			WHERE agent_id = $1 AND archived_at IS NULL
 			ORDER BY (session_key = $2) DESC, created_at, id
 			LIMIT 1)
 		  AND NOT EXISTS (SELECT 1 FROM chat_sessions WHERE agent_id = $1 AND is_default)`,
-		agentID, legacySessionKey(agentName))
-	if err != nil && !isUniqueViolation(err) {
+			agentID, legacySessionKey(agentName))
+		if err != nil && !isUniqueViolation(err) {
+			return err
+		}
+		return nil
+	}
+	if err := elect(); err != nil {
+		return ChatSession{}, err
+	}
+	c, err = read()
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return c, err
+	}
+	// Every session is archived: a new one is the primary.
+	if _, err := s.CreateSession(ctx, agentID, agentName); err != nil {
+		return ChatSession{}, err
+	}
+	if err := elect(); err != nil {
 		return ChatSession{}, err
 	}
 	return read()

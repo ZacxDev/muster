@@ -209,14 +209,30 @@ func (s *Server) handleChiefFreshPrimary(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "could not open the primary chat", http.StatusInternalServerError)
 		return
 	}
+	// 🔴 ONE FRESH PRIMARY PER CHIEF AT A TIME, HANDOVER INCLUDED: held from
+	// here until the handover's last turn ends, so a second tap (another tab,
+	// a double tap) gets a clean 409 instead of a second switch and a second
+	// handover. The store's NOWAIT lock (ErrFreshPrimaryBusy) is the same rule
+	// across processes, for the switch itself.
+	if _, busy := s.freshPrimaries.LoadOrStore(a.ID, struct{}{}); busy {
+		http.Error(w, agents.ErrFreshPrimaryBusy.Error(), http.StatusConflict)
+		return
+	}
+	release := func() { s.freshPrimaries.Delete(a.ID) }
 	old, fresh, err := cs.FreshPrimary(ctx, a.ID, a.Name, sideChatRuntime(a), "")
+	if errors.Is(err, agents.ErrFreshPrimaryBusy) {
+		release()
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
+		release()
 		s.logger.Printf("chief chats: fresh primary of %d: %v", a.ID, err)
 		http.Error(w, "could not start a fresh primary chat", http.StatusInternalServerError)
 		return
 	}
 	s.logger.Printf("chief chats: %s: fresh primary %d (old primary %d archived)", a.Name, fresh.ID, old.ID)
-	s.handOverPrimary(ctx, a, old, fresh)
+	s.handOverPrimary(ctx, a, old, fresh, release)
 	s.answerSessionOpened(ctx, w, r, a, fresh)
 }
 
@@ -254,9 +270,12 @@ const FreshPrimaryNoHandover = "[muster] This is your new primary chat: every de
 // recorded in the chief's usage). Deliveries already go to the new primary
 // while they run (the switch committed first); one that arrives meanwhile
 // queues behind the handover turn in the agent's turn order.
-func (s *Server) handOverPrimary(ctx context.Context, a agents.Agent, old, fresh agents.ChatSession) {
+//
+// done is called once the handover has ended, however it ended.
+func (s *Server) handOverPrimary(ctx context.Context, a agents.Agent, old, fresh agents.ChatSession, done func()) {
 	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*agentTurnBudget(a.Kind))
 	safeGo(s.logger, "chief handover", func() {
+		defer done()
 		defer cancel()
 		parts, err := s.runUserTurn(hctx, a, old, FreshPrimaryHandoverPrompt, nil)
 		if err != nil {

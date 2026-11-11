@@ -182,8 +182,8 @@ func (f *chatsFixture) sideChat(t *testing.T) agents.ChatSession {
 //
 //   - an outcome note (writeChiefNote),
 //   - `muster chief ask` (the machine message door),
-//   - a request route's note, though the request was asked in the side chat
-//     (routeChiefSession — it used to answer in the asking chat),
+//   - a task route's note (routeChiefSession; a REQUEST route answers in the
+//     chat it was asked in — TestARequestRouteAnswersInItsSideChatUntilArchived),
 //   - a refused draft's note and a closed PR's note (both read the plugin's
 //     recorded session before),
 //   - an attention answer with no asking chat (answerSession),
@@ -238,15 +238,15 @@ func TestDeliveriesGoOnlyToThePrimaryChat(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("chief ask: %d %s", w.Code, w.Body)
 	}
-	// 3. A request route asked in the side chat.
-	sideLatest("the request route")
-	r := plugins.Route{RouteID: "rt-side", AgentID: &f.chief.ID, ChiefSessionID: side.ID, RequestMessageID: 1, TargetKind: "mirror", TargetKey: "x"}
-	if !r.IsRequest() {
-		t.Fatal("control: the fixture route is not a request route")
+	// 3. A task route's note.
+	sideLatest("the task route")
+	r := plugins.Route{RouteID: "rt-task", AgentID: &f.chief.ID, TaskID: 7, TargetKind: "mirror", TargetKey: "x"}
+	if !r.IsTask() {
+		t.Fatal("control: the fixture route is not a task route")
 	}
 	got, ok := f.srv.routeChiefSession(ctx, r)
 	if !ok || got != primary.ID {
-		t.Errorf("a request route asked in side chat %d is told in %d (ok %v), want the primary %d", side.ID, got, ok, primary.ID)
+		t.Errorf("a task route is told in %d (ok %v), want the primary %d", got, ok, primary.ID)
 	}
 	// 4. The primary by agent id (a refused draft, a closed PR).
 	sideLatest("the primary by id")
@@ -414,10 +414,14 @@ func TestTheContextChipReadsItsChatsLatestTurn(t *testing.T) {
 	}
 	side := f.sideChat(t)
 	cu := chiefusage.NewPG(f.pool)
+	// The turn's TOTALS are three times its last request's fill (a turn with
+	// tool calls sums the conversation once per request): a chip reading the
+	// totals would draw a count three times too high (PR #609 round 1 F3).
 	record := func(sess int64, model string, in, read, create int64) {
 		t.Helper()
 		if err := cu.RecordTurn(ctx, chiefusage.Turn{Chief: f.chief.ID, Trigger: chiefusage.Trigger{Kind: chiefusage.TriggerOwnerChat},
-			Known: true, Tokens: chiefusage.Tokens{Input: in, Output: 999, CacheRead: read, CacheCreation: create}, SessionID: sess, Model: model}); err != nil {
+			Known: true, Tokens: chiefusage.Tokens{Input: 3 * in, Output: 999, CacheRead: 3 * read, CacheCreation: 3 * create},
+			ContextTokens: in + read + create, SessionID: sess, Model: model}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -484,8 +488,8 @@ func TestAChiefTurnRecordsItsChatAndModel(t *testing.T) {
 	if sess != side.ID {
 		t.Errorf("the turn's usage row names session %d, want the side chat %d", sess, side.ID)
 	}
-	if model != "claude" {
-		t.Errorf("the turn's usage row names model %q, want claude (a claude-code chief on its CLI's default)", model)
+	if model != "" {
+		t.Errorf("the turn's usage row names model %q, want \"\" (a claude-code chief on its CLI's unknown default)", model)
 	}
 }
 
@@ -656,3 +660,54 @@ func TestTheChatRoutesAreTheChiefsOnly(t *testing.T) {
 }
 
 var _ = errors.New
+
+// TestARequestRouteAnswersInItsSideChatUntilArchived (operator decision, PR
+// #609 Q1): a request route started from a SIDE chat answers back into that
+// side chat — it is that chat's own thread — and, once that chat is archived,
+// into the primary instead (nothing is delivered into an archived chat).
+func TestARequestRouteAnswersInItsSideChatUntilArchived(t *testing.T) {
+	f := newChatsFixture(t, "")
+	ctx := asUser(1)
+	primary, err := f.srv.primarySession(ctx, f.chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := f.sideChat(t)
+	r := plugins.Route{RouteID: "rt-side", AgentID: &f.chief.ID, ChiefSessionID: side.ID, RequestMessageID: 1, TargetKind: "mirror", TargetKey: "x"}
+	if !r.IsRequest() {
+		t.Fatal("control: the fixture route is not a request route")
+	}
+	if got, ok := f.srv.routeChiefSession(ctx, r); !ok || got != side.ID {
+		t.Errorf("a request route asked in side chat %d is told in %d (ok %v), want that side chat", side.ID, got, ok)
+	}
+	if w := f.post(t, ui.ChiefArchivePath(f.chief.ID, side.ID, true)); w.Code != http.StatusOK {
+		t.Fatalf("archive: %d", w.Code)
+	}
+	if got, ok := f.srv.routeChiefSession(ctx, r); !ok || got != primary.ID {
+		t.Errorf("with its side chat archived, the request route is told in %d (ok %v), want the primary %d", got, ok, primary.ID)
+	}
+}
+
+// TestTheContextChipOfAnUnknownModelIsUntinted: a turn whose model muster does
+// not know (a claude-code chief on its CLI's default: chiefTurnModel "") draws
+// the count alone — no window, no tint — however full a 200k window it would be.
+func TestTheContextChipOfAnUnknownModelIsUntinted(t *testing.T) {
+	f := newChatsFixture(t, agents.KindClaudeCode)
+	ctx := asUser(1)
+	primary, err := f.srv.primarySession(ctx, f.chief)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := chiefTurnModel(f.chief, primary); m != "" {
+		t.Fatalf("a claude-code chief with no model is %q, want unknown", m)
+	}
+	if err := chiefusage.NewPG(f.pool).RecordTurn(ctx, chiefusage.Turn{Chief: f.chief.ID, Trigger: chiefusage.Trigger{Kind: chiefusage.TriggerOwnerChat},
+		Known: true, Tokens: chiefusage.Tokens{Input: 190_000}, ContextTokens: 190_000, SessionID: primary.ID, Model: chiefTurnModel(f.chief, primary)}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.call(t, http.MethodGet, ui.ChiefContextPath(f.chief.Name, primary.ID), nil, f.operator())
+	body := w.Body.String()
+	if !regexp.MustCompile(`data-ctx-count=""[^>]*>190k<`).MatchString(body) || strings.Contains(body, "data-level=") || strings.Contains(body, "/200k") {
+		t.Errorf("an unknown model's chip: %s; want 190k alone, untinted", body)
+	}
+}

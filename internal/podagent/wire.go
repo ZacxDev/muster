@@ -81,6 +81,12 @@ type Usage struct {
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	// ContextTokens is the context the turn's LAST model call was sent: its
+	// input + cache read + cache creation. The fields above are the turn's
+	// totals, summed over every call, so with tool calls they count the
+	// conversation once per call; this is what the next call starts from.
+	// nil: not reported (a runtime that predates it), and omitted on the wire.
+	ContextTokens *int64 `json:"context_tokens,omitempty"`
 }
 
 // NativeToolItem is one tool call the agent ran itself during the turn,

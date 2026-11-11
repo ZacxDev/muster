@@ -179,7 +179,9 @@ func (s *Server) answerSession(ctx context.Context, a agents.Agent, asked string
 	if asked != "" {
 		if list, err := s.ext.Agents.ListSessions(ctx, a.ID); err == nil {
 			for _, sess := range list {
-				if sess.SessionKey == asked {
+				// An ARCHIVED asking chat (an old primary after a fresh one, a side
+				// chat put away) is not answered into: the primary takes it (F2).
+				if sess.SessionKey == asked && sess.ArchivedAt == nil {
 					return sess, nil
 				}
 			}

@@ -919,6 +919,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		a.Close()
 		return nil, fmt.Errorf("memo relay: %w", err)
 	}
+	if a.memo != nil {
+		// A memo to the chief goes to its primary chat (memorelay.SetSession).
+		a.memo.SetSession(srv.DeliverySession)
+	}
 
 	// The feature registry (features.go): evaluated once, from what was wired.
 	feats, err := a.buildFeatures(ext, port)

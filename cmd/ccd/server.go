@@ -717,6 +717,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		mode := laneMode{
 			ephemeral: r.Header.Get(headerCCEphemeral) == "1",
 			toolless:  r.Header.Get(headerCCToolless) == "1",
+			pinned:    r.Header.Get(headerCCPinned) == "1",
 		}
 		ln, f := s.laneFor(r.Context(), key, r.Header.Get(headerCCModel), r.Header.Get(headerCCWorkdir), mode)
 		if f != nil {

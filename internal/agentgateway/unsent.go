@@ -17,6 +17,10 @@ const (
 	UnsentRejected       = "rejected"     // the runtime refused the request's shape (a typed 400)
 	UnsentNeverConnected = "never_connected"
 	UnsentUnresolved     = "unresolved" // Resolve failed: no runtime was contacted
+	// UnsentCapacity: ccd's typed 503 `capacity` (LanesFull) — every Claude
+	// Code CLI it may run is held by a turn, so it started none and pasted
+	// nothing for this one.
+	UnsentCapacity = agents.FailureCapacity
 )
 
 // unresolved marks a [Gateway.Resolve] failure, which happens before any runtime
@@ -78,6 +82,14 @@ func Unsent(err error) string {
 			return UnsentBusy
 		case rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready":
 			return UnsentNotReady
+		// 🔴 A TYPED `capacity` IS PRE-SEND (PR #609 round 1 F1). ccd answers it
+		// from laneFor → lanes.acquireIn, which returns before a lane is made and
+		// before runTurn — the only code that pastes — runs (cmd/ccd
+		// handleResponses; TestACapacityRefusalPastesNothing pins it). Read as
+		// "may have been sent", a plugin delivery to a chief whose primary is a
+		// lane settled unconfirmed and was never sent; now it is queued again.
+		case rt.Status == http.StatusServiceUnavailable && rt.Type == agents.FailureCapacity:
+			return UnsentCapacity
 		case rt.Status == http.StatusUnauthorized && rt.Type == "unauthorized":
 			return UnsentUnauthorized
 		case rt.Status == http.StatusBadRequest && (rt.Type == "bad_request" || rt.Type == "invalid_input"):
@@ -125,11 +137,11 @@ const CodeAwaitingApproval = "awaiting_approval"
 // it before starting a CLI or pasting anything, so it too proves the turn was
 // not sent.
 //
-// ⚠ IT IS NOT ONE OF [Unsent]'s REASONS, DELIBERATELY. Adding it there would
-// change what every unsolicited deliverer does with it (a plugin delivery to a
-// chief whose default session is an explicit one, the memo relay, …), and each
-// of those is its own decision. A caller that routes a turn to a lane of its own
-// and wants "skip, retry later" asks this as well (chief_nudge.go).
+// It is also one of [Unsent]'s reasons (UnsentCapacity, PR #609 round 1 F1):
+// every unsolicited deliverer — a plugin delivery, an answer's delivery, the
+// memo relay — queues the turn again rather than settling it unconfirmed. A
+// caller that must tell capacity from the other reasons (the stall check, which
+// skips rather than retries: chief_nudge.go) asks this first.
 func LanesFull(err error) bool {
 	if err == nil || agents.PastFirstRequest(err) {
 		return false

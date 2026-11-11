@@ -63,7 +63,7 @@ func sameIDs(a, b []int64) bool {
 // the CLI's [1m] suffix, and nothing for any other model.
 func TestClaudeContextWindow(t *testing.T) {
 	for model, want := range map[string]int64{
-		"opus": 200_000, "sonnet": 200_000, "haiku": 200_000, "claude": 200_000,
+		"opus": 200_000, "sonnet": 200_000, "haiku": 200_000, "claude": 0,
 		"claude-opus-4-6": 200_000, "opus[1m]": 1_000_000, "claude-sonnet-4-6[1m]": 1_000_000,
 		"anthropic/claude-sonnet-4": 200_000, "openrouter/xiaomi/mimo-v2.5": 0, "": 0, "gpt-5": 0,
 	} {

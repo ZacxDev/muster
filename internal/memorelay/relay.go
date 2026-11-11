@@ -179,6 +179,9 @@ type Config struct {
 
 // Relay delivers memos. Build it with [New].
 type Relay struct {
+	// session picks the chat session a memo turn runs in (SetSession); nil:
+	// the agent's latest.
+	session  func(ctx context.Context, a agents.Agent) (agents.ChatSession, error)
 	agents   agents.Store
 	taskRepo func(context.Context, int64) (string, error)
 	gw       Gateway
@@ -608,7 +611,7 @@ func (r *Relay) deliver(parent context.Context, a agents.Agent, scope string, ba
 		r.count(familyDelivery, ResultUnresolved)
 		return
 	}
-	sess, err := r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	sess, err := r.sessionFor(ctx, a)
 	if err != nil {
 		r.count(familyDelivery, ResultNoSession)
 		return
@@ -694,4 +697,21 @@ func (r *Relay) Hold(a agents.Agent) (release func()) {
 		return func() {}
 	}
 	return r.hold(a)
+}
+
+// SetSession sets how the relay picks the chat session a memo turn runs in:
+// cmd/muster-server passes api.Server.DeliverySession, so a memo for the CHIEF
+// (classify has no chief exclusion) goes to its PRIMARY chat — never a side
+// chat, which "latest" can be — and any other agent's to its latest, as before.
+// Call it before Start.
+func (r *Relay) SetSession(fn func(ctx context.Context, a agents.Agent) (agents.ChatSession, error)) {
+	r.session = fn
+}
+
+// sessionFor is the chat session a memo turn for a runs in (SetSession).
+func (r *Relay) sessionFor(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+	if r.session != nil {
+		return r.session(ctx, a)
+	}
+	return r.agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 }

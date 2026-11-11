@@ -16,12 +16,28 @@ import (
 // this one's. Counted once per call:
 var fixtureTurnUsage = podagent.Usage{InputTokens: 6, OutputTokens: 946, CacheReadInputTokens: 493988, CacheCreationInputTokens: 4751}
 
+// fixtureLastCallFill is the SECOND (last) call's context fill: input 2 +
+// cache read 248769 + cache creation 1201 — what the next call starts from.
+// The turn total's fill (6 + 493988 + 4751 = 498745) counts the conversation
+// once per call, about twice what it is.
+const fixtureLastCallFill = 2 + 248769 + 1201
+
 // TestExtractTurnSumsTheTurnsUsageOncePerAPICall pins the per-turn tokens read
 // from a real (content-replaced) transcript.
 func TestExtractTurnSumsTheTurnsUsageOncePerAPICall(t *testing.T) {
 	res := extract(t, fixture(t, "turn_success_tools_2.1.289.jsonl"), fixturePromptID)
-	if res.Usage == nil || *res.Usage != fixtureTurnUsage {
-		t.Fatalf("the turn's usage = %+v, want %+v", res.Usage, fixtureTurnUsage)
+	if res.Usage == nil {
+		t.Fatal("the turn has no usage")
+	}
+	got := *res.Usage
+	fill := got.ContextTokens
+	got.ContextTokens = nil
+	if got != fixtureTurnUsage {
+		t.Fatalf("the turn's usage = %+v, want %+v", got, fixtureTurnUsage)
+	}
+	// The LAST call's fill, not the turn total's (PR #609 round 1 F3).
+	if fill == nil || *fill != fixtureLastCallFill {
+		t.Fatalf("the turn's context fill = %v, want the last call's %d", fill, fixtureLastCallFill)
 	}
 	// A failed turn's API-error record carries no usage worth counting.
 	if bad := extract(t, fixture(t, "turn_auth_failed_2.1.296.jsonl"), fixturePromptID); bad.Usage != nil {
@@ -42,5 +58,8 @@ func TestMustersClientReceivesTheTurnsUsage(t *testing.T) {
 	in, out, read, create, known := sink.Snapshot()
 	if !known || in != 6 || out != 946 || read != 493988 || create != 4751 {
 		t.Fatalf("muster's sink = in %d out %d read %d create %d known %v; want 6 946 493988 4751 true", in, out, read, create, known)
+	}
+	if fill, ok := sink.Context(); !ok || fill != fixtureLastCallFill {
+		t.Fatalf("muster's context fill = %d (%v), want the last call's %d", fill, ok, fixtureLastCallFill)
 	}
 }

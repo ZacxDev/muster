@@ -52,8 +52,8 @@ var claudeModelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$
 var ClaudeCodeModels = []string{"opus", "sonnet", "haiku"}
 
 // ClaudeContextWindow is the context window, in tokens, of a Claude model as
-// muster names one — an alias (opus, sonnet, haiku), a claude-* id, or
-// "claude" (a claude-code chief on its CLI's default) — and 0 for any other
+// muster names one — an alias (opus, sonnet, haiku) or a claude-* id — and 0
+// for any other (a claude-code chief on its CLI's unknown default included)
 // model: 1,000,000 with the CLI's "[1m]" suffix, else 200,000, the window
 // every current Claude model has by default.
 //
@@ -67,7 +67,7 @@ func ClaudeContextWindow(model string) int64 {
 	long := strings.HasSuffix(m, "[1m]")
 	m = strings.TrimSuffix(m, "[1m]")
 	switch {
-	case m == "claude", m == "opus", m == "sonnet", m == "haiku", strings.HasPrefix(m, "claude-"):
+	case m == "opus", m == "sonnet", m == "haiku", strings.HasPrefix(m, "claude-"):
 	default:
 		return 0
 	}

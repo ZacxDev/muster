@@ -241,19 +241,17 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 				t.Fatalf("the answered route: %+v", r)
 			}
 
-			// The sweep delivers it to the chief's PRIMARY chat (chief_chats.go:
-			// every delivery goes there, a request route's answer included — the
-			// chat the owner asked in may be a side chat, which gets none) — as a
-			// note here (no provisioner: the chief cannot be given a turn) —
-			// exactly once, however often it runs. The note names the owner's
-			// message, so where it was asked is not lost.
+			// The sweep delivers it to the chief session where the owner asked —
+			// as a note here (no provisioner: the chief cannot be given a turn) —
+			// exactly once, however often it runs. That chat may be a SIDE chat:
+			// a request is that chat's own thread (PR #609 Q1).
 			for i := 0; i < 2; i++ {
 				if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}
 			delivered := 0
-			for _, m := range f.chatText(t, def.ID) {
+			for _, m := range f.chatText(t, said.SessionID) {
 				if strings.Contains(m, answer) {
 					delivered++
 					for _, want := range []string{"[muster] Route " + res.RouteID, "your owner's request, their chat message " +
@@ -266,11 +264,11 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 				}
 			}
 			if delivered != 1 {
-				t.Fatalf("the answer reached the chief's primary chat %d time(s), want 1: %q", delivered, f.chatText(t, def.ID))
+				t.Fatalf("the answer reached the owner's chief chat %d time(s), want 1: %q", delivered, f.chatText(t, said.SessionID))
 			}
-			for _, m := range f.chatText(t, said.SessionID) {
+			for _, m := range f.chatText(t, def.ID) {
 				if strings.Contains(m, answer) || strings.Contains(m, res.RouteID) {
-					t.Fatalf("the answer went to the chat the owner asked in (a side chat), not the primary: %q", m)
+					t.Fatalf("the answer went to the chief's default session, not the one the owner asked in: %q", m)
 				}
 			}
 
