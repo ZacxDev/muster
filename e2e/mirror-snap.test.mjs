@@ -85,7 +85,7 @@ test('worth keeps what draws and drops a bare marker', () => {
   assert.equal(core.worth({ type: 'batch', offset: 5, ops: [{ op: 'append' }] }), true);
   assert.equal(core.worth({ type: 'batch', reset: true, ops: [] }), true);
   assert.equal(core.worth({ type: 'batch', index: { items: [] }, ops: [] }), true);
-  assert.equal(core.worth({ type: 'batch', context: { label: '1k context' }, ops: [] }), true);
+  assert.equal(core.worth({ type: 'batch', context: { label: '1k', count: '1k', detail: '1,234 tokens' }, ops: [] }), true);
 });
 
 test('a snapshot is refused 30 minutes after its last full read, however recently it was written', () => {

@@ -751,9 +751,8 @@ confirmed, as a Claude paste does today. Its busy semantics ("immediately",
   growth to the next. It is `Msg.Context` (`mirror.AgentContext`: tokens,
   limit, model) on the view's stream instead, sent after the backfill and
   whenever it moves; the page reads it as the header's readout,
-  "`<model> · 47k / 188k context`", with a tooltip saying how it is made.
-  (Since compacted: "`<name> · 47k/188k`", the exact figures on a tap —
-  docs/mirroring.md.)
+  "`<name> · 47k/188k`" (the model without its provider prefix), with the
+  exact figures and how they are made on a tap (docs/mirroring.md).
 - The limit is `limit.context` of the model (provider and id) in `GET
   /api/model`, read once per host every 10 minutes, and again at most once a
   minute for a model the list lacks. A model it does not name shows the count
