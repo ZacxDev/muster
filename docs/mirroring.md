@@ -167,7 +167,9 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 - **What a row says.** Besides its name: how many things wait on you there, a
   dot when it waits on you with nothing to count (an agent at a permission
   prompt), **offline** while its host is not serving it, and how many
-  subagents and background shells it has running. A long name is cut; the
+  subagents and background shells it has running, and a small browser-window
+  mark when it has a web server to preview or a preview open
+  ([previews.md](previews.md)). A long name is cut; the
   whole name is the row's tooltip. A window's own Rendered view and terminal
   say under their header when its host is offline, and show the host's note
   about it.
@@ -1457,6 +1459,11 @@ capped, with anything that looks like a secret redacted on the host — on at mo
 windows per report), which the [attention queue](attention.md#what-is-in-it)
 shows. An older muster ignores it; a host that does not send it gets muster's
 generic "waiting" line.
+And, with `-preview`, how many web servers each window offers to preview and
+how many previews of it are open (a `previews` message of its own, counts
+only: [previews.md](previews.md#what-muster-is-told)), from which the session
+views draw their Preview button. An older muster drops the message; a host
+that does not send it has no Preview button on its windows.
 
 The time is Claude Code's, measured on Claude Code 2.1.289 (2026-10-15, one
 Linux host, about 40 minutes of every live sessions file, read-only). The

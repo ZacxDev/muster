@@ -95,6 +95,7 @@ var noStoreLiterals = map[string]string{
 	"handleViewSuccessor":       "the view's succession read (its card and where the successor is): live state",
 	"handleNavAgents":           "the sidebar's agent list",
 	"handleNavWaiting":          "the ☰ button's waiting badge",
+	"handlePreviewButton":       "a session view's Preview button: the window's live preview counts",
 	"redirectTo":                "home's redirect, from `/` and GET /agents (it follows who the chief is now)",
 	"handleAgentsHome":          "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":         "an agent page's status strip, ⋯ menu and notices, live",
