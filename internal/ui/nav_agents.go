@@ -497,6 +497,7 @@ func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
 			navChiefChip(e.mirror),
 			navOutcome(e.agent),
 			navWork(e.work()),
+			navPreviewOf(e),
 			entryWaitMark(it),
 		),
 	)
@@ -540,6 +541,36 @@ func navWork(w mirror.WindowWork) g.Node {
 		g.Raw(`<svg class="h-3 w-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3l7 4-7 4-7-4z"/><path d="M3 11l7 4 7-4"/></svg>`),
 		Span(Class("sr-only"), g.Text(label)),
 		Span(g.Attr("aria-hidden", "true"), g.Text(count)),
+	)
+}
+
+// navPreviewOf is a mirrored window's preview mark (navPreview); nothing for
+// an agent.
+func navPreviewOf(e listEntry) g.Node {
+	if e.mirror == nil {
+		return nil
+	}
+	return navPreview(e.mirror.Previews)
+}
+
+// navPreview is a row's preview mark: the window has a web server to preview
+// or a preview open (mirror.WindowPreviews) — the Preview button's own
+// browser-window glyph, small and in the accent, the counts in words its
+// accessible name and tooltip. NOT a dot: the row's waiting mark is an accent
+// dot already (navAttentionPill). Nothing when it has neither: the mark says
+// the window's Preview button is there to open.
+func navPreview(p mirror.WindowPreviews) g.Node {
+	if p.IsZero() {
+		return nil
+	}
+	label := "Preview: " + previewWords(p)
+	return Span(
+		g.Attr("data-nav-preview", strconv.Itoa(p.Total())),
+		g.Attr("role", "img"),
+		g.Attr("aria-label", label),
+		g.Attr("title", label),
+		Class("inline-flex shrink-0 items-center text-accent"),
+		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>`),
 	)
 }
 

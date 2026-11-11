@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -9,18 +10,22 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// THE SESSION-VIEW CHIP (docs/plugins.md#the-session-view-chip;
-// docs/design/previews.md seam (b)): one static chip per live viewer plugin of
-// the owner, on a mirrored window's two session views (/mirror/view and
-// /mirror/terminal). Its Open and Show here mint a hand-off (POST
-// /plugin-handoffs) at click time; nothing is minted to draw it.
+// THE SESSION VIEWS' PREVIEW BUTTON (docs/plugins.md#the-session-view-chip;
+// docs/design/previews.md seam (b); ui/plugin_chip.go): on a mirrored window's
+// two session views (/mirror/view and /mirror/terminal), a header button that
+// opens the owner's live viewer plugin in a panel — drawn only while the
+// window HAS SOMETHING TO PREVIEW (its host's mirror.WindowPreviews). Its
+// panel and New tab mint a hand-off (POST /plugin-handoffs) at click time;
+// nothing is minted to draw it.
 //
-// 🔴 DRAWN FROM THE TOKEN ROWS ALONE, and only while they would mint: a
-// revoked token, one without viewer, and one whose origin is no longer in
-// MUSTER_PLUGIN_ORIGINS (the mint's own re-check, ValidViewerLink) draw no
-// chip. With MUSTER_PLUGIN_ORIGINS unset, or plugins off, nothing is read at
-// all: no chip and no frame-src.
-
+// 🔴 TWO GATES, BOTH REQUIRED. (1) viewerPlugins — the token rows, only while
+// they would mint: a revoked token, one without viewer, and one whose origin
+// is no longer in MUSTER_PLUGIN_ORIGINS (the mint's own re-check,
+// ValidViewerLink) give nothing; with MUSTER_PLUGIN_ORIGINS unset, or plugins
+// off, nothing is read at all: no slot, no poll and no frame-src. (2) the
+// window's counts, which only NARROW (1): the slot and the frame-src follow
+// (1) alone, so a button that appears after the page loaded can frame its
+// plugin; the button itself is drawn only while the counts are above zero.
 // viewerPlugins is the principal's live viewer plugins whose link the CURRENT
 // MUSTER_PLUGIN_ORIGINS still allows, newest first (the store's List order);
 // nil when the seam is off or the window has no tmux id a hand-off could name.
@@ -65,12 +70,13 @@ func viewerFrameSrc(ps []plugins.Plugin) string {
 	return strings.Join(src, " ")
 }
 
-// pluginChips is what the page draws for ps, aimed at (host, window).
-func pluginChips(ps []plugins.Plugin, host, window string) *ui.PluginChips {
+// pluginChips is what the page draws for ps, aimed at e's window, with its
+// counts now.
+func pluginChips(ps []plugins.Plugin, e mirror.SessionView) *ui.PluginChips {
 	if len(ps) == 0 {
 		return nil
 	}
-	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Host: host, Window: window}
+	c := &ui.PluginChips{MintPath: pluginHandoffsPath, Host: e.Host, Session: e.Session, Window: e.Window, Previews: e.Previews}
 	for _, p := range ps {
 		label := p.Label
 		if label == "" {
@@ -79,4 +85,26 @@ func pluginChips(ps []plugins.Plugin, host, window string) *ui.PluginChips {
 		c.Chips = append(c.Chips, ui.PluginChip{ID: p.ID, Label: label})
 	}
 	return c
+}
+
+// handlePreviewButton serves GET ui.PreviewButtonPath: the session view's
+// Preview button for the window's counts NOW (ui.PreviewButton), nothing when
+// it has nothing to preview. The page's slot polls it.
+//
+// 🔴 THE SAME TWO GATES AS THE PAGE: the window's counts first (in memory —
+// a window with nothing answers empty without reading the plugin store), then
+// viewerPlugins, so a token revoked since the page loaded takes the button
+// away at the next poll. An unknown window answers empty, never an error the
+// slot would keep its old button through.
+func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	q := r.URL.Query()
+	_, e, listed, _, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	if !ok || !listed || e.Window == "" || e.Previews.IsZero() || len(s.viewerPlugins(r.Context(), e.Window)) == 0 {
+		return
+	}
+	if err := ui.RenderPreviewButton(w, e.Previews); err != nil {
+		s.logger.Printf("preview button: render: %v", err)
+	}
 }

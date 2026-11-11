@@ -503,6 +503,10 @@ type Msg struct {
 	// Outcomes (outcomes) is, per window id, the final reply of an idle
 	// opencode window the chief started — the WHOLE map each time (outcomes.go).
 	Outcomes map[string]WindowOutcome `json:"outcomes,omitempty"`
+	// Previews (previews) is, per window id, how many of its web servers the
+	// host offers and how many previews of it are open — the WHOLE map each
+	// time (previews.go).
+	Previews map[string]WindowPreviews `json:"previews,omitempty"`
 
 	// ---- tracing (internal/telemetry) ----
 

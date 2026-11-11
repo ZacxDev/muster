@@ -63,9 +63,9 @@ var QuickKeys = []QuickKey{
 
 // AgentTerminalView is the data the terminal page renders.
 type AgentTerminalView struct {
-	// Plugins is the owner's viewer plugins' chip row (plugin_chip.go), under
-	// the header: a mirrored window's Terminal view only (an agent's has none
-	// in this phase); nil for none.
+	// Plugins is the owner's viewer plugins and the window's preview counts:
+	// the header's Preview button and its panel (plugin_chip.go); nil for
+	// none.
 	Plugins     *PluginChips
 	Name        string
 	DisplayName string
@@ -369,13 +369,16 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						Class("press min-h-[44px] shrink-0 items-center rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-pressed:bg-accent aria-pressed:text-on-accent"),
 						g.Text("Fit width"),
 					),
+					// The window's Preview button, while it has something to
+					// preview (plugin_chip.go).
+					previewButtonSlot(v.Plugins),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),
 				mirrorHostBanner("term-host-note", v.Offline, v.Note),
-				// The owner's viewer plugins (plugin_chip.go): a fixed-height row.
-				pluginChipRow(v.Plugins),
+				// The Preview button's panel, closed (plugin_chip.go).
+				previewPanel(v.Plugins),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),

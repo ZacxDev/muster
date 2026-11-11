@@ -147,10 +147,10 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	// The viewer's tags on the tmux session, in the header (ui/session_tags.go).
 	v.Tags = s.sessionTagsFor(op.begin("tags"), sessiontags.Target{Host: h.Host, Session: e.Session})
-	// The owner's viewer plugins' chips, and the frame-src their Show here
+	// The window's Preview button and panel, and the frame-src the panel
 	// needs (plugin_chip.go); none and "" while the seam is off.
 	vp := s.viewerPlugins(op.begin("plugins"), e.Window)
-	v.Plugins = pluginChips(vp, h.Host, e.Window)
+	v.Plugins = pluginChips(vp, e)
 	allowSameOriginFrame(w, viewerFrameSrc(vp))
 	viewDocument(w)
 	op.serverTiming(w)

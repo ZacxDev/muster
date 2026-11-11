@@ -152,8 +152,9 @@ type MirrorViewView struct {
 	// End is this session's newest proposal when it is an end_session's
 	// (view_end_session.go), drawn instead of Succession; nil otherwise.
 	End *EndView
-	// Plugins is the owner's viewer plugins' chip row (plugin_chip.go), under
-	// the header; nil for none.
+	// Plugins is the owner's viewer plugins and the window's preview counts:
+	// the header's Preview button and its panel (plugin_chip.go); nil for
+	// none.
 	Plugins *PluginChips
 }
 
@@ -278,6 +279,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						),
 					),
 					chatIndexButton("mv-log"),
+					// The window's Preview button, while it has something to
+					// preview (plugin_chip.go).
+					previewButtonSlot(v.Plugins),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),
@@ -285,8 +289,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// name (session_name.go).
 				driftBanner(v.Drift),
 				mirrorHostBanner("mv-host-note", v.Offline, v.Note),
-				// The owner's viewer plugins (plugin_chip.go): a fixed-height row.
-				pluginChipRow(v.Plugins),
+				// The Preview button's panel, closed (plugin_chip.go).
+				previewPanel(v.Plugins),
 				// A succession of this session's: the card, its line, the follow
 				// (view_succession.go).
 				successionRegion(ref, v.Succession, v.Predecessor, v.End, v.Chief),

@@ -157,6 +157,11 @@ type HostView struct {
 	// (an older muster-mirror). 🔴 NEVER KEPT FOR AN OFFLINE HOST: a count is a
 	// claim about NOW, and a host that is gone cannot vouch for it.
 	Work map[string]WindowWork
+	// Previews is the live preview counts per WINDOW ID the host last sent
+	// (TypePreviews, previews.go), restricted to its windows when it arrived;
+	// nil when it sent none (an older muster-mirror, one without -preview).
+	// 🔴 NEVER KEPT FOR AN OFFLINE HOST, like Work: a count is a claim about NOW.
+	Previews map[string]WindowPreviews
 	// Colors is the tmux identity colour per WINDOW ID the host last sent
 	// (TypeColors, work.go), restricted to its windows when it arrived; nil when
 	// it sent none. Kept offline, like Repos: it is the window's identity, not
@@ -444,6 +449,9 @@ type hostConn struct {
 	// (NormalizeWork / NormalizeColors over windows).
 	work   map[string]WindowWork
 	colors map[string]string
+	// previews is the host's last TypePreviews map (NormalizePreviews over
+	// windows).
+	previews map[string]WindowPreviews
 	// outcomes is the host's last TypeOutcomes map (NormalizeOutcomes over
 	// windows, re-restricted at every listing: outcomesApplied).
 	outcomes map[string]WindowOutcome
@@ -506,7 +514,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
 			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
@@ -1019,6 +1027,20 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 					work := NormalizeWork(m.Work, hc.windows)
 					same := maps.Equal(hc.work, work)
 					hc.work = work
+					hc.mu.Unlock()
+					if !same {
+						h.changed(hc.key.owner)
+					}
+				}
+			case TypePreviews:
+				// The windows' live preview counts (previews.go), as TypeWork: a
+				// change is one the views draw (the Preview button, the sidebar's
+				// mark), so it nudges them.
+				if hc.version >= 2 {
+					hc.mu.Lock()
+					previews := NormalizePreviews(m.Previews, hc.windows)
+					same := maps.Equal(hc.previews, previews)
+					hc.previews = previews
 					hc.mu.Unlock()
 					if !same {
 						h.changed(hc.key.owner)
