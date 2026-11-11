@@ -859,8 +859,9 @@ const (
 // Claude Code: by DEFAULT its host starts it without permission prompts
 // (-agent-spawn-skip-permissions; the operator's decision: muster assumes
 // sessions run without them), so it uses tools without asking; a host with the
-// setting off — or older than it — starts it in normal permission mode, and it
-// asks the owner on muster. Which one is the HOST's hello
+// setting off, running as root (Claude Code refuses bypassPermissions as root),
+// or older than the setting starts it in normal permission mode, and it asks
+// the owner on muster. Which one is the HOST's hello
 // (HostView.AgentSpawnSkipPermissions). opencode runs in its allow-by-default
 // mode and DOES NOT ASK either way (#522 round 0, Q1 (a); with the setting on
 // its host adds --auto, which approves its owner's `ask` rules too) — bounded by

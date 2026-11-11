@@ -1425,10 +1425,24 @@ and audit log above, and whatever deny rules your own CLI configuration has.
   CLI's own source; `cmd/ccd/seed.go` names the version). If you have never
   accepted it, expect the first spawned window to stop at that dialog: answer
   it in the Terminal view, or start `claude --permission-mode
-  bypassPermissions` once yourself. muster does not accept it for you. If your
-  settings disable bypass mode (`permissions.disableBypassPermissionsMode`),
-  Claude Code will not start in it; turn this setting off on that host
-  instead.
+  bypassPermissions` once yourself. muster does not accept it for you.
+- **When your settings disable bypass mode.** If Claude Code's settings set
+  `permissions.disableBypassPermissionsMode`, a spawned claude does not refuse
+  to start: it prints "Bypass permissions mode was disabled by settings" and
+  runs in its default mode, so it **asks** — while the host's hello, and so
+  what the agent and your chief are told, still say it runs without prompts.
+  muster does not read your Claude Code settings and cannot tell. On such a
+  host, turn this setting off (`-agent-spawn-skip-permissions=false`) so the
+  wording matches what runs.
+- **A mirror running as root.** Claude Code exits at once (status 1) when it
+  is started with `bypassPermissions` as root outside a sandbox of its own. So
+  when the mirror's effective uid is 0, the host starts **claude in normal
+  permission mode whatever this setting says** — its argv is the one
+  `=false` gives — and says in its hello that it does not skip them, so the
+  agent and your chief are told normal permission mode; the startup line says
+  why. opencode's `--auto` is unaffected. The hello carries one bool per host
+  rather than one per runtime because Claude Code's is the only wording that
+  depends on it: an opencode agent is told it runs without asking either way.
 - **What it does not change.** Sessions you start yourself are yours: start
   them with `--permission-mode bypassPermissions` (or auto mode) if you want
   them to match. A resumed session (`-resume-spawn`) runs `<-resume-claude>

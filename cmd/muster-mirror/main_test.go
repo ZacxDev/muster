@@ -404,8 +404,11 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 // the daemon's startup line says its spawned agents start WITHOUT permission
 // prompts by default; MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=0 (or false),
 // or -agent-spawn-skip-permissions=false, says normal permission mode instead;
-// =1 keeps it on; and a value that is not a bool stops the daemon (rc 2) naming
-// the variable. The daemon's context is ended before it dials.
+// =1 keeps it on; as root (geteuid 0) claude keeps its prompts and the line
+// says why; and a value that is not a bool stops the daemon (rc 2) naming the
+// variable and the values strconv.ParseBool accepts. The line is worded from
+// the built AgentSpawnConfig, so it also pins the flag-to-config assignment.
+// The daemon's context is ended before it dials.
 func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tmux server: nothing to touch
@@ -417,9 +420,13 @@ func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
 		cancel()
 		return ctx, cancel
 	}
+	prevE := geteuid
+	t.Cleanup(func() { geteuid = prevE })
 	const (
-		on  = ", WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
-		off = ", in normal permission mode (-agent-spawn-skip-permissions=false)"
+		on   = ", WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
+		off  = ", in normal permission mode (-agent-spawn-skip-permissions=false)"
+		root = ", claude in normal permission mode because this mirror runs as root (effective uid 0) and Claude Code refuses " +
+			"bypassPermissions as root, opencode WITHOUT permission prompts (-agent-spawn-skip-permissions, --auto)"
 	)
 	env := func(skip string) map[string]string {
 		e := map[string]string{envURL: "https://m.example", envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
@@ -434,21 +441,35 @@ func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
 	for _, c := range []struct {
 		name, env string
 		args      []string
-		want, not string
+		euid      int
+		want      string
 	}{
-		{"the default", "", nil, on, off},
-		{"env 1", "1", nil, on, off},
-		{"env 0", "0", nil, off, on},
-		{"env false", "false", nil, off, on},
-		{"the flag =false", "", []string{"-agent-spawn-skip-permissions=false"}, off, on},
-		{"the flag over env 0", "0", []string{"-agent-spawn-skip-permissions=true"}, on, off},
+		{"the default", "", nil, 1000, on},
+		{"env 1", "1", nil, 1000, on},
+		{"env 0", "0", nil, 1000, off},
+		{"env false", "false", nil, 1000, off},
+		{"env F", "F", nil, 1000, off},
+		{"the flag =false", "", []string{"-agent-spawn-skip-permissions=false"}, 1000, off},
+		{"the flag over env 0", "0", []string{"-agent-spawn-skip-permissions=true"}, 1000, on},
+		// As root claude keeps its prompts (Claude Code refuses
+		// bypassPermissions as root) and the line says why; off is off.
+		{"root, the default", "", nil, 0, root},
+		{"root, env 0", "0", nil, 0, off},
 	} {
+		geteuid = func() int { return c.euid }
 		rc, _, errs := runWith(t, env(c.env), c.args...)
-		if rc != 0 || !strings.Contains(errs, "STARTING AGENTS IS ON") || !strings.Contains(errs, c.want) || strings.Contains(errs, c.not) {
-			t.Fatalf("%s: rc %d, log:\n%s\nwant %q and not %q", c.name, rc, errs, c.want, c.not)
+		if rc != 0 || !strings.Contains(errs, "STARTING AGENTS IS ON") || !strings.Contains(errs, c.want) {
+			t.Fatalf("%s: rc %d, log:\n%s\nwant %q", c.name, rc, errs, c.want)
+		}
+		for _, other := range []string{on, off, root} {
+			if other != c.want && strings.Contains(errs, other) {
+				t.Fatalf("%s: the log also says %q:\n%s", c.name, other, errs)
+			}
 		}
 	}
-	if rc, _, errs := runWith(t, env("off")); rc != 2 || !strings.Contains(errs, `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="off" is not a bool`) {
+	geteuid = func() int { return 1000 }
+	if rc, _, errs := runWith(t, env("off")); rc != 2 || !strings.Contains(errs,
+		`MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="off" is not a bool (1, t, T, TRUE, true, True, 0, f, F, FALSE, false or False)`) {
 		t.Fatalf("a value that is not a bool: rc %d: %s", rc, errs)
 	}
 }

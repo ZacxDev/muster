@@ -145,7 +145,8 @@ type HostView struct {
 	// (Msg.AgentSpawn), for an -interactive host only; nil otherwise.
 	AgentSpawn []string
 	// AgentSpawnSkipPermissions: the host advertised that it starts its
-	// spawned agents without permission prompts (Msg.AgentSpawnSkipPermissions);
+	// spawned Claude Code agents without permission prompts
+	// (Msg.AgentSpawnSkipPermissions);
 	// false whenever AgentSpawn is empty.
 	AgentSpawnSkipPermissions bool
 	// AgentClose: the host ends an agent window on muster's request

@@ -61,3 +61,50 @@ func TestEveryPermissionWordIsAHostWord(t *testing.T) {
 		}
 	}
 }
+
+// TestARootMirrorStartsClaudeWithItsPromptsAndOpenCodeWithout: Claude Code
+// exits 1 on bypassPermissions as root outside a sandbox of its own, so a root
+// mirror (Geteuid 0) gives claude NO permission words — its argv is the
+// setting-off argv, word for word — and ClaudeSkipsPermissions (what the hello
+// says) is false; opencode's --auto is unaffected. Not root: unchanged. Off is
+// off either way. Root is the Geteuid seam: nothing here runs as root.
+func TestARootMirrorStartsClaudeWithItsPromptsAndOpenCodeWithout(t *testing.T) {
+	const (
+		shell  = "/bin/fixture-sh"
+		prompt = "/run/fixture/muster-mirror/prompts/8"
+		claude = "/opt/fixture/bin/claude"
+		sid    = "00000000-0000-4000-8000-000000000008"
+		mm     = "/opt/fixture/bin/muster-mirror"
+		oc     = "/opt/fixture/bin/opencode"
+		ocSID  = "ses_fixture8"
+	)
+	wrapper := `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f -- "$1"; shift; exec "$@" "$p"`
+	claudeOff := []string{shell, "-l", "-c", wrapper, shell, prompt, claude, "--session-id", sid, "--"}
+	claudeOn := []string{shell, "-l", "-c", wrapper, shell, prompt, claude, "--session-id", sid, "--permission-mode", "bypassPermissions", "--"}
+	ocOff := []string{shell, "-l", "-c", `exec "$@"`, shell, mm, "opencode", "--opencode-bin", oc, "-s", ocSID}
+	ocOn := append(slices.Clone(ocOff), "--auto")
+	for _, c := range []struct {
+		name             string
+		euid             int
+		keep             bool
+		claude, opencode []string
+		hello            bool
+	}{
+		{"root, on", 0, false, claudeOff, ocOn, false},
+		{"root, off", 0, true, claudeOff, ocOff, false},
+		{"not root, on", 1000, false, claudeOn, ocOn, true},
+		{"not root, off", 1000, true, claudeOff, ocOff, false},
+	} {
+		euid := c.euid
+		sc := AgentSpawnConfig{KeepPermissionPrompts: c.keep, Geteuid: func() int { return euid }}
+		if got := spawnArgv(shell, prompt, claude, sid, false, "", sc.spawnSkips(false)); !slices.Equal(got, c.claude) {
+			t.Errorf("%s: claude\n got %q\nwant %q", c.name, got, c.claude)
+		}
+		if got := spawnArgv(shell, prompt, mm, ocSID, true, oc, sc.spawnSkips(true)); !slices.Equal(got, c.opencode) {
+			t.Errorf("%s: opencode\n got %q\nwant %q", c.name, got, c.opencode)
+		}
+		if got := sc.ClaudeSkipsPermissions(); got != c.hello {
+			t.Errorf("%s: ClaudeSkipsPermissions %v, want %v", c.name, got, c.hello)
+		}
+	}
+}

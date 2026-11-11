@@ -430,7 +430,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	hello.AgentSpawn = conn.agentSpawnRuntimes()
-	hello.AgentSpawnSkipPermissions = len(hello.AgentSpawn) > 0 && !c.cfg.AgentSpawn.KeepPermissionPrompts
+	// Claude Code's mode only (ClaudeSkipsPermissions: off as root): the one
+	// runtime whose wording muster varies by it (Msg.AgentSpawnSkipPermissions).
+	hello.AgentSpawnSkipPermissions = len(hello.AgentSpawn) > 0 && c.cfg.AgentSpawn.ClaudeSkipsPermissions()
 	hello.AgentClose = conn.agentCloseOn()
 	if err := conn.send(hello); err != nil {
 		return err

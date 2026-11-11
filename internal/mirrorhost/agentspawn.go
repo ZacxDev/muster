@@ -104,6 +104,13 @@ type AgentSpawnConfig struct {
 	// because muster assumes its sessions run without them and answers none
 	// itself (docs/mirroring.md, "Permission prompts").
 	KeepPermissionPrompts bool
+	// Geteuid is the mirror's effective uid (nil = os.Geteuid). 🔴 AS ROOT,
+	// CLAUDE KEEPS ITS PROMPTS: Claude Code exits 1 on bypassPermissions when
+	// it runs as root outside a sandbox of its own, so a root mirror starts
+	// claude in normal permission mode whatever the setting says, and its hello
+	// says so (ClaudeSkipsPermissions). opencode's --auto is unaffected. No
+	// flag sets it; a test sets it to say "root" without being root.
+	Geteuid func() int
 
 	// --- test seams (no flag sets these) ---
 
@@ -138,6 +145,33 @@ type AgentSpawnConfig struct {
 	// beforeNewWindow, when set (tests), runs just before the deadline check
 	// that precedes `new-window`.
 	beforeNewWindow func()
+}
+
+// ClaudeSkipsPermissions reports whether a spawned claude starts without
+// permission prompts: the setting is on AND the mirror is not root (Geteuid).
+// THE one place that decides it — the argv (spawnSkips) and the hello both
+// read it, so what muster is told is what the host runs.
+func (c AgentSpawnConfig) ClaudeSkipsPermissions() bool {
+	return !c.KeepPermissionPrompts && !c.Root()
+}
+
+// Root reports whether the mirror runs as root (effective uid 0, Geteuid).
+func (c AgentSpawnConfig) Root() bool {
+	euid := os.Geteuid
+	if c.Geteuid != nil {
+		euid = c.Geteuid
+	}
+	return euid() == 0
+}
+
+// spawnSkips is whether a spawn of the runtime gets the permission words:
+// opencode's --auto follows the setting alone; claude's also needs a mirror
+// that is not root (ClaudeSkipsPermissions).
+func (c AgentSpawnConfig) spawnSkips(opencode bool) bool {
+	if opencode {
+		return !c.KeepPermissionPrompts
+	}
+	return c.ClaudeSkipsPermissions()
 }
 
 func (c AgentSpawnConfig) now() time.Time {
@@ -1247,7 +1281,7 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	if opencode {
 		ocBin = oc.openCodeBin
 	}
-	argv := spawnArgv(shell, promptFile, bin, sid, opencode, ocBin, !sc.KeepPermissionPrompts)
+	argv := spawnArgv(shell, promptFile, bin, sid, opencode, ocBin, sc.spawnSkips(opencode))
 	winID, pane, err := t.newAgentWindow(ctx, winName, dir, argv)
 	if err != nil {
 		return fail(refuseSpawn(mirror.SpawnFailed, "the window could not be started"))

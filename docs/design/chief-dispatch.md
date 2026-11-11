@@ -2746,6 +2746,12 @@ agent the chief itself started on that task, which already holds the task's
 text, and which runs in normal permission mode, so any tool use it is talked
 into still asks the owner.
 
+**Amended (operator decision, 2026-11-11; decision 3, amended).** With the
+host's `-agent-spawn-skip-permissions` on (the default), a spawned window runs
+its tools without asking, so outside text a chief forwards into it (plugin
+task events among it) can make it run tools unattended. Such forwards are
+allowed. With the setting off, the bound above holds as written.
+
 The answer is today's, with `forwarded_to` becoming `{host, window,
 dispatch}` for a host target.
 
@@ -3012,6 +3018,12 @@ permission mode**, not an isolation boundary:
   that the owner's settings do not allow by default, so it reaches the owner
   as an ask. An owner, or a repository's settings (which `connectedRepo`
   bounds), that allows arbitrary shell also allows these.
+- **Amended (operator decision, 2026-11-11; decision 3, amended).** With the
+  host's `-agent-spawn-skip-permissions` on (the default), a spawned window
+  runs its tools without asking, so none of these reaches the owner as an ask,
+  and outside text forwarded into it ([3.10](#310-forwarding-into-a-host-spawned-agent))
+  can make it run tools unattended. Such forwards are allowed. With the
+  setting off, normal permission mode stands in the way as written above.
 - **What it does stop** is the plain case: an agent that simply calls
   `attention_answer`, or `agent_destroy` on its own dispatch, as itself.
 
@@ -3119,6 +3131,15 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
       That is a mitigation, not a boundary. The settings in force are the
       owner's own plus the repository's `.claude/settings.json`, which can
       allow more.
+      **Amended (operator decision, 2026-11-11; decision 3, amended):** that
+      holds only with the host's `-agent-spawn-skip-permissions=false`. With
+      it on (the default), claude starts with `--permission-mode
+      bypassPermissions` and runs its tools without asking, so outside text
+      that reaches its window, in the first message or forwarded later
+      ([3.10](#310-forwarding-into-a-host-spawned-agent)), can make it run
+      tools unattended. Such forwards are allowed. A root host is the
+      exception: there claude keeps normal permission mode
+      ([mirroring.md](../mirroring.md#permission-prompts-in-a-spawned-agent)).
     - **opencode does not ask** (decision 3, amended): it runs in its own
       allow-by-default mode, and no ask stands between a relayed prompt and
       its tools. Its limits are the owner's opencode **deny rules and guard plugin**, the host's
