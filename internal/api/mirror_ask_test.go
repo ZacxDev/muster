@@ -540,8 +540,11 @@ func TestTheTerminalWinsTheRace(t *testing.T) {
 	am2.typeErr = mirror.ErrAskNoPicker
 	am2.amu.Unlock()
 	resp, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	// No answer form (nothing to type into): the card's one way on from here is
+	// "Send as a message" (ask_message.go), whose form posts elsewhere.
 	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed ||
-		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "data-ask-form") {
+		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, `action="`+ui.MirrorAskPath+`"`) ||
+		!strings.Contains(body, `action="`+ui.MirrorAskMessagePath+`"`) {
 		t.Fatalf("a typing with no picker: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
 	am2.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
@@ -938,7 +941,9 @@ func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 	am.amu.Lock()
 	priors := append([]*askq.Progress(nil), am.priors...)
 	am.amu.Unlock()
-	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4}
+	// Reset: a Try again after a failure also asks the host to reset a picker
+	// that is neither untouched nor exactly as those keys left it (askdrive).
+	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4, Reset: true}
 	if len(priors) != 2 || priors[0] != nil || !reflect.DeepEqual(priors[1], want) {
 		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
 	}

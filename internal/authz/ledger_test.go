@@ -229,6 +229,10 @@ var (
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and
 		// returns only counts.
 		"internal/asklog.sys",
+		// The answer-attempt log (migration 0113): the retention sweep's one
+		// helper. It deletes rows past 30 days, by age only, across every
+		// owner (askattempt.PG.Prune), and returns only a count.
+		"internal/askattempt.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the

@@ -292,6 +292,12 @@ BEGIN
         ALTER TABLE public.cc_account_usage DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.cc_account_usage ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0113 (ask_attempts), when this schema has it; same reason as 0011.
+    IF to_regclass('public.ask_attempts') IS NOT NULL THEN
+        ALTER TABLE public.ask_attempts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.ask_attempts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.ask_attempts ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0100 (chief_proposals), when this schema has it; same reason as 0011.
     IF to_regclass('public.chief_proposals') IS NOT NULL THEN
         ALTER TABLE public.chief_proposals NO FORCE ROW LEVEL SECURITY;

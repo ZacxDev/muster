@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -141,6 +142,7 @@ func (s *Server) registerMirrorAskRoutes(mux Mux) {
 	mux.HandleFunc("GET "+ui.MirrorAsksPath, s.requireSession(s.handleMirrorAsks))
 	mux.HandleFunc("POST "+ui.MirrorAskPath, s.requireOperatorWrite(s.handleMirrorAskAnswer))
 	mux.HandleFunc("POST "+ui.MirrorAskCancelPath, s.requireOperatorWrite(s.handleMirrorAskCancel))
+	mux.HandleFunc("POST "+ui.MirrorAskMessagePath, s.requireOperatorWrite(s.handleMirrorAskMessage))
 }
 
 // mirrorAskCanceller is the plugin's half of dismissing a picker
@@ -247,6 +249,12 @@ func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.Mirr
 		if x.Left != nil {
 			v.Chosen = x.Left.Choices
 		}
+		// The failure's own record (answers_page.go), and — when typing again
+		// cannot work (the picker is gone or unreadable) and the answer is
+		// known — "Send as a message" (handleMirrorAskMessage).
+		v.Record = answersCardPath(x.Key.ToolUseID)
+		v.Message = askattempt.Recovery(x.Reason) == askattempt.RecoverMessage && len(x.Typed) > 0 &&
+			h.Interactive && h.Online
 	case x.State == askq.Answered:
 		v.State = ui.AskStateAnsweredTerminal
 		if x.By == askq.ByMuster {
@@ -368,49 +376,24 @@ func askTypeFailure(err error, resumable, typed bool) string {
 }
 
 // askFailure is how a drive that ended in err (AnswerWindow's) leaves the
-// question: what the card says, whether it can be tried again from muster,
-// and what the picker is known to hold of muster's — choices' first keys
+// question: what the card says, its reason (askTypingResult) and so whether
+// it can be tried again from muster (askattempt.Recovery: RecoverRetry), and
+// what the picker is known to hold of muster's — choices' first keys
 // (mirror.AskKeys). A drive whose outcome is unknown records nothing it may
 // have typed (askq.Failure.Settled).
 func askFailure(err error, choices []askq.Choice) askq.Failure {
-	f := askq.Failure{Settled: mirror.AskOutcomeKnown(err)}
+	f := askq.Failure{Settled: mirror.AskOutcomeKnown(err), Reason: askTypingResult(err)}
 	if f.Settled && mirror.AskKeys(err) > 0 {
 		f.Left = &askq.Progress{Choices: choices, Keys: mirror.AskKeys(err)}
 	}
 	// Lost part way with what it typed recorded: continue it — the card
-	// resends exactly that answer (ui: a fixed retry). Busy: wait.
+	// resends exactly that answer (ui: a fixed retry). Every other
+	// recoverable reason: Try again re-reads the picker and resets it first
+	// (askq.Progress.Reset).
 	resumable := f.Left != nil && errors.Is(err, mirror.ErrAskLost) && !errors.Is(err, mirror.ErrAskUnreadable)
-	f.Retry = resumable || errors.Is(err, mirror.ErrAskBusy)
+	f.Retry = askattempt.Recovery(f.Reason) == askattempt.RecoverRetry
 	f.Note = askTypeFailure(err, resumable, mirror.AskKeys(err) > 0)
 	return f
-}
-
-// askTypingResult is the muster_mirror_ask_typing_total label for an
-// AnswerWindow outcome.
-func askTypingResult(err error) string {
-	switch {
-	case err == nil:
-		return "typed"
-	case errors.Is(err, mirror.ErrAskNotSent):
-		return "not-sent"
-	case errors.Is(err, mirror.ErrAskNoPicker):
-		return "no-picker"
-	case errors.Is(err, mirror.ErrAskUnreadable):
-		return "unreadable"
-	case errors.Is(err, mirror.ErrAskTouched):
-		return "touched"
-	case errors.Is(err, mirror.ErrAskLost):
-		return "lost"
-	case errors.Is(err, mirror.ErrAskUnrecognised):
-		return "unrecognised"
-	case errors.Is(err, mirror.ErrAskBusy):
-		return "busy"
-	case errors.Is(err, mirror.ErrAskUnsupported):
-		return "unsupported"
-	case errors.Is(err, mirror.ErrAskTimeout):
-		return "timeout"
-	}
-	return "error"
 }
 
 // handleMirrorAskAnswer is POST ui.MirrorAskPath: a person's answers, typed
@@ -420,72 +403,100 @@ func askTypingResult(err error) string {
 // card says why, and that the terminal has it); 400 for answers the question
 // set (or the picker) cannot take.
 func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
+	att := s.beginAttempt(r, askattempt.DoorCard, askattempt.ActionSubmit, askattempt.MethodTyped)
+	defer att.done()
 	r.Body = http.MaxBytesReader(w, r.Body, mirrorAskFormMax)
 	if err := r.ParseForm(); err != nil {
+		att.end("too-large")
 		http.Error(w, "the answers are too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	att.a.Door = cardDoor(r.PostForm)
+	tool := r.PostFormValue("tool")
+	att.where(r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"), tool)
 	h, e, ok := s.askWindow(w, r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"))
 	if !ok {
+		att.end("not-found")
 		return
 	}
+	if rt, ok := e.Spec(); ok && rt.PendingNamesAsk {
+		att.a.Runtime, att.a.Method = askattempt.RuntimeOpenCode, askattempt.MethodRelayed
+	}
 	if !h.Interactive {
+		att.end("read-only")
 		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
 		return
 	}
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		att.end("step-up")
 		refuseStale(w)
 		return
 	}
-	if rt, ok := e.Spec(); ok && rt.PendingNamesAsk {
+	if att.a.Runtime == askattempt.RuntimeOpenCode {
 		// An opencode window's ask: relayed through its host's API
 		// (mirror_opencode_ask.go), never typed.
-		s.handleOpenCodeAskAnswer(w, r, h, e)
+		s.handleOpenCodeAskAnswer(w, r, h, e, att)
 		return
 	}
-	tool := r.PostFormValue("tool")
 	if !toolUseIDPattern.MatchString(tool) {
+		att.end("invalid")
 		http.Error(w, "an answer names the call it answers (tool)", http.StatusBadRequest)
 		return
 	}
 	if e.ClaudeSession == "" {
+		att.end("not-found")
 		http.NotFound(w, r)
 		return
 	}
 	key := askKey(r, h, e, tool)
 	entry, found := s.asks.Find(key)
 	if !found {
+		att.end("not-found")
 		http.NotFound(w, r)
 		return
 	}
+	att.shape(entry.Questions, nil)
 	if !entry.State.Open() {
+		att.end("closed")
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
 		return
 	}
 	choices, answers, err := askq.FromForm(entry.Questions, r.PostForm)
 	if err != nil {
+		att.end("invalid")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	att.shape(entry.Questions, choices)
 	a, can := s.ext.Mirror.(mirrorAsker)
 	if !can || !h.AskAnswer {
+		att.end("unsupported")
 		http.Error(w, mirror.ErrAskUnsupported.Error(), http.StatusConflict)
 		return
 	}
+	retrying := entry.State == askq.Failed
 	got, again, err := s.asks.BeginTyping(key, answers)
 	switch {
 	case errors.Is(err, askq.ErrNotFound):
+		att.end("not-found")
 		http.NotFound(w, r)
 		return
-	case errors.Is(err, askq.ErrBusy), errors.Is(err, askq.ErrClosed):
+	case errors.Is(err, askq.ErrBusy):
+		att.end("in-progress")
+		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, got))
+		return
+	case errors.Is(err, askq.ErrClosed):
+		att.end("closed")
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, got))
 		return
 	case err != nil:
+		att.end("invalid")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	case again:
 		// The same answers again (a double submit): already typed, or being
 		// typed — never typed twice.
+		att.end("duplicate")
 		s.writeAskLive(w, http.StatusOK, questionCard(h, e, got))
 		return
 	}
@@ -494,15 +505,26 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	// still be typing — that would mark the answer failed and let another
 	// drive start into the same picker. The hub bounds the wait itself.
 	// got.Left is what an earlier drive is known to have left in the picker:
-	// the host continues it when the picker shows exactly that.
-	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices, got.Left)
+	// the host continues it when the picker shows exactly that. A Try again
+	// after a failure also asks the host to re-read the picker and reset it to
+	// its first option when it is neither (askq.Progress.Reset).
+	prior := got.Left
+	if retrying {
+		if prior == nil {
+			prior = &askq.Progress{}
+		}
+		prior.Reset = true
+	}
+	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices, prior)
 	metrics.MirrorAskTyping.WithLabelValues(askTypingResult(err)).Inc()
 	if err != nil {
+		att.failed(err)
 		s.logger.Printf("mirror: typing an answer into %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
 		failed, _ := s.asks.TypingFailed(key, askFailure(err, choices))
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, failed))
 		return
 	}
+	att.end("typed")
 	s.asks.TypingDone(key)
 	s.logger.Printf("mirror: typed an answer into %s/%s%s (%s)", h.Host, e.Session, e.Window, got.ID)
 	// The watcher resolves it from the CLI's record; a page reading this
@@ -548,43 +570,61 @@ func askCancelFailure(err error) string {
 // the page asks for confirmation in a dialog naming the window. The host
 // checks the rest: a picker on screen, the pane's one-drive lock.
 func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
+	att := s.beginAttempt(r, askattempt.DoorCard, askattempt.ActionDismiss, askattempt.MethodEscape)
+	defer att.done()
 	r.Body = http.MaxBytesReader(w, r.Body, mirrorAskFormMax)
 	if err := r.ParseForm(); err != nil {
+		att.end("too-large")
 		http.Error(w, "the request is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	att.a.Door = cardDoor(r.PostForm)
+	tool := r.PostFormValue("tool")
+	att.where(r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"), tool)
 	h, e, ok := s.askWindow(w, r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"))
 	if !ok {
+		att.end("not-found")
 		return
 	}
 	if !h.Interactive {
+		att.end("read-only")
 		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
 		return
 	}
-	tool := r.PostFormValue("tool")
 	if !toolUseIDPattern.MatchString(tool) {
+		att.end("invalid")
 		http.Error(w, "a dismissal names the call it dismisses (tool)", http.StatusBadRequest)
 		return
 	}
 	if e.ClaudeSession == "" {
+		att.end("not-found")
 		http.NotFound(w, r)
 		return
 	}
 	key := askKey(r, h, e, tool)
 	entry, err := s.asks.Dismissing(key)
+	att.shape(entry.Questions, nil)
 	switch {
 	case errors.Is(err, askq.ErrNotFound):
+		att.end("not-found")
 		http.NotFound(w, r)
 		return
-	case errors.Is(err, askq.ErrClosed), errors.Is(err, askq.ErrBusy):
+	case errors.Is(err, askq.ErrClosed):
+		att.end("closed")
+		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
+		return
+	case errors.Is(err, askq.ErrBusy):
+		att.end("in-progress")
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
 		return
 	case err != nil:
+		att.end("invalid")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	c, can := s.ext.Mirror.(mirrorAskCanceller)
 	if !can || !h.AskCancel {
+		att.end("unsupported")
 		http.Error(w, askCancelFailure(mirror.ErrAskCancelUnsupported), http.StatusConflict)
 		return
 	}
@@ -592,10 +632,12 @@ func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
 	// not end the wait while the host may be sending the key.
 	note, err := c.CancelAsk(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window)
 	if err != nil {
+		att.failed(err)
 		s.logger.Printf("mirror: dismissing a question in %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
 		http.Error(w, askCancelFailure(err), http.StatusConflict)
 		return
 	}
+	att.end("dismissed")
 	s.logger.Printf("mirror: dismissed a question in %s/%s%s with Escape (%s)", h.Host, e.Session, e.Window, entry.ID)
 	v := questionCard(h, e, entry)
 	// The host's note says the picker is still showing (the Escape did not

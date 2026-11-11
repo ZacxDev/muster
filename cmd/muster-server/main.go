@@ -59,6 +59,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -719,6 +720,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// a database, always — it records numbers and tags only, owner-scoped.
 	if a.pool != nil {
 		ext.ChiefUsage = chiefusage.NewPG(a.pool)
+		// The answer-attempt log (internal/askattempt; the Answers page): with
+		// a database, always — shapes and reason codes, never question or
+		// answer text; a failure's pane snapshot redacted and capped.
+		ext.AskAttempts = askattempt.NewPG(a.pool)
 	}
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {

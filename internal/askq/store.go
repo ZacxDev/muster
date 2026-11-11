@@ -97,6 +97,9 @@ type Entry struct {
 	// Retry (Failed) says the failure leaves the question answerable from
 	// muster again: typing can be tried again (Failure.Retry).
 	Retry bool
+	// Reason (Failed) is the failure's reason code (Failure.Reason,
+	// internal/askattempt's Reasons): what the card offers to recover with.
+	Reason string
 	// Left is what muster's typing is KNOWN to have left in the terminal's
 	// picker: the choices it was typing and how many keys of their plan it
 	// sent (nil: nothing known to be there). A drive that stopped part way
@@ -116,6 +119,15 @@ type Entry struct {
 type Progress struct {
 	Choices []Choice `json:"choices"`
 	Keys    int      `json:"keys"`
+	// Reset asks the drive, when the picker is neither untouched nor exactly
+	// as Keys of Choices left it, to put it back to the first option of its
+	// first question before typing (internal/askdrive's DriveFrom) — a card's
+	// Try again after a recoverable failure (internal/askattempt's
+	// RecoverRetry). The drive re-reads the screen first, and resets only a
+	// picker on its first question with no answer of one's own typed in.
+	// 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host ignores it (and refuses
+	// a touched picker as before); an older muster never sets it.
+	Reset bool `json:"reset,omitempty"`
 }
 
 // clone is a deep copy of p (nil for nil).
@@ -123,7 +135,7 @@ func (p *Progress) clone() *Progress {
 	if p == nil {
 		return nil
 	}
-	out := &Progress{Keys: p.Keys, Choices: make([]Choice, len(p.Choices))}
+	out := &Progress{Keys: p.Keys, Reset: p.Reset, Choices: make([]Choice, len(p.Choices))}
 	for i, c := range p.Choices {
 		out.Choices[i] = Choice{Picks: append([]int(nil), c.Picks...), Other: c.Other}
 	}
@@ -563,7 +575,7 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 	}
 	// Left stays: it is what this drive finds in the picker (the caller hands
 	// it to the host), until this drive's outcome replaces it.
-	en.State, en.Typed, en.Note, en.Retry = Typing, maps.Clone(answers), "", false
+	en.State, en.Typed, en.Note, en.Retry, en.Reason = Typing, maps.Clone(answers), "", false, ""
 	en.driveUntil = s.now().Add(MaxDrive)
 	s.touch(en, &fire)
 	return en.snapshot(), false, nil
@@ -592,6 +604,8 @@ type Failure struct {
 	Left *Progress
 	// Retry says the question can be answered from muster again (Entry.Retry).
 	Retry bool
+	// Reason is the failure's reason code (Entry.Reason).
+	Reason string
 }
 
 // TypingFailed records that muster could not type the answer in (f): a
@@ -619,9 +633,32 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 		en.Left = nil
 	}
 	if en.State == Typing {
-		en.State, en.Note, en.Retry = Failed, f.Note, f.Retry
+		en.State, en.Note, en.Retry, en.Reason = Failed, f.Note, f.Retry, f.Reason
 		s.touch(en, &fire)
 	}
+	return en.snapshot(), nil
+}
+
+// SentAsMessage records that a Failed question's answer went to its session
+// as an ordinary message (internal/api's "Send as a message"): it stays
+// Failed — the CLI's record of the call still resolves it — with note as what
+// the card says, and offers no recovery any more (no Retry, no Reason), so the
+// answer is not sent twice from the card. ErrNotFound for a question that is
+// not there, ErrClosed for one not Failed.
+func (s *Store) SentAsMessage(key Key, note string) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case en.State != Failed:
+		return en.snapshot(), ErrClosed
+	}
+	en.Note, en.Retry, en.Reason = note, false, ""
+	s.touch(en, &fire)
 	return en.snapshot(), nil
 }
 

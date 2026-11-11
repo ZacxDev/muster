@@ -147,6 +147,20 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 		first = resumeAt(Parse(scr), qs, steps, prior)
 	}
 	want := At(steps, first)
+	// reset is how many keys this drive sends first to put the picker back to
+	// its first option (prior.Reset; resetSteps): they are not keys of
+	// choices' plan, so they are not counted in what DriveFrom returns.
+	reset := 0
+	if prior != nil && prior.Reset && first == 0 {
+		scr, err := p.Capture(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if from, pre := resetSteps(Parse(scr), qs); len(pre) > 0 {
+			steps, want, reset = append(pre, steps...), from, len(pre)
+		}
+	}
+	planned := func(i int) int { return max(i-reset, 0) }
 	act, _ := p.(Activity)
 	for i := first; i < len(steps); i++ {
 		st := steps[i]
@@ -169,56 +183,56 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 		for waits := 0; ; waits++ {
 			scr, err := p.Capture(ctx)
 			if err != nil {
-				return i, err
+				return planned(i), err
 			}
 			if err := Match(Parse(scr), want, qs, answers); err != nil {
 				s := Parse(scr)
 				if i == first {
 					switch {
 					case s.Kind == None:
-						return i, fmt.Errorf("%w: %v", ErrNoPicker, err)
+						return planned(i), fmt.Errorf("%w: %v", ErrNoPicker, err)
 					case s.Kind == Unknown:
-						return i, fmt.Errorf("%w: %v", ErrUnrecognised, err)
+						return planned(i), fmt.Errorf("%w: %v", ErrUnrecognised, err)
 					case s.Kind == Clipped:
-						return i, fmt.Errorf("%w: %v", ErrUnreadable, err)
+						return planned(i), fmt.Errorf("%w: %v", ErrUnreadable, err)
 					// Untouched in every way the screen can show, only the
 					// question's words differ: muster misread (or was told)
 					// the question — nobody is answering it.
 					case s.Kind == Question && match(s, want, qs, answers, false) == nil:
-						return i, fmt.Errorf("%w: %v", ErrUnreadable, err)
+						return planned(i), fmt.Errorf("%w: %v", ErrUnreadable, err)
 					// One of these questions, its rows not drawn as its are —
 					// in ANY state: not someone answering it, a picker muster
 					// cannot read (a layout it does not know).
 					case s.Kind == Question && errors.Is(shownLayout(s, qs), errLayout):
-						return i, fmt.Errorf("%w: %v", ErrUnrecognised, shownLayout(s, qs))
+						return planned(i), fmt.Errorf("%w: %v", ErrUnrecognised, shownLayout(s, qs))
 					}
 				} else if s.Kind == Clipped {
-					return i, fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
+					return planned(i), fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
 				}
 				if changedAnswer(s, want, qs, answers) {
-					return i, fmt.Errorf("%w (before key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, err)
+					return planned(i), fmt.Errorf("%w (before key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, err)
 				}
-				return i, refuse(err)
+				return planned(i), refuse(err)
 			}
 			if err := sleep(ctx, opt.Steady); err != nil {
-				return i, err
+				return planned(i), err
 			}
 			second := time.Now()
 			again, err := p.Capture(ctx)
 			if err != nil {
-				return i, err
+				return planned(i), err
 			}
 			// The PICKER must be unchanged; the rest of the pane (the CLI's own
 			// status lines) may change on its own.
 			if !reflect.DeepEqual(Parse(again), Parse(scr)) {
-				return i, refuse(errors.New("the screen changed while it was being read — someone is typing in the terminal"))
+				return planned(i), refuse(errors.New("the screen changed while it was being read — someone is typing in the terminal"))
 			}
 			if act == nil {
 				break
 			}
 			last, err := act.LastInput(ctx)
 			if err != nil {
-				return i, err
+				return planned(i), err
 			}
 			// Input stamped last happened before last+Grain and is drawn
 			// within Steady of it: the second look saw it if it was taken
@@ -228,21 +242,21 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 				break
 			}
 			if waits >= maxInputWaits {
-				return i, refuse(errors.New("the terminal keeps getting input — someone is using it"))
+				return planned(i), refuse(errors.New("the terminal keeps getting input — someone is using it"))
 			}
 			if err := sleep(ctx, time.Until(drawnBy)); err != nil {
-				return i, err
+				return planned(i), err
 			}
 		}
 		if err := p.Send(ctx, st.Keys); err != nil {
 			// Whether any of it arrived is not known: count it.
-			return i + 1, err
+			return planned(i + 1), err
 		}
 		deadline := time.Now().Add(opt.Settle)
 		for {
 			scr, err := p.Capture(ctx)
 			if err != nil {
-				return i + 1, err
+				return planned(i + 1), err
 			}
 			merr := Match(Parse(scr), st.Want, qs, answers)
 			if merr == nil {
@@ -252,23 +266,23 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 			// someone's in the terminal (an earlier question changed): not
 			// untouched, and not submitted.
 			if changedAnswer(Parse(scr), st.Want, qs, answers) {
-				return i + 1, fmt.Errorf("%w (after key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, merr)
+				return planned(i + 1), fmt.Errorf("%w (after key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, merr)
 			}
 			if time.Now().After(deadline) {
 				if Parse(scr).Kind == Clipped {
-					return i + 1, fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
+					return planned(i + 1), fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
 				}
-				return i + 1, fmt.Errorf("%w (after key %d, wanted %s): %v", ErrLost, i+1, st.Want, merr)
+				return planned(i + 1), fmt.Errorf("%w (after key %d, wanted %s): %v", ErrLost, i+1, st.Want, merr)
 			}
 			select {
 			case <-ctx.Done():
-				return i + 1, ctx.Err()
+				return planned(i + 1), ctx.Err()
 			case <-time.After(opt.Poll):
 			}
 		}
 		want = st.Want
 	}
-	return len(steps), nil
+	return planned(len(steps)), nil
 }
 
 // resumeAt is the key a drive of steps starts at, given that the picker shows
@@ -506,4 +520,76 @@ func tabsMatch(s Screen, qs []askq.Question, current int) error {
 		}
 	}
 	return nil
+}
+
+// resetSteps is how a Try again (askq.Progress.Reset) puts a picker back to
+// its first option before typing: the screen s shows as a Want (from), and
+// the keys that take it to Start, each with the screen it must leave — none
+// when s is Start already, or is not a picker it may reset.
+//
+// 🔴 IT RESETS ONLY WHAT IT CAN READ, AND ONLY ON THE FIRST QUESTION. s must
+// be question 1 of qs, its text, tabs and rows drawn exactly as qs's
+// (Match against from), with no answer of one's own typed in its text row —
+// the cursor may be on any row, and on a multi-select question any of its
+// options may be ticked. Then: each ticked option's digit (a digit toggles a
+// multi-select option and leaves the cursor where it was), then Up, one row
+// at a time, to the first row (from the Next/Submit row Up goes to the last
+// row first). Each key is verified as any of the drive's are. A picker on a
+// later question, with typed text, or that does not read as qs is left to the
+// drive's own first look, which refuses it.
+//
+// The Up key's effect is the fake picker's model of Claude Code (FakePicker,
+// the browser suite's and this package's tests); it is not yet measured on a
+// live Claude Code (make test-liveclaude).
+func resetSteps(s Screen, qs []askq.Question) (from Want, steps []Step) {
+	if s.Kind != Question || len(qs) == 0 {
+		return Want{}, nil
+	}
+	q := qs[0]
+	k := len(q.Options)
+	cur := -1
+	var checked []int
+	for j, r := range s.Rows {
+		if r.Cursor {
+			cur = j + 1
+		}
+		// An option ticked (its text row's tick, typed text, is not one: the
+		// Match below refuses a text row holding anything).
+		if r.Box == "[✔]" && j < k {
+			checked = append(checked, j+1)
+		}
+	}
+	if s.NavCursor {
+		cur = 0
+	}
+	if cur < 0 {
+		return Want{}, nil
+	}
+	from = Want{Kind: Question, Q: 0, Cursor: cur, Checked: slices.Clone(checked)}
+	// Defence in depth: the drive's own look before every key refuses a
+	// screen that is not from (or the step before) all the same, sending
+	// nothing; this keeps resetSteps from planning keys for one.
+	if Match(s, from, qs, nil) != nil || reflect.DeepEqual(from, Start()) {
+		return Want{}, nil
+	}
+	if len(checked) > 0 && !q.MultiSelect {
+		return Want{}, nil
+	}
+	for len(checked) > 0 {
+		r := checked[len(checked)-1]
+		checked = checked[:len(checked)-1]
+		steps = append(steps, Step{Keys: digit(r), Want: Want{Kind: Question, Q: 0, Cursor: cur, Checked: slices.Clone(checked)}})
+	}
+	if cur == 0 {
+		cur = k + 1
+		if q.Previews() {
+			cur = k
+		}
+		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur}})
+	}
+	for cur > 1 {
+		cur--
+		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur}})
+	}
+	return from, steps
 }
