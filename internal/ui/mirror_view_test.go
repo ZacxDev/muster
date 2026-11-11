@@ -190,9 +190,9 @@ func TestTakeContextIsTheLatestTurnsTokenCount(t *testing.T) {
 		events []cctranscript.Event
 		want   *ContextView
 	}{
-		{"a turn's usage", []cctranscript.Event{use(124_400)}, &ContextView{Tokens: 124_400, Label: "124k", Count: "124k", Detail: "124,400 tokens"}},
-		{"a 1M-scale count", []cctranscript.Event{use(966_483)}, &ContextView{Tokens: 966_483, Label: "966k", Count: "966k", Detail: "966,483 tokens"}},
-		{"the LATEST turn wins", []cctranscript.Event{use(10_000), use(20_000)}, &ContextView{Tokens: 20_000, Label: "20k", Count: "20k", Detail: "20,000 tokens"}},
+		{"a turn's usage", []cctranscript.Event{use(124_400)}, &ContextView{Tokens: 124_400, Label: "124k", Count: "124k", Detail: "124,400 tokens", Title: ClaudeContextTitle}},
+		{"a 1M-scale count", []cctranscript.Event{use(966_483)}, &ContextView{Tokens: 966_483, Label: "966k", Count: "966k", Detail: "966,483 tokens", Title: ClaudeContextTitle}},
+		{"the LATEST turn wins", []cctranscript.Event{use(10_000), use(20_000)}, &ContextView{Tokens: 20_000, Label: "20k", Count: "20k", Detail: "20,000 tokens", Title: ClaudeContextTitle}},
 		{"no usage at all (an older host): nothing", []cctranscript.Event{{Kind: cctranscript.KindText, Text: "x"}, {Kind: cctranscript.KindPrompt, Text: "y"}}, nil},
 	}
 	for _, c := range cases {

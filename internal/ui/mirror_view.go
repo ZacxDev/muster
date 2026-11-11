@@ -818,6 +818,11 @@ const (
 const AgentContextTitle = "Context used by the latest model request: its input + cache read + cache write tokens, " +
 	"as the agent reports them (output is not counted: it is in the next request's input), of the model's context window."
 
+// ClaudeContextTitle is how Claude Code's readout (a turn's usage) is
+// derived; its popover shows it under the exact count.
+const ClaudeContextTitle = "Context used by the latest request: its input + cache read + cache write tokens " +
+	"(output is not counted: it is in the next request's input)."
+
 // contextView is THE readout of tokens in context, of a window of limit (0:
 // unknown), on model ("" unknown).
 func contextView(tokens, limit int64, model, title string) *ContextView {
@@ -826,11 +831,14 @@ func contextView(tokens, limit int64, model, title string) *ContextView {
 	exact := groupDigits(tokens)
 	if limit > 0 {
 		v.Count += "/" + tokenCount(limit)
-		exact += " of " + groupDigits(limit) + " tokens (" + strconv.FormatInt((tokens*100+limit/2)/limit, 10) + "%)"
+		// One rounded share for the detail AND the tint, so the chip never
+		// says "(70%)" untinted or "(89%)" red.
+		pct := (tokens*100 + limit/2) / limit
+		exact += " of " + groupDigits(limit) + " tokens (" + strconv.FormatInt(pct, 10) + "%)"
 		switch {
-		case tokens*100 >= limit*ContextDangerPct:
+		case pct >= ContextDangerPct:
 			v.Level = ContextLevelDanger
-		case tokens*100 >= limit*ContextWarnPct:
+		case pct >= ContextWarnPct:
 			v.Level = ContextLevelWarn
 		}
 	} else {
@@ -869,7 +877,7 @@ func (t *MirrorTranscript) TakeContext() *ContextView {
 		return contextView(c.Tokens, c.Limit, c.Model, AgentContextTitle)
 	case t.usage != nil:
 		t.fresh = false
-		return contextView(t.usage.Tokens, 0, "", "")
+		return contextView(t.usage.Tokens, 0, "", ClaudeContextTitle)
 	}
 	return nil
 }
@@ -893,6 +901,9 @@ const (
 // the chip is for. relative z-20: over the title button's 44px hit area
 // (mirrorTitleHitClass, z-10), which spans this row while the title is
 // clipped, so a tap on the chip opens the chip's popover and not the title's.
+// The row's Updating… chip (mirrorUpdatingChip) is z-30, over this one: a
+// long name runs under it at a phone's width, and the stale-page indicator
+// must stay seen (it is pointer-events-none, so a tap still reaches this).
 // The tint is data-level (ContextView.Level), on the warning and error tokens.
 func mirrorContextChip() g.Node {
 	return g.Group{
@@ -909,7 +920,7 @@ func mirrorContextChip() g.Node {
 				"data-[level=warn]:bg-st-warning-bg data-[level=warn]:text-st-warning-fg data-[level=warn]:ring-st-warning-fg/40 "+
 				"data-[level=danger]:bg-st-error-bg data-[level=danger]:text-st-error-fg data-[level=danger]:ring-st-error-fg/40"),
 			Span(g.Attr("data-ctx-name", ""), Class("min-w-0 truncate [&[hidden]]:hidden")),
-			Span(g.Attr("data-ctx-sep", ""), g.Attr("aria-hidden", "true"), Class("shrink-0 [&[hidden]]:hidden")),
+			Span(g.Attr("data-ctx-sep", ""), Class("shrink-0 [&[hidden]]:hidden")),
 			Span(g.Attr("data-ctx-count", ""), Class("shrink-0 whitespace-nowrap")),
 		),
 		Div(

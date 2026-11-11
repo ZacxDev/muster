@@ -427,7 +427,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 		// A restore's "Updating…" (restore.go): hung just below the header (a
 		// sticky box, so it is the chip's containing block), over the top of
 		// the transcript, taking no room in either.
-		updatingChip("agent-updating", "right-3 top-full mt-1"),
+		updatingChip("agent-updating", "right-3 top-full mt-1 z-10"),
 	)
 }
 

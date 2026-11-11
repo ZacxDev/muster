@@ -68,7 +68,7 @@ func TestAnAgentContextIsReportedOnceAndForgottenOnReset(t *testing.T) {
 		t.Fatalf("a Reset kept %+v", c)
 	}
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "t", Usage: &cctranscript.Usage{Tokens: 2468}}})
-	if c := tr.TakeContext(); c == nil || c.Label != "2k" || c.Title != "" {
+	if c := tr.TakeContext(); c == nil || c.Label != "2k" || c.Title != ClaudeContextTitle {
 		t.Fatalf("Claude Code's readout after a Reset: %+v", c)
 	}
 }

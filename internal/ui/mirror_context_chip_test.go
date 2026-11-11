@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -83,38 +84,58 @@ func TestTheContextChipDetailIsExact(t *testing.T) {
 }
 
 // TestTheContextChipTintsByFill: "warn" from 70% of a KNOWN window, "danger"
-// from 90%, "" below 70% and whenever the window is unknown. Each boundary
-// is pinned one token below it and exactly at it (213,400 × 70% = 149,380;
-// 187,300 × 90% = 168,570).
+// from 90%, "" below 70% and whenever the window is unknown — judged on the
+// SAME rounded percentage the detail shows, so a chip never says "(70%)"
+// untinted or "(89%)" red. Each boundary is pinned one token below it and
+// exactly at it: a share rounds up to 70% from 69.5% (213,400 × 69.5% =
+// 148,313) and to 90% from 89.5% (187,300: 167,634 is the first token count
+// that rounds to 90).
 func TestTheContextChipTintsByFill(t *testing.T) {
 	for _, c := range []struct {
 		name          string
 		tokens, limit int64
 		want          string
+		pct           string
 	}{
-		{"well below", 41_203, 213_400, ""},
-		{"one below 70%", 149_379, 213_400, ""},
-		{"at 70%", 149_380, 213_400, "warn"},
-		{"between", 160_011, 187_300, "warn"},
-		{"one below 90%", 168_569, 187_300, "warn"},
-		{"at 90%", 168_570, 187_300, "danger"},
-		{"past the window", 2_000_003, 1_048_576, "danger"},
-		{"no window: never tinted", 999_983, 0, ""},
+		{"well below", 41_203, 213_400, "", "(19%)"},
+		{"one below 69.5%", 148_312, 213_400, "", "(69%)"},
+		{"at 69.5%: shown as 70%", 148_313, 213_400, "warn", "(70%)"},
+		{"69.6%", 175_323, 251_900, "warn", "(70%)"},
+		{"between", 160_011, 187_300, "warn", "(85%)"},
+		{"one below 89.5%", 167_633, 187_300, "warn", "(89%)"},
+		{"at 89.5%: shown as 90%", 167_634, 187_300, "danger", "(90%)"},
+		{"89.5%", 225_451, 251_900, "danger", "(90%)"},
+		{"past the window", 2_000_003, 1_048_576, "danger", "(191%)"},
+		{"no window: never tinted", 999_983, 0, "", ""},
 	} {
 		v := agentCtxView(t, mirror.AgentContext{Tokens: c.tokens, Limit: c.limit, Model: "fixture-model"})
 		if v.Level != c.want {
 			t.Errorf("%s (%d of %d): level %q, want %q", c.name, c.tokens, c.limit, v.Level, c.want)
 		}
+		if c.pct != "" && !strings.HasSuffix(v.Detail, c.pct) {
+			t.Errorf("%s (%d of %d): detail %q, want it to end %q", c.name, c.tokens, c.limit, v.Detail, c.pct)
+		}
 	}
 }
 
 // TestClaudeCodesChipIsTheCountAlone: Claude Code reports no model or window
-// here, so its chip is the count, its detail the exact count, never tinted.
+// here, so its chip is the count, its detail the exact count, never tinted —
+// and its popover says what the number is (ClaudeContextTitle).
 func TestClaudeCodesChipIsTheCountAlone(t *testing.T) {
 	var tr MirrorTranscript
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "x", Usage: &cctranscript.Usage{Tokens: 124_437}}})
 	v := tr.TakeContext()
-	if v == nil || v.Label != "124k" || v.Count != "124k" || v.Name != "" || v.Detail != "124,437 tokens" || v.Level != "" || v.Title != "" {
+	if v == nil || v.Label != "124k" || v.Count != "124k" || v.Name != "" || v.Detail != "124,437 tokens" || v.Level != "" || v.Title != ClaudeContextTitle {
 		t.Fatalf("Claude Code's readout: %+v", v)
+	}
+}
+
+// TestClaudeContextTitleSaysWhatTheNumberIs pins the text: it is the only
+// thing a tap on a bare "250k" shows beside the exact count.
+func TestClaudeContextTitleSaysWhatTheNumberIs(t *testing.T) {
+	const want = "Context used by the latest request: its input + cache read + cache write tokens " +
+		"(output is not counted: it is in the next request's input)."
+	if ClaudeContextTitle != want {
+		t.Errorf("ClaudeContextTitle = %q, want %q", ClaudeContextTitle, want)
 	}
 }

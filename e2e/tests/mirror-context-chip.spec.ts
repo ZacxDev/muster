@@ -28,6 +28,9 @@ const shortName = 'some-very-long-model-name-v9-experimental';
 const windowSize = 1_843_200;
 const t0 = Math.floor(Date.now() / 1000);
 let ops = '';
+let ocWindowsFile = '';
+// The session the pane switches to (a reset of the view): no step yet.
+const otherTitle = 'Another fixture session with no step yet';
 
 function op(o: Record<string, unknown>) {
   fs.appendFileSync(ops, JSON.stringify(o) + '\n');
@@ -61,11 +64,13 @@ test.beforeAll(async ({ browser }) => {
   // A long title too, so the header's title is clipped (its button's 44px
   // hit area then spans the chip's row: mirrorTitleHitClass).
   op({ op: 'session', id: sid, title: 'A deliberately long fixture session title that cannot fit a phone header' });
+  op({ op: 'session', id: 'ses_0e2ectxchip00002', title: otherTitle });
   op({ op: 'models', models: [{ provider: 'fixture-router', id: model, context: windowSize }] });
   assistantStep(20_011, 9_203); // 29,214
   const windows = path.join(rig.dir, 'windows');
   writeFileAtomic(windows, `plain|@1|0|1|zsh|${t0 - 50}|\n`);
   const ocWindows = path.join(rig.dir, 'opencode-windows');
+  ocWindowsFile = ocWindows;
   writeFileAtomic(ocWindows, `oc|@2|0|1|${t0 - 10}|OC | A deliberately long fixture session title that cannot fit a phone header\n`);
   await rig.startHost({
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
@@ -131,6 +136,90 @@ async function expectFits(page: Page, label: string) {
   expect(m.name.height, `${at}: the model name wraps onto more than one line`).toBeLessThanOrEqual(m.count.height + 0.5);
 }
 
+// snapBatches is how many batches this window's snapshot holds (the
+// rendered view's store, web/static/mirror-snap.js), 0 for none.
+async function snapBatches(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const dbs = await indexedDB.databases();
+    if (!dbs.some((d) => d.name === 'muster-snap')) return 0;
+    return await new Promise<number>((res) => {
+      const r = indexedDB.open('muster-snap');
+      r.onsuccess = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains('mirror')) {
+          db.close();
+          return res(0);
+        }
+        const q = db.transaction('mirror', 'readonly').objectStore('mirror').getAll();
+        q.onsuccess = () => {
+          db.close();
+          const rec = (q.result as any[]).find((x) => x.window === '@2' && x.session === 'oc');
+          res(rec?.batches?.length ?? 0);
+        };
+        q.onerror = () => (db.close(), res(0));
+      };
+      r.onerror = () => res(0);
+    });
+  });
+}
+
+// 🔴 THE CHIP NEVER COVERS THE STALE-PAGE INDICATOR. The Updating… chip
+// (mirrorUpdatingChip) sits at the right of the context chip's row; with a
+// long model name the two overlap at 390px, and the context chip is raised
+// over the title's hit area (z-20). A view painted from its snapshot whose
+// socket is held past a second shows Updating… WITH the snapshot's context
+// chip: the real path. The probe is paint order — hit-testing follows it —
+// so the Updating… chip's pointer-events:none is lifted for the one
+// elementFromPoint call (it would otherwise be skipped by hit-testing
+// whatever is painted on top), and put back.
+test('at 390px the Updating… chip is painted over a long context chip', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize(widths[0]);
+  await rig.login(page);
+  await page.goto(rig.origin + view());
+  const chip = page.locator('#mv-context');
+  await expect(chip, `the chip (mirror log:\n${rig.log})`).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => snapBatches(page), { message: 'the snapshot was stored' }).toBeGreaterThan(0);
+  await page.goto(rig.origin + '/tasks');
+  let held = true;
+  const queue: { ws: { send: (m: string | Buffer) => void }; m: string | Buffer }[] = [];
+  await page.routeWebSocket(
+    (u) => u.pathname === '/mirror/view/ws',
+    (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((m) => (held ? queue.push({ ws, m }) : ws.send(m)));
+      ws.onMessage((m) => server.send(m));
+    },
+  );
+  await page.goto(rig.origin + view());
+  await expect(page.locator('#mv-log')).toHaveAttribute('data-snapshot', '');
+  const upd = page.locator('#mv-updating');
+  await expect(upd).toBeVisible({ timeout: 5_000 });
+  await expect(chip, 'the snapshot drew the context chip').toBeVisible();
+  const hit = await page.evaluate(() => {
+    const u = document.getElementById('mv-updating')!;
+    const c = document.getElementById('mv-context')!;
+    const r = u.getBoundingClientRect();
+    const cr = c.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    u.style.pointerEvents = 'auto';
+    const el = document.elementFromPoint(x, y);
+    u.style.pointerEvents = '';
+    return {
+      overlap: x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom,
+      top: el ? (el.id || el.closest('[id]')?.id || el.tagName) : null,
+      updating: !!el && u.contains(el),
+    };
+  });
+  // POSITIVE CONTROL: the two overlap here at all (else the probe is vacuous).
+  expect(hit.overlap, `the Updating… chip's centre is over the context chip: ${JSON.stringify(hit)}`).toBe(true);
+  expect(hit.updating, `the top element at the Updating… chip's centre: ${JSON.stringify(hit)}`).toBe(true);
+  held = false;
+  for (const q of queue.splice(0)) q.ws.send(q.m);
+  await expect(upd).toBeHidden({ timeout: 10_000 });
+});
+
 test('the context chip is short, fits the header at every width, opens its detail on a tap, and tints as the window fills', async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize(widths[0]);
@@ -145,6 +234,10 @@ test('the context chip is short, fits the header at every width, opens its detai
   await expect(chip, `the chip (mirror log:\n${rig.log})`).toHaveText(`${shortName} · 29k/1.8M`, { timeout: 20_000 });
   await expect(chip).not.toHaveAttribute('data-level');
   await expect(chip).toHaveAttribute('title', `${model} — 29,214 of 1,843,200 tokens (2%)`);
+  // Its accessible name is what it shows, with the separator (never
+  // "<name>29k/1.8M"); its description, the exact detail.
+  await expect(chip).toHaveAccessibleName(`${shortName} · 29k/1.8M`);
+  await expect(chip).toHaveAccessibleDescription(`${model} — 29,214 of 1,843,200 tokens (2%)`);
 
   for (const vp of widths) {
     await page.setViewportSize(vp);
@@ -206,4 +299,20 @@ test('the context chip is short, fits the header at every width, opens its detai
     await page.setViewportSize(vp);
     await expectFits(page, `${vp.name}, 92%`);
   }
+
+  // Back down to 30%: the tint goes (setContext removes data-level).
+  assistantStep(540_011, 12_973); // 552,984
+  await expect(chip).toHaveText(`${shortName} · 553k/1.8M`, { timeout: 20_000 });
+  await expect(chip).not.toHaveAttribute('data-level');
+  expect(await bg()).toBe(plain);
+
+  // A reset (the pane now shows another session, with no step yet): the
+  // view starts over, and the chip is hidden — with its popover, open as the
+  // reset lands, closed.
+  await chip.click();
+  await expect(pop).toBeVisible();
+  writeFileAtomic(ocWindowsFile, `oc|@2|0|1|${t0 - 5}|OC | ${otherTitle}\n`);
+  await expect(page.locator('#mv-log [data-notice-row="opencode"]').first(), `the new session (mirror log:\n${rig.log})`).toContainText(otherTitle, { timeout: 20_000 });
+  await expect(chip).toBeHidden();
+  await expect(pop).toBeHidden();
 });

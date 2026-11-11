@@ -131,10 +131,11 @@ func restoreJoinJS(p string) string {
 // absolutely positioned (pos: its placement inside a `relative` box), so it
 // adds no width or height to the row it sits in, and it is `invisible`
 // (visibility: hidden), never `hidden` (display: none), so showing it moves
-// nothing and its box is where it shows.
+// nothing and its box is where it shows. pos also names its z-index: it must
+// paint over whatever shares its row (the Rendered view's context chip).
 func updatingChip(id, pos string) g.Node {
 	return Span(ID(id), g.Attr(UpdatingChipAttr, ""), g.Attr("aria-hidden", "true"),
-		Class("invisible absolute "+pos+" pointer-events-none z-10 whitespace-nowrap rounded-full bg-s2 px-2 py-0.5 text-[11px] text-fg2 ring-1 ring-inset ring-line"),
+		Class("invisible absolute "+pos+" pointer-events-none whitespace-nowrap rounded-full bg-s2 px-2 py-0.5 text-[11px] text-fg2 ring-1 ring-inset ring-line"),
 		g.Text("Updating…"))
 }
 
