@@ -55,6 +55,10 @@ import (
 //     INCLUDED — a subagent's calls are this instance's spend — each call
 //     counted once by callLedger, with its largest value of each token field
 //     over every copy.
+//   - Model: per bucket, the model (message.model, which every record of a
+//     call that names one repeats) with the most output tokens over the bucket's calls; a tie
+//     goes to the smaller model id, so the answer does not depend on file or
+//     record order. No call naming a model: none (bucketModel).
 //   - Turns: distinct non-empty promptIds of user records that are not a
 //     subagent's (isSidechain: the parent's tool call, not a turn) and not
 //     injected context (isMeta, isCompactSummary).
@@ -143,7 +147,8 @@ func hourlyUsage(projects string, since time.Time) []cctranscript.UsageBucket {
 	// order (the route's doc): plain string order of the relative path, not the
 	// walk's, which visits <session>/ before <session>.jsonl.
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
-	sc := usageScan{since: since, acc: map[bucketKey]*cctranscript.UsageBucket{}, callOwner: map[string]bucketKey{}, prompts: map[string]bool{}}
+	sc := usageScan{since: since, acc: map[bucketKey]*cctranscript.UsageBucket{}, callOwner: map[string]bucketKey{},
+		callModel: map[string]string{}, prompts: map[string]bool{}}
 	for _, f := range files {
 		if r, err := os.Open(f.path); err == nil {
 			sc.file(r, f.session)
@@ -179,6 +184,8 @@ type usageScan struct {
 	// (session, hour), from its first record in scan order.
 	calls     callLedger
 	callOwner map[string]bucketKey
+	// callModel is each call's model, as its records name it.
+	callModel map[string]string
 	// prompts is every promptId already counted, in any session.
 	prompts map[string]bool
 }
@@ -222,6 +229,9 @@ func (sc *usageScan) file(r io.Reader, session string) {
 			if counted && first {
 				sc.callOwner[key] = own
 			}
+			if counted && rec.Message.Model != "" {
+				sc.callModel[key] = rec.Message.Model
+			}
 		case "user":
 			if rec.IsSidechain || rec.IsMeta || rec.IsCompactSummary || rec.PromptID == "" || sc.prompts[rec.PromptID] {
 				continue
@@ -237,12 +247,20 @@ func (sc *usageScan) file(r io.Reader, session string) {
 // buckets adds every call to its owner's bucket and answers the non-empty
 // buckets, sorted by hour then session.
 func (sc *usageScan) buckets() []cctranscript.UsageBucket {
+	models := map[bucketKey]map[string]int64{}
 	for _, key := range sc.calls.keys() {
-		b := sc.bucket(sc.callOwner[key])
+		own := sc.callOwner[key]
+		b := sc.bucket(own)
 		if b == nil {
 			continue
 		}
 		u := sc.calls.call(key)
+		if m := sc.callModel[key]; m != "" {
+			if models[own] == nil {
+				models[own] = map[string]int64{}
+			}
+			models[own][m] += u.OutputTokens
+		}
 		b.APICalls++
 		b.InputTokens += u.InputTokens
 		b.OutputTokens += u.OutputTokens
@@ -250,10 +268,11 @@ func (sc *usageScan) buckets() []cctranscript.UsageBucket {
 		b.CacheCreationTokens += u.CacheCreationInputTokens
 	}
 	out := make([]cctranscript.UsageBucket, 0, len(sc.acc))
-	for _, b := range sc.acc {
+	for k, b := range sc.acc {
 		if b.APICalls == 0 && b.Turns == 0 {
 			continue
 		}
+		b.Model = bucketModel(models[k])
 		out = append(out, *b)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -263,4 +282,17 @@ func (sc *usageScan) buckets() []cctranscript.UsageBucket {
 		return out[i].Session < out[j].Session
 	})
 	return out
+}
+
+// bucketModel is THE rule for a bucket's model: of the output tokens per
+// model, the model with the most; a tie goes to the smaller model id. None
+// for no model.
+func bucketModel(out map[string]int64) string {
+	best, bestOut := "", int64(-1)
+	for m, n := range out {
+		if n > bestOut || (n == bestOut && m < best) {
+			best, bestOut = m, n
+		}
+	}
+	return best
 }

@@ -303,6 +303,11 @@ func capBuckets(bs []cctranscript.UsageBucket) []cctranscript.UsageBucket {
 	out := make([]cctranscript.UsageBucket, len(bs))
 	for i, b := range bs {
 		b.Hour = b.Hour.UTC()
+		if !officers.HQModelPattern.MatchString(b.Model) {
+			// HQ refuses the WHOLE push over a model it does not take: the
+			// model is dropped, never the bucket.
+			b.Model = ""
+		}
 		out[i] = b
 	}
 	sort.SliceStable(out, func(i, j int) bool {

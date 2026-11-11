@@ -257,6 +257,11 @@ var (
 		// pool and keeps the readings as the operator's rows, so row-level
 		// security says they are nobody else's.
 		"internal/ccusage.(*Poller).Run",
+		// The consumer usage collector (MUSTER_CC_CONSUMER_USAGE): it reads the
+		// instances on the OPERATOR's pool accounts and their failover history,
+		// so it acts as the operator and row-level security keeps every other
+		// user's agents out of it.
+		"internal/api.(*Server).consumerUsagePrincipal",
 	}
 	// withPrincipalLedger: admit, and the send queue's delivery.
 	//

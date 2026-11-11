@@ -70,6 +70,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/consumerusage"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/devices"
@@ -214,6 +215,9 @@ type app struct {
 	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
 	// declares none.
 	officers *officers.Reconciler
+	// officerPools pushes the declared officers' pools to their HQ
+	// (api.Server.OfficerPoolsReporter); nil without officers.
+	officerPools interface{ Run(context.Context) }
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -826,10 +830,28 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
+		// The declared pools push (docs/officers.md "Pools to HQ"): run with
+		// the background loops, its first push at once.
+		if p := srv.OfficerPoolsReporter(); p != nil {
+			a.officerPools = p
+		}
 		// A declared cluster with no allowlist reads nothing (fail closed):
 		// say so at startup, so a missing setting is not a silent "off".
 		for _, line := range officers.KubeReadDisabled(cfg.Officers) {
 			logger.Printf("officers: %s", line)
+		}
+	}
+	// The consumer usage push (MUSTER_CC_CONSUMER_USAGE, docs/officers.md
+	// "Consumer usage to HQ"): this muster's non-officer instances' Claude
+	// usage, to the pool push's HQ with its token and label. Refused at boot,
+	// as parseCCConsumerUsage refused a contradictory configuration, when the
+	// server cannot do it.
+	if cc := cfg.CCUsage.Consumer; cc.Consumer != "" {
+		if _, err := srv.EnableConsumerUsage(api.ConsumerUsageConfig{Consumer: cc.Consumer, Instance: cfg.CCUsage.Push.Instance,
+			URL: cc.URL, Token: cfg.CCUsage.Push.Token, HTTPClient: &http.Client{Timeout: ccusage.PushTimeout},
+			InstallBeforeStop: beforeStopOn(prov)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envCCConsumerUsage, err)
 		}
 	}
 
@@ -941,6 +963,16 @@ func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (age
 		return nil
 	}
 	return prov.UseClaudeCodeSession
+}
+
+// beforeStopOn is prov's pre-stop hook installer for the consumer usage
+// collector, or nil when there is no provisioner (EnableConsumerUsage then
+// refuses).
+func beforeStopOn(prov *agentprovision.Adapter) func(func(context.Context, agents.Agent)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseBeforeStop
 }
 
 // askSweepEvery is how often the question store's expiry runs
@@ -1153,6 +1185,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// is idempotent (docs/officers.md).
 	if a.officers != nil {
 		go a.officers.Run(ctx)
+	}
+	// The officers' declared pools, to each officer's HQ: at once (boot), then
+	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
+	// set, and HQ replaces it.
+	if a.officerPools != nil {
+		go a.officerPools.Run(ctx)
 	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves
@@ -1776,6 +1814,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				envCCUsagePushURL, a.cfg.CCUsage.Push.Instance)
 		} else {
 			l.Printf("claude account usage push: OFF — %s is unset", envCCUsagePushURL)
+		}
+		if c := a.cfg.CCUsage.Consumer; c.Consumer != "" {
+			l.Printf("claude consumer usage push: ON (%s=%s) — this muster's non-officer instances' usage per session and hour is PUT to the "+
+				"pool push's HQ route %s as instance %q", envCCConsumerUsage, c.Consumer, consumerusage.ConsumerUsageSuffix, a.cfg.CCUsage.Push.Instance)
+		} else {
+			l.Printf("claude consumer usage push: OFF — %s is unset", envCCConsumerUsage)
 		}
 	} else {
 		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)
