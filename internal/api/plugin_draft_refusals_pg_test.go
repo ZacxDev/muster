@@ -405,6 +405,15 @@ func TestAPluginWithDraftChecksHoldsTheApprovalUntilItsVerdict(t *testing.T) {
 	if d := listedByID(f.listed(t, f.tok, otherRouteSID), id); d == nil || d["awaiting_plugin_check"] != true {
 		t.Fatalf("plugin_drafts_list: %v; want it marked awaiting_plugin_check", d)
 	}
+	items, err := f.srv.pendingDraftItems(f.asOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.Key == draftKey(id) {
+			t.Fatalf("an unchecked draft is an attention item: %+v", it)
+		}
+	}
 	if text, isErr := f.decide(t, f.tok, otherRouteSID, id, "approve", sha(body)); !isErr || text != toolErr("draft %d: %s", id, DraftUncheckedRefusal) {
 		t.Fatalf("approving an unchecked draft: %s", text)
 	}
@@ -422,6 +431,18 @@ func TestAPluginWithDraftChecksHoldsTheApprovalUntilItsVerdict(t *testing.T) {
 		t.Fatalf("GET checks: %d %v", code, out)
 	}
 	check := "/plugin/v1/drafts/" + strconv.FormatInt(id, 10) + "/check"
+	// Another draft_checks plugin of the SAME owner cannot decide it.
+	other, _, err := f.plugins.CreatePlugin(f.asOwner, plugins.NewPlugin{Name: "example-checker-two", Label: "Example checker two",
+		DataScope: "example-checker-data", Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.plug(t, other, http.MethodPost, check, `{"sendable":true}`); code != http.StatusNotFound {
+		t.Fatalf("another plugin's verdict on the draft: %d; want 404", code)
+	}
+	if code, out := f.plug(t, other, http.MethodGet, "/plugin/v1/drafts/checks", ""); code != http.StatusOK || len(out["drafts"].([]any)) != 0 {
+		t.Fatalf("another plugin's checks list: %d %v; want none", code, out)
+	}
 	if code, _ := f.plug(t, ctok, http.MethodPost, check, `{"sendable":false}`); code != http.StatusBadRequest {
 		t.Fatalf("a refusal with no reason: %d; want 400", code)
 	}
@@ -441,6 +462,10 @@ func TestAPluginWithDraftChecksHoldsTheApprovalUntilItsVerdict(t *testing.T) {
 	}
 	if r, _ := f.plugins.Route(f.asOwner, rid); r.State != plugins.RouteSendFailed || !r.Redraft {
 		t.Fatalf("the route after the check refused its reply: %s redraft=%v", r.State, r.Redraft)
+	}
+	// The owner never saw it, and it goes back to its session: nothing to push.
+	if ps := f.refusalPushes(id); len(ps) != 0 {
+		t.Fatalf("a check refusal going back to its session pushed the owner: %+v", ps)
 	}
 	f.sweep(t)
 	routes := f.routesOf(t, m.ID)
