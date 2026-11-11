@@ -92,7 +92,8 @@ import (
 // (attention_answer, the decide tools, agent_destroy, chief_restart, the
 // dispatch verbs, plugin routing) and every tool built on a Claude Code
 // session (chief_ask, route_reply, agent_report_done) is refused by name, at
-// the call, whatever was listed.
+// the call: serveMCP runs a listed name only, and such a caller's list is that
+// set alone.
 // ---------------------------------------------------------------------------
 
 // mirrorSessionHeader carries the calling Claude Code session's id.
@@ -365,11 +366,10 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 		tools: tools,
 		call: func(name, args string) string {
 			if openCode {
-				// 🔴 FAILS CLOSED, BY NAME: whatever was listed, an opencode
-				// caller runs only its own set, and only bound by its key.
-				if !openCodeMirrorTools[name] {
-					return toolErr("%s", openCodeToolRefusal(name))
-				}
+				// Only its own set reaches here: serveMCP runs a LISTED name
+				// only, and tools above lists openCodeMirrorTools alone (the
+				// rest is explained by disabled). 🔴 FAILS CLOSED: bound by its
+				// key alone, never beside or as a Claude session.
 				if sid != "" || !mirror.OpenCodeMCPCaller(agentKey) {
 					return toolErr("an opencode caller is bound by its opencode session (its MCP endpoint sends %s: opencode:<id>), never by a Claude session", mirrorAgentSessionHeader)
 				}

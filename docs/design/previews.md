@@ -116,8 +116,9 @@ A claim that nothing in the code confirmed is marked **UNVERIFIED**.
   binding muster sends on, and anything else is `no_window`. The id is a
   selector among this host's own windows behind the same secret, not a
   credential ([attention.md](../attention.md#opencode-sessions),
-  `internal/mirrorhost/mcpproxy.go`). opencode still has no muster tools
-  (`/mcp`). An opencode window's listeners are also **offered**, as before
+  `internal/mirrorhost/mcpproxy.go`). The same binding now serves muster's
+  own tools on `/mcp`, narrowed to the attention and task tools
+  ([attention.md](../attention.md#mirrored-opencode-sessions)). An opencode window's listeners are also **offered**, as before
   (decision 9 needs no tool).
 - **Making preview content safe.** It is untrusted, and is kept away.
 - **TLS to the upstream.** Plain HTTP on loopback; TLS ends at the edge.
