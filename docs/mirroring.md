@@ -749,14 +749,18 @@ verify, or any opencode window on a host that did not opt in — is disabled and
 says why. What the session **waits on** does reach muster (below).
 
 **The header** shows the session's model and how much context it fills, as
-"`<model> · 47k / 188k context`": the newest completed step's input + cache
+a chip "`<model> · 47k/188k`" (the model without its provider prefix: a
+`vendor/name` id shows `name`): the newest completed step's input + cache
 read + cache write tokens (what the model was sent for that request, the same
 count a Claude Code view shows), out of the model's context window from
 opencode's `GET /api/model` (`limit.context`). Output and reasoning are not
 counted: they are in the next request's input. opencode's own TUI adds them,
 so its figure reads higher. A model the list does not name shows the count
-alone; a session with no completed step shows nothing. The tooltip says how
-the number is made.
+alone; a session with no completed step shows nothing. A tap on the chip (or
+its tooltip) shows the whole model id and the exact counts, "`<vendor>/<model>
+— 46,809 of 187,500 tokens (25%)`", and how the number is made. The chip turns
+amber at 70% of the window and red at 90%, only when the window is known; at a
+phone's width its model name is cut short, never its numbers.
 
 **A turn that failed** is a row in the view, as before. The host also reports
 it with the window, as it does for Claude Code (`Window.TurnError`: the error's

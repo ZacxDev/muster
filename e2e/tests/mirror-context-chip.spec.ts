@@ -99,7 +99,7 @@ async function expectFits(page: Page, label: string) {
     const h = document.querySelector('header')!;
     const box = (sel: string) => {
       const r = document.querySelector(sel)!.getBoundingClientRect();
-      return { left: r.left, right: r.right };
+      return { left: r.left, right: r.right, height: r.height };
     };
     return {
       header: [h.scrollWidth, h.clientWidth],
@@ -108,14 +108,27 @@ async function expectFits(page: Page, label: string) {
       back: box('#mv-back'),
       toggle: box('header nav[aria-label="View"]'),
       chip: box('#mv-context'),
+      count: box('#mv-context [data-ctx-count]'),
+      name: box('#mv-context [data-ctx-name]'),
+      // The first header control right of the chip's column.
+      next: box('#chat-index-open'),
     };
   });
-  expect(m.header[0], `${label}: the header scrolls sideways (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.header[1]);
-  expect(m.doc[0], `${label}: the page scrolls sideways (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.doc[1]);
-  for (const [name, b] of [['back', m.back], ['view switch', m.toggle], ['chip', m.chip]] as const) {
-    expect(b.left, `${label}: the ${name} starts off screen (${JSON.stringify(m)})`).toBeGreaterThanOrEqual(0);
-    expect(b.right, `${label}: the ${name} ends off screen (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.vw);
+  const at = `${label} (${JSON.stringify(m)})`;
+  expect(m.header[0], `${at}: the header scrolls sideways`).toBeLessThanOrEqual(m.header[1]);
+  expect(m.doc[0], `${at}: the page scrolls sideways`).toBeLessThanOrEqual(m.doc[1]);
+  for (const [name, b] of [['back', m.back], ['view switch', m.toggle], ['chip', m.chip], ['count', m.count]] as const) {
+    expect(b.left, `${at}: the ${name} starts off screen`).toBeGreaterThanOrEqual(0);
+    expect(b.right, `${at}: the ${name} ends off screen`).toBeLessThanOrEqual(m.vw);
   }
+  // Nothing spills out of the chip (a name that cannot shrink pushes the
+  // count past the chip's end, over whatever is next), and the chip ends
+  // before the next control starts.
+  expect(m.count.right, `${at}: the count spills out of the chip`).toBeLessThanOrEqual(m.chip.right + 0.5);
+  expect(m.chip.right, `${at}: the chip runs into the next control`).toBeLessThanOrEqual(m.next.left);
+  // ONE line: a name that cannot shrink does not only overflow — a hyphenated
+  // id WRAPS at its hyphens instead, and the chip grows down the header.
+  expect(m.name.height, `${at}: the model name wraps onto more than one line`).toBeLessThanOrEqual(m.count.height + 0.5);
 }
 
 test('the context chip is short, fits the header at every width, opens its detail on a tap, and tints as the window fills', async ({ page }) => {
