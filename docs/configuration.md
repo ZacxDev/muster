@@ -603,7 +603,6 @@ below.
 | `PREVIEW_TTL` | `24h` | no | A preview closes this long after it opened, in use or not; reopening mints a new id. A Go duration, at least `1m`. |
 | `PREVIEW_IDLE` | `2h` | no | A preview with no request for this long closes; an open WebSocket or streamed response counts as a request in progress. A Go duration, at least `1m`. |
 | `PREVIEW_MAX_BODY` | `32MiB` | no | The largest request body one proxied request may send; past it, `413 body_too_large`. Bytes, or a number with `KiB`, `MiB` or `GiB` (powers of 1024), from `1KiB` to `1GiB`. WebSocket messages are not bodies and are not limited. |
-| `PREVIEW_TRUSTED_PROXIES` | none | no | Comma-separated CIDRs or addresses (a bare address is just that one) of the relay in front of the listeners. Only from a TCP peer in this list does the failed-host-token throttle believe the client-address header (`X-Real-IP` on the mesh listener, `CF-Connecting-IP` on the public one); every other peer is keyed on its own address, so a client that reaches a listener directly cannot pick its bucket. Unset, no header is believed and the throttle keys on the TCP peer: behind a relay, every client then shares the relay's one bucket (a valid token is still never refused). |
 
 ## Test and e2e harness
 

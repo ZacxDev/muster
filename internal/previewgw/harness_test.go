@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -165,11 +164,10 @@ func (e *gwEnv) serve(port, real int) { e.ports.Store(port, real) }
 type gwOpts struct {
 	tokens    []string // plugin tokens; default {"mpl_owner1"}
 	dialWait  time.Duration
-	ttl, idle time.Duration  // Config.TTL, Config.Idle; 0 = the defaults
-	maxBody   int64          // Config.MaxBody; 0 = the default
-	keepalive time.Duration  // Options.StreamKeepalive; 0 = an hour (off)
-	perPrev   int            // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
-	trusted   []netip.Prefix // Config.TrustedProxies; nil = none (the default)
+	ttl, idle time.Duration // Config.TTL, Config.Idle; 0 = the defaults
+	maxBody   int64         // Config.MaxBody; 0 = the default
+	keepalive time.Duration // Options.StreamKeepalive; 0 = an hour (off)
+	perPrev   int           // Options.MaxConnsPerPreview; 0 = MaxConnsPerPreview
 }
 
 // newGW starts a gateway with a fake clock and a fake muster where
@@ -188,8 +186,7 @@ func newGW(t *testing.T, o gwOpts) *gwEnv {
 	}
 	dir := t.TempDir()
 	cfg := Config{MusterURL: fm.srv.URL, PublicURL: testPublicURL, PluginTokens: o.tokens, SigningKey: []byte(testSigningKey),
-		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody,
-		TrustedProxies: o.trusted}
+		Domain: testDomain, Listen: ":0", StateDir: dir, TTL: o.ttl, Idle: o.idle, MaxBody: o.maxBody}
 	if o.keepalive == 0 {
 		o.keepalive = time.Hour
 	}

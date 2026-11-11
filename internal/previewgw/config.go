@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -69,11 +68,6 @@ type Config struct {
 	// (PREVIEW_MAX_BODY); past it the request is refused 413 body_too_large.
 	// Zero means DefaultMaxBody.
 	MaxBody int64
-	// TrustedProxies are the TCP peers whose client-address header the
-	// failed-token throttle believes (PREVIEW_TRUSTED_PROXIES): the relay in
-	// front of the listeners. Empty, the default, believes no header: every
-	// peer is keyed on its own address (throttle.go, peerOf).
-	TrustedProxies []netip.Prefix
 }
 
 // Lifecycle defaults (docs/design/previews.md, "Lifecycle").
@@ -145,41 +139,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if c.MaxBody, err = byteSize("PREVIEW_MAX_BODY", getenv("PREVIEW_MAX_BODY"), DefaultMaxBody); err != nil {
 		return Config{}, err
 	}
-	if c.TrustedProxies, err = prefixes("PREVIEW_TRUSTED_PROXIES", getenv("PREVIEW_TRUSTED_PROXIES")); err != nil {
-		return Config{}, err
-	}
 	return c, nil
-}
-
-// prefixes parses a comma-separated list of CIDRs or bare addresses (a bare
-// address is that one address: /32, or /128); empty is none.
-func prefixes(name, v string) ([]netip.Prefix, error) {
-	var out []netip.Prefix
-	for _, f := range strings.Split(v, ",") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		bad := fmt.Errorf("%s must be comma-separated CIDRs or addresses (for example 192.0.2.10/32), got %q", name, f)
-		if strings.Contains(f, "/") {
-			p, err := netip.ParsePrefix(f)
-			if err != nil {
-				return nil, bad
-			}
-			if p.Addr().Is4In6() {
-				return nil, bad
-			}
-			out = append(out, p.Masked())
-			continue
-		}
-		a, err := netip.ParseAddr(f)
-		if err != nil || a.Zone() != "" {
-			return nil, bad
-		}
-		a = a.Unmap()
-		out = append(out, netip.PrefixFrom(a, a.BitLen()))
-	}
-	return out, nil
 }
 
 // byteSize parses a size: a whole number of bytes, or one followed by KiB,
