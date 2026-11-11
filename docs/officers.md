@@ -1851,7 +1851,7 @@ read); a line that does not decode is skipped.
 |---|---|
 | `api_calls` | assistant records — subagent (sidechain) records included, as they are this instance's spend — one per API call, at the hour of the call's FIRST record |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | those calls' `message.usage`, each call's largest value of each field |
-| `turns` | distinct `promptId`s of main-conversation (non-sidechain) `user` records, at the hour first seen; a subagent's prompt is not a turn |
+| `turns` | distinct `promptId`s of main-conversation `user` records, at the hour first seen; a subagent's prompt (`isSidechain`) and injected context (`isMeta`, `isCompactSummary`) are not turns |
 
 **The dedup rule.** The CLI writes one assistant record per content block
 (thinking, text, tool use), each repeating the same API call's usage. A call
@@ -1862,6 +1862,17 @@ because a block written mid-stream can carry a smaller output count than the
 last. Each field keeps the call's largest value. An API-error record
 (`isApiErrorMessage`) and a `<synthetic>` record are not calls. It is the same
 rule a turn's own usage is counted by (`cmd/ccd/callusage.go`).
+
+🔴 **One ledger for the whole scan, not one per file.** The same call and the
+same prompt are written into more than one file: a forked subagent's
+transcript, and a branched or resumed session, copy the records they continue
+from. So each call and each prompt is counted once across every file read,
+and is OWNED — its session and its hour — by its first record in scan order,
+each field still its largest value over every copy. The files are read in
+sorted relative-path order (plain byte order: `-w/s.jsonl` before
+`-w/s/subagents/…`, and `-w-x/…` before `-w/…`), so the owner is the same on
+every scan. That matters because HQ replaces a bucket on every push: an owner
+that moved between scans would move counts between sessions.
 
 **The hour truncation.** `ccd` truncates `since` DOWN to the UTC hour (and
 clamps it to at most 48 hours ago, on an hour boundary), and answers
@@ -1914,42 +1925,54 @@ a restart onto a `claude-code-agent` image from this version or later; until
 then each instance is skipped (one log line each). HQ's route may land before
 or after muster's: until it does, HQ answers 404 and the pushes are dropped.
 
-**Checking one hour by hand.** Run against one session's files in the pod
-(its own transcript and its subagents'), for a UTC hour given as a
-timestamp prefix. It applies the same rules: complete lines only, the same
-call key, each call at the hour of its first record, the field maxima, and
-non-sidechain prompts. The CLI writes timestamps in UTC (`…Z`), which the
-prefix match relies on.
+**Checking one hour by hand.** Run in the pod, over EVERY transcript under
+`projects/` (the dedup and the ownership are scan-wide, so one session's files
+alone over-count a call another file also holds), for one session and one UTC
+hour given as a timestamp prefix. It applies the same rules as `ccd`: complete
+lines only, the same call key across all files, each call and prompt owned by
+its first record in sorted path order, the field maxima, and the same records
+excluded from turns. The CLI writes timestamps in UTC (`…Z`), which the prefix
+match relies on. It reads every transcript, so it is for spot checks, not a
+loop.
 
 ```sh
 cat > /tmp/hour.jq <<'EOF'
-def calls: [ .[] | select(.type == "assistant" and .message.usage != null
-                          and (.isApiErrorMessage != true) and .message.model != "<synthetic>") ]
-  | group_by([.message.id, (.message.usage.input_tokens // 0),
-              (.message.usage.cache_read_input_tokens // 0), (.message.usage.cache_creation_input_tokens // 0)])
-  | map({first: (map(.timestamp) | min),
-         input: (map(.message.usage.input_tokens // 0) | max),
-         output: (map(.message.usage.output_tokens // 0) | max),
-         cache_read: (map(.message.usage.cache_read_input_tokens // 0) | max),
-         cache_creation: (map(.message.usage.cache_creation_input_tokens // 0) | max)})
-  | map(select(.first | startswith($h)));
-def turns: [ .[] | select(.type == "user" and (.isSidechain != true) and (.promptId // "") != "") ]
-  | group_by(.promptId) | map(map(.timestamp) | min) | map(select(startswith($h))) | length;
-calls as $c
-| {hour: $h, turns: turns, api_calls: ($c | length),
+# Input: [{s: <session>, r: <record>}] for EVERY transcript under projects/,
+# in sorted path order. $session, $h: the session and UTC hour to check.
+[ to_entries[] | {i: .key, s: .value.s, r: .value.r} | select((.r.timestamp // "") != "") ] as $recs
+| ([ $recs[] | select(.r.type == "assistant" and .r.message.usage != null
+                      and (.r.isApiErrorMessage != true) and .r.message.model != "<synthetic>") ]
+   | group_by([.r.message.id, (.r.message.usage.input_tokens // 0),
+               (.r.message.usage.cache_read_input_tokens // 0), (.r.message.usage.cache_creation_input_tokens // 0)])
+   | map(min_by(.i) as $o
+         | {s: $o.s, t: $o.r.timestamp,
+            input: (map(.r.message.usage.input_tokens // 0) | max),
+            output: (map(.r.message.usage.output_tokens // 0) | max),
+            cache_read: (map(.r.message.usage.cache_read_input_tokens // 0) | max),
+            cache_creation: (map(.r.message.usage.cache_creation_input_tokens // 0) | max)})
+   | map(select(.s == $session and (.t | startswith($h))))) as $c
+| ([ $recs[] | select(.r.type == "user" and (.r.isSidechain != true) and (.r.isMeta != true)
+                      and (.r.isCompactSummary != true) and (.r.promptId // "") != "") ]
+   | group_by(.r.promptId) | map(min_by(.i))
+   | map(select(.s == $session and (.r.timestamp | startswith($h)))) | length) as $turns
+| {session: $session, hour: $h, turns: $turns, api_calls: ($c | length),
    input_tokens: ($c | map(.input) | add // 0), output_tokens: ($c | map(.output) | add // 0),
    cache_read_tokens: ($c | map(.cache_read) | add // 0),
    cache_creation_tokens: ($c | map(.cache_creation) | add // 0)}
 EOF
-cd "$CLAUDE_CONFIG_DIR/projects/<project>"
-for f in <session>.jsonl <session>/subagents/*.jsonl; do
-  [ -f "$f" ] && jq -cRs 'split("\n") | .[:-1][] | fromjson? // empty' "$f"   # drops a line still being written
-done | jq -s --arg h 2026-11-10T13 -f /tmp/hour.jq
+cd "$CLAUDE_CONFIG_DIR/projects"
+find . -name '*.jsonl' -type f | LC_ALL=C sort | while IFS= read -r f; do
+  s=${f#./*/}; s=${s%%/*}; s=${s%.jsonl}      # the session: the first element under the project
+  jq -cRs --arg s "$s" 'split("\n") | .[:-1][] | fromjson? // empty | select(type == "object") | {s: $s, r: .}' "$f"
+done | jq -s --arg session <session> --arg h 2026-11-10T13 -f /tmp/hour.jq
 ```
 
-It prints that hour's bucket for the session, to compare with HQ's. (The
-recipe pools the call keys across the session's files, where `ccd` keys each
-file on its own; API message ids are unique, so the two agree.)
+`split("\n") | .[:-1]` drops a line still being written, as `ccd` does. It
+prints that session's bucket for the hour, to compare with HQ's. The one rule
+it does not apply is `ccd`'s file filter (a file last modified before the
+window is not read). Such a file holds no record inside the window, so the
+two agree for an hour in the window unless a newer file holds a copy of one of
+its calls or prompts stamped inside the window.
 
 ## Tiers and the LLM proxy
 

@@ -195,3 +195,73 @@ func TestUsageRouteRefusesNoBearerAndABadSince(t *testing.T) {
 		}
 	}
 }
+
+// dupRig is a tree where the SAME API calls and prompts appear in more than
+// one file, as forked subagents and branched or resumed sessions write them:
+//
+//	-w/sess-c.jsonl                    prompt c1, call d1
+//	-w/sess-c/subagents/agent-1.jsonl  call d2 (two blocks)
+//	-w/sess-c/subagents/agent-2.jsonl  call d2 again (a fork's copy, larger
+//	                                   output), its own call d3
+//	-w/sess-d.jsonl                    a copy of sess-c's prompt c1 and call
+//	                                   d1, then its own prompt d1, call d4,
+//	                                   a meta record, a compaction summary,
+//	                                   and call d5
+//	-w-x/sess-e.jsonl                  another project's copy of call d5
+//
+// Each call is counted ONCE in the whole scan, owned by the first file in
+// sorted path order that holds it, each field its largest value across every
+// copy. Sorted as STRINGS: "-w/sess-c.jsonl" before "-w/sess-c/…" ('.' <
+// '/'), and "-w-x/…" before "-w/…" ('-' < '/') — where the directory walk
+// visits -w first, so d5 shows which order decided.
+func dupRig(t *testing.T) *server {
+	t.Helper()
+	config := t.TempDir()
+	proj := filepath.Join(config, "projects", "-w")
+	writeUsageFile(t, filepath.Join(proj, "sess-c.jsonl"), ""+
+		uLine("2000-01-03T10:01:00.000Z", "c1", false)+
+		aLine("2000-01-03T10:02:00.000Z", "msg_d1", "claude-test", 5, 401, 61, 17, nil))
+	side := map[string]any{"isSidechain": true}
+	writeUsageFile(t, filepath.Join(proj, "sess-c", "subagents", "agent-1.jsonl"), ""+
+		aLine("2000-01-03T10:03:00.000Z", "msg_d2", "claude-test", 7, 503, 71, 19, side)+
+		aLine("2000-01-03T10:03:01.000Z", "msg_d2", "claude-test", 7, 503, 71, 23, side))
+	writeUsageFile(t, filepath.Join(proj, "sess-c", "subagents", "agent-2.jsonl"), ""+
+		aLine("2000-01-03T10:03:00.000Z", "msg_d2", "claude-test", 7, 503, 71, 29, side)+
+		aLine("2000-01-03T10:05:00.000Z", "msg_d3", "claude-test", 11, 601, 83, 31, side))
+	meta := func(at, prompt, field string) string {
+		b, _ := json.Marshal(map[string]any{"type": "user", "timestamp": at, "promptId": prompt, field: true,
+			"message": map[string]any{"role": "user", "content": "synthetic injected context"}})
+		return string(b) + "\n"
+	}
+	writeUsageFile(t, filepath.Join(proj, "sess-d.jsonl"), ""+
+		uLine("2000-01-03T10:01:00.000Z", "c1", false)+
+		aLine("2000-01-03T10:02:00.000Z", "msg_d1", "claude-test", 5, 401, 61, 17, nil)+
+		uLine("2000-01-03T11:10:00.000Z", "d1", false)+
+		aLine("2000-01-03T11:11:00.000Z", "msg_d4", "claude-test", 13, 701, 97, 37, nil)+
+		meta("2000-01-03T11:12:00.000Z", "m1", "isMeta")+
+		meta("2000-01-03T11:13:00.000Z", "m2", "isCompactSummary")+
+		aLine("2000-01-03T11:20:00.000Z", "msg_d5", "claude-test", 17, 809, 113, 41, nil))
+	writeUsageFile(t, filepath.Join(config, "projects", "-w-x", "sess-e.jsonl"),
+		aLine("2000-01-03T11:20:00.000Z", "msg_d5", "claude-test", 17, 809, 113, 41, nil))
+	s := newServer(serverConfig{ConfigDir: config, Bearer: usageBearer}, nil, newAuthTracker())
+	s.clock = func() time.Time { return usageNow }
+	return s
+}
+
+// TestUsageRouteCountsACallInSeveralFilesOnce pins the answer over dupRig:
+// sess-c 10:00 holds c1 and the three distinct calls (d2 at its largest
+// output, 29, from the fork's copy); sess-d holds only its own prompt and
+// call — the copied c1 and d1 are sess-c's, and the meta and
+// compaction-summary records are not turns; d5 is sess-e's, whose path sorts
+// first.
+func TestUsageRouteCountsACallInSeveralFilesOnce(t *testing.T) {
+	s := dupRig(t)
+	_, _, raw := getUsage(t, s, "?since="+unixOf("2000-01-03T10:00:00Z"), true)
+	want := `{"since":"2000-01-03T10:00:00Z","buckets":[` +
+		`{"session":"sess-c","hour":"2000-01-03T10:00:00Z","turns":1,"api_calls":3,"input_tokens":23,"output_tokens":77,"cache_read_tokens":1505,"cache_creation_tokens":215},` +
+		`{"session":"sess-d","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":1,"input_tokens":13,"output_tokens":37,"cache_read_tokens":701,"cache_creation_tokens":97},` +
+		`{"session":"sess-e","hour":"2000-01-03T11:00:00Z","turns":0,"api_calls":1,"input_tokens":17,"output_tokens":41,"cache_read_tokens":809,"cache_creation_tokens":113}]}` + "\n"
+	if raw != want {
+		t.Fatalf("answer\n got %s\nwant %s", raw, want)
+	}
+}

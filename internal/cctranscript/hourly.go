@@ -31,10 +31,13 @@ type UsagePage struct {
 //     parent session.
 //   - Hour is the UTC hour, on the hour.
 //   - Turns: distinct prompts (promptId) of the main conversation, at the
-//     hour each was first seen. A subagent's prompts are not turns.
+//     hour each was first seen. A subagent's prompts and injected context
+//     (isMeta, compaction summaries) are not turns.
 //   - APICalls: API calls, each counted ONCE however many block records the
-//     CLI wrote for it, at the hour of its first record — subagent calls
-//     included (they are this instance's spend).
+//     CLI wrote for it and however many transcript files hold it (a fork or
+//     a resumed session copies them), at the session and hour of its first
+//     record in sorted file order — subagent calls included (they are this
+//     instance's spend).
 //   - The tokens are those calls' usage, each call's largest value of each
 //     field.
 type UsageBucket struct {

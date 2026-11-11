@@ -37,18 +37,27 @@ import (
 // transcript, and <project>/<session>/subagents/<x>.jsonl a subagent's,
 // counted on the session that ran it.
 //
-// What is counted, per file (usageOfFile): complete lines only (a trailing
-// line still being written is left for the next read), decoded with a LEAN
-// struct (usageRecord: never the content); a line that does not decode, or is
-// over maxTranscriptLine, is skipped.
+// How a file is read (usageScan.file): complete lines only (a trailing line
+// still being written is left for the next read), decoded with a LEAN struct
+// (usageRecord: never the content); a line that does not decode, or is over
+// maxTranscriptLine, is skipped.
+//
+// 🔴 ONE LEDGER FOR THE WHOLE SCAN, NOT ONE PER FILE. The same API call and
+// the same prompt are written into MORE THAN ONE file: a forked subagent's
+// transcript, a branched or resumed session copy the records they continue
+// from. So every call and every prompt is counted once across all the files
+// read, and is OWNED — its session and its hour — by its first record in
+// scan order. The files are read in SORTED relative-path order, so the owner
+// is the same on every scan: HQ replaces a bucket on every push, and an owner
+// that moved between scans would move counts between sessions.
 //
 //   - API calls and tokens: assistant records, subagent (sidechain) records
 //     INCLUDED — a subagent's calls are this instance's spend — each call
-//     counted once by callLedger, at the hour of its first record, with its
-//     largest value of each token field.
-//   - Turns: distinct non-empty promptIds of NON-sidechain user records, at
-//     the hour first seen. A subagent's prompt is the parent's tool call, not
-//     a turn.
+//     counted once by callLedger, with its largest value of each token field
+//     over every copy.
+//   - Turns: distinct non-empty promptIds of user records that are not a
+//     subagent's (isSidechain: the parent's tool call, not a turn) and not
+//     injected context (isMeta, isCompactSummary).
 //
 // A record's hour is its own timestamp's; a record with none is skipped.
 // Every record of a file is read, those before since included, so a call or
@@ -94,11 +103,16 @@ type bucketKey struct {
 	hour    time.Time
 }
 
+// usageFile is one transcript to read: its path relative to projects/ (the
+// sort key), its path on disk, and its session.
+type usageFile struct {
+	rel, path, session string
+}
+
 // hourlyUsage counts every transcript under projects modified at or after
 // since into buckets of hour >= since (the route's doc).
 func hourlyUsage(projects string, since time.Time) []cctranscript.UsageBucket {
-	acc := map[bucketKey]*cctranscript.UsageBucket{}
-	prompts := map[string]bool{} // session + "\x00" + promptId already counted
+	var files []usageFile
 	_ = filepath.WalkDir(projects, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() && path != projects {
@@ -113,78 +127,82 @@ func hourlyUsage(projects string, since time.Time) []cctranscript.UsageBucket {
 		if err != nil {
 			return nil
 		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
+		rel = filepath.ToSlash(rel)
+		parts := strings.Split(rel, "/")
 		if len(parts) < 2 {
 			return nil // directly under projects/: no project, no session
 		}
-		session := strings.TrimSuffix(parts[1], ".jsonl")
 		info, err := d.Info()
 		if err != nil || !info.Mode().IsRegular() || info.ModTime().Before(since) {
 			return nil
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			return nil
-		}
-		defer f.Close()
-		usageOfFile(f, session, since, acc, prompts)
+		files = append(files, usageFile{rel: rel, path: path, session: strings.TrimSuffix(parts[1], ".jsonl")})
 		return nil
 	})
-	out := make([]cctranscript.UsageBucket, 0, len(acc))
-	for _, b := range acc {
-		if b.APICalls == 0 && b.Turns == 0 {
-			continue
+	// The owner of a record found in several files is the first file in THIS
+	// order (the route's doc): plain string order of the relative path, not the
+	// walk's, which visits <session>/ before <session>.jsonl.
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	sc := usageScan{since: since, acc: map[bucketKey]*cctranscript.UsageBucket{}, callOwner: map[string]bucketKey{}, prompts: map[string]bool{}}
+	for _, f := range files {
+		if r, err := os.Open(f.path); err == nil {
+			sc.file(r, f.session)
+			r.Close()
 		}
-		out = append(out, *b)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].Hour.Equal(out[j].Hour) {
-			return out[i].Hour.Before(out[j].Hour)
-		}
-		return out[i].Session < out[j].Session
-	})
-	return out
+	return sc.buckets()
 }
 
 // usageRecord is the LEAN decode of one transcript line: only what the
 // hourly count reads. The content — most of a transcript's bytes — is never
 // decoded.
 type usageRecord struct {
-	Type        string `json:"type"`
-	Timestamp   string `json:"timestamp"`
-	PromptID    string `json:"promptId"`
-	IsSidechain bool   `json:"isSidechain"`
-	IsAPIError  bool   `json:"isApiErrorMessage"`
-	Message     struct {
+	Type             string `json:"type"`
+	Timestamp        string `json:"timestamp"`
+	PromptID         string `json:"promptId"`
+	IsSidechain      bool   `json:"isSidechain"`
+	IsMeta           bool   `json:"isMeta"`
+	IsCompactSummary bool   `json:"isCompactSummary"`
+	IsAPIError       bool   `json:"isApiErrorMessage"`
+	Message          struct {
 		ID    string          `json:"id"`
 		Model string          `json:"model"`
 		Usage *podagent.Usage `json:"usage"`
 	} `json:"message"`
 }
 
-// usageOfFile adds one transcript file of session to acc (buckets of hour >=
-// since only). prompts is the scan's prompt set, shared across the session's
-// files.
-func usageOfFile(r io.Reader, session string, since time.Time, acc map[bucketKey]*cctranscript.UsageBucket, prompts map[string]bool) {
-	bucket := func(hour time.Time) *cctranscript.UsageBucket {
-		if hour.Before(since) {
-			return nil
-		}
-		k := bucketKey{session, hour}
-		b := acc[k]
-		if b == nil {
-			b = &cctranscript.UsageBucket{Session: session, Hour: hour}
-			acc[k] = b
-		}
-		return b
+// usageScan is one GET /v1/usage's count, across every file it reads.
+type usageScan struct {
+	since time.Time
+	acc   map[bucketKey]*cctranscript.UsageBucket
+	// calls is THE ledger for the whole scan; callOwner is each call's
+	// (session, hour), from its first record in scan order.
+	calls     callLedger
+	callOwner map[string]bucketKey
+	// prompts is every promptId already counted, in any session.
+	prompts map[string]bool
+}
+
+// bucket is the bucket k, or nil when its hour is before the window.
+func (sc *usageScan) bucket(k bucketKey) *cctranscript.UsageBucket {
+	if k.hour.Before(sc.since) {
+		return nil
 	}
-	var calls callLedger
-	callHour := map[string]time.Time{}
+	b := sc.acc[k]
+	if b == nil {
+		b = &cctranscript.UsageBucket{Session: k.session, Hour: k.hour}
+		sc.acc[k] = b
+	}
+	return b
+}
+
+// file reads one transcript of session into the scan.
+func (sc *usageScan) file(r io.Reader, session string) {
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
 		line, err := readLine(br)
 		if err != nil {
-			break // io.EOF (the unterminated tail is ignored) or a read error
+			return // io.EOF (the unterminated tail is ignored) or a read error
 		}
 		if len(line) == 0 {
 			continue
@@ -197,37 +215,52 @@ func usageOfFile(r io.Reader, session string, since time.Time, acc map[bucketKey
 		if err != nil {
 			continue
 		}
-		hour := at.UTC().Truncate(time.Hour)
+		own := bucketKey{session, at.UTC().Truncate(time.Hour)}
 		switch rec.Type {
 		case "assistant":
-			key, first, counted := calls.add(rec.Message.ID, rec.Message.Model, rec.IsAPIError, rec.Message.Usage)
+			key, first, counted := sc.calls.add(rec.Message.ID, rec.Message.Model, rec.IsAPIError, rec.Message.Usage)
 			if counted && first {
-				callHour[key] = hour
+				sc.callOwner[key] = own
 			}
 		case "user":
-			if rec.IsSidechain || rec.PromptID == "" {
+			if rec.IsSidechain || rec.IsMeta || rec.IsCompactSummary || rec.PromptID == "" || sc.prompts[rec.PromptID] {
 				continue
 			}
-			k := session + "\x00" + rec.PromptID
-			if prompts[k] {
-				continue
-			}
-			prompts[k] = true
-			if b := bucket(hour); b != nil {
+			sc.prompts[rec.PromptID] = true
+			if b := sc.bucket(own); b != nil {
 				b.Turns++
 			}
 		}
 	}
-	for _, key := range calls.keys() {
-		b := bucket(callHour[key])
+}
+
+// buckets adds every call to its owner's bucket and answers the non-empty
+// buckets, sorted by hour then session.
+func (sc *usageScan) buckets() []cctranscript.UsageBucket {
+	for _, key := range sc.calls.keys() {
+		b := sc.bucket(sc.callOwner[key])
 		if b == nil {
 			continue
 		}
-		u := calls.call(key)
+		u := sc.calls.call(key)
 		b.APICalls++
 		b.InputTokens += u.InputTokens
 		b.OutputTokens += u.OutputTokens
 		b.CacheReadTokens += u.CacheReadInputTokens
 		b.CacheCreationTokens += u.CacheCreationInputTokens
 	}
+	out := make([]cctranscript.UsageBucket, 0, len(sc.acc))
+	for _, b := range sc.acc {
+		if b.APICalls == 0 && b.Turns == 0 {
+			continue
+		}
+		out = append(out, *b)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Hour.Equal(out[j].Hour) {
+			return out[i].Hour.Before(out[j].Hour)
+		}
+		return out[i].Session < out[j].Session
+	})
+	return out
 }
