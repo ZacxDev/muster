@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
 // ErrHQUnavailable is HQ not answering usefully: a transport failure, a
@@ -595,6 +597,46 @@ func (c *Client) PostTranscript(ctx context.Context, item ItemID, instance strin
 		return TranscriptAck{}, fmt.Errorf("%w: transcript: HQ's answer is not {stored, last_seq}: %v", ErrHQUnavailable, err)
 	}
 	return ack, nil
+}
+
+// PUT /officers/{id}/usage: one instance's Claude usage per session and UTC
+// hour (docs/officers.md, "Claude usage to HQ"). HQ upserts each bucket by
+// (officer, instance, session, hour), REPLACING its counts, and answers 204;
+// 400 invalid, 403 another officer's token, 404 an unknown officer (or an HQ
+// without the route), 413 over MaxUsageBody bytes or MaxUsageBuckets buckets.
+
+// Usage route bounds, as HQ enforces them.
+const (
+	MaxUsageBuckets = 1000
+	MaxUsageBody    = 256 << 10 // bytes
+)
+
+// UsageReport is the usage route's body.
+//
+//   - Instance is the instance's muster agent name.
+//   - Pool is the instance's pool: TierRoutine, TierJudgement, or "" for an
+//     untiered officer.
+//   - Account is the pooled Claude account the instance is on NOW (its
+//     agent row's), "" for a pool on the LLM proxy: an account failover moves
+//     the instance, and every hour pushed after it is reported on the new one.
+//   - GeneratedAt is when muster built the report (RFC 3339, UTC).
+//   - Buckets are what the instance's ccd counted (cctranscript.UsageBucket),
+//     never null.
+type UsageReport struct {
+	Instance    string                     `json:"instance"`
+	Pool        string                     `json:"pool"`
+	Account     string                     `json:"account"`
+	GeneratedAt string                     `json:"generated_at"`
+	Buckets     []cctranscript.UsageBucket `json:"buckets"`
+}
+
+// PutUsage is PUT /officers/{id}/usage.
+func (c *Client) PutUsage(ctx context.Context, r UsageReport) error {
+	if r.Buckets == nil {
+		r.Buckets = []cctranscript.UsageBucket{}
+	}
+	_, err := c.Do(ctx, http.MethodPut, c.officerPath()+"/usage", r)
+	return err
 }
 
 // tokenWithheld is what Scrub writes in place of the officer token.
