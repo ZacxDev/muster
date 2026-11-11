@@ -711,7 +711,7 @@ func (s *OpenCodeSource) markStaleLocked() {
 // first, at most maxOpenCodeAncestors — from the server's session list
 // (knownSessions): how a subagent's child session, which a TUI does not show,
 // is traced to the root session its window shows (MCPProxy's
-// openCodeWindow). An id the list does not hold, or a list that cannot be
+// openCodeBinding). An id the list does not hold, or a list that cannot be
 // read, has none. A cycle ends the walk.
 func (s *OpenCodeSource) Ancestors(id string) []string {
 	if s == nil || !s.paired() {

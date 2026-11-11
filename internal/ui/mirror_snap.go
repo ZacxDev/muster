@@ -64,7 +64,7 @@ func snapScript(f Features, extra ...g.Node) g.Node {
 // It is the same chip a restore shows (updatingChip, restore.go), and the same
 // element: a Rendered view restored from the back/forward cache shows this one.
 func mirrorUpdatingChip() g.Node {
-	return updatingChip("mv-updating", "right-0 top-1/2 -translate-y-1/2")
+	return updatingChip("mv-updating", "right-0 top-1/2 -translate-y-1/2 z-30")
 }
 
 // SnapPurgeHTML is the inline script every server-written auth page carries

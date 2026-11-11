@@ -106,7 +106,8 @@ var (
 	// MirrorAskTyping counts answers muster typed into a mirrored session's
 	// AskUserQuestion picker, by outcome:
 	//   typed        — every key landed (the CLI's record says whose answer won)
-	//   not-sent     — refused before the host was asked (offline, step-up, …)
+	//   not-sent     — refused before the host was asked (offline, …)
+	//   step-up      — the hub's own fresh-sign-in gate refused it
 	//   no-picker    — the picker was gone (answered or dismissed in the terminal)
 	//   touched      — someone was answering in the terminal; nothing typed
 	//   unreadable   — the host could not read the question off the screen as
@@ -432,6 +433,26 @@ var (
 	OfficerUsagePush = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "muster_officer_usage_push_total",
 		Help: "Officer instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
+	}, []string{"result"})
+	// OfficerPoolsPush counts the officer pools reporter's per-officer
+	// pushes (internal/officers PoolsReporter), by result: pushed (HQ answered
+	// 2xx), hq_refused (a 4xx, not retried), hq_unavailable (5xx or no answer
+	// after the retries), ledger_failed (the session count could not be read,
+	// nothing sent).
+	OfficerPoolsPush = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_pools_push_total",
+		Help: "Officer declared-pools pushes to HQ, by result (pushed or a failure class).",
+	}, []string{"result"})
+	// CCConsumerUsagePush counts the consumer usage collector's per-instance
+	// attempts (internal/consumerusage, MUSTER_CC_CONSUMER_USAGE), by result:
+	// pushed (HQ answered 2xx), empty (no row to send), ccd_unsupported (the
+	// instance's ccd predates GET /v1/usage), ccd_failed (the read failed),
+	// hq_refused (a 4xx, not retried), hq_unavailable (5xx or no answer after
+	// the retries), skipped (a pre-stop flush that could not start within its
+	// budget).
+	CCConsumerUsagePush = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_cc_consumer_usage_push_total",
+		Help: "Consumer (non-officer) instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
 	}, []string{"result"})
 )
 

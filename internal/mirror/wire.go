@@ -378,6 +378,13 @@ type Msg struct {
 	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
 	// muster can vouch for), and an older muster ignores it.
 	Keys int `json:"keys,omitempty"`
+	// Screen (answered, a refusal) is the pane as the host read it when the
+	// answer stopped — plain text, redacted and then capped at MaxAskScreen by the host (CapAskScreen) — for
+	// the answer-attempt log (internal/askattempt redacts and caps it again
+	// before it is stored). 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH
+	// WAYS: an older host never sets it (no snapshot), an older muster
+	// ignores it.
+	Screen string `json:"screen,omitempty"`
 	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
 	// to an opencode ask — a permission request, a question-tool form —
 	// through the opencode server's API (opencode_answer.go): an -interactive

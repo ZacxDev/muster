@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/ccusage"
+	"github.com/ZacxDev/muster/internal/consumerusage"
 )
 
 // The usage poller's variables (envCCUsagePoll, envCCUsagePollInterval) are
@@ -23,6 +24,19 @@ type ccUsageConfig struct {
 	Interval time.Duration
 	// Push is the optional pusher's; Push.URL "" is off.
 	Push ccUsagePushConfig
+	// Consumer is the consumer usage push's (MUSTER_CC_CONSUMER_USAGE);
+	// Consumer.Consumer "" is off. It rides the pool push: same HQ, same
+	// token, same instance label.
+	Consumer ccConsumerUsageConfig
+}
+
+// ccConsumerUsageConfig is the consumer usage push's: this muster's
+// non-officer instances' Claude usage PUT to URL as Consumer.
+type ccConsumerUsageConfig struct {
+	Consumer string
+	// URL is the pool push's URL with its /claude-pool/usage path replaced by
+	// /claude-pool/consumer-usage (consumerusage.URLFromPoolPush).
+	URL string
 }
 
 // ccUsagePushConfig is the usage pusher's (MUSTER_CC_USAGE_PUSH_*): after each
@@ -52,7 +66,34 @@ func parseCCUsage(getenv func(string) string) (ccUsageConfig, error) {
 	if c.Push, err = parseCCUsagePush(getenv, c.On); err != nil {
 		return ccUsageConfig{}, err
 	}
+	if c.Consumer, err = parseCCConsumerUsage(getenv, c.Push); err != nil {
+		return ccUsageConfig{}, err
+	}
 	return c, nil
+}
+
+// parseCCConsumerUsage reads the consumer usage push's switch. Unset is off.
+// Set, boot is refused for a consumer muster does not know
+// (consumerusage.Consumers), without the pool push (it is that push's HQ,
+// token and instance label; the pool push already refused itself without the
+// poller or the token), and when the pool push's URL is not HQ's pool route,
+// from which the consumer route is derived.
+func parseCCConsumerUsage(getenv func(string) string, push ccUsagePushConfig) (ccConsumerUsageConfig, error) {
+	v := strings.TrimSpace(getenv(envCCConsumerUsage))
+	if v == "" {
+		return ccConsumerUsageConfig{}, nil
+	}
+	if !consumerusage.ValidConsumer(v) {
+		return ccConsumerUsageConfig{}, fmt.Errorf("invalid %s %q: want one of %s", envCCConsumerUsage, v, strings.Join(consumerusage.Consumers, ", "))
+	}
+	if push.URL == "" {
+		return ccConsumerUsageConfig{}, fmt.Errorf("%s is set but %s is not: the consumer usage goes to the pool push's HQ, with its token", envCCConsumerUsage, envCCUsagePushURL)
+	}
+	u, err := consumerusage.URLFromPoolPush(push.URL)
+	if err != nil {
+		return ccConsumerUsageConfig{}, fmt.Errorf("%s needs %s to be HQ's pool route: %v", envCCConsumerUsage, envCCUsagePushURL, err)
+	}
+	return ccConsumerUsageConfig{Consumer: v, URL: u}, nil
 }
 
 // parseCCUsagePush reads the pusher's configuration. Boot is refused when the

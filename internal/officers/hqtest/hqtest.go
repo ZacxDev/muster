@@ -240,6 +240,283 @@ type Server struct {
 	UsageAbsent bool
 	usagePuts   []UsagePut
 	usageRows   map[string][2]int64
+	// The consumer-usage route (PUT /claude-pool/consumer-usage), on the pool
+	// push's token: poolTokens are the tokens of the pool-usage scope;
+	// ConsumerAbsent is an HQ without the route (404); consumerFail are
+	// statuses answered to the next PUTs, one each, in order (FailConsumer);
+	// consumerPuts is every accepted PUT and consumerRows the rows upserted by
+	// (instance, consumer, session, hour).
+	// The pools route (PUT /officers/{id}/pools): PoolsAbsent is an HQ without
+	// it (404); poolsFail are statuses answered to the next PUTs, in order
+	// (FailPools); poolsPuts every accepted PUT; poolSets each officer's pool
+	// set as the last accepted body left it (HQ deletes a pool the body does
+	// not name).
+	PoolsAbsent    bool
+	poolsFail      []int
+	poolsPuts      []UsagePut
+	poolSets       map[string][]string
+	poolTokens     map[string]bool
+	ConsumerAbsent bool
+	consumerFail   []int
+	consumerPuts   [][]byte
+	consumerRows   map[string]ConsumerRow
+}
+
+// FailPools makes the next len(codes) pools PUTs answer those statuses, in
+// order, before the route serves normally again.
+func (s *Server) FailPools(codes ...int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.poolsFail = append(s.poolsFail, codes...)
+}
+
+// PoolsPuts returns the accepted pools PUTs, in order.
+func (s *Server) PoolsPuts() []UsagePut {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsagePut(nil), s.poolsPuts...)
+}
+
+// PoolSet is officer's stored pools, in the last accepted body's order (nil
+// when none was ever pushed).
+func (s *Server) PoolSet(officer string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.poolSets[officer]...)
+}
+
+// pools is PUT /officers/{id}/pools, to the contract: the body decoded
+// strictly, pools present and each one's pool "" | routine | judgement (no
+// pool twice, "" only alone), its model a string, max_instances 0-100,
+// max_sessions_per_day null or 1-100, sessions_today present and
+// non-negative, sessions_day_resets_at RFC 3339 on a UTC midnight; reported_at
+// RFC 3339. 204, the officer's set REPLACED by the body's.
+func (s *Server) pools(w http.ResponseWriter, officer string, raw []byte) {
+	switch {
+	case s.PoolsAbsent:
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	case len(s.poolsFail) > 0:
+		code := s.poolsFail[0]
+		s.poolsFail = s.poolsFail[1:]
+		s.write(w, code, map[string]any{"error": "forced", "code": "forced"})
+		return
+	}
+	var body struct {
+		Pools []struct {
+			Pool                *string `json:"pool"`
+			Model               *string `json:"model"`
+			MaxInstances        *int    `json:"max_instances"`
+			MaxSessionsPerDay   *int    `json:"max_sessions_per_day"`
+			SessionsToday       *int    `json:"sessions_today"`
+			SessionsDayResetsAt *string `json:"sessions_day_resets_at"`
+		} `json:"pools"`
+		ReportedAt *string `json:"reported_at"`
+	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		invalid("pools body: " + err.Error())
+		return
+	}
+	if body.Pools == nil || body.ReportedAt == nil {
+		invalid("pools and reported_at are required")
+		return
+	}
+	if _, err := time.Parse(time.RFC3339, *body.ReportedAt); err != nil {
+		invalid("reported_at is not RFC 3339")
+		return
+	}
+	var set []string
+	seen := map[string]bool{}
+	for _, p := range body.Pools {
+		if p.Pool == nil || p.Model == nil || p.MaxInstances == nil || p.SessionsToday == nil || p.SessionsDayResetsAt == nil {
+			invalid("a pool needs pool, model, max_instances, sessions_today and sessions_day_resets_at")
+			return
+		}
+		if n := *p.Pool; (n != "" && n != "routine" && n != "judgement") || seen[n] {
+			invalid("pool must be routine, judgement or empty, each once")
+			return
+		}
+		seen[*p.Pool] = true
+		reset, err := time.Parse(time.RFC3339, *p.SessionsDayResetsAt)
+		if err != nil || !reset.Equal(reset.UTC().Truncate(24*time.Hour)) {
+			invalid("sessions_day_resets_at must be a UTC midnight, RFC 3339")
+			return
+		}
+		if *p.MaxInstances < 0 || *p.MaxInstances > 100 || *p.SessionsToday < 0 || (p.MaxSessionsPerDay != nil && (*p.MaxSessionsPerDay < 1 || *p.MaxSessionsPerDay > 100)) {
+			invalid("max_instances 0-100, sessions_today >= 0, max_sessions_per_day null or 1-100")
+			return
+		}
+		if *p.Model != "" && !usageModelRe.MatchString(*p.Model) {
+			invalid("model must be empty or match ^[A-Za-z0-9._:/-]{1,128}$")
+			return
+		}
+		set = append(set, *p.Pool)
+	}
+	if seen[""] && len(body.Pools) > 1 {
+		invalid("an untiered officer's pool \"\" is its only one")
+		return
+	}
+	if s.poolSets == nil {
+		s.poolSets = map[string][]string{}
+	}
+	s.poolSets[officer] = set
+	s.poolsPuts = append(s.poolsPuts, UsagePut{Officer: officer, Raw: append([]byte(nil), raw...)})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ConsumerRow is one stored consumer-usage row: the account and counts the
+// last PUT of its (instance, consumer, session, hour) carried.
+type ConsumerRow struct {
+	Account                                                                          string
+	Turns, APICalls, InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens int64
+}
+
+// ConsumerUsagePath is the consumer-usage route under the base.
+const ConsumerUsagePath = "/api/v1/claude-pool/consumer-usage"
+
+// ConsumerUsageURL is the route's URL; PoolUsageURL the pool push's sibling
+// route (MUSTER_CC_USAGE_PUSH_URL), which the fake does not serve.
+func (s *Server) ConsumerUsageURL() string { return s.Server.URL + ConsumerUsagePath }
+func (s *Server) PoolUsageURL() string     { return s.Server.URL + "/api/v1/claude-pool/usage" }
+
+// AddPoolToken accepts tok on the claude-pool routes (HQ's pool-usage scope).
+func (s *Server) AddPoolToken(tok string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.poolTokens == nil {
+		s.poolTokens = map[string]bool{}
+	}
+	s.poolTokens[tok] = true
+}
+
+// FailConsumer makes the next len(codes) consumer-usage PUTs answer those
+// statuses, in order, before the route serves normally again.
+func (s *Server) FailConsumer(codes ...int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.consumerFail = append(s.consumerFail, codes...)
+}
+
+// ConsumerPuts returns the accepted consumer-usage PUTs' bodies, in order.
+func (s *Server) ConsumerPuts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.consumerPuts))
+	for i, b := range s.consumerPuts {
+		out[i] = string(b)
+	}
+	return out
+}
+
+// ConsumerRows returns the stored rows by "instance|consumer|session|hour".
+func (s *Server) ConsumerRows() map[string]ConsumerRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]ConsumerRow, len(s.consumerRows))
+	for k, v := range s.consumerRows {
+		out[k] = v
+	}
+	return out
+}
+
+// consumerSessionRe is HQ's session id.
+var consumerSessionRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// consumerUsage is PUT /claude-pool/consumer-usage, to the contract: the body
+// decoded strictly (an unknown field is a 400), instance required, consumer
+// pr-review, hours present; each row's hour RFC 3339 on the hour, its account
+// set, its session HQ's id, within the last 8 days and not in the future, its
+// counts present and non-negative; 413 past
+// 256 KiB or 1000 rows. 204, each row upserted (the last PUT replaces).
+func (s *Server) consumerUsage(w http.ResponseWriter, r *http.Request, raw []byte) {
+	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	switch {
+	case s.ConsumerAbsent:
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	case r.Method != http.MethodPut:
+		s.write(w, http.StatusMethodNotAllowed, map[string]any{"error": "PUT only"})
+		return
+	case !s.poolTokens[tok]:
+		s.write(w, http.StatusUnauthorized, map[string]any{"error": "bad token"})
+		return
+	case len(s.consumerFail) > 0:
+		code := s.consumerFail[0]
+		s.consumerFail = s.consumerFail[1:]
+		s.write(w, code, map[string]any{"error": "forced", "code": "forced"})
+		return
+	case len(raw) > maxUsageBody:
+		s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "body over 256 KiB", "code": "too_large"})
+		return
+	}
+	var body struct {
+		Instance *string `json:"instance"`
+		Consumer *string `json:"consumer"`
+		Hours    []struct {
+			Hour                string `json:"hour"`
+			Account             string `json:"account"`
+			Session             string `json:"session"`
+			Turns               *int64 `json:"turns"`
+			APICalls            *int64 `json:"api_calls"`
+			InputTokens         *int64 `json:"input_tokens"`
+			OutputTokens        *int64 `json:"output_tokens"`
+			CacheReadTokens     *int64 `json:"cache_read_tokens"`
+			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
+			// No model: HQ's consumer-usage route has none, and its strict
+			// decoder refuses one (unknown field "model").
+		} `json:"hours"`
+	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		invalid("consumer usage body: " + err.Error())
+		return
+	}
+	if body.Instance == nil || *body.Instance == "" || body.Consumer == nil || body.Hours == nil {
+		invalid("instance, consumer and hours are required")
+		return
+	}
+	if *body.Consumer != "pr-review" {
+		invalid("unknown consumer")
+		return
+	}
+	if len(body.Hours) > maxUsageBuckets {
+		s.write(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "over 1000 rows", "code": "too_large"})
+		return
+	}
+	rows := map[string]ConsumerRow{}
+	for _, h := range body.Hours {
+		t, err := time.Parse(time.RFC3339, h.Hour)
+		if err != nil || !t.Equal(t.Truncate(time.Hour)) || h.Account == "" || !consumerSessionRe.MatchString(h.Session) {
+			invalid("a row needs an hour on the hour, an account and a session id")
+			return
+		}
+		if now := s.Now(); t.Before(now.Add(-8*24*time.Hour)) || t.After(now) {
+			invalid("hour is older than 8 days or in the future")
+			return
+		}
+		for _, n := range []*int64{h.Turns, h.APICalls, h.InputTokens, h.OutputTokens, h.CacheReadTokens, h.CacheCreationTokens} {
+			if n == nil || *n < 0 {
+				invalid("a row's counts are required and non-negative")
+				return
+			}
+		}
+		rows[*body.Instance+"|"+*body.Consumer+"|"+h.Session+"|"+t.UTC().Format(time.RFC3339)] = ConsumerRow{Account: h.Account,
+			Turns: *h.Turns, APICalls: *h.APICalls, InputTokens: *h.InputTokens, OutputTokens: *h.OutputTokens,
+			CacheReadTokens: *h.CacheReadTokens, CacheCreationTokens: *h.CacheCreationTokens}
+	}
+	if s.consumerRows == nil {
+		s.consumerRows = map[string]ConsumerRow{}
+	}
+	for k, v := range rows {
+		s.consumerRows[k] = v
+	}
+	s.consumerPuts = append(s.consumerPuts, append([]byte(nil), raw...))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // UsagePut is one accepted PUT /officers/{id}/usage: the officer the token
@@ -262,6 +539,10 @@ func (s *Server) UsageRows() int {
 	defer s.mu.Unlock()
 	return len(s.usageRows)
 }
+
+// usageModelRe is HQ's model id on the usage and pools routes ("" is taken:
+// no model); any other is a refusal of the whole request.
+var usageModelRe = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // Usage route limits, as HQ states them.
 const (
@@ -297,6 +578,8 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 			OutputTokens        *int64 `json:"output_tokens"`
 			CacheReadTokens     *int64 `json:"cache_read_tokens"`
 			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
+			// Model is optional: the session-hour's model, absent when unknown.
+			Model *string `json:"model"`
 		} `json:"buckets"`
 	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
@@ -334,6 +617,10 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 				invalid("a bucket's counts are required and non-negative")
 				return
 			}
+		}
+		if b.Model != nil && *b.Model != "" && !usageModelRe.MatchString(*b.Model) {
+			invalid("model must match ^[A-Za-z0-9._:/-]{1,128}$")
+			return
 		}
 		rows[officer+"|"+*body.Instance+"|"+b.Session+"|"+h.UTC().Format(time.RFC3339)] = [2]int64{*b.Turns, *b.APICalls}
 	}
@@ -884,6 +1171,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.write(w, s.status, map[string]any{"error": "forced", "code": "forced"})
 		return
 	}
+	if r.URL.Path == ConsumerUsagePath {
+		s.consumerUsage(w, r, raw)
+		return
+	}
 	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	caller, ok := s.tokens[tok]
 	if !ok {
@@ -1017,6 +1308,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.claimNext(w, officer, body, now)
 	case len(parts) == 2 && parts[1] == "usage" && r.Method == http.MethodPut:
 		s.usage(w, officer, raw)
+	case len(parts) == 2 && parts[1] == "pools" && r.Method == http.MethodPut:
+		s.pools(w, officer, raw)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})

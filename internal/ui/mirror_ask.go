@@ -54,6 +54,9 @@ const (
 	// MirrorAskCancelPath dismisses a card's picker in the terminal with one
 	// Escape (POST).
 	MirrorAskCancelPath = "/mirror/view/ask/cancel"
+	// MirrorAskMessagePath sends a failed card's answer to the session as an
+	// ordinary message (POST): "Send as a message".
+	MirrorAskMessagePath = "/mirror/view/ask/message"
 )
 
 // The states a card can be in, as data-ask-state carries them.
@@ -229,6 +232,14 @@ type MirrorAskLiveView struct {
 	// ByIndex: each option's value is its place in the question ("0", "1",
 	// …), not its label — an opencode card, answered by index.
 	ByIndex bool
+	// Record (failed) is the failure's own record on the Answers page: the
+	// card links to it.
+	Record string
+	// Message (failed) says the card offers "Send as a message": typing again
+	// cannot work (the picker is gone or unreadable), so the answer muster was
+	// typing is sent to the session as an ordinary message
+	// (MirrorAskMessagePath), the picker dismissed first if it is still there.
+	Message bool
 }
 
 // agent is who asks, as the card names it.
@@ -264,6 +275,9 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	case AskStateFailed:
 		label = "answer in the terminal"
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Note, true)}
+		if v.Message && v.Unanswerable == "" {
+			body = g.Group{body, askMessageForm(v)}
+		}
 		switch {
 		case v.Retry && v.Unanswerable == "" && v.Chosen != nil:
 			// The picker holds part of THIS answer: Try again resends it as
@@ -308,6 +322,10 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	}
 	if v.CanCancel && sent != "gone" && (v.State == AskStatePending || v.State == AskStateFailed) {
 		body = g.Group{body, askCancelControl(v)}
+	}
+	if v.Record != "" && (v.State == AskStateFailed || v.Error != "") {
+		body = g.Group{body, A(Href(v.Record), hx("hx-boost", "false"), g.Attr("data-ask-record", ""),
+			Class("inline-flex min-h-[44px] items-center text-xs text-accent underline"), g.Text("What happened (the failure's record)"))}
 	}
 	return Section(
 		g.Attr("data-ask-live", ""),
@@ -430,6 +448,22 @@ func askForm(v MirrorAskLiveView) g.Node {
 			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text(submit)),
 			Span(Class("text-xs text-muted"), g.Text("The terminal shows this question too — whichever is answered first counts."))),
 	)
+}
+
+// askMessageForm is a failed card's "Send as a message": the card's call and
+// nothing else — the server sends the answer muster was typing (never one the
+// page names), dismissing the picker first if it is still on screen.
+func askMessageForm(v MirrorAskLiveView) g.Node {
+	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-message", ""), Method("post"), Action(MirrorAskMessagePath), Class("flex flex-col gap-2"),
+		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
+		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
+		hidden("tool", v.ToolID),
+		P(g.Attr("data-ask-error", ""), g.Attr("role", "alert"), g.Attr("hidden", ""),
+			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
+		Div(Class("flex flex-wrap items-center gap-2"),
+			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Send as a message")),
+			Span(Class("text-xs text-muted"), g.Text("Dismisses the picker if it is still there, then sends your answer to "+v.agent()+" as a message."))))
 }
 
 // askRetryForm is a fixed retry: Chosen, as hidden fields, and "Try again" —
@@ -631,6 +665,9 @@ func askScript() g.Node {
     say('');
     if (btn) btn.disabled = true;
     var body = new URLSearchParams(new FormData(form));
+    // The door the answer came from (the answer-attempt log): the card in
+    // the Android app's shell, or in a browser.
+    body.set('door', window.musterApp ? 'phone' : 'card');
     fetch(form.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
@@ -677,7 +714,9 @@ func askScript() g.Node {
     function say(msg) { if (!note) return; note.textContent = msg || ''; note.hidden = !msg; }
     say('');
     if (btn) btn.disabled = true;
-    fetch(form.getAttribute('action'), { method: 'POST', body: new URLSearchParams(new FormData(form)), credentials: 'same-origin',
+    var cbody = new URLSearchParams(new FormData(form));
+    cbody.set('door', window.musterApp ? 'phone' : 'card');
+    fetch(form.getAttribute('action'), { method: 'POST', body: cbody, credentials: 'same-origin',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
         return r.text().then(function (t) {

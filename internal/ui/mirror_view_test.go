@@ -190,9 +190,9 @@ func TestTakeContextIsTheLatestTurnsTokenCount(t *testing.T) {
 		events []cctranscript.Event
 		want   *ContextView
 	}{
-		{"a turn's usage", []cctranscript.Event{use(124_400)}, &ContextView{Tokens: 124_400, Label: "124k context"}},
-		{"a 1M-scale count", []cctranscript.Event{use(966_483)}, &ContextView{Tokens: 966_483, Label: "966k context"}},
-		{"the LATEST turn wins", []cctranscript.Event{use(10_000), use(20_000)}, &ContextView{Tokens: 20_000, Label: "20k context"}},
+		{"a turn's usage", []cctranscript.Event{use(124_400)}, &ContextView{Tokens: 124_400, Label: "124k", Count: "124k", Detail: "124,400 tokens", Title: ClaudeContextTitle}},
+		{"a 1M-scale count", []cctranscript.Event{use(966_483)}, &ContextView{Tokens: 966_483, Label: "966k", Count: "966k", Detail: "966,483 tokens", Title: ClaudeContextTitle}},
+		{"the LATEST turn wins", []cctranscript.Event{use(10_000), use(20_000)}, &ContextView{Tokens: 20_000, Label: "20k", Count: "20k", Detail: "20,000 tokens", Title: ClaudeContextTitle}},
 		{"no usage at all (an older host): nothing", []cctranscript.Event{{Kind: cctranscript.KindText, Text: "x"}, {Kind: cctranscript.KindPrompt, Text: "y"}}, nil},
 	}
 	for _, c := range cases {
@@ -215,7 +215,7 @@ func TestTakeContextIsTheLatestTurnsTokenCount(t *testing.T) {
 		t.Error("a batch that did not change the usage reported it again")
 	}
 	tr.Ops([]cctranscript.Event{use(2000)})
-	if got := tr.TakeContext(); got == nil || got.Label != "2k context" {
+	if got := tr.TakeContext(); got == nil || got.Label != "2k" {
 		t.Errorf("a new turn's usage was not reported: %+v", got)
 	}
 	tr.Reset()
@@ -254,10 +254,13 @@ func TestTokenCount(t *testing.T) {
 // The readout's home: in the header, hidden until a batch carries one.
 func TestTheViewHeaderHasAHiddenContextReadout(t *testing.T) {
 	html := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"}))
-	if !strings.Contains(html, `<span id="mv-context" hidden`) {
-		t.Errorf("no hidden #mv-context in the view:\n%s", html)
+	if !strings.Contains(html, `<button id="mv-context" type="button" hidden`) || !strings.Contains(html, `popovertarget="mv-context-detail"`) {
+		t.Errorf("no hidden #mv-context opening its popover in the view:\n%s", html)
 	}
-	if !strings.Contains(html, "if (m.context && m.context.label) {") {
+	if !strings.Contains(html, `<div id="mv-context-detail" popover="auto"`) {
+		t.Error("no popover for the context chip's detail")
+	}
+	if !strings.Contains(html, "if (m.context && m.context.label) {\n      setContext(m.context);") {
 		t.Error("the view script does not apply a batch's context")
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -183,10 +184,19 @@ func (c toolCaller) refOrigin() refOrigin {
 
 // mirroredSession reports whether c is one of the owner's mirrored Claude Code
 // sessions — the caller mirror_mcp.go builds from a mirror host's token and a
-// session that host lists — and not a dispatched agent or muster itself. It is
-// attention_answer's caller-kind rule.
+// session that host lists — and not a dispatched agent, muster itself, or a
+// mirrored OPENCODE session (openCodeSession), which acts as no operator. It is
+// attention_answer's caller-kind rule, and ownersOwnSession's.
 func (c toolCaller) mirroredSession() bool {
-	return c.agent == nil && c.asker.AgentID == 0 && !c.asker.System && c.asker.MirrorHost != "" && c.asker.MirrorSession != ""
+	return c.agent == nil && c.asker.AgentID == 0 && !c.asker.System && c.asker.MirrorHost != "" && c.asker.MirrorSession != "" &&
+		!c.openCodeSession()
+}
+
+// openCodeSession reports whether c is a mirrored opencode session: THE ONE
+// predicate the door's opencode tool set (openCodeMirrorTools) and the
+// operator rules (mirroredSession) refuse it by.
+func (c toolCaller) openCodeSession() bool {
+	return mirror.OpenCodeMCPCaller(c.asker.MirrorSession)
 }
 
 // askerKey names the caller for the wait bounds.
@@ -679,7 +689,9 @@ func (s *Server) taskScopeOf(ctx context.Context, c toolCaller) (taskScope, erro
 		// (design 5.1: a spawned agent keeps task_get and task_comment; its
 		// rules say to comment the PR and set the task ready_for_review). The
 		// caller is resolved by callerHostDispatch, the one binding rule.
-		if h, err := s.callerHostDispatch(ctx, c.asker.MirrorHost, c.asker.MirrorSession, c.mirrorWindow); err == nil {
+		// A host dispatch records its session's bare id (an opencode one
+		// without its key's prefix: mirror.SessionIDOf).
+		if h, err := s.callerHostDispatch(ctx, c.asker.MirrorHost, mirror.SessionIDOf(c.asker.MirrorSession), c.mirrorWindow); err == nil {
 			if h.Status == plugins.HostDispatchRunning && h.TaskID > 0 {
 				sc.ids[h.TaskID] = true
 			}
@@ -864,9 +876,13 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 	n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, c.refOrigin())), writerTaskTool, in.ID, in.Status)
 	if err == nil || errors.Is(err, errQueuedUpstream) {
 		// A mirrored session picking the task up claims it (task_claims.go;
-		// open's release is setNoteStatus's).
-		s.claimOnStatus(ctx, in.ID, in.Status,
-			claimant{session: c.asker.MirrorSession, name: c.asker.Label, host: c.asker.MirrorHost})
+		// open's release is setNoteStatus's). An opencode session claims
+		// nothing: a claim ends when its CLAUDE session's window goes
+		// (sessionEnded), which an opencode session never has.
+		if !c.openCodeSession() {
+			s.claimOnStatus(ctx, in.ID, in.Status,
+				claimant{session: c.asker.MirrorSession, name: c.asker.Label, host: c.asker.MirrorHost})
+		}
 	}
 	if errors.Is(err, errQueuedUpstream) {
 		return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})

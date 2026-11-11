@@ -209,31 +209,42 @@ func (s *Server) openCodeFormOf(ctx context.Context, h mirror.HostView, e mirror
 
 // handleOpenCodeAskAnswer is a card's submit for e's opencode window (the
 // caller has checked the owner, same origin, -interactive and a fresh
-// sign-in): the window's ask, answered through its host.
-func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request, h mirror.HostView, e mirror.SessionView) {
+// sign-in): the window's ask, answered through its host. att is the caller's
+// attempt (ask_attempts.go): every return here names its reason.
+func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request, h mirror.HostView, e mirror.SessionView, att *attempt) {
 	tool := r.PostFormValue("tool")
 	p, waiting := openCodePending(h, e)
 	if !waiting || tool == "" || p.PromptID != tool {
 		// 🔴 Not the ask the window waits on now: nothing is sent.
+		att.end("not-waiting")
 		v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: tool, State: ui.AskStateExpired, Note: openCodeCardGone, Agent: openCodeAgentName}
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
 	v, form := s.openCodeCard(r.Context(), h, e, p)
+	att.shape(v.Questions, nil)
 	if v.Unanswerable != "" {
+		att.end("unanswerable")
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
 	picks, answers, err := formPicks(form, r.PostForm)
 	if err != nil {
+		att.end("invalid")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	for _, pk := range picks {
+		if pk.Other != "" {
+			att.a.Shape.Other = true
+		}
 	}
 	// The page is not the wait's owner: the hub bounds it.
 	ctx := context.WithoutCancel(r.Context())
 	if p.Kind == mirror.PendingPermission {
 		a, can := s.ext.Mirror.(openCodeAnswerer)
 		if !can {
+			att.end("unsupported")
 			http.Error(w, mirror.ErrOpenCodeAnswerUnsupported.Error(), http.StatusConflict)
 			return
 		}
@@ -241,11 +252,13 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 	} else {
 		f, can := s.ext.Mirror.(openCodeFormer)
 		if !can {
+			att.end("unsupported")
 			http.Error(w, mirror.ErrOpenCodeFormsUnsupported.Error(), http.StatusConflict)
 			return
 		}
 		err = f.AnswerOpenCodeForm(ctx, h.Host, e.Session, e.Window, form, picks)
 	}
+	att.end(openCodeAnswerResult(err))
 	if err != nil {
 		s.logger.Printf("mirror: answering the opencode ask in %s/%s%s: %v", h.Host, e.Session, e.Window, err)
 		why := err.Error()
@@ -263,6 +276,7 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 			why = openCodeRefusedText
 		}
 		v.Error = why
+		v.Record = answersCardPath(tool)
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}

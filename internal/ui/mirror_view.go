@@ -273,8 +273,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
-							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
-								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
+							mirrorContextChip(),
 							mirrorUpdatingChip(),
 							// Below `sm` the Preview button is here, in the second
 							// row, so the title keeps its width (plugin_chip.go).
@@ -773,24 +772,96 @@ func (t *MirrorTranscript) appendRow(toolID, state string, row g.Node) []MirrorO
 }
 
 // ContextView is the header's context-usage readout (mirrorViewBatch.Context):
-// the latest turn's context, as a count ("124k context") — and, from a
-// runtime that reports them beside its events (opencode: SetAgentContext),
-// its model and the model's context window ("big-pickle · 5k / 262k
-// context"). The count means one thing for every runtime: the tokens the
-// latest model request was sent (input + cache read + cache write).
+// the latest turn's context, as a count — and, from a runtime that reports
+// them beside its events (opencode: SetAgentContext), its model and the
+// model's context window. The count means one thing for every runtime: the
+// tokens the latest model request was sent (input + cache read + cache write).
+//
+// 🔴 ONE RULE, ONE PLACE: contextView builds every field, for every runtime,
+// and the page only places them (mirrorViewScript's setContext) — it never
+// spells a label, a share or a threshold of its own.
 type ContextView struct {
 	Tokens int64  `json:"tokens"`
 	Limit  int64  `json:"limit,omitempty"`
 	Model  string `json:"model,omitempty"`
-	Label  string `json:"label"`
-	// Title is the readout's tooltip, "" for the page's own ("Context used").
+	// Label is the chip's whole short text: "<name> · <count>", or <count>.
+	Label string `json:"label"`
+	// Name is the model without its provider prefix (contextModelName), ""
+	// with no model; the chip truncates it first.
+	Name string `json:"name,omitempty"`
+	// Count is "<tokens>/<window>" short ("29k/1M"), or "<tokens>" with no
+	// window known; the chip never truncates it.
+	Count string `json:"count"`
+	// Detail is the exact readout the chip's popover and tooltip show: the
+	// whole model id and the exact counts, with the share of a known window.
+	Detail string `json:"detail"`
+	// Level tints the chip as a known window fills: ContextLevelWarn,
+	// ContextLevelDanger, or "" (below ContextWarnPct, or no window known).
+	Level string `json:"level,omitempty"`
+	// Title is how the number is derived, "" when there is nothing to add.
 	Title string `json:"title,omitempty"`
 }
 
-// AgentContextTitle is the tooltip of a readout a runtime reported
-// (SetAgentContext): how its number is derived.
+// The chip's tint thresholds, in percent of a known context window, and the
+// separator between its name and count (the label's, and the page's when it
+// draws the two as parts).
+const (
+	contextSep         = " · "
+	ContextWarnPct     = 70
+	ContextDangerPct   = 90
+	ContextLevelWarn   = "warn"
+	ContextLevelDanger = "danger"
+)
+
+// AgentContextTitle is how a readout a runtime reported (SetAgentContext) is
+// derived; the chip's popover shows it under the detail.
 const AgentContextTitle = "Context used by the latest model request: its input + cache read + cache write tokens, " +
 	"as the agent reports them (output is not counted: it is in the next request's input), of the model's context window."
+
+// ClaudeContextTitle is how Claude Code's readout (a turn's usage) is
+// derived; its popover shows it under the exact count.
+const ClaudeContextTitle = "Context used by the latest request: its input + cache read + cache write tokens " +
+	"(output is not counted: it is in the next request's input)."
+
+// contextView is THE readout of tokens in context, of a window of limit (0:
+// unknown), on model ("" unknown).
+func contextView(tokens, limit int64, model, title string) *ContextView {
+	v := &ContextView{Tokens: tokens, Limit: limit, Model: model, Name: contextModelName(model), Title: title}
+	v.Count = tokenCount(tokens)
+	exact := groupDigits(tokens)
+	if limit > 0 {
+		v.Count += "/" + tokenCount(limit)
+		// One rounded share for the detail AND the tint, so the chip never
+		// says "(70%)" untinted or "(89%)" red.
+		pct := (tokens*100 + limit/2) / limit
+		exact += " of " + groupDigits(limit) + " tokens (" + strconv.FormatInt(pct, 10) + "%)"
+		switch {
+		case pct >= ContextDangerPct:
+			v.Level = ContextLevelDanger
+		case pct >= ContextWarnPct:
+			v.Level = ContextLevelWarn
+		}
+	} else {
+		exact += " tokens"
+	}
+	v.Label, v.Detail = v.Count, exact
+	if v.Name != "" {
+		v.Label = v.Name + contextSep + v.Count
+	}
+	if model != "" {
+		v.Detail = model + " — " + exact
+	}
+	return v
+}
+
+// contextModelName is model without its provider prefix: what follows its
+// last "/" ("vendor/name" → "name"), or model whole when nothing does.
+func contextModelName(model string) string {
+	if i := strings.LastIndexByte(model, '/'); i >= 0 && i < len(model)-1 {
+		return model[i+1:]
+	}
+	return model
+}
 
 // TakeContext is the context readout when Ops (or SetAgentContext) has drawn
 // a newer one since the last call, else nil — so a batch carries it only
@@ -803,20 +874,66 @@ func (t *MirrorTranscript) TakeContext() *ContextView {
 	case t.agentCtx != nil:
 		t.fresh = false
 		c := t.agentCtx
-		label := tokenCount(c.Tokens)
-		if c.Limit > 0 {
-			label += " / " + tokenCount(c.Limit)
-		}
-		label += " context"
-		if c.Model != "" {
-			label = c.Model + " · " + label
-		}
-		return &ContextView{Tokens: c.Tokens, Limit: c.Limit, Model: c.Model, Label: label, Title: AgentContextTitle}
+		return contextView(c.Tokens, c.Limit, c.Model, AgentContextTitle)
 	case t.usage != nil:
 		t.fresh = false
-		return &ContextView{Tokens: t.usage.Tokens, Label: tokenCount(t.usage.Tokens) + " context"}
+		return contextView(t.usage.Tokens, 0, "", ClaudeContextTitle)
 	}
 	return nil
+}
+
+// mirrorContextChipID is the header's context chip; mirrorContextPopoverID
+// its full-detail popover. One of each per document.
+const (
+	mirrorContextChipID    = "mv-context"
+	mirrorContextPopoverID = "mv-context-detail"
+)
+
+// mirrorContextChip is the header's context readout (ContextView), drawn
+// empty and hidden: the view script's setContext fills it from a batch's
+// parts. It is a button that opens the exact readout in a popover — the
+// header title's pattern (fullTitlePopover, placed by floatingMenuScript) —
+// so a tap shows it on a phone, and its title shows it on hover.
+//
+// 🔴 IT SHRINKS, NEVER PUSHES. min-w-0 and a max width let it give up room
+// to the header's buttons at a phone's width; inside it only the model name
+// truncates (min-w-0 truncate), the count is shrink-0 — the numbers are what
+// the chip is for. relative z-20: over the title button's 44px hit area
+// (mirrorTitleHitClass, z-10), which spans this row while the title is
+// clipped, so a tap on the chip opens the chip's popover and not the title's.
+// The row's Updating… chip (mirrorUpdatingChip) is z-30, over this one: a
+// long name runs under it at a phone's width, and the stale-page indicator
+// must stay seen (it is pointer-events-none, so a tap still reaches this).
+// The tint is data-level (ContextView.Level), on the warning and error tokens.
+func mirrorContextChip() g.Node {
+	return g.Group{
+		Button(
+			ID(mirrorContextChipID),
+			Type("button"),
+			g.Attr("hidden", ""),
+			g.Attr("title", "Context used"),
+			g.Attr("popovertarget", mirrorContextPopoverID),
+			g.Attr("aria-haspopup", "dialog"),
+			g.Attr("aria-controls", mirrorContextPopoverID),
+			g.Attr("aria-expanded", "false"),
+			Class("press relative z-20 inline-flex min-w-0 max-w-[16rem] items-center gap-1 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus [&[hidden]]:hidden "+
+				"data-[level=warn]:bg-st-warning-bg data-[level=warn]:text-st-warning-fg data-[level=warn]:ring-st-warning-fg/40 "+
+				"data-[level=danger]:bg-st-error-bg data-[level=danger]:text-st-error-fg data-[level=danger]:ring-st-error-fg/40"),
+			Span(g.Attr("data-ctx-name", ""), Class("min-w-0 truncate [&[hidden]]:hidden")),
+			Span(g.Attr("data-ctx-sep", ""), Class("shrink-0 [&[hidden]]:hidden")),
+			Span(g.Attr("data-ctx-count", ""), Class("shrink-0 whitespace-nowrap")),
+		),
+		Div(
+			ID(mirrorContextPopoverID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "dialog"),
+			g.Attr("aria-label", "Context used"),
+			g.Attr("data-floating-menu", ""),
+			Class(fullTitlePopoverClass),
+			Span(g.Attr("data-ctx-detail", ""), Class("[overflow-wrap:anywhere] text-sm font-semibold tabular-nums")),
+			Span(g.Attr("data-ctx-how", ""), Class("text-xs text-muted [&[hidden]]:hidden")),
+		),
+	}
 }
 
 // SetAgentContext records the context fill a runtime reported beside its
@@ -1117,7 +1234,32 @@ func mirrorViewScript() g.Node {
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
-  var ctxEl = document.getElementById('mv-context');
+  var ctxEl = document.getElementById('` + mirrorContextChipID + `');
+  var ctxPop = document.getElementById('` + mirrorContextPopoverID + `');
+  // setContext draws the context chip (mirrorContextChip) from a batch's
+  // readout — the server's parts (ui.ContextView), placed as they come: this
+  // spells no label, share or threshold of its own. null hides it.
+  function setContext(c) {
+    function part(sel, text) {
+      var el = (sel === 'detail' || sel === 'how' ? ctxPop : ctxEl).querySelector('[data-ctx-' + sel + ']');
+      el.textContent = text || '';
+      el.hidden = !text;
+    }
+    if (!c) {
+      ctxEl.hidden = true;
+      // A closed popover's hidePopover throws in older engines; none without the API.
+      if (ctxPop.hidePopover) { try { ctxPop.hidePopover(); } catch (e) {} }
+      return;
+    }
+    part('name', c.name);
+    part('sep', c.name ? '` + contextSep + `' : '');
+    part('count', c.count);
+    part('detail', c.detail);
+    part('how', c.title);
+    ctxEl.title = c.detail;
+    if (c.level) ctxEl.setAttribute('data-level', c.level); else ctxEl.removeAttribute('data-level');
+    ctxEl.hidden = false;
+  }
   // clearQueued empties the region of what Claude Code has queued
   // (cc_queued.go) — looked up each time: a patch replaces the element. A
   // view that ended (the window stopped being Claude, the CLI exited) or a
@@ -1214,7 +1356,7 @@ func mirrorViewScript() g.Node {
     clearLog();
     clearQueued();
     window.muMirrorIndex = null;
-    ctxEl.hidden = true; ctxEl.textContent = '';
+    setContext(null);
     document.dispatchEvent(new CustomEvent('muster:chat-index'));
     gen = ''; offset = 0; opLog = []; opBytes = 0; firstAt = 0; dirty = false;
     if (snap && snapRef) snap.drop(snapRef);
@@ -1289,7 +1431,7 @@ func mirrorViewScript() g.Node {
     // The prompt index (chatIndexScript reads it): a Reset starts a transcript
     // over, so its index is gone until the host sends the new one — and a host
     // that predates it never does.
-    if (m.reset) { clearLog(); window.muMirrorIndex = null; ctxEl.hidden = true; ctxEl.textContent = ''; }
+    if (m.reset) { clearLog(); window.muMirrorIndex = null; setContext(null); }
     if (m.index) { window.muMirrorIndex = m.index; }
     if (m.reset || m.index) document.dispatchEvent(new CustomEvent('muster:chat-index'));
     // Context usage: only a batch whose usage changed carries it; an older
@@ -1298,9 +1440,7 @@ func mirrorViewScript() g.Node {
     // message written here (AgentSessionField), so a send names what was shown.
     if (m.gen) { var shownEl = document.querySelector('input[name="` + AgentSessionField + `"]'); if (shownEl) shownEl.value = m.gen; }
     if (m.context && m.context.label) {
-      ctxEl.textContent = m.context.label;
-      ctxEl.title = m.context.title || 'Context used';
-      ctxEl.hidden = false;
+      setContext(m.context);
     }
     (m.ops || []).forEach(function (op) {
       // A group's state (tool_groups.go): one attribute, on the group.

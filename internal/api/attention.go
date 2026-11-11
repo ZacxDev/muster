@@ -1435,6 +1435,8 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 		s.lapseDraftChecks(ctx)
 		s.recheckOfflineHosts()
 		s.sweepUnroutedMessages(ctx)
+		// The answer-attempt log's retention (ask_attempts.go): hourly.
+		s.pruneAskAttempts(ctx)
 		select {
 		case <-ctx.Done():
 			return

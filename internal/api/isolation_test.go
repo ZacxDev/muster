@@ -442,6 +442,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /rules/{id}/enable":  classParam,
 	"POST /rules/{id}/delete":  classParam,
 	"GET /usage":               classList,
+	"GET /answers":             classList,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
@@ -545,9 +546,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/confirm-send": classMirror,
 	// AskUserQuestion (mirror_ask.go): the live region (address in the query)
 	// and the answers (address in the form, plus the call's tool id).
-	"GET /mirror/view/asks":        classMirror,
-	"POST /mirror/view/ask":        classMirror,
-	"POST /mirror/view/ask/cancel": classMirror,
+	"GET /mirror/view/asks":         classMirror,
+	"POST /mirror/view/ask":         classMirror,
+	"POST /mirror/view/ask/cancel":  classMirror,
+	"POST /mirror/view/ask/message": classMirror,
 	// An opencode ask's answer (attention_opencode.go): addressed by the
 	// window's host and session in the form, like a send.
 	"POST /attention/opencode/answer": classMirror,
@@ -1695,7 +1697,7 @@ func namesObject(route string) bool {
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/view/chief" || route == "POST /mirror/view/proposal" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/opencode/answer" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /mirror/view/ask/message" || route == "POST /attention/opencode/answer" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent

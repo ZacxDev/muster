@@ -1094,7 +1094,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeAnswered:
 				if hc.version >= 2 {
-					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
+					hc.answered(m.ID, m.Error, m.Refusal, m.Keys, m.Screen)
 				}
 			case TypeAskCancelled:
 				if hc.version >= 2 {

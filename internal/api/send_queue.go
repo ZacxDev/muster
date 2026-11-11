@@ -220,6 +220,29 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		s.heldRefusal(r.Context(), w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
 		return
 	}
+	_, err := s.enqueueSend(ctx, q, text)
+	switch {
+	case errors.Is(err, sendqueue.ErrFull):
+		refuse(http.StatusConflict, strings.TrimPrefix(err.Error(), "sendqueue: "), noticeQueueFull)
+		return
+	case err != nil:
+		refuse(http.StatusInternalServerError, "could not queue the message", noticeFailed)
+		return
+	}
+	if nav {
+		http.Redirect(w, r, withNotice(q.back, noticeQueued), http.StatusSeeOther)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// enqueueSend queues text for q's target — the gates (sendQueueGate, the
+// text's sanitizing, the held-send check) are the caller's — as a queue post
+// does: the sign-in time ctx carries (the step-up decided now holds for the
+// delivery), the hub's last paste, the window addressed, the dispatcher
+// kicked. Its callers: a queue post (sendQueueAdd), and a failed question
+// card's "Send as a message" (handleMirrorAskMessage).
+func (s *Server) enqueueSend(ctx context.Context, q sendQueueTarget, text string) (sendqueue.Item, error) {
 	// The session the page showed (a hand-opened opencode pane's): the row is
 	// delivered only while the window still shows it (mirror.ShownSession).
 	it := sendqueue.Item{Target: q.t, Body: text, AgentSession: q.agentSession}
@@ -228,14 +251,11 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	// is stored with it so that a restart does not forget it.
 	it.AfterSince = s.ext.Mirror.AgentState(ctx, q.t.Host, q.t.Session, q.t.Window).Pasted
 	stored, err := s.ext.SendQueue.Enqueue(ctx, it)
-	switch {
-	case errors.Is(err, sendqueue.ErrFull):
-		refuse(http.StatusConflict, strings.TrimPrefix(err.Error(), "sendqueue: "), noticeQueueFull)
-		return
-	case err != nil:
-		s.logger.Printf("sendqueue: queue for %s: %v", q.t, err)
-		refuse(http.StatusInternalServerError, "could not queue the message", noticeFailed)
-		return
+	if err != nil {
+		if !errors.Is(err, sendqueue.ErrFull) {
+			s.logger.Printf("sendqueue: queue for %s: %v", q.t, err)
+		}
+		return sendqueue.Item{}, err
 	}
 	s.logger.Printf("sendqueue: queued message %d (%d bytes) for %s", stored.ID, len(stored.Body), q.t)
 	// The operator wrote to the session — when they QUEUED it, not when it is
@@ -243,11 +263,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	// waits for idle, so it would never be pasted while the ask held it.
 	s.mirrorAddressed(ctx, q.h.Host, q.e, mirror.PasteClaude, text, stored.ID)
 	s.kickSendQueue()
-	if nav {
-		http.Redirect(w, r, withNotice(q.back, noticeQueued), http.StatusSeeOther)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	return stored, nil
 }
 
 // sendQueueGateResult is why a queue (or a Retry) may not be queued for its

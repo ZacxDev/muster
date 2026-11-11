@@ -696,6 +696,58 @@ names and server instructions load at startup",
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
 
+### Mirrored opencode sessions
+
+An opencode TUI in a mirrored window reaches `/mcp` too, through the same
+opencode caller path as the preview tools ([below](#opencode-sessions)): its
+entry, in opencode's config under `mcp`, sends the secret and a static
+`X-Muster-Client: opencode`, never pane headers.
+
+```json
+"muster": {
+  "type": "remote",
+  "url": "http://127.0.0.1:47823/mcp",
+  "oauth": false,
+  "headers": {
+    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "X-Muster-Client": "opencode"
+  }
+}
+```
+
+1. **The host binds the call.** A request carrying the header skips the
+   tmux-server check; the secret, `Origin` and POST checks apply as before.
+   `initialize` and `tools/list` are forwarded with no session, marked as
+   opencode's. A `tools/call` is bound by the session id the call carries
+   (`params._meta["ai.opencode/sessionID"]`), by the **same** rule as the
+   preview tools: the one window whose active pane shows that session (or its
+   nearest ancestor), through a binding muster sends on. Anything else is a
+   tool error the model reads, and nothing is forwarded: no session id, an id
+   no window shows, an unverified title match, two windows. Pane headers on
+   such a request are ignored.
+2. **The host forwards the bound session's key**, `X-Muster-Agent-Session:
+   opencode:<id>`, and **no** Claude session. muster runs the call only if that
+   host lists **exactly one** window showing that session in its active pane
+   that it sends to (launcher-bound, or a verified title binding). A key beside
+   a Claude session, a Claude session in its place, or no key is refused.
+3. **It gets a narrower tool set.** The list it is shown, and the only names
+   it can call, are the ones below (`muster_help` too). Every other tool of
+   this door is explained as a tool error when named, and does not run.
+
+| Tool | opencode | Why |
+|---|---|---|
+| `attention_ask`, `attention_wait`, `attention_cancel` | **offered** | The ask is the session's, filed under its key (`opencode:<id>`) and shown under its window. Its answer is left for its `attention_wait` (delivery `pull`), as every mirrored session's is: muster never types it into the pane. A message you type into the opencode session does **not** settle its open ask (that is a Claude Code pane's rule), so answer it in the Attention view. |
+| `tasks_list`, `task_get`, `task_comment`, `task_set_status` | **offered** | Over the tasks that session created (a `created` link, which today only Claude Code's `muster task create` records, so usually none) and the task of its own running host dispatch. `in_progress` **claims nothing**, because a claim ends when its Claude session's window goes, which an opencode session never has. |
+| `attention_answer`, `connector_requests_list`, `connector_request_decide`, `plugin_drafts_list`, `plugin_draft_decide`, `plugin_messages_list`, `plugin_message_route`, `agent_destroy`, `chief_restart`, `dispatch_request`, `dispatch_approve` | refused | Each acts **as the operator**. Extending them to another runtime's sessions, often on other models, is a decision for the operator, not a default. |
+| `chief_ask` | refused | It hands the chief the session as a `mirror:` subject, and the chief's tools that act on one are built for Claude Code sessions. |
+| `route_reply` | refused | A route to an opencode session is refused before the queue, so no route can be one's. |
+| `agent_report_done` | refused | An opencode host dispatch reports through its reply's done line ([mirroring.md](mirroring.md)). |
+
+The `initialize` instructions name a mirrored opencode session, and say only
+to ask with `attention_ask` and wait with `attention_wait`. A muster that
+predates this ignores the key, so every call from an opencode caller is
+refused (no Claude session is named), and it lists the full set.
+
 ### The preview tools (`/preview-mcp`)
 
 With [previews](previews.md) on (`-preview` and a valid
@@ -767,8 +819,8 @@ headers:
 }
 ```
 
-A request carrying that header (on `/preview-mcp` only) skips the
-tmux-server check, since the service runs in no pane; the secret, `Origin`
+A request carrying that header (on `/preview-mcp` and `/mcp`; any other
+path is 404) skips the tmux-server check, since the service runs in no pane; the secret, `Origin`
 and POST checks apply as before. `initialize` and `tools/list` need no
 session and answer as for any caller, instructions included. A
 `tools/call` is bound to the **one** window whose active pane runs an
@@ -785,8 +837,8 @@ authenticate. It is believed only among this host's mirrored windows,
 behind the same per-host secret, so a forged id can at most bind a preview
 to **another of the same owner's windows on this host**, which is what a
 Claude Code caller can already do by naming another pane. `/mcp` (muster's
-own tools) ignores the header: an opencode-marked caller there is checked
-as before. On a host with one `muster-mirror` per tmux server, register the
+own tools) binds an opencode caller by the same rule
+([above](#mirrored-opencode-sessions)). On a host with one `muster-mirror` per tmux server, register the
 endpoint of the one whose tmux server runs the opencode TUIs. A call to
 another one finds no window (`no_window`).
 

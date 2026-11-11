@@ -749,14 +749,18 @@ verify, or any opencode window on a host that did not opt in — is disabled and
 says why. What the session **waits on** does reach muster (below).
 
 **The header** shows the session's model and how much context it fills, as
-"`<model> · 47k / 188k context`": the newest completed step's input + cache
+a chip "`<model> · 47k/188k`" (the model without its provider prefix: a
+`vendor/name` id shows `name`): the newest completed step's input + cache
 read + cache write tokens (what the model was sent for that request, the same
 count a Claude Code view shows), out of the model's context window from
 opencode's `GET /api/model` (`limit.context`). Output and reasoning are not
 counted: they are in the next request's input. opencode's own TUI adds them,
 so its figure reads higher. A model the list does not name shows the count
-alone; a session with no completed step shows nothing. The tooltip says how
-the number is made.
+alone; a session with no completed step shows nothing. A tap on the chip (or
+its tooltip) shows the whole model id and the exact counts, "`<vendor>/<model>
+— 46,809 of 187,500 tokens (25%)`", and how the number is made. The chip turns
+amber at 70% of the window and red at 90%, only when the window is known; at a
+phone's width its model name is cut short, never its numbers.
 
 **A turn that failed** is a row in the view, as before. The host also reports
 it with the window, as it does for Claude Code (`Window.TurnError`: the error's
@@ -1074,8 +1078,40 @@ How it works:
   review screen lists exactly your answers — an earlier answer changed in the
   terminal is caught there, said as someone answering in the terminal, and
   nothing is submitted. A muster restart, or a typing whose outcome the host
-  never reported, records nothing to continue: the picker is then the
-  terminal's to finish.
+  never reported, records nothing to continue.
+- **Try again after any recoverable failure.** A card offers **Try again**
+  for every reason the [table below](#which-failures-a-card-recovers-from)
+  marks *retry*. Before its first key the host re-reads the picker: exactly
+  as muster's own keys left it, it continues (above); untouched, it types; on
+  the first question with only its cursor moved — or, on a multi-select
+  question, options ticked — it first puts the picker back to the first option
+  (Up a row at a time to the first option, then each ticked option's digit
+  there — never a digit on the "Type something" row, where it would be typed
+  as text — every key checked like any other), then types the answer again. A picker on a later question, or
+  with an answer of one's own typed in, is not reset: it is refused as
+  someone answering in the terminal, and nothing is typed. (Up's effect is
+  the fake picker's model of Claude Code; `make test-liveclaude` does not
+  measure the reset yet.) A host whose `muster-mirror` predates it ignores the
+  reset and refuses a moved picker as before.
+- **Send as a message.** When typing again cannot work — the picker is gone
+  (*no-picker*), or muster cannot read it (*unreadable*, *unrecognised*) — the
+  card offers **Send as a message** instead. It dismisses the picker with the
+  same single Escape as **Cancel question** (unless the failure said it is not
+  on screen; a host that answers "no picker" counts as dismissed), then queues
+  the answer muster was typing as an ordinary message through the
+  [send queue](#read-only-interactive-and-sending), one line per question:
+  `Answer to “<header, or the question's first words>”: <your answer>`. The
+  page never names the text — the server sends the answer the card was typing.
+  It passes the queue's gates, recent sign-in included (403 and the step-up
+  dialog when it is stale). The card is claimed before anything is done, so
+  a second **Send as a message** while one is under way is refused with the
+  card, and one answer is never queued twice. A host that finds no picker to
+  dismiss (the screen is not a picker at all) counts as dismissed: nothing
+  there can take the message's keys. If a picker is there but cannot be
+  dismissed (one muster cannot read), nothing is sent — a message typed into
+  an open picker would be keys into it — and the card says so and stops
+  offering it: press Esc in the terminal, then send the answer from the
+  composer.
 - **Options with previews.** When a question's options carry a `preview`,
   Claude Code draws them in a column with the highlighted option's preview
   boxed beside them, and no row for your own answer (measured, 2.1.289). The
@@ -1144,6 +1180,101 @@ How it works:
   shows the questions without a form.
 - Afterwards the conversation also shows the call read-only, with the answers it
   was given, wherever they were given.
+
+### Answer attempts
+
+Every **Submit** and **Dismiss** of a question card is recorded, one row each
+(`ask_attempts`, migration 0113; `internal/askattempt`), for Claude Code and
+opencode, from every door that answers one:
+
+| door | what it is |
+|---|---|
+| `card` | the card in a session's rendered view, in a browser: an answer, **Cancel question**, **Send as a message**, an opencode card |
+| `phone` | the same card in the Android app's shell (the page's `window.musterApp` bridge marks it) |
+| `attention` | the Attention list's own answer buttons for an opencode ask (a Claude question there links to its card) |
+
+The phone's signed actions (`/api/device/actions/attention/asks/…`) answer
+`attention_ask` questions, not question cards; those are in the
+[ask log](asks.md), not here.
+
+A row holds when, the owner (row-level security: nobody else's rows are
+visible, on the page or anywhere), the host, session and window, the runtime,
+the door, the card's id (the call's `tool_use` id, or opencode's prompt id),
+the action (`submit`, `dismiss`) and method (`typed`, `relayed`, `escape`,
+`message`), the question's **shape** — how many questions, each one's option
+count and whether it is multi-select, and whether an answer of one's own was
+used — the outcome (`ok`, `refused` before anything reached the host,
+`failed` after, `noop`) and its reason code, the keys that reached the
+picker, how long it took, and which attempt on the card it was (a retry is
+attempt 2).
+
+🔴 **It never holds the question's or the answer's text.** The one exception
+is a failure's **snapshot**: the terminal pane as the host read it when the
+answer stopped. A pane can show the question and what was typed into the
+picker, so it is redacted with muster's secret redactor (`redact.Secrets`)
+and capped — redacted on the host first, then its tail from a line start,
+under a "the top of the pane was cut" line, 16 KiB on the wire; redacted
+again and its last 8000 characters stored — and kept
+only as long as the row. A `muster-mirror` that predates it sends none. An
+opencode relay has no pane to send.
+
+A row is written after the door has answered (the response never waits for
+it), at most 64 writes at once; a row past that, or a write that fails, is a
+log line. Rows are deleted after **30 days** (the attention sweep prunes them
+hourly).
+Nothing alerts on them.
+
+#### The Answers page
+
+`/answers` (linked from `/usage`) shows the success rate — of answers, not
+dismissals, nor the same answer submitted twice — overall, by runtime and by
+question shape, over the last 24 hours and 7 days; every failure or refusal
+grouped by its reason, with counts; and each failure expandable to its
+snapshot and to its card's timeline (`/answers?card=<id>`: every attempt on
+that card, oldest first). A failed card links to its own timeline (*What
+happened*).
+
+#### Which failures a card recovers from
+
+The reasons are one enumerated set (`askattempt.Reasons`); the store refuses
+any other, and a test pins the set every door can produce to it.
+
+| reason | outcome | what happened | the card offers |
+|---|---|---|---|
+| `typed` | ok | typed into the picker | — |
+| `relayed` | ok | answered through opencode's API | — |
+| `dismissed` | ok | Esc sent | — |
+| `queued` | ok | sent as a message | — |
+| `duplicate` | noop | the same answers again | — |
+| `too-large` | refused | the form was too large | — |
+| `not-found` | refused | no such card for the window (muster restarted; another owner's) | — |
+| `read-only` | refused | the host is not `-interactive` | — |
+| `step-up` | refused | the sign-in was stale | Try again (after the step-up) |
+| `invalid` | refused | not answers the question takes | — |
+| `closed` | refused | the question was no longer open | — |
+| `in-progress` | refused | another answer was being typed into it | Try again |
+| `unsupported` | refused | the host's `muster-mirror` cannot | — |
+| `not-waiting` | refused | opencode no longer waits on that ask | — |
+| `unanswerable` | refused | the card cannot be answered here (offline host, no relay) | — |
+| `not-offered` | refused | Send as a message was not offered for the card | — |
+| `queue-refused` | refused | the send queue refused the message | — |
+| `dismiss-failed` | failed | the picker could not be dismissed, so no message was sent | — |
+| `not-sent` | failed | the answer never reached the host | Try again |
+| `no-picker` | failed | the picker was not on screen | Send as a message |
+| `unreadable` | failed | the question could not be read off the screen | Send as a message |
+| `touched` | failed | someone was answering in the terminal | — (finish it there) |
+| `lost` | failed | the picker changed part-way through typing | Try again |
+| `unrecognised` | failed | the picker's layout was not recognised | Send as a message |
+| `busy` | failed | another answer was being typed into the terminal | Try again |
+| `timeout` | failed | the host did not report back in time | Try again (after 90 s) |
+| `error` | failed | anything else | Try again |
+| `gone` | failed | opencode moved on from the ask | — |
+| `unreachable` | failed | the host could not reach opencode | Try again |
+| `answer-unknown` | failed | opencode did not say whether it took the answer | — |
+| `answer-refused` | failed | opencode refused the answer | — |
+
+The typing reasons are also `muster_mirror_ask_typing_total`'s `result`
+labels.
 
 ### A question survives a muster restart and a host reconnect
 
@@ -1363,8 +1494,10 @@ is gone **only** when it is clean and its branch has no commit the remote lacks;
 anything else stays, logged.
 
 **How a spawned agent says it finished.** A Claude Code agent calls
-`agent_report_done` on the mirror MCP. An opencode agent has no muster tool, so
-the host reads it instead: for each idle window carrying `@muster-dispatch` and
+`agent_report_done` on the mirror MCP. An opencode agent is not offered it (its
+muster tools are the attention and task tools only:
+[attention.md](attention.md#mirrored-opencode-sessions)), so the host reads it
+instead: for each idle window carrying `@muster-dispatch` and
 running a launcher-bound opencode session, it reads that session's final reply
 from the opencode server (once per change of the session) and sends its last
 three lines on an `outcomes` message. muster records **done** only when the
