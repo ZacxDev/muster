@@ -218,7 +218,7 @@ const lines = (n: number, what: string) => Array.from({ length: n }, (_, i) => `
 const fromBottom = (page: Page, sel = '#mv-log') =>
   page.locator(sel).evaluate((l) => l.scrollHeight - l.scrollTop - l.clientHeight);
 
-// B2: a bubble over ~12 lines is clamped with a fade and a control; a tap opens
+// B2: a bubble over ~15 lines is clamped with a fade and a control; a tap opens
 // it to its full height (animated), "Show less" closes it; a short one is untouched;
 // opening the newest at the bottom keeps the log at the bottom.
 test('a long bubble is clamped, a tap expands it to full height and back, a short one is not clamped, and the log stays at the bottom', async ({ page }) => {
@@ -232,15 +232,19 @@ test('a long bubble is clamped, a tap expands it to full height and back, a shor
   // Short: not clamped, no control.
   await expect(short).toContainText('a short question');
   await expect(short).not.toHaveAttribute('data-clamp', /.*/);
-  expect(await short.evaluate((e) => e.nextElementSibling?.hasAttribute('data-clamp-toggle') ?? false), 'no control under a short bubble').toBe(false);
+  // (The control right after it, if any, is the long reply's: a tail-first
+  // bubble's control sits ABOVE it, marked data-clamp-toggle="tail".)
+  expect(await short.evaluate((e) => e.nextElementSibling?.getAttribute('data-clamp-toggle') === ''), 'no control under a short bubble').toBe(false);
 
-  // Long: clamped to about twelve lines — content hidden below, a control under it.
+  // Long: clamped to about fifteen lines — content hidden, and a control (under
+  // the reader's own message; the reply's, tail-first, is above it:
+  // tail-clamp.spec.ts).
   for (const b of [answer, newest]) {
     await expect(b).toHaveAttribute('data-clamp', 'closed');
     const [h, sh, lh] = await b.evaluate((e) => [e.clientHeight, e.scrollHeight, parseFloat(getComputedStyle(e).lineHeight)]);
     expect(sh, 'there is more content than is shown').toBeGreaterThan(h + lh);
-    expect(h, 'about 12 lines tall').toBeGreaterThanOrEqual(lh * 11);
-    expect(h, 'about 12 lines tall').toBeLessThanOrEqual(lh * 14);
+    expect(h, 'about 15 lines tall').toBeGreaterThanOrEqual(lh * 14);
+    expect(h, 'about 15 lines tall').toBeLessThanOrEqual(lh * 17);
   }
   const toggle = newest.locator('xpath=following-sibling::*[1]');
   await expect(toggle).toHaveAttribute('data-clamp-toggle', '');
@@ -296,9 +300,10 @@ test('with reduced motion the clamp opens with no transition', async ({ page }) 
 // B2 round 1: a tap on a control INSIDE a bubble is the control's. A fenced
 // code block in a mirrored reply is a collapsed <details> (internal/ui/
 // markdown.go); tapping its summary opens the code block and leaves the
-// clamped bubble alone.
+// clamped bubble alone. The code block is the reply's LAST block: a reply is
+// clamped tail-first, so its end is what shows.
 test('tapping a code block summary inside a clamped bubble toggles only the code block', async ({ page }) => {
-  const tr = newTranscript(prompt('show me') + reply('```\ncode line one\ncode line two\n```\n\n' + lines(30, 'after the code')));
+  const tr = newTranscript(prompt('show me') + reply(lines(30, 'before the code') + '\n\n```\ncode line one\ncode line two\n```'));
   await openView(page, tr);
   const b = page.locator('#mv-log [data-bubble="assistant"]').first();
   await expect(b).toHaveAttribute('data-clamp', 'closed');
@@ -805,7 +810,12 @@ const queueOp = (operation: string, content?: string) =>
   rec({ type: 'queue-operation', operation, timestamp: '2000-01-01T00:00:00.000Z', sessionId: 's', ...(content === undefined ? {} : { content }) });
 
 test('a message Claude Code queued is shown under the conversation until Claude takes it', async ({ page }) => {
-  const tr = newTranscript(prompt('start the long job') + reply(lines(60, 'Earlier reply')));
+  // Long enough to SCROLL with every reply clamped (four of them): a log
+  // shorter than its box sits at its bottom (input.css), and then a region
+  // appearing under it moves it, as a messaging app's would.
+  let earlier = '';
+  for (let i = 1; i <= 4; i++) earlier += prompt(`step ${i} of the long job`) + reply(lines(60, `Earlier reply ${i}`));
+  const tr = newTranscript(earlier);
   await openView(page, tr);
   const log = page.locator('#mv-log');
   const region = page.locator('#mv-ccq');
@@ -813,6 +823,7 @@ test('a message Claude Code queued is shown under the conversation until Claude 
 
   // The reader scrolls up to read: what is at the top must not move.
   await log.evaluate((l) => (l.scrollTop = 200));
+  expect(await log.evaluate((l) => l.scrollTop), 'control: the log really scrolled').toBe(200);
   const anchor = log.locator('[data-bubble="assistant"]').first();
   const before = (await anchor.boundingBox())!.y;
 

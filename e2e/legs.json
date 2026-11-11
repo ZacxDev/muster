@@ -98,7 +98,8 @@
     "tests/chief-end-session.spec.ts": 30.0,
     "tests/plugin-chip.spec.ts": 20.0,
     "tests/previews.spec.ts": 30.0,
-    "tests/routing-rules.spec.ts": 30.0
+    "tests/routing-rules.spec.ts": 30.0,
+    "tests/tail-clamp.spec.ts": 40.0
   },
   "legs": {
     "1": [
@@ -208,7 +209,8 @@
       "tests/reconnect.spec.ts",
       "tests/chief-ux.spec.ts",
       "tests/agent-outcomes.spec.ts",
-      "tests/waiting-composer.spec.ts"
+      "tests/waiting-composer.spec.ts",
+      "tests/tail-clamp.spec.ts"
     ]
   }
 }

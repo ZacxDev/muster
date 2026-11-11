@@ -275,6 +275,17 @@ by default. Prompts and replies appear as chat bubbles, and each tool call as on
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
 
+A conversation too short to fill the screen sits at the bottom, next to the
+composer. A bubble longer than about 15 lines is shortened, with a **Show more** control.
+A reply from the agent shows its **last** lines, because the end of a reply is
+usually what matters. Its **Show more** is at the top of the bubble. Opening it
+reveals the earlier text above, and the part already on screen stays where it
+is. **Show less**, also at the top, shortens it again. Your own long messages
+show their **first** lines, with **Show more** under them. Tapping a shortened
+bubble also opens it, but only **Show less** shortens it again. A message
+streaming in is never shortened. The agent chat page and the chief panel
+shorten bubbles the same way.
+
 The **Rendered | Terminal** switch in the header moves between the two. On a
 phone it is one icon button, for the view you are not on: a speech bubble opens
 the Rendered view, a `>_` prompt opens the Terminal view. The Rendered view is
