@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -263,5 +264,51 @@ func TestAnOpenCodeHostDispatchsSessionWorksItsOwnTaskAndClaimsNothing(t *testin
 	}
 	if out := call(agentReportDoneTool, map[string]any{"summary": "done"}); !strings.Contains(out, agentReportDoneTool+" is not offered to a mirrored opencode session") {
 		t.Fatalf("agent_report_done from an opencode dispatch: %s", out)
+	}
+}
+
+// TestAnOpenCodeKeyInTheClaudeHeaderIsNoClaudeSession: a request naming an
+// opencode session's KEY in X-Muster-Claude-Session, with neither the marker
+// nor X-Muster-Agent-Session, is refused at the Claude branch's own check —
+// as no Claude session — for an attention tool and an operator tool alike,
+// and nothing is asked. (Before, the key bound to the opencode window and ran
+// as that session with the Claude Code tool set.)
+func TestAnOpenCodeKeyInTheClaudeHeaderIsNoClaudeSession(t *testing.T) {
+	f, ws := newOpenCodeMirrorFixture(t)
+	hdr := mirrorAs(ws, "opencode:ses_launch")
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{attentionAskTool, map[string]any{"question": "smuggled through the Claude header?"}},
+		{agentDestroyTool, map[string]any{"name": "nobody"}},
+		{attentionAnswerTool, map[string]any{"id": 1, "answer": "x"}},
+	} {
+		_, r, body := f.mirrorRPC(t, hdr, mcpToolCall(c.tool, c.args))
+		if r == nil {
+			t.Fatalf("%s: %s", c.tool, body)
+		}
+		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, "is not a Claude session id") {
+			t.Errorf("%s with an opencode key as the Claude session: %s; want the Claude branch's refusal", c.tool, text)
+		}
+	}
+	var n int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM attention_asks WHERE question = 'smuggled through the Claude header?'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d ask(s) filed through the Claude header (%v)", n, err)
+	}
+}
+
+// TestAnOpenCodeCallerIsNoMirroredSessionForTheOperatorRules: the operator
+// tools' caller-kind rule (mirroredSession, which ownersOwnSession and the
+// dispatch holds build on) admits a Claude session and never an opencode
+// caller, however it was bound.
+func TestAnOpenCodeCallerIsNoMirroredSessionForTheOperatorRules(t *testing.T) {
+	claude := toolCaller{asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID}}
+	oc := toolCaller{asker: attention.Asker{MirrorHost: "ws", MirrorSession: "opencode:ses_launch"}}
+	if !claude.mirroredSession() || claude.openCodeSession() {
+		t.Fatalf("a Claude session: mirrored %v, opencode %v", claude.mirroredSession(), claude.openCodeSession())
+	}
+	if oc.mirroredSession() || !oc.openCodeSession() {
+		t.Fatalf("an opencode caller: mirrored %v, opencode %v", oc.mirroredSession(), oc.openCodeSession())
 	}
 }

@@ -184,10 +184,19 @@ func (c toolCaller) refOrigin() refOrigin {
 
 // mirroredSession reports whether c is one of the owner's mirrored Claude Code
 // sessions — the caller mirror_mcp.go builds from a mirror host's token and a
-// session that host lists — and not a dispatched agent or muster itself. It is
-// attention_answer's caller-kind rule.
+// session that host lists — and not a dispatched agent, muster itself, or a
+// mirrored OPENCODE session (openCodeSession), which acts as no operator. It is
+// attention_answer's caller-kind rule, and ownersOwnSession's.
 func (c toolCaller) mirroredSession() bool {
-	return c.agent == nil && c.asker.AgentID == 0 && !c.asker.System && c.asker.MirrorHost != "" && c.asker.MirrorSession != ""
+	return c.agent == nil && c.asker.AgentID == 0 && !c.asker.System && c.asker.MirrorHost != "" && c.asker.MirrorSession != "" &&
+		!c.openCodeSession()
+}
+
+// openCodeSession reports whether c is a mirrored opencode session: THE ONE
+// predicate the door's opencode tool set (openCodeMirrorTools) and the
+// operator rules (mirroredSession) refuse it by.
+func (c toolCaller) openCodeSession() bool {
+	return mirror.OpenCodeMCPCaller(c.asker.MirrorSession)
 }
 
 // askerKey names the caller for the wait bounds.
@@ -870,7 +879,7 @@ func (s *Server) toolTaskSetStatus(ctx context.Context, c toolCaller, arguments 
 		// open's release is setNoteStatus's). An opencode session claims
 		// nothing: a claim ends when its CLAUDE session's window goes
 		// (sessionEnded), which an opencode session never has.
-		if !mirror.OpenCodeMCPCaller(c.asker.MirrorSession) {
+		if !c.openCodeSession() {
 			s.claimOnStatus(ctx, in.ID, in.Status,
 				claimant{session: c.asker.MirrorSession, name: c.asker.Label, host: c.asker.MirrorHost})
 		}
