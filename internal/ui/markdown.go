@@ -500,6 +500,12 @@ func mdTableStartsAt(lines []string, i int) bool {
 	return strings.Contains(lines[i], "|") && mdIsTableSep(lines[i+1])
 }
 
+// MarkdownHTML is markdownHTML for another package: a shareable page's
+// markdown block (internal/pages renders it inside the page's sandboxed
+// document). Every author character is escaped; only the renderer's own tags
+// are emitted.
+func MarkdownHTML(src string) string { return markdownHTML(src) }
+
 // markdownHTML is the pure string transform (testable without a DOM). The output
 // contains ONLY tags this function emits; all author text passed through
 // mdEscape first.

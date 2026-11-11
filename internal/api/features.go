@@ -167,6 +167,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.SessionRouting, routeToolDef())
 		add(features.TaskRouting, taskRoutingToolDefs(true)...)
 		add(features.Officers, officerToolDefs()...)
+		add(features.Pages, pageToolDefs()...)
 	case mirrorDoor:
 		add(features.Connectors, connectorDecideToolDefs()...)
 		add(features.Plugins, pluginDraftToolDefs()...)
@@ -174,6 +175,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.SessionRouting, pluginMessageRouteToolDefs()...)
 		add(features.Dispatch, chiefRestartToolDef())
 		add(features.TaskRouting, dispatchHoldToolDefs()...)
+		add(features.Pages, pageToolDefs()...)
 	}
 	return m
 }

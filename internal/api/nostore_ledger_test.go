@@ -101,6 +101,7 @@ var noStoreLiterals = map[string]string{
 	"handleAgentsHome":          "GET /agents: home's redirect, or the onboarding page when there is nowhere to go",
 	"handleAgentHeader":         "an agent page's status strip, ⋯ menu and notices, live",
 	"handleSessionTagsList":     "a session's tags: the viewer's own, private, and changed by any tab",
+	"refusePageLink":            "a refused share link: one answer for unknown, revoked and expired alike",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.

@@ -282,6 +282,11 @@ const (
 	envAskLogTextTTL  = "MUSTER_ASK_LOG_TEXT_TTL"
 	envAskLogClassify = "MUSTER_ASK_LOG_CLASSIFY"
 
+	// SHAREABLE PAGES (internal/pages, internal/api/pages.go, docs/pages.md):
+	// agents publish pages and ask for share links; off by default, and it
+	// needs a database.
+	envPages = "MUSTER_PAGES"
+
 	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
 	// account usage"; ccusage_config.go parses them): its switch (off by
 	// default) and its interval; and its optional pusher, which PUTs each
@@ -813,6 +818,9 @@ type config struct {
 
 	// AskLog is the ask log's configuration (asklog_config.go).
 	AskLog askLogConfig
+
+	// Pages turns shareable pages on (MUSTER_PAGES=1; off by default).
+	Pages bool
 
 	// CCUsage is the Claude account usage poller's (ccusage_config.go).
 	CCUsage ccUsageConfig
@@ -1734,6 +1742,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.ChiefNudges = envFlag(getenv, envChiefNudges)
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
+	c.Pages = envFlag(getenv, envPages)
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
 		return config{}, err
 	}

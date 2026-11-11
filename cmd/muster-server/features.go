@@ -128,6 +128,10 @@ func featureCatalog() []features.Feature {
 			Description: "Every question an agent asks you, with your answer and how long it took, recorded for review.",
 			Enable:      []features.Var{is(envAskLog, "1")},
 			Settings:    []string{envAskLogTextTTL, envAskLogClassify}},
+		{ID: features.Pages, Name: "Shareable pages",
+			Description: "Agents publish pages for you — showcases, questions, forms, uploads, custom script in a sandbox — and ask before a link anyone can open goes live.",
+			Enable:      []features.Var{is(envPages, "1")},
+			Settings:    []string{envPublicURL}},
 		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			Description: "External bots post messages to your chief; it drafts replies you approve.",
 			Enable:      []features.Var{is(envPlugins, "1")}},
@@ -388,6 +392,18 @@ func (a *app) featureStatuses(ext api.Extensions, port router.Port) map[string]f
 	}
 	st[features.SessionState] = pick(ext.Episodes != nil, c.SessionState, "", envSessionState+"=1 but "+noDB, envSessionState+" is unset")
 	st[features.AskLog] = pick(ext.AskLog != nil, c.AskLog.On, "", envAskLog+"=1 but "+noDB, envAskLog+" is unset")
+	switch {
+	case ext.Pages != nil && c.PublicURL == "":
+		st[features.Pages] = on("links are written as paths until " + envPublicURL + " is set, so an agent cannot hand one on")
+	case ext.Pages != nil && ext.Uploads == nil:
+		st[features.Pages] = on("an upload block is drawn disabled until file attachments are on (docs/features.md#attachments)")
+	case ext.Pages != nil:
+		st[features.Pages] = on("")
+	case c.Pages:
+		st[features.Pages] = bad(envPages + "=1 but " + noDB)
+	default:
+		st[features.Pages] = off(envPages + " is unset")
+	}
 
 	switch {
 	case ext.Plugins != nil && ext.PluginGateway != nil:

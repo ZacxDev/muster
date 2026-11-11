@@ -18,6 +18,9 @@ const (
 	// EventAgentOutcome: an agent started with a first turn finished, failed or
 	// went quiet (internal/agentoutcome) — one push per change of its outcome.
 	EventAgentOutcome = "agent_outcome"
+	// EventPage: a viewer sent something through a shareable page's link
+	// (internal/pages) — at most one push per page a minute.
+	EventPage = "page"
 )
 
 // Event is one toggle.
@@ -37,6 +40,7 @@ var Events = []Event{
 	{EventPlugin, "A reply draft awaits your approval, or your chief routed something to a session"},
 	{EventAttention, "An agent asks you something, or a session is waiting on you"},
 	{EventAgentOutcome, "An agent you started finished, failed or went quiet"},
+	{EventPage, "Someone sent a response through one of your pages' links"},
 }
 
 // KnownEvent reports whether name is in Events.

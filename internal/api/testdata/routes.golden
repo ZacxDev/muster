@@ -126,12 +126,18 @@ GET /mirror/view/subagent
 GET /mirror/view/successor
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /pages
+GET /pages/{id}
+GET /pages/{id}/preview
+GET /pages/{id}/versions/{v}/content
 GET /plugin/v1/drafts/checks
 GET /plugin/v1/self
 GET /plugin/v1/tasks
 GET /plugins
 GET /readyz
 GET /rules
+GET /s/{token}
+GET /s/{token}/content
 GET /send-queue
 GET /sessions/tags
 GET /share
@@ -271,6 +277,9 @@ POST /mirror/view/chief
 POST /mirror/view/proposal
 POST /mirror/view/send
 POST /mirror/view/suggest/event
+POST /pages/{id}/links
+POST /pages/{id}/links/{link}/revoke
+POST /pages/{id}/rollback
 POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/check
@@ -293,6 +302,8 @@ POST /rules/{id}/enable
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result
+POST /s/{token}/submit
+POST /s/{token}/upload
 POST /send-queue
 POST /send-queue/confirm
 POST /send-queue/{id}/cancel

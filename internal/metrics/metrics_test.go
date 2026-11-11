@@ -68,6 +68,9 @@ var wantMetrics = map[string][]string{
 	"muster_http_request_duration_seconds":            {"method", "route"},
 	"muster_panics_total":                             {"source"},
 	"muster_plugin_origin_refusals_total":             {},
+	"muster_page_link_requests_total":                 {"route", "outcome"},
+	"muster_page_responses_total":                     {"kind", "outcome"},
+	"muster_page_share_decisions_total":               {"decision"},
 	"muster_plugin_handoffs_total":                    {"outcome", "purpose"},
 	"muster_agent_provision_total":                    {"result"},
 	"muster_push_delivery_total":                      {"result"},
@@ -105,6 +108,9 @@ func gather(t *testing.T) map[string][]string {
 	BuildInfo.WithLabelValues("0.0.0-test")
 	Panics.WithLabelValues("test")
 	PluginHandoffs.WithLabelValues("view", "minted")
+	PageLinkRequests.WithLabelValues("shell", "served")
+	PageResponses.WithLabelValues("submit", "recorded")
+	PageShareDecisions.WithLabelValues("approved")
 	AsksTotal.WithLabelValues("plain_text")
 	AskPlainTextPrefilter.WithLabelValues("kept")
 	AskAnswerSeconds.WithLabelValues("plain_text", "owner")

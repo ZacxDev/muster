@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/telemetry"
 )
@@ -233,7 +234,9 @@ func accessLogPath(u *url.URL) string {
 }
 
 func loggedPath(p string) string {
-	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/"} {
+	// A page's share link (/s/<token>…) is a bearer capability: none of it
+	// is written, whatever follows the token.
+	for _, prefix := range []string{"/auth/claim/", "/invite/", "/auth/reset/", pages.SharePrefix} {
 		if strings.HasPrefix(p, prefix) {
 			return prefix + "[redacted]"
 		}

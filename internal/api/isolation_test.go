@@ -40,6 +40,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -623,6 +624,22 @@ var isolationClasses = map[string]routeClass{
 	"GET /uploads/{id}/file":    classParam,
 	"POST /uploads/{id}/revoke": classParam,
 	"GET /f/{id}":               classPublic,
+	// Shareable pages (pages.go). The owner's screen lists the caller's pages;
+	// a page, its preview, a version's content and the three writes name A's
+	// page (and link, version) by id. The four share-link routes are public:
+	// the token in the path is the credential, which no walker holds
+	// (sideEffectControlled).
+	"GET /pages":                           classList,
+	"GET /pages/{id}":                      classParam,
+	"GET /pages/{id}/preview":              classParam,
+	"GET /pages/{id}/versions/{v}/content": classParam,
+	"POST /pages/{id}/links":               classParam,
+	"POST /pages/{id}/links/{link}/revoke": classParam,
+	"POST /pages/{id}/rollback":            classParam,
+	"GET /s/{token}":                       classPublic,
+	"GET /s/{token}/content":               classPublic,
+	"POST /s/{token}/submit":               classPublic,
+	"POST /s/{token}/upload":               classPublic,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -662,6 +679,9 @@ var wantCanaryForA = []string{
 	// The attention summary through A's personal token: A's canary-carrying
 	// ask is on it (its why is the question).
 	"GET /api/attention/summary",
+	// Shareable pages: A's page is canary-titled, so A's Pages screen and A's
+	// page show it.
+	"GET /pages", "GET /pages/{id}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -1072,6 +1092,20 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
 		Question: w.canary + " asks", Options: []string{"yes", "no"}})
 	must(err, "an ask")
+	// A's shareable page (0113): canary-titled, two versions (so A's rollback
+	// has one to move to), a live link and a canary-carrying response — the
+	// objects the Pages routes name by id.
+	pgs := pages.NewPG(pool)
+	pgBlocks, pgSize, err := pages.Parse([]byte(`[{"type":"question","id":"q1","label":"` + w.canary + ` question"}]`))
+	must(err, "a page's blocks")
+	aPage, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page", pgBlocks, pgSize)
+	must(err, "a page")
+	_, _, err = pgs.AddVersion(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, aPage.ID, w.canary+" page", pgBlocks, pgSize)
+	must(err, "a page's second version")
+	aPageLink, err := pgs.CreateLink(ua, aPage.ID, pages.LinkLive, w.a.agent.Name)
+	must(err, "a page link")
+	_, err = pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
+	must(err, "a page response")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -1082,7 +1116,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
-		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel}
+		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
+		page: aPage.ID, pageLink: aPageLink.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1092,7 +1127,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
-		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix}
+		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
+		page: ghostID, pageLink: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1158,6 +1194,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
 		Uploads:   w.uploadSvc,
+		// Shareable pages (0113): A's page is a real object B must not reach.
+		Pages: pages.NewPG(pool),
 		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
 		Devices:   devices.NewPG(pool),
@@ -1435,6 +1473,8 @@ type isoObjs struct {
 	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
 	// disabled (Enable's), ruleDel active (Delete's).
 	rule, ruleOff, ruleDel int64
+	// Shareable pages (0113): a page's id and one of its links'.
+	page, pageLink int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1518,6 +1558,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = o.upload
 	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
+	case strings.HasPrefix(path, "/pages/{id}"):
+		id = strconv.FormatInt(o.page, 10)
 	}
 	if path == "/attention/asker" {
 		// The asks block of A's agent (the agent page's), by name.
@@ -1533,6 +1575,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
 		"{wid}", strconv.FormatInt(o.refWrite, 10),
+		"{link}", strconv.FormatInt(o.pageLink, 10), "{v}", "1",
 		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
 	).Replace(path)
@@ -1584,6 +1627,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// names o's task.
 		"winner": {strconv.FormatInt(winner, 10)}, "loser": {strconv.FormatInt(o.task, 10)},
 		"note_id": {strconv.FormatInt(o.task, 10)},
+		// A page's rollback names a version of it.
+		"version": {"1"},
 	}
 	// The pin routes name o's agent. Only on them: `kind` is also the dispatch
 	// form's agent-kind field.
@@ -1637,7 +1682,7 @@ func (w *isoWorld) snapshot() map[string]string {
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "session_tags", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
 		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences",
-		"task_ref_writes"} {
+		"task_ref_writes", "pages", "page_versions", "page_links", "page_responses"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions and the owner-keyed tables have no `id` ordering column;
@@ -1784,6 +1829,15 @@ var sideEffectControlled = map[string]string{
 	// route with A's valid signature serves A's bytes, and unsigned, tampered,
 	// expired or revoked it is that 404.
 	"GET /f/{id}": "a signed link (uploads.go): its credential is the HMAC no walker holds; controlled in uploads_test.go",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a page's share link is the token
+	// in its path, which no walker holds, so A's own answer is the ghost's 404.
+	// Its control is pages_pg_test.go: the SAME routes with A's live token serve
+	// A's page (and record A's responses), another user's token serves only its
+	// own page, and an unknown, pending, denied or revoked token is that 404.
+	"GET /s/{token}":         "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"GET /s/{token}/content": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/submit": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
+	"POST /s/{token}/upload": "a share link: its token is the credential no walker holds; controlled in pages_pg_test.go",
 	// 🔴 A DOOR NO WALKER HOLDS, AS GET /f/{id}: the job API is the SERVICE tier
 	// only (requireServiceToken), which acts as user 1, so no credential of a
 	// member — A's included — opens it, and A's answer is the ghost's 401. Its

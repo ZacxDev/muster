@@ -86,6 +86,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -373,6 +374,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
+		// Shareable pages (migration 0113): off unless MUSTER_PAGES=1.
+		if cfg.Pages {
+			ext.Pages = pages.NewPG(pool)
+		}
 		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
 		if cfg.AskLog.On {
 			ext.AskLog = &api.AskLog{Store: asklog.NewPG(pool), TextTTL: cfg.AskLog.TextTTL, JevAtCapture: cfg.AskLog.JevAtCapture}
@@ -1795,6 +1800,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
 		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.Pages != nil:
+		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner and ask before a share link goes live; "+
+			"links are served at %s<token>, sandboxed (an opaque origin, no page network)", envPages, pages.SharePrefix)
+	case a.cfg.Pages:
+		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
+	default:
+		l.Printf("shareable pages: OFF — %s is unset", envPages)
 	}
 	switch {
 	case ext.AskLog != nil:

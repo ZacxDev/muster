@@ -487,6 +487,15 @@ func (s *Server) agentTools() []agentTool {
 		// chief answers it. Chief-only, on MCP.
 		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
 	}
+	// Shareable pages (page_tools.go), with the store and the feature on:
+	// every agent may publish pages for its owner and ASK for a link (only the
+	// owner's own door approves one). On MCP too, so a claude-code agent has
+	// them.
+	if s.pagesOn() {
+		for _, d := range pageToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
+		}
+	}
 	// The officer runtime (officers.go), present when officers are declared:
 	// an officer's instances reach their HQ queue through muster, which holds
 	// the officer's token. On MCP (officer instances are claude-code agents);

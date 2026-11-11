@@ -185,6 +185,12 @@ var (
 		// there is no principal to run as. Only what serving the file needs is
 		// handed on (its key, type, name, and whether it was revoked).
 		"internal/uploads.sys",
+		// Shareable pages (migration 0113): a share link's read of ONE live
+		// link by the sha256 of the presented token (pages.PGStore.LinkByToken)
+		// — the link is the credential, and its row names the owner the
+		// request then acts as (authz.ViaPageLink). Only the link row is
+		// handed on.
+		"internal/pages.sys",
 		// The attention queue (migration 0023): the expiry sweep moves every
 		// owner's lapsed asks and hands each back with its owner, whose devices
 		// alone are then told (attention.PGStore.ExpireDue's one helper) — and,
@@ -348,6 +354,7 @@ var (
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
 		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0039): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
+		"internal/api.(*Server).requirePageLink",        // a page's share link (0113): /s/{token}/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported
@@ -355,7 +362,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAgentMessage", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaHostDispatch", "ViaJobQueue", "ViaKickoff", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPageLink", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

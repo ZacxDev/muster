@@ -308,6 +308,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.dispatchHoldToolsOn() && !s.featureOff(features.TaskRouting) {
 		out = append(out, dispatchHoldToolDefs()...)
 	}
+	// The page tools (page_tools.go) — a session publishing pages for its
+	// owner and asking for a link — with the page store and the feature on.
+	if s.pagesOn() {
+		out = append(out, pageToolDefs()...)
+	}
 	// agent_report_done — a HOST-SPAWNED agent saying it finished
 	// (host_dispatch_done.go) — with the host-dispatch store. Listed for every
 	// session (tools/list carries no session); the call binds it to the

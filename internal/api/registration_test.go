@@ -29,6 +29,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -106,9 +107,11 @@ func fullyWiredServer(t *testing.T) *Server {
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 		// NON-NIL on purpose: registration must not branch on the dial guard.
-		DialGuard:       &safedial.Guard{AllowLoopback: true},
-		Mirror:          stubMirror{},
-		Flows:           stubFlows{},
+		DialGuard: &safedial.Guard{AllowLoopback: true},
+		Mirror:    stubMirror{},
+		Flows:     stubFlows{},
+		// Shareable pages: registration must not branch on the store.
+		Pages:           stubPages{},
 		Plugins:         stubPlugins{},
 		Pins:            stubPins{},
 		SessionTags:     stubSessionTags{},
@@ -176,6 +179,9 @@ type stubMirror struct{ Mirror }
 
 // stubFlows satisfies flows.Store for registration only; any method call panics.
 type stubFlows struct{ flows.Store }
+
+// stubPages satisfies pages.Store for registration only; any method call panics.
+type stubPages struct{ pages.Store }
 
 // stubPlugins satisfies plugins.Store for registration only; any method call panics.
 type stubPlugins struct{ plugins.Store }

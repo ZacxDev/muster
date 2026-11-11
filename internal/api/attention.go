@@ -1790,6 +1790,13 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 			return a, err
 		}
 	}
+	// A page link's card (page_share.go): the owner's own door, one of its two
+	// options, the link still pending — then the link goes live or is denied.
+	if note == nil {
+		if err := s.pageShareForAnswer(ctx, id, answer, src); err != nil {
+			return a, err
+		}
+	}
 	if src.ViaSession() {
 		a, err = s.ext.Attention.AnswerFromSession(ctx, id, answer, src.Host, src.Session)
 	} else {
