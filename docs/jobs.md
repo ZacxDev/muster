@@ -735,6 +735,48 @@ call without an actor.
   account only. A job counts on the account its last turn ran on.
 - `poll_interval_seconds` is 0 with the poller off; the numbers then never move.
 
+### Pushing the readings
+
+With `MUSTER_CC_USAGE_PUSH_URL` set (and its `MUSTER_CC_USAGE_PUSH_TOKEN`),
+muster also **pushes** the readings to an external dashboard instead of
+waiting to be read: after each poll cycle, once, it sends
+
+```
+PUT <MUSTER_CC_USAGE_PUSH_URL>
+Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
+Content-Type: application/json
+
+{"source_instance": "muster.example.com",
+ "read_at": "2026-11-10T18:21:00Z",
+ "poll_interval_seconds": 900,
+ "accounts": [ … ]}
+```
+
+- `accounts` is the admin's accounts **byte for byte** as `GET
+  /api/cc-accounts/usage` answers them (above, `used_by` included): both are
+  built by the same code.
+- `source_instance` is `MUSTER_CC_USAGE_PUSH_INSTANCE` (at most 64
+  characters), else `MUSTER_PUBLIC_URL`'s host, else `muster`. `read_at` is
+  when the push was built. `poll_interval_seconds` is the poller's
+  configured interval in whole seconds, as the API's own field: a dashboard can
+  mark the source stale once a few intervals pass with no push.
+- The push is made after **every** cycle, whether or not a reading changed, so
+  a dashboard can tell a quiet muster from a dead one.
+- The dashboard answers **`204`**. Anything else — a 4xx, a 5xx, another 2xx,
+  a redirect (never followed: it would re-send the bearer), no answer in 10
+  seconds, a transport error, or readings the store could not give — is logged
+  (the status or the error's class only, never the token or the body; on a
+  4xx, also the first 512 bytes of the dashboard's answer as one line, control
+  characters made spaces, at most 200 characters, the token redacted, so a
+  refusal such as a cap exceeded says why) and counted in
+  `muster_cc_usage_push_failures_total{reason}` (`http_4xx`, `http_5xx`,
+  `http_other`, `timeout`, `transport`, `build`, or `canceled` when muster
+  was shutting down mid-push). It
+  is not retried: the next cycle's push carries newer readings.
+- Boot is refused when the URL is set with the poller off, without the token,
+  or not `https` (plain `http` is allowed only to a loopback host, for tests),
+  and when the token or the instance is set without the URL.
+
 The same readings are drawn on **Account → Credentials** ("Claude account
 usage"), for the admin and for a member alike.
 

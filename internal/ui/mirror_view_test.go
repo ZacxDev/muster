@@ -100,17 +100,24 @@ func TestBothClampedChatSurfacesCarryTheBubbleClamp(t *testing.T) {
 	}
 }
 
-// The chief panel is deliberately NOT clamped: neither its body nor its frame
-// carries the clamp script.
-func TestTheChiefPanelCarriesNoBubbleClamp(t *testing.T) {
+// The chief panel IS clamped, so a long chief reply shows its end: its BODY (the
+// part fetched on open, with the chat) carries the clamp script once, ahead of
+// agentChatScript, and its frame (in every page's shell) carries none — a page
+// that never opens the panel pays nothing for it.
+func TestTheChiefPanelBodyCarriesTheBubbleClamp(t *testing.T) {
 	cv := sampleAgentDetailView()
 	cv.Surface = ChatSurfaceChiefPanel
 	var b strings.Builder
 	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(b.String(), "window.muClamp"); n != 0 {
-		t.Errorf("the chief panel body carries the bubble clamp (%d)", n)
+	body := b.String()
+	if n := strings.Count(body, "window.muClamp = {"); n != 1 {
+		t.Fatalf("the chief panel body carries the bubble clamp %d times, want 1", n)
+	}
+	clamp, chat := strings.Index(body, "window.muClamp = {"), strings.Index(body, "window.__cgLayoutLog = function")
+	if chat < 0 || clamp > chat {
+		t.Errorf("the clamp script (at %d) is not ahead of agentChatScript (at %d)", clamp, chat)
 	}
 	if n := strings.Count(renderString(t, ChiefPanel()), "window.muClamp"); n != 0 {
 		t.Errorf("the chief panel frame carries the bubble clamp (%d)", n)

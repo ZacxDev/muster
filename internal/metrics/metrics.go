@@ -312,6 +312,22 @@ var (
 		Name: "muster_memo_relay_deliveries_total",
 		Help: "Memo relay: delivery attempts to agents, by result ONLY — never an agent, scope or memo id.",
 	}, []string{"result"})
+
+	// CCUsagePushFailures counts the Claude account usage pusher's failed
+	// pushes (MUSTER_CC_USAGE_PUSH_URL; internal/ccusage push.go), by reason:
+	//   build     — the readings could not be assembled (the store did not answer)
+	//   timeout   — no answer inside the push timeout
+	//   transport — any other failure to send (DNS, refused connection, TLS)
+	//   http_4xx  — the dashboard answered 4xx (a bad token is 401/403)
+	//   http_5xx  — the dashboard answered 5xx
+	//   http_other — any other status but 204 (a 200, a refused redirect)
+	//   canceled  — muster was shutting down mid-push
+	// 🔴 `reason` is that closed vocabulary (ccusage.PushReason*): never a URL,
+	// a status code or an account name.
+	CCUsagePushFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_cc_usage_push_failures_total",
+		Help: "Claude account usage pushes that failed, by reason (build|timeout|transport|http_4xx|http_5xx|http_other|canceled).",
+	}, []string{"reason"})
 )
 
 // ---- opening a session (docs/telemetry.md) --------------------------------

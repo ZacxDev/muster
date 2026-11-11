@@ -1919,6 +1919,9 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 	}
 	return Div(append([]g.Node{
 		g.Attr("data-bubble", role),
+		// An agent's reply is clamped TAIL-first: its end is what shows
+		// (bubble_clamp.go). Declared here from the role, never read off the text.
+		clampFrom(role),
 		Class("max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm " + tone),
 	}, body...)...)
 }
@@ -2163,6 +2166,8 @@ func agentChatScript(name string) g.Node {
     // data-bubble, like chatBubbleOf's: what bubbleClampScript clamps. (The
     // streamed reply's bubble, ensureText, deliberately has none.)
     d.setAttribute('data-bubble', role);
+    // clampFrom's rule: an agent's reply is clamped tail-first.
+    if (role === 'assistant') d.setAttribute('data-clamp-from', 'tail');
     d.setAttribute('data-chat-local', ''); // drawn here, not by the server (see configRequest)
     d.className ='max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
       (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'

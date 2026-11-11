@@ -244,3 +244,70 @@ func TestAProxiedOfficerInstanceIsNotCreditedToItsAccount(t *testing.T) {
 		t.Fatalf("alpha's officers = %+v, want only the routine instance %+v", o, want)
 	}
 }
+
+// TestTheUsagePushCarriesTheAPIsAccountsByteForByte is the golden: for the
+// same readings, the pushed body's `accounts` is byte-for-byte the `accounts`
+// GET /api/cc-accounts/usage answers the admin (used_by included), beside
+// exactly source_instance, read_at and the API's own poll_interval_seconds.
+func TestTheUsagePushCarriesTheAPIsAccountsByteForByte(t *testing.T) {
+	h, _, store := newCCUsageFixture(t)
+	s := New(nil, AuthConfig{HookToken: tokTestHook, ServiceToken: ccUsageServiceToken}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Users: stubUsers{}, CCUsage: store, CCUsageInterval: 5 * time.Minute})
+	rec := ccUsageGet(h, CCAccountUsagePath, map[string]string{"Authorization": "Bearer " + ccUsageServiceToken, ActorHeader: "hq"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: %d %s", rec.Code, rec.Body)
+	}
+	// Now, as the GET's own clock (the attribution windows end at now), in a
+	// zone that is not UTC, so read_at's conversion is seen.
+	now := time.Now().In(time.FixedZone("UTC-5", -5*3600))
+	body, err := s.CCUsagePushBody(context.Background(), 1, "example", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var api, push map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &api); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &push); err != nil {
+		t.Fatal(err)
+	}
+	if len(push) != 4 || string(push["poll_interval_seconds"]) != "300" || string(push["poll_interval_seconds"]) != string(api["poll_interval_seconds"]) ||
+		string(push["source_instance"]) != `"example"` || string(push["read_at"]) != `"`+now.UTC().Format(time.RFC3339)+`"` {
+		t.Fatalf("push envelope: %s", body)
+	}
+	// Positive control: the fixture's attribution is in the answer, so the
+	// comparison below covers used_by and not only empty lists.
+	if !strings.Contains(string(api["accounts"]), `"requested_by":"pr-review"`) || !strings.Contains(string(api["accounts"]), `"seven_day_opus"`) {
+		t.Fatalf("the fixture's answer lacks its attribution or windows: %s", api["accounts"])
+	}
+	if string(push["accounts"]) != string(api["accounts"]) {
+		t.Fatalf("the pushed accounts differ from the API's:\npush %s\napi  %s", push["accounts"], api["accounts"])
+	}
+	// A second interval (one no constant equals): the field follows the
+	// configured interval, and is 0 with the poller off, as the API's is.
+	for _, c := range []struct {
+		iv   time.Duration
+		want string
+	}{{7 * time.Minute, "420"}, {0, "0"}} {
+		s2 := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+		s2.UseExtensions(Extensions{Users: stubUsers{}, CCUsage: store, CCUsageInterval: c.iv})
+		b, err := s2.CCUsagePushBody(context.Background(), 1, "example", now)
+		var m map[string]json.RawMessage
+		if err != nil || json.Unmarshal(b, &m) != nil || string(m["poll_interval_seconds"]) != c.want {
+			t.Fatalf("interval %s: poll_interval_seconds %s (%v), want %s", c.iv, m["poll_interval_seconds"], err, c.want)
+		}
+	}
+	if store.owners[len(store.owners)-1] != 1 {
+		t.Fatalf("the push read owner %d, want the admin (1)", store.owners[len(store.owners)-1])
+	}
+}
+
+// TestTheUsagePushRefusesWithoutAStore: no database, no body (the push is
+// counted as a build failure, never sent empty).
+func TestTheUsagePushRefusesWithoutAStore(t *testing.T) {
+	s := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Users: stubUsers{}})
+	if b, err := s.CCUsagePushBody(context.Background(), 1, "example", time.Now()); err == nil {
+		t.Fatalf("built %s with no store", b)
+	}
+}

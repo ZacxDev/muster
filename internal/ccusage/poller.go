@@ -260,6 +260,12 @@ type Poller struct {
 	Interval time.Duration
 	Logger   *log.Logger
 	Now      func() time.Time
+	// AfterPass, when set, runs once after each pass (Run), whether or not the
+	// pass read anything: the usage pusher (Pusher.PushAfterPass,
+	// MUSTER_CC_USAGE_PUSH_URL). It runs in the poll loop, so one cycle makes
+	// at most one call of it, and a slow one delays the next pass rather than
+	// overlapping it.
+	AfterPass func(ctx context.Context)
 }
 
 func (p *Poller) now() time.Time {
@@ -289,6 +295,9 @@ func (p *Poller) Run(ctx context.Context) {
 	for {
 		if err := p.Pass(ctx); err != nil {
 			p.logf("ccusage: pass: %v", err)
+		}
+		if p.AfterPass != nil && ctx.Err() == nil {
+			p.AfterPass(ctx)
 		}
 		select {
 		case <-ctx.Done():

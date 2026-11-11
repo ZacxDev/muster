@@ -80,6 +80,7 @@ var wantMetrics = map[string][]string{
 	"muster_memo_relay_agent_checks_total":            {"result"},
 	"muster_memo_relay_upstream_total":                {"result"},
 	"muster_memo_relay_deliveries_total":              {"result"},
+	"muster_cc_usage_push_failures_total":             {"reason"},
 }
 
 // 🔴 LABELS THAT MAY NEVER APPEAR, BY NAME. This is the denylist half: the
@@ -118,6 +119,7 @@ func gather(t *testing.T) map[string][]string {
 	MemoRelayAgentChecks.WithLabelValues("eligible")
 	MemoRelayUpstream.WithLabelValues("ok")
 	MemoRelayDeliveries.WithLabelValues("delivered")
+	CCUsagePushFailures.WithLabelValues("timeout")
 	OfficerTranscriptEvents.WithLabelValues("posted")
 	OfficerLLMRequests.WithLabelValues("example:area", "1", "ok")
 	OfficerLLMRefused.WithLabelValues("none", "path")
