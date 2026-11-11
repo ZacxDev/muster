@@ -351,26 +351,26 @@ func TestAResultSettlesOnlyItsOwnPluginsClaimedDraft(t *testing.T) {
 		t.Fatalf("second claim got %d, want %d", c.DraftID, d.ID)
 	}
 	_, other := mustCreate(t, w.s, 2, "second-inbox")
-	if _, err := w.s.FinishDraft(plugin(2), other.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
+	if _, _, err := w.s.FinishDraft(plugin(2), other.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another plugin of the same owner settling it: %v; want ErrNotFound", err)
 	}
 	_, theirs := mustCreate(t, w.s, 3, "example-inbox")
-	if _, err := w.s.FinishDraft(plugin(3), theirs.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
+	if _, _, err := w.s.FinishDraft(plugin(3), theirs.ID, d.ID, DraftResult{OK: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner's plugin settling it: %v; want ErrNotFound", err)
 	}
-	got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up-123", Detail: "ok"})
-	if err != nil || got.Status != DraftSent || got.FinishedAt == nil || got.ExternalRef != "up-123" {
+	got, first, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up-123", Detail: "ok"})
+	if err != nil || !first || got.Status != DraftSent || got.FinishedAt == nil || got.ExternalRef != "up-123" {
 		t.Fatalf("the result: %+v %v", got, err)
 	}
-	again, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "different"})
-	if err != nil || again.Status != DraftSent || again.ExternalRef != "up-123" {
+	again, repeat, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "different"})
+	if err != nil || repeat || again.Status != DraftSent || again.ExternalRef != "up-123" {
 		t.Fatalf("the same result again: %+v %v; want the stored draft unchanged", again, err)
 	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false}); !errors.Is(err, ErrResultConflict) {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false}); !errors.Is(err, ErrResultConflict) {
 		t.Fatalf("the other result: %v; want ErrResultConflict", err)
 	}
 	fresh := w.approve(t, w.file(t, w.delivered(t, "m-fresh", false), "f"))
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, fresh.ID, DraftResult{OK: true}); !errors.Is(err, ErrDraftState) {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, fresh.ID, DraftResult{OK: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("a result for an unclaimed draft: %v; want ErrDraftState", err)
 	}
 	var n int
@@ -430,7 +430,7 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 		t.Fatal("an unconfirmed draft was handed out after an approve attempt")
 	}
 	// A LATE result is still recorded on it.
-	if late, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
+	if late, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: false, Detail: "timed out"}); err != nil || late.Status != DraftFailed {
 		t.Fatalf("the late result: %+v %v; want failed", late, err)
 	}
 }
@@ -493,7 +493,7 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
 		t.Fatal("claim d1")
 	}
-	if _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
+	if _, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d1.ID, DraftResult{OK: true}); err != nil {
 		t.Fatal(err)
 	}
 	d2 := w.file(t, w.m, "a follow-up after the first was sent")
@@ -603,7 +603,7 @@ func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true})
+		_, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true})
 		done <- err
 	}()
 	select {
@@ -669,11 +669,11 @@ func TestALateSentCancelsEveryOtherReplyToTheMessage(t *testing.T) {
 	}
 
 	for _, d := range []Draft{d1, d3, d7} {
-		if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up"}); err != nil || got.Status != DraftSent {
+		if got, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d.ID, DraftResult{OK: true, ExternalRef: "up"}); err != nil || got.Status != DraftSent {
 			t.Fatalf("draft %d's late sent: %+v %v; want sent", d.ID, got, err)
 		}
 	}
-	if got, err := w.s.FinishDraft(plugin(2), w.p.ID, d5.ID, DraftResult{OK: false, Detail: "upstream said no"}); err != nil || got.Status != DraftFailed {
+	if got, _, err := w.s.FinishDraft(plugin(2), w.p.ID, d5.ID, DraftResult{OK: false, Detail: "upstream said no"}); err != nil || got.Status != DraftFailed {
 		t.Fatalf("draft 5's late failed: %+v %v; want failed", got, err)
 	}
 	for _, c := range []struct {

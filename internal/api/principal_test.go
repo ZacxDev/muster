@@ -130,6 +130,7 @@ var routeVias = map[authz.Via][]string{
 		// A viewer hand-off's mint (plugin_handoffs.go).
 		"POST /plugin-handoffs",
 		"POST /plugins/{id}/revoke",
+		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",
@@ -462,6 +463,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugin/v1/messages",
 		"POST /plugin/v1/drafts/claim",
 		"POST /plugin/v1/drafts/{id}/result",
+		"GET /plugin/v1/drafts/checks",
+		"POST /plugin/v1/drafts/{id}/check",
 		"POST /plugin/v1/tasks",
 		"GET /plugin/v1/tasks",
 		"POST /plugin/v1/task-writes/claim",
@@ -523,8 +526,8 @@ type principalPlugins struct{ plugins.Store }
 func (principalPlugins) Authenticate(_ context.Context, tok string) (plugins.Plugin, error) {
 	if tok == pPluginToken {
 		return plugins.Plugin{ID: 9, OwnerID: authz.OperatorUserID, Name: "principal-test",
-			// Both capabilities, so the probe reaches every plugin route's handler.
-			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer}}, nil
+			// Every capability, so the probe reaches every plugin route's handler.
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapViewer, plugins.CapDraftChecks}}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }

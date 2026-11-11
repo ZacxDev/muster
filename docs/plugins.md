@@ -22,14 +22,17 @@ The whole loop:
 4. You approve or reject each draft on the **Asks** page's **Reply drafts** tab
    (`/attention?tab=drafts`; see [attention.md](attention.md#the-reply-drafts-tab)).
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
-   it, and reports the result (`POST /plugin/v1/drafts/{id}/result`).
+   it, and reports the result (`POST /plugin/v1/drafts/{id}/result`). A plugin
+   minted with [`draft_checks`](#check-a-reply-before-it-can-be-approved) also
+   checks each pending draft before you can approve it. A reply the plugin
+   refuses [comes back](#when-the-plugin-refuses-a-reply).
 
 ## Two ways in
 
 | door | who | routes |
 |---|---|---|
 | The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
 
 A plugin token is shown once, when you create it. muster stores only its
 sha256. The token acts as you, and only on `/plugin/v1/*`:
@@ -52,14 +55,34 @@ A plugin token opens only the routes its **capabilities** allow:
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
+| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check`. Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
-token is minted: nothing widens or narrows it.
+token is minted, with one exception: `draft_checks`, which you can turn on or
+off for an existing plugin (below).
 
-On `/plugins`, the choice is drawn only while `MUSTER_PLUGIN_ORIGINS` is set
+On `/plugins`, the `messages`/`viewer` choice is drawn only while
+`MUSTER_PLUGIN_ORIGINS` is set
 ([configuration.md](configuration.md#muster-server-optional-features)); without
-it every new token gets `messages`. A `viewer` token also carries:
+it every new token gets `messages`. The **Checks replies** box adds
+`draft_checks`, whatever that variable says.
+
+An existing plugin can gain or lose `draft_checks` with no new token. Each live
+plugin with `messages` has a **Turn on Checks replies** (or **Turn off**) button
+on its `/plugins` card (`POST /plugins/{id}/draft-checks`, `on=1` or `0`). The
+plugin keeps its row and its token, so its routing rules, chief session, queued
+messages and drafts all stay. The button is gated like **Revoke**: a signed-in
+session and a same-origin form, with no fresh sign-in, because it changes
+nothing an outside party is sent and you still approve every reply. Only the
+plugin's owner can use it (another owner's plugin answers 404). It needs
+`messages`, as at mint. Each change writes a `plugin.capability.changed` audit
+row with the old and new sets. Turning it **off** lapses every draft of the
+plugin still awaiting a check, as its deadline would. Each becomes an ordinary
+pending draft, and you get the usual push, noting that the plugin no longer
+checks replies.
+
+A `viewer` token also carries:
 
 - an **origin**, one of the server's `MUSTER_PLUGIN_ORIGINS` patterns, chosen
   from a list;
@@ -364,6 +387,105 @@ waiting for it, and a message already being delivered is not handed over twice.
 | `400 {"error"}` | `ok` is missing, or a field breaks a rule |
 | `404 {"error"}` | no such reply claimed by this plugin (another plugin's, another owner's, or none) |
 | `409 {"error", "draft_id", "status"}` | the reply already has the **other** result, or it was never claimed |
+
+### Check a reply before it can be approved
+
+A plugin minted with `draft_checks` checks each **pending** reply draft before
+your owner can approve it. This keeps the sending rule in the plugin, the one
+place that knows what its upstream can carry. muster does not copy it.
+
+While a draft awaits the check:
+
+- your owner gets no push and no attention item for it;
+- the Asks card says the plugin is checking it, and offers only **Reject**;
+- `plugin_drafts_list` marks it `awaiting_plugin_check`;
+- an approval is refused, on the card and over `plugin_draft_decide`.
+
+The wait is bounded. A draft with no verdict **1 hour** after it was filed
+(`plugins.DraftCheckWait`) **lapses**: it becomes an ordinary pending draft that
+your owner may approve. Your owner then gets the usual push, saying the plugin
+did not check it, and the attention item. `plugin_drafts_list` marks it
+`plugin_check_lapsed`. A plugin that stops checking therefore never leaves a
+reply to expire unseen.
+
+An auto-approved draft (an [allowlisted, verified sender](#routing-a-message-to-a-session))
+is not checked first. If your send-time check refuses it, report the result
+`ok: false`, and it [comes back](#when-the-plugin-refuses-a-reply) the same way.
+
+#### `GET /plugin/v1/drafts/checks`
+
+Your plugin's pending drafts awaiting a verdict, oldest first, at most 20:
+
+```json
+{"drafts": [{"draft_id": 17, "message_external_id": "msg-0001",
+  "body": "Thanks, noon works.", "created_at": "2000-01-02T03:04:05Z"}]}
+```
+
+Nothing is leased. Checking a draft twice is harmless: the first verdict
+recorded is kept. Call this beside your claim loop, for example after each claim
+that answered `204`.
+
+#### `POST /plugin/v1/drafts/{id}/check`
+
+```json
+{"sendable": false, "detail": "rule list-bullet: line 6 starts with '- '"}
+```
+
+| field | required | rule |
+|---|---|---|
+| `sendable` | yes | `true`: you can send it. `false`: you cannot. |
+| `detail` | with `false` | up to 4 KiB: why not. It is what the reply's writer is told to fix. |
+
+| answer | meaning |
+|---|---|
+| `200 {"draft_id", "status", "check"}` | recorded. `sendable`: the draft stays `pending`, and your owner is now pushed to decide it. `refused`: the draft is `rejected`, can never be approved, and [goes back](#when-the-plugin-refuses-a-reply) to whoever wrote it. The same verdict again is also `200` and changes nothing. |
+| `400 {"error"}` | `sendable` is missing, a refusal has no `detail`, or a field breaks a rule |
+| `403 {"error"}` | the token does not have `draft_checks` |
+| `404 {"error"}` | no such draft of this plugin's messages (another plugin's, another owner's, or none) |
+| `409 {"error", "draft_id", "status", "check"}` | the draft already has the **other** verdict, or it is not awaiting a check: none was asked for, it was superseded, rejected or expired first, or its check **lapsed** (`"check": "lapsed"`). After a lapse your owner decides it, and a late verdict changes nothing. |
+
+A plugin that never calls these routes, and was not minted with
+`draft_checks`, behaves as before: its drafts are approvable at once.
+
+### When the plugin refuses a reply
+
+A reply is refused when the plugin reports its result `"ok": false`, or when
+its [check](#check-a-reply-before-it-can-be-approved) says `"sendable": false`.
+muster then, once, on the call that recorded it:
+
+- **does nothing more when another reply already went.** If another reply to
+  the same message was reported sent, or is approved and on its way, the
+  sender has an answer. The refusal is recorded on the draft only. Its route
+  is left as it was, nothing goes back to the session or the chief, and your
+  owner's push says another reply was already sent. This is the case where a
+  draft's lease lapsed, another reply was sent, and the first one's failure
+  arrived late.
+
+- **pushes your owner** on the draft's own notification tag, with the plugin's
+  `detail` on one line (cut to 300 characters), after where the reply goes:
+  back to the session that wrote it (or to your chief if that session is gone),
+  or straight to your chief. It does this for every failed
+  send. For a check refusal it does this only when the reply is not going back
+  to its session, because there is nothing for your owner to do while the
+  session rewrites it.
+- **hands a routed reply back to the session that wrote it.** The route ends
+  `send_failed`, not `relayed`, so `plugin_messages_list` says `send_failed`.
+  The route sweep makes a **new route** of the same message to the same
+  session. Its paste says the earlier reply was not sent, and quotes, as data,
+  the plugin's `detail` and the refused text. The session answers the new
+  `route_id`. The chief gets a note naming the new route.
+- **bounds it.** A message's reply goes back to its session at most **2**
+  times (`plugins.MaxRouteRedrafts`). The refusal after that goes to the
+  chief as a hand-back, as a timed-out route's does: a turn, or a note when it
+  is not running. The same happens when the session's window is gone, or the
+  new route cannot be made.
+- **notes the chief** about a draft it filed itself (`reply_draft`, no route),
+  in the plugin's chief session, with the `detail`, so it can draft again.
+
+Each step writes an audit row: `plugin.draft.failed` or
+`plugin.draft.check_refused`, then `session_route.send_failed` (with
+`redraft` and the message's refusal count), then the new route's
+`session_route.routed` (`routed_via` `redraft of <route> to <session>`).
 
 ### At most once
 
@@ -1384,7 +1506,7 @@ with two tools no dispatched agent (the chief included) is offered:
 | tool | what it does |
 |---|---|
 | `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Read-only. |
-| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is sent: the plugin's next claim collects it) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
+| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is **queued**, not yet sent: the plugin's next claim collects it and tries to send it; a refusal [comes back](#when-the-plugin-refuses-a-reply)) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), an approval of a draft its plugin has [not checked yet](#check-a-reply-before-it-can-be-approved) or refused, a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
 
 Every decision's `plugin.draft.*` audit row records where it was made
 (`decided_via`): `browser` for the card, `mcp from <host>/<session>` for
@@ -1404,11 +1526,11 @@ hash must match it). Revoke a token you suspect.
 
 | state | meaning |
 |---|---|
-| `pending` | awaiting your decision |
+| `pending` | awaiting your decision — or, for a [`draft_checks`](#check-a-reply-before-it-can-be-approved) plugin, its check first |
 | `approved` | the next claim will hand it to the plugin, or already has (leased) |
 | `sent` / `failed` | the plugin's result |
 | `unconfirmed` | the plugin claimed it and never reported; it may have been sent. Never offered again, and it cannot be approved again. |
-| `rejected` | you said no |
+| `rejected` | you said no, or the plugin's check refused it |
 | `superseded` | the chief wrote a newer draft for the same message; or another reply to the same message was reported sent before a plugin collected this one (it may then still carry its approval time) |
 | `expired` | not sent within 7 days of being written, whether pending or approved |
 
@@ -1726,7 +1848,7 @@ turn for each message says when to do this.
    fails, is the only place it is delivered.
 
 Every step writes a `session_route.*` audit row (`routed`, `answered`,
-`relayed`, `fallback`, `timed_out`, `failed`, `owner_answered`), plus the draft's own
+`relayed`, `fallback`, `timed_out`, `failed`, `owner_answered`, `send_failed`), plus the draft's own
 `plugin.draft.filed` / `plugin.draft.approved` (with `"auto": true`).
 
 🔴 **What stands in for the step-up.** A message you queue carries the sign-in
@@ -1758,6 +1880,10 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+The routed paste tells the session to write plain text, with no Markdown lists,
+headings or code blocks. That is a hint, not a rule muster enforces: the rule is
+the plugin's, through its [check](#check-a-reply-before-it-can-be-approved) or
+its send, and a reply it refuses [comes back](#when-the-plugin-refuses-a-reply).
 
 ### A one-way heads-up for a message that cannot be answered
 
@@ -2338,7 +2464,7 @@ to no dispatched agent (the chief included):
 
 | tool | what it does |
 |---|---|
-| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you), `owner_answered` ([answered directly](#when-the-owner-answers-it-directly)) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you), `send_failed` (the plugin [refused the reply](#when-the-plugin-refuses-a-reply): not sent), `owner_answered` ([answered directly](#when-the-owner-answers-it-directly)) or `handed_back` (timed out or failed: back with the chief). Read-only. |
 | `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session, exactly as `mirror:<claude session id>` (the chief's form). Any other value — a bare id, an empty id, a window title — or a session no online window shows is refused `subject_not_found`, listing the online sessions as `candidates`: the way to find a subject on this door. |
 
 It is **the chief's route**, not a copy (`routeMessage`): the same target
