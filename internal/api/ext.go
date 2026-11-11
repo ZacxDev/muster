@@ -10,6 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/apitokens"
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/ccfailover"
@@ -379,6 +380,12 @@ type Extensions struct {
 	// page answers 404. The routing rules (routing_rules.go) are the plugin
 	// store's (ruleStore), present with plugins and session routing.
 	ChiefUsage chiefusage.Store
+
+	// AskAttempts is the answer-attempt log (internal/askattempt, migration
+	// 0113; ask_attempts.go): one row per Submit or Dismiss of a question
+	// card, and the Answers page (answers_page.go). nil (no database) records
+	// nothing and the page answers 404.
+	AskAttempts askattempt.Store
 
 	// FleetReport is the fleet-report request's configuration
 	// (MUSTER_FLEET_REPORT_SENDERS, MUSTER_FLEET_REPORT_PATHS;

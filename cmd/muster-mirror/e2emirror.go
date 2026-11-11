@@ -861,6 +861,15 @@ func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Questi
 	return keys, werr
 }
 
+// CapturePane implements mirrorhost.PaneReader: the window's picker as drawn
+// (the snapshot a refused answer sends), or a plain prompt when there is none.
+func (w windowFake) CapturePane(ctx context.Context, pane string) (string, error) {
+	if _, _, cur, err := w.pickerOf(ctx, pane); err == nil {
+		return cur.p.Screen(), nil
+	}
+	return "e2e fake pane: no picker on screen\n> ", nil
+}
+
 // fakePickerPane is a FakePicker as the driver's pane; its drop-th key (from
 // 1; 0: none) never reaches the picker. Every key sent is appended, as hex,
 // one per line, to keylog (T.picker.keys), so a spec sees exactly what reached

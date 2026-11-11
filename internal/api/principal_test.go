@@ -140,6 +140,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /rules/{id}/enable",
 		"POST /rules/{id}/delete",
 		"GET /usage",
+		// The answer-attempt log's page (answers_page.go).
+		"GET /answers",
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
@@ -245,6 +247,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/asks",
 		"POST /mirror/view/ask",
 		"POST /mirror/view/ask/cancel",
+		"POST /mirror/view/ask/message",
 		"GET /agents/{name}/send",
 		"POST /agents/{name}/send",
 		// Dictation: the session tier only (requireOperatorWrite), like a send.

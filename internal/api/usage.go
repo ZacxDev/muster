@@ -208,6 +208,7 @@ func (s *Server) handleUsagePage(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(`</ul>
 <p class="text-xs text-fg2">A token total is a count, not a cost: a cache read costs far less than an input token. "Estimated tokens avoided" is an estimate, not a measurement: it multiplies a rule's hits by the average of your chief's turns for the same plugin and sender before the rule was approved.</p>
 <a href="` + routingRulesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Routing rules</a>
+<a href="` + answersPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answers</a>
 </section>`)
 	s.writeNavDocument(w, r, http.StatusOK, "Usage", "", false, b.String())
 }

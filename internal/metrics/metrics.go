@@ -106,7 +106,8 @@ var (
 	// MirrorAskTyping counts answers muster typed into a mirrored session's
 	// AskUserQuestion picker, by outcome:
 	//   typed        — every key landed (the CLI's record says whose answer won)
-	//   not-sent     — refused before the host was asked (offline, step-up, …)
+	//   not-sent     — refused before the host was asked (offline, …)
+	//   step-up      — the hub's own fresh-sign-in gate refused it
 	//   no-picker    — the picker was gone (answered or dismissed in the terminal)
 	//   touched      — someone was answering in the terminal; nothing typed
 	//   unreadable   — the host could not read the question off the screen as
