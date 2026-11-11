@@ -2,19 +2,23 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,11 +76,13 @@ const (
 
 // The approval card's options and their values.
 const (
-	approveLabel  = "Approve and start"
-	declineLabel  = "Don't start"
-	approveValue  = "approve"
-	declineValue  = "decline"
-	repoValuePref = "repo:"
+	approveLabel    = "Approve and start"
+	changeRepoLabel = "Change repo"
+	declineLabel    = "Don't start"
+	approveValue    = "approve"
+	changeRepoValue = "change-repo"
+	declineValue    = "decline"
+	repoValuePref   = "repo:"
 	// repoCardMax bounds the repositories a repo card offers (the owner can
 	// type any other: owner/name).
 	repoCardMax = 8
@@ -94,6 +100,20 @@ const (
 	agentDispatchHeldInChat   = "your owner answered that card in your chat: their message is a turn they typed, so call " +
 		"agent_dispatch in your answer to it with owner_asked: true"
 	agentDispatchHeldChoseRepo = "your owner chose the repository %s for this dispatch: call agent_dispatch with repo set to exactly that"
+	// agentDispatchHeldPushAction: the stored answer came through the phone's
+	// notification action, not a tap on the whole card.
+	agentDispatchHeldPushAction = "your owner's answer to that approval card came from a notification, which cannot show the whole " +
+		"request, so muster cannot take it as their approval; it starts only from a tap on the card itself"
+	// approvalNotOnTheCard: the answer path's refusal of the same (the card
+	// stays open): what the owner's phone reads.
+	approvalNotOnTheCard = "open this card to approve it: an agent is started only from the whole card, never from a notification"
+	// The approval caps (approvalCapRefusal).
+	agentDispatchApproveTurnCap = "you already put an approval card in front of your owner in this turn: one per turn. Wait for " +
+		"their answer before asking for another start"
+	agentDispatchApproveHourCap = "you have put %d approval cards in front of your owner in the last hour, the most allowed: " +
+		"ask them in your chat instead, or wait"
+	// approvalCardsPerHour bounds the approval cards one owner gets in an hour.
+	approvalCardsPerHour = 6
 )
 
 // errApprovalNeeded is a reservation check's answer for a request the owner
@@ -143,6 +163,15 @@ type approvalRequest struct {
 	task                      notes.Note
 	onTask                    bool
 	prompt                    string
+	// trigger is what started the chief's turn (approvalTrigger), said on
+	// the card; set by fileHeldDispatch.
+	trigger string
+}
+
+// repoChangeable reports whether the request's repository is the chief's to
+// pass — so the owner may change it — not one its task names.
+func (r approvalRequest) repoChangeable() bool {
+	return !r.onTask || strings.TrimSpace(r.task.Repo) == ""
 }
 
 // approvalQuestion is the card's text: the request in full, the brief last
@@ -154,6 +183,9 @@ func approvalQuestion(r approvalRequest, repoBlank bool) (string, string) {
 	var b strings.Builder
 	b.WriteString("Start this agent? Your chief asked for it in a turn you did not type in its chat, so nothing starts unless " +
 		"you approve it here.\n")
+	if r.trigger != "" {
+		b.WriteString("Your chief asked for this while handling " + r.trigger + ".\n")
+	}
 	where := one(r.target)
 	if l := dispatchTargetLabel(r.target); l != r.target {
 		where = one(l) + " (" + where + ")"
@@ -204,8 +236,16 @@ func (s *Server) approvalCardFor(ctx context.Context, a agents.Agent, blank, hos
 	}
 	c := approvalCard{question: q, values: map[string]string{}}
 	if blank == blankApprove {
-		c.labels = []string{approveLabel, declineLabel}
-		c.values[approveLabel], c.values[declineLabel] = approveValue, declineValue
+		c.labels = []string{approveLabel}
+		c.values[approveLabel] = approveValue
+		if r.repoChangeable() {
+			// The repo card in this one's place: the connected repositories,
+			// ranked, every guard of a picked repository (completeHeld).
+			c.labels = append(c.labels, changeRepoLabel)
+			c.values[changeRepoLabel] = changeRepoValue
+		}
+		c.labels = append(c.labels, declineLabel)
+		c.values[declineLabel] = declineValue
 		return c, ""
 	}
 	list, err := s.githubRepos(ctx)
@@ -262,6 +302,158 @@ func (s *Server) rankedRepos(ctx context.Context, a agents.Agent, host string, l
 		add(r.FullName)
 	}
 	return out
+}
+
+// --- where the request came from, and how often -----------------------------
+
+// approvalTriggerRunes cuts an outside name (a sender, a question) on the card.
+const approvalTriggerRunes = 80
+
+// attentionAnswerTurnPrefix starts muster's delivery of the owner's answer to
+// an attention ask (renderAttentionAnswer); the ask it names is re-read before
+// the card says so.
+const attentionAnswerTurnPrefix = "muster: your owner answered attention #"
+
+// chiefTurnRow is the user row the chief's running turn answers: the turn's
+// own input (turnInputOf), else — a delivered turn muster did not store first
+// — the newest user row of its default session within its turn budget. ok
+// false when there is none.
+func (s *Server) chiefTurnRow(ctx context.Context, chief agents.Agent) (agents.ChatMessage, bool) {
+	st, ok := s.ext.Agents.(ownerTurnStore)
+	if !ok {
+		return agents.ChatMessage{}, false
+	}
+	if id := s.turnInputOf(ctx, chief.ID); id > 0 {
+		if m, err := st.ChatMessage(ctx, id); err == nil && m.AgentID == chief.ID && m.Role == "user" {
+			return m, true
+		}
+	}
+	sess, err := s.defaultSession(ctx, chief)
+	if err != nil {
+		return agents.ChatMessage{}, false
+	}
+	msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, sess.ID, chatHistoryCap)
+	if err != nil {
+		return agents.ChatMessage{}, false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if m := msgs[i]; m.Role == "user" {
+			if s.now().Sub(m.CreatedAt) > agentTurnBudget(chief.Kind) {
+				break
+			}
+			return m, true
+		}
+	}
+	return agents.ChatMessage{}, false
+}
+
+// approvalTrigger is the chief's running turn (its row id, 0 unknown) and
+// what started it, as the approval card says it ("Your chief asked for this
+// while handling <trigger>"). 🔴 DECIDED FROM STRUCTURE, NOT THE ROW'S WORDS:
+// a plugin delivery is its plugin_message_id (its plugin's label, the
+// message's sender — outside words, quoted and cut — and whether it is a task
+// event); muster's delivery of an attention answer names its ask, which is
+// re-read and must be an ANSWERED ask of THIS chief's; a row the owner typed
+// is TypedBy. Anything else is said to be unknown, never guessed.
+func (s *Server) approvalTrigger(ctx context.Context, chief agents.Agent) (int64, string) {
+	m, ok := s.chiefTurnRow(ctx, chief)
+	if !ok {
+		return 0, "a turn muster could not identify"
+	}
+	quote := func(v string) string {
+		return strconv.Quote(fence.Cut(fence.Sanitize(strings.TrimSpace(v)), approvalTriggerRunes))
+	}
+	switch {
+	case m.TypedBy > 0 && m.TypedBy == agentOwnerID(chief):
+		return m.ID, "a message you typed in its chat (which it could not show was yours)"
+	case m.PluginMessageID > 0 && s.ext.Plugins != nil:
+		pm, err := s.ext.Plugins.Message(ctx, m.PluginMessageID)
+		if err != nil {
+			return m.ID, "a plugin message"
+		}
+		name := "a plugin"
+		if p, err := s.ext.Plugins.Plugin(ctx, pm.PluginID); err == nil {
+			name = firstNonBlank(p.Label, p.Name)
+		}
+		if plugins.IsTaskEvent(pm) {
+			return m.ID, "a task event from " + quote(name) + " about task #" + strconv.FormatInt(*pm.TaskID, 10)
+		}
+		if strings.TrimSpace(pm.Sender) == "" {
+			return m.ID, "a " + quote(name) + " message"
+		}
+		return m.ID, "a " + quote(name) + " message from " + quote(pm.Sender)
+	case strings.HasPrefix(m.Content, attentionAnswerTurnPrefix) && s.ext.Attention != nil:
+		digits := m.Content[len(attentionAnswerTurnPrefix):]
+		if i := strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' }); i >= 0 {
+			digits = digits[:i]
+		}
+		if id, err := strconv.ParseInt(digits, 10, 64); err == nil {
+			if a, err := s.ext.Attention.Get(ctx, id); err == nil && a.Asker.AgentID == chief.ID && a.Status == attention.Answered {
+				where := "on the Attention view"
+				if a.AnsweredVia.Via == attention.ViaDevice {
+					where = "from your phone's notification"
+				}
+				return m.ID, "your answer " + where + " to its question " + quote(a.Question)
+			}
+		}
+	}
+	return m.ID, "a turn you did not type"
+}
+
+// approvalCapRefusal is "" when the chief may put one more approval card in
+// front of its owner in turn (for request key), else why not: at most ONE
+// open approval card per chief turn (another request_key's), and at most
+// approvalCardsPerHour filed in an hour. A count that cannot be read refuses
+// (fail closed).
+func (s *Server) approvalCapRefusal(ctx context.Context, turn int64, key string) string {
+	st := s.hostDispatches()
+	if st == nil {
+		return "the approval card could not be raised; try again"
+	}
+	hour, inTurn, err := st.ApprovalHoldCounts(ctx, time.Hour, turn, key)
+	if err != nil {
+		s.logger.Printf("agent_dispatch: count approval cards: %v", err)
+		return "the approval card could not be raised; try again"
+	}
+	if inTurn > 0 {
+		return agentDispatchApproveTurnCap
+	}
+	if hour >= approvalCardsPerHour {
+		return fmt.Sprintf(agentDispatchApproveHourCap, hour)
+	}
+	return ""
+}
+
+// approvalSurfaceRefusal is why answer to ask id cannot be taken from the
+// door it came through, nil when it can (proposalSurfaceRefusal's model,
+// #546): an APPROVAL card is answered only on the whole card — the Attention
+// view, or the phone's signed-in page — never from the phone's signed
+// notification action (the device door), whose lock screen showed a cut
+// question. Refused BEFORE anything is recorded: the card stays open.
+func (s *Server) approvalSurfaceRefusal(ctx context.Context, id int64) error {
+	st := s.hostDispatches()
+	if st == nil {
+		return nil
+	}
+	p, ok := authz.From(ctx)
+	if !ok || p.Via != authz.ViaDevice {
+		return nil
+	}
+	h, err := st.CardHoldByAsk(ctx, id)
+	if errors.Is(err, plugins.ErrHoldNotFound) {
+		return nil // not a dispatch card
+	}
+	if err != nil {
+		// Unreadable: whether this is an approval card is unknown, and the
+		// phone's action is refused (fail closed; the whole card still works).
+		s.logger.Printf("agent_dispatch: read the hold of card %d: %v", id, err)
+		return errReleaseRefused(approvalNotOnTheCard)
+	}
+	var d heldDetail
+	if json.Unmarshal(h.Detail, &d) != nil || !d.Approval {
+		return nil
+	}
+	return errReleaseRefused(approvalNotOnTheCard)
 }
 
 // approvalNext is a held answer's "next" for an approval card.

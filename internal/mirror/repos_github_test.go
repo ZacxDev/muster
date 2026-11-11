@@ -4,13 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
+
+// TestValidGitHubRepoAgreesWithGitHubs: mirror's own copy of the owner/name
+// rule (it may not import internal/github, which muster-mirror would then
+// link with a redirect-following HTTP client) answers exactly as
+// github.ValidRepoName on every boundary: owner 1 and 39 and 40 characters, a
+// leading hyphen, name 1, 100 and 101 characters, each allowed and a refused
+// character, no slash, two slashes.
+func TestValidGitHubRepoAgreesWithGitHubs(t *testing.T) {
+	o39, n100 := strings.Repeat("o", 39), strings.Repeat("n", 100)
+	cases := []string{"a/b", o39 + "/x", o39 + "o/x", "-a/b", "a-/b", "a/" + n100, "a/" + n100 + "n", "a/b.c_d-e", "a/b c",
+		"a/b/c", "ab", "", "a/", "/b", "A9/Z_9", "a_b/c", "a/é"}
+	seenTrue, seenFalse := false, false
+	for _, c := range cases {
+		got, want := mirror.ValidGitHubRepo(c), github.ValidRepoName(c)
+		if got != want {
+			t.Errorf("%q: mirror %v, github %v", c, got, want)
+		}
+		seenTrue, seenFalse = seenTrue || want, seenFalse || !want
+	}
+	if !seenTrue || !seenFalse {
+		t.Fatal("instrument check: the cases must include both valid and invalid names")
+	}
+}
 
 // TestAReposMessagesGitHubReposLandOnTheEntries: the GitHub repository a v2
 // host sends beside a window's folder name (Msg.GitHubRepos) lands on that

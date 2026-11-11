@@ -166,6 +166,43 @@ func (s *PGStore) RecordDispatchApproved(ctx context.Context, holdID string, det
 	return s.inTx(ctx, func(tx pgx.Tx) error { return audit(ctx, tx, ActionDispatchApproved, holdID, detail) })
 }
 
+// CardHoldByAsk is the principal's newest card hold whose card is attention
+// ask askID (detail.ask_id) — open or not. ErrHoldNotFound when none is.
+func (s *PGStore) CardHoldByAsk(ctx context.Context, askID int64) (DispatchHold, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return DispatchHold{}, errors.New("plugins: a held dispatch needs a user principal")
+	}
+	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'ask_id' = $5::bigint::text`, askID)
+}
+
+// ApprovalHoldCounts is how many APPROVAL card holds (detail.approval) the
+// principal filed: within the last `within` by the database's clock (hour),
+// and — of those still open: unexpired and unconsumed — how many were filed
+// in chief turn `turn` (detail.turn; 0 counts none) for a request_key other
+// than `key` (inTurn). The bound on how often a chief that is not in its
+// owner's typed turn may put an approval card in front of them.
+func (s *PGStore) ApprovalHoldCounts(ctx context.Context, within time.Duration, turn int64, key string) (hour, inTurn int, err error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return 0, 0, errors.New("plugins: a held dispatch needs a user principal")
+	}
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT
+		    count(*) FILTER (WHERE h.at > now() - make_interval(secs => $3)),
+		    count(*) FILTER (WHERE $5::bigint > 0 AND h.detail->>'turn' = $5::bigint::text
+		                       AND h.detail->>'request_key' IS DISTINCT FROM $6
+		                       AND h.at + make_interval(secs => $7) > now()
+		                       AND NOT EXISTS (SELECT 1 FROM audit_log r WHERE r.action = $4 AND r.user_id = $2
+		                                        AND r.detail->>'`+DetailHeld+`' = h.object))
+		  FROM audit_log h
+		 WHERE h.action = $1 AND h.user_id = $2 AND h.detail->>'door' = 'card' AND (h.detail->>'approval')::boolean IS TRUE
+		   AND h.at > now() - make_interval(secs => greatest($3, $7))`,
+			ActionDispatchHeld, p.UserID, within.Seconds(), ActionChiefDispatch, turn, key, DispatchHoldTTL.Seconds()).Scan(&hour, &inTurn)
+	})
+	return hour, inTurn, err
+}
+
 // CardHoldByKey is the principal's NEWEST held dispatch filed by agent_dispatch
 // for a card (detail.door "card") under request_key key — open or not; the
 // caller reads Open(). A newer hold for the same key supersedes an older one

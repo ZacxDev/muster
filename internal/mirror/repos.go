@@ -1,11 +1,20 @@
 package mirror
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/ZacxDev/muster/internal/github"
 )
+
+// githubRepoRE is a GitHub owner/name: internal/github's repoNameRe, spelled
+// again HERE because muster-mirror links this package and internal/github
+// carries an HTTP client that follows redirects (TestEveryMirrorHTTPClient
+// RefusesRedirects). TestValidGitHubRepoAgreesWithGitHubs pins the two equal.
+var githubRepoRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+// ValidGitHubRepo reports whether s is a GitHub owner/name
+// (github.ValidRepoName's rule).
+func ValidGitHubRepo(s string) bool { return githubRepoRE.MatchString(s) }
 
 // THE REPO CHIP: which repository a mirrored window — a shell or a Claude Code
 // session alike — works in, as a SHORT NAME: the top-level directory's
@@ -63,11 +72,11 @@ func CleanRepoName(name string) string {
 // from its repository. 🔴 A HOST'S WORD, NOT AN AUTHORITY: muster checks it
 // against the owner's connected repositories (connectedRepoName) before
 // anything uses it, like any repository the chief names. Its worst case on the
-// wire (MaxWindows × github.ValidRepoName's 140 bytes) is measured beside the
+// wire (MaxWindows × ValidGitHubRepo's 140 bytes) is measured beside the
 // names' by TestTheLargestReposMessageFitsOneFrame.
 
 // NormalizeGitHubRepos is in restricted to windows (NormalizeRepos' rule),
-// each value a GitHub owner/name (github.ValidRepoName) lowercased; an entry
+// each value a GitHub owner/name (ValidGitHubRepo) lowercased; an entry
 // that is not is dropped; nil when nothing is left.
 func NormalizeGitHubRepos(in map[string]string, windows []Window) map[string]string {
 	if len(in) == 0 {
@@ -79,7 +88,7 @@ func NormalizeGitHubRepos(in map[string]string, windows []Window) map[string]str
 		if !ok {
 			continue
 		}
-		if v = strings.ToLower(strings.TrimSpace(v)); !github.ValidRepoName(v) {
+		if v = strings.ToLower(strings.TrimSpace(v)); !ValidGitHubRepo(v) {
 			continue
 		}
 		if out == nil {

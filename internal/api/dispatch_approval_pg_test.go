@@ -167,14 +167,14 @@ func (f *hostFixture) heldRepoCard(t *testing.T, key string) attention.Ask {
 // a host dispatch with repo "?" starts NOTHING and raises one card that shows
 // the whole request — target, the brief whole — and offers the connected
 // repositories, the one host-bravo's window works in FIRST, then "Don't
-// start". The owner's tap (browser, then phone) lets the completing call —
+// start". The owner's tap on the whole card lets the completing call —
 // same key and arguments, repo the one tapped, in a turn the owner did not
 // type — start it: the host is sent the CANONICAL name (GitHub's casing, not
 // the host's lowercase), the row names the hold, and the agent is told the
 // brief its owner APPROVED, every line of it. Before approve-by-tap: refused,
 // "a host target needs repo".
 func TestARepoCardTapBindsTheCanonicalRepository(t *testing.T) {
-	for _, via := range []authz.Via{authz.ViaSession, authz.ViaDevice} {
+	for _, via := range []authz.Via{authz.ViaSession} { // the Attention view, and the phone's whole card (the same signed-in page)
 		t.Run(string(via), func(t *testing.T) {
 			f := newApprovalFixture(t)
 			card := f.heldRepoCard(t, "repo-1")
@@ -297,7 +297,7 @@ func TestAnApprovalIsSingleUse(t *testing.T) {
 	card := f.heldRepoCard(t, "once-1")
 	f.tap(t, card.ID, apRealRepo, authz.ViaSession)
 	if _, err := f.srv.answerAsk(authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin,
-		Via: authz.ViaDevice}), card.ID, apWidgets); err == nil {
+		Via: authz.ViaSession}), card.ID, apWidgets); err == nil {
 		t.Fatal("a second answer to the same card was taken")
 	}
 	f.m.reply = func(string, int64, mirror.AgentSpawnReq) (mirror.AgentSpawned, error) {
@@ -326,7 +326,7 @@ func TestDontStartDeclines(t *testing.T) {
 		t.Fatalf("not an approval card: %s", text)
 	}
 	card := f.newestCard(t)
-	if strings.Join(card.Options, "|") != approveLabel+"|"+declineLabel || !strings.Contains(card.Question, "Repository: "+apRealRepo) {
+	if strings.Join(card.Options, "|") != approveLabel+"|"+changeRepoLabel+"|"+declineLabel || !strings.Contains(card.Question, "Repository: "+apRealRepo) {
 		t.Fatalf("the approval card: %q\n%s", card.Options, card.Question)
 	}
 	f.tap(t, card.ID, declineLabel, authz.ViaSession)
@@ -381,7 +381,7 @@ func TestAPodDispatchIsApprovedByTapToo(t *testing.T) {
 		if !strings.Contains(card.Question, apBriefLine2) || !strings.Contains(card.Question, "pod/claude-code") {
 			t.Fatalf("%s: the card: %s", c.name, card.Question)
 		}
-		f.tap(t, card.ID, approveLabel, authz.ViaDevice)
+		f.tap(t, card.ID, approveLabel, authz.ViaSession)
 		f.untypedTurn(t)
 		out := f.callRaw(f.chief, agentDispatchTool, c.args)
 		var started struct {

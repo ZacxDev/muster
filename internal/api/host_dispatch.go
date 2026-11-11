@@ -72,6 +72,8 @@ type hostDispatchStore interface {
 	RecordHostDispatchAgent(ctx context.Context, object string, hostDispatchID int64) error
 	HostDispatchObject(ctx context.Context, h plugins.HostDispatch) (string, error)
 	CardHoldByKey(ctx context.Context, key string) (plugins.DispatchHold, error)
+	CardHoldByAsk(ctx context.Context, askID int64) (plugins.DispatchHold, error)
+	ApprovalHoldCounts(ctx context.Context, within time.Duration, turn int64, key string) (int, int, error)
 }
 
 var _ hostDispatchStore = (*plugins.PGStore)(nil)
@@ -349,6 +351,13 @@ type heldDetail struct {
 	Options      map[string]string `json:"options"`
 	AskID        int64             `json:"ask_id"`
 	OwnerMessage int64             `json:"owner_message,omitempty"`
+	// Approval: the card is an approval card (dispatch_approval.go), the owner's
+	// say-so for the whole request. Turn is the chief turn it was raised in
+	// (chiefTurnRow; 0 unknown) and Trigger what started that turn, as the
+	// card says it (approvalTrigger) — both counted by the approval caps.
+	Approval bool   `json:"approval,omitempty"`
+	Turn     int64  `json:"turn,omitempty"`
+	Trigger  string `json:"trigger,omitempty"`
 }
 
 // cardHoldDoor is the door a card hold is filed with (dispatch_request's are "mcp").
@@ -373,7 +382,17 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	if t != nil {
 		host, hostName = t.String(), t.Host
 	}
-	if isApprovalBlank(blanks[0]) {
+	approval := isApprovalBlank(blanks[0])
+	var turn int64
+	if approval {
+		// 🔴 WHO ASKED, AND HOW OFTEN: the card says what started the chief's
+		// turn, and an untyped turn may raise one approval card, a few an hour.
+		var trigger string
+		turn, trigger = s.approvalTrigger(ctx, a)
+		if why := s.approvalCapRefusal(ctx, turn, in.RequestKey); why != "" {
+			return refuse(why)
+		}
+		req.trigger = trigger
 		var c approvalCard
 		c, why = s.approvalCardFor(ctx, a, blanks[0], hostName, req)
 		question, labels, values = c.question, c.labels, c.values
@@ -405,12 +424,24 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	if slices.Contains(blanks, blankRepo) {
 		held.Repo, in.Repo = "", ""
 	}
-	ask, err := s.raiseOwnerCard(ctx, a, question, labels, "")
+	// 🔴 AN APPROVAL CARD'S PUSH CARRIES NO CHIPS AND NO SIGNED ACTIONS
+	// (proposalCardFiled, as a proposal's): its notification cannot show the
+	// brief, so a tap on the lock screen must open the whole card, never
+	// answer it. It is notified only once its hold is filed.
+	var (
+		ask attention.Ask
+		err error
+	)
+	if approval {
+		ask, err = s.raiseProposalCard(ctx, a, question, labels)
+	} else {
+		ask, err = s.raiseOwnerCard(ctx, a, question, labels, "")
+	}
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
 	}
 	d := heldDetail{Door: cardHoldDoor, RequestKey: in.RequestKey, HeldHash: dispatchRequestHash(held, prompt), Target: held.Target,
-		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg}
+		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger}
 	var detail map[string]any
 	raw, _ := json.Marshal(d)
 	_ = json.Unmarshal(raw, &detail)
@@ -418,6 +449,9 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		s.logger.Printf("agent_dispatch: file a held dispatch: %v", err)
 		_, _ = s.cancelAsk(ctx, ask.ID)
 		return refuse("the dispatch could not be held for your owner's answer; try again")
+	}
+	if approval {
+		s.proposalCardFiled(ask)
 	}
 	next := approvalNext(blanks[0])
 	if !isApprovalBlank(blanks[0]) {
@@ -446,6 +480,9 @@ type heldCompletion struct {
 	replay   bool
 	accepted bool
 	refusal  string
+	// changeRepo: the owner tapped "Change repo" on an approval card; the
+	// caller re-files the hold as a repo card (blankRepo).
+	changeRepo bool
 }
 
 // completeHeld judges a call against the newest open card hold for its key —
@@ -570,6 +607,16 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 		c.refusal = agentDispatchHeldDoor
 		return c
 	}
+	// 🔴 AN APPROVAL IS A TAP ON THE WHOLE CARD, NEVER A NOTIFICATION'S ACTION:
+	// the phone's signed answer action (stored as the device door) answers from
+	// a lock screen that showed a cut question, not the brief. The answer path
+	// refuses it before it is recorded (approvalSurfaceRefusal); this is the
+	// same rule read back from the stored row. The phone's whole card is a
+	// signed-in page (the browser door) and binds.
+	if isApprovalBlank(first) && ask.AnsweredVia.Via == attention.ViaDevice {
+		c.refusal = agentDispatchHeldPushAction
+		return c
+	}
 	chosen, label := "", ""
 	if i, ok := ask.ChosenOption(); ok {
 		if chosen, ok = d.Options[ask.Options[i]]; !ok {
@@ -601,6 +648,12 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 	}
 	if chosen == declineValue {
 		c.refusal = agentDispatchHeldDeclined
+		return c
+	}
+	if chosen == changeRepoValue && first == blankApprove {
+		// "Change repo": the owner's say-so for a repo card in its place, the
+		// call otherwise unchanged (its hash was checked above).
+		c.changeRepo = true
 		return c
 	}
 	if chosen != filled {
@@ -759,6 +812,11 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 			out["budget"] = b
 		}
 		return toolJSON(out)
+	}
+	if comp.changeRepo && !typed {
+		// "Change repo" tapped: the repo card in the approval card's place.
+		effective = ""
+		return s.fileHeldDispatch(ctx, a, in, &t, []string{blankRepo}, prompt, 0, approval(t))
 	}
 	byTap := comp.accepted
 	// 🔴 NEITHER TYPED NOR TAPPED: the owner is asked to approve the WHOLE

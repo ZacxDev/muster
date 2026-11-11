@@ -430,7 +430,15 @@ not type) with a `request_key`, it is no longer just refused. muster puts an
   `host/<host>/<runtime>` and the model), the repository, the base branch, the
   task, and the chief's brief **whole** — a brief too long for the card is
   refused, never cut, because the brief is what the agent is told;
-- its buttons are **Approve and start** and **Don't start**; when the chief left
+- it says what the chief was handling when it asked: a plugin's message (the
+  plugin and its sender), a task event, your answer to one of its questions,
+  or "a turn you did not type" when muster cannot tell;
+- its notification only opens the card: it has no answer buttons, because a
+  lock screen cannot show the brief. Answers from the phone's notification
+  actions are refused. Tap the card itself, in muster or in the phone app;
+- its buttons are **Approve and start**, **Change repo** (when the repository
+  is the chief's to choose, not one its task names: it opens the repository
+  picker below, and the agent starts in the one you pick) and **Don't start**; when the chief left
   the repository blank (or `?`), the buttons are your connected repositories
   instead, the one the session you are looking at, or the target host's
   windows, work in first — or type any other `owner/name`;
@@ -448,6 +456,8 @@ even if that start is refused and retried. **Don't start** refuses it. A start
 that already exists answers as it always did (the same `request_key` replays it;
 a task already started says so) — a retry never raises a second card. A card
 never releases a gate: a gated task still needs your typed turn or the board.
+A chief turn you did not type raises at most one approval card, and at most six
+are raised in an hour; past either, the chief is told why and nothing is asked.
 
 The agent's first message carries the chief's brief, marked as one **you
 approved on a card** (not one you typed), in place of the "relayed from a message

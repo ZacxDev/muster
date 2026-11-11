@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -96,7 +98,7 @@ func TestTheGitHubRepoIsTheOriginsNotTheFolders(t *testing.T) {
 // quoted value is unquoted. Each URL is distinct so a mutant reading the wrong
 // one is seen.
 func TestGitConfigOriginURLReadsGitsOwnRules(t *testing.T) {
-	for _, c := range []struct{ name, text, want string }{
+	cases := []struct{ name, text, want string }{
 		{"last wins", "[remote \"origin\"]\n\turl = https://github.com/a-org/first.git\n\turl = https://github.com/b-org/second.git\n", "https://github.com/b-org/second.git"},
 		{"other remote", "[remote \"upstream\"]\n\turl = https://github.com/c-org/up.git\n[remote \"origin\"]\n\turl = git@github.com:d-org/mine.git\n", "git@github.com:d-org/mine.git"},
 		{"origin then other", "[remote \"origin\"]\n\turl = https://github.com/e-org/o.git\n[remote \"fork\"]\n\turl = https://github.com/f-org/f.git\n", "https://github.com/e-org/o.git"},
@@ -104,9 +106,29 @@ func TestGitConfigOriginURLReadsGitsOwnRules(t *testing.T) {
 		{"section case", "[Remote \"origin\"]\n\tURL = \"https://github.com/h-org/yes.git\"\n", "https://github.com/h-org/yes.git"},
 		{"subsection case", "[remote \"Origin\"]\n\turl = https://github.com/i-org/no.git\n", ""},
 		{"none", "[core]\n\tbare = false\n", ""},
-	} {
+		{"legacy section", "[remote.origin]\n\turl = https://github.com/j-org/legacy.git\n", "https://github.com/j-org/legacy.git"},
+		{"legacy section case", "[Remote.ORIGIN]\n\turl = https://github.com/k-org/upper.git\n", "https://github.com/k-org/upper.git"},
+		{"legacy other remote", "[remote.fork]\n\turl = https://github.com/l-org/fork.git\n", ""},
+	}
+	for _, c := range cases {
 		if got := gitConfigOriginURL(c.text); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	// The same texts through git itself: the parser agrees with git on every
+	// case above (the expectations are git's answers, not the parser's).
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
+	dir := t.TempDir()
+	for i, c := range cases {
+		p := filepath.Join(dir, "config-"+strconv.Itoa(i))
+		if err := os.WriteFile(p, []byte(c.text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := exec.Command("git", "config", "-f", p, "--get", "remote.origin.url").Output()
+		if got := strings.TrimSpace(string(out)); got != c.want {
+			t.Errorf("%s: git answers %q, the case wants %q", c.name, got, c.want)
 		}
 	}
 }

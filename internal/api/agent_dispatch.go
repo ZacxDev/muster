@@ -658,9 +658,26 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	var comp heldCompletion
 	if !typed {
-		comp = s.completeHeld(ctx, in, nil, nil, "", prompt)
+		// A pod's repository is optional: a blank one is a blank only to a
+		// repo card ("Change repo"), which the call fills with repo.
+		var callBlanks []string
+		if repoBlankOf(in.Repo) {
+			callBlanks = []string{blankRepo}
+		}
+		comp = s.completeHeld(ctx, in, nil, callBlanks, strings.TrimSpace(in.Repo), prompt)
 		if comp.refusal != "" {
 			return refuse(comp.refusal)
+		}
+		if comp.changeRepo {
+			// "Change repo" tapped: the repo card in the approval card's place.
+			var n notes.Note
+			if onTask {
+				if n, ok = s.ownersTask(ctx, a, in.TaskID); !ok {
+					return refuse(chiefDispatchNoTask)
+				}
+			}
+			return s.fileHeldDispatch(ctx, a, in, nil, []string{blankRepo}, prompt, 0, approvalRequest{target: in.Target,
+				model: in.Model, base: in.Base, task: n, onTask: onTask, prompt: prompt})
 		}
 	}
 	byTap := comp.approvedByTap()

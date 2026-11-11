@@ -50,7 +50,12 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	// routing_rule_propose raises its card here too: its question is
 	// ruleCardQuestion over a plugins.RuleNew, which carries no kickoff (a
 	// rule is a match and an action copied from a plugin message).
-	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "routing_rules.go:toolRoutingRulePropose"})
+	// agent_dispatch's APPROVAL card (dispatch_approval.go) too: raised
+	// unnotified like a proposal's, then notified with no answer actions
+	// (proposalCardFiled). Its question is approvalQuestion over the
+	// dispatch's own arguments: no succession, so no kickoff.
+	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "host_dispatch.go:fileHeldDispatch",
+		"routing_rules.go:toolRoutingRulePropose"})
 	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)

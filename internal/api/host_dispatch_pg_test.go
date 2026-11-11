@@ -92,9 +92,9 @@ type hostFixture struct {
 
 const hostPrompt = "Fix the typo in the README."
 
-func newHostFixture(t *testing.T) *hostFixture {
+func newHostFixture(t *testing.T, extra ...func(ext *Extensions)) *hostFixture {
 	t.Helper()
-	f := &hostFixture{releaseFixture: newReleaseFixture(t)}
+	f := &hostFixture{releaseFixture: newReleaseFixture(t, extra...)}
 	f.withConnectedRepos(t, "acme/widgets")
 	f.m = &spawnMirror{fakeMirror: &fakeMirror{online: true, interactive: true}, owner: f.owner,
 		hosts: []mirror.HostView{spawnableHost("host-bravo", true), spawnableHost("host-charlie", true), spawnableHost("host-delta", false)}}

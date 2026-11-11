@@ -277,7 +277,10 @@ func gitConfigOriginURL(text string) string {
 				continue
 			}
 			sec, sub, hasSub := strings.Cut(strings.TrimSpace(l[1:end]), " ")
-			in = hasSub && strings.EqualFold(sec, "remote") && strings.TrimSpace(sub) == `"origin"`
+			// `[remote "origin"]`, or git's deprecated `[remote.origin]` (whose
+			// subsection is compared without case, as git lowercases it).
+			in = (hasSub && strings.EqualFold(sec, "remote") && strings.TrimSpace(sub) == `"origin"`) ||
+				(!hasSub && strings.EqualFold(sec, "remote.origin"))
 			if rest := strings.TrimSpace(l[end+1:]); in && rest != "" {
 				// "[remote "origin"] url = …" on one line.
 				l = rest
