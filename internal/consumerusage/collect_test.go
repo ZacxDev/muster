@@ -63,7 +63,7 @@ var (
 	w1Reading  = Reading{Account: "acct-b",
 		Failovers: []Failover{{From: "acct-a", To: "acct-b", At: hr(11).Add(30 * time.Minute)}},
 		Buckets: []cctranscript.UsageBucket{
-			{Session: "s-beta", Hour: hr(12), Turns: 7, APICalls: 31, InputTokens: 410, OutputTokens: 9822, CacheReadTokens: 1803321, CacheCreationTokens: 60117},
+			{Session: "s-beta", Hour: hr(12), Turns: 7, APICalls: 31, InputTokens: 410, OutputTokens: 9822, CacheReadTokens: 1803321, CacheCreationTokens: 60117, Model: "claude-model-b"},
 			{Session: "s-alpha", Hour: hr(10), Turns: 2, APICalls: 5, InputTokens: 113, OutputTokens: 517, CacheReadTokens: 70229, CacheCreationTokens: 3301},
 		}}
 	w2Reading = Reading{Account: "acct-c", Buckets: []cctranscript.UsageBucket{
@@ -73,7 +73,7 @@ var (
 const (
 	w1Body = `{"instance":"muster.example.com","consumer":"pr-review","hours":[` +
 		`{"hour":"2026-11-10T10:00:00Z","account":"acct-a","session":"s-alpha","turns":2,"api_calls":5,"input_tokens":113,"output_tokens":517,"cache_read_tokens":70229,"cache_creation_tokens":3301},` +
-		`{"hour":"2026-11-10T12:00:00Z","account":"acct-b","session":"s-beta","turns":7,"api_calls":31,"input_tokens":410,"output_tokens":9822,"cache_read_tokens":1803321,"cache_creation_tokens":60117}]}`
+		`{"hour":"2026-11-10T12:00:00Z","account":"acct-b","session":"s-beta","turns":7,"api_calls":31,"input_tokens":410,"output_tokens":9822,"cache_read_tokens":1803321,"cache_creation_tokens":60117,"model":"claude-model-b"}]}`
 	w2Body = `{"instance":"muster.example.com","consumer":"pr-review","hours":[` +
 		`{"hour":"2026-11-10T11:00:00Z","account":"acct-c","session":"s-gamma","turns":3,"api_calls":9,"input_tokens":47,"output_tokens":1201,"cache_read_tokens":88001,"cache_creation_tokens":4409}]}`
 )

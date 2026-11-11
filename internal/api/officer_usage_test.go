@@ -51,7 +51,7 @@ func (g *usageGateway) Usage(_ context.Context, a agents.Agent, _ time.Time) (cc
 	}
 	h := time.Date(2000, 1, 3, 11, 0, 0, 0, time.UTC)
 	return cctranscript.UsagePage{Since: h, Buckets: []cctranscript.UsageBucket{{Session: "s-1", Hour: h, Turns: 1, APICalls: 2,
-		InputTokens: 3, OutputTokens: 4, CacheReadTokens: 5, CacheCreationTokens: 6}}}, nil
+		InputTokens: 3, OutputTokens: 4, CacheReadTokens: 5, CacheCreationTokens: 6, Model: "claude-model-a"}}}, nil
 }
 
 func (g *usageGateway) readList() string {
@@ -99,7 +99,7 @@ func TestEveryOfficerGetsAUsageCollectorThatReadsTheInstanceByItsOwnRow(t *testi
 	}
 	puts := hq.UsagePuts()
 	want := `{"instance":"` + name + `","pool":"","account":"acct-two","generated_at":"2000-01-03T12:20:00Z","buckets":[` +
-		`{"session":"s-1","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":3,"output_tokens":4,"cache_read_tokens":5,"cache_creation_tokens":6}]}`
+		`{"session":"s-1","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":3,"output_tokens":4,"cache_read_tokens":5,"cache_creation_tokens":6,"model":"claude-model-a"}]}`
 	if len(puts) != 1 || puts[0].Officer != offA || string(puts[0].Raw) != want {
 		t.Fatalf("PUTs %+v\nwant one: %s", puts, want)
 	}

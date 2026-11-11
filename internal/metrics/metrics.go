@@ -433,6 +433,15 @@ var (
 		Name: "muster_officer_usage_push_total",
 		Help: "Officer instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
 	}, []string{"result"})
+	// OfficerPoolsPush counts the officer pools reporter's per-officer
+	// pushes (internal/officers PoolsReporter), by result: pushed (HQ answered
+	// 2xx), hq_refused (a 4xx, not retried), hq_unavailable (5xx or no answer
+	// after the retries), ledger_failed (the session count could not be read,
+	// nothing sent).
+	OfficerPoolsPush = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_officer_pools_push_total",
+		Help: "Officer declared-pools pushes to HQ, by result (pushed or a failure class).",
+	}, []string{"result"})
 	// CCConsumerUsagePush counts the consumer usage collector's per-instance
 	// attempts (internal/consumerusage, MUSTER_CC_CONSUMER_USAGE), by result:
 	// pushed (HQ answered 2xx), empty (no row to send), ccd_unsupported (the

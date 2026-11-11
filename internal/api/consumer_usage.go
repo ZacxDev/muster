@@ -102,11 +102,13 @@ func (s *Server) consumerUsagePrincipal(ctx context.Context) context.Context {
 }
 
 // consumerUsageEligible is THE rule for whose usage the consumer push carries:
-// the operator's claude-code agents on a pool account that are NOT an
-// officer's instance (whose usage goes to its officer's HQ,
-// internal/officers/usage — pushing it here too would count it twice).
+// the operator's agents on a pool account — which are exactly its claude-code
+// agents (migration 0003's agents_cc_account_matches_kind: a row names an
+// account iff it is claude-code) — that are NOT an officer's instance (whose
+// usage goes to its officer's HQ, internal/officers/usage: pushing it here
+// too would count it twice).
 func (s *Server) consumerUsageEligible(a agents.Agent) bool {
-	if a.OwnerID != authz.OperatorUserID || agents.ResolveKind(a.Kind) != agents.KindClaudeCode || a.CCAccount == "" {
+	if a.OwnerID != authz.OperatorUserID || a.CCAccount == "" {
 		return false
 	}
 	_, _, officer := s.officerOf(a)
@@ -153,9 +155,6 @@ func (g consumerGatewayUsage) Read(ctx context.Context, instance string, since t
 	a, err := g.s.ext.Agents.GetByName(octx, instance)
 	if err != nil {
 		return consumerusage.Reading{}, fmt.Errorf("instance %s: %w", instance, err)
-	}
-	if !g.s.consumerUsageEligible(a) {
-		return consumerusage.Reading{}, fmt.Errorf("instance %s is not this muster's consumer instance", instance)
 	}
 	p, err := g.r.Usage(octx, a, since)
 	if errors.Is(err, agentgateway.ErrUsageUnsupported) {

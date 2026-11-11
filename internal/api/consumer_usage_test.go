@@ -69,7 +69,7 @@ type consumerRig struct {
 //	review-w2  operator, claude-code, acct-c, up
 //	review-w3  operator, claude-code, acct-c, STOPPED
 //	member-w4  owner 2,  claude-code, acct-d, up (a member's own account)
-//	gw-w5      operator, gateway kind, up
+//	gw-w5      operator, gateway kind (so no account), up
 //	<officer>  operator, claude-code, acct-e, up — an officer instance
 func consumerServer(t *testing.T) *consumerRig {
 	t.Helper()

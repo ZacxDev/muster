@@ -215,6 +215,9 @@ type app struct {
 	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
 	// declares none.
 	officers *officers.Reconciler
+	// officerPools pushes the declared officers' pools to their HQ
+	// (api.Server.OfficerPoolsReporter); nil without officers.
+	officerPools interface{ Run(context.Context) }
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -827,6 +830,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
+		// The declared pools push (docs/officers.md "Pools to HQ"): run with
+		// the background loops, its first push at once.
+		if p := srv.OfficerPoolsReporter(); p != nil {
+			a.officerPools = p
+		}
 		// A declared cluster with no allowlist reads nothing (fail closed):
 		// say so at startup, so a missing setting is not a silent "off".
 		for _, line := range officers.KubeReadDisabled(cfg.Officers) {
@@ -1177,6 +1185,12 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// is idempotent (docs/officers.md).
 	if a.officers != nil {
 		go a.officers.Run(ctx)
+	}
+	// The officers' declared pools, to each officer's HQ: at once (boot), then
+	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
+	// set, and HQ replaces it.
+	if a.officerPools != nil {
+		go a.officerPools.Run(ctx)
 	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves

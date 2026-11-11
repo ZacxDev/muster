@@ -246,11 +246,121 @@ type Server struct {
 	// statuses answered to the next PUTs, one each, in order (FailConsumer);
 	// consumerPuts is every accepted PUT and consumerRows the rows upserted by
 	// (instance, consumer, session, hour).
+	// The pools route (PUT /officers/{id}/pools): PoolsAbsent is an HQ without
+	// it (404); poolsFail are statuses answered to the next PUTs, in order
+	// (FailPools); poolsPuts every accepted PUT; poolSets each officer's pool
+	// set as the last accepted body left it (HQ deletes a pool the body does
+	// not name).
+	PoolsAbsent    bool
+	poolsFail      []int
+	poolsPuts      []UsagePut
+	poolSets       map[string][]string
 	poolTokens     map[string]bool
 	ConsumerAbsent bool
 	consumerFail   []int
 	consumerPuts   [][]byte
 	consumerRows   map[string]ConsumerRow
+}
+
+// FailPools makes the next len(codes) pools PUTs answer those statuses, in
+// order, before the route serves normally again.
+func (s *Server) FailPools(codes ...int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.poolsFail = append(s.poolsFail, codes...)
+}
+
+// PoolsPuts returns the accepted pools PUTs, in order.
+func (s *Server) PoolsPuts() []UsagePut {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsagePut(nil), s.poolsPuts...)
+}
+
+// PoolSet is officer's stored pools, in the last accepted body's order (nil
+// when none was ever pushed).
+func (s *Server) PoolSet(officer string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.poolSets[officer]...)
+}
+
+// pools is PUT /officers/{id}/pools, to the contract: the body decoded
+// strictly, pools present and each one's pool "" | routine | judgement (no
+// pool twice, "" only alone), its model a string, max_instances at least 1,
+// max_sessions_per_day null or 1-100, sessions_today present and
+// non-negative, sessions_day_resets_at RFC 3339 on a UTC midnight; reported_at
+// RFC 3339. 204, the officer's set REPLACED by the body's.
+func (s *Server) pools(w http.ResponseWriter, officer string, raw []byte) {
+	switch {
+	case s.PoolsAbsent:
+		s.write(w, http.StatusNotFound, map[string]any{"error": "no such route", "code": "not_found"})
+		return
+	case len(s.poolsFail) > 0:
+		code := s.poolsFail[0]
+		s.poolsFail = s.poolsFail[1:]
+		s.write(w, code, map[string]any{"error": "forced", "code": "forced"})
+		return
+	}
+	var body struct {
+		Pools []struct {
+			Pool                *string `json:"pool"`
+			Model               *string `json:"model"`
+			MaxInstances        *int    `json:"max_instances"`
+			MaxSessionsPerDay   *int    `json:"max_sessions_per_day"`
+			SessionsToday       *int    `json:"sessions_today"`
+			SessionsDayResetsAt *string `json:"sessions_day_resets_at"`
+		} `json:"pools"`
+		ReportedAt *string `json:"reported_at"`
+	}
+	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		invalid("pools body: " + err.Error())
+		return
+	}
+	if body.Pools == nil || body.ReportedAt == nil {
+		invalid("pools and reported_at are required")
+		return
+	}
+	if _, err := time.Parse(time.RFC3339, *body.ReportedAt); err != nil {
+		invalid("reported_at is not RFC 3339")
+		return
+	}
+	var set []string
+	seen := map[string]bool{}
+	for _, p := range body.Pools {
+		if p.Pool == nil || p.Model == nil || p.MaxInstances == nil || p.SessionsToday == nil || p.SessionsDayResetsAt == nil {
+			invalid("a pool needs pool, model, max_instances, sessions_today and sessions_day_resets_at")
+			return
+		}
+		if n := *p.Pool; (n != "" && n != "routine" && n != "judgement") || seen[n] {
+			invalid("pool must be routine, judgement or empty, each once")
+			return
+		}
+		seen[*p.Pool] = true
+		reset, err := time.Parse(time.RFC3339, *p.SessionsDayResetsAt)
+		if err != nil || !reset.Equal(reset.UTC().Truncate(24*time.Hour)) {
+			invalid("sessions_day_resets_at must be a UTC midnight, RFC 3339")
+			return
+		}
+		if *p.MaxInstances < 1 || *p.SessionsToday < 0 || (p.MaxSessionsPerDay != nil && (*p.MaxSessionsPerDay < 1 || *p.MaxSessionsPerDay > 100)) {
+			invalid("max_instances >= 1, sessions_today >= 0, max_sessions_per_day null or 1-100")
+			return
+		}
+		set = append(set, *p.Pool)
+	}
+	if seen[""] && len(body.Pools) > 1 {
+		invalid("an untiered officer's pool \"\" is its only one")
+		return
+	}
+	if s.poolSets == nil {
+		s.poolSets = map[string][]string{}
+	}
+	s.poolSets[officer] = set
+	s.poolsPuts = append(s.poolsPuts, UsagePut{Officer: officer, Raw: append([]byte(nil), raw...)})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ConsumerRow is one stored consumer-usage row: the account and counts the
@@ -350,6 +460,8 @@ func (s *Server) consumerUsage(w http.ResponseWriter, r *http.Request, raw []byt
 			OutputTokens        *int64 `json:"output_tokens"`
 			CacheReadTokens     *int64 `json:"cache_read_tokens"`
 			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
+			// Model is optional: the session-hour's model, absent when unknown.
+			Model *string `json:"model"`
 		} `json:"hours"`
 	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
@@ -453,6 +565,8 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 			OutputTokens        *int64 `json:"output_tokens"`
 			CacheReadTokens     *int64 `json:"cache_read_tokens"`
 			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
+			// Model is optional: the session-hour's model, absent when unknown.
+			Model *string `json:"model"`
 		} `json:"buckets"`
 	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
@@ -1177,6 +1291,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.claimNext(w, officer, body, now)
 	case len(parts) == 2 && parts[1] == "usage" && r.Method == http.MethodPut:
 		s.usage(w, officer, raw)
+	case len(parts) == 2 && parts[1] == "pools" && r.Method == http.MethodPut:
+		s.pools(w, officer, raw)
 	case len(parts) == 2 && parts[1] == "preflight" && r.Method == http.MethodPost:
 		if s.Preflight == nil {
 			s.write(w, http.StatusNotFound, map[string]any{"error": "not found"})
