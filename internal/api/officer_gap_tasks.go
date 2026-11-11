@@ -25,7 +25,7 @@ func gapTaskToolDef() agents.ToolDef {
 			"It does NOT end your lease: keep working the item and complete it as usual, naming each task you filed.",
 		Parameters: objSchema(map[string]any{
 			"item_id":   strProp("The item's id, as officer_items or officer_brief returned it. You must hold its live lease."),
-			"store":     strProp("The store, as dr-sweep names it (e.g. qdrant, forgejo), or @<scope> for one fix covering many stores (e.g. @tools)."),
+			"store":     strProp("The store, as your charter's store registry names it (e.g. vector-store, git-host), or @<scope> for one fix covering many stores (e.g. @fleet-x)."),
 			"kind":      strProp("The gap kind, one of the list above."),
 			"namespace": strProp("Optional: the store's Kubernetes namespace."),
 			"tier":      strProp("Optional: critical, secondary, index or tool (a critical store's task is high priority)."),

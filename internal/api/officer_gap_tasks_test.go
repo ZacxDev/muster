@@ -19,7 +19,7 @@ import (
 
 const (
 	gapTaskTool = "officer_gap_task"
-	offDS       = "datastore:dp-9"
+	offDS       = "datastore:test-9"
 	offDSTok    = "fixture-officer-token-datastore-7c2e"
 	kindAudit   = "datastore.audit"
 )
@@ -74,7 +74,7 @@ func TestTheGapTaskToolIsTheDatastoreOfficersBothPools(t *testing.T) {
 		a   agents.Agent
 	}{{"the task reconciler", trRoutine}, {"an ordinary agent", r.agent(t, officerOrdinaryID)}, {"the chief", r.agent(t, officerChiefID)}} {
 		r.hq.ResetRequests()
-		out := r.s.dispatchAgentTool(ctx, c.a, gapTaskTool, `{"item_id":"1","store":"qdrant","kind":"no_backup"}`)
+		out := r.s.dispatchAgentTool(ctx, c.a, gapTaskTool, `{"item_id":"1","store":"vector-store","kind":"no_backup"}`)
 		if !isToolErr(out) {
 			t.Errorf("%s calling %s: %s, want a refusal", c.who, gapTaskTool, out)
 		}
@@ -98,7 +98,7 @@ func TestAGapTaskSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 		t.Fatalf("claim: %s", out)
 	}
 	r.hq.ResetRequests()
-	out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"qdrant","kind":"no_backup","namespace":"qdrant","tier":"secondary"}`)
+	out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"vector-store","kind":"no_backup","namespace":"vector-store","tier":"secondary"}`)
 	var got map[string]any
 	if err := json.Unmarshal([]byte(out), &got); err != nil || got["filed"] != true {
 		t.Fatalf("first filing: %s, want HQ's answer with filed true", out)
@@ -111,11 +111,11 @@ func TestAGapTaskSendsTheContractBodyWithTheOfficersToken(t *testing.T) {
 		t.Errorf("filing went %s %s with %q", q.Method, q.Path, q.Auth)
 	}
 	gts := r.hq.GapTasks()
-	wantBody := map[string]any{"instance": inst.Name, "store": "qdrant", "kind": "no_backup", "namespace": "qdrant", "tier": "secondary"}
+	wantBody := map[string]any{"instance": inst.Name, "store": "vector-store", "kind": "no_backup", "namespace": "vector-store", "tier": "secondary"}
 	if len(gts) != 1 || !reflect.DeepEqual(gts[0].Body, wantBody) {
 		t.Fatalf("HQ received %+v, want exactly %v", gts, wantBody)
 	}
-	again := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"qdrant","kind":"no_backup"}`)
+	again := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"vector-store","kind":"no_backup"}`)
 	if !strings.Contains(again, `"filed":false`) || !strings.Contains(again, gts[0].TaskID) {
 		t.Fatalf("repeat: %s, want filed false with task %s", again, gts[0].TaskID)
 	}
@@ -130,11 +130,11 @@ func TestTheGapTaskToolRefusesLocallyWhatMusterOwns(t *testing.T) {
 	inst := r.addNamed(r.a.Pool(officers.TierRoutine).InstanceName(1), 1321)
 	for _, args := range []string{
 		`{"item_id":"88","kind":"no_backup"}`,
-		`{"item_id":"88","store":"qdrant"}`,
-		`{"store":"qdrant","kind":"no_backup"}`,
-		`{"item_id":"../x","store":"qdrant","kind":"no_backup"}`,
-		`{"item_id":"88","store":"qdrant","kind":"no_backup","title":"my own words"}`,
-		`{"item_id":"88","store":"qdrant","kind":"no_backup","officer_id":"datastore:other"}`,
+		`{"item_id":"88","store":"vector-store"}`,
+		`{"store":"vector-store","kind":"no_backup"}`,
+		`{"item_id":"../x","store":"vector-store","kind":"no_backup"}`,
+		`{"item_id":"88","store":"vector-store","kind":"no_backup","title":"my own words"}`,
+		`{"item_id":"88","store":"vector-store","kind":"no_backup","officer_id":"datastore:other"}`,
 	} {
 		r.hq.ResetRequests()
 		out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, args)
@@ -156,7 +156,7 @@ func TestTheGapTaskToolPassesHQsRefusalsBack(t *testing.T) {
 	inst := r.addNamed(r.a.Pool(officers.TierRoutine).InstanceName(1), 1331)
 	item := r.hq.AddTieredItem(offDS, kindAudit, "sched:daily-audit:y", officers.TierRoutine)
 	// not claimed by this instance: HQ's lease_lost
-	out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"qdrant","kind":"no_backup"}`)
+	out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"vector-store","kind":"no_backup"}`)
 	if st, code := obsRefusal(out); st != 409 || code != "lease_lost" {
 		t.Errorf("unheld item: %s, want refused 409 lease_lost", out)
 	}
@@ -164,7 +164,7 @@ func TestTheGapTaskToolPassesHQsRefusalsBack(t *testing.T) {
 		t.Fatalf("claim: %s", out)
 	}
 	r.hq.RefuseVerb("gap-tasks", 429, "gap_task_cap", "this item already filed 3 gap tasks")
-	out = r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"ntfy","kind":"no_backup"}`)
+	out = r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"push-svc","kind":"no_backup"}`)
 	if st, code := obsRefusal(out); st != 429 || code != "gap_task_cap" {
 		t.Errorf("capped: %s, want refused 429 gap_task_cap", out)
 	}
