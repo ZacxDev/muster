@@ -37,7 +37,8 @@ counts per window (below).
    (a side panel on a wide screen, the whole screen on a phone) that mints a
    hand-off code at the click and shows the gateway's **session page**,
    `https://w.<zone>/__muster/enter`, in its frame; the panel's **New tab**
-   does the same in a new tab. With nothing to preview there is no button
+   does the same in a new tab (in the Android app, **Full screen** instead:
+   the same frame fills the screen, since a new tab would leave the app). With nothing to preview there is no button
    ([plugins.md](plugins.md#the-session-view-chip)). An agent's page
    (`/agents/{name}`) has none in this phase.
 2. **The session page** lists, for that window only: its **offers**

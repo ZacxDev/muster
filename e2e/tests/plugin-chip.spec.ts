@@ -186,6 +186,11 @@ test('the Preview button on both session views: drawn only while the window has 
   const panel = page.locator('#preview-panel');
   await expect(panel).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  // In a browser (no window.musterApp) the header offers New tab, never the
+  // Android app's Full screen.
+  await expect(newTab).toBeVisible();
+  await expect(panel.locator('[data-preview-fullscreen]')).toBeHidden();
+  await expect(panel).not.toHaveAttribute('data-preview-app', '');
   const pbox = (await panel.boundingBox())!;
   expect([Math.round(pbox.x), Math.round(pbox.width)], 'the panel is the whole screen on a phone').toEqual([0, 390]);
   const frameEl = page.locator('#preview-panel iframe');
@@ -335,4 +340,141 @@ test('the Preview button follows the host: hidden while the window has nothing t
   await expect(page.locator('#preview-toggle-row'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
   await expect.poll(nav, { timeout: 20_000 }).not.toContain('data-nav-preview');
   playPreviews('@1 2 1\n@2 1 0\n');
+});
+
+// IN THE ANDROID APP (window.musterApp, the bridge object the app's WebView
+// injects; played here by an init script that records what is posted to it):
+// the panel's New tab is Full screen. The app hands every origin but muster's
+// to the system browser, so a new tab there left the app (operator report);
+// full screen keeps the SAME frame — not reloaded, no new mint — filling the
+// screen edge to edge, with an Exit button; Exit, Escape and the shell's Back
+// (window.musterBack, under a back-claim) each leave it. From inside the
+// view-swap frame the claim goes to the MAIN frame's bridge (the app refuses
+// a subframe's) and the main frame's Back leaves the frame's full screen.
+test('in the Android app New tab is Full screen: the same frame fills the screen, nothing is opened or minted, and Exit, Escape and Back leave it', async ({ page, context }) => {
+  test.setTimeout(150_000);
+  await page.addInitScript(() => {
+    const w = window as unknown as { __appMsgs: string[]; musterApp: { postMessage(m: string): void } };
+    w.__appMsgs = [];
+    w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
+  });
+  const CLAIM_ON = JSON.stringify({ type: 'back-claim', open: true });
+  const CLAIM_OFF = JSON.stringify({ type: 'back-claim', open: false });
+  const msgs = () => page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs.slice());
+  await ready(page);
+  const { token } = await mintViewer(page, 'App viewer');
+  const landings = await playEntry(context, token);
+  await buttonFor(page, '@1', true);
+
+  await page.goto(origin + viewOf('@1'));
+  const panel = page.locator('#preview-panel');
+  const newTab = panel.locator('[data-preview-newtab]');
+  const full = panel.locator('[data-preview-fullscreen]');
+  const exit = panel.locator('[data-preview-exit-full]');
+  const head = panel.locator('h2#preview-panel-title');
+  const frameEl = panel.locator('iframe');
+  const framed = page.frameLocator('#preview-panel iframe');
+  await page.locator('#preview-toggle-row').click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  expect(landings).toHaveLength(1);
+  await expect(panel).toHaveAttribute('data-preview-app', '');
+  await expect(newTab, 'no New tab in the app').toBeHidden();
+  await expect(full).toBeVisible();
+  await expect(full).toHaveText('Full screen');
+  await expect(exit).toBeHidden();
+  expect(await msgs(), 'nothing claimed before full screen').toEqual([]);
+
+  // FULL SCREEN: the same document in the same frame (a mark set in it
+  // survives), no new page, no new mint; panel and frame are the viewport.
+  await framed.locator('body').evaluate(() => { (window as unknown as { __mark: number }).__mark = 42; });
+  const src = await frameEl.getAttribute('src');
+  const pages = context.pages().length;
+  await full.click();
+  await expect(panel).toHaveAttribute('data-preview-full', '');
+  await expect(head, 'the header is hidden').toBeHidden();
+  await expect(exit).toBeVisible();
+  await expect(exit).toBeFocused();
+  const vp = page.viewportSize()!;
+  const box = async (l: typeof panel) => { const b = (await l.boundingBox())!; return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; };
+  expect(await box(panel), 'the panel is the viewport').toEqual([0, 0, vp.width, vp.height]);
+  expect(await box(frameEl), 'the frame is the viewport, edge to edge').toEqual([0, 0, vp.width, vp.height]);
+  expect(await frameEl.getAttribute('src'), 'the frame was not sent anywhere').toBe(src);
+  expect(await framed.locator('body').evaluate(() => (window as unknown as { __mark?: number }).__mark), 'the frame was not reloaded').toBe(42);
+  await page.waitForTimeout(500);
+  expect(context.pages().length, 'no tab was opened').toBe(pages);
+  expect(landings, 'nothing was minted').toHaveLength(1);
+  expect(await msgs(), 'full screen claims Back').toEqual([CLAIM_ON]);
+
+  // EXIT: back to the panel, its header and Full screen, the claim released.
+  await exit.click();
+  await expect(panel).not.toHaveAttribute('data-preview-full', '');
+  await expect(head).toBeVisible();
+  await expect(full).toBeFocused();
+  await expect(panel).toBeVisible();
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF]);
+
+  // THE SHELL'S BACK: musterBack leaves full screen (true), and with full
+  // screen gone answers as before (false: no dock open), the panel still open.
+  await full.click();
+  await expect(panel).toHaveAttribute('data-preview-full', '');
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'Back left full screen').toBe(true);
+  await expect(panel).not.toHaveAttribute('data-preview-full', '');
+  await expect(panel).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'Back with no full screen and no dock').toBe(false);
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
+
+  // ESCAPE: the first leaves full screen, the second closes the panel.
+  await full.click();
+  await expect(panel).toHaveAttribute('data-preview-full', '');
+  await page.keyboard.press('Escape');
+  await expect(panel).not.toHaveAttribute('data-preview-full', '');
+  await expect(panel).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
+
+  // New tab itself, reached however (a script's click on the hidden link),
+  // never opens a tab in the app: it goes full screen.
+  await page.locator('#preview-toggle-row').click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  const minted = landings.length;
+  await page.evaluate(() => (document.querySelector('#preview-panel [data-preview-newtab]') as HTMLElement).click());
+  await expect(panel).toHaveAttribute('data-preview-full', '');
+  await page.waitForTimeout(500);
+  expect(context.pages().length, 'New tab opened no tab in the app').toBe(pages);
+  expect(landings, 'New tab minted nothing in the app').toHaveLength(minted);
+  // Close from full screen releases the claim with it.
+  await page.evaluate(() => (document.querySelector('#preview-panel [data-preview-close]') as HTMLElement).click());
+  await expect(panel).toBeHidden();
+  expect((await msgs()).slice(-2)).toEqual([CLAIM_ON, CLAIM_OFF]);
+
+  // A WIDE SCREEN in the app (a tablet): the side panel goes the whole width.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.locator('#preview-toggle').click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  expect((await box(panel))[2], 'a side panel before full screen').toBeLessThan(1024);
+  await full.click();
+  expect(await box(frameEl), 'full screen at a wide width').toEqual([0, 0, 1024, 768]);
+  await exit.click();
+  await panel.locator('[data-preview-close]').click();
+  await page.setViewportSize(vp);
+
+  // FROM INSIDE THE VIEW-SWAP FRAME (the Terminal view, framed): the claim
+  // is posted to the MAIN frame's bridge, not the frame's own, and the main
+  // frame's Back leaves the frame's full screen.
+  await page.locator('#view-terminal').click();
+  await expect(page.locator('iframe[data-muster-view]')).toBeVisible();
+  const term = page.frameLocator('iframe[data-muster-view]');
+  const before = (await msgs()).length;
+  await term.locator('#preview-toggle-row').click();
+  await expect(term.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(term.locator('#preview-panel [data-preview-newtab]')).toBeHidden();
+  await term.locator('#preview-panel [data-preview-fullscreen]').click();
+  await expect(term.locator('#preview-panel')).toHaveAttribute('data-preview-full', '');
+  expect((await msgs()).slice(before), 'the claim went to the main frame').toEqual([CLAIM_ON]);
+  const frameMsgs = await term.locator('body').evaluate(() => (window as unknown as { __appMsgs?: string[] }).__appMsgs ?? []);
+  expect(frameMsgs, 'nothing posted to the subframe\'s bridge').toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'the main frame\'s Back left the frame\'s full screen').toBe(true);
+  await expect(term.locator('#preview-panel')).not.toHaveAttribute('data-preview-full', '');
+  expect((await msgs()).slice(before)).toEqual([CLAIM_ON, CLAIM_OFF]);
 });
