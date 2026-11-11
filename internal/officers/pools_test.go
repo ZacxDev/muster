@@ -62,9 +62,9 @@ func newPoolsRig(t *testing.T) *poolsRig {
 	hq := hqtest.New(map[string]string{poolsTok: poolsOfficer})
 	t.Cleanup(hq.Close)
 	st := &daySessions{days: map[string][]string{}}
-	// Day 2026-11-10: four items counted, as the cap's ledger holds them.
-	st.set(poolsOfficer, "2026-11-10", "101", "102", "103", "104")
-	return &poolsRig{hq: hq, store: st, logs: &bytes.Buffer{}, slp: &poolsSleeps{}, clock: time.Date(2026, 11, 10, 17, 25, 0, 0, time.UTC)}
+	// Day 2000-01-03: four items counted, as the cap's ledger holds them.
+	st.set(poolsOfficer, "2000-01-03", "101", "102", "103", "104")
+	return &poolsRig{hq: hq, store: st, logs: &bytes.Buffer{}, slp: &poolsSleeps{}, clock: time.Date(2000, 1, 3, 17, 25, 0, 0, time.UTC)}
 }
 
 func (r *poolsRig) reporter(t *testing.T, o officers.Officer) *officers.PoolsReporter {
@@ -80,12 +80,12 @@ func (r *poolsRig) reporter(t *testing.T, o officers.Officer) *officers.PoolsRep
 
 const (
 	tieredPools = `{"pools":[` +
-		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":4,"sessions_day_resets_at":"2026-11-11T00:00:00Z"},` +
-		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2026-11-11T00:00:00Z"}],` +
-		`"reported_at":"2026-11-10T17:25:00Z"}`
+		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":4,"sessions_day_resets_at":"2000-01-04T00:00:00Z"},` +
+		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],` +
+		`"reported_at":"2000-01-03T17:25:00Z"}`
 	untieredPools = `{"pools":[` +
-		`{"pool":"","model":"sonnet","max_instances":5,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2026-11-11T00:00:00Z"}],` +
-		`"reported_at":"2026-11-10T17:25:00Z"}`
+		`{"pool":"","model":"sonnet","max_instances":5,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],` +
+		`"reported_at":"2000-01-03T17:25:00Z"}`
 )
 
 // TestThePoolsPushIsTheOfficersDeclaredSet: a tiered officer sends both pools
@@ -125,25 +125,25 @@ func TestAPoolRemovedFromTheConfigLeavesHQsSet(t *testing.T) {
 	}
 }
 
-// TestSessionsTodayIsTheCapCounterAndResetsWithTheDay: 4 on 2026-11-10 (the
+// TestSessionsTodayIsTheCapCounterAndResetsWithTheDay: 4 on 2000-01-03 (the
 // ledger's count), and the same reporter at 00:05 the next day reads that
 // day's ledger — 0 — with the reset moved to the following midnight.
 func TestSessionsTodayIsTheCapCounterAndResetsWithTheDay(t *testing.T) {
 	r := newPoolsRig(t)
 	p := r.reporter(t, tieredOfficer(r.hq))
 	p.Tick(context.Background())
-	r.clock = time.Date(2026, 11, 11, 0, 5, 0, 0, time.UTC)
+	r.clock = time.Date(2000, 1, 4, 0, 5, 0, 0, time.UTC)
 	p.Tick(context.Background())
 	puts := r.hq.PoolsPuts()
 	want := `{"pools":[` +
-		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":0,"sessions_day_resets_at":"2026-11-12T00:00:00Z"},` +
-		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2026-11-12T00:00:00Z"}],` +
-		`"reported_at":"2026-11-11T00:05:00Z"}`
+		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":0,"sessions_day_resets_at":"2000-01-05T00:00:00Z"},` +
+		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-05T00:00:00Z"}],` +
+		`"reported_at":"2000-01-04T00:05:00Z"}`
 	if len(puts) != 2 || string(puts[0].Raw) != tieredPools || string(puts[1].Raw) != want {
 		t.Fatalf("PUTs %d:\n%s", len(puts), puts)
 	}
 	// The cap's own reading agrees with what was pushed (one counter).
-	r.store.set(poolsOfficer, "2026-11-11", "201", "202", "203")
+	r.store.set(poolsOfficer, "2000-01-04", "201", "202", "203")
 	used, _, err := officers.NewJudgementLedger(r.store, nil, nil).Usage(context.Background(), tieredOfficer(r.hq).Pool(officers.TierJudgement), r.clock)
 	p.Tick(context.Background())
 	if err != nil || used != 3 || !strings.Contains(string(r.hq.PoolsPuts()[2].Raw), `"sessions_today":3,`) {
