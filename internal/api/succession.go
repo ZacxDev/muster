@@ -403,19 +403,29 @@ func successionTargetOf(in successionProposeIn, about chatSubject) (hostTarget, 
 }
 
 // successionRepoOf is the successor's repository, canonical: the owner's
-// words, else the viewed session's dispatch's, else its short repository name
-// when exactly one connected repository has it.
+// words, else the viewed session's dispatch's, else the GitHub repository its
+// checkout's origin names (chatSubject.GitHubRepo), else its short repository
+// name when exactly one connected repository has it.
+//
+// 🔴 THE FOLDER NAME IS THE LAST RESORT: a checkout folder can be named unlike
+// its repository, and matching the folder's name against GitHub's names then
+// finds the wrong repository or none. The host-reported GitHub repository is
+// still only a host's word: connectedRepoName decides.
 func (s *Server) successionRepoOf(ctx context.Context, in successionProposeIn, about chatSubject) (string, string) {
 	repo := strings.TrimSpace(in.Repo)
 	if repo == "" {
 		repo = about.Repo
+		if !strings.Contains(repo, "/") && about.GitHubRepo != "" {
+			repo = about.GitHubRepo
+		}
 	}
 	if repo != "" && !strings.Contains(repo, "/") {
+		short := repo
 		list, err := s.githubRepos(ctx)
 		repo = ""
 		if err == nil {
 			for _, r := range list {
-				if _, name, ok := strings.Cut(r.FullName, "/"); ok && strings.EqualFold(name, about.Repo) {
+				if _, name, ok := strings.Cut(r.FullName, "/"); ok && strings.EqualFold(name, short) {
 					if repo != "" {
 						repo = ""
 						break

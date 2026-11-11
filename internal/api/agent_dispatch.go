@@ -634,7 +634,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	onTask := in.TaskID > 0
 	if !onTask {
 		switch {
-		case !in.OwnerAsked:
+		case !in.OwnerAsked && in.RequestKey == "":
 			return refuse(agentDispatchNoTaskOwnerAsked)
 		case in.RequestKey == "":
 			return refuse(agentDispatchNoTaskKey)
@@ -648,16 +648,57 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		return refuse(chiefDispatchPromptCap)
 	}
 	hash := dispatchRequestHash(in, prompt)
+	// WHOSE SAY-SO (dispatch_approval.go): the owner's typed turn
+	// (owner_asked, verified now and again under the reservation's lock), or
+	// their tap on an approval card this request_key holds.
+	typed := false
+	if in.OwnerAsked {
+		_, why := s.ownerTurnFor(ctx, a)
+		typed = why == ""
+	}
+	var comp heldCompletion
+	if !typed {
+		// A pod's repository is optional: a blank one is a blank only to a
+		// repo card ("Change repo"), which the call fills with repo.
+		var callBlanks []string
+		if repoBlankOf(in.Repo) {
+			callBlanks = []string{blankRepo}
+		}
+		comp = s.completeHeld(ctx, in, nil, callBlanks, strings.TrimSpace(in.Repo), prompt)
+		if comp.refusal != "" {
+			return refuse(comp.refusal)
+		}
+		if comp.changeRepo {
+			// "Change repo" tapped: the repo card in the approval card's place.
+			var n notes.Note
+			if onTask {
+				if n, ok = s.ownersTask(ctx, a, in.TaskID); !ok {
+					return refuse(chiefDispatchNoTask)
+				}
+			}
+			return s.fileHeldDispatch(ctx, a, in, nil, []string{blankRepo}, prompt, 0, approvalRequest{target: in.Target,
+				model: in.Model, base: in.Base, task: n, onTask: onTask, prompt: prompt, refile: true})
+		}
+	}
+	byTap := comp.approvedByTap()
+	// needCard: the owner must approve this request on a card — it is not in
+	// their typed turn, and nothing else of theirs covers it.
+	needCard := !typed && !byTap && in.RequestKey != "" && (!onTask || in.OwnerAsked)
 	// 🔴 WITHOUT owner_asked (only possible on a task), A PROMPT IS ONLY EVER THE
 	// OWNER'S OWN WORDS: verbatim, the owner's answer to an attention ask linked
-	// to THIS task (ownerAnswer) — today's task_dispatch rule. Refused before the
+	// to THIS task (ownerAnswer) — today's task_dispatch rule — or a brief the
+	// owner APPROVED on a card that showed it whole (byTap; with a request_key
+	// and no such answer, the card is raised: needCard). Refused before the
 	// reservation: no unit is spent. WITH owner_asked, ownerTurnFor below must
 	// pass instead, and the prompt is then the chief's relay of that message.
 	var source attention.Ask
-	if prompt != "" && !in.OwnerAsked {
+	if onTask && prompt != "" && !in.OwnerAsked && !byTap {
 		var why string
 		if source, why = s.ownerAnswer(ctx, owner, in.TaskID, raw); why != "" {
-			return refuse(why)
+			if in.RequestKey == "" {
+				return refuse(why)
+			}
+			needCard = true
 		}
 	}
 	// 🔴 THE OWNER'S CLICK BINDS THE TARGET: on a task whose newest owner
@@ -710,6 +751,27 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			return refuse(why)
 		}
 	}
+	// 🔴 A CARD NEVER RELEASES A GATE: a gated task is started through the
+	// owner's typed turn (verifyGateRelease) or released on the board.
+	var cardTask notes.Note
+	if onTask && (needCard || byTap) {
+		n, ok := s.ownersTask(ctx, a, in.TaskID)
+		if !ok {
+			return refuse(chiefDispatchNoTask)
+		}
+		cardTask = n
+		if notes.IsGated(n.Tags) {
+			if !in.OwnerAsked || byTap {
+				return refuse(fmt.Sprintf(agentDispatchApproveGated, in.TaskID))
+			}
+			// owner_asked on a gated task: verifyGateRelease answers, as always.
+			needCard = false
+		}
+	}
+	// needCard's card is filed only once the reservation has said what it
+	// would (errApprovalNeeded, below): a request_key that already started
+	// REPLAYS that start, and a task already started answers with it — never a
+	// card for a start that exists.
 	detail := map[string]any{"kind": kind, "target": in.Target}
 	recordDispatchModel(detail, model)
 	if in.RequestKey != "" {
@@ -718,9 +780,14 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	if in.WorkerPool != "" {
 		detail["worker_pool"] = in.WorkerPool
 	}
+	if byTap {
+		// The hold this start consumes (single use), and the card the owner
+		// approved the whole request on.
+		detail[plugins.DetailHeld], detail["approved_on_card"] = comp.hold.ID, comp.detail.AskID
+	}
 	if prompt != "" {
 		detail["instructions"] = prompt
-		if !in.OwnerAsked {
+		if !in.OwnerAsked && !byTap {
 			detail["instructions_ask"] = source.ID
 			if source.AnsweredVia.ViaSession() {
 				detail["instructions_via"], detail["instructions_from"] = source.AnsweredVia.Via, source.AnsweredVia.String()
@@ -741,7 +808,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	if onTask {
 		taskKind = ownerAskedUngated
 	}
-	if in.OwnerAsked {
+	if in.OwnerAsked && !byTap {
 		if n, ok := s.ownersTaskIf(ctx, a, onTask, in.TaskID); ok && notes.IsGated(n.Tags) {
 			taskKind = ownerAskedGated
 			if n.Status == notes.StatusOpen {
@@ -764,8 +831,15 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	var task notes.Note
 	check := func() error {
 		// 🔴 UNDER THE LOCK, owner_asked is checked: the owner's turn in flight
-		// now (and, for a gate release, on the message verifyGateRelease read).
-		if in.OwnerAsked {
+		// now (and, for a gate release, on the message verifyGateRelease read) —
+		// or, for a start the owner approved on a card, the hold re-read: open
+		// and unconsumed (SINGLE USE: the reservation naming it consumes it).
+		if byTap {
+			h, err := s.hostDispatches().CardHoldByKey(ctx, in.RequestKey)
+			if err != nil || h.ID != comp.hold.ID || !h.Open() {
+				return errTaskDispatch(fmt.Sprintf(agentDispatchHeldNone, in.RequestKey))
+			}
+		} else if in.OwnerAsked && !needCard {
 			msg, why := s.ownerTurnFor(ctx, a)
 			if why != "" {
 				return errTaskDispatch(ownerAskedRefusal(why, taskKind))
@@ -777,6 +851,9 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			detail["owner_message"] = msg.ID
 		}
 		if !onTask {
+			if needCard {
+				return errApprovalNeeded
+			}
 			return nil
 		}
 		n, ok := s.ownersTask(ctx, a, in.TaskID)
@@ -808,12 +885,22 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 			return errTaskDispatch(why)
 		}
 		task = n
+		if needCard {
+			return errApprovalNeeded
+		}
 		return nil
 	}
 	res, err := s.ext.ChiefDispatch.ReserveChiefDispatch(ctx, object, detail, check)
 	var refusal errTaskDispatch
 	switch {
 	case err == nil:
+	case errors.Is(err, errApprovalNeeded):
+		// Every check passed and nothing was reserved: the owner is asked.
+		if onTask {
+			cardTask = task
+		}
+		return s.fileHeldDispatch(ctx, a, in, nil, []string{blankApprove}, prompt, 0, approvalRequest{target: in.Target,
+			model: in.Model, repo: effective, base: in.Base, task: cardTask, onTask: onTask, prompt: prompt})
 	case errors.As(err, &refusal):
 		return refuse(string(refusal))
 	case errors.Is(err, plugins.ErrRequestKeyReused):
@@ -846,6 +933,8 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		}
 		kickoff = task.Body + chiefDispatchRules
 		switch {
+		case prompt != "" && byTap:
+			kickoff = renderApprovedBrief(prompt, true) + "\n" + kickoff
 		case prompt != "" && in.OwnerAsked:
 			kickoff = renderChiefRelay(prompt, true) + "\n" + kickoff
 		case prompt != "":
@@ -862,6 +951,8 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 		// preface when a prompt leads).
 		p.DisplayName = dispatchDisplayName(task.ID, task.Body)
 		p.NoteID = &task.ID
+	} else if prompt != "" && byTap {
+		kickoff = renderApprovedBrief(prompt, false) + chiefDispatchRulesNoTask
 	} else if prompt != "" {
 		kickoff = renderChiefRelay(prompt, false) + chiefDispatchRulesNoTask
 	} else {

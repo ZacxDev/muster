@@ -500,6 +500,10 @@ type Msg struct {
 	// Repos (repos) is, per window id, the short name of the repository the
 	// window works in — the WHOLE map each time (repos.go).
 	Repos map[string]string `json:"repos,omitempty"`
+	// GitHubRepos (repos) is, per window id, the GitHub <owner>/<name> the
+	// window's checkout's origin names — on the same message as Repos, the
+	// WHOLE map each time (repos.go).
+	GitHubRepos map[string]string `json:"github_repos,omitempty"`
 
 	// Work (work) is, per window id, the subagents and background shells its
 	// Claude Code session has running — the WHOLE map each time (work.go).

@@ -448,6 +448,12 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// repos_list (repos_list.go): the owner's connected repositories, the
+		// only ones agent_dispatch starts in. Read-only; offered with
+		// agent_dispatch, chief-only and on MCP like it.
+		if chiefDispatchOn(s.ext) {
+			tools = append(tools, agentTool{def: reposListToolDef(), mcp: true, chiefOnly: true})
+		}
 		// succession_propose (succession.go): the chief proposes a session that
 		// continues the one its owner asked about from its view; only the owner's
 		// tap on the card starts it. Chief-only and on MCP, with agent_dispatch.
@@ -851,6 +857,8 @@ func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, te
 		ctx, emit = ctx2, usage.observe(nil)
 		defer func() { usage.finish(ctx, err) }()
 	}
+	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
+	defer endRecord()
 	tctx, tt, ok := s.gatewayTurnTools(withTurnSession(ctx, sessionKey), a, via)
 	if !ok {
 		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, nil)
@@ -980,6 +988,13 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolSessionsOverview(ctx, a, arguments)
 	case sessionContextToolName:
 		return s.toolSessionContext(ctx, arguments)
+	case reposListTool:
+		// Re-checked at the call: a gateway runtime can name a tool it was
+		// never offered.
+		if !chiefDispatchOn(s.ext) || !taskRoutingOn(s.ext) {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolReposList(ctx, arguments)
 	case successionProposeTool:
 		if !successionOffered(s.ext) {
 			return toolErr("unknown tool %q", name)

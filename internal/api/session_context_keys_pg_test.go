@@ -35,7 +35,7 @@ func TestSessionContextAnswersExactlyItsKeys(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	want := "base,branch,cwd,dispatch,host,model,repo,runtime,status,subject,tail,title,tmux,truncated,untrusted,window"
+	want := "base,branch,cwd,dispatch,github_repo,host,model,repo,runtime,status,subject,tail,title,tmux,truncated,untrusted,window"
 	if got := strings.Join(keys, ","); got != want {
 		t.Errorf("session_context answers the keys\n  %s\nwant exactly\n  %s\n(no suggested target or model before phase 2)", got, want)
 	}

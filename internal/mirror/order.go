@@ -74,6 +74,11 @@ type SessionView struct {
 	// Repo is the short name of the repository the entry works in
 	// (HostView.Repos, repos.go), "" when its host did not say.
 	Repo string
+	// GitHubRepo is the GitHub <owner>/<name> the entry's checkout's origin
+	// names (HostView.GitHubRepos, repos.go), "" when its host did not say. It
+	// can differ from Repo (a folder named unlike its repository); the chief is
+	// shown both, and dispatches with this one.
+	GitHubRepo string
 	// Dispatch is the host dispatch the entry's window was started for
 	// (Window.Dispatch): an agent the chief started. 0 for every other window.
 	Dispatch int64
@@ -420,7 +425,7 @@ func (h HostView) Entries() []SessionView {
 			e.Runtime, e.AgentSession, e.AgentNote, e.LiveCopy = w.Runtime, w.AgentSession, w.AgentNote, w.LiveCopy
 			e.AgentSend, e.AgentBind = w.AgentSend, w.AgentBind
 			e.Dispatch = w.Dispatch
-			e.Repo = h.Repos[w.ID]
+			e.Repo, e.GitHubRepo = h.Repos[w.ID], h.GitHubRepos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
 			e.Previews = h.Previews[w.ID]
 			if h.StatusReport {

@@ -1757,6 +1757,12 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 // first). The ONE answer path both doors take.
 func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
 	var a attention.Ask
+	// A chief's dispatch APPROVAL card (dispatch_approval.go): never answered
+	// from the phone's notification action, which cannot show the brief —
+	// refused before anything is recorded or done; the card stays open.
+	if err := s.approvalSurfaceRefusal(ctx, id); err != nil {
+		return a, err
+	}
 	// A Release option of a routed task's ask (answer_release.go): checked
 	// before the answer is recorded, applied before anyone is woken by it.
 	rel, err := s.releaseForAnswer(ctx, id, answer, src)

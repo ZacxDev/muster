@@ -2169,6 +2169,10 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// Its input row (0: one muster did not store first), for the view line a
 	// tool call answers (ownerViewLine): ctx, and the registry for a CLI.
 	defer s.turnInputs.begin(a.ID, turnInputFrom(ctx))()
+	// The turn itself — what started it and an id of its own — for an approval
+	// card it raises (dispatch_approval.go): ctx, and the registry for a CLI.
+	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
+	defer endRecord()
 	ctx, tt := s.turnTools(ctx, a)
 	return s.runTurnWithTools(ctx, a, sessionKey, text, tt, emit)
 }

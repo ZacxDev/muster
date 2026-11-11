@@ -50,7 +50,12 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 	// routing_rule_propose raises its card here too: its question is
 	// ruleCardQuestion over a plugins.RuleNew, which carries no kickoff (a
 	// rule is a match and an action copied from a plugin message).
-	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "routing_rules.go:toolRoutingRulePropose"})
+	// agent_dispatch's APPROVAL card (dispatch_approval.go) too: raised
+	// unnotified like a proposal's, then notified with no answer actions
+	// (proposalCardFiled). Its question is approvalQuestion over the
+	// dispatch's own arguments: no succession, so no kickoff.
+	assertCallers(t, ".", "raiseProposalCard", []string{"chief_proposal.go:fileProposal", "host_dispatch.go:fileHeldDispatch",
+		"routing_rules.go:toolRoutingRulePropose"})
 	assertCallers(t, ".", "raiseCard", []string{"owner_ask.go:raiseOwnerCard", "owner_ask.go:raiseProposalCard"})
 
 	pkg := typedAPI(t)
@@ -116,6 +121,32 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 		for _, bad := range pkg.kickoffReadsReached(b) {
 			t.Errorf("the builder %s reaches %s, which reads the kickoff's text", b, bad)
 		}
+	}
+
+	// agent_dispatch's approval card, the one other raiseProposalCard caller
+	// that builds a question of its own (fileHeldDispatch): nothing in its
+	// body holds kickoffCopy's result, at any depth, and no package function
+	// it reaches reads a Proposal's Kickoff. Pinned here, not by the comment
+	// on its caller entry above.
+	fhd, ok := pkg.funcs["fileHeldDispatch"]
+	if !ok {
+		t.Fatal("instrument check: no function fileHeldDispatch")
+	}
+	raises := 0
+	ast.Inspect(fhd.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == "raiseProposalCard" {
+			raises++
+		}
+		return true
+	})
+	if raises != 1 {
+		t.Errorf("instrument check: fileHeldDispatch calls raiseProposalCard %d times; want 1", raises)
+	}
+	if v := pkg.taintedIn(fhd.Body, tainted); v != "" {
+		t.Errorf("fileHeldDispatch holds the kickoff (%s): an approval card's question or options could carry it", v)
+	}
+	for _, bad := range pkg.kickoffReadsReached("fileHeldDispatch") {
+		t.Errorf("fileHeldDispatch reaches %s, which reads the kickoff's text", bad)
 	}
 
 	var readers []string

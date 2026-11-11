@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"slices"
 	"sync"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/chiefusage"
 )
 
 // The chat session a chief's turn runs in, for the owner card it raises
@@ -146,4 +150,83 @@ func (s *Server) turnSessionOf(ctx context.Context, agent int64) string {
 		return k
 	}
 	return s.turnSessions.current(agent)
+}
+
+// THE TURN ITSELF: what started it, and an identity of its own. A turn's
+// INPUT ROW cannot answer either while it runs: a plugin delivery and an
+// attention answer store their row only after the turn (their input is 0
+// here), so "the newest row" during such a turn is the PREVIOUS turn's. So
+// every turn is recorded as the door started it — its chiefusage.Trigger, the
+// one each door already sets for the token telemetry — under a serial no other
+// turn shares, on the same two doors: ctx for an in-process dispatch, the
+// registry for a CLI's /mcp call (one running turn only, as turnInputs).
+
+// turnRecord is one running turn: serial is its own (never a row's id), and
+// trigger what started it.
+type turnRecord struct {
+	serial  int64
+	trigger chiefusage.Trigger
+}
+
+type turnRecordKey struct{}
+
+// withTurnRecord marks ctx as turn r.
+func withTurnRecord(ctx context.Context, r turnRecord) context.Context {
+	return context.WithValue(ctx, turnRecordKey{}, r)
+}
+
+// turnRecordRegistry is agent id -> its running turns.
+type turnRecordRegistry struct {
+	mu   sync.Mutex
+	runs map[int64][]turnRecord
+}
+
+// begin records agent's turn r until the returned func is called.
+func (g *turnRecordRegistry) begin(agent int64, r turnRecord) func() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.runs == nil {
+		g.runs = map[int64][]turnRecord{}
+	}
+	g.runs[agent] = append(g.runs[agent], r)
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		l := slices.DeleteFunc(g.runs[agent], func(x turnRecord) bool { return x.serial == r.serial })
+		if len(l) == 0 {
+			delete(g.runs, agent)
+		} else {
+			g.runs[agent] = l
+		}
+	}
+}
+
+// only is agent's one running turn; false when none runs or several do.
+func (g *turnRecordRegistry) only(agent int64) (turnRecord, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if l := g.runs[agent]; len(l) == 1 {
+		return l[0], true
+	}
+	return turnRecord{}, false
+}
+
+// beginTurnRecord starts recording agent's turn, started as ctx's door says
+// (chiefusage.TriggerFrom), under a fresh serial: the ctx to run it in and the
+// func that ends the record. The serial starts at the boot's milliseconds ×
+// 1000, so a restart does not reuse a turn id a stored hold still names, and
+// it stays inside a JSON number's exact range.
+func (s *Server) beginTurnRecord(ctx context.Context, agent int64) (context.Context, func()) {
+	s.turnSerial.CompareAndSwap(0, time.Now().UnixMilli()*1000)
+	r := turnRecord{serial: s.turnSerial.Add(1), trigger: chiefusage.TriggerFrom(ctx)}
+	return withTurnRecord(ctx, r), s.turnRecords.begin(agent, r)
+}
+
+// currentTurn is the turn agent's tool call runs in: ctx's, else the one turn
+// muster is running for it now; false when that is unknown (none, or several).
+func (s *Server) currentTurn(ctx context.Context, agent int64) (turnRecord, bool) {
+	if r, ok := ctx.Value(turnRecordKey{}).(turnRecord); ok && r.serial > 0 {
+		return r, true
+	}
+	return s.turnRecords.only(agent)
 }
