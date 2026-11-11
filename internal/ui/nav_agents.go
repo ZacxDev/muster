@@ -558,7 +558,9 @@ func navPreviewOf(e listEntry) g.Node {
 // browser-window glyph, small and in the accent, the counts in words its
 // accessible name and tooltip. NOT a dot: the row's waiting mark is an accent
 // dot already (navAttentionPill). Nothing when it has neither: the mark says
-// the window's Preview button is there to open.
+// the window's Preview button is there to open — so internal/api's
+// handleNavAgents (gatePreviewMarks) zeroes the counts unless the owner has a live viewer plugin,
+// the button's own gate.
 func navPreview(p mirror.WindowPreviews) g.Node {
 	if p.IsZero() {
 		return nil

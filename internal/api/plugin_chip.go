@@ -30,7 +30,18 @@ import (
 // MUSTER_PLUGIN_ORIGINS still allows, newest first (the store's List order);
 // nil when the seam is off or the window has no tmux id a hand-off could name.
 func (s *Server) viewerPlugins(ctx context.Context, window string) []plugins.Plugin {
-	if s.ext.Plugins == nil || len(s.ext.PluginOrigins) == 0 || mirror.ValidWindowID(window) != nil {
+	if mirror.ValidWindowID(window) != nil {
+		return nil
+	}
+	return s.liveViewerPlugins(ctx)
+}
+
+// liveViewerPlugins is viewerPlugins for no particular window: the one gate
+// the session views (through viewerPlugins) and the sidebar's preview mark
+// (mirrorCards) share. With plugins off or MUSTER_PLUGIN_ORIGINS unset nothing
+// is read.
+func (s *Server) liveViewerPlugins(ctx context.Context) []plugins.Plugin {
+	if s.ext.Plugins == nil || len(s.ext.PluginOrigins) == 0 {
 		return nil
 	}
 	all, err := s.ext.Plugins.List(ctx)

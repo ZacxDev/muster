@@ -35,8 +35,10 @@ import (
 //     width — so one request per tick, and the page holds no event stream.
 //   - THE PANEL opens on the button: the plugin's page (the gateway's session
 //     page) in a sandboxed frame, a side panel beside the conversation from
-//     `sm` up and the whole screen below it. Close (or Escape) unloads the
-//     page. "New tab" in its header is the hand-off in a new tab instead.
+//     `sm` up and the whole screen below it — where everything behind it is
+//     made inert while it is open, so Tab stays in it. Close (or Escape, when
+//     no other dialog or popover is open to take it) unloads the page. "New
+//     tab" in its header is the hand-off in a new tab instead.
 //   - Both mint a one-time hand-off at CLICK time (POST /plugin-handoffs,
 //     aimed at this window) and go to the entry URL it answers; drawing the
 //     button mints nothing. One mint at a time.
@@ -368,10 +370,32 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
       say(e && e.message ? e.message : 'the hand-off failed');
     }).then(function () { busy = false; });
   }
+  // FULL SCREEN (below sm) the panel is all there is: everything behind it is
+  // made inert, so Tab cannot reach a control it covers. Only what this set
+  // inert is restored. Beside the page (sm and up) nothing is: the
+  // conversation stays usable next to it.
+  var inerted = [];
+  function shield() {
+    var p = panel(), full = p && !p.hidden && window.innerWidth < 640;
+    if (full && !inerted.length) {
+      var kids = document.body.children;
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k === p || k.contains(p) || k.tagName === 'SCRIPT' || k.inert) continue;
+        k.inert = true;
+        inerted.push(k);
+      }
+    } else if (!full && inerted.length) {
+      inerted.forEach(function (k) { k.inert = false; });
+      inerted = [];
+    }
+  }
+  window.addEventListener('resize', shield);
   function open() {
     var p = panel();
     if (!p.hidden) return;
     p.hidden = false;
+    shield();
     expanded();
     var c = p.querySelector('[data-preview-close]');
     if (c) c.focus();
@@ -381,6 +405,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     var p = panel();
     if (!p || p.hidden) return;
     p.hidden = true;
+    shield();
     // The plugin's page ends with the panel: nothing of it runs on hidden.
     frame().src = 'about:blank';
     say('');
@@ -415,8 +440,17 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     var t = ev.target;
     if (t && t.matches && t.matches('[data-preview-plugin]') && !panel().hidden) show();
   });
+  // Escape closes the panel only when it is the panel's: not one another
+  // handler already took, and not while another dialog or popover is open
+  // (Escape is that one's to close).
+  function otherOpen() {
+    if (document.querySelector('dialog[open]')) return true;
+    try { return !!document.querySelector(':popover-open'); } catch (e) { return false; }
+  }
   document.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Escape' && panel() && !panel().hidden) close();
+    if (ev.key !== 'Escape' || ev.defaultPrevented || !panel() || panel().hidden || otherOpen()) return;
+    ev.preventDefault();
+    close();
   });
   // The slot's refresh swaps the button in fresh: keep it saying whether the
   // panel is open.

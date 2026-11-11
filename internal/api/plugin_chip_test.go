@@ -393,13 +393,13 @@ func TestThePreviewButtonsPollFollowsTheCountsAndThePlugins(t *testing.T) {
 
 // TestTheSidebarMarksAWindowWithSomethingToPreview (operator decision 3): a
 // window whose host reports something to preview draws the preview mark on
-// its sidebar row, its counts in words its name; a window with nothing — and
+// its sidebar row, its counts in words its name — for an owner with a live
+// viewer plugin, the Preview button's own gate; a window with nothing — and
 // every window of a host that never reports — draws none.
 func TestTheSidebarMarksAWindowWithSomethingToPreview(t *testing.T) {
-	s, ts := viewServer(t, goldHost())
-	fm := s.ext.Mirror.(*fakeMirror)
+	_, get, _, fm := chipServerFm(t, chipZone, viewerRow(3, "Live", chipZone, "https://w.viewer.example.net/e"))
 	fm.setPreviews(map[string]mirror.WindowPreviews{"@7": {Offered: 2, Open: 1}, "@4": {}})
-	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
+	_, list := get(ui.NavAgentsPath)
 	row7 := cardFor(t, list, ref("scratch2", "@7").ViewPath())
 	if !strings.Contains(row7, `data-nav-preview="3"`) || !strings.Contains(row7, `aria-label="Preview: 1 preview open, 2 servers to preview"`) {
 		t.Errorf("@7's row has no preview mark naming its counts:\n%s", row7)
@@ -410,8 +410,45 @@ func TestTheSidebarMarksAWindowWithSomethingToPreview(t *testing.T) {
 		}
 	}
 	fm.setPreviews(nil)
-	_, list = mirrorGet(t, s, ts, ui.NavAgentsPath)
+	_, list = get(ui.NavAgentsPath)
 	if strings.Contains(list, "data-nav-preview") {
 		t.Error("a host that reports no previews (an older muster-mirror) has a preview mark")
+	}
+}
+
+// TestTheSidebarMarksNothingWithoutALiveViewerPlugin: the host reports
+// something to preview, but the owner has no viewer plugin the Preview button
+// would open — a revoked one, one without viewer, or MUSTER_PLUGIN_ORIGINS
+// unset — so the views draw no button, and the sidebar must not point at one.
+// The plugin store is read at most once per list, and not at all with the
+// seam off.
+func TestTheSidebarMarksNothingWithoutALiveViewerPlugin(t *testing.T) {
+	revoked := viewerRow(9, "Revoked", chipZone, "https://w.viewer.example.net/e")
+	at := time.Unix(1_900_000_000, 0)
+	revoked.RevokedAt = &at
+	for _, tc := range []struct {
+		name    string
+		origins string
+		ps      []plugins.Plugin
+		want    bool
+		lists   int
+	}{
+		{"CONTROL: a live viewer plugin", chipZone, []plugins.Plugin{viewerRow(3, "Live", chipZone, "https://w.viewer.example.net/e")}, true, 1},
+		{"a revoked viewer plugin", chipZone, []plugins.Plugin{revoked}, false, 1},
+		{"a messages-only plugin", chipZone, []plugins.Plugin{viewerRow(8, "Messages", chipZone, "https://w.viewer.example.net/m", plugins.CapMessages)}, false, 1},
+		{"MUSTER_PLUGIN_ORIGINS unset", "", []plugins.Plugin{viewerRow(3, "Live", chipZone, "https://w.viewer.example.net/e")}, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, get, st, fm := chipServerFm(t, tc.origins, tc.ps...)
+			fm.setPreviews(map[string]mirror.WindowPreviews{"@7": {Offered: 2, Open: 1}, "@4": {Offered: 1}})
+			before := st.lists
+			_, list := get(ui.NavAgentsPath)
+			if got := strings.Contains(list, "data-nav-preview"); got != tc.want {
+				t.Errorf("preview mark drawn = %v, want %v", got, tc.want)
+			}
+			if n := st.lists - before; n > tc.lists {
+				t.Errorf("the plugin store was read %d times for one list, want at most %d", n, tc.lists)
+			}
+		})
 	}
 }

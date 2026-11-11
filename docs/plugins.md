@@ -201,10 +201,13 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   `viewer` plugin, or the window has no tmux window id (an older per-session
   muster-mirror) for a hand-off to name.
 - **The sidebar** marks a window that has something to preview with a small
-  browser-window glyph on its row, the counts in words its name and tooltip.
-  It follows the host's counts alone (a host has them only while the gateway
-  serves its tunnel, which it does only for an owner with a live viewer
-  plugin).
+  browser-window glyph on its row, the counts in words its name and tooltip,
+  under the button's own gate: only while the owner has a live viewer plugin
+  (read once per list, and not at all with plugins or
+  `MUSTER_PLUGIN_ORIGINS` off).
+- **Escape** closes the panel only when no other dialog or popover is open.
+  **Full screen** (below `sm`) everything behind the panel is made inert while
+  it is open, so Tab stays in it; that is undone on close.
 
 ## The plugin author's contract
 

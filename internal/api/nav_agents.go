@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -35,8 +37,32 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
 	}
+	s.gatePreviewMarks(r.Context(), mirrors)
 	if err := ui.RenderNavAgents(w, cards, mirrors, r.Header.Get("HX-Current-URL"), s.now()); err != nil {
 		s.logger.Printf("nav agents: render: %v", err)
+	}
+}
+
+// gatePreviewMarks puts the Preview button's own gate on the sidebar's
+// preview marks (ui's navPreview): unless the owner has a live viewer plugin
+// the button would open (liveViewerPlugins), every row's counts are zeroed, so
+// no row points at a button the views do not draw. The plugin store is read
+// at most ONCE per list, and only when some row has something to preview —
+// and not at all with plugins or MUSTER_PLUGIN_ORIGINS off. Only the sidebar's
+// list is gated here: nothing else draws the mark.
+func (s *Server) gatePreviewMarks(ctx context.Context, mirrors []ui.MirrorCardView) {
+	has := false
+	for _, m := range mirrors {
+		if !m.Previews.IsZero() {
+			has = true
+			break
+		}
+	}
+	if !has || len(s.liveViewerPlugins(ctx)) > 0 {
+		return
+	}
+	for i := range mirrors {
+		mirrors[i].Previews = mirror.WindowPreviews{}
 	}
 }
 
