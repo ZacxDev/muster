@@ -748,6 +748,7 @@ Content-Type: application/json
 
 {"source_instance": "muster.example.com",
  "read_at": "2026-11-10T18:21:00Z",
+ "poll_interval_seconds": 900,
  "accounts": [ … ]}
 ```
 
@@ -756,7 +757,9 @@ Content-Type: application/json
   built by the same code.
 - `source_instance` is `MUSTER_CC_USAGE_PUSH_INSTANCE` (at most 64
   characters), else `MUSTER_PUBLIC_URL`'s host, else `muster`. `read_at` is
-  when the push was built.
+  when the push was built. `poll_interval_seconds` is the poller's
+  configured interval in whole seconds, as the API's own field: a dashboard can
+  mark the source stale once a few intervals pass with no push.
 - The push is made after **every** cycle, whether or not a reading changed, so
   a dashboard can tell a quiet muster from a dead one.
 - The dashboard answers **`204`**. Anything else — a 4xx, a 5xx, another 2xx,

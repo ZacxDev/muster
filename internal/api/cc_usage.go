@@ -191,9 +191,12 @@ func (s *Server) officerPoolOf(name string) (string, string, bool, bool) {
 // accounts exactly as GET /api/cc-accounts/usage answers the admin (the same
 // ccUsageAccounts, so the two cannot drift), under the instance's label.
 type ccUsagePush struct {
-	SourceInstance string           `json:"source_instance"`
-	ReadAt         string           `json:"read_at"`
-	Accounts       []ccUsageAccount `json:"accounts"`
+	SourceInstance string `json:"source_instance"`
+	ReadAt         string `json:"read_at"`
+	// PollIntervalSeconds is the poller's interval, as the API's own field:
+	// the dashboard marks the source stale at a multiple of it.
+	PollIntervalSeconds int              `json:"poll_interval_seconds"`
+	Accounts            []ccUsageAccount `json:"accounts"`
 }
 
 // CCUsagePushBody is the usage pusher's request body at now for owner (the
@@ -207,7 +210,8 @@ func (s *Server) CCUsagePushBody(ctx context.Context, owner int64, instance stri
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(ccUsagePush{SourceInstance: instance, ReadAt: now.UTC().Format(time.RFC3339), Accounts: accts})
+	return json.Marshal(ccUsagePush{SourceInstance: instance, ReadAt: now.UTC().Format(time.RFC3339),
+		PollIntervalSeconds: int(s.ext.CCUsageInterval / time.Second), Accounts: accts})
 }
 
 func (s *Server) handleCCAccountUsage(w http.ResponseWriter, r *http.Request) {

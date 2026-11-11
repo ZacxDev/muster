@@ -248,7 +248,7 @@ func TestAProxiedOfficerInstanceIsNotCreditedToItsAccount(t *testing.T) {
 // TestTheUsagePushCarriesTheAPIsAccountsByteForByte is the golden: for the
 // same readings, the pushed body's `accounts` is byte-for-byte the `accounts`
 // GET /api/cc-accounts/usage answers the admin (used_by included), beside
-// exactly source_instance and read_at.
+// exactly source_instance, read_at and the API's own poll_interval_seconds.
 func TestTheUsagePushCarriesTheAPIsAccountsByteForByte(t *testing.T) {
 	h, _, store := newCCUsageFixture(t)
 	s := New(nil, AuthConfig{HookToken: tokTestHook, ServiceToken: ccUsageServiceToken}, log.New(io.Discard, "", 0))
@@ -271,7 +271,8 @@ func TestTheUsagePushCarriesTheAPIsAccountsByteForByte(t *testing.T) {
 	if err := json.Unmarshal(body, &push); err != nil {
 		t.Fatal(err)
 	}
-	if len(push) != 3 || string(push["source_instance"]) != `"example"` || string(push["read_at"]) != `"`+now.UTC().Format(time.RFC3339)+`"` {
+	if len(push) != 4 || string(push["poll_interval_seconds"]) != "300" || string(push["poll_interval_seconds"]) != string(api["poll_interval_seconds"]) ||
+		string(push["source_instance"]) != `"example"` || string(push["read_at"]) != `"`+now.UTC().Format(time.RFC3339)+`"` {
 		t.Fatalf("push envelope: %s", body)
 	}
 	// Positive control: the fixture's attribution is in the answer, so the
@@ -281,6 +282,20 @@ func TestTheUsagePushCarriesTheAPIsAccountsByteForByte(t *testing.T) {
 	}
 	if string(push["accounts"]) != string(api["accounts"]) {
 		t.Fatalf("the pushed accounts differ from the API's:\npush %s\napi  %s", push["accounts"], api["accounts"])
+	}
+	// A second interval (one no constant equals): the field follows the
+	// configured interval, and is 0 with the poller off, as the API's is.
+	for _, c := range []struct {
+		iv   time.Duration
+		want string
+	}{{7 * time.Minute, "420"}, {0, "0"}} {
+		s2 := New(nil, AuthConfig{HookToken: tokTestHook}, log.New(io.Discard, "", 0))
+		s2.UseExtensions(Extensions{Users: stubUsers{}, CCUsage: store, CCUsageInterval: c.iv})
+		b, err := s2.CCUsagePushBody(context.Background(), 1, "example", now)
+		var m map[string]json.RawMessage
+		if err != nil || json.Unmarshal(b, &m) != nil || string(m["poll_interval_seconds"]) != c.want {
+			t.Fatalf("interval %s: poll_interval_seconds %s (%v), want %s", c.iv, m["poll_interval_seconds"], err, c.want)
+		}
 	}
 	if store.owners[len(store.owners)-1] != 1 {
 		t.Fatalf("the push read owner %d, want the admin (1)", store.owners[len(store.owners)-1])
