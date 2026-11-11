@@ -706,3 +706,39 @@ func (s *OpenCodeSource) markStaleLocked() {
 	s.stale = true
 	s.staleGen++
 }
+
+// Ancestors is session id's parent, that one's parent, and so on — nearest
+// first, at most maxOpenCodeAncestors — from the server's session list
+// (knownSessions): how a subagent's child session, which a TUI does not show,
+// is traced to the root session its window shows (MCPProxy's
+// openCodeWindow). An id the list does not hold, or a list that cannot be
+// read, has none. A cycle ends the walk.
+func (s *OpenCodeSource) Ancestors(id string) []string {
+	if s == nil || !s.paired() {
+		return nil
+	}
+	sessions, err := s.knownSessions()
+	if err != nil {
+		return nil
+	}
+	parent := make(map[string]string, len(sessions))
+	for _, o := range sessions {
+		parent[o.ID] = o.ParentID
+	}
+	seen := map[string]bool{id: true}
+	var out []string
+	for cur := parent[id]; cur != "" && !seen[cur] && len(out) < maxOpenCodeAncestors; cur = parent[cur] {
+		seen[cur] = true
+		out = append(out, cur)
+	}
+	return out
+}
+
+// OpenCodeSourceOf is b's OpenCodeSource, looking through wrappers; nil for
+// none.
+func OpenCodeSourceOf(b Backend) *OpenCodeSource {
+	if s, ok := capabilityOf[OpenCodeSourcer](b); ok {
+		return s.OpenCodeSource()
+	}
+	return nil
+}

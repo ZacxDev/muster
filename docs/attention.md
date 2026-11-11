@@ -701,7 +701,8 @@ If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 With [previews](previews.md) on (`-preview` and a valid
 `previews.json`), the same endpoint serves a **second MCP server** at
 `http://127.0.0.1:47823/preview-mcp`, behind the same secret, the same
-`Origin` refusal and the same tmux-server check as `/mcp`. It answers
+`Origin` refusal and the same tmux-server check as `/mcp` (opencode's
+caller is the one exception, [below](#opencode-sessions)). It answers
 everything itself and forwards nothing to muster, so a muster outage still
 fails the `muster` server loudly (502) while the preview tools work or fail
 on their own. Without previews the path is 404. Add a second entry with the
@@ -742,6 +743,52 @@ included — is a tool error the model reads, whose text is
 Its `initialize` also carries server instructions (`serverInstructions` in
 `internal/previewhost/mcp.go`). A caller from another tmux server still gets
 no instructions and no tools.
+
+#### opencode sessions
+
+opencode reaches the same server, but cannot name its pane: its MCP headers
+are fixed when its config loads, in the one background service every
+opencode TUI on the host is a client of, so `X-Muster-Pane` would name the
+service's pane for every session. What opencode sends per session is the
+calling session's id, in every `tools/call`'s
+`params._meta["ai.opencode/sessionID"]`. So its entry (in opencode's config,
+under `mcp`) sends a static `X-Muster-Client: opencode` instead of the pane
+headers:
+
+```json
+"preview": {
+  "type": "remote",
+  "url": "http://127.0.0.1:47823/preview-mcp",
+  "oauth": false,
+  "headers": {
+    "Authorization": "Bearer {file:~/.config/muster-mirror/mcp-secret}",
+    "X-Muster-Client": "opencode"
+  }
+}
+```
+
+A request carrying that header (on `/preview-mcp` only) skips the
+tmux-server check, since the service runs in no pane; the secret, `Origin`
+and POST checks apply as before. `initialize` and `tools/list` need no
+session and answer as for any caller, instructions included. A
+`tools/call` is bound to the **one** window whose active pane runs an
+opencode TUI on that session, or on its nearest ancestor (a subagent's child
+session calls with its own id), through a binding muster also sends on: the
+launcher's record, or a verified title binding. Anything else is
+`no_window`: no session id, an id no window shows, a window that shows it
+only through an unverified title match, or two windows that show it. Pane
+headers on such a request are ignored, because they could only be the
+service's own. It is never the service's pane, and never a guess.
+
+🔴 The session id is the caller's own claim, so it **selects**; it does not
+authenticate. It is believed only among this host's mirrored windows,
+behind the same per-host secret, so a forged id can at most bind a preview
+to **another of the same owner's windows on this host**, which is what a
+Claude Code caller can already do by naming another pane. `/mcp` (muster's
+own tools) ignores the header: an opencode-marked caller there is checked
+as before. On a host with one `muster-mirror` per tmux server, register the
+endpoint of the one whose tmux server runs the opencode TUIs. A call to
+another one finds no window (`no_window`).
 
 ### Stale tool definitions
 

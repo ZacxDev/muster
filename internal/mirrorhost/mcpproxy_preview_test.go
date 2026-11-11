@@ -223,7 +223,7 @@ func TestThePreviewCallerIsThePanesWindow(t *testing.T) {
 	for pane, want := range map[string]string{"%7": "@1", "%9": "@1", "%10": "@1", "%8": "@2"} {
 		r := httptest.NewRequest(http.MethodPost, PreviewMCPPath, nil)
 		r.Header.Set(MCPPaneHeader, pane)
-		if got, err := p.CallerWindow(r); err != nil || got != want {
+		if got, err := p.CallerWindow(r, ""); err != nil || got != want {
 			t.Errorf("pane %s: %q, %v; want %s", pane, got, err, want)
 		}
 	}
@@ -236,13 +236,13 @@ func TestThePreviewCallerIsThePanesWindow(t *testing.T) {
 	for _, pane := range []string{"%99", ""} {
 		r := httptest.NewRequest(http.MethodPost, PreviewMCPPath, nil)
 		r.Header.Set(MCPPaneHeader, pane)
-		if got, err := p.CallerWindow(r); err == nil {
+		if got, err := p.CallerWindow(r, ""); err == nil {
 			t.Errorf("pane %q resolved to %q", pane, got)
 		}
 	}
 
 	p.SetPreview(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		win, err := p.CallerWindow(r)
+		win, err := p.CallerWindow(r, "")
 		if err != nil {
 			win = "error: " + err.Error()
 		}

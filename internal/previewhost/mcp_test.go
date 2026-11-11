@@ -22,11 +22,64 @@ import (
 // muster-mirror's CallerWindow resolves it from a listing.
 var testPanes = map[string]string{"%1": "@1", "%2": "@2", "%3": "@1"}
 
-func testCaller(r *http.Request) (string, error) {
+func testCaller(r *http.Request, _ string) (string, error) {
 	if w, ok := testPanes[r.Header.Get("X-Muster-Pane")]; ok {
 		return w, nil
 	}
 	return "", errors.New("pane is in no window this host mirrors")
+}
+
+// TestTheCallsOpenCodeSessionReachesTheCaller: a tools/call's
+// params._meta["ai.opencode/sessionID"] — opencode's one per-session signal —
+// is handed to Caller as is, for each tool; a call without one, or with one
+// that is not a string, hands "". The window Caller answers is the one the
+// tool uses (preview_list of a session-resolved window answers, an unknown
+// one is no_window).
+func TestTheCallsOpenCodeSessionReachesTheCaller(t *testing.T) {
+	var got []string
+	s := &MCPServer{Host: NewHost(HostConfig{Logger: log.New(io.Discard, "", 0)}), Caller: func(r *http.Request, sid string) (string, error) {
+		got = append(got, sid)
+		if sid == "ses_root" {
+			return "@4", nil
+		}
+		return "", errors.New("opencode session is in no window this host mirrors")
+	}}
+	call := func(name string, args any, meta any) toolOut {
+		params := map[string]any{"name": name, "arguments": args}
+		if meta != nil {
+			params["_meta"] = meta
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+		return rpc(t, s, "", string(b)).tool(t)
+	}
+	meta := map[string]any{"ai.opencode/sessionID": "ses_root", "progressToken": 3}
+	if o := call(ToolList, map[string]any{}, meta); o.IsError {
+		t.Fatalf("preview_list with the session's id: %v", o.Body)
+	}
+	if c := call(ToolOpen, map[string]any{"port": 5173}, meta).code(t); c == CodeNoWindow {
+		t.Fatalf("preview_open with the session's id: no_window")
+	}
+	if c := call(ToolClose, map[string]any{"id": "p-1"}, meta).code(t); c != CodeNotFound {
+		t.Fatalf("preview_close with the session's id: %q; want not_found", c)
+	}
+	for name, m := range map[string]any{
+		"no _meta":       nil,
+		"another key":    map[string]any{"progressToken": 3},
+		"a number id":    map[string]any{"ai.opencode/sessionID": 7},
+		"an unknown id":  map[string]any{"ai.opencode/sessionID": "ses_other"},
+		"an empty _meta": map[string]any{},
+	} {
+		if c := call(ToolList, map[string]any{}, m).code(t); c != CodeNoWindow {
+			t.Errorf("%s: %q; want no_window", name, c)
+		}
+	}
+	want := []string{"ses_root", "ses_root", "ses_root"}
+	if len(got) < 3 || !slices.Equal(got[:3], want) {
+		t.Fatalf("Caller saw %q; want %q first", got, want)
+	}
+	if slices.Contains(got[3:], "ses_root") || !slices.Contains(got[3:], "ses_other") {
+		t.Fatalf("the refused calls handed %q", got[3:])
+	}
 }
 
 // rpcReply is one JSON-RPC answer, its tool result decoded.
