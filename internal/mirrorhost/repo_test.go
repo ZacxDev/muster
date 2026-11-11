@@ -180,7 +180,17 @@ func TestTheLargestReposMessageFitsOneFrame(t *testing.T) {
 			t.Fatalf("instrument check: a name was cut to %d bytes, so this is not the worst case", len(v))
 		}
 	}
-	b, err := json.Marshal(mirror.Msg{Type: mirror.TypeRepos, Repos: kept})
+	// Beside each name, the longest GitHub owner/name (39 + 1 + 100 bytes), as
+	// the same message carries it (Msg.GitHubRepos).
+	gh := map[string]string{}
+	for _, w := range windows {
+		gh[w.ID] = strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
+	}
+	keptGH := mirror.NormalizeGitHubRepos(gh, mirror.NormalizeWindows(windows, 0))
+	if len(keptGH) != mirror.MaxWindows {
+		t.Fatalf("instrument check: %d GitHub repositories kept, want %d", len(keptGH), mirror.MaxWindows)
+	}
+	b, err := json.Marshal(mirror.Msg{Type: mirror.TypeRepos, Repos: kept, GitHubRepos: keptGH})
 	if err != nil {
 		t.Fatal(err)
 	}

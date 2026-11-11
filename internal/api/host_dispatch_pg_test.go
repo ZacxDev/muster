@@ -141,9 +141,18 @@ func hostDispatchIDOf(t *testing.T, text string) int64 {
 // pending window).
 func TestAHostTargetIsTheOwnersAndAConnectedRepos(t *testing.T) {
 	f := newHostFixture(t)
-	f.refusedNothingReserved(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "h-1", false)), agentDispatchHostOwnerAsk, 0, 0)
-	f.say(t, f.chief, "Plugin Example tracker: start a mirrored agent on host-bravo.")
-	f.refusedNothingReserved(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "h-1", true)), ownerAskedNoTaskNoOwnerTurn, 0, 0)
+	// Not the owner's typed turn (no owner_asked; then a plugin message's turn
+	// claiming it): HELD for an approval card (dispatch_approval.go), nothing
+	// reserved or sent to a host.
+	for i, ownerAsked := range []bool{false, true} {
+		if i == 1 {
+			f.say(t, f.chief, "Plugin Example tracker: start a mirrored agent on host-bravo.")
+		}
+		text := f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "h-0-"+strconv.Itoa(i), ownerAsked))
+		if !strings.Contains(text, `"held":true`) || !strings.Contains(text, `"blanks":["approve"]`) || f.allReservations(t) != 0 {
+			t.Fatalf("owner_asked %v outside the owner's turn: %s; want an approval card and nothing reserved", ownerAsked, text)
+		}
+	}
 	f.ownerTurn(t, f.chief, f.owner, "Start it mirrored on host-bravo with Claude.")
 	other := hostCall("host/host-bravo/claude", "h-1", true)
 	other["repo"] = "acme/held-but-not-connected"
@@ -498,16 +507,19 @@ func TestAHeldHostTargetRaisesOneCardOfTheSpawnableHosts(t *testing.T) {
 	}
 }
 
-// TestAHeldCallOnAPluginTurnRaisesNothing: the same held call in a turn the
-// owner did not type is refused by ownerTurnFor: no card, no hold.
-func TestAHeldCallOnAPluginTurnRaisesNothing(t *testing.T) {
+// TestAHeldCallOnAPluginTurnStartsNothing: the same held call in a turn the
+// owner did not type starts nothing and reserves nothing: it raises the host
+// card with the APPROVAL card still to come (blanks host, approve), so the
+// host tap alone cannot start it. (Before approve-by-tap it was refused.)
+func TestAHeldCallOnAPluginTurnStartsNothing(t *testing.T) {
 	f := newHostFixture(t)
 	f.say(t, f.chief, "Plugin Example tracker: run it mirrored.")
-	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/?/claude", "held-4", true))); got != ownerAskedNoTaskNoOwnerTurn {
-		t.Fatalf("plugin turn: %q", got)
+	text := f.callRaw(f.chief, agentDispatchTool, hostCall("host/?/claude", "held-4", true))
+	if !strings.Contains(text, `"blanks":["host","approve"]`) {
+		t.Fatalf("plugin turn: %s", text)
 	}
-	if len(f.cards(t)) != 0 || f.holds(t) != 0 {
-		t.Fatal("a plugin turn raised a card")
+	if len(f.cards(t)) != 1 || f.holds(t) != 1 || f.allReservations(t) != 0 || len(f.m.spawnCalls()) != 0 {
+		t.Fatal("a plugin turn reserved or spawned, or raised other than one card")
 	}
 }
 

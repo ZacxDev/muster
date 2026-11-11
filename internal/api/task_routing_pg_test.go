@@ -1231,7 +1231,7 @@ func TestTheTaskRoutingToolsAreLedgered(t *testing.T) {
 		want     []string
 	}{
 		{false, []string{taskRouteAttentionTool, taskForwardTool}},
-		{true, []string{taskRouteAttentionTool, taskForwardTool, agentDispatchTool}},
+		{true, []string{taskRouteAttentionTool, taskForwardTool, agentDispatchTool, reposListTool}},
 	} {
 		f := newTaskRouteFixture(t, c.dispatch, c.dispatch)
 		var chiefOnly []string

@@ -3,6 +3,8 @@ package mirror
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/github"
 )
 
 // THE REPO CHIP: which repository a mirrored window — a shell or a Claude Code
@@ -52,6 +54,40 @@ func CleanRepoName(name string) string {
 		s = strings.TrimRight(s[:cut], " ")
 	}
 	return s
+}
+
+// THE GITHUB REPOSITORY BESIDE THE NAME (Msg.GitHubRepos): the <owner>/<name>
+// the window's checkout's origin names, on the same repos message. The NAME
+// stays the folder's (the chip, `repo:`); the GitHub repository is what the
+// chief is told to dispatch with, because a folder can be named differently
+// from its repository. 🔴 A HOST'S WORD, NOT AN AUTHORITY: muster checks it
+// against the owner's connected repositories (connectedRepoName) before
+// anything uses it, like any repository the chief names. Its worst case on the
+// wire (MaxWindows × github.ValidRepoName's 140 bytes) is measured beside the
+// names' by TestTheLargestReposMessageFitsOneFrame.
+
+// NormalizeGitHubRepos is in restricted to windows (NormalizeRepos' rule),
+// each value a GitHub owner/name (github.ValidRepoName) lowercased; an entry
+// that is not is dropped; nil when nothing is left.
+func NormalizeGitHubRepos(in map[string]string, windows []Window) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for _, w := range windows {
+		v, ok := in[w.ID]
+		if !ok {
+			continue
+		}
+		if v = strings.ToLower(strings.TrimSpace(v)); !github.ValidRepoName(v) {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[w.ID] = v
+	}
+	return out
 }
 
 // NormalizeRepos is in restricted to windows (a host cannot name the repo of a

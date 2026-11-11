@@ -98,6 +98,11 @@ type chatSubject struct {
 	// or Repo the window's short repository name without one.
 	Dispatch                  int64
 	Repo, Base, Branch, Model string
+	// GitHubRepo is the window's GitHub <owner>/<name> as its host reported it
+	// (mirror.SessionView.GitHubRepo), "" when it did not: what a succession or
+	// a dispatch about this session takes as its repository when Repo is only
+	// the folder's name. A host's word, checked as connected before any use.
+	GitHubRepo string
 	// CanSucceed: the chief is offered succession_propose (succession.go), so
 	// the header says how to continue the session. Not stored.
 	CanSucceed bool
@@ -147,6 +152,9 @@ func viewChiefTurnText(about *chatSubject, text string) string {
 	}
 	if r := one(about.Repo); r != "" {
 		b.WriteString("   repo: " + r)
+	}
+	if g := one(about.GitHubRepo); g != "" && !strings.EqualFold(g, one(about.Repo)) {
+		b.WriteString("   github_repo: " + g)
 	}
 	b.WriteString("\n")
 	if t := one(about.Title); t != "" {
@@ -213,7 +221,7 @@ func (s *Server) viewChiefSubject(r *http.Request, host, session, window string)
 // and session_context answers with it.
 func (s *Server) sessionSubject(ctx context.Context, e mirror.SessionView) chatSubject {
 	about := chatSubject{SessionKey: e.SessionKey(), Runtime: mirror.RuntimeClaude, Host: e.Host,
-		TmuxSession: e.Session, TmuxWindow: e.Window, Tmux: e.Address(), Dispatch: e.Dispatch, Repo: e.Repo}
+		TmuxSession: e.Session, TmuxWindow: e.Window, Tmux: e.Address(), Dispatch: e.Dispatch, Repo: e.Repo, GitHubRepo: e.GitHubRepo}
 	if rt, ok := e.Spec(); ok {
 		about.Runtime = rt.Name
 	}
