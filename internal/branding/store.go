@@ -181,6 +181,17 @@ func (p *PG) Apply(ctx context.Context, c Change) (Branding, error) {
 	}
 	defer func() { _ = tx.Rollback(sctx) }()
 
+	// 🔴 THE ROW MUST EXIST BEFORE IT IS LOCKED. 0105 writes no row, and
+	// FOR UPDATE locks nothing that is not there: two first-ever saves would
+	// both read "nothing set", and the second's write would drop the first's
+	// change (TestConcurrentFirstSavesBothSurvive). This all-NULL row reads as
+	// "nothing set" exactly as no row does (Load, Resolve), and it is rolled
+	// back with the transaction when the change is refused below. A second
+	// save's INSERT waits on the first's uncommitted one, then does nothing,
+	// and its FOR UPDATE reads the committed row.
+	if _, err := tx.Exec(sctx, `INSERT INTO instance_branding (singleton) VALUES (true) ON CONFLICT DO NOTHING`); err != nil {
+		return Branding{}, err
+	}
 	var cur Stored
 	err = tx.QueryRow(sctx, `SELECT coalesce(name, ''), logo_png, icon192_png, icon512_png, appicon192_png, appicon512_png, logo_shows_name
 		FROM instance_branding WHERE singleton FOR UPDATE`).

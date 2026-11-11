@@ -275,4 +275,72 @@ func TestLogoShowsNameIsKeptUntilChanged(t *testing.T) {
 	}
 }
 
+// TestConcurrentFirstSavesBothSurvive: on a fresh instance (no row: 0105
+// writes none), pairs of admins save at the same moment — one the logo, one
+// the name — and both changes must be in the row afterwards. Repeated over
+// fresh tables, because a lost update needs the two transactions to overlap.
+// The control is the same race on a row that already exists.
+func TestConcurrentFirstSavesBothSurvive(t *testing.T) {
+	p, dsn := pgStore(t)
+	admin := as(authz.OperatorUserID, authz.RoleAdmin)
+	race := func(seeded bool) (lost int) {
+		for i := 0; i < 30; i++ {
+			dbtest.OwnerExec(t, dsn, `TRUNCATE instance_branding`)
+			if seeded {
+				dbtest.OwnerExec(t, dsn, `INSERT INTO instance_branding (singleton) VALUES (true)`)
+			}
+			start := make(chan struct{})
+			errs := make(chan error, 2)
+			go func() { <-start; _, err := p.Apply(admin, Change{Logo: ptr(images("L", "I1", "I5"))}); errs <- err }()
+			go func() { <-start; _, err := p.Apply(admin, Change{Name: strp("Team Example")}); errs <- err }()
+			close(start)
+			for j := 0; j < 2; j++ {
+				if err := <-errs; err != nil {
+					t.Fatalf("round %d: %v", i, err)
+				}
+			}
+			b, err := p.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b.Name != "Team Example" || !b.HasLogo() || string(b.Logo) != "L" {
+				lost++
+			}
+		}
+		return lost
+	}
+	if lost := race(true); lost != 0 {
+		t.Fatalf("control: an existing row: %d of 30 concurrent saves lost a change", lost)
+	}
+	if lost := race(false); lost != 0 {
+		t.Fatalf("fresh instance: %d of 30 concurrent first saves lost a change", lost)
+	}
+}
+
+// TestAnAllDefaultRowReadsAsNothingSet: the row Apply now inserts before it
+// locks (all NULL, logo_shows_name false) reads exactly as no row does — no
+// name, no logo, no ETag, no app icon — so every surface, /api/instance
+// included, still draws "nothing set"; and a refused change on an empty
+// table leaves no such row behind (its transaction rolls back).
+func TestAnAllDefaultRowReadsAsNothingSet(t *testing.T) {
+	p, dsn := pgStore(t)
+	admin := as(authz.OperatorUserID, authz.RoleAdmin)
+	if _, err := p.Apply(admin, Change{AppIcon: &AppIcon{Icon192: []byte("A1"), Icon512: []byte("A5")}}); !errors.Is(err, ErrAppIconNeedsLogo) {
+		t.Fatalf("control: the refusal: %v", err)
+	}
+	var n int
+	if err := p.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM instance_branding`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a refused change left %d row(s) (err %v); want 0", n, err)
+	}
+	dbtest.OwnerExec(t, dsn, `INSERT INTO instance_branding (singleton) VALUES (true)`)
+	b, err := p.Load(context.Background())
+	if err != nil || b.Name != "" || b.HasLogo() || b.ETag != "" || b.Logo != nil || b.Icon192 != nil || b.HasAppIcon || b.LogoShowsName {
+		t.Fatalf("an all-default row reads %+v (err %v); want nothing set", b, err)
+	}
+	// A reset on it is still a reset to nothing.
+	if b, err := p.Apply(admin, Change{ClearLogo: true}); err != nil || b.HasLogo() || b.ETag != "" {
+		t.Fatalf("a reset on an all-default row: %+v %v", b, err)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

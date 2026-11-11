@@ -6,8 +6,8 @@
 --       logo is set, the header, the sidebar and the sign-in page draw the
 --       logo alone (its alt text is the name, so the name is still announced)
 --       instead of the logo followed by the name. Without a logo it changes
---       nothing. The name itself is kept and still used everywhere else: the
---       tab title, GET /api/instance, the apps' server switcher.
+--       nothing. The name itself is kept and still used everywhere else:
+--       GET /api/instance and the apps' server switcher.
 --       NOT NULL DEFAULT false, so the existing row (and every row an older
 --       image writes) reads as "draw the name", exactly as before.
 --   instance_branding.appicon192_png, appicon512_png
@@ -25,6 +25,13 @@
 -- policy covers them, and nothing re-applies it. Must apply after 0113 (the
 -- contiguity test refuses a gap). The number was the next free one on main
 -- when written; it may need renumbering at merge. Idempotent.
+--
+-- ⚠ RUN THE ROLLBACK SQL IMMEDIATELY AFTER THE IMAGE ROLLS BACK — not
+-- before: this image reads these columns, and fails without them. Until it
+-- runs, an older image serves the logo's own icons under the app icon's ETag
+-- (a cache keyed by that ?v= may keep the wrong bytes), and its "Reset logo"
+-- fails with a 500: clearing the logo breaks
+-- instance_branding_app_icon_needs_logo while the app icon columns are set.
 --
 -- ROLLBACK (after rolling the image back; an older image reads none of the columns, draws the name, and serves the logo's icons — whose ETag the first statement restores):
 --   UPDATE public.instance_branding SET logo_etag = substr(encode(sha256(logo_png || icon192_png || icon512_png), 'hex'), 1, 16) WHERE appicon192_png IS NOT NULL;

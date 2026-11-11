@@ -262,13 +262,18 @@ write. A second replica shows a change within 30 seconds.
 
 ## Rolling back
 
-Roll the image back first.
-
 To roll back only `0114` (the app icon and the logo-shows-the-name setting),
-run its header's statements. An older image never reads those columns: it
-draws the name beside the logo and serves the logo's own icons. The first
-statement puts back the ETag of the logo's icons, so it matches what that
-image serves:
+roll the image back, then run the migration header's statements
+**immediately**. Do not run them first: the current image reads these columns
+and fails without them. Until they run, the older image serves the logo's own
+icons under the app icon's ETag, so a cache keyed by that `?v=` URL can keep
+the wrong bytes. Its **Reset logo** also fails with a 500, because clearing the
+logo breaks `instance_branding_app_icon_needs_logo` while an app icon is still
+stored.
+
+An older image never reads these columns: it draws the name beside the logo
+and serves the logo's own icons. The first statement puts back the ETag of the
+logo's icons, so it matches what that image serves:
 
 ```sql
 UPDATE public.instance_branding SET logo_etag = substr(encode(sha256(logo_png || icon192_png || icon512_png), 'hex'), 1, 16) WHERE appicon192_png IS NOT NULL;
@@ -280,7 +285,8 @@ ALTER TABLE public.instance_branding DROP COLUMN IF EXISTS logo_shows_name;
 DELETE FROM schema_migrations WHERE version = 114;
 ```
 
-An image older than `0105` never reads the table and draws muster's own mark.
+To go back past `0105`, roll the image back first: an image older than
+`0105` never reads the table and draws muster's own mark.
 To remove all the data (after rolling back `0114`):
 
 ```sql

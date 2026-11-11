@@ -445,3 +445,67 @@ func TestAnAppIconBecomesEveryIconAndRollsTheETag(t *testing.T) {
 		t.Error("the Remove app icon button is still drawn with no app icon")
 	}
 }
+
+// TestTheSignInLogoAltIsEscaped: a name with a quote and markup becomes the
+// sign-in logo's alt (a wordmark logo) as an attribute VALUE, parsed back
+// whole — not markup that closes the attribute and opens an element.
+func TestTheSignInLogoAltIsEscaped(t *testing.T) {
+	_, h, _, cookie := brandingServer(t)
+	const name = `Say "hi" <b>bold</b> & co`
+	if rec := bPut(t, h, who{cookie: cookie}, formPart{name: "name", value: name}, formPart{name: logoShowsNameField, value: "true"},
+		formPart{name: "logo", file: testLogoPNG(t, 30, 10)}); rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
+	}
+	doc := bDoc(t, get(h, "/login", nil, true).Body.String())
+	brands := bElems(doc, func(n *html.Node) bool { v, _ := bAttr(n, "data-testid"); return v == "login-brand" })
+	if len(brands) != 1 {
+		t.Fatalf("%d login-brand blocks, want 1", len(brands))
+	}
+	logos := bElems(brands[0], bHasAttr("data-brand-logo"))
+	if len(logos) != 1 {
+		t.Fatalf("%d logos, want 1", len(logos))
+	}
+	if alt, _ := bAttr(logos[0], "alt"); alt != name {
+		t.Errorf("the logo's alt parses as %q, want %q", alt, name)
+	}
+	if n := len(bElems(brands[0], func(n *html.Node) bool { return n.Data == "b" })); n != 0 {
+		t.Errorf("the name's markup became %d <b> element(s)", n)
+	}
+}
+
+// noisePNG is a w×h PNG of pseudo-random opaque pixels: it does not compress,
+// so its size is about 4·w·h bytes.
+func noisePNG(t *testing.T, w, h int, seed uint32) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	x := seed
+	for i := 0; i < len(img.Pix); i += 4 {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = uint8(x), uint8(x>>8), uint8(x>>16), 255
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// TestALogoAndAnAppIconFitInOneSave: a logo and an app icon, each under the
+// 1 MiB file cap but together over the old 1 MiB + 64 KiB body cap, are
+// accepted in one save (the Account page's form sends both at once).
+func TestALogoAndAnAppIconFitInOneSave(t *testing.T) {
+	_, h, mem, cookie := brandingServer(t)
+	logo, icon := noisePNG(t, 500, 500, 1), noisePNG(t, 500, 500, 7)
+	body, ct := bMultipart(t, formPart{name: "logo", file: logo}, formPart{name: appIconField, file: icon})
+	raw, _ := io.ReadAll(body)
+	if len(logo) > branding.MaxUploadBytes || len(icon) > branding.MaxUploadBytes || len(raw) <= branding.MaxUploadBytes+64<<10 {
+		t.Fatalf("control: files %d and %d bytes, body %d; want each under %d and the body over %d",
+			len(logo), len(icon), len(raw), branding.MaxUploadBytes, branding.MaxUploadBytes+64<<10)
+	}
+	rec := brandingDo(h, http.MethodPut, BrandingPath, bytes.NewReader(raw), ct, who{cookie: cookie})
+	if rec.Code != http.StatusOK || !mem.b.HasLogo() || !mem.b.HasAppIcon {
+		t.Fatalf("a logo and an app icon in one save: %d %s (logo %v, app icon %v)", rec.Code, rec.Body.String(), mem.b.HasLogo(), mem.b.HasAppIcon)
+	}
+}
