@@ -1,9 +1,10 @@
 # Design: shareable pages — agent-written pages a stranger can open
 
-**Status: phase 1 is being built (this branch); phases 2 and 3 are proposed.**
-The operator's decisions are made ([decisions](#operator-decisions)). What
-was built is described in [pages.md](../pages.md), from the code; where the
-two disagree, the code wins ([decisions.md](../decisions.md)).
+**Status: phase 1 is built (#606); phases 2 and 3 are proposed.** The
+operator's decisions are made ([decisions](#operator-decisions)). What was
+built is described in [pages.md](../pages.md), from the code; where the two
+disagree, the code wins ([decisions.md](../decisions.md)). Where phase 1 came
+out differently from this page, the section says **As built**.
 
 The ask, verbatim: *"I'd like to implement the concept of shareable pages as
 a feature. This probably makes sense to exist as a plugin. My requirements are
@@ -20,7 +21,7 @@ questions, upload things, fill out a form etc."*
 | | Decision |
 |---|---|
 | What a page is | A row the owner owns, with **versions** (immutable) and a current-version pointer. A version is a list of **blocks**: markdown, built-in components (question, choice, form, upload, approval) and raw `html` (custom HTML and JavaScript) |
-| Who makes one | An agent, with MCP tools on both agent doors (`POST /mcp` and `POST /mirror/mcp`): `page_create`, `page_update`, `page_get`, `page_list`, `page_share_request`, `page_responses`, `page_link_revoke` |
+| Who makes one | An agent, with MCP tools on both agent doors (`POST /mcp` and `POST /mirror/mcp`): `page_create`, `page_update`, `page_get`, `page_list`, `page_share_request`, `page_responses`, `page_link_revoke`. **As built:** a mirrored *opencode* session's narrower set (attention and task tools only, #595) does not include them |
 | Who sees it | Its owner, signed in, at any time (a preview). Anyone else only through a **share link**: `/s/<token>`, 256 random bits, revocable |
 | Making a link | An agent **asks**; the owner **approves** it on the Asks page or their phone (an attention ask, owner's door only). The owner can also mint and revoke links on the Pages screen |
 | Serving | From muster's own host. The page's bytes are served at `/s/<token>/content` with `Content-Security-Policy: sandbox allow-scripts allow-forms; …` as an **HTTP header** (an opaque origin even on direct navigation), framed by a thin muster shell at `/s/<token>` that draws the instance branding |
@@ -181,7 +182,10 @@ Content-Type: text/html; charset=utf-8
 - **No `allow-top-navigation`, `allow-popups`, `allow-modals`,
   `allow-downloads`**: page script cannot navigate the viewer's tab away or
   open windows.
-- **`frame-ancestors 'self'`**: only muster's shell may frame it.
+- **`frame-ancestors 'self'`**: only muster's shell may frame it. `'self'`
+  is the origin of the response's URL, not the sandboxed document's opaque
+  one, so the shell on muster's origin may frame it (measured in Chromium by
+  `e2e/tests/pages.spec.ts`).
 - **The handler never reads a cookie** and never writes one. The route is
   outside every session wrapper; its principal comes from the link alone.
 
@@ -241,13 +245,13 @@ only what the page's own script could already do.
 
 | block | renders | a submit's `data` | checked by muster |
 |---|---|---|---|
-| `markdown` | muster's markdown renderer, HTML-escaped | — | — |
+| `markdown` | muster's markdown renderer, HTML-escaped (**as built:** its document form, `ui.MarkdownHTML`, whose headings are real `<h1>`…`<h6>`) | — | — |
 | `question` | a labelled text box (`multiline` optional) | `{"answer": "…"}` | required, ≤ 4000 chars |
 | `choice` | radio buttons or checkboxes (`multiple`) | `{"choices": ["…"]}` | each is one of `options`; one unless `multiple` |
 | `form` | typed fields (`text`, `textarea`, `email`, `number`, `date`, `select`, `checkbox`) | `{"fields": {"name": value}}` | known names only, types, required, `select` options |
 | `upload` | a file picker | — (an upload) | the link's caps; the type is sniffed |
 | `approval` | Approve / Decline, optional comment | `{"decision": "approve"\|"decline", "comment": "…"}` | the two values |
-| `html` | the agent's HTML and script, verbatim | `muster.submit(data)`: any JSON | ≤ 32 KiB; component `custom` |
+| `html` | the agent's HTML and script, verbatim | `muster.submit(data)`: any JSON | ≤ 32 KiB; component `custom`; stored as `{"value": data}` |
 
 Every component is muster-generated HTML inside the **same** sandboxed
 document, wired by the SDK, so there is one security model for all of them.

@@ -24,7 +24,9 @@ Off, no page tool is offered, the Pages screen answers the typed
 ## The agents' tools
 
 Offered to every dispatched agent (on its gateway turns and over `POST /mcp`)
-and to every mirrored Claude Code session (`POST /mirror/mcp`). A tool acts
+and to every mirrored Claude Code session (`POST /mirror/mcp`). A mirrored
+opencode session is not offered them: its set is the attention and task tools
+([attention.md](attention.md#mirrored-opencode-sessions)). A tool acts
 only on pages its caller made: a dispatched agent on its own pages, a mirrored
 session on the pages made from its **host** (the host is what the mirror token
 proves). Any other page reads as `no such page`.
@@ -151,7 +153,13 @@ or `/upload` with no credentials. Those routes, and the two `GET`s, read no
 cookie: the token is their only credential.
 
 No page response sets a cookie. The access log writes every `/s/` path as
-`/s/[redacted]`.
+`/s/[redacted]`. Nothing about a viewer is stored but what they send; the
+failed-lookup limit holds client addresses in memory only.
+
+An uploaded file may be of any type. Its type is sniffed from its bytes, and it
+is only ever served back as [uploads.md](uploads.md#serving-uploaded-files)
+serves every upload: to the owner, as an attachment (images inline), under a
+`sandbox` policy.
 
 ## Notifications
 
