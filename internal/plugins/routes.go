@@ -881,8 +881,8 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			return err
 		}
 		status, q, args := DraftPending, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
-				check_state)
-			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, $8) RETURNING `+draftCols, []any{check}
+				check_state, check_due_at)
+			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, $8, `+checkDueSQL("$8")+`) RETURNING `+draftCols, []any{check}
 		if approve {
 			status, q, args = DraftApproved, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
 				status, decided_at, approved_at)

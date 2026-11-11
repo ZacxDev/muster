@@ -290,6 +290,18 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 //     chief — or else the chief, as a timed-out route's);
 //   - a draft the chief filed itself (reply_draft) is noted to the chief.
 func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+	// Another reply to the message went out, or is on its way: the store left
+	// its route alone (plugins.OtherReplyOut), so nothing goes back anywhere.
+	// The owner is told so — never "it went back" — and nobody is asked to
+	// write it again.
+	if out, err := s.ext.Plugins.ReplyOutElsewhere(ctx, d); err != nil || out {
+		if err != nil {
+			s.logger.Printf("plugins: draft %d refused: read its message's other replies: %v", d.ID, err)
+		}
+		s.logger.Printf("plugins: plugin %d refused draft %d; another reply to message %d is sent or on its way", p.ID, d.ID, d.MessageID)
+		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
+		return
+	}
 	var route plugins.Route
 	routed := false
 	if d.RouteID != nil && routesOn(s.ext) {
@@ -300,8 +312,12 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 	}
 	redraft := routed && route.Redraft
 	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v, routed %v, redraft %v)", p.ID, d.ID, sending, routed, redraft)
+	where := refusalToChief
+	if redraft {
+		where = refusalToSession
+	}
 	if sending || !redraft {
-		s.notifyDraftRefused(p, d, redraft)
+		s.notifyDraftRefused(p, d, where)
 	}
 	if routed {
 		s.kickRouteSweep()
@@ -309,6 +325,20 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 	}
 	s.noteDraftRefusedToChief(ctx, p, d, sending)
 }
+
+// Where a refused reply goes, as its push says (draftRefusedPushBody).
+const (
+	// refusalToChief: back to the chief (its hand-back, or a note).
+	refusalToChief = iota
+	// refusalToSession: back to the session that wrote it — unless that
+	// session is gone by the time the sweep hands it back (redraftRoute), when
+	// it goes to the chief; the push is sent before that is known, so it says
+	// both.
+	refusalToSession
+	// refusalAnsweredElsewhere: nowhere — another reply to the message was
+	// sent or is on its way (plugins.OtherReplyOut).
+	refusalAnsweredElsewhere
+)
 
 // The refused draft push's title (muster's), and its body's bound.
 const (
@@ -323,30 +353,35 @@ const (
 // 🔴 IT CARRIES THE PLUGIN'S REASON (operator decision), one line, cut — never
 // the draft or the message it answers (notifyDraftAwaiting's "who and where,
 // never what"): the reason is the plugin's words about the reply.
-func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, redraft bool) {
+func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, where int) {
 	id := strconv.FormatInt(d.ID, 10)
 	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftRefusedPushTitle,
-		Body:  draftRefusedPushBody(p.Label, d.Detail, redraft),
+		Body:  draftRefusedPushBody(p.Label, d.Detail, where),
 		Tag:   draftTag(d.ID),
 		Data:  map[string]string{"url": draftLink(d.ID)},
 	}, nil)
 }
 
 // draftRefusedPushBody is a refused draft's push body: "<plugin label>
-// refused it: <reason>", then where it went.
-func draftRefusedPushBody(label, detail string, redraft bool) string {
+// refused it.", where it goes (one of the refusal* values), then "It said:
+// <reason>".
+func draftRefusedPushBody(label, detail string, where int) string {
 	body := "The plugin"
 	if l := mirror.OneLine(label, plugins.MaxLabelRunes); l != "" {
 		body = l
 	}
-	where := " It went back to your chief."
-	if redraft {
-		where = " It went back to the session that wrote it."
+	tail := " It went back to your chief."
+	switch where {
+	case refusalToSession:
+		tail = " It is going back to the session that wrote it, or to your chief if that session is gone."
+	case refusalAnsweredElsewhere:
+		tail = " Another reply to this message was already sent or is on its way, so nothing more is done."
 	}
-	return truncate(body+" refused it: "+plugins.RefusalText(detail)+"."+where, draftRefusedPushBodyMax)
+	// Where it goes first: a long reason is what the bound cuts, never that.
+	return truncate(body+" refused it."+tail+" It said: "+plugins.RefusalText(detail), draftRefusedPushBodyMax)
 }
 
 // noteDraftRefusedToChief tells the chief that filed refused draft d (no
@@ -548,6 +583,8 @@ func draftStatusText(d plugins.Draft) string {
 		return "Waiting for the plugin to check that it can send it · expires" + at(&d.ExpiresAt)
 	case d.RefusedByCheck():
 		return "Refused by the plugin before approval" + at(d.CheckedAt) + " · never sent"
+	case d.Status == plugins.DraftPending && d.CheckState == plugins.CheckLapsed:
+		return "Awaiting your decision · the plugin did not check it in time · expires" + at(&d.ExpiresAt)
 	}
 	switch d.Status {
 	case plugins.DraftPending:

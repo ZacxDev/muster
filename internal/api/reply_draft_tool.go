@@ -104,6 +104,12 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 // queue page and /plugins show them, behind the sign-in. Without the message
 // (m.ID 0) it is muster's fixed sentence.
 func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
+	s.notifyDraftAwaitingNoting(ctx, owner, d, m, "")
+}
+
+// notifyDraftAwaitingNoting is notifyDraftAwaiting with muster's own note
+// after the body: a lapsed check's (lapseDraftChecks, DraftCheckLapsedNote).
+func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message, note string) {
 	id := strconv.FormatInt(d.ID, 10)
 	label := ""
 	if m.ID != 0 {
@@ -115,7 +121,7 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  draftPushBody(m, label),
+		Body:  draftPushBody(m, label) + note,
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": draftLink(d.ID)},
 	}, nil)

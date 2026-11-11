@@ -385,6 +385,13 @@ While a draft awaits the check:
 - `plugin_drafts_list` marks it `awaiting_plugin_check`;
 - an approval is refused, on the card and over `plugin_draft_decide`.
 
+The wait is bounded. A draft with no verdict **1 hour** after it was filed
+(`plugins.DraftCheckWait`) **lapses**: it becomes an ordinary pending draft that
+your owner may approve. Your owner then gets the usual push, saying the plugin
+did not check it, and the attention item. `plugin_drafts_list` marks it
+`plugin_check_lapsed`. A plugin that stops checking therefore never leaves a
+reply to expire unseen.
+
 An auto-approved draft (an [allowlisted, verified sender](#routing-a-message-to-a-session))
 is not checked first. If your send-time check refuses it, report the result
 `ok: false`, and it [comes back](#when-the-plugin-refuses-a-reply) the same way.
@@ -419,7 +426,7 @@ that answered `204`.
 | `400 {"error"}` | `sendable` is missing, a refusal has no `detail`, or a field breaks a rule |
 | `403 {"error"}` | the token does not have `draft_checks` |
 | `404 {"error"}` | no such draft of this plugin's messages (another plugin's, another owner's, or none) |
-| `409 {"error", "draft_id", "status", "check"}` | the draft already has the **other** verdict, or it is not awaiting a check (none was asked for, or it was superseded, rejected or expired first) |
+| `409 {"error", "draft_id", "status", "check"}` | the draft already has the **other** verdict, or it is not awaiting a check: none was asked for, it was superseded, rejected or expired first, or its check **lapsed** (`"check": "lapsed"`). After a lapse your owner decides it, and a late verdict changes nothing. |
 
 A plugin that never calls these routes, and was not minted with
 `draft_checks`, behaves as before: its drafts are approvable at once.
@@ -430,8 +437,18 @@ A reply is refused when the plugin reports its result `"ok": false`, or when
 its [check](#check-a-reply-before-it-can-be-approved) says `"sendable": false`.
 muster then, once, on the call that recorded it:
 
+- **does nothing more when another reply already went.** If another reply to
+  the same message was reported sent, or is approved and on its way, the
+  sender has an answer. The refusal is recorded on the draft only. Its route
+  is left as it was, nothing goes back to the session or the chief, and your
+  owner's push says another reply was already sent. This is the case where a
+  draft's lease lapsed, another reply was sent, and the first one's failure
+  arrived late.
+
 - **pushes your owner** on the draft's own notification tag, with the plugin's
-  `detail` on one line (cut to 300 characters). It does this for every failed
+  `detail` on one line (cut to 300 characters), after where the reply goes:
+  back to the session that wrote it, or to your chief if that session is gone,
+  or to your chief. It does this for every failed
   send. For a check refusal it does this only when the reply is not going back
   to its session, because there is nothing for your owner to do while the
   session rewrites it.

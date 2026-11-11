@@ -1432,6 +1432,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 		s.deliverDueAnswers(ctx)
 		s.putDueQuestions(ctx)
 		s.expireDraftNotes(ctx)
+		s.lapseDraftChecks(ctx)
 		s.recheckOfflineHosts()
 		s.sweepUnroutedMessages(ctx)
 		select {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -356,6 +357,163 @@ func TestARefusedReplyFallsToTheChiefWhenItsSessionIsGone(t *testing.T) {
 	backs := f.chiefNotes(t, "back with you")
 	if len(backs) != 1 || !strings.Contains(backs[0], "rule numbat-5") || !strings.Contains(backs[0], "could not hand it back to the session") {
 		t.Fatalf("the chief's hand-back: %v", backs)
+	}
+	// The owner's push (sent before the sweep knew the session was gone) must
+	// be true of where it went: the session, or the chief if it is gone.
+	if ps := f.refusalPushes(id); len(ps) != 1 || !strings.Contains(ps[0].Body, "rule numbat-5") || !strings.Contains(ps[0].Body, "or to your chief") {
+		t.Fatalf("the owner's push: %+v; want it to name the chief as where a gone session's reply goes", ps)
+	}
+}
+
+// TestALateFailureAfterAnotherReplyWasSentHandsNothingBack (audit Y1): reply
+// A to a verified, allowlisted sender is auto-approved and claimed, and its
+// lease lapses (unconfirmed); the chief's reply B is approved and reported
+// SENT; then A's failure arrives late. The sender HAS an answer, so: the route
+// is left as it was (not send_failed), no redraft route or paste is made, no
+// auto-approved third reply exists, and the owner's push says another reply
+// went — never that it went back.
+func TestALateFailureAfterAnotherReplyWasSentHandsNothingBack(t *testing.T) {
+	f := newRefusalFixture(t)
+	f.allow(t, "example-inbox:someone@example.test")
+	_, m := f.pluginMessage(t, "example-inbox", "rf-late", "someone@example.test", true)
+	rid := f.route(t, m)
+	const bodyA = "The first answer, auto-approved."
+	a, st := f.answer(t, rid, bodyA)
+	if st != "approved" {
+		t.Fatalf("control: the allowlisted answer became %s; want approved", st)
+	}
+	if code, c := f.plug(t, f.plugTok, http.MethodPost, "/plugin/v1/drafts/claim", `{"wait_seconds":0}`); code != http.StatusOK || int64(c["draft_id"].(float64)) != a {
+		t.Fatalf("claim A: %d %v", code, c)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE plugin_reply_drafts SET lease_until = now() - interval '1 minute' WHERE id = `+strconv.FormatInt(a, 10))
+	const bodyB = "The chief's second answer."
+	args, _ := json.Marshal(map[string]any{"message_id": m.ID, "body": bodyB})
+	sub := draftIDRE.FindStringSubmatch(f.srv.AgentToolDispatch(f.asOwner, f.chief)(replyDraftToolName, string(args)))
+	if sub == nil {
+		t.Fatal("reply_draft B was not filed")
+	}
+	b, _ := strconv.ParseInt(sub[1], 10, 64)
+	if da, _ := f.plugins.Draft(f.asOwner, a); da.Status != plugins.DraftUnconfirmed {
+		t.Fatalf("control: A is %s; want unconfirmed", da.Status)
+	}
+	if text, isErr := f.decide(t, f.tok, otherRouteSID, b, "approve", sha(bodyB)); isErr {
+		t.Fatalf("approve B: %s", text)
+	}
+	if code, c := f.plug(t, f.plugTok, http.MethodPost, "/plugin/v1/drafts/claim", `{"wait_seconds":0}`); code != http.StatusOK || int64(c["draft_id"].(float64)) != b {
+		t.Fatalf("claim B: %d %v", code, c)
+	}
+	if code, out := f.plug(t, f.plugTok, http.MethodPost, "/plugin/v1/drafts/"+strconv.FormatInt(b, 10)+"/result", `{"ok":true}`); code != http.StatusOK || out["status"] != "sent" {
+		t.Fatalf("B sent: %d %v", code, out)
+	}
+	before, _ := f.lastPaste(t)
+	if code, out := f.plug(t, f.plugTok, http.MethodPost, "/plugin/v1/drafts/"+strconv.FormatInt(a, 10)+"/result",
+		`{"ok":false,"detail":"rule jackal-4 refused it late"}`); code != http.StatusOK || out["status"] != "failed" {
+		t.Fatalf("A's late failure: %d %v", code, out)
+	}
+	f.sweep(t)
+	routes := f.routesOf(t, m.ID)
+	if len(routes) != 1 || routes[0].State != plugins.RouteRelayed {
+		t.Fatalf("after A's late failure the routes are %+v; want the one route, still relayed", routes)
+	}
+	if n, _ := f.lastPaste(t); n != before {
+		t.Fatalf("A's late failure pasted into the session (%d rows, was %d)", n, before)
+	}
+	var drafts, live int
+	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*), count(*) FILTER (WHERE status IN ('pending', 'approved'))
+		FROM plugin_reply_drafts WHERE message_id = $1`, m.ID).Scan(&drafts, &live); err != nil || drafts != 2 || live != 0 {
+		t.Fatalf("the message's drafts: %d, %d live (%v); want A and B only, none live", drafts, live, err)
+	}
+	ps := f.refusalPushes(a)
+	if len(ps) != 1 || !strings.Contains(ps[0].Body, "already sent") || strings.Contains(ps[0].Body, "going back") {
+		t.Fatalf("the owner's push for A: %+v; want one saying another reply already went", ps)
+	}
+	if backs := f.chiefNotes(t, "back with you"); len(backs) != 0 {
+		t.Fatalf("A's late failure handed the message to the chief: %v", backs)
+	}
+}
+
+// staleDueList is the real store whose DraftChecksDue names due (a list read
+// before something changed).
+type staleDueList struct {
+	plugins.Store
+	due []plugins.DueDraftCheck
+}
+
+func (s staleDueList) DraftChecksDue(context.Context) ([]plugins.DueDraftCheck, error) {
+	return s.due, nil
+}
+
+// TestAnUncheckedDraftLapsesToTheOwnerAfterDraftCheckWait (audit Y2): a draft
+// its draft_checks plugin never checks is held only until its deadline
+// (plugins.DraftCheckWait): before it the sweep changes nothing; past it the
+// draft becomes an ordinary pending draft — approvable, an attention item —
+// and the owner is pushed once, told the plugin did not check it. A verdict
+// arriving after that is refused 409 (the owner decides it now) and changes
+// nothing; a second sweep pushes nothing more.
+func TestAnUncheckedDraftLapsesToTheOwnerAfterDraftCheckWait(t *testing.T) {
+	f := newRefusalFixture(t)
+	ctok, _ := f.checker(t)
+	const body = "A reply its plugin never checks."
+	_, m := f.pluginMessage(t, "example-checker", "rf-lapse", "someone@example.test", true)
+	id, _ := f.answer(t, f.route(t, m), body)
+	asked := func() []push.Payload {
+		f.srv.WaitForPushes()
+		var out []push.Payload
+		for _, p := range f.pusher.to(ep("rf-owner")) {
+			if p.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) && p.Title == DraftPushTitle {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	f.srv.lapseDraftChecks(context.Background())
+	if d, _ := f.plugins.Draft(f.asOwner, id); !d.AwaitingCheck() || len(asked()) != 0 {
+		t.Fatalf("control: before its deadline the draft is %s/%s with %d push(es); want awaiting, none", d.Status, d.CheckState, len(asked()))
+	}
+	// A due list that names it anyway (read before a verdict, a clock skew):
+	// the lapse itself re-checks the deadline under the row lock, and nothing
+	// is pushed for a draft it did not lapse.
+	real := f.srv.ext.Plugins
+	f.srv.ext.Plugins = staleDueList{Store: real, due: []plugins.DueDraftCheck{{ID: id, OwnerID: f.owner}}}
+	f.srv.lapseDraftChecks(context.Background())
+	f.srv.ext.Plugins = real
+	if d, _ := f.plugins.Draft(f.asOwner, id); !d.AwaitingCheck() || len(asked()) != 0 {
+		t.Fatalf("a stale due list lapsed the draft early (%s/%s) or pushed (%d)", d.Status, d.CheckState, len(asked()))
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE plugin_reply_drafts SET check_due_at = now() - interval '1 second' WHERE id = `+strconv.FormatInt(id, 10))
+	f.srv.lapseDraftChecks(context.Background())
+	d, _ := f.plugins.Draft(f.asOwner, id)
+	if d.Status != plugins.DraftPending || d.CheckState != plugins.CheckLapsed || d.AwaitingCheck() {
+		t.Fatalf("past its deadline the draft is %s/%s; want pending, lapsed", d.Status, d.CheckState)
+	}
+	if ps := asked(); len(ps) != 1 || !strings.Contains(ps[0].Body, "did not check it") {
+		t.Fatalf("past its deadline the owner's pushes: %+v; want one saying the plugin did not check it", ps)
+	}
+	items, err := f.srv.pendingDraftItems(f.asOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range items {
+		found = found || it.Key == draftKey(id)
+	}
+	if !found {
+		t.Fatal("a lapsed draft is not an attention item")
+	}
+	if l := listedByID(f.listed(t, f.tok, otherRouteSID), id); l == nil || l["awaiting_plugin_check"] != nil || l["plugin_check_lapsed"] != true {
+		t.Fatalf("plugin_drafts_list: %v; want plugin_check_lapsed and not awaiting", l)
+	}
+	// A late verdict: refused, the draft unchanged.
+	if code, out := f.plug(t, ctok, http.MethodPost, "/plugin/v1/drafts/"+strconv.FormatInt(id, 10)+"/check",
+		`{"sendable":false,"detail":"rule tapir-2, too late"}`); code != http.StatusConflict || out["check"] != "lapsed" {
+		t.Fatalf("a verdict after the lapse: %d %v; want 409 naming the lapsed check", code, out)
+	}
+	f.srv.lapseDraftChecks(context.Background())
+	if n := len(asked()); n != 1 {
+		t.Fatalf("a second sweep pushed again: %d pushes", n)
+	}
+	if text, isErr := f.decide(t, f.tok, otherRouteSID, id, "approve", sha(body)); isErr || !strings.Contains(text, `"status":"approved"`) {
+		t.Fatalf("approving a lapsed draft: %s", text)
 	}
 }
 

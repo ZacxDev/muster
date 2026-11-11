@@ -121,6 +121,13 @@ type Store interface {
 	// (CapDraftChecks), oldest first; CheckDraft records its verdict on one.
 	DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit int) ([]AwaitingCheck, error)
 	CheckDraft(ctx context.Context, pluginID, draftID int64, v DraftCheck) (d Draft, fresh bool, err error)
+	// DraftChecksDue is every owner's drafts whose check is past
+	// DraftCheckWait (system scope); LapseDraftCheck lapses one, as its owner.
+	DraftChecksDue(ctx context.Context) ([]DueDraftCheck, error)
+	LapseDraftCheck(ctx context.Context, id int64) (d Draft, lapsed bool, err error)
+	// ReplyOutElsewhere reports whether another reply to d's message was sent
+	// or is in flight (OtherReplyOut).
+	ReplyOutElsewhere(ctx context.Context, d Draft) (bool, error)
 	// QueuedForOwner is ownerID's undelivered messages across live plugins,
 	// except those a mail resume holds (resumeHolds).
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)

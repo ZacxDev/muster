@@ -9,8 +9,13 @@
 --       'awaiting': filed for a plugin with draft_checks, and not approvable
 --       until the plugin says. 'sendable': the plugin said it can send it.
 --       'refused': the plugin said it cannot; the draft is then `rejected`, and
---       detail holds the plugin's reason.
---   plugin_reply_drafts.checked_at            when the plugin's verdict came.
+--       detail holds the plugin's reason. 'lapsed': no verdict came within
+--       plugins.DraftCheckWait, so it became an ordinary pending draft the
+--       owner may approve (and was asked to, told the plugin did not check it).
+--   plugin_reply_drafts.checked_at            when the plugin's verdict came, or
+--       the check lapsed.
+--   plugin_reply_drafts.check_due_at          an awaiting draft's deadline for
+--       the verdict (filing + plugins.DraftCheckWait).
 --   session_routes.state 'send_failed'        the route's reply draft was
 --       refused by its plugin — reported failed after it was claimed, or
 --       refused by the check before approval. Terminal; reached from relayed
@@ -52,6 +57,8 @@
 --   ALTER TABLE plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_unchecked_not_approved;
 --   ALTER TABLE plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_refused_is_rejected;
 --   DROP INDEX IF EXISTS idx_plugin_reply_drafts_awaiting_check;
+--   ALTER TABLE plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_check_due;
+--   ALTER TABLE plugin_reply_drafts DROP COLUMN IF EXISTS check_due_at;
 --   ALTER TABLE plugin_reply_drafts DROP COLUMN IF EXISTS checked_at;
 --   ALTER TABLE plugin_reply_drafts DROP COLUMN IF EXISTS check_state;
 --   DELETE FROM schema_migrations WHERE version = 112;
@@ -64,15 +71,16 @@ ALTER TABLE public.plugins ADD CONSTRAINT plugins_capabilities_known
 
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS check_state TEXT;
 ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS checked_at TIMESTAMPTZ;
+ALTER TABLE public.plugin_reply_drafts ADD COLUMN IF NOT EXISTS check_due_at TIMESTAMPTZ;
 
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_check_state_known;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_check_state_known
-    CHECK (check_state IS NULL OR check_state IN ('awaiting', 'sendable', 'refused'));
+    CHECK (check_state IS NULL OR check_state IN ('awaiting', 'sendable', 'refused', 'lapsed'));
 
 -- A verdict and its time together.
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_check_has_time;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_check_has_time
-    CHECK (coalesce(check_state IN ('sendable', 'refused'), false) = (checked_at IS NOT NULL));
+    CHECK (coalesce(check_state IN ('sendable', 'refused', 'lapsed'), false) = (checked_at IS NOT NULL));
 
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_unchecked_not_approved;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_unchecked_not_approved
@@ -81,6 +89,12 @@ ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_unchec
 ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_refused_is_rejected;
 ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_refused_is_rejected
     CHECK (check_state IS DISTINCT FROM 'refused' OR status = 'rejected');
+
+-- An awaiting draft always has its check's deadline (plugins.DraftCheckWait
+-- after filing), past which it lapses to an ordinary pending draft.
+ALTER TABLE public.plugin_reply_drafts DROP CONSTRAINT IF EXISTS plugin_reply_drafts_check_due;
+ALTER TABLE public.plugin_reply_drafts ADD CONSTRAINT plugin_reply_drafts_check_due
+    CHECK (check_state IS DISTINCT FROM 'awaiting' OR check_due_at IS NOT NULL);
 
 -- GET /plugin/v1/drafts/checks: the drafts awaiting a verdict.
 CREATE INDEX IF NOT EXISTS idx_plugin_reply_drafts_awaiting_check

@@ -138,6 +138,9 @@ type pluginDraftView struct {
 	// AwaitingCheck: its plugin has not yet checked that it can send it
 	// (plugins.Draft.AwaitingCheck), so it cannot be approved yet.
 	AwaitingCheck bool `json:"awaiting_plugin_check,omitempty"`
+	// CheckLapsed: its plugin did not check it within plugins.DraftCheckWait,
+	// so it is approvable unchecked.
+	CheckLapsed bool `json:"plugin_check_lapsed,omitempty"`
 }
 
 func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string {
@@ -169,7 +172,8 @@ func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string 
 		v := pluginDraftView{ID: d.ID, MessageID: m.ID, Plugin: cd.PluginLabel, Sender: plugins.SenderText(m),
 			SenderVerified: m.SenderVerified, Subject: m.Subject, Message: m.Body, DraftedBy: d.AgentName, Body: d.Body,
 			Characters: utf8.RuneCountInString(d.Body), BodySHA256: plugins.DraftBodySHA256(d.Body),
-			Created: d.CreatedAt, Expires: d.ExpiresAt, EarlierMaySent: cd.EarlierUnconfirmed, AwaitingCheck: d.AwaitingCheck()}
+			Created: d.CreatedAt, Expires: d.ExpiresAt, EarlierMaySent: cd.EarlierUnconfirmed, AwaitingCheck: d.AwaitingCheck(),
+			CheckLapsed: d.CheckState == plugins.CheckLapsed}
 		if d.RouteID != nil {
 			v.Route = &pluginDraftRouteView{ID: *d.RouteID, Kind: cd.Route.Kind, Target: cd.Route.Key, Label: cd.Route.Label}
 		}

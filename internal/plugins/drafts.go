@@ -125,6 +125,10 @@ const (
 	// CheckRefused: the plugin said it cannot send it. The draft is rejected
 	// and its Detail is the plugin's reason.
 	CheckRefused DraftCheckState = "refused"
+	// CheckLapsed: the plugin gave no verdict within DraftCheckWait
+	// (LapseDraftCheck). The draft is an ordinary pending one the owner may
+	// approve; the card and the push say the plugin did not check it.
+	CheckLapsed DraftCheckState = "lapsed"
 )
 
 // Scan reads check_state, NULL as "".
@@ -309,6 +313,13 @@ func draftDest(d *Draft, st *string) []any {
 		&d.CheckState, &d.CheckedAt}
 }
 
+// checkDueSQL is the check_due_at a NEW draft is filed with, given the SQL
+// parameter holding its check_state: now + DraftCheckWait for an awaiting
+// one, NULL otherwise (0112's plugin_reply_drafts_check_due).
+func checkDueSQL(param string) string {
+	return fmt.Sprintf(`CASE WHEN %s::text = 'awaiting' THEN now() + make_interval(secs => %d) END`, param, int(DraftCheckWait/time.Second))
+}
+
 // checkStateFor is the check_state a NEW pending draft of message messageID
 // is filed with: CheckAwaiting when the message's plugin has CapDraftChecks,
 // else nil (none asked for). Read in the filing's transaction.
@@ -476,8 +487,8 @@ func (s *PGStore) FileDraft(ctx context.Context, agentID, ownerID int64, agentNa
 			return err
 		}
 		d, err = scanDraft(tx.QueryRow(ctx, `
-			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state)
-			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7) RETURNING `+draftCols,
+			INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, check_state, check_due_at)
+			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, `+checkDueSQL("$7")+`) RETURNING `+draftCols,
 			ownerID, messageID, agentID, cutRunes(agentName, 100), body, DraftTTL.Seconds(), check))
 		if err != nil {
 			return err
@@ -872,6 +883,90 @@ func RouteSendFailedHandBack(draftID int64, detail string) string {
 		RefusalText(detail) + "»"
 }
 
+// rowQuerier is what OtherReplyOut reads with: a transaction or the pool.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// OtherReplyOut reports whether a reply to message messageID other than draft
+// draftID was SENT, or is approved and in flight (unclaimed, or claimed within
+// its lease: lockMessage's in-flight rule). THE ONE PREDICATE for "the sender
+// has, or is getting, another answer": refuseRouteDraftTx (no redraft) and
+// internal/api's refusal push (its wording) both read it.
+func OtherReplyOut(ctx context.Context, q rowQuerier, messageID, draftID int64) (bool, error) {
+	var out bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts
+		WHERE message_id = $1 AND id <> $2
+		  AND (status = 'sent' OR (status = 'approved' AND (claimed_at IS NULL OR lease_until > now()))))`,
+		messageID, draftID).Scan(&out)
+	return out, err
+}
+
+// ReplyOutElsewhere is OtherReplyOut for draft d, read as the principal.
+func (s *PGStore) ReplyOutElsewhere(ctx context.Context, d Draft) (bool, error) {
+	return OtherReplyOut(ctx, s.pool, d.MessageID, d.ID)
+}
+
+// DraftCheckWait is how long a draft awaits its plugin's check before it
+// LAPSES (LapseDraftCheck): it then becomes an ordinary pending draft the
+// owner may approve, and the owner is asked, told the plugin did not check
+// it — so a plugin that stops checking never leaves a reply to expire unseen.
+const DraftCheckWait = time.Hour
+
+// DueDraftCheck is a draft whose check is past DraftCheckWait, and whose.
+type DueDraftCheck struct{ ID, OwnerID int64 }
+
+// DraftChecksDue is EVERY owner's drafts awaiting a check past
+// DraftCheckWait (system scope; ids and owners only): each is then lapsed AS
+// ITS OWNER (LapseDraftCheck), by internal/api's attention sweep.
+func (s *PGStore) DraftChecksDue(ctx context.Context) ([]DueDraftCheck, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT id, owner_id FROM plugin_reply_drafts
+		WHERE status = 'pending' AND check_state = 'awaiting' AND expires_at > now()
+		  AND check_due_at <= now() ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DueDraftCheck, error) {
+		var d DueDraftCheck
+		err := r.Scan(&d.ID, &d.OwnerID)
+		return d, err
+	})
+}
+
+// LapseDraftCheck ends draft id's wait for its plugin's check when it is still
+// awaiting one past DraftCheckWait: check_state becomes CheckLapsed, and the
+// draft is an ordinary pending draft the owner may approve. lapsed is false —
+// and nothing changes — otherwise (a verdict came, it left pending, it is not
+// yet due). A verdict after a lapse is ErrDraftState (CheckDraft): the owner
+// decides it now.
+func (s *PGStore) LapseDraftCheck(ctx context.Context, id int64) (Draft, bool, error) {
+	var d Draft
+	lapsed := false
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockedDraft(ctx, tx, id)
+		if err != nil && !errors.Is(err, ErrReplyInFlight) {
+			return err
+		}
+		d = cur
+		var due bool
+		if err := tx.QueryRow(ctx, `SELECT coalesce(check_due_at <= now(), false) AND expires_at > now()
+			FROM plugin_reply_drafts WHERE id = $1`, id).Scan(&due); err != nil {
+			return err
+		}
+		if !cur.AwaitingCheck() || !due {
+			return nil
+		}
+		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET check_state = 'lapsed', checked_at = now()
+			WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
+			return err
+		}
+		lapsed = true
+		return audit(ctx, tx, "plugin.draft.check_lapsed", DraftObject(id), map[string]any{
+			"why": "the plugin did not check it within " + DraftCheckWait.String()})
+	})
+	return d, lapsed, err
+}
+
 // refuseRouteDraftTx is the route half of a refused draft d (FinishDraft's
 // "failed", CheckDraft's "refused"), in the caller's transaction, which holds
 // d's message and then d (the lock order every draft write takes; the route
@@ -894,6 +989,16 @@ func refuseRouteDraftTx(ctx context.Context, tx pgx.Tx, d Draft, detail string) 
 	}
 	if cur.DraftID == nil || *cur.DraftID != d.ID || (cur.State != RouteRelayed && cur.State != RouteFallback) {
 		return nil
+	}
+	// 🔴 ANOTHER REPLY TO THE MESSAGE WENT OUT, OR IS ON ITS WAY: the sender
+	// has (or is getting) an answer, so this refusal is recorded on the draft
+	// only. The route is left as it is — no send_failed, no hand-back — or a
+	// redraft would tell the session "the sender has no answer yet" and its new
+	// reply could reach the sender as a second one (an auto-approved relay).
+	// The case: this draft's lease lapsed (unconfirmed), another was sent, and
+	// this one's failure arrived late.
+	if out, err := OtherReplyOut(ctx, tx, d.MessageID, d.ID); err != nil || out {
+		return err
 	}
 	var before int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM session_routes WHERE plugin_message_id = $1 AND state = 'send_failed'`,
