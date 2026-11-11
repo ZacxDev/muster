@@ -500,16 +500,21 @@ func mdTableStartsAt(lines []string, i int) bool {
 	return strings.Contains(lines[i], "|") && mdIsTableSep(lines[i+1])
 }
 
-// MarkdownHTML is markdownHTML for another package: a shareable page's
-// markdown block (internal/pages renders it inside the page's sandboxed
-// document). Every author character is escaped; only the renderer's own tags
-// are emitted.
-func MarkdownHTML(src string) string { return markdownHTML(src) }
+// MarkdownHTML is the renderer for a DOCUMENT rather than a chat bubble: a
+// shareable page's markdown block (internal/pages draws it inside the page's
+// sandboxed document, which loads no app.css). The one difference from
+// markdownHTML is that an ATX heading is a real <h1>…<h6>, not a styled div.
+// Every author character is escaped; only the renderer's own tags are emitted.
+func MarkdownHTML(src string) string { return markdownRender(src, true) }
 
 // markdownHTML is the pure string transform (testable without a DOM). The output
 // contains ONLY tags this function emits; all author text passed through
 // mdEscape first.
-func markdownHTML(src string) string {
+func markdownHTML(src string) string { return markdownRender(src, false) }
+
+// markdownRender is markdownHTML, with headings drawn as <h1>…<h6> when
+// docHeadings is set (MarkdownHTML).
+func markdownRender(src string, docHeadings bool) string {
 	// Normalize newlines so \r\n / \r split cleanly.
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	src = strings.ReplaceAll(src, "\r", "\n")
@@ -558,6 +563,12 @@ func markdownHTML(src string) string {
 		}
 
 		// Heading.
+		if m := mdHeadingRe.FindStringSubmatch(line); m != nil && docHeadings {
+			tag := "h" + strconv.Itoa(len(m[1]))
+			out.WriteString("<" + tag + ">" + mdInline(mdEscape(m[2])) + "</" + tag + ">")
+			i++
+			continue
+		}
 		if m := mdHeadingRe.FindStringSubmatch(line); m != nil {
 			size := "text-sm"
 			if len(m[1]) <= 2 {

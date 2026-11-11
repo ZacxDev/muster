@@ -234,7 +234,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<ToolRe
 // The page's own script: a custom submit, and the two probes.
 const CUSTOM_HTML = `<div id="custom">
 <button id="cj" type="button">Send my pick</button>
-<p id="cj-out"></p><p id="probe-cookie"></p><p id="probe-fetch"></p>
+<p id="cj-out"></p><p id="probe-cookie"></p><p id="probe-fetch"></p><p id="probe-nocors"></p>
 </div>
 <script>
 (function(){
@@ -244,6 +244,12 @@ const CUSTOM_HTML = `<div id="custom">
   try {
     fetch('/pages',{credentials:'include',redirect:'manual'}).then(function(r){ f.textContent='status:'+r.status; },function(e){ f.textContent='blocked:'+e.name; });
   } catch(e) { f.textContent='blocked:'+e.name; }
+  // A no-cors request needs no CORS answer, so only the page's connect-src
+  // can refuse it: this probe sees the CSP layer on its own.
+  var n=document.getElementById('probe-nocors');
+  try {
+    fetch('/health',{mode:'no-cors'}).then(function(r){ n.textContent='status:'+r.status; },function(e){ n.textContent='blocked:'+e.name; });
+  } catch(e) { n.textContent='blocked:'+e.name; }
   document.getElementById('cj').addEventListener('click',function(){
     muster.submit({picked:'May 8',from:'custom script'}).then(function(r){ document.getElementById('cj-out').textContent='saved:'+r.id; },
       function(e){ document.getElementById('cj-out').textContent='failed:'+e.message; });
@@ -277,7 +283,14 @@ const probe = (page: Page) =>
     } catch (e) {
       fetched = 'blocked:' + (e as Error).name;
     }
-    return { cookie, fetched };
+    let nocors = '';
+    try {
+      const r = await fetch('/health', { mode: 'no-cors' });
+      nocors = 'status:' + r.status;
+    } catch (e) {
+      nocors = 'blocked:' + (e as Error).name;
+    }
+    return { cookie, fetched, nocors };
   });
 
 test('an agent publishes a page, the owner approves its link, a stranger answers it, and the agent reads the answers', async ({ page, browser }) => {
@@ -307,8 +320,9 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await expect(card).toContainText('asks to share your page');
   await expect(card).toContainText(`/pages/${pageID}/preview`);
   await Promise.all([page.waitForURL(origin + '/attention'), card.getByRole('button', { name: 'Approve link', exact: true }).click()]);
-  // The share request reached the owner's phone path too (the router's fan-out).
-  await expect.poll(() => notified.some((n) => n.tag === `attention-ask-${askID}`), 'the share request was notified').toBe(true);
+  // (Its push to the owner's phone is muster's own Web Push, which the
+  // router never carries — goNotify skips attention events there. The Go
+  // test TestAPageFromCreationToAStrangersResponse asserts that push.)
 
   const got = await call('page_get', { page_id: pageID });
   const url = ((got.body.links as { url?: string }[])[0] ?? {}).url ?? '';
@@ -369,14 +383,16 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   const opFrame = op.frameLocator('iframe#page');
   await expect(opFrame.locator('#probe-cookie')).toHaveText('threw:SecurityError');
   await expect(opFrame.locator('#probe-fetch')).toHaveText(/^blocked:TypeError$/);
+  await expect(opFrame.locator('#probe-nocors')).toHaveText(/^blocked:TypeError$/);
   // …and opened DIRECTLY (no shell, no frame attribute): the header alone.
   await op.goto(url + '/content');
   await expect(op.locator('#probe-cookie')).toHaveText('threw:SecurityError');
   await expect(op.locator('#probe-fetch')).toHaveText(/^blocked:TypeError$/);
+  await expect(op.locator('#probe-nocors')).toHaveText(/^blocked:TypeError$/);
   // The positive control: the SAME probe at muster's own top level, same
   // context, reads cookies without throwing and is answered 200.
   await op.goto(origin + '/pages');
-  expect(await probe(op)).toEqual({ cookie: expect.stringMatching(/^read:\d+$/), fetched: 'status:200' });
+  expect(await probe(op)).toEqual({ cookie: expect.stringMatching(/^read:\d+$/), fetched: 'status:200', nocors: 'status:200' });
   await op.close();
 
   // 7. The owner's Pages screen: the responses and the file to download.

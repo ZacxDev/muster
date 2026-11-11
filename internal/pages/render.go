@@ -26,7 +26,10 @@ import (
 //
 // No allow-top-navigation, allow-popups, allow-modals or allow-downloads: page
 // script cannot move the viewer's tab or open a window. frame-ancestors 'self'
-// lets only muster's shell frame it.
+// lets only muster's shell frame it: 'self' is the origin of the response's
+// URL, not the sandboxed document's opaque one, so the shell on muster's own
+// origin may frame it (measured in Chromium by e2e/tests/pages.spec.ts, whose
+// stranger reads the page through the shell's frame).
 //
 // TestTheContentHeadersAreExactlyTheSandbox (and the api route tests) assert
 // the WHOLE value of each, so a weakened policy is a red test, not a review
