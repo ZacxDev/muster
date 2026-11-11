@@ -1363,8 +1363,10 @@ is gone **only** when it is clean and its branch has no commit the remote lacks;
 anything else stays, logged.
 
 **How a spawned agent says it finished.** A Claude Code agent calls
-`agent_report_done` on the mirror MCP. An opencode agent has no muster tool, so
-the host reads it instead: for each idle window carrying `@muster-dispatch` and
+`agent_report_done` on the mirror MCP. An opencode agent is not offered it (its
+muster tools are the attention and task tools only:
+[attention.md](attention.md#mirrored-opencode-sessions)), so the host reads it
+instead: for each idle window carrying `@muster-dispatch` and
 running a launcher-bound opencode session, it reads that session's final reply
 from the opencode server (once per change of the session) and sends its last
 three lines on an `outcomes` message. muster records **done** only when the

@@ -184,7 +184,11 @@ func TestAHostActsOnlyAsItsOwnSessions(t *testing.T) {
 			t.Errorf("%s: %d %s", name, code, body)
 			continue
 		}
-		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, "lists no window running Claude session") {
+		// The PROPERTY, not the sentence: a tool error (the tool did not run —
+		// nothing is asked, checked below) that names the header a Claude Code
+		// caller is bound by. A malformed or missing id is refused before any
+		// listing is read; an id no window shows, after it.
+		if text, isErr := toolText(t, r); !isErr || !strings.Contains(text, mirrorSessionHeader) {
 			t.Errorf("%s: %s", name, text)
 		}
 		for _, m := range []string{`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`} {

@@ -147,6 +147,11 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirror/hub.go Hub.Hosts ×2",
 		"internal/mirror/hub.go hostConn.target ×1",
 		"internal/mirror/hub.go hostConn.targetRuntime ×1",
+		// An MCP caller that is an opencode session is named by its opencode
+		// session's key, and only an opencode window runs it
+		// (mcpcaller.go, the mirrored sessions' MCP door's one window rule).
+		"internal/mirror/mcpcaller.go Window.RunsMCPCaller ×1",
+		"internal/mirror/mcpcaller.go openCodeSpec ×1",
 		"internal/mirror/opencode_answer.go Hub.AnswerOpenCodeAsk ×2",
 		"internal/mirror/opencode_answer.go Hub.relayOpenCodeAnswer ×1",
 		// An opencode question's whole form (opencode_form.go): opencode's
@@ -163,10 +168,10 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		// opencode both report how a turn ended.)
 		"internal/mirror/wire.go (declarations) ×1",
 		"internal/mirror/wire.go Window.AgentRuntime ×1",
-		// A preview tool call from opencode names its session in opencode's
-		// own _meta key, so only an opencode pane's session can match it
-		// (mcpproxy.go, "AN OPENCODE CALLER OF THE PREVIEW TOOLS").
-		"internal/mirrorhost/mcpproxy.go MCPProxy.openCodeWindow ×1",
+		// A tool call from opencode — to the preview tools or muster's — names
+		// its session in opencode's own _meta key, so only an opencode pane's
+		// session can match it (mcpproxy.go, "AN OPENCODE CALLER").
+		"internal/mirrorhost/mcpproxy.go MCPProxy.openCodeBinding ×1",
 		"internal/mirrorhost/opencode.go ResolveOpenCodePaneStarted ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
 		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",

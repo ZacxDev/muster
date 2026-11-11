@@ -80,10 +80,52 @@ import (
 // With session routing on, plugin_messages_list and plugin_message_route
 // (plugin_message_route_tools.go) widen what an mmt_ reaches: docs/auth.md
 // ("Mirror tokens and session routing").
+//
+// 🔴 A MIRRORED OPENCODE SESSION GETS A NARROWER SET (openCodeMirrorTools;
+// docs/attention.md, "Mirrored opencode sessions"). Its host forwards its call
+// with the KEY of the opencode session it bound the call to
+// (X-Muster-Agent-Session, "opencode:<id>") and NO Claude session, and marks
+// all its requests X-Muster-Client: opencode. The call is believed only when
+// that host lists exactly ONE window showing that session in its active pane
+// AND sends to it (mirror.Window.RunsMCPCaller). Such a caller is offered the
+// attention tools and the task tools, nothing else: every operator power
+// (attention_answer, the decide tools, agent_destroy, chief_restart, the
+// dispatch verbs, plugin routing) and every tool built on a Claude Code
+// session (chief_ask, route_reply, agent_report_done) is refused by name: its
+// list is that set alone (serveMCP runs a listed name only), and at the call
+// whatever header carried it — by the RESOLVED caller (toolCaller.
+// openCodeSession), which the operator rules (mirroredSession) refuse too. The
+// Claude header names a Claude session id only, never an opencode key.
 // ---------------------------------------------------------------------------
 
 // mirrorSessionHeader carries the calling Claude Code session's id.
 const mirrorSessionHeader = "X-Muster-Claude-Session"
+
+// mirrorAgentSessionHeader carries, INSTEAD, the calling opencode session's
+// key (mirror.OpenCodeCallerKey); mirrorClientHeader: mirrorClientOpenCode
+// marks every request of an opencode caller (mirrorhost's MCPClientHeader).
+const (
+	mirrorAgentSessionHeader = "X-Muster-Agent-Session"
+	mirrorClientHeader       = "X-Muster-Client"
+	mirrorClientOpenCode     = "opencode"
+)
+
+// openCodeMirrorTools is the tools the door offers a mirrored opencode
+// session, by name: the attention tools — its answer is left for its
+// attention_wait, as every mirrored session's is (never typed into its pane)
+// — and the task tools, over the tasks that session created and its own host
+// dispatch's task (taskScopeOf). muster_help is serveMCP's own.
+var openCodeMirrorTools = map[string]bool{
+	attentionAskTool: true, attentionWaitTool: true, attentionCancelTool: true,
+	tasksListTool: true, taskGetTool: true, taskCommentTool: true, taskSetStatusTool: true,
+}
+
+// openCodeToolRefusal is the door's answer — a sentence, for a tool error —
+// to an opencode session naming a tool of the door it is not offered.
+func openCodeToolRefusal(name string) string {
+	return name + " is not offered to a mirrored opencode session: it gets attention_ask, attention_wait, attention_cancel and the task tools; " +
+		"use one of your owner's Claude Code sessions for it"
+}
 
 // mirrorHostCtxKey carries the authenticated host token through the request.
 type mirrorHostCtxKey struct{}
@@ -166,27 +208,31 @@ func mirrorMCPFailKey(addr, tok string) string {
 	return addr + " " + hex.EncodeToString(sum[:16])
 }
 
-// mirrorSessionOf is the window of the principal's host `host` running Claude
-// session sid now — in its active pane or in another pane of it (a split) —
-// and whether there is one: the host must be online and list it.
+// mirrorSessionOf is the window of the principal's host `host` running the
+// mirrored session sid names now (mirror.Window.RunsMCPCaller: a Claude
+// session in its active pane or another pane of it — a split — or an opencode
+// caller's key in its active pane, sent to), and whether there is one: the
+// host must be online and list it. 🔴 An opencode key two windows show is
+// none: which one called is unknown.
 func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.SessionView, bool) {
-	if s.ext.Mirror == nil || !mirror.ValidClaudeSession(sid) {
+	if s.ext.Mirror == nil || !mirror.ValidMCPCaller(sid) {
 		return mirror.SessionView{}, false
 	}
 	hosts := s.ext.Mirror.Hosts(ctx)
 	var window string
-	found := false
+	found := 0
 	for _, h := range hosts {
 		if h.Host != host || !h.Online {
 			continue
 		}
 		for _, w := range h.Windows {
-			if (w.Claude && w.ClaudeSession == sid) || slices.Contains(w.OtherClaude, sid) {
-				window, found = h.Host+"\x00"+w.Session+"\x00"+w.ID, true
+			if w.RunsMCPCaller(sid) {
+				window = h.Host + "\x00" + w.Session + "\x00" + w.ID
+				found++
 			}
 		}
 	}
-	if !found {
+	if found == 0 || (found > 1 && mirror.OpenCodeMCPCaller(sid)) {
 		return mirror.SessionView{}, false
 	}
 	for _, e := range mirror.Ordered(hosts) {
@@ -280,7 +326,34 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
 	disabled, off := s.mcpFeatureHooks(mirrorDoor)
 	sid := strings.TrimSpace(r.Header.Get(mirrorSessionHeader))
+	// An opencode caller (its host marks it, and names its session by KEY):
+	// the narrower set, refused by name at the call (openCodeMirrorTools).
+	agentKey := strings.TrimSpace(r.Header.Get(mirrorAgentSessionHeader))
+	openCode := agentKey != "" || strings.EqualFold(strings.TrimSpace(r.Header.Get(mirrorClientHeader)), mirrorClientOpenCode)
+	tools := s.mirrorTools
 	instructions := "muster's tools for a mirrored Claude Code session."
+	if openCode {
+		tools = func() []agents.ToolDef {
+			var out []agents.ToolDef
+			for _, d := range s.mirrorTools() {
+				if openCodeMirrorTools[d.Name] {
+					out = append(out, d)
+				}
+			}
+			return out
+		}
+		all := disabled
+		disabled = func(name string) string {
+			if slices.ContainsFunc(s.mirrorTools(), func(d agents.ToolDef) bool { return d.Name == name }) {
+				return openCodeToolRefusal(name)
+			}
+			if all == nil {
+				return ""
+			}
+			return all(name)
+		}
+		instructions = "muster's tools for a mirrored opencode session."
+	}
 	if s.attentionToolsOn() {
 		instructions += " " + mirrorAttentionInstruction
 	}
@@ -292,14 +365,42 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	// A call is bound to a window this host lists running that session — or
 	// refused as a TOOL error the model sees.
 	s.serveMCP(w, r, mcpSurface{
-		tools: s.mirrorTools,
+		tools: tools,
 		call: func(name, args string) string {
-			e, ok := s.awaitMirrorSession(r.Context(), t.Host, sid)
-			if !ok {
-				return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
-					t.Host, sid, mirrorSessionHeader)
+			var c toolCaller
+			if openCode {
+				// 🔴 FAILS CLOSED: an opencode caller is bound by its key
+				// alone, never beside or as a Claude session.
+				if sid != "" || !mirror.OpenCodeMCPCaller(agentKey) {
+					return toolErr("an opencode caller is bound by its opencode session (its MCP endpoint sends %s: opencode:<id>), never by a Claude session", mirrorAgentSessionHeader)
+				}
+				e, ok := s.awaitMirrorSession(r.Context(), t.Host, agentKey)
+				if !ok {
+					return toolErr("host %s lists no one window running opencode session %q that it sends to now; a host acts only as its own sessions",
+						t.Host, mirror.SessionIDOf(agentKey))
+				}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: agentKey, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
+			} else {
+				// 🔴 THE CLAUDE HEADER NAMES A CLAUDE SESSION ONLY. mirrorSessionOf
+				// also binds an opencode caller's key, so without this an
+				// opencode key sent here bound to its window as the Claude Code
+				// caller this branch serves.
+				if !mirror.ValidClaudeSession(sid) {
+					return toolErr("%q is not a Claude session id: a Claude Code caller is named by %s, an opencode one by %s with the marker", sid, mirrorSessionHeader, mirrorAgentSessionHeader)
+				}
+				e, ok := s.awaitMirrorSession(r.Context(), t.Host, sid)
+				if !ok {
+					return toolErr("host %s lists no window running Claude session %q now; a host acts only as its own sessions (its MCP endpoint sends %s)",
+						t.Host, sid, mirrorSessionHeader)
+				}
+				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
 			}
-			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
+			// 🔴 BY THE RESOLVED CALLER, NOT THE HEADER THAT CARRIED IT: an
+			// opencode caller runs only openCodeMirrorTools, however it was
+			// bound (toolCaller.openCodeSession, the one predicate).
+			if c.openCodeSession() && !openCodeMirrorTools[name] {
+				return toolErr("%s", openCodeToolRefusal(name))
+			}
 			// chief_ask is this door's alone, like route_reply below (listed only
 			// with chiefAskOn, and serveMCP refuses an unlisted name).
 			if name == chiefAskTool {
@@ -329,7 +430,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// agent_report_done here is the host-dispatch form (listed only with
 			// the host-dispatch store): bound to THIS session's own dispatch.
 			if name == agentReportDoneTool {
-				return s.toolHostReportDone(r.Context(), t.Host, sid, e.Window, args)
+				return s.toolHostReportDone(r.Context(), t.Host, c.asker.MirrorSession, c.mirrorWindow, args)
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text
@@ -352,7 +453,7 @@ var mirrorBindWait = 3 * time.Second
 // mirrorBindWait (or the request) ends. A malformed or empty session id is
 // refused at once: no listing can ever show it.
 func (s *Server) awaitMirrorSession(ctx context.Context, host, sid string) (mirror.SessionView, bool) {
-	if !mirror.ValidClaudeSession(sid) {
+	if !mirror.ValidMCPCaller(sid) {
 		return mirror.SessionView{}, false
 	}
 	deadline := time.Now().Add(mirrorBindWait)

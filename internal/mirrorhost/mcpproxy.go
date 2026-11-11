@@ -57,6 +57,10 @@ const (
 	MCPPaneHeader    = "X-Muster-Pane"
 	MCPTmuxHeader    = "X-Muster-Tmux"
 	MCPSessionHeader = "X-Muster-Claude-Session"
+	// MCPAgentSessionHeader is what the proxy tells muster INSTEAD of
+	// MCPSessionHeader for an opencode caller: the KEY of the session the
+	// call was bound to (mirror.OpenCodeCallerKey, "opencode:<id>").
+	MCPAgentSessionHeader = "X-Muster-Agent-Session"
 	// MCPPath is muster's mirrored-sessions MCP door.
 	MCPPath = "/mirror/mcp"
 	// PreviewMCPPath is the endpoint's second MCP server: the preview tools,
@@ -70,37 +74,44 @@ const (
 	MCPClientOpenCode = "opencode"
 )
 
-// AN OPENCODE CALLER OF THE PREVIEW TOOLS (docs/design/previews.md, "opencode
-// callers"). opencode resolves a remote MCP server's headers ONCE, when its
-// config loads, inside the one background service every opencode TUI on the
-// host is a client of — so X-Muster-Pane / X-Muster-Tmux, if it sent them,
-// would name the SERVICE's pane for every session. What opencode does send
-// per session is the calling session's id, in every tools/call's
-// params._meta["ai.opencode/sessionID"]. So its MCP entry sends the static
-// header X-Muster-Client: opencode, and a /preview-mcp request carrying it is
-// resolved by that session id instead of by pane (CallerWindow):
+// AN OPENCODE CALLER (docs/attention.md, "Mirrored opencode sessions";
+// docs/design/previews.md, "opencode callers"). opencode resolves a remote MCP
+// server's headers ONCE, when its config loads, inside the one background
+// service every opencode TUI on the host is a client of — so X-Muster-Pane /
+// X-Muster-Tmux, if it sent them, would name the SERVICE's pane for every
+// session. What opencode does send per session is the calling session's id,
+// in every tools/call's params._meta["ai.opencode/sessionID"]. So its MCP
+// entries send the static header X-Muster-Client: opencode, and a request
+// carrying it — on /mcp and on /preview-mcp alike — is resolved by that
+// session id instead of by pane:
 //
 //   - the guard's tmux-server check is not applied to it (the service runs
 //     outside any pane); the secret, Origin and POST checks are, unchanged.
-//     /mcp — muster's own tools — never takes this path: it needs a Claude
-//     Code session (session()), and an opencode-marked request there is
-//     checked exactly as before;
-//   - initialize and tools/list carry no session id and need none: they are
-//     answered as for any caller (the instructions and the three tools);
-//   - a tools/call is bound to the ONE window of this host whose active pane
-//     runs an opencode TUI bound — by its launcher record, or a verified title
+//     Any other path is 404, marked or not;
+//   - initialize and tools/list carry no session id and need none: /preview-mcp
+//     answers them as for any caller, and /mcp forwards them marked as
+//     opencode's (MCPClientHeader), so muster answers with the tools and the
+//     instructions it offers an opencode session — never more than a Claude
+//     Code session's;
+//   - a tools/call is bound by ONE function both servers call
+//     (openCodeBinding) to the ONE window of this host whose active pane runs
+//     an opencode TUI bound — by its launcher record, or a verified title
 //     binding — to that session, or to the nearest ancestor of it (a
 //     subagent's child session calls with its own id). No session id, an id
 //     no such window shows, or two windows showing it: no window, and the
-//     call fails (no_window). Never the service's pane, never a guess.
+//     call fails — /preview-mcp's no_window, /mcp's tool error, which is not
+//     forwarded. Never the service's pane, never a guess;
+//   - /mcp forwards a bound call with that window's session KEY
+//     (MCPAgentSessionHeader, "opencode:<id>") and NO Claude session, and
+//     muster checks the same binding again (mirror.Window.RunsMCPCaller);
 //   - pane headers on an opencode-marked request are IGNORED: they can only
 //     be the service's own, which is exactly the wrong answer.
 //
 // 🔴 A SELECTOR, NOT A CREDENTIAL. The session id is the caller's own claim.
 // It is believed only among THIS host's mirrored windows, behind the same
-// per-host secret, so a forged id can at most bind a preview to ANOTHER of
-// the same owner's windows on this host — the reach a Claude Code caller
-// already has by naming another pane. An id no window shows binds nothing.
+// per-host secret, so a forged id can at most act as ANOTHER of the same
+// owner's sessions on this host — the reach a Claude Code caller already has
+// by naming another pane. An id no window shows binds nothing.
 
 // MCPProxy is the local endpoint's handler.
 type MCPProxy struct {
@@ -174,14 +185,15 @@ func OpenCodeCaller(r *http.Request) bool {
 // itself names (opencode's params._meta["ai.opencode/sessionID"]; "" none).
 //
 // An opencode-marked request (OpenCodeCaller) is resolved by agentSession
-// alone (openCodeWindow). Any other is resolved by its pane — its
+// alone (openCodeBinding). Any other is resolved by its pane — its
 // X-Muster-Pane, ANY pane of the window — and agentSession is not read:
 // unlike session it needs no Claude Code session in the pane, as a preview
 // belongs to the window, whatever runs in it. The guard has already checked
 // such a caller's tmux server (checkServer: pane ids are per server).
 func (p *MCPProxy) CallerWindow(r *http.Request, agentSession string) (string, error) {
 	if OpenCodeCaller(r) {
-		return p.openCodeWindow(r.Context(), agentSession)
+		win, _, err := p.openCodeBinding(r.Context(), agentSession)
+		return win, err
 	}
 	pane := strings.TrimSpace(r.Header.Get(MCPPaneHeader))
 	if pane == "" {
@@ -217,22 +229,25 @@ func windowOfPane(ws []WindowInfo, pane string) (string, bool) {
 // window is looked for.
 const maxOpenCodeAncestors = 8
 
-// openCodeWindow is the window of this host showing opencode session sid —
-// or, when none shows it, the nearest of its ancestors that one shows
-// (OpenCodeAncestors) — through a binding muster sends on (boundOpenCode).
+// openCodeBinding is THE ONE binding of an opencode caller, for both servers
+// (CallerWindow for the preview tools, serveMuster for muster's): the window
+// of this host showing opencode session sid — or, when none shows it, the
+// nearest of its ancestors that one shows (OpenCodeAncestors) — through a
+// binding muster sends on (boundOpenCode), and the session that window shows
+// (sid itself, or that ancestor).
 // 🔴 FAILS CLOSED: no id, an id no window shows, or a session two windows
 // show is an error, never a fallback.
-func (p *MCPProxy) openCodeWindow(ctx context.Context, sid string) (string, error) {
+func (p *MCPProxy) openCodeBinding(ctx context.Context, sid string) (window, session string, err error) {
 	sid = strings.TrimSpace(sid)
 	if sid == "" {
-		return "", errors.New(`this opencode call names no session (params._meta["ai.opencode/sessionID"]), so its window is unknown`)
+		return "", "", errors.New(`this opencode call names no session (params._meta["ai.opencode/sessionID"]), so its window is unknown`)
 	}
 	if p.Windows == nil {
-		return "", errors.New("this host cannot resolve an opencode session")
+		return "", "", errors.New("this host cannot resolve an opencode session")
 	}
 	ws, err := p.Windows.Windows(ctx)
 	if err != nil {
-		return "", fmt.Errorf("list windows: %w", err)
+		return "", "", fmt.Errorf("list windows: %w", err)
 	}
 	ids := []string{sid}
 	if p.OpenCodeAncestors != nil {
@@ -260,15 +275,15 @@ func (p *MCPProxy) openCodeWindow(ctx context.Context, sid string) (string, erro
 		switch len(found) {
 		case 0:
 		case 1:
-			return found[0], nil
+			return found[0], id, nil
 		default:
-			return "", fmt.Errorf("opencode session %s is shown in %d windows (%s), so which one called is unknown", strconv.Quote(id), len(found), strings.Join(found, ", "))
+			return "", "", fmt.Errorf("opencode session %s is shown in %d windows (%s), so which one called is unknown", strconv.Quote(id), len(found), strings.Join(found, ", "))
 		}
 	}
 	if unbound != "" {
-		return "", fmt.Errorf("window %s shows opencode session %s, but its binding is not verified (muster does not send to it either)", unbound, strconv.Quote(sid))
+		return "", "", fmt.Errorf("window %s shows opencode session %s, but its binding is not verified (muster does not send to it either)", unbound, strconv.Quote(sid))
 	}
-	return "", fmt.Errorf("opencode session %s is in no window this host mirrors", strconv.Quote(sid))
+	return "", "", fmt.Errorf("opencode session %s is in no window this host mirrors", strconv.Quote(sid))
 }
 
 // boundOpenCode reports whether an opencode pane's session is one muster
@@ -524,14 +539,14 @@ func derefClaude(c *ClaudePane) ClaudePane {
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/mcp":
-		p.guarded(w, r, "muster", false, p.serveMuster)
+		p.guarded(w, r, "muster", p.serveMuster)
 	case PreviewMCPPath:
 		h := p.previewHandler()
 		if h == nil {
 			http.NotFound(w, r)
 			return
 		}
-		p.guarded(w, r, "muster-preview", true, h.ServeHTTP)
+		p.guarded(w, r, "muster-preview", h.ServeHTTP)
 	default:
 		http.NotFound(w, r)
 	}
@@ -543,11 +558,10 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // from another tmux server is answered as a healthy server with no tools,
 // named name (answerOutsider). Only then is serve called.
 //
-// opencodeOK (the preview server only): an opencode-marked request
-// (OpenCodeCaller) skips the tmux-server check — opencode's service runs
-// outside any pane, and its calls are bound by session id instead
-// (openCodeWindow), which only finds this host's own windows.
-func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, opencodeOK bool, serve http.HandlerFunc) {
+// An opencode-marked request (OpenCodeCaller) skips the tmux-server check —
+// opencode's service runs outside any pane, and its calls are bound by session
+// id instead (openCodeBinding), which only finds this host's own windows.
+func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, serve http.HandlerFunc) {
 	if r.Header.Get("Origin") != "" {
 		mcpRefuse(w, http.StatusForbidden, "cross-origin requests are refused")
 		return
@@ -563,7 +577,7 @@ func (p *MCPProxy) guarded(w http.ResponseWriter, r *http.Request, name string, 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !(opencodeOK && OpenCodeCaller(r)) {
+	if !OpenCodeCaller(r) {
 		if err := p.checkServer(r.Context(), r); err != nil {
 			p.answerOutsider(w, r, name, err)
 			return
@@ -590,15 +604,32 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	// listing can show it — and never retries a connection that failed then.
 	// They are forwarded with no session; muster binds the call. Anything that
 	// does not parse as one request is forwarded unbound too: muster refuses
-	// it, and an unbound call is refused there.
+	// it, and an unbound call is refused there. The same holds for an opencode
+	// caller, whose call is bound by its session instead of its pane.
 	var head struct {
 		Method string          `json:"method"`
 		ID     json.RawMessage `json:"id"`
+		Params json.RawMessage `json:"params"`
 	}
 	_ = json.Unmarshal(body, &head)
-	sid := ""
+	// An opencode caller (OpenCodeCaller) is named by the session its call
+	// carries, bound by openCodeBinding — its pane headers are never read —
+	// and is forwarded with that session's KEY instead of a Claude session.
+	openCode := OpenCodeCaller(r)
+	sid, agentKey := "", ""
 	if head.Method == "tools/call" {
-		if sid, err = p.session(r.Context(), r); err != nil {
+		if openCode {
+			_, bound, berr := p.openCodeBinding(r.Context(), mirror.OpenCodeCallSession(head.Params))
+			if berr == nil {
+				if agentKey = mirror.OpenCodeCallerKey(bound); agentKey == "" {
+					berr = fmt.Errorf("opencode session %s is not a session id muster accepts", strconv.Quote(bound))
+				}
+			}
+			if berr != nil {
+				mcpToolError(w, head.ID, berr.Error())
+				return
+			}
+		} else if sid, err = p.session(r.Context(), r); err != nil {
 			mcpToolError(w, head.ID, err.Error())
 			return
 		}
@@ -618,6 +649,14 @@ func (p *MCPProxy) serveMuster(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+p.Token)
 	if sid != "" {
 		req.Header.Set(MCPSessionHeader, sid)
+	}
+	if openCode {
+		// Every request of an opencode caller is marked so upstream too: muster
+		// lists, instructs and binds it as an opencode session.
+		req.Header.Set(MCPClientHeader, MCPClientOpenCode)
+		if agentKey != "" {
+			req.Header.Set(MCPAgentSessionHeader, agentKey)
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")

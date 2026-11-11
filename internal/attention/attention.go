@@ -202,8 +202,9 @@ const (
 // SystemAskerLabel is the label of an ask muster itself raised.
 const SystemAskerLabel = "muster"
 
-// Asker is who raised an ask: a dispatched agent (AgentID), a mirrored Claude
-// Code session (MirrorHost + MirrorSession, the Claude session id), or muster
+// Asker is who raised an ask: a dispatched agent (AgentID), a mirrored
+// session (MirrorHost + MirrorSession: a Claude Code session id, or a mirrored
+// opencode session's key, "opencode:<id>" — mirror.ValidMCPCaller), or muster
 // itself (System: an ask nobody waits on, migration 0028). Exactly one is set.
 type Asker struct {
 	AgentID       int64
@@ -226,8 +227,8 @@ func (a Asker) Valid() error {
 		if err := mirror.ValidHost(a.MirrorHost); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
-		if !mirror.ValidClaudeSession(a.MirrorSession) {
-			return fmt.Errorf("%w: not a Claude session id", ErrInvalid)
+		if !mirror.ValidMCPCaller(a.MirrorSession) {
+			return fmt.Errorf("%w: not a mirrored session's id", ErrInvalid)
 		}
 	default:
 		return fmt.Errorf("%w: an ask needs an asker", ErrInvalid)

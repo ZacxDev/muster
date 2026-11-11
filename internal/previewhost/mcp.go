@@ -107,11 +107,11 @@ const (
 // ProbeWait bounds preview_open's probe: a loopback dial and HEAD /, answered.
 const ProbeWait = 5 * time.Second
 
-// OpenCodeSessionMeta is the key opencode puts the calling session's id
-// under in every tools/call's params._meta (packages/core/src/mcp/client.ts
-// at 6ec5682): the one per-session signal it sends. Read here and handed to
-// Caller; whether it is believed is the caller resolver's decision.
-const OpenCodeSessionMeta = "ai.opencode/sessionID"
+// OpenCodeSessionMeta is mirror.OpenCodeSessionMeta: the key opencode puts
+// the calling session's id under in every tools/call's params._meta. Read
+// (mirror.OpenCodeCallSession) and handed to Caller; whether it is believed
+// is the caller resolver's decision.
+const OpenCodeSessionMeta = mirror.OpenCodeSessionMeta
 
 // mcpMaxBody bounds one JSON-RPC message (the /mcp proxy's own bound).
 const mcpMaxBody = 64 << 10
@@ -210,10 +210,9 @@ func (s *MCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeRPC(w, req.ID, nil, -32602, "tools/call params must be {name, arguments}")
 			return
 		}
-		// A session id that is not a JSON string is none.
-		var agentSession string
-		_ = json.Unmarshal(p.Meta[OpenCodeSessionMeta], &agentSession)
-		c := call{r: r, agentSession: agentSession}
+		// A session id that is not a JSON string is none (the ONE reader of it,
+		// which muster-mirror's /mcp forwarder calls too).
+		c := call{r: r, agentSession: mirror.OpenCodeCallSession(req.Params)}
 		var (
 			res  any
 			terr *toolError
