@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -283,5 +284,49 @@ func TestReportedAtIsTwoSecondsBackOnTheSecond(t *testing.T) {
 	puts := r.hq.PoolsPuts()
 	if len(puts) != 1 || !strings.HasSuffix(string(puts[0].Raw), `"reported_at":"2000-01-03T17:24:58Z"}`) {
 		t.Fatalf("PUTs %s", puts)
+	}
+}
+
+// TestAPoolModelHQWouldRefuseIsSentAsDefault: muster accepts a model with a
+// context suffix ("opus[1m]") that HQ's officer model pattern
+// (^[A-Za-z0-9._:/-]{1,128}$) refuses — and HQ refuses the WHOLE pools PUT
+// over it. Such a pool is sent with model "" (HQ shows its default) and the
+// push is accepted; the other pool keeps its model; it is logged once per
+// officer over two ticks.
+func TestAPoolModelHQWouldRefuseIsSentAsDefault(t *testing.T) {
+	r := newPoolsRig(t)
+	o := tieredOfficer(r.hq)
+	o.Tiers.Judgement.Model = "opus[1m]"
+	p := r.reporter(t, o)
+	p.Tick(context.Background())
+	p.Tick(context.Background())
+	puts := r.hq.PoolsPuts()
+	want := `{"pools":[` +
+		`{"pool":"judgement","model":"","max_instances":2,"max_sessions_per_day":30,"sessions_today":4,"sessions_day_resets_at":"2000-01-04T00:00:00Z"},` +
+		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],` +
+		`"reported_at":"2000-01-03T17:24:58Z"}`
+	if len(puts) != 2 || string(puts[0].Raw) != want {
+		t.Fatalf("accepted %d PUTs:\n%s\nwant:\n%s", len(puts), puts, want)
+	}
+	if n := strings.Count(r.logs.String(), `"opus[1m]"`); n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, r.logs)
+	}
+}
+
+// TestTheFakeRefusesAPoolModelHQRefuses: the instrument check for the test
+// above — the fake 400s a pools body whose model HQ would refuse.
+func TestTheFakeRefusesAPoolModelHQRefuses(t *testing.T) {
+	r := newPoolsRig(t)
+	body := `{"pools":[{"pool":"","model":"opus[1m]","max_instances":1,"max_sessions_per_day":null,"sessions_today":0,` +
+		`"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],"reported_at":"2000-01-03T17:24:58Z"}`
+	req, _ := http.NewRequest(http.MethodPut, r.hq.BaseURL()+"/officers/"+poolsOfficer+"/pools", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+poolsTok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || len(r.hq.PoolsPuts()) != 0 {
+		t.Fatalf("status %d, accepted %d", resp.StatusCode, len(r.hq.PoolsPuts()))
 	}
 }

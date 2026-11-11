@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,7 +45,14 @@ type PoolReport struct {
 type PoolsReport struct {
 	Pools      []PoolReport `json:"pools"`
 	ReportedAt string       `json:"reported_at"`
+	// Dropped are the configured models sent as "" because HQ would refuse
+	// them (HQModelPattern); not on the wire.
+	Dropped []string `json:"-"`
 }
+
+// HQModelPattern is THE model id HQ takes on an officer's routes (a pool's
+// model, a usage bucket's): HQ refuses the whole request over any other.
+var HQModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // PutPools is PUT /officers/{id}/pools.
 func (c *Client) PutPools(ctx context.Context, r PoolsReport) error {
@@ -60,9 +69,16 @@ func (c *Client) PutPools(ctx context.Context, r PoolsReport) error {
 // read failure is returned: a report with a wrong sessions_today is not sent.
 func PoolsReportFor(ctx context.Context, o Officer, ledger *JudgementLedger, now time.Time) (PoolsReport, error) {
 	reset := CapResetAt(now).Format(time.RFC3339)
+	var rep PoolsReport
 	pools := []PoolReport{}
 	for _, p := range o.Pools() {
 		pr := PoolReport{Pool: p.Tier, Model: p.Model, MaxInstances: p.MaxInstances, SessionsDayResetsAt: reset}
+		if pr.Model != "" && !HQModelPattern.MatchString(pr.Model) {
+			// muster takes a model HQ does not ("opus[1m]"), and HQ refuses the
+			// WHOLE body over it: the pool is reported on HQ's default instead.
+			rep.Dropped = append(rep.Dropped, pr.Model)
+			pr.Model = ""
+		}
 		if c := p.SessionCap(); c > 0 {
 			pr.MaxSessionsPerDay = &c
 		}
@@ -73,9 +89,11 @@ func PoolsReportFor(ctx context.Context, o Officer, ledger *JudgementLedger, now
 		pr.SessionsToday = used
 		pools = append(pools, pr)
 	}
-	// reported_at is now - reportedAtLead, on the second: HQ refuses one in
-	// its future, and a small clock skew must not make it one.
-	return PoolsReport{Pools: pools, ReportedAt: now.Add(-reportedAtLead).UTC().Truncate(time.Second).Format(time.RFC3339)}, nil
+	// reported_at is now - reportedAtLead, on the second (RFC 3339 without
+	// fractions): HQ refuses one in its future, and a small clock skew must
+	// not make it one.
+	rep.Pools, rep.ReportedAt = pools, now.Add(-reportedAtLead).UTC().Format(time.RFC3339)
+	return rep, nil
 }
 
 // reportedAtLead is how far behind now a pools report dates itself.
@@ -139,6 +157,8 @@ type PoolsReporter struct {
 	// state is each officer's last outcome class ("" = pushed), so a
 	// failure is logged when it starts and once more when it ends.
 	state map[string]string
+	// dropLogged is each officer whose unsendable model was logged, once.
+	dropLogged map[string]bool
 }
 
 // NewPoolsReporter builds a reporter.
@@ -164,7 +184,7 @@ func NewPoolsReporter(cfg PoolsReporterConfig) (*PoolsReporter, error) {
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = DefaultHQTimeout
 	}
-	return &PoolsReporter{cfg: cfg, state: map[string]string{}}, nil
+	return &PoolsReporter{cfg: cfg, state: map[string]string{}, dropLogged: map[string]bool{}}, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -217,6 +237,16 @@ func (r *PoolsReporter) push(ctx context.Context, o Officer) {
 	if err != nil {
 		r.result(o, poolsLedger, poolsLedger, fmt.Sprintf("officers: %s: its pools were not pushed to HQ: the session count could not be read: %v", o.ID, err))
 		return
+	}
+	if len(rep.Dropped) > 0 {
+		r.mu.Lock()
+		first := !r.dropLogged[o.ID]
+		r.dropLogged[o.ID] = true
+		r.mu.Unlock()
+		if first {
+			r.cfg.Logger.Printf("officers: %s: model %q is not one HQ takes (%s): its pool is reported to HQ with no model (HQ's default)",
+				o.ID, strings.Join(rep.Dropped, `", "`), HQModelPattern)
+		}
 	}
 	for attempt := 0; ; attempt++ {
 		pctx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)

@@ -349,6 +349,10 @@ func (s *Server) pools(w http.ResponseWriter, officer string, raw []byte) {
 			invalid("max_instances 0-100, sessions_today >= 0, max_sessions_per_day null or 1-100")
 			return
 		}
+		if *p.Model != "" && !usageModelRe.MatchString(*p.Model) {
+			invalid("model must be empty or match ^[A-Za-z0-9._:/-]{1,128}$")
+			return
+		}
 		set = append(set, *p.Pool)
 	}
 	if seen[""] && len(body.Pools) > 1 {
@@ -536,7 +540,8 @@ func (s *Server) UsageRows() int {
 	return len(s.usageRows)
 }
 
-// usageModelRe is HQ's bucket model: a refusal of the whole push otherwise.
+// usageModelRe is HQ's model id on the usage and pools routes ("" is taken:
+// no model); any other is a refusal of the whole request.
 var usageModelRe = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // Usage route limits, as HQ states them.
@@ -613,7 +618,7 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 				return
 			}
 		}
-		if b.Model != nil && !usageModelRe.MatchString(*b.Model) {
+		if b.Model != nil && *b.Model != "" && !usageModelRe.MatchString(*b.Model) {
 			invalid("model must match ^[A-Za-z0-9._:/-]{1,128}$")
 			return
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -276,5 +277,30 @@ func TestAModelHQWouldRefuseIsDroppedNotTheRow(t *testing.T) {
 	}
 	if len(ok) != 128 {
 		t.Fatalf("fixture: the valid model is %d characters, want the 128 boundary", len(ok))
+	}
+}
+
+// TestTheFakeChecksTheUsageModelAsHQDoes: the instrument check for
+// TestAModelHQWouldRefuseIsDroppedNotTheRow — the fake 400s a bucket whose
+// model HQ refuses, and takes "model":"" as HQ does.
+func TestTheFakeChecksTheUsageModelAsHQDoes(t *testing.T) {
+	r := newRig(t)
+	put := func(model string) int {
+		body := `{"instance":"officer-review-example-web-1","pool":"","account":"acct-one","generated_at":"2000-01-03T12:20:00Z","buckets":[` +
+			`{"session":"s-1","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":1,"input_tokens":1,"output_tokens":1,"cache_read_tokens":1,` +
+			`"cache_creation_tokens":1,"model":` + model + `}]}`
+		req, _ := http.NewRequest(http.MethodPut, r.hq.BaseURL()+"/officers/"+untieredID+"/usage", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+untieredTok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for model, want := range map[string]int{`"claude model"`: 400, `"` + strings.Repeat("b", 129) + `"`: 400, `""`: 204, `"claude-model-a"`: 204} {
+		if got := put(model); got != want {
+			t.Errorf("model %.20s: %d, want %d", model, got, want)
+		}
 	}
 }

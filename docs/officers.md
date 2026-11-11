@@ -1895,8 +1895,9 @@ in the hour it began.
 `model` is ccd's, passed through (absent when ccd names none; an older ccd
 never names one). HQ refuses the WHOLE push over a model that does not match
 `^[A-Za-z0-9._:/-]{1,128}$`, so such a model is dropped and its bucket sent
-without one. ⚠ HQ refuses unknown fields, so HQ must accept `model`
-before a muster that sends it is deployed. `pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
+without one.
+
+`pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
 each bucket by (officer, instance, session, hour), replacing its counts, and
 answers 204 (400 invalid, 403 another officer's token, 404 an unknown officer
 or an HQ without the route, 413 over 256 KiB or 1000 buckets). More than 1000
@@ -2002,7 +2003,9 @@ PUT {hq_url}/officers/{id}/pools
 - `pool` is `judgement` and `routine` for a tiered officer (in that order),
   `""` for an untiered one (its only pool).
 - `model` is the pool's configured model (`""` when none is configured: the
-  CLI's default); `max_instances` its `max_instances`.
+  CLI's default; also `""`, logged once per officer, for a model HQ refuses,
+  such as one with a context suffix like `opus[1m]` — HQ's pattern is
+  `^[A-Za-z0-9._:/-]{1,128}$` and it refuses the whole body over another); `max_instances` its `max_instances`.
 - `max_sessions_per_day` is `tiers.judgement.max_sessions_per_day`, `null` for
   a pool without a cap.
 - `sessions_today` is the count the cap is enforced by — the same ledger
