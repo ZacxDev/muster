@@ -100,7 +100,8 @@
     "tests/previews.spec.ts": 30.0,
     "tests/routing-rules.spec.ts": 30.0,
     "tests/tail-clamp.spec.ts": 40.0,
-    "tests/task-claims.spec.ts": 4.0
+    "tests/task-claims.spec.ts": 4.0,
+    "tests/mirror-context-chip.spec.ts": 15.0
   },
   "legs": {
     "1": [
@@ -155,7 +156,8 @@
       "tests/agent-chat-markdown.spec.ts",
       "tests/plugin-chip.spec.ts",
       "tests/previews.spec.ts",
-      "tests/routing-rules.spec.ts"
+      "tests/routing-rules.spec.ts",
+      "tests/mirror-context-chip.spec.ts"
     ],
     "2": [
       "tests/chief-succession.spec.ts",

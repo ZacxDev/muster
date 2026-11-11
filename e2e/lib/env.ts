@@ -411,6 +411,10 @@ export const routingRulesFakePort = port + 387;
 // binary, mirror plugin on) and one fake mirrored host, for the mirrored view,
 // the agent chat page and the chief panel.
 export const tailClampPort = port + 388;
+// The mirrored view's context chip (mirror-context-chip.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one fake host whose fake
+// opencode server reports a long model id and a large window.
+export const contextChipPort = port + 389;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

@@ -12,20 +12,20 @@ import (
 // SetAgentContext): its model, the count and the model's window, pinned as
 // literal labels. Values are pairwise distinct and none is a round constant.
 
-// TestAnAgentContextReadoutNamesItsModelAndWindow: "<model> · <count> /
-// <window> context"; with no window known, the count alone ("<model> ·
-// <count> context", as Claude Code's reads); with no model, no model. The
-// tooltip says how the number is derived.
+// TestAnAgentContextReadoutNamesItsModelAndWindow: "<name> · <count>/
+// <window>" (the model without its provider prefix); with no window known,
+// the count alone ("<name> · <count>", as Claude Code's reads); with no
+// model, no model. The title says how the number is derived.
 func TestAnAgentContextReadoutNamesItsModelAndWindow(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		in   mirror.AgentContext
 		want string
 	}{
-		{"model and window", mirror.AgentContext{Tokens: 46809, Limit: 187500, Model: "fixture-model"}, "fixture-model · 47k / 188k context"},
-		{"an unknown window", mirror.AgentContext{Tokens: 46809, Model: "fixture-model"}, "fixture-model · 47k context"},
-		{"no model", mirror.AgentContext{Tokens: 5339, Limit: 262144}, "5k / 262k context"},
-		{"a small count", mirror.AgentContext{Tokens: 913, Limit: 1_048_576, Model: "vendor/long-name"}, "vendor/long-name · 913 / 1M context"},
+		{"model and window", mirror.AgentContext{Tokens: 46809, Limit: 187500, Model: "fixture-model"}, "fixture-model · 47k/188k"},
+		{"an unknown window", mirror.AgentContext{Tokens: 46809, Model: "fixture-model"}, "fixture-model · 47k"},
+		{"no model", mirror.AgentContext{Tokens: 5339, Limit: 262144}, "5k/262k"},
+		{"a small count", mirror.AgentContext{Tokens: 913, Limit: 1_048_576, Model: "vendor/long-name"}, "long-name · 913/1M"},
 	} {
 		var tr MirrorTranscript
 		in := c.in
@@ -60,7 +60,7 @@ func TestAnAgentContextIsReportedOnceAndForgottenOnReset(t *testing.T) {
 		t.Fatalf("a context of no tokens was reported: %+v", c)
 	}
 	tr.SetAgentContext(&mirror.AgentContext{Tokens: 12345, Limit: 96000, Model: "m1"})
-	if c := tr.TakeContext(); c == nil || c.Label != "m1 · 12k / 96k context" {
+	if c := tr.TakeContext(); c == nil || c.Label != "m1 · 12k/96k" {
 		t.Fatalf("a new context: %+v", c)
 	}
 	tr.Reset()
@@ -68,7 +68,7 @@ func TestAnAgentContextIsReportedOnceAndForgottenOnReset(t *testing.T) {
 		t.Fatalf("a Reset kept %+v", c)
 	}
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "t", Usage: &cctranscript.Usage{Tokens: 2468}}})
-	if c := tr.TakeContext(); c == nil || c.Label != "2k context" || c.Title != "" {
+	if c := tr.TakeContext(); c == nil || c.Label != "2k" || c.Title != "" {
 		t.Fatalf("Claude Code's readout after a Reset: %+v", c)
 	}
 }
