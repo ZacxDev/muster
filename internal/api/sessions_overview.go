@@ -87,7 +87,7 @@ var overviewBudget = 12 * time.Second
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
 		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code and opencode windows active in the " +
-			"last 24 h — is doing now, newest-active first: id, kind, name, host, status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day), the distinct focus titles of " +
+			"last 24 h — is doing now, newest-active first: id, kind, name, host, a mirrored session's repo (its checkout folder) and github_repo (the GitHub owner/name its origin names: what to dispatch with), status, current focus with how old it is (focus_set_at; focus_age \"2d\" past a day), the distinct focus titles of " +
 			"the last 6 h with their times, anything it has waiting on your owner, and its last few user and assistant messages " +
 			"(secrets redacted, tool output left out). Use it before filing a task or drafting a reply about ongoing work, to find " +
 			"the session already on it. Size-capped." + focusUntrustedTail +
@@ -107,9 +107,13 @@ type liveSession struct {
 	where string
 	// runtime is a mirrored session's non-Claude runtime ("opencode"), "" for
 	// Claude Code and for an agent.
-	runtime  string
-	status   string
-	activeAt time.Time
+	runtime string
+	// repo and githubRepo are a mirrored window's folder name and the GitHub
+	// owner/name its checkout's origin names (mirror.SessionView), "" for an
+	// agent or when its host did not say.
+	repo, githubRepo string
+	status           string
+	activeAt         time.Time
 }
 
 // liveSessions is ctx's principal's live sessions, newest-active first, minus
@@ -161,7 +165,7 @@ func (s *Server) liveSessions(ctx context.Context, exclude int64) []liveSession 
 			status = "unknown"
 		}
 		ls := liveSession{sub: focus.MirrorSubject(key), kind: "mirror", name: fi.mirrorName(e).Text,
-			host: e.Host, where: e.Where(), status: status, activeAt: at}
+			host: e.Host, where: e.Where(), repo: e.Repo, githubRepo: e.GitHubRepo, status: status, activeAt: at}
 		if rt, ok := e.Spec(); ok {
 			ls.runtime = rt.Name
 		}
@@ -492,13 +496,18 @@ type overviewSession struct {
 	Kind string `json:"kind"`
 	// Runtime is a mirrored session's runtime when it is not Claude Code
 	// ("opencode"); absent for Claude Code and for an agent.
-	Runtime  string `json:"runtime,omitempty"`
-	Name     string `json:"name"`
-	Host     string `json:"host,omitempty"`
-	Where    string `json:"where,omitempty"` // fleetListRow.Where
-	Status   string `json:"status"`
-	ActiveAt string `json:"active_at,omitempty"`
-	Focus    string `json:"focus,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	Name    string `json:"name"`
+	Host    string `json:"host,omitempty"`
+	Where   string `json:"where,omitempty"` // fleetListRow.Where
+	// Repo is a mirrored session's checkout folder name; GitHubRepo the
+	// GitHub owner/name its origin names — they can differ, and GitHubRepo is
+	// what to dispatch with.
+	Repo       string `json:"repo,omitempty"`
+	GitHubRepo string `json:"github_repo,omitempty"`
+	Status     string `json:"status"`
+	ActiveAt   string `json:"active_at,omitempty"`
+	Focus      string `json:"focus,omitempty"`
 	// focusAgeFields: how old Focus is (fleetListRow's).
 	focusAgeFields
 	RecentFocus []overviewTitle    `json:"recent_focus,omitempty"`
@@ -539,7 +548,8 @@ func (s *Server) toolSessionsOverview(ctx context.Context, caller agents.Agent, 
 	size := len(toolJSON(res)) + len(`,"sessions":[]`)
 	out := []overviewSession{}
 	for i, ls := range live {
-		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Runtime: ls.runtime, Name: ls.name, Host: ls.host, Where: ls.where, Status: ls.status,
+		row := overviewSession{ID: ls.sub.String(), Kind: ls.kind, Runtime: ls.runtime, Name: ls.name, Host: ls.host, Where: ls.where,
+			Repo: ls.repo, GitHubRepo: ls.githubRepo, Status: ls.status,
 			Focus: fi[ls.sub].Title, focusAgeFields: fi.ageFields(ls.sub, now), Attention: pending[ls.sub], Transcript: tails[i]}
 		if !ls.activeAt.IsZero() {
 			row.ActiveAt = ls.activeAt.UTC().Format(time.RFC3339)

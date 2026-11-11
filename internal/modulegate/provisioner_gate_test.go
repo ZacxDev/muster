@@ -73,6 +73,7 @@ var provisionerGateLedger = map[string]int{
 	"internal/api/live_status.go (*Server).instanceIndexWithin Provisioner==nil":             1, // live status reads, bounded
 	"internal/api/notes.go (*Server).dismissTask Provisioner!=nil":                           1, // a dismissed task's linked agent torn down
 	"internal/api/officers.go (*Server).EnableOfficers Provisioner==nil":                     1, // officers (refused at boot beside the Compose chief)
+	"internal/api/consumer_usage.go (*Server).EnableConsumerUsage Provisioner==nil":          1, // consumer usage: reads existing agents' instances, never dispatches
 	"internal/api/session_routes.go (*Server).handBackRoute Provisioner==nil":                1, // a route handed back to the chief
 	"internal/api/session_routes.go (*Server).deliverRouteAnswer Provisioner!=nil":           1, // a session's answer delivered to the chief as a turn
 	"internal/api/task_complete_stop.go (*Server).stopChiefAgentOnComplete Provisioner==nil": 1, // stop the chief's own dispatched agent (no ChiefDispatch here)

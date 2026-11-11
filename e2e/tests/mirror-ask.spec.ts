@@ -1027,3 +1027,75 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 A FAILED CARD SAYS WHAT HAPPENED, AND SENDS ITS ANSWER AS A MESSAGE
+// (docs/mirroring.md#answer-attempts). The terminal's picker goes before the
+// answer is typed (the fake host finds no picker, and sends the pane it read):
+// the card fails, links to its own record on the Answers page — the attempt,
+// its reason and the pane snapshot — and offers "Send as a message", which
+// queues the answer for the window (no dismissal: the picker is gone) and is
+// the card's attempt 2, by message. The Answers page groups the failure.
+test.describe('a failed card, phone 412×915 touch', () => {
+  test.use({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
+
+  test('links to its failure record and sends the answer as a message', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_msg_' + stamp;
+    await registered(toolID);
+    const c = page.locator(`#mv-asks [data-ask-live][data-ask-tool="${toolID}"]`);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    // The picker leaves the terminal's screen before muster types.
+    fs.rmSync(pickerFile(), { force: true });
+    await c.locator('fieldset').nth(0).getByText('Red', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Cat', { exact: true }).tap();
+    await c.locator('fieldset').nth(2).getByText('Alpha', { exact: true }).tap();
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c, `the typing failed (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
+    await expect(c).toContainText('no longer on the terminal');
+    const link = c.locator('[data-ask-record]');
+    await expect(link).toHaveAttribute('href', '/answers?card=' + toolID);
+
+    // Its record: one attempt, no-picker, with the pane the host read.
+    const rp = await page.context().newPage();
+    await rp.goto(origin + '/answers?card=' + encodeURIComponent(toolID));
+    const tl = rp.locator('[data-testid="answers-card"]');
+    await expect(tl).toHaveAttribute('data-attempts', '1');
+    const first = tl.locator('[data-attempt-number="1"]');
+    await expect(first).toHaveAttribute('data-reason', 'no-picker');
+    await expect(first.locator('[data-attempt-snapshot]')).toContainText('no picker on screen');
+
+    // Send as a message: queued for the window, the card says so.
+    await c.getByRole('button', { name: 'Send as a message' }).tap();
+    await expect(c, `sent as a message (log:\n${mirrorLog})`).toContainText('Sent as a message', { timeout: 10_000 });
+    await expect(c.getByRole('button', { name: 'Send as a message' }), 'the answer is not offered twice').toHaveCount(0);
+    await rp.reload();
+    await expect(tl).toHaveAttribute('data-attempts', '2');
+    const second = tl.locator('[data-attempt-number="2"]');
+    await expect(second).toHaveAttribute('data-reason', 'queued');
+    await expect(second).toHaveAttribute('data-method', 'message');
+
+    // The Answers page groups the failure by its reason.
+    await rp.goto(origin + '/answers');
+    await expect(rp.locator('[data-testid="answers-page"]')).toBeVisible();
+    await expect(rp.locator('[data-answers-reason="no-picker"]')).toBeVisible();
+    const [sw, cw] = await rp.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll on the Answers page').toBeLessThanOrEqual(cw);
+    await rp.close();
+
+    // Tidy: the queued message is cancelled, and the CLI records the
+    // question answered, so no later spec sees either.
+    await page.reload();
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+    const queued = await page
+      .locator('#mv-queue [data-queue-state="queued"]')
+      .evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-queue-id'))));
+    for (const id of queued) {
+      await page.evaluate(
+        async (id) =>
+          (await fetch(`/send-queue/${id}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })).status,
+        id,
+      );
+    }
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Red', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Alpha' });
+  });
+});

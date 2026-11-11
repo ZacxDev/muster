@@ -461,8 +461,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 
 	// The first listing's repo names, work counts and colours, after the hello
 	// that listed its windows.
-	if len(first.repos) > 0 {
-		if err := conn.sendRepos(first.repos); err != nil {
+	if len(first.repos) > 0 || len(first.githubRepos) > 0 {
+		if err := conn.sendRepos(first.repos, first.githubRepos); err != nil {
 			return err
 		}
 	}
@@ -671,6 +671,9 @@ type listing struct {
 	// on a repos message of its own (sendRepos), the window list having no room
 	// for it (mirror/repos.go).
 	repos map[string]string
+	// githubRepos is each window's GitHub <owner>/<name> by window id
+	// (originGitHubRepo), on the SAME repos message as repos.
+	githubRepos map[string]string
 	// work and colors are each window's live work counts and identity colour
 	// by window id (work.go), on messages of their own exactly like repos
 	// (mirror/work.go).
@@ -746,6 +749,7 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
+		l.githubRepos = mirror.NormalizeGitHubRepos(h.c.repoNamer().windowGitHubRepos(raw), windows)
 		if !h.c.cfg.NoWork {
 			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
 			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
@@ -1114,8 +1118,8 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 		}
 	}
 	// AFTER the window list, so muster already lists every window it names.
-	if !maps.Equal(now.repos, last.repos) {
-		if err := h.sendRepos(now.repos); err != nil {
+	if !maps.Equal(now.repos, last.repos) || !maps.Equal(now.githubRepos, last.githubRepos) {
+		if err := h.sendRepos(now.repos, now.githubRepos); err != nil {
 			return false
 		}
 	}
@@ -1154,8 +1158,8 @@ func (h *hostSide) sendsRepos() bool {
 }
 
 // sendRepos sends the whole repo map (an empty one clears muster's).
-func (h *hostSide) sendRepos(repos map[string]string) error {
-	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos})
+func (h *hostSide) sendRepos(repos, githubRepos map[string]string) error {
+	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos, GitHubRepos: githubRepos})
 }
 
 // workCounter is the client's work ledgers (a zero Client — a test's — gets

@@ -38,6 +38,7 @@ var apiNavWriters = []string{
 	"renderFlowsPage",       // /flows
 	"renderRulesPage",       // /rules (the chief's routing rules)
 	"handleUsagePage",       // /usage (what the chief costs)
+	"handleAnswersPage",     // /answers (how answering question cards went)
 	"writeAdminDocument",    // /admin/users, /admin/invites
 	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
 }
@@ -373,6 +374,7 @@ var apiNavSecret = map[string]bool{
 	"renderNotice":          false, // one sentence
 	"renderRulesPage":       false, // the owner's rules: matches, actions, counts; no secret
 	"handleUsagePage":       false, // token counts and senders the owner already sees; no secret
+	"handleAnswersPage":     false, // reason codes, shapes and redacted pane snapshots the owner's own terminal showed; no secret
 }
 
 // TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this

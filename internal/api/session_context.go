@@ -61,7 +61,8 @@ const sessionContextUntrusted = "the tail is the session's own words (and its ti
 func sessionContextToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionContextToolName,
 		Description: "One of your owner's mirrored sessions (Claude Code or opencode), in detail: its runtime, host, tmux window, " +
-			"status, working directory, and — for a session you started — its dispatch's repository, base, branch and model; " +
+			"status, working directory, its checkout's folder (repo) and GitHub repository (github_repo: owner/name, what to dispatch " +
+			"with), and — for a session you started — its dispatch's repository, base, branch and model; " +
 			"then its newest messages (default 8, at most 20), each with a ref (\"m:<hex>\", content-addressed: it names the same " +
 			"message however the transcript grows), its role, its text (secrets redacted, cut at 6 KiB, tool output left out) " +
 			"and its fenced code blocks listed by index, language and first line. subject is the session's key, as a message " +
@@ -182,7 +183,7 @@ func (s *Server) toolSessionContext(ctx context.Context, arguments string) strin
 	res := map[string]any{
 		"subject": key, "runtime": about.Runtime, "host": about.Host, "tmux": about.Tmux, "window": about.TmuxWindow,
 		"title": about.Title, "status": status, "cwd": cwd, "dispatch": about.Dispatch,
-		"repo": nullIfEmpty(about.Repo), "base": nullIfEmpty(about.Base), "branch": nullIfEmpty(about.Branch),
+		"repo": nullIfEmpty(about.Repo), "github_repo": nullIfEmpty(about.GitHubRepo), "base": nullIfEmpty(about.Base), "branch": nullIfEmpty(about.Branch),
 		"model":     nullIfEmpty(about.Model),
 		"untrusted": sessionContextUntrusted,
 		// 🔴 NO SUGGESTED TARGET OR MODEL (operator decision, PR #537 round 0

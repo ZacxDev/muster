@@ -637,9 +637,16 @@ func (s *Server) connectedRepo(ctx context.Context, repo string) string {
 // connectedRepoName is connectedRepo, also returning the connected
 // repository's CANONICAL name (its FullName, as GitHub spells it) when it
 // passes: what a host is sent, whatever casing the chief wrote.
+//
+// A refused name is followed by up to repoCandidatesMax connected repositories
+// it may have meant (repoCandidates, repos_list.go) — data, said to be.
 func (s *Server) connectedRepoName(ctx context.Context, repo string) (string, string) {
 	if !github.ValidRepoName(repo) {
-		return "", "repo " + strconv.Quote(repo) + " is not owner/name"
+		why := "repo " + strconv.Quote(repo) + " is not owner/name"
+		if list, err := s.githubRepos(ctx); err == nil {
+			why += repoCandidatesNote(s.repoCandidates(ctx, repo, list))
+		}
+		return "", why
 	}
 	list, err := s.githubRepos(ctx)
 	if errors.Is(err, errNoGitHub) {
@@ -654,7 +661,7 @@ func (s *Server) connectedRepoName(ctx context.Context, repo string) (string, st
 			return r.FullName, ""
 		}
 	}
-	return "", "repo " + repo + " " + chiefDispatchRepo
+	return "", "repo " + repo + " " + chiefDispatchRepo + repoCandidatesNote(s.repoCandidates(ctx, repo, list))
 }
 
 // --- the plugin's hand-off -----------------------------------------------------

@@ -229,6 +229,10 @@ var (
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and
 		// returns only counts.
 		"internal/asklog.sys",
+		// The answer-attempt log (migration 0113): the retention sweep's one
+		// helper. It deletes rows past 30 days, by age only, across every
+		// owner (askattempt.PG.Prune), and returns only a count.
+		"internal/askattempt.sys",
 	}
 	// operatorLedger: work done as the OPERATOR (user 1) with no request —
 	// the boot-time GitHub connect of the operator's own static token, and the
@@ -257,6 +261,11 @@ var (
 		// pool and keeps the readings as the operator's rows, so row-level
 		// security says they are nobody else's.
 		"internal/ccusage.(*Poller).Run",
+		// The consumer usage collector (MUSTER_CC_CONSUMER_USAGE): it reads the
+		// instances on the OPERATOR's pool accounts and their failover history,
+		// so it acts as the operator and row-level security keeps every other
+		// user's agents out of it.
+		"internal/api.(*Server).consumerUsagePrincipal",
 	}
 	// withPrincipalLedger: admit, and the send queue's delivery.
 	//

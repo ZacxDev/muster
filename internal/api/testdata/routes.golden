@@ -62,6 +62,7 @@ GET /agents/{name}/send
 GET /agents/{name}/terminal
 GET /agents/{name}/terminal/ws
 GET /agents/{name}/ws
+GET /answers
 GET /api/agents
 GET /api/agents/{name}/account-failovers
 GET /api/agents/{name}/messages
@@ -259,6 +260,7 @@ POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask
 POST /mirror/view/ask/cancel
+POST /mirror/view/ask/message
 POST /mirror/view/chief
 POST /mirror/view/proposal
 POST /mirror/view/send

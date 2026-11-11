@@ -330,7 +330,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	tctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	// The owner's answer, delivered (chief_usage.go): the turn's trigger.
-	tctx = chiefusage.WithTrigger(tctx, chiefusage.Trigger{Kind: chiefusage.TriggerAnswer})
+	tctx = chiefusage.WithTrigger(tctx, chiefusage.Trigger{Kind: chiefusage.TriggerAnswer, AskID: a.ID})
 	parts, err := s.answerTurn(tctx, ag, sess, renderAttentionAnswer(a), nil)
 	if reason := agentgateway.Unsent(err); reason != "" {
 		// Provably nothing reached the runtime: queued again, for the sweep.

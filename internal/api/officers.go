@@ -78,6 +78,9 @@ type officerRuntime struct {
 	// (internal/officers/usage, officer_usage.go); nil when the agent gateway
 	// cannot read it.
 	usage *usage.Collector
+	// pools pushes every declared officer's pools to its HQ at boot and on
+	// the usage collector's cadence (officers.PoolsReporter, "Pools to HQ").
+	pools *officers.PoolsReporter
 	// llm is the officer LLM proxy (officer_llm.go, internal/llmproxy); nil
 	// when no declared officer has an `llm` block.
 	llm *llmproxy.Proxy
@@ -239,6 +242,8 @@ type OfficersConfig struct {
 	UsageSource   usage.Source
 	UsageInterval time.Duration
 	NoUsageRun    bool
+	// PoolsBackoff replaces the pools reporter's retry waits (tests).
+	PoolsBackoff []time.Duration
 	// LLMStore keeps the LLM proxy's per-day usage (the budget); REQUIRED
 	// when an officer declares `llm`. LLMUpstream replaces the provider's API
 	// base and LLMHTTP its transport (tests); ""/nil is production.
@@ -357,6 +362,15 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 			}
 		}
 	}
+	// The declared pools, pushed to each officer's HQ with its token: at boot
+	// (MUSTER_OFFICERS is read only then, so a change is a restart) and on
+	// the usage collector's cadence, sessions_today read through the SAME
+	// ledger that enforces the cap.
+	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: cfg.Officers, Poster: officers.NewClientPoolsPoster(hq),
+		Ledger: judgement, Logger: s.logger, Now: now, Interval: cfg.UsageInterval, Backoff: cfg.PoolsBackoff})
+	if err != nil {
+		return nil, err
+	}
 	rcfg := officers.Config{Registry: reg, HQ: hq, Fleet: officerFleet{s: s}, Logger: s.logger, Now: now, Judgement: judgement,
 		CapHold: s.officerCapHoldNotice}
 	switch {
@@ -380,7 +394,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, err
 	}
 	host, _ := os.Hostname()
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, llm: px, judgement: judgement, now: now, kube: kube,
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
 		reads:      officers.NewReadBudget(officers.ReadsPerItem, now),
 		claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	if err := s.enableShips(cfg); err != nil {
@@ -841,6 +855,17 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 	}
 	f.s.clearAgentWork(a.ID)
 	return f.s.ext.Provisioner.Stop(octx, a.ID)
+}
+
+// OfficerPoolsReporter is the declared officers' pools push
+// (officers.PoolsReporter), nil before EnableOfficers. It is NOT started
+// here: cmd/muster-server runs it with the other background loops, and its
+// first push is at once (boot).
+func (s *Server) OfficerPoolsReporter() *officers.PoolsReporter {
+	if s.officerRT == nil {
+		return nil
+	}
+	return s.officerRT.pools
 }
 
 // WaitForOfficerReprompts blocks until every in-flight re-prompt send has

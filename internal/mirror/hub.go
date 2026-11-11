@@ -157,6 +157,10 @@ type HostView struct {
 	// it sent none (an older muster-mirror, a per-session host). Display and
 	// search only: Entries copies each window's onto its SessionView.Repo.
 	Repos map[string]string
+	// GitHubRepos is the GitHub <owner>/<name> per WINDOW ID the host last sent
+	// on the same message (Msg.GitHubRepos), nil when it sent none: Entries
+	// copies each window's onto its SessionView.GitHubRepo. A host's word.
+	GitHubRepos map[string]string
 	// Work is the live work counts per WINDOW ID the host last sent (TypeWork,
 	// work.go), restricted to its windows when it arrived; nil when it sent none
 	// (an older muster-mirror). 🔴 NEVER KEPT FOR AN OFFLINE HOST: a count is a
@@ -277,6 +281,7 @@ type offlineHost struct {
 	labels      map[string]string
 	activity    map[string]int64
 	repos       map[string]string
+	githubRepos map[string]string
 	colors      map[string]string
 	interactive bool
 	since       time.Time
@@ -451,8 +456,11 @@ type hostConn struct {
 	claude   []string
 	labels   map[string]string
 	activity map[string]int64
-	// repos is the host's last TypeRepos map (NormalizeRepos over windows).
-	repos map[string]string
+	// repos is the host's last TypeRepos map (NormalizeRepos over windows);
+	// githubRepos the same message's GitHub repositories
+	// (NormalizeGitHubRepos).
+	repos       map[string]string
+	githubRepos map[string]string
 	// work and colors are the host's last TypeWork and TypeColors maps
 	// (NormalizeWork / NormalizeColors over windows).
 	work   map[string]WindowWork
@@ -522,7 +530,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
 			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
@@ -536,7 +544,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), Colors: maps.Clone(o.colors), Interactive: o.interactive,
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), GitHubRepos: maps.Clone(o.githubRepos), Colors: maps.Clone(o.colors), Interactive: o.interactive,
 				OfflineSince: o.since})
 		}
 	}
@@ -1020,8 +1028,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.mu.Lock()
 					repos := NormalizeRepos(m.Repos, hc.windows)
-					same := maps.Equal(hc.repos, repos)
-					hc.repos = repos
+					githubRepos := NormalizeGitHubRepos(m.GitHubRepos, hc.windows)
+					same := maps.Equal(hc.repos, repos) && maps.Equal(hc.githubRepos, githubRepos)
+					hc.repos, hc.githubRepos = repos, githubRepos
 					hc.mu.Unlock()
 					if !same {
 						h.changed(hc.key.owner)
@@ -1103,7 +1112,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeAnswered:
 				if hc.version >= 2 {
-					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
+					hc.answered(m.ID, m.Error, m.Refusal, m.Keys, m.Screen)
 				}
 			case TypeAskCancelled:
 				if hc.version >= 2 {
@@ -1185,7 +1194,7 @@ func (h *Hub) drop(hc *hostConn) {
 			labels := maps.Clone(hc.labels)
 			activity := maps.Clone(hc.activity)
 			windows := slices.Clone(hc.windows)
-			repos := maps.Clone(hc.repos)
+			repos, githubRepos := maps.Clone(hc.repos), maps.Clone(hc.githubRepos)
 			colors := maps.Clone(hc.colors)
 			if !hc.statusReport {
 				// A status is believed only from a host that reports it: what an
@@ -1195,7 +1204,7 @@ func (h *Hub) drop(hc *hostConn) {
 				}
 			}
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, colors: colors, interactive: hc.interactive, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, githubRepos: githubRepos, colors: colors, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()

@@ -54,6 +54,9 @@ type Trigger struct {
 	Plugin    string
 	Sender    string
 	MessageID int64
+	// AskID is the attention ask whose answer a TriggerAnswer turn delivers
+	// (0 for every other kind): read by the chief's approval card, not recorded.
+	AskID int64
 }
 
 type triggerKey struct{}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
@@ -51,6 +53,61 @@ var (
 	// sent to the host: nothing can be being typed.
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
 )
+
+// MaxAskScreen bounds the pane a host sends with a refusal (Msg.Screen), in
+// bytes: the bottom of the pane, where the picker is, is kept.
+const MaxAskScreen = 16 << 10
+
+// AskScreenCutMark begins a screen CapAskScreen cut.
+const AskScreenCutMark = "[… the top of the pane was cut]\n"
+
+// CapAskScreen is s as a host sends it: REDACTED FIRST (redact.Secrets, over
+// the whole pane), then, when it is over MaxAskScreen bytes, its tail from a
+// line start, under AskScreenCutMark, MaxAskScreen bytes in all.
+//
+// 🔴 REDACTION BEFORE THE CUT: a cut first could split a secret — a key
+// block's BEGIN line above the cut, its body below — into a fragment the
+// redactor no longer recognises (internal/askattempt's store redacts again,
+// and cuts again, for the same reason).
+func CapAskScreen(s string) string {
+	s = redact.Secrets(s)
+	if len(s) <= MaxAskScreen {
+		return s
+	}
+	s = s[len(s)-(MaxAskScreen-len(AskScreenCutMark)):]
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	return AskScreenCutMark + s
+}
+
+// askScreenError is a host's refusal with the pane it read then (Msg.Screen).
+type askScreenError struct {
+	screen string
+	err    error
+}
+
+func (e askScreenError) Error() string { return e.err.Error() }
+func (e askScreenError) Unwrap() error { return e.err }
+
+// WithAskScreen is err carrying the pane screen a host read when it refused
+// (AskScreen). nil stays nil, and an empty screen adds nothing.
+func WithAskScreen(err error, screen string) error {
+	if err == nil || screen == "" {
+		return err
+	}
+	return askScreenError{screen: screen, err: err}
+}
+
+// AskScreen is the pane the host sent with AnswerWindow's refusal err: ""
+// when it sent none (an older host, a refusal before it read the pane).
+func AskScreen(err error) string {
+	var s askScreenError
+	if errors.As(err, &s) {
+		return s.screen
+	}
+	return ""
+}
 
 // askKeysError is a host's refusal with how many keys of the answer's plan
 // the picker had received (Msg.Keys).
@@ -167,8 +224,9 @@ func (h *Hub) prepareAnswer(ctx context.Context, owner int64, host, session, win
 }
 
 // answered hands the host's outcome to the answer waiting on id: keys is how
-// many keys of its plan the picker had received (Msg.Keys).
-func (hc *hostConn) answered(id uint32, why, refusal string, keys int) {
+// many keys of its plan the picker had received (Msg.Keys), screen the pane
+// the host read when it stopped (Msg.Screen).
+func (hc *hostConn) answered(id uint32, why, refusal string, keys int, screen string) {
 	hc.mu.Lock()
 	ch := hc.answers[id]
 	delete(hc.answers, id)
@@ -176,7 +234,7 @@ func (hc *hostConn) answered(id uint32, why, refusal string, keys int) {
 	if ch == nil {
 		return
 	}
-	ch <- WithAskKeys(askAnswerError(why, refusal), keys)
+	ch <- WithAskScreen(WithAskKeys(askAnswerError(why, refusal), keys), CapAskScreen(screen))
 }
 
 // askAnswerError is the error a host's answered means; the host's prose (why)

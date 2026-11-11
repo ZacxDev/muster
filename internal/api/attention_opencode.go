@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"html"
 	"net/http"
 	"strings"
@@ -201,17 +202,27 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 		http.NotFound(w, r)
 		return
 	}
+	// The answer-attempt log (ask_attempts.go): this door's every exit names
+	// its reason. Its question is one, single-select: the choice offered.
+	att := s.beginAttempt(r, askattempt.DoorAttention, askattempt.ActionSubmit, askattempt.MethodRelayed)
+	att.a.Runtime = askattempt.RuntimeOpenCode
+	defer att.done()
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
+		att.end("too-large")
 		s.renderAttentionPage(w, r, http.StatusBadRequest, "That answer could not be read.")
 		return
 	}
+	att.where(r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"), r.PostFormValue("prompt"))
 	h, e, listed, _, found := s.mirrorEntry(r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"))
 	if !found || !listed {
+		att.end("not-found")
 		s.renderAttentionPage(w, r, http.StatusNotFound, "That window is gone: "+openCodeGoneText)
 		return
 	}
+	att.a.Shape = attentionOpenCodeShape(h, e)
 	if !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		att.end("step-up")
 		w.Header().Set("X-Muster-Step-Up", "required")
 		s.renderAttentionPage(w, r, http.StatusForbidden, stepup.ErrStale.Error())
 		return
@@ -219,6 +230,7 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 	// 🔴 NOT THE REQUEST'S CONTEXT: a page that goes away must not cut the
 	// wait while the host may be answering. The hub bounds it.
 	err := a.AnswerOpenCodeAsk(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, r.PostFormValue("prompt"), r.PostFormValue("choice"))
+	att.end(openCodeAnswerResult(err))
 	if err != nil {
 		code, text := http.StatusConflict, openCodeGoneText
 		switch {
@@ -246,6 +258,21 @@ func (s *Server) handleAttentionOpenCodeAnswer(w http.ResponseWriter, r *http.Re
 	// The ask log (ask_log.go): the answer muster relayed.
 	s.askLogOpenCodeAnswered(requestOwner(r.Context()), r.PostFormValue("prompt"), r.PostFormValue("choice"))
 	http.Redirect(w, r, attentionPath+"?answered=opencode", http.StatusSeeOther)
+}
+
+// attentionOpenCodeShape is the shape of what e's opencode window waits on,
+// as the Attention list offers it: one single-select question, its options
+// the choices offered (none when the window names no ask).
+func attentionOpenCodeShape(h mirror.HostView, e mirror.SessionView) askattempt.Shape {
+	n := 0
+	if w, ok := windowOfEntry(h, e); ok && w.Pending != nil {
+		if w.Pending.Kind == mirror.PendingQuestion {
+			n = len(w.Pending.OptionList())
+		} else {
+			n = len(strings.Fields(w.Pending.Choices))
+		}
+	}
+	return askattempt.Shape{Options: []int{n}, Multi: []bool{false}}
 }
 
 // attentionNotice is the page's notice for a query that names one (an

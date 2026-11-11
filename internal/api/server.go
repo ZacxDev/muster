@@ -98,6 +98,15 @@ type Server struct {
 	asks *askq.Store
 	// askWatch is the running question watches (mirror_ask.go).
 	askWatch askWatchers
+	// askAttemptPrune is when the answer-attempt log was last pruned
+	// (ask_attempts.go).
+	askAttemptPrune struct {
+		sync.Mutex
+		last time.Time
+	}
+	// askAttemptWrites is the answer-attempt rows being written after their
+	// door answered (ask_attempts.go).
+	askAttemptWrites askAttemptWriters
 	// askScan is the open-question scan's reads (mirror_ask_scan.go).
 	askScan askScans
 	// ledgers is the rendered views' tool-context ledger checkpoints, which a
@@ -293,6 +302,10 @@ type Server struct {
 	// turnInputs is the input row of each agent's running turn
 	// (turn_session.go): the owner's line a tool call answers.
 	turnInputs turnInputRegistry
+	// turnRecords is each agent's running turns as the doors started them
+	// (turn_session.go): a serial of the turn's own and its trigger.
+	turnRecords turnRecordRegistry
+	turnSerial  atomic.Int64
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
@@ -727,6 +740,8 @@ func (s *Server) registerAll(mux Mux) {
 	// chief's usage page (usage.go): /usage, 404 without a database.
 	s.registerRoutingRuleRoutes(mux)
 	s.registerUsageRoutes(mux)
+	// The answer-attempt log's page (answers_page.go): /answers, 404 without a database.
+	s.registerAnswersRoutes(mux)
 	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.

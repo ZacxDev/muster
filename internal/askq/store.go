@@ -97,6 +97,12 @@ type Entry struct {
 	// Retry (Failed) says the failure leaves the question answerable from
 	// muster again: typing can be tried again (Failure.Retry).
 	Retry bool
+	// Reason (Failed) is the failure's reason code (Failure.Reason,
+	// internal/askattempt's Reasons): what the card offers to recover with.
+	Reason string
+	// Sending (Failed) says a "Send as a message" holds the question
+	// (BeginMessage): the card offers nothing until it ends.
+	Sending bool
 	// Left is what muster's typing is KNOWN to have left in the terminal's
 	// picker: the choices it was typing and how many keys of their plan it
 	// sent (nil: nothing known to be there). A drive that stopped part way
@@ -116,6 +122,15 @@ type Entry struct {
 type Progress struct {
 	Choices []Choice `json:"choices"`
 	Keys    int      `json:"keys"`
+	// Reset asks the drive, when the picker is neither untouched nor exactly
+	// as Keys of Choices left it, to put it back to the first option of its
+	// first question before typing (internal/askdrive's DriveFrom) — a card's
+	// Try again after a recoverable failure (internal/askattempt's
+	// RecoverRetry). The drive re-reads the screen first, and resets only a
+	// picker on its first question with no answer of one's own typed in.
+	// 🔴 BACKWARD-COMPATIBLE BOTH WAYS: an older host ignores it (and refuses
+	// a touched picker as before); an older muster never sets it.
+	Reset bool `json:"reset,omitempty"`
 }
 
 // clone is a deep copy of p (nil for nil).
@@ -123,7 +138,7 @@ func (p *Progress) clone() *Progress {
 	if p == nil {
 		return nil
 	}
-	out := &Progress{Keys: p.Keys, Choices: make([]Choice, len(p.Choices))}
+	out := &Progress{Keys: p.Keys, Reset: p.Reset, Choices: make([]Choice, len(p.Choices))}
 	for i, c := range p.Choices {
 		out.Choices[i] = Choice{Picks: append([]int(nil), c.Picks...), Other: c.Other}
 	}
@@ -556,14 +571,15 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 	case Failed:
 		// 🔴 A HOST MAY STILL BE TYPING the last answer (its outcome never
 		// came back): no second drive into the same picker until it is known
-		// or MaxDrive has passed.
-		if s.now().Before(en.driveUntil) {
+		// or MaxDrive has passed. Nor while its answer is being sent as a
+		// message (BeginMessage).
+		if s.now().Before(en.driveUntil) || en.Sending {
 			return en.snapshot(), false, ErrBusy
 		}
 	}
 	// Left stays: it is what this drive finds in the picker (the caller hands
 	// it to the host), until this drive's outcome replaces it.
-	en.State, en.Typed, en.Note, en.Retry = Typing, maps.Clone(answers), "", false
+	en.State, en.Typed, en.Note, en.Retry, en.Reason = Typing, maps.Clone(answers), "", false, ""
 	en.driveUntil = s.now().Add(MaxDrive)
 	s.touch(en, &fire)
 	return en.snapshot(), false, nil
@@ -592,6 +608,8 @@ type Failure struct {
 	Left *Progress
 	// Retry says the question can be answered from muster again (Entry.Retry).
 	Retry bool
+	// Reason is the failure's reason code (Entry.Reason).
+	Reason string
 }
 
 // TypingFailed records that muster could not type the answer in (f): a
@@ -619,10 +637,61 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 		en.Left = nil
 	}
 	if en.State == Typing {
-		en.State, en.Note, en.Retry = Failed, f.Note, f.Retry
+		en.State, en.Note, en.Retry, en.Reason = Failed, f.Note, f.Retry, f.Reason
 		s.touch(en, &fire)
 	}
 	return en.snapshot(), nil
+}
+
+// BeginMessage CLAIMS a Failed question for internal/api's "Send as a
+// message", under the store's lock: offered(e) says the card offers it (its
+// reason, an answer muster was typing). 🔴 ONE CLAIM AT A TIME: a second
+// request while one holds it is ErrBusy (and so is a question a host may
+// still be typing into), so two concurrent requests never both dismiss and
+// queue. While claimed (Entry.Sending) the card offers no recovery, no
+// typing begins (BeginTyping's ErrBusy) and nothing else dismisses it.
+// ErrNotFound for a question not there; ErrClosed for one not Failed, or
+// whose card does not offer it. EndMessage releases the claim.
+func (s *Store) BeginMessage(key Key, offered func(Entry) bool) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case en.Sending, s.now().Before(en.driveUntil):
+		return en.snapshot(), ErrBusy
+	case en.State != Failed || !offered(en.snapshot()):
+		return en.snapshot(), ErrClosed
+	}
+	en.Sending = true
+	s.touch(en, &fire)
+	return en.snapshot(), nil
+}
+
+// EndMessage releases BeginMessage's claim on key. note "" puts the card back
+// as it was (the attempt failed before anything was done, so it still offers
+// what it did); otherwise note is what the card says from now on and it
+// offers no recovery any more (no Retry, no Reason) — the answer was sent, or
+// muster cannot send it — until the CLI's record of the call resolves it.
+func (s *Store) EndMessage(key Key, note string) Entry {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	en, ok := s.byID[s.byKey[key]]
+	if !ok {
+		return Entry{}
+	}
+	en.Sending = false
+	if note != "" && en.State == Failed {
+		en.Note, en.Retry, en.Reason = note, false, ""
+	}
+	s.touch(en, &fire)
+	return en.snapshot()
 }
 
 // Dismissing reports whether the question at key (key.Owner is the request's
@@ -642,7 +711,7 @@ func (s *Store) Dismissing(key Key) (Entry, error) {
 		return Entry{}, ErrNotFound
 	case !en.State.Open():
 		return en.snapshot(), ErrClosed
-	case en.State == Typing, s.now().Before(en.driveUntil):
+	case en.State == Typing, s.now().Before(en.driveUntil), en.Sending:
 		return en.snapshot(), ErrBusy
 	}
 	return en.snapshot(), nil

@@ -419,6 +419,9 @@ type Adapter struct {
 	// officer runtime's pre-allowed tools, model and permission bypass); nil =
 	// none for anyone.
 	ccSession func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
+	// beforeStop is handed the agent's row before every Stop scales it to zero
+	// and every Destroy removes it (UseBeforeStop); nil = nothing.
+	beforeStop func(ctx context.Context, ag agents.Agent)
 	// lifecycle serialises Start, Stop, Destroy and Rebind per agent in this
 	// process (lockAgent), so an account failover cannot race a Stop or a
 	// Destroy into bringing a stopped agent back or re-creating a deleted one.
@@ -451,6 +454,16 @@ func (a *Adapter) lockAgent(agentID int64) func() {
 // agent answers ok=false.
 func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
 	a.ccSession = f
+}
+
+// UseBeforeStop installs f, handed the agent's row on every Stop and Destroy
+// BEFORE the driver scales the instance to zero or removes it — while its pod
+// can still answer. internal/api's consumer usage collector is the one caller
+// (its last push of the instance's Claude usage). f must be bounded and must
+// not fail the stop: it returns nothing, and it runs under the agent's
+// lifecycle lock. Call it before the adapter serves.
+func (a *Adapter) UseBeforeStop(f func(ctx context.Context, ag agents.Agent)) {
+	a.beforeStop = f
 }
 
 // UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
@@ -826,6 +839,9 @@ func (a *Adapter) Stop(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: stop agent %d: load row: %w", agentID, err)
 	}
+	if a.beforeStop != nil {
+		a.beforeStop(ctx, ag)
+	}
 	// 🔴 provision.ErrNotFound IS ALREADY-STOPPED, NOT A FAILURE, AND TREATING IT
 	// AS ONE LEFT THE ROW PERMANENTLY WRONG. An instance that was evicted or
 	// deleted out of band is gone, which is what a stop is FOR; refusing meant the
@@ -876,6 +892,9 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d: load row: %w", agentID, err)
+	}
+	if a.beforeStop != nil {
+		a.beforeStop(ctx, ag)
 	}
 	err = a.driver.Destroy(ctx, agents.RefOf(ag))
 	if err != nil && !errors.Is(err, provision.ErrNotFound) {

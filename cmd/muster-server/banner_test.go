@@ -478,6 +478,8 @@ var bannerExempt = map[string]string{
 		"line; refused at boot with the poller off, whose OFF line names " + envCCUsagePoll,
 	envCCUsagePushToken:    "a secret, never printed; refused at boot without " + envCCUsagePushURL + ", whose state the push line prints",
 	envCCUsagePushInstance: "printed with its value on the `claude account usage push: ON` line; refused at boot without " + envCCUsagePushURL,
+	envCCConsumerUsage: "printed with its value on its own `claude consumer usage push: ON/OFF` line, which is drawn only under the " +
+		"poller's ON line; refused at boot without " + envCCUsagePushURL + ", which is refused with the poller off",
 	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
 		"whose OFF line names " + envCCUsagePoll,
 	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
