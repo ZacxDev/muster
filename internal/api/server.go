@@ -109,6 +109,9 @@ type Server struct {
 	askAttemptWrites askAttemptWriters
 	// askScan is the open-question scan's reads (mirror_ask_scan.go).
 	askScan askScans
+	// ocAnswered is the opencode asks lately answered from a card
+	// (mirror_opencode_ask.go: openCodeAnswers).
+	ocAnswered openCodeAnswers
 	// ledgers is the rendered views' tool-context ledger checkpoints, which a
 	// resuming socket starts from (mirror_ledger.go).
 	ledgers ledgerCheckpoints

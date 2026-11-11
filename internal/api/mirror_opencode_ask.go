@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -221,6 +223,14 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
+	if v, ok := s.openCodeAnsweredCard(r, h, e, tool); ok {
+		// Answered here already (a second submit while the listing still
+		// names it): the same answer, never relayed twice.
+		att.shape(v.Questions, nil)
+		att.end("duplicate")
+		s.writeAskLive(w, http.StatusOK, v)
+		return
+	}
 	v, form := s.openCodeCard(r.Context(), h, e, p)
 	att.shape(v.Questions, nil)
 	if v.Unanswerable != "" {
@@ -281,6 +291,91 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.logger.Printf("mirror: answered the opencode ask in %s/%s%s", h.Host, e.Session, e.Window)
+	s.ocAnswered.record(openCodeAnswerKey(r, h, e, tool), v.Questions, answers, time.Now())
 	v.State, v.Answers = ui.AskStateAnswered, answers
 	s.writeAskLive(w, http.StatusOK, v)
+}
+
+// 🔴 AN ASK ANSWERED HERE STAYS ANSWERED WHILE THE LISTING CATCHES UP. The
+// window's listing — and so openCodePending — is the hub's copy of the host's
+// LAST listing, which names the ask until the host's next one. A poll of the
+// live region in that gap read the form again; opencode no longer holds it
+// (it was answered), so the host refused the read as gone and the card was
+// redrawn saying "opencode is no longer waiting on that … Nothing was answered
+// here" — a successful answer shown as a failure (the operator's report). So
+// a successful answer is recorded here (owner, host, session, window, ask id),
+// and while the listing still names that ask, the region draws it answered
+// with its answers — no form read — and a second submit of it relays nothing.
+// An ask id is opencode's own and never reused, so the record cannot stand
+// for another ask; it is kept mirrorAskShownFor, like a Claude card's end.
+type openCodeAnswerKeyT struct {
+	owner                           int64
+	host, session, window, promptID string
+}
+
+type openCodeAnsweredAsk struct {
+	questions []askq.Question
+	answers   map[string]string
+	at        time.Time
+}
+
+// openCodeAnswers is the asks lately answered from a card.
+type openCodeAnswers struct {
+	mu sync.Mutex
+	m  map[openCodeAnswerKeyT]openCodeAnsweredAsk
+}
+
+// openCodeAnswerKey is ask promptID of e's window (h its host), for the
+// request's owner.
+func openCodeAnswerKey(r *http.Request, h mirror.HostView, e mirror.SessionView, promptID string) openCodeAnswerKeyT {
+	return openCodeAnswerKeyT{owner: requestOwner(r.Context()), host: h.Host, session: e.Session, window: e.Window, promptID: promptID}
+}
+
+func (a *openCodeAnswers) record(k openCodeAnswerKeyT, qs []askq.Question, answers map[string]string, now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.m == nil {
+		a.m = map[openCodeAnswerKeyT]openCodeAnsweredAsk{}
+	}
+	for old, x := range a.m {
+		if now.Sub(x.at) > mirrorAskShownFor {
+			delete(a.m, old)
+		}
+	}
+	a.m[k] = openCodeAnsweredAsk{questions: qs, answers: answers, at: now}
+}
+
+func (a *openCodeAnswers) find(k openCodeAnswerKeyT, now time.Time) (openCodeAnsweredAsk, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	x, ok := a.m[k]
+	if !ok || now.Sub(x.at) > mirrorAskShownFor {
+		return openCodeAnsweredAsk{}, false
+	}
+	return x, true
+}
+
+// openCodeAnsweredCard is ask promptID of e's window drawn answered here, when
+// it was answered from a card lately (openCodeAnswers).
+func (s *Server) openCodeAnsweredCard(r *http.Request, h mirror.HostView, e mirror.SessionView, promptID string) (ui.MirrorAskLiveView, bool) {
+	x, ok := s.ocAnswered.find(openCodeAnswerKey(r, h, e, promptID), time.Now())
+	if !ok {
+		return ui.MirrorAskLiveView{}, false
+	}
+	return ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: promptID, State: ui.AskStateAnswered, Questions: x.questions, Answers: x.answers,
+		WindowName: e.DisplayTitle(), Agent: openCodeAgentName, ByIndex: true}, true
+}
+
+// openCodeLiveCard is the live region's card for the ask p of e's window: the
+// answered card when it was answered here (checked again after the form read,
+// which an answer landing meanwhile turns into "gone"), else openCodeCard's.
+func (s *Server) openCodeLiveCard(r *http.Request, h mirror.HostView, e mirror.SessionView, p *mirror.Pending) ui.MirrorAskLiveView {
+	if v, ok := s.openCodeAnsweredCard(r, h, e, p.PromptID); ok {
+		return v
+	}
+	v, _ := s.openCodeCard(r.Context(), h, e, p)
+	if a, ok := s.openCodeAnsweredCard(r, h, e, p.PromptID); ok {
+		return a
+	}
+	return v
 }

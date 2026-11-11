@@ -302,8 +302,7 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 	var vs []ui.MirrorAskLiveView
 	// An opencode window's ask, read live from its host (mirror_opencode_ask.go).
 	if p, ok := openCodePending(h, e); ok {
-		v, _ := s.openCodeCard(r.Context(), h, e, p)
-		vs = append(vs, v)
+		vs = append(vs, s.openCodeLiveCard(r, h, e, p))
 	}
 	if e.ClaudeSession != "" {
 		for _, x := range s.asks.ForSession(requestOwner(r.Context()), askSourceMirror, h.Host, e.ClaudeSession, mirrorAskShownFor) {
