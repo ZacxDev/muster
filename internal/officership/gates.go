@@ -836,6 +836,15 @@ func (g *Gates) rateAllows(ctx context.Context, rels []release, slug string) err
 // squash merge of an up-to-date head always has. CI that tests pull requests
 // only (and posts nothing on the base branch) is covered by the second; a
 // merge of a stale head, whose tree no CI run saw, is refused.
+//
+// The pull request is found by its merge_commit_sha == head, from two
+// sources in turn: GitHub's commit→pull request association
+// (commits/{sha}/pulls), then — when that names no merge of head — the most
+// recently updated closed pull requests into the base. The association lags
+// a merge (MEASURED: [] 36 s after a squash merge, the pull request three
+// minutes later), so where the base gets no CI of its own, a release right
+// after a merge would always be refused; merge_commit_sha is set by the merge
+// itself. Either source leads to the same checks below.
 func (g *Gates) mainCIGreen(ctx context.Context, head string) error {
 	direct := g.checksGreen(ctx, head)
 	if direct == nil {
@@ -845,28 +854,45 @@ func (g *Gates) mainCIGreen(ctx context.Context, head string) error {
 	if err != nil {
 		return refuse(GateMainCI, "%v; and the pull request of %s could not be read: %v", direct, short(head), err)
 	}
-	for _, pr := range prs {
-		if !pr.Merged || pr.MergeCommitSHA != head {
-			continue
-		}
-		if err := g.checksGreen(ctx, pr.HeadSHA); err != nil {
-			return refuse(GateMainCI, "%s is #%d's merge, and its head's checks are not green: %v", short(head), pr.Number, err)
-		}
-		ht, _, err := g.GH.Commit(ctx, head)
+	pr, ok := mergeOf(prs, head)
+	if !ok {
+		recent, err := g.GH.RecentlyClosedPRs(ctx, g.Ship.Base)
 		if err != nil {
-			return refuse(GateMainCI, "could not read %s: %v", short(head), err)
+			return refuse(GateMainCI, "%v; GitHub names no pull request for %s yet, and the pull requests closed into %s could not be read: %v",
+				direct, short(head), g.Ship.Base, err)
 		}
-		pt, _, err := g.GH.Commit(ctx, pr.HeadSHA)
-		if err != nil {
-			return refuse(GateMainCI, "could not read %s: %v", short(pr.HeadSHA), err)
+		if pr, ok = mergeOf(recent, head); !ok {
+			return refuse(GateMainCI, "the checks are not green on %s's head %s, and it is no pull request's merge "+
+				"(neither GitHub's pull requests of the commit nor the %d most recently updated closed into %s merged as it): %v",
+				g.Ship.Base, short(head), recentClosedPRs, g.Ship.Base, direct)
 		}
-		if ht != pt {
-			return refuse(GateMainCI, "%s (#%d's merge) has a tree its checks never saw: #%d was merged behind %s. Its tree is untested; release after the next up-to-date merge",
-				short(head), pr.Number, pr.Number, g.Ship.Base)
-		}
-		return nil
 	}
-	return refuse(GateMainCI, "the checks are not green on %s's head %s, and it is no pull request's merge: %v", g.Ship.Base, short(head), direct)
+	if err := g.checksGreen(ctx, pr.HeadSHA); err != nil {
+		return refuse(GateMainCI, "%s is #%d's merge, and its head's checks are not green: %v", short(head), pr.Number, err)
+	}
+	ht, _, err := g.GH.Commit(ctx, head)
+	if err != nil {
+		return refuse(GateMainCI, "could not read %s: %v", short(head), err)
+	}
+	pt, _, err := g.GH.Commit(ctx, pr.HeadSHA)
+	if err != nil {
+		return refuse(GateMainCI, "could not read %s: %v", short(pr.HeadSHA), err)
+	}
+	if ht != pt {
+		return refuse(GateMainCI, "%s (#%d's merge) has a tree its checks never saw: #%d was merged behind %s. Its tree is untested; release after the next up-to-date merge",
+			short(head), pr.Number, pr.Number, g.Ship.Base)
+	}
+	return nil
+}
+
+// mergeOf is the pull request among prs that was merged AS sha.
+func mergeOf(prs []PR, sha string) (PR, bool) {
+	for _, pr := range prs {
+		if pr.Merged && pr.MergeCommitSHA == sha {
+			return pr, true
+		}
+	}
+	return PR{}, false
 }
 
 // backupReady is HQ's preflight: WAL archived in the last 5 minutes, no

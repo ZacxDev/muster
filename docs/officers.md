@@ -1493,8 +1493,11 @@ when ALL of these hold:
 6. the required checks passed for the head's **exact tree**: either they are
    success on the head itself, or the head is a pull request's squash merge
    whose head commit has them all success and the same tree (true of every
-   squash merge of an up-to-date head). A head merged from a stale branch is
-   refused until the next up-to-date merge;
+   squash merge of an up-to-date head). The pull request is the one whose
+   `merge_commit_sha` is the head: from `commits/{sha}/pulls`, or, while that
+   still answers nothing (GitHub's association lags a merge by minutes), from
+   the 30 most recently updated pull requests closed into `base`. A head
+   merged from a stale branch is refused until the next up-to-date merge;
 7. no destructive DDL in the release's migrations, and when it adds one, HQ's
    preflight (`POST /officers/{id}/preflight`) reports a WAL archive under 5
    minutes old, no archive failure in the last hour and a base backup under

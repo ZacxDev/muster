@@ -27,6 +27,8 @@ type fakeGH struct {
 	tagObjects map[string]TagObject
 	commits    map[string]commitInfo
 	prsFor     map[string][]PR
+	// closedInto is RecentlyClosedPRs' answer per base.
+	closedInto map[string][]PR
 	mergeErr   error
 	refErr     error
 	// existingRefs answer ErrRefExists on create.
@@ -155,6 +157,9 @@ func (f *fakeGH) Commit(_ context.Context, sha string) (string, []string, error)
 	return c.tree, c.parents, nil
 }
 func (f *fakeGH) PRsForCommit(_ context.Context, sha string) ([]PR, error) { return f.prsFor[sha], nil }
+func (f *fakeGH) RecentlyClosedPRs(_ context.Context, base string) ([]PR, error) {
+	return f.closedInto[base], nil
+}
 func (f *fakeGH) Merge(_ context.Context, n int, sha string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
