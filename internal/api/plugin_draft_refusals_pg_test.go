@@ -495,6 +495,42 @@ func TestAPluginWithDraftChecksHoldsTheApprovalUntilItsVerdict(t *testing.T) {
 	}
 }
 
+// TestAChiefDraftForADraftChecksPluginWaitsForTheVerdict: the chief's own
+// reply_draft to a draft_checks plugin's message is held as the routed one is
+// — no push to the owner and its tool answer says the plugin checks it first —
+// until the plugin says it is sendable, when the owner is asked once.
+func TestAChiefDraftForADraftChecksPluginWaitsForTheVerdict(t *testing.T) {
+	f := newRefusalFixture(t)
+	ctok, _ := f.checker(t)
+	_, m := f.pluginMessage(t, "example-checker", "rf-chief-check", "Ada <ada@example.invalid>", true)
+	args, _ := json.Marshal(map[string]any{"message_id": m.ID, "body": "The chief's checked reply."})
+	out := f.srv.AgentToolDispatch(f.asOwner, f.chief)(replyDraftToolName, string(args))
+	sub := draftIDRE.FindStringSubmatch(out)
+	if sub == nil || !strings.Contains(out, "plugin checks this draft first") {
+		t.Fatalf("reply_draft: %s; want it to say the plugin checks the draft first", out)
+	}
+	id, _ := strconv.ParseInt(sub[1], 10, 64)
+	asked := func() int {
+		f.srv.WaitForPushes()
+		n := 0
+		for _, p := range f.pusher.to(ep("rf-owner")) {
+			if p.Tag == "plugin-draft-"+strconv.FormatInt(id, 10) && p.Title == DraftPushTitle {
+				n++
+			}
+		}
+		return n
+	}
+	if n := asked(); n != 0 {
+		t.Fatalf("the owner was asked %d time(s) about an unchecked chief draft; want 0", n)
+	}
+	if code, _ := f.plug(t, ctok, http.MethodPost, "/plugin/v1/drafts/"+strconv.FormatInt(id, 10)+"/check", `{"sendable":true}`); code != http.StatusOK {
+		t.Fatalf("the sendable verdict: %d", code)
+	}
+	if n := asked(); n != 1 {
+		t.Fatalf("after the verdict the owner was asked %d time(s); want 1", n)
+	}
+}
+
 // TestAPluginWithoutDraftChecksKeepsTodaysFlow: a messages-only plugin's
 // routed reply is pending with no check asked for — the owner is pushed at
 // once, it is not marked awaiting a check, nothing is listed for a check, and
