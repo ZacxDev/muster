@@ -132,6 +132,13 @@ owner's live `viewer` plugin in a panel. A window with no rendered view opens
 on `/mirror/terminal`, so the button is on both. An agent's pages
 (`/agents/{name}`) draw none.
 
+- **Where it sits.** From `sm` (640 px) up, in the header row beside the
+  switch: an icon, "Preview" and the count. Below `sm`, in the header's
+  **second row** (the status line under the title), as a small pill with the
+  count and a 44 px tap target, so the title keeps its whole width; it lays
+  out at that row's own height, so neither the title nor the header moves
+  when it appears. Each place has its own slot, polled only at its width.
+
 - **Only while the window has something to preview.** The window's host
   reports, per tmux window, how many of its web servers it offers and how many
   previews of it are open ([previews.md](previews.md#what-you-do)); the button

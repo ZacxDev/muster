@@ -276,12 +276,15 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
 								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
 							mirrorUpdatingChip(),
+							// Below `sm` the Preview button is here, in the second
+							// row, so the title keeps its width (plugin_chip.go).
+							previewButtonSlot(v.Plugins, PreviewInRow),
 						),
 					),
 					chatIndexButton("mv-log"),
 					// The window's Preview button, while it has something to
 					// preview (plugin_chip.go).
-					previewButtonSlot(v.Plugins),
+					previewButtonSlot(v.Plugins, PreviewInHeader),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
 				liveCopyBanner("mv-live-copy", v.LiveCopy),

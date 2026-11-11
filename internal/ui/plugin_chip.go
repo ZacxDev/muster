@@ -19,13 +19,20 @@ import (
 // that window has something to preview (operator decision: a control above
 // every chat whether or not anything was running was noise).
 //
-//   - THE BUTTON is in the header, beside the Rendered | Terminal switch:
-//     "Preview" and a count (the window's offers plus its open previews,
-//     mirror.WindowPreviews, which the window's host reports). It is drawn
-//     only while that count is above zero; below `sm` it is a 44×44 icon with
-//     the count on it. Its slot re-reads it (PreviewButtonPath) every
-//     previewPollEvery while the tab is shown, so it appears and goes as the
-//     host's counts move — the page holds no event stream for it.
+//   - THE BUTTON: "Preview" and a count (the window's offers plus its open
+//     previews, mirror.WindowPreviews, which the window's host reports),
+//     drawn only while that count is above zero. From `sm` (640px) up it is
+//     in the header row, beside the Rendered | Terminal switch. 🔴 BELOW `sm`
+//     IT IS IN THE HEADER'S SECOND ROW (the status line under the title) —
+//     operator decision: at a phone's width the header row holds no room for
+//     another 44px button, and taking it would leave the title a few pixels.
+//     There it is a 20px pill, the height the row already has, so neither the
+//     title row nor the header grows when it appears; its hit area is 44px
+//     tall (a ::before over the header's padding, above the title's own hit
+//     area). TWO SLOTS, one per place, each `display:none` at the other's
+//     width and each re-reading its button (PreviewButtonPath, Place) every
+//     previewPollEvery only while the tab is shown AND the page is at its
+//     width — so one request per tick, and the page holds no event stream.
 //   - THE PANEL opens on the button: the plugin's page (the gateway's session
 //     page) in a sandboxed frame, a side panel beside the conversation from
 //     `sm` up and the whole screen below it. Close (or Escape) unloads the
@@ -59,9 +66,12 @@ import (
 //     page loaded, and its panel must then be allowed to frame the plugin
 //     (api's allowSameOriginFrame). With no live viewer plugin nothing here is
 //     drawn, nothing polls, and the CSP is the switch's own.
-//   - The panel is position:fixed and the button is in a header row that
-//     already holds the switch, so neither moves the conversation: the views
-//     with a live preview are measured by cls.spec.ts.
+//   - The panel is position:fixed, and the button takes room only inside a
+//     row that already has its height (the header row's 44px controls, the
+//     second row's 20px), so neither moves the conversation: the views with a
+//     live preview are measured by cls.spec.ts, and plugin-chip.spec.ts
+//     measures the title and the header unchanged when the button appears
+//     at a phone's width.
 
 // PluginChipSandbox is the panel's frame's sandbox, exactly: no
 // allow-top-navigation of any kind.
@@ -76,12 +86,31 @@ const PreviewButtonPath = "/ui/mirror/preview-button"
 // listener scan, so this is the same order of delay.
 const previewPollEvery = "10s"
 
-// PreviewButtonSrc is PreviewButtonPath for one window.
-func PreviewButtonSrc(host, session, window string) string {
+// PreviewPlace is where a Preview button is drawn: the header row (from `sm`
+// up) or the header's second row (below `sm`).
+type PreviewPlace string
+
+const (
+	PreviewInHeader PreviewPlace = "header"
+	PreviewInRow    PreviewPlace = "row"
+)
+
+// PreviewPlaceOf is the place a query's `place` names; anything else is the
+// header.
+func PreviewPlaceOf(s string) PreviewPlace {
+	if s == string(PreviewInRow) {
+		return PreviewInRow
+	}
+	return PreviewInHeader
+}
+
+// PreviewButtonSrc is PreviewButtonPath for one window's button at place.
+func PreviewButtonSrc(host, session, window string, place PreviewPlace) string {
 	q := url.Values{}
 	q.Set("host", host)
 	q.Set("session", session)
 	q.Set("window", window)
+	q.Set("place", string(place))
 	return PreviewButtonPath + "?" + q.Encode()
 }
 
@@ -136,60 +165,83 @@ func previewCount(n int) string {
 
 const previewIcon = `<svg class="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>`
 
-// PreviewButton is the header button for a window's counts p: nil while it
-// has nothing to preview. It carries no htmx wiring (the slot does), so a
-// swapped-in button never re-arms a trigger.
-func PreviewButton(p mirror.WindowPreviews) g.Node {
+// PreviewButton is the Preview button for a window's counts p at place: nil
+// while it has nothing to preview. It carries no htmx wiring (the slot does),
+// so a swapped-in button never re-arms a trigger. The two places' buttons have
+// their own ids (preview-toggle, preview-toggle-row) and share
+// data-preview-toggle, which the panel's script reads.
+func PreviewButton(p mirror.WindowPreviews, place PreviewPlace) g.Node {
 	if p.IsZero() {
 		return nil
 	}
 	words := previewWords(p)
+	id, cls, icon := "preview-toggle",
+		"press relative inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent",
+		previewIcon
+	badge := "inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent"
+	if place == PreviewInRow {
+		badge = "inline-flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none tabular-nums text-on-accent"
+		// 20px tall with -2px margins above and below: it lays out as 16px,
+		// the status line's own height, so the row — and the title row above
+		// it, which the header centres with it — does not move when it
+		// appears. The ::before is its 44px
+		// thumb target (centred on it, so it reaches over the header's
+		// padding, not the title row's text), z-20 above the title's z-10 hit
+		// area (mirrorTitleHitClass), which spans this row too.
+		id = "preview-toggle-row"
+		cls = "press relative z-20 -my-0.5 inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-s2 px-2 text-[11px] font-semibold leading-none text-fg ring-1 ring-inset ring-line aria-expanded:ring-2 aria-expanded:ring-accent " +
+			"before:absolute before:-inset-x-1 before:top-1/2 before:h-11 before:-translate-y-1/2 before:content-['']"
+		icon = strings.Replace(previewIcon, `class="h-5 w-5 shrink-0"`, `class="h-3.5 w-3.5 shrink-0"`, 1)
+	}
 	return Button(
 		Type("button"),
-		ID("preview-toggle"),
-		g.Attr("data-preview-toggle", ""),
+		ID(id),
+		g.Attr("data-preview-toggle", string(place)),
 		g.Attr("data-preview-count", strconv.Itoa(p.Total())),
 		g.Attr("aria-controls", "preview-panel"),
 		g.Attr("aria-expanded", "false"),
 		g.Attr("aria-label", "Preview: "+words),
 		g.Attr("title", "Preview: "+words),
-		// Below `sm` a 44×44 icon with the count on its corner (the ☰
-		// button's badge); from `sm` up the word and the count beside it.
-		Class("press relative inline-flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-s2 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:ring-2 aria-expanded:ring-accent sm:w-auto sm:px-3"),
-		g.Raw(previewIcon),
-		Span(Class("max-sm:hidden"), g.Text("Preview")),
-		Span(
-			g.Attr("aria-hidden", "true"),
-			Class("inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold leading-none tabular-nums text-on-accent max-sm:pointer-events-none max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:ring-2 max-sm:ring-bg"),
-			g.Text(previewCount(p.Total())),
-		),
+		Class(cls),
+		g.Raw(icon),
+		g.If(place == PreviewInHeader, Span(g.Text("Preview"))),
+		Span(g.Attr("aria-hidden", "true"), Class(badge), g.Text(previewCount(p.Total()))),
 	)
 }
 
-// RenderPreviewButton writes PreviewButton(p) (nothing at zero).
-func RenderPreviewButton(w io.Writer, p mirror.WindowPreviews) error {
-	n := PreviewButton(p)
+// RenderPreviewButton writes PreviewButton(p, place) (nothing at zero).
+func RenderPreviewButton(w io.Writer, p mirror.WindowPreviews, place PreviewPlace) error {
+	n := PreviewButton(p, place)
 	if n == nil {
 		return nil
 	}
 	return n.Render(w)
 }
 
-// previewButtonSlot is the header's slot: the button as the page was drawn,
-// refreshed every previewPollEvery while the tab is shown. display:contents,
-// so an empty slot takes no room and adds no gap to the header row.
-func previewButtonSlot(c *PluginChips) g.Node {
+// previewWide is the slots' width test: the page is at `sm` (640px) or
+// wider — Tailwind's sm, a min-width on the viewport, which innerWidth is.
+const previewWide = "window.innerWidth>=640"
+
+// previewButtonSlot is the slot for place: the button as the page was drawn,
+// re-read every previewPollEvery while the tab is shown and the page is at
+// the place's width. Hidden at the other width, and while empty (empty:hidden:
+// an empty slot takes no room and adds no gap to its row).
+func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
 	if !c.on() {
 		return nil
 	}
+	id, cls, at := "preview-slot", "inline-flex shrink-0 empty:hidden max-sm:hidden", previewWide
+	if place == PreviewInRow {
+		id, cls, at = "preview-slot-row", "ml-auto inline-flex shrink-0 empty:hidden sm:hidden", "!("+previewWide+")"
+	}
 	return Span(
-		ID("preview-slot"),
-		Class("contents"),
-		hx("hx-get", PreviewButtonSrc(c.Host, c.Session, c.Window)),
-		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden]"),
+		ID(id),
+		Class(cls),
+		hx("hx-get", PreviewButtonSrc(c.Host, c.Session, c.Window, place)),
+		hx("hx-trigger", "every "+previewPollEvery+" [!document.hidden&&"+at+"]"),
 		hx("hx-swap", "innerHTML"),
 		hx("hx-target", "this"),
-		PreviewButton(c.Previews),
+		PreviewButton(c.Previews, place),
 	)
 }
 
@@ -266,7 +318,13 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   var BLOCKED = 'The browser blocked the new tab. Allow pop-ups for this site, or use the preview here.';
   var busy = false;
   function panel() { return document.getElementById('preview-panel'); }
-  function toggle() { return document.getElementById('preview-toggle'); }
+  // The button on screen: the header's, or the second row's below sm.
+  function toggles() { return document.querySelectorAll('[data-preview-toggle]'); }
+  function toggle() {
+    var ts = toggles();
+    for (var i = 0; i < ts.length; i++) if (ts[i].getClientRects().length) return ts[i];
+    return null;
+  }
   function frame() { return panel().querySelector('iframe'); }
   function say(msg) {
     var e = document.getElementById('preview-error');
@@ -275,8 +333,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     e.hidden = !msg;
   }
   function expanded() {
-    var t = toggle(), p = panel();
-    if (t) t.setAttribute('aria-expanded', p && !p.hidden ? 'true' : 'false');
+    var ts = toggles(), p = panel(), on = p && !p.hidden ? 'true' : 'false';
+    for (var i = 0; i < ts.length; i++) ts[i].setAttribute('aria-expanded', on);
   }
   function plugin() {
     var p = panel(), s = p.querySelector('[data-preview-plugin]');
@@ -363,7 +421,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // The slot's refresh swaps the button in fresh: keep it saying whether the
   // panel is open.
   document.addEventListener('htmx:afterSwap', function (ev) {
-    if (ev.target && ev.target.id === 'preview-slot') expanded();
+    if (ev.target && (ev.target.id === 'preview-slot' || ev.target.id === 'preview-slot-row')) expanded();
   });
 })();
 `)

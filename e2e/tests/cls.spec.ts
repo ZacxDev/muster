@@ -881,7 +881,8 @@ test.describe('the session views with a live preview', () => {
         ] as const) {
           const r = await measure(page, crig.origin + url, ready);
           // The state measured: the button is there.
-          await expect(page.locator('header #preview-toggle'), `${label}: the Preview button is drawn`).toHaveCount(1);
+          // (in the header row on a desktop, in its second row on a phone).
+          await expect(page.locator('header [data-preview-toggle]:visible'), `${label}: the Preview button is drawn`).toHaveCount(1);
           console.log(`[cls ${vp.name}] ${label} ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${label}`, r));
         }

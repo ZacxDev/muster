@@ -88,8 +88,9 @@ func pluginChips(ps []plugins.Plugin, e mirror.SessionView) *ui.PluginChips {
 }
 
 // handlePreviewButton serves GET ui.PreviewButtonPath: the session view's
-// Preview button for the window's counts NOW (ui.PreviewButton), nothing when
-// it has nothing to preview. The page's slot polls it.
+// Preview button for the window's counts NOW (ui.PreviewButton), drawn for
+// the slot's `place` (the header row, or the second row below `sm`), nothing
+// when it has nothing to preview. The page's slots poll it.
 //
 // 🔴 THE SAME TWO GATES AS THE PAGE: the window's counts first (in memory —
 // a window with nothing answers empty without reading the plugin store), then
@@ -104,7 +105,7 @@ func (s *Server) handlePreviewButton(w http.ResponseWriter, r *http.Request) {
 	if !ok || !listed || e.Window == "" || e.Previews.IsZero() || len(s.viewerPlugins(r.Context(), e.Window)) == 0 {
 		return
 	}
-	if err := ui.RenderPreviewButton(w, e.Previews); err != nil {
+	if err := ui.RenderPreviewButton(w, e.Previews, ui.PreviewPlaceOf(q.Get("place"))); err != nil {
 		s.logger.Printf("preview button: render: %v", err)
 	}
 }

@@ -309,6 +309,17 @@ func TestThePreviewButtonIsDrawnOnlyWhileTheWindowHasSomethingToPreview(t *testi
 		case wantCount != "" && !strings.Contains(b, `data-preview-count="`+wantCount+`"`):
 			t.Errorf("%s: GET %s: Preview button %q, want one counting %s", what, path, b, wantCount)
 		}
+		// The second row's button (below sm) follows the same gate.
+		row := regexp.MustCompile(`<button[^>]*id="preview-toggle-row"[^>]*>`).FindString(page)
+		switch {
+		case wantCount == "" && row != "":
+			t.Errorf("%s: GET %s draws a second-row Preview button %q with nothing to preview", what, path, row)
+		case wantCount != "" && !strings.Contains(row, `data-preview-count="`+wantCount+`"`):
+			t.Errorf("%s: GET %s: second-row Preview button %q, want one counting %s", what, path, row, wantCount)
+		}
+		if !strings.Contains(page, `id="preview-slot-row"`) || !strings.Contains(page, `place=row`) {
+			t.Errorf("%s: GET %s: no second-row slot polling its own place", what, path)
+		}
 		if !strings.Contains(page, `id="preview-slot"`) || len(chipIDs(page)) != 1 {
 			t.Errorf("%s: GET %s: the slot and panel are not drawn for a live viewer plugin", what, path)
 		}
@@ -340,7 +351,7 @@ func TestThePreviewButtonsPollFollowsTheCountsAndThePlugins(t *testing.T) {
 	_, get, st, fm := chipServerFm(t, chipZone, viewerRow(3, "Live", chipZone, "https://w.viewer.example.net/e"))
 	poll := func(win string) string {
 		t.Helper()
-		resp, body := get(ui.PreviewButtonSrc("ws", "scratch2", win))
+		resp, body := get(ui.PreviewButtonSrc("ws", "scratch2", win, ui.PreviewInHeader))
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("poll %s = %d, want 200 (an empty answer, never an error)", win, resp.StatusCode)
 		}
@@ -351,6 +362,9 @@ func TestThePreviewButtonsPollFollowsTheCountsAndThePlugins(t *testing.T) {
 	}
 	if b := poll("@7"); !strings.Contains(b, `data-preview-count="3"`) || !strings.Contains(b, `id="preview-toggle"`) {
 		t.Fatalf("CONTROL: poll @7 with 3 to preview = %q", b)
+	}
+	if _, b := get(ui.PreviewButtonSrc("ws", "scratch2", "@7", ui.PreviewInRow)); !strings.Contains(b, `id="preview-toggle-row"`) || !strings.Contains(b, `data-preview-count="3"`) {
+		t.Errorf("poll @7 for the second row = %q, want the second row's button", b)
 	}
 	if b := poll("@7"); !strings.Contains(b, `aria-label="Preview: 1 preview open, 2 servers to preview"`) {
 		t.Errorf("poll @7: the button's name does not say the counts: %q", b)

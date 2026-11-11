@@ -32,7 +32,8 @@ counts per window (below).
 1. **On a mirrored window's page** (`/mirror/view` or `/mirror/terminal`),
    while the window has a server to preview or a preview open, the header
    has a **Preview** button with that count, beside the Rendered | Terminal
-   switch; the sidebar marks the window's row too. The button opens a panel
+   switch (on a phone, in the header's second row, under the title); the
+   sidebar marks the window's row too. The button opens a panel
    (a side panel on a wide screen, the whole screen on a phone) that mints a
    hand-off code at the click and shows the gateway's **session page**,
    `https://w.<zone>/__muster/enter`, in its frame; the panel's **New tab**

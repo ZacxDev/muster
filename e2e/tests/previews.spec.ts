@@ -275,16 +275,16 @@ async function ready(page: Page): Promise<void> {
     })
     .toBe(true);
   await page.goto(origin + view);
-  await expect(page.locator('#preview-toggle')).toHaveCount(1);
+  await expect(page.locator('#preview-toggle-row')).toHaveCount(1);
   await expect(page.locator('#preview-panel')).toHaveAttribute('data-plugin', String(pluginId));
 }
 
 // showSessionPage opens the Preview button's panel on the gateway's session
 // page.
 async function showSessionPage(page: Page) {
-  await page.locator('#preview-toggle').click();
+  await page.locator('#preview-toggle-row').click();
   await expect(page.locator('#preview-panel')).toBeVisible();
-  await expect(page.locator('#preview-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('aria-expanded', 'true');
   const framed = page.frameLocator('#preview-panel iframe');
   await expect(framed.locator('h1'), allLogs()).toHaveText('Previews');
   return framed;
@@ -365,7 +365,7 @@ test('the owner opens a window\'s dev server from muster: the Preview button\'s 
   // stays open to be refused below.
   const second = await context.newPage();
   await second.goto(origin + view);
-  await second.locator('#preview-toggle').click();
+  await second.locator('#preview-toggle-row').click();
   await expect(second.locator('#preview-panel')).toBeVisible();
   const [tab] = await Promise.all([context.waitForEvent('page'), second.locator('#preview-panel [data-preview-newtab]').click()]);
   await expect(tab.locator('h1')).toHaveText('Previews');
@@ -497,7 +497,7 @@ test('nothing to preview, no Preview button: a window with no listener draws non
   expect(new URL(page.url()).pathname).toBe('/mirror/terminal');
   expect(resp!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
   await expect(page.locator('#preview-slot')).toHaveCount(1);
-  await expect(page.locator('#preview-toggle')).toHaveCount(0);
+  await expect(page.locator('#preview-toggle-row')).toHaveCount(0);
   expect((await (await page.request.get(origin + buttonSrc('@2'))).text()).trim()).toBe('');
 
   // @1 (the control): the button; the panel opens and Close unloads it.
@@ -506,5 +506,22 @@ test('nothing to preview, no Preview button: a window with no listener draws non
   await page.keyboard.press('Escape');
   await expect(page.locator('#preview-panel')).toBeHidden();
   await expect(page.locator('#preview-panel iframe')).toHaveAttribute('src', 'about:blank');
-  await expect(page.locator('#preview-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('aria-expanded', 'false');
+
+  // A DESKTOP's width: the button is in the header row, right beside the
+  // Rendered | Terminal switch, and the second row's is not drawn.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(origin + view);
+  const head = page.locator('#preview-toggle');
+  await expect(head).toBeVisible();
+  await expect(head).toContainText('Preview');
+  await expect(page.locator('#preview-toggle-row')).toBeHidden();
+  const b = (await head.boundingBox())!;
+  const sw = (await page.locator('header nav[aria-label="View"]').boundingBox())!;
+  expect(sw.x - (b.x + b.width), 'beside the switch: one header gap').toBeLessThanOrEqual(12);
+  expect(sw.x - (b.x + b.width)).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(b.y + b.height / 2 - (sw.y + sw.height / 2)), 'on the switch\'s row').toBeLessThanOrEqual(2);
+  await head.click();
+  await expect(page.locator('#preview-panel')).toBeVisible();
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
 });

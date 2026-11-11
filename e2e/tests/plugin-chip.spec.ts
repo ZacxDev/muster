@@ -153,14 +153,22 @@ test('the Preview button on both session views: drawn only while the window has 
   const resp = await page.goto(origin + viewOf('@1'));
   expect(resp!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
   await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the prompt of the chip window');
-  const toggle = page.locator('header #preview-toggle');
+  const toggle = page.locator('header #preview-toggle-row');
   await expect(toggle).toHaveCount(1);
   await expect(toggle).toHaveAttribute('data-preview-count', '3');
   await expect(toggle).toHaveAttribute('aria-label', 'Preview: 1 preview open, 2 servers to preview');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  // At this phone width it is a 44×44 icon: its word is not drawn.
+  // At this phone width it is in the header's SECOND row, under the title,
+  // and the header row's own button is not drawn (operator decision: the
+  // title keeps its width).
+  await expect(page.locator('#preview-toggle')).toBeHidden();
   const box = (await toggle.boundingBox())!;
-  expect([Math.round(box.width), Math.round(box.height)]).toEqual([44, 44]);
+  const title = (await page.locator('header h1').first().boundingBox())!;
+  expect(box.y + box.height / 2, 'the button is below the title').toBeGreaterThan(title.y + title.height);
+  expect(Math.round(box.height), 'a 20px pill in the second row').toBe(20);
+  // Its tap goes to it, not to the title's hit area over the same row.
+  const hit = await page.evaluate(([x, y]) => (document.elementFromPoint(x, y) as Element | null)?.closest('[data-preview-toggle]')?.id ?? 'none', [box.x + box.width / 2, box.y + box.height / 2]);
+  expect(hit, 'the second-row button is on top at its centre').toBe('preview-toggle-row');
   // No row above the chat any more.
   await expect(page.locator('#plugin-chips')).toHaveCount(0);
   await expect(page.locator('#preview-panel')).toBeHidden();
@@ -247,16 +255,16 @@ test('the Preview button on both session views: drawn only while the window has 
   const term = page.frameLocator('iframe[data-muster-view]');
   await expect(term.locator('#term')).toHaveCount(1);
   await expect(term.locator('#preview-panel[data-window="@1"]')).toHaveCount(1);
-  await expect(term.locator('#preview-toggle')).toHaveCount(1);
+  await expect(term.locator('#preview-toggle-row')).toHaveCount(1);
 
   // A window with NO rendered view opens on /mirror/terminal: the button is
   // there, aimed at that window, and its panel's New tab lands for it.
   const t = await page.goto(origin + viewOf('@2'));
   expect(new URL(page.url()).pathname).toBe('/mirror/terminal');
   expect(t!.headers()['content-security-policy']).toContain(`frame-src 'self' ${ZONE}; `);
-  await expect(page.locator('#preview-toggle')).toHaveAttribute('data-preview-count', '1');
+  await expect(page.locator('#preview-toggle-row')).toHaveAttribute('data-preview-count', '1');
   await expect(page.locator('#preview-panel')).toHaveAttribute('data-window', '@2');
-  await page.locator('#preview-toggle').click();
+  await page.locator('#preview-toggle-row').click();
   await expect(page.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
   const [tab2] = await Promise.all([context.waitForEvent('page'), page.locator('#preview-panel [data-preview-newtab]').click()]);
   await expect(tab2.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @2`);
@@ -296,20 +304,35 @@ test('the Preview button follows the host: hidden while the window has nothing t
   // NOTHING TO PREVIEW: no button on either view, and no sidebar mark.
   await page.goto(origin + viewOf('@1'));
   await expect(page.locator('#preview-slot')).toHaveCount(1);
-  await expect(page.locator('#preview-toggle')).toHaveCount(0);
+  await expect(page.locator('#preview-slot-row')).toHaveCount(1);
+  await expect(page.locator('[data-preview-toggle]')).toHaveCount(0);
+  await expect(page.locator('#mv-log [data-bubble="user"]').first()).toBeVisible();
+  // The geometry the button must not move when it appears: the title, the
+  // header, and where the conversation starts.
+  const geometry = () =>
+    page.evaluate(() => {
+      const r = (q: string) => {
+        const b = document.querySelector(q)!.getBoundingClientRect();
+        return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
+      };
+      return { title: r('header h1'), header: r('header'), log: r('#mv-log') };
+    });
+  const before = await geometry();
   const nav = () => page.request.get(origin + '/ui/nav/agents').then((r) => r.text());
   expect(await nav()).not.toContain('data-nav-preview');
 
   // The host reports an offer: the open page's button appears at the slot's
   // next poll, with no reload, and the sidebar marks @1 alone.
   playPreviews('@1 1 0\n');
-  await expect(page.locator('#preview-toggle'), 'the button appeared live').toHaveAttribute('data-preview-count', '1', { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle-row'), 'the button appeared live').toHaveAttribute('data-preview-count', '1', { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle-row')).toBeVisible();
+  expect(await geometry(), 'the title (its width included), the header and the conversation did not move when the button appeared').toEqual(before);
   const marked = mirroredEntries(await nav()).filter((e) => e.markup.includes('data-nav-preview'));
   expect(marked.map((e) => entryMatches(e.markup, 'data-mirror-claude'))).toEqual([true]);
 
   // And goes when the host has nothing again.
   playPreviews('@1 0 0\n');
-  await expect(page.locator('#preview-toggle'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator('#preview-toggle-row'), 'the button went live').toHaveCount(0, { timeout: 30_000 });
   await expect.poll(nav, { timeout: 20_000 }).not.toContain('data-nav-preview');
   playPreviews('@1 2 1\n@2 1 0\n');
 });
