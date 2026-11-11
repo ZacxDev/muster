@@ -474,6 +474,10 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envCCUsagePushURL: "printed on its own `claude account usage push: ON/OFF` line, which is drawn only under the poller's ON " +
+		"line; refused at boot with the poller off, whose OFF line names " + envCCUsagePoll,
+	envCCUsagePushToken:    "a secret, never printed; refused at boot without " + envCCUsagePushURL + ", whose state the push line prints",
+	envCCUsagePushInstance: "printed with its value on the `claude account usage push: ON` line; refused at boot without " + envCCUsagePushURL,
 	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
 		"whose OFF line names " + envCCUsagePoll,
 	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,

@@ -284,9 +284,13 @@ const (
 
 	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
 	// account usage"; ccusage_config.go parses them): its switch (off by
-	// default) and its interval.
+	// default) and its interval; and its optional pusher, which PUTs each
+	// cycle's readings to an external dashboard (off unless the URL is set).
 	envCCUsagePoll         = "MUSTER_CC_USAGE_POLL"
 	envCCUsagePollInterval = "MUSTER_CC_USAGE_POLL_INTERVAL"
+	envCCUsagePushURL      = "MUSTER_CC_USAGE_PUSH_URL"
+	envCCUsagePushToken    = "MUSTER_CC_USAGE_PUSH_TOKEN"
+	envCCUsagePushInstance = "MUSTER_CC_USAGE_PUSH_INSTANCE"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
