@@ -440,10 +440,12 @@
  * Chat bubble clamp (internal/ui/bubble_clamp.go). Outside every @layer on
  * purpose: these are attribute selectors with no class, and only a layer's
  * class candidates are what Tailwind matches against the views.
- * - [data-clamp]          : a bubble the script measured as over ~12 lines;
+ * - [data-clamp]          : a bubble the script measured as over ~15 lines;
  *                           its max-height animates between clamped and full.
  * - [data-clamp="closed"] : the clamped state; the bottom fades out (a mask,
  *                           so it fades over any bubble's background).
+ * - [data-clamp-from="tail"][data-clamp="closed"] : an agent's reply, clamped
+ *                           tail-first: its END shows, so the TOP fades in.
  */
 [data-clamp] {
   overflow: hidden;
@@ -457,6 +459,10 @@
   cursor: pointer;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+[data-clamp-from="tail"][data-clamp="closed"] {
+  -webkit-mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to top, #000 calc(100% - 2.5rem), transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   [data-clamp] {
