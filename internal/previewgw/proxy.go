@@ -29,11 +29,13 @@ package previewgw
 //     the browser without the rules above — ReverseProxy forwards it from an
 //     httptrace Got1xxResponse hook, before ModifyResponse exists for it — so
 //     the Transport installs a hook of its own that removes every field
-//     dropAppNonFinal names from the 1xx header IN PLACE (filter1xx). Ours
-//     is the newer trace on the outbound context, and httptrace runs the
-//     newer hook first, on the same map, before ReverseProxy's copies it to
-//     the browser (and clears what it copied, so nothing lingers into the
-//     final response's headers). A Link passes.
+//     dropAppNonFinal names from the 1xx header IN PLACE, then adds the
+//     gateway's own safety headers to it (addSafetyHeaders: nosniff,
+//     Referrer-Policy no-referrer, frame-ancestors), as on a final response
+//     (filter1xx). Ours is the newer trace on the outbound context, and
+//     httptrace runs the newer hook first, on the same map, before
+//     ReverseProxy's copies it to the browser (and clears what it copied, so
+//     nothing lingers into the final response's headers). A Link passes.
 //   - Trailers: an app's trailer named like a header these rules drop or
 //     replace (dropAppNonFinal) is removed, declared (Trailer:) or not
 //     (net/http's TrailerPrefix sends it undeclared), from both the Trailer
@@ -143,7 +145,7 @@ func (g *Gateway) newProxy() *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: g.rewrite,
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			r = r.WithContext(httptrace.WithClientTrace(r.Context(), filter1xx()))
+			r = r.WithContext(httptrace.WithClientTrace(r.Context(), g.filter1xx()))
 			return targetOf(r.Context()).t.rt.RoundTrip(r)
 		}),
 		FlushInterval:  -1,
@@ -223,8 +225,23 @@ func stripAppTrailers(tr http.Header) {
 	}
 }
 
+// addSafetyHeaders adds the headers the gateway sets on every app response
+// it relays, final or 1xx: nosniff, Referrer-Policy no-referrer (replacing
+// the app's) and a frame-ancestors CSP with muster's origin (a second CSP
+// header, intersected by a browser with the app's own).
+func (g *Gateway) addSafetyHeaders(h http.Header) {
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Add("Content-Security-Policy", "frame-ancestors "+frameAncestor(g.cfg.PublicURL))
+}
+
 // filter1xx is the outbound request's trace: it removes the fields
-// dropAppNonFinal names from an app's 1xx header in place. It must be the
+// dropAppNonFinal names from an app's 1xx header in place, then adds the
+// gateway's safety headers (addSafetyHeaders). The map is what ReverseProxy
+// copies onto the browser's 1xx, and net/http's server writes a 1xx's header
+// from the ResponseWriter's map, so a field set here is one the browser
+// receives on the 1xx. (dropAppNonFinal removes the app's CSP first, so the
+// 1xx carries the gateway's alone.) It must be the
 // NEWER trace on the context than ReverseProxy's (installed in the
 // Transport, after ReverseProxy installed its own): httptrace's compose calls
 // the newer hook, then the older, with the same map, so this runs before
@@ -233,13 +250,14 @@ func stripAppTrailers(tr http.Header) {
 // 🔴 A new trace per request: WithClientTrace composes INTO the trace it is
 // given (it rewrites its hook fields), so a shared one would chain every
 // request's ReverseProxy hook onto every later request.
-func filter1xx() *httptrace.ClientTrace {
+func (g *Gateway) filter1xx() *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{Got1xxResponse: func(_ int, h textproto.MIMEHeader) error {
 		for k := range h {
 			if dropAppNonFinal(k) {
 				delete(h, k)
 			}
 		}
+		g.addSafetyHeaders(http.Header(h))
 		return nil
 	}}
 }
@@ -274,9 +292,7 @@ func (g *Gateway) previewResponseHeaders(h http.Header, tg *proxyTarget) {
 	}
 	h.Del("Clear-Site-Data")
 	h.Del("Strict-Transport-Security")
-	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Add("Content-Security-Policy", "frame-ancestors "+frameAncestor(g.cfg.PublicURL))
+	g.addSafetyHeaders(h)
 	if loc := h.Get("Location"); loc != "" {
 		h.Set("Location", g.rewriteLocation(loc, tg))
 	}

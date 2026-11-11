@@ -88,6 +88,10 @@ func fakeComposeChild() int {
 		}
 		if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 			fmt.Fprintln(os.Stderr, "fake child: another child is still running:", err)
+			// The overlap's witness (TestComposeNeverRunsTwoChildrenAtOnce):
+			// without it the supervisor restarts this child after its
+			// backoff, the old one gone by then, and the overlap heals unseen.
+			_ = os.WriteFile(p+".overlap", []byte(strconv.Itoa(os.Getpid())), 0o600)
 			return 1
 		}
 		lock = f
@@ -444,6 +448,33 @@ func TestComposeStatusNamesANewGenerationOnlyWithItsOwnChild(t *testing.T) {
 	}
 	if !sawStop {
 		t.Fatal("control: no sample fell inside the 600ms stop, so the check above saw nothing")
+	}
+}
+
+// 🔴 A new generation's child starts only once the old one has ENDED, never
+// beside it, even when the old one takes a while to stop. Overlapping, the two
+// would share the listen port and both spend the owner's model. The old child
+// here takes 400ms to exit after SIGTERM; a second child started while it
+// lives fails the fake child's lock and leaves a witness file. The supervisor
+// would restart that child after a backoff and come up "running" anyway, so
+// the witness and the start count are what see it, not the status.
+func TestComposeNeverRunsTwoChildrenAtOnce(t *testing.T) {
+	h := newComposeHarness(t)
+	overlap := envValue(h.sup.baseEnv, "CCD_TEST_CHILD_LOCK") + ".overlap"
+	slow := func(gen int64) map[string]any {
+		sp := spec(gen, 1, "aa")
+		sp["env"] = []any{map[string]string{"name": "FAKE_TERM_DELAY_MS", "value": "400"}}
+		return sp
+	}
+	h.writeSpec(slow(1))
+	h.waitFor("generation 1 running", running)
+	h.writeSpec(slow(2))
+	h.waitFor("generation 2 running", func(st composeStatus) bool { return running(st) && st.Generation == 2 })
+	if b, err := os.ReadFile(overlap); err == nil {
+		t.Fatalf("a child (pid %s) started while the previous one still ran", b)
+	}
+	if n := strings.Count(h.log(), "ccd compose: started the chief"); n != 2 {
+		t.Fatalf("%d child starts for two generations; want 2 (one that could not run beside the old child was retried):\n%s", n, h.log())
 	}
 }
 

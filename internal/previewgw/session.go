@@ -114,13 +114,21 @@ func newNonce() string {
 }
 
 // pageStyle is the session page's and notices' whole stylesheet.
-const pageStyle = `body{font:15px/1.45 system-ui,sans-serif;margin:0;padding:16px;max-width:640px;color:#1b1b1b;background:#fff}
-@media (prefers-color-scheme:dark){body{color:#e8e8e8;background:#161616}button{color:inherit;background:#2a2a2a;border-color:#444}}
+//
+// 🔴 Every colour is a :root custom property, and the dark scheme changes
+// ONLY those properties. A dark-scheme rule for an element, as this once had
+// for button, sits earlier in the sheet than the element's own rule at the
+// same specificity and loses to it: the buttons kept their light background
+// under the dark scheme's light, inherited text (TestSessionPageButtonsAreReadable).
+// A button's colour and background are both set: never the UA's default.
+const pageStyle = `:root{color-scheme:light dark;--fg:#1b1b1b;--bg:#fff;--btn-fg:#1b1b1b;--btn-bg:#f4f4f4;--btn-border:#bbb;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--fg:#e8e8e8;--bg:#161616;--btn-fg:#e8e8e8;--btn-bg:#2a2a2a;--btn-border:#555;--err:#ff8a80}}
+body{font:15px/1.45 system-ui,sans-serif;margin:0;padding:16px;max-width:640px;color:var(--fg);background:var(--bg)}
 h1{font-size:17px;margin:0 0 4px}.sub{opacity:.7;margin:0 0 16px;word-break:break-all}
 ul{list-style:none;padding:0;margin:0 0 16px}li{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #8884}
-li .what{flex:1;min-width:0;overflow-wrap:anywhere}button{font:inherit;padding:4px 10px;border:1px solid #bbb;border-radius:6px;background:#f4f4f4;cursor:pointer}
+li .what{flex:1;min-width:0;overflow-wrap:anywhere}button{font:inherit;padding:4px 10px;border:1px solid var(--btn-border);border-radius:6px;color:var(--btn-fg);background:var(--btn-bg);cursor:pointer}
 .slow{display:inline-block;font-size:12px;padding:1px 6px;border-radius:4px;background:#f6d77a;color:#222;margin-bottom:12px}
-.note{opacity:.7}.err{color:#b3261e}`
+.note{opacity:.7}.err{color:var(--err)}`
 
 // renderNotice writes a small text page (no script).
 func (g *Gateway) renderNotice(w http.ResponseWriter, status int, title, body string) {
