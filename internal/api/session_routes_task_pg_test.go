@@ -66,7 +66,7 @@ func refusedAs(text string) string {
 // chiefDefaultSessionText is every message in the chief's default session.
 func (f *routeFixture) chiefDefaultSessionText(t *testing.T) string {
 	t.Helper()
-	sess, err := f.srv.defaultSession(f.asOwner, f.chief)
+	sess, err := f.srv.primarySession(f.asOwner, f.chief)
 	if err != nil {
 		t.Fatal(err)
 	}

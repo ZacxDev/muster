@@ -142,7 +142,7 @@ func (s *Server) viewLineFor(ctx context.Context, chief agents.Agent) (agents.Ch
 // The line is still single use: CreateProposal files at most one proposal
 // of each kind on it (fileProposal's proposalLineUsed).
 func (s *Server) ownerViewLine(ctx context.Context, chief agents.Agent) (line agents.ChatMessage, direct bool, why string) {
-	sess, err := s.defaultSession(ctx, chief)
+	sess, err := s.primarySession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("proposal: %s's default session: %v", chief.Name, err)
 		return agents.ChatMessage{}, false, proposalNoViewRow

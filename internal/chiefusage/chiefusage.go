@@ -175,6 +175,29 @@ type Turn struct {
 	// means "unknown", not "free").
 	Known    bool
 	Duration time.Duration
+	// SessionID is the chat session the turn ran in (chat_sessions.id,
+	// migration 0114), 0 for none stored (a recap, a check); Model the model
+	// that session ran on as muster knew it, "" unknown.
+	SessionID int64
+	Model     string
+}
+
+// SessionContext is a chat session's context fill as its LATEST recorded turn
+// left it (LatestContext): the tokens that turn's last model request was sent
+// — input + cache read + cache creation, the chip's derivation
+// (ui.ContextView) — and the model it ran on.
+type SessionContext struct {
+	Tokens int64
+	Model  string
+	At     time.Time
+}
+
+// ContextReader reads a session's context fill. PGStore implements it; a
+// separate interface so a Store fake need not.
+type ContextReader interface {
+	// LatestContext is session sessionID's latest turn that reported usage;
+	// ok false when it has none.
+	LatestContext(ctx context.Context, sessionID int64) (SessionContext, bool, error)
 }
 
 // Handlers: who handled an inbound plugin message

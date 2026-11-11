@@ -1221,64 +1221,47 @@ func routeNote(r plugins.Route, what string) string {
 }
 
 // routeChiefSession is the conversation of r's chief that hears about r: the
-// chief session of the message's plugin (while that plugin's chief is still
-// r's; for a one-way route, the chief's default session otherwise), for a task
-// route the chief's default session, and for a request route the chief session
-// the owner asked in (while it is still r's chief's). ok is false when there is
-// none to tell.
+// chief's PRIMARY chat (primarySession), for every kind of route — a message
+// route while its plugin's chief is still r's (a one-way one whatever its
+// plugin now names: it OWES its answer, deliverRouteAnswer), a task route, and
+// a request route. ok is false when there is none to tell.
+//
+// 🔴 NEVER A SIDE CHAT, AND NOT THE CHAT THE REQUEST WAS ASKED IN. A route's
+// note, answer and hand-back are deliveries, and deliveries go to the primary
+// only (chief_chats.go): a request route asked from a side chat used to answer
+// there (its ChiefSessionID), and a message route answered in whatever session
+// its plugin last recorded — after a fresh primary, the archived one. The
+// request's own line is still named in the note (routeNote's "their chat
+// message N"), so where it was asked is not lost.
 func (s *Server) routeChiefSession(ctx context.Context, r plugins.Route) (int64, bool) {
 	if r.AgentID == nil || s.ext.Agents == nil {
 		return 0, false
 	}
-	if r.IsRequest() {
-		sess, err := s.ext.Agents.GetSession(ctx, r.ChiefSessionID)
-		if err == nil && sess.AgentID == *r.AgentID {
-			return sess.ID, true
-		}
-		// The session the owner asked in is gone, unreadable or not this
-		// chief's: the chief's default session instead, said in the log, so a
-		// request route's answer and hand-back are never dropped for want of it.
-		chief, cerr := s.ext.Agents.Get(ctx, *r.AgentID)
-		if cerr != nil {
+	if !r.IsRequest() && !r.IsTask() && !r.OneWay {
+		// A message route is told only while its plugin's chief is still r's.
+		if _, ok := s.pluginChiefSession(ctx, r); !ok {
 			return 0, false
 		}
-		def, derr := s.defaultSession(ctx, chief)
-		if derr != nil {
-			return 0, false
-		}
-		why := "it is another agent's"
-		if err != nil {
-			why = "it cannot be read (" + err.Error() + ")"
-		}
-		s.logger.Printf("routes: %s: the chief session the owner asked in (%d) is not usable — %s; using the chief's default session %d",
-			r.RouteID, r.ChiefSessionID, why, def.ID)
-		return def.ID, true
 	}
-	defaultOf := func() (int64, bool) {
-		chief, err := s.ext.Agents.Get(ctx, *r.AgentID)
-		if err != nil {
-			return 0, false
-		}
-		sess, err := s.defaultSession(ctx, chief)
-		if err != nil {
-			return 0, false
-		}
-		return sess.ID, true
+	return s.chiefPrimaryID(ctx, *r.AgentID)
+}
+
+// chiefPrimaryID is the primary chat (primarySession) of the agent with id
+// agentID, by its id; ok false when the agent or its session cannot be read.
+func (s *Server) chiefPrimaryID(ctx context.Context, agentID int64) (int64, bool) {
+	if s.ext.Agents == nil {
+		return 0, false
 	}
-	if r.IsTask() {
-		return defaultOf()
+	chief, err := s.ext.Agents.Get(ctx, agentID)
+	if err != nil {
+		return 0, false
 	}
-	if id, ok := s.pluginChiefSession(ctx, r); ok {
-		return id, true
+	sess, err := s.primarySession(ctx, chief)
+	if err != nil {
+		s.logger.Printf("chief: the primary chat of agent %d: %v", agentID, err)
+		return 0, false
 	}
-	if r.OneWay {
-		// A one-way route OWES its answer (deliverRouteAnswer), which waits for a
-		// session to deliver it to: with the plugin's chief session gone, or no
-		// longer r's chief's, the chief's default session takes it, as a request
-		// route's does, so the answer is never left owed for ever.
-		return defaultOf()
-	}
-	return 0, false
+	return sess.ID, true
 }
 
 // pluginChiefSession is the chief session of message route r's plugin, while

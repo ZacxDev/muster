@@ -129,8 +129,9 @@ func fetchOpenRouterCatalog(ctx context.Context) ([]CatalogModel, error) {
 	}
 	var body struct {
 		Data []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID            string `json:"id"`
+			Name          string `json:"name"`
+			ContextLength int64  `json:"context_length"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -139,7 +140,7 @@ func fetchOpenRouterCatalog(ctx context.Context) ([]CatalogModel, error) {
 	out := make([]CatalogModel, 0, len(body.Data))
 	for _, m := range body.Data {
 		if m.ID != "" {
-			out = append(out, CatalogModel{ID: m.ID, Name: m.Name})
+			out = append(out, CatalogModel{ID: m.ID, Name: m.Name, ContextLength: max(m.ContextLength, 0)})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

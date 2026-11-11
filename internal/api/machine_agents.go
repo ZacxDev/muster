@@ -669,12 +669,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	// one plugin deliveries go to — and every other agent's to its latest, as
 	// before. Whether or not MUSTER_CHIEF_SESSION_RUNTIMES is set: that flag
 	// draws the runtime picker, it does not gate this routing.
-	var sess agents.ChatSession
-	if s.isChiefAgent(ctx, a) {
-		sess, err = s.defaultSession(ctx, a)
-	} else {
-		sess, err = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
-	}
+	sess, err := s.deliverySession(ctx, a)
 	if err != nil {
 		s.logger.Printf("agents: api message session for %q: %v", name, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not open a chat session for that agent"})

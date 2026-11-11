@@ -195,7 +195,7 @@ const (
 // the attention sweep retries it (putDueQuestions). It says which.
 func (s *Server) putQuestionToChief(ctx context.Context, chief agents.Agent, q attention.Ask, about *routedAbout) string {
 	text := renderChiefQuestion(q, askSource(q, s.askHosts(ctx, q)), about, fence.NewNonce())
-	sess, err := s.defaultSession(ctx, chief)
+	sess, err := s.primarySession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("chief_ask: question %d: open the chief's session: %v", q.ID, err)
 		return chiefQuestionLeft

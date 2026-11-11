@@ -78,6 +78,11 @@ const (
 	EventAgentChanged = "agent.changed"
 	// EventChatReply announces a persisted assistant turn.
 	EventChatReply = "chat.reply"
+	// EventChatTurn announces that a conversation of the named agent started
+	// or stopped working: its first turn began, or its last one ended
+	// (countSessionTurn). Open chats of the agent re-fetch #chat-log on it and
+	// draw "working…" from the server's count.
+	EventChatTurn = "chat.turn"
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
 	// EventAttentionChanged announces that something entered or left the

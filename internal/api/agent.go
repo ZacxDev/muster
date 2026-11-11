@@ -852,8 +852,12 @@ func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, te
 		trigger = chiefusage.TriggerKickoff
 	}
 	ctx = chiefusage.WithTrigger(ctx, chiefusage.Trigger{Kind: trigger})
+	// "working…" on an open chat of this conversation while the turn runs —
+	// `muster chief ask`'s turn too (countSessionTurn). Deferred before the
+	// telemetry, so it ends after the turn's usage row is written (chatTurn).
+	defer s.countSessionTurn(a, sessionKey)()
 	var emit agents.StreamEmit
-	if ctx2, usage := s.beginChiefTurnUsage(ctx, a); usage != nil {
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a, sessionKey); usage != nil {
 		ctx, emit = ctx2, usage.observe(nil)
 		defer func() { usage.finish(ctx, err) }()
 	}

@@ -163,6 +163,9 @@ var provisionerDeps = []provisionerDep{
 			// The view's chief mode (view_chief.go): the owner's line runs as a
 			// chief turn (startAgentTurn → chatTurn), as POST /agents/{name}/send.
 			"POST /mirror/view/chief",
+			// A fresh primary's handover (chief_chats.go handOverPrimary): two
+			// chief turns, runUserTurn → chatTurn.
+			"POST /agents/{id}/sessions/fresh-primary",
 		},
 		callers: []string{
 			"(*Server).gatewayTurn",      // Chat (or runTurnWithTools); reached only from handleAPIAgentSendMessage (POST /api/agents/{name}/messages)

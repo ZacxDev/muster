@@ -186,7 +186,7 @@ func (s *Server) startAgentTurn(ctx context.Context, a agents.Agent, session age
 	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 	// Counted NOW, before this request answers: the page this send redirects back
 	// to is drawn next, and must already show "working…" (session_turns.go).
-	endCount := s.sessionTurns.begin(session.SessionKey)
+	endCount := s.countSessionTurn(a, session.SessionKey)
 	safeGo(s.logger, "agent turn (send)", func() {
 		defer cancel()
 		defer s.turns.leave(a.ID)

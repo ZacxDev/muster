@@ -185,10 +185,12 @@ func (s *Server) answerSession(ctx context.Context, a agents.Agent, asked string
 			}
 		}
 	}
-	if st, ok := s.ext.Agents.(agents.SessionRuntimeStore); ok {
-		return st.DefaultSession(ctx, a.ID, a.Name)
-	}
-	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	// 🔴 THE ASKING CHAT FIRST, ON PURPOSE, AND THE PRIMARY OTHERWISE. An answer
+	// to a question the chief asked in a SIDE chat is that chat's own thread
+	// going on — the owner answering it — not a delivery muster makes, so it
+	// goes back where it was asked; with no asking chat it is a delivery, and
+	// goes to the primary (primarySession) like every other.
+	return s.primarySession(ctx, a)
 }
 
 // startAnswerDelivery delivers ask id's answer in the background after the

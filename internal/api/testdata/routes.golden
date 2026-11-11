@@ -143,6 +143,7 @@ GET /tasks/{id}/attachments/{aid}
 GET /ui/agents/repos
 GET /ui/agents/{id}/header
 GET /ui/agents/{id}/status
+GET /ui/agents/{name}/chat-context
 GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/task
 GET /ui/chief/panel
@@ -207,7 +208,11 @@ POST /agents/sessions/{sid}/read
 POST /agents/{id}/model
 POST /agents/{id}/name
 POST /agents/{id}/sessions
+POST /agents/{id}/sessions/fresh-primary
+POST /agents/{id}/sessions/side
+POST /agents/{id}/sessions/{sid}/archive
 POST /agents/{id}/sessions/{sid}/default
+POST /agents/{id}/sessions/{sid}/unarchive
 POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send

@@ -1,6 +1,10 @@
 package api
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/ZacxDev/muster/internal/agents"
+)
 
 // sessionTurnCount counts the turns running for each chat session, keyed by the
 // session's key (agents.ChatSession.SessionKey).
@@ -29,26 +33,39 @@ type sessionTurnCount struct {
 // begin counts one turn for key and returns its end, which is safe to call more
 // than once. An empty key counts nothing.
 func (c *sessionTurnCount) begin(key string) (end func()) {
+	_, end2 := c.beginEdge(key)
+	return func() { end2() }
+}
+
+// beginEdge is begin, also saying whether this turn is the FIRST running for
+// key (first) and, from its end, whether it was the LAST (last): the two moments
+// a conversation starts and stops working, which open pages are told
+// (Server.countSessionTurn). end reports last true at most once, from the call
+// that actually ended the turn.
+func (c *sessionTurnCount) beginEdge(key string) (first bool, end func() (last bool)) {
 	if key == "" {
-		return func() {}
+		return false, func() bool { return false }
 	}
 	c.mu.Lock()
 	if c.running == nil {
 		c.running = map[string]int{}
 	}
 	c.running[key]++
+	first = c.running[key] == 1
 	c.mu.Unlock()
 	var once sync.Once
-	return func() {
+	return first, func() (last bool) {
 		once.Do(func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			if c.running[key] <= 1 {
 				delete(c.running, key)
+				last = true
 				return
 			}
 			c.running[key]--
 		})
+		return last
 	}
 }
 
@@ -60,4 +77,32 @@ func (c *sessionTurnCount) inFlight(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.running[key] > 0
+}
+
+// countSessionTurn counts one turn running in agent a's session sessionKey
+// (sessionTurns) and returns its end, safe to call more than once.
+//
+// 🔴 THE FIRST TURN TO START IN A CONVERSATION AND THE LAST TO END EACH TELL THE
+// OWNER'S OPEN PAGES (EventChatTurn), and that is what makes "working…" show on a
+// chat that did not start the turn: another tab, `muster chief ask` (the machine
+// door), a plugin delivery, a hand-back. Each #chat-log of a's refetches on it
+// (ui.chatLogTrigger) and draws the row from this count — showing on the start,
+// hidden (with whatever was stored) on the end. Before, only the page that sent
+// the message drew the row; every other open chat learned of the turn only from
+// its reply.
+//
+// 🔴 EVERY DOOR THAT RUNS A TURN IN A STORED SESSION COUNTS THROUGH HERE: chatTurn,
+// chatTurnWhenFree, startAgentTurn, the chat socket (from the moment it reads the
+// message) and gatewayTurn (the machine door). TestEveryTurnDoorCountsTheSession
+// pins the set.
+func (s *Server) countSessionTurn(a agents.Agent, sessionKey string) (end func()) {
+	first, last := s.sessionTurns.beginEdge(sessionKey)
+	if first {
+		s.broadcastTo(a.OwnerID, EventChatTurn, a.Name)
+	}
+	return func() {
+		if last() {
+			s.broadcastTo(a.OwnerID, EventChatTurn, a.Name)
+		}
+	}
 }

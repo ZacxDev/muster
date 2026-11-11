@@ -63,6 +63,10 @@ import (
 type CatalogModel struct {
 	ID   string
 	Name string
+	// ContextLength is the model's context window in tokens, as the catalogue
+	// states it (OpenRouter's context_length); 0 unknown. The chief chat's
+	// context chip reads it (modelContextWindow).
+	ContextLength int64
 }
 
 // ModelCatalog is the catalogue the model check reads. api.OpenRouterCatalog is

@@ -150,7 +150,7 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 			// The owner types in a chat session of the chief's that is NOT its
 			// default one (where task deliveries go), so the answer's
 			// destination is measured, not the default.
-			def, err := f.srv.defaultSession(f.asOwner, f.chief)
+			def, err := f.srv.primarySession(f.asOwner, f.chief)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if again, err := f.srv.defaultSession(f.asOwner, f.chief); err != nil || again.ID != def.ID || asked.ID == def.ID {
+			if again, err := f.srv.primarySession(f.asOwner, f.chief); err != nil || again.ID != def.ID || asked.ID == def.ID {
 				t.Fatalf("control: default session %d then %d (%v), the owner's %d", def.ID, again.ID, err, asked.ID)
 			}
 			said := f.typedIn(t, f.owner, asked.ID, "Send this to whoever is on the changelog: "+ownersIdea)
@@ -241,16 +241,19 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 				t.Fatalf("the answered route: %+v", r)
 			}
 
-			// The sweep delivers it to the chief session where the owner asked —
-			// as a note here (no provisioner: the chief cannot be given a turn) —
-			// exactly once, however often it runs.
+			// The sweep delivers it to the chief's PRIMARY chat (chief_chats.go:
+			// every delivery goes there, a request route's answer included — the
+			// chat the owner asked in may be a side chat, which gets none) — as a
+			// note here (no provisioner: the chief cannot be given a turn) —
+			// exactly once, however often it runs. The note names the owner's
+			// message, so where it was asked is not lost.
 			for i := 0; i < 2; i++ {
 				if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}
 			delivered := 0
-			for _, m := range f.chatText(t, said.SessionID) {
+			for _, m := range f.chatText(t, def.ID) {
 				if strings.Contains(m, answer) {
 					delivered++
 					for _, want := range []string{"[muster] Route " + res.RouteID, "your owner's request, their chat message " +
@@ -263,11 +266,11 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 				}
 			}
 			if delivered != 1 {
-				t.Fatalf("the answer reached the owner's chief chat %d time(s), want 1: %q", delivered, f.chatText(t, said.SessionID))
+				t.Fatalf("the answer reached the chief's primary chat %d time(s), want 1: %q", delivered, f.chatText(t, def.ID))
 			}
-			for _, m := range f.chatText(t, def.ID) {
+			for _, m := range f.chatText(t, said.SessionID) {
 				if strings.Contains(m, answer) || strings.Contains(m, res.RouteID) {
-					t.Fatalf("the answer went to the chief's default session, not the one the owner asked in: %q", m)
+					t.Fatalf("the answer went to the chat the owner asked in (a side chat), not the primary: %q", m)
 				}
 			}
 
@@ -523,7 +526,7 @@ func countContaining(msgs []string, sub string) int {
 func TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession(t *testing.T) {
 	f, _ := newRequestRouteFixture(t, false)
 	tok := f.withRouteReply(t)
-	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	def, err := f.srv.primarySession(f.asOwner, f.chief)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +555,7 @@ func TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession(t *tes
 func TestARequestAnswerNeverGoesToAnotherChiefsSession(t *testing.T) {
 	f, _ := newRequestRouteFixture(t, false)
 	tok := f.withRouteReply(t)
-	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	def, err := f.srv.primarySession(f.asOwner, f.chief)
 	if err != nil {
 		t.Fatal(err)
 	}

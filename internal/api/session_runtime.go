@@ -18,7 +18,7 @@ import (
 //
 // A chief chat session is started on a runtime and a model, fixed for its life;
 // muster routes each of its turns by them (sessionRoute). One session per agent
-// is the DEFAULT: plugin deliveries and `chief ask` go to it (defaultSession).
+// is the DEFAULT: plugin deliveries and `chief ask` go to it (primarySession).
 //
 // 🔴 EVERY SESSION THAT EXISTED BEFORE 0030 IS LEGACY AND ROUTES EXACTLY AS IT
 // DID. Its turns carry no route header, so a claude-code chief's ccd puts them
@@ -31,12 +31,31 @@ func (s *Server) sessionRuntimeStore() (agents.SessionRuntimeStore, bool) {
 	return st, ok
 }
 
-// defaultSession is the session a's deliveries go to: its default, elected on
-// first use. A store without the 0030 half keeps the pre-0030 answer, the
-// latest session.
-func (s *Server) defaultSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+// primarySession is THE session a's deliveries go to — the chief's PRIMARY
+// chat (chief_chats.go): its default, elected on first use. A store without
+// the 0030 half keeps the pre-0030 answer, the latest session.
+//
+// 🔴 ONE RULE, ONE PLACE. Every muster-made write to the chief's chat — plugin
+// mail (the Deliverer's Primary hook), an attention answer with no asking chat,
+// a session's question, a route's note, answer and hand-back, an outcome note,
+// `muster chief ask`, a task mention, a refused draft, a closed PR — picks its
+// session here and nowhere else, so none can land in a SIDE chat, and a fresh
+// primary (agents.ChatStore.FreshPrimary) moves all of them at once.
+// TestEveryChiefSessionPickerIsLedgered pins the set of pickers.
+func (s *Server) primarySession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
 	if st, ok := s.sessionRuntimeStore(); ok {
 		return st.DefaultSession(ctx, a.ID, a.Name)
+	}
+	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+}
+
+// deliverySession is the session a message muster delivers to agent a goes
+// to: the chief's PRIMARY chat (primarySession), any other agent's latest
+// session, as before. For a caller that can be handed either (the machine
+// message door, a task mention).
+func (s *Server) deliverySession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+	if s.isChiefAgent(ctx, a) {
+		return s.primarySession(ctx, a)
 	}
 	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 }
@@ -202,7 +221,8 @@ func (s *Server) sessionViews(ctx context.Context, a agents.Agent, sessions []ag
 	chief := defaults && s.isChiefAgent(ctx, a)
 	views := make([]ui.SessionView, 0, len(sessions))
 	for _, sess := range sessions {
-		v := ui.SessionView{ID: sess.ID, Title: sess.Title, Active: sess.ID == activeID, LastActive: sess.UpdatedAt}
+		v := ui.SessionView{ID: sess.ID, Title: sess.Title, Active: sess.ID == activeID, LastActive: sess.UpdatedAt,
+			Archived: chief && sess.ArchivedAt != nil}
 		if chief {
 			v.Runtime, v.Model, v.IsDefault = sess.Runtime, sess.Model, sess.IsDefault
 			if sess.Runtime != "" {

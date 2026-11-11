@@ -239,9 +239,13 @@ func (s *Server) settleClosedPRMessage(ctx context.Context, m plugins.Message, v
 	}
 	s.logger.Printf("prclosed: message %d: %s", m.ID, c.reason)
 	if c.note != "" && p.ChiefAgentID != nil && p.ChiefSessionID != nil && s.ext.Agents != nil {
-		if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *p.ChiefAgentID,
-			SessionID: *p.ChiefSessionID, Role: "user", Content: c.note}); err != nil {
-			s.logger.Printf("prclosed: message %d: note to the chief: %v", m.ID, err)
+		// The chief's PRIMARY chat (primarySession): the plugin's recorded
+		// session may be an archived former primary.
+		if primary, ok := s.chiefPrimaryID(ctx, *p.ChiefAgentID); ok {
+			if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *p.ChiefAgentID,
+				SessionID: primary, Role: "user", Content: c.note}); err != nil {
+				s.logger.Printf("prclosed: message %d: note to the chief: %v", m.ID, err)
+			}
 		}
 	}
 	return true

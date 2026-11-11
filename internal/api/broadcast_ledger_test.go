@@ -43,6 +43,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// THE outcome note's writer (writeChiefNote), for a pod's outcome and a
 		// host dispatch's: the chief's owner, which both callers check is the
 		// agent's (or the row's) owner.
+		// A conversation of the agent started or stopped working
+		// (countSessionTurn): the agent's owner, whose open chats draw it.
+		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)",
+		"(*Server).countSessionTurn → broadcastTo(a.OwnerID)", // its start and its end
 		"(*Server).writeChiefNote → broadcastTo(chief.OwnerID)",
 		"(*Server).applyTaskStatus → broadcast(ctx)",
 		// A claim made or released after a status write (task_claims.go): ctx

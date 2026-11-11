@@ -207,7 +207,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 
 	// The default of the live shape is the legacy session, not the newer one.
-	if d, err := srv.defaultSession(asOwner, chief); err != nil || d.ID != legacy.ID {
+	if d, err := srv.primarySession(asOwner, chief); err != nil || d.ID != legacy.ID {
 		t.Fatalf("the chief's default: %+v, %v; want its legacy session %d (the plugin session %d is newer)", d, err, legacy.ID, pluginSess.ID)
 	}
 
@@ -275,7 +275,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
 		t.Errorf("a cross-site default move: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
 	}
-	if d, _ := srv.defaultSession(asOwner, chief); d.ID != legacy.ID {
+	if d, _ := srv.primarySession(asOwner, chief); d.ID != legacy.ID {
 		t.Errorf("a cross-site POST moved the default to %d; want it still %d", d.ID, legacy.ID)
 	}
 
@@ -379,7 +379,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if rec := do("POST", "/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(other.ID, 10)+"/default", "", ""); rec.Code != http.StatusNotFound {
 		t.Errorf("making the worker's session the chief's default: %d; want 404", rec.Code)
 	}
-	if d, _ := srv.defaultSession(asOwner, chief); d.ID != or.ID {
+	if d, _ := srv.primarySession(asOwner, chief); d.ID != or.ID {
 		t.Errorf("a refused move changed the default to %d", d.ID)
 	}
 }

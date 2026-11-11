@@ -70,7 +70,13 @@ const requests: { first: string; outputs: { call_id: string; output: string }[];
 
 const sse = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 
-type Out = { text?: string; call?: { id: string; name: string; args: Record<string, unknown> } };
+type Out = {
+  text?: string;
+  call?: { id: string; name: string; args: Record<string, unknown> };
+  // The turn's tokens, in ccd's (Anthropic) split: what the chief chat's
+  // context chip reads back from the turn's usage row.
+  usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+};
 
 function answer(res: http.ServerResponse, out: Out) {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -82,7 +88,7 @@ function answer(res: http.ServerResponse, out: Out) {
   if (out.call) {
     output.push({ type: 'function_call', call_id: out.call.id, name: out.call.name, arguments: JSON.stringify(out.call.args) });
   }
-  res.end(sse('response.completed', { response: { status: 'completed', output } }));
+  res.end(sse('response.completed', { response: { status: 'completed', output, ...(out.usage ? { usage: out.usage } : {}) } }));
 }
 
 // The OpenRouter models the fake chief offers beside Claude.
@@ -129,6 +135,13 @@ async function script(body: { input?: { type?: string; content?: string; call_id
     // gate per run, so a repeated run never finds an earlier run's gate open).
     await gate('kickoff-' + kick[1]).wait();
     return { text: 'Kickoff done: looked at the task.' };
+  }
+  if (first.includes('SIDE-USAGE')) {
+    // 120,000 + 30,000 + 2,000 = 152k in context (output is not counted).
+    return {
+      text: 'GOT: ' + first.slice(-200),
+      usage: { input_tokens: 120_000, output_tokens: 777, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 2_000 },
+    };
   }
   const hold = /HOLD-ME-(\w+)/.exec(first);
   if (hold) {
@@ -544,3 +557,138 @@ test.describe('a dispatched agent', () => {
     tasksMade.splice(tasksMade.indexOf(task.id), 1);
   });
 });
+
+// --- the chief's PAGE: "working…" that holds, and primary + side chats ---------
+//
+// THE OPERATOR'S REPORT: in a fresh chief chat, "ping" drew "working…", and a
+// #chat-log refetch moments later re-rendered the log with the row HIDDEN while
+// the chief was still working; the reply came later out of nowhere. Two halves:
+// the server's count of the turn (internal/api countSessionTurn — now counted
+// from the moment the socket reads the message) and the page's own (the row is
+// no longer hidden when its socket drops mid-turn; a reconnect redraws it from
+// the server; a turn started anywhere else tells every open chat).
+
+const pageLog = (page: Page) => page.locator('#chat-log');
+const pageWorking = (page: Page) => page.locator('#chat-working');
+const bar = (page: Page) => page.locator('[data-chief-chat-bar]');
+
+async function openChiefPage(page: Page) {
+  await signIn(page, origin);
+  await page.goto(origin + '/agents/' + chiefName);
+  await expect(page.locator('#chat-form')).toBeVisible();
+  // The chat's socket is open: a send goes over it, not the form's fallback.
+  await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+}
+
+async function sendOnPage(page: Page, text: string) {
+  const input = page.locator('#chat-input');
+  await input.fill(text);
+  await input.press('Enter');
+}
+
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`the chief page on a ${vp.name}`, () => {
+    test.use({ ...vp.use, storageState: { cookies: [], origins: [] } });
+
+    test('"working…" holds across a socket drop mid-turn, and goes when the reply lands', async ({ page }) => {
+      test.setTimeout(90_000);
+      const key = 'drop' + vp.name + stamp;
+      await openChiefPage(page);
+      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await sendOnPage(page, `ping HOLD-ME-${key}`);
+      await expect(pageWorking(page)).toBeVisible();
+      await expect.poll(() => gate(key).entered, { timeout: 15_000 }).toBe(1);
+      // The socket drops mid-turn (a network blip, a sleeping phone): the turn
+      // runs on, detached, on the server.
+      await page.evaluate(() => {
+        (window as any).__droppedWS = (window as any).__cgChat.ws;
+        (window as any).__cgChat.ws.close();
+      });
+      // A new socket opens…
+      await expect
+        .poll(() => page.evaluate(() => {
+          const c = (window as any).__cgChat;
+          return !!c && !!c.ws && c.ws !== (window as any).__droppedWS && c.ws.readyState === 1;
+        }), { timeout: 15_000 })
+        .toBe(true);
+      // …and the row is the SERVER's: drawn showing, from its count of the turn.
+      await expect(pageWorking(page), 'the row is redrawn from the server while the turn runs').toHaveAttribute('data-turn-in-flight', '', { timeout: 10_000 });
+      await expect(pageWorking(page)).toBeVisible();
+      await expect(pageLog(page)).not.toContainText(`HELD-REPLY-${key}`);
+      gate(key).release();
+      await expect(pageLog(page)).toContainText(`HELD-REPLY-${key}`, { timeout: 20_000 });
+      await expect(pageWorking(page)).toBeHidden();
+    });
+
+    test('a turn started elsewhere — `muster chief ask` — shows "working…" on the open chat', async ({ page }) => {
+      test.setTimeout(90_000);
+      const key = 'ask' + vp.name + stamp;
+      await openChiefPage(page);
+      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      await expect(pageWorking(page)).toBeHidden();
+      // The CLI's door, not this page: the turn runs in the primary chat.
+      const asked = api('POST', `/api/agents/${chiefName}/messages`, { message: `from the CLI HOLD-ME-${key}` });
+      await expect.poll(() => gate(key).entered, { timeout: 15_000 }).toBe(1);
+      await expect(pageWorking(page), 'the open chat shows the turn it did not start').toBeVisible({ timeout: 10_000 });
+      gate(key).release();
+      expect((await asked).status).toBe(200);
+      await expect(pageLog(page)).toContainText(`HELD-REPLY-${key}`, { timeout: 20_000 });
+      await expect(pageWorking(page)).toBeHidden();
+    });
+
+    test('side chats: a labelled New side chat, the switcher lists the primary first, the context chip', async ({ page }) => {
+      test.setTimeout(90_000);
+      await openChiefPage(page);
+      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary');
+      const primaryURL = page.url();
+      // The control has VISIBLE text; the header's icon-only ＋ is gone.
+      const newSide = bar(page).getByRole('button', { name: 'New side chat', exact: true });
+      await expect(newSide).toBeVisible();
+      await expect(newSide).toHaveText('New side chat');
+      await expect(page.getByRole('button', { name: 'New chat session' })).toHaveCount(0);
+      await newSide.click();
+      await page.waitForURL((u) => u.toString() !== primaryURL);
+      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'side');
+      await expect.poll(() => page.evaluate(() => (window as any).__cgChat?.ws?.readyState ?? -1), { timeout: 15_000 }).toBe(1);
+      // A turn in the side chat, which reports its tokens: the chip shows them
+      // when the turn ends, no reload.
+      await sendOnPage(page, `side question SIDE-USAGE (${vp.name})`);
+      await expect(pageLog(page)).toContainText(`GOT: side question SIDE-USAGE (${vp.name})`, { timeout: 20_000 });
+      const chip = bar(page).locator('#chief-context-chip');
+      await expect(chip).toBeVisible({ timeout: 10_000 });
+      await expect(chip.locator('[data-ctx-count]')).toHaveText('152k');
+      // A tap shows the exact count.
+      await chip.click();
+      await expect(page.locator('#chief-context-detail [data-ctx-detail]')).toContainText('152,000 tokens');
+      await page.keyboard.press('Escape');
+      // No sideways scroll at the phone's width, with the bar's actions in it.
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      // The switcher: the primary first, with its badge, then this side chat.
+      await page.locator('label[for="session-drawer"]').first().click();
+      const drawer = page.getByRole('dialog', { name: 'Chat history' });
+      await expect(drawer).toBeVisible();
+      const rows = drawer.locator('a');
+      await expect(rows.first()).toContainText('Primary');
+      // The drawer was drawn with the page, before the first line titled this
+      // chat: the row is this chat by its link, not by its title.
+      const here = new URL(page.url()).searchParams.get('session');
+      await expect(rows.nth(1)).toHaveAttribute('href', new RegExp(`[?&]session=${here}(&|$)`));
+      // Switch back to the primary.
+      await rows.first().click();
+      await expect(bar(page)).toHaveAttribute('data-chief-chat-kind', 'primary', { timeout: 10_000 });
+      await expect(pageLog(page)).not.toContainText('side question SIDE-USAGE');
+    });
+
+    test('the panel has the labelled New side chat too', async ({ page }) => {
+      test.setTimeout(60_000);
+      await openChief(page);
+      const newSide = panel(page).locator('[data-chief-chat-bar]').getByRole('button', { name: 'New side chat', exact: true });
+      await expect(newSide).toBeVisible();
+      await expect(newSide).toHaveText('New side chat');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+  });
+}

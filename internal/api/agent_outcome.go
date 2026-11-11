@@ -602,7 +602,7 @@ func (s *Server) noteOutcomeToChief(octx context.Context, a agents.Agent, outcom
 // A pod's outcome (noteOutcomeToChief) and a host dispatch's
 // (noteHostOutcomeToChief) both write through it.
 func (s *Server) writeChiefNote(octx context.Context, chief agents.Agent, content string) error {
-	sess, err := s.defaultSession(octx, chief)
+	sess, err := s.primarySession(octx, chief)
 	if err != nil {
 		return fmt.Errorf("the chief's session: %w", err)
 	}

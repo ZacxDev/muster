@@ -428,7 +428,9 @@ func chiefPanelActions(v ChiefPanelView) g.Node {
 		ID(chiefPanelActionsID),
 		hx("hx-swap-oob", "true"),
 		Class("ml-auto flex items-center gap-0.5"),
-		g.If(v.Configured, chiefNewThreadButton(v.Chat.ID)),
+		// The new chat is the chat bar's labelled "New side chat" (chief_chats.go),
+		// over the transcript; the title bar keeps the thread list.
+		g.If(v.Configured && v.Chat.ChiefChat == nil, chiefNewThreadButton(v.Chat.ID)),
 		g.If(v.Configured, chatHistoryButton(chiefThreadsToggleID)),
 	)
 }
@@ -639,8 +641,14 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		}
 		return chiefThreadNotice(state, msg, "text-muted")
 	}
-	rows := make([]g.Node, 0, len(v.Threads))
+	rows := make([]g.Node, 0, len(v.Threads)+1)
+	archivedShown := false
 	for _, sess := range v.Threads {
+		// The archived chats come last (agents.SwitcherOrder), under their heading.
+		if sess.Archived && !archivedShown {
+			archivedShown = true
+			rows = append(rows, H3(Class("mt-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(chiefArchivedLabel)))
+		}
 		title := textplain.Title(sess.Title)
 		if title == "" {
 			title = "New thread"
@@ -663,7 +671,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 			Div(
 				Class("flex w-full items-baseline gap-2"),
 				Span(Class("mr-auto truncate"), g.Text(title)),
-				sessionDefaultBadge(sess),
+				chiefChatRowExtras(sess),
 				g.If(!sess.LastActive.IsZero(),
 					Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 				),

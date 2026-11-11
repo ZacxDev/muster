@@ -145,6 +145,10 @@ type AgentDetailView struct {
 	// reloaded mid-turn then says the agent is working, and the chat.reply
 	// refetch that brings the reply draws it hidden again.
 	TurnInFlight bool
+	// ChiefChat is the chief chat's bar (chief_chats.go): set on the chief's
+	// chat only, nil on every other agent's — which keeps the header's ＋ and
+	// draws no bar.
+	ChiefChat *ChiefChatBar
 	// DispatchCards is each agent_dispatch call's card, by its tool id
 	// (internal/api dispatchCardsFor); a call with none draws as a plain tool row.
 	DispatchCards map[string]DispatchCard
@@ -241,6 +245,10 @@ type SessionView struct {
 	// alone — the title is already on screen, so repeating it as a snippet would
 	// claim a body match that does not exist.
 	Snippet string
+	// Unread (a chief's chat, agents.ChatListing): a reply arrived since the
+	// chat was last opened — the switcher's unread dot. Archived: the chat is
+	// archived, listed apart under "Archived".
+	Unread, Archived bool
 }
 
 // AgentDetailPage renders the full agent detail document: live logs (SSE) and a
@@ -455,6 +463,12 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	if v.FocusHistory != "" {
 		n = 3
 	}
+	// A chief's chat has no ＋ here: its new chat is the chat bar's labelled
+	// "New side chat" (chief_chats.go), which an operator could find.
+	chief := v.ChiefChat != nil
+	if chief {
+		n--
+	}
 	gap := "gap-3 "
 	if compact {
 		gap = "gap-1 "
@@ -462,7 +476,7 @@ func agentHeaderToolsWith(v AgentDetailView, compact bool) g.Node {
 	return Div(
 		g.Attr("data-header-tools", ""),
 		Class("flex shrink-0 items-center "+gap+agentHeaderToolsWidth(n, compact)),
-		newChatButton(v.ID),
+		g.If(!chief, newChatButton(v.ID)),
 		chatHistoryButton(sessionDrawerID),
 		g.If(v.FocusHistory != "", focusHistoryButton()),
 	)
@@ -487,6 +501,8 @@ func agentHeaderToolsWidth(n int, compact bool) string {
 		return "w-[8.75rem]"
 	case n == 3:
 		return "w-[9.75rem]"
+	case n == 1:
+		return "w-11"
 	case compact:
 		return "w-[5.75rem]"
 	}
@@ -917,6 +933,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.Card.ID != 0, agentNotices(v.Card)),
 		// The rename offer, when the agent's work has moved on from its name.
 		g.If(v.Surface == ChatSurfacePage, driftBanner(v.Drift)),
+		// A chief chat's bar: which chat, its context, and the chat actions.
+		chiefChatBar(v),
 		Div(
 			ID("chat-log"),
 			// 🔴 NO CARD AROUND THE TRANSCRIPT: the messages sit straight on the
@@ -1129,6 +1147,11 @@ const ChatLogSettle = "settle:0ms"
 //   - sse:chat.reply — a turn was persisted (the kickoff turn included).
 //   - task:changed — the completion banner's Mark-complete button.
 //   - sse:agent.changed for THIS agent — its status moved.
+//   - sse:chat.turn for THIS agent — a conversation of it started or stopped
+//     working (internal/api countSessionTurn), from ANY door: another tab,
+//     `muster chief ask`, a plugin delivery, a hand-back. The refetch draws
+//     "working…" from the server's count, so an open chat shows a turn it did
+//     not start (and hides it when the turn ends).
 //   - htmx:sseOpen — the page's /events stream (re)opened. 🔴 A broadcast is
 //     sent ONCE; one fired before this page's stream was open (a turn stored in
 //     the moment between the page rendering and its stream connecting, or while
@@ -1227,6 +1250,7 @@ func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
 	return ChatLogRefetchEvent + ", sse:chat.reply from:body, task:changed from:body, " +
 		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
+		"sse:chat.turn[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
 		"htmx:sseOpen from:body"
 }
 
@@ -1257,8 +1281,15 @@ func chatLogTrigger(agentName string) string {
 // sessions to /operator rather than /agents/{name}. Task #633 deleted that page,
 // so every agent's drawer links into the agent-detail route.
 func sessionDrawer(v AgentDetailView) g.Node {
-	links := make([]g.Node, 0, len(v.Sessions))
+	links := make([]g.Node, 0, len(v.Sessions)+1)
+	archivedShown := false
 	for _, sess := range v.Sessions {
+		// A chief's archived chats come last (agents.SwitcherOrder), under a
+		// heading of their own.
+		if sess.Archived && !archivedShown {
+			archivedShown = true
+			links = append(links, H3(Class("mt-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted"), g.Text(chiefArchivedLabel)))
+		}
 		// A chat title is LLM- or user-written and routinely carries markdown;
 		// the drawer shows what a reader of it would see (textplain).
 		title := textplain.Title(sess.Title)
@@ -1278,6 +1309,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			// to the picked session. Boosting is a safe top-level body swap.
 			Class(cls+" gap-2"),
 			Span(Class("mr-auto truncate"), g.Text(title)),
+			g.If(v.ChiefChat != nil, chiefChatRowExtras(sess)),
 			g.If(!sess.LastActive.IsZero(),
 				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 			),
@@ -2139,6 +2171,9 @@ func agentChatScript(name string) g.Node {
     // point is to SEE that the agent is working.
     forceScroll();
   }
+  // The global #chat-log afterSwap re-shows the row while this page's own turn
+  // streams (see there).
+  session.showWorking = showWorking;
   function hideWorking() {
     var working = workingEl();
     if (!working) return;
@@ -2466,6 +2501,11 @@ func agentChatScript(name string) g.Node {
     if (session.disposed) return;
     // 🔴 ONE SOCKET: the one before is detached and closed first.
     drop();
+    // A socket REPLACED mid-turn (a wake judged it stale) never says "done" to
+    // this page: the new one knows nothing of the turn. The page stops waiting
+    // on it, and the new socket's open redraws the log — and the row — from the
+    // server (onopen).
+    if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); }
     // Its echoes will never come: a bubble it left waiting keeps its plain
     // text (the chat log's refetch redraws it), and no echo on this socket may
     // land in it.
@@ -2483,6 +2523,10 @@ func agentChatScript(name string) g.Node {
     madeAt = lastAt = Date.now(); beat = false;
     sock.onopen = function () {
       retry = 0; lastAt = Date.now();
+      // A RECONNECT redraws the log from the server (its "working…" included):
+      // whatever happened while there was no socket — a turn that ended, one
+      // that started — is on the server, not in this page.
+      if (why) { session.refetchOwed = true; owedRefetch(); }
       if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
     };
     sock.onmessage = function (ev) {
@@ -2500,9 +2544,14 @@ func agentChatScript(name string) g.Node {
       if (opening) opening.end(why);
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code });
       opening = null; live = null;
-      // A turn streaming over it is over as far as this socket goes: the
-      // chat log's refetch draws what was stored.
-      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; hideWorking(); resetTurn(); owedRefetch(); }
+      // A turn streaming over it is over as far as this socket goes — but NOT
+      // over as far as the server goes: the turn runs on to its end detached
+      // from the socket (handleAgentWS). 🔴 SO THE ROW IS NOT HIDDEN HERE. It used
+      // to be, and then nothing redrew it: a dropped or replaced socket mid-turn
+      // left "working…" gone while the chief worked, until the reply landed.
+      // The refetch draws the transcript as stored AND the row from the
+      // server's count — showing while the turn runs.
+      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); session.refetchOwed = true; owedRefetch(); }
       retry++;
       // A hidden or offline page waits for its wake (live.go).
       if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
@@ -2826,6 +2875,11 @@ func agentChatScript(name string) g.Node {
         var xhr = e.detail.xhr;
         var ver = xhr && xhr.getResponseHeader('` + ChatLogVersionHeader + `');
         if (ver) t.setAttribute('data-chat-version', ver); else t.removeAttribute('data-chat-version');
+        // While THIS page's own turn streams, the row stays up whatever the
+        // render said: the page knows a turn is running that a render can
+        // have been drawn before (the guard below cancels most refetches then,
+        // not every one — a reconnect's is let through).
+        if (window.__cgChat && window.__cgChat.streaming && window.__cgChat.showWorking) window.__cgChat.showWorking();
         // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
         // (stick !== false). Default to pinning when there's no live chat session.
         if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;

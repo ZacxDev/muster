@@ -421,7 +421,7 @@ type Extensions struct {
 	// refuses a runtime.
 	//
 	// ⚠ IT GATES THE PICKER, NOT THE ROUTING. Plugin deliveries and `chief ask`
-	// go to the chief's DEFAULT session (defaultSession) whether or not this is
+	// go to the chief's DEFAULT session (primarySession) whether or not this is
 	// set, on any store with the 0030 half — so on such a deployment a plugin no
 	// longer gets a session of its own even with this empty. That is the
 	// operator's "one pinned default session" decision, not a leak of the flag.
@@ -635,7 +635,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 			Hints: s.pluginHints(ext),
 			// The chief's restricted tool set (the Compose chief's): the turn
 			// names only tools it holds.
-			Tools: s.ChiefTurnTools})
+			Tools: s.ChiefTurnTools,
+			// The chief's PRIMARY chat: the one place a delivery's session is picked.
+			Primary: s.primarySession})
 		if err != nil {
 			s.logger.Printf("plugins: no deliverer: %v", err)
 		}
