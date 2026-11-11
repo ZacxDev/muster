@@ -554,9 +554,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// CLOSED: if any may remain, the password is not set and the person is told
 	// to ask for a new link — the sessions are already ended, which is the safe
 	// half (TestAResetDeletesEveryPasskey,
-	// TestAResetFailsClosedWhenPasskeysCannotBeRemoved). Unticked: GoTrue's
-	// passkey API is not called at all
-	// (TestAResetWithoutTheBoxNeverCallsThePasskeyAPI).
+	// TestAResetFailsClosedWhenPasskeysCannotBeRemoved). Unticked: nothing is
+	// deleted, and GoTrue's passkey API is only READ, after the password is
+	// set, to word the note (countPasskeys) — its failure fails nothing
+	// (TestAResetWithoutTheBoxNeverDeletesAPasskey).
 	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
 	done := resetDonePath(removePasskeys, 0)
 	if removePasskeys {
@@ -591,7 +592,26 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
+	if !removePasskeys {
+		// What the page says about the kept passkeys depends on whether there
+		// are any (resetDonePath). Counted AFTER the password is set and only
+		// read: a GoTrue failure here changes the sentence, never the reset.
+		done = resetDonePath(false, s.countPasskeys(r.Context(), ip, c.Subject))
+	}
 	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut, done)
+}
+
+// countPasskeys is how many passkeys GoTrue lists for sub, or -1 when it
+// cannot say (within 5 seconds).
+func (s *Server) countPasskeys(ctx context.Context, ip, sub string) int {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	list, err := s.gt.Client.AdminPasskeys(ctx, ip, sub)
+	if err != nil {
+		s.logger.Printf("reset: could not count the passkeys that were kept: %v", err)
+		return -1
+	}
+	return len(list)
 }
 
 // signInAfterCutoff is signInNewLogin for a session that must be issued AFTER

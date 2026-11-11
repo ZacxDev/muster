@@ -177,6 +177,7 @@ func (s *Server) handlePasskeySignInOptions(w http.ResponseWriter, r *http.Reque
 		s.writeGoTrueRefusal(w, "sign-in options", err, PasskeysOffRefusal)
 		return
 	}
+	s.gt.noteRPID(opts)
 	s.writeJSON(w, http.StatusOK, map[string]any{"challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
 }
 
@@ -218,10 +219,23 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyNoUVRefusal})
 		return
 	}
+	credID, handle, _ := gotrue.AssertionIdentity(canonical)
 	sess, err := s.gt.Client.PasskeySignInVerify(r.Context(), ip, body.ChallengeID, canonical)
 	if err != nil {
 		if gotrue.IsClientError(err) && !isStatus(err, http.StatusTooManyRequests) {
 			outcome = outcomeFailed
+		}
+		// A refusal of a credential muster can show is not this account's says
+		// so, and lets the page tell the password manager to stop offering it
+		// (signalUnknownCredential; passkey_signal.go). Only GoTrue's
+		// verification failure is asked about: a 429, a ban or an outage is not
+		// about the credential.
+		var ae *gotrue.APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusBadRequest && ae.Code == "webauthn_verification_failed" &&
+			s.credentialUnknown(r.Context(), ip, credID, handle) {
+			s.logger.Printf("passkeys: refused a sign-in with a credential that is not registered (from %s)", ip)
+			s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyUnknownRefusal, "credential_unknown": true})
+			return
 		}
 		s.writeGoTrueRefusal(w, "a passkey sign-in", err, PasskeyRejectedRefusal)
 		return
@@ -242,6 +256,7 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 	outcome = outcomeSucceeded
 	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
+	s.backfillCredentialID(r.Context(), ip, u.GotrueSub, credID)
 	s.logger.Printf("login: user %d signed in with a passkey", u.ID)
 	s.writeJSON(w, http.StatusOK, map[string]any{"redirect": safeReturnTo(body.Next)})
 }
@@ -386,7 +401,19 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 `+skip+`
 <a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>
-<script>`+ui.PasskeyJS+passkeyAddJS+`</script>`)
+<script>`+ui.PasskeyJS+passkeyAddJS+`</script>`+s.passkeySignalNode(ctx, creds, list, flags))
+}
+
+// passkeySignalNode is the Signal API hand-off for the person in creds, whose
+// passkeys GoTrue listed as list (flags: their records), or "" when there is
+// nothing to send. Drawn on every /account/passkeys — so a removal, which
+// redirects there, is signalled on the page it lands on.
+func (s *Server) passkeySignalNode(ctx context.Context, creds gotrueCreds, list []gotrue.Passkey, flags map[string]map[string]any) string {
+	sig, ok := s.signalFor(ctx, creds.claims.Subject, creds.claims.Email, list, flags)
+	if !ok {
+		return ""
+	}
+	return signalNode(sig)
 }
 
 // refuseStaleCredentialChange answers 401 reauth_required unless the request's
@@ -417,6 +444,7 @@ func (s *Server) handlePasskeyAddOptions(w http.ResponseWriter, r *http.Request)
 		s.writeGoTrueRefusal(w, "registration options", err, "A passkey cannot be added right now.")
 		return
 	}
+	s.gt.noteRPID(opts)
 	s.writeJSON(w, http.StatusOK, map[string]any{"challenge_id": o.ChallengeID, "options": json.RawMessage(opts)})
 }
 
@@ -447,7 +475,13 @@ func (s *Server) handlePasskeyAddVerify(w http.ResponseWriter, r *http.Request) 
 		s.writeGoTrueRefusal(w, "a passkey registration", err, "That passkey could not be added.")
 		return
 	}
-	s.setPasskeyFlag(r.Context(), creds.claims.Subject, p.ID, map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible})
+	rec := map[string]any{"synced": flags.BackedUp, "can_sync": flags.BackupEligible}
+	// The credential id too: GoTrue does not return it, and the Signal API
+	// needs it (passkey_signal.go).
+	if id, err := gotrue.AttestationCredentialID(canonical); err == nil {
+		rec[passkeyCredIDKey] = id
+	}
+	s.setPasskeyFlag(r.Context(), creds.claims.Subject, p.ID, rec)
 	uid := authz.MustFrom(r.Context()).UserID
 	if s.gt.Accounts != nil {
 		_ = s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: uid, Via: authz.ViaSession}, "user.passkey_added",

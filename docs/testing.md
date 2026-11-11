@@ -125,6 +125,17 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
 - a tapped tool-group expand is excluded as input, and the same expand by
   script is counted (the spec's own check of its exclusion).
 
+**Passkeys.** `authenticator(page)` in `e2e/lib/webauthn.ts` attaches
+Chromium's virtual authenticator, and also holds every conditional (autofill)
+WebAuthn request pending until the page aborts it. With a virtual
+authenticator, Chromium answers a conditional request at once with the first
+matching passkey, so without the hold every visit to `/login` on a page that
+holds a passkey would sign in by itself. A real person who ignores the
+suggestions leaves the request pending in the same way. `recordWebAuthn(page,
+…)`, called before `authenticator`, reports each request, abort and Signal API
+call to the spec, and its `autofill = 'real'` lets the conditional request
+through (`passkeys.spec.ts`).
+
 `e2e/verdict.mjs` fails the run on any skip, or on fewer passes than its floor.
 In CI the suite runs as parallel legs, each with its own Postgres
 (`e2e/legs.json`). The `e2e` check aggregates them, and refuses a spec that ran

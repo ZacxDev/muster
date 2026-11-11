@@ -78,16 +78,73 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
   there. The sessions, tokens and phones are already gone, but the password is
   NOT changed and NO audit row is written. Any passkeys not yet deleted remain,
   and the person needs a new reset link.
-- The account page the reset lands on says whether the passkeys were kept or
-  how many were removed.
+- The account page the reset lands on says how many passkeys were removed, or,
+  with the box unticked, that they were kept. It says "kept" only when the
+  person has at least one: after the password is set, the reset counts them
+  through GoTrue's admin API (a read; it deletes nothing). If that count fails,
+  the page says "Any passkeys you have were kept", and the reset is not held up.
 - The box is on every reset page. It does not depend on GoTrue reporting
   passkeys as enabled, because passkeys made while they were on can outlive
   that setting.
 - You manage your passkeys at **Account → Passkeys** (`/account/passkeys`).
-  Adding one needs a sign-in from the last five minutes.
-- Signing in with a passkey needs no username.
+  The link is on the Account page of every gotrue-mode server, whether or not
+  GoTrue reports passkeys as enabled; with them off the page says so. Adding
+  one needs a sign-in from the last five minutes.
+- Signing in with a passkey needs no username. The sign-in page offers three
+  ways:
+  - **Autofill.** The email field is `autocomplete="username webauthn"`, and
+    where the browser supports conditional mediation
+    (`getClientCapabilities().conditionalGet` or
+    `isConditionalMediationAvailable()`) the page starts a conditional
+    request on load. The browser then lists the account's passkeys in the
+    field's suggestions, and picking one signs in.
+  - **Sign in with a passkey.** The button first aborts the pending autofill
+    request (a page can run one WebAuthn request at a time). That abort shows
+    nothing. Each request uses a challenge of its own, and a new one is
+    fetched when a request ends.
+  - **Use a passkey from my phone.** The same request with the WebAuthn
+    Level 3 hint `hybrid` (Chrome 128 and later), which goes straight to the
+    phone's QR code. A password-manager extension that intercepts the request
+    may ignore the hint and show its own window. That window's "use another
+    device" option hands over to the browser's.
+- When no passkey was used (the sheet was closed, the device has none for
+  this site, or it timed out) the page says "No passkey was used" and lists
+  the other ways in. It does not say "cancelled", because the browser does
+  not tell the page which of those happened. A passkey that was checked and
+  refused shows the server's reason.
 - Passkeys can also confirm a step-up; see
   [sending-and-step-up.md](sending-and-step-up.md).
+
+### Keeping password managers in step (the Signal API)
+
+A removed passkey stays in the person's password manager or phone, which keeps
+offering it. Where the browser has the WebAuthn Signal API, muster tells it.
+Every call is feature-detected, and a browser without the API is left as it
+was.
+
+- `/account/passkeys` calls `signalAllAcceptedCredentials` with every passkey
+  the account has, and `signalCurrentUserDetails` with its email. A removal
+  redirects there, so the removed passkey is signalled away on the next page.
+- The page a reset that removed passkeys lands on signals the passkeys GoTrue
+  still lists (none, straight after the reset). The set comes from GoTrue, not
+  from the page's query string.
+- A passkey sign-in that GoTrue refuses calls `signalUnknownCredential`, but
+  only when muster can show the passkey is not the account's. GoTrue answers
+  every failed passkey sign-in the same way, so muster checks the user the
+  passkey names: no such user, a user with no passkeys, or a user whose
+  passkeys all have known ids and none is this one. The page then says "That
+  passkey is no longer registered here."
+
+The calls need the user handle and the credential ids. GoTrue v2.197.0
+registers the user handle as the GoTrue user id's text, so muster derives it.
+GoTrue's passkey list does not return credential ids, so muster records each
+one in the user's GoTrue `app_metadata` (`muster_passkeys`, beside the backup
+flags) when the passkey is added. A passkey added before muster recorded ids
+gets its id at its next sign-in, when it is the account's only passkey without
+one. 🔴 Until every passkey of an account has a known id,
+`signalAllAcceptedCredentials` is not sent for that account: a partial list
+would tell the password manager to drop a passkey that still works. The RP ID
+is read from the options GoTrue hands out.
 
 ### Passkeys in the Android app
 

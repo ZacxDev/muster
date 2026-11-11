@@ -338,13 +338,19 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // whose authenticator data carries flags. The fake does not check its
 // signature (see the package note above).
 func Assertion(credID string, flags byte) json.RawMessage {
+	return AssertionFor(credID, "user-handle", flags)
+}
+
+// AssertionFor is Assertion with the user handle userHandle: GoTrue's user id
+// as text, as v2.197.0 registers it (User.WebAuthnID).
+func AssertionFor(credID, userHandle string, flags byte) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"id": credID, "rawId": b64u([]byte(credID)), "type": "public-key",
 		"response": map[string]any{
 			"clientDataJSON":    b64u([]byte(`{"type":"webauthn.get"}`)),
 			"authenticatorData": b64u(AuthData(flags)),
 			"signature":         b64u([]byte("signature")),
-			"userHandle":        b64u([]byte("user-handle")),
+			"userHandle":        b64u([]byte(userHandle)),
 		},
 		"clientExtensionResults": map[string]any{},
 	})

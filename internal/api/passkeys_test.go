@@ -376,29 +376,49 @@ func TestAResetWithoutTheBoxKeepsThePasskeys(t *testing.T) {
 	}
 }
 
-// TestAResetWithoutTheBoxNeverCallsThePasskeyAPI: the opt-in is a real branch.
+// TestAResetWithoutTheBoxNeverDeletesAPasskey: the opt-in is a real branch.
 // With GoTrue's admin passkey API set to FAIL, a reset without the box still
-// succeeds — it never asked — and with the box the same failure fails it closed
-// (TestAResetFailsClosedWhenPasskeysCannotBeRemoved).
-func TestAResetWithoutTheBoxNeverCallsThePasskeyAPI(t *testing.T) {
+// succeeds — it deletes nothing, and the one call it makes is the READ that
+// words the note (countPasskeys), after the password is set — and the note
+// falls back to the sentence that is true either way. With the box the same
+// failure fails it closed (TestAResetFailsClosedWhenPasskeysCannotBeRemoved).
+func TestAResetWithoutTheBoxNeverDeletesAPasskey(t *testing.T) {
 	w := newPasskeyWorld(t)
 	_, sub, _, _ := w.joinMember("pk-nocall@invite.test")
 	w.fake.AddPasskey(sub, "kept-1")
 	w.fake.FailAdminPasskeys(5)
-	before := w.adminPasskeyCalls()
+	callsBefore := len(w.fake.Calls())
 	const newPW = "a-new-long-password"
 	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, newPW, false))
-	if r.Code != http.StatusSeeOther {
-		t.Fatalf("an unticked reset with the passkey API failing: %d %s", r.Code, truncate(r.Body.String(), 300))
+	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/account?reset=1&passkeys=unknown" {
+		t.Fatalf("an unticked reset with the passkey API failing: %d %q %s", r.Code, r.Header().Get("Location"), truncate(r.Body.String(), 300))
 	}
 	if gu, _ := w.fake.User(sub); gu.Password != newPW {
 		t.Fatal("the reset did not set the password")
 	}
-	if got := w.adminPasskeyCalls() - before; got != 0 {
-		t.Fatalf("an unticked reset made %d admin passkey calls, want 0", got)
+	var reads, deletes int
+	for _, c := range w.fake.Calls()[callsBefore:] {
+		if strings.HasPrefix(c.Path, "/admin/users/") && strings.Contains(c.Path, "/passkeys") {
+			switch c.Method {
+			case http.MethodGet:
+				reads++
+			default:
+				deletes++
+			}
+		}
+	}
+	if deletes != 0 || reads != 1 {
+		t.Fatalf("an unticked reset made %d admin passkey reads and %d other admin passkey calls; want 1 and 0", reads, deletes)
 	}
 	if n := len(w.fake.Passkeys(sub)); n != 1 {
 		t.Fatalf("passkeys after the reset: %d, want 1", n)
+	}
+	ck := setCookies(r)
+	page := do(w.edge, "GET", r.Header().Get("Location"), nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+	want := "Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+		"Any passkeys you have were kept. You can review them under Passkeys."
+	if got := resetNoteText(t, page.Body.String()); got != want {
+		t.Fatalf("the note when the passkeys could not be counted\n got: %q\nwant: %q", got, want)
 	}
 }
 
@@ -612,6 +632,13 @@ func TestTheResetDoneNoteSaysWhatHappenedToThePasskeys(t *testing.T) {
 		{"kept", false, 2, "/account?reset=1&passkeys=kept",
 			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
 				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
+		// 🔴 "kept" only for someone who HAS a passkey: with none, the note
+		// says nothing about passkeys (#596 said "were kept" to everyone).
+		{"kept-one", false, 1, "/account?reset=1&passkeys=kept",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
+		{"none", false, 0, "/account?reset=1&passkeys=none",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below."},
 		{"removed", true, 3, "/account?reset=1&passkeys=3",
 			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
 				"All 3 of your passkeys were removed."},
@@ -636,18 +663,33 @@ func TestTheResetDoneNoteSaysWhatHappenedToThePasskeys(t *testing.T) {
 // anything else — a hand-typed query — adds nothing.
 func TestResetPasskeysNote(t *testing.T) {
 	for v, want := range map[string]string{
-		"kept": ResetPasskeysKeptNote,
-		"0":    "You had no passkeys to remove.",
-		"1":    "Your passkey was removed.",
-		"7":    "All 7 of your passkeys were removed.",
-		"":     "", "-1": "", "02": "", "2x": "", "KEPT": "", "<b>": "",
+		"kept":    ResetPasskeysKeptNote,
+		"unknown": "Any passkeys you have were kept. You can review them under Passkeys.",
+		"none":    "",
+		"0":       "You had no passkeys to remove.",
+		"1":       "Your passkey was removed.",
+		"7":       "All 7 of your passkeys were removed.",
+		"":        "", "-1": "", "02": "", "2x": "", "KEPT": "", "<b>": "",
 	} {
 		if got := resetPasskeysNote(v); got != want {
 			t.Errorf("resetPasskeysNote(%q) = %q, want %q", v, got, want)
 		}
 	}
-	if resetDonePath(false, 5) != "/account?reset=1&passkeys=kept" || resetDonePath(true, 5) != "/account?reset=1&passkeys=5" {
-		t.Fatalf("resetDonePath: %q %q", resetDonePath(false, 5), resetDonePath(true, 5))
+	for _, c := range []struct {
+		removed bool
+		n       int
+		want    string
+	}{
+		{false, 5, "/account?reset=1&passkeys=kept"},
+		{false, 1, "/account?reset=1&passkeys=kept"},
+		{false, 0, "/account?reset=1&passkeys=none"},
+		{false, -1, "/account?reset=1&passkeys=unknown"},
+		{true, 5, "/account?reset=1&passkeys=5"},
+		{true, 0, "/account?reset=1&passkeys=0"},
+	} {
+		if got := resetDonePath(c.removed, c.n); got != c.want {
+			t.Errorf("resetDonePath(%v, %d) = %q, want %q", c.removed, c.n, got, c.want)
+		}
 	}
 }
 

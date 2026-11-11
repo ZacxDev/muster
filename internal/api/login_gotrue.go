@@ -102,28 +102,49 @@ const ResetDoneNote = "Your password was reset. Your API tokens were revoked; cr
 const accountResetDonePath = "/account?reset=1"
 
 // resetPasskeysParam carries what the reset did to the passkeys on the
-// redirect: "kept", or how many it removed. ⚠ DISPLAY-ONLY, like reset=1.
+// redirect: "kept" (the person has at least one, and kept it), "none" (they
+// had none), "unknown" (kept, but GoTrue could not say how many), or how many
+// it removed. ⚠ DISPLAY-ONLY, like reset=1 — with one exception that does not
+// trust it either: after a removal the page signals the passkeys GoTrue
+// still lists (handleAccountPage), never a set read off the query.
 const resetPasskeysParam = "passkeys"
 
-// ResetPasskeysKeptNote follows ResetDoneNote after a reset that kept them.
+// ResetPasskeysKeptNote follows ResetDoneNote after a reset that kept them —
+// only when the person has at least one: said to someone with none, it told
+// them of passkeys they never had.
 const ResetPasskeysKeptNote = "Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."
 
+// ResetPasskeysUnknownNote follows ResetDoneNote after a reset that kept the
+// passkeys when GoTrue could not count them: true whether there are any or not.
+const ResetPasskeysUnknownNote = "Any passkeys you have were kept. You can review them under Passkeys."
+
 // resetDonePath is where a reset that set the password redirects: removed
-// says whether the person ticked "Also remove all my passkeys", n how many
-// went.
+// says whether the person ticked "Also remove all my passkeys"; n is how many
+// went, or — unticked — how many the person has (negative: GoTrue could not
+// say).
 func resetDonePath(removed bool, n int) string {
-	v := "kept"
-	if removed {
-		v = strconv.Itoa(n)
+	v := strconv.Itoa(n)
+	if !removed {
+		switch {
+		case n < 0:
+			v = "unknown"
+		case n == 0:
+			v = "none"
+		default:
+			v = "kept"
+		}
 	}
 	return accountResetDonePath + "&" + resetPasskeysParam + "=" + v
 }
 
 // resetPasskeysNote is the sentence /account?reset=1 adds for the passkeys
-// value v, or "" for a value resetDonePath never writes.
+// value v, or "" for "none" and for a value resetDonePath never writes.
 func resetPasskeysNote(v string) string {
-	if v == "kept" {
+	switch v {
+	case "kept":
 		return ResetPasskeysKeptNote
+	case "unknown":
+		return ResetPasskeysUnknownNote
 	}
 	n, err := strconv.Atoi(v)
 	switch {
@@ -194,12 +215,19 @@ func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email, problem string) {
 	passkey := ""
+	// "username webauthn" lets the browser offer the account's passkeys in
+	// the email field's suggestions (autofill; passkeySignInJS starts the
+	// conditional request that fills them). Only when passkeys are served:
+	// with them off there is no request to fill them.
+	emailAutocomplete := "username"
 	if s.gt != nil && s.gt.passkeysOn(context.Background()) {
-		// Outside the form: the passkey button posts nothing, so the form's
-		// required email/password never block it. The script prefetches the
-		// sign-in options and runs the ceremony (passkeySignInJS).
+		emailAutocomplete = "username webauthn"
+		// Outside the form: the passkey buttons post nothing, so the form's
+		// required email/password never block them. The script prefetches the
+		// sign-in options and runs the ceremonies (passkeySignInJS).
 		passkey = `<section class="mt-4 flex flex-col gap-2">
 <button type="button" id="passkey-signin" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign in with a passkey</button>
+<button type="button" id="passkey-signin-phone" class="press min-h-[44px] w-full rounded-md px-3 py-2 text-sm font-medium text-accent underline">Use a passkey from my phone</button>
 <p class="text-sm text-fg2" id="passkey-signin-status" role="status" aria-live="polite"></p>
 </section>
 <script>` + ui.PasskeyJS + passkeySignInJS + `</script>`
@@ -208,7 +236,7 @@ func (s *Server) renderGoTrueLogin(w http.ResponseWriter, code int, next, email,
 <h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
 ` + problemNode(problem) + `
 <label for="muster-email" class="text-sm font-medium text-fg">Email</label>
-<input id="muster-email" name="email" type="email" autocomplete="username" autofocus required value="` + html.EscapeString(email) + `"
+<input id="muster-email" name="email" type="email" autocomplete="` + emailAutocomplete + `" autofocus required value="` + html.EscapeString(email) + `"
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <label for="muster-password" class="text-sm font-medium text-fg">Password</label>
 <input id="muster-password" name="password" type="password" autocomplete="current-password" required
@@ -392,17 +420,24 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Sign out everywhere</button></form>
 <p class="text-sm text-fg2">` + SignOutEverywhereTokenNote + `</p>`
 	}
+	// The Passkeys link is there in every gotrue-mode server, whatever
+	// GoTrue's /settings says: a failed or slow read hid it, and the page
+	// itself says when passkeys are off (passkeyAccountCreds).
 	passkeysLink := ""
-	if s.passkeysServed(r.Context()) {
+	if s.auth.goTrueMode() && s.gt != nil {
 		passkeysLink = `<a href="` + accountPasskeysPath + `" id="account-passkeys" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Passkeys</a>`
 	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
 		note := ResetDoneNote
-		if pk := resetPasskeysNote(r.URL.Query().Get(resetPasskeysParam)); pk != "" {
+		v := r.URL.Query().Get(resetPasskeysParam)
+		if pk := resetPasskeysNote(v); pk != "" {
 			note += " " + pk
 		}
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + html.EscapeString(note) + `</p>`
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			resetNote += s.resetSignalNode(r)
+		}
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
@@ -422,6 +457,25 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 `+s.accountChiefSection(r)+`
 `+s.accountSuggestSection(r)+`
 `+s.accountBrandingSection(r)+`</div>`)
+}
+
+// resetSignalNode is, on the page a reset that REMOVED passkeys lands on, the
+// Signal API hand-off of the passkeys the account still has — so the password
+// manager stops offering the removed ones. 🔴 The set is GoTrue's list, read
+// now, never the query's count (which anyone can type): a hand-typed
+// ?reset=1&passkeys=3 signals only what is really there. "" when GoTrue
+// cannot list them.
+func (s *Server) resetSignalNode(r *http.Request) string {
+	creds, ok := gotrueCredsFrom(r.Context())
+	if !ok || s.gt == nil {
+		return ""
+	}
+	list, err := s.gt.Client.Passkeys(r.Context(), clientIP(r), creds.access)
+	if err != nil {
+		s.logger.Printf("passkeys: list for the reset signal: %v", err)
+		return ""
+	}
+	return s.passkeySignalNode(r.Context(), creds, list, s.passkeyFlags(r.Context(), creds.claims.Subject))
 }
 
 // --- the admin claim ------------------------------------------------------------

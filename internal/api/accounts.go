@@ -185,6 +185,8 @@ type gotrueState struct {
 
 	// pk caches GoTrue's passkeys_enabled (passkeys.go).
 	pk passkeyGate
+	// rp is the WebAuthn RP ID GoTrue's options last named (passkey_signal.go).
+	rp rpIDCache
 }
 
 // liveRequest is one in-flight session request's cancel.
