@@ -196,6 +196,9 @@ var (
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.
 		"internal/plugins.(*PGStore).PendingDrafts",
+		// …and every owner's drafts whose plugin check is past its deadline
+		// (ids and owners only), each then lapsed as THAT owner (ViaAttention).
+		"internal/plugins.(*PGStore).DraftChecksDue",
 		// …and its unrouted-message half (migration 0051): every owner's
 		// delivered messages the chief has not dispositioned past the delay, and
 		// every owner's open ask raised for a message dispositioned since — each

@@ -122,3 +122,43 @@ func (s *Server) expireDraftNotes(ctx context.Context) {
 		s.clearDraftNote(d.owner, d.id)
 	}
 }
+
+// DraftCheckLapsedNote follows a draft push's body when the draft's plugin
+// did not check it in time (plugins.DraftCheckWait): the owner decides it
+// unchecked.
+const DraftCheckLapsedNote = " · the plugin did not check it"
+
+// lapseDraftChecks is the attention sweep's half of plugins.DraftCheckWait:
+// every draft whose plugin gave no verdict in time becomes an ordinary pending
+// draft (plugins.PGStore.LapseDraftCheck, as its owner), and ONLY THEN is the
+// owner asked — the push and the attention item a draft with no check would
+// have had at filing, saying the plugin did not check it. Exactly once: only
+// the call that lapsed it pushes.
+func (s *Server) lapseDraftChecks(ctx context.Context) {
+	if s.ext.Plugins == nil {
+		return
+	}
+	due, err := s.ext.Plugins.DraftChecksDue(ctx)
+	if err != nil {
+		s.logger.Printf("attention: drafts past their check: %v", err)
+		return
+	}
+	for _, d := range due {
+		octx := s.attentionPrincipal(ctx, d.OwnerID)
+		got, lapsed, err := s.ext.Plugins.LapseDraftCheck(octx, d.ID)
+		if err != nil {
+			s.logger.Printf("attention: lapse draft %d's check: %v", d.ID, err)
+			continue
+		}
+		if !lapsed {
+			continue
+		}
+		s.logger.Printf("attention: draft %d: its plugin did not check it within %s; the owner decides it unchecked", d.ID, plugins.DraftCheckWait)
+		m, merr := s.ext.Plugins.Message(octx, got.MessageID)
+		if merr != nil {
+			m = plugins.Message{}
+		}
+		s.notifyDraftAwaitingNoting(octx, d.OwnerID, got, m, DraftCheckLapsedNote)
+		s.draftFiled(d.OwnerID, got)
+	}
+}

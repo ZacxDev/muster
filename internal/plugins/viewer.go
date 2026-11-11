@@ -11,18 +11,23 @@ import (
 // said before the insert).
 func validCapabilities(caps []Capability) ([]Capability, error) {
 	var out []Capability
-	for _, c := range []Capability{CapMessages, CapViewer} {
+	known := []Capability{CapMessages, CapViewer, CapDraftChecks}
+	for _, c := range known {
 		if slices.Contains(caps, c) {
 			out = append(out, c)
 		}
 	}
 	for _, c := range caps {
-		if c != CapMessages && c != CapViewer {
-			return nil, invalid("%q is not a plugin capability (messages, viewer)", string(c))
+		if !slices.Contains(known, c) {
+			return nil, invalid("%q is not a plugin capability (messages, viewer, draft_checks)", string(c))
 		}
 	}
 	if len(out) == 0 {
 		return nil, invalid("a plugin needs at least one capability")
+	}
+	if slices.Contains(out, CapDraftChecks) && !slices.Contains(out, CapMessages) {
+		// It checks reply drafts, which only a messages plugin has.
+		return nil, invalid("draft_checks needs messages: only a plugin that brings messages has reply drafts to check")
 	}
 	return out, nil
 }

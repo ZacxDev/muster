@@ -174,3 +174,31 @@ func TestASupersededReleaseEndsTheWatchWithoutRollback(t *testing.T) {
 		t.Fatalf("status %+v, refs %v", st, rr.gh.createdRefs)
 	}
 }
+
+// TestARevertIncludesTheNewestOfficerMergeTheAssociationDoesNotNameYet: the
+// release holds two of the officer's merges, and GitHub's commit→pull
+// request association still answers [] for the newest (it lags a merge by
+// minutes). The revert must still undo BOTH, newest first: the newest is
+// found by its merge_commit_sha among the pull requests recently closed into
+// the base, as main_ci finds it.
+func TestARevertIncludesTheNewestOfficerMergeTheAssociationDoesNotNameYet(t *testing.T) {
+	rr := newRolloutRig(t, officers.RollbackPR)
+	const older = "4444444444444444444444444444444444444444"
+	bot := BotLogin(rr.gh.slug)
+	rr.gh.compares[fxPrevTag+"..."+fxMain] = Compare{Status: "ahead", AheadBy: 2, Commits: []string{older, fxMain}}
+	newest := PR{Number: 78, Merged: true, MergeCommitSHA: fxMain, Author: bot, HeadRef: "officer/18-y", Title: "y"}
+	oldPR := PR{Number: 77, Merged: true, MergeCommitSHA: older, Author: bot, HeadRef: "officer/17-x", Title: "x"}
+	rr.gh.prsFor[fxMain] = nil // the association lags the newest merge
+	rr.gh.prsFor[older] = []PR{oldPR}
+	rr.gh.closedInto = map[string][]PR{"main": {newest, oldPR}}
+	rr.gh.commits[fxMain] = commitInfo{tree: "tree-b", parents: []string{older}}
+	rr.gh.commits[older] = commitInfo{tree: "tree-a", parents: []string{fxPrevTag}}
+	rr.gh.commits[fxPrevTag] = commitInfo{tree: "tree-prev"}
+	pr, err := rr.w.openRevert(context.Background(), fxRelease)
+	if err != nil || pr != 900 {
+		t.Fatalf("openRevert: %d %v", pr, err)
+	}
+	if got, want := strings.Join(rr.gh.mergedInto, ","), "revert-of-"+fxMain+",revert-of-"+older; got != want {
+		t.Fatalf("reverts merged into the branch %q, want %q (the newest officer merge, which the association did not name yet, left out)", got, want)
+	}
+}

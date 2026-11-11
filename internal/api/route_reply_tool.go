@@ -118,6 +118,9 @@ func routeClosedHint(st plugins.RouteState) string {
 		return ": it failed and the message went back to the chief"
 	case plugins.RouteOwnerAnswered:
 		return ": its reply was already sent to the sender directly, so no reply is needed"
+	case plugins.RouteSendFailed:
+		return ": its reply was refused by the plugin and not sent. If muster pasted the message back into this session, " +
+			"answer the route_id in that newer paste"
 	}
 	return ""
 }

@@ -30,6 +30,8 @@ const (
 	pgnTok = "mpl_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
 	// pgnViewerTok is a live token with the viewer capability and not messages.
 	pgnViewerTok = "mpl_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV"
+	// pgnChecksTok is a live token with messages and draft_checks.
+	pgnChecksTok = "mpl_KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK"
 	pgnSvc       = "plugins-test-service-token-0123456789abcd"
 	pgnRunner    = "mfr_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
 	pgnAgent     = "plugins-test-agent-own-token-0123456789"
@@ -64,6 +66,9 @@ func (c *countingPlugins) Authenticate(ctx context.Context, tok string) (plugins
 	case pgnViewerTok:
 		return plugins.Plugin{ID: 4, OwnerID: authz.OperatorUserID, Name: "example-viewer", Label: "Example viewer",
 			Capabilities: []plugins.Capability{plugins.CapViewer}, OwnerLogin: "owner@example.invalid"}, nil
+	case pgnChecksTok:
+		return plugins.Plugin{ID: 6, OwnerID: authz.OperatorUserID, Name: "example-checker", Label: "Example checker",
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}, OwnerLogin: "owner@example.invalid"}, nil
 	}
 	return plugins.Plugin{}, plugins.ErrBadToken
 }
@@ -103,9 +108,9 @@ func (c *countingPlugins) ClaimDraft(ctx context.Context, _ int64) (plugins.Clai
 	return plugins.Claim{}, false, nil
 }
 
-func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, error) {
+func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins.DraftResult) (plugins.Draft, bool, error) {
 	c.note(ctx, "FinishDraft")
-	return plugins.Draft{}, plugins.ErrNotFound
+	return plugins.Draft{}, false, plugins.ErrNotFound
 }
 
 // pluginsTestAgents resolves one agent by its own token (pgnAgent).
@@ -240,6 +245,10 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// A hand-off redeem (plugin_handoffs.go) needs viewer: this fixture's
 	// messages token is refused at the capability check.
 	{"/plugin/v1/handoffs/redeem", `{"code":"x"}`, "", http.StatusForbidden, ""},
+	// The pre-approval check (plugin_drafts.go) needs draft_checks: this
+	// fixture's messages token is refused at the capability check.
+	{"/plugin/v1/drafts/checks", "", "", http.StatusForbidden, http.MethodGet},
+	{"/plugin/v1/drafts/5/check", `{"sendable":true}`, "", http.StatusForbidden, ""},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.
@@ -445,12 +454,12 @@ type resultPlugins struct {
 	detail string
 }
 
-func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, error) {
+func (v *resultPlugins) FinishDraft(_ context.Context, _, id int64, r plugins.DraftResult) (plugins.Draft, bool, error) {
 	if err := r.Validate(); err != nil {
-		return plugins.Draft{}, err
+		return plugins.Draft{}, false, err
 	}
 	v.detail = r.Detail
-	return plugins.Draft{ID: id, Status: plugins.DraftSent}, nil
+	return plugins.Draft{ID: id, Status: plugins.DraftSent}, true, nil
 }
 
 // TestAValidDraftResultIsReadWhateverItsJSONEscaping (audit round 1): the result

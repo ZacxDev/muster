@@ -1493,8 +1493,11 @@ when ALL of these hold:
 6. the required checks passed for the head's **exact tree**: either they are
    success on the head itself, or the head is a pull request's squash merge
    whose head commit has them all success and the same tree (true of every
-   squash merge of an up-to-date head). A head merged from a stale branch is
-   refused until the next up-to-date merge;
+   squash merge of an up-to-date head). The pull request is the one whose
+   `merge_commit_sha` is the head: from `commits/{sha}/pulls`, or, while that
+   still answers nothing (GitHub's association lags a merge by minutes), from
+   the 30 most recently updated pull requests closed into `base`. A head
+   merged from a stale branch is refused until the next up-to-date merge;
 7. no destructive DDL in the release's migrations, and when it adds one, HQ's
    preflight (`POST /officers/{id}/preflight`) reports a WAL archive under 5
    minutes old, no archive failure in the last hour and a base backup under
@@ -1524,7 +1527,10 @@ On `not_live` or `unhealthy`, per `rollback`:
 - `pr`: open a revert pull request from `<prefix>revert-<tag>` (`-2`, `-3`, … if
   that branch exists) that reverts the
   officer's own squash merges in the release, newest first (each a 3-way merge
-  GitHub computes, so later commits are kept); escalate with its number.
+  GitHub computes, so later commits are kept); escalate with its number. A
+  merge is found the way gate 6 finds one (its `merge_commit_sha`, from the
+  association, then the recently closed list), so a merge the association
+  does not name yet is still reverted.
 - `auto`: as `pr`, then merge it through `officer_merge_pr`'s gates (CI and
   review must pass on the revert) and tag it through the release gates minus
   the in-flight, rate, quiet-hours and HQ-enabled gates (the release being
