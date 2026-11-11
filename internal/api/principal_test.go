@@ -203,6 +203,7 @@ var routeVias = map[authz.Via][]string{
 		// the same role check (branding.go).
 		"PUT /api/instance/branding",
 		"DELETE /api/instance/branding/logo",
+		"DELETE /api/instance/branding/app-icon",
 		"POST /admin/users/{id}/enable",
 		"POST /admin/users/{id}/reset-link",
 		"POST /admin/users/{id}/role",
