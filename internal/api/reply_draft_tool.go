@@ -74,13 +74,21 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 	if merr != nil {
 		m = plugins.Message{}
 	}
-	s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
-	// It is also an item of the owner's attention queue; it supersedes the
-	// message's earlier pending draft, whose notification is withdrawn.
+	next := "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again."
+	if d.AwaitingCheck() {
+		// Its plugin checks it first (plugins.CapDraftChecks): the owner is asked
+		// once it says it can send it (handlePluginDraftCheck).
+		next = "Its plugin checks this draft first; your owner is asked to approve it only once the plugin says it can send it. " +
+			"If the plugin refuses it, you are told why. Nothing is sent until your owner approves it. Do not file it again."
+	} else {
+		s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
+	}
+	// It is also an item of the owner's attention queue (once it is
+	// approvable: pendingDraftItems); it supersedes the message's earlier
+	// pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
 	return toolJSON(map[string]any{
-		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded,
-		"next": "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again.",
+		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded, "next": next,
 	})
 }
 
@@ -96,6 +104,12 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 // queue page and /plugins show them, behind the sign-in. Without the message
 // (m.ID 0) it is muster's fixed sentence.
 func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
+	s.notifyDraftAwaitingNoting(ctx, owner, d, m, "")
+}
+
+// notifyDraftAwaitingNoting is notifyDraftAwaiting with muster's own note
+// after the body: a lapsed check's (lapseDraftChecks, DraftCheckLapsedNote).
+func (s *Server) notifyDraftAwaitingNoting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message, note string) {
 	id := strconv.FormatInt(d.ID, 10)
 	label := ""
 	if m.ID != 0 {
@@ -107,7 +121,7 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 		Type:  "plugin",
 		ID:    id,
 		Title: DraftPushTitle,
-		Body:  draftPushBody(m, label),
+		Body:  draftPushBody(m, label) + note,
 		Tag:   "plugin-draft-" + id,
 		Data:  map[string]string{"url": draftLink(d.ID)},
 	}, nil)
