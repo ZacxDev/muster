@@ -233,6 +233,8 @@ type Server struct {
 	// (RefuseVerb); derivedAsks is every one accepted, in order.
 	verbRefusal map[string]*refusal
 	derivedAsks []DerivedAsk
+	// gapTasks: every accepted gap-tasks request (civ-hq §5o), in order.
+	gapTasks []GapTask
 	// The usage route (PUT /officers/{id}/usage): UsageAbsent is an HQ
 	// without it (404 not_found, its router's catch-all); usagePuts is every
 	// accepted PUT, in order, and usageRows the buckets upserted by
@@ -394,6 +396,50 @@ func (s *Server) derivedAsk(w http.ResponseWriter, officer string, it *Item, ver
 		return
 	}
 	s.write(w, http.StatusCreated, map[string]any{"ask": ask, "task_ask": map[string]any{"ask_id": n, "task_id": "fixture-task-1", "task_rev": 3}, "item": *it})
+}
+
+// GapTask is one gap-tasks request HQ accepted (the body as decoded) and
+// the task id it answered.
+type GapTask struct {
+	Officer, Item, TaskID string
+	Filed                 bool
+	Body                  map[string]any
+}
+
+// GapTasks returns every accepted gap-tasks request, in order.
+func (s *Server) GapTasks() []GapTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]GapTask(nil), s.gapTasks...)
+}
+
+// gapTask serves gap-tasks as civ-hq's route does in the parts muster can
+// observe: a forced refusal (RefuseVerb) wins; a caller without the item's
+// claim is 409 lease_lost; otherwise one task per (officer, store, kind) —
+// 201 filed the first time, 200 filed false with the same task after. The
+// item is NOT changed (a filing does not end the lease). HQ's own checks
+// (kinds, slugs, caps) are HQ's and are not re-implemented here.
+func (s *Server) gapTask(w http.ResponseWriter, officer string, it *Item, instance string, body map[string]any) {
+	if f := s.verbRefusal["gap-tasks"]; f != nil {
+		s.write(w, f.status, map[string]any{"error": f.error, "code": f.code})
+		return
+	}
+	if it.Status != "claimed" || it.ClaimedBy != instance {
+		s.write(w, http.StatusConflict, map[string]any{"error": "this instance does not hold a live lease on the item", "code": "lease_lost"})
+		return
+	}
+	store, _ := body["store"].(string)
+	kind, _ := body["kind"].(string)
+	for _, g := range s.gapTasks {
+		if g.Filed && g.Officer == officer && g.Body["store"] == store && g.Body["kind"] == kind {
+			s.gapTasks = append(s.gapTasks, GapTask{Officer: officer, Item: it.ID, TaskID: g.TaskID, Body: body})
+			s.write(w, http.StatusOK, map[string]any{"gap_task": map[string]any{"officer_id": officer, "store": store, "kind": kind, "task_id": g.TaskID}, "filed": false})
+			return
+		}
+	}
+	id := "datastore_gap_fixture_" + strconv.Itoa(len(s.gapTasks)+1)
+	s.gapTasks = append(s.gapTasks, GapTask{Officer: officer, Item: it.ID, TaskID: id, Filed: true, Body: body})
+	s.write(w, http.StatusCreated, map[string]any{"gap_task": map[string]any{"officer_id": officer, "store": store, "kind": kind, "task_id": id}, "filed": true})
 }
 
 // RefuseCompletes makes every complete answer status {error, code} (status 0:
@@ -1261,6 +1307,8 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.ask(w, officer, it, instance, live, body, now)
 	case "task-asks", "flood-blocks":
 		s.derivedAsk(w, officer, it, verb, body, now)
+	case "gap-tasks":
+		s.gapTask(w, officer, it, instance, body)
 	case "release":
 		if it.Status != "claimed" || it.ClaimedBy != instance {
 			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
