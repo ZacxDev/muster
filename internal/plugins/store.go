@@ -116,7 +116,11 @@ type Store interface {
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
-	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (Draft, error)
+	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (d Draft, fresh bool, err error)
+	// DraftsAwaitingCheck is pluginID's drafts awaiting its pre-approval check
+	// (CapDraftChecks), oldest first; CheckDraft records its verdict on one.
+	DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit int) ([]AwaitingCheck, error)
+	CheckDraft(ctx context.Context, pluginID, draftID int64, v DraftCheck) (d Draft, fresh bool, err error)
 	// QueuedForOwner is ownerID's undelivered messages across live plugins,
 	// except those a mail resume holds (resumeHolds).
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)

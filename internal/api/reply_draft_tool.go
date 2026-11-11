@@ -74,13 +74,21 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 	if merr != nil {
 		m = plugins.Message{}
 	}
-	s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
-	// It is also an item of the owner's attention queue; it supersedes the
-	// message's earlier pending draft, whose notification is withdrawn.
+	next := "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again."
+	if d.AwaitingCheck() {
+		// Its plugin checks it first (plugins.CapDraftChecks): the owner is asked
+		// once it says it can send it (handlePluginDraftCheck).
+		next = "Its plugin checks this draft first; your owner is asked to approve it only once the plugin says it can send it. " +
+			"If the plugin refuses it, you are told why. Nothing is sent until your owner approves it. Do not file it again."
+	} else {
+		s.notifyDraftAwaiting(ctx, agentOwnerID(a), d, m)
+	}
+	// It is also an item of the owner's attention queue (once it is
+	// approvable: pendingDraftItems); it supersedes the message's earlier
+	// pending draft, whose notification is withdrawn.
 	s.draftFiled(agentOwnerID(a), d)
 	return toolJSON(map[string]any{
-		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded,
-		"next": "Your owner must approve this draft in muster; nothing is sent until they do. Do not file it again.",
+		"draft_id": d.ID, "status": string(d.Status), "superseded": superseded, "next": next,
 	})
 }
 

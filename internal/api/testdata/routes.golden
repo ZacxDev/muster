@@ -124,6 +124,7 @@ GET /mirror/view/subagent
 GET /mirror/view/successor
 GET /mirror/view/suggest
 GET /mirror/view/ws
+GET /plugin/v1/drafts/checks
 GET /plugin/v1/self
 GET /plugin/v1/tasks
 GET /plugins
@@ -264,6 +265,7 @@ POST /mirror/view/send
 POST /mirror/view/suggest/event
 POST /plugin-handoffs
 POST /plugin/v1/drafts/claim
+POST /plugin/v1/drafts/{id}/check
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages

@@ -12,7 +12,7 @@ import (
 )
 
 // pluginRouteCapabilities is THE LEDGER of what each /plugin/v1/* route needs
-// (plugins.capabilities, migration 0102): "messages", or "any" for a route every
+// (plugins.capabilities, migrations 0102, 0111): "messages", "viewer", "draft_checks", or "any" for a route every
 // live plugin token opens. It is written out here by hand, not read from the
 // registration, so a route moving between capabilities is a diff a person reads.
 var pluginRouteCapabilities = map[string]string{
@@ -26,6 +26,8 @@ var pluginRouteCapabilities = map[string]string{
 	"POST /plugin/v1/task-writes/{id}/result":      "messages",
 	"POST /plugin/v1/messages/{id}/owner-answered": "messages",
 	"POST /plugin/v1/handoffs/redeem":              "viewer",
+	"GET /plugin/v1/drafts/checks":                 "draft_checks",
+	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
 }
 
 // goldenPluginRoutes is every /plugin/v1/* route in the checked-in route golden.
@@ -109,6 +111,13 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 		case "any":
 			if viewerRefused || messagesRefused {
 				t.Errorf("%s: viewer-only %d, messages %d; want both past the capability check", route, viewerCode, messagesCode)
+			}
+		case "draft_checks":
+			if !messagesRefused || !viewerRefused {
+				t.Errorf("%s: messages-only %d, viewer-only %d; want both 403, the route needs draft_checks", route, messagesCode, viewerCode)
+			}
+			if refused, code := capabilityRefused(h, method, path, pgnChecksTok); refused {
+				t.Errorf("CONTROL %s with a draft_checks token: refused (%d); want it past the capability check", route, code)
 			}
 		default:
 			t.Fatalf("ledger %s: unknown capability %q", route, want)

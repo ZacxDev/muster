@@ -497,6 +497,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /plugins/messages/{id}/retry":  classParam,
 	"POST /plugin/v1/drafts/claim":       classPlugin,
 	"POST /plugin/v1/drafts/{id}/result": classPlugin,
+	// The pre-approval check (draft_checks): the listing names nothing (the
+	// token owner's own plugin's drafts) and the verdict names A's draft — which
+	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
+	"GET /plugin/v1/drafts/checks":      classPlugin,
+	"POST /plugin/v1/drafts/{id}/check": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
@@ -955,7 +960,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.pluginTokens = map[int64]string{}
 	var aPlugin1 plugins.Plugin
 	for _, u := range []isoUser{w.a, w.b} {
-		tok, p, err := ps.Create(as2(u), "iso-inbox", "Iso inbox", "iso")
+		// With draft_checks too, so the check routes are walked past the
+		// capability: A's own check of A's draft (awaiting it) differs from a
+		// ghost's, and B's plugin must get the ghost's answer.
+		tok, p, err := ps.CreatePlugin(as2(u), plugins.NewPlugin{Name: "iso-inbox", Label: "Iso inbox", DataScope: "iso",
+			Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}})
 		must(err, u.name+" plugin")
 		w.pluginTokens[u.uid] = tok
 		if u.uid == w.a.uid {
@@ -1516,10 +1525,11 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	}
 	if strings.HasPrefix(path, "/plugin/") {
 		// A whole valid message: what B's plugin posts is accepted as B's own.
-		// The draft routes' fields ride along: a claim that does not wait, and a
-		// result (so a refusal is about WHOSE draft, not a malformed body).
+		// The draft routes' fields ride along: a claim that does not wait, a
+		// result and a check verdict (so a refusal is about WHOSE draft, not a
+		// malformed body).
 		return method, path, `{"external_id":"iso-` + w.suffix + `-` + strconv.FormatInt(actor.uid, 10) +
-			`","sender":"iso","subject":"iso-write","body":"iso-write","wait_seconds":0,"ok":true}`
+			`","sender":"iso","subject":"iso-write","body":"iso-write","wait_seconds":0,"ok":true,"sendable":true}`
 	}
 	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/agent/") || path == "/mcp" || strings.HasPrefix(path, "/connect/") ||
 		strings.HasPrefix(path, "/runner/") {
@@ -1866,7 +1876,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	// The plugin-token leg too: B's plugin must have been ADMITTED on its own
 	// door (its message stored as B's, its two claims — the drafts' and the
 	// task writes' — answered "nothing for you", and GET /plugin/v1/self naming
-	// B's own plugin), or its clean answers
+	// B's own plugin, and GET /plugin/v1/drafts/checks listing only B's own
+	// drafts awaiting a check), or its clean answers
 	// everywhere else are only the refusal of an unknown token. The result
 	// routes name A's draft and A's write, so they are NOT among them; the
 	// reference listing names no namespace in the walk (400).
@@ -1879,8 +1890,8 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			}
 		}
 	}
-	if plugAdmitted != 4 {
-		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message, two claim routes and its self", plugAdmitted)
+	if plugAdmitted != 5 {
+		t.Errorf("CONTROL: B's plugin token was admitted on %d routes; want exactly its own message, two claim routes, its drafts awaiting a check and its self", plugAdmitted)
 	}
 	// The device-credential leg: B's device must have been ADMITTED on its own
 	// tier (its config read, its own unpair) and nowhere else. The push PUT is

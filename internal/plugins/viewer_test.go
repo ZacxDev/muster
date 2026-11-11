@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+// TestDraftChecksIsACapabilityOnlyBesideMessages: draft_checks is a known
+// capability (0111), ordered after the others, and refused without messages —
+// a plugin that brings no messages has no reply drafts to check.
+func TestDraftChecksIsACapabilityOnlyBesideMessages(t *testing.T) {
+	got, err := validCapabilities([]Capability{CapDraftChecks, CapMessages})
+	if err != nil || len(got) != 2 || got[0] != CapMessages || got[1] != CapDraftChecks {
+		t.Fatalf("messages + draft_checks = %v, %v; want [messages draft_checks]", got, err)
+	}
+	for _, caps := range [][]Capability{{CapDraftChecks}, {CapViewer, CapDraftChecks}} {
+		if _, err := validCapabilities(caps); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%v: %v; want ErrInvalid (draft_checks needs messages)", caps, err)
+		}
+	}
+}
+
 // TestValidViewerLinkRefusesEveryEntryURLTrick: the origin must be one of the
 // configured patterns, and the entry URL an https URL whose host is under it —
 // so a look-alike host with the zone in its query or path, user info naming

@@ -91,6 +91,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage, plugins.CapMessages))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/claim", s.requirePluginToken(s.handlePluginDraftClaim, plugins.CapMessages))
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult, plugins.CapMessages))
+	// The plugin's check of a pending draft before its owner may approve it
+	// (plugin_drafts.go): only a plugin minted with draft_checks.
+	mux.HandleFunc("GET "+pluginAPIPrefix+"/drafts/checks", s.requirePluginToken(s.handlePluginDraftChecks, plugins.CapDraftChecks))
+	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/check", s.requirePluginToken(s.handlePluginDraftCheck, plugins.CapDraftChecks))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask, plugins.CapMessages))
 	// Plugin task REFERENCES (plugin_task_refs.go): the reconcile listing, and
@@ -424,7 +428,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
 <label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where your chief is told to record anything durable from these messages</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="example-inbox" class="` + flowsInputClass + `">
-` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
+` + pluginViewerFieldsHTML(s.ext.PluginOrigins) + pluginDraftChecksFieldHTML + `<button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
 <ul class="flex flex-col gap-2" data-testid="plugins">
 `)
@@ -501,6 +505,12 @@ func (s *Server) pluginCreateInput(r *http.Request) (plugins.NewPlugin, string) 
 	if len(in.Capabilities) == 0 {
 		in.Capabilities = []plugins.Capability{plugins.CapMessages}
 	}
+	// draft_checks is its own checkbox, drawn whatever MUSTER_PLUGIN_ORIGINS
+	// says (pluginDraftChecksFieldHTML): a messages plugin that checks each
+	// reply draft before its owner may approve it.
+	if r.PostFormValue("draft_checks") == "1" && !slices.Contains(in.Capabilities, plugins.CapDraftChecks) {
+		in.Capabilities = append(in.Capabilities, plugins.CapDraftChecks)
+	}
 	if !slices.Contains(in.Capabilities, plugins.CapViewer) {
 		return in, ""
 	}
@@ -539,6 +549,12 @@ func pluginViewerFieldsHTML(origins []plugins.OriginPattern) string {
 `)
 	return b.String()
 }
+
+// pluginDraftChecksFieldHTML is the create form's draft_checks choice
+// (plugins.CapDraftChecks), fixed once the token is minted like every
+// capability. Unticked, the token is as every token before it.
+const pluginDraftChecksFieldHTML = `<label class="flex min-h-[44px] items-center gap-2 text-sm text-fg" data-testid="plugin-draft-checks"><input type="checkbox" name="draft_checks" value="1"> Checks replies: the plugin checks each reply draft before you can approve it <span class="text-xs text-fg2">fixed once created</span></label>
+`
 
 // pluginCapabilitiesText is a plugin's capabilities as its card shows them.
 func pluginCapabilitiesText(p plugins.Plugin) string {

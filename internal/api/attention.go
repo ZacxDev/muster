@@ -647,7 +647,8 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 	var out []attentionItem
 	now := time.Now()
 	for _, c := range cards {
-		if c.Draft.Status != plugins.DraftPending || !c.Draft.ExpiresAt.After(now) {
+		if c.Draft.Status != plugins.DraftPending || !c.Draft.ExpiresAt.After(now) || c.Draft.AwaitingCheck() {
+			// An unchecked draft is not the owner's to decide yet.
 			continue
 		}
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,

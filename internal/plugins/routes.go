@@ -149,6 +149,12 @@ const (
 	// through muster, so no draft exists — in a send stamped with this
 	// message, which its plugin reported (SettleOwnerAnswered). Terminal.
 	RouteOwnerAnswered RouteState = "owner_answered"
+	// RouteSendFailed: the reply draft the route became (relayed or fallback)
+	// was REFUSED by its plugin — reported failed after its claim, or refused
+	// by the plugin's pre-approval check (migration 0111; drafts.go,
+	// refuseRouteDraftTx). Terminal, owing a hand-back: to the session, as a
+	// new route to redraft it (Route.Redraft), or to the chief.
+	RouteSendFailed RouteState = "send_failed"
 )
 
 // Route is one row of session_routes.
@@ -190,6 +196,11 @@ type Route struct {
 	// OneWay marks a route carrying a no_reply plugin message (migration
 	// 0087): a heads-up whose answer goes to the chief only.
 	OneWay bool
+	// Redraft marks a RouteSendFailed route whose hand-back goes back to the
+	// session it was routed to, to write the reply again (migration 0111),
+	// rather than to the chief: decided once, when it became send_failed
+	// (refuseRouteDraftTx, bounded by MaxRouteRedrafts).
+	Redraft bool
 }
 
 // IsPRReview reports whether muster made r for a pull-request review: the one
@@ -281,10 +292,22 @@ const RouteViaMCP = "mcp"
 //
 // RouteViaRule is muster itself too, because the message matched the owner's
 // approved routing rule Rule, which names Session (rules.go).
+//
+// RouteViaRedraft is muster itself, handing a message back to Session — the
+// session its earlier route Redraft went to — because the reply it wrote
+// there was refused by the plugin (RouteSendFailed with Route.Redraft).
+// Refusal is the plugin's reason, which the paste carries (as data); String
+// never spells it.
 type RouteOrigin struct {
 	Via, Host, Session, Thread, PR, HeadSHA string
 	Rule                                    int64
+	Redraft, Refusal                        string
 }
+
+// RouteViaRedraft is RouteOrigin.Via for a route muster makes to hand a
+// refused reply back to the session that wrote it (internal/api's
+// redraftRoute). Not ByMuster: the message was already delivered to the chief.
+const RouteViaRedraft = "redraft"
 
 // RouteViaRule is RouteOrigin.Via for a route an approved routing rule made
 // (rules.go; internal/api routing_rules.go).
@@ -311,6 +334,8 @@ func (o RouteOrigin) String() string {
 		return o.Via + " " + o.PR + " authored by " + o.Session
 	case RouteViaRule:
 		return o.Via + " #" + strconv.FormatInt(o.Rule, 10) + " to " + o.Session
+	case RouteViaRedraft:
+		return o.Via + " of " + o.Redraft + " to " + o.Session
 	}
 	return o.Via
 }
@@ -342,14 +367,14 @@ func RouteObject(routeID string) string { return "session_route:" + routeID }
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0),
 	coalesce(request_text, ''), coalesce(request_message_id, 0), coalesce(chief_session_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at,
-	coalesce(pr_head_sha, ''), one_way`
+	coalesce(pr_head_sha, ''), one_way, redraft`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.RequestText, &r.RequestMessageID, &r.ChiefSessionID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt,
-		&r.PRHeadSHA, &r.OneWay)
+		&r.PRHeadSHA, &r.OneWay, &r.Redraft)
 	r.State = RouteState(st)
 	return r, err
 }
@@ -847,15 +872,24 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			return err
 		}
 		superseded := int(tag.RowsAffected())
-		status, q := DraftPending, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id)
-			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7) RETURNING `+draftCols
-		if approve {
-			status, q = DraftApproved, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
-				status, decided_at, approved_at)
-			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, 'approved', now(), now()) RETURNING `+draftCols
+		// A PENDING draft awaits its plugin's check when the plugin has
+		// CapDraftChecks (checkStateFor). An auto-approved one is not checked
+		// first: its plugin's own send-time check refuses it, as a failed
+		// result (FinishDraft), if it must.
+		check, err := checkStateFor(ctx, tx, messageID)
+		if err != nil {
+			return err
 		}
-		if d, err = scanDraft(tx.QueryRow(ctx, q, cur.OwnerID, messageID, *cur.AgentID, cutRunes(agentName, 100), cur.ReplyBody,
-			DraftTTL.Seconds(), routeID)); err != nil {
+		status, q, args := DraftPending, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
+				check_state)
+			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, $8) RETURNING `+draftCols, []any{check}
+		if approve {
+			status, q, args = DraftApproved, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
+				status, decided_at, approved_at)
+			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, 'approved', now(), now()) RETURNING `+draftCols, nil
+		}
+		if d, err = scanDraft(tx.QueryRow(ctx, q, append([]any{cur.OwnerID, messageID, *cur.AgentID, cutRunes(agentName, 100), cur.ReplyBody,
+			DraftTTL.Seconds(), routeID}, args...)...)); err != nil {
 			return err
 		}
 		if err := audit(ctx, tx, "plugin.draft.filed", DraftObject(d.ID), map[string]any{

@@ -14,8 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/flows"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -169,10 +172,14 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p := pluginFromContext(r.Context())
-	d, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
+	d, fresh, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
 	switch {
 	case err == nil:
 		s.draftStatusMoved(p.OwnerID, d.ID)
+		if fresh && d.Status == plugins.DraftFailed {
+			// Once, on the result that made it failed: a repeat changes nothing.
+			s.draftRefused(r.Context(), p, d, true)
+		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -187,6 +194,183 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	default:
 		s.logger.Printf("plugins: plugin %d result for draft %d: %v", p.ID, id, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the result could not be recorded"})
+	}
+}
+
+// handlePluginDraftChecks is GET /plugin/v1/drafts/checks (CapDraftChecks):
+// 200 {drafts: [{draft_id, message_external_id, body, created_at}]}, this
+// plugin's pending drafts awaiting its verdict, oldest first, at most
+// plugins.MaxChecksListed. Nothing is leased: answer each with POST
+// /plugin/v1/drafts/{id}/check.
+func (s *Server) handlePluginDraftChecks(w http.ResponseWriter, r *http.Request) {
+	p := pluginFromContext(r.Context())
+	list, err := s.ext.Plugins.DraftsAwaitingCheck(r.Context(), p.ID, plugins.MaxChecksListed)
+	if err != nil {
+		s.logger.Printf("plugins: plugin %d drafts awaiting a check: %v", p.ID, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the drafts could not be read"})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"drafts": list})
+}
+
+// handlePluginDraftCheck is POST /plugin/v1/drafts/{id}/check {sendable,
+// detail} (CapDraftChecks): the plugin's verdict on one of its drafts awaiting
+// a check. sendable: the owner is now asked to approve it (the push and the
+// attention item it would have had at filing). Refused (detail required: the
+// plugin's reason): the draft is rejected and can never be approved, and it
+// goes back to whoever wrote it (draftRefused). 200 {draft_id, status,
+// check}; the same verdict again is 200 and changes nothing; the other
+// verdict is 409; a draft not awaiting a check is 409; another plugin's, or
+// none, is 404.
+func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft"})
+		return
+	}
+	var in struct {
+		Sendable *bool  `json:"sendable"`
+		Detail   string `json:"detail"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxResultRequestBytes)).Decode(&in); err != nil || in.Sendable == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": `the body is {"sendable": true|false, "detail"}`})
+		return
+	}
+	if !*in.Sendable && strings.TrimSpace(in.Detail) == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "a refusal names its reason in detail: it is what the reply's writer is told to fix"})
+		return
+	}
+	p := pluginFromContext(r.Context())
+	d, fresh, err := s.ext.Plugins.CheckDraft(r.Context(), p.ID, id, plugins.DraftCheck{Sendable: *in.Sendable, Detail: in.Detail})
+	switch {
+	case err == nil:
+		if fresh && d.CheckState == plugins.CheckSendable {
+			// Only now is the owner asked (notifyDraftAwaiting was held back
+			// while it awaited this verdict).
+			m, merr := s.ext.Plugins.Message(r.Context(), d.MessageID)
+			if merr != nil {
+				m = plugins.Message{}
+			}
+			s.notifyDraftAwaiting(r.Context(), p.OwnerID, d, m)
+			s.draftFiled(p.OwnerID, d)
+		}
+		if fresh && d.RefusedByCheck() {
+			s.draftRefused(r.Context(), p, d, false)
+		}
+		s.draftStatusMoved(p.OwnerID, d.ID)
+		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	case errors.Is(err, plugins.ErrInvalid):
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
+	case errors.Is(err, plugins.ErrNotFound):
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such draft of this plugin's"})
+	case errors.Is(err, plugins.ErrCheckConflict):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft already has the other verdict",
+			"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	case errors.Is(err, plugins.ErrDraftState):
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the draft is not awaiting a check",
+			"draft_id": d.ID, "status": string(d.Status), "check": string(d.CheckState)})
+	default:
+		s.logger.Printf("plugins: plugin %d check of draft %d: %v", p.ID, id, err)
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the verdict could not be recorded"})
+	}
+}
+
+// draftRefused is what follows a reply draft its plugin REFUSED — a result
+// ok=false after its claim (sending), or a refused pre-approval check — once,
+// on the call that recorded it. Its session route (when it has one) already
+// ended send_failed in the same transaction, owing a hand-back
+// (plugins.refuseRouteDraftTx): to the session that wrote it, to redraft it,
+// or to the chief. So:
+//   - the OWNER is pushed, on the draft's own tag, with the plugin's reason —
+//     always for a reply they approved that did not go (sending), and for one
+//     refused before they saw it only when it is not going back to its session
+//     (nothing is theirs to do while the session rewrites it);
+//   - a ROUTED draft's hand-back is delivered by the route sweep, woken now
+//     (deliverHandBack: the session again — redraftRoute, which tells the
+//     chief — or else the chief, as a timed-out route's);
+//   - a draft the chief filed itself (reply_draft) is noted to the chief.
+func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+	var route plugins.Route
+	routed := false
+	if d.RouteID != nil && routesOn(s.ext) {
+		if r, err := s.ext.Routes.Route(ctx, *d.RouteID); err == nil && r.State == plugins.RouteSendFailed &&
+			r.DraftID != nil && *r.DraftID == d.ID {
+			route, routed = r, true
+		}
+	}
+	redraft := routed && route.Redraft
+	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v, routed %v, redraft %v)", p.ID, d.ID, sending, routed, redraft)
+	if sending || !redraft {
+		s.notifyDraftRefused(p, d, redraft)
+	}
+	if routed {
+		s.kickRouteSweep()
+		return
+	}
+	s.noteDraftRefusedToChief(ctx, p, d, sending)
+}
+
+// The refused draft push's title (muster's), and its body's bound.
+const (
+	DraftRefusedPushTitle   = "A reply was not sent"
+	draftRefusedPushBodyMax = 240
+)
+
+// notifyDraftRefused pushes the `plugin` event to p's owner about refused
+// draft d, on the draft's own tag (draftTag), so it replaces that draft's
+// earlier notification on the owner's devices.
+//
+// 🔴 IT CARRIES THE PLUGIN'S REASON (operator decision), one line, cut — never
+// the draft or the message it answers (notifyDraftAwaiting's "who and where,
+// never what"): the reason is the plugin's words about the reply.
+func (s *Server) notifyDraftRefused(p plugins.Plugin, d plugins.Draft, redraft bool) {
+	id := strconv.FormatInt(d.ID, 10)
+	s.goNotify(p.OwnerID, push.EventPlugin, RouterNotification{
+		Type:  "plugin",
+		ID:    id,
+		Title: DraftRefusedPushTitle,
+		Body:  draftRefusedPushBody(p.Label, d.Detail, redraft),
+		Tag:   draftTag(d.ID),
+		Data:  map[string]string{"url": draftLink(d.ID)},
+	}, nil)
+}
+
+// draftRefusedPushBody is a refused draft's push body: "<plugin label>
+// refused it: <reason>", then where it went.
+func draftRefusedPushBody(label, detail string, redraft bool) string {
+	body := "The plugin"
+	if l := mirror.OneLine(label, plugins.MaxLabelRunes); l != "" {
+		body = l
+	}
+	where := " It went back to your chief."
+	if redraft {
+		where = " It went back to the session that wrote it."
+	}
+	return truncate(body+" refused it: "+plugins.RefusalText(detail)+"."+where, draftRefusedPushBodyMax)
+}
+
+// noteDraftRefusedToChief tells the chief that filed refused draft d (no
+// session route) why it was not sent, in p's chief session — while that is
+// still d's agent's — so its next turn can draft again.
+func (s *Server) noteDraftRefusedToChief(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
+	if s.ext.Agents == nil || d.AgentID == nil {
+		return
+	}
+	cur, err := s.ext.Plugins.Plugin(ctx, p.ID)
+	if err != nil || cur.ChiefAgentID == nil || cur.ChiefSessionID == nil || *cur.ChiefAgentID != *d.AgentID {
+		s.logger.Printf("plugins: draft %d refused: no chief session of plugin %d to tell", d.ID, p.ID)
+		return
+	}
+	when := "before your owner could approve it"
+	if sending {
+		when = "after your owner approved it"
+	}
+	text := "[muster] Your reply draft " + strconv.FormatInt(d.ID, 10) + " to plugin message_id " + strconv.FormatInt(d.MessageID, 10) +
+		" was NOT sent: the plugin refused it " + when + ", saying «" + plugins.RefusalText(d.Detail) + "». The sender has no " +
+		"reply from it. If they still need one, draft a new reply with reply_draft that fixes what the plugin refused."
+	if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *d.AgentID,
+		SessionID: *cur.ChiefSessionID, Role: "user", Content: text}); err != nil {
+		s.logger.Printf("plugins: draft %d refused: note to the chief: %v", d.ID, err)
 	}
 }
 
@@ -330,6 +514,11 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
 		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
 		return draftRefusal{http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftUnchecked):
+		return draftRefusal{http.StatusConflict, DraftUncheckedRefusal, asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftState) && d.RefusedByCheck():
+		return draftRefusal{http.StatusConflict, "The plugin refused that draft before it could be approved, saying «" +
+			plugins.RefusalText(d.Detail) + "». It can never be sent; it went back to whoever wrote it for a new one.", asksTabArchived}
 	case errors.Is(err, plugins.ErrDraftState):
 		return draftRefusal{http.StatusConflict, "That draft is no longer awaiting this decision (it is " + string(d.Status) + ").", asksTabArchived}
 	case errors.Is(err, plugins.ErrReplyInFlight):
@@ -341,6 +530,11 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	return draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
 }
 
+// DraftUncheckedRefusal is an approval refused because the draft's plugin has
+// not checked it yet (plugins.ErrDraftUnchecked).
+const DraftUncheckedRefusal = "The plugin has not yet checked that it can send that draft. " +
+	"It can be approved once the plugin says it can; if the plugin refuses it, it goes back to whoever wrote it."
+
 // draftStatusText is a draft's state in words.
 func draftStatusText(d plugins.Draft) string {
 	at := func(t *time.Time) string {
@@ -348,6 +542,12 @@ func draftStatusText(d plugins.Draft) string {
 			return ""
 		}
 		return " " + t.UTC().Format("2006-01-02 15:04") + " UTC"
+	}
+	switch {
+	case d.AwaitingCheck():
+		return "Waiting for the plugin to check that it can send it · expires" + at(&d.ExpiresAt)
+	case d.RefusedByCheck():
+		return "Refused by the plugin before approval" + at(d.CheckedAt) + " · never sent"
 	}
 	switch d.Status {
 	case plugins.DraftPending:
@@ -427,6 +627,14 @@ func draftCardHTML(c plugins.DraftCard) string {
 `)
 		}
 	case plugins.DraftPending:
+		if d.AwaitingCheck() {
+			// Not approvable until its plugin says it can send it (the store
+			// refuses it whatever the page draws): Reject only.
+			b.WriteString(`<span class="text-xs text-fg2" data-draft-awaiting-check>The plugin checks this reply before you can approve it.</span>
+<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
+`)
+			break
+		}
 		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form><button type="submit" class="` +
 			flowsButtonClass + ` w-full" data-draft-approve>Approve and send</button></form>
 <form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
