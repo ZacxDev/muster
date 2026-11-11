@@ -117,6 +117,20 @@ async function settled(bubble: Locator) {
 }
 
 const press = (touch: boolean, l: Locator) => (touch ? l.tap() : l.click());
+// gapUnder is the space between el's bottom and its log's visible bottom.
+const gapUnder = (el: Locator) =>
+  el.evaluate((e) => e.closest('#mv-log, #chat-log')!.getBoundingClientRect().bottom - e.getBoundingClientRect().bottom);
+// boxIn is whether el is wholly inside what of bubble is on screen (the
+// bubble's box, cut by its log's).
+async function boxIn(bubble: Locator, el: Locator): Promise<boolean> {
+  const b = await bubble.elementHandle();
+  return el.evaluate((e, b) => {
+    const r = e.getBoundingClientRect();
+    const br = (b as Element).getBoundingClientRect();
+    const lr = (b as Element).closest('#mv-log, #chat-log')!.getBoundingClientRect();
+    return r.top >= Math.max(br.top, lr.top) - 1 && r.bottom <= Math.min(br.bottom, lr.bottom) + 1;
+  }, b);
+}
 const fromBottom = (log: Locator) => log.evaluate((l) => l.scrollHeight - l.scrollTop - l.clientHeight);
 
 // THE TAIL-FIRST CASE, on whichever surface: reply is a long assistant bubble
@@ -302,21 +316,52 @@ for (const vp of viewports) {
       await tailCase(vp.touch, reply, 'agentreply');
     });
 
-    // ⚠ THE BOUNDARY: a transcript that does not fill the log leaves nothing
-    // to scroll, so the end CANNOT stay put — it moves down into the empty
-    // space under it. It must still end on screen.
-    test('agent chat page: a reply in a transcript that fits on screen opens with its end still on screen', async ({ page }) => {
+    // A transcript SHORTER than its log sits at the log's bottom (input.css,
+    // "Chat logs are bottom-aligned"), so even there the reply opens upward
+    // with its end in place: the log can always scroll by what it grew.
+    test('agent chat page: in a transcript shorter than the log, the reply sits at the bottom and opens with its end in place', async ({ page }) => {
       await openAgent(page, SHORT);
       const log = page.locator('#chat-log');
       const reply = log.locator('[data-bubble="assistant"]').last();
       await expect(reply).toHaveAttribute('data-clamp', 'closed');
-      expect(await log.evaluate((l) => l.scrollHeight - l.clientHeight), 'control: the log does not scroll').toBeLessThanOrEqual(1);
-      expect(await line(reply, last('shortreply', N))).toMatchObject({ shown: true });
-      await press(vp.touch, reply.locator('xpath=preceding-sibling::*[1]'));
+      expect(await log.evaluate((l) => l.scrollHeight - l.clientHeight), 'control: the transcript is shorter than the log').toBeLessThanOrEqual(1);
+      expect(await gapUnder(reply), "bottom-aligned: the reply sits at the log's bottom").toBeLessThanOrEqual(12);
+      const toggle = reply.locator('xpath=preceding-sibling::*[1]');
+      await toggle.scrollIntoViewIfNeeded();
+      const before = await line(reply, last('shortreply', N));
+      expect(before.shown).toBe(true);
+      await press(vp.touch, toggle);
       await expect(reply).toHaveAttribute('data-clamp', 'open');
       await settled(reply);
-      expect(await line(reply, last('shortreply', N)), 'the last line is still on screen').toMatchObject({ shown: true });
-      expect(await fromBottom(log), 'the log is at its end').toBeLessThan(2);
+      const after = await line(reply, last('shortreply', N));
+      expect(Math.abs(after.top - before.top), `the last line stayed put (was ${before.top}, now ${after.top})`).toBeLessThanOrEqual(2);
+    });
+
+    test('mirrored view: a transcript shorter than the log sits at its bottom', async ({ page }) => {
+      await openView(page, cc.prompt('a short question') + cc.reply('a short answer'));
+      const reply = page.locator('#mv-log [data-bubble="assistant"]').last();
+      await expect(reply).toContainText('a short answer');
+      expect(await page.locator('#mv-log').evaluate((l) => l.scrollHeight - l.clientHeight), 'control: shorter than the log').toBeLessThanOrEqual(1);
+      expect(await gapUnder(reply), "bottom-aligned: the reply sits at the log's bottom").toBeLessThanOrEqual(16);
+    });
+
+    // A code block in the MIDDLE of a closed reply opens below its summary,
+    // and the summary just tapped stays where it was, on screen.
+    test('mirrored view: opening a code block in the middle of a closed reply keeps its summary on screen', async ({ page }) => {
+      const code = Array.from({ length: 20 }, (_, i) => `step_${i + 1}()`).join('\n');
+      await openView(page, cc.prompt('show me') + cc.reply(lines(30, 'pre') + '\n\n```sh\n' + code + '\n```\n\n' + lines(3, 'post')));
+      const reply = page.locator('#mv-log [data-bubble="assistant"]').last();
+      await expect(reply).toHaveAttribute('data-clamp', 'closed');
+      const block = reply.locator('details').first();
+      const summary = block.locator('summary');
+      expect(await boxIn(reply, summary), 'control: the summary is on screen before the tap').toBe(true);
+      const y0 = (await summary.boundingBox())!.y;
+      await press(vp.touch, summary);
+      await expect(block).toHaveAttribute('open', '');
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      await expect(reply, 'the bubble itself stays closed').toHaveAttribute('data-clamp', 'closed');
+      expect(await boxIn(reply, summary), 'the tapped summary is still on screen').toBe(true);
+      expect(Math.abs((await summary.boundingBox())!.y - y0), 'and where it was').toBeLessThanOrEqual(2);
     });
 
     test('agent chat page: an opened reply stays open across a chat-log refresh, its control still on top', async ({ page }) => {
@@ -369,6 +414,16 @@ for (const vp of viewports) {
       const reply = log.locator('[data-bubble="assistant"]').last();
       expect(await line(reply, last('cls39', N)), 'the newest reply shows its last line').toMatchObject({ shown: true });
       expect(await line(reply, first('cls39')), 'and not its first').toMatchObject({ hidden: true });
+      // INVARIANT GUARD (green on main too): a transcript that fills its log is
+      // laid out as before the logs were bottom-aligned — scrolled to the top,
+      // its first message sits at the log's top padding.
+      expect(
+        await log.evaluate((l) => {
+          l.scrollTop = 0;
+          return Math.round(l.firstElementChild!.getBoundingClientRect().top - l.getBoundingClientRect().top - parseFloat(getComputedStyle(l).paddingTop));
+        }),
+        'a full log starts at its top padding',
+      ).toBe(0);
       const moved = +(r.total + r.excluded).toFixed(5);
       expect(moved, `layout shift: ${JSON.stringify(r.shifts)} excluded: ${JSON.stringify(r.excludedShifts)}`).toBeLessThan(0.01);
     });

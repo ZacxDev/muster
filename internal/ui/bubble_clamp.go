@@ -16,10 +16,10 @@ import (
 //     usually ends with the thing that matters — the answer, the question, the
 //     next step — so the end is what is shown. Opening it grows the earlier
 //     text UPWARD and the end stays where it was on screen: the log's scroll is
-//     moved by exactly what the bubble grew, on every frame (animate).
-//     ⚠ Its one limit: a log whose transcript does not fill it has nothing to
-//     scroll, so there the end moves down into the empty space under it (and
-//     stops at the log's bottom) before the log can begin to follow.
+//     moved by exactly what the bubble grew, on every frame (animate). That
+//     holds in a SHORT transcript too, because a log's messages sit at its
+//     bottom (input.css, "Chat logs are bottom-aligned"): the log can always
+//     scroll by what the bubble grew.
 //
 // 🔴 THE DIRECTION IS DECLARED BY THE SERVER, NEVER INFERRED FROM THE TEXT.
 // chatBubbleOf sets data-clamp-from="tail" from the message ROLE (clampFrom), so
@@ -30,8 +30,11 @@ import (
 // nothing to the clamp — the reader is reading it, and a stray tap must not
 // fold the text away under their thumb. The ONLY way to close it is the
 // control, which reads "Show less" while the bubble is open: under a head-first
-// bubble, above a tail-first one. A tail-first bubble closes with its control
-// (its top) kept in place.
+// bubble, above a tail-first one. Closing does NOT anchor anything of its own:
+// with the log scrolled away from its end, the bubble shrinks from its bottom
+// and its control (its top) stays where it is; within stick-to-bottom's reach
+// of the end (80px), the log is kept at its end instead, so the bubble's end
+// stays and its top — the control with it — moves DOWN by what it shrank.
 //
 // 🔴 ONE SCRIPT FOR EVERY CLAMPED SURFACE, BECAUSE THE BUBBLES ARE ONE
 // COMPONENT. It acts on any [data-bubble] element in the document — the mirrored
@@ -96,8 +99,11 @@ func bubbleClampScript() g.Node {
   // tail: the server drew el tail-first (clampFrom) — its END is what shows.
   function tail(el) { return el.getAttribute('data-clamp-from') === 'tail'; }
   // pin scrolls a tail-first bubble's own box to its end, so its last lines
-  // are the ones its clamp shows.
-  function pin(el) { if (tail(el)) el.scrollTop = el.scrollHeight; }
+  // are the ones its clamp shows. el._clampOff marks a closed bubble the
+  // READER moved off its end (a code block opened mid-reply, see 'toggle'):
+  // a re-measure (its width changed, its content was redrawn) leaves that
+  // bubble's scroll alone instead of snapping it back.
+  function pin(el) { if (tail(el)) { el.scrollTop = el.scrollHeight; el._clampOff = false; } }
 
   // The clamped height: LINES of the bubble's own line-height, plus its padding.
   function limit(el) {
@@ -154,7 +160,7 @@ func bubbleClampScript() g.Node {
       el.style.maxHeight = max + 'px';
       el.setAttribute('data-clamp', 'closed');
       setToggle(el, false);
-      pin(el);
+      if (st !== 'closed' || !el._clampOff) pin(el);
     } else if (st === 'closed') {
       el.removeAttribute('data-clamp');
       el.style.maxHeight = '';
@@ -254,18 +260,39 @@ func bubbleClampScript() g.Node {
     var el = t.closest('[data-clamp]');
     if (!el) return;
     var ctl = t.closest(CONTROLS);
+    // A tap on a code block's summary in the MIDDLE of a closed tail-first
+    // reply: marked off its end NOW, before the block opens — the re-measure
+    // its new width triggers can run before the 'toggle' event does.
+    var sum = t.closest('summary');
+    if (sum && el.contains(sum) && tail(el) && el.getAttribute('data-clamp') === 'closed' &&
+        sum.parentElement && sum.parentElement.tagName === 'DETAILS' && !last(sum.parentElement, el)) el._clampOff = true;
     if (ctl && el.contains(ctl)) return;
     var sel = window.getSelection && window.getSelection();
     if (sel && !sel.isCollapsed && el.contains(sel.anchorNode)) return;
     expand(el);
   });
 
-  // A code block (a <details>) opened or closed inside a closed tail-first
-  // bubble changes what its end is without changing its box: re-pin it, so the
-  // block opened at the bottom is seen. 'toggle' does not bubble: captured.
+  // last: nothing in host follows d — d holds the bubble's end.
+  function last(d, host) {
+    for (var n = d; n && n !== host; n = n.parentElement) if (n.nextElementSibling) return false;
+    return true;
+  }
+  // A code block (a <details>) opened inside a closed tail-first bubble. One
+  // in the MIDDLE grows below its summary and the bubble's own scroll is left
+  // alone, so the summary just tapped stays exactly where it was. Only the
+  // LAST block is re-pinned — it holds the end, and the code it opened would
+  // otherwise be under the clamp's edge — and then never past its own summary:
+  // a block taller than the clamp opens with its summary at the bubble's top.
+  // 'toggle' does not bubble: captured.
   document.addEventListener('toggle', function (e) {
-    var host = e.target && e.target.closest && e.target.closest('[data-clamp="closed"]');
-    if (host) pin(host);
+    var d = e.target;
+    var host = d && d.closest && d.closest('[data-clamp="closed"]');
+    if (!host || !tail(host)) return;
+    if (!last(d, host)) { host._clampOff = true; return; }
+    pin(host);
+    var s = d.querySelector('summary');
+    var over = s ? host.getBoundingClientRect().top - s.getBoundingClientRect().top : 0;
+    if (over > 0) { host.scrollTop -= over; host._clampOff = true; }
   }, true);
 
   new MutationObserver(function (ms) {

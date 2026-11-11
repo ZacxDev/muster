@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -139,16 +141,37 @@ func TestAnAgentReplyIsClampedFromItsTailOnEverySurface(t *testing.T) {
 	}
 }
 
-// The clamp script reads the direction off the attribute the server sets, and
-// shows about fifteen lines either way.
-func TestTheClampScriptReadsTheServersDirection(t *testing.T) {
-	js := render(bubbleClampScript())
-	for _, want := range []string{
-		"var LINES = 15;",
-		"el.getAttribute('data-clamp-from') === 'tail'",
-	} {
-		if !strings.Contains(js, want) {
-			t.Errorf("the clamp script lacks %q", want)
+// THE BOTTOM-ALIGNED LOGS' ONE COUPLING (input.css, "Chat logs are
+// bottom-aligned"): the ::before item's negative margin-top cancels the log's
+// gap, so it must be the gap both logs are drawn with — gap-3, 0.75rem. A log
+// whose gap changed alone would gain (or lose) the difference above its first
+// message in a full transcript. The behaviour itself is tail-clamp.spec.ts's.
+func TestTheChatLogsGapMatchesTheBottomAlignRule(t *testing.T) {
+	css, err := os.ReadFile("../../web/css/input.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := regexp.MustCompile(`#mv-log::before,\s*#chat-log::before\s*\{([^}]*)\}`).FindSubmatch(css)
+	if rule == nil {
+		t.Fatal("input.css has no #mv-log::before, #chat-log::before rule")
+	}
+	for _, want := range []string{"margin-top: -0.75rem;", "margin-bottom: auto;"} {
+		if !strings.Contains(string(rule[1]), want) {
+			t.Errorf("the bottom-align rule lacks %q: %s", want, rule[1])
+		}
+	}
+	var page strings.Builder
+	if err := RenderAgentDetail(&page, sampleAgentDetailView(), featuresAllOn); err != nil {
+		t.Fatal(err)
+	}
+	logs := map[string]string{
+		"#mv-log":   openTag(t, renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"})), `id="mv-log"`),
+		"#chat-log": openTag(t, page.String(), `id="chat-log"`),
+	}
+	for name, tag := range logs {
+		classes := regexp.MustCompile(`class="([^"]*)"`).FindStringSubmatch(tag)
+		if classes == nil || !strings.Contains(" "+classes[1]+" ", " gap-3 ") || !strings.Contains(" "+classes[1]+" ", " flex-col ") {
+			t.Errorf("%s is not a gap-3 flex column, which the bottom-align rule assumes: %s", name, tag)
 		}
 	}
 }

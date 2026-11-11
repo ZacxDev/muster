@@ -275,7 +275,8 @@ by default. Prompts and replies appear as chat bubbles, and each tool call as on
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
 
-A bubble longer than about 15 lines is shortened, with a **Show more** control.
+A conversation too short to fill the screen sits at the bottom, next to the
+composer. A bubble longer than about 15 lines is shortened, with a **Show more** control.
 A reply from the agent shows its **last** lines, because the end of a reply is
 usually what matters. Its **Show more** is at the top of the bubble. Opening it
 reveals the earlier text above, and the part already on screen stays where it

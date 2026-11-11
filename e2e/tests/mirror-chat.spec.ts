@@ -810,7 +810,12 @@ const queueOp = (operation: string, content?: string) =>
   rec({ type: 'queue-operation', operation, timestamp: '2000-01-01T00:00:00.000Z', sessionId: 's', ...(content === undefined ? {} : { content }) });
 
 test('a message Claude Code queued is shown under the conversation until Claude takes it', async ({ page }) => {
-  const tr = newTranscript(prompt('start the long job') + reply(lines(60, 'Earlier reply')));
+  // Long enough to SCROLL with every reply clamped (four of them): a log
+  // shorter than its box sits at its bottom (input.css), and then a region
+  // appearing under it moves it, as a messaging app's would.
+  let earlier = '';
+  for (let i = 1; i <= 4; i++) earlier += prompt(`step ${i} of the long job`) + reply(lines(60, `Earlier reply ${i}`));
+  const tr = newTranscript(earlier);
   await openView(page, tr);
   const log = page.locator('#mv-log');
   const region = page.locator('#mv-ccq');
@@ -818,6 +823,7 @@ test('a message Claude Code queued is shown under the conversation until Claude 
 
   // The reader scrolls up to read: what is at the top must not move.
   await log.evaluate((l) => (l.scrollTop = 200));
+  expect(await log.evaluate((l) => l.scrollTop), 'control: the log really scrolled').toBe(200);
   const anchor = log.locator('[data-bubble="assistant"]').first();
   const before = (await anchor.boundingBox())!.y;
 
