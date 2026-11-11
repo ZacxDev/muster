@@ -65,11 +65,11 @@ type RefSnapshot struct {
 	Claimants []RefClaimant `json:"claimants,omitempty"`
 }
 
-// RefClaimant is one upstream claim: the claiming agent's id and the
-// coding-agent session it claimed from (the upstream's agent and
-// agent_session; the session is linked to the task when it is a mirrored
-// session muster knows), and an optional display name. One that names none
-// of the three is no claim.
+// RefClaimant is one upstream claim — a session's pickup: the coding-agent
+// session that picked the record up (agent_session, REQUIRED: a claimant
+// without one is no claim), the agent it ran as, and an optional display name.
+// The session is linked to the task when it is a mirrored session muster
+// knows.
 type RefClaimant struct {
 	Agent        string `json:"agent,omitempty"`
 	AgentSession string `json:"agent_session,omitempty"`

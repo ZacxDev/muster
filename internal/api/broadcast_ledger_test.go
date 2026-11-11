@@ -49,6 +49,15 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// is that write's — the machine route's, the card's or the task tool's
 		// principal — who owns the task (the write itself read it under RLS).
 		"(*Server).claimOnStatus → broadcast(ctx)",
+		// …its release on a status write (setNoteStatus's funnel: ctx is the
+		// write's, whose principal owns the task) and at a decision that reads a
+		// claim (the triage's or the chief's ctx: the task's owner).
+		"(*Server).releaseClaimsOnStatus → broadcast(ctx)",
+		"(*Server).releaseEndedClaimsOf → broadcast(ctx)",
+		// The claim sweep (ReleaseEndedClaims): each claim is read with its
+		// owner (one system-scoped read) and released as that owner, who is
+		// named explicitly because the sweep's context carries no principal.
+		"(*Server).ReleaseEndedClaims → broadcastTo(c.OwnerID)",
 		"(*Server).broadcastTaskLink → broadcast(ctx)",
 		"(*Server).decideConnectorGrant → broadcast(ctx)",
 		"(*Server).dismissTask → broadcast(ctx)",

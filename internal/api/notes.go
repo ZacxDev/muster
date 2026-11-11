@@ -1550,13 +1550,6 @@ func (s *Server) handleNoteStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	note, err := s.applyTaskStatus(withRefOrigin(r.Context(), refOrigin{Author: "user"}), writerHumanUI, id, r.FormValue("status"))
-	if (err == nil || errors.Is(err, errQueuedUpstream)) &&
-		s.claimOnStatus(r.Context(), writerHumanUI, note.ID, r.FormValue("status"), claimant{}) {
-		// Back to open: the task's claims are released (task_claims.go).
-		if fresh, ferr := s.ext.Notes.Get(r.Context(), note.ID); ferr == nil {
-			note = fresh
-		}
-	}
 	if errors.Is(err, errQueuedUpstream) {
 		// A reference: the status went to the upstream's queue. 202 with the card
 		// as it stands; the task page shows the write as "sending…".
@@ -1663,10 +1656,10 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	note, err := s.applyTaskStatus(withRefOrigin(ctx, origin), writerMachineAPI, id, status)
 	if err == nil || errors.Is(err, errQueuedUpstream) {
 		// A session picking the task up (in_progress) claims it, whether the
-		// status was stored or only queued for a reference's upstream; open
-		// releases every claim (task_claims.go).
+		// status was stored or only queued for a reference's upstream
+		// (task_claims.go; the release half is setNoteStatus's).
 		_, sid := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
-		if s.claimOnStatus(ctx, writerMachineAPI, note.ID, status,
+		if s.claimOnStatus(ctx, note.ID, status,
 			s.requestClaimant(ctx, sid, taskSessionHost(r, s.ext.LegacyProvenanceHeaderPrefix))) {
 			if fresh, ferr := s.ext.Notes.Get(ctx, note.ID); ferr == nil {
 				note = fresh

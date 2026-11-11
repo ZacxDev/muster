@@ -200,7 +200,7 @@ func (s *Server) triageAssignedTask(ctx context.Context, p plugins.Plugin, n not
 		out, handler = toolJSON(map[string]any{"task_id": n.ID, "claimed": true}), chiefusage.HandlerTaskClaimed
 		did = "left it alone: it is already claimed by " + claimNames(facts.claims)
 	default:
-		out, handler = s.toolTaskRouteAttention(ctx, chief, n.ID, triageBoardNote), chiefusage.HandlerTaskBoard
+		out, handler = s.toolTaskRouteAttention(ctx, chief, n.ID, triageBoardNote, ""), chiefusage.HandlerTaskBoard
 		did = "put it in front of your owner (no session or agent is on it)"
 	}
 	if toolRefused(out) {
@@ -241,7 +241,8 @@ func (s *Server) triageFactsFor(ctx context.Context, chief agents.Agent, n notes
 		s.logger.Printf("task triage: task %d: read it: %v", n.ID, err)
 		return f, false
 	}
-	f.claims = notes.Claims(cur)
+	// A claim whose session ended is released first (task_claims.go).
+	f.claims = notes.Claims(s.releaseEndedClaimsOf(ctx, cur))
 	targets, err := s.forwardTargets(ctx, chief, n.ID)
 	if err != nil {
 		s.logger.Printf("task triage: task %d: agents on it: %v", n.ID, err)

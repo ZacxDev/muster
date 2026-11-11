@@ -413,7 +413,7 @@ func TestAClaimSurvivesAnUpstreamThatRefusesInProgress(t *testing.T) {
 // task_route_attention on a claimed task answers claimed and files no ask.
 func TestTheChiefsRouteAttentionRaisesNoCardForAClaimedTask(t *testing.T) {
 	f := newTriageFixture(t, false)
-	id := f.upsertRef(t, refKey(), claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"agent": "press-calibrator"}}}))
+	id := f.upsertRef(t, refKey(), claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"agent": "press-calibrator", "agent_session": claimantSID}}}))
 	out := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id, "note": "look at this"})
 	if toolRefused(out) || !strings.Contains(out, `"claimed":true`) || !strings.Contains(out, "press-calibrator") {
 		t.Fatalf("task_route_attention on a claimed task: %s", out)

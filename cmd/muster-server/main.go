@@ -1203,6 +1203,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunAskLogSweep(ctx, api.AskLogSweepInterval)
 	// Host dispatches whose host was not seen for a day end (and free their slot).
 	go a.srv.RunHostDispatchSweep(ctx, api.HostDispatchSweepInterval)
+	// Task claims whose session ended (its window gone from a reporting host)
+	// are released (returns at once without a mirror).
+	go a.srv.RunClaimSweep(ctx, api.ClaimSweepInterval)
 	// The chief's stall nudges (MUSTER_CHIEF_NUDGES=1; returns at once when off).
 	go a.srv.RunChiefNudgeSweep(ctx, api.ChiefNudgeInterval)
 	// The outcome watchdog: a started agent gone quiet is called stuck, once

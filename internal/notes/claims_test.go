@@ -45,8 +45,12 @@ func TestClaimsPinnedCases(t *testing.T) {
 		{"a session only: shown by its prefix", Note{Ref: ref(StatusOpen, "to do", RefClaimant{AgentSession: "77aa88bb99cc"})},
 			[]Claim{{Source: ClaimUpstream, Who: "session 77aa88bb", SessionID: "77aa88bb99cc"}}},
 		{"a claimant naming nobody is dropped", Note{Ref: ref(StatusInProgress, "in progress", RefClaimant{})}, nil},
-		{"both systems: sessions first", Note{Sessions: []SessionLink{claimed}, Ref: ref(StatusOpen, "to do", RefClaimant{Name: "Q. Smith"})},
-			[]Claim{{Source: ClaimSession, Who: "lathe bench", SessionID: "sess-aaaa1111-x"}, {Source: ClaimUpstream, Who: "Q. Smith"}}},
+		// 🔴 A CLAIM IS A SESSION'S PICKUP: an agent or a name without a
+		// session is no claim (round 1).
+		{"an agent without a session is no claim", Note{Ref: ref(StatusOpen, "to do", RefClaimant{Agent: "ag_press03"})}, nil},
+		{"a name without a session is no claim", Note{Ref: ref(StatusOpen, "to do", RefClaimant{Agent: "ag_press04", Name: "R. Doe"})}, nil},
+		{"both systems: sessions first", Note{Sessions: []SessionLink{claimed}, Ref: ref(StatusOpen, "to do", RefClaimant{Name: "Q. Smith", AgentSession: "s-7"})},
+			[]Claim{{Source: ClaimSession, Who: "lathe bench", SessionID: "sess-aaaa1111-x"}, {Source: ClaimUpstream, Who: "Q. Smith", SessionID: "s-7"}}},
 	} {
 		if got := Claims(c.n); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)

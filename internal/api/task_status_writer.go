@@ -137,6 +137,10 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 		return notes.Note{}, err
 	}
 	if queued {
+		// The claim release (task_claims.go): a person's, a session's or an
+		// agent's open releases the task's session claims even while the
+		// upstream has the write.
+		s.releaseClaimsOnStatus(ctx, writer, id, status, true)
 		n, err := s.ext.Notes.Get(ctx, id)
 		if err != nil {
 			return notes.Note{}, err
@@ -167,6 +171,13 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 		// The ready-for-review push (and its withdrawal on leaving review), fed
 		// wctx so its title can name the writer's source (reviewSourceLabel).
 		s.notifyTaskDone(wctx, n)
+		// The claim release (task_claims.go claimReleasedBy): an open by a
+		// person, session or agent, an upstream reopen, a complete by anyone.
+		if s.releaseClaimsOnStatus(ctx, writer, id, status, false) {
+			if fresh, ferr := s.ext.Notes.Get(ctx, id); ferr == nil {
+				n = fresh
+			}
+		}
 	}
 	// The third: an AGENT moving its OWN task to review or complete ends its
 	// work — its outcome becomes done, said once (agent_outcome.go). Only an

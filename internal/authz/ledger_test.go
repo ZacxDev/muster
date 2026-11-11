@@ -202,6 +202,11 @@ var (
 		// row handed back with its owner, then raised or cancelled as THAT owner.
 		"internal/plugins.(*PGStore).UnroutedDue",
 		"internal/plugins.(*PGStore).UnroutedAsksToClose",
+		// Task claims (migration 0111): the claim sweep's read of every owner's
+		// live session claims (owner, task, session, host — no text); each is
+		// then judged against THAT owner's hosts and released as that owner
+		// (internal/api ReleaseEndedClaims).
+		"internal/api.(*Server).ReleaseEndedClaims",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).

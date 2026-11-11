@@ -3,6 +3,8 @@ package notes
 import (
 	"context"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ---------------------------------------------------------------------------
@@ -80,18 +82,19 @@ func Claims(n Note) []Claim {
 }
 
 // who is the name an upstream claimant is shown under: its display name, else
-// its agent, else its session's prefix; "" for a claimant that names nobody
-// (no claim).
+// its agent, else its session's prefix — "" for a claimant WITHOUT a session,
+// which is no claim (round 1: a claim is a session's pickup; an agent alone
+// names no session that is working the task).
 func (c RefClaimant) who() string {
 	switch {
+	case c.AgentSession == "":
+		return ""
 	case c.Name != "":
 		return c.Name
 	case c.Agent != "":
 		return c.Agent
-	case c.AgentSession != "":
-		return SessionClaimName(c.AgentSession)
 	}
-	return ""
+	return SessionClaimName(c.AgentSession)
 }
 
 // SessionClaimName is the name a session's claim is shown under when it came
@@ -119,6 +122,43 @@ func (s *PGStore) ClaimByLink(ctx context.Context, noteID int64, l SessionLink, 
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claimed_at = coalesce(claimed_at, now()), claimed_by = $3
 		WHERE note_id = $1 AND session_id = $2 AND (claimed_at IS NULL OR claimed_by <> $3)`, noteID, l.SessionID, by)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ClaimedSession is one session claim, as the ended-session sweep reads it:
+// whose, on which task, which session, and the host it claimed from ("" when
+// the claim named none).
+type ClaimedSession struct {
+	OwnerID, NoteID int64
+	SessionID, Host string
+}
+
+// ClaimedSessions is the live session claims (claimed_at set, on a live task)
+// ctx may see, at most limit: the claim sweep passes the system scope (its
+// caller is on internal/authz's ledger), then judges and releases each as its
+// owner.
+func (s *PGStore) ClaimedSessions(ctx context.Context, limit int) ([]ClaimedSession, error) {
+	rows, err := s.pool.Query(ctx, `SELECT ts.owner_id, ts.note_id, ts.session_id, ts.host
+		FROM task_sessions ts JOIN notes n ON n.id = ts.note_id
+		WHERE ts.claimed_at IS NOT NULL AND n.`+liveOnly+` ORDER BY ts.owner_id, ts.note_id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (ClaimedSession, error) {
+		var c ClaimedSession
+		err := row.Scan(&c.OwnerID, &c.NoteID, &c.SessionID, &c.Host)
+		return c, err
+	})
+}
+
+// ReleaseSessionClaim clears session sessionID's claim on task noteID (the
+// session ended), reporting whether there was one.
+func (s *PGStore) ReleaseSessionClaim(ctx context.Context, noteID int64, sessionID string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claimed_at = NULL, claimed_by = ''
+		WHERE note_id = $1 AND session_id = $2 AND claimed_at IS NOT NULL`, noteID, sessionID)
 	if err != nil {
 		return false, err
 	}

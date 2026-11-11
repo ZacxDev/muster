@@ -4,18 +4,22 @@
 --   task_sessions.claimed_at   set when THIS session picked the task up through
 --       muster's task tools (a status write to in_progress that carried the
 --       session's id), NULL otherwise. Cleared when the task is set back to
---       open (the unclaim). A claim is a fact about a request, never inferred
---       from focus or transcript text.
+--       open by a person, session or agent, reopened upstream, stored as
+--       complete, or when the claiming session ended (internal/api
+--       task_claims.go). A claim is a fact about a request, never inferred from
+--       focus or transcript text.
 --   task_sessions.claimed_by   the name the claim was made under (a mirrored
 --       session's stable name, or "session <id prefix>"): what the board shows.
 --
 --   plugin_message_handling.handler gains 'task_claimed': the task triage left
---       an assignment of a CLAIMED task alone (no "needs you" card, no chief
+--       an assignment of a CLAIMED task alone (no "pick this up" card, no chief
 --       turn).
 --
 -- The other half of a claim — the upstream's, for a plugin task reference — is
--- not stored here: it is read from the reference's snapshot (claimants, or a
--- status in progress), so a later snapshot without it is the unclaim.
+-- not stored here: it is read from the reference's snapshot, whose claimants
+-- name the session that picked the record up. A status is NEVER a claim (an
+-- upstream in progress names nobody), and a later snapshot without claimants
+-- is the unclaim.
 --
 -- IF NOT EXISTS / DROP IF EXISTS: every migration is idempotent (the
 -- skipped-migration recovery re-runs a file whose effect may already be there).

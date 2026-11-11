@@ -66,34 +66,56 @@ text:
   [reference](plugins.md#task-references) the status itself is only queued
   for the upstream; the claim is recorded whatever the upstream does with it.
 - **The upstream's claim.** A reference whose last snapshot names
-  [`claimants`](plugins.md#task-references) — the claiming agent and its
-  session (`agent`, `agent_session`) — is claimed by them. A claimant whose
-  `agent_session` is one of your mirrored sessions is linked to the task too.
-  **A status is never a claim:** an upstream `in_progress` (or paused) with no
-  claimant, your own `in_progress` from the card, and a snapshot from a plugin
-  that sends no `claimants` all leave the task unclaimed.
+  [`claimants`](plugins.md#task-references) is claimed by them. A claimant is
+  a session's pickup: it must carry the session (`agent_session`, a valid
+  session id), with the `agent` it ran as; one without a session claims
+  nothing. A claimant whose `agent_session` is one of your mirrored sessions
+  is linked to the task too. **A status is never a claim:** an upstream
+  `in_progress` (or paused) with no claimant, your own `in_progress` from the
+  card, and a snapshot from a plugin that sends no `claimants` all leave the
+  task unclaimed. (The HQ tasks plugin sends the session that moved the HQ
+  task to "in progress" — see [plugins.md](plugins.md#task-references).)
 
 What a claim does:
 
-- **No "needs you" card.** The [task triage](plugins.md#an-assigned-task-muster-places-itself)
+- **No "pick this up" card.** The [task triage](plugins.md#an-assigned-task-muster-places-itself)
   leaves an assignment of a claimed task alone (settled
   `muster: task triage — left it alone: it is already claimed by <who>`, no
   chief turn), and the chief's `task_route_attention` raises no card for one.
   The one exception is the clean forward: a task with exactly one agent on it
   that `task_forward` can reach is still forwarded to that agent.
+- **The chief can still ask.** `task_route_attention` with a `question` (the
+  chief asking you something about the task, not putting it up for pickup)
+  raises its card whether or not the task is claimed; the card names the
+  question and who is working the task.
 - **The board shows who.** The card carries "⚑ worked by <who>"
   (`data-task-claimed` names the sources: `session`, `upstream`).
-- **An unclaim reopens it.** Setting the task back to `open` (the card, the
-  machine route, the task tool, or a dispatched agent's own status route and
-  tool) releases every session claim; a later snapshot without claimants
-  drops the upstream's. The
-  next assignment gets its card again.
 
-muster's own status writers (a snapshot, a dispatch advance, the reopen after
-an agent is destroyed) neither claim nor unclaim. A status the upstream
-refuses (a record whose statuses have no "in progress": the write shows as
-failed on the task page and the task stays `open`) does not take the claim
-with it.
+A session's claim is **released** — and the next assignment gets its card
+again — when:
+
+- the task is set back to `open` by you (the card), a session or a machine
+  (the machine route), the task tool, or a dispatched agent's own status route
+  and tool. That releases **every** session claim on the task: an agent names
+  no session, so none is "its own" to pick out, and setting its task back to
+  open is the agent handing the work back;
+- the upstream moves a reference back to `open` (a snapshot changes the
+  task's status to it): the upstream reopened it;
+- the task is stored as `complete`, by any writer (a reference's complete
+  counts once the upstream's snapshot stores it);
+- the claiming session **ended**: its window is gone from the host it claimed
+  from while that host is online, reports status and lists windows — muster's
+  one "the session is gone" rule. A sweep checks every minute, and the triage
+  and `task_route_attention` check the task's claims before reading them. A
+  claim whose host is offline, does not report status, or was never known is
+  not ended by this; it waits for one of the releases above.
+
+The upstream's claim is released by a later snapshot without it. muster's own
+status writers (a dispatch advance, the reopen after an agent is destroyed, a
+merge) neither claim nor release, beyond the reopen and complete above. A
+status the upstream refuses (a record whose statuses have no "in progress":
+the write shows as failed on the task page and the task stays `open`) does
+not take the claim with it.
 
 ## Provenance
 

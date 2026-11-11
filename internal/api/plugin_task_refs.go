@@ -97,11 +97,11 @@ type pluginRefIn struct {
 	// record. One line of plain text, cut at maxRefAuthorRunes like a comment
 	// author; the task notifications name it (taskRefFragment).
 	Creator string `json:"creator"`
-	// Claimants is OPTIONAL: who CLAIMED the record upstream — the claiming
-	// agent (agent) and its session (agent_session), with an optional display
-	// name. Cut, never refused: at most maxRefClaimants; agent and name are
-	// one line of plain text; an agent_session that is not a session id is
-	// dropped; a claimant left naming nobody is dropped (notes.Claims).
+	// Claimants is OPTIONAL: who picked the record up upstream — the session
+	// (agent_session, required), the agent it ran as and an optional display
+	// name. Cut, never refused: at most maxRefClaimants; agent and name are one
+	// line of plain text; a claimant whose agent_session is missing or not a
+	// session id is dropped (notes.Claims).
 	Claimants []struct {
 		Agent        string `json:"agent"`
 		AgentSession string `json:"agent_session"`
@@ -242,8 +242,8 @@ func (ref pluginRefIn) snapshot(key string) notes.RefSnapshot {
 		if mirror.ValidClaudeSession(c.AgentSession) {
 			cl.AgentSession = c.AgentSession
 		}
-		if cl == (notes.RefClaimant{}) {
-			continue // names nobody: no claim
+		if cl.AgentSession == "" {
+			continue // no (valid) session: no claim — a claim is a session's pickup
 		}
 		if len(snap.Claimants) == maxRefClaimants {
 			break

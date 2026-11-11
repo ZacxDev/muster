@@ -469,6 +469,10 @@ type Store interface {
 	// claim on the task. See Claims for what a claim does.
 	ClaimByLink(ctx context.Context, noteID int64, l SessionLink, by string, detailSeen bool) (bool, error)
 	ReleaseClaims(ctx context.Context, noteID int64) (int64, error)
+	// ClaimedSessions and ReleaseSessionClaim are the ended-session sweep's
+	// read (every owner's, system scope) and release (one session's claim).
+	ClaimedSessions(ctx context.Context, limit int) ([]ClaimedSession, error)
+	ReleaseSessionClaim(ctx context.Context, noteID int64, sessionID string) (bool, error)
 	// TasksForSession is the REVERSE lookup — every LIVE task a session touched,
 	// most-recently-touched first. It backs GET /api/sessions/{id}/tasks.
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)
