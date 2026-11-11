@@ -28,6 +28,8 @@ import (
 // still be refused here as it would be in production.
 type memBranding struct {
 	mu sync.Mutex
+	// st is the row as stored; b is what it serves (st.Resolve()).
+	st branding.Stored
 	b  branding.Branding
 	// calls counts every Apply, refused or not; writes the ones that wrote.
 	calls, writes int
@@ -46,18 +48,18 @@ func (m *memBranding) Apply(ctx context.Context, c branding.Change) (branding.Br
 	if !authz.IsAdmin(ctx) {
 		return branding.Branding{}, branding.ErrNotAdmin
 	}
+	if c.Empty() {
+		return branding.Branding{}, branding.ErrEmptyChange
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	next, err := m.st.Next(c)
+	if err != nil {
+		return branding.Branding{}, err
+	}
 	m.writes++
-	if c.Name != nil {
-		m.b.Name = *c.Name
-	}
-	if c.Logo != nil {
-		m.b.Logo, m.b.Icon192, m.b.Icon512, m.b.ETag = c.Logo.Logo, c.Logo.Icon192, c.Logo.Icon512, c.Logo.ETag
-	}
-	if c.ClearLogo {
-		m.b.Logo, m.b.Icon192, m.b.Icon512, m.b.ETag = nil, nil, nil, ""
-	}
+	m.st = next
+	m.b = next.Resolve()
 	m.b.UpdatedBy = authz.MustFrom(ctx).UserID
 	return m.b, nil
 }

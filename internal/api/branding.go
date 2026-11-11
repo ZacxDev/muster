@@ -32,11 +32,12 @@ import (
 // icon of a server it has not signed in to yet. What they serve is the one
 // server-wide row an admin chose to publish.
 //
-// 🔴 THE WRITES ARE AN ADMIN'S, CHECKED TWICE. PUT /api/instance/branding and
-// DELETE /api/instance/branding/logo are requireAdminRole (a browser session
-// whose principal is an admin, from muster's own pages), and the store refuses
-// any caller that is not an admin before it acts as the system
-// (branding.PG.Apply). Neither route takes a machine credential.
+// 🔴 THE WRITES ARE AN ADMIN'S, CHECKED TWICE. PUT /api/instance/branding,
+// DELETE /api/instance/branding/logo and DELETE /api/instance/branding/app-icon
+// are requireAdminRole (a browser session whose principal is an admin, from
+// muster's own pages), and the store refuses any caller that is not an admin
+// before it acts as the system (branding.PG.Apply). No write route takes a
+// machine credential.
 // ---------------------------------------------------------------------------
 
 // The routes.
@@ -44,22 +45,24 @@ const (
 	InstancePath      = "/api/instance"
 	BrandingPath      = "/api/instance/branding"
 	BrandingLogoPath  = "/api/instance/branding/logo"
+	BrandingIconPath  = "/api/instance/branding/app-icon"
 	BrandLogoPath     = ui.BrandLogoPath
 	BrandIcon192Path  = ui.BrandIcon192Path
 	BrandIcon512Path  = ui.BrandIcon512Path
 	brandingAccountID = "branding"
 )
 
-// brandingBodyLimit is the most a PUT body may be: the 1 MiB file plus room
-// for the multipart framing and the name. A larger body is refused while it
-// is read (http.MaxBytesReader), before it is parsed or buffered; the file's
-// own cap (branding.MaxUploadBytes) is checked on the bytes read.
-const brandingBodyLimit = branding.MaxUploadBytes + 64<<10
+// brandingBodyLimit is the most a PUT body may be: two 1 MiB files (the logo
+// and the app icon) plus room for the multipart framing and the other fields.
+// A larger body is refused while it is read (http.MaxBytesReader), before it
+// is parsed or buffered; each file's own cap (branding.MaxUploadBytes) is
+// checked on the bytes read.
+const brandingBodyLimit = 2*branding.MaxUploadBytes + 64<<10
 
 // errBodyTooLarge is the refusal of a body over brandingBodyLimit — distinct
 // from branding.ErrTooLarge, the file's own cap, so a client (and a test) can
 // tell which guard answered.
-var errBodyTooLarge = &branding.Error{Code: "body_too_large", Msg: "the upload is larger than 1 MiB"}
+var errBodyTooLarge = &branding.Error{Code: "body_too_large", Msg: "the upload is larger than 2 MiB"}
 
 // The cache lifetimes. Every link muster publishes to /brand/* — the pages,
 // the manifest, Web Push and the instance document — carries ?v=<etag>
@@ -94,6 +97,7 @@ func (s *Server) registerBrandingRoutes(mux Mux) {
 	mux.HandleFunc("GET "+BrandIcon512Path, s.handleBrandIcon512)
 	mux.HandleFunc("PUT "+BrandingPath, s.requireAdminRole(s.handleBrandingPut))
 	mux.HandleFunc("DELETE "+BrandingLogoPath, s.requireAdminRole(s.handleBrandingLogoDelete))
+	mux.HandleFunc("DELETE "+BrandingIconPath, s.requireAdminRole(s.handleBrandingIconDelete))
 }
 
 // brandCache is the last row read, shared by every render on this server.
@@ -145,7 +149,7 @@ func (s *Server) brandingStored(b branding.Branding) {
 // uiBrand is the branding as the pages draw it.
 func (s *Server) uiBrand(ctx context.Context) ui.Brand {
 	b := s.instanceBranding(ctx)
-	return ui.Brand{Name: b.Name, ETag: b.ETag}
+	return ui.Brand{Name: b.Name, ETag: b.ETag, LogoShowsName: b.LogoShowsName}
 }
 
 // --- GET /api/instance ----------------------------------------------------------
@@ -264,7 +268,7 @@ func (s *Server) handleBrandingPut(w http.ResponseWriter, r *http.Request) {
 			s.brandingRefuseErr(w, r, errBodyTooLarge)
 			return
 		}
-		s.brandingRefuse(w, r, http.StatusBadRequest, "bad_form", "send multipart/form-data with a logo file and/or a name")
+		s.brandingRefuse(w, r, http.StatusBadRequest, "bad_form", "send multipart/form-data with a logo file, an app_icon file and/or a name")
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }()
@@ -278,7 +282,15 @@ func (s *Server) handleBrandingPut(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Name = &name
 	}
-	if fh := logoPart(r.MultipartForm); fh != nil {
+	if vals, ok := r.MultipartForm.Value[logoShowsNameField]; ok {
+		v, err := parseLogoShowsName(vals)
+		if err != nil {
+			s.brandingRefuseErr(w, r, err)
+			return
+		}
+		c.LogoShowsName = &v
+	}
+	if fh := filePart(r.MultipartForm, "logo"); fh != nil {
 		data, err := readPart(fh)
 		if err != nil {
 			s.brandingRefuse(w, r, http.StatusBadRequest, "bad_form", "the logo could not be read")
@@ -291,8 +303,23 @@ func (s *Server) handleBrandingPut(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Logo = &img
 	}
-	if c.Name == nil && c.Logo == nil {
-		s.brandingRefuse(w, r, http.StatusBadRequest, "empty", "send a logo file, a name, or both")
+	// The app icon goes through the logo's own pipeline (ProcessIcon), so it
+	// is refused with the same codes.
+	if fh := filePart(r.MultipartForm, appIconField); fh != nil {
+		data, err := readPart(fh)
+		if err != nil {
+			s.brandingRefuse(w, r, http.StatusBadRequest, "bad_form", "the app icon could not be read")
+			return
+		}
+		icon, err := branding.ProcessIcon(data)
+		if err != nil {
+			s.brandingRefuseErr(w, r, err)
+			return
+		}
+		c.AppIcon = &icon
+	}
+	if c.Name == nil && c.Logo == nil && c.AppIcon == nil && c.LogoShowsName == nil {
+		s.brandingRefuse(w, r, http.StatusBadRequest, "empty", "send a logo file, an app_icon file, a name, or logo_shows_name")
 		return
 	}
 	s.brandingApply(w, r, c, "saved")
@@ -306,6 +333,14 @@ func (s *Server) handleBrandingLogoDelete(w http.ResponseWriter, r *http.Request
 	s.brandingApply(w, r, branding.Change{ClearLogo: true}, "reset")
 }
 
+func (s *Server) handleBrandingIconDelete(w http.ResponseWriter, r *http.Request) {
+	if s.ext.Branding == nil {
+		s.brandingRefuse(w, r, http.StatusServiceUnavailable, "no_store", "this server has no database to keep the branding in")
+		return
+	}
+	s.brandingApply(w, r, branding.Change{ClearAppIcon: true}, "icon_removed")
+}
+
 // brandingApply writes c and answers with the instance document (or, for the
 // Account page's htmx form, a redirect back to it).
 func (s *Server) brandingApply(w http.ResponseWriter, r *http.Request, c branding.Change, done string) {
@@ -316,6 +351,13 @@ func (s *Server) brandingApply(w http.ResponseWriter, r *http.Request, c brandin
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
 		return
 	}
+	var refusal *branding.Error
+	if errors.As(err, &refusal) {
+		// A refusal the store makes on what is stored (an app icon with no
+		// logo), with its own code.
+		s.brandingRefuseErr(w, r, err)
+		return
+	}
 	if err != nil {
 		s.logger.Printf("branding: save: %v", err)
 		s.brandingRefuse(w, r, http.StatusInternalServerError, "save_failed", "the branding could not be saved")
@@ -323,17 +365,46 @@ func (s *Server) brandingApply(w http.ResponseWriter, r *http.Request, c brandin
 	}
 	s.brandingStored(b)
 	p := authz.MustFrom(r.Context())
-	s.logger.Printf("branding: %s by user %d (logo %s)", done, p.UserID, map[bool]string{true: b.ETag, false: "none"}[b.HasLogo()])
+	s.logger.Printf("branding: %s by user %d (logo %s, app icon %t)", done, p.UserID, map[bool]string{true: b.ETag, false: "none"}[b.HasLogo()], b.HasAppIcon)
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", accountPath+"?branding="+done+"#"+brandingAccountID)
 	}
 	s.writeJSON(w, http.StatusOK, instanceDoc(b))
 }
 
-// logoPart is the request's logo file, or nil. An empty file input — a
-// browser sends it as a part with no filename and no bytes — is no logo.
-func logoPart(f *multipart.Form) *multipart.FileHeader {
-	fhs := f.File["logo"]
+// logoShowsNameField is the PUT's form field for Branding.LogoShowsName.
+const logoShowsNameField = "logo_shows_name"
+
+// errLogoShowsName refuses a logo_shows_name that is not "true" or "false".
+var errLogoShowsName = &branding.Error{Code: "logo_shows_name_invalid", Msg: `logo_shows_name must be "true" or "false"`}
+
+// parseLogoShowsName is the field's value: the LAST one sent, each "true" or
+// "false". The Account page's form sends a hidden "false" before the checkbox,
+// so an unticked box (which a browser does not send) still says false, and a
+// ticked one sends "false" then "true". A client that omits the field leaves
+// the setting as it is.
+func parseLogoShowsName(vals []string) (bool, error) {
+	v := false
+	for _, s := range vals {
+		switch s {
+		case "true":
+			v = true
+		case "false":
+			v = false
+		default:
+			return false, errLogoShowsName
+		}
+	}
+	return v, nil
+}
+
+// appIconField is the PUT's form field for the app icon file.
+const appIconField = "app_icon"
+
+// filePart is the request's file in field, or nil. An empty file input — a
+// browser sends it as a part with no filename and no bytes — is no file.
+func filePart(f *multipart.Form, field string) *multipart.FileHeader {
+	fhs := f.File[field]
 	if len(fhs) == 0 || (fhs[0].Filename == "" && fhs[0].Size == 0) {
 		return nil
 	}
@@ -386,24 +457,29 @@ func (s *Server) brandingRefuse(w http.ResponseWriter, r *http.Request, status i
 // the server checks, so only these fixed sentences can be drawn — an unknown
 // code draws a generic line, never the query's text.
 var brandingErrorText = map[string]string{
-	branding.ErrEmpty.Code:       branding.ErrEmpty.Msg,
-	branding.ErrTooLarge.Code:    branding.ErrTooLarge.Msg,
-	errBodyTooLarge.Code:         errBodyTooLarge.Msg,
-	branding.ErrSVG.Code:         branding.ErrSVG.Msg,
-	branding.ErrUnsupported.Code: branding.ErrUnsupported.Msg,
-	branding.ErrCorrupt.Code:     branding.ErrCorrupt.Msg,
-	branding.ErrDimensions.Code:  branding.ErrDimensions.Msg,
-	branding.ErrPixels.Code:      branding.ErrPixels.Msg,
-	branding.ErrNameInvalid.Code: branding.ErrNameInvalid.Msg,
-	branding.ErrNameTooLong.Code: branding.ErrNameTooLong.Msg,
-	branding.ErrNameControl.Code: branding.ErrNameControl.Msg,
-	"empty":                      "Choose a logo file or enter a name.",
+	branding.ErrEmpty.Code:            branding.ErrEmpty.Msg,
+	branding.ErrTooLarge.Code:         branding.ErrTooLarge.Msg,
+	errBodyTooLarge.Code:              errBodyTooLarge.Msg,
+	branding.ErrSVG.Code:              branding.ErrSVG.Msg,
+	branding.ErrUnsupported.Code:      branding.ErrUnsupported.Msg,
+	branding.ErrCorrupt.Code:          branding.ErrCorrupt.Msg,
+	branding.ErrDimensions.Code:       branding.ErrDimensions.Msg,
+	branding.ErrPixels.Code:           branding.ErrPixels.Msg,
+	branding.ErrNameInvalid.Code:      branding.ErrNameInvalid.Msg,
+	branding.ErrNameTooLong.Code:      branding.ErrNameTooLong.Msg,
+	branding.ErrNameControl.Code:      branding.ErrNameControl.Msg,
+	errLogoShowsName.Code:             errLogoShowsName.Msg,
+	branding.ErrAppIconNeedsLogo.Code: branding.ErrAppIconNeedsLogo.Msg,
+	"empty":                           "Choose a logo file or enter a name.",
 }
 
 // --- the Account page's section -------------------------------------------------
 
 // BrandingSectionHeading is the Account page section's heading.
 const BrandingSectionHeading = "Instance branding"
+
+// LogoShowsNameLabel is the label of the section's logo_shows_name checkbox.
+const LogoShowsNameLabel = "The logo already shows the name (hide the name text next to it)"
 
 // accountBrandingSection is the Account page's "Instance branding" section:
 // an ADMIN's only (a member's page has none, and the routes refuse a member
@@ -424,6 +500,8 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 		sb.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Branding saved.</p>`)
 	case "reset":
 		sb.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Logo reset to the muster mark.</p>`)
+	case "icon_removed":
+		sb.WriteString(`<p role="status" class="text-sm font-semibold text-fg">App icon removed: the icons are made from the logo again.</p>`)
 	}
 	if code := q.Get("branding_error"); code != "" {
 		msg, ok := brandingErrorText[code]
@@ -446,8 +524,18 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 <input id="branding-name" name="name" type="text" maxlength="64" autocomplete="off" value="` + html.EscapeString(b.Name) + `" class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <label for="branding-logo" class="text-sm font-medium text-fg">Logo (PNG, JPEG or WebP, up to 1 MiB and 4096 px)</label>
 <input id="branding-logo" name="logo" type="file" accept="image/png,image/jpeg,image/webp" class="text-sm text-fg2">
+<label for="branding-app-icon" class="text-sm font-medium text-fg">App icon (optional: a square image, at least 512 × 512 px, for the favicon, the installed app and notifications; without one they are made from the logo)</label>
+<input id="branding-app-icon" name="` + appIconField + `" type="file" accept="image/png,image/jpeg,image/webp" class="text-sm text-fg2">
+<input type="hidden" name="` + logoShowsNameField + `" value="false">
+<label for="branding-logo-shows-name" class="flex min-h-[44px] items-center gap-3 text-sm text-fg">
+<input id="branding-logo-shows-name" name="` + logoShowsNameField + `" type="checkbox" value="true"` + map[bool]string{true: " checked", false: ""}[b.LogoShowsName] + ` class="h-5 w-5 shrink-0">
+` + LogoShowsNameLabel + `
+</label>
 <button type="submit" id="branding-save" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Save branding</button>
 </form>`)
+	if b.HasAppIcon {
+		sb.WriteString(`<button type="button" id="branding-icon-remove" hx-delete="` + BrandingIconPath + `" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Remove app icon</button>`)
+	}
 	if b.HasLogo() {
 		sb.WriteString(`<button type="button" id="branding-reset" hx-delete="` + BrandingLogoPath + `" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Reset logo to the muster mark</button>`)
 	}
@@ -455,20 +543,22 @@ func (s *Server) accountBrandingSection(r *http.Request) string {
 	return sb.String()
 }
 
-// loginBrandHTML is the sign-in page's brand: the logo and name when set,
-// nothing otherwise (the page's own heading names muster). It is public — the
-// sign-in page is — and it is the server's, not a user's.
+// loginBrandHTML is the sign-in page's brand: the logo and name when set —
+// the logo alone, its alt the name, when it already shows the name
+// (ui.Brand.DrawsName, the header's rule) — and nothing when neither is set
+// (the page's own heading names muster). It is public — the sign-in page is —
+// and it is the server's, not a user's.
 func (s *Server) loginBrandHTML(ctx context.Context) string {
-	b := s.instanceBranding(ctx)
+	b := s.uiBrand(ctx)
 	if !b.HasLogo() && b.Name == "" {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString(`<div data-testid="login-brand" class="mb-4 flex flex-col items-center gap-2">`)
 	if b.HasLogo() {
-		sb.WriteString(`<img data-brand-logo src="` + ui.Brand{ETag: b.ETag}.Versioned(BrandLogoPath) + `" alt="" class="h-16 w-auto max-w-[12rem] object-contain">`)
+		sb.WriteString(`<img data-brand-logo src="` + b.Versioned(BrandLogoPath) + `" alt="` + html.EscapeString(b.LogoAlt()) + `" class="h-16 w-auto max-w-[12rem] object-contain">`)
 	}
-	if b.Name != "" {
+	if b.DrawsName() {
 		sb.WriteString(`<p data-brand-name class="text-center text-lg font-semibold text-fg">` + html.EscapeString(b.Name) + `</p>`)
 	}
 	sb.WriteString(`</div>`)

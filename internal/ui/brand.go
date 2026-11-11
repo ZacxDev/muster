@@ -30,10 +30,31 @@ type Brand struct {
 	// the old one: /brand/* is long-cached only at the URL whose v is the
 	// current ETag (internal/api serveBrandImage).
 	ETag string
+	// LogoShowsName is the admin's statement that the logo already spells
+	// the name (a wordmark): the pages then draw the logo alone. It means
+	// nothing while no logo is set.
+	LogoShowsName bool
 }
 
 // HasLogo reports whether a logo is set.
 func (b Brand) HasLogo() bool { return b.ETag != "" }
+
+// DrawsName reports whether the name is drawn as text beside the logo: a name
+// is set, and no logo that already spells it (LogoShowsName) is. The one rule
+// for the header, the sidebar and the sign-in page.
+func (b Brand) DrawsName() bool {
+	return b.Name != "" && !(b.HasLogo() && b.LogoShowsName)
+}
+
+// LogoAlt is the logo's alt text: "" while the name is drawn beside it (the
+// text already says it, and a screen reader would say it twice), and the name
+// when the logo stands for it alone, so the name is still announced.
+func (b Brand) LogoAlt() string {
+	if b.DrawsName() {
+		return ""
+	}
+	return b.Name
+}
 
 // Versioned is path with the logo's ETag as its ?v= — the one spelling of a
 // link to a /brand/ image: the pages, the manifest, Web Push and the instance
@@ -49,15 +70,16 @@ func (b Brand) Icon192() string {
 }
 
 // brandMark is the header's and the sidebar's brand: the logo, then the name,
-// each when set — and the wordmark when neither is.
+// each when set — the logo alone when it already shows the name
+// (Brand.DrawsName) — and the wordmark when neither is set.
 func brandMark(b Brand) g.Node {
 	if !b.HasLogo() && b.Name == "" {
 		return wordmark()
 	}
 	return g.Group{
-		g.If(b.HasLogo(), Img(g.Attr("data-brand-logo", ""), Src(b.Versioned(BrandLogoPath)), Alt(""),
+		g.If(b.HasLogo(), Img(g.Attr("data-brand-logo", ""), Src(b.Versioned(BrandLogoPath)), Alt(b.LogoAlt()),
 			Class("h-7 w-auto max-w-[8rem] shrink-0 object-contain"))),
-		g.If(b.Name != "", Span(g.Attr("data-brand-name", ""), Class("truncate"), g.Text(b.Name))),
+		g.If(b.DrawsName(), Span(g.Attr("data-brand-name", ""), Class("truncate"), g.Text(b.Name))),
 	}
 }
 
