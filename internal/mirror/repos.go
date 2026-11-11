@@ -1,9 +1,20 @@
 package mirror
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
+
+// githubRepoRE is a GitHub owner/name: internal/github's repoNameRe, spelled
+// again HERE because muster-mirror links this package and internal/github
+// carries an HTTP client that follows redirects (TestEveryMirrorHTTPClient
+// RefusesRedirects). TestValidGitHubRepoAgreesWithGitHubs pins the two equal.
+var githubRepoRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+// ValidGitHubRepo reports whether s is a GitHub owner/name
+// (github.ValidRepoName's rule).
+func ValidGitHubRepo(s string) bool { return githubRepoRE.MatchString(s) }
 
 // THE REPO CHIP: which repository a mirrored window — a shell or a Claude Code
 // session alike — works in, as a SHORT NAME: the top-level directory's
@@ -52,6 +63,40 @@ func CleanRepoName(name string) string {
 		s = strings.TrimRight(s[:cut], " ")
 	}
 	return s
+}
+
+// THE GITHUB REPOSITORY BESIDE THE NAME (Msg.GitHubRepos): the <owner>/<name>
+// the window's checkout's origin names, on the same repos message. The NAME
+// stays the folder's (the chip, `repo:`); the GitHub repository is what the
+// chief is told to dispatch with, because a folder can be named differently
+// from its repository. 🔴 A HOST'S WORD, NOT AN AUTHORITY: muster checks it
+// against the owner's connected repositories (connectedRepoName) before
+// anything uses it, like any repository the chief names. Its worst case on the
+// wire (MaxWindows × ValidGitHubRepo's 140 bytes) is measured beside the
+// names' by TestTheLargestReposMessageFitsOneFrame.
+
+// NormalizeGitHubRepos is in restricted to windows (NormalizeRepos' rule),
+// each value a GitHub owner/name (ValidGitHubRepo) lowercased; an entry
+// that is not is dropped; nil when nothing is left.
+func NormalizeGitHubRepos(in map[string]string, windows []Window) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for _, w := range windows {
+		v, ok := in[w.ID]
+		if !ok {
+			continue
+		}
+		if v = strings.ToLower(strings.TrimSpace(v)); !ValidGitHubRepo(v) {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[w.ID] = v
+	}
+	return out
 }
 
 // NormalizeRepos is in restricted to windows (a host cannot name the repo of a

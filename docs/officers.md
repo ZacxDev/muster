@@ -1858,6 +1858,7 @@ read); a line that does not decode is skipped.
 | `api_calls` | assistant records — subagent (sidechain) records included, as they are this instance's spend — one per API call, at the hour of the call's FIRST record |
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` | those calls' `message.usage`, each call's largest value of each field |
 | `turns` | distinct `promptId`s of main-conversation `user` records, at the hour first seen; a subagent's prompt (`isSidechain`) and injected context (`isMeta`, `isCompactSummary`) are not turns |
+| `model` (optional) | the model (`message.model`, which every record of a call repeats) with the most output tokens over the bucket's calls; a tie goes to the smaller model id, so file and record order never decide it. Left out of the bucket when no call names a model, so an older reader sees the bytes it always did |
 
 **The dedup rule.** The CLI writes one assistant record per content block
 (thinking, text, tool use), each repeating the same API call's usage. A call
@@ -1893,8 +1894,14 @@ in the hour it began.
 {"instance": "officer-review-example-web-r1", "pool": "routine", "account": "",
  "generated_at": "2026-11-10T14:05:00Z",
  "buckets": [{"session": "…", "hour": "2026-11-10T13:00:00Z", "turns": 2, "api_calls": 31,
-   "input_tokens": 410, "output_tokens": 9822, "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
+   "input_tokens": 410, "output_tokens": 9822, "cache_read_tokens": 1803321, "cache_creation_tokens": 60117,
+   "model": "claude-model-a"}]}
 ```
+
+`model` is ccd's, passed through (absent when ccd names none; an older ccd
+never names one). HQ refuses the WHOLE push over a model that does not match
+`^[A-Za-z0-9._:/-]{1,128}$`, so such a model is dropped and its bucket sent
+without one.
 
 `pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
 each bucket by (officer, instance, session, hour), replacing its counts, and
@@ -1955,7 +1962,8 @@ cat > /tmp/hour.jq <<'EOF'
             input: (map(.r.message.usage.input_tokens // 0) | max),
             output: (map(.r.message.usage.output_tokens // 0) | max),
             cache_read: (map(.r.message.usage.cache_read_input_tokens // 0) | max),
-            cache_creation: (map(.r.message.usage.cache_creation_input_tokens // 0) | max)})
+            cache_creation: (map(.r.message.usage.cache_creation_input_tokens // 0) | max),
+            model: (sort_by(.i) | map(.r.message.model // "") | map(select(. != "")) | .[0] // "")})
    | map(select(.s == $session and (.t | startswith($h))))) as $c
 | ([ $recs[] | select(.r.type == "user" and (.r.isSidechain != true) and (.r.isMeta != true)
                       and (.r.isCompactSummary != true) and (.r.promptId // "") != "") ]
@@ -1964,7 +1972,9 @@ cat > /tmp/hour.jq <<'EOF'
 | {session: $session, hour: $h, turns: $turns, api_calls: ($c | length),
    input_tokens: ($c | map(.input) | add // 0), output_tokens: ($c | map(.output) | add // 0),
    cache_read_tokens: ($c | map(.cache_read) | add // 0),
-   cache_creation_tokens: ($c | map(.cache_creation) | add // 0)}
+   cache_creation_tokens: ($c | map(.cache_creation) | add // 0),
+   model: ($c | map(select(.model != "")) | group_by(.model)
+           | map({m: .[0].model, o: (map(.output) | add)}) | sort_by(-.o, .m) | .[0].m)}
 EOF
 cd "$CLAUDE_CONFIG_DIR/projects"
 find . -name '*.jsonl' -type f | LC_ALL=C sort | while IFS= read -r f; do
@@ -1974,11 +1984,158 @@ done | jq -s --arg session <session> --arg h 2026-11-10T13 -f /tmp/hour.jq
 ```
 
 `split("\n") | .[:-1]` drops a line still being written, as `ccd` does. It
-prints that session's bucket for the hour, to compare with HQ's. The one rule
+prints that session's bucket for the hour, to compare with HQ's (`model` is
+`null` where `ccd` leaves it out). The one rule
 it does not apply is `ccd`'s file filter (a file last modified before the
 window is not read). Such a file holds no record inside the window, so the
 two agree for an hour in the window unless a newer file holds a copy of one of
 its calls or prompts stamped inside the window.
+
+## Pools to HQ
+
+Every declared officer's pools — as muster runs them, not as HQ guesses — are
+pushed to the officer's HQ with the officer's own token:
+
+```
+PUT {hq_url}/officers/{id}/pools
+
+{"pools": [{"pool": "judgement", "model": "opus", "max_instances": 2, "max_sessions_per_day": 30,
+            "sessions_today": 4, "sessions_day_resets_at": "2026-11-11T00:00:00Z"},
+           {"pool": "routine", "model": "haiku", "max_instances": 3, "max_sessions_per_day": null,
+            "sessions_today": 0, "sessions_day_resets_at": "2026-11-11T00:00:00Z"}],
+ "reported_at": "2026-11-10T17:25:00Z"}
+```
+
+- `pool` is `judgement` and `routine` for a tiered officer (in that order),
+  `""` for an untiered one (its only pool).
+- `model` is the pool's configured model (`""` when none is configured: the
+  CLI's default; also `""`, logged once per officer, for a model HQ refuses,
+  such as one with a context suffix like `opus[1m]` — HQ's pattern is
+  `^[A-Za-z0-9._:/-]{1,128}$` and it refuses the whole body over another); `max_instances` its `max_instances`.
+- `max_sessions_per_day` is `tiers.judgement.max_sessions_per_day`, `null` for
+  a pool without a cap.
+- `sessions_today` is the count the cap is enforced by — the same ledger
+  `officer_claim` reserves in and the wake loop's `judgement cap reached
+  (N/M until 00:00 UTC)` line prints — for the current UTC day; `0` for a pool
+  without a cap, which keeps no count. `sessions_day_resets_at` is the next UTC
+  midnight. `reported_at` is now minus 2 s, on the second, so a small clock
+  skew cannot make HQ refuse it as in the future. When the ledger cannot be read nothing is sent (a wrong count is
+  worse than a late one), logged.
+- HQ refuses pool `""` sent with any other pool, and requires
+  `max_instances` (0-100) on every pool; muster's bodies always meet both
+  (an untiered officer sends exactly its `""` pool, a tiered one only
+  `judgement` and `routine`). HQ serves the stored set back on `GET
+  /officers/{id}/pools`.
+- The body is the officer's WHOLE set: HQ deletes a pool it does not name, so
+  an officer reconfigured without its tiers reports its one `""` pool and HQ
+  drops the other two.
+
+**When.** At boot — `MUSTER_OFFICERS` is read only at boot, so a configuration
+change is a restart and this push carries it — and then every 10 minutes, so
+`sessions_today` stays fresh. Re-pushing is idempotent.
+
+**Failures.** A 4xx is not retried and is logged once per officer until HQ's
+answer changes; a 5xx or no answer is retried after 2 s and 5 s, then left to
+the next tick, logged once until a push is taken again. Counted on
+`muster_officer_pools_push_total{result}`: `pushed`, `hq_refused`,
+`hq_unavailable`, `ledger_failed`.
+
+## Consumer usage to HQ
+
+A muster that is **not** the officers' muster — one running pull-request
+review workers, say — can push its own instances' Claude usage to HQ too, so
+HQ can split each pooled account's spend into officers, each named consumer,
+and everything else. It is off unless `MUSTER_CC_CONSUMER_USAGE` names the
+consumer:
+
+```sh
+MUSTER_CC_USAGE_POLL=1
+MUSTER_CC_USAGE_PUSH_URL=https://hq.example.com/api/v1/claude-pool/usage
+MUSTER_CC_USAGE_PUSH_TOKEN=<the pool-usage token>
+MUSTER_CC_USAGE_PUSH_INSTANCE=review-muster
+MUSTER_CC_CONSUMER_USAGE=pr-review
+```
+
+It rides the [pool push](jobs.md#pushing-the-readings): the same HQ, the same
+bearer token, the same instance label. The route is derived from the pool
+push's URL, its path's `/claude-pool/usage` replaced by
+`/claude-pool/consumer-usage`. Boot is refused for a consumer other than
+`pr-review`, without `MUSTER_CC_USAGE_PUSH_URL` (which itself needs the poller
+and the token), and when that URL's path does not end in `/claude-pool/usage`.
+Unset, nothing changes: the officers' muster leaves it unset.
+
+**Whose usage.** Every instance that is the admin's (the pool's owner), of
+the `claude-code` kind, on a pool account, up — and **not an officer's
+instance**: an officer instance's usage goes to its officer's HQ ([Claude
+usage to HQ](#claude-usage-to-hq)), and pushing it here as well would count
+it twice. A member's agents run on the member's own accounts and are not
+read. What is measured is exactly what the officer push measures: each
+instance pod's `ccd` on `GET /v1/usage` (same buckets, same dedup rule, same
+hour truncation).
+
+**The push** is one `PUT` per instance:
+
+```
+PUT <base>/api/v1/claude-pool/consumer-usage
+Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
+
+{"instance": "review-muster", "consumer": "pr-review",
+ "hours": [{"hour": "2026-11-10T13:00:00Z", "account": "acct-a", "session": "…",
+            "turns": 2, "api_calls": 31, "input_tokens": 410, "output_tokens": 9822,
+            "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
+```
+
+🔴 There is no `model` on a consumer row: HQ's route has no such field and
+decodes strictly, so ccd's bucket model is never sent here (only the officer
+usage push carries it). HQ upserts each row on (instance, consumer, session, hour), replacing its
+counts and account, and refuses unknown fields. Every push is the instance's
+whole 25-hour window, so re-pushing is idempotent. A session id must match
+`^[A-Za-z0-9_-]{1,64}$` (ccd's are UUIDs); a row that does not, or whose hour
+is not on the hour, or whose account is not known, is left out (never sent
+with an empty account) and logged once per instance. HQ takes at most 1000
+rows and 256 KiB per request (413 past either), so a larger window is sent in
+several pushes, in order; one that fails leaves the rest to the next tick,
+which re-sends the whole window. HQ refuses an hour older than 8 days or in
+the future; the 25-hour window never reaches either. An instance with no row
+in its window sends nothing.
+
+**The account of each hour** is the pool account the instance was on at the
+END of that hour: the `from` of the instance's earliest account failover at or
+after the hour's end, else the account it is on now. An agent's account
+changes only by a failover, and every failover is recorded (the agent page's
+history, `cc_account_failovers`), so this is the account each session ran on,
+to the hour. Two sessions of one instance on either side of a failover are on
+different accounts; a failover INSIDE an hour puts that whole hour on the
+account it moved to (as a job is counted on the account its last turn ran on).
+With no failover it is the officer push's rule: the instance's account now.
+
+**When.** Every 10 minutes for every listed instance, read since now − 25
+hours; and once more before each Stop or Delete of an eligible instance,
+whoever asks for it (the lifecycle adapter's pre-stop hook), while its `ccd`
+can still answer — best-effort, at most 10 s, never failing the stop; an
+instance whose row is already stopped (a Destroy of a stopped agent, the
+reaper's) has no `ccd` to read and is skipped.
+
+**Failures.** An HQ 4xx is not retried: the next tick pushes again, and it is
+logged once until HQ's answer changes (one line for HQ, not one per
+instance). A 5xx or no answer is retried twice, after 2 s and 5 s; still not
+taken, the rest of that tick is skipped (the next tick covers it) and it is
+logged once until HQ takes a push again. A `ccd` without the route is skipped
+and logged once per instance. Every attempt is counted on
+`muster_cc_consumer_usage_push_total{result}`: `pushed`, `empty`,
+`ccd_unsupported`, `ccd_failed`, `hq_refused`, `hq_unavailable`, `skipped`.
+No log line carries the token, the URL or HQ's answer body.
+
+**Checking one hour by hand.** In the instance's pod, run the recipe in
+[Claude usage to HQ](#claude-usage-to-hq) for the session and hour: it prints
+the counts `ccd` reports, which must equal the row HQ holds for
+(`MUSTER_CC_USAGE_PUSH_INSTANCE`, `pr-review`, session, hour); the recipe
+takes the hour as a timestamp prefix (`--arg h 2026-11-10T13`). The session ids of a
+worker are its transcripts' file names under `projects/`, and a job's is its
+lane's (`ccd11a9e-…`).
+
+The account HQ holds for the row is the instance's account at the end of the
+hour: compare it with the agent page's account and failover history.
 
 ## Tiers and the LLM proxy
 
@@ -2698,7 +2855,8 @@ shipping officer also uses `GET /officers/{id}` (its `enabled`), `POST
 "failed_count"}, "last_backup_time"}`). An officer with `transcript` enabled
 uses `POST /officers/{id}/items/{item}/transcript`
 ([Transcript to HQ](#transcript-to-hq)). Every officer uses `PUT
-/officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)). `ccd ask-image` uses `POST
+/officers/{id}/usage` ([Claude usage to HQ](#claude-usage-to-hq)) and `PUT
+/officers/{id}/pools` ([Pools to HQ](#pools-to-hq)). `ccd ask-image` uses `POST
 /officers/{id}/ask-images?filename=…` (raw image bytes, through muster), and
 `officer_ask_person` uses `POST /officers/{id}/items/{item}/asks`. Every
 officer may use `GET /officers/{id}/obs/queries` and `POST
@@ -2716,6 +2874,10 @@ across officers), the captain route's body rules, the transcript route's
 (limits, 409 `not_claimed` / `officer_disabled`, idempotency on `seq`), the
 usage route's (a strict decoder, the pool values, hours on the hour, 413 past
 256 KiB or 1000 buckets, the upsert; `UsageAbsent` plays an HQ without it), the
+pools route's (a strict decoder, the pool values each once, a reset on a UTC
+midnight, the officer's set replaced by each body; `FailPools` answers a
+sequence of statuses), the consumer-usage route's on a pool token
+([Consumer usage to HQ](#consumer-usage-to-hq); `FailConsumer` likewise), the
 asks routes' (the upload's type and size checks, 400 `invalid` for HQ's
 input limits — deadline, image and option counts, option and question length —
 before the item is looked up, 409 `lease_lost`, 410, 422 `unknown_recipient`,

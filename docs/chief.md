@@ -273,6 +273,7 @@ The chief is offered these tools, and no other agent is:
 | `ask_owner` (a question card in its chat: you tap an answer) | the attention queue |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `agent_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
+| `repos_list` (read-only: your connected GitHub repositories, [below](#which-repository)) | the same as `agent_dispatch` |
 
 The other way round, the chief is the one agent **not** offered
 `connector_request`, `connector_status`, `browser_flow_request` or
@@ -353,7 +354,8 @@ it"*.
 
 It starts on one of your tasks (`task_id`), or **with no task**, from a
 prompt alone. A dispatch with no task needs `owner_asked: true` — muster checks
-that the turn the chief is in is a message you typed in its chat — and a
+that the turn the chief is in is a message you typed in its chat — or your tap
+on an [approval card](#approving-a-start-by-tap), and a
 `request_key` the chief mints for that request and reuses on any retry of it:
 a retry with the same key answers with the first start (`replayed`), and the
 same key with anything changed is refused. `owner_asked: true` is always
@@ -392,6 +394,83 @@ page reads that row back yet: query it
 (`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`;
 a start with no task has the object `dispatch:<32 hex>`).
 What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#agent_dispatch-the-guards).
+
+### Which repository
+
+A mirrored session's repo chip is its checkout **folder's** name, and a folder
+can be named unlike its repository (a clone of `example-org/real-name` into a
+folder called `checkout-x`). So every session the chief reads — `focus_search`,
+`sessions_overview`, `session_context` and the header of a line you send from a
+session's view — carries both: `repo`, the folder, and `github_repo`, the
+`owner/name` its checkout's `remote.origin.url` names, as the session's host
+reports it (read from the repository's own git config, the same URL rule a
+spawn matches its clone by; `""` for a remote that is not GitHub's, or none).
+The chief dispatches with `github_repo`, and a succession of a window you
+opened takes it too. It is the host's word, so muster still checks it is one of
+your connected repositories before anything starts.
+
+`repos_list {query?}` lists your connected repositories as `owner/name` — the
+only ones `agent_dispatch` starts in — keeping those whose name contains
+`query` (any case). And a refusal of a repository that is not connected names up
+to five that it may be: the `github_repo` of a session whose folder is the name
+sent, and connected repositories whose name contains it or is contained in it.
+The chief is told they are data, to ask you about, not a choice made for it.
+
+### Approving a start by tap
+
+A start needs your say-so: a message you typed in the chief's chat
+(`owner_asked: true`, checked), or — on a task, for a pod — the prompt being
+verbatim your answer to an ask about it. When the chief calls `agent_dispatch`
+**outside** a turn you typed (for example after you answered its question on
+the Attention view or your phone: muster delivers that answer as a turn you did
+not type) with a `request_key`, it is no longer just refused. muster puts an
+**approval card** in front of you instead, and starts nothing:
+
+- the card shows exactly what would start: where (the pod kind, or
+  `host/<host>/<runtime>` and the model), the repository, the base branch, the
+  task, and the chief's brief **whole** — a brief too long for the card is
+  refused, never cut, because the brief is what the agent is told;
+- it says what the chief was handling when it asked: a plugin's message (the
+  plugin and its sender), a task event, your answer to one of its questions,
+  or "a turn you did not type" when muster cannot tell;
+- its notification only opens the card: it has no answer buttons, because a
+  lock screen cannot show the brief. Answers from the phone's notification
+  actions are refused. Tap the card itself, in muster or in the phone app;
+- its buttons are **Approve and start**, **Change repo** (when the repository
+  is the chief's to choose, not one its task names: it opens the repository
+  picker below, and the agent starts in the one you pick) and **Don't start**; when the chief left
+  the repository blank (or `?`), the buttons are your connected repositories
+  instead, the one the session you are looking at, or the target host's
+  windows, work in first — or type any other `owner/name`;
+- on a host target with a blank host or model, the host and model cards come
+  first and the approval card last.
+
+Tap it in muster or on your phone, and the chief completes the start by calling
+again with the same `request_key` and the same arguments (and the repository you
+picked). muster decides from what it stored, never from what the chief says
+about your answer: the answer must come from your browser or phone — a mirrored
+session's `attention_answer` cannot answer the card; every other argument,
+the brief included, must be exactly what the card showed; a picked repository is
+checked as connected like any other; and one approval starts at most one agent,
+even if that start is refused and retried. **Don't start** refuses it. A start
+that already exists answers as it always did (the same `request_key` replays it;
+a task already started says so) — a retry never raises a second card. A card
+never releases a gate: a gated task still needs your typed turn or the board.
+A chief turn you did not type raises at most one open approval card (once you
+answer or it is withdrawn, the turn may ask again), and at most six are raised in
+an hour — the repository picker a **Change repo** tap opens is the same request
+and is not counted again; past either, the chief is told why and nothing is
+asked. What the card says started the turn is recorded when the turn begins, by
+the door that starts it, so it is always the turn the chief is in.
+
+The agent's first message carries the chief's brief, marked as one **you
+approved on a card** (not one you typed), in place of the "relayed from a message
+your owner typed" preface. That is why the card shows the brief whole: without
+your typed turn, an agent's instructions must be words you saw — before, the only
+way was your own short answer, verbatim, in place of the chief's brief. The
+audit row (`task.chief_dispatch`) names the hold it consumed (`detail.held`) and
+the card you approved (`detail.approved_on_card`). Your typed turn still starts
+everything exactly as before, with no card.
 
 **Every agent the chief starts reports back.** When it finishes, fails or goes
 quiet ([outcomes](provisioner.md#how-an-agents-work-ends)), you get one push,

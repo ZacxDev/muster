@@ -139,9 +139,9 @@ func TestUsageRouteCountsCallsTokensAndTurnsPerSessionHour(t *testing.T) {
 		t.Fatalf("status %d: %s", code, raw)
 	}
 	want := `{"since":"2000-01-03T10:00:00Z","buckets":[` +
-		`{"session":"sess-a","hour":"2000-01-03T10:00:00Z","turns":1,"api_calls":1,"input_tokens":11,"output_tokens":29,"cache_read_tokens":1301,"cache_creation_tokens":701},` +
-		`{"session":"sess-a","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":16,"output_tokens":102,"cache_read_tokens":1620,"cache_creation_tokens":134},` +
-		`{"session":"sess-b","hour":"2000-01-03T12:00:00Z","turns":1,"api_calls":1,"input_tokens":2,"output_tokens":71,"cache_read_tokens":503,"cache_creation_tokens":101}]}` + "\n"
+		`{"session":"sess-a","hour":"2000-01-03T10:00:00Z","turns":1,"api_calls":1,"input_tokens":11,"output_tokens":29,"cache_read_tokens":1301,"cache_creation_tokens":701,"model":"claude-test"},` +
+		`{"session":"sess-a","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":16,"output_tokens":102,"cache_read_tokens":1620,"cache_creation_tokens":134,"model":"claude-test"},` +
+		`{"session":"sess-b","hour":"2000-01-03T12:00:00Z","turns":1,"api_calls":1,"input_tokens":2,"output_tokens":71,"cache_read_tokens":503,"cache_creation_tokens":101,"model":"claude-test"}]}` + "\n"
 	if raw != want {
 		t.Fatalf("answer\n got %s\nwant %s", raw, want)
 	}
@@ -158,8 +158,8 @@ func TestUsageRouteCountsOnlyTheWindowsHours(t *testing.T) {
 	s := usageRig(t)
 	_, _, raw := getUsage(t, s, "?since="+unixOf("2000-01-03T11:59:59Z"), true)
 	want := `{"since":"2000-01-03T11:00:00Z","buckets":[` +
-		`{"session":"sess-a","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":16,"output_tokens":102,"cache_read_tokens":1620,"cache_creation_tokens":134},` +
-		`{"session":"sess-b","hour":"2000-01-03T12:00:00Z","turns":1,"api_calls":1,"input_tokens":2,"output_tokens":71,"cache_read_tokens":503,"cache_creation_tokens":101}]}` + "\n"
+		`{"session":"sess-a","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":2,"input_tokens":16,"output_tokens":102,"cache_read_tokens":1620,"cache_creation_tokens":134,"model":"claude-test"},` +
+		`{"session":"sess-b","hour":"2000-01-03T12:00:00Z","turns":1,"api_calls":1,"input_tokens":2,"output_tokens":71,"cache_read_tokens":503,"cache_creation_tokens":101,"model":"claude-test"}]}` + "\n"
 	if raw != want {
 		t.Fatalf("answer\n got %s\nwant %s", raw, want)
 	}
@@ -258,9 +258,9 @@ func TestUsageRouteCountsACallInSeveralFilesOnce(t *testing.T) {
 	s := dupRig(t)
 	_, _, raw := getUsage(t, s, "?since="+unixOf("2000-01-03T10:00:00Z"), true)
 	want := `{"since":"2000-01-03T10:00:00Z","buckets":[` +
-		`{"session":"sess-c","hour":"2000-01-03T10:00:00Z","turns":1,"api_calls":3,"input_tokens":23,"output_tokens":77,"cache_read_tokens":1505,"cache_creation_tokens":215},` +
-		`{"session":"sess-d","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":1,"input_tokens":13,"output_tokens":37,"cache_read_tokens":701,"cache_creation_tokens":97},` +
-		`{"session":"sess-e","hour":"2000-01-03T11:00:00Z","turns":0,"api_calls":1,"input_tokens":17,"output_tokens":41,"cache_read_tokens":809,"cache_creation_tokens":113}]}` + "\n"
+		`{"session":"sess-c","hour":"2000-01-03T10:00:00Z","turns":1,"api_calls":3,"input_tokens":23,"output_tokens":77,"cache_read_tokens":1505,"cache_creation_tokens":215,"model":"claude-test"},` +
+		`{"session":"sess-d","hour":"2000-01-03T11:00:00Z","turns":1,"api_calls":1,"input_tokens":13,"output_tokens":37,"cache_read_tokens":701,"cache_creation_tokens":97,"model":"claude-test"},` +
+		`{"session":"sess-e","hour":"2000-01-03T11:00:00Z","turns":0,"api_calls":1,"input_tokens":17,"output_tokens":41,"cache_read_tokens":809,"cache_creation_tokens":113,"model":"claude-test"}]}` + "\n"
 	if raw != want {
 		t.Fatalf("answer\n got %s\nwant %s", raw, want)
 	}

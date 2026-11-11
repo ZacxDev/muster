@@ -114,3 +114,76 @@ func TestCCUsagePushRefusalMatrix(t *testing.T) {
 		}
 	}
 }
+
+// consumerEnv is a valid pool push plus kv.
+func consumerEnv(kv map[string]string) map[string]string {
+	out := map[string]string{envCCUsagePoll: "1", envCCUsagePushURL: "https://hq.example.com/api/v1/claude-pool/usage",
+		envCCUsagePushToken: "push-token-SENTINEL-5678", envCCUsagePushInstance: "review-muster"}
+	for k, v := range kv {
+		if v == "" {
+			delete(out, k)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// TestCCConsumerUsageIsOffByDefault: unset is off, and the officers' muster's
+// configuration — the poller and the pool push, no consumer — parses exactly
+// as before, push included (the positive control: the new variable changes
+// nothing when it is not set).
+func TestCCConsumerUsageIsOffByDefault(t *testing.T) {
+	c, err := parseCCUsage(ccUsageEnv(consumerEnv(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Consumer != (ccConsumerUsageConfig{}) {
+		t.Fatalf("unset: %+v, want off", c.Consumer)
+	}
+	if c.Push != (ccUsagePushConfig{URL: "https://hq.example.com/api/v1/claude-pool/usage", Token: "push-token-SENTINEL-5678", Instance: "review-muster"}) || !c.On {
+		t.Fatalf("the pool push changed: %+v", c)
+	}
+	if c, err := parseCCUsage(ccUsageEnv(nil)); err != nil || c.Consumer != (ccConsumerUsageConfig{}) {
+		t.Fatalf("nothing set: %+v %v", c.Consumer, err)
+	}
+}
+
+// TestCCConsumerUsageOnDerivesTheRouteFromThePoolPush: pr-review with a valid
+// pool push is on, PUTting to the pool route's sibling.
+func TestCCConsumerUsageOnDerivesTheRouteFromThePoolPush(t *testing.T) {
+	c, err := parseCCUsage(ccUsageEnv(consumerEnv(map[string]string{envCCConsumerUsage: "pr-review"})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Consumer != (ccConsumerUsageConfig{Consumer: "pr-review", URL: "https://hq.example.com/api/v1/claude-pool/consumer-usage"}) {
+		t.Fatalf("%+v", c.Consumer)
+	}
+}
+
+// TestCCConsumerUsageRefusals: each refusal is its own error — an unknown
+// consumer; set without the push URL; with a push URL that is not HQ's pool
+// route — and none carries the token.
+func TestCCConsumerUsageRefusals(t *testing.T) {
+	const tok = "push-token-SENTINEL-5678"
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		want string // a phrase only this refusal has
+	}{
+		{"unknown consumer", consumerEnv(map[string]string{envCCConsumerUsage: "officers"}), `invalid MUSTER_CC_CONSUMER_USAGE "officers": want one of pr-review`},
+		{"no push URL", map[string]string{envCCConsumerUsage: "pr-review"}, "MUSTER_CC_CONSUMER_USAGE is set but MUSTER_CC_USAGE_PUSH_URL is not"},
+		{"no push URL, poller on", map[string]string{envCCConsumerUsage: "pr-review", envCCUsagePoll: "1"}, "MUSTER_CC_CONSUMER_USAGE is set but MUSTER_CC_USAGE_PUSH_URL is not"},
+		{"not the pool route", consumerEnv(map[string]string{envCCConsumerUsage: "pr-review", envCCUsagePushURL: "https://hq.example.com/api/usage"}),
+			"MUSTER_CC_CONSUMER_USAGE needs MUSTER_CC_USAGE_PUSH_URL to be HQ's pool route"},
+	} {
+		_, err := parseCCUsage(ccUsageEnv(c.env))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v; want %q", c.name, err, c.want)
+			continue
+		}
+		if strings.Contains(err.Error(), tok) {
+			t.Errorf("%s: the refusal carries the token", c.name)
+		}
+	}
+}

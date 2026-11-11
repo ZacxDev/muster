@@ -40,6 +40,10 @@ type UsagePage struct {
 //     instance's spend).
 //   - The tokens are those calls' usage, each call's largest value of each
 //     field.
+//   - Model is the model of the hour's calls (message.model) with the most
+//     output tokens among them, a tie going to the smaller model id; empty —
+//     and left out of the JSON, so an older reader sees the bytes it always
+//     did — when no call names one.
 type UsageBucket struct {
 	Session             string    `json:"session"`
 	Hour                time.Time `json:"hour"`
@@ -49,4 +53,5 @@ type UsageBucket struct {
 	OutputTokens        int64     `json:"output_tokens"`
 	CacheReadTokens     int64     `json:"cache_read_tokens"`
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	Model               string    `json:"model,omitempty"`
 }

@@ -378,6 +378,13 @@ type Msg struct {
 	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
 	// muster can vouch for), and an older muster ignores it.
 	Keys int `json:"keys,omitempty"`
+	// Screen (answered, a refusal) is the pane as the host read it when the
+	// answer stopped — plain text, redacted and then capped at MaxAskScreen by the host (CapAskScreen) — for
+	// the answer-attempt log (internal/askattempt redacts and caps it again
+	// before it is stored). 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH
+	// WAYS: an older host never sets it (no snapshot), an older muster
+	// ignores it.
+	Screen string `json:"screen,omitempty"`
 	// OpenCodeAnswer (hello) is the host ADVERTISING that it relays an answer
 	// to an opencode ask — a permission request, a question-tool form —
 	// through the opencode server's API (opencode_answer.go): an -interactive
@@ -493,6 +500,10 @@ type Msg struct {
 	// Repos (repos) is, per window id, the short name of the repository the
 	// window works in — the WHOLE map each time (repos.go).
 	Repos map[string]string `json:"repos,omitempty"`
+	// GitHubRepos (repos) is, per window id, the GitHub <owner>/<name> the
+	// window's checkout's origin names — on the same message as Repos, the
+	// WHOLE map each time (repos.go).
+	GitHubRepos map[string]string `json:"github_repos,omitempty"`
 
 	// Work (work) is, per window id, the subagents and background shells its
 	// Claude Code session has running — the WHOLE map each time (work.go).

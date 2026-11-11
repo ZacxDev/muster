@@ -18,6 +18,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentoutcome"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/askattempt"
 	"github.com/ZacxDev/muster/internal/asklog"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
@@ -131,10 +132,11 @@ func fullyWiredServer(t *testing.T) *Server {
 		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch: stubChiefDispatch{},
 		// NON-ZERO on purpose: an empty sender list is the feature off.
-		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
-		PRSessions: stubPRSessions{},
-		ClosedPRs:  &ClosedPRs{},
-		ChiefUsage: struct{ chiefusage.Store }{},
+		PRMail:      &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		PRSessions:  stubPRSessions{},
+		ClosedPRs:   &ClosedPRs{},
+		ChiefUsage:  struct{ chiefusage.Store }{},
+		AskAttempts: &askattempt.Mem{},
 		FleetReport: &FleetReport{Senders: plugins.AgentMailSenders{"standup-desk/report-ask": true},
 			Paths: plugins.FleetReportPaths{"/srv/example-work"}, Replies: stubMusterReplier{}},
 		// NON-ZERO on purpose: an empty allowlist is the feature off.

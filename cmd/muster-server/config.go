@@ -291,6 +291,11 @@ const (
 	envCCUsagePushURL      = "MUSTER_CC_USAGE_PUSH_URL"
 	envCCUsagePushToken    = "MUSTER_CC_USAGE_PUSH_TOKEN"
 	envCCUsagePushInstance = "MUSTER_CC_USAGE_PUSH_INSTANCE"
+	// …and the consumer usage push (internal/consumerusage, docs/officers.md
+	// "Consumer usage to HQ"): a NON-officer muster's instances' Claude usage
+	// per session and hour, labelled with this consumer, to the pool push's
+	// HQ (off unless set; needs the pool push).
+	envCCConsumerUsage = "MUSTER_CC_CONSUMER_USAGE"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows

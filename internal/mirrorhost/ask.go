@@ -68,6 +68,21 @@ func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, ch
 	return askdrive.DriveFrom(ctx, tmuxPane{t: t, id: pane, paste: kp}, qs, choices, prior, askdrive.Options{})
 }
 
+// PaneReader is a backend that can read a pane's screen: what a refused
+// answer sends back as its snapshot (Msg.Screen).
+type PaneReader interface {
+	CapturePane(ctx context.Context, pane string) (string, error)
+}
+
+// CapturePane implements PaneReader: the pane's screen, wrapped lines joined
+// (the screen askdrive reads).
+func (t Tmux) CapturePane(ctx context.Context, pane string) (string, error) {
+	if !strings.HasPrefix(pane, "%") {
+		return "", fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
+	}
+	return tmuxPane{t: t, id: pane}.Capture(ctx)
+}
+
 // ErrPaneBusy: another answer is being typed into the pane.
 var ErrPaneBusy = errors.New("muster-mirror: another answer is being typed into this pane")
 
@@ -372,10 +387,21 @@ func (h *hostSide) answer(m mirror.Msg) {
 	// keys is how many keys of the answer's plan the picker has received
 	// (Msg.Keys): what muster hands the next answer, if this one stops.
 	keys := 0
+	// pane is the Claude pane the answer was typed into, once resolved: a
+	// refusal sends its screen as the host reads it then (Msg.Screen, the
+	// answer-attempt log's snapshot), when the backend can read one.
+	pane := ""
 	reply := func(err error) {
 		ans := mirror.Msg{Type: mirror.TypeAnswered, ID: m.ID}
 		if err != nil {
 			ans.Error, ans.Keys = err.Error(), keys
+			if pr, ok := capabilityOf[PaneReader](h.c.cfg.Backend); ok && pane != "" {
+				sctx, cancel := context.WithTimeout(h.ctx, 3*time.Second)
+				if scr, cerr := pr.CapturePane(sctx, pane); cerr == nil {
+					ans.Screen = mirror.CapAskScreen(scr)
+				}
+				cancel()
+			}
 			switch {
 			case errors.Is(err, askdrive.ErrNoPicker):
 				ans.Refusal = mirror.AskRefusalNoPicker
@@ -428,6 +454,7 @@ func (h *hostSide) answer(m mirror.Msg) {
 		reply(fmt.Errorf("%w: %v", askdrive.ErrNoPicker, errNotClaudeNow))
 		return
 	}
+	pane = p.Pane
 	reply(h.typeInto(ctx, p.Pane, func() error {
 		var err error
 		keys, err = ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices, m.Ask.Prior)

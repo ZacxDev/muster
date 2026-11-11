@@ -311,8 +311,10 @@ func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {
 		// The chief chat's form and socket only. 🔴 NOT the view's chief door
 		// (handleViewChief): a line typed from a session's view answers none of
 		// the chief's asks (operator decision, PR #537 round 1).
-		"askerAddressed":  {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
-		"mirrorAddressed": {{"mirrorDeliver", "p.target"}, {"sendQueueAdd", "mirror.PasteClaude"}, {"sendQueueRetry", "mirror.PasteClaude"}},
+		"askerAddressed": {{"handleAgentSend", ""}, {"handleAgentWS", ""}},
+		// enqueueSend: a queue post (sendQueueAdd) and a failed question
+		// card's "Send as a message" (handleMirrorAskMessage) both queue through it.
+		"mirrorAddressed": {{"enqueueSend", "mirror.PasteClaude"}, {"mirrorDeliver", "p.target"}, {"sendQueueRetry", "mirror.PasteClaude"}},
 		"queue paste":     {{"sendQueueDeliver", "mirror.PasteClaude"}},
 	} {
 		got := calls[name]

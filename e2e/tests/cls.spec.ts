@@ -69,6 +69,8 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // Routing rules and the chief's usage (routing_rules.go, usage.go): server-rendered lists.
   'GET /rules': { where: 'signed-in', url: '/rules', ready: 'h1' },
   'GET /usage': { where: 'signed-in', url: '/usage', ready: '[data-testid="usage-totals"]' },
+  // Answer attempts (answers_page.go, #603): server-rendered rates and failures.
+  'GET /answers': { where: 'signed-in', url: '/answers', ready: '[data-testid="answers-page"]' },
   'GET /admin/invites': { where: 'signed-in', url: '/admin/invites', ready: '#invite-ttl' },
   'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
 };
