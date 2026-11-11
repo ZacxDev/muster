@@ -12,7 +12,7 @@ import (
 )
 
 // THE GAP TASK TOOL (officer_gap_tasks.go): a datastore officer's instance —
-// either pool — has HQ file ONE task per (store, kind) through HQ's officer
+// either pool — has HQ file ONE open task per (store, kind) through HQ's officer
 // gap-tasks route (civ-hq docs/OFFICERS.md §5o) with the officer's own token;
 // no other officer is offered it. Names, paths and codes are literals on
 // purpose: they are the contract.
@@ -167,5 +167,66 @@ func TestTheGapTaskToolPassesHQsRefusalsBack(t *testing.T) {
 	out = r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"push-svc","kind":"no_backup"}`)
 	if st, code := obsRefusal(out); st != 429 || code != "gap_task_cap" {
 		t.Errorf("capped: %s, want refused 429 gap_task_cap", out)
+	}
+}
+
+// TestTheGapTaskToolSaysAClosedGapIsFiledAgain: HQ keeps ONE OPEN task per
+// (officer, store, kind) and files a new one once that task is closed (civ-hq
+// §5o). The tool text is what the model acts on, so the whole description is
+// pinned: the first version told it a gap is filed once "EVER", which would
+// have it skip a gap still present after a person closed its task.
+func TestTheGapTaskToolSaysAClosedGapIsFiledAgain(t *testing.T) {
+	want := "File ONE HQ task for a backup/DR gap you found (POST /officers/{id}/items/{item_id}/gap-tasks), for an item you hold. " +
+		"Name the store and the gap kind; HQ writes the task's title and text from its own template and assigns it to your owner — you cannot write the text or pick a person. " +
+		"Kinds: no_backup, backup_unobservable, no_offsite, no_stale_alert, no_failed_alert, no_wal_alert, no_metrics, no_size_metric, mirror_unverified, routing_gap, unregistered_store. " +
+		"Filed in shadow too. HQ keeps ONE OPEN task per store and kind: filed:false means that task is still open (its task_id is in the answer) — that is not an error, report the link. " +
+		"Once a person closes it, filing a gap you still find files a NEW task (filed:true): file it as usual and say it was refiled. " +
+		"A 429 gap_task_cap means list the rest in your summary as unfiled, do not retry. A 403 gap_tasks_off means HQ does not let this officer file: do not retry. " +
+		"It does NOT end your lease: keep working the item and complete it as usual, naming each task you filed."
+	if got := gapTaskToolDef().Description; got != want {
+		t.Fatalf("officer_gap_task description:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestAGapTaskIsFiledAgainAfterItsTaskIsClosed: through the tool, against
+// the fake HQ serving civ-hq's rule — a repeat while the task is open answers
+// it (filed false), and once the task is closed the next filing comes back
+// filed true with a NEW task, which a repeat then answers.
+func TestAGapTaskIsFiledAgainAfterItsTaskIsClosed(t *testing.T) {
+	r := newGapTaskRig(t)
+	ctx := context.Background()
+	inst := r.addNamed(r.a.Pool(officers.TierRoutine).InstanceName(1), 1341)
+	item := r.hq.AddTieredItem(offDS, kindAudit, "sched:daily-audit:z", officers.TierRoutine)
+	if out := r.s.dispatchAgentTool(ctx, inst, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) {
+		t.Fatalf("claim: %s", out)
+	}
+	file := func() (bool, string) {
+		t.Helper()
+		out := r.s.dispatchAgentTool(ctx, inst, gapTaskTool, `{"item_id":"`+item+`","store":"git-host","kind":"no_offsite"}`)
+		var got struct {
+			Filed   bool `json:"filed"`
+			GapTask struct {
+				TaskID string `json:"task_id"`
+			} `json:"gap_task"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil || got.GapTask.TaskID == "" {
+			t.Fatalf("filing: %s", out)
+		}
+		return got.Filed, got.GapTask.TaskID
+	}
+	filed, first := file()
+	if !filed {
+		t.Fatalf("first filing not filed")
+	}
+	if filed, id := file(); filed || id != first {
+		t.Fatalf("repeat while open: filed %v task %s, want filed false with %s", filed, id, first)
+	}
+	r.hq.CloseGapTask(first)
+	filed, second := file()
+	if !filed || second == first {
+		t.Fatalf("after close: filed %v task %s, want a new task (not %s)", filed, second, first)
+	}
+	if filed, id := file(); filed || id != second {
+		t.Fatalf("repeat after the refile: filed %v task %s, want filed false with %s", filed, id, second)
 	}
 }

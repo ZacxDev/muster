@@ -235,6 +235,8 @@ type Server struct {
 	derivedAsks []DerivedAsk
 	// gapTasks: every accepted gap-tasks request (civ-hq §5o), in order.
 	gapTasks []GapTask
+	// closedGapTasks: gap task ids a test closed (CloseGapTask).
+	closedGapTasks map[string]bool
 	// The usage route (PUT /officers/{id}/usage): UsageAbsent is an HQ
 	// without it (404 not_found, its router's catch-all); usagePuts is every
 	// accepted PUT, in order, and usageRows the buckets upserted by
@@ -406,6 +408,17 @@ type GapTask struct {
 	Body                  map[string]any
 }
 
+// CloseGapTask marks task id closed, as a person moving it to a done status
+// in HQ does.
+func (s *Server) CloseGapTask(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closedGapTasks == nil {
+		s.closedGapTasks = map[string]bool{}
+	}
+	s.closedGapTasks[id] = true
+}
+
 // GapTasks returns every accepted gap-tasks request, in order.
 func (s *Server) GapTasks() []GapTask {
 	s.mu.Lock()
@@ -415,8 +428,9 @@ func (s *Server) GapTasks() []GapTask {
 
 // gapTask serves gap-tasks as civ-hq's route does in the parts muster can
 // observe: a forced refusal (RefuseVerb) wins; a caller without the item's
-// claim is 409 lease_lost; otherwise one task per (officer, store, kind) —
-// 201 filed the first time, 200 filed false with the same task after. The
+// claim is 409 lease_lost; otherwise one OPEN task per (officer, store,
+// kind) — 201 filed when the gap has no open task, 200 filed false with the
+// open task after; a task closed by CloseGapTask is not open. The
 // item is NOT changed (a filing does not end the lease). HQ's own checks
 // (kinds, slugs, caps) are HQ's and are not re-implemented here.
 func (s *Server) gapTask(w http.ResponseWriter, officer string, it *Item, instance string, body map[string]any) {
@@ -431,7 +445,7 @@ func (s *Server) gapTask(w http.ResponseWriter, officer string, it *Item, instan
 	store, _ := body["store"].(string)
 	kind, _ := body["kind"].(string)
 	for _, g := range s.gapTasks {
-		if g.Filed && g.Officer == officer && g.Body["store"] == store && g.Body["kind"] == kind {
+		if g.Filed && !s.closedGapTasks[g.TaskID] && g.Officer == officer && g.Body["store"] == store && g.Body["kind"] == kind {
 			s.gapTasks = append(s.gapTasks, GapTask{Officer: officer, Item: it.ID, TaskID: g.TaskID, Body: body})
 			s.write(w, http.StatusOK, map[string]any{"gap_task": map[string]any{"officer_id": officer, "store": store, "kind": kind, "task_id": g.TaskID}, "filed": false})
 			return

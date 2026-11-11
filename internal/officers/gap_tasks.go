@@ -9,12 +9,13 @@ import (
 	"strings"
 )
 
-// --- Gap tasks: ONE HQ task per (officer, store, gap kind) ------------------
+// --- Gap tasks: ONE open HQ task per (officer, store, gap kind) -------------
 //
 // The datastore officer's operator decision of 2026-11-04: "report + one
 // task per gap", filed in shadow too. The instance holding an item names a
 // store and a gap kind; HQ files the task from its own template, assigned to
-// the officer's owner, and answers the task filed before on a repeat:
+// the officer's owner, and answers the gap's OPEN task on a repeat (once that
+// task is closed, the next filing files a new one):
 //
 //	POST /officers/{id}/items/{item}/gap-tasks  {"instance", "store", "kind", "namespace"?, "tier"?, "affected"?}
 //
