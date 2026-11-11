@@ -210,6 +210,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/terminal/ws",
 		"GET /mirror/view",
 		"GET /mirror/view/ws",
+		// A session view's Preview button (plugin_chip.go).
+		"GET /ui/mirror/preview-button",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
 		// Suggested replies (suggest.go): the composer's set and its counts,
