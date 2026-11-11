@@ -1974,6 +1974,94 @@ window is not read). Such a file holds no record inside the window, so the
 two agree for an hour in the window unless a newer file holds a copy of one of
 its calls or prompts stamped inside the window.
 
+## Consumer usage to HQ
+
+A muster that is **not** the officers' muster — one running pull-request
+review workers, say — can push its own instances' Claude usage to HQ too, so
+HQ can split each pooled account's spend into officers, each named consumer,
+and everything else. It is off unless `MUSTER_CC_CONSUMER_USAGE` names the
+consumer:
+
+```sh
+MUSTER_CC_USAGE_POLL=1
+MUSTER_CC_USAGE_PUSH_URL=https://hq.example.com/api/v1/claude-pool/usage
+MUSTER_CC_USAGE_PUSH_TOKEN=<the pool-usage token>
+MUSTER_CC_USAGE_PUSH_INSTANCE=review-muster
+MUSTER_CC_CONSUMER_USAGE=pr-review
+```
+
+It rides the [pool push](jobs.md#pushing-the-readings): the same HQ, the same
+bearer token, the same instance label. The route is derived from the pool
+push's URL, its path's `/claude-pool/usage` replaced by
+`/claude-pool/consumer-usage`. Boot is refused for a consumer other than
+`pr-review`, without `MUSTER_CC_USAGE_PUSH_URL` (which itself needs the poller
+and the token), and when that URL's path does not end in `/claude-pool/usage`.
+Unset, nothing changes: the officers' muster leaves it unset.
+
+**Whose usage.** Every instance that is the admin's (the pool's owner), of
+the `claude-code` kind, on a pool account, up — and **not an officer's
+instance**: an officer instance's usage goes to its officer's HQ ([Claude
+usage to HQ](#claude-usage-to-hq)), and pushing it here as well would count
+it twice. A member's agents run on the member's own accounts and are not
+read. What is measured is exactly what the officer push measures: each
+instance pod's `ccd` on `GET /v1/usage` (same buckets, same dedup rule, same
+hour truncation).
+
+**The push** is one `PUT` per instance:
+
+```
+PUT <base>/api/v1/claude-pool/consumer-usage
+Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
+
+{"instance": "review-muster", "consumer": "pr-review",
+ "hours": [{"hour": "2026-11-10T13:00:00Z", "account": "acct-a", "session": "…",
+            "turns": 2, "api_calls": 31, "input_tokens": 410, "output_tokens": 9822,
+            "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
+```
+
+HQ upserts each row on (instance, consumer, session, hour), replacing its
+counts and account, and refuses unknown fields. Every push is the instance's
+whole 25-hour window, so re-pushing is idempotent. A session id must match
+`^[A-Za-z0-9_-]{1,64}$` (ccd's are UUIDs); a row that does not, or whose hour
+is not on the hour, is left out and logged once per instance. Over 1000 rows
+the newest 1000 are sent. An instance with no row in its window sends nothing.
+
+**The account of each hour** is the pool account the instance was on at the
+END of that hour: the `from` of the instance's earliest account failover at or
+after the hour's end, else the account it is on now. An agent's account
+changes only by a failover, and every failover is recorded (the agent page's
+history, `cc_account_failovers`), so this is the account each session ran on,
+to the hour. Two sessions of one instance on either side of a failover are on
+different accounts; a failover INSIDE an hour puts that whole hour on the
+account it moved to (as a job is counted on the account its last turn ran on).
+With no failover it is the officer push's rule: the instance's account now.
+
+**When.** Every 10 minutes for every listed instance, read since now − 25
+hours; and once more before each Stop or Delete of an eligible instance,
+whoever asks for it (the lifecycle adapter's pre-stop hook), while its `ccd`
+can still answer — best-effort, at most 10 s, never failing the stop.
+
+**Failures.** An HQ 4xx is not retried: the next tick pushes again, and it is
+logged once until HQ's answer changes (one line for HQ, not one per
+instance). A 5xx or no answer is retried twice, after 2 s and 5 s; still not
+taken, the rest of that tick is skipped (the next tick covers it) and it is
+logged once until HQ takes a push again. A `ccd` without the route is skipped
+and logged once per instance. Every attempt is counted on
+`muster_cc_consumer_usage_push_total{result}`: `pushed`, `empty`,
+`ccd_unsupported`, `ccd_failed`, `hq_refused`, `hq_unavailable`, `skipped`.
+No log line carries the token, the URL or HQ's answer body.
+
+**Checking one hour by hand.** In the instance's pod, run the recipe in
+[Claude usage to HQ](#claude-usage-to-hq) for the session and hour: it prints
+the counts `ccd` reports, which must equal the row HQ holds for
+(`MUSTER_CC_USAGE_PUSH_INSTANCE`, `pr-review`, session, hour); the recipe
+takes the hour as a timestamp prefix (`--arg h 2026-11-10T13`). The session ids of a
+worker are its transcripts' file names under `projects/`, and a job's is its
+lane's (`ccd11a9e-…`).
+
+The account HQ holds for the row is the instance's account at the end of the
+hour: compare it with the agent page's account and failover history.
+
 ## Tiers and the LLM proxy
 
 ### The two pools

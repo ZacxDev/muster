@@ -70,6 +70,7 @@ import (
 	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/consumerusage"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/devices"
@@ -832,6 +833,19 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			logger.Printf("officers: %s", line)
 		}
 	}
+	// The consumer usage push (MUSTER_CC_CONSUMER_USAGE, docs/officers.md
+	// "Consumer usage to HQ"): this muster's non-officer instances' Claude
+	// usage, to the pool push's HQ with its token and label. Refused at boot,
+	// as parseCCConsumerUsage refused a contradictory configuration, when the
+	// server cannot do it.
+	if cc := cfg.CCUsage.Consumer; cc.Consumer != "" {
+		if _, err := srv.EnableConsumerUsage(api.ConsumerUsageConfig{Consumer: cc.Consumer, Instance: cfg.CCUsage.Push.Instance,
+			URL: cc.URL, Token: cfg.CCUsage.Push.Token, HTTPClient: &http.Client{Timeout: ccusage.PushTimeout},
+			InstallBeforeStop: beforeStopOn(prov)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envCCConsumerUsage, err)
+		}
+	}
 
 	// The Compose chief on the OpenRouter key reaches its model through the
 	// LLM proxy (api.EnableChiefLLM): the admin's chief alone, the model
@@ -941,6 +955,16 @@ func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (age
 		return nil
 	}
 	return prov.UseClaudeCodeSession
+}
+
+// beforeStopOn is prov's pre-stop hook installer for the consumer usage
+// collector, or nil when there is no provisioner (EnableConsumerUsage then
+// refuses).
+func beforeStopOn(prov *agentprovision.Adapter) func(func(context.Context, agents.Agent)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseBeforeStop
 }
 
 // askSweepEvery is how often the question store's expiry runs
@@ -1776,6 +1800,12 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				envCCUsagePushURL, a.cfg.CCUsage.Push.Instance)
 		} else {
 			l.Printf("claude account usage push: OFF — %s is unset", envCCUsagePushURL)
+		}
+		if c := a.cfg.CCUsage.Consumer; c.Consumer != "" {
+			l.Printf("claude consumer usage push: ON (%s=%s) — this muster's non-officer instances' usage per session and hour is PUT to the "+
+				"pool push's HQ route %s as instance %q", envCCConsumerUsage, c.Consumer, consumerusage.ConsumerUsageSuffix, a.cfg.CCUsage.Push.Instance)
+		} else {
+			l.Printf("claude consumer usage push: OFF — %s is unset", envCCConsumerUsage)
 		}
 	} else {
 		l.Printf("claude account usage: OFF — %s is unset; no account's utilization is read", envCCUsagePoll)

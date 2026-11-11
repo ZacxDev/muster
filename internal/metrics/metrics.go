@@ -433,6 +433,17 @@ var (
 		Name: "muster_officer_usage_push_total",
 		Help: "Officer instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
 	}, []string{"result"})
+	// CCConsumerUsagePush counts the consumer usage collector's per-instance
+	// attempts (internal/consumerusage, MUSTER_CC_CONSUMER_USAGE), by result:
+	// pushed (HQ answered 2xx), empty (no row to send), ccd_unsupported (the
+	// instance's ccd predates GET /v1/usage), ccd_failed (the read failed),
+	// hq_refused (a 4xx, not retried), hq_unavailable (5xx or no answer after
+	// the retries), skipped (a pre-stop flush that could not start within its
+	// budget).
+	CCConsumerUsagePush = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_cc_consumer_usage_push_total",
+		Help: "Consumer (non-officer) instance Claude-usage pushes to HQ, by result (pushed or a failure class).",
+	}, []string{"result"})
 )
 
 // The officer LLM proxy (internal/llmproxy, POST /llm/v1/messages on the
