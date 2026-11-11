@@ -123,6 +123,32 @@ func TestNoWriterPutsTheKickoffInTheAsk(t *testing.T) {
 		}
 	}
 
+	// agent_dispatch's approval card, the one other raiseProposalCard caller
+	// that builds a question of its own (fileHeldDispatch): nothing in its
+	// body holds kickoffCopy's result, at any depth, and no package function
+	// it reaches reads a Proposal's Kickoff. Pinned here, not by the comment
+	// on its caller entry above.
+	fhd, ok := pkg.funcs["fileHeldDispatch"]
+	if !ok {
+		t.Fatal("instrument check: no function fileHeldDispatch")
+	}
+	raises := 0
+	ast.Inspect(fhd.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == "raiseProposalCard" {
+			raises++
+		}
+		return true
+	})
+	if raises != 1 {
+		t.Errorf("instrument check: fileHeldDispatch calls raiseProposalCard %d times; want 1", raises)
+	}
+	if v := pkg.taintedIn(fhd.Body, tainted); v != "" {
+		t.Errorf("fileHeldDispatch holds the kickoff (%s): an approval card's question or options could carry it", v)
+	}
+	for _, bad := range pkg.kickoffReadsReached("fileHeldDispatch") {
+		t.Errorf("fileHeldDispatch reaches %s, which reads the kickoff's text", bad)
+	}
+
 	var readers []string
 	for name, fd := range pkg.funcs {
 		if pkg.readsKickoff(fd.Body, false) {

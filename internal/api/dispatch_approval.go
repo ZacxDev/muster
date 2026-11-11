@@ -14,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/chiefusage"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -166,6 +167,8 @@ type approvalRequest struct {
 	// trigger is what started the chief's turn (approvalTrigger), said on
 	// the card; set by fileHeldDispatch.
 	trigger string
+	// refile: the repo card a "Change repo" tap opens (heldDetail.Refile).
+	refile bool
 }
 
 // repoChangeable reports whether the request's repository is the chief's to
@@ -309,95 +312,75 @@ func (s *Server) rankedRepos(ctx context.Context, a agents.Agent, host string, l
 // approvalTriggerRunes cuts an outside name (a sender, a question) on the card.
 const approvalTriggerRunes = 80
 
-// attentionAnswerTurnPrefix starts muster's delivery of the owner's answer to
-// an attention ask (renderAttentionAnswer); the ask it names is re-read before
-// the card says so.
-const attentionAnswerTurnPrefix = "muster: your owner answered attention #"
-
-// chiefTurnRow is the user row the chief's running turn answers: the turn's
-// own input (turnInputOf), else — a delivered turn muster did not store first
-// — the newest user row of its default session within its turn budget. ok
-// false when there is none.
-func (s *Server) chiefTurnRow(ctx context.Context, chief agents.Agent) (agents.ChatMessage, bool) {
-	st, ok := s.ext.Agents.(ownerTurnStore)
-	if !ok {
-		return agents.ChatMessage{}, false
-	}
-	if id := s.turnInputOf(ctx, chief.ID); id > 0 {
-		if m, err := st.ChatMessage(ctx, id); err == nil && m.AgentID == chief.ID && m.Role == "user" {
-			return m, true
-		}
-	}
-	sess, err := s.defaultSession(ctx, chief)
-	if err != nil {
-		return agents.ChatMessage{}, false
-	}
-	msgs, err := s.ext.Agents.ListRecentChatMessages(ctx, sess.ID, chatHistoryCap)
-	if err != nil {
-		return agents.ChatMessage{}, false
-	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if m := msgs[i]; m.Role == "user" {
-			if s.now().Sub(m.CreatedAt) > agentTurnBudget(chief.Kind) {
-				break
-			}
-			return m, true
-		}
-	}
-	return agents.ChatMessage{}, false
-}
-
-// approvalTrigger is the chief's running turn (its row id, 0 unknown) and
-// what started it, as the approval card says it ("Your chief asked for this
-// while handling <trigger>"). 🔴 DECIDED FROM STRUCTURE, NOT THE ROW'S WORDS:
-// a plugin delivery is its plugin_message_id (its plugin's label, the
-// message's sender — outside words, quoted and cut — and whether it is a task
-// event); muster's delivery of an attention answer names its ask, which is
-// re-read and must be an ANSWERED ask of THIS chief's; a row the owner typed
-// is TypedBy. Anything else is said to be unknown, never guessed.
+// approvalTrigger is the chief's running turn (its serial, 0 unknown) and what
+// started it, as the approval card says it ("Your chief asked for this while
+// handling <trigger>").
+//
+// 🔴 READ FROM THE TURN ITSELF, NEVER FROM A STORED ROW: currentTurn is the
+// door's own chiefusage.Trigger, recorded when the turn began (chatTurn,
+// gatewayTurn). A plugin delivery and an attention answer store their row only
+// after the turn, so a row read now would be the PREVIOUS turn's. The plugin
+// is named by its label (its message's plugin) or the trigger's name, the
+// sender as the trigger carries it — outside words, quoted and cut; a
+// delivered answer names its ask, which is re-read and must be an ANSWERED
+// ask of THIS chief's. Anything else is said plainly, never guessed.
 func (s *Server) approvalTrigger(ctx context.Context, chief agents.Agent) (int64, string) {
-	m, ok := s.chiefTurnRow(ctx, chief)
+	r, ok := s.currentTurn(ctx, chief.ID)
 	if !ok {
 		return 0, "a turn muster could not identify"
 	}
 	quote := func(v string) string {
 		return strconv.Quote(fence.Cut(fence.Sanitize(strings.TrimSpace(v)), approvalTriggerRunes))
 	}
-	switch {
-	case m.TypedBy > 0 && m.TypedBy == agentOwnerID(chief):
-		return m.ID, "a message you typed in its chat (which it could not show was yours)"
-	case m.PluginMessageID > 0 && s.ext.Plugins != nil:
-		pm, err := s.ext.Plugins.Message(ctx, m.PluginMessageID)
-		if err != nil {
-			return m.ID, "a plugin message"
+	t := r.trigger
+	switch t.Kind {
+	case chiefusage.TriggerOwnerChat, chiefusage.TriggerView:
+		return r.serial, "a message you typed in its chat (which it could not show was yours)"
+	case chiefusage.TriggerPlugin, chiefusage.TriggerTaskEvent:
+		name := firstNonBlank(t.Plugin, "a plugin")
+		var task int64
+		if s.ext.Plugins != nil && t.MessageID > 0 {
+			if pm, err := s.ext.Plugins.Message(ctx, t.MessageID); err == nil {
+				if p, err := s.ext.Plugins.Plugin(ctx, pm.PluginID); err == nil {
+					name = firstNonBlank(p.Label, firstNonBlank(p.Name, name))
+				}
+				if pm.TaskID != nil {
+					task = *pm.TaskID
+				}
+			}
 		}
-		name := "a plugin"
-		if p, err := s.ext.Plugins.Plugin(ctx, pm.PluginID); err == nil {
-			name = firstNonBlank(p.Label, p.Name)
+		if t.Kind == chiefusage.TriggerTaskEvent {
+			out := "a task event from " + quote(name)
+			if task > 0 {
+				out += " about task #" + strconv.FormatInt(task, 10)
+			}
+			return r.serial, out
 		}
-		if plugins.IsTaskEvent(pm) {
-			return m.ID, "a task event from " + quote(name) + " about task #" + strconv.FormatInt(*pm.TaskID, 10)
+		if strings.TrimSpace(t.Sender) == "" {
+			return r.serial, "a " + quote(name) + " message"
 		}
-		if strings.TrimSpace(pm.Sender) == "" {
-			return m.ID, "a " + quote(name) + " message"
-		}
-		return m.ID, "a " + quote(name) + " message from " + quote(pm.Sender)
-	case strings.HasPrefix(m.Content, attentionAnswerTurnPrefix) && s.ext.Attention != nil:
-		digits := m.Content[len(attentionAnswerTurnPrefix):]
-		if i := strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' }); i >= 0 {
-			digits = digits[:i]
-		}
-		if id, err := strconv.ParseInt(digits, 10, 64); err == nil {
-			if a, err := s.ext.Attention.Get(ctx, id); err == nil && a.Asker.AgentID == chief.ID && a.Status == attention.Answered {
+		return r.serial, "a " + quote(name) + " message from " + quote(t.Sender)
+	case chiefusage.TriggerAnswer:
+		if t.AskID > 0 && s.ext.Attention != nil {
+			if a, err := s.ext.Attention.Get(ctx, t.AskID); err == nil && a.Asker.AgentID == chief.ID && a.Status == attention.Answered {
 				where := "on the Attention view"
 				if a.AnsweredVia.Via == attention.ViaDevice {
 					where = "from your phone's notification"
 				}
-				return m.ID, "your answer " + where + " to its question " + quote(a.Question)
+				return r.serial, "your answer " + where + " to its question " + quote(a.Question)
 			}
 		}
+		return r.serial, "your answer to one of its questions"
+	case chiefusage.TriggerSessionQuestion:
+		return r.serial, "a question one of your mirrored sessions asked it"
+	case chiefusage.TriggerHandBack:
+		return r.serial, "work a session handed back to it"
+	case chiefusage.TriggerMachine:
+		return r.serial, "a message sent to it through muster's API"
+	case chiefusage.TriggerKickoff:
+		return r.serial, "its first turn"
 	}
-	return m.ID, "a turn you did not type"
+	return r.serial, "a turn you did not type"
 }
 
 // approvalCapRefusal is "" when the chief may put one more approval card in
@@ -439,13 +422,24 @@ func (s *Server) approvalSurfaceRefusal(ctx context.Context, id int64) error {
 	if !ok || p.Via != authz.ViaDevice {
 		return nil
 	}
+	// THE ASK'S KIND FIRST: only an owner card with an approval card's own
+	// "Don't start" button (muster's stored options, every approval and repo
+	// card has it) can be one, so a hold that cannot be read never blocks the
+	// phone's answer to any other ask.
+	if s.ext.Attention == nil {
+		return nil
+	}
+	a, err := s.ext.Attention.Get(ctx, id)
+	if err != nil || !a.OwnerCard || !slices.Contains(a.Options, declineLabel) {
+		return nil
+	}
 	h, err := st.CardHoldByAsk(ctx, id)
 	if errors.Is(err, plugins.ErrHoldNotFound) {
-		return nil // not a dispatch card
+		return nil // an owner card the chief raised with those words: not a dispatch card
 	}
 	if err != nil {
-		// Unreadable: whether this is an approval card is unknown, and the
-		// phone's action is refused (fail closed; the whole card still works).
+		// Unreadable, on a card that looks like one: the phone's action is
+		// refused (fail closed; the whole card still works).
 		s.logger.Printf("agent_dispatch: read the hold of card %d: %v", id, err)
 		return errReleaseRefused(approvalNotOnTheCard)
 	}

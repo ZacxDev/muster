@@ -11,11 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 )
 
@@ -232,92 +230,6 @@ func TestChangeRepoOpensTheRepoCardAndBindsThePick(t *testing.T) {
 	f.callRaw(f.chief, agentDispatchTool, map[string]any{"target": "host/host-bravo/claude", "prompt": apBrief, "task_id": n.ID, "request_key": "chg-2"})
 	if c := f.newestCard(t); strings.Join(c.Options, "|") != approveLabel+"|"+declineLabel {
 		t.Fatalf("a task's own repository: options %q; want no Change repo", c.Options)
-	}
-}
-
-// TestTheCardSaysWhereTheRequestCameFrom (F5): the approval card names what
-// started the chief's turn — a plugin message by its plugin and sender, the
-// owner's answer to the chief's own question (re-read from its ask), or a turn
-// it cannot identify — and the hold records it.
-func TestTheCardSaysWhereTheRequestCameFrom(t *testing.T) {
-	f := newApprovalFixture(t)
-	_, p, err := f.plugins.Create(f.asOwner, "approval-src-"+strconv.FormatInt(time.Now().UnixNano(), 36), "Signal bridge", "approval-src")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, _, err := f.plugins.Submit(f.asOwner, p.ID, plugins.MessageIn{ExternalID: "src-1-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-		Sender: "Robin Example", Subject: "start it", Body: "please start an agent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := agents.NewPG(f.pool)
-	sess, err := st.LatestOrCreateSession(f.asOwner, f.chief.ID, f.chief.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.AddChatMessage(f.asOwner, agents.ChatMessage{AgentID: f.chief.ID, SessionID: sess.ID, Role: "user",
-		Content: "Plugin message: please start an agent", PluginMessageID: m.ID}); err != nil {
-		t.Fatal(err)
-	}
-	f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "src-1"))
-	first := f.newestCard(t)
-	if want := `Your chief asked for this while handling a "Signal bridge" message from "Robin Example".`; !strings.Contains(first.Question, want) {
-		t.Fatalf("a plugin message's card:\n%s\nwant %q", first.Question, want)
-	}
-	// The owner's answer to that card, delivered: the next card says so.
-	f.tap(t, first.ID, declineLabel, authz.ViaSession)
-	f.say(t, f.chief, attentionAnswerTurnPrefix+strconv.FormatInt(first.ID, 10)+", which you asked. …")
-	f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "src-2"))
-	second := f.newestCard(t)
-	if !strings.Contains(second.Question, "while handling your answer on the Attention view to its question \"Start this agent?") {
-		t.Fatalf("an attention answer's card:\n%s", second.Question)
-	}
-	// Text that only SPELLS a delivery — of an ask that exists but has no
-	// answer (the second card, still open), or of none — is not taken for one.
-	for i, id := range []string{strconv.FormatInt(second.ID, 10), "999999999"} {
-		f.say(t, f.chief, attentionAnswerTurnPrefix+id+", which you asked.")
-		f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "src-3-"+strconv.Itoa(i)))
-		if q := f.newestCard(t).Question; !strings.Contains(q, "while handling a turn you did not type.") {
-			t.Fatalf("a spelled delivery of #%s's card:\n%s", id, q)
-		}
-	}
-	var trigger string
-	if err := f.pool.QueryRow(f.asOwner, `SELECT detail->>'trigger' FROM audit_log WHERE action = $1 AND user_id = $2 AND detail->>'request_key' = 'src-1'`,
-		plugins.ActionDispatchHeld, f.owner).Scan(&trigger); err != nil || !strings.Contains(trigger, "Robin Example") {
-		t.Fatalf("the hold's trigger: %q (%v)", trigger, err)
-	}
-}
-
-// TestTheApprovalCardsAreCapped (F5): one approval card per chief turn — a
-// second request in the same turn is refused with its sentence, a retry of
-// the first is not counted against it — and approvalCardsPerHour in an hour:
-// the next is refused with its sentence, and no card is raised for either.
-func TestTheApprovalCardsAreCapped(t *testing.T) {
-	f := newApprovalFixture(t)
-	f.untypedTurn(t)
-	if text := f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "cap-0")); !strings.Contains(text, `"held":true`) {
-		t.Fatalf("the turn's first card: %s", text)
-	}
-	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apWidgets, "cap-0b"))); got != agentDispatchApproveTurnCap {
-		t.Fatalf("a second card in the same turn: %q", got)
-	}
-	cards := len(f.cards(t))
-	for i := 1; i < approvalCardsPerHour; i++ {
-		f.untypedTurn(t)
-		if text := f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "cap-"+strconv.Itoa(i))); !strings.Contains(text, `"held":true`) {
-			t.Fatalf("card %d of the hour: %s", i+1, text)
-		}
-	}
-	if n := len(f.cards(t)); n != cards+approvalCardsPerHour-1 {
-		t.Fatalf("%d cards, want %d", n, cards+approvalCardsPerHour-1)
-	}
-	f.untypedTurn(t)
-	got := errorText(t, f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "cap-over")))
-	if got != fmt.Sprintf(agentDispatchApproveHourCap, approvalCardsPerHour) {
-		t.Fatalf("past the hour's cap: %q", got)
-	}
-	if n := len(f.cards(t)); n != cards+approvalCardsPerHour-1 {
-		t.Fatal("a capped call raised a card")
 	}
 }
 

@@ -177,8 +177,11 @@ func (s *PGStore) CardHoldByAsk(ctx context.Context, askID int64) (DispatchHold,
 }
 
 // ApprovalHoldCounts is how many APPROVAL card holds (detail.approval) the
-// principal filed: within the last `within` by the database's clock (hour),
-// and — of those still open: unexpired and unconsumed — how many were filed
+// principal filed: within the last `within` by the database's clock (hour; a
+// re-filed card — detail.refile, the repo card a "Change repo" tap opens — is
+// the same request and is not counted again), and — of those still open:
+// unexpired, unconsumed, and their card still unanswered (a declined or
+// withdrawn card frees its turn at once) — how many were filed
 // in chief turn `turn` (detail.turn; 0 counts none) for a request_key other
 // than `key` (inTurn). The bound on how often a chief that is not in its
 // owner's typed turn may put an approval card in front of them.
@@ -189,12 +192,14 @@ func (s *PGStore) ApprovalHoldCounts(ctx context.Context, within time.Duration, 
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT
-		    count(*) FILTER (WHERE h.at > now() - make_interval(secs => $3)),
+		    count(*) FILTER (WHERE h.at > now() - make_interval(secs => $3) AND (h.detail->>'refile')::boolean IS NOT TRUE),
 		    count(*) FILTER (WHERE $5::bigint > 0 AND h.detail->>'turn' = $5::bigint::text
 		                       AND h.detail->>'request_key' IS DISTINCT FROM $6
 		                       AND h.at + make_interval(secs => $7) > now()
 		                       AND NOT EXISTS (SELECT 1 FROM audit_log r WHERE r.action = $4 AND r.user_id = $2
-		                                        AND r.detail->>'`+DetailHeld+`' = h.object))
+		                                        AND r.detail->>'`+DetailHeld+`' = h.object)
+		                       AND EXISTS (SELECT 1 FROM attention_asks a WHERE a.owner_id = $2
+		                                    AND a.id::text = h.detail->>'ask_id' AND a.status = 'open'))
 		  FROM audit_log h
 		 WHERE h.action = $1 AND h.user_id = $2 AND h.detail->>'door' = 'card' AND (h.detail->>'approval')::boolean IS TRUE
 		   AND h.at > now() - make_interval(secs => greatest($3, $7))`,

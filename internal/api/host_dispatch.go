@@ -358,6 +358,9 @@ type heldDetail struct {
 	Approval bool   `json:"approval,omitempty"`
 	Turn     int64  `json:"turn,omitempty"`
 	Trigger  string `json:"trigger,omitempty"`
+	// Refile: the repo card a "Change repo" tap opened in an approval card's
+	// place — the same request, not counted again by the hourly cap.
+	Refile bool `json:"refile,omitempty"`
 }
 
 // cardHoldDoor is the door a card hold is filed with (dispatch_request's are "mcp").
@@ -389,8 +392,12 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		// turn, and an untyped turn may raise one approval card, a few an hour.
 		var trigger string
 		turn, trigger = s.approvalTrigger(ctx, a)
-		if why := s.approvalCapRefusal(ctx, turn, in.RequestKey); why != "" {
-			return refuse(why)
+		// A "Change repo" tap's repo card is the same request, already
+		// counted: no cap applies to it.
+		if !req.refile {
+			if why := s.approvalCapRefusal(ctx, turn, in.RequestKey); why != "" {
+				return refuse(why)
+			}
 		}
 		req.trigger = trigger
 		var c approvalCard
@@ -441,7 +448,7 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		return refuse(ownerCardRefusal(err))
 	}
 	d := heldDetail{Door: cardHoldDoor, RequestKey: in.RequestKey, HeldHash: dispatchRequestHash(held, prompt), Target: held.Target,
-		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger}
+		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger, Refile: req.refile}
 	var detail map[string]any
 	raw, _ := json.Marshal(d)
 	_ = json.Unmarshal(raw, &detail)
@@ -816,7 +823,9 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	if comp.changeRepo && !typed {
 		// "Change repo" tapped: the repo card in the approval card's place.
 		effective = ""
-		return s.fileHeldDispatch(ctx, a, in, &t, []string{blankRepo}, prompt, 0, approval(t))
+		r := approval(t)
+		r.refile = true
+		return s.fileHeldDispatch(ctx, a, in, &t, []string{blankRepo}, prompt, 0, r)
 	}
 	byTap := comp.accepted
 	// 🔴 NEITHER TYPED NOR TAPPED: the owner is asked to approve the WHOLE

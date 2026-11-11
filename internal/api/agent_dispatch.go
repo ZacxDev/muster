@@ -677,7 +677,7 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 				}
 			}
 			return s.fileHeldDispatch(ctx, a, in, nil, []string{blankRepo}, prompt, 0, approvalRequest{target: in.Target,
-				model: in.Model, base: in.Base, task: n, onTask: onTask, prompt: prompt})
+				model: in.Model, base: in.Base, task: n, onTask: onTask, prompt: prompt, refile: true})
 		}
 	}
 	byTap := comp.approvedByTap()

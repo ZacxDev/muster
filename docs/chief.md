@@ -456,8 +456,12 @@ even if that start is refused and retried. **Don't start** refuses it. A start
 that already exists answers as it always did (the same `request_key` replays it;
 a task already started says so) — a retry never raises a second card. A card
 never releases a gate: a gated task still needs your typed turn or the board.
-A chief turn you did not type raises at most one approval card, and at most six
-are raised in an hour; past either, the chief is told why and nothing is asked.
+A chief turn you did not type raises at most one open approval card (once you
+answer or it is withdrawn, the turn may ask again), and at most six are raised in
+an hour — the repository picker a **Change repo** tap opens is the same request
+and is not counted again; past either, the chief is told why and nothing is
+asked. What the card says started the turn is recorded when the turn begins, by
+the door that starts it, so it is always the turn the chief is in.
 
 The agent's first message carries the chief's brief, marked as one **you
 approved on a card** (not one you typed), in place of the "relayed from a message

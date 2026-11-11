@@ -857,6 +857,8 @@ func (s *Server) gatewayTurn(ctx context.Context, a agents.Agent, sessionKey, te
 		ctx, emit = ctx2, usage.observe(nil)
 		defer func() { usage.finish(ctx, err) }()
 	}
+	ctx, endRecord := s.beginTurnRecord(ctx, a.ID)
+	defer endRecord()
 	tctx, tt, ok := s.gatewayTurnTools(withTurnSession(ctx, sessionKey), a, via)
 	if !ok {
 		return s.ext.Gateway.Chat(ctx, a, sessionKey, text, nil)

@@ -293,6 +293,10 @@ type Server struct {
 	// turnInputs is the input row of each agent's running turn
 	// (turn_session.go): the owner's line a tool call answers.
 	turnInputs turnInputRegistry
+	// turnRecords is each agent's running turns as the doors started them
+	// (turn_session.go): a serial of the turn's own and its trigger.
+	turnRecords turnRecordRegistry
+	turnSerial  atomic.Int64
 
 	// sendQueue is the send queue's dispatcher (send_queue.go); nil until
 	// RunSendQueue starts it.
