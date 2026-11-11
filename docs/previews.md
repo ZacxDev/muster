@@ -96,7 +96,9 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    no agent tools, but offers still work).
 6. **The agent's session:** add the `preview` MCP server entry from
    [attention.md](attention.md#the-preview-tools-preview-mcp). A session that
-   connected before this sees the tools only after it reconnects.
+   connected before this sees the tools only after it reconnects. The
+   server's `initialize` carries instructions telling the agent when and how
+   to use `preview_open`, so it learns of previews without being told.
 
 ```json
 {
