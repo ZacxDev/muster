@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/textproto"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -30,6 +31,8 @@ func TestAppInformationalResponseGetsTheResponseRules(t *testing.T) {
 		h.Set(ErrorCodeHeader, codePreviewClosed)
 		h.Set("X-Muster-Owner", "2")
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		h.Set("Referrer-Policy", "unsafe-url")
+		h.Set("Content-Security-Policy", "frame-ancestors *")
 		w.WriteHeader(http.StatusEarlyHints)
 		// net/http's server sends w.Header() with a 1xx and keeps it: the
 		// app clears it for its final response, as a real one would.
@@ -85,6 +88,19 @@ func TestAppInformationalResponseGetsTheResponseRules(t *testing.T) {
 			t.Errorf("the app's %s %q reached the browser on its 103", k, v)
 		}
 	}
+	// The gateway's own safety headers are on the 103 as on a final response:
+	// the app's Referrer-Policy replaced, nosniff added, and the gateway's
+	// frame-ancestors the 103's only CSP (the app's own removed).
+	wantCSP := "frame-ancestors " + frameAncestor(testPublicURL)
+	for k, want := range map[string][]string{
+		"Referrer-Policy":         {"no-referrer"},
+		"X-Content-Type-Options":  {"nosniff"},
+		"Content-Security-Policy": {wantCSP},
+	} {
+		if got := hint.Values(k); !slices.Equal(got, want) {
+			t.Errorf("the 103's %s %q; want %q", k, got, want)
+		}
+	}
 
 	if resp.StatusCode != http.StatusOK || string(b) != "body" {
 		t.Fatalf("final HTTP %d %q; want the app's 200 %q", resp.StatusCode, b, "body")
@@ -95,8 +111,13 @@ func TestAppInformationalResponseGetsTheResponseRules(t *testing.T) {
 	if got := resp.Header.Get("Referrer-Policy"); got != "no-referrer" {
 		t.Errorf("final Referrer-Policy %q; want the gateway's no-referrer", got)
 	}
-	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Errorf("final X-Content-Type-Options %q; want nosniff", got)
+	if got := resp.Header.Values("X-Content-Type-Options"); !slices.Equal(got, []string{"nosniff"}) {
+		t.Errorf("final X-Content-Type-Options %q; want one nosniff", got)
+	}
+	// The 103's own CSP did not linger into the final response: one, the
+	// gateway's.
+	if got := resp.Header.Values("Content-Security-Policy"); !slices.Equal(got, []string{wantCSP}) {
+		t.Errorf("final Content-Security-Policy %q; want only %q", got, wantCSP)
 	}
 	for _, k := range []string{"Link", "Set-Cookie", "Clear-Site-Data", ErrorCodeHeader, "X-Muster-Owner",
 		"Strict-Transport-Security"} {

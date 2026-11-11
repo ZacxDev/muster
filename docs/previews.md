@@ -258,7 +258,9 @@ whole (`internal/previewgw/proxy.go`).
   `Strict-Transport-Security`, `Referrer-Policy`, `X-Content-Type-Options`,
   `Content-Security-Policy`, `Location` and `Set-Cookie` (dropped whole, not
   stripped of its `Domain`) never reach the browser on one; a `Link` and other
-  fields pass. `httputil.ReverseProxy` forwards a 1xx from its own
+  fields pass. The gateway's own `Referrer-Policy: no-referrer`,
+  `X-Content-Type-Options: nosniff` and `frame-ancestors` CSP are then added
+  to it, as on a final response. `httputil.ReverseProxy` forwards a 1xx from its own
   `httptrace` hook, outside `ModifyResponse`, so the gateway's transport adds
   a newer hook that filters the 1xx header in place before ReverseProxy's
   copies it (`filter1xx`). Nothing of a 1xx carries into the final
