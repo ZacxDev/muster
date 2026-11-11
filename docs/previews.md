@@ -98,7 +98,10 @@ host) and [configuration.md](configuration.md#muster-server-optional-features)
    [attention.md](attention.md#the-preview-tools-preview-mcp). A session that
    connected before this sees the tools only after it reconnects. The
    server's `initialize` carries instructions telling the agent when and how
-   to use `preview_open`, so it learns of previews without being told.
+   to use `preview_open`. A runtime that shows MCP server instructions to the
+   model (Claude Code) needs nothing more; an opencode session is told
+   through the host's own configuration instead (its opencode MCP entry for
+   this server, and a line in its AGENTS.md).
 
 ```json
 {

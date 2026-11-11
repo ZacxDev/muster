@@ -62,8 +62,8 @@ const (
 // as the descriptions are. The outsider answer (mirrorhost's answerOutsider)
 // carries none: a caller from another tmux server has no tools here.
 const serverInstructions = "muster's preview tools (on the `preview` MCP server: preview_open, preview_list, preview_close) show your owner a web page you serve on this machine. " +
-	"When you start a web or dev server your owner should look at, bind it to loopback (127.0.0.1) on a port this host allows; you cannot see the allowlist, so if preview_open answers port_not_allowed, restart the server on another port. " +
-	"Once it answers HTTP, call preview_open{port, label} with a short label, and tell your owner it is under the Previews control on this session's view in muster: no URL is returned, so do not make one up. " +
+	"When you start a web or dev server your owner should look at, bind it to loopback (127.0.0.1) on a port this host allows; if preview_open answers port_not_allowed, its message usually lists the allowed ports: restart the server on one of them. " +
+	"Once it answers HTTP, call preview_open{port, label} with a short label, and tell your owner it is ready on this session's page in muster: no URL is returned, so do not make one up. " +
 	"Servers on allowed ports are usually also offered to your owner automatically; preview_open is how you name one and open it on purpose. " +
 	"Call preview_close{id} when it is no longer needed."
 

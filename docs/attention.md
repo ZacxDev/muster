@@ -739,14 +739,9 @@ included — is a tool error the model reads, whose text is
 `{"error": "<code>", "message": "…"}`; previews turned off by a bad
 `previews.json` are `previews_off`. An unknown tool name is a JSON-RPC error.
 
-Its `initialize` also carries server **instructions**, so the model learns
-that previews exist even when Claude Code defers the tools behind its tool
-search: bind a server the owner should see to loopback on an allowed port
-(another port on `port_not_allowed`), call `preview_open` with the port and a
-short label, tell the owner it is under the Previews control on the
-session's view in muster (no URL is returned), and `preview_close` it when
-done (`serverInstructions` in `internal/previewhost/mcp.go`). A caller from
-another tmux server still gets no instructions and no tools.
+Its `initialize` also carries server instructions (`serverInstructions` in
+`internal/previewhost/mcp.go`). A caller from another tmux server still gets
+no instructions and no tools.
 
 ### Stale tool definitions
 
