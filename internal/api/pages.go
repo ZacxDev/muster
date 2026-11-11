@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/pages"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -497,7 +498,7 @@ func (s *Server) renderPagesList(w http.ResponseWriter, r *http.Request, code in
 	for _, p := range list {
 		id := strconv.FormatInt(p.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-page-id="` + id + `">
-<a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(p.Title) + `</a>
+<a href="` + pagePath(p.ID) + `" class="break-all text-sm font-semibold text-accent underline" data-page-title>` + esc(textplain.Title(p.Title)) + `</a>
 <span class="text-xs text-fg2">by ` + esc(p.Creator.Label) + ` · version ` + strconv.Itoa(p.CurrentVersion) + ` of ` + strconv.Itoa(p.Versions) +
 			` · ` + strconv.Itoa(p.LiveLinks) + ` live link(s), ` + strconv.Itoa(p.Pending) + ` waiting for you · <span data-page-responses="` + strconv.Itoa(p.Responses) + `">` +
 			strconv.Itoa(p.Responses) + ` response(s)</span> · updated ` + esc(ruleTime(p.UpdatedAt)) + `</span>
@@ -545,7 +546,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	base := pagePath(id)
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="page-detail" data-page-id="` + pid + `">
-<h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(p.Title) + `</h1>
+<h1 class="break-all text-balance text-base font-semibold text-fg" data-page-title>` + esc(textplain.Title(p.Title)) + `</h1>
 <p class="text-sm text-fg2">By ` + esc(p.Creator.Label) + `. Showing version ` + strconv.Itoa(p.CurrentVersion) + `. <a href="` + base + `/preview" class="text-accent underline" data-page-preview>Preview it</a> (only you can see a preview, and nothing sent from it is recorded).</p>
 `)
 	b.WriteString(problemNode(problem))
@@ -590,7 +591,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 			cur = " · current"
 		}
 		b.WriteString(`<li class="` + flowsCardClass + `" data-version="` + vn + `">
-<span class="text-sm text-fg">Version ` + vn + `: ` + esc(v.Title) + `<span class="text-xs text-fg2">` + cur + ` · ` + esc(ruleTime(v.CreatedAt)) + ` · ` + uploads.HumanSize(int64(v.SizeBytes)) + `</span></span>
+<span class="text-sm text-fg">Version ` + vn + `: ` + esc(textplain.Title(v.Title)) + `<span class="text-xs text-fg2">` + cur + ` · ` + esc(ruleTime(v.CreatedAt)) + ` · ` + uploads.HumanSize(int64(v.SizeBytes)) + `</span></span>
 <a href="` + base + `/preview?v=` + vn + `" class="text-sm text-accent underline">Preview</a>
 `)
 		if v.Version != p.CurrentVersion {
@@ -629,7 +630,7 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 </section>`)
 	// secret: it shows each live share link, a bearer capability, so it
 	// loads no telemetry (ui.NavDocumentView.Secret).
-	s.writeNavDocument(w, r, code, p.Title, "", true, b.String())
+	s.writeNavDocument(w, r, code, textplain.Title(p.Title), "", true, b.String())
 }
 
 // pageLinkStateText is a link's state in words.

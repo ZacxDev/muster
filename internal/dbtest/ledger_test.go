@@ -219,6 +219,11 @@ var pgBackedPackages = []string{
 	// key is the id and nothing else" are claims about row-level security and a
 	// CHECK constraint.
 	"internal/uploads",
+	// Shareable pages (migration 0113). "Another user cannot read or change
+	// your page, its links or its responses", "a link serves only while live"
+	// and "a response through a revoked link records nothing" are claims about
+	// row-level security, composite keys and a row lock.
+	"internal/pages",
 	// Recents (migration 0018). "Another user cannot see or write your recently
 	// viewed entries", "a visit upserts" and "the oldest past the bound are
 	// pruned" are claims about row-level security and SQL.
