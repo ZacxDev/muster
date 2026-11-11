@@ -163,6 +163,10 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		// opencode both report how a turn ended.)
 		"internal/mirror/wire.go (declarations) ×1",
 		"internal/mirror/wire.go Window.AgentRuntime ×1",
+		// A preview tool call from opencode names its session in opencode's
+		// own _meta key, so only an opencode pane's session can match it
+		// (mcpproxy.go, "AN OPENCODE CALLER OF THE PREVIEW TOOLS").
+		"internal/mirrorhost/mcpproxy.go MCPProxy.openCodeWindow ×1",
 		"internal/mirrorhost/opencode.go ResolveOpenCodePaneStarted ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
 		"internal/mirrorhost/opencode_asks.go hostSide.answerOpenCode ×1",
