@@ -189,6 +189,9 @@ const (
 	HandlerTaskForward = "task_forward"
 	HandlerTaskRoute   = "task_route"
 	HandlerTaskBoard   = "task_board"
+	// HandlerTaskClaimed: the triage left an assignment of a CLAIMED task
+	// alone (notes.Claims): no card, no turn.
+	HandlerTaskClaimed = "task_claimed"
 	HandlerRule        = "rule"
 	HandlerChief       = "chief"
 )
@@ -196,7 +199,7 @@ const (
 // MusterHandlers are the handlers that are muster's own deterministic paths
 // (neither a rule nor the chief).
 var MusterHandlers = []string{HandlerFleetReport, HandlerThread, HandlerClosedPR, HandlerPRRoute, HandlerMailResume, HandlerTaskEventMention,
-	HandlerTaskForward, HandlerTaskRoute, HandlerTaskBoard}
+	HandlerTaskForward, HandlerTaskRoute, HandlerTaskBoard, HandlerTaskClaimed}
 
 // Handling is who handled one inbound plugin message. RuleID is set exactly
 // for HandlerRule; FallbackRuleID for HandlerChief when a rule matched and its

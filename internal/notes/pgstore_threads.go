@@ -32,7 +32,7 @@ import (
 // Its observation now arrives as an ARGUMENT to LinkSession instead of being probed
 // in SQL. One bit without the other cannot tell "reaped" from "never recorded" —
 // see SessionLink.DetailSeen.
-const sessionCols = `ts.session_id, ts.role, ts.project, ts.cwd, ts.host, ts.first_seen_at, ts.last_seen_at, ts.detail_seen`
+const sessionCols = `ts.session_id, ts.role, ts.project, ts.cwd, ts.host, ts.first_seen_at, ts.last_seen_at, ts.detail_seen, ts.claimed_at, ts.claimed_by, ts.upstream_released_rev, ts.claim_host`
 
 // sessionFrom is the FROM clause sessionCols is written against.
 const sessionFrom = `FROM task_sessions ts`
@@ -48,7 +48,7 @@ const sessionFrom = `FROM task_sessions ts`
 // from the other service's session record. Adding a destination for it here would
 // need a source, and the only source is the JOIN this package dropped.
 func scanSessionLinkInto(l *SessionLink) []any {
-	return []any{&l.SessionID, &l.Role, &l.Project, &l.Cwd, &l.Host, &l.FirstSeenAt, &l.LastSeenAt, &l.DetailSeen}
+	return []any{&l.SessionID, &l.Role, &l.Project, &l.Cwd, &l.Host, &l.FirstSeenAt, &l.LastSeenAt, &l.DetailSeen, &l.ClaimedAt, &l.ClaimedBy, &l.UpstreamReleasedRev, &l.ClaimHost}
 }
 
 // detailSeenUpgradeExpr is the MONOTONIC merge on conflict — the detail_seen twin of
@@ -216,15 +216,15 @@ func (s *PGStore) LinkSession(ctx context.Context, noteID int64, l SessionLink, 
 			   OR (EXCLUDED.project <> '' AND EXCLUDED.project <> task_sessions.project)
 			   OR (EXCLUDED.cwd     <> '' AND EXCLUDED.cwd     <> task_sessions.cwd)
 			   OR (EXCLUDED.host    <> '' AND EXCLUDED.host    <> task_sessions.host)
-			RETURNING session_id, role, project, cwd, host, first_seen_at, last_seen_at, detail_seen
+			RETURNING session_id, role, project, cwd, host, first_seen_at, last_seen_at, detail_seen, claimed_at, claimed_by, upstream_released_rev, claim_host
 		)
 		SELECT ins.session_id, ins.role, ins.project, ins.cwd, ins.host, ins.first_seen_at, ins.last_seen_at,
-		       ins.detail_seen,
+		       ins.detail_seen, ins.claimed_at, ins.claimed_by, ins.upstream_released_rev, ins.claim_host,
 		       (SELECT role FROM prev)
 		  FROM ins`,
 		noteID, l.SessionID, l.Role, l.Project, l.Cwd, l.Host, lastSeenCoalesce.String(), detailSeen).
 		Scan(&out.SessionID, &out.Role, &out.Project, &out.Cwd, &out.Host,
-			&out.FirstSeenAt, &out.LastSeenAt, &out.DetailSeen, &prevRole)
+			&out.FirstSeenAt, &out.LastSeenAt, &out.DetailSeen, &out.ClaimedAt, &out.ClaimedBy, &out.UpstreamReleasedRev, &out.ClaimHost, &prevRole)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			// TWO different situations produce an empty result, and they are not

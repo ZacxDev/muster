@@ -731,8 +731,11 @@ func TestSessionColsAndScanTargetsAgree(t *testing.T) {
 	}
 	// The last column is the one that can be transposed without any error at all, so
 	// name it explicitly rather than trusting the count.
-	if got := strings.TrimSpace(cols[len(cols)-1]); got != "ts.detail_seen" {
-		t.Fatalf("the last projected column is %q, want ts.detail_seen — scanSessionLinkInto ends with &l.DetailSeen", got)
+	if got := strings.TrimSpace(cols[len(cols)-1]); got != "ts.claim_host" {
+		t.Fatalf("the last projected column is %q, want ts.claim_host — scanSessionLinkInto ends with &l.ClaimHost", got)
+	}
+	if got := strings.TrimSpace(cols[len(cols)-5]); got != "ts.detail_seen" {
+		t.Fatalf("the fifth-last projected column is %q, want ts.detail_seen — scanSessionLinkInto has &l.DetailSeen there", got)
 	}
 	// 🔴 AND EVERY COLUMN MUST COME OFF task_sessions ALONE. This projection used to
 	// end with `(cs.session_id IS NOT NULL)` off a LEFT JOIN onto the session table,

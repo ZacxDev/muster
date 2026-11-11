@@ -569,11 +569,10 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	return r, t, ""
 }
 
-// prRouteSuperseded is the error a review round's route ends with when a
-// LATER-ARRIVING round (another head commit) of the same pull request was
-// routed to the same session (supersedePRRoutes). "Newer" means later by
-// arrival, not a newer commit.
-const prRouteSuperseded = "superseded by a newer review round"
+// prRouteSuperseded is plugins.PRRouteSuperseded: the error a review round's
+// route ends with when a LATER-ARRIVING round of the same pull request was
+// routed to the same session (supersedePRRoutes).
+const prRouteSuperseded = plugins.PRRouteSuperseded
 
 // supersedePRRoutes ends every route of ANOTHER review round of origin's pull
 // request that arrived before route newer and is still open for origin's
@@ -582,9 +581,12 @@ const prRouteSuperseded = "superseded by a newer review round"
 // 🔴 A ROUND IS A HEAD COMMIT, AND ONE ROUND MAY BE SEVERAL MESSAGES. Parts of
 // newer's own round (the same head sha) are never superseded: each part is half
 // of the review the session must see (plugins.PGStore.OlderOpenPRRoutes keys on
-// the round). Order is by ARRIVAL, not commit: muster cannot tell which head is
-// newer, so a late review of an older head supersedes a newer head's route. An
-// earlier-arriving round is superseded WHETHER OR NOT its paste was delivered:
+// the round). 🔴 THE NEWEST HEAD WINS (pr_head_order.go): an earlier-arriving
+// round is superseded only when newer's head is the same as or comes AFTER its
+// head in the pull request's commits; a late review of an OLDER head
+// supersedes nothing. When the order cannot be read, it is superseded by
+// arrival, as before. A superseded round goes WHETHER OR NOT its paste was
+// delivered:
 //   - still QUEUED: superseded FIRST, then its paste cancelled, so a delivery
 //     that claims the row in between finds the route closed and pastes nothing
 //     (sendQueueRoutedGate). The session never answers — and muster never
@@ -592,13 +594,15 @@ const prRouteSuperseded = "superseded by a newer review round"
 //   - already delivered: the session has it, and the later round replaces it,
 //     so its route need not wait out its 4-hour deadline.
 //
-// No hand-back either way, and the chief is not told. But only a route whose
-// paste was SENT is settled by muster (plugins.PGStore.SupersedeRoute): one
-// whose paste was not sent never reached the session — it may be the NEWER
-// head, superseded by a late older one — so its message stays unsettled and
-// the "not acted on" ask (plugins.UnroutedAskAfter) still raises it. A route
-// whose paste is still being made by its own injection (no row yet) is left to
-// that injection.
+// No hand-back either way, and the chief is not told. Only a route whose paste
+// was SENT is settled by muster (plugins.PGStore.SupersedeRoute). One whose
+// paste was not sent stays unsettled; superseded by a verified NEWER head
+// (plugins.SupersededByNewerHeadError) it raises no "not acted on" ask — the
+// newer round's message answers for the review, and raises the ask itself if
+// its own route fails for a real reason — while one superseded by arrival
+// alone (plugins.SupersededRouteError) still raises it. A route whose paste is
+// still being made by its own injection (no row yet) is left to that
+// injection.
 func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, origin plugins.RouteOrigin) {
 	older, err := s.ext.Routes.OlderOpenPRRoutes(ctx, newer.RouteID, origin)
 	if err != nil {
@@ -606,14 +610,30 @@ func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, ori
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
+	var commits []string // read once, only when there is a round to order
+	read := false
 	for _, o := range older {
 		if o.SendQueueID == nil {
 			// Still being queued by its own injection, which decides its fate.
 			continue
 		}
-		why := prRouteSuperseded + " (route " + newer.RouteID + ")"
+		if !read {
+			commits, read = s.prCommits(ctx, origin.PR), true
+		}
+		// THE NEWEST HEAD WINS (pr_head_order.go): a review of an OLDER head
+		// supersedes nothing; a newer (or same) head's supersede is handled;
+		// an unknown order supersedes by arrival, NOT handled (its message
+		// still raises the "not acted on" ask).
+		why := plugins.SupersededRouteError(newer.RouteID)
+		switch compareHeads(commits, o.PRHeadSHA, origin.HeadSHA) {
+		case headOlder:
+			s.logger.Printf("routes: %s: a late review of an older head of %s (route %s) does not supersede it", o.RouteID, origin.PR, newer.RouteID)
+			continue
+		case headNewerOrSame:
+			why = plugins.SupersededByNewerHeadError(newer.RouteID)
+		}
 		settle := plugins.SettledByMuster + "a review round of " + origin.PR + " for the session that authored it (route " +
-			o.RouteID + "), " + prRouteSuperseded + " (route " + newer.RouteID + ")"
+			o.RouteID + "), " + why
 		if _, done, err := s.ext.Routes.SupersedeRoute(ctx, o.RouteID, why, settle); err != nil || !done {
 			if err != nil {
 				s.logger.Printf("routes: %s: supersede: %v", o.RouteID, err)

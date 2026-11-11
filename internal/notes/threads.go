@@ -162,6 +162,24 @@ type SessionLink struct {
 	// neither bounding the other — comparing LastSeenAt against the retention window
 	// produces a confident answer and the wrong one.
 	DetailSeen bool `json:"detailSeen"`
+	// ClaimedAt is when this session CLAIMED the task (migration 0111): it picked
+	// the task up through muster's task tools (a status write to in_progress that
+	// carried its id). nil when it has not, or when the task was set back to open
+	// since (the unclaim). ClaimedBy is the name the claim was made under. A
+	// claim is the request's fact, never inferred from focus or transcript text;
+	// what it does is notes.Claims.
+	ClaimedAt *time.Time `json:"claimedAt,omitempty"`
+	ClaimedBy string     `json:"claimedBy,omitempty"`
+	// UpstreamReleasedRev is, for a session an upstream claimant names, the
+	// snapshot revision ("rev:<rev>") at which muster released that claim
+	// because the session ended (migration 0111); "" when it did not. Claims
+	// skips the claimant while the snapshot is still at that revision.
+	UpstreamReleasedRev string `json:"upstreamReleasedRev,omitempty"`
+	// ClaimHost is the host the MIRROR listed this session on when it claimed
+	// the task, or when an upstream claimant named it (migration 0111); ""
+	// when none did. It — never Host, a request's own header — is what "the
+	// claiming session ended" is judged against.
+	ClaimHost string `json:"claimHost,omitempty"`
 }
 
 // TaskLink is the REVERSE view — one task a given session touched — backing
