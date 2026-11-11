@@ -20,6 +20,7 @@
 package consumerusage
 
 import (
+	"encoding/json"
 	"regexp"
 	"sort"
 	"time"
@@ -53,9 +54,12 @@ func ValidConsumer(c string) bool {
 // not sent (HQ would refuse the whole push over it).
 var SessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// MaxRows is the most rows one push carries: the newest are kept (as the
-// officer route's 1000 buckets).
-const MaxRows = 1000
+// MaxRows and MaxBody bound one push, as HQ does (413 past either): a window
+// with more is sent in several pushes (Batches), each upserted on its own.
+const (
+	MaxRows = 1000
+	MaxBody = 256 << 10 // bytes
+)
 
 // Row is one (session, hour) of one instance on the wire, in the contract's
 // field order.
@@ -115,7 +119,7 @@ func AccountAt(current string, failovers []Failover, hour time.Time) string {
 }
 
 // Rows is buckets as contract rows, each attributed by AccountAt: sorted by
-// hour then session, at most MaxRows (the newest). A bucket whose session
+// hour then session. A bucket whose session
 // HQ would refuse, whose hour is not on the hour, or whose account is empty
 // is left out and counted in invalid.
 func Rows(buckets []cctranscript.UsageBucket, current string, failovers []Failover) (rows []Row, invalid int) {
@@ -141,8 +145,33 @@ func Rows(buckets []cctranscript.UsageBucket, current string, failovers []Failov
 			APICalls: b.APICalls, InputTokens: b.InputTokens, OutputTokens: b.OutputTokens,
 			CacheReadTokens: b.CacheReadTokens, CacheCreationTokens: b.CacheCreationTokens, Model: b.Model})
 	}
-	if n := len(rows) - MaxRows; n > 0 {
-		rows = rows[n:]
-	}
 	return rows, invalid
+}
+
+// Batches splits rows, in order, into the reports of instance and consumer
+// that HQ takes: each at most MaxRows rows and MaxBody bytes encoded. HQ
+// upserts each row on its own key, so pushing the window in several reports
+// is the same as pushing it in one.
+func Batches(instance, consumer string, rows []Row) []Report {
+	empty, _ := json.Marshal(Report{Instance: instance, Consumer: consumer, Hours: []Row{}})
+	var out []Report
+	var cur []Row
+	size := len(empty)
+	for _, r := range rows {
+		b, _ := json.Marshal(r)
+		add := len(b)
+		if len(cur) > 0 {
+			add++ // the comma
+		}
+		if len(cur) > 0 && (len(cur) == MaxRows || size+add > MaxBody) {
+			out = append(out, Report{Instance: instance, Consumer: consumer, Hours: cur})
+			cur, size, add = nil, len(empty), len(b)
+		}
+		cur = append(cur, r)
+		size += add
+	}
+	if len(cur) > 0 {
+		out = append(out, Report{Instance: instance, Consumer: consumer, Hours: cur})
+	}
+	return out
 }

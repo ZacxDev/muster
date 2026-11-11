@@ -217,9 +217,14 @@ func (c *Collector) collect(ctx context.Context, instance string) string {
 		metrics.CCConsumerUsagePush.WithLabelValues(resultEmpty).Inc()
 		return resultEmpty
 	}
-	pctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	err = c.cfg.Poster.Put(pctx, Report{Instance: c.cfg.Instance, Consumer: c.cfg.Consumer, Hours: rows})
-	cancel()
+	for _, rep := range Batches(c.cfg.Instance, c.cfg.Consumer, rows) {
+		pctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+		err = c.cfg.Poster.Put(pctx, rep)
+		cancel()
+		if err != nil {
+			break // the rest waits for the next tick, which re-sends the window
+		}
+	}
 	var refused *RefusedError
 	switch {
 	case err == nil:

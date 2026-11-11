@@ -3,6 +3,7 @@ package officers_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"strings"
@@ -237,5 +238,37 @@ func TestAnUnreadableSessionCountSendsNothing(t *testing.T) {
 	p.Tick(context.Background())
 	if puts := r.hq.PoolsPuts(); len(puts) != 1 || string(puts[0].Raw) != tieredPools {
 		t.Fatalf("after recovery: %v", puts)
+	}
+}
+
+// TestPoolsBodiesMeetHQsShapeRules pins, structurally, the two rules HQ
+// refuses a body over: pool "" is an untiered officer's ONLY pool and never
+// sent with another, and every pool carries max_instances (0-100).
+func TestPoolsBodiesMeetHQsShapeRules(t *testing.T) {
+	r := newPoolsRig(t)
+	r.reporter(t, tieredOfficer(r.hq)).Tick(context.Background())
+	r.reporter(t, untieredOfficer(r.hq)).Tick(context.Background())
+	puts := r.hq.PoolsPuts()
+	if len(puts) != 2 {
+		t.Fatalf("%d accepted pools PUTs, want 2", len(puts))
+	}
+	for k, want := range []string{"judgement,routine", ""} {
+		var body struct {
+			Pools []map[string]any `json:"pools"`
+		}
+		if err := json.Unmarshal(puts[k].Raw, &body); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, p := range body.Pools {
+			n, ok := p["max_instances"].(float64)
+			if !ok || n < 0 || n > 100 {
+				t.Fatalf("body %d: pool %v has max_instances %v", k, p["pool"], p["max_instances"])
+			}
+			names = append(names, p["pool"].(string))
+		}
+		if got := strings.Join(names, ","); got != want || (len(names) > 1 && strings.Contains(","+got+",", ",,")) {
+			t.Fatalf("body %d pools %q, want %q", k, got, want)
+		}
 	}
 }

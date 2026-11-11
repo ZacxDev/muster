@@ -287,7 +287,7 @@ func (s *Server) PoolSet(officer string) []string {
 
 // pools is PUT /officers/{id}/pools, to the contract: the body decoded
 // strictly, pools present and each one's pool "" | routine | judgement (no
-// pool twice, "" only alone), its model a string, max_instances at least 1,
+// pool twice, "" only alone), its model a string, max_instances 0-100,
 // max_sessions_per_day null or 1-100, sessions_today present and
 // non-negative, sessions_day_resets_at RFC 3339 on a UTC midnight; reported_at
 // RFC 3339. 204, the officer's set REPLACED by the body's.
@@ -345,8 +345,8 @@ func (s *Server) pools(w http.ResponseWriter, officer string, raw []byte) {
 			invalid("sessions_day_resets_at must be a UTC midnight, RFC 3339")
 			return
 		}
-		if *p.MaxInstances < 1 || *p.SessionsToday < 0 || (p.MaxSessionsPerDay != nil && (*p.MaxSessionsPerDay < 1 || *p.MaxSessionsPerDay > 100)) {
-			invalid("max_instances >= 1, sessions_today >= 0, max_sessions_per_day null or 1-100")
+		if *p.MaxInstances < 0 || *p.MaxInstances > 100 || *p.SessionsToday < 0 || (p.MaxSessionsPerDay != nil && (*p.MaxSessionsPerDay < 1 || *p.MaxSessionsPerDay > 100)) {
+			invalid("max_instances 0-100, sessions_today >= 0, max_sessions_per_day null or 1-100")
 			return
 		}
 		set = append(set, *p.Pool)
@@ -424,7 +424,8 @@ var consumerSessionRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // consumerUsage is PUT /claude-pool/consumer-usage, to the contract: the body
 // decoded strictly (an unknown field is a 400), instance required, consumer
 // pr-review, hours present; each row's hour RFC 3339 on the hour, its account
-// set, its session HQ's id, its counts present and non-negative; 413 past
+// set, its session HQ's id, within the last 8 days and not in the future, its
+// counts present and non-negative; 413 past
 // 256 KiB or 1000 rows. 204, each row upserted (the last PUT replaces).
 func (s *Server) consumerUsage(w http.ResponseWriter, r *http.Request, raw []byte) {
 	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -488,6 +489,10 @@ func (s *Server) consumerUsage(w http.ResponseWriter, r *http.Request, raw []byt
 		t, err := time.Parse(time.RFC3339, h.Hour)
 		if err != nil || !t.Equal(t.Truncate(time.Hour)) || h.Account == "" || !consumerSessionRe.MatchString(h.Session) {
 			invalid("a row needs an hour on the hour, an account and a session id")
+			return
+		}
+		if now := s.Now(); t.Before(now.Add(-8*24*time.Hour)) || t.After(now) {
+			invalid("hour is older than 8 days or in the future")
 			return
 		}
 		for _, n := range []*int64{h.Turns, h.APICalls, h.InputTokens, h.OutputTokens, h.CacheReadTokens, h.CacheCreationTokens} {

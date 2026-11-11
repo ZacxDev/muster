@@ -2009,6 +2009,11 @@ PUT {hq_url}/officers/{id}/pools
   without a cap, which keeps no count. `sessions_day_resets_at` is the next UTC
   midnight. When the ledger cannot be read nothing is sent (a wrong count is
   worse than a late one), logged.
+- HQ refuses pool `""` sent with any other pool, and requires
+  `max_instances` (0-100) on every pool; muster's bodies always meet both
+  (an untiered officer sends exactly its `""` pool, a tiered one only
+  `judgement` and `routine`). HQ serves the stored set back on `GET
+  /officers/{id}/pools`.
 - The body is the officer's WHOLE set: HQ deletes a pool it does not name, so
   an officer reconfigured without its tiers reports its one `""` pool and HQ
   drops the other two.
@@ -2073,8 +2078,13 @@ table above), left out when unknown. HQ upserts each row on (instance, consumer,
 counts and account, and refuses unknown fields. Every push is the instance's
 whole 25-hour window, so re-pushing is idempotent. A session id must match
 `^[A-Za-z0-9_-]{1,64}$` (ccd's are UUIDs); a row that does not, or whose hour
-is not on the hour, is left out and logged once per instance. Over 1000 rows
-the newest 1000 are sent. An instance with no row in its window sends nothing.
+is not on the hour, or whose account is not known, is left out (never sent
+with an empty account) and logged once per instance. HQ takes at most 1000
+rows and 256 KiB per request (413 past either), so a larger window is sent in
+several pushes, in order; one that fails leaves the rest to the next tick,
+which re-sends the whole window. HQ refuses an hour older than 8 days or in
+the future; the 25-hour window never reaches either. An instance with no row
+in its window sends nothing.
 
 **The account of each hour** is the pool account the instance was on at the
 END of that hour: the `from` of the instance's earliest account failover at or

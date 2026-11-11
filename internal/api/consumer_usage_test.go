@@ -76,6 +76,7 @@ func consumerServer(t *testing.T) *consumerRig {
 	hq := hqtest.New(map[string]string{offATok: offA})
 	t.Cleanup(hq.Close)
 	hq.AddPoolToken("pool-tok-SENTINEL-31")
+	hq.Now = func() time.Time { return time.Date(2026, 11, 10, 12, 40, 0, 0, time.UTC) } // HQ refuses hours past 8 days old
 	store := &officerAgents{}
 	prov := &officerProv{store: store, phase: map[string]provision.Phase{}}
 	gw := &consumerGateway{}

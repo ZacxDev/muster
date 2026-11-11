@@ -59,15 +59,45 @@ func TestRowsAreTheContractRowsSortedAttributedAndValid(t *testing.T) {
 	}
 }
 
-// TestOverMaxRowsTheNewestAreKept: 1003 hourly buckets send the newest 1000.
-func TestOverMaxRowsTheNewestAreKept(t *testing.T) {
-	var bs []cctranscript.UsageBucket
-	for i := 1002; i >= 0; i-- {
-		bs = append(bs, cctranscript.UsageBucket{Session: fmt.Sprintf("s-%d", i), Hour: hr(0).Add(time.Duration(i) * time.Hour), Turns: int64(i)})
+// TestBatchesStayUnderHQsRowAndByteCaps: 1003 small rows are two reports of
+// 1000 and 3, in order; 1000 large rows (64-character sessions, a model, big
+// counts) are split by size, every report encoding to at most 256 KiB — and
+// no row is lost or reordered in either.
+func TestBatchesStayUnderHQsRowAndByteCaps(t *testing.T) {
+	var small []Row
+	for i := 0; i < 1003; i++ {
+		small = append(small, Row{Hour: "2000-01-03T10:00:00Z", Account: "acct-a", Session: fmt.Sprintf("s-%d", i), Turns: int64(i)})
 	}
-	rows, _ := Rows(bs, "acct-a", nil)
-	if len(rows) != MaxRows || rows[0].Turns != 3 || rows[len(rows)-1].Turns != 1002 {
-		t.Fatalf("%d rows, first %d last %d; want 1000, the newest (3..1002)", len(rows), rows[0].Turns, rows[len(rows)-1].Turns)
+	bs := Batches("review-muster", ConsumerPRReview, small)
+	if len(bs) != 2 || len(bs[0].Hours) != 1000 || len(bs[1].Hours) != 3 || bs[1].Hours[0].Turns != 1000 || bs[1].Hours[2].Turns != 1002 {
+		t.Fatalf("small: %d reports", len(bs))
+	}
+	var large []Row
+	for i := 0; i < 1000; i++ {
+		sess := fmt.Sprintf("%064d", i)
+		large = append(large, Row{Hour: "2000-01-03T10:00:00Z", Account: "acct-with-a-longer-name-b", Session: sess, Turns: 9000000 + int64(i),
+			APICalls: 9100000, InputTokens: 912345678, OutputTokens: 923456789, CacheReadTokens: 934567890123, CacheCreationTokens: 945678901, Model: "claude-model-with-a-long-id-1"})
+	}
+	whole, _ := json.Marshal(Report{Instance: "review-muster", Consumer: ConsumerPRReview, Hours: large})
+	if len(whole) <= MaxBody {
+		t.Fatalf("fixture too small to need a split: %d bytes", len(whole))
+	}
+	bs = Batches("review-muster", ConsumerPRReview, large)
+	n := 0
+	for k, b := range bs {
+		raw, _ := json.Marshal(b)
+		if len(raw) > MaxBody || len(b.Hours) > MaxRows || b.Instance != "review-muster" || b.Consumer != ConsumerPRReview {
+			t.Fatalf("report %d: %d bytes, %d rows", k, len(raw), len(b.Hours))
+		}
+		for _, r := range b.Hours {
+			if r.Turns != 9000000+int64(n) {
+				t.Fatalf("row %d out of order (turns %d)", n, r.Turns)
+			}
+			n++
+		}
+	}
+	if len(bs) < 2 || n != 1000 {
+		t.Fatalf("large: %d reports, %d rows", len(bs), n)
 	}
 }
 

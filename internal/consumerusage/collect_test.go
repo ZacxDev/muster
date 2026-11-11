@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -91,6 +92,7 @@ func newRig(t *testing.T, names ...string) *rig {
 	hq := hqtest.New(nil)
 	t.Cleanup(hq.Close)
 	hq.AddPoolToken(poolTok)
+	hq.Now = func() time.Time { return fixtureNow } // HQ refuses hours past 8 days old
 	src := &fakeSource{readings: map[string]Reading{"review-w1": w1Reading, "review-w2": w2Reading}, errs: map[string]error{}}
 	slp := &sleeps{}
 	logs := &bytes.Buffer{}
@@ -269,5 +271,21 @@ func TestAnOlderCcdIsSkippedAndLoggedOnce(t *testing.T) {
 	r.c.Tick(context.Background())
 	if strings.Count(r.logs.String(), "review-w2: its Claude usage is read again") != 1 || len(r.hq.ConsumerPuts()) != 1 {
 		t.Fatalf("recovery: log:\n%s", r.logs)
+	}
+}
+
+// TestAWindowOverHQsCapIsPushedInBatches: an instance with 1003 session-hours
+// is two PUTs HQ takes (its fake refuses over 1000 rows with 413), and HQ
+// then holds all 1003 rows.
+func TestAWindowOverHQsCapIsPushedInBatches(t *testing.T) {
+	r := newRig(t, "review-big")
+	var bs []cctranscript.UsageBucket
+	for i := 0; i < 1003; i++ {
+		bs = append(bs, cctranscript.UsageBucket{Session: fmt.Sprintf("s-%04d", i), Hour: hr(11), Turns: 1, APICalls: int64(i + 1)})
+	}
+	r.src.readings["review-big"] = Reading{Account: "acct-a", Buckets: bs}
+	r.c.Tick(context.Background())
+	if puts, n := r.hq.ConsumerPuts(), len(r.hq.ConsumerRows()); len(puts) != 2 || n != 1003 || r.consumerRequests() != 2 {
+		t.Fatalf("%d accepted PUTs of %d, %d rows stored; want 2 and 1003", len(puts), r.consumerRequests(), n)
 	}
 }
