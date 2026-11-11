@@ -3,6 +3,7 @@ package previewgw
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -27,25 +28,48 @@ const (
 	PathPublic Path = "public"
 )
 
-// peerOf is the throttle's key for a request on a listener of path p. The
-// mesh listener sits behind the relay, which sets X-Real-IP; the public one
-// behind the edge, which sets CF-Connecting-IP. Without the header, the TCP
-// peer.
+// peerOf is the throttle's key for a request on a listener of path p: the TCP
+// peer, unless that peer is in trusted (PREVIEW_TRUSTED_PROXIES), the relay in
+// front of the gateway, whose client-address header then names the client:
+// X-Real-IP on the mesh listener, CF-Connecting-IP on the public one. Without
+// the header, the TCP peer.
+//
+// 🔴 A HEADER FROM ANY OTHER PEER IS IGNORED. Anything that reaches a
+// listener directly (an in-cluster client, past the relay) could otherwise set
+// the header itself and rotate it, a fresh bucket per guess, and the throttle
+// would never answer it 429.
 //
 // It is a THROTTLE key, not an identity: nothing else reads it.
-func peerOf(p Path, r *http.Request) string {
-	h := "X-Real-IP"
-	if p == PathPublic {
-		h = "CF-Connecting-IP"
+func peerOf(p Path, r *http.Request, trusted []netip.Prefix) string {
+	peer := tcpPeer(r.RemoteAddr)
+	if a, err := netip.ParseAddr(peer); err == nil && inPrefixes(a.Unmap(), trusted) {
+		h := "X-Real-IP"
+		if p == PathPublic {
+			h = "CF-Connecting-IP"
+		}
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" && len(v) <= 64 {
+			return v
+		}
 	}
-	if v := strings.TrimSpace(r.Header.Get(h)); v != "" && len(v) <= 64 {
-		return v
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return peer
+}
+
+// tcpPeer is a RemoteAddr's host, or the whole of it when it has no port.
+func tcpPeer(remote string) string {
+	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
-		return r.RemoteAddr
+		return remote
 	}
 	return host
+}
+
+func inPrefixes(a netip.Addr, ps []netip.Prefix) bool {
+	for _, p := range ps {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxFailKeys bounds the limiter's map. Keys are cheap for an

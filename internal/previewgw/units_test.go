@@ -131,6 +131,13 @@ func TestLoadConfig(t *testing.T) {
 		c.TTL != 90*time.Minute || c.Idle != 17*time.Minute {
 		t.Fatalf("PREVIEW_TTL 90m, PREVIEW_IDLE 17m: %+v %v", c, err)
 	}
+	if c.TrustedProxies != nil {
+		t.Fatalf("PREVIEW_TRUSTED_PROXIES unset: %v; want none trusted", c.TrustedProxies)
+	}
+	if c, err := LoadConfig(env(map[string]string{"PREVIEW_TRUSTED_PROXIES": "192.0.2.7"})); err != nil ||
+		len(c.TrustedProxies) != 1 || c.TrustedProxies[0].String() != "192.0.2.7/32" {
+		t.Fatalf("PREVIEW_TRUSTED_PROXIES 192.0.2.7: %v %v", c.TrustedProxies, err)
+	}
 	for name, over := range map[string]map[string]string{
 		"no muster url":      {"MUSTER_URL": ""},
 		"no public url":      {"MUSTER_PUBLIC_URL": ""},
@@ -147,6 +154,7 @@ func TestLoadConfig(t *testing.T) {
 		"bad ttl":            {"PREVIEW_TTL": "a day"},
 		"ttl under a minute": {"PREVIEW_TTL": "59s"},
 		"bad idle":           {"PREVIEW_IDLE": "-2h"},
+		"bad trusted proxy":  {"PREVIEW_TRUSTED_PROXIES": "192.0.2.1,relay"},
 	} {
 		if _, err := LoadConfig(env(over)); err == nil {
 			t.Errorf("%s: accepted", name)

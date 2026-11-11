@@ -111,7 +111,7 @@ func TestThePathIsDecidedByTheListener(t *testing.T) {
 // token from that peer is still accepted, another peer is still 401, and a
 // new minute starts afresh.
 func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
-	e := newGW(t, gwOpts{})
+	e := newGW(t, gwOpts{trusted: loopbackPeers}) // the test's dials play the relay
 	good := e.mint(t, 1, "alpha")
 	bad := wire.TokenPrefix + strings.Repeat("A", hostTokenLen-len(wire.TokenPrefix))
 	peer := func(ip string) http.Header { return http.Header{"X-Real-Ip": {ip}} }
@@ -144,9 +144,10 @@ func TestThe11thBadTokenFromOnePeerIs429(t *testing.T) {
 
 // The public listener keys the throttle on CF-Connecting-IP: ten bad tokens
 // from one such peer, then 429 on the 11th; a fresh CF-Connecting-IP is still
-// 401. There is no cap across peers (round 0, D1).
+// 401. There is no cap across peers (round 0, D1). The header is believed
+// because the peer (the test, on loopback) is a trusted proxy.
 func TestThePublicListenerThrottlesPerCFConnectingIP(t *testing.T) {
-	e := newGW(t, gwOpts{})
+	e := newGW(t, gwOpts{trusted: loopbackPeers})
 	bad := wire.TokenPrefix + strings.Repeat("B", hostTokenLen-len(wire.TokenPrefix))
 	cf := func(ip string) http.Header { return http.Header{"Cf-Connecting-Ip": {ip}} }
 	for i := 1; i <= 10; i++ {

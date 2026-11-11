@@ -406,7 +406,7 @@ func (g *Gateway) hostTunnel(p Path) http.Handler {
 			return
 		}
 		refuse := func() {
-			if lim.fail(peerOf(p, r)) {
+			if lim.fail(peerOf(p, r, g.cfg.TrustedProxies)) {
 				http.Error(w, "too many failed host-token checks from this address; wait a minute", http.StatusTooManyRequests)
 				return
 			}
