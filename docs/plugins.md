@@ -463,8 +463,8 @@ muster then, once, on the call that recorded it:
 
 - **pushes your owner** on the draft's own notification tag, with the plugin's
   `detail` on one line (cut to 300 characters), after where the reply goes:
-  back to the session that wrote it, or to your chief if that session is gone,
-  or to your chief. It does this for every failed
+  back to the session that wrote it (or to your chief if that session is gone),
+  or straight to your chief. It does this for every failed
   send. For a check refusal it does this only when the reply is not going back
   to its session, because there is nothing for your owner to do while the
   session rewrites it.

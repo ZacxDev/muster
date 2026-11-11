@@ -864,6 +864,15 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			r, err = failRouteTx(ctx, tx, cur, failWhy, "its answer could not be sent ("+failWhy+")")
 			return err
 		}
+		// A PENDING draft awaits its plugin's check when the plugin has
+		// CapDraftChecks (checkStateFor). An auto-approved one is not checked
+		// first: its plugin's own send-time check refuses it, as a failed
+		// result (FinishDraft), if it must. Read — and the plugin row locked —
+		// BEFORE the supersede locks any draft (checkStateFor's lock order).
+		check, err := checkStateFor(ctx, tx, messageID)
+		if err != nil {
+			return err
+		}
 		// FileDraft's supersede, with FileDraft's accounting: the count on the
 		// filing's audit row.
 		tag, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'superseded', decided_at = now()
@@ -872,14 +881,6 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 			return err
 		}
 		superseded := int(tag.RowsAffected())
-		// A PENDING draft awaits its plugin's check when the plugin has
-		// CapDraftChecks (checkStateFor). An auto-approved one is not checked
-		// first: its plugin's own send-time check refuses it, as a failed
-		// result (FinishDraft), if it must.
-		check, err := checkStateFor(ctx, tx, messageID)
-		if err != nil {
-			return err
-		}
 		status, q, args := DraftPending, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, route_id,
 				check_state, check_due_at)
 			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7, $8, `+checkDueSQL("$8")+`) RETURNING `+draftCols, []any{check}

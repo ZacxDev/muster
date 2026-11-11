@@ -288,42 +288,36 @@ func (s *Server) handlePluginDraftCheck(w http.ResponseWriter, r *http.Request) 
 //   - a ROUTED draft's hand-back is delivered by the route sweep, woken now
 //     (deliverHandBack: the session again — redraftRoute, which tells the
 //     chief — or else the chief, as a timed-out route's);
-//   - a draft the chief filed itself (reply_draft) is noted to the chief.
+//   - a draft the chief filed itself (reply_draft) is noted to the chief;
+//   - unless another reply to the message was sent or is on its way
+//     (plugins.RefusalAnsweredElsewhere): then the store left the route as it
+//     was, and only the owner is pushed, saying so.
 func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.Draft, sending bool) {
-	// Another reply to the message went out, or is on its way: the store left
-	// its route alone (plugins.OtherReplyOut), so nothing goes back anywhere.
-	// The owner is told so — never "it went back" — and nobody is asked to
-	// write it again.
-	if out, err := s.ext.Plugins.ReplyOutElsewhere(ctx, d); err != nil || out {
-		if err != nil {
-			s.logger.Printf("plugins: draft %d refused: read its message's other replies: %v", d.ID, err)
-		}
-		s.logger.Printf("plugins: plugin %d refused draft %d; another reply to message %d is sent or on its way", p.ID, d.ID, d.MessageID)
+	// 🔴 WHAT FOLLOWS IS WHAT THE STORE DECIDED (d.Refusal), in the transaction
+	// that recorded the refusal — never a second read, which could describe
+	// something else, or fail and drop the hand-back.
+	outcome := d.Refusal
+	if !routesOn(s.ext) && (outcome == plugins.RefusalRedraft || outcome == plugins.RefusalRouteToChief) {
+		// No route sweep runs to deliver the route's hand-back: tell the chief.
+		outcome = plugins.RefusalNoRoute
+	}
+	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v): %s", p.ID, d.ID, sending, outcome)
+	switch outcome {
+	case plugins.RefusalAnsweredElsewhere:
+		// Another reply went, or is on its way: nothing goes back anywhere.
 		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
-		return
-	}
-	var route plugins.Route
-	routed := false
-	if d.RouteID != nil && routesOn(s.ext) {
-		if r, err := s.ext.Routes.Route(ctx, *d.RouteID); err == nil && r.State == plugins.RouteSendFailed &&
-			r.DraftID != nil && *r.DraftID == d.ID {
-			route, routed = r, true
+	case plugins.RefusalRedraft:
+		if sending {
+			s.notifyDraftRefused(p, d, refusalToSession)
 		}
-	}
-	redraft := routed && route.Redraft
-	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v, routed %v, redraft %v)", p.ID, d.ID, sending, routed, redraft)
-	where := refusalToChief
-	if redraft {
-		where = refusalToSession
-	}
-	if sending || !redraft {
-		s.notifyDraftRefused(p, d, where)
-	}
-	if routed {
 		s.kickRouteSweep()
-		return
+	case plugins.RefusalRouteToChief:
+		s.notifyDraftRefused(p, d, refusalToChief)
+		s.kickRouteSweep()
+	default:
+		s.notifyDraftRefused(p, d, refusalToChief)
+		s.noteDraftRefusedToChief(ctx, p, d, sending)
 	}
-	s.noteDraftRefusedToChief(ctx, p, d, sending)
 }
 
 // Where a refused reply goes, as its push says (draftRefusedPushBody).

@@ -128,9 +128,6 @@ type Store interface {
 	// DraftCheckWait (system scope); LapseDraftCheck lapses one, as its owner.
 	DraftChecksDue(ctx context.Context) ([]DueDraftCheck, error)
 	LapseDraftCheck(ctx context.Context, id int64) (d Draft, lapsed bool, err error)
-	// ReplyOutElsewhere reports whether another reply to d's message was sent
-	// or is in flight (OtherReplyOut).
-	ReplyOutElsewhere(ctx context.Context, d Draft) (bool, error)
 	// QueuedForOwner is ownerID's undelivered messages across live plugins,
 	// except those a mail resume holds (resumeHolds).
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)
@@ -405,6 +402,7 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 		rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'lapsed', checked_at = now()
 			WHERE id IN (SELECT d.id FROM plugin_reply_drafts d JOIN plugin_messages m ON m.id = d.message_id
 			              WHERE m.plugin_id = $1 AND d.status = 'pending' AND d.check_state = 'awaiting'
+			                AND d.expires_at > now()
 			              ORDER BY d.id FOR UPDATE OF d)
 			RETURNING `+draftCols, id)
 		if err != nil {

@@ -155,6 +155,17 @@ func TestAPluginWithoutMessagesCannotGainChecksReplies(t *testing.T) {
 func TestTurningChecksRepliesOffLapsesTheDraftsAwaitingIt(t *testing.T) {
 	f := newRefusalFixture(t)
 	ctok, cp := f.checker(t)
+	// Another draft_checks plugin's draft, awaiting ITS check: untouched below.
+	_, other, err := f.plugins.CreatePlugin(f.asOwner, plugins.NewPlugin{Name: "ct-other-checker", Label: "Other checker",
+		DataScope: "example-checker-data", Capabilities: []plugins.Capability{plugins.CapMessages, plugins.CapDraftChecks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, om := f.pluginMessage(t, other.Name, "ct-off-other", "someone@example.test", true)
+	od, _, err := f.plugins.FileDraft(f.asOwner, f.chief.ID, f.owner, f.chief.Name, om.ID, "The other plugin's reply.")
+	if err != nil || !od.AwaitingCheck() {
+		t.Fatalf("control: the other plugin's draft %+v (%v); want awaiting", od, err)
+	}
 	const body = "Awaiting a check that is turned off."
 	_, m := f.pluginMessage(t, "example-checker", "ct-off", "someone@example.test", true)
 	id, _ := f.answer(t, f.route(t, m), body)
@@ -177,6 +188,20 @@ func TestTurningChecksRepliesOffLapsesTheDraftsAwaitingIt(t *testing.T) {
 	}
 	if asked != 1 {
 		t.Fatalf("the owner was asked %d time(s); want 1, saying the plugin no longer checks replies", asked)
+	}
+	items, err := f.srv.pendingDraftItems(f.asOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isItem := false
+	for _, it := range items {
+		isItem = isItem || it.Key == draftKey(id)
+	}
+	if !isItem {
+		t.Fatal("the lapsed draft is not an attention item")
+	}
+	if got, _ := f.plugins.Draft(f.asOwner, od.ID); !got.AwaitingCheck() {
+		t.Fatalf("turning one plugin's Checks replies off moved another plugin's draft: %s/%s", got.Status, got.CheckState)
 	}
 	if code, _ := f.plug(t, ctok, http.MethodGet, "/plugin/v1/drafts/checks", ""); code != http.StatusForbidden {
 		t.Fatalf("the plugin's checks after Checks replies was turned off: %d; want 403", code)
