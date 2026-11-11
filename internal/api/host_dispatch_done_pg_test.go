@@ -421,8 +421,8 @@ func TestTheSpawnRulesAreRuntimeSpecific(t *testing.T) {
 	task := notes.Note{ID: 77, Body: "Fix the typo."}
 	tools := []string{"agent_report_done", "chief_ask", "attention_", "task_get", "task_comment", "task_set_status", "tasks_list", "route_reply"}
 	for _, onTask := range []bool{false, true} {
-		claude := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Do it.", task, onTask)
-		oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "Do it.", task, onTask)
+		claude := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Do it.", task, onTask, false)
+		oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "Do it.", task, onTask, false)
 		wantClaude, wantOC := chiefDispatchRulesNoTask, spawnRulesOpenCodeNoTask
 		if onTask {
 			wantClaude, wantOC = chiefDispatchRules, spawnRulesOpenCode
@@ -455,7 +455,7 @@ func TestTheSpawnRulesAreRuntimeSpecific(t *testing.T) {
 	}
 	// A cut task on opencode is not pointed at task_get either.
 	long := notes.Note{ID: 78, Body: strings.Repeat("task body line\n", 800)}
-	if oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "", long, true); strings.Contains(oc, "task_get") || !strings.Contains(oc, "[cut:") {
+	if oc := spawnPrompt(mirror.SpawnRuntimeOpenCode, "host-bravo", "acme/widgets", "", long, true, false); strings.Contains(oc, "task_get") || !strings.Contains(oc, "[cut:") {
 		t.Errorf("opencode's cut task: task_get named or not cut")
 	}
 }

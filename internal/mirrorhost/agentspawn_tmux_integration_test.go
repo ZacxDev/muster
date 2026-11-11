@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +111,8 @@ func (r *spawnRig) tmux(t *testing.T, args ...string) string {
 
 // TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree: the feature,
 // for every prompt shape the design lists: the stub claude sees EXACTLY
-// [--session-id, <uuid>, --, <prompt>], byte for byte; the prompt file is gone;
+// [--session-id, <uuid>, --permission-mode, bypassPermissions, --, <prompt>]
+// (the default: no permission prompts), byte for byte; the prompt file is gone;
 // the window is in `agents`, named cc-<d>-<slug>, tagged with its dispatch
 // (its OWN option); it sits in a fresh worktree on muster/<d>-<slug> cut from
 // origin/main; Claude Code's trust entry names it; the owner's DIRTY clone has
@@ -132,8 +134,10 @@ func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) 
 			t.Fatalf("prompt %q: refused %+v", tail, e)
 		}
 		argv := r.argvOf(t, d)
-		if len(argv) != 4 || argv[0] != "--session-id" || argv[1] != w.AgentSession || argv[2] != "--" || argv[3] != prompt {
-			t.Fatalf("prompt %q: the stub saw %q; want [--session-id %s -- <prompt>]", tail, argv, w.AgentSession)
+		// DEFAULT ON (-agent-spawn-skip-permissions): the permission words sit
+		// between the session id and `--`, as literals.
+		if want := []string{"--session-id", w.AgentSession, "--permission-mode", "bypassPermissions", "--", prompt}; !slices.Equal(argv, want) {
+			t.Fatalf("prompt %q: the stub saw %q; want [--session-id %s --permission-mode bypassPermissions -- <prompt>]", tail, argv, w.AgentSession)
 		}
 		if _, err := os.Stat(filepath.Join(promptDir(r.c.cfg.AgentSpawn.RuntimeDir), strconv.FormatInt(d, 10))); !os.IsNotExist(err) {
 			t.Fatalf("prompt %q: the prompt file is still there", tail)

@@ -399,3 +399,56 @@ func TestADanglingSymlinkSecretNeverDelaysMirroring(t *testing.T) {
 		t.Fatal("run did not stop")
 	}
 }
+
+// TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff: with -agent-spawn on,
+// the daemon's startup line says its spawned agents start WITHOUT permission
+// prompts by default; MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS=0 (or false),
+// or -agent-spawn-skip-permissions=false, says normal permission mode instead;
+// =1 keeps it on; and a value that is not a bool stops the daemon (rc 2) naming
+// the variable. The daemon's context is ended before it dials.
+func TestSpawnedAgentsSkipPermissionPromptsUnlessTurnedOff(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", tmp) // a private, absent tmux server: nothing to touch
+	t.Setenv("TMUX", "")
+	prevC := runContext
+	t.Cleanup(func() { runContext = prevC })
+	runContext = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, cancel
+	}
+	const (
+		on  = ", WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
+		off = ", in normal permission mode (-agent-spawn-skip-permissions=false)"
+	)
+	env := func(skip string) map[string]string {
+		e := map[string]string{envURL: "https://m.example", envToken: "mmt_" + strings.Repeat("A", 43), envHost: "laptop",
+			envSocket: "teamq", envInteractive: "1", envAgentSpawn: "1", envAgentSpawnRepos: "acme/widgets", envAgentSpawnTenantServer: "teamq",
+			"XDG_RUNTIME_DIR": filepath.Join(tmp, "run"), "XDG_DATA_HOME": filepath.Join(tmp, "data"), "XDG_STATE_HOME": filepath.Join(tmp, "state"),
+			envAgentSpawnRoots: filepath.Join(tmp, "src"), "HOME": tmp}
+		if skip != "" {
+			e[envAgentSpawnSkipPermissions] = skip
+		}
+		return e
+	}
+	for _, c := range []struct {
+		name, env string
+		args      []string
+		want, not string
+	}{
+		{"the default", "", nil, on, off},
+		{"env 1", "1", nil, on, off},
+		{"env 0", "0", nil, off, on},
+		{"env false", "false", nil, off, on},
+		{"the flag =false", "", []string{"-agent-spawn-skip-permissions=false"}, off, on},
+		{"the flag over env 0", "0", []string{"-agent-spawn-skip-permissions=true"}, on, off},
+	} {
+		rc, _, errs := runWith(t, env(c.env), c.args...)
+		if rc != 0 || !strings.Contains(errs, "STARTING AGENTS IS ON") || !strings.Contains(errs, c.want) || strings.Contains(errs, c.not) {
+			t.Fatalf("%s: rc %d, log:\n%s\nwant %q and not %q", c.name, rc, errs, c.want, c.not)
+		}
+	}
+	if rc, _, errs := runWith(t, env("off")); rc != 2 || !strings.Contains(errs, `MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS="off" is not a bool`) {
+		t.Fatalf("a value that is not a bool: rc %d: %s", rc, errs)
+	}
+}

@@ -435,3 +435,53 @@ func TestWhatTheAgentAndTheChiefAreToldAboutAskingIsTrueForEachRuntime(t *testin
 		t.Fatalf("opencode: the agent's prompt %q\nthe chief's next %q", op[:min(len(op), 400)], on)
 	}
 }
+
+// TestAHostThatSkipsPermissionsIsDescribedAsSkippingThem
+// (-agent-spawn-skip-permissions, on by default on the host): when the host's
+// hello says it starts its agents without permission prompts
+// (HostView.AgentSpawnSkipPermissions), a host-spawned claude is told — and the
+// chief is told — that it uses tools WITHOUT asking, and neither is told it asks
+// the owner; opencode's texts are the same as on a host that does not say so.
+// Each text is pinned whole (literal). The normal-mode half is
+// TestWhatTheAgentAndTheChiefAreToldAboutAskingIsTrueForEachRuntime, whose host
+// says nothing (an older host, or the setting off).
+func TestAHostThatSkipsPermissionsIsDescribedAsSkippingThem(t *testing.T) {
+	const (
+		claudeAgent = "You run without permission prompts (Claude Code's bypassPermissions mode): you use tools without " +
+			"asking, and there is no owner approval step, so stay inside the task."
+		claudeChief = "Started in a new window of the agents session on host-echo. It runs without permission prompts " +
+			"(Claude Code's bypassPermissions mode), so it uses tools without asking. Do not start another."
+		ocAgent = "You run without asking before you use tools, inside your owner's opencode deny rules; there is no owner " +
+			"approval step, so stay inside the task."
+		ocChief = "Started in a new window of the agents session on host-echo. It runs without asking before it uses tools " +
+			"(opencode's own mode), inside your owner's opencode deny rules. Do not start another."
+	)
+	f := newOCHostFixture(t)
+	f.m.mu.Lock()
+	for i := range f.m.hosts {
+		f.m.hosts[i].AgentSpawnSkipPermissions = f.m.hosts[i].Host == "host-echo"
+	}
+	f.m.mu.Unlock()
+	run := func(call map[string]any) (prompt, next string) {
+		t.Helper()
+		f.ownerTurn(t, f.chief, f.owner, "Start it mirrored on host-echo.")
+		var out struct {
+			Next string `json:"next"`
+		}
+		text := f.callRaw(f.chief, agentDispatchTool, call)
+		hostDispatchIDOf(t, text)
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			t.Fatal(err)
+		}
+		calls := f.m.spawnCalls()
+		return calls[len(calls)-1].req.Prompt, out.Next
+	}
+	cp, cn := run(hostCall("host/host-echo/claude", "skip-cc", true))
+	op, on := run(ocCall("host/host-echo/opencode", "qwen/qwen3-coder", "skip-oc", true))
+	if !strings.Contains(cp, claudeAgent) || strings.Contains(cp, "normal permission mode") || strings.Contains(cp, "answers your asks") || cn != claudeChief {
+		t.Fatalf("claude: the agent's prompt %q\nthe chief's next %q", cp[:min(len(cp), 400)], cn)
+	}
+	if !strings.Contains(op, ocAgent) || on != ocChief {
+		t.Fatalf("opencode: the agent's prompt %q\nthe chief's next %q", op[:min(len(op), 400)], on)
+	}
+}

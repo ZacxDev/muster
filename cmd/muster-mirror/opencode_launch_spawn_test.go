@@ -54,3 +54,27 @@ func TestAHostSpawnsLauncherRunsExactlyTheBinaryItWasToldAndFailsClosed(t *testi
 		t.Fatalf("a relative --opencode-bin: rc %d", rc)
 	}
 }
+
+// TestAHostSpawnsLauncherPassesAutoOnToOpenCode: the host spawn's default argv
+// ends in --auto (-agent-spawn-skip-permissions, internal/mirrorhost
+// spawnArgv); the launcher passes it on to the TUI, so opencode starts in its
+// auto-approve mode. Without it (the setting off) the TUI's argv has no --auto.
+func TestAHostSpawnsLauncherPassesAutoOnToOpenCode(t *testing.T) {
+	const checked = "/srv/fixture/checked/opencode"
+	for _, c := range []struct {
+		args, want []string
+	}{
+		{[]string{"--opencode-bin", checked, "-s", "ses_fixtureSpawn", "--auto"}, []string{checked, "opencode", "--session", "ses_fixtureSpawn", "--auto"}},
+		{[]string{"--opencode-bin", checked, "-s", "ses_fixtureSpawn"}, []string{checked, "opencode", "--session", "ses_fixtureSpawn"}},
+	} {
+		r := newLaunchRig(t)
+		d := r.deps()
+		d.version = func(string) (string, error) { return r.tuiVer, nil }
+		if rc := runOpenCodeLaunch(c.args, d, &r.stderr); rc != 0 {
+			t.Fatalf("%q: rc %d: %s", c.args, rc, r.stderr.String())
+		}
+		if !slices.Equal(r.execd, c.want) {
+			t.Fatalf("%q: execed %q; want %q", c.args, r.execd, c.want)
+		}
+	}
+}

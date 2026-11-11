@@ -196,9 +196,14 @@ cell, plus a line each on herdr and Paseo citing their READMEs:
   macOS yet (`internal/mirrorhost/pty_other.go`), so there only a Claude Code
   window whose Rendered view resolves can be viewed, and Rendered-view
   detection is unverified on a real Mac. No Windows.
-- **A Claude Code permission prompt is answered in the Terminal view.** The
-  chat view refuses to type into a waiting prompt, and there is no one-tap
-  approve ([docs/sending-and-step-up.md](docs/sending-and-step-up.md)).
+- **muster assumes sessions run without permission prompts.** Start your own
+  Claude Code sessions in `bypassPermissions` or auto mode; the agents a host
+  starts for your chief are started without them by default, so they run
+  their tools without asking (`-agent-spawn-skip-permissions=false` turns that
+  off: [docs/mirroring.md](docs/mirroring.md#permission-prompts-in-a-spawned-agent)).
+  A Claude Code permission prompt that does appear is answered in the Terminal
+  view: the chat view refuses to type into a waiting prompt, and there is no
+  one-tap approve ([docs/sending-and-step-up.md](docs/sending-and-step-up.md)).
 - **Codex and Gemini CLI get no waiting push** and no ask tool: they are
   terminal views. The message box sends to opencode only on an opted-in host
   ([docs/mirroring.md](docs/mirroring.md#sending-to-opencode)).

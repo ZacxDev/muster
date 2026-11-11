@@ -430,6 +430,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.OpenCodeSend = conn.openCodeSend()
 	hello.ResumeSpawn = conn.resumeSpawn()
 	hello.AgentSpawn = conn.agentSpawnRuntimes()
+	hello.AgentSpawnSkipPermissions = len(hello.AgentSpawn) > 0 && !c.cfg.AgentSpawn.KeepPermissionPrompts
 	hello.AgentClose = conn.agentCloseOn()
 	if err := conn.send(hello); err != nil {
 		return err

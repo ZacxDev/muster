@@ -78,19 +78,21 @@ func TestTheSpawnPromptNeverLosesItsRules(t *testing.T) {
 			onTask  bool
 		}{{mirror.SpawnRuntimeClaude, false}, {mirror.SpawnRuntimeClaude, true}, {mirror.SpawnRuntimeOpenCode, false}, {mirror.SpawnRuntimeOpenCode, true}} {
 			onTask := c.onTask
-			out := spawnPrompt(c.runtime, "host-bravo", "acme/widgets", prompt, task, onTask)
-			rules := spawnRules(c.runtime, onTask)
-			if !strings.HasPrefix(out, mirror.SpawnPreface) || !strings.HasSuffix(out, rules) || len(out) > mirror.MaxSpawnPrompt {
-				t.Fatalf("%d bytes, on task %v: %d bytes, preface %v, rules %v", n, onTask, len(out),
-					strings.HasPrefix(out, mirror.SpawnPreface), strings.HasSuffix(out, rules))
-			}
-			if !strings.Contains(out, "did not fit") {
-				t.Fatalf("%d bytes, on task %v: the relay was not cut, or not marked", n, onTask)
+			for _, skip := range []bool{false, true} {
+				out := spawnPrompt(c.runtime, "host-bravo", "acme/widgets", prompt, task, onTask, skip)
+				rules := spawnRules(c.runtime, onTask)
+				if !strings.HasPrefix(out, mirror.SpawnPreface) || !strings.HasSuffix(out, rules) || len(out) > mirror.MaxSpawnPrompt {
+					t.Fatalf("%d bytes, on task %v, skip %v: %d bytes, preface %v, rules %v", n, onTask, skip, len(out),
+						strings.HasPrefix(out, mirror.SpawnPreface), strings.HasSuffix(out, rules))
+				}
+				if !strings.Contains(out, "did not fit") {
+					t.Fatalf("%d bytes, on task %v, skip %v: the relay was not cut, or not marked", n, onTask, skip)
+				}
 			}
 		}
 	}
 	// Control: a short prompt is whole.
-	if out := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Fix the typo.", task, true); strings.Contains(out, "did not fit") || !strings.Contains(out, "Fix the typo.") {
+	if out := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "Fix the typo.", task, true, false); strings.Contains(out, "did not fit") || !strings.Contains(out, "Fix the typo.") {
 		t.Fatal("a short prompt was cut")
 	}
 }
@@ -119,7 +121,7 @@ func TestAHostSpawnedWindowsFirstMessageIsNotTheOwners(t *testing.T) {
 	now := time.Now()
 	// The on-task kickoff with no relay: the task's text, unfenced, after the
 	// preface — only the preface marks it as muster's.
-	kick := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "", notes.Note{ID: 9, Body: "Merge it when green."}, true)
+	kick := spawnPrompt(mirror.SpawnRuntimeClaude, "host-bravo", "acme/widgets", "", notes.Note{ID: 9, Body: "Merge it when green."}, true, false)
 	msgs := []chiefnudge.Msg{{Role: "user", Text: kick, ID: "1", At: now.Add(-time.Minute)}, {Role: "user", Text: "go ahead and push", ID: "2", At: now}}
 	got := chiefnudge.OwnerMessages(msgs, nil, nudgeInjectedPrefixes, now.Add(-time.Hour), false)
 	if len(got) != 1 || got[0].Text != "go ahead and push" {

@@ -97,6 +97,13 @@ type AgentSpawnConfig struct {
 	// It must resolve to the very server this mirror mirrors; empty (the
 	// default) keeps spawning on the default tmux server only (design 3.8).
 	TenantServer string
+	// KeepPermissionPrompts is -agent-spawn-skip-permissions=false: start each
+	// spawned agent EXACTLY as before that flag existed — claude in its normal
+	// permission mode, opencode without --auto. The zero value is the default:
+	// a spawned agent starts WITHOUT permission prompts (spawnPermissionWords),
+	// because muster assumes its sessions run without them and answers none
+	// itself (docs/mirroring.md, "Permission prompts").
+	KeepPermissionPrompts bool
 
 	// --- test seams (no flag sets these) ---
 
@@ -168,8 +175,44 @@ const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f 
 // argv's constants and tmux's own options). TestNoSpawnConstantWordEndsInASemicolon
 // asserts none ends in ';'.
 var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
+	claudeSkipPermissions[0], claudeSkipPermissions[1], openCodeSkipPermissions,
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
 	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption, spawnNoConfig[0], spawnNoConfig[1]}
+
+// THE PERMISSION WORDS of a spawn (-agent-spawn-skip-permissions, ON by
+// default): constants, each that CLI's own documented way to start without
+// permission prompts.
+//   - claude: `--permission-mode bypassPermissions` (Claude Code `--help`:
+//     "Permission mode to use for the session", one of its listed choices; the
+//     same spelling ccd's bypass job lanes use, cmd/ccd/lanes.go). Equivalent to
+//     `--dangerously-skip-permissions`; one spelling across the repository.
+//   - opencode: `--auto` (opencode v2.0.32 `--help`: "Auto-approve permissions
+//     that are not explicitly denied"), which the launcher passes on to the TUI
+//     (cmd/muster-mirror/opencode_launch.go). The owner's deny rules still hold.
+var (
+	claudeSkipPermissions   = [2]string{"--permission-mode", "bypassPermissions"}
+	openCodeSkipPermissions = "--auto"
+)
+
+// spawnArgv is the argv a spawn's window runs: THE one place it is built.
+// claude: the constant wrapper reads promptFile and appends the prompt after
+// `--`; opencode: the launcher (launcher, the absolute muster-mirror) on
+// openCodeBin and session sid. skip adds the permission words above; without
+// it the argv is byte-identical to the one before the setting existed.
+func spawnArgv(shell, promptFile, bin, sid string, opencode bool, openCodeBin string, skip bool) []string {
+	if opencode {
+		argv := []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "--opencode-bin", openCodeBin, "-s", sid}
+		if skip {
+			argv = append(argv, openCodeSkipPermissions)
+		}
+		return argv
+	}
+	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid}
+	if skip {
+		argv = append(argv, claudeSkipPermissions[0], claudeSkipPermissions[1])
+	}
+	return append(argv, "--")
+}
 
 // spawnNoConfig is the tmux option the spawn's new-session carries: a server it
 // would start loads no configuration (newAgentWindow).
@@ -1200,10 +1243,11 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	}
 	// 🔴 NO PROMPT IN EITHER ARGV: claude's is read from its 0600 file by the
 	// constant wrapper; opencode's is posted through its API (step 12).
-	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid, "--"}
+	ocBin := ""
 	if opencode {
-		argv = []string{shell, "-l", "-c", loginScript, shell, bin, "opencode", "--opencode-bin", oc.openCodeBin, "-s", sid}
+		ocBin = oc.openCodeBin
 	}
+	argv := spawnArgv(shell, promptFile, bin, sid, opencode, ocBin, !sc.KeepPermissionPrompts)
 	winID, pane, err := t.newAgentWindow(ctx, winName, dir, argv)
 	if err != nil {
 		return fail(refuseSpawn(mirror.SpawnFailed, "the window could not be started"))
