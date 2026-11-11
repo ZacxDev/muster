@@ -345,7 +345,7 @@ func TestAResetWithoutTheBoxKeepsThePasskeys(t *testing.T) {
 	}
 	const newPW = "a-new-long-password"
 	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, newPW, false))
-	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != accountResetDonePath || setCookies(r)[accessCookieName] == nil {
+	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/account?reset=1&passkeys=kept" || setCookies(r)[accessCookieName] == nil {
 		t.Fatalf("reset: %d %q %s", r.Code, r.Header().Get("Location"), truncate(r.Body.String(), 300))
 	}
 	if gu, _ := w.fake.User(sub); gu.Password != newPW {
@@ -490,10 +490,10 @@ func resetBoxState(t *testing.T, page string) (found, checked bool) {
 	return found, checked
 }
 
-// TestTheResetPageOffersAnUntickedPasskeyBox: where passkeys are served, the
-// reset page carries the "Also remove all my passkeys" checkbox, UNTICKED; a
-// form that comes back with a problem keeps the person's choice; where
-// passkeys are off there is no such box.
+// TestTheResetPageOffersAnUntickedPasskeyBox: the reset page carries the
+// "Also remove all my passkeys" checkbox, UNTICKED; a form that comes back
+// with a problem keeps the person's choice; and the box is there even with
+// passkeys switched off in GoTrue, where old passkeys may still exist.
 func TestTheResetPageOffersAnUntickedPasskeyBox(t *testing.T) {
 	w := newPasskeyWorld(t)
 	page := do(w.edge, "GET", ResetPath, nil)
@@ -518,8 +518,136 @@ func TestTheResetPageOffersAnUntickedPasskeyBox(t *testing.T) {
 		}
 	}
 	off := newInviteWorld(t) // passkeys off in GoTrue
-	if found, _ := resetBoxState(t, do(off.edge, "GET", ResetPath, nil).Body.String()); found {
-		t.Fatal("the reset page offers to remove passkeys on a server without passkeys")
+	if found, checked := resetBoxState(t, do(off.edge, "GET", ResetPath, nil).Body.String()); !found || checked {
+		t.Fatalf("with passkeys off in GoTrue the box: found %v, checked %v; want found, unchecked", found, checked)
+	}
+}
+
+// TestTheResetPasskeyBoxSurvivesAFailingSettingsRead: with GoTrue's /settings
+// failing (read as "passkeys off", and not cached), the box is still on the
+// page, a ticked box still comes back ticked after a problem, and the ticked
+// reset still deletes every passkey through the admin API. Gating the box on
+// /settings failed OPEN: the box vanished, and the lost device's passkey
+// survived the reset its owner meant to remove it with.
+func TestTheResetPasskeyBoxSurvivesAFailingSettingsRead(t *testing.T) {
+	w := newPasskeyWorld(t)
+	_, sub, _, _ := w.joinMember("pk-nosettings@invite.test")
+	w.fake.AddPasskey(sub, "stolen-phone")
+	w.s.gt.pk.mu.Lock()
+	w.s.gt.pk.at = time.Time{} // forget the cached passkeys_enabled
+	w.s.gt.pk.mu.Unlock()
+	w.fake.FailSettings(1000)
+	settingsBefore := w.fake.CountCalls("GET", "/settings")
+	if found, checked := resetBoxState(t, do(w.edge, "GET", ResetPath, nil).Body.String()); !found || checked {
+		t.Fatalf("the reset page with /settings failing: found %v, checked %v; want found, unchecked", found, checked)
+	}
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "short", true))
+	if found, checked := resetBoxState(t, r.Body.String()); r.Code != http.StatusBadRequest || !found || !checked {
+		t.Fatalf("the form back after a problem, /settings failing: %d found %v, checked %v", r.Code, found, checked)
+	}
+	// CONTROL: the failure is really served, and muster reads it as "off".
+	if w.s.passkeysServed(context.Background()) || w.fake.CountCalls("GET", "/settings") == settingsBefore {
+		t.Fatal("CONTROL: /settings never failed, or muster still believes passkeys are on")
+	}
+	if r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", true)); r.Code != http.StatusSeeOther {
+		t.Fatalf("the ticked reset with /settings failing: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	if n := len(w.fake.Passkeys(sub)); n != 0 {
+		t.Fatalf("after the ticked reset the user still has %d passkeys", n)
+	}
+}
+
+// resetNoteText is the reset-done note on an /account page: the text of its
+// role="status" paragraph, whitespace collapsed.
+func resetNoteText(t *testing.T, page string) string {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	var text func(*html.Node) string
+	text = func(n *html.Node) string {
+		if n.Type == html.TextNode {
+			return n.Data
+		}
+		var b strings.Builder
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			b.WriteString(text(c))
+		}
+		return b.String()
+	}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "p" {
+			for _, a := range n.Attr {
+				if a.Key == "role" && a.Val == "status" {
+					notes = append(notes, strings.Join(strings.Fields(text(n)), " "))
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if len(notes) != 1 {
+		t.Fatalf("want one status note on the page, got %q", notes)
+	}
+	return notes[0]
+}
+
+// TestTheResetDoneNoteSaysWhatHappenedToThePasskeys: where a reset lands says
+// whether the passkeys were kept or how many were removed — the whole note is
+// pinned on each path.
+func TestTheResetDoneNoteSaysWhatHappenedToThePasskeys(t *testing.T) {
+	w := newPasskeyWorld(t)
+	for _, c := range []struct {
+		name     string
+		tick     bool
+		passkeys int
+		loc      string
+		note     string
+	}{
+		{"kept", false, 2, "/account?reset=1&passkeys=kept",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
+		{"removed", true, 3, "/account?reset=1&passkeys=3",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+				"All 3 of your passkeys were removed."},
+	} {
+		_, sub, _, _ := w.joinMember("pk-note-" + c.name + "@invite.test")
+		for i := 0; i < c.passkeys; i++ {
+			w.fake.AddPasskey(sub, c.name+"-cred-"+strconv.Itoa(i))
+		}
+		r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", c.tick))
+		if r.Code != http.StatusSeeOther || r.Header().Get("Location") != c.loc {
+			t.Fatalf("%s: reset %d → %q, want %q", c.name, r.Code, r.Header().Get("Location"), c.loc)
+		}
+		ck := setCookies(r)
+		page := do(w.edge, "GET", c.loc, nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+		if got := resetNoteText(t, page.Body.String()); page.Code != 200 || got != c.note {
+			t.Fatalf("%s: the note %d\n got: %q\nwant: %q", c.name, page.Code, got, c.note)
+		}
+	}
+}
+
+// TestResetPasskeysNote: each value resetDonePath writes has its sentence, and
+// anything else — a hand-typed query — adds nothing.
+func TestResetPasskeysNote(t *testing.T) {
+	for v, want := range map[string]string{
+		"kept": ResetPasskeysKeptNote,
+		"0":    "You had no passkeys to remove.",
+		"1":    "Your passkey was removed.",
+		"7":    "All 7 of your passkeys were removed.",
+		"":     "", "-1": "", "02": "", "2x": "", "KEPT": "", "<b>": "",
+	} {
+		if got := resetPasskeysNote(v); got != want {
+			t.Errorf("resetPasskeysNote(%q) = %q, want %q", v, got, want)
+		}
+	}
+	if resetDonePath(false, 5) != "/account?reset=1&passkeys=kept" || resetDonePath(true, 5) != "/account?reset=1&passkeys=5" {
+		t.Fatalf("resetDonePath: %q %q", resetDonePath(false, 5), resetDonePath(true, 5))
 	}
 }
 

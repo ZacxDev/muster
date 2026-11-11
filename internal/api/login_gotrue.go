@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,8 +97,46 @@ const SignOutEverywhereTokenNote = "Paired phones are signed out too. API tokens
 // hand-typed /account?reset=1 shows it too. It reaches nothing else.
 const ResetDoneNote = "Your password was reset. Your API tokens were revoked; create new ones under API tokens below."
 
-// accountResetDonePath is where a successful reset redirects.
+// accountResetDonePath is where a successful reset redirects, before
+// resetDonePath adds what happened to the passkeys.
 const accountResetDonePath = "/account?reset=1"
+
+// resetPasskeysParam carries what the reset did to the passkeys on the
+// redirect: "kept", or how many it removed. ⚠ DISPLAY-ONLY, like reset=1.
+const resetPasskeysParam = "passkeys"
+
+// ResetPasskeysKeptNote follows ResetDoneNote after a reset that kept them.
+const ResetPasskeysKeptNote = "Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."
+
+// resetDonePath is where a reset that set the password redirects: removed
+// says whether the person ticked "Also remove all my passkeys", n how many
+// went.
+func resetDonePath(removed bool, n int) string {
+	v := "kept"
+	if removed {
+		v = strconv.Itoa(n)
+	}
+	return accountResetDonePath + "&" + resetPasskeysParam + "=" + v
+}
+
+// resetPasskeysNote is the sentence /account?reset=1 adds for the passkeys
+// value v, or "" for a value resetDonePath never writes.
+func resetPasskeysNote(v string) string {
+	if v == "kept" {
+		return ResetPasskeysKeptNote
+	}
+	n, err := strconv.Atoi(v)
+	switch {
+	case err != nil || n < 0 || strconv.Itoa(n) != v:
+		return ""
+	case n == 0:
+		return "You had no passkeys to remove."
+	case n == 1:
+		return "Your passkey was removed."
+	default:
+		return "All " + v + " of your passkeys were removed."
+	}
+}
 
 // registerAccountRoutes wires the claim and account routes. Literal patterns,
 // for the reason registerLoginRoutes gives.
@@ -359,7 +398,11 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	}
 	resetNote := ""
 	if r.URL.Query().Get("reset") == "1" {
-		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
+		note := ResetDoneNote
+		if pk := resetPasskeysNote(r.URL.Query().Get(resetPasskeysParam)); pk != "" {
+			note += " " + pk
+		}
+		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + html.EscapeString(note) + `</p>`
 	}
 	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>

@@ -102,6 +102,8 @@ type Fake struct {
 	lastCredential  []byte
 	// adminPasskeyFailures: the next N admin passkey calls answer 500.
 	adminPasskeyFailures int
+	// settingsFailures: the next N GET /settings calls answer 500.
+	settingsFailures int
 }
 
 // Call is one request the fake served.
@@ -309,8 +311,15 @@ func (f *Fake) route(w http.ResponseWriter, r *http.Request) {
 		f.verify(w, r)
 	case r.Method == http.MethodGet && p == "/settings":
 		f.mu.Lock()
-		on := f.passkeysEnabled
+		on, fail := f.passkeysEnabled, f.settingsFailures > 0
+		if fail {
+			f.settingsFailures--
+		}
 		f.mu.Unlock()
+		if fail {
+			writeErr(w, 500, "unexpected_failure", "injected /settings failure")
+			return
+		}
 		writeJSON(w, 200, map[string]any{"passkeys_enabled": on})
 	case strings.HasPrefix(p, "/passkeys"):
 		f.passkeyRoute(w, r)

@@ -439,15 +439,21 @@ func (s *Server) renderResetForm(w http.ResponseWriter, r *http.Request, code in
  class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
 	}
 	fields := pw("reset-password", "password", "New password (at least 12 characters)") + pw("reset-password2", "password2", "New password again")
-	// Offered only where this server serves passkeys: elsewhere nobody has one.
-	if s.passkeysServed(r.Context()) {
-		checked := ""
-		if removePasskeys {
-			checked = " checked"
-		}
-		fields += `<label for="reset-remove-passkeys" class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input id="reset-remove-passkeys" type="checkbox" name="` +
-			resetRemovePasskeysField + `" value="1"` + checked + `> ` + html.EscapeString(resetRemovePasskeysLabel) + `</label>`
+	// 🔴 THE BOX IS ALWAYS OFFERED — NOT GATED ON GoTrue's passkeys_enabled.
+	// This form is only reached in gotrue mode (inviteRefusal), and the
+	// deletion goes through GoTrue's ADMIN passkey API whatever /settings
+	// says. Gating it on passkeysServed failed OPEN on a security control: a
+	// /settings error reads as "passkeys off" (uncached), so the box could
+	// vanish on the first load or on the re-render after a problem, and a
+	// person who meant to tick it submitted without it — the lost device's
+	// passkey survived. Likewise when passkeys are switched off in GoTrue while
+	// old ones still exist (TestTheResetPasskeyBoxSurvivesAFailingSettingsRead).
+	checked := ""
+	if removePasskeys {
+		checked = " checked"
 	}
+	fields += `<label for="reset-remove-passkeys" class="flex min-h-[44px] items-center gap-2 text-sm text-fg"><input id="reset-remove-passkeys" type="checkbox" name="` +
+		resetRemovePasskeysField + `" value="1"` + checked + `> ` + html.EscapeString(resetRemovePasskeysLabel) + `</label>`
 	writeAuthDocument(w, code, s.uiBrand(r.Context()), "Set a new password", fragmentForm(ResetPath, "Set a new password",
 		"This link works once.", "Set password", false, fields, token, problem))
 }
@@ -552,6 +558,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// passkey API is not called at all
 	// (TestAResetWithoutTheBoxNeverCallsThePasskeyAPI).
 	audit := map[string]any{"ip": ip, "remove_passkeys": removePasskeys}
+	done := resetDonePath(removePasskeys, 0)
 	if removePasskeys {
 		n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject)
 		if err != nil {
@@ -564,6 +571,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 			s.setPasskeyFlag(r.Context(), c.Subject, "", nil)
 		}
 		audit["passkeys_removed"] = n
+		done = resetDonePath(true, n)
 	}
 	// The audit row (actor: the user; the client address, and whether the
 	// passkeys were removed and how many, in the detail) commits only if GoTrue
@@ -583,7 +591,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
-	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut)
+	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut, done)
 }
 
 // signInAfterCutoff is signInNewLogin for a session that must be issued AFTER
@@ -597,7 +605,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 // ends on: the reset revoked the user's API tokens (users.ResetCredentials).
 const resetTokensRevoked = "Your API tokens were revoked."
 
-func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time) {
+func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time, done string) {
 	for attempt := 0; attempt < 3; attempt++ {
 		// Attempt n waits until n+1 whole seconds past the cutoff's second.
 		if wait := time.Until(cut.Truncate(time.Second).Add(time.Duration(attempt+1) * time.Second)); wait > 0 {
@@ -624,8 +632,9 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 		clearSiteCaches(w)
 		s.setGoTrueCookies(w, sess)
 		// To /account, which says the reset revoked the user's API tokens
-		// (accounts PR 6), rather than straight to the board.
-		http.Redirect(w, r, accountResetDonePath, http.StatusSeeOther)
+		// (accounts PR 6) and what happened to the passkeys, rather than
+		// straight to the board.
+		http.Redirect(w, r, done, http.StatusSeeOther)
 		return
 	}
 	s.renderNotice(w, r, http.StatusBadGateway, "Your password is set, but sign-in failed",

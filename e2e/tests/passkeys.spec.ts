@@ -240,7 +240,8 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   await expect(mp.locator('#reset-remove-passkeys'), 'the box is offered, unticked').not.toBeChecked();
   await mp.fill('#reset-password', 'e2e-member-kept-password-not-real');
   await mp.fill('#reset-password2', 'e2e-member-kept-password-not-real');
-  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=kept'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await expect(mp.getByRole('status')).toContainText('Your passkeys were kept and still sign you in.');
   await mp.goto(browserURL + '/account/passkeys');
   await expect(mp.locator('[data-passkey-id]'), 'an unticked reset kept the passkey').toHaveCount(1);
   await signOut(mp);
@@ -256,7 +257,8 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   await mp.fill('#reset-password', 'e2e-member-new-password-not-real');
   await mp.fill('#reset-password2', 'e2e-member-new-password-not-real');
   await mp.check('#reset-remove-passkeys');
-  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await expect(mp.getByRole('status')).toContainText('Your passkey was removed.');
   await mp.goto(browserURL + '/account/passkeys');
   await expect(mp.locator('#passkey-none'), 'the reset removed the passkey').toBeVisible();
   await signOut(mp);

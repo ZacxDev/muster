@@ -69,12 +69,20 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 - A password reset **keeps** the user's passkeys by default. The reset page has
   an unticked box, **Also remove all my passkeys (a device was lost or
   stolen)**. Tick it and the reset deletes every passkey before it sets the
-  password. If any passkey cannot be deleted, the password is not set and the
-  person needs a new reset link. Either way, the reset still ends every
-  session, revokes the user's API tokens and paired phones, and writes the
+  password.
+- Ticked or not, the reset first ends every session and revokes the user's
+  API tokens and paired phones. It then sets the password and writes the
   `user.password_reset` audit row. The row's detail records `remove_passkeys`,
-  and when the box was ticked, `passkeys_removed` (how many). The box shows
-  only when this server serves passkeys.
+  and when the box was ticked, `passkeys_removed` (how many).
+- If the box was ticked and a passkey cannot be deleted, the reset stops
+  there. The sessions, tokens and phones are already gone, but the password is
+  NOT changed and NO audit row is written. Any passkeys not yet deleted remain,
+  and the person needs a new reset link.
+- The account page the reset lands on says whether the passkeys were kept or
+  how many were removed.
+- The box is on every reset page. It does not depend on GoTrue reporting
+  passkeys as enabled, because passkeys made while they were on can outlive
+  that setting.
 - You manage your passkeys at **Account → Passkeys** (`/account/passkeys`).
   Adding one needs a sign-in from the last five minutes.
 - Signing in with a passkey needs no username.
