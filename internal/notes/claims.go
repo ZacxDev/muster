@@ -73,12 +73,32 @@ func Claims(n Note) []Claim {
 	if n.Ref == nil {
 		return out
 	}
+	mark := UpstreamReleaseMark(n.Ref.Snapshot.Rev)
 	for _, c := range n.Ref.Snapshot.Claimants {
-		if who := c.who(); who != "" {
-			out = append(out, Claim{Source: ClaimUpstream, Who: who, SessionID: c.AgentSession, Agent: c.Agent})
+		who := c.who()
+		if who == "" || upstreamReleased(n.Sessions, c.AgentSession, mark) {
+			continue
 		}
+		out = append(out, Claim{Source: ClaimUpstream, Who: who, SessionID: c.AgentSession, Agent: c.Agent})
 	}
 	return out
+}
+
+// UpstreamReleaseMark is the mark a release of an upstream claim records for
+// a snapshot at rev (task_sessions.upstream_released_rev): never "", so an
+// unreleased link can never read as released.
+func UpstreamReleaseMark(rev string) string { return "rev:" + rev }
+
+// upstreamReleased reports whether session sid's upstream claim was released
+// at the snapshot revision mark (its session ended there): the claimant is
+// then no claim until the snapshot moves to another revision.
+func upstreamReleased(links []SessionLink, sid, mark string) bool {
+	for _, l := range links {
+		if l.SessionID == sid {
+			return l.UpstreamReleasedRev == mark
+		}
+	}
+	return false
 }
 
 // who is the name an upstream claimant is shown under: its display name, else
@@ -107,11 +127,12 @@ func SessionClaimName(sessionID string) string {
 }
 
 // ClaimByLink records that session l.SessionID CLAIMED task noteID, under the
-// name by (cut at MaxClaimedByRunes): the link is upserted as `worked`
-// (LinkSession's rules: a live task only, the role only moves up) and then
-// carries claimed_at — kept from an earlier claim, so a repeat claim does not
-// move it — and claimed_by. changed is false for a repeat claim under the same
-// name. A dismissed or unknown task is pgx.ErrNoRows.
+// name by (cut at MaxClaimedByRunes), on l.ClaimHost (the host the mirror
+// listed it on, "" for none): the link is upserted as `worked` (LinkSession's
+// rules: a live task only, the role only moves up) and then carries
+// claimed_at — kept from an earlier claim, so a repeat claim does not move it
+// — claimed_by and claim_host. changed is false for a repeat claim under the
+// same name and host. A dismissed or unknown task is pgx.ErrNoRows.
 func (s *PGStore) ClaimByLink(ctx context.Context, noteID int64, l SessionLink, by string, detailSeen bool) (bool, error) {
 	l.Role = RoleWorked
 	if _, _, err := s.LinkSession(ctx, noteID, l, detailSeen); err != nil {
@@ -120,38 +141,72 @@ func (s *PGStore) ClaimByLink(ctx context.Context, noteID int64, l SessionLink, 
 	if utf8.RuneCountInString(by) > MaxClaimedByRunes {
 		by = string([]rune(by)[:MaxClaimedByRunes])
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claimed_at = coalesce(claimed_at, now()), claimed_by = $3
-		WHERE note_id = $1 AND session_id = $2 AND (claimed_at IS NULL OR claimed_by <> $3)`, noteID, l.SessionID, by)
+	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claimed_at = coalesce(claimed_at, now()), claimed_by = $3, claim_host = $4
+		WHERE note_id = $1 AND session_id = $2 AND (claimed_at IS NULL OR claimed_by <> $3 OR claim_host <> $4)`,
+		noteID, l.SessionID, by, l.ClaimHost)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
 }
 
-// ClaimedSession is one session claim, as the ended-session sweep reads it:
-// whose, on which task, which session, and the host it claimed from ("" when
-// the claim named none).
+// ClaimedSession is one claim the ended-session sweep can judge: whose, on
+// which task, which session, and the host muster saw it on ("" when none).
+// Upstream is "" for a session's own claim (claimed_at), and for an upstream
+// claimant's linked session the release mark of the snapshot's current
+// revision (UpstreamReleaseMark).
 type ClaimedSession struct {
-	OwnerID, NoteID int64
-	SessionID, Host string
+	OwnerID, NoteID           int64
+	SessionID, Host, Upstream string
 }
 
-// ClaimedSessions is the live session claims (claimed_at set, on a live task)
-// ctx may see, at most limit: the claim sweep passes the system scope (its
+// ClaimedSessions is the claims ctx may see on live tasks, at most limit:
+// every session claim (claimed_at set), and every upstream claimant whose
+// session is linked to its task with a host and is not released at the
+// snapshot's current revision. The claim sweep passes the system scope (its
 // caller is on internal/authz's ledger), then judges and releases each as its
 // owner.
 func (s *PGStore) ClaimedSessions(ctx context.Context, limit int) ([]ClaimedSession, error) {
-	rows, err := s.pool.Query(ctx, `SELECT ts.owner_id, ts.note_id, ts.session_id, ts.host
-		FROM task_sessions ts JOIN notes n ON n.id = ts.note_id
-		WHERE ts.claimed_at IS NOT NULL AND n.`+liveOnly+` ORDER BY ts.owner_id, ts.note_id LIMIT $1`, limit)
+	rows, err := s.pool.Query(ctx, `SELECT * FROM (
+		SELECT ts.owner_id, ts.note_id, ts.session_id, ts.claim_host, '' AS upstream
+		  FROM task_sessions ts JOIN notes n ON n.id = ts.note_id
+		 WHERE ts.claimed_at IS NOT NULL AND n.`+liveOnly+`
+		UNION ALL
+		SELECT ts.owner_id, ts.note_id, ts.session_id, ts.claim_host, 'rev:' || coalesce(n.ext_snapshot->>'rev', '')
+		  FROM task_sessions ts JOIN notes n ON n.id = ts.note_id
+		 WHERE n.ext_key IS NOT NULL AND n.`+liveOnly+` AND ts.claim_host <> ''
+		   AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(n.ext_snapshot->'claimants', '[]'::jsonb)) c
+		               WHERE c->>'agent_session' = ts.session_id)
+		   AND ts.upstream_released_rev <> 'rev:' || coalesce(n.ext_snapshot->>'rev', '')
+		) claims ORDER BY owner_id, note_id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (ClaimedSession, error) {
 		var c ClaimedSession
-		err := row.Scan(&c.OwnerID, &c.NoteID, &c.SessionID, &c.Host)
+		err := row.Scan(&c.OwnerID, &c.NoteID, &c.SessionID, &c.Host, &c.Upstream)
 		return c, err
 	})
+}
+
+// SetClaimHost records host as the host the mirror listed session sessionID
+// on, for task noteID (an upstream claimant's linked session).
+func (s *PGStore) SetClaimHost(ctx context.Context, noteID int64, sessionID, host string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claim_host = $3
+		WHERE note_id = $1 AND session_id = $2 AND claim_host <> $3`, noteID, sessionID, host)
+	return err
+}
+
+// ReleaseUpstreamClaim records that session sessionID's upstream claim on task
+// noteID is released at the snapshot revision mark (UpstreamReleaseMark): the
+// session ended. It reports whether the mark changed.
+func (s *PGStore) ReleaseUpstreamClaim(ctx context.Context, noteID int64, sessionID, mark string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET upstream_released_rev = $3
+		WHERE note_id = $1 AND session_id = $2 AND upstream_released_rev <> $3`, noteID, sessionID, mark)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // ReleaseSessionClaim clears session sessionID's claim on task noteID (the

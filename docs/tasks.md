@@ -87,7 +87,9 @@ What a claim does:
 - **The chief can still ask.** `task_route_attention` with a `question` (the
   chief asking you something about the task, not putting it up for pickup)
   raises its card whether or not the task is claimed; the card names the
-  question and who is working the task.
+  question and who is working the task. It offers no `agent_dispatch`: a
+  claimed task starts no new agent (`agent_dispatch` refuses it too) until its
+  claim is released.
 - **The board shows who.** The card carries "⚑ worked by <who>"
   (`data-task-claimed` names the sources: `session`, `upstream`).
 
@@ -108,9 +110,19 @@ again — when:
   one "the session is gone" rule. A sweep checks every minute, and the triage
   and `task_route_attention` check the task's claims before reading them. A
   claim whose host is offline, does not report status, or was never known is
-  not ended by this; it waits for one of the releases above.
+  not ended by this; it waits for one of the releases above. The claim's host
+  is recorded **only** when one of your hosts lists the claiming session at
+  the time (the request's own host header is not used: it names a machine,
+  not a host whose window list could prove the session gone), so a claim from
+  a session no host lists is never ended this way.
 
-The upstream's claim is released by a later snapshot without it. muster's own
+The upstream's claim is released by a later snapshot without it — and when
+its claimant session **ended** by the same rule (the session linked to the task
+with the host that listed it): the release is kept for the snapshot's
+revision, so a snapshot that still names that session at the same revision
+does not bring it back; a newer revision (a new pickup, any upstream change)
+is judged afresh. An upstream claimant whose session no host listed is never
+judged ended. muster's own
 status writers (a dispatch advance, the reopen after an agent is destroyed, a
 merge) neither claim nor release, beyond the reopen and complete above. A
 status the upstream refuses (a record whose statuses have no "in progress":

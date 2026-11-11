@@ -40,6 +40,19 @@ import (
 //     (sessionstate.EndGone). Applied by the claim sweep (ReleaseEndedClaims)
 //     and at each decision that reads a claim (releaseEndedClaimsOf).
 //
+// 🔴 A CLAIM'S HOST IS ONLY ONE THE MIRROR SAW THE SESSION ON (requestClaimant,
+// a mirrored session's own call, linkUpstreamClaimants); otherwise it is "",
+// and an empty host is never judged ended. A request's own host header is not
+// used: it names the machine, not a host whose window list could prove the
+// session gone.
+//
+// The UPSTREAM's claim is released by a later snapshot without it — and, the
+// same way as a session's, when its claimant session (linked to the task with
+// a host, linkUpstreamClaimants) ended: the release is recorded on that link
+// for the snapshot's revision (notes.UpstreamReleaseMark), so the next
+// snapshot naming the same session at the same revision does not bring it
+// back; a newer revision (a new pickup, any upstream change) is judged afresh.
+//
 // 🔴 AN AGENT'S OPEN RELEASES EVERY SESSION CLAIM ON ITS TASK, NOT ONLY "ITS
 // OWN": a dispatched agent names no session, so no claim is its own to pick
 // out. It is bound to the task, and setting the task back to open is it
@@ -110,7 +123,7 @@ func (s *Server) claimOnStatus(ctx context.Context, id int64, status string, who
 	if name == "" {
 		name = notes.SessionClaimName(who.session)
 	}
-	ok, err := s.ext.Notes.ClaimByLink(ctx, id, notes.SessionLink{SessionID: who.session, Host: who.host}, name, false)
+	ok, err := s.ext.Notes.ClaimByLink(ctx, id, notes.SessionLink{SessionID: who.session, ClaimHost: who.host}, name, false)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false
@@ -150,29 +163,49 @@ func sessionEnded(hs []mirror.HostView, host, sid string) bool {
 	return false
 }
 
-// releaseEndedClaimsOf releases n's session claims whose session ended
-// (sessionEnded, on one read of the owner's hosts), and answers n as it stands
+// releaseEndedClaimsOf releases n's claims whose session ended (sessionEnded,
+// on one read of the owner's hosts) — its sessions' own, and the upstream's
+// whose claimant session is linked with a host — and answers n as it stands
 // after (re-read when anything was released).
 func (s *Server) releaseEndedClaimsOf(ctx context.Context, n notes.Note) notes.Note {
 	if s.ext.Mirror == nil {
 		return n
 	}
+	upstream := map[string]bool{}
+	mark := ""
+	if n.Ref != nil {
+		mark = notes.UpstreamReleaseMark(n.Ref.Snapshot.Rev)
+		for _, c := range n.Ref.Snapshot.Claimants {
+			upstream[c.AgentSession] = c.AgentSession != ""
+		}
+	}
 	var hs []mirror.HostView
 	released := false
 	for _, l := range n.Sessions {
-		if l.ClaimedAt == nil {
+		own := l.ClaimedAt != nil
+		up := upstream[l.SessionID] && l.UpstreamReleasedRev != mark
+		if (!own && !up) || l.ClaimHost == "" {
 			continue
 		}
 		if hs == nil {
 			hs = s.ext.Mirror.Hosts(ctx)
 		}
-		if !sessionEnded(hs, l.Host, l.SessionID) {
+		if !sessionEnded(hs, l.ClaimHost, l.SessionID) {
 			continue
 		}
-		if ok, err := s.ext.Notes.ReleaseSessionClaim(ctx, n.ID, l.SessionID); err != nil {
-			s.logger.Printf("task claims: task %d: release ended session %s: %v", n.ID, l.SessionID, err)
-		} else if ok {
-			released = true
+		if own {
+			if ok, err := s.ext.Notes.ReleaseSessionClaim(ctx, n.ID, l.SessionID); err != nil {
+				s.logger.Printf("task claims: task %d: release ended session %s: %v", n.ID, l.SessionID, err)
+			} else if ok {
+				released = true
+			}
+		}
+		if up {
+			if ok, err := s.ext.Notes.ReleaseUpstreamClaim(ctx, n.ID, l.SessionID, mark); err != nil {
+				s.logger.Printf("task claims: task %d: release the upstream claim of ended session %s: %v", n.ID, l.SessionID, err)
+			} else if ok {
+				released = true
+			}
 		}
 	}
 	if !released {
@@ -219,7 +252,11 @@ func (s *Server) ReleaseEndedClaims(ctx context.Context) (int, error) {
 		if !sessionEnded(hs, c.Host, c.SessionID) {
 			continue
 		}
-		if ok, err := s.ext.Notes.ReleaseSessionClaim(octx, c.NoteID, c.SessionID); err != nil {
+		release := func() (bool, error) { return s.ext.Notes.ReleaseSessionClaim(octx, c.NoteID, c.SessionID) }
+		if c.Upstream != "" {
+			release = func() (bool, error) { return s.ext.Notes.ReleaseUpstreamClaim(octx, c.NoteID, c.SessionID, c.Upstream) }
+		}
+		if ok, err := release(); err != nil {
 			s.logger.Printf("task claims: task %d: release ended session %s: %v", c.NoteID, c.SessionID, err)
 		} else if ok {
 			released++
@@ -288,19 +325,25 @@ func (s *Server) linkUpstreamClaimants(ctx context.Context, n notes.Note) {
 		if !ok {
 			continue
 		}
-		if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: c.AgentSession, Role: notes.RoleWorked, Host: host}, false); err != nil &&
-			!errors.Is(err, pgx.ErrNoRows) {
-			s.logger.Printf("task claims: task %d: link the upstream claimant's session: %v", n.ID, err)
+		if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: c.AgentSession, Role: notes.RoleWorked}, false); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				s.logger.Printf("task claims: task %d: link the upstream claimant's session: %v", n.ID, err)
+			}
+			continue
+		}
+		if err := s.ext.Notes.SetClaimHost(ctx, n.ID, c.AgentSession, host); err != nil {
+			s.logger.Printf("task claims: task %d: record the upstream claimant's host: %v", n.ID, err)
 		}
 	}
 }
 
 // requestClaimant is the claimant a machine request names: its session
-// header, and — when one of the owner's hosts lists that session — the
+// header, and — only when one of the owner's hosts lists that session — the
 // mirrored session's name and THAT host (what sessionEnded judges the claim
-// by), else the host header.
-func (s *Server) requestClaimant(ctx context.Context, sessionID, hostHeader string) claimant {
-	c := claimant{session: sessionID, host: hostHeader}
+// by). Otherwise the host is "": the request's own host header names a
+// machine, not a host whose window list could ever prove the session gone.
+func (s *Server) requestClaimant(ctx context.Context, sessionID string) claimant {
+	c := claimant{session: sessionID}
 	if sessionID == "" {
 		return c
 	}

@@ -473,6 +473,8 @@ type Store interface {
 	// read (every owner's, system scope) and release (one session's claim).
 	ClaimedSessions(ctx context.Context, limit int) ([]ClaimedSession, error)
 	ReleaseSessionClaim(ctx context.Context, noteID int64, sessionID string) (bool, error)
+	ReleaseUpstreamClaim(ctx context.Context, noteID int64, sessionID, mark string) (bool, error)
+	SetClaimHost(ctx context.Context, noteID int64, sessionID, host string) error
 	// TasksForSession is the REVERSE lookup — every LIVE task a session touched,
 	// most-recently-touched first. It backs GET /api/sessions/{id}/tasks.
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)

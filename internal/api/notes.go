@@ -1660,7 +1660,7 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 		// (task_claims.go; the release half is setNoteStatus's).
 		_, sid := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
 		if s.claimOnStatus(ctx, note.ID, status,
-			s.requestClaimant(ctx, sid, taskSessionHost(r, s.ext.LegacyProvenanceHeaderPrefix))) {
+			s.requestClaimant(ctx, sid)) {
 			if fresh, ferr := s.ext.Notes.Get(ctx, note.ID); ferr == nil {
 				note = fresh
 			}

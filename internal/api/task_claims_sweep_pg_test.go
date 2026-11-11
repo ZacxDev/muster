@@ -36,3 +36,29 @@ func TestTheClaimSweepReleasesAnEndedSessionsClaim(t *testing.T) {
 		t.Fatalf("after the sweep the task is still claimed by %q", got)
 	}
 }
+
+// TestTheClaimSweepReleasesAnEndedUpstreamClaimant: an upstream claimant's
+// session (linked with the host that listed it) ended: the sweep releases
+// that claim at the snapshot's revision, and the next assignment gets its card.
+func TestTheClaimSweepReleasesAnEndedUpstreamClaimant(t *testing.T) {
+	f := newTriageFixture(t, false)
+	key := refKey()
+	snap := func() map[string]any {
+		return claimSnap("in_progress", "in progress", map[string]any{"rev": "5",
+			"claimants": []map[string]any{{"agent": "ag_presscal01", "agent_session": routeSID}}})
+	}
+	id := f.upsertRef(t, key, snap())
+	ctx := context.Background()
+	if n, err := f.srv.ReleaseEndedClaims(ctx); err != nil || n != 0 {
+		t.Fatalf("a sweep with the claimant's session running released %d (%v); want 0", n, err)
+	}
+	f.mirror.set(func(m *routeMirror) { m.claudeSession = triSID2 })
+	if n, err := f.srv.ReleaseEndedClaims(ctx); err != nil || n != 1 {
+		t.Fatalf("the sweep after the claimant's session ended released %d (%v); want 1", n, err)
+	}
+	if n, err := f.srv.ReleaseEndedClaims(ctx); err != nil || n != 0 {
+		t.Fatalf("a second sweep released %d (%v); want 0 (already released at this revision)", n, err)
+	}
+	_, m := f.assignRef(t, key, snap())
+	f.mustGetItsCard(t, id, m)
+}
