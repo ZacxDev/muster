@@ -104,14 +104,14 @@ type Draft struct {
 	// RouteID is the session route this draft was relayed from (0021), when
 	// it is one: a routed session's answer that fell back to the owner.
 	RouteID *string `json:"-"`
-	// CheckState is the plugin's pre-approval check (0111): "" when none is
+	// CheckState is the plugin's pre-approval check (0112): "" when none is
 	// asked for (its plugin lacks CapDraftChecks), else CheckAwaiting,
 	// CheckSendable or CheckRefused. CheckedAt is when the verdict came.
 	CheckState DraftCheckState `json:"checkState,omitempty"`
 	CheckedAt  *time.Time      `json:"checkedAt,omitempty"`
 }
 
-// DraftCheckState is a draft's pre-approval check by its plugin (0111's
+// DraftCheckState is a draft's pre-approval check by its plugin (0112's
 // check_state); "" is none asked for.
 type DraftCheckState string
 

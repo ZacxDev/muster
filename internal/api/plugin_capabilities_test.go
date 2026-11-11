@@ -12,7 +12,7 @@ import (
 )
 
 // pluginRouteCapabilities is THE LEDGER of what each /plugin/v1/* route needs
-// (plugins.capabilities, migrations 0102, 0111): "messages", "viewer", "draft_checks", or "any" for a route every
+// (plugins.capabilities, migrations 0102, 0112): "messages", "viewer", "draft_checks", or "any" for a route every
 // live plugin token opens. It is written out here by hand, not read from the
 // registration, so a route moving between capabilities is a diff a person reads.
 var pluginRouteCapabilities = map[string]string{

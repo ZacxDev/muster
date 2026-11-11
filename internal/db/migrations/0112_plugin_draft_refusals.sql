@@ -1,4 +1,4 @@
--- muster 0111 — A REPLY THE PLUGIN REFUSED (docs/plugins.md#when-the-plugin-refuses-a-reply).
+-- muster 0112 — A REPLY THE PLUGIN REFUSED (docs/plugins.md#when-the-plugin-refuses-a-reply).
 --
 --   plugins.capabilities 'draft_checks'      the plugin CHECKS a pending reply
 --       draft before the owner may approve it (GET /plugin/v1/drafts/checks,
@@ -27,7 +27,7 @@
 -- (rejected, superseded, expired), and a 'refused' one is rejected. The store
 -- refuses the approval first, with a sentence (plugins.ErrDraftUnchecked).
 --
--- Must apply after 0110 (the contiguity test refuses a gap). New columns and
+-- Must apply after 0111 (the contiguity test refuses a gap). New columns and
 -- widened CHECKs on owned tables: their row-level security covers them; not
 -- re-applied by db.RLSOn (0016's and 0021's bodies create their tables only IF
 -- NOT EXISTS, and 0102 is not re-applied). Idempotent.
@@ -54,7 +54,7 @@
 --   DROP INDEX IF EXISTS idx_plugin_reply_drafts_awaiting_check;
 --   ALTER TABLE plugin_reply_drafts DROP COLUMN IF EXISTS checked_at;
 --   ALTER TABLE plugin_reply_drafts DROP COLUMN IF EXISTS check_state;
---   DELETE FROM schema_migrations WHERE version = 111;
+--   DELETE FROM schema_migrations WHERE version = 112;
 
 SET LOCAL lock_timeout = '3s';
 

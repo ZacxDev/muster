@@ -140,10 +140,10 @@ const (
 	// chip on session views, and redeeming hand-off codes.
 	CapViewer Capability = "viewer"
 	// CapDraftChecks is a plugin that CHECKS each pending reply draft before
-	// its owner may approve it (migration 0111): it opens GET
+	// its owner may approve it (migration 0112): it opens GET
 	// /plugin/v1/drafts/checks and POST /plugin/v1/drafts/{id}/check, and a
 	// draft filed for one of its messages awaits that verdict (drafts.go,
-	// DraftAwaitingCheck). A plugin without it behaves as before 0111.
+	// Draft.AwaitingCheck). A plugin without it behaves as before 0112.
 	CapDraftChecks Capability = "draft_checks"
 )
 

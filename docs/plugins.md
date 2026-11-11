@@ -55,7 +55,7 @@ A plugin token opens only the routes its **capabilities** allow:
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
-| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check`. Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0111`) |
+| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check`. Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the

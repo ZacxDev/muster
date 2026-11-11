@@ -151,7 +151,7 @@ const (
 	RouteOwnerAnswered RouteState = "owner_answered"
 	// RouteSendFailed: the reply draft the route became (relayed or fallback)
 	// was REFUSED by its plugin — reported failed after its claim, or refused
-	// by the plugin's pre-approval check (migration 0111; drafts.go,
+	// by the plugin's pre-approval check (migration 0112; drafts.go,
 	// refuseRouteDraftTx). Terminal, owing a hand-back: to the session, as a
 	// new route to redraft it (Route.Redraft), or to the chief.
 	RouteSendFailed RouteState = "send_failed"
@@ -197,7 +197,7 @@ type Route struct {
 	// 0087): a heads-up whose answer goes to the chief only.
 	OneWay bool
 	// Redraft marks a RouteSendFailed route whose hand-back goes back to the
-	// session it was routed to, to write the reply again (migration 0111),
+	// session it was routed to, to write the reply again (migration 0112),
 	// rather than to the chief: decided once, when it became send_failed
 	// (refuseRouteDraftTx, bounded by MaxRouteRedrafts).
 	Redraft bool

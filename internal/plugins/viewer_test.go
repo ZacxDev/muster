@@ -6,7 +6,7 @@ import (
 )
 
 // TestDraftChecksIsACapabilityOnlyBesideMessages: draft_checks is a known
-// capability (0111), ordered after the others, and refused without messages —
+// capability (0112), ordered after the others, and refused without messages —
 // a plugin that brings no messages has no reply drafts to check.
 func TestDraftChecksIsACapabilityOnlyBesideMessages(t *testing.T) {
 	got, err := validCapabilities([]Capability{CapDraftChecks, CapMessages})
