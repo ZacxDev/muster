@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -67,49 +66,25 @@ type turnResult struct {
 	// Usage is the turn's tokens: each main-conversation API call's usage
 	// counted ONCE (the CLI repeats it on every block record of the call; the
 	// largest output count is kept, as a block written mid-stream can carry a
-	// partial one — see addUsage for the key). nil when no record of the turn
+	// partial one — callLedger is the rule). nil when no record of the turn
 	// carried usage. Subagent (sidechain) records are not counted: they are not this
 	// conversation's turn.
 	Usage *podagent.Usage
-	// usageByMsg is the per-message usage Usage is summed from.
-	usageByMsg map[string]podagent.Usage
-	usageOrder []string
+	// calls are the per-call usages Usage is summed from.
+	calls callLedger
 }
 
-// addUsage records rec's usage under its API call's key.
+// addUsage records rec's usage under its API call's key (callLedger).
 func (r *turnResult) addUsage(rec cctranscript.Record) {
-	u := rec.Message.Usage
-	if u == nil || rec.IsAPIError || rec.Message.Model == "<synthetic>" {
+	var u *podagent.Usage
+	if m := rec.Message.Usage; m != nil {
+		u = &podagent.Usage{InputTokens: m.InputTokens, OutputTokens: m.OutputTokens,
+			CacheReadInputTokens: m.CacheReadInputTokens, CacheCreationInputTokens: m.CacheCreationInputTokens}
+	}
+	if _, _, counted := r.calls.add(rec.Message.ID, rec.Message.Model, rec.IsAPIError, u); !counted {
 		return
 	}
-	if r.usageByMsg == nil {
-		r.usageByMsg = map[string]podagent.Usage{}
-	}
-	// One API call's key: its message id AND its input side (uncached input,
-	// cache read, cache creation), which every block record of that call
-	// repeats and the next call — its context larger — does not. The id alone
-	// is not enough: a transcript whose ids were normalised (the fixtures) or
-	// left out would fold distinct calls into one. Output is not in the key: a
-	// block written mid-stream can carry a smaller output count than the last.
-	id := rec.Message.ID + ":" + strconv.FormatInt(u.InputTokens, 10) + ":" + strconv.FormatInt(u.CacheReadInputTokens, 10) +
-		":" + strconv.FormatInt(u.CacheCreationInputTokens, 10)
-	cur, seen := r.usageByMsg[id]
-	if !seen {
-		r.usageOrder = append(r.usageOrder, id)
-	}
-	cur.InputTokens = max(cur.InputTokens, u.InputTokens)
-	cur.OutputTokens = max(cur.OutputTokens, u.OutputTokens)
-	cur.CacheReadInputTokens = max(cur.CacheReadInputTokens, u.CacheReadInputTokens)
-	cur.CacheCreationInputTokens = max(cur.CacheCreationInputTokens, u.CacheCreationInputTokens)
-	r.usageByMsg[id] = cur
-	var sum podagent.Usage
-	for _, k := range r.usageOrder {
-		m := r.usageByMsg[k]
-		sum.InputTokens += m.InputTokens
-		sum.OutputTokens += m.OutputTokens
-		sum.CacheReadInputTokens += m.CacheReadInputTokens
-		sum.CacheCreationInputTokens += m.CacheCreationInputTokens
-	}
+	sum := r.calls.sum()
 	r.Usage = &sum
 }
 

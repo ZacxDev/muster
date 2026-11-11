@@ -223,6 +223,8 @@ func (s *server) gatewayHandler() http.Handler {
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	// The primary's transcript, incrementally (transcript_route.go).
 	mux.HandleFunc("GET /v1/transcript", s.handleTranscript)
+	// This pod's Claude usage per session and UTC hour (usage_route.go).
+	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	// Which CLIs in the pod are working, by their own sessions files (clis.go).
 	mux.HandleFunc("GET /v1/clis", s.handleCLIs)
 	// `/` is the same check: muster's default agent health path is "/"

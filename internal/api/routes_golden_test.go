@@ -726,7 +726,10 @@ func moduleRoot(t *testing.T) string {
 //     (internal/officers/transcript), bearer-authenticated like /v1/responses;
 //     GET /v1/clis is which CLIs in the pod are working by their own sessions
 //     files, read by task_dispatch's owner_asked (internal/api
-//     chief_owner_release.go), bearer-authenticated the same way.
+//     chief_owner_release.go), bearer-authenticated the same way; GET
+//     /v1/usage is the pod's Claude usage per session and UTC hour, counted
+//     from its transcripts, read by muster-server's officer usage collector
+//     (internal/officers/usage), bearer-authenticated the same way.
 //   - internal/clankmailplugin: the muster-clankmail plugin's ADMIN socket
 //     ($STATE_DIR/admin.sock, a 0600 unix socket inside the plugin's own
 //     container), used by its admin subcommands. muster-server never serves it,
@@ -737,7 +740,7 @@ func moduleRoot(t *testing.T) string {
 //     preview gateway. A test tool in no shipped binary (internal/modulegate's
 //     ledger says so).
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd":                  {"GET /healthz", "GET /{$}", "GET /v1/clis", "GET /v1/transcript", "GET /v1/usage", "POST /hook/{event}", "POST /v1/responses"},
 	"internal/clankmailplugin": {"GET /requests", "GET /show", "POST /peer-verify"},
 	"e2e/previewfix":           {"GET /{$}", "GET /api/ping", "GET /attack", "GET /secret", "GET /sse", "GET /ws"},
 }
