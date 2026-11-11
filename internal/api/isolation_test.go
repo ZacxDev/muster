@@ -516,7 +516,12 @@ var isolationClasses = map[string]routeClass{
 	// send carries host and session in its FORM, which fill() also sets.
 	"GET /mirror/view": classMirror,
 	// A session view's Preview button (plugin_chip.go): the window's counts,
-	// addressed like the view (?host=&session=&window=).
+	// addressed like the view (?host=&session=&window=), read from the hub's
+	// OWNER-SCOPED host list. NOT an object route (namesObject): it answers an
+	// empty 200 alike for a window with nothing to preview, one it does not
+	// list and one of another owner's, by design — so it cannot tell A's
+	// window from a ghost even to A, and the walk holds it to the stricter
+	// rule instead: no identifier of A's in an outsider's answer.
 	"GET /ui/mirror/preview-button": classMirror,
 	"GET /mirror/view/ws":           classMirror,
 	"POST /mirror/view/send":        classMirror,
@@ -1673,7 +1678,7 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 // the merge form) in its body.
 func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /tasks/merge" ||
-		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") || route == "GET /ui/mirror/preview-button" ||
+		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/view/chief" || route == "POST /mirror/view/proposal" ||
 		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/opencode/answer" ||
