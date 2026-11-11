@@ -669,6 +669,9 @@ func startMCP(ctx context.Context, listen, secretFile string, backend mirrorhost
 	proxy.Secret = secret
 	proxy.Windows, _ = mirrorhost.WindowListerOf(backend)
 	proxy.Socket, _ = mirrorhost.ServerSocketOf(backend)
+	if src := mirrorhost.OpenCodeSourceOf(backend); src != nil {
+		proxy.OpenCodeAncestors = src.Ancestors
+	}
 	logger.Printf("muster-mirror: MCP endpoint for this host's Claude Code sessions at http://%s/mcp (secret in %s)", l.Addr(), secretFile)
 	go func() {
 		if err := mirrorhost.ServeMCP(ctx, l, proxy); err != nil {

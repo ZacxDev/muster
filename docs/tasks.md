@@ -50,6 +50,85 @@ scripts write them through the JSON API and the [CLI](cli.md).
 The task table is called `notes` for historical reasons (see
 [schema.md](schema.md)).
 
+## Claims
+
+A task is **claimed** when someone has explicitly said they are working it.
+Both systems count, and nothing is inferred from a focus title or transcript
+text:
+
+- **A session's claim.** A coding-agent session that picks the task up
+  through muster's task tools claims it: a status write to `in_progress` that
+  carries the session's id — `muster task status <id> in_progress` run inside
+  the session (the CLI sends `X-Muster-Session-Id`), or a mirrored session's
+  own `task_set_status`. The session joins the task's thread as `worked`, and
+  its link carries `claimedAt` and `claimedBy` (its mirrored name when one of
+  your hosts lists it, else `session <id prefix>`). On a
+  [reference](plugins.md#task-references) the status itself is only queued
+  for the upstream; the claim is recorded whatever the upstream does with it.
+- **The upstream's claim.** A reference whose last snapshot names
+  [`claimants`](plugins.md#task-references) is claimed by them. A claimant is
+  a session's pickup: it must carry the session (`agent_session`, a valid
+  session id), with the `agent` it ran as; one without a session claims
+  nothing. A claimant whose `agent_session` is one of your mirrored sessions
+  is linked to the task too. **A status is never a claim:** an upstream
+  `in_progress` (or paused) with no claimant, your own `in_progress` from the
+  card, and a snapshot from a plugin that sends no `claimants` all leave the
+  task unclaimed. (The HQ tasks plugin sends the session that moved the HQ
+  task to "in progress" — see [plugins.md](plugins.md#task-references).)
+
+What a claim does:
+
+- **No "pick this up" card.** The [task triage](plugins.md#an-assigned-task-muster-places-itself)
+  leaves an assignment of a claimed task alone (settled
+  `muster: task triage — left it alone: it is already claimed by <who>`, no
+  chief turn), and the chief's `task_route_attention` raises no card for one.
+  The one exception is the clean forward: a task with exactly one agent on it
+  that `task_forward` can reach is still forwarded to that agent.
+- **The chief can still ask.** `task_route_attention` with a `question` (the
+  chief asking you something about the task, not putting it up for pickup)
+  raises its card whether or not the task is claimed; the card names the
+  question and who is working the task. It offers no `agent_dispatch`: a
+  claimed task starts no new agent (`agent_dispatch` refuses it too) until its
+  claim is released.
+- **The board shows who.** The card carries "⚑ worked by <who>"
+  (`data-task-claimed` names the sources: `session`, `upstream`).
+
+A session's claim is **released** — and the next assignment gets its card
+again — when:
+
+- the task is set back to `open` by you (the card), a session or a machine
+  (the machine route), the task tool, or a dispatched agent's own status route
+  and tool. That releases **every** session claim on the task: an agent names
+  no session, so none is "its own" to pick out, and setting its task back to
+  open is the agent handing the work back;
+- the upstream moves a reference back to `open` (a snapshot changes the
+  task's status to it): the upstream reopened it;
+- the task is stored as `complete`, by any writer (a reference's complete
+  counts once the upstream's snapshot stores it);
+- the claiming session **ended**: its window is gone from the host it claimed
+  from while that host is online, reports status and lists windows — muster's
+  one "the session is gone" rule. A sweep checks every minute, and the triage
+  and `task_route_attention` check the task's claims before reading them. A
+  claim whose host is offline, does not report status, or was never known is
+  not ended by this; it waits for one of the releases above. The claim's host
+  is recorded **only** when one of your hosts lists the claiming session at
+  the time (the request's own host header is not used: it names a machine,
+  not a host whose window list could prove the session gone), so a claim from
+  a session no host lists is never ended this way.
+
+The upstream's claim is released by a later snapshot without it — and when
+its claimant session **ended** by the same rule (the session linked to the task
+with the host that listed it): the release is kept for the snapshot's
+revision, so a snapshot that still names that session at the same revision
+does not bring it back; a newer revision (a new pickup, any upstream change)
+is judged afresh. An upstream claimant whose session no host listed is never
+judged ended. muster's own
+status writers (a dispatch advance, the reopen after an agent is destroyed, a
+merge) neither claim nor release, beyond the reopen and complete above. A
+status the upstream refuses (a record whose statuses have no "in progress":
+the write shows as failed on the task page and the task stays `open`) does
+not take the claim with it.
+
 ## Provenance
 
 Task writes from the CLI carry headers recording where they came from:
@@ -105,7 +184,8 @@ usually not needed.
   answered with any other status would drop work. The grammar (charset, caps,
   the routing namespaces) is the header of `internal/notes/tags.go`.
 - **Task and session threads.** A task's `sessions` are embedded, each with a
-  `role` (`created`, `worked` or `read`). The reverse is
+  `role` (`created`, `worked` or `read`), and `claimedAt`/`claimedBy` on a
+  session that [claimed](#claims) it. The reverse is
   `GET /api/sessions/{id}/tasks`; an unknown session answers `200` with no
   tasks, so an empty answer cannot tell "touched nothing" from "wrong id".
   `GET /api/tasks/{id}/sessions` is a `404` by design. Filter on `role`, never on

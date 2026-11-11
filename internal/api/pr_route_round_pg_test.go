@@ -157,7 +157,10 @@ func TestANewerRoundSupersedesAnAlreadyDeliveredRoundWithNoAsk(t *testing.T) {
 // supersedes the newer route (the supersede orders by arrival, not by head).
 // The newer review never reached the session, so muster must NOT settle its
 // message: it stays unsettled and the "not acted on" ask still fires, or the
-// newer review would be lost with no ask and no hand-back.
+// newer review would be lost with no ask and no hand-back. (Here muster cannot
+// read the heads' order — no GitHub App — so it supersedes by arrival, which
+// is NOT handled; with the order known, a late older head supersedes nothing:
+// TestALateReviewOfAnOlderHeadSupersedesNothing.)
 func TestALateOlderRoundDoesNotSettleAQueuedNewerRound(t *testing.T) {
 	f := newPRFixture(t)
 	f.authored(t, f.asOwner, routeSID, prCreated())

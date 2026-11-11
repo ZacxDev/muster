@@ -21,8 +21,10 @@ import (
 
 // THE PREVIEW TOOLS (docs/design/previews.md, "The MCP tools"): a second MCP
 // server on muster-mirror's loopback MCP endpoint, at /preview-mcp, beside
-// /mcp. muster-mirror's MCPProxy guards it exactly as it guards /mcp (the
-// per-host secret, no Origin, POST only, the caller's tmux server) and then
+// /mcp. muster-mirror's MCPProxy guards it as it guards /mcp (the per-host
+// secret, no Origin, POST only, the caller's tmux server — except for an
+// opencode-marked caller, which is bound by session id instead: mirrorhost's
+// "AN OPENCODE CALLER OF THE PREVIEW TOOLS") and then
 // hands the request to MCPServer, which answers EVERYTHING itself: nothing on
 // this path is forwarded to muster, and it holds no muster credential.
 //
@@ -88,7 +90,8 @@ const (
 	// CodeGatewayError: the gateway refused with something that is not a
 	// well-formed code (gatewayCode).
 	CodeGatewayError = "gateway_error"
-	// CodeNoWindow: the caller's pane is in no window this host mirrors, so
+	// CodeNoWindow: the caller's pane — or, for opencode, the session its
+	// call names — is in no window this host mirrors, so
 	// the preview would belong to no one (not in the design's table: a
 	// session outside a mirrored window has nothing to bind a preview to).
 	CodeNoWindow = "no_window"
@@ -104,6 +107,12 @@ const (
 // ProbeWait bounds preview_open's probe: a loopback dial and HEAD /, answered.
 const ProbeWait = 5 * time.Second
 
+// OpenCodeSessionMeta is the key opencode puts the calling session's id
+// under in every tools/call's params._meta (packages/core/src/mcp/client.ts
+// at 6ec5682): the one per-session signal it sends. Read here and handed to
+// Caller; whether it is believed is the caller resolver's decision.
+const OpenCodeSessionMeta = "ai.opencode/sessionID"
+
 // mcpMaxBody bounds one JSON-RPC message (the /mcp proxy's own bound).
 const mcpMaxBody = 64 << 10
 
@@ -113,10 +122,13 @@ type MCPServer struct {
 	// Host is this host's previews: its allowlist and checks, its record of
 	// acknowledged opens, and its offer stream to the gateway.
 	Host *Host
-	// Caller is the tmux window ("@12") the request's pane is in, from a
-	// fresh listing (mirrorhost.MCPProxy.CallerWindow). It needs no Claude
-	// Code session in the pane: a preview belongs to the window.
-	Caller func(r *http.Request) (string, error)
+	// Caller is the tmux window ("@12") the request's caller is in, from a
+	// fresh listing (mirrorhost.MCPProxy.CallerWindow): by its pane, or —
+	// for opencode, whose headers cannot name one — by agentSession, the
+	// session the tools/call itself names (OpenCodeSessionMeta; "" none). It
+	// needs no Claude Code session in the pane: a preview belongs to the
+	// window.
+	Caller func(r *http.Request, agentSession string) (string, error)
 	// Version is what `initialize` names as the server's version; "" = "dev".
 	Version string
 
@@ -190,13 +202,18 @@ func (s *MCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRPC(w, req.ID, map[string]any{"tools": toolDefs()}, 0, "")
 	case "tools/call":
 		var p struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+			Name      string                     `json:"name"`
+			Arguments json.RawMessage            `json:"arguments"`
+			Meta      map[string]json.RawMessage `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			writeRPC(w, req.ID, nil, -32602, "tools/call params must be {name, arguments}")
 			return
 		}
+		// A session id that is not a JSON string is none.
+		var agentSession string
+		_ = json.Unmarshal(p.Meta[OpenCodeSessionMeta], &agentSession)
+		c := call{r: r, agentSession: agentSession}
 		var (
 			res  any
 			terr *toolError
@@ -204,11 +221,11 @@ func (s *MCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 		switch p.Name {
 		case ToolOpen:
-			res, terr, bad = s.open(r, p.Arguments)
+			res, terr, bad = s.open(c, p.Arguments)
 		case ToolList:
-			res, terr, bad = s.list(r, p.Arguments)
+			res, terr, bad = s.list(c, p.Arguments)
 		case ToolClose:
-			res, terr, bad = s.close(r, p.Arguments)
+			res, terr, bad = s.close(c, p.Arguments)
 		default:
 			writeRPC(w, req.ID, nil, -32602, "unknown tool "+p.Name)
 			return
@@ -303,11 +320,17 @@ func (s *MCPServer) on() *toolError {
 	return nil
 }
 
-func (s *MCPServer) window(r *http.Request) (string, *toolError) {
+// call is one tools/call: its request, and the agent session it names.
+type call struct {
+	r            *http.Request
+	agentSession string
+}
+
+func (s *MCPServer) window(c call) (string, *toolError) {
 	if s.Caller == nil {
 		return "", refuse(CodeNoWindow, "this host cannot tell which tmux window is calling")
 	}
-	id, err := s.Caller(r)
+	id, err := s.Caller(c.r, c.agentSession)
 	if err != nil {
 		return "", refuse(CodeNoWindow, "%v", err)
 	}
@@ -327,7 +350,8 @@ func (s *MCPServer) window(r *http.Request) (string, *toolError) {
 // not_answering); then the gateway, through the offer stream
 // (Host.RequestOpen: gateway_not_connected, gateway_timeout, or the
 // gateway's own refusal such as max_open).
-func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError, error) {
+func (s *MCPServer) open(c call, raw json.RawMessage) (any, *toolError, error) {
+	r := c.r
 	if terr := s.on(); terr != nil {
 		return nil, terr, nil
 	}
@@ -343,7 +367,7 @@ func (s *MCPServer) open(r *http.Request, raw json.RawMessage) (any, *toolError,
 		return nil, nil, err
 	}
 	port := *a.Port
-	win, terr := s.window(r)
+	win, terr := s.window(c)
 	if terr != nil {
 		return nil, terr, nil
 	}
@@ -513,7 +537,7 @@ func isControl(c rune) bool { return c < ' ' || c == 0x7f }
 // list is preview_list: the caller's window's acknowledged opens — its
 // agent's and the owner's click-opens alike (the gateway tells the host of
 // those unasked).
-func (s *MCPServer) list(r *http.Request, raw json.RawMessage) (any, *toolError, error) {
+func (s *MCPServer) list(c call, raw json.RawMessage) (any, *toolError, error) {
 	if terr := s.on(); terr != nil {
 		return nil, terr, nil
 	}
@@ -521,7 +545,7 @@ func (s *MCPServer) list(r *http.Request, raw json.RawMessage) (any, *toolError,
 	if err := decodeArgs(raw, &a); err != nil {
 		return nil, nil, err
 	}
-	win, terr := s.window(r)
+	win, terr := s.window(c)
 	if terr != nil {
 		return nil, terr, nil
 	}
@@ -536,7 +560,7 @@ func (s *MCPServer) list(r *http.Request, raw json.RawMessage) (any, *toolError,
 
 // close is preview_close: an id the caller's window holds, closed through
 // the gateway. Another window's id is not_found, exactly like an unknown one.
-func (s *MCPServer) close(r *http.Request, raw json.RawMessage) (any, *toolError, error) {
+func (s *MCPServer) close(c call, raw json.RawMessage) (any, *toolError, error) {
 	if terr := s.on(); terr != nil {
 		return nil, terr, nil
 	}
@@ -549,7 +573,7 @@ func (s *MCPServer) close(r *http.Request, raw json.RawMessage) (any, *toolError
 	if a.ID == "" {
 		return nil, nil, errors.New("id is required")
 	}
-	win, terr := s.window(r)
+	win, terr := s.window(c)
 	if terr != nil {
 		return nil, terr, nil
 	}
@@ -564,8 +588,8 @@ func (s *MCPServer) close(r *http.Request, raw json.RawMessage) (any, *toolError
 	if !found {
 		return nil, refuse(CodeNotFound, "no preview %q is open for this window", a.ID), nil
 	}
-	ans, err := s.Host.RequestClose(r.Context(), wire.Request{Window: win, Port: o.Port, Preview: o.Preview})
-	if terr := gatewayRefusal(r.Context(), err, "close preview "+o.Preview); terr != nil {
+	ans, err := s.Host.RequestClose(c.r.Context(), wire.Request{Window: win, Port: o.Port, Preview: o.Preview})
+	if terr := gatewayRefusal(c.r.Context(), err, "close preview "+o.Preview); terr != nil {
 		return nil, terr, nil
 	}
 	if ans.Error != "" {

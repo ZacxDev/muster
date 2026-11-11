@@ -140,6 +140,9 @@ func dispatchableStatus(n notes.Note) bool {
 	return n.Status == notes.StatusOpen
 }
 
+// chiefDispatchClaimed is agent_dispatch's refusal of a claimed task.
+const chiefDispatchClaimed = "is already claimed: a session is working it, so no agent is started on it (its claim must be released first)"
+
 // chiefDispatchTaskBlock is THE task predicate behind chiefDispatchTaskRefusal
 // (the tool's refusal) and chiefTaskActions (the ask's reason): one check,
 // two wordings.
@@ -152,6 +155,13 @@ func (s *Server) chiefDispatchTaskBlock(ctx context.Context, owner int64, n note
 	if !dispatchableStatus(n) {
 		return taskBlock{"task " + id + " " + chiefDispatchNotOpen + " (" + n.Status + ")",
 			"this task is not open (" + n.Status + "), so it cannot start one on it"}, nil
+	}
+	// 🔴 A CLAIMED TASK IS BEING WORKED (notes.Claims): no new agent on it — not
+	// offered on a card (a question about a claimed task offers no dispatch
+	// button) and refused by agent_dispatch. Releasing the claim lifts it.
+	if claims := notes.Claims(n); len(claims) > 0 {
+		return taskBlock{"task " + id + " " + chiefDispatchClaimed + " (" + claimNames(claims) + ")",
+			claimNames(claims) + " is already working this task, so it cannot start another"}, nil
 	}
 	on, err := s.liveOnTask(ctx, owner, n.ID)
 	if err != nil {

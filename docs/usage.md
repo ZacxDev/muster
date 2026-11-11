@@ -41,7 +41,8 @@ handled it:
   or closed pull request), `pr_route` (a review routed to the session that
   wrote the pull request), `mail_resume`, `task_event_mention`, or the
   [task triage](plugins.md#an-assigned-task-muster-places-itself) of an
-  assigned task: `task_forward`, `task_route` or `task_board`;
+  assigned task: `task_forward`, `task_route`, `task_board` or `task_claimed`
+  (left alone: the task is [claimed](tasks.md#claims));
 - `rule`: an approved [routing rule](plugins.md#routing-rules), with its id;
 - `chief`: a chief turn. When a rule matched but its session could not take
   the message, the row also names that rule as the fallback.

@@ -3,6 +3,7 @@ package api
 import (
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -15,6 +16,7 @@ func TestDecideTaskTriagePinnedCases(t *testing.T) {
 	weak := plugins.SessionHint{ID: "mirror:ses-d", Titles: []plugins.HintTitle{{Title: "fixing widgets"}}}
 	agentWeak := plugins.SessionHint{ID: "agent:12", Titles: []plugins.HintTitle{{Title: "widgets"}}}
 	agentByPR := plugins.SessionHint{ID: "agent:13", PRs: []string{"acme/widgets#7"}}
+	claimed := []notes.Claim{{Source: notes.ClaimUpstream, Who: "press-bot"}}
 	for _, c := range []struct {
 		name string
 		f    triageFacts
@@ -39,6 +41,16 @@ func TestDecideTaskTriagePinnedCases(t *testing.T) {
 		{"an agent matched by focus only", triageFacts{hints: []plugins.SessionHint{agentWeak}}, triageDecision{kind: triageChief}},
 		{"an agent session listed by a pull request is no mirrored session", triageFacts{hints: []plugins.SessionHint{agentByPR}}, triageDecision{kind: triageChief}},
 		{"one strong session on a gated task", triageFacts{gated: true, hints: []plugins.SessionHint{byPR}}, triageDecision{kind: triageChief}},
+		// A CLAIMED task (notes.Claims): left alone — no card, no chief turn —
+		// whatever else is hinted, except the clean forward to its agent.
+		{"claimed, nothing else on it: left alone (no card)", triageFacts{claims: claimed}, triageDecision{kind: triageClaimed}},
+		{"claimed and gated: left alone", triageFacts{gated: true, claims: claimed}, triageDecision{kind: triageClaimed}},
+		{"claimed, one strong session: left alone", triageFacts{claims: claimed, hints: []plugins.SessionHint{byPR}}, triageDecision{kind: triageClaimed}},
+		{"claimed, a weak match: left alone", triageFacts{claims: claimed, hints: []plugins.SessionHint{weak}}, triageDecision{kind: triageClaimed}},
+		{"claimed, a stuck agent: left alone", triageFacts{claims: claimed, stuck: 1}, triageDecision{kind: triageClaimed}},
+		{"claimed, two agents: left alone", triageFacts{claims: claimed, forward: 2}, triageDecision{kind: triageClaimed}},
+		{"claimed, one agent on it: still forwarded", triageFacts{claims: claimed, forward: 1}, triageDecision{kind: triageForward}},
+		{"claimed, one agent and a hint: left alone", triageFacts{claims: claimed, forward: 1, hints: []plugins.SessionHint{byPR}}, triageDecision{kind: triageClaimed}},
 	} {
 		if got := decideTaskTriage(c.f); got != c.want {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)

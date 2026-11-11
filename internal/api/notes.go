@@ -1654,6 +1654,18 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 		origin.Agent = actor
 	}
 	note, err := s.applyTaskStatus(withRefOrigin(ctx, origin), writerMachineAPI, id, status)
+	if err == nil || errors.Is(err, errQueuedUpstream) {
+		// A session picking the task up (in_progress) claims it, whether the
+		// status was stored or only queued for a reference's upstream
+		// (task_claims.go; the release half is setNoteStatus's).
+		_, sid := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
+		if s.claimOnStatus(ctx, note.ID, status,
+			s.requestClaimant(ctx, sid)) {
+			if fresh, ferr := s.ext.Notes.Get(ctx, note.ID); ferr == nil {
+				note = fresh
+			}
+		}
+	}
 	if errors.Is(err, errQueuedUpstream) {
 		// A reference: queued for the upstream. 202, the task as it stands.
 		s.writeJSON(w, http.StatusAccepted, queuedTask{apiTask: s.apiTaskOne(ctx, note), Queued: true})
