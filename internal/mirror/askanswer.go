@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/stepup"
 )
 
@@ -56,19 +58,27 @@ var (
 // bytes: the bottom of the pane, where the picker is, is kept.
 const MaxAskScreen = 16 << 10
 
-// CapAskScreen is s as a host sends it: its last MaxAskScreen bytes, cut at
-// a line start where it was cut.
+// AskScreenCutMark begins a screen CapAskScreen cut.
+const AskScreenCutMark = "[… the top of the pane was cut]\n"
+
+// CapAskScreen is s as a host sends it: REDACTED FIRST (redact.Secrets, over
+// the whole pane), then, when it is over MaxAskScreen bytes, its tail from a
+// line start, under AskScreenCutMark, MaxAskScreen bytes in all.
+//
+// 🔴 REDACTION BEFORE THE CUT: a cut first could split a secret — a key
+// block's BEGIN line above the cut, its body below — into a fragment the
+// redactor no longer recognises (internal/askattempt's store redacts again,
+// and cuts again, for the same reason).
 func CapAskScreen(s string) string {
+	s = redact.Secrets(s)
 	if len(s) <= MaxAskScreen {
 		return s
 	}
-	s = s[len(s)-MaxAskScreen:]
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			return s[i+1:]
-		}
+	s = s[len(s)-(MaxAskScreen-len(AskScreenCutMark)):]
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
 	}
-	return s
+	return AskScreenCutMark + s
 }
 
 // askScreenError is a host's refusal with the pane it read then (Msg.Screen).

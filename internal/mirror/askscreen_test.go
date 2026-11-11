@@ -19,7 +19,7 @@ func TestAnAnsweredRefusalCarriesTheHostsScreen(t *testing.T) {
 	if !errors.Is(err, ErrAskLost) || AskKeys(err) != 3 {
 		t.Fatalf("err %v keys %d", err, AskKeys(err))
 	}
-	if got := AskScreen(err); got != "❯ 1. Red" {
+	if got := AskScreen(err); got != AskScreenCutMark+"❯ 1. Red" {
 		t.Fatalf("screen %q, want the last line (a cut is at a line start)", got)
 	}
 	small := make(chan error, 1)

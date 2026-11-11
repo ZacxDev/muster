@@ -531,10 +531,11 @@ func tabsMatch(s Screen, qs []askq.Question, current int) error {
 // be question 1 of qs, its text, tabs and rows drawn exactly as qs's
 // (Match against from), with no answer of one's own typed in its text row —
 // the cursor may be on any row, and on a multi-select question any of its
-// options may be ticked. Then: each ticked option's digit (a digit toggles a
-// multi-select option and leaves the cursor where it was), then Up, one row
-// at a time, to the first row (from the Next/Submit row Up goes to the last
-// row first). Each key is verified as any of the drive's are. A picker on a
+// options may be ticked. Then: Up, one row at a time, to the first row (from
+// the Next/Submit row Up goes to the last row first), then each ticked
+// option's digit there (a digit toggles a multi-select option and leaves the
+// cursor where it was — but on the text row it is typed text, hence the
+// order). Each key is verified as any of the drive's are. A picker on a
 // later question, with typed text, or that does not read as qs is left to the
 // drive's own first look, which refuses it.
 //
@@ -575,21 +576,25 @@ func resetSteps(s Screen, qs []askq.Question) (from Want, steps []Step) {
 	if len(checked) > 0 && !q.MultiSelect {
 		return Want{}, nil
 	}
-	for len(checked) > 0 {
-		r := checked[len(checked)-1]
-		checked = checked[:len(checked)-1]
-		steps = append(steps, Step{Keys: digit(r), Want: Want{Kind: Question, Q: 0, Cursor: cur, Checked: slices.Clone(checked)}})
-	}
+	// 🔴 THE CURSOR MOVES FIRST, THE TICKS GO SECOND: on the "Type something"
+	// row a digit is TEXT (the package doc), so a tick undone there would
+	// type into the box. Up to the first row (an option's), ticks kept; then
+	// each ticked option's digit, on that row.
 	if cur == 0 {
 		cur = k + 1
 		if q.Previews() {
 			cur = k
 		}
-		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur}})
+		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur, Checked: slices.Clone(checked)}})
 	}
 	for cur > 1 {
 		cur--
-		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur}})
+		steps = append(steps, Step{Keys: KeyUp, Want: Want{Kind: Question, Q: 0, Cursor: cur, Checked: slices.Clone(checked)}})
+	}
+	for len(checked) > 0 {
+		r := checked[len(checked)-1]
+		checked = checked[:len(checked)-1]
+		steps = append(steps, Step{Keys: digit(r), Want: Want{Kind: Question, Q: 0, Cursor: 1, Checked: slices.Clone(checked)}})
 	}
 	return from, steps
 }

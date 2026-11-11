@@ -379,7 +379,7 @@ type Msg struct {
 	// muster can vouch for), and an older muster ignores it.
 	Keys int `json:"keys,omitempty"`
 	// Screen (answered, a refusal) is the pane as the host read it when the
-	// answer stopped — plain text, capped at MaxAskScreen by the host — for
+	// answer stopped — plain text, redacted and then capped at MaxAskScreen by the host (CapAskScreen) — for
 	// the answer-attempt log (internal/askattempt redacts and caps it again
 	// before it is stored). 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH
 	// WAYS: an older host never sets it (no snapshot), an older muster

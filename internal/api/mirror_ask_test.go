@@ -57,6 +57,7 @@ type askMirror struct {
 	cancelNote string
 	cancelErr  error
 	noCancel   bool
+	cancelHold chan struct{}
 	// hold, when set, keeps AnswerWindow typing until it is closed (or the
 	// call's ctx ends, which is then its error); typingCtx is the last call's
 	// ctx.
@@ -85,9 +86,15 @@ func (a *askMirror) Hosts(ctx context.Context) []mirror.HostView {
 
 func (a *askMirror) CancelAsk(ctx context.Context, host, session, window string) (string, error) {
 	a.amu.Lock()
-	defer a.amu.Unlock()
 	a.cancels = append(a.cancels, host+" "+session+" "+window)
-	return a.cancelNote, a.cancelErr
+	note, err, hold := a.cancelNote, a.cancelErr, a.cancelHold
+	a.amu.Unlock()
+	// cancelHold, when set, is a slow dismissal: the Escape's outcome comes
+	// once it is closed.
+	if hold != nil {
+		<-hold
+	}
+	return note, err
 }
 
 func (a *askMirror) cancelsSoFar() []string {

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/askattempt"
@@ -29,9 +31,13 @@ import (
 // is a visible wrong row, never a missing one (the ledger test,
 // TestEveryAnswerPathRecordsOneRow, pins which reason each path records).
 //
-// 🔴 CAPTURE NEVER FAILS THE ANSWER. The row is written after the door has
-// answered the person, bounded by askAttemptWriteTimeout, under the request's
-// own principal (row-level security); a failed write is a log line.
+// 🔴 CAPTURE NEVER FAILS OR DELAYS THE ANSWER. done (the door's defer) hands
+// the row to a goroutine and returns, so the response does not wait for the
+// INSERT. The write runs on a detached context bounded by
+// askAttemptWriteTimeout, under the request's own principal (row-level
+// security); at most askAttemptMaxWrites run at once, and past that a row is
+// dropped with a log line — as is a failed write. Tests wait for the writes
+// with flushAskAttempts.
 // ---------------------------------------------------------------------------
 
 // askAttemptWriteTimeout bounds one row's write.
@@ -115,12 +121,37 @@ func (t *attempt) done() {
 		t.a.Reason = "error"
 	}
 	t.a.Duration = time.Since(t.start)
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.ctx), askAttemptWriteTimeout)
-	defer cancel()
-	if _, err := t.s.ext.AskAttempts.Record(ctx, t.a); err != nil {
-		t.s.logger.Printf("answer attempts: record a %s (%s): %v", t.a.Action, t.a.Reason, err)
+	w := &t.s.askAttemptWrites
+	if w.n.Add(1) > askAttemptMaxWrites {
+		w.n.Add(-1)
+		t.s.logger.Printf("answer attempts: %d writes already running; a %s (%s) was not recorded", askAttemptMaxWrites, t.a.Action, t.a.Reason)
+		return
 	}
+	w.wg.Add(1)
+	a, store, ctx := t.a, t.s.ext.AskAttempts, context.WithoutCancel(t.ctx)
+	safeGo(t.s.logger, "answer attempts: record a row", func() {
+		defer w.wg.Done()
+		defer w.n.Add(-1)
+		ctx, cancel := context.WithTimeout(ctx, askAttemptWriteTimeout)
+		defer cancel()
+		if _, err := store.Record(ctx, a); err != nil {
+			t.s.logger.Printf("answer attempts: record a %s (%s): %v", a.Action, a.Reason, err)
+		}
+	})
 }
+
+// askAttemptMaxWrites bounds the row writes running at once.
+const askAttemptMaxWrites = 64
+
+// askAttemptWriters is the rows being written (done).
+type askAttemptWriters struct {
+	wg sync.WaitGroup
+	n  atomic.Int32
+}
+
+// flushAskAttempts waits until every row handed to a write so far is written
+// (or failed): the tests' hook.
+func (s *Server) flushAskAttempts() { s.askAttemptWrites.wg.Wait() }
 
 // askTypingResult is an AnswerWindow outcome's reason — the
 // muster_mirror_ask_typing_total label, and the answer-attempt log's reason

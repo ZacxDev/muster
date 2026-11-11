@@ -1081,8 +1081,9 @@ How it works:
   as muster's own keys left it, it continues (above); untouched, it types; on
   the first question with only its cursor moved — or, on a multi-select
   question, options ticked — it first puts the picker back to the first option
-  (each ticked option's digit, then Up a row at a time, every key checked like
-  any other), then types the answer again. A picker on a later question, or
+  (Up a row at a time to the first option, then each ticked option's digit
+  there — never a digit on the "Type something" row, where it would be typed
+  as text — every key checked like any other), then types the answer again. A picker on a later question, or
   with an answer of one's own typed in, is not reset: it is refused as
   someone answering in the terminal, and nothing is typed. (Up's effect is
   the fake picker's model of Claude Code; `make test-liveclaude` does not
@@ -1098,8 +1099,15 @@ How it works:
   `Answer to “<header, or the question's first words>”: <your answer>`. The
   page never names the text — the server sends the answer the card was typing.
   It passes the queue's gates, recent sign-in included (403 and the step-up
-  dialog when it is stale). If the picker cannot be dismissed, nothing is
-  sent: a message typed into an open picker would be keys into it.
+  dialog when it is stale). The card is claimed before anything is done, so
+  a second **Send as a message** while one is under way is refused with the
+  card, and one answer is never queued twice. A host that finds no picker to
+  dismiss (the screen is not a picker at all) counts as dismissed: nothing
+  there can take the message's keys. If a picker is there but cannot be
+  dismissed (one muster cannot read), nothing is sent — a message typed into
+  an open picker would be keys into it — and the card says so and stops
+  offering it: press Esc in the terminal, then send the answer from the
+  composer.
 - **Options with previews.** When a question's options carry a `preview`,
   Claude Code draws them in a column with the highlighted option's preview
   boxed beside them, and no row for your own answer (measured, 2.1.289). The
@@ -1200,11 +1208,16 @@ attempt 2).
 is a failure's **snapshot**: the terminal pane as the host read it when the
 answer stopped. A pane can show the question and what was typed into the
 picker, so it is redacted with muster's secret redactor (`redact.Secrets`)
-and capped — 16 KiB on the wire, the last 8000 characters stored — and kept
+and capped — redacted on the host first, then its tail from a line start,
+under a "the top of the pane was cut" line, 16 KiB on the wire; redacted
+again and its last 8000 characters stored — and kept
 only as long as the row. A `muster-mirror` that predates it sends none. An
 opencode relay has no pane to send.
 
-Rows are deleted after **30 days** (the attention sweep prunes them hourly).
+A row is written after the door has answered (the response never waits for
+it), at most 64 writes at once; a row past that, or a write that fails, is a
+log line. Rows are deleted after **30 days** (the attention sweep prunes them
+hourly).
 Nothing alerts on them.
 
 #### The Answers page

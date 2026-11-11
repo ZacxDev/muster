@@ -61,6 +61,7 @@ func TestNoColumnHoldsTheQuestionOrTheAnswerOnPostgres(t *testing.T) {
 	setAsk(am, func(a *askMirror) { a.typeErr = nil })
 	_, _ = answerReq(t, s, ts, answerForm(tool, "a0", "B"+noTextMarker), "", "")
 	_, _ = cancelReq(t, s, ts, tool, "", "")
+	s.flushAskAttempts()
 	rows, err := pool.Query(authz.System(context.Background()), `SELECT row_to_json(a)::text FROM ask_attempts a`)
 	if err != nil {
 		t.Fatal(err)

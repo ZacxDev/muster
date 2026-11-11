@@ -253,7 +253,7 @@ func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.Mirr
 		// cannot work (the picker is gone or unreadable) and the answer is
 		// known — "Send as a message" (handleMirrorAskMessage).
 		v.Record = answersCardPath(x.Key.ToolUseID)
-		v.Message = askattempt.Recovery(x.Reason) == askattempt.RecoverMessage && len(x.Typed) > 0 &&
+		v.Message = askattempt.Recovery(x.Reason) == askattempt.RecoverMessage && len(x.Typed) > 0 && !x.Sending &&
 			h.Interactive && h.Online
 	case x.State == askq.Answered:
 		v.State = ui.AskStateAnsweredTerminal

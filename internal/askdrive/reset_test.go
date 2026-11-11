@@ -65,7 +65,7 @@ func TestRetryUnticksAMultiSelectThenTypes(t *testing.T) {
 	if _, err := DriveFrom(context.Background(), fp, qs, cs, &Progress{Reset: true}, fast); err != nil {
 		t.Fatalf("the reset retry: %v (sent %q)\n%s", err, fp.sent, p.Screen())
 	}
-	if want := []string{"2", "1", KeyUp}; !slices.Equal(fp.sent[:3], want) {
+	if want := []string{KeyUp, "2", "1"}; !slices.Equal(fp.sent[:3], want) {
 		t.Fatalf("the reset sent %q, want %q first", fp.sent, want)
 	}
 	if answers, _, done := p.Result(); !done || !reflect.DeepEqual(answers, map[string]string{pets.Question: "Fish"}) {
@@ -93,5 +93,30 @@ func TestRetryLeavesTypedTextAndLaterQuestionsAlone(t *testing.T) {
 		if _, err := DriveFrom(context.Background(), fp, c.qs, c.cs, &Progress{Reset: true}, fast); !errors.Is(err, ErrNotUntouched) || len(fp.sent) != 0 {
 			t.Errorf("%s: %v, sent %q", name, err, fp.sent)
 		}
+	}
+}
+
+// TestRetryMovesOffTheTextRowBeforeUnticking: the audit's case (F1). A
+// multi-select question with an option ticked and the cursor on the empty
+// "Type something" row: there a digit is TEXT, so unticking first typed "1"
+// into the box (the picker then read `4. [✔] 1`, the drive was lost, and
+// nothing could recover it). The cursor moves up onto the first option first,
+// then the tick is undone, then the answer is typed.
+func TestRetryMovesOffTheTextRowBeforeUnticking(t *testing.T) {
+	qs, cs := []askq.Question{pets}, []Choice{{Picks: []int{2}}}
+	p := NewFakePicker(qs)
+	p.Type("1" + KeyDown + KeyDown + KeyDown)
+	if err := Match(Parse(p.Screen()), Want{Kind: Question, Q: 0, Cursor: 4, Checked: []int{1}}, qs, nil); err != nil {
+		t.Fatalf("the fixture: %v\n%s", err, p.Screen())
+	}
+	fp := &fakePane{p: p}
+	if _, err := DriveFrom(context.Background(), fp, qs, cs, &Progress{Reset: true}, fast); err != nil {
+		t.Fatalf("the reset retry: %v (sent %q)\n%s", err, fp.sent, p.Screen())
+	}
+	if want := []string{KeyUp, KeyUp, KeyUp, "1"}; !slices.Equal(fp.sent[:4], want) {
+		t.Fatalf("the reset sent %q, want %q first", fp.sent, want)
+	}
+	if answers, _, done := p.Result(); !done || !reflect.DeepEqual(answers, map[string]string{pets.Question: "Fish"}) {
+		t.Fatalf("submitted %v", answers)
 	}
 }

@@ -100,6 +100,9 @@ type Entry struct {
 	// Reason (Failed) is the failure's reason code (Failure.Reason,
 	// internal/askattempt's Reasons): what the card offers to recover with.
 	Reason string
+	// Sending (Failed) says a "Send as a message" holds the question
+	// (BeginMessage): the card offers nothing until it ends.
+	Sending bool
 	// Left is what muster's typing is KNOWN to have left in the terminal's
 	// picker: the choices it was typing and how many keys of their plan it
 	// sent (nil: nothing known to be there). A drive that stopped part way
@@ -568,8 +571,9 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 	case Failed:
 		// 🔴 A HOST MAY STILL BE TYPING the last answer (its outcome never
 		// came back): no second drive into the same picker until it is known
-		// or MaxDrive has passed.
-		if s.now().Before(en.driveUntil) {
+		// or MaxDrive has passed. Nor while its answer is being sent as a
+		// message (BeginMessage).
+		if s.now().Before(en.driveUntil) || en.Sending {
 			return en.snapshot(), false, ErrBusy
 		}
 	}
@@ -639,27 +643,55 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	return en.snapshot(), nil
 }
 
-// SentAsMessage records that a Failed question's answer went to its session
-// as an ordinary message (internal/api's "Send as a message"): it stays
-// Failed — the CLI's record of the call still resolves it — with note as what
-// the card says, and offers no recovery any more (no Retry, no Reason), so the
-// answer is not sent twice from the card. ErrNotFound for a question that is
-// not there, ErrClosed for one not Failed.
-func (s *Store) SentAsMessage(key Key, note string) (Entry, error) {
+// BeginMessage CLAIMS a Failed question for internal/api's "Send as a
+// message", under the store's lock: offered(e) says the card offers it (its
+// reason, an answer muster was typing). 🔴 ONE CLAIM AT A TIME: a second
+// request while one holds it is ErrBusy (and so is a question a host may
+// still be typing into), so two concurrent requests never both dismiss and
+// queue. While claimed (Entry.Sending) the card offers no recovery, no
+// typing begins (BeginTyping's ErrBusy) and nothing else dismisses it.
+// ErrNotFound for a question not there; ErrClosed for one not Failed, or
+// whose card does not offer it. EndMessage releases the claim.
+func (s *Store) BeginMessage(key Key, offered func(Entry) bool) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case en.Sending, s.now().Before(en.driveUntil):
+		return en.snapshot(), ErrBusy
+	case en.State != Failed || !offered(en.snapshot()):
+		return en.snapshot(), ErrClosed
+	}
+	en.Sending = true
+	s.touch(en, &fire)
+	return en.snapshot(), nil
+}
+
+// EndMessage releases BeginMessage's claim on key. note "" puts the card back
+// as it was (the attempt failed before anything was done, so it still offers
+// what it did); otherwise note is what the card says from now on and it
+// offers no recovery any more (no Retry, no Reason) — the answer was sent, or
+// muster cannot send it — until the CLI's record of the call resolves it.
+func (s *Store) EndMessage(key Key, note string) Entry {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	en, ok := s.byID[s.byKey[key]]
-	switch {
-	case !ok:
-		return Entry{}, ErrNotFound
-	case en.State != Failed:
-		return en.snapshot(), ErrClosed
+	if !ok {
+		return Entry{}
 	}
-	en.Note, en.Retry, en.Reason = note, false, ""
+	en.Sending = false
+	if note != "" && en.State == Failed {
+		en.Note, en.Retry, en.Reason = note, false, ""
+	}
 	s.touch(en, &fire)
-	return en.snapshot(), nil
+	return en.snapshot()
 }
 
 // Dismissing reports whether the question at key (key.Owner is the request's
@@ -679,7 +711,7 @@ func (s *Store) Dismissing(key Key) (Entry, error) {
 		return Entry{}, ErrNotFound
 	case !en.State.Open():
 		return en.snapshot(), ErrClosed
-	case en.State == Typing, s.now().Before(en.driveUntil):
+	case en.State == Typing, s.now().Before(en.driveUntil), en.Sending:
 		return en.snapshot(), ErrBusy
 	}
 	return en.snapshot(), nil

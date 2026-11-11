@@ -124,42 +124,61 @@ func (s *Server) handleMirrorAskMessage(w http.ResponseWriter, r *http.Request) 
 		}
 		return
 	}
-	text := askMessageText(entry.Questions, entry.Typed)
-	if entry.State != askq.Failed || askattempt.Recovery(entry.Reason) != askattempt.RecoverMessage || text == "" {
+	// 🔴 THE CARD IS CLAIMED BEFORE ANYTHING IS DONE (askq's BeginMessage,
+	// under the store's lock): a second request while this one dismisses or
+	// queues is refused with the card, so one answer is never sent twice.
+	// The claim checks the card offers it — failed with a message recovery,
+	// and an answer muster was typing — and is released on every exit.
+	offered := func(x askq.Entry) bool {
+		return askattempt.Recovery(x.Reason) == askattempt.RecoverMessage && askMessageText(x.Questions, x.Typed) != ""
+	}
+	entry, err := s.asks.BeginMessage(key, offered)
+	switch {
+	case errors.Is(err, askq.ErrNotFound):
+		att.end("not-found")
+		http.NotFound(w, r)
+		return
+	case errors.Is(err, askq.ErrBusy):
+		att.end("in-progress")
+		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
+		return
+	case err != nil:
 		att.end("not-offered")
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
 		return
 	}
+	// end is the claim's release: note "" leaves the card offering what it
+	// did; otherwise it says note and offers nothing more.
+	ended := false
+	end := func(note string) askq.Entry {
+		ended = true
+		return s.asks.EndMessage(key, note)
+	}
+	defer func() {
+		if !ended {
+			s.asks.EndMessage(key, "")
+		}
+	}()
+	text := askMessageText(entry.Questions, entry.Typed)
 	// The answer as it was typed: whether it used "Other" is in its shape.
 	att.a.Shape.Other = askTypedOther(entry.Questions, entry.Typed)
-	if _, err := s.asks.Dismissing(key); err != nil {
-		switch {
-		case errors.Is(err, askq.ErrBusy):
-			att.end("in-progress")
-		case errors.Is(err, askq.ErrNotFound):
-			att.end("not-found")
-			http.NotFound(w, r)
-			return
-		default:
-			att.end("closed")
-		}
-		now, _ := s.asks.Find(key)
-		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, now))
-		return
-	}
 	// The picker first: dismissed, unless the failure said it is not on the
-	// screen. A message must never be typed into an open picker.
+	// screen. A message must never be typed into an open picker. A host that
+	// finds NO picker to dismiss (the screen is not a picker at all) is the
+	// same as dismissed: nothing there can take the message's keys. A host
+	// that sees something like a picker it cannot read refuses, and then the
+	// card stops offering it and says why: muster cannot send it safely.
 	if entry.Reason != "no-picker" {
 		c, can := s.ext.Mirror.(mirrorAskCanceller)
 		if !can || !h.AskCancel {
 			att.end("dismiss-failed")
-			http.Error(w, "Couldn't dismiss the terminal's picker (this host's muster-mirror cannot) — nothing was sent. Press Esc in the terminal, then send your answer.", http.StatusConflict)
+			s.writeAskLive(w, http.StatusConflict, questionCard(h, e, end(askMessageNoDismissNote)))
 			return
 		}
 		if _, err := c.CancelAsk(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window); err != nil && !errors.Is(err, mirror.ErrAskNoPicker) {
 			att.end("dismiss-failed")
 			s.logger.Printf("mirror: dismissing a question in %s/%s%s before sending its answer as a message: %v", h.Host, e.Session, e.Window, err)
-			http.Error(w, "Couldn't dismiss the terminal's picker, so nothing was sent: "+askCancelFailure(err), http.StatusConflict)
+			s.writeAskLive(w, http.StatusConflict, questionCard(h, e, end(askMessageDismissFailedNote(err))))
 			return
 		}
 	}
@@ -176,10 +195,18 @@ func (s *Server) handleMirrorAskMessage(w http.ResponseWriter, r *http.Request) 
 	s.logger.Printf("mirror: a question's answer in %s/%s%s was queued as a message (%s)", h.Host, e.Session, e.Window, entry.ID)
 	// The card offers no recovery any more — its answer went — and says so on
 	// every poll until the CLI's record of the call resolves it.
-	if now, err := s.asks.SentAsMessage(key, askSentAsMessageNote); err == nil {
-		entry = now
-	}
-	s.writeAskLive(w, http.StatusOK, questionCard(h, e, entry))
+	s.writeAskLive(w, http.StatusOK, questionCard(h, e, end(askSentAsMessageNote)))
+}
+
+// askMessageNoDismissNote and askMessageDismissFailedNote are what a card
+// says once its picker could not be dismissed for a message: nothing was
+// sent, and why.
+const askMessageNoDismissNote = "Couldn't dismiss the terminal's picker (this host's muster-mirror cannot), so your answer was not sent as a message. " +
+	"Press Esc in the terminal, then send your answer from the composer."
+
+func askMessageDismissFailedNote(err error) string {
+	return "Couldn't dismiss the terminal's picker, so your answer was not sent as a message: " + askCancelFailure(err) +
+		" Press Esc in the terminal, then send your answer from the composer."
 }
 
 // askSentAsMessageNote is what a card whose answer went as a message says.
