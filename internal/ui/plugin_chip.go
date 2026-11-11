@@ -39,7 +39,7 @@ import (
 //     made inert while it is open, so Tab stays in it. Close (or Escape, when
 //     no other dialog or popover is open to take it) unloads the page. "New
 //     tab" in its header is the hand-off in a new tab instead — except in the
-//     Android app, where its place is "Full screen": the same frame fills the
+//     Android app, where that same control reads "Full screen": the same frame fills the
 //     screen, never a new tab (the app would hand that to the system browser;
 //     see enterFull in the script).
 //   - Both mint a one-time hand-off at CLICK time (POST /plugin-handoffs,
@@ -250,13 +250,9 @@ func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
 	)
 }
 
-// PreviewAppAttr marks the panel while it is open inside the Android app
-// (AppBridgeName exists in the main frame): its header offers Full screen in
-// place of New tab. PreviewFullAttr marks it while it is full screen.
-const (
-	PreviewAppAttr  = "data-preview-app"
-	PreviewFullAttr = "data-preview-full"
-)
+// PreviewFullAttr marks the panel while it is full screen (the Android app
+// only: its header's one hand-off control reads Full screen there).
+const PreviewFullAttr = "data-preview-full"
 
 const exitFullIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
 
@@ -298,19 +294,18 @@ func previewPanel(c *PluginChips) g.Node {
 			Div(Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-4 pr-1 group-data-[preview-full]:hidden"),
 				H2(ID("preview-panel-title"), Class("min-w-0 flex-1 truncate text-sm font-semibold"), g.Text("Preview")),
 				picker,
-				// In a browser: New tab. In the Android app (PreviewAppAttr):
-				// Full screen instead, which keeps the preview in this frame.
+				// ONE hand-off control: New tab in a browser; in the Android
+				// app the script relabels it Full screen when the panel opens,
+				// and its tap keeps the preview in this frame.
 				A(
 					g.Attr("data-preview-newtab", ""),
 					Href("#"),
 					Target("_blank"),
 					Rel("noopener noreferrer"),
 					g.Attr("aria-label", "Open the preview in a new tab"),
-					Class(btn+" text-accent group-data-[preview-app]:hidden"),
+					Class(btn+" text-accent"),
 					g.Text("New tab"),
 				),
-				Button(Type("button"), g.Attr("data-preview-fullscreen", ""), g.Attr("aria-label", "Show the preview full screen"),
-					Class(btn+" hidden text-accent group-data-[preview-app]:inline-flex"), g.Text("Full screen")),
 				Button(Type("button"), g.Attr("data-preview-close", ""), g.Attr("aria-label", "Close the preview"),
 					Class(btn+" text-fg2"), g.Text("Close")),
 			),
@@ -343,7 +338,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   window.__musterPreviewPanel = true;
   var SIGN_IN = 'Your sign-in has expired: reload the page and sign in again.';
   var BLOCKED = 'The browser blocked the new tab. Allow pop-ups for this site, or use the preview here.';
-  var APP = '`+PreviewAppAttr+`', FULL = '`+PreviewFullAttr+`';
+  var FULL = '`+PreviewFullAttr+`';
   var busy = false;
   function panel() { return document.getElementById('preview-panel'); }
   // The button on screen: the header's, or the second row's below sm.
@@ -420,10 +415,10 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
 
   // 🔴 INSIDE THE ANDROID APP NEW TAB IS FULL SCREEN (operator decision): the
   // app's WebView sends every origin but muster's to the system browser, so a
-  // new tab of the plugin's page left the app. There the header offers Full
-  // screen instead: the SAME frame, never reloaded (its partitioned cookie and
-  // state carry over), fills the screen at every width, the header hidden,
-  // with an Exit button over its corner. Escape, Exit, Close and the app's
+  // new tab of the plugin's page left the app. There the same control reads
+  // Full screen, and its tap makes the SAME frame, never reloaded (its
+  // partitioned cookie and state carry over), fill the screen at every width,
+  // the header hidden, with an Exit button over its corner. Escape, Exit, Close and the app's
   // Back each leave it (Close also closes the panel).
   //
   // THE APP is the bridge object the app's WebView injects (AppBridgeName),
@@ -489,7 +484,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     claim(false);
     shield();
     if (closing !== true) {
-      var f = p.querySelector('[data-preview-fullscreen]');
+      var f = p.querySelector('[data-preview-newtab]');
       if (f) f.focus({ preventScroll: true });
     }
     return true;
@@ -498,10 +493,18 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   document.addEventListener('htmx:beforeHistorySave', function () { exitFull(true); });
   window.addEventListener('pagehide', function () { if (isFull()) exitFull(true); });
 
+  // label is the hand-off control's words for where the panel runs: New tab
+  // in a browser (as drawn), Full screen in the app.
+  function label(p) {
+    var a = p.querySelector('[data-preview-newtab]');
+    if (!a || !inApp()) return;
+    a.textContent = 'Full screen';
+    a.setAttribute('aria-label', 'Show the preview full screen');
+  }
   function open() {
     var p = panel();
     if (!p.hidden) return;
-    p.toggleAttribute(APP, inApp());
+    label(p);
     p.hidden = false;
     shield();
     expanded();
@@ -523,8 +526,6 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (t) t.focus();
   }
   function newTab() {
-    // In the app a new tab leaves it: full screen, never window.open.
-    if (inApp()) { enterFull(); return; }
     if (busy) return;
     say('');
     // Inside the tap, before any await (see the file comment).
@@ -545,8 +546,9 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (!t || !t.closest || !panel()) return;
     if (t.closest('[data-preview-toggle]')) { ev.preventDefault(); if (panel().hidden) open(); else close(); return; }
     if (t.closest('[data-preview-close]')) { ev.preventDefault(); close(); return; }
-    if (t.closest('[data-preview-newtab]')) { ev.preventDefault(); newTab(); return; }
-    if (t.closest('[data-preview-fullscreen]')) { ev.preventDefault(); enterFull(); return; }
+    // The one hand-off control: in the app a new tab would leave it, so
+    // there it is full screen, never window.open.
+    if (t.closest('[data-preview-newtab]')) { ev.preventDefault(); if (inApp()) enterFull(); else newTab(); return; }
     if (t.closest('[data-preview-exit-full]')) { ev.preventDefault(); exitFull(); }
   });
   document.addEventListener('change', function (ev) {

@@ -780,7 +780,7 @@ small PR in that repo, **in the plan and shipped alongside Phase 1**
    apply unchanged, which is why the dock always opens in the top document
    ([The view-swap frame](#the-view-swap-frame)).
    **A second claimer: the Preview panel's full screen** (in the app, the
-   panel's Full screen replaces New tab; `internal/ui/plugin_chip.go`). It
+   panel's New tab control is Full screen; `internal/ui/plugin_chip.go`). It
    posts the same pair, through the MAIN frame's bridge also when the panel
    is in the view-swap frame, and wraps the main frame's `musterBack` so a
    press leaves full screen first and otherwise reaches the dock as before.

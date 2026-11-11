@@ -186,11 +186,11 @@ test('the Preview button on both session views: drawn only while the window has 
   const panel = page.locator('#preview-panel');
   await expect(panel).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  // In a browser (no window.musterApp) the header offers New tab, never the
-  // Android app's Full screen.
+  // In a browser (no window.musterApp) the header's hand-off control is New
+  // tab, never the Android app's Full screen.
   await expect(newTab).toBeVisible();
-  await expect(panel.locator('[data-preview-fullscreen]')).toBeHidden();
-  await expect(panel).not.toHaveAttribute('data-preview-app', '');
+  await expect(newTab).toHaveText('New tab');
+  await expect(newTab).toHaveAttribute('aria-label', 'Open the preview in a new tab');
   const pbox = (await panel.boundingBox())!;
   expect([Math.round(pbox.x), Math.round(pbox.width)], 'the panel is the whole screen on a phone').toEqual([0, 390]);
   const frameEl = page.locator('#preview-panel iframe');
@@ -368,8 +368,8 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
 
   await page.goto(origin + viewOf('@1'));
   const panel = page.locator('#preview-panel');
-  const newTab = panel.locator('[data-preview-newtab]');
-  const full = panel.locator('[data-preview-fullscreen]');
+  // The ONE hand-off control: New tab in a browser, Full screen here.
+  const full = panel.locator('[data-preview-newtab]');
   const exit = panel.locator('[data-preview-exit-full]');
   const head = panel.locator('h2#preview-panel-title');
   const frameEl = panel.locator('iframe');
@@ -377,10 +377,10 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await page.locator('#preview-toggle-row').click();
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   expect(landings).toHaveLength(1);
-  await expect(panel).toHaveAttribute('data-preview-app', '');
-  await expect(newTab, 'no New tab in the app').toBeHidden();
   await expect(full).toBeVisible();
-  await expect(full).toHaveText('Full screen');
+  await expect(full, 'the control reads Full screen in the app').toHaveText('Full screen');
+  await expect(full).toHaveAttribute('aria-label', 'Show the preview full screen');
+  await expect(panel.locator('a, button').filter({ hasText: 'New tab' }), 'no New tab in the app').toHaveCount(0);
   await expect(exit).toBeHidden();
   expect(await msgs(), 'nothing claimed before full screen').toEqual([]);
 
@@ -433,17 +433,12 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(panel).toBeHidden();
   expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
 
-  // New tab itself, reached however (a script's click on the hidden link),
-  // never opens a tab in the app: it goes full screen.
+  // CLOSE from full screen (reopened: its tap, with the header hidden, is a
+  // script's) releases the claim with it.
   await page.locator('#preview-toggle-row').click();
   await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
-  const minted = landings.length;
-  await page.evaluate(() => (document.querySelector('#preview-panel [data-preview-newtab]') as HTMLElement).click());
+  await full.click();
   await expect(panel).toHaveAttribute('data-preview-full', '');
-  await page.waitForTimeout(500);
-  expect(context.pages().length, 'New tab opened no tab in the app').toBe(pages);
-  expect(landings, 'New tab minted nothing in the app').toHaveLength(minted);
-  // Close from full screen releases the claim with it.
   await page.evaluate(() => (document.querySelector('#preview-panel [data-preview-close]') as HTMLElement).click());
   await expect(panel).toBeHidden();
   expect((await msgs()).slice(-2)).toEqual([CLAIM_ON, CLAIM_OFF]);
@@ -468,8 +463,8 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   const before = (await msgs()).length;
   await term.locator('#preview-toggle-row').click();
   await expect(term.frameLocator('#preview-panel iframe').locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
-  await expect(term.locator('#preview-panel [data-preview-newtab]')).toBeHidden();
-  await term.locator('#preview-panel [data-preview-fullscreen]').click();
+  await expect(term.locator('#preview-panel [data-preview-newtab]'), 'Full screen in the frame too').toHaveText('Full screen');
+  await term.locator('#preview-panel [data-preview-newtab]').click();
   await expect(term.locator('#preview-panel')).toHaveAttribute('data-preview-full', '');
   expect((await msgs()).slice(before), 'the claim went to the main frame').toEqual([CLAIM_ON]);
   const frameMsgs = await term.locator('body').evaluate(() => (window as unknown as { __appMsgs?: string[] }).__appMsgs ?? []);
