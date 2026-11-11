@@ -76,6 +76,14 @@ func (f *Fake) FailAdminPasskeys(n int) {
 	f.mu.Unlock()
 }
 
+// FailSettings makes the next n GET /settings calls answer 500 — GoTrue
+// unreachable for the passkeys_enabled read.
+func (f *Fake) FailSettings(n int) {
+	f.mu.Lock()
+	f.settingsFailures = n
+	f.mu.Unlock()
+}
+
 // Passkeys returns user id's passkeys.
 func (f *Fake) Passkeys(userID string) []FakePasskey {
 	f.mu.Lock()

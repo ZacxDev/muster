@@ -511,11 +511,11 @@ func TestAPasswordResetRevokesTheUsersAPITokens(t *testing.T) {
 	if _, err := ts.Authenticate(sys, secret); !errors.Is(err, apitokens.ErrBadToken) {
 		t.Fatalf("the user's API token after a password reset: %v; want it revoked", err)
 	}
-	if loc := r.Header().Get("Location"); loc != "/account?reset=1" {
+	if loc := r.Header().Get("Location"); loc != "/account?reset=1&passkeys=kept" {
 		t.Fatalf("a successful reset lands on %q; want the account page that says the tokens were revoked", loc)
 	}
 	ck := setCookies(r)
-	page := do(w.edge, "GET", "/account?reset=1", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+	page := do(w.edge, "GET", "/account?reset=1&passkeys=kept", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
 	if page.Code != 200 || !strings.Contains(page.Body.String(), "Your API tokens were revoked") {
 		t.Fatalf("the reset's landing page: %d, does not say the API tokens were revoked\n%s", page.Code, truncate(page.Body.String(), 600))
 	}

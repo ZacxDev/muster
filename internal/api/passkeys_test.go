@@ -14,6 +14,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
+	"golang.org/x/net/html"
 )
 
 // postJSON POSTs body as JSON, same-origin unless an option says otherwise.
@@ -302,17 +303,117 @@ func TestAStaleSessionCannotAddAPasskey(t *testing.T) {
 	}
 }
 
-// TestAResetDeletesEveryPasskey: a password reset removes every passkey the
-// user has, so a passkey on a lost device cannot sign the thief back in.
+// resetForm is a reset POST for sub's recovery token, with the "Also remove
+// all my passkeys" box ticked when removePasskeys.
+func (w *invWorld) resetForm(sub, pw string, removePasskeys bool) url.Values {
+	v := url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {pw}, "password2": {pw}}
+	if removePasskeys {
+		v.Set(resetRemovePasskeysField, "1")
+	}
+	return v
+}
+
+// adminPasskeyCalls counts the requests muster made to GoTrue's ADMIN passkey
+// API (GET /admin/users/{id}/passkeys, DELETE …/passkeys/{id}) — the API a
+// reset deletes through.
+func (w *invWorld) adminPasskeyCalls() int {
+	n := 0
+	for _, c := range w.fake.Calls() {
+		if strings.HasPrefix(c.Path, "/admin/users/") && strings.Contains(c.Path, "/passkeys") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAResetWithoutTheBoxKeepsThePasskeys: a reset with the "Also remove all
+// my passkeys" box left unticked (the default) sets the password, ends the
+// other sessions — and keeps every passkey, which still signs in, with its
+// recorded flags. The audit row says the passkeys were not removed.
+func TestAResetWithoutTheBoxKeepsThePasskeys(t *testing.T) {
+	w := newPasskeyWorld(t)
+	uid, sub, at, rt := w.joinMember("pk-keep@invite.test")
+	old := withCookies(at, rt)
+	if rec := w.addPasskey("kept-phone", gotruetest.FlagUPUVBEBS, old); rec.Code != http.StatusOK {
+		t.Fatalf("add a passkey: %d %s", rec.Code, rec.Body)
+	}
+	w.fake.AddPasskey(sub, "kept-laptop")
+	gu, _ := w.fake.User(sub)
+	flagsBefore, _ := gu.AppMetadata[passkeyMetaKey].(map[string]any)
+	if len(flagsBefore) != 1 {
+		t.Fatalf("CONTROL: the added passkey's flags are recorded: %v", gu.AppMetadata)
+	}
+	const newPW = "a-new-long-password"
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, newPW, false))
+	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/account?reset=1&passkeys=kept" || setCookies(r)[accessCookieName] == nil {
+		t.Fatalf("reset: %d %q %s", r.Code, r.Header().Get("Location"), truncate(r.Body.String(), 300))
+	}
+	if gu, _ := w.fake.User(sub); gu.Password != newPW {
+		t.Fatal("the reset did not set the password")
+	}
+	if n := len(w.fake.Passkeys(sub)); n != 2 {
+		t.Fatalf("after a reset without the box the user has %d passkeys, want 2", n)
+	}
+	gu, _ = w.fake.User(sub)
+	if flags, _ := gu.AppMetadata[passkeyMetaKey].(map[string]any); len(flags) != 1 {
+		t.Fatalf("the recorded passkey flags after the reset: %v", gu.AppMetadata)
+	}
+	for _, cred := range []string{"kept-phone", "kept-laptop"} {
+		if rec := w.passkeySignIn(cred, gotruetest.FlagUPUV); rec.Code != http.StatusOK || setCookies(rec)[accessCookieName] == nil {
+			t.Fatalf("passkey %s after the reset: %d %s", cred, rec.Code, rec.Body)
+		}
+	}
+	// Everything else a reset does still happens: the old session is ended.
+	if rec := do(w.edge, "GET", "/account", nil, old, asXHR); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the pre-reset session after the reset: %d, want 401", rec.Code)
+	}
+	a := w.audit("user.password_reset")
+	if len(a) != 1 || a[0].UserID != uid || a[0].Detail["remove_passkeys"] != false || a[0].Detail["ip"] == nil {
+		t.Fatalf("user.password_reset audit %+v", a)
+	}
+	if _, has := a[0].Detail["passkeys_removed"]; has {
+		t.Fatalf("an unticked reset recorded a passkey count: %+v", a[0].Detail)
+	}
+}
+
+// TestAResetWithoutTheBoxNeverCallsThePasskeyAPI: the opt-in is a real branch.
+// With GoTrue's admin passkey API set to FAIL, a reset without the box still
+// succeeds — it never asked — and with the box the same failure fails it closed
+// (TestAResetFailsClosedWhenPasskeysCannotBeRemoved).
+func TestAResetWithoutTheBoxNeverCallsThePasskeyAPI(t *testing.T) {
+	w := newPasskeyWorld(t)
+	_, sub, _, _ := w.joinMember("pk-nocall@invite.test")
+	w.fake.AddPasskey(sub, "kept-1")
+	w.fake.FailAdminPasskeys(5)
+	before := w.adminPasskeyCalls()
+	const newPW = "a-new-long-password"
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, newPW, false))
+	if r.Code != http.StatusSeeOther {
+		t.Fatalf("an unticked reset with the passkey API failing: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	if gu, _ := w.fake.User(sub); gu.Password != newPW {
+		t.Fatal("the reset did not set the password")
+	}
+	if got := w.adminPasskeyCalls() - before; got != 0 {
+		t.Fatalf("an unticked reset made %d admin passkey calls, want 0", got)
+	}
+	if n := len(w.fake.Passkeys(sub)); n != 1 {
+		t.Fatalf("passkeys after the reset: %d, want 1", n)
+	}
+}
+
+// TestAResetDeletesEveryPasskey: a password reset with "Also remove
+// all my passkeys" ticked removes every passkey the user has, so a passkey on a
+// lost device cannot sign the thief back in; the audit row counts them.
 func TestAResetDeletesEveryPasskey(t *testing.T) {
 	w := newPasskeyWorld(t)
-	_, sub, _, _ := w.joinMember("pk-reset@invite.test")
+	uid, sub, _, _ := w.joinMember("pk-reset@invite.test")
 	w.fake.AddPasskey(sub, "lost-phone")
 	w.fake.AddPasskey(sub, "old-laptop")
 	if rec := w.passkeySignIn("lost-phone", gotruetest.FlagUPUV); rec.Code != http.StatusOK {
 		t.Fatalf("CONTROL: the passkey works before the reset: %d", rec.Code)
 	}
-	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", true))
 	if r.Code != http.StatusSeeOther {
 		t.Fatalf("reset: %d %s", r.Code, truncate(r.Body.String(), 300))
 	}
@@ -322,19 +423,25 @@ func TestAResetDeletesEveryPasskey(t *testing.T) {
 	if rec := w.passkeySignIn("lost-phone", gotruetest.FlagUPUV); rec.Code != http.StatusUnauthorized || len(setCookies(rec)) != 0 {
 		t.Fatalf("the pre-reset passkey after the reset: %d %s", rec.Code, rec.Body)
 	}
+	// JSON numbers come back as float64.
+	if a := w.audit("user.password_reset"); len(a) != 1 || a[0].UserID != uid ||
+		a[0].Detail["remove_passkeys"] != true || a[0].Detail["passkeys_removed"] != float64(2) {
+		t.Fatalf("user.password_reset audit %+v", a)
+	}
 }
 
-// TestAResetFailsClosedWhenPasskeysCannotBeRemoved: if GoTrue fails while the
-// reset is removing passkeys, the password is NOT set (the old one still signs
-// in) and the passkeys that were not reached are still there to be removed by
-// the next link — never a reset that reports success with a passkey left.
+// TestAResetFailsClosedWhenPasskeysCannotBeRemoved: with the box ticked, if
+// GoTrue fails while the reset is removing passkeys, the password is NOT set
+// (the old one still signs in) and the passkeys that were not reached are still
+// there to be removed by the next link — never a reset that reports success
+// with a passkey left.
 func TestAResetFailsClosedWhenPasskeysCannotBeRemoved(t *testing.T) {
 	w := newPasskeyWorld(t)
 	_, sub, _, _ := w.joinMember("pk-resetfail@invite.test")
 	w.fake.AddPasskey(sub, "kept-1")
 	w.fake.AddPasskey(sub, "kept-2")
 	w.fake.FailAdminPasskeys(1) // the list call fails
-	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", true))
 	if r.Code != http.StatusBadGateway || !strings.Contains(r.Body.String(), "The password could not be set") {
 		t.Fatalf("reset with GoTrue failing: %d %s", r.Code, truncate(r.Body.String(), 300))
 	}
@@ -343,6 +450,204 @@ func TestAResetFailsClosedWhenPasskeysCannotBeRemoved(t *testing.T) {
 	}
 	if n := len(w.fake.Passkeys(sub)); n != 2 {
 		t.Fatalf("CONTROL: the failure removed %d passkeys before it", 2-n)
+	}
+	if a := w.audit("user.password_reset"); len(a) != 0 {
+		t.Fatalf("a reset that set nothing wrote an audit row: %+v", a)
+	}
+}
+
+// resetBoxState finds the reset form's "remove all my passkeys" checkbox in
+// page by parsing it, and returns whether it exists and is checked.
+func resetBoxState(t *testing.T, page string) (found, checked bool) {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "input" {
+			attrs := map[string]string{}
+			has := map[string]bool{}
+			for _, a := range n.Attr {
+				attrs[a.Key], has[a.Key] = a.Val, true
+			}
+			if attrs["name"] == resetRemovePasskeysField {
+				if found {
+					t.Fatalf("two %q inputs on the page", resetRemovePasskeysField)
+				}
+				if attrs["type"] != "checkbox" || attrs["id"] == "" {
+					t.Fatalf("the passkey input is not a labelled checkbox: %v", n.Attr)
+				}
+				found, checked = true, has["checked"]
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return found, checked
+}
+
+// TestTheResetPageOffersAnUntickedPasskeyBox: the reset page carries the
+// "Also remove all my passkeys" checkbox, UNTICKED; a form that comes back
+// with a problem keeps the person's choice; and the box is there even with
+// passkeys switched off in GoTrue, where old passkeys may still exist.
+func TestTheResetPageOffersAnUntickedPasskeyBox(t *testing.T) {
+	w := newPasskeyWorld(t)
+	page := do(w.edge, "GET", ResetPath, nil)
+	if page.Code != http.StatusOK {
+		t.Fatalf("the reset page: %d", page.Code)
+	}
+	if found, checked := resetBoxState(t, page.Body.String()); !found || checked {
+		t.Fatalf("the reset page's passkey box: found %v, checked %v; want found, unchecked", found, checked)
+	}
+	if !strings.Contains(page.Body.String(), html.EscapeString(resetRemovePasskeysLabel)) {
+		t.Fatal("the passkey box has no label")
+	}
+	_, sub, _, _ := w.joinMember("pk-page@invite.test")
+	for _, tick := range []bool{true, false} {
+		v := w.resetForm(sub, "short", tick)
+		r := do(w.edge, "POST", ResetPath, v)
+		if r.Code != http.StatusBadRequest {
+			t.Fatalf("a short password: %d", r.Code)
+		}
+		if found, checked := resetBoxState(t, r.Body.String()); !found || checked != tick {
+			t.Fatalf("the form back after a problem, ticked %v: found %v, checked %v", tick, found, checked)
+		}
+	}
+	off := newInviteWorld(t) // passkeys off in GoTrue
+	if found, checked := resetBoxState(t, do(off.edge, "GET", ResetPath, nil).Body.String()); !found || checked {
+		t.Fatalf("with passkeys off in GoTrue the box: found %v, checked %v; want found, unchecked", found, checked)
+	}
+}
+
+// TestTheResetPasskeyBoxSurvivesAFailingSettingsRead: with GoTrue's /settings
+// failing (read as "passkeys off", and not cached), the box is still on the
+// page, a ticked box still comes back ticked after a problem, and the ticked
+// reset still deletes every passkey through the admin API. Gating the box on
+// /settings failed OPEN: the box vanished, and the lost device's passkey
+// survived the reset its owner meant to remove it with.
+func TestTheResetPasskeyBoxSurvivesAFailingSettingsRead(t *testing.T) {
+	w := newPasskeyWorld(t)
+	_, sub, _, _ := w.joinMember("pk-nosettings@invite.test")
+	w.fake.AddPasskey(sub, "stolen-phone")
+	w.s.gt.pk.mu.Lock()
+	w.s.gt.pk.at = time.Time{} // forget the cached passkeys_enabled
+	w.s.gt.pk.mu.Unlock()
+	w.fake.FailSettings(1000)
+	settingsBefore := w.fake.CountCalls("GET", "/settings")
+	if found, checked := resetBoxState(t, do(w.edge, "GET", ResetPath, nil).Body.String()); !found || checked {
+		t.Fatalf("the reset page with /settings failing: found %v, checked %v; want found, unchecked", found, checked)
+	}
+	r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "short", true))
+	if found, checked := resetBoxState(t, r.Body.String()); r.Code != http.StatusBadRequest || !found || !checked {
+		t.Fatalf("the form back after a problem, /settings failing: %d found %v, checked %v", r.Code, found, checked)
+	}
+	// CONTROL: the failure is really served, and muster reads it as "off".
+	if w.s.passkeysServed(context.Background()) || w.fake.CountCalls("GET", "/settings") == settingsBefore {
+		t.Fatal("CONTROL: /settings never failed, or muster still believes passkeys are on")
+	}
+	if r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", true)); r.Code != http.StatusSeeOther {
+		t.Fatalf("the ticked reset with /settings failing: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	if n := len(w.fake.Passkeys(sub)); n != 0 {
+		t.Fatalf("after the ticked reset the user still has %d passkeys", n)
+	}
+}
+
+// resetNoteText is the reset-done note on an /account page: the text of its
+// role="status" paragraph, whitespace collapsed.
+func resetNoteText(t *testing.T, page string) string {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	var text func(*html.Node) string
+	text = func(n *html.Node) string {
+		if n.Type == html.TextNode {
+			return n.Data
+		}
+		var b strings.Builder
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			b.WriteString(text(c))
+		}
+		return b.String()
+	}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "p" {
+			for _, a := range n.Attr {
+				if a.Key == "role" && a.Val == "status" {
+					notes = append(notes, strings.Join(strings.Fields(text(n)), " "))
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if len(notes) != 1 {
+		t.Fatalf("want one status note on the page, got %q", notes)
+	}
+	return notes[0]
+}
+
+// TestTheResetDoneNoteSaysWhatHappenedToThePasskeys: where a reset lands says
+// whether the passkeys were kept or how many were removed — the whole note is
+// pinned on each path.
+func TestTheResetDoneNoteSaysWhatHappenedToThePasskeys(t *testing.T) {
+	w := newPasskeyWorld(t)
+	for _, c := range []struct {
+		name     string
+		tick     bool
+		passkeys int
+		loc      string
+		note     string
+	}{
+		{"kept", false, 2, "/account?reset=1&passkeys=kept",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+				"Your passkeys were kept and still sign you in. Remove any you no longer trust under Passkeys."},
+		{"removed", true, 3, "/account?reset=1&passkeys=3",
+			"Your password was reset. Your API tokens were revoked; create new ones under API tokens below. " +
+				"All 3 of your passkeys were removed."},
+	} {
+		_, sub, _, _ := w.joinMember("pk-note-" + c.name + "@invite.test")
+		for i := 0; i < c.passkeys; i++ {
+			w.fake.AddPasskey(sub, c.name+"-cred-"+strconv.Itoa(i))
+		}
+		r := do(w.edge, "POST", ResetPath, w.resetForm(sub, "a-new-long-password", c.tick))
+		if r.Code != http.StatusSeeOther || r.Header().Get("Location") != c.loc {
+			t.Fatalf("%s: reset %d → %q, want %q", c.name, r.Code, r.Header().Get("Location"), c.loc)
+		}
+		ck := setCookies(r)
+		page := do(w.edge, "GET", c.loc, nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+		if got := resetNoteText(t, page.Body.String()); page.Code != 200 || got != c.note {
+			t.Fatalf("%s: the note %d\n got: %q\nwant: %q", c.name, page.Code, got, c.note)
+		}
+	}
+}
+
+// TestResetPasskeysNote: each value resetDonePath writes has its sentence, and
+// anything else — a hand-typed query — adds nothing.
+func TestResetPasskeysNote(t *testing.T) {
+	for v, want := range map[string]string{
+		"kept": ResetPasskeysKeptNote,
+		"0":    "You had no passkeys to remove.",
+		"1":    "Your passkey was removed.",
+		"7":    "All 7 of your passkeys were removed.",
+		"":     "", "-1": "", "02": "", "2x": "", "KEPT": "", "<b>": "",
+	} {
+		if got := resetPasskeysNote(v); got != want {
+			t.Errorf("resetPasskeysNote(%q) = %q, want %q", v, got, want)
+		}
+	}
+	if resetDonePath(false, 5) != "/account?reset=1&passkeys=kept" || resetDonePath(true, 5) != "/account?reset=1&passkeys=5" {
+		t.Fatalf("resetDonePath: %q %q", resetDonePath(false, 5), resetDonePath(true, 5))
 	}
 }
 
