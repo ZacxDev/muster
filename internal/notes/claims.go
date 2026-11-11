@@ -13,9 +13,11 @@ import (
 //   - a SESSION claimed it through muster's task tools: its task_sessions row
 //     carries claimed_at (a status write to in_progress that carried the
 //     session's id; internal/api/task_claims.go is the writer), or
-//   - its plugin task REFERENCE's upstream says someone is on it: the snapshot
-//     names claimants, or its status is in_progress (the upstream's "in
-//     progress", whoever set it).
+//   - its plugin task REFERENCE's upstream NAMES a claimant: the snapshot's
+//     claimants carry the claiming agent and/or its session (agent,
+//     agent_session). A status alone — in_progress, paused, whoever set it —
+//     is NO claim: it names nobody, and an owner's own in_progress (or a
+//     plugin from before claimants) must not read as someone working it.
 //
 // Nothing else makes a claim: not a focus title, not transcript text, not a
 // session that merely read or commented on the task (role `read`/`worked`
@@ -45,10 +47,10 @@ type Claim struct {
 	// Who is the name the board shows.
 	Who string `json:"who"`
 	// SessionID is the claiming session (ClaimSession), or the upstream
-	// claimant's recorded session ("" when it has none).
+	// claimant's agent_session ("" when it has none).
 	SessionID string `json:"sessionId,omitempty"`
-	// Kind is an upstream claimant's kind ("person", "agent", or "").
-	Kind string `json:"kind,omitempty"`
+	// Agent is an upstream claimant's agent id ("" when it has none).
+	Agent string `json:"agent,omitempty"`
 }
 
 // Claims is every claim on n, sessions first (in thread order), then the
@@ -69,27 +71,28 @@ func Claims(n Note) []Claim {
 	if n.Ref == nil {
 		return out
 	}
-	snap := n.Ref.Snapshot
-	for _, c := range snap.Claimants {
-		if c.Name == "" {
-			continue
+	for _, c := range n.Ref.Snapshot.Claimants {
+		if who := c.who(); who != "" {
+			out = append(out, Claim{Source: ClaimUpstream, Who: who, SessionID: c.AgentSession, Agent: c.Agent})
 		}
-		out = append(out, Claim{Source: ClaimUpstream, Who: c.Name, SessionID: c.Session, Kind: c.Kind})
-	}
-	if len(snap.Claimants) == 0 && snap.Status == StatusInProgress {
-		// No claimant named (a plugin that does not send them, or an upstream
-		// moved to in progress by hand): the status is the claim.
-		label := snap.StatusLabel
-		if label == "" {
-			label = snap.Status
-		}
-		out = append(out, Claim{Source: ClaimUpstream, Who: "upstream (" + label + ")"})
 	}
 	return out
 }
 
-// Claimed reports whether n has any claim (Claims).
-func Claimed(n Note) bool { return len(Claims(n)) > 0 }
+// who is the name an upstream claimant is shown under: its display name, else
+// its agent, else its session's prefix; "" for a claimant that names nobody
+// (no claim).
+func (c RefClaimant) who() string {
+	switch {
+	case c.Name != "":
+		return c.Name
+	case c.Agent != "":
+		return c.Agent
+	case c.AgentSession != "":
+		return SessionClaimName(c.AgentSession)
+	}
+	return ""
+}
 
 // SessionClaimName is the name a session's claim is shown under when it came
 // with none: "session " and the id's first 8 characters.
@@ -122,12 +125,11 @@ func (s *PGStore) ClaimByLink(ctx context.Context, noteID int64, l SessionLink, 
 	return tag.RowsAffected() > 0, nil
 }
 
-// ReleaseClaims clears the session claims on task noteID — every session's,
-// or only sessionID's when it is not "" — and reports how many it cleared.
-// The links themselves stay (they record work).
-func (s *PGStore) ReleaseClaims(ctx context.Context, noteID int64, sessionID string) (int64, error) {
+// ReleaseClaims clears every session claim on task noteID and reports how
+// many it cleared. The links themselves stay (they record work).
+func (s *PGStore) ReleaseClaims(ctx context.Context, noteID int64) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE task_sessions SET claimed_at = NULL, claimed_by = ''
-		WHERE note_id = $1 AND claimed_at IS NOT NULL AND ($2 = '' OR session_id = $2)`, noteID, sessionID)
+		WHERE note_id = $1 AND claimed_at IS NOT NULL`, noteID)
 	if err != nil {
 		return 0, err
 	}

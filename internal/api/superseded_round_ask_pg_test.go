@@ -19,16 +19,24 @@ import (
 // Through the real server, sweep and Postgres; every repository, sha and id is
 // the pr fixture's invented one.
 
-// supersededErr is the error of a route superseded by route newer, spelled
-// from the base's own constant (so this file compiles on the pre-change tree
-// and goes red there for a behavioural reason).
-func supersededErr(newer string) string { return prRouteSuperseded + " (route " + newer + ")" }
+// supersededErr is the error of a route superseded by route newer's review of
+// a NEWER head (plugins.SupersededByNewerHeadError), spelled from the base's
+// own constant (so this file compiles on the pre-change tree and goes red there
+// for a behavioural reason).
+func supersededErr(newer string) string {
+	return prRouteSuperseded + ", a newer head commit (route " + newer + ")"
+}
+
+// supersededByArrivalErr is the error of a route superseded on arrival alone
+// (the heads' order unknown: plugins.SupersededRouteError).
+func supersededByArrivalErr(newer string) string { return prRouteSuperseded + " (route " + newer + ")" }
 
 // supersededPair routes an older round (its paste left queued, as the false
 // alarms' were) and then a newer one to the same session: the older message
 // and route, the newer message and route.
 func (f *prFixture) supersededPair(t *testing.T, prefix string) (plugins.Message, plugins.Route, plugins.Message, plugins.Route) {
 	t.Helper()
+	f.withPRCommits(shaRoundA, shaRoundB) // the pull request's commits: A, then B
 	f.authored(t, f.asOwner, routeSID, prCreated())
 	oldMsg := f.review(t, prefix+"-old", prSender, true, part(1, 1, shaRoundA))
 	old := f.oneRoute(t, oldMsg)
@@ -44,6 +52,50 @@ func (f *prFixture) supersededPair(t *testing.T, prefix string) (plugins.Message
 		t.Fatalf("fixture: the unsent superseded round was settled %q; the sweep must decide it", r)
 	}
 	return oldMsg, old, newMsg, cur
+}
+
+// TestALateReviewOfAnOlderHeadSupersedesNothing (REGRESSION, the #413
+// invariant; red at #586's first head): the pull request's commits are A then
+// B. B's review is routed (its paste still queued); a LATE review of A arrives.
+// The newest head wins: B's route stays routed and its paste queued — the late
+// older review hides nothing — and A's review is routed beside it.
+func TestALateReviewOfAnOlderHeadSupersedesNothing(t *testing.T) {
+	f := newPRFixture(t)
+	f.withPRCommits(shaRoundA, shaRoundB)
+	f.authored(t, f.asOwner, routeSID, prCreated())
+	newerMsg := f.review(t, "late-old-head-b", prSender, true, part(1, 1, shaRoundB))
+	newer := f.oneRoute(t, newerMsg)
+	late := f.oneRoute(t, f.review(t, "late-old-head-a", prSender, true, part(1, 1, shaRoundA)))
+	if got := f.routeState(t, newer.RouteID); got.State != plugins.RouteRouted {
+		t.Fatalf("the newer head's route is %s %q after a late review of an older head; want routed", got.State, got.Error)
+	}
+	if it := f.queueRow(t, *newer.SendQueueID); it.State != sendqueue.Queued {
+		t.Fatalf("the newer head's paste is %s; want still queued", it.State)
+	}
+	if got := f.routeState(t, late.RouteID); got.State != plugins.RouteRouted {
+		t.Fatalf("the late older head's route is %s; want routed", got.State)
+	}
+	if f.askedAbout(t, newerMsg) {
+		t.Fatal("the newer head's live route raised a \"not acted on\" ask")
+	}
+}
+
+// TestAnUnknownHeadOrderStillRaisesTheAsk (red at #586's first head): with no
+// way to read the pull request's commits, a later-arriving round supersedes by
+// arrival (as before) and that is NOT handled — the superseded message still
+// raises its ask, since muster cannot tell it was the older head.
+func TestAnUnknownHeadOrderStillRaisesTheAsk(t *testing.T) {
+	f := newPRFixture(t)
+	f.authored(t, f.asOwner, routeSID, prCreated())
+	oldMsg := f.review(t, "unknown-order-a", prSender, true, part(1, 1, shaRoundA))
+	old := f.oneRoute(t, oldMsg)
+	cur := f.oneRoute(t, f.review(t, "unknown-order-b", prSender, true, part(1, 1, shaRoundB)))
+	if got := f.routeState(t, old.RouteID); got.State != plugins.RouteFailed || got.Error != supersededByArrivalErr(cur.RouteID) {
+		t.Fatalf("the earlier round's route: %s %q; want failed, %q", got.State, got.Error, supersededByArrivalErr(cur.RouteID))
+	}
+	if !f.askedAbout(t, oldMsg) {
+		t.Fatal("a round superseded by arrival alone (head order unknown) raised no ask")
+	}
 }
 
 // TestARouteSupersededByANewerRoundRaisesNoAsk (REGRESSION, red at the base):

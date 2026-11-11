@@ -97,15 +97,15 @@ type pluginRefIn struct {
 	// record. One line of plain text, cut at maxRefAuthorRunes like a comment
 	// author; the task notifications name it (taskRefFragment).
 	Creator string `json:"creator"`
-	// Claimants is OPTIONAL: who the upstream says is working the record
-	// beyond the owner (an assignee who is not the owner, an agent that took
-	// it). Cut, never refused: at most maxRefClaimants, each name one line of
-	// plain text; a kind other than person/agent, and a session id that is not
-	// one, are dropped; a claimant with no name is dropped (notes.Claims).
+	// Claimants is OPTIONAL: who CLAIMED the record upstream — the claiming
+	// agent (agent) and its session (agent_session), with an optional display
+	// name. Cut, never refused: at most maxRefClaimants; agent and name are
+	// one line of plain text; an agent_session that is not a session id is
+	// dropped; a claimant left naming nobody is dropped (notes.Claims).
 	Claimants []struct {
-		Kind    string `json:"kind"`
-		Name    string `json:"name"`
-		Session string `json:"session"`
+		Agent        string `json:"agent"`
+		AgentSession string `json:"agent_session"`
+		Name         string `json:"name"`
 	} `json:"claimants"`
 	Comments []struct {
 		ID        string `json:"id"`
@@ -238,19 +238,15 @@ func (ref pluginRefIn) snapshot(key string) notes.RefSnapshot {
 		snap.Title = key
 	}
 	for _, c := range ref.Claimants {
-		name := plainLabel(c.Name, maxRefAuthorRunes)
-		if name == "" {
-			continue
+		cl := notes.RefClaimant{Agent: plainLabel(c.Agent, maxRefAuthorRunes), Name: plainLabel(c.Name, maxRefAuthorRunes)}
+		if mirror.ValidClaudeSession(c.AgentSession) {
+			cl.AgentSession = c.AgentSession
+		}
+		if cl == (notes.RefClaimant{}) {
+			continue // names nobody: no claim
 		}
 		if len(snap.Claimants) == maxRefClaimants {
 			break
-		}
-		cl := notes.RefClaimant{Name: name}
-		if c.Kind == "person" || c.Kind == "agent" {
-			cl.Kind = c.Kind
-		}
-		if mirror.ValidClaudeSession(c.Session) {
-			cl.Session = c.Session
 		}
 		snap.Claimants = append(snap.Claimants, cl)
 	}

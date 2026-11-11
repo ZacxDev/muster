@@ -8,8 +8,8 @@ import (
 
 // TestClaimsPinnedCases is THE claim predicate's table (claims.go): every
 // case a literal, each fixture's names distinct from each other and from the
-// constants the rule spells ("upstream (", "session "), so a mutant that
-// hardcodes one cannot pass for another.
+// constant the rule spells ("session "), so a mutant that hardcodes one cannot
+// pass for another.
 func TestClaimsPinnedCases(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
 	claimed := SessionLink{SessionID: "sess-aaaa1111-x", Role: RoleWorked, ClaimedAt: &at, ClaimedBy: "lathe bench"}
@@ -32,25 +32,24 @@ func TestClaimsPinnedCases(t *testing.T) {
 			[]Claim{{Source: ClaimSession, Who: "session sess-bbb", SessionID: "sess-bbbb2222-y"}}},
 		{"an open reference with no claimants field", Note{Ref: ref(StatusOpen, "to discuss")}, nil},
 		{"an open reference with an empty claimants list", Note{Ref: ref(StatusOpen, "to discuss", []RefClaimant{}...)}, nil},
-		{"ready for review upstream is no claim", Note{Ref: ref(StatusReadyForReview, "pending review")}, nil},
-		{"an upstream claimant", Note{Ref: ref(StatusOpen, "to do", RefClaimant{Kind: "agent", Name: "press-bot", Session: "s-9"})},
-			[]Claim{{Source: ClaimUpstream, Who: "press-bot", SessionID: "s-9", Kind: "agent"}}},
-		{"a nameless upstream claimant is dropped", Note{Ref: ref(StatusOpen, "to do", RefClaimant{Kind: "person"})}, nil},
-		{"in progress upstream, no claimant: the status is the claim", Note{Ref: ref(StatusInProgress, "paused")},
-			[]Claim{{Source: ClaimUpstream, Who: "upstream (paused)"}}},
-		{"in progress upstream, no label: the status", Note{Ref: ref(StatusInProgress, "")},
-			[]Claim{{Source: ClaimUpstream, Who: "upstream (in_progress)"}}},
-		{"in progress upstream WITH a claimant: the claimant only", Note{Ref: ref(StatusInProgress, "in progress", RefClaimant{Name: "Q. Smith"})},
-			[]Claim{{Source: ClaimUpstream, Who: "Q. Smith"}}},
+		// 🔴 A STATUS NAMES NOBODY: in progress upstream, with no claimant, is no
+		// claim (an owner's own in_progress; a plugin from before claimants).
+		{"in progress upstream, no claimant: NO claim", Note{Ref: ref(StatusInProgress, "paused")}, nil},
+		{"ready for review upstream, no claimant: no claim", Note{Ref: ref(StatusReadyForReview, "pending review")}, nil},
+		{"an upstream claim with agent and session: shown by the agent", Note{Ref: ref(StatusOpen, "to do",
+			RefClaimant{Agent: "ag_press01", AgentSession: "s-9"})},
+			[]Claim{{Source: ClaimUpstream, Who: "ag_press01", SessionID: "s-9", Agent: "ag_press01"}}},
+		{"a display name wins over the agent", Note{Ref: ref(StatusOpen, "to do",
+			RefClaimant{Agent: "ag_press02", AgentSession: "s-8", Name: "press-bot"})},
+			[]Claim{{Source: ClaimUpstream, Who: "press-bot", SessionID: "s-8", Agent: "ag_press02"}}},
+		{"a session only: shown by its prefix", Note{Ref: ref(StatusOpen, "to do", RefClaimant{AgentSession: "77aa88bb99cc"})},
+			[]Claim{{Source: ClaimUpstream, Who: "session 77aa88bb", SessionID: "77aa88bb99cc"}}},
+		{"a claimant naming nobody is dropped", Note{Ref: ref(StatusInProgress, "in progress", RefClaimant{})}, nil},
 		{"both systems: sessions first", Note{Sessions: []SessionLink{claimed}, Ref: ref(StatusOpen, "to do", RefClaimant{Name: "Q. Smith"})},
 			[]Claim{{Source: ClaimSession, Who: "lathe bench", SessionID: "sess-aaaa1111-x"}, {Source: ClaimUpstream, Who: "Q. Smith"}}},
 	} {
-		got := Claims(c.n)
-		if !reflect.DeepEqual(got, c.want) {
+		if got := Claims(c.n); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
-		}
-		if Claimed(c.n) != (len(c.want) > 0) {
-			t.Errorf("%s: Claimed = %v", c.name, Claimed(c.n))
 		}
 	}
 }

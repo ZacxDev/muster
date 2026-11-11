@@ -54,40 +54,60 @@ func sqlStringList(names []string) string {
 }
 
 // dispositioned: settled, the chief acted on it (chiefActed, retry.go), or its
-// pull-request review route was superseded by a newer round
-// (supersededByNewerRound).
-var dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + ` OR ` + supersededByNewerRound + `)`
+// pull-request review route was superseded by a review of a NEWER head commit
+// (supersededByNewerHead).
+var dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + ` OR ` + supersededByNewerHead + `)`
 
-// PRRouteSuperseded is the error a review round's route ends with when a
+// PRRouteSuperseded opens the error a review round's route ends with when a
 // LATER-ARRIVING round (another head commit) of the same pull request was
-// routed to the same session (internal/api's supersedePRRoutes). "Newer"
-// means later by arrival, not a newer commit. SupersededRouteError is the
-// whole error, naming the newer round's route: the ONE spelling the writer
-// uses and supersededByNewerRound parses.
+// routed to the same session and superseded it (internal/api's
+// supersedePRRoutes). Two spellings follow it, the ONE place each is written
+// and read:
+//   - SupersededRouteError: superseded by ARRIVAL — muster could not tell
+//     which head is newer (no GitHub App, a head not among the pull request's
+//     commits, an error). Not handled: the "not acted on" ask still raises it,
+//     so a late review of an older head can never silently hide a newer one.
+//   - SupersededByNewerHeadError: the superseding review's head is the same
+//     as or NEWER than this one's, by the pull request's commit order.
+//     Handled (supersededByNewerHead).
+//
+// A review of a head GitHub orders OLDER supersedes nothing (supersedePRRoutes).
 const PRRouteSuperseded = "superseded by a newer review round"
 
-// SupersededRouteError is the error of a route superseded by route newer.
+// prRouteNewerHead is what SupersededByNewerHeadError adds after
+// PRRouteSuperseded.
+const prRouteNewerHead = ", a newer head commit"
+
+// SupersededRouteError is the error of a route superseded by route newer on
+// arrival alone (the heads' order unknown).
 func SupersededRouteError(newer string) string { return PRRouteSuperseded + " (route " + newer + ")" }
 
-// supersededByNewerRound: message m's review route ended ONLY because a newer
-// review round of the same pull request superseded it (SupersededRouteError),
-// and that newer round's route is another message's. Such a message is
-// handled whether or not its own paste was sent (operator decision, 0.191):
-// the newer round carries the review now, so the newer MESSAGE is the one
-// that answers for it — when the newer route itself fails for a real reason,
-// its message raises the "not acted on" ask (it is undispositioned), and a
-// newer route superseded in turn hands that to ITS successor. One ask, on the
-// newest message, never one per round.
-var supersededByNewerRound = `EXISTS (SELECT 1 FROM session_routes r JOIN session_routes n
+// SupersededByNewerHeadError is the error of a route superseded by route newer
+// whose head the pull request's commits order after this route's.
+func SupersededByNewerHeadError(newer string) string {
+	return PRRouteSuperseded + prRouteNewerHead + " (route " + newer + ")"
+}
+
+// supersededByNewerHead: message m's review route ended ONLY because a review
+// of a NEWER head of the same pull request superseded it
+// (SupersededByNewerHeadError), and that newer route is another message's.
+// Such a message is handled whether or not its own paste was sent (operator
+// decision, 0.191): the newer review carries it now, so the newer MESSAGE
+// answers for it — when the newer route itself fails for a real reason, its
+// message raises the "not acted on" ask (it is undispositioned), and a newer
+// route superseded in turn hands that to ITS successor. One ask, on the
+// newest message. A route superseded on arrival alone (SupersededRouteError)
+// is NOT matched.
+var supersededByNewerHead = `EXISTS (SELECT 1 FROM session_routes r JOIN session_routes n
 		ON n.route_id = substring(r.error FROM '` + supersededErrorPattern() + `')
 	WHERE r.plugin_message_id = m.id AND r.state = 'failed'
 	  AND n.plugin_message_id IS NOT NULL AND n.plugin_message_id <> m.id)`
 
-// supersededErrorPattern is SupersededRouteError as a POSIX regex whose one
-// group is the newer route's id (routeIDPattern's shape). It panics (at
-// package init) if the constant could break out of the SQL literal.
+// supersededErrorPattern is SupersededByNewerHeadError as a POSIX regex whose
+// one group is the newer route's id (routeIDPattern's shape). It panics (at
+// package init) if the constants could break out of the SQL literal.
 func supersededErrorPattern() string {
-	p := `^` + regexp.QuoteMeta(PRRouteSuperseded) + ` \(route (` + strings.Trim(routeIDPattern.String(), "^$") + `)\)$`
+	p := `^` + regexp.QuoteMeta(PRRouteSuperseded+prRouteNewerHead) + ` \(route (` + strings.Trim(routeIDPattern.String(), "^$") + `)\)$`
 	if strings.ContainsRune(p, '\'') {
 		panic("plugins: PRRouteSuperseded must not contain a quote")
 	}

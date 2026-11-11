@@ -178,6 +178,11 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	note, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(r.Context(), refOrigin{Author: a.Name, Agent: a.Name})), writerAgentRoute, id, body.Status)
+	if err == nil || errors.Is(err, errQueuedUpstream) {
+		// The agent setting its task back to open releases its claims
+		// (task_claims.go); an agent names no session, so it claims nothing.
+		s.claimOnStatus(r.Context(), writerAgentRoute, id, body.Status, claimant{})
+	}
 	if errors.Is(err, errQueuedUpstream) {
 		s.writeJSON(w, http.StatusAccepted, struct {
 			notes.Note
@@ -936,6 +941,10 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 			return toolErr("%s", why)
 		}
 		n, err := s.setNoteStatus(notes.ForAgent(withRefOrigin(ctx, refOrigin{Author: a.Name, Agent: a.Name})), writerAgentTool, *a.NoteID, in.Status)
+		if err == nil || errors.Is(err, errQueuedUpstream) {
+			// Back to open releases the task's claims (task_claims.go).
+			s.claimOnStatus(ctx, writerAgentTool, *a.NoteID, in.Status, claimant{})
+		}
 		if errors.Is(err, errQueuedUpstream) {
 			return toolJSON(map[string]any{"queued": true, "task_id": n.ID, "message": refQueuedText})
 		}

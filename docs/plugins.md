@@ -468,7 +468,7 @@ fresh snapshot. muster never calls the plugin: the plugin claims the queue.
 | `reference.title`, `body` | The task's title and body follow them. `body` is cut at 16 KiB. An empty title shows the key. |
 | `reference.url` | Linked from the task page. A link that is not `http(s)`, or is over 2 KiB, is dropped. |
 | `reference.creator` | Optional. The upstream's display name for whoever created the record. The task's [notifications](push.md) name it (`by A. Person`). One line of plain text, cut at 200 characters. Leave it out when the upstream has none. A muster from before this field refuses it like any unknown field (`400`), so send it only to a muster that documents it. |
-| `reference.claimants` | Optional. Who the upstream says is **working** the record, beyond you (the owner the reference was filed for): `[{"kind": "person"\|"agent", "name": "…", "session": "…"}]` — an assignee who is not you, an agent that took the record. `name` is required (one line, cut at 200 characters; a claimant without one is dropped); a `kind` other than `person` or `agent` is dropped, and so is a `session` that is not a coding-agent session id. At most 20 are kept. A non-empty list makes the task [claimed](tasks.md#claims); a claimant whose `session` is one of your mirrored sessions a host lists now is also linked to the task (`worked`). Leave it out (or send `[]`) when nobody else is on it. A muster from before this field refuses it (`400`), so send it only to a muster that documents it. |
+| `reference.claimants` | Optional. Who **claimed** the record upstream — the session that took it: `[{"agent": "…", "agent_session": "…", "name": "…"}]`, the claiming agent's id, the coding-agent session id it claimed from, and an optional display name (the card shows `name`, else `agent`, else the session's prefix). `agent` and `name` are one line, cut at 200 characters; an `agent_session` that is not a session id is dropped; a claimant left naming nobody is dropped. At most 20 are kept. A non-empty list makes the task [claimed](tasks.md#claims); a claimant whose `agent_session` is one of your mirrored sessions a host lists now is also linked to the task (`worked`). Send only a real claim — a field the upstream stamps on every record (its filer, say) is not one. Leave it out (or send `[]`) when nobody claimed it: the status is never read as a claim. A muster from before this field refuses it (`400`), so send it only to a muster that documents it. |
 | `reference.comments` | The upstream's thread, shown read-only. At most 50 are kept: the newest, by `created_at`. Each body is cut at 16 KiB. |
 | `reference.detach` | `true` dismisses the reference (the soft dismissal an owner's dismiss is; an agent on it is left running). A later upsert for the key files a new row. |
 | `event_id` | 1 to 200 bytes, no spaces or control characters. It names the upstream event for routing, as `comment` does for a copy, and it is required with `route_to_chief`. Resending the same `event_id` never routes twice. |
@@ -783,7 +783,7 @@ bound to the task, and the turn's
 | What muster sees | What it does |
 |---|---|
 | Exactly one agent that `task_forward` can reach is bound to the task. No other live agent is bound, and the hint names no session. | Forwards the task to that agent. |
-| Otherwise, the task is [**claimed**](tasks.md#claims): a session picked it up through muster's task tools, or its reference's upstream names a claimant or is in progress. | Leaves it alone: **no** "needs you" card and no chief turn. Settled `muster: task triage — left it alone: it is already claimed by <who>`; it leaves "Task to route". |
+| Otherwise, the task is [**claimed**](tasks.md#claims): a session picked it up through muster's task tools, or its reference's upstream names a claimant (`agent`, `agent_session`); a status alone is not a claim. | Leaves it alone: **no** "needs you" card and no chief turn. Settled `muster: task triage — left it alone: it is already claimed by <who>`; it leaves "Task to route". |
 | No agent is bound, and the hint names exactly one session through a **strong** link: a pull request or branch the task names, which muster recorded that session creating or pushing (`session_prs`, owner-scoped), or a repository name that only that one online session reports. The hint names no other session. | Routes the task to that session. |
 | No agent is bound, and the hint names no session at all. | Puts the task on your board. |
 | Anything else: two candidates, a focus-title match (weak), a live agent muster cannot send to, or a gated task with any candidate. | Hands the event to the chief, exactly as before. |
@@ -1497,9 +1497,10 @@ failed, and a route timed out or failed, ended without an answer, so the
 message is back where it started — except a
 [pull-request review](#a-pull-request-review-mail) the session had (its paste
 was sent), which muster settles itself when its route ends, and a review whose
-route failed **only** because a newer review round of the same pull request
-superseded it (`superseded by a newer review round (route rt_…)`, naming a
-route of another message): that one is dispositioned, and the newer round's
+route failed **only** because a review of a **newer head** of the same pull
+request superseded it (`superseded by a newer review round, a newer head
+commit (route rt_…)`, naming a route of another message): that one is
+dispositioned, and the newer round's
 message raises the ask instead if its own route fails for a real reason. An
 ask already open for such a message is closed by the sweep.
 
@@ -1925,10 +1926,16 @@ routing is on.
    part reaches the session — no part supersedes another. A review that
    **arrives later** with a **different** `head_sha` for the same pull request
    and session **supersedes** every open route of an earlier-arriving round,
-   whether or not its paste was already delivered. Order is by arrival, not by
-   commit: muster cannot tell which head is newer, so a late review of an
-   older head supersedes a newer head's route. The superseded route ends
-   `failed` ("superseded by a newer review round"), with no hand-back to the
+   whether or not its paste was already delivered — **when its head is the
+   same as or newer than** that round's. **The newest head wins:** muster
+   reads the pull request's commits through the [GitHub App](configuration.md)
+   (the same repository-limited pull-requests read as below), and a late
+   review of an **older** head supersedes nothing: both routes stay, and the
+   newer review is never hidden. When the order cannot be read (no App, a head
+   not among the commits after a force push, an error), it supersedes by
+   arrival, as before. The superseded route ends `failed` ("superseded by a
+   newer review round", with ", a newer head commit" when the order was read),
+   with no hand-back to the
    chief, and a paste still queued is cancelled (so the session never answers,
    and muster never auto-sends, a stale round).
 
@@ -1939,16 +1946,14 @@ routing is on.
    `muster: `), so it never becomes a
    ["not acted on" ask](#a-message-the-chief-does-not-act-on). A superseded
    round whose paste was **not** sent (still queued, being sent) is **not**
-   settled — the session never had it — but it raises **no** "not acted on"
-   ask either: a route that failed only because a newer round superseded it
-   counts as handled, and the **newer round's message** answers for the
-   review. When the newer round's own route fails for a real reason (the
-   window closed, the queue was full), the ask is raised on **that** message,
-   the newest; a newer round superseded in turn passes this on to its own
-   successor, so there is one ask, never one per round. ⚠ Because order is by
-   arrival, a late review of an older head that supersedes a newer head's
-   unsent route leaves the newer head's review with no ask: the session has
-   the older review. A review whose paste was **never** delivered by its
+   settled — the session never had it. Superseded by a **newer head** (the
+   order read), it raises **no** "not acted on" ask: the **newer round's
+   message** answers for the review, and when the newer round's own route
+   fails for a real reason (the window closed, the queue was full) the ask is
+   raised on **that** message, the newest; a newer round superseded in turn
+   passes this on, so there is one ask, never one per round. Superseded by
+   **arrival alone** (the order unknown), it still raises the ask: muster
+   cannot tell it was not the newer head. A review whose paste was **never** delivered by its
    deadline — still queued, cancelled, or failed — goes back to the chief as
    any route does. Every other route (the chief's, the owner's, a route by
    thread) is unchanged. A review route made before `0070` has no round: it is
@@ -1985,7 +1990,7 @@ Where it is checked:
 - **when its route would be handed back** — a review timed out or superseded
   before its paste was sent: settled instead of going back to the chief;
 - **when the ["not acted on" ask](#a-message-the-chief-does-not-act-on) is
-  due** — a review the chief holds, or the newest round whose own route
+  due** — a review the chief holds, a round superseded by arrival alone, or the newest round whose own route
   failed: settled instead of asked about.
 
 **Only a closed answer settles.** These are all **unknown**, and an unknown

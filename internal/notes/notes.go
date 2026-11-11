@@ -465,11 +465,10 @@ type Store interface {
 	// embed this on Note.Sessions; this is for callers holding only an id.
 	SessionsForTask(ctx context.Context, noteID int64) ([]SessionLink, error)
 	// ClaimByLink links l's session to the task as `worked` and records its
-	// CLAIM under the name by (claims.go); ReleaseClaims clears the task's
-	// session claims (one session's, or every one's for sessionID ""). See
-	// Claims for what a claim does.
+	// CLAIM under the name by (claims.go); ReleaseClaims clears every session
+	// claim on the task. See Claims for what a claim does.
 	ClaimByLink(ctx context.Context, noteID int64, l SessionLink, by string, detailSeen bool) (bool, error)
-	ReleaseClaims(ctx context.Context, noteID int64, sessionID string) (int64, error)
+	ReleaseClaims(ctx context.Context, noteID int64) (int64, error)
 	// TasksForSession is the REVERSE lookup — every LIVE task a session touched,
 	// most-recently-touched first. It backs GET /api/sessions/{id}/tasks.
 	TasksForSession(ctx context.Context, sessionID string) ([]TaskLink, error)

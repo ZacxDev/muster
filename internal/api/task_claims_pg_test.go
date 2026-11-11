@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,7 +19,8 @@ import (
 // CLAIMS through the real routes, triage and Postgres (docs/tasks.md#claims):
 // a session's explicit pickup (a status write to in_progress carrying its
 // session id) and the upstream's claim (a reference snapshot naming
-// claimants, or in progress) each mark a task claimed; an assignment of a
+// claimants: the claiming agent and its session) each mark a task claimed; a
+// status alone (in progress upstream, the owner's own in_progress) does not; an assignment of a
 // claimed task gets NO "needs you" card; an unclaim reopens it; a snapshot
 // with no claimants field is handled; one owner's claim is never another's.
 //
@@ -183,9 +185,9 @@ func TestASessionsPickupClaimsTheTaskAndTheTriageSkipsItsCard(t *testing.T) {
 func TestAnUpstreamClaimantMarksTheReferenceClaimed(t *testing.T) {
 	f := newTriageFixture(t, false)
 	snap := claimSnap("open", "to discuss", map[string]any{"claimants": []map[string]any{
-		{"kind": "agent", "name": "press-calibrator", "session": claimantSID}}})
+		{"agent": "ag_presscal01", "agent_session": claimantSID}}})
 	id, m := f.assignRef(t, refKey(), snap)
-	f.mustBeLeftClaimed(t, id, m, "press-calibrator")
+	f.mustBeLeftClaimed(t, id, m, "ag_presscal01")
 	for _, l := range f.sessionsOf(t, id) {
 		if l.(map[string]any)["sessionId"] == claimantSID {
 			t.Fatal("a claimant session no host lists was linked to the task")
@@ -198,7 +200,7 @@ func TestAnUpstreamClaimantMarksTheReferenceClaimed(t *testing.T) {
 func TestAnUpstreamClaimantsKnownSessionIsLinked(t *testing.T) {
 	f := newTriageFixture(t, false)
 	snap := claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{
-		{"kind": "agent", "name": "press-calibrator", "session": routeSID}}})
+		{"agent": "ag_presscal01", "agent_session": routeSID}}})
 	id := f.upsertRef(t, refKey(), snap)
 	var role string
 	for _, l := range f.sessionsOf(t, id) {
@@ -211,13 +213,75 @@ func TestAnUpstreamClaimantsKnownSessionIsLinked(t *testing.T) {
 	}
 }
 
-// TestAnUpstreamInProgressStatusIsAClaim: no claimants field at all (what a
-// plugin that does not send them pushes), the upstream in progress: claimed,
-// by the upstream's label.
-func TestAnUpstreamInProgressStatusIsAClaim(t *testing.T) {
+// TestAnUpstreamInProgressStatusAloneIsNoClaim: no claimants field at all
+// (what a plugin from before claimants pushes), the upstream in progress. A
+// status names nobody: the task is unclaimed, and its assignment gets its
+// card.
+func TestAnUpstreamInProgressStatusAloneIsNoClaim(t *testing.T) {
 	f := newTriageFixture(t, false)
 	id, m := f.assignRef(t, refKey(), claimSnap("in_progress", claimSnapLabel, nil))
-	f.mustBeLeftClaimed(t, id, m, "upstream ("+claimSnapLabel+")")
+	f.mustGetItsCard(t, id, m)
+}
+
+// TestTheOwnersOwnInProgressIsNoClaim: the owner sets the task in_progress on
+// its card (no session): no claim, and the assignment gets its card.
+func TestTheOwnersOwnInProgressIsNoClaim(t *testing.T) {
+	f := newTriageFixture(t, false)
+	key := refKey()
+	id := f.upsertRef(t, key, claimSnap("open", "to do", nil))
+	req := httptest.NewRequest(http.MethodPatch, "/tasks/"+strconv.FormatInt(id, 10)+"/status",
+		strings.NewReader(url.Values{"status": {"in_progress"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(f.asOwner)
+	req.SetPathValue("id", strconv.FormatInt(id, 10))
+	rec := httptest.NewRecorder()
+	f.srv.handleNoteStatus(rec, req)
+	if rec.Code/100 != 2 {
+		t.Fatalf("the owner's card write: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if got := f.claimedBy(t, id); len(got) != 0 {
+		t.Fatalf("the owner's own in_progress claimed the task: %q", got)
+	}
+	_, m := f.assignRef(t, key, claimSnap("open", "to do", nil))
+	f.mustGetItsCard(t, id, m)
+}
+
+// TestAnAgentSettingItsTaskOpenReleasesTheClaim: a session claimed the task;
+// the dispatched agent bound to it sets it back to open through its own route
+// and through its own tool: every claim is released.
+func TestAnAgentSettingItsTaskOpenReleasesTheClaim(t *testing.T) {
+	for _, via := range []string{"route", "tool"} {
+		f := newTriageFixture(t, false)
+		id := f.upsertRef(t, refKey(), claimSnap("open", "to do", nil))
+		if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET note_id = $1 WHERE id = $2`, id, f.worker.ID); err != nil {
+			t.Fatal(err)
+		}
+		if code := f.machineStatus(t, f.asOwner, id, "in_progress", routeSID); code != http.StatusAccepted {
+			t.Fatalf("%s: pickup: HTTP %d", via, code)
+		}
+		if len(f.claimedBy(t, id)) != 1 {
+			t.Fatalf("%s: fixture: the pickup claimed nothing", via)
+		}
+		a, err := f.srv.ext.Agents.Get(f.asOwner, f.worker.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch via {
+		case "route":
+			w := f.connFixture.call(t, http.MethodPatch, "/agent/task/status", strings.NewReader(`{"status":"open"}`),
+				map[string]string{"Authorization": "Bearer " + f.workerTok, "Content-Type": "application/json"})
+			if w.Code/100 != 2 {
+				t.Fatalf("route: the agent's open: HTTP %d %s", w.Code, w.Body)
+			}
+		case "tool":
+			if out := f.srv.dispatchAgentTool(f.asOwner, a, "agent_set_task_status", `{"status":"open"}`); toolRefused(out) {
+				t.Fatalf("tool: the agent's open: %s", out)
+			}
+		}
+		if got := f.claimedBy(t, id); len(got) != 0 {
+			t.Fatalf("%s: after the agent's open the task is still claimed by %q", via, got)
+		}
+	}
 }
 
 // --- an unclaimed task still gets its card ---------------------------------
@@ -268,7 +332,7 @@ func TestAnUnclaimReopensTheTask(t *testing.T) {
 	t.Run("the upstream's claim, dropped by a later snapshot", func(t *testing.T) {
 		f := newTriageFixture(t, false)
 		key := refKey()
-		claimed := claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"kind": "person", "name": "A. Fitter"}}})
+		claimed := claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"agent": "ag_fitter01", "agent_session": claimantSID, "name": "A. Fitter"}}})
 		id, first := f.assignRef(t, key, claimed)
 		f.mustBeLeftClaimed(t, id, first, "A. Fitter") // the control: the claim was there
 		_, m := f.assignRef(t, key, claimSnap("open", "to do", nil))
@@ -349,7 +413,7 @@ func TestAClaimSurvivesAnUpstreamThatRefusesInProgress(t *testing.T) {
 // task_route_attention on a claimed task answers claimed and files no ask.
 func TestTheChiefsRouteAttentionRaisesNoCardForAClaimedTask(t *testing.T) {
 	f := newTriageFixture(t, false)
-	id := f.upsertRef(t, refKey(), claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"name": "press-calibrator"}}}))
+	id := f.upsertRef(t, refKey(), claimSnap("open", "to do", map[string]any{"claimants": []map[string]any{{"agent": "press-calibrator"}}}))
 	out := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id, "note": "look at this"})
 	if toolRefused(out) || !strings.Contains(out, `"claimed":true`) || !strings.Contains(out, "press-calibrator") {
 		t.Fatalf("task_route_attention on a claimed task: %s", out)

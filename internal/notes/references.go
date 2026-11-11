@@ -58,21 +58,22 @@ type RefSnapshot struct {
 	// capped at the route. DATA, like every other field here.
 	Creator  string       `json:"creator,omitempty"`
 	Comments []RefComment `json:"comments,omitempty"`
-	// Claimants is who the upstream says is WORKING the record, beyond the
-	// owner the reference was filed for: OPTIONAL (a plugin that sends none —
-	// every plugin written before muster had the field — leaves it nil, and the
-	// snapshot's status alone then says whether it is claimed: Claims). DATA.
+	// Claimants is who the upstream says CLAIMED the record (the session that
+	// took it): OPTIONAL — a plugin that sends none, every plugin written
+	// before muster had the field included, leaves it nil, and the reference
+	// is then unclaimed upstream (Claims). DATA.
 	Claimants []RefClaimant `json:"claimants,omitempty"`
 }
 
-// RefClaimant is one upstream claimant: a display name, its kind as the
-// plugin read it ("person" or "agent"; "" when it did not say), and the
-// coding-agent session id the upstream recorded for the claim, when it has
-// one (linked to the task when it is a mirrored session muster knows).
+// RefClaimant is one upstream claim: the claiming agent's id and the
+// coding-agent session it claimed from (the upstream's agent and
+// agent_session; the session is linked to the task when it is a mirrored
+// session muster knows), and an optional display name. One that names none
+// of the three is no claim.
 type RefClaimant struct {
-	Kind    string `json:"kind,omitempty"`
-	Name    string `json:"name"`
-	Session string `json:"session,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	AgentSession string `json:"agent_session,omitempty"`
+	Name         string `json:"name,omitempty"`
 }
 
 // RefComment is one upstream comment in a snapshot. Every field came from

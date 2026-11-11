@@ -42,6 +42,18 @@ type fakePRStates struct {
 	block bool
 	calls int
 	now   time.Time
+	// commits is the pull request's commit list (PullRequestCommits), oldest
+	// first; nil answers an error (the head order is unknown).
+	commits []string
+}
+
+func (f *fakePRStates) PullRequestCommits(_ context.Context, _ string, _ int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.commits == nil {
+		return nil, errors.New("no commit list")
+	}
+	return append([]string(nil), f.commits...), nil
 }
 
 func (f *fakePRStates) PullRequestState(ctx context.Context, repo string, n int64) (githubapp.PRState, error) {
@@ -115,6 +127,16 @@ func (f *prFixture) withPRStates(st githubapp.PRState) *fakePRStates {
 	gh := &fakePRStates{state: map[string]githubapp.PRState{}, now: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 	gh.answer(prNumber, st)
 	f.srv.ext.ClosedPRs = &ClosedPRs{States: gh, Store: f.plugins, Now: gh.clock}
+	return gh
+}
+
+// withPRCommits is withPRStates(prOpen) whose pull request's commits are
+// shas, oldest first: the head order supersedePRRoutes reads.
+func (f *prFixture) withPRCommits(shas ...string) *fakePRStates {
+	gh := f.withPRStates(prOpen)
+	gh.mu.Lock()
+	gh.commits = shas
+	gh.mu.Unlock()
 	return gh
 }
 

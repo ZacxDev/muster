@@ -1127,14 +1127,13 @@ func (s *PGStore) OlderOpenPRRoutes(ctx context.Context, routeID string, origin 
 // relay.
 //
 // 🔴 ONLY A ROUTE WHOSE PASTE WAS SENT IS SETTLED (prReviewPasteSent). The
-// supersede orders routes by ARRIVAL, not by head commit, so a late review of an
-// older head supersedes a newer head's route. When that route's paste was
+// supersede falls back to ARRIVAL order when the heads' order is unknown, so a
+// late review of an older head can supersede a newer head's route. When that route's paste was
 // still queued (or being sent, or never made), the session never had it:
-// its message is left unsettled. It raises no "not acted on" ask all the same
-// (supersededByNewerRound, unrouted.go: a route superseded by a newer round is
-// handled, by the operator's decision): the newer round's message answers for
-// the review, and raises the ask itself if its own route fails for a real
-// reason. Locks the message row, then the route (lockRouteMessageFirst).
+// its message is left unsettled. Superseded by a verified newer head
+// (SupersededByNewerHeadError) it raises no "not acted on" ask
+// (supersededByNewerHead, unrouted.go); superseded by arrival alone it still
+// does. Locks the message row, then the route (lockRouteMessageFirst).
 func (s *PGStore) SupersedeRoute(ctx context.Context, routeID, why, settle string) (r Route, superseded bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockRouteMessageFirst(ctx, tx, routeID)

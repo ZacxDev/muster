@@ -912,6 +912,43 @@ func (a *App) PullRequestState(ctx context.Context, repo string, n int64) (PRSta
 	return PRState{State: r.State, Merged: r.Merged}, nil
 }
 
+// prCommitPages bounds PullRequestCommits: GitHub lists at most 250 commits of
+// a pull request, 100 a page.
+const prCommitPages = 3
+
+// PullRequestCommits lists pull request n's commit shas, oldest first, with
+// the same repository-limited read token as PullRequestState (pull requests
+// read). A force-pushed-away head is not among them. Every failure is an
+// error, which the caller reads as "order unknown".
+func (a *App) PullRequestCommits(ctx context.Context, repo string, n int64) ([]string, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || n <= 0 {
+		return nil, fmt.Errorf("%q #%d is not owner/name and a pull request number", repo, n)
+	}
+	tok, err := a.prReadToken(ctx, owner, name)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for page := 1; page <= prCommitPages; page++ {
+		var r []struct {
+			SHA string `json:"sha"`
+		}
+		if err := a.do(ctx, http.MethodGet, a.cfg.BaseURL+"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/pulls/"+
+			strconv.FormatInt(n, 10)+"/commits?per_page=100&page="+strconv.Itoa(page), "token "+tok, nil, &r,
+			"listing "+repo+" pull request #"+strconv.FormatInt(n, 10)+"'s commits", owner); err != nil {
+			return nil, err
+		}
+		for _, c := range r {
+			out = append(out, c.SHA)
+		}
+		if len(r) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
 // ListPullRequests lists agentID's own repository's pull requests with that
 // agent's repository token (server-side; the worker tool returns only the list).
 func (a *App) ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error) {

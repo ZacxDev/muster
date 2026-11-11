@@ -66,10 +66,12 @@ text:
   [reference](plugins.md#task-references) the status itself is only queued
   for the upstream; the claim is recorded whatever the upstream does with it.
 - **The upstream's claim.** A reference whose last snapshot names
-  [`claimants`](plugins.md#task-references), or whose status is
-  `in_progress`, is claimed by them (or by `upstream (<status label>)` when
-  the plugin names nobody). A claimant whose recorded session is one of your
-  mirrored sessions is linked to the task too.
+  [`claimants`](plugins.md#task-references) — the claiming agent and its
+  session (`agent`, `agent_session`) — is claimed by them. A claimant whose
+  `agent_session` is one of your mirrored sessions is linked to the task too.
+  **A status is never a claim:** an upstream `in_progress` (or paused) with no
+  claimant, your own `in_progress` from the card, and a snapshot from a plugin
+  that sends no `claimants` all leave the task unclaimed.
 
 What a claim does:
 
@@ -82,8 +84,9 @@ What a claim does:
 - **The board shows who.** The card carries "⚑ worked by <who>"
   (`data-task-claimed` names the sources: `session`, `upstream`).
 - **An unclaim reopens it.** Setting the task back to `open` (the card, the
-  machine route, the task tool) releases every session claim; a later
-  snapshot without claimants and not in progress drops the upstream's. The
+  machine route, the task tool, or a dispatched agent's own status route and
+  tool) releases every session claim; a later snapshot without claimants
+  drops the upstream's. The
   next assignment gets its card again.
 
 muster's own status writers (a snapshot, a dispatch advance, the reopen after

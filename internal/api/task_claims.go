@@ -67,7 +67,7 @@ func (s *Server) claimOnStatus(ctx context.Context, writer statusWriter, id int6
 			changed = ok
 		}
 	case status == notes.StatusOpen && unclaimWriters[writer]:
-		n, err := s.ext.Notes.ReleaseClaims(ctx, id, "")
+		n, err := s.ext.Notes.ReleaseClaims(ctx, id)
 		if err != nil {
 			s.logger.Printf("task claims: task %d: release: %v", id, err)
 		}
@@ -106,14 +106,14 @@ func (s *Server) linkUpstreamClaimants(ctx context.Context, n notes.Note) {
 		return
 	}
 	for _, c := range n.Ref.Snapshot.Claimants {
-		if c.Session == "" {
+		if c.AgentSession == "" {
 			continue
 		}
-		host, _, ok := s.knownMirrorSession(ctx, c.Session)
+		host, _, ok := s.knownMirrorSession(ctx, c.AgentSession)
 		if !ok {
 			continue
 		}
-		if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: c.Session, Role: notes.RoleWorked, Host: host}, false); err != nil &&
+		if _, _, err := s.ext.Notes.LinkSession(ctx, n.ID, notes.SessionLink{SessionID: c.AgentSession, Role: notes.RoleWorked, Host: host}, false); err != nil &&
 			!errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Printf("task claims: task %d: link the upstream claimant's session: %v", n.ID, err)
 		}

@@ -41,7 +41,7 @@ import (
 //     no other session, strong or weak (a focus-title match is weak);
 //   - CLAIMED: a session or the task's upstream has CLAIMED the task
 //     (notes.Claims: a session's explicit pickup, or a reference whose
-//     snapshot names claimants or is in progress) and the forward above does
+//     snapshot names a claimant: agent, agent_session) and the forward above does
 //     not apply: nothing is placed — no "needs you" card, no chief turn —
 //     because someone is already on it;
 //   - BOARD: no agent is bound and the hint names no session at all.
