@@ -367,9 +367,10 @@ for (const vp of viewports) {
     await page.goto(rig.origin + viewOf('@5'));
     // 46809 of 187500, on fixture-model — worked out from the fake's numbers.
     const ctx = page.locator('#mv-context');
-    await expect(ctx, `the readout (mirror log:\n${rig.log})`).toHaveText('fixture-model · 47k / 188k context', { timeout: 20_000 });
+    await expect(ctx, `the readout (mirror log:\n${rig.log})`).toHaveText('fixture-model · 47k/188k', { timeout: 20_000 });
     await expect(ctx).toBeVisible();
-    await expect(ctx).toHaveAttribute('title', /input \+ cache read \+ cache write/);
+    await expect(ctx).toHaveAttribute('title', 'fixture-model — 46,809 of 187,500 tokens (25%)');
+    await expect(page.locator('#mv-context-detail [data-ctx-how]')).toContainText('input + cache read + cache write');
     // The failed turns: their rows, and the queue holding instead of sending
     // into the same failure (its circuit breaker, as for Claude Code).
     const errors = page.locator('#mv-log [data-mirror-error]', { hasText: 'fixture provider overloaded' });

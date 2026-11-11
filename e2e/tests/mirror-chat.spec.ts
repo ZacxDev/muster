@@ -679,10 +679,11 @@ test('the header shows the context token count from the host, follows it live, a
 
   fs.appendFileSync(tr, modelAttachment('claude-opus-5-5[1m]') + prompt('more') + replyUsage('first', 'claude-opus-5-5', 249_500));
   await expect(ctx).toBeVisible();
-  await expect(ctx).toHaveText('250k context');
+  await expect(ctx).toHaveText('250k');
+  await expect(ctx).toHaveAttribute('title', '250,000 tokens');
   // Live: the next turn's usage replaces it.
   fs.appendFileSync(tr, prompt('again') + replyUsage('second', 'claude-opus-5-5', 611_500));
-  await expect(ctx).toHaveText('612k context');
+  await expect(ctx).toHaveText('612k');
   // It fits the phone's header with nothing scrolling sideways.
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw).toBeLessThanOrEqual(cw);

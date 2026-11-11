@@ -85,7 +85,7 @@ feature; "—" means it stays out.
 | answering asks | keys into the picker | API reply (`OpenCodeAnswer`), one short single-select only | the whole form from the view's card (`OpenCodeForms`, `OpenCodeReply.Picks`), and permissions | **built** |
 | attention queue, push | yes | yes | unchanged | done |
 | slash/command menu | host catalog + CC built-ins | menu shows **CC's** built-ins | `GET /api/command`, sent through `session.command` | 2 |
-| context readout | "124k context" (`internal/ui/mirror_view.go:644-659`) | none | context of the last step / model limit | 3, **built** |
+| context readout | "124k" (`contextView`, `internal/ui/mirror_view.go`; the exact count and how it is made on a tap) | none | context of the last step / model limit | 3, **built** |
 | model name | not shown | not shown | `model.id` from the assistant message | 3, **built** |
 | cost | not shown | not shown | session `cost` (USD), as opencode reports it | 3 |
 | per-tool context cost | measured | estimate (`internal/cctranscript/toolctx.go:83`) | unchanged (later: step tokens) | — |
@@ -751,7 +751,8 @@ confirmed, as a Claude paste does today. Its busy semantics ("immediately",
   growth to the next. It is `Msg.Context` (`mirror.AgentContext`: tokens,
   limit, model) on the view's stream instead, sent after the backfill and
   whenever it moves; the page reads it as the header's readout,
-  "`<model> · 47k / 188k context`", with a tooltip saying how it is made.
+  "`<name> · 47k/188k`" (the model without its provider prefix), with the
+  exact figures and how they are made on a tap (docs/mirroring.md).
 - The limit is `limit.context` of the model (provider and id) in `GET
   /api/model`, read once per host every 10 minutes, and again at most once a
   minute for a model the list lacks. A model it does not name shows the count
@@ -765,10 +766,12 @@ The draft:
 - `Render` puts `Usage` on the event of the last assistant message: context is
   the sum of its tokens, as the TUI computes it.
 - The host reads `limit.context` from `GET /api/model` (cached per host; when to re-read it is a phase-3 detail).
-- The header's readout (`internal/ui/mirror_view.go:644-659`) becomes "<model>
-  · 124k / 200k context · $0.42" for opencode. The cost is the session's sum
+- The header's readout (`contextView`, `internal/ui/mirror_view.go`) is
+  "<name> · 124k/200k" for opencode (the model without its provider prefix;
+  the exact figures on a tap — docs/mirroring.md), and a cost would follow it
+  ("· $0.42", not built). The cost is the session's sum
   (`session.usage.updated`), labelled as opencode's own estimate. Claude Code's
-  readout is unchanged.
+  readout is the count alone ("124k").
 - Tests: the render fixtures gain usage frames from the phase-1 capture; a
   unit test pins the context sum against a hand-computed value; a fixture
   with distinct input, output, reasoning and cache values catches a dropped

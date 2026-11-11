@@ -82,7 +82,7 @@ func foldedHeader(v AgentDetailView) g.Node {
 		// The Terminal item is a view-swap link (viewToggle's): the script that
 		// opens it in the kept frame travels with whatever draws such a link.
 		viewFrameScript(),
-		updatingChip("agent-updating", "right-3 top-full mt-1"),
+		updatingChip("agent-updating", "right-3 top-full mt-1 z-10"),
 	)
 }
 

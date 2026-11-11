@@ -360,7 +360,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 								g.If(v.InteractiveNote != "", g.Group([]g.Node{g.Attr("title", v.InteractiveNote), g.Attr("data-interactive-note", v.InteractiveNote)})),
 								g.Text("Not connected")),
 							previewButtonSlot(v.Plugins, PreviewInRow)),
-						updatingChip("term-updating", "bottom-0 right-0"),
+						updatingChip("term-updating", "bottom-0 right-0 z-10"),
 					),
 					// Fit width: shown only while the far side is wider than this
 					// page. It scales the VIEW (the far side's size is untouched).
