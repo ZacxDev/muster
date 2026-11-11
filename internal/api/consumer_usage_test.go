@@ -206,3 +206,18 @@ func TestEnableConsumerUsageRefusesWithoutThePreStopInstaller(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// TestThePreStopHookSkipsAnAlreadyStoppedInstance: a Destroy of an instance
+// whose row is already stopped (the reaper's, a delete of a stopped agent)
+// has no ccd to read — the hook reads and pushes nothing for it.
+func TestThePreStopHookSkipsAnAlreadyStoppedInstance(t *testing.T) {
+	r := consumerServer(t)
+	w3, _ := r.s.ext.Agents.GetByName(context.Background(), "review-w3")
+	if w3.Status != agents.StatusStopped {
+		t.Fatalf("fixture: review-w3 is %s", w3.Status)
+	}
+	r.hook(context.Background(), w3)
+	if len(r.gw.reads) != 0 || len(r.hq.ConsumerPuts()) != 0 {
+		t.Fatalf("reads %v, pushes %d for a stopped instance", r.gw.reads, len(r.hq.ConsumerPuts()))
+	}
+}

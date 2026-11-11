@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -297,12 +298,21 @@ func (c *Collector) result(o officers.Officer, instance, result, msg string) {
 	}
 }
 
+// ModelPattern is the bucket model HQ's officer usage route takes; any other
+// is left out of the push (capBuckets).
+var ModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
+
 // capBuckets is bs sorted by hour then session, and at most
 // officers.MaxUsageBuckets of them: the newest.
 func capBuckets(bs []cctranscript.UsageBucket) []cctranscript.UsageBucket {
 	out := make([]cctranscript.UsageBucket, len(bs))
 	for i, b := range bs {
 		b.Hour = b.Hour.UTC()
+		if !ModelPattern.MatchString(b.Model) {
+			// HQ refuses the WHOLE push over a model it does not take: the
+			// model is dropped, never the bucket.
+			b.Model = ""
+		}
 		out[i] = b
 	}
 	sort.SliceStable(out, func(i, j int) bool {

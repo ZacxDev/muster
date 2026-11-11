@@ -73,8 +73,13 @@ func PoolsReportFor(ctx context.Context, o Officer, ledger *JudgementLedger, now
 		pr.SessionsToday = used
 		pools = append(pools, pr)
 	}
-	return PoolsReport{Pools: pools, ReportedAt: now.UTC().Format(time.RFC3339)}, nil
+	// reported_at is now - reportedAtLead, on the second: HQ refuses one in
+	// its future, and a small clock skew must not make it one.
+	return PoolsReport{Pools: pools, ReportedAt: now.Add(-reportedAtLead).UTC().Truncate(time.Second).Format(time.RFC3339)}, nil
 }
+
+// reportedAtLead is how far behind now a pools report dates itself.
+const reportedAtLead = 2 * time.Second
 
 // PoolsPoster is the HQ side of the pools push.
 type PoolsPoster interface {

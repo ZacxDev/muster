@@ -1893,7 +1893,9 @@ in the hour it began.
 ```
 
 `model` is ccd's, passed through (absent when ccd names none; an older ccd
-never names one). ⚠ HQ refuses unknown fields, so HQ must accept `model`
+never names one). HQ refuses the WHOLE push over a model that does not match
+`^[A-Za-z0-9._:/-]{1,128}$`, so such a model is dropped and its bucket sent
+without one. ⚠ HQ refuses unknown fields, so HQ must accept `model`
 before a muster that sends it is deployed. `pool` is `routine`, `judgement`, or `""` for an untiered officer. HQ upserts
 each bucket by (officer, instance, session, hour), replacing its counts, and
 answers 204 (400 invalid, 403 another officer's token, 404 an unknown officer
@@ -2007,7 +2009,8 @@ PUT {hq_url}/officers/{id}/pools
   `officer_claim` reserves in and the wake loop's `judgement cap reached
   (N/M until 00:00 UTC)` line prints — for the current UTC day; `0` for a pool
   without a cap, which keeps no count. `sessions_day_resets_at` is the next UTC
-  midnight. When the ledger cannot be read nothing is sent (a wrong count is
+  midnight. `reported_at` is now minus 2 s, on the second, so a small clock
+  skew cannot make HQ refuse it as in the future. When the ledger cannot be read nothing is sent (a wrong count is
   worse than a late one), logged.
 - HQ refuses pool `""` sent with any other pool, and requires
   `max_instances` (0-100) on every pool; muster's bodies always meet both
@@ -2070,11 +2073,12 @@ Authorization: Bearer <MUSTER_CC_USAGE_PUSH_TOKEN>
 {"instance": "review-muster", "consumer": "pr-review",
  "hours": [{"hour": "2026-11-10T13:00:00Z", "account": "acct-a", "session": "…",
             "turns": 2, "api_calls": 31, "input_tokens": 410, "output_tokens": 9822,
-            "cache_read_tokens": 1803321, "cache_creation_tokens": 60117, "model": "claude-model-a"}]}
+            "cache_read_tokens": 1803321, "cache_creation_tokens": 60117}]}
 ```
 
-`model` is optional: the session-hour's model by ccd's rule (see the bucket
-table above), left out when unknown. HQ upserts each row on (instance, consumer, session, hour), replacing its
+🔴 There is no `model` on a consumer row: HQ's route has no such field and
+decodes strictly, so ccd's bucket model is never sent here (only the officer
+usage push carries it). HQ upserts each row on (instance, consumer, session, hour), replacing its
 counts and account, and refuses unknown fields. Every push is the instance's
 whole 25-hour window, so re-pushing is idempotent. A session id must match
 `^[A-Za-z0-9_-]{1,64}$` (ccd's are UUIDs); a row that does not, or whose hour
@@ -2099,7 +2103,9 @@ With no failover it is the officer push's rule: the instance's account now.
 **When.** Every 10 minutes for every listed instance, read since now − 25
 hours; and once more before each Stop or Delete of an eligible instance,
 whoever asks for it (the lifecycle adapter's pre-stop hook), while its `ccd`
-can still answer — best-effort, at most 10 s, never failing the stop.
+can still answer — best-effort, at most 10 s, never failing the stop; an
+instance whose row is already stopped (a Destroy of a stopped agent, the
+reaper's) has no `ccd` to read and is skipped.
 
 **Failures.** An HQ 4xx is not retried: the next tick pushes again, and it is
 logged once until HQ's answer changes (one line for HQ, not one per

@@ -80,7 +80,9 @@ func (s *Server) EnableConsumerUsage(cfg ConsumerUsageConfig) (*consumerusage.Co
 		return nil, err
 	}
 	cfg.InstallBeforeStop(func(ctx context.Context, a agents.Agent) {
-		if s.consumerUsageEligible(a) {
+		// A row already stopped (a Destroy of a stopped instance: the reaper's,
+		// a delete) has no ccd to answer: nothing to push.
+		if s.consumerUsageEligible(a) && a.Status != agents.StatusStopped {
 			c.Flush(ctx, a.Name)
 		}
 	})

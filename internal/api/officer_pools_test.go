@@ -22,7 +22,7 @@ func TestEnableOfficersBuildsThePoolsReporter(t *testing.T) {
 	p.Tick(context.Background())
 	puts := hq.PoolsPuts()
 	want := `{"pools":[{"pool":"","model":"","max_instances":1,"max_sessions_per_day":null,"sessions_today":0,` +
-		`"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],"reported_at":"2000-01-03T12:20:00Z"}`
+		`"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],"reported_at":"2000-01-03T12:19:58Z"}`
 	if len(puts) != 1 || puts[0].Officer != o.ID || string(puts[0].Raw) != want {
 		t.Fatalf("pools PUTs %+v\nwant one: %s", puts, want)
 	}

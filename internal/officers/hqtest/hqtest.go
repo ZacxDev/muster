@@ -461,8 +461,8 @@ func (s *Server) consumerUsage(w http.ResponseWriter, r *http.Request, raw []byt
 			OutputTokens        *int64 `json:"output_tokens"`
 			CacheReadTokens     *int64 `json:"cache_read_tokens"`
 			CacheCreationTokens *int64 `json:"cache_creation_tokens"`
-			// Model is optional: the session-hour's model, absent when unknown.
-			Model *string `json:"model"`
+			// No model: HQ's consumer-usage route has none, and its strict
+			// decoder refuses one (unknown field "model").
 		} `json:"hours"`
 	}
 	invalid := func(msg string) { s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"}) }
@@ -535,6 +535,9 @@ func (s *Server) UsageRows() int {
 	defer s.mu.Unlock()
 	return len(s.usageRows)
 }
+
+// usageModelRe is HQ's bucket model: a refusal of the whole push otherwise.
+var usageModelRe = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,128}$`)
 
 // Usage route limits, as HQ states them.
 const (
@@ -609,6 +612,10 @@ func (s *Server) usage(w http.ResponseWriter, officer string, raw []byte) {
 				invalid("a bucket's counts are required and non-negative")
 				return
 			}
+		}
+		if b.Model != nil && !usageModelRe.MatchString(*b.Model) {
+			invalid("model must match ^[A-Za-z0-9._:/-]{1,128}$")
+			return
 		}
 		rows[officer+"|"+*body.Instance+"|"+b.Session+"|"+h.UTC().Format(time.RFC3339)] = [2]int64{*b.Turns, *b.APICalls}
 	}

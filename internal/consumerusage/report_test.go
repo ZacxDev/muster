@@ -76,7 +76,7 @@ func TestBatchesStayUnderHQsRowAndByteCaps(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		sess := fmt.Sprintf("%064d", i)
 		large = append(large, Row{Hour: "2000-01-03T10:00:00Z", Account: "acct-with-a-longer-name-b", Session: sess, Turns: 9000000 + int64(i),
-			APICalls: 9100000, InputTokens: 912345678, OutputTokens: 923456789, CacheReadTokens: 934567890123, CacheCreationTokens: 945678901, Model: "claude-model-with-a-long-id-1"})
+			APICalls: 9100000, InputTokens: 912345678, OutputTokens: 923456789, CacheReadTokens: 934567890123, CacheCreationTokens: 945678901})
 	}
 	whole, _ := json.Marshal(Report{Instance: "review-muster", Consumer: ConsumerPRReview, Hours: large})
 	if len(whole) <= MaxBody {

@@ -83,10 +83,10 @@ const (
 	tieredPools = `{"pools":[` +
 		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":4,"sessions_day_resets_at":"2000-01-04T00:00:00Z"},` +
 		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],` +
-		`"reported_at":"2000-01-03T17:25:00Z"}`
+		`"reported_at":"2000-01-03T17:24:58Z"}`
 	untieredPools = `{"pools":[` +
 		`{"pool":"","model":"sonnet","max_instances":5,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-04T00:00:00Z"}],` +
-		`"reported_at":"2000-01-03T17:25:00Z"}`
+		`"reported_at":"2000-01-03T17:24:58Z"}`
 )
 
 // TestThePoolsPushIsTheOfficersDeclaredSet: a tiered officer sends both pools
@@ -139,7 +139,7 @@ func TestSessionsTodayIsTheCapCounterAndResetsWithTheDay(t *testing.T) {
 	want := `{"pools":[` +
 		`{"pool":"judgement","model":"opus","max_instances":2,"max_sessions_per_day":30,"sessions_today":0,"sessions_day_resets_at":"2000-01-05T00:00:00Z"},` +
 		`{"pool":"routine","model":"haiku","max_instances":3,"max_sessions_per_day":null,"sessions_today":0,"sessions_day_resets_at":"2000-01-05T00:00:00Z"}],` +
-		`"reported_at":"2000-01-04T00:05:00Z"}`
+		`"reported_at":"2000-01-04T00:04:58Z"}`
 	if len(puts) != 2 || string(puts[0].Raw) != tieredPools || string(puts[1].Raw) != want {
 		t.Fatalf("PUTs %d:\n%s", len(puts), puts)
 	}
@@ -270,5 +270,18 @@ func TestPoolsBodiesMeetHQsShapeRules(t *testing.T) {
 		if got := strings.Join(names, ","); got != want || (len(names) > 1 && strings.Contains(","+got+",", ",,")) {
 			t.Fatalf("body %d pools %q, want %q", k, got, want)
 		}
+	}
+}
+
+// TestReportedAtIsTwoSecondsBackOnTheSecond: HQ refuses a reported_at in its
+// future, so a small clock skew must not make it one: the push says now - 2 s,
+// truncated to the second (17:25:00.9 -> 17:24:58).
+func TestReportedAtIsTwoSecondsBackOnTheSecond(t *testing.T) {
+	r := newPoolsRig(t)
+	r.clock = time.Date(2000, 1, 3, 17, 25, 0, 900_000_000, time.UTC)
+	r.reporter(t, untieredOfficer(r.hq)).Tick(context.Background())
+	puts := r.hq.PoolsPuts()
+	if len(puts) != 1 || !strings.HasSuffix(string(puts[0].Raw), `"reported_at":"2000-01-03T17:24:58Z"}`) {
+		t.Fatalf("PUTs %s", puts)
 	}
 }

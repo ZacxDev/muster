@@ -250,3 +250,31 @@ func TestAFlushThatFailsReturnsAndCountsNothingAsPushed(t *testing.T) {
 		t.Fatalf("after recovery: %d pushes; log:\n%s", n, r.logs)
 	}
 }
+
+// TestAModelHQWouldRefuseIsDroppedNotTheRow: HQ checks a bucket's model
+// against ^[A-Za-z0-9._:/-]{1,128}$ and refuses the WHOLE push on a mismatch,
+// so a model with a space, or of 129 characters, is left out and its bucket
+// still sent; a valid one (128 characters, with every allowed punctuation)
+// is kept.
+func TestAModelHQWouldRefuseIsDroppedNotTheRow(t *testing.T) {
+	r := newRig(t)
+	h := time.Date(2000, 1, 3, 11, 0, 0, 0, time.UTC)
+	ok := "claude.m_1:x/y-" + strings.Repeat("a", 113)
+	spaced, long := bucket("s-space", h, 2), bucket("s-long", h, 30)
+	spaced.Model, long.Model = "claude model", strings.Repeat("b", 129)
+	good := bucket("s-good", h, 60)
+	good.Model = ok
+	r.src.answer["officer-review-example-web-1"] = Reading{Account: "acct-one", Buckets: []cctranscript.UsageBucket{spaced, long, good}}
+	r.listing[officers.TierJudgement], r.listing[officers.TierRoutine] = nil, nil
+	r.c.Tick(context.Background())
+	want := untieredID + ` {"instance":"officer-review-example-web-1","pool":"","account":"acct-one","generated_at":"2000-01-03T12:20:00Z","buckets":[` +
+		`{"session":"s-good","hour":"2000-01-03T11:00:00Z","turns":60,"api_calls":61,"input_tokens":62,"output_tokens":63,"cache_read_tokens":64,"cache_creation_tokens":65,"model":"` + ok + `"},` +
+		`{"session":"s-long","hour":"2000-01-03T11:00:00Z","turns":30,"api_calls":31,"input_tokens":32,"output_tokens":33,"cache_read_tokens":34,"cache_creation_tokens":35},` +
+		`{"session":"s-space","hour":"2000-01-03T11:00:00Z","turns":2,"api_calls":3,"input_tokens":4,"output_tokens":5,"cache_read_tokens":6,"cache_creation_tokens":7}]}`
+	if got := putBodies(r.hq); len(got) != 1 || got[0] != want {
+		t.Fatalf("PUT bodies\n got %s\nwant %s", strings.Join(got, "\n"), want)
+	}
+	if len(ok) != 128 {
+		t.Fatalf("fixture: the valid model is %d characters, want the 128 boundary", len(ok))
+	}
+}

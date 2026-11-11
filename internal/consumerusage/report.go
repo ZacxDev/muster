@@ -76,10 +76,9 @@ type Row struct {
 	OutputTokens        int64  `json:"output_tokens"`
 	CacheReadTokens     int64  `json:"cache_read_tokens"`
 	CacheCreationTokens int64  `json:"cache_creation_tokens"`
-	// Model is the hour's model as ccd names it (cctranscript.UsageBucket's
-	// rule: the most output tokens, a tie to the smaller id); left out when
-	// unknown.
-	Model string `json:"model,omitempty"`
+	// 🔴 NO MODEL: HQ's consumer-usage route has no model field and decodes
+	// strictly, so a row carrying ccd's bucket model would make every push a
+	// 400. The officer usage route is the one that takes it.
 }
 
 // Report is one push's body. Hours is never null.
@@ -143,7 +142,7 @@ func Rows(buckets []cctranscript.UsageBucket, current string, failovers []Failov
 		}
 		rows = append(rows, Row{Hour: b.Hour.Format(time.RFC3339), Account: acct, Session: b.Session, Turns: b.Turns,
 			APICalls: b.APICalls, InputTokens: b.InputTokens, OutputTokens: b.OutputTokens,
-			CacheReadTokens: b.CacheReadTokens, CacheCreationTokens: b.CacheCreationTokens, Model: b.Model})
+			CacheReadTokens: b.CacheReadTokens, CacheCreationTokens: b.CacheCreationTokens})
 	}
 	return rows, invalid
 }

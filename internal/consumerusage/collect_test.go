@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -74,7 +75,7 @@ var (
 const (
 	w1Body = `{"instance":"muster.example.com","consumer":"pr-review","hours":[` +
 		`{"hour":"2026-11-10T10:00:00Z","account":"acct-a","session":"s-alpha","turns":2,"api_calls":5,"input_tokens":113,"output_tokens":517,"cache_read_tokens":70229,"cache_creation_tokens":3301},` +
-		`{"hour":"2026-11-10T12:00:00Z","account":"acct-b","session":"s-beta","turns":7,"api_calls":31,"input_tokens":410,"output_tokens":9822,"cache_read_tokens":1803321,"cache_creation_tokens":60117,"model":"claude-model-b"}]}`
+		`{"hour":"2026-11-10T12:00:00Z","account":"acct-b","session":"s-beta","turns":7,"api_calls":31,"input_tokens":410,"output_tokens":9822,"cache_read_tokens":1803321,"cache_creation_tokens":60117}]}`
 	w2Body = `{"instance":"muster.example.com","consumer":"pr-review","hours":[` +
 		`{"hour":"2026-11-10T11:00:00Z","account":"acct-c","session":"s-gamma","turns":3,"api_calls":9,"input_tokens":47,"output_tokens":1201,"cache_read_tokens":88001,"cache_creation_tokens":4409}]}`
 )
@@ -287,5 +288,41 @@ func TestAWindowOverHQsCapIsPushedInBatches(t *testing.T) {
 	r.c.Tick(context.Background())
 	if puts, n := r.hq.ConsumerPuts(), len(r.hq.ConsumerRows()); len(puts) != 2 || n != 1003 || r.consumerRequests() != 2 {
 		t.Fatalf("%d accepted PUTs of %d, %d rows stored; want 2 and 1003", len(puts), r.consumerRequests(), n)
+	}
+}
+
+// TestAConsumerRowNeverCarriesAModel: HQ's consumer-usage route has no model
+// field and decodes strictly (a body with one is a 400), so a bucket ccd
+// named a model for (w1's s-beta) is sent with no model key — and the fake,
+// which refuses the field as HQ does, takes the push.
+func TestAConsumerRowNeverCarriesAModel(t *testing.T) {
+	if w1Reading.Buckets[0].Model == "" {
+		t.Fatal("fixture: s-beta must carry a model for this test to mean anything")
+	}
+	r := newRig(t, "review-w1")
+	r.c.Tick(context.Background())
+	puts := r.hq.ConsumerPuts()
+	if len(puts) != 1 || puts[0] != w1Body || strings.Contains(puts[0], "model") {
+		t.Fatalf("accepted %v\nwant exactly: %s", puts, w1Body)
+	}
+}
+
+// TestTheFakeRefusesAModelOnConsumerRowsAsHQDoes: the instrument check — a
+// body with a model is a 400 naming the field, so a push carrying one cannot
+// pass the test above by accident.
+func TestTheFakeRefusesAModelOnConsumerRowsAsHQDoes(t *testing.T) {
+	r := newRig(t)
+	body := `{"instance":"i","consumer":"pr-review","hours":[{"hour":"2026-11-10T10:00:00Z","account":"acct-a","session":"s-1",` +
+		`"turns":1,"api_calls":1,"input_tokens":1,"output_tokens":1,"cache_read_tokens":1,"cache_creation_tokens":1,"model":"m"}]}`
+	req, _ := http.NewRequest(http.MethodPut, r.hq.ConsumerUsageURL(), strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+poolTok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 400 || !strings.Contains(string(raw), `unknown field \"model\"`) {
+		t.Fatalf("%d %s", resp.StatusCode, raw)
 	}
 }
