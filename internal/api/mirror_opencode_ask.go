@@ -223,17 +223,23 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
 	}
-	if v, ok := s.openCodeAnsweredCard(r, h, e, tool); ok {
-		// Answered here already (a second submit while the listing still
-		// names it): the same answer, never relayed twice.
-		att.shape(v.Questions, nil)
-		att.end("duplicate")
-		s.writeAskLive(w, http.StatusOK, v)
-		return
+	// answeredHere answers a second submit of an ask answered here already
+	// (the listing still names it): the answered card, never relayed twice.
+	answeredHere := func() bool {
+		a, ok := s.openCodeAnsweredCard(r, h, e, tool)
+		if ok {
+			att.end("duplicate")
+			s.writeAskLive(w, http.StatusOK, a)
+		}
+		return ok
 	}
 	v, form := s.openCodeCard(r.Context(), h, e, p)
 	att.shape(v.Questions, nil)
 	if v.Unanswerable != "" {
+		// The form read is refused as gone once opencode has the answer.
+		if answeredHere() {
+			return
+		}
 		att.end("unanswerable")
 		s.writeAskLive(w, http.StatusConflict, v)
 		return
@@ -242,6 +248,9 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		att.end("invalid")
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if answeredHere() {
 		return
 	}
 	for _, pk := range picks {

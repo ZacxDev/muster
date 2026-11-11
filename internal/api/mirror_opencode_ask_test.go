@@ -356,6 +356,19 @@ func TestAnAnsweredOpenCodeQuestionStaysAnsweredWhileTheListingCatchesUp(t *test
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Answered here — opencode has it.") {
 		t.Errorf("a second submit = %d:\n%s", resp.StatusCode, body)
 	}
+	// And while the host can still read the form (its own listing lags too):
+	// answered, nothing relayed — but answers the form cannot take are still
+	// refused as such.
+	m.mu.Lock()
+	m.taken = false
+	m.mu.Unlock()
+	resp, body = answerReq(t, s, ts, submit, "", "")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Answered here — opencode has it.") {
+		t.Errorf("a second submit, the form still readable = %d:\n%s", resp.StatusCode, body)
+	}
+	if resp, _ = answerReq(t, s, ts, answerForm(ocAskForm, "a0", "7", "a1", "1"), "", ""); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("an invalid second submit = %d, want 400", resp.StatusCode)
+	}
 	if calls, _ := m.got(); len(calls) != 1 {
 		t.Errorf("relayed %d answers, want 1: %v", len(calls), calls)
 	}
