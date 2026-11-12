@@ -1127,6 +1127,12 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 		"summary": strProp("What you found and did, at most 24,576 characters."),
 		"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
 	}
+	// Every officer is offered it: HQ decides which items take a hand-off.
+	desc += " With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required."
+	props["handoff"] = map[string]any{"type": "object", "additionalProperties": false,
+		"description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items " +
+			"(400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+		"properties": map[string]any{"head_sha": strProp("40 lower-case hex.")}, "required": []string{"head_sha"}}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
@@ -1141,6 +1147,32 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	}
 	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
 		Parameters: objSchema(props, "item_id", "outcome", "summary")}
+}
+
+// completeHandoff checks officer_complete's `handoff` (raw as sent; absent or
+// null is none): exactly {"head_sha": <40 lower-case hex>}, and only on
+// outcome done (HQ refuses it on any other). It returns the hand-off to send,
+// or why it is refused — before anything reaches HQ.
+func completeHandoff(raw json.RawMessage, outcome string) (*officers.Handoff, string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var h struct {
+		HeadSHA *string `json:"head_sha"`
+	}
+	if err := dec.Decode(&h); err != nil {
+		return nil, fmt.Sprintf("handoff must be exactly {\"head_sha\": <40 lower-case hex>}: %v", err)
+	}
+	if h.HeadSHA == nil || !officers.ValidHandoffHead(*h.HeadSHA) {
+		return nil, "handoff.head_sha must be the full commit sha, 40 lower-case hex"
+	}
+	if outcome != "done" {
+		return nil, fmt.Sprintf("handoff goes with outcome done only (HQ refuses it on %s)", outcome)
+	}
+	return &officers.Handoff{HeadSHA: *h.HeadSHA}, ""
 }
 
 // officerToolDefFor is tool definition d as officer o's instances are
@@ -1269,6 +1301,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// officer_complete's investigation block, kept as sent: HQ's decoder
 		// is its one schema (officers.Completion.InvestigationJSON).
 		Investigation json.RawMessage `json:"investigation"`
+		// officer_complete's hand-off, checked by completeHandoff.
+		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
 		To              string          `json:"to"`
 		Question        string          `json:"question"`
@@ -1411,6 +1445,10 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
+		handoff, bad := completeHandoff(in.Handoff, in.Outcome)
+		if bad != "" {
+			return toolErr("%s", bad), true
+		}
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it
 		// (CompleteDroppingCost). It is read here, before officerItemEnded
@@ -1422,7 +1460,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// a shepherd's writes refused in shadow, under this item; cut to
 		// HQ's bound, never the instance's own text.
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
-		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
+		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff}
 		var refused *officers.HQError
 		body, refused, err = c.CompleteDroppingCost(ctx, in.ItemID, instance, done)
 		if refused != nil {

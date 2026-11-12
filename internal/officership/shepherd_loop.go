@@ -146,44 +146,60 @@ func AuditVerdictClear(item officers.Item, pr PR) error {
 	return nil
 }
 
+// ShadowRule is THE shadow rule, one for every write muster refuses in
+// shadow: the shepherd's five writes and a draft officer's push under a
+// pull-request fix item (fixpush.go). Officer is the officer's id;
+// OfficerShadow reads HQ's officer row `shadow`; Shadowed records a refused
+// write ("would have …") against its item (appended to that item's
+// officer_complete summary); nil records nothing.
+type ShadowRule struct {
+	Officer       string
+	OfficerShadow func(ctx context.Context) (bool, error)
+	Shadowed      func(item officers.Item, line string)
+}
+
 // shadowed decides whether a write under item runs in shadow: the item's own
 // `shadow` when HQ sends one, else the officer row's. 🔴 FAIL CLOSED: a row
 // that cannot be read, or no way to read it, is shadow. It returns why (the
 // refusal's tail).
-func (s *Shepherd) shadowed(ctx context.Context, item officers.Item) (bool, string) {
+func (r ShadowRule) shadowed(ctx context.Context, item officers.Item) (bool, string) {
 	if item.Shadow != nil {
 		if *item.Shadow {
 			return true, "HQ runs item " + string(item.ID) + " in shadow"
 		}
 		return false, ""
 	}
-	if s.OfficerShadow == nil {
+	if r.OfficerShadow == nil {
 		return true, "muster cannot read HQ's officer row for its shadow, so the write is treated as shadow"
 	}
-	on, err := s.OfficerShadow(ctx)
+	on, err := r.OfficerShadow(ctx)
 	if err != nil {
 		return true, fmt.Sprintf("HQ's officer row could not be read for its shadow (%v), so the write is treated as shadow", err)
 	}
 	if on {
-		return true, "HQ runs officer " + s.OfficerID + " in shadow"
+		return true, "HQ runs officer " + r.Officer + " in shadow"
 	}
 	return false, ""
 }
 
-// shadowRefusal is nil when the write may go ahead; else it records "would
-// have <would>" for item (Shepherd.Shadowed, appended to the item's
-// completion) and returns the refusal text `shadow: would have <would>`
-// with why.
-func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string) (string, bool) {
-	on, why := s.shadowed(ctx, item)
+// refusal is "", false when the write may go ahead; else it records "would
+// have <would>" for item and returns the refusal text `shadow: would have
+// <would>` with why.
+func (r ShadowRule) refusal(ctx context.Context, item officers.Item, would string) (string, bool) {
+	on, why := r.shadowed(ctx, item)
 	if !on {
 		return "", false
 	}
 	line := "would have " + would
-	if s.Shadowed != nil {
-		s.Shadowed(item, line)
+	if r.Shadowed != nil {
+		r.Shadowed(item, line)
 	}
 	return "shadow: " + line + " (" + why + "; nothing was sent)", true
+}
+
+// shadowRefusal is the shepherd's writes asking ShadowRule.
+func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string) (string, bool) {
+	return ShadowRule{Officer: s.OfficerID, OfficerShadow: s.OfficerShadow, Shadowed: s.Shadowed}.refusal(ctx, item, would)
 }
 
 // head12 is a sha's first 12 characters (all of it when shorter).

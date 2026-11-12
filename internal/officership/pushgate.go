@@ -85,7 +85,15 @@ type PushGate struct {
 	// holding item of this officer under a live lease: a draft officer's new
 	// pull request names its item in its branch, and the item must be one the
 	// instance claimed. nil: every new pull request is refused (fail closed).
-	ItemClaimed func(ctx context.Context, instance string, item int) error
+	ItemClaimed func(ctx context.Context, instance string, item int) (officers.Item, error)
+	// FixItems are the pull-request fix items (kind *.pr_fix) HQ shows
+	// instance holding under a live lease (fixpush.go). nil: no push is
+	// looked up.
+	FixItems func(ctx context.Context, instance string) ([]officers.Item, error)
+	// OfficerShadow and Shadowed are this officer's ShadowRule (a push under
+	// a fix item in shadow is refused and recorded).
+	OfficerShadow func(ctx context.Context) (bool, error)
+	Shadowed      func(item officers.Item, line string)
 	// PROpened tells HQ a draft officer opened pull request p (POST
 	// /officers/{id}/pr-opened, with the officer's own token), so HQ can start
 	// its review loop. Called by muster only — never an instance's tool — and
@@ -327,6 +335,14 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 		// the daily orphan report, and a human removes it.
 		if g.Ship.IsDraft() && strings.Trim(c.newOID, "0") == "" {
 			return nil, refused("deleting %s: a draft officer never deletes a branch (the daily orphan report lists abandoned ones for a human)", c.ref)
+		}
+	}
+	// A push under a held pull-request fix item (fixpush.go): its pull
+	// request is the officer's own and open, and it is not in shadow —
+	// checked before anything is forwarded.
+	if g.Ship.IsDraft() {
+		if err := g.admitFixPush(r.Context(), sr, cmds); err != nil {
+			return nil, err
 		}
 	}
 	head := pre.Bytes()

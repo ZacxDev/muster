@@ -44,6 +44,11 @@ const StageShepherd = "shepherd"
 // review on a pull request it shepherds (officership.ShepherdGates.MarkReady).
 const ToolShepherdReady = "officer_shepherd_mark_ready"
 
+// PRFixKindSuffix ends the kind of every pull-request fix item HQ hands an
+// AUTHORING officer (`<its type>.pr_fix`, subject `<repo>#<pr>`): the fix
+// goes to that pull request's existing branch (officership's fixpush.go).
+const PRFixKindSuffix = ".pr_fix"
+
 // ToolShepherdMergeAsk is the shepherd's merge-ask tool: HQ's merge ask for a
 // pull request it shepherds, under the item it holds
 // (officership.ShepherdGates.MergeAsk). A shepherd's only; it merges nothing.

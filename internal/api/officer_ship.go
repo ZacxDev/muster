@@ -138,8 +138,15 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Announce: func(ctx context.Context, n officers.Notice) error {
 			return hq.PostNotice(ctx, sp.NoticeURLPath(o.ID), n)
 		},
-		ItemClaimed: func(ctx context.Context, instance string, item int) error {
+		ItemClaimed: func(ctx context.Context, instance string, item int) (officers.Item, error) {
 			return itemClaimedBy(ctx, hq.c, o.ID, instance, item, cfg.Now)
+		},
+		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
+			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
+		},
+		OfficerShadow: hq.c.Shadow,
+		Shadowed: func(item officers.Item, line string) {
+			s.officerRT.recordShadow(o.ID, item.ID, line)
 		},
 		// 🔴 muster's own call, after a clean draft create, with the
 		// authoring officer's token: no instance tool reaches it.
@@ -247,10 +254,10 @@ func (s *Server) deploymentReadCred() func(ctx context.Context, caller connector
 // item under a live lease at now. Anything else — another holder, an expired
 // lease, no such claimed item, HQ unreadable — is an error, and the new pull
 // request is refused.
-func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance string, item int, now func() time.Time) error {
+func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance string, item int, now func() time.Time) (officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
-		return fmt.Errorf("HQ's claimed items could not be read: %v", err)
+		return officers.Item{}, fmt.Errorf("HQ's claimed items could not be read: %v", err)
 	}
 	at := time.Now()
 	if now != nil {
@@ -263,15 +270,36 @@ func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance 
 		}
 		switch {
 		case it.OfficerID != "" && it.OfficerID != officerID:
-			return fmt.Errorf("item %d belongs to officer %s", item, it.OfficerID)
+			return officers.Item{}, fmt.Errorf("item %d belongs to officer %s", item, it.OfficerID)
 		case it.ClaimedBy != instance:
-			return fmt.Errorf("item %d is claimed by %s", item, it.ClaimedBy)
+			return officers.Item{}, fmt.Errorf("item %d is claimed by %s", item, it.ClaimedBy)
 		case !it.LeaseLive(at):
-			return fmt.Errorf("the lease on item %d has expired", item)
+			return officers.Item{}, fmt.Errorf("the lease on item %d has expired", item)
 		}
-		return nil
+		return it, nil
 	}
-	return fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+}
+
+// fixItemsHeld is the draft gate's FixItems: the pull-request fix items
+// (kind *.pr_fix) of officer officerID that HQ (read with its own token)
+// shows instance holding under a live lease at now.
+func fixItemsHeld(ctx context.Context, c *officers.Client, officerID, instance string, now func() time.Time) ([]officers.Item, error) {
+	items, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return nil, fmt.Errorf("HQ's claimed items could not be read: %v", err)
+	}
+	at := time.Now()
+	if now != nil {
+		at = now()
+	}
+	var out []officers.Item
+	for _, it := range items {
+		if (it.OfficerID == "" || it.OfficerID == officerID) && it.ClaimedBy == instance && it.LeaseLive(at) && officership.IsPRFix(it.Kind) {
+			out = append(out, it)
+		}
+	}
+	return out, nil
 }
 
 // shepherdAuthorLogin is officership.Shepherd.AuthorLogin: the bot login of

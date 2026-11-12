@@ -658,7 +658,7 @@ listing and again at dispatch):
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
-| `officer_complete` `{item_id, outcome, summary, links?, investigation?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
@@ -746,6 +746,18 @@ dispatch both ask them.
   investigation is the judgement pool's. An `investigation` it sends anyway
   is **refused** by muster, naming `needs_judgement`, and nothing reaches HQ.
   It is never silently dropped.
+- **`handoff`** (every instance; HQ decides which items take it). HQ's review
+  loop advances on a hand-off: the shepherd completing its opened item, every
+  auditor round, and an author completing its fix item each send
+  `handoff: {"head_sha": "<the pull request's head, 40 hex>"}`, and HQ
+  refuses those completes without it (`400 handoff_required`). muster
+  refuses, before HQ, a hand-off that is not exactly `{"head_sha"}` with 40
+  **lower-case** hex, or one on any outcome but `done` (HQ refuses that too),
+  and sends `"handoff"` only when one is given — an HQ that predates the
+  field never sees it. HQ's refusals (`400 handoff_required`, `409
+  round_cap`, `no_handoff_target`, `handoff_ambiguous`, `handoff_exists`)
+  come back with HQ's status and body; HQ rolls the complete back, so the
+  item stays held.
 
 ### Observability queries
 
@@ -1256,6 +1268,32 @@ notice says whether it did. A close or a delete GitHub refuses is posted as
 Until a re-check finishes (or, at worst, the next sweep), the pull request
 shows the change.
 
+**Fixing its own pull request (`*.pr_fix` items).** Fixes go to the
+**authoring** officer (operator decision, 2026-11-12): after a clean audit
+round's 🟡 findings, or a human approver's feedback, HQ hands the officer
+whose App opened the pull request an item of kind `<its type>.pr_fix`
+(muster keys on the `.pr_fix` suffix only), subject `<repo>#<pr>` (repository
+lower-cased), payload `{pr_loop: {repo, pr, head_sha, …}, findings |
+feedback, from}`.
+
+- A draft officer's push to one of its own branches is admitted **without an
+  item**, as before (the branch shape and the push re-check above), and that
+  is unchanged. What a held fix item adds: when the pushing instance holds a
+  `*.pr_fix` item (live lease, read from HQ with the officer's token) and the
+  pushed branch is the head of that item's pull request — named for the
+  ORIGINAL item, not the fix item — the pull request must be open and
+  authored by this officer's own App, and the push is refused in **shadow**
+  ([below](#shadow)) with `shadow: would have pushed <old12>..<new12> to
+  <branch>` before anything reaches GitHub. HQ's items unreadable at a push
+  is a refusal (fail closed). A fix item for another pull request changes
+  nothing. The content rules and the re-checks apply unchanged.
+- A fix item **never opens a pull request**: a `POST pulls` whose branch's
+  item HQ shows to be a `*.pr_fix` item is refused 403 ("a fix item pushes to
+  the pull request's existing branch …").
+- The next audit round starts when the author completes the fix item `done`
+  with `handoff: {head_sha: <the new head>}` ([Completing an
+  item](#completing-an-item-outcomes-and-investigation)).
+
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no
 pull request (in any state, found by the branch) was opened from — a refused
@@ -1410,7 +1448,12 @@ block; or the same author in the same repository shepherded by two officers.
 A review loop is a `draft` officer's pull request worked to a merge decision
 by HQ's officers: the draft officer opens it, a `shepherd` settles and fixes
 it, a read-only auditor officer audits each round, and HQ asks a human to
-merge. muster's side of HQ's officers API:
+merge. A round's 🟡 findings and an approver's feedback go back to the
+**authoring** draft officer as a `*.pr_fix` item ([the draft
+stage](#the-draft-stage)), never to the shepherd. Every step that advances
+the loop completes its item `done` with a `handoff` ([Completing an
+item](#completing-an-item-outcomes-and-investigation)). muster's side of HQ's
+officers API:
 
 - **`pr-opened`** — `POST {hq_url}/officers/{id}/pr-opened` with the
   **authoring** officer's own token, body exactly
@@ -1460,7 +1503,9 @@ ready | asked HQ for a merge ask of <repo>#<n> at <head12>>`. muster keeps each
 line per (officer, item), in memory, and when an instance completes that item
 with `officer_complete` it appends a `Shadow (muster refused these writes):`
 block of them to the summary HQ receives — cut to HQ's summary bound, never
-the instance's own text. A restart forgets the lines.
+the instance's own text. A restart forgets the lines. The same rule, and the
+same ledger, cover a draft officer's push under a held `*.pr_fix` item
+([the draft stage](#the-draft-stage)).
 
 **Its App needs** Contents **read and write** (push to the branches it
 shepherds — the scratch ref and the compare-and-swap update included —

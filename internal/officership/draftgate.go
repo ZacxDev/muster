@@ -119,9 +119,16 @@ func (g *PushGate) claimed(ctx context.Context, item int) error {
 	if g.ItemClaimed == nil {
 		return refused("a pull request for item %d: muster cannot check HQ's claim on it", item)
 	}
-	if err := g.ItemClaimed(ctx, c.AgentName, item); err != nil {
+	it, err := g.ItemClaimed(ctx, c.AgentName, item)
+	if err != nil {
 		return refused("a pull request for item %d, which HQ does not show %s holding (claim it with %s first): %v", item, c.AgentName,
 			officers.ToolClaim, err)
+	}
+	// 🔴 A FIX ITEM OPENS NOTHING (fixpush.go): its fix goes to the pull
+	// request it names.
+	if IsPRFix(it.Kind) {
+		return refused("a pull request for item %d, a fix item (%s): a fix item pushes to the pull request's existing branch (%s), it never opens a new one",
+			item, it.Kind, it.SubjectKey)
 	}
 	return nil
 }

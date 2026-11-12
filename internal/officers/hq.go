@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -427,7 +428,24 @@ type Completion struct {
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
 	Cost *ItemCost `json:"-"`
+	// Handoff is HQ's `handoff` (the review loop's next step, e.g. the next
+	// audit round of a pull request at HeadSHA). nil: not sent.
+	Handoff *Handoff `json:"-"`
 }
+
+// Handoff is a completion's `handoff`: exactly {"head_sha": <40 lower-case
+// hex>}. HQ decides which items and outcomes take one (it refuses it on any
+// outcome but done) and where it goes; muster checks only its shape
+// (ValidHandoffHead) and that the outcome is done.
+type Handoff struct {
+	HeadSHA string `json:"head_sha"`
+}
+
+// handoffHeadRE is a hand-off head: a full commit sha, lower-case.
+var handoffHeadRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// ValidHandoffHead reports whether sha is a hand-off head (40 lower-case hex).
+func ValidHandoffHead(sha string) bool { return handoffHeadRE.MatchString(sha) }
 
 // ItemCost is an item's cost as HQ takes it: USD, and who computed it.
 type ItemCost struct {
@@ -518,6 +536,10 @@ const MaxItemCostUSD = 10000
 // refuses the fields: the caller retries without them, CompleteDroppingCost).
 func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {
 	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
+	// Only when given: an HQ that predates the hand-off never sees the field.
+	if done.Handoff != nil {
+		body["handoff"] = done.Handoff
+	}
 	if done.Cost != nil {
 		body["cost_usd"], body["cost_from"] = done.Cost.USD, done.Cost.From
 	}
