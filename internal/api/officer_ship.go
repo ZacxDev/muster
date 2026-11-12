@@ -60,15 +60,19 @@ type shipRuntime struct {
 	shepherd *officership.ShepherdGates
 }
 
-// officerHQ adapts officers.Client to officership.HQ.
-type officerHQ struct{ c *officers.Client }
+// officerHQ adapts an officer's backend to officership.HQ: its switch (a core
+// verb) and its ship verbs (officers.ShipBackend).
+type officerHQ struct {
+	c officers.Backend
+	s officers.ShipBackend
+}
 
 func (h officerHQ) Enabled(ctx context.Context) (bool, error) { return h.c.Enabled(ctx) }
 func (h officerHQ) PostNotice(ctx context.Context, path string, n officers.Notice) error {
-	return h.c.PostNotice(ctx, path, n)
+	return h.s.PostNotice(ctx, path, n)
 }
 func (h officerHQ) Preflight(ctx context.Context) (officers.Preflight, error) {
-	return h.c.Preflight(ctx)
+	return h.s.Preflight(ctx)
 }
 
 // shipREST is the REST client the gates use for one ship repository, as
@@ -131,7 +135,14 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		}
 		gh = ghFor[strings.ToLower(o.Repo)]
 	}
-	hq := officerHQ{c: s.officerRT.hq.Client(o)}
+	// 🔴 A SHIPPING OFFICER'S BACKEND MUST SERVE THE SHIP VERBS, or it does
+	// not ship: refused at boot, never a gate that fails open later.
+	b := s.officerRT.hq.Backend(o)
+	sb, err := officers.Serves[officers.ShipBackend](b, officers.CapShip)
+	if err != nil {
+		return nil, fmt.Errorf("officer %s: it ships, but %w", o.ID, err)
+	}
+	hq := officerHQ{c: b, s: sb}
 	rt := &shipRuntime{}
 	rt.gate = &officership.PushGate{Repo: o.Repo, Ship: sp, OfficerID: o.ID, GitHost: gitHost, APIHost: apiHost, Cred: cred,
 		ReadCred: s.deploymentReadCred(), OnRejected: reject, GH: gh, GHFor: ghFor, Now: cfg.Now, Logf: s.logger.Printf,
@@ -236,7 +247,7 @@ func (s *Server) deploymentReadCred() func(ctx context.Context, caller connector
 // item under a live lease at now. Anything else — another holder, an expired
 // lease, no such claimed item, HQ unreadable — is an error, and the new pull
 // request is refused.
-func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance string, item int, now func() time.Time) error {
+func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance string, item int, now func() time.Time) error {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return fmt.Errorf("HQ's claimed items could not be read: %v", err)
@@ -284,7 +295,7 @@ func (s *Server) shepherdAuthorLogin(ctx context.Context, officerID string) (str
 // holding, under a live lease at now, an item of the officer whose subject_key
 // names pull request n of repo (officers.SameShepherdSubject). Anything else —
 // no such item, another holder, an expired lease, HQ unreadable — is an error.
-func itemHeldFor(ctx context.Context, c *officers.Client, officerID, instance, repo string, n int, now func() time.Time) error {
+func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, repo string, n int, now func() time.Time) error {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return fmt.Errorf("HQ's claimed items could not be read: %v", err)

@@ -36,11 +36,15 @@ func gapTaskToolDef() agents.ToolDef {
 }
 
 // officerGapTask runs officer_gap_task for instance, with client c.
-func officerGapTask(ctx context.Context, c *officers.Client, instance, arguments string) string {
+func officerGapTask(ctx context.Context, c officers.Backend, instance, arguments string) string {
+	gb, err := officers.Serves[officers.GapTasksBackend](c, officers.CapGapTasks)
+	if err != nil {
+		return notServedResult(officers.ToolGapTask, err)
+	}
 	a, err := officers.ParseGapTaskArgs([]byte(orEmptyJSON(arguments)))
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	body, err := c.FileGapTask(ctx, instance, a)
+	body, err := gb.FileGapTask(ctx, instance, a)
 	return officerToolResult(officers.ToolGapTask, body, err)
 }

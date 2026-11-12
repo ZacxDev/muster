@@ -21,7 +21,6 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -543,7 +542,7 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 		}
 		if t.officerOnly {
 			o, _, officer := s.officerOf(a)
-			if !officer || !officers.ToolOffered(o, t.def.Name) {
+			if !officer || !s.officerToolServed(o, t.def.Name) {
 				continue
 			}
 			// the definition as o's pool is offered it (officer_complete's

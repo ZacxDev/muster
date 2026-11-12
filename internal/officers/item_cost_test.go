@@ -52,7 +52,7 @@ func TestCompleteDroppingCostRetriesOnlyA400(t *testing.T) {
 			hq.RefuseCompletes(tc.status, "forced", "refused by the test")
 		}
 		hq.ResetRequests()
-		_, refused, err := c.CompleteDroppingCost(ctx, officers.ItemID(item), inst, officers.Completion{Outcome: "done", Summary: "checked", Cost: cost})
+		_, refused, err := officers.CompleteDroppingCost(ctx, c, officers.ItemID(item), inst, officers.Completion{Outcome: "done", Summary: "checked", Cost: cost})
 		if err == nil || refused != nil {
 			t.Errorf("%s: err %v, refused %v; want the complete's error and no dropped-cost refusal", tc.name, err, refused)
 		}
@@ -77,7 +77,7 @@ func TestCompleteDroppingCostRetriesOnlyA400(t *testing.T) {
 	t.Cleanup(cut.Close)
 	o := mustTiered(t)
 	o.HQURL = cut.URL
-	_, refused, err := officers.NewClient(o, nil).CompleteDroppingCost(ctx, "7", inst, officers.Completion{Outcome: "done", Summary: "checked", Cost: cost})
+	_, refused, err := officers.CompleteDroppingCost(ctx, officers.NewClient(o, nil), "7", inst, officers.Completion{Outcome: "done", Summary: "checked", Cost: cost})
 	mu.Lock()
 	got := n
 	mu.Unlock()

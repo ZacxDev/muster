@@ -65,7 +65,7 @@ func itemAskToolDefs() []agents.ToolDef {
 }
 
 // officerItemAsk runs one of the two tools for instance, with client c.
-func (s *Server) officerItemAsk(ctx context.Context, c *officers.Client, o officers.Officer, instance, name, arguments string) string {
+func (s *Server) officerItemAsk(ctx context.Context, c officers.Backend, o officers.Officer, instance, name, arguments string) string {
 	var (
 		item officers.ItemID
 		body []byte
@@ -78,15 +78,23 @@ func (s *Server) officerItemAsk(ctx context.Context, c *officers.Client, o offic
 		if perr != nil {
 			return toolErr("%v", perr)
 		}
+		tb, serr := officers.Serves[officers.TaskAsksBackend](c, officers.CapTaskAsks)
+		if serr != nil {
+			return notServedResult(name, serr)
+		}
 		item, note = a.Item, taskAskedNote
-		body, err = c.CreateTaskAsk(ctx, instance, a)
+		body, err = tb.CreateTaskAsk(ctx, instance, a)
 	case officers.ToolFloodBlockPropose:
 		p, perr := officers.ParseFloodBlockProposal([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
 			return toolErr("%v", perr)
 		}
+		fb, serr := officers.Serves[officers.FloodBlocksBackend](c, officers.CapFloodBlocks)
+		if serr != nil {
+			return notServedResult(name, serr)
+		}
 		item, note = p.Item, floodProposedNote
-		body, err = c.ProposeFloodBlock(ctx, instance, p)
+		body, err = fb.ProposeFloodBlock(ctx, instance, p)
 	default:
 		return toolErr("%s is not an item ask tool", name)
 	}

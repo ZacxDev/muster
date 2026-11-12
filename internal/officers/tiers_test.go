@@ -415,7 +415,7 @@ func TestTheWakeLoopRunsEachTierPool(t *testing.T) {
 	}
 	fleet := &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}
 	logs := &bytes.Buffer{}
-	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewClientHQ(nil), Fleet: fleet, Logger: log.New(logs, "", 0), Now: clk.Now})
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: fleet, Logger: log.New(logs, "", 0), Now: clk.Now})
 	if err != nil {
 		t.Fatal(err)
 	}

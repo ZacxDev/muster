@@ -194,6 +194,60 @@ type declared struct {
 	// Kube is parsed by parseKube (kube.go), which reads each cluster's
 	// sealed environment.
 	Kube json.RawMessage `json:"kube"`
+	// Backend is which officer backend serves the officer (BackendHQ, the
+	// default, or BackendBuiltin): parseBackend.
+	Backend string `json:"backend"`
+}
+
+// The officer backends a declaration may name (`backend`).
+const (
+	// BackendHQ is an external HQ over HTTPS with the officer's token: the
+	// default, and the only backend before officer-backend/v1.
+	BackendHQ = "hq"
+	// BackendBuiltin is muster's own Postgres (internal/officers/builtin).
+	BackendBuiltin = "builtin"
+)
+
+// errBuiltinNotWired is the refusal of a builtin officer that passes every
+// builtin rule: the built-in backend's store exists but no officer runs on it
+// yet (muster#503 slice 5 wires it). Refused, never run against nothing.
+var errBuiltinNotWired = errors.New(`backend "builtin" is not available in this build yet (its store exists; muster does not run officers on it until the wiring lands): declare "backend": "hq" or remove the officer`)
+
+// parseBackend is the declaration's backend: "" and "hq" are BackendHQ; and
+// "builtin" is refused at boot, FAIL CLOSED, when the officer declares
+// anything that only means something with an external HQ — hq_url, a token in
+// the environment, ship or ci_logs (the ship gates' notices, preflight and
+// switch are HQ's), or transcript forwarding (HQ's transcript store) — and,
+// until the built-in backend is wired, in any case (errBuiltinNotWired).
+func (d declared) parseBackend(getenv func(string) string) (string, error) {
+	switch strings.TrimSpace(d.Backend) {
+	case "", BackendHQ:
+		return BackendHQ, nil
+	case BackendBuiltin:
+	default:
+		return "", fmt.Errorf("backend %q is not %q or %q", d.Backend, BackendHQ, BackendBuiltin)
+	}
+	var refused []string
+	if strings.TrimSpace(d.HQURL) != "" {
+		refused = append(refused, "hq_url (a builtin officer's backend is muster itself)")
+	}
+	if v := TokenEnvPrefix + TokenEnvSuffix(strings.TrimSpace(d.ID)); strings.TrimSpace(getenv(v)) != "" {
+		refused = append(refused, v+" (a builtin officer has no token: unset it)")
+	}
+	present := func(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }
+	if present(d.Ship) {
+		refused = append(refused, "ship (the ship gates need an HQ's notices, preflight and switch)")
+	}
+	if present(d.CILogs) {
+		refused = append(refused, "ci_logs (a shipping officer's)")
+	}
+	if present(d.Transcript) {
+		refused = append(refused, "transcript (forwarding goes to an HQ's transcript store)")
+	}
+	if len(refused) > 0 {
+		return "", fmt.Errorf(`backend "builtin" refuses %s`, strings.Join(refused, "; "))
+	}
+	return "", errBuiltinNotWired
 }
 
 // Transcript is an officer's `transcript` block: whether its instances' live
@@ -384,6 +438,11 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	}
 	if !idRE.MatchString(o.ID) {
 		return Officer{}, fmt.Errorf("id %q is not <type>:<area> (lowercase letters, digits and single hyphens on each side)", d.ID)
+	}
+	// The backend first: a builtin officer is refused (naming everything it
+	// may not declare) before any HQ-only check reads as the reason.
+	if _, err := d.parseBackend(getenv); err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 	}
 	u, err := url.Parse(o.HQURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

@@ -127,7 +127,7 @@ func (r *rig) newReconciler(t *testing.T) *officers.Reconciler {
 	t.Helper()
 	rec, err := officers.NewReconciler(officers.Config{
 		Registry: officers.NewRegistry([]officers.Officer{r.o}),
-		HQ:       officers.NewClientHQ(nil),
+		HQ:       officers.NewBackends(nil),
 		Fleet:    r.fleet,
 		Logger:   log.New(r.logs, "", 0),
 		Now:      r.clk.Now,

@@ -58,19 +58,23 @@ func taskToolResult(name string, body []byte, err error) string {
 }
 
 // officerTaskRead runs one task read tool with client c.
-func officerTaskRead(ctx context.Context, c *officers.Client, name, arguments string) string {
+func officerTaskRead(ctx context.Context, c officers.Backend, name, arguments string) string {
+	tb, err := officers.Serves[officers.TasksBackend](c, officers.CapTasksRead)
+	if err != nil {
+		return notServedResult(name, err)
+	}
 	if name == officers.ToolTaskGet {
 		id, err := officers.TaskGetID([]byte(orEmptyJSON(arguments)))
 		if err != nil {
 			return toolErr("%v", err)
 		}
-		body, err := c.TaskGet(ctx, id)
+		body, err := tb.TaskGet(ctx, id)
 		return taskToolResult(name, body, err)
 	}
 	q, err := officers.TaskListQuery([]byte(orEmptyJSON(arguments)))
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	body, err := c.TaskList(ctx, q)
+	body, err := tb.TaskList(ctx, q)
 	return taskToolResult(name, body, err)
 }
