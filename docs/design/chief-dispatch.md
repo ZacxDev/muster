@@ -684,11 +684,12 @@ guard keeps its order and its sentence.
 | `owner_asked` | see [gating](#25-gating-when-there-is-no-task-to-hang-it-on) | **`true` always runs `ownerTurnFor`, whatever the target and whether or not there is a task**. It is required for a dispatch with no task and for every host target |
 | `worker_pool` | no | decision 5: make the agent a machine-job worker in the named pool. See [below](#worker-pool-agents) |
 | `request_key` | **yes without `task_id`**; optional with one | decision 8: the call's idempotency key. See [2.6.1](#261-request_key-idempotency) |
+| `clone` | no; host targets only | the clone the owner tapped on a clone card, exactly as it offered it ([3.1.1](#311-which-clone-agent-clones-and-the-clone-hint)). Refused on a pod target, for a host that cannot list its clones, and for a clone that host did not list |
 
 **Unknown fields are refused, which is new.** The arguments are decoded with
 `json.Decoder.DisallowUnknownFields`. Any field not in the table above is
 refused with `"arguments are {target, prompt?, task_id?, repo?, base?, model?,
-worker_pool?, request_key?, owner_asked?}"`. Today's decode
+worker_pool?, request_key?, owner_asked?, clone?}"`. Today's decode
 (`task_routing.go:285-294`) ignores unknown fields and refuses only a missing
 or invalid `task_id`. So this is a change, and it gets its own test.
 
@@ -1248,7 +1249,8 @@ chief and a test can tell them apart:
 
 | refusal | sentence |
 |---|---|
-| no held row, or older than 15 minutes | `"request_key %q holds no dispatch waiting for your owner's answer (or it is more than 15 minutes old): ask them again in the chat"` |
+| no held row, or older than 24 hours (`plugins.CardHoldTTL`) | `"request_key %q holds no dispatch waiting for your owner's answer (or its card expired, 24 hours after it was raised): ask them again in the chat"` |
+| another listed clone than the one tapped | `"your owner chose the clone %s for this dispatch: call agent_dispatch with clone set to exactly that"` |
 | arguments changed | `"request_key %q was held with different arguments: only the blank your owner answered may change"` |
 | filled blank is not the owner's answer | `"your owner chose %s for this dispatch: call agent_dispatch with exactly that"` (the sibling of `agentDispatchNotTheOwnersTarget`) |
 | answer not through an owner door | `"your owner's answer to that card did not come from muster's Attention view or their phone, so muster cannot take it as theirs"` |
@@ -1373,7 +1375,8 @@ agents.
   (`authz.ViaMirrorHost`). A hold is read as its owner only, so another owner's
   session finds nothing to approve.
 - **Single use and expiry** are decided under the owner's reservation lock: a
-  hold is open while it is at most 15 minutes old, by the database's clock, and
+  hold is open while it is at most 15 minutes old (`plugins.DispatchHoldTTL`;
+  an MCP hold — a CARD hold lives 24 hours, below), by the database's clock, and
   no reservation names it. The reservation that names it is its consumption, so
   two approvals of one hold start one agent.
 
@@ -1422,7 +1425,11 @@ message type it does not know (host-sessions, "The wire";
   - `repo` is `<owner>/<repo>`. **The host resolves it when the spawn runs:**
     exactly one git clone directly under its roots must have an `origin` URL
     that parses as that GitHub repository. Otherwise it refuses with `no_repo`,
-    and the refusal names the repository.
+    and the refusal names the repository — unless `clone` names one of them.
+  - `clone` (optional; [3.1.1](#311-which-clone-agent-clones-and-the-clone-hint))
+    is muster's HINT of which clone: a main working tree's path exactly as the
+    host listed it in an `agent-clones-list`. The host uses it only when it is
+    one of the clones it enumerates now, and refuses anything else `bad_clone`.
   - `base` is a branch name. Empty means the remote's default branch.
   - `prompt` arrives already cleaned and wrapped by muster
     ([2.2](#22-parameters)).
@@ -1474,6 +1481,7 @@ for the owner and the logs; the chief acts only on the code.
 |---|---|---|
 | `unavailable` | the host's own preconditions: no `-agent-spawn`, no `-interactive`, not the default tmux server, no tmux server running, the runtime binary not found; for opencode, no `-opencode-send`, no token, the service unreachable, or the TUI's version differs from the service's (the launcher's own refusal, #486); the host's spawn rate limit; the audit log cannot be written | `"host %q cannot start %s agents now: <detail>"`. Offer your owner another target |
 | `no_repo` | no clone of `<owner>/<repo>` under the host's roots, or more than one; or the repository is not on the host's `-agent-spawn-repos` allow-list | `"repo %s has no single clone on host %q: <detail>"`. Ask your owner which repository, or which host |
+| `bad_clone` | `clone` is not one of the host's own clones of the repository under its roots now (it is compared exactly, never resolved on the host's filesystem) | `"host %q refused the clone of %s muster named: <detail>. Call again without clone, and muster asks your owner which"` |
 | `bad_base` | `base` is not a valid branch name, or does not exist on the remote | `"branch %q does not exist on %s's remote"`. Ask your owner which branch |
 | `bad_model` | opencode only: `model` is not `openrouter/<vendor>/<model>`, the host's opencode has no `openrouter` provider, or that provider does not list the model (`GET /api/model`) | `"host %q's opencode has no OpenRouter model %q"`. Ask your owner which model |
 | `failed` | anything after work started: the fetch, the worktree, tmux, the tag, the landing check, the trust entry ([3.6.1](#361-claude-codes-folder-trust-entry)), or opencode's prompt. The host removes whatever it created | `"the agent could not be started on %q: <detail>; tell your owner"`. Do not retry with the same `request_key` |
@@ -2604,6 +2612,70 @@ limits that hold if the server itself misbehaves
 ([3.2](#32-the-flag), [5.5](#55-a-compromised-server)). The host also keeps its
 limit on forwards ([3.10](#310-forwarding-into-a-host-spawned-agent)).
 
+### 3.1.1 Which clone: agent-clones and the clone hint
+
+**Measured in production:** a host had two main working trees of the
+repository a dispatch named — the one the owner's live mirrored sessions work
+in (their windows report it as `github_repo`), and an older standalone clone —
+and refused the approved start: `no_repo: repo <r> has 2 clones under this
+host's roots`. `agent_dispatch` had no way to choose. Operator decision:
+**"Prefer the live sessions' clone".**
+
+- **`agent-clones`** (muster → host): `{id, cloneRepo}`. **`agent-clones-list`**
+  (host → muster): `{id, clones: [{path, live}]}`, or `refusal` and `error` (the
+  spawn's codes: `unavailable` with spawning off, `no_repo` for a name off the
+  allow-list). The host runs the spawn's own enumeration (`clonesOf`, the one
+  `resolveClone` resolves against) and marks a clone `live` when one of its
+  listed windows — a window muster started (its `@muster-dispatch` tag) not
+  counted — has it as the main working tree of its cwd's checkout, by
+  `repo.go`'s lookup (no git process; a worktree resolves through its
+  `commondir`: the same rule as the repo chip and `github_repo`). It starts and
+  changes nothing.
+- **The rule, one place (`mirror.ChooseClone`):** the only clone, or the only
+  live clone among several, is the clone; otherwise the owner chooses among the
+  host's clones, live ones first. A list muster cannot carry (a path that is not
+  absolute and clean, longer than 160 bytes, a control character, more than 8)
+  is refused whole: no choice is made from part of it.
+- **When, and only once per request_key:** `toolHostDispatch` asks before
+  anything is held or reserved, on the first call that knows the host and the
+  connected repository (`chooseClone`). The host's answer is stored — on the
+  hold that call files (`heldDetail.clone_decision`) and on the reservation
+  that starts (`detail.clone_decision`) — and every later call with the key
+  takes it from there (its live reservation first, then its newest hold) and
+  asks the host nothing. So a retry, a waiting call, a replay or a completion
+  cannot re-derive a different clone when the host is offline, slow, or its
+  live window moved (audit #615 F1–F3: a retry was refused "use a new key",
+  and following that started a second agent in the other clone; an approved
+  hold read as changed). The clone it settles is shown on the approval card
+  (`Clone: <path>`) and carried by the spawn; `held_hash` and the request_key's
+  hash bind only a `clone` the CHIEF passed (`omitempty`: a call with none
+  hashes as before). A list that is not answered on that first call refuses
+  it — "can't be read right now; retry with the same request_key" — with
+  nothing held; a host that does not list its clones (an older mirror) decides
+  "no clone", and a `clone` named for it is refused as such.
+- **The clone card** (blank `clone`) stands in the approval card's place when
+  the owner must choose: the whole request, the host's clones as its buttons,
+  and "Don't start". It is raised after another card's tap (a host, model or
+  repository card) as a refile, and in the owner's TYPED turn too — there it says
+  so, is not an approval of the brief (the agent is told the owner's relayed
+  message), and is not counted by the approval caps' per-turn rule. The
+  completing call passes `clone` (the tapped label's " (your live sessions work
+  here)" is dropped); `completeHeld` binds it as it binds a tapped repository.
+  A hold whose host, repository or clone is still a blank is hashed with the
+  clone cleared, since the clone is chosen from that host's clones of that
+  repository.
+- **Trust boundary:** the server proposes, the host decides. muster sends a
+  hint only from the list that host sent, re-checks a chief's `clone` against
+  it, and the host re-enumerates at the spawn and refuses anything else. Its
+  allow-list and roots checks are unchanged, and the hint is compared as a
+  string: nothing muster sends is resolved on the host's filesystem.
+- **Compatibility:** a host advertises `agentSpawnClones` in its hello beside
+  `agentSpawn`. muster asks no other host and sends no other host a hint. An
+  older host is asked nothing; sent a hint anyway (a muster bug), it ignores the
+  field and resolves as it always did — its single clone, or `no_repo` for
+  several. It never picks one on a guess. An older muster never asks and never
+  sends a hint: the new host behaves exactly as before.
+
 ### 3.10 Forwarding into a host-spawned agent
 
 Decision 9. `task_forward` today reaches the newest running **pod** agent on a
@@ -2764,7 +2836,7 @@ index.
 |---|---|---|---|
 | the host is offline, or lacks `-agent-spawn` | refused at the call, with the target list; **nothing is queued** ([2.4](#24-discovery-the-refusal-is-the-list)) | nothing spent | nothing |
 | no host can spawn, on a held `host/?/…` | `"no host can start agents now …"`; **no card** ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) | nothing spent | nothing |
-| the owner never answers the card | nothing; a later call with the key answers "holds no dispatch … more than 15 minutes old" | nothing spent | nothing |
+| the owner never answers the card | after 24 hours the hold lapses: the attention sweep withdraws the card (cancelled, off the Attention list) and notes the chief; a later call with the key answers "holds no dispatch … its card expired"; a tap that beats the sweep records nothing and answers "This request expired; ask your chief again." | nothing spent | nothing |
 | the host refuses before the window (`unavailable`, `no_repo`, `bad_base`, `bad_model`, or `failed` before `new-window`) | the code's sentence ([3.1](#31-wire-messages-and-capability)) | released with the refusal; the `request_key` is freed | the worktree and the opencode session it created are removed |
 | the window opens, then a later step fails (tag, landing check, trust write) | `failed` | released | the window is killed, the worktree removed |
 | opencode: the first prompt is not accepted | `failed`, `prompt not accepted` | released | the window **stays** (the owner may be typing); muster raises the orphan notice ([3.7](#37-linking-the-spawned-window-to-the-dispatch-and-the-task)) |
@@ -2940,7 +3012,7 @@ test of that option through the tool, with the same refusals.
 | server | the caller is the owner's chief, and the chief is on (`agent.go:627-634`) |
 | server | `MUSTER_CHIEF_DISPATCH_OWNERS` names the owner (the existing opt-in) |
 | server | `owner_asked: true`, **verified by `ownerTurnFor`**. The turn is a message the owner typed in a signed-in browser session, and no other turn of the chief's is running. It is re-checked under the reservation's lock |
-| server | **or**, for a held mirrored dispatch, the owner's own tap on the card that such a turn raised: same arguments (`held_hash`), the tapped option, an owner door (`ViaSession` or `ViaDevice`), at most 15 minutes old, used once ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) |
+| server | **or**, for a held mirrored dispatch, the owner's own tap on the card that such a turn raised: same arguments (`held_hash`), the tapped option, an owner door (`ViaSession` or `ViaDevice`), at most 24 hours old, used once ([2.8](#28-mirrored-dispatch-choosing-host-runtime-and-model)) |
 | server | the host is the owner's, connected, v2, `interactive`, and its hello lists the runtime (`hostSpawnable`) |
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |

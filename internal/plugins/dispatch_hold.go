@@ -51,9 +51,44 @@ const (
 	ActionDispatchApproved = "chief.dispatch_approved"
 	// DetailHeld is the reservation detail key naming the hold it consumes.
 	DetailHeld = "held"
-	// DispatchHoldTTL is how long a hold can be approved.
+	// DispatchHoldTTL is how long an MCP hold (dispatch_request's, door "mcp")
+	// can be approved: dispatch_approve follows its request in the same
+	// session, and no card waits on it.
 	DispatchHoldTTL = 15 * time.Minute
+	// CardHoldTTL is how long a CARD hold (agent_dispatch's, door "card": a
+	// host, model, repo, clone or approval card) can be completed — and so how
+	// long its card stays in front of the owner. 🔴 WHY 24 HOURS (measured in
+	// production): an approval card sat open for hours while its hold had
+	// lapsed at 15 minutes, so the owner's tap approved nothing and the chief
+	// had to file a new card. Operator decision: "Card expires with its hold"
+	// — the hold now lives as long as a card is shown (attention's
+	// DefaultTimeout), and the card is withdrawn when the hold lapses
+	// (LapsedCardHolds).
+	CardHoldTTL = 24 * time.Hour
+	// CardAskOutlives is how much longer a card hold's attention ask is filed
+	// to wait than the hold itself, so the HOLD always lapses first and the
+	// sweep that withdraws its card (and tells the chief) sees it still open.
+	CardAskOutlives = time.Hour
 )
+
+// CardHoldDoor is the door agent_dispatch's card holds are filed with.
+const CardHoldDoor = "card"
+
+// HoldTTL is how long a hold filed through door can be approved: CardHoldTTL
+// for a card's, DispatchHoldTTL for any other. THE one rule: holdTTLSQL is the
+// same choice in SQL.
+func HoldTTL(door string) time.Duration {
+	if door == CardHoldDoor {
+		return CardHoldTTL
+	}
+	return DispatchHoldTTL
+}
+
+// holdTTLSQL is HoldTTL in SQL for the hold row h, the card TTL's seconds in
+// $card and the other's in $mcp.
+func holdTTLSQL(card, mcp string) string {
+	return `(CASE WHEN h.detail->>'door' = '` + CardHoldDoor + `' THEN ` + card + `::double precision ELSE ` + mcp + `::double precision END)`
+}
 
 // holdObjectPrefix is a hold id's prefix: "held:" and 16 random bytes in hex.
 const holdObjectPrefix = "held:"
@@ -82,7 +117,7 @@ type DispatchHold struct {
 	ID string
 	// RowID is its audit row.
 	RowID int64
-	// At is when it was filed; ExpiresAt is At + DispatchHoldTTL.
+	// At is when it was filed; ExpiresAt is At + HoldTTL(its door).
 	At, ExpiresAt time.Time
 	// Expired: ExpiresAt is past, by the database's clock.
 	Expired bool
@@ -128,20 +163,21 @@ func (s *PGStore) DispatchHold(ctx context.Context, id string) (DispatchHold, er
 	if !ValidHoldID(id) {
 		return DispatchHold{}, ErrHoldNotFound
 	}
-	return s.readHold(ctx, p.UserID, `h.object = $5`, id)
+	return s.readHold(ctx, p.UserID, `h.object = $6`, id)
 }
 
 // readHold is the newest hold of owner's matching where (whose own arguments
-// start at $5).
+// start at $6).
 func (s *PGStore) readHold(ctx context.Context, owner int64, where string, args ...any) (DispatchHold, error) {
 	var (
 		h      DispatchHold
 		detail []byte
 	)
-	all := append([]any{ActionDispatchHeld, owner, DispatchHoldTTL.Seconds(), ActionChiefDispatch}, args...)
+	all := append([]any{ActionDispatchHeld, owner, DispatchHoldTTL.Seconds(), ActionChiefDispatch, CardHoldTTL.Seconds()}, args...)
+	ttl := `make_interval(secs => ` + holdTTLSQL("$5", "$3") + `)`
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT h.object, h.id, h.at, h.at + make_interval(secs => $3),
-		       h.at + make_interval(secs => $3) <= now(), h.detail,
+		return tx.QueryRow(ctx, `SELECT h.object, h.id, h.at, h.at + `+ttl+`,
+		       h.at + `+ttl+` <= now(), h.detail,
 		       coalesce((SELECT r.id FROM audit_log r WHERE r.action = $4 AND r.user_id = $2
 		                  AND r.detail->>'`+DetailHeld+`' = h.object ORDER BY r.id LIMIT 1), 0)
 		  FROM audit_log h
@@ -173,7 +209,7 @@ func (s *PGStore) CardHoldByAsk(ctx context.Context, askID int64) (DispatchHold,
 	if !ok || p.UserID <= 0 {
 		return DispatchHold{}, errors.New("plugins: a held dispatch needs a user principal")
 	}
-	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'ask_id' = $5::bigint::text`, askID)
+	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'ask_id' = $6::bigint::text`, askID)
 }
 
 // ApprovalHoldCounts is how many APPROVAL card holds (detail.approval) the
@@ -203,7 +239,7 @@ func (s *PGStore) ApprovalHoldCounts(ctx context.Context, within time.Duration, 
 		  FROM audit_log h
 		 WHERE h.action = $1 AND h.user_id = $2 AND h.detail->>'door' = 'card' AND (h.detail->>'approval')::boolean IS TRUE
 		   AND h.at > now() - make_interval(secs => greatest($3, $7))`,
-			ActionDispatchHeld, p.UserID, within.Seconds(), ActionChiefDispatch, turn, key, DispatchHoldTTL.Seconds()).Scan(&hour, &inTurn)
+			ActionDispatchHeld, p.UserID, within.Seconds(), ActionChiefDispatch, turn, key, CardHoldTTL.Seconds()).Scan(&hour, &inTurn)
 	})
 	return hour, inTurn, err
 }
@@ -218,5 +254,52 @@ func (s *PGStore) CardHoldByKey(ctx context.Context, key string) (DispatchHold, 
 	if !ok || p.UserID <= 0 {
 		return DispatchHold{}, errors.New("plugins: a held dispatch needs a user principal")
 	}
-	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'request_key' = $5`, key)
+	return s.readHold(ctx, p.UserID, `h.detail->>'door' = 'card' AND h.detail->>'request_key' = $6`, key)
+}
+
+// LapsedCardHold is a card hold that lapsed unused while its card is still
+// open: its owner, its id, the card (attention ask) and the request_key.
+type LapsedCardHold struct {
+	Owner      int64
+	HoldID     string
+	AskID      int64
+	RequestKey string
+	ExpiresAt  time.Time
+}
+
+// lapsedCardHoldsLookback bounds how far back LapsedCardHolds reads: no card
+// is open longer than attention's MaxTimeout (7 days), so a hold filed before
+// this cannot have an open card.
+const lapsedCardHoldsLookback = 8 * 24 * time.Hour
+
+// LapsedCardHolds is every owner's CARD hold (door "card") past CardHoldTTL by
+// the database's clock, consumed by no reservation, whose card — the attention
+// ask detail.ask_id names, the hold's owner's — is still open: what the sweep
+// withdraws (internal/api's withdrawLapsedHoldCards), each AS ITS OWNER, and
+// tells the chief about. Oldest first, at most limit. Under the system scope
+// (internal/authz's ledger names it): owners, ids and keys only, no detail.
+func (s *PGStore) LapsedCardHolds(ctx context.Context, limit int) ([]LapsedCardHold, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT h.user_id, h.object, a.id, coalesce(h.detail->>'request_key', ''),
+	       h.at + make_interval(secs => $3)
+	  FROM audit_log h
+	  JOIN attention_asks a ON a.owner_id = h.user_id AND a.id::text = h.detail->>'ask_id' AND a.status = 'open'
+	 WHERE h.action = $1 AND h.detail->>'door' = '`+CardHoldDoor+`'
+	   AND h.at > now() - make_interval(secs => $4)
+	   AND h.at + make_interval(secs => $3) <= now()
+	   AND NOT EXISTS (SELECT 1 FROM audit_log r WHERE r.action = $2 AND r.user_id = h.user_id
+	                    AND r.detail->>'`+DetailHeld+`' = h.object)
+	 ORDER BY h.id LIMIT $5`, ActionDispatchHeld, ActionChiefDispatch, CardHoldTTL.Seconds(), lapsedCardHoldsLookback.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LapsedCardHold
+	for rows.Next() {
+		var l LapsedCardHold
+		if err := rows.Scan(&l.Owner, &l.HoldID, &l.AskID, &l.RequestKey, &l.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }

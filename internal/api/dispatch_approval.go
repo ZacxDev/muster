@@ -141,7 +141,9 @@ func approvalBlanks(t *hostTarget, repoBlank bool) []string {
 
 // isApprovalBlank reports whether blank is an approval card's (the owner's
 // say-so for the whole request, not one blank of it).
-func isApprovalBlank(blank string) bool { return blank == blankApprove || blank == blankRepo }
+func isApprovalBlank(blank string) bool {
+	return blank == blankApprove || blank == blankRepo || blank == blankClone
+}
 
 // repoBlankOf reports whether repo is a blank an approval card can ask for.
 func repoBlankOf(repo string) bool {
@@ -167,8 +169,18 @@ type approvalRequest struct {
 	// trigger is what started the chief's turn (approvalTrigger), said on
 	// the card; set by fileHeldDispatch.
 	trigger string
-	// refile: the repo card a "Change repo" tap opens (heldDetail.Refile).
+	// refile: the repo card a "Change repo" tap opens, or a clone card after
+	// another card's tap (heldDetail.Refile).
 	refile bool
+	// clone is the clone the request starts in, when muster settled one, and
+	// decision the host's answer it was settled from (clone_choice.go): the
+	// clone card's choices are mirror.ChooseClone's of it, and the hold stores
+	// it (heldDetail.CloneDecision) so no later call asks the host again.
+	clone    string
+	decision cloneDecision
+	// typed: a clone card in the owner's typed turn — no approval of the
+	// chief's brief, only the clone of a request they typed.
+	typed bool
 }
 
 // repoChangeable reports whether the request's repository is the chief's to
@@ -182,10 +194,22 @@ func (r approvalRequest) repoChangeable() bool {
 // refusal then says by how much): a brief is never cut on the card, because
 // the brief is what the agent is told.
 func approvalQuestion(r approvalRequest, repoBlank bool) (string, string) {
+	return approvalQuestionFor(r, repoBlank, false)
+}
+
+// approvalQuestionFor is approvalQuestion, the clone a choice below when
+// cloneBlank (the clone card).
+func approvalQuestionFor(r approvalRequest, repoBlank, cloneBlank bool) (string, string) {
 	one := func(v string) string { return fence.Sanitize(strings.TrimSpace(v)) }
 	var b strings.Builder
-	b.WriteString("Start this agent? Your chief asked for it in a turn you did not type in its chat, so nothing starts unless " +
-		"you approve it here.\n")
+	switch {
+	case r.typed:
+		b.WriteString("Which clone should this agent start in? You asked your chief for it in its chat, and the repository has " +
+			"several clones on that host, none of them the only one your live sessions work in. Nothing starts until you choose.\n")
+	default:
+		b.WriteString("Start this agent? Your chief asked for it in a turn you did not type in its chat, so nothing starts unless " +
+			"you approve it here.\n")
+	}
 	if r.trigger != "" {
 		b.WriteString("Your chief asked for this while handling " + r.trigger + ".\n")
 	}
@@ -205,6 +229,12 @@ func approvalQuestion(r approvalRequest, repoBlank bool) (string, string) {
 		b.WriteString("Repository: " + one(r.repo) + "\n")
 	default:
 		b.WriteString("Repository: none\n")
+	}
+	switch {
+	case cloneBlank:
+		b.WriteString("Clone: choose it below (the repository has several clones on that host)\n")
+	case r.clone != "":
+		b.WriteString("Clone: " + one(r.clone) + "\n")
 	}
 	if r.base != "" {
 		b.WriteString("Base branch: " + one(r.base) + "\n")
@@ -233,11 +263,23 @@ func approvalQuestion(r approvalRequest, repoBlank bool) (string, string) {
 // approvalCardFor is the card for blank (blankApprove or blankRepo) of request
 // r, for chief a starting on host ("" for a pod target).
 func (s *Server) approvalCardFor(ctx context.Context, a agents.Agent, blank, host string, r approvalRequest) (approvalCard, string) {
-	q, why := approvalQuestion(r, blank == blankRepo)
+	q, why := approvalQuestionFor(r, blank == blankRepo, blank == blankClone)
 	if why != "" {
 		return approvalCard{}, why
 	}
 	c := approvalCard{question: q, values: map[string]string{}}
+	if blank == blankClone {
+		// The host's own clones, live ones first (mirror.ChooseClone's order).
+		_, choices := mirror.ChooseClone(r.decision.List)
+		for _, cl := range choices {
+			l := cloneLabel(cl)
+			c.labels = append(c.labels, l)
+			c.values[l] = clonePref + cl.Path
+		}
+		c.labels = append(c.labels, declineLabel)
+		c.values[declineLabel] = declineValue
+		return c, ""
+	}
 	if blank == blankApprove {
 		c.labels = []string{approveLabel}
 		c.values[approveLabel] = approveValue
@@ -452,6 +494,12 @@ func (s *Server) approvalSurfaceRefusal(ctx context.Context, id int64) error {
 
 // approvalNext is a held answer's "next" for an approval card.
 func approvalNext(blank string) string {
+	if blank == blankClone {
+		return "muster asked your owner which of the host's clones of the repository to start this in, on a card showing the " +
+			"whole request (the repository has several there). When their answer arrives, call agent_dispatch again with the same " +
+			"request_key, the same arguments and clone set to the clone they chose, as the card offered it; do not choose one " +
+			"yourself. If they declined, do not start it."
+	}
 	if blank == blankRepo {
 		return "muster asked your owner to approve this start and choose its repository, on a card showing the whole request. " +
 			"When their answer arrives, call agent_dispatch again with the same request_key, the same arguments and repo set " +

@@ -622,6 +622,8 @@ type spawnAuditRequest struct {
 	PromptSHA256 string    `json:"prompt_sha256"`
 	PromptBytes  int       `json:"prompt_bytes"`
 	Prompt       string    `json:"prompt"`
+	// Clone is muster's clone hint (AgentSpawnReq.Clone), "" for none.
+	Clone string `json:"clone,omitempty"`
 }
 
 // spawnAuditAdmit is the line the rate limit counts: written UNDER the
@@ -820,15 +822,44 @@ func githubRepoOf(raw string) string {
 	return strings.ToLower(path)
 }
 
-// resolveClone is the ONE repository of repo directly under a root: its origin
-// URL names repo. Entries are counted by the repository they belong to —
-// realpath of `git rev-parse --git-common-dir` — so a worktree of a clone is
-// that clone, not a second one; an entry whose rev-parse fails (a prunable
-// worktree) is skipped. The repository's MAIN working tree (the common dir's
-// parent) must itself be under a root, and is what the spawn's worktree is cut
-// from. None, or two genuinely separate clones, is no_repo, naming the
-// repository.
-func resolveClone(ctx context.Context, git string, roots []string, repo string) (string, error) {
+// resolveClone is the repository of repo directly under a root that the
+// spawn's worktree is cut from (clonesOf): with no hint, the ONLY one — none,
+// or two genuinely separate clones, is no_repo, naming the repository, as it
+// always was. With a hint (muster's AgentSpawnReq.Clone, a path this host
+// listed in an agent-clones-list), the clone whose main working tree IS that
+// path exactly as listed — and a hint that is none of them, even with a
+// single clone, is bad_clone: the host never cuts from a directory it did not
+// itself find, and never falls back to a guess.
+func resolveClone(ctx context.Context, git string, roots []string, repo, hint string) (string, error) {
+	found := clonesOf(ctx, git, roots, repo)
+	if hint != "" {
+		// Compared exactly as the host lists it (clonesOf: realpaths), never
+		// resolved on this filesystem: a path from the server touches nothing.
+		for _, f := range found {
+			if f == hint {
+				return f, nil
+			}
+		}
+		return "", refuseSpawn(mirror.SpawnBadClone, "the clone muster named is not one of this host's %d clone(s) of repo %s under its roots", len(found), repo)
+	}
+	switch len(found) {
+	case 0:
+		return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has no clone under this host's roots", repo)
+	case 1:
+		return found[0], nil
+	}
+	return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has %d clones under this host's roots", repo, len(found))
+}
+
+// clonesOf is EVERY repository of repo directly under a root, as main working
+// trees (realpath), in roots-then-directory order: its origin URL names repo.
+// Entries are counted by the repository they belong to — realpath of `git
+// rev-parse --git-common-dir` — so a worktree of a clone is that clone, not a
+// second one; an entry whose rev-parse fails (a prunable worktree) is skipped.
+// The repository's MAIN working tree (the common dir's parent) must itself be
+// under a root. THE ONE enumeration a spawn resolves against and an
+// agent-clones-list answers with (clones.go).
+func clonesOf(ctx context.Context, git string, roots []string, repo string) []string {
 	want := strings.ToLower(repo)
 	underARoot := func(p string) bool {
 		for _, r := range roots {
@@ -870,13 +901,7 @@ func resolveClone(ctx context.Context, git string, roots []string, repo string) 
 			}
 		}
 	}
-	switch len(found) {
-	case 0:
-		return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has no clone under this host's roots", repo)
-	case 1:
-		return found[0], nil
-	}
-	return "", refuseSpawn(mirror.SpawnNoRepo, "repo %s has %d clones under this host's roots", repo, len(found))
+	return found
 }
 
 // newSessionID is a fresh UUIDv4, minted here: claude's --session-id.
@@ -999,7 +1024,7 @@ func (c *Client) spawnAgentSteps(ctx context.Context, h *hostSide, m mirror.Msg,
 	f := func(v string) string { return capField(v, auditFieldMax) }
 	line := spawnAuditRequest{At: received, Kind: "request", Dispatch: m.Dispatch, Server: f(sc.Server), Runtime: f(req.Runtime),
 		Repo: f(req.Repo), Base: f(req.Base), Model: f(req.Model), Name: f(req.Name), PromptSHA256: hex.EncodeToString(sum[:]),
-		PromptBytes: len(req.Prompt), Prompt: capField(req.Prompt, mirror.MaxSpawnPrompt)}
+		PromptBytes: len(req.Prompt), Prompt: capField(req.Prompt, mirror.MaxSpawnPrompt), Clone: f(req.Clone)}
 	if sc.Log == "" {
 		return w, false, false, refuseSpawn(mirror.SpawnUnavailable, "audit log unwritable")
 	}
@@ -1145,7 +1170,7 @@ func (c *Client) spawnRuntime(ctx context.Context, h *hostSide, dispatch int64, 
 	} else if bin, err = c.claudeBinary(ctx); err != nil {
 		return mirror.AgentSpawned{}, refuseSpawn(mirror.SpawnUnavailable, "claude not found")
 	}
-	clone, err := resolveClone(ctx, git, sc.Roots, req.Repo)
+	clone, err := resolveClone(ctx, git, sc.Roots, req.Repo, req.Clone)
 	if err != nil {
 		return mirror.AgentSpawned{}, err
 	}

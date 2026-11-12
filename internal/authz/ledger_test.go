@@ -205,6 +205,11 @@ var (
 		// row handed back with its owner, then raised or cancelled as THAT owner.
 		"internal/plugins.(*PGStore).UnroutedDue",
 		"internal/plugins.(*PGStore).UnroutedAsksToClose",
+		// …and its held-dispatch half: every owner's CARD hold that lapsed unused
+		// while its card is still open (owners, hold and ask ids, request keys;
+		// no detail), each card then withdrawn — and its chief told — as THAT
+		// owner (internal/api withdrawLapsedHoldCards).
+		"internal/plugins.(*PGStore).LapsedCardHolds",
 		// Task claims (migration 0111): the claim sweep's read of every owner's
 		// live session claims (owner, task, session, host — no text); each is
 		// then judged against THAT owner's hosts and released as that owner

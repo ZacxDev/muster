@@ -437,6 +437,18 @@ type Msg struct {
 	// builds the argv, and nothing muster sends changes it. An older host never
 	// sets it, and starts in normal permission mode, which is what false reads as.
 	AgentSpawnSkipPermissions bool `json:"agentSpawnSkipPermissions,omitempty"`
+	// AgentSpawnClones (hello) is the host ADVERTISING that it answers an
+	// agent-clones request (TypeAgentClones, clones.go) and honours an
+	// agent-spawn's clone hint (AgentSpawnReq.Clone), checked against its own
+	// clones. Backward-compatible both ways: an older muster ignores it and
+	// sends no hint; an older host never sets it, so muster asks it nothing
+	// and sends it no hint (and a hint it was sent anyway it ignores, refusing
+	// a repository with several clones as it always did).
+	AgentSpawnClones bool `json:"agentSpawnClones,omitempty"`
+	// CloneRepo is an agent-clones request's repository (<owner>/<repo>);
+	// Clones an agent-clones-list's answer (clones.go).
+	CloneRepo string       `json:"cloneRepo,omitempty"`
+	Clones    []AgentClone `json:"clones,omitempty"`
 	// Dispatch is the host dispatch an agent-spawn / agent-spawned is for, or
 	// the one a paste is for (ForDispatch: the host checks the window's tag).
 	Dispatch int64 `json:"dispatch,omitempty"`

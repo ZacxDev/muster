@@ -334,7 +334,7 @@ func TestAWorktreeOfTheCloneIsTheClone(t *testing.T) {
 	main := clone(filepath.Join(root, "widgets"))
 	gitIn(t, main, "worktree", "add", "-q", "-b", "side", filepath.Join(root, "widgets-side"))
 	git := gitPath(t)
-	got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets")
+	got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets", "")
 	if err != nil || got != main {
 		t.Fatalf("the clone and its worktree: %q, %v; want the clone %q", got, err, main)
 	}
@@ -345,18 +345,18 @@ func TestAWorktreeOfTheCloneIsTheClone(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(other, ".git", "worktrees", "widgets-orphan")); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets"); err != nil || got != main {
+	if got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets", ""); err != nil || got != main {
 		t.Fatalf("with a prunable worktree: %q, %v", got, err)
 	}
 	// A live worktree under the root of a clone outside every root: not one.
 	gitIn(t, other, "worktree", "prune")
 	gitIn(t, other, "worktree", "add", "-q", "-b", "outside", filepath.Join(root, "widgets-outside"))
-	if got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets"); err != nil || got != main {
+	if got, err := resolveClone(context.Background(), git, []string{root}, "acme/widgets", ""); err != nil || got != main {
 		t.Fatalf("with an outside clone's worktree: %q, %v", got, err)
 	}
 	// Two separate clones under the root: refused.
 	clone(filepath.Join(root, "widgets-2"))
-	_, err = resolveClone(context.Background(), git, []string{root}, "acme/widgets")
+	_, err = resolveClone(context.Background(), git, []string{root}, "acme/widgets", "")
 	var e *errSpawn
 	if !errors.As(err, &e) || e.code != mirror.SpawnNoRepo || e.detail != "repo acme/widgets has 2 clones under this host's roots" {
 		t.Fatalf("two clones: %v", err)

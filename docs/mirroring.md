@@ -1468,6 +1468,17 @@ repository, a base branch, the prompt and a display name. The host:
   needs exactly one clone of it directly under a root (matched by its configured
   `origin` URL). A worktree of that clone counts as the clone, and the new
   worktree is cut from the clone itself;
+- with **several** clones of it under the roots, cuts from the one muster names
+  — and only when that is one of the clones it finds itself. Before a start,
+  muster asks the host (`agent-clones`) for its clones of the repository; the
+  host answers with its own list, each marked live when one of its listed
+  windows (not a muster-started agent's) works in it, by the same rule as the
+  repo chip (a worktree resolves to its main working tree through its
+  `commondir`). muster picks the only live one, or asks you on the card, and
+  sends the path back as a hint. The host re-enumerates and refuses a hint that
+  is not one of its clones (`bad_clone`, written to the audit log with the
+  request), and refuses several clones with no hint (`no_repo`), as before. A
+  mirror older than this sends no list and is sent no hint;
 - counts its rate limit from the audit log (an `admit` line, written before the
   next request is checked), so a restart does not reset it and concurrent
   requests cannot pass it;

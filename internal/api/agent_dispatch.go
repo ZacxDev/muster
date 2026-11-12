@@ -59,7 +59,7 @@ const (
 	taskDispatchReplaced = "task_dispatch is replaced by agent_dispatch, which needs a target: ask your owner where to run it"
 	// agentDispatchArgs is the refusal of arguments that do not decode, or that
 	// carry a field outside agent_dispatch's table (DisallowUnknownFields).
-	agentDispatchArgs = "arguments are {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?}"
+	agentDispatchArgs = "arguments are {target, prompt?, task_id?, repo?, base?, model?, worker_pool?, request_key?, owner_asked?, clone?}"
 
 	// 🔴 THE NO-TARGET REFUSAL TELLS THE CHIEF HOW TO ASK, NOT ONLY THAT IT MUST
 	// (owner decision 1 as amended, docs/design/chief-dispatch.md): with ask_owner,
@@ -180,6 +180,9 @@ func agentDispatchToolDef() agents.ToolDef {
 				"A pool worker holds a live slot for as long as it runs."),
 			"request_key": strProp("Your idempotency key for this request of your owner's: 1-64 of [A-Za-z0-9._:-]. Required " +
 				"without task_id. Reuse it on every retry of the same request; use a new one for a new request."),
+			"clone": strProp("For a host target only, and only after your owner chose one on a clone card: the clone they " +
+				"chose, exactly as the card offered it. Omit it otherwise: muster picks the clone your owner's live sessions " +
+				"work in, or asks them."),
 		}, "target")}
 }
 
@@ -194,6 +197,9 @@ type agentDispatchIn struct {
 	WorkerPool string `json:"worker_pool"`
 	RequestKey string `json:"request_key"`
 	OwnerAsked bool   `json:"owner_asked"`
+	// Clone is a host target's clone (clone_choice.go): the path of one of the
+	// host's own clones of repo, exactly as the clone card offered it.
+	Clone string `json:"clone"`
 }
 
 // decodeAgentDispatch decodes arguments, refusing any field outside the table.
@@ -213,6 +219,8 @@ func decodeAgentDispatch(arguments string) (agentDispatchIn, bool) {
 	in.Model = strings.TrimSpace(in.Model)
 	in.WorkerPool = strings.TrimSpace(in.WorkerPool)
 	in.RequestKey = strings.TrimSpace(in.RequestKey)
+	// The clone card's label marks a live clone; the clone is the path.
+	in.Clone = strings.TrimSuffix(strings.TrimSpace(in.Clone), cloneLiveSuffix)
 	return in, true
 }
 
@@ -354,7 +362,10 @@ func dispatchRequestHash(in agentDispatchIn, prompt string) string {
 		WorkerPool string `json:"worker_pool"`
 		Prompt     string `json:"prompt"`
 		OwnerAsked bool   `json:"owner_asked"`
-	}{in.Target, in.TaskID, strings.ToLower(in.Repo), in.Base, in.Model, in.WorkerPool, prompt, in.OwnerAsked})
+		// omitempty: a call with no clone hashes exactly as before clones
+		// existed (a hold or request_key filed then still matches).
+		Clone string `json:"clone,omitempty"`
+	}{in.Target, in.TaskID, strings.ToLower(in.Repo), in.Base, in.Model, in.WorkerPool, prompt, in.OwnerAsked, in.Clone})
 	sum := sha256.Sum256(canon)
 	return hex.EncodeToString(sum[:])
 }
@@ -603,6 +614,9 @@ func (s *Server) toolAgentDispatch(ctx context.Context, a agents.Agent, in agent
 	}
 	// 🔴 FROM HERE ON EVERY ANSWER CARRIES THE CHIEF'S CURRENT BUDGET.
 	refuse := func(msg string) string { return dispatchRefusal(msg, s.chiefBudgetNow(ctx)) }
+	if in.Clone != "" {
+		return refuse(agentDispatchCloneHostOnly)
+	}
 	kindArg, why := s.podKindOf(ctx, in.Target)
 	if why != "" {
 		return s.targetRefusal(ctx, why)

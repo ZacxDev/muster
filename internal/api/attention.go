@@ -1429,6 +1429,8 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 	defer t.Stop()
 	for {
 		s.expireAsks(ctx)
+		// A dispatch card whose hold lapsed is withdrawn with it (hold_lapse.go).
+		s.withdrawLapsedHoldCards(ctx)
 		s.deliverDueAnswers(ctx)
 		s.putDueQuestions(ctx)
 		s.expireDraftNotes(ctx)
@@ -1757,6 +1759,11 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 // first). The ONE answer path both doors take.
 func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src attention.AnswerSource) (attention.Ask, error) {
 	var a attention.Ask
+	// A dispatch card whose hold lapsed (hold_lapse.go): nothing is recorded;
+	// the card is withdrawn, the chief told, and the owner reads why.
+	if err := s.lapsedCardRefusal(ctx, id); err != nil {
+		return a, err
+	}
 	// A chief's dispatch APPROVAL card (dispatch_approval.go): never answered
 	// from the phone's notification action, which cannot show the brief —
 	// refused before anything is recorded or done; the card stays open.

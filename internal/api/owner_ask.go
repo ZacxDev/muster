@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -123,9 +125,25 @@ func (s *Server) toolAskOwner(ctx context.Context, a agents.Agent, arguments str
 // (row-level security makes the row theirs). about is the session the question
 // is about (attention.New.SubjectKey: chiefAskSubject's, for ask_owner), "" for
 // none — muster's own cards.
-func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string, about string) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, false, about)
+func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, question string, options []string, about string,
+	wait ...time.Duration) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, false, about, firstWait(wait))
 }
+
+// firstWait is a card's optional wait (attention.New.Timeout; 0 = the
+// store's default). agent_dispatch's hold cards pass holdCardWait.
+func firstWait(wait []time.Duration) time.Duration {
+	if len(wait) == 0 {
+		return 0
+	}
+	return wait[0]
+}
+
+// holdCardWait is how long the card of an agent_dispatch HOLD waits
+// (host_dispatch.go's fileHeldDispatch): plugins.CardAskOutlives longer than
+// its hold (plugins.CardHoldTTL), so the hold always lapses first and its card
+// is then withdrawn by withdrawLapsedHoldCards — never left open past it.
+const holdCardWait = plugins.CardHoldTTL + plugins.CardAskOutlives
 
 // raiseProposalCard is raiseOwnerCard for a chief PROPOSAL's card
 // (chief_proposal.go): the same row, but its notification carries no chips
@@ -135,12 +153,14 @@ func (s *Server) raiseOwnerCard(ctx context.Context, chief agents.Agent, questio
 // fileProposal notifies it (proposalCardFiled) only once the proposal is
 // recorded, so a refused one (a line already used: ErrProposalLineUsed) never
 // reaches the owner's phone; its card is cancelled.
-func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string) (attention.Ask, error) {
-	return s.raiseCard(ctx, chief, question, options, true, "")
+func (s *Server) raiseProposalCard(ctx context.Context, chief agents.Agent, question string, options []string,
+	wait ...time.Duration) (attention.Ask, error) {
+	return s.raiseCard(ctx, chief, question, options, true, "", firstWait(wait))
 }
 
 // raiseCard is raiseOwnerCard and raiseProposalCard.
-func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool, about string) (attention.Ask, error) {
+func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question string, options []string, proposal bool, about string,
+	timeout time.Duration) (attention.Ask, error) {
 	// Only a test fixture runs with no attention store (muster-server always
 	// wires one); ask_owner is still offered there (round 0 D1), and the call
 	// then takes the same chat-only path as any refused raise.
@@ -148,7 +168,7 @@ func (s *Server) raiseCard(ctx context.Context, chief agents.Agent, question str
 		return attention.Ask{}, errors.New("no attention store")
 	}
 	a, err := s.ext.Attention.Create(ctx, attention.New{Asker: callerOfAgent(chief).asker, Question: question, Options: options,
-		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about})
+		OwnerCard: true, AskedSession: s.turnSessionOf(ctx, chief.ID), SubjectKey: about, Timeout: timeout})
 	if err != nil {
 		return attention.Ask{}, err
 	}

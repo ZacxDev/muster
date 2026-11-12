@@ -73,6 +73,7 @@ type hostDispatchStore interface {
 	HostDispatchObject(ctx context.Context, h plugins.HostDispatch) (string, error)
 	CardHoldByKey(ctx context.Context, key string) (plugins.DispatchHold, error)
 	CardHoldByAsk(ctx context.Context, askID int64) (plugins.DispatchHold, error)
+	KeyedReservationDetail(ctx context.Context, key string) (json.RawMessage, bool, error)
 	ApprovalHoldCounts(ctx context.Context, within time.Duration, turn int64, key string) (int, int, error)
 }
 
@@ -115,7 +116,7 @@ const (
 	agentDispatchHostGated = "task %d is gated: a host target does not release a gate. Release it first (on the board, or a pod " +
 		"start with owner_asked), then start it on the host"
 
-	agentDispatchHeldNone    = "request_key %q holds no dispatch waiting for your owner's answer (or it is more than 15 minutes old): ask them again in the chat"
+	agentDispatchHeldNone    = "request_key %q holds no dispatch waiting for your owner's answer (or its card expired, " + cardHoldAge + " after it was raised): ask them again in the chat"
 	agentDispatchHeldChanged = "request_key %q was held with different arguments: only the blank your owner answered may change"
 	agentDispatchHeldChose   = "your owner chose %s for this dispatch: call agent_dispatch with exactly that"
 	agentDispatchHeldDoor    = "your owner's answer to that card did not come from muster's Attention view or their phone, so muster cannot take it as theirs"
@@ -139,6 +140,8 @@ func spawnRefusalSentence(code, host, runtime, repo, base, detail string) string
 		return fmt.Sprintf("branch %q does not exist on %s's remote: %s. Ask your owner which branch", base, repo, detail)
 	case mirror.SpawnBadModel:
 		return fmt.Sprintf("host %q's opencode has no such OpenRouter model: %s. Ask your owner which model", host, detail)
+	case mirror.SpawnBadClone:
+		return fmt.Sprintf("host %q refused the clone of %s muster named: %s. Call again without clone, and muster asks your owner which", host, repo, detail)
 	}
 	return fmt.Sprintf("the agent could not be started on %q: %s; tell your owner", host, detail)
 }
@@ -361,10 +364,15 @@ type heldDetail struct {
 	// Refile: the repo card a "Change repo" tap opened in an approval card's
 	// place — the same request, not counted again by the hourly cap.
 	Refile bool `json:"refile,omitempty"`
+	// CloneDecision is the host's clone list this request was decided from
+	// (clone_choice.go), nil while its host or repository is still a blank:
+	// every later call with the key takes the clone from here, never asking
+	// the host again.
+	CloneDecision *cloneDecision `json:"clone_decision,omitempty"`
 }
 
 // cardHoldDoor is the door a card hold is filed with (dispatch_request's are "mcp").
-const cardHoldDoor = "card"
+const cardHoldDoor = plugins.CardHoldDoor
 
 // fileHeldDispatch raises the card for blanks[0] and files the hold that binds
 // the chief's completing call to it: a host or model card for t's blanks (t
@@ -387,7 +395,7 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	}
 	approval := isApprovalBlank(blanks[0])
 	var turn int64
-	if approval {
+	if approval && !req.typed {
 		// 🔴 WHO ASKED, AND HOW OFTEN: the card says what started the chief's
 		// turn, and an untyped turn may raise one approval card, a few an hour.
 		var trigger string
@@ -400,6 +408,8 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 			}
 		}
 		req.trigger = trigger
+	}
+	if approval {
 		var c approvalCard
 		c, why = s.approvalCardFor(ctx, a, blanks[0], hostName, req)
 		question, labels, values = c.question, c.labels, c.values
@@ -431,6 +441,18 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 	if slices.Contains(blanks, blankRepo) {
 		held.Repo, in.Repo = "", ""
 	}
+	// A clone chosen from a host or repository still blank, or by the clone
+	// card itself, is not held either (completeHeld clears it the same way).
+	if cloneDependsOn(blanks) {
+		held.Clone, in.Clone = "", ""
+	}
+	// With the host or the repository still a blank nothing was decided about
+	// the clone: the call that fills it decides.
+	var decision *cloneDecision
+	if !slices.Contains(blanks, "host") && !slices.Contains(blanks, blankRepo) && req.decision.Decided {
+		d := req.decision
+		decision = &d
+	}
 	// 🔴 AN APPROVAL CARD'S PUSH CARRIES NO CHIPS AND NO SIGNED ACTIONS
 	// (proposalCardFiled, as a proposal's): its notification cannot show the
 	// brief, so a tap on the lock screen must open the whole card, never
@@ -439,16 +461,20 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		ask attention.Ask
 		err error
 	)
+	// 🔴 THE CARD WAITS AS LONG AS ITS HOLD, AND A LITTLE LONGER
+	// (plugins.CardAskOutlives): the hold lapses first, and the sweep then
+	// withdraws the card and tells the chief (withdrawLapsedHoldCards).
 	if approval {
-		ask, err = s.raiseProposalCard(ctx, a, question, labels)
+		ask, err = s.raiseProposalCard(ctx, a, question, labels, holdCardWait)
 	} else {
-		ask, err = s.raiseOwnerCard(ctx, a, question, labels, "")
+		ask, err = s.raiseOwnerCard(ctx, a, question, labels, "", holdCardWait)
 	}
 	if err != nil {
 		return refuse(ownerCardRefusal(err))
 	}
 	d := heldDetail{Door: cardHoldDoor, RequestKey: in.RequestKey, HeldHash: dispatchRequestHash(held, prompt), Target: held.Target,
-		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger, Refile: req.refile}
+		Blanks: blanks, Options: values, AskID: ask.ID, OwnerMessage: ownerMsg, Approval: approval, Turn: turn, Trigger: req.trigger, Refile: req.refile,
+		CloneDecision: decision}
 	var detail map[string]any
 	raw, _ := json.Marshal(d)
 	_ = json.Unmarshal(raw, &detail)
@@ -471,7 +497,8 @@ func (s *Server) fileHeldDispatch(ctx context.Context, a agents.Agent, in agentD
 		next = "muster asked your owner " + what + ". When their answer arrives, call agent_dispatch again with the same " +
 			"request_key, the same arguments, and " + then + "; do not choose one yourself."
 	}
-	out := map[string]any{"held": true, ui.OwnerCardAskIDKey: ask.ID, "blanks": blanks, "options": labels, "next": next}
+	out := map[string]any{"held": true, ui.OwnerCardAskIDKey: ask.ID, "blanks": blanks, "options": labels, "next": next,
+		"expires_at": ask.ExpiresAt.Add(-plugins.CardAskOutlives).UTC().Format(time.RFC3339)}
 	if b := s.chiefBudgetNow(ctx); b != nil {
 		out["budget"] = b
 	}
@@ -552,6 +579,11 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 	if slices.Contains(d.Blanks, blankRepo) {
 		asHeld.Repo = ""
 	}
+	// A clone settled after the hold (its host, repository or clone a blank)
+	// was held with none.
+	if cloneDependsOn(d.Blanks) {
+		asHeld.Clone = ""
+	}
 	if dispatchRequestHash(asHeld, prompt) != d.HeldHash {
 		c.refusal = fmt.Sprintf(agentDispatchHeldChanged, in.RequestKey)
 		return c
@@ -577,13 +609,17 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 		if repo != "" {
 			filled = repoValuePref + strings.ToLower(repo)
 		}
+	case blankClone:
+		if in.Clone != "" {
+			filled = clonePref + in.Clone
+		}
 	case blankApprove:
 		filled = approveValue
 	}
 	if filled == "" {
 		c.refusal = fmt.Sprintf(agentDispatchHeldChanged, in.RequestKey)
-		if first == blankRepo && slices.Equal(callBlanks, pending) {
-			// The repo card's own call again, before or after its answer.
+		if (first == blankRepo || first == blankClone) && slices.Equal(callBlanks, pending) {
+			// The repo or clone card's own call again, before or after its answer.
 			c.refusal = agentDispatchHeldWaiting
 		}
 		return c
@@ -670,6 +706,9 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 		case blankRepo:
 			c.refusal = fmt.Sprintf(agentDispatchHeldChoseRepo, label)
 			return c
+		case blankClone:
+			c.refusal = fmt.Sprintf(agentDispatchHeldChoseClone, strings.TrimPrefix(chosen, clonePref))
+			return c
 		}
 		c.refusal = fmt.Sprintf(agentDispatchHeldChose, label)
 		return c
@@ -682,7 +721,10 @@ func (s *Server) completeHeld(ctx context.Context, in agentDispatchIn, t *hostTa
 // approval of the whole request — its card an approval card — rather than a
 // host or model card's blank.
 func (c heldCompletion) approvedByTap() bool {
-	return c.accepted && len(c.detail.Blanks) > 0 && isApprovalBlank(c.detail.Blanks[0])
+	// A clone card raised in the owner's TYPED turn (OwnerMessage) is their
+	// choice of a clone for a request they typed, not an approval of the
+	// chief's brief: the brief stays their relayed message.
+	return c.accepted && len(c.detail.Blanks) > 0 && isApprovalBlank(c.detail.Blanks[0]) && c.detail.OwnerMessage == 0
 }
 
 // toolHostDispatch is agent_dispatch for a host target (the caller,
@@ -800,12 +842,34 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 		}
 		effective = canonical
 	}
+	// THE CLONE (clone_choice.go): decided ONCE per request_key — from the
+	// key's reservation or hold when it has one, else from the host's own list
+	// now — the only clone or the only live one is the request's; otherwise it
+	// is the owner's to choose on the card. in.Clone stays what the CHIEF sent
+	// (what the hashes bind); clone is the one the spawn carries.
+	cc := s.chooseClone(ctx, t, effective, in.Clone, in.RequestKey)
+	if cc.refusal != "" {
+		return refuse(cc.refusal)
+	}
+	clone := cc.clone
 	callBlanks := t.blanks()
 	if repoBlank {
 		callBlanks = append(callBlanks, blankRepo)
 	}
+	if cc.blank {
+		callBlanks = append(callBlanks, blankClone)
+	}
 	approval := func(t hostTarget) approvalRequest {
-		return approvalRequest{target: t.String(), model: in.Model, repo: effective, base: in.Base, task: task, onTask: onTask, prompt: prompt}
+		return approvalRequest{target: t.String(), model: in.Model, repo: effective, base: in.Base, task: task, onTask: onTask, prompt: prompt,
+			clone: clone, decision: cc.decision}
+	}
+	// cloneCard is the clone card, in the approval card's place: after a tap
+	// that filled another blank (refile: that tap already asked the owner), or
+	// in the owner's typed turn (typed, ownerMsg the message they typed).
+	cloneCard := func(refile, typed bool, ownerMsg int64) string {
+		r := approval(t)
+		r.refile, r.typed = refile, typed
+		return s.fileHeldDispatch(ctx, a, in, &t, []string{blankClone}, prompt, ownerMsg, r)
 	}
 	// The owner's gate: a held card's tap, or owner_asked in their typed turn.
 	comp := s.completeHeld(ctx, in, &t, callBlanks, effective, prompt)
@@ -821,8 +885,10 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 		return toolJSON(out)
 	}
 	if comp.changeRepo && !typed {
-		// "Change repo" tapped: the repo card in the approval card's place.
-		effective = ""
+		// "Change repo" tapped: the repo card in the approval card's place
+		// (and the clone, chosen from the old repository's clones, with it:
+		// fileHeldDispatch stores no decision for a repo card).
+		effective, clone = "", ""
 		r := approval(t)
 		r.refile = true
 		return s.fileHeldDispatch(ctx, a, in, &t, []string{blankRepo}, prompt, 0, r)
@@ -841,7 +907,7 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 		}
 		if held {
 			// The host or model card first; the approval card after its tap.
-			return s.fileHeldDispatch(ctx, a, in, &t, approvalBlanks(&t, repoBlank), prompt, 0, approval(t))
+			return s.fileHeldDispatch(ctx, a, in, &t, withCloneBlank(approvalBlanks(&t, repoBlank), cc.blank), prompt, 0, approval(t))
 		}
 		// The approval card is filed once the reservation has said what it
 		// would (errApprovalNeeded): a replay or a prior start answers first.
@@ -852,17 +918,44 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	// own card is raised — whatever the call put there, even when one runtime
 	// is all there is to choose. An approval card is always the last.
 	if byTap && len(comp.detail.Blanks) > 1 {
-		rest := comp.detail.Blanks[1:]
+		rest := withCloneBlank(comp.detail.Blanks[1:], cc.blank)
 		t = t.withBlanks(rest)
 		in.Target = t.String()
 		if slices.Contains(rest, blankRepo) {
 			effective = ""
 		}
-		return s.fileHeldDispatch(ctx, a, in, &t, rest, prompt, 0, approval(t))
+		r := approval(t)
+		var ownerMsg int64
+		if rest[0] == blankClone && comp.detail.OwnerMessage != 0 {
+			// The clone card of a request the owner TYPED (its model card was
+			// held in their turn): worded and started as theirs.
+			r.typed, ownerMsg = true, comp.detail.OwnerMessage
+		}
+		return s.fileHeldDispatch(ctx, a, in, &t, rest, prompt, ownerMsg, r)
 	}
-	// A call in the owner's typed turn that still has a blank files a hold.
+	// A call in the owner's typed turn that still has a blank files a hold
+	// (the clone card after it when the clone is theirs to choose too).
 	if held && !byTap {
-		return s.fileHeldDispatch(ctx, a, in, &t, t.blanks(), prompt, typedMsg.ID, approvalRequest{})
+		blanks := t.blanks()
+		if cc.blank {
+			blanks = append(blanks, blankClone)
+		}
+		return s.fileHeldDispatch(ctx, a, in, &t, blanks, prompt, typedMsg.ID, approvalRequest{decision: cc.decision})
+	}
+	// 🔴 THE CLONE IS STILL THE OWNER'S TO CHOOSE: the clone card, whatever
+	// else was answered. Reached after the tap of a card whose hold decided
+	// nothing about the clone — a host card's or a repository card's (the
+	// clone is decided by this call, the first to know both) — or in the
+	// owner's typed turn. A hold that decided the clone keeps it (clone_
+	// choice.go), so an approval's tap never lands here. Never a start on a
+	// clone nobody chose.
+	if cc.blank {
+		switch {
+		case byTap && comp.detail.Blanks[0] != blankClone:
+			return cloneCard(true, comp.detail.OwnerMessage != 0, comp.detail.OwnerMessage)
+		case typed && !byTap:
+			return cloneCard(false, true, typedMsg.ID)
+		}
 	}
 	approved := comp.approvedByTap()
 	detail := map[string]any{"kind": "host", "target": t.String(), plugins.DetailRequestKey: in.RequestKey,
@@ -880,6 +973,13 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	if approved {
 		// The audit row names the approval card the owner tapped.
 		detail["approved_on_card"] = comp.detail.AskID
+	}
+	if clone != "" {
+		detail["clone"] = clone
+	}
+	if cc.decision.Decided {
+		// The decision, for every later call with this key (clone_choice.go).
+		detail[detailCloneDecision] = cc.decision
 	}
 	object := plugins.NoteObject(in.TaskID)
 	if !onTask {
@@ -945,7 +1045,7 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	case err == nil:
 	case errors.Is(err, errApprovalNeeded):
 		// Every check passed and nothing was reserved: the owner is asked.
-		return s.fileHeldDispatch(ctx, a, in, &t, approvalBlanks(&t, repoBlank), prompt, 0, approval(t))
+		return s.fileHeldDispatch(ctx, a, in, &t, withCloneBlank(approvalBlanks(&t, repoBlank), cc.blank), prompt, 0, approval(t))
 	case errors.As(err, &refusal):
 		return refuse(string(refusal))
 	case errors.Is(err, plugins.ErrRequestKeyReused):
@@ -964,7 +1064,7 @@ func (s *Server) toolHostDispatch(ctx context.Context, a agents.Agent, in agentD
 	if res.Prior {
 		return s.alreadyDispatchedAnswer(ctx, a, in.TaskID, res)
 	}
-	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: effective, Base: in.Base, Model: wireModel,
+	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: effective, Base: in.Base, Model: wireModel, Clone: clone,
 		Prompt: spawnPromptFor(t.Runtime, t.Host, effective, prompt, task, onTask, approved, s.hostSkipsPermissions(ctx, t.Host)), Name: spawnName(task, onTask, prompt)}
 	return s.spawnReserved(ctx, owner, t, hd, req, object, in.TaskID)
 }
