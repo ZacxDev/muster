@@ -171,7 +171,7 @@ func TestASpecWithoutEgressCIDRsRendersAsBefore(t *testing.T) {
 func TestCreateRefusesANonPublicEgressCIDR(t *testing.T) {
 	d, cs := perInstanceDriver(t)
 	spec := officerEgressSpec("calm-osprey")
-	spec.Network.EgressCIDRs = []provision.CIDRPort{{CIDR: "10.43.0.0/16", Port: 443}}
+	spec.Network.EgressCIDRs = []provision.CIDRPort{{CIDR: "10.244.0.0/16", Port: 443}}
 	err := d.Create(context.Background(), spec)
 	if !errors.Is(err, provision.ErrInvalidSpec) || !strings.Contains(err.Error(), "overlaps the non-public range 10.0.0.0/8") {
 		t.Fatalf("a block inside 10.0.0.0/8: err = %v, want ErrInvalidSpec naming the range", err)

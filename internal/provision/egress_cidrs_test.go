@@ -3,6 +3,7 @@ package provision
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -29,9 +30,8 @@ func TestValidateRefusesEgressCIDRsThatConfineNothingOrReachInside(t *testing.T)
 		"host bits":       {[]CIDRPort{{"160.79.104.10/23", 443}}, true, "has host bits set; write the block itself, 160.79.104.0/23"},
 		"too wide":        {[]CIDRPort{{"160.0.0.0/15", 443}}, true, `"160.0.0.0/15" is wider than a /16`},
 		"everything":      {[]CIDRPort{{"0.0.0.0/0", 443}}, true, `"0.0.0.0/0" is wider than a /16`},
-		"rfc1918 inside":  {[]CIDRPort{{"10.43.0.0/16", 443}}, true, "overlaps the non-public range 10.0.0.0/8"},
-		"172.16/12":       {[]CIDRPort{{"172.20.0.0/16", 443}}, true, "overlaps the non-public range 172.16.0.0/12"},
-		"192.168/16":      {[]CIDRPort{{"192.168.50.0/24", 443}}, true, "overlaps the non-public range 192.168.0.0/16"},
+		"rfc1918 inside":  {[]CIDRPort{{"10.244.0.0/16", 443}}, true, "overlaps the non-public range 10.0.0.0/8"},
+		"192.168/16":      {[]CIDRPort{{"192.168.0.0/16", 443}}, true, "overlaps the non-public range 192.168.0.0/16"},
 		"link-local":      {[]CIDRPort{{"169.254.169.254/32", 80}}, true, "overlaps the non-public range 169.254.0.0/16"},
 		"cgnat":           {[]CIDRPort{{"100.100.0.0/16", 443}}, true, "overlaps the non-public range 100.64.0.0/10"},
 		"loopback":        {[]CIDRPort{{"127.0.0.0/16", 443}}, true, "overlaps the non-public range 127.0.0.0/8"},
@@ -44,6 +44,32 @@ func TestValidateRefusesEgressCIDRsThatConfineNothingOrReachInside(t *testing.T)
 		err := s.Validate()
 		if !errors.Is(err, ErrInvalidSpec) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want ErrInvalidSpec containing %q", name, err, c.want)
+		}
+	}
+}
+
+// TestEveryNonPublicRangeIsRefused pins the list by its literal value (so a
+// dropped entry reddens here) and then reaches each entry's overlap refusal
+// with a block inside it that no earlier check rejects: the range itself when
+// it is a /16 or narrower, else its first /16. The blocks are derived, not
+// written, so the private ones never appear in the tree as host addresses.
+func TestEveryNonPublicRangeIsRefused(t *testing.T) {
+	var got []string
+	for _, np := range nonPublicEgressIPv4 {
+		got = append(got, np.String())
+	}
+	want := "0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("non-public ranges = %v, want %s", got, want)
+	}
+	for _, np := range nonPublicEgressIPv4 {
+		inside := np
+		if np.Bits() < MinEgressCIDRPrefixBits {
+			inside = netip.PrefixFrom(np.Addr(), MinEgressCIDRPrefixBits)
+		}
+		err := CheckEgressCIDR(CIDRPort{inside.String(), 443})
+		if err == nil || !strings.Contains(err.Error(), "overlaps the non-public range "+np.String()) {
+			t.Errorf("%s (inside %s): err = %v, want the overlap refusal naming it", inside, np, err)
 		}
 	}
 }
