@@ -86,6 +86,12 @@ type PushGate struct {
 	// pull request names its item in its branch, and the item must be one the
 	// instance claimed. nil: every new pull request is refused (fail closed).
 	ItemClaimed func(ctx context.Context, instance string, item int) error
+	// PROpened tells HQ a draft officer opened pull request p (POST
+	// /officers/{id}/pr-opened, with the officer's own token), so HQ can start
+	// its review loop. Called by muster only — never an instance's tool — and
+	// only on the clean branch of the create re-check (afterCreate). nil: HQ
+	// is not told.
+	PROpened func(ctx context.Context, p officers.PROpened) (officers.PROpenedAnswer, error)
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration

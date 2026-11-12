@@ -41,20 +41,42 @@ const (
 	sNode          = "PR_kwDOshepherd57node"
 	sListFile      = "scripts/ci/officer-forbidden.txt"
 	sAuditor       = "example-auditor"
+	sItem          = "4401"
 )
 
-// sAudit is an auditor's audit block: round n, its 🔴 count, at head sha.
-func sAudit(n, red int, sha string) string {
-	return fmt.Sprintf("```audit-round-%d\nround %d · findings: 3\nGate: run 9 on %s\nLedger: round %d · findings 🔴%d 🟡2 🟢0\nVerdict: x\n```", n, n, sha[:8], n, red)
+// sLoop is an HQ loop item's payload: pull request sPR at head, premise
+// round, and (summary non-empty) the auditor's report HQ recorded.
+func sLoop(round int, head, summary string) string {
+	p := map[string]any{"pr_loop": map[string]any{"repo": sRepo, "pr": sPR, "head_sha": head, "round": round}}
+	if summary != "" {
+		p["from"] = map[string]any{"officer_id": "audit:example-infra", "item_id": 3901, "kind": "findings", "summary": summary}
+	}
+	b, _ := json.Marshal(p)
+	return string(b)
 }
+
+// sVerdict is an auditor's report: its VERDICT line, then body lines.
+func sVerdict(verdict string, round int, head string, body ...string) string {
+	return strings.Join(append([]string{fmt.Sprintf("VERDICT: %s · round %d · head %s", verdict, round, head[:12])}, body...), "\n")
+}
+
+func boolp(b bool) *bool { return &b }
 
 type shepRig struct {
 	g       *PushGate
 	gates   *ShepherdGates
 	gh      *fakeGH
 	notices []officers.Notice
-	// held is HQ's view: subject -> the instance holding it.
+	// held is HQ's view: subject -> the instance holding it; item is the item
+	// the item gate returns (its payload: a clean round-2 verdict at oidA; its
+	// shadow: false).
 	held map[string]string
+	item officers.Item
+	// officerShadow / officerShadowErr are the officer row's `shadow`;
+	// shadowLines what the gate recorded as refused in shadow.
+	officerShadow    bool
+	officerShadowErr error
+	shadowLines      []string
 	// authorLogin is what the author officer's App reads as; authorErr fails it.
 	authorLogin string
 	authorErr   error
@@ -66,7 +88,7 @@ func newShepRig() *shepRig {
 		RequiredChecks: []string{"ci / gate"},
 		Repos:          []officers.ShipRepo{{Repo: sRepo, Base: "trunk", BranchPrefix: "officer/"}},
 		Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: sAuthorLogin, Officer: sAuthorOfficer},
-			{Login: "ship-officer[bot]"}, {Login: "example-human"}}, Auditors: []string{sAuditor}}}
+			{Login: "ship-officer[bot]"}, {Login: "example-human"}}}}
 	rules := []officers.ShepherdRule{
 		{Repo: sRepo, Login: sAuthorLogin, AuthorOfficer: sAuthorOfficer, ForbiddenPaths: []string{"nodes/**"}, ForbiddenPathsFiles: []string{sListFile}},
 		// The shepherd's OWN bot, listed on purpose: so the own-App check is
@@ -82,12 +104,18 @@ func newShepRig() *shepRig {
 			}
 			return r.authorLogin, r.authorErr
 		},
-		ItemHeld: func(_ context.Context, instance, repo string, n int) error {
+		ItemHeld: func(_ context.Context, instance, repo string, n int) (officers.Item, error) {
 			if r.held[officers.ShepherdSubject(repo, n)] != instance {
-				return fmt.Errorf("fake HQ: %s does not hold %s", instance, officers.ShepherdSubject(repo, n))
+				return officers.Item{}, fmt.Errorf("fake HQ: %s does not hold %s", instance, officers.ShepherdSubject(repo, n))
 			}
-			return nil
+			return r.item, nil
+		},
+		OfficerShadow: func(context.Context) (bool, error) { return r.officerShadow, r.officerShadowErr },
+		Shadowed: func(item officers.Item, line string) {
+			r.shadowLines = append(r.shadowLines, string(item.ID)+": "+line)
 		}}
+	r.item = officers.Item{ID: sItem, SubjectKey: officers.ShepherdSubject(sRepo, sPR), Shadow: boolp(false),
+		Payload: json.RawMessage(sLoop(2, oidA, sVerdict("no-red", 2, oidA, "Round 2 found nothing blocking.", "🟡 a log line could be clearer")))}
 	r.g = &PushGate{Repo: sRepo, Ship: ship, OfficerID: sOfficer, GitHost: "github.com", APIHost: "api.github.com", GH: r.gh,
 		GHFor: map[string]GitHub{sRepo: r.gh}, Shepherd: sh,
 		Cred: func(context.Context, connectors.Caller, string, string) (string, bool, error) {
@@ -113,7 +141,9 @@ func newShepRig() *shepRig {
 	r.gh.compares["trunk..."+oidA] = Compare{Status: "ahead", AheadBy: 1, Commits: []string{oidA},
 		Files: []File{{Path: "clusters/prod/apps/x/deploy.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-  memory: 1Gi\n+  memory: 3Gi"}}}
 	r.gh.statuses[oidA] = map[string]string{"ci / gate": "success"}
-	r.gh.comments[sPR] = []Comment{{Author: sAuditor, AuthorType: "User", Body: "Rounds 0+1.\n" + sAudit(1, 0, oidA)}}
+	// A perfect old-style audit comment: it no longer counts for anything
+	// (TestTheOldAuditCommentNoLongerPasses).
+	r.gh.comments[sPR] = []Comment{{Author: sAuditor, AuthorType: "User", Body: "```audit-round-1\nGate: on " + oidA[:8] + "\nLedger: round 1 · findings 🔴0 🟡0 🟢0\n```"}}
 	return r
 }
 
@@ -344,7 +374,7 @@ func TestTheShepherdRuleRefusesEveryOtherPullRequest(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r := newShepRig()
 			c.break_(r)
-			_, err := r.g.Shepherd.Admit(context.Background(), r.g.Ship.Repos[0], r.gh, r.gh.prs[sPR], sInstance, func(string) {})
+			_, _, err := r.g.Shepherd.Admit(context.Background(), r.g.Ship.Repos[0], r.gh, r.gh.prs[sPR], sInstance, func(string) {})
 			if rf, ok := AsRefusal(err); !ok || rf.Gate != c.gate {
 				t.Fatalf("Admit: err = %v, want a refusal by gate %q", err, c.gate)
 			}
@@ -721,12 +751,11 @@ func TestTheShepherdMarksAHeldDraftReady(t *testing.T) {
 
 // TestMarkReadyNeedsCIAWallCheckAndAClearAuditAtTheHead (Q1, R3): mark ready
 // is refused, by its gate and with nothing converted, unless CI is
-// confirmable (required_checks listed), the head passes the wall, and an
-// auditor's latest audit round with a ledger reports 🔴0 and names the head.
-// Each case breaks ONE input of the allow fixture; the controls pass.
+// confirmable (required_checks listed), the head passes the wall, and the
+// held item's auditor report clears the head (AuditVerdictClear; its every
+// reason is TestTheAuditVerdictIsReadOffTheHeldItem's). Each case breaks ONE
+// input of the allow fixture.
 func TestMarkReadyNeedsCIAWallCheckAndAClearAuditAtTheHead(t *testing.T) {
-	setComments := func(cs ...Comment) func(r *shepRig) { return func(r *shepRig) { r.gh.comments[sPR] = cs } }
-	by := func(author, body string) Comment { return Comment{Author: author, AuthorType: "User", Body: body} }
 	headWall := func(f File) func(r *shepRig) {
 		return func(r *shepRig) {
 			cmp := r.gh.compares["trunk..."+oidA]
@@ -743,20 +772,10 @@ func TestMarkReadyNeedsCIAWallCheckAndAClearAuditAtTheHead(t *testing.T) {
 		{"the head touches the list file's path", GateWall, headWall(File{Path: "clusters/prod/identity/role.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a\n+b"})},
 		{"the head carries a credential", GateWall, headWall(File{Path: "clusters/prod/apps/x/cfg.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+" + dSecret})},
 		{"the head's comparison is unreadable", GateWall, func(r *shepRig) { delete(r.gh.compares, "trunk..."+oidA) }},
-		{"no auditors listed", GateAudit, func(r *shepRig) { r.g.Ship.Shepherd.Auditors = nil }},
-		{"no audit block", GateAudit, setComments(by(sAuditor, "looks fine to me"))},
-		{"the latest round has a 🔴", GateAudit, setComments(by(sAuditor, sAudit(1, 0, oidA)), by(sAuditor, sAudit(2, 1, oidA)))},
-		{"the clear round audited another head", GateAudit, setComments(by(sAuditor, sAudit(1, 0, oidB)))},
-		{"the clear round is by a non-auditor", GateAudit, setComments(by("someone-else", sAudit(1, 0, oidA)))},
-		{"the clear round is the shepherd's own (listed as an auditor)", GateAudit, func(r *shepRig) {
-			r.g.Ship.Shepherd.Auditors = []string{sAuditor, "ship-officer[bot]"}
-			r.gh.comments[sPR] = []Comment{by(sAuditor, sAudit(1, 1, oidA)), {Author: "ship-officer[bot]", AuthorType: "Bot", Body: sAudit(2, 0, oidA)}}
+		{"the item carries no auditor's report", GateAudit, func(r *shepRig) { r.item.Payload = json.RawMessage(sLoop(2, oidA, "")) }},
+		{"the auditor's verdict is red", GateAudit, func(r *shepRig) {
+			r.item.Payload = json.RawMessage(sLoop(2, oidA, sVerdict("red", 2, oidA, "🔴 the limit is unbounded")))
 		}},
-		{"the clear round is the author's (listed as an auditor)", GateAudit, func(r *shepRig) {
-			r.g.Ship.Shepherd.Auditors = []string{sAuditor, sAuthorLogin}
-			r.gh.comments[sPR] = []Comment{by(sAuditor, sAudit(1, 1, oidA)), {Author: sAuthorLogin, AuthorType: "Bot", Body: sAudit(2, 0, oidA)}}
-		}},
-		{"a clear round 1 beneath an open round 2 posted earlier", GateAudit, setComments(by(sAuditor, sAudit(2, 1, oidA)), by(sAuditor, sAudit(1, 0, oidA)))},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newShepRig()
@@ -770,21 +789,61 @@ func TestMarkReadyNeedsCIAWallCheckAndAClearAuditAtTheHead(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheOldAuditCommentNoLongerPasses: a perfect `audit-round-1 … findings
+// 🔴0` comment at the head, by any login (the auditor's, the author's, the
+// shepherd's own bot), with no auditor report on the held item, is refused
+// by the audit gate — the verdict comes from HQ only.
+func TestTheOldAuditCommentNoLongerPasses(t *testing.T) {
+	for _, login := range []string{sAuditor, sAuthorLogin, "ship-officer[bot]"} {
+		r := newShepRig()
+		r.item.Payload = json.RawMessage(sLoop(1, oidA, ""))
+		r.gh.comments[sPR] = []Comment{{Author: login, AuthorType: "User", Body: "```audit-round-1\nGate: on " + oidA + "\nLedger: round 1 · findings 🔴0 🟡0 🟢0\n```"}}
+		_, err := r.gates.MarkReady(context.Background(), sInstance, sRepo, sPR)
+		if rf, ok := AsRefusal(err); !ok || rf.Gate != GateAudit || !strings.Contains(rf.Reason, "carries no auditor's report") {
+			t.Errorf("an audit comment by %s: err = %v, want the audit gate's no-report refusal", login, err)
+		}
+		if len(r.gh.readied) != 0 {
+			t.Errorf("an audit comment by %s converted %v", login, r.gh.readied)
+		}
+	}
+}
+
+// TestTheAuditVerdictIsReadOffTheHeldItem is AuditVerdictClear's every reason,
+// over a head whose characters are pairwise distinct (so a 12-hex prefix
+// check cannot pass on a degenerate sha), each case changing ONE input of the
+// clean fixture, each asserted by its own words; the control passes.
+func TestTheAuditVerdictIsReadOffTheHeldItem(t *testing.T) {
+	const live = "0123456789abcdef0123456789abcdef01234567"
+	const other = "fedcba9876543210fedcba9876543210fedcba98"
+	pr := PR{Number: sPR, HeadSHA: live}
+	item := func(payload string) officers.Item { return officers.Item{ID: sItem, Payload: json.RawMessage(payload)} }
+	clean := sLoop(3, live, sVerdict("no-red", 3, live, "Nothing blocking.", "🟡 naming", "🟢 nit"))
+	if err := AuditVerdictClear(item(clean), pr); err != nil {
+		t.Fatalf("control: a clean no-red verdict at the head was refused: %v", err)
+	}
 	for _, c := range []struct {
-		name string
-		edit func(r *shepRig)
+		name, payload, want string
 	}{
-		{"a clear round 2 after an open round 1", setComments(by(sAuditor, sAudit(1, 1, oidA)), by(sAuditor, sAudit(2, 0, oidA)))},
-		{"a requirements round 3 with no ledger after the clear round", setComments(by(sAuditor, sAudit(2, 0, oidA)),
-			by(sAuditor, "```audit-round-3\nround 3 · requirements: 2\nVerdict: requirement questioned\n```"))},
-		{"the auditor's login in another case, the full sha", setComments(by("Example-Auditor",
-			"```audit-round-4\nGate: on "+oidA+"\nLedger: round 4 · findings 🔴0 🟡0 🟢0\n```"))},
+		{"no from.summary", sLoop(3, live, ""), "carries no auditor's report"},
+		{"no payload at all", "", "carries no auditor's report"},
+		{"no round on record", `{"pr_loop":{"repo":"` + sRepo + `","pr":57,"head_sha":"` + live + `"},"from":{"summary":"` + sVerdict("no-red", 3, live) + `"}}`, "no round on record"},
+		{"premise round 0", sLoop(0, live, sVerdict("no-red", 0, live)), "premise round 0"},
+		{"the item's loop is at another head", sLoop(3, other, sVerdict("no-red", 3, live)), "audited another head"},
+		{"line 1 unreadable", sLoop(3, live, "Verdict: no-red · round 3 · head "+live[:12]), "verdict line is unreadable"},
+		{"line 1 with a short head", sLoop(3, live, "VERDICT: no-red · round 3 · head "+live[:8]), "verdict line is unreadable"},
+		{"the verdict names another round", sLoop(3, live, sVerdict("no-red", 2, live)), "the verdict names round 2"},
+		{"the verdict names another head", sLoop(3, live, sVerdict("no-red", 3, other)), "the verdict names round 3 at head " + other[:12]},
+		{"a red verdict", sLoop(3, live, sVerdict("red", 3, live)), "the verdict is red, not no-red"},
+		{"a questioned verdict", sLoop(3, live, sVerdict("questioned", 3, live)), "the verdict is questioned, not no-red"},
+		{"a 🔴 line under a no-red verdict", sLoop(3, live, sVerdict("no-red", 3, live, "  🔴 the limit is unbounded", "🟡 naming")), "has 1 🔴 findings"},
 	} {
-		t.Run("control: "+c.name, func(t *testing.T) {
-			r := newShepRig()
-			c.edit(r)
-			if _, err := r.gates.MarkReady(context.Background(), sInstance, sRepo, sPR); err != nil {
-				t.Fatalf("refused: %v", err)
+		t.Run(c.name, func(t *testing.T) {
+			err := AuditVerdictClear(item(c.payload), pr)
+			rf, ok := AsRefusal(err)
+			if !ok || rf.Gate != GateAudit || !strings.Contains(rf.Reason, c.want) {
+				t.Fatalf("err = %v, want the audit gate's %q", err, c.want)
 			}
 		})
 	}

@@ -558,7 +558,38 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 		}
 	}
 	for _, pr := range prs {
-		g.answer(ctx, sr, gh, pr, pr.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA), "its creation at "+shortSHA(pr.HeadSHA))
+		if g.answer(ctx, sr, gh, pr, pr.HeadSHA, g.checkComparison(ctx, sr, gh, baseOf(sr, pr), pr.HeadSHA), "its creation at "+shortSHA(pr.HeadSHA)) {
+			// 🔴 ONLY A CLEAN CREATE IS ANNOUNCED: one the re-check closed is
+			// no pull request HQ should loop on.
+			g.prOpened(ctx, sr, pr)
+		}
+	}
+}
+
+// prOpened tells HQ (PROpened) that pull request pr of sr was opened clean.
+// It never fails the create: an HQ that is told nothing is logged and, but
+// for the caller officer being in shadow (HQ's 409 officer_shadow, the
+// expected answer then, logged as a note), posted to HQ as a notice. It is
+// not retried.
+func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
+	if g.PROpened == nil {
+		return
+	}
+	p := officers.PROpened{Repo: sr.Repo, PR: pr.Number, HeadSHA: pr.HeadSHA, HeadRef: pr.HeadRef, Base: baseOf(sr, pr), Author: pr.Author}
+	ans, err := g.PROpened(ctx, p)
+	var hqErr *officers.HQError
+	switch {
+	case err == nil:
+		g.logf("officers: %s: told HQ #%d in %s was opened at %s: %d loop item(s), %d officer(s) skipped",
+			g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), len(ans.Items), len(ans.Skipped))
+	case errors.As(err, &hqErr) && hqErr.Status == http.StatusConflict && hqErr.Code() == "officer_shadow":
+		g.logf("officers: %s: note: HQ runs this officer in shadow, so #%d in %s starts no review loop (pr-opened answered 409 officer_shadow)",
+			g.OfficerID, pr.Number, sr.Repo)
+	default:
+		g.logf("officers: %s: HQ was not told #%d in %s was opened (pr-opened): %v", g.OfficerID, pr.Number, sr.Repo, err)
+		g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: pr.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+			"officer %s: muster could not tell HQ that #%d in %s was opened at %s (pr-opened: %v); the pull request stands, but no review loop was started for it — start one by hand",
+			g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), err)})
 	}
 }
 
@@ -638,7 +669,9 @@ func baseOf(sr officers.ShipRepo, pr PR) string {
 // answer is a re-check's answer to verdict v of open pull request pr at sha:
 // a clean one is recorded (the sweep does not read sha again); a hit, or an
 // unreadable comparison, closes the pull request (FAIL CLOSED).
-func (g *PushGate) answer(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, sha string, v comparisonVerdict, after string) {
+//
+// It reports whether the verdict was clean (the pull request stays open).
+func (g *PushGate) answer(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, sha string, v comparisonVerdict, after string) bool {
 	key := sr.Repo + "#" + strconv.Itoa(pr.Number)
 	switch {
 	case v.Err != nil:
@@ -653,12 +686,13 @@ func (g *PushGate) answer(ctx context.Context, sr officers.ShipRepo, gh GitHub, 
 		g.checked[key] = sha
 		delete(g.misses, key)
 		g.mu.Unlock()
-		return
+		return true
 	}
 	g.mu.Lock()
 	delete(g.checked, key)
 	delete(g.misses, key)
 	g.mu.Unlock()
+	return false
 }
 
 // Sweep is the draft sweep: every open pull request the officer's App opened

@@ -44,23 +44,18 @@ const StageShepherd = "shepherd"
 // review on a pull request it shepherds (officership.ShepherdGates.MarkReady).
 const ToolShepherdReady = "officer_shepherd_mark_ready"
 
-// maxShepherdAuthors bounds ship.shepherd.authors, maxShepherdAuditors
-// ship.shepherd.auditors.
-const (
-	maxShepherdAuthors  = 16
-	maxShepherdAuditors = 16
-)
+// ToolShepherdMergeAsk is the shepherd's merge-ask tool: HQ's merge ask for a
+// pull request it shepherds, under the item it holds
+// (officership.ShepherdGates.MergeAsk). A shepherd's only; it merges nothing.
+const ToolShepherdMergeAsk = "officer_shepherd_merge_ask"
+
+// maxShepherdAuthors bounds ship.shepherd.authors.
+const maxShepherdAuthors = 16
 
 // Shepherd is a shepherd-stage officer's `ship.shepherd` block.
 type Shepherd struct {
 	// Authors are whose pull requests the shepherd may act on.
 	Authors []ShepherdAuthor
-	// Auditors are the GitHub logins whose `audit-round-<n>` comment blocks
-	// officer_shepherd_mark_ready reads (officership's auditLadderClear): the
-	// latest one must report no 🔴 and name the head. None: mark ready is
-	// refused (fail closed). Never an author, never the shepherd's own App
-	// (checked at call time).
-	Auditors []string
 }
 
 // ShepherdAuthor is one entry of ship.shepherd.authors.
@@ -119,8 +114,11 @@ func (d *declaredShepherdAuthor) UnmarshalJSON(b []byte) error {
 }
 
 type declaredShepherd struct {
-	Authors  []declaredShepherdAuthor `json:"authors"`
-	Auditors []string                 `json:"auditors"`
+	Authors []declaredShepherdAuthor `json:"authors"`
+	// Auditors is read only to refuse it (parseShepherd): the audit verdict
+	// officer_shepherd_mark_ready reads now comes from HQ, not from comments
+	// by listed logins.
+	Auditors json.RawMessage `json:"auditors"`
 }
 
 // parseShepherd reads a `ship.shepherd` block. Cross-officer rules (an
@@ -130,7 +128,14 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 	dec.DisallowUnknownFields()
 	var d declaredShepherd
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf(`ship: shepherd must be {"authors": [{"login", "officer"}, …], "auditors"?: [<login>, …]}: %v`, err)
+		return nil, fmt.Errorf(`ship: shepherd must be {"authors": [{"login", "officer"}, …]}: %v`, err)
+	}
+	// 🔴 REFUSED, NOT IGNORED: an operator who lists auditors believes the
+	// verdict is read from their comments, and an ignored key would read as
+	// still in force.
+	if d.Auditors != nil {
+		return nil, fmt.Errorf("ship: shepherd.auditors is no longer read: officer_shepherd_mark_ready takes the audit verdict from HQ " +
+			"(the auditor's report on the item the instance holds, payload.from.summary), not from pull request comments by listed logins; remove the key")
 	}
 	if len(d.Authors) == 0 {
 		return nil, fmt.Errorf("ship: shepherd.authors is empty: a shepherd acts only on pull requests authored by a listed login, so with none it could act on nothing — there is no default")
@@ -160,39 +165,7 @@ func parseShepherd(id string, raw json.RawMessage) (*Shepherd, error) {
 		}
 		sh.Authors = append(sh.Authors, ShepherdAuthor{Login: login, Officer: off})
 	}
-	if len(d.Auditors) > maxShepherdAuditors {
-		return nil, fmt.Errorf("ship: shepherd.auditors lists %d logins, over the cap of %d", len(d.Auditors), maxShepherdAuditors)
-	}
-	seenAud := map[string]bool{}
-	for i, a := range d.Auditors {
-		login := strings.TrimSpace(a)
-		if !botLoginRE.MatchString(login) {
-			return nil, fmt.Errorf("ship: shepherd.auditors[%d] %q is not a GitHub login", i, a)
-		}
-		if seen[strings.ToLower(login)] {
-			return nil, fmt.Errorf("ship: shepherd.auditors[%d] %s is also an author: an author never audits its own pull requests", i, login)
-		}
-		if seenAud[strings.ToLower(login)] {
-			return nil, fmt.Errorf("ship: shepherd.auditors lists %q twice", login)
-		}
-		seenAud[strings.ToLower(login)] = true
-		sh.Auditors = append(sh.Auditors, login)
-	}
 	return sh, nil
-}
-
-// Auditor reports whether login is one of the shepherd's auditors (compared
-// without case).
-func (sh *Shepherd) Auditor(login string) bool {
-	if sh == nil {
-		return false
-	}
-	for _, a := range sh.Auditors {
-		if strings.EqualFold(a, login) {
-			return true
-		}
-	}
-	return false
 }
 
 // Author is the authors entry for login (compared without case).

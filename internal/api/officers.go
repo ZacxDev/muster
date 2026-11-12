@@ -108,6 +108,11 @@ type officerRuntime struct {
 	// (conversationConfirmed, from OfficerTurnContext). Guarded by workedMu.
 	workedMu sync.Mutex
 	worked   map[string]officers.ItemID
+	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
+	// refused in shadow, per (officer, item), appended to that item's
+	// officer_complete summary. Guarded by shadowMu.
+	shadowMu sync.Mutex
+	shadow   map[string]*shadowLedger
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -1413,7 +1418,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// under the hold is still unbooked (the meter says inflight otherwise,
 		// and nothing is sent), so a figure that rides this call is complete.
 		cost, why := s.llmItemCost(o, instance, in.ItemID, in.Outcome)
-		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
+		// 🔴 THE SHADOW BLOCK RIDES THE SUMMARY HQ RECEIVES (officer_shadow.go):
+		// a shepherd's writes refused in shadow, under this item; cut to
+		// HQ's bound, never the instance's own text.
+		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
+		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
 		var refused *officers.HQError
 		body, refused, err = c.CompleteDroppingCost(ctx, in.ItemID, instance, done)
 		if refused != nil {
@@ -1427,6 +1436,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				o.ID, instance, in.ItemID, in.Outcome, why)
 		}
 		if err == nil {
+			s.officerRT.forgetShadow(o.ID, in.ItemID)
 			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolRelease:
