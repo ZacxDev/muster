@@ -45,7 +45,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Focus](#focus) | a title and summary per session, searchable | an OpenRouter key | off until the key is set | the same line |
 | [Agent ask tool](#agent-ask-tool) | a session asks you a question and waits for the answer | per-machine setup of `muster-mirror` and Claude Code | off | per machine |
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
-| [Session state](#session-state) | one push per stop; the Stalled / waiting section | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
+| [Session state](#session-state) | one push per stop; stalled / waiting rows on the Asks page | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
 | [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and ask before a link anyone can open goes live | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
@@ -384,8 +384,8 @@ home opens its chat. [chief.md](chief.md).
 ### Session state
 
 Every stop of a session becomes an episode, pushed **once** (naming the
-session, never quoting it), and open stops are listed in the Asks page's
-**Stalled / waiting** section ([attention.md](attention.md#stalled--waiting-session-state)).
+session, never quoting it), and open stops are listed as rows of the Asks page's
+**Waiting** group ([attention.md](attention.md#stalled--waiting-session-state)).
 
 - **On by default in the Compose stack.** The compose file sets
   `MUSTER_SESSION_STATE=1` unless `.env` says otherwise. (The server binary on
@@ -397,7 +397,7 @@ session, never quoting it), and open stops are listed in the Asks page's
   stall classifier runs only where [chief nudges](#chief-nudges) run.
 - **Turning it off:** `MUSTER_SESSION_STATE=0` in `.env` (an empty value does
   the same; only `1`, `true`, `yes` or `on` is on). Off, there are no episodes
-  and no Stalled / waiting section, and notifications are as before session
+  and no stalled / waiting rows, and notifications are as before session
   state: a push when a window starts waiting, and the chief's stall notice,
   instead of one push per stop.
 - **Check:** `session state: ON (MUSTER_SESSION_STATE=1) — …`; off, the line

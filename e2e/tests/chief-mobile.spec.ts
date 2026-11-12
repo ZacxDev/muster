@@ -201,11 +201,11 @@ test.describe('on a phone', () => {
     expect.soft(card.y + card.height, 'the card\'s bottom border is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
     const moreBox = (await block.locator('[data-asks-more]').boundingBox())!;
     expect.soft(moreBox.y + moreBox.height, '"Show N more" is inside the block').toBeLessThanOrEqual(bb.y + bb.height + 0.5);
-    // Answer and Dismiss share one row.
+    // Dismiss is a small icon button at the card's head, above Answer.
     const first0 = block.locator('[data-attention-item]').first();
     const ans = (await first0.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
     const dis = (await first0.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
-    expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
+    expect.soft(dis.y + dis.height, 'Dismiss is above Answer, in the head').toBeLessThanOrEqual(ans.y);
     await wordsAreWhole(first0);
     // THE REAL CARD (what clipped live): two long options and the answer box's
     // mic are in it — the positive control that this card is production's size.
@@ -307,18 +307,22 @@ async function wordsAreWhole(card: ReturnType<Page['locator']>) {
   }
 }
 
-// theQueueDrawsTheCompactForm: the Asks queue (/attention) draws the SAME
-// answer form as the session page's block (internal/api attentionItemsHTMLTo):
-// a one-line box, Answer and Dismiss on one row, nothing wider than the page.
+// theQueueDrawsTheCompactForm: the Asks queue (/attention) draws the same
+// answer form as the session page's block (internal/api attentionItemsHTMLTo)
+// — except that its box sits behind its options ("Type an answer", the Asks
+// page's design pass): opened, a one-line box and Answer, Dismiss the small
+// icon at the card's head above them, nothing wider than the page.
 async function theQueueDrawsTheCompactForm(page: Page, name: string) {
   await page.goto(origin + '/attention');
   const card = page.locator('[data-attention-item]').filter({ hasText: 'Question 1:' });
   await expect(card).toHaveCount(1);
   await card.scrollIntoViewIfNeeded();
+  await expect(card.locator('textarea[name="answer"]'), 'the box is behind the options').toBeHidden();
+  await card.getByText('Type an answer', { exact: true }).click();
   await shot(page, name);
   const ans = (await card.getByRole('button', { name: 'Answer', exact: true }).boundingBox())!;
   const dis = (await card.getByRole('button', { name: 'Dismiss without answering' }).boundingBox())!;
-  expect.soft(Math.abs(ans.y - dis.y), 'Answer and Dismiss are on one row').toBeLessThanOrEqual(2);
+  expect.soft(dis.y + dis.height, 'Dismiss is above Answer, in the head').toBeLessThanOrEqual(ans.y);
   await wordsAreWhole(card);
   const box = (await card.locator('textarea[name="answer"]').boundingBox())!;
   expect.soft(box.height, 'the answer box starts one line').toBeLessThanOrEqual(46);

@@ -13,7 +13,8 @@ import (
 // Asks queue's and a session page's block, one form for both — draws the
 // compact form (THE COMPACT ANSWER FORM, internal/ui/attention.go): options as
 // wide as their words, a one-line box that grows (ui.AskFormFitClass), and
-// Answer and Dismiss in ONE row. And the two posts are what they were: Answer
+// Answer in its own row, Dismiss a small icon button in the card's head. And the
+// two posts are what they were: Answer
 // submits the answer form to /answer; Dismiss is a button IN that row that
 // belongs, by form=, to a SEPARATE form posting to /cancel (no formaction on
 // the answer form, so a dismissal never carries the typed answer), with the
@@ -22,13 +23,28 @@ func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
 	items := []attentionItem{{Key: "ask-9", Kind: attentionKindAsk, AskID: 9, Text: "ship?", Options: []string{"yes", "no"}}}
 	for _, returnTo := range []string{"", "/agents/a"} {
 		out := attentionItemsHTMLTo(items, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), returnTo)
+		// The Asks page (no return) draws its options as full-width chips; a
+		// session page's block keeps them as wide as their words.
+		optionClass := ui.AskFormOptionClass
+		if returnTo == "" {
+			optionClass = ui.AsksOptionClass
+		}
 		answer := regexp.MustCompile(`(?s)<form method="POST" action="/attention/asks/9/answer"[^>]*>.*?</form>`).FindString(out)
 		if answer == "" {
 			t.Fatalf("return %q: no answer form:\n%s", returnTo, out)
 		}
-		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" class="[^"]*">Answer</button><button type="submit" form="ask-9-dismiss" aria-label="Dismiss without answering"[^>]*>Dismiss</button></div>`)
+		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" class="[^"]*">Answer</button></div>`)
 		if !row.MatchString(answer) {
-			t.Errorf("return %q: Answer and Dismiss are not one row inside the answer form:\n%s", returnTo, answer)
+			t.Errorf("return %q: Answer is not in its own row inside the answer form:\n%s", returnTo, answer)
+		}
+		// Dismiss is a small icon button in the card's head, OUTSIDE the
+		// answer form, joined by form= to the separate /cancel form.
+		if strings.Contains(answer, `form="ask-9-dismiss"`) {
+			t.Errorf("return %q: Dismiss sits inside the answer form", returnTo)
+		}
+		if !regexp.MustCompile(`<button type="submit" form="ask-9-dismiss" aria-label="Dismiss without answering" title="Dismiss without answering"[^>]*>` +
+			regexp.QuoteMeta(ui.AsksDismissIcon) + `</button>`).MatchString(out) {
+			t.Errorf("return %q: no icon Dismiss named \"Dismiss without answering\" for the dismiss form:\n%s", returnTo, out)
 		}
 		if strings.Contains(answer, "formaction") {
 			t.Errorf("return %q: the answer form carries a formaction", returnTo)
@@ -42,7 +58,7 @@ func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
 		}
 		for _, want := range []string{
 			`rows="1"`, `class="` + ui.AskFormInputClass + `"`, `placeholder="Your answer…"`, `<label for="answer-9" class="sr-only">Your answer</label>`,
-			`class="` + ui.AskFormOptionClass + `" data-attention-option>yes</button>`,
+			`class="` + optionClass + `" data-attention-option>yes</button>`,
 		} {
 			if !strings.Contains(answer, want) {
 				t.Errorf("return %q: the answer form lacks %q", returnTo, want)

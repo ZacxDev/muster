@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/chiefnudge"
 	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // THE "CHIEF NUDGES" TAB of the Asks page (docs/chief-nudges.md): every
@@ -16,9 +17,9 @@ import (
 // while the feature is on.
 //
 // ⚠ ONLY CLASSES THE STYLESHEET ALREADY EMITS. This file is not one of
-// Tailwind's content globs (tailwind.config.js), so every class here is copied
-// from markup that is — answeredAsksHTML's card and the flows constants — and
-// a new class would ship unstyled with css-check green.
+// Tailwind's content globs (tailwind.config.js), so every class here is ui's
+// (internal/ui/asks_list.go, the Asks list's own) or copied from markup that
+// is scanned — a new class would ship unstyled with css-check green.
 
 const (
 	asksTabNudges = "nudges"
@@ -31,18 +32,20 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 	esc := html.EscapeString
 	var b strings.Builder
 	owner := requestOwner(ctx)
+	// One short line for the mode (the design pass: no explanatory prose —
+	// docs/chief-nudges.md explains it).
 	if s.chiefNudgeLive(owner) {
-		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="live">Live: your chief nudges a stalled session only with a labelled message quoting one of your own messages to it, or puts a notice on your Asks list naming where the session is. A notice has nothing to answer: go to the session, or dismiss it.</p>`)
+		b.WriteString(`<p class="px-1 text-xs text-fg2" data-nudges-mode="live">Live: nudges and notices are sent.</p>`)
 	} else {
-		b.WriteString(`<p class="text-xs text-fg2" data-nudges-mode="shadow">Shadow mode: your chief's decisions about your stalled sessions are recorded here. Nothing is sent and nothing is asked.</p>`)
+		b.WriteString(`<p class="px-1 text-xs text-fg2" data-nudges-mode="shadow">Shadow mode: recorded only, nothing is sent.</p>`)
 	}
 	list, err := s.ext.ChiefNudges.List(ctx, chiefNudgesShown)
 	if err != nil {
 		s.logger.Printf("chief nudges: list: %v", err)
 		b.WriteString(problemNode("The chief's nudge decisions could not be read."))
 	}
-	b.WriteString(`<p class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2">Decisions</p>
-<ul class="flex flex-col gap-2" data-testid="nudges-list">`)
+	b.WriteString(ui.AsksGroupLabel("nudges-decisions", "Decisions", len(list)) + `
+<ul class="` + ui.AsksGroupListClass + `" data-testid="nudges-list">`)
 	if len(list) == 0 {
 		b.WriteString(`<li class="text-sm text-fg2" data-nudges-empty>No decisions yet. The chief looks at a session once it has been idle for ` +
 			esc(s.chiefNudgeIdle().String()) + `.</li>`)
@@ -79,7 +82,11 @@ func nudgeQuoteFrom(source string) string {
 	return "Quote"
 }
 
-// chiefNudgeCardHTML is one decision's card.
+// chiefNudgeCardHTML is one decision's card (the design pass): the session as
+// its title, the decision and its age under it and the mode as a pill; then
+// what the chief would send or asked, and the outcome — the two things read at
+// a glance — and the rest (the quote, what it covers, the classifier, the
+// chief's reason) folded under one small Details.
 func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 	esc := html.EscapeString
 	id := strconv.FormatInt(d.ID, 10)
@@ -88,11 +95,13 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		mode = "Live"
 	}
 	var b strings.Builder
-	b.WriteString(`<li id="nudge-` + id + `" class="` + flowsCardClass + `" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
+	b.WriteString(`<li id="nudge-` + id + `" class="` + ui.AsksCardClass + `" data-nudge data-nudge-id="` + id + `" data-decision="` + esc(d.Decision) +
 		`" data-outcome="` + esc(d.Outcome) + `" data-mode="` + esc(d.Mode) + `">
-<span class="text-xs text-fg2"><span class="font-semibold" data-nudge-mode>` + mode + `</span> · <span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) +
-		`</span> · <time datetime="` + d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span>
-<p class="break-words text-sm text-fg"><span class="font-semibold" data-nudge-session>` + esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span></p>
+<div class="flex min-w-0 items-start gap-2"><div class="` + ui.AsksHeadTextClass + `"><span class="break-words text-sm font-semibold text-fg" data-nudge-session>` +
+		esc(nudgeWhere(textplain.Title(d.Title), d.Kind, strconv.FormatInt(d.AgentID, 10), d.Host)) + `</span>
+<span class="` + ui.AsksSubClass + `"><span data-nudge-decision>` + esc(nudgeDecisionLabel(d.Decision)) + `</span> · <time datetime="` +
+		d.DecidedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(d.DecidedAt))) + `</time></span></div>
+<span class="` + ui.AsksPillClass + `" data-nudge-mode>` + mode + `</span></div>
 `)
 	switch {
 	case d.Message != "":
@@ -100,35 +109,14 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 		if d.Mode == chiefnudge.ModeLive {
 			label = "Message: "
 		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-nudge-message>` + label + esc(d.Message) + `</p>
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-message>` + label + esc(d.Message) + `</p>
 `)
 	case d.Question != "":
 		q := d.Question
 		if len(d.Options) > 0 {
 			q += "\nOptions: " + strings.Join(d.Options, " · ")
 		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-nudge-question>Question: ` + esc(q) + `</p>
-`)
-	}
-	if d.QuoteText != "" {
-		when := ""
-		if !d.QuoteAt.IsZero() {
-			when = " · " + d.QuoteAt.UTC().Format(time.RFC3339)
-		}
-		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-quote data-quote-source="` + esc(d.QuoteSource) + `">` +
-			esc(nudgeQuoteFrom(d.QuoteSource)) + ` [` + esc(d.QuoteID) + esc(when) + `]: "` + esc(d.QuoteText) + `"</p>
-`)
-	}
-	if d.Covered != "" {
-		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-covers>Covers: ` + esc(d.Covered) + `</p>
-`)
-	}
-	if line := nudgeJevLine(d); line != "" {
-		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-jev data-jev-label="` + esc(d.JevLabel) + `">` + esc(line) + `</p>
-`)
-	}
-	if d.Reason != "" {
-		b.WriteString(`<p class="break-words text-sm text-fg2" data-nudge-reason>Reason: ` + esc(d.Reason) + `</p>
+		b.WriteString(`<p class="` + ui.AsksTextClass + `" data-nudge-question>Question: ` + esc(q) + `</p>
 `)
 	}
 	out := nudgeOutcomeLabel(d.Outcome)
@@ -138,9 +126,36 @@ func chiefNudgeCardHTML(d chiefnudge.Decision, now time.Time) string {
 	if d.Detail != "" {
 		out += " — " + d.Detail
 	}
-	b.WriteString(`<p class="break-words text-sm text-fg" data-nudge-outcome>` + esc(out) + `</p>
-</li>
+	b.WriteString(`<p class="break-words text-sm font-medium text-fg" data-nudge-outcome>` + esc(out) + `</p>
 `)
+	var more strings.Builder
+	if d.QuoteText != "" {
+		when := ""
+		if !d.QuoteAt.IsZero() {
+			when = " · " + d.QuoteAt.UTC().Format(time.RFC3339)
+		}
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-quote data-quote-source="` + esc(d.QuoteSource) + `">` +
+			esc(nudgeQuoteFrom(d.QuoteSource)) + ` [` + esc(d.QuoteID) + esc(when) + `]: "` + esc(d.QuoteText) + `"</p>
+`)
+	}
+	if d.Covered != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-covers>Covers: ` + esc(d.Covered) + `</p>
+`)
+	}
+	if line := nudgeJevLine(d); line != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-jev data-jev-label="` + esc(d.JevLabel) + `">` + esc(line) + `</p>
+`)
+	}
+	if d.Reason != "" {
+		more.WriteString(`<p class="break-words text-xs text-fg2" data-nudge-reason>Reason: ` + esc(d.Reason) + `</p>
+`)
+	}
+	if more.Len() > 0 {
+		b.WriteString(`<details class="` + ui.AsksDetailsClass + `" data-nudge-more><summary class="` + ui.AsksDetailsSummaryClass + `">Details</summary>
+<div class="` + ui.AsksDetailsBodyClass + `">` + more.String() + `</div></details>
+`)
+	}
+	b.WriteString("</li>\n")
 	return b.String()
 }
 

@@ -747,17 +747,13 @@ var episodeQuietText = map[string]string{
 }
 
 // askListHTML is the Asks list's <li>s, as the page draws them and as its live
-// refresh redraws them: the items (pageAttentionItems), the recent answers,
-// then the "Stalled / waiting" section (episodeSectionHTML). With a section
-// drawn, the list's "Nothing is waiting on you." line is dropped — a stalled
-// session is waiting on you.
+// refresh redraws them: the items (pageAttentionItems) in their groups, the
+// session-state rows in the Waiting group (episodeRowsHTML), then the
+// Answered group (askGroupsHTML). With a row drawn, the list's "Nothing is
+// waiting on you." line is not — a stalled session is waiting on you.
 func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now time.Time) string {
-	list := askTabListHTML(s.pageAttentionItems(ctx, items), s.answeredAsksNow(ctx, now), now)
-	sec := s.episodeSectionHTML(ctx, now)
-	if sec != "" {
-		list = strings.Replace(list, attentionEmptyHTML, "", 1)
-	}
-	return list + sec
+	rows, n := s.episodeRowsHTML(ctx, now)
+	return askGroupsHTML(s.pageAttentionItems(ctx, items), rows, n, s.answeredAsksNow(ctx, now), now)
 }
 
 // pageAttentionItems is items as the Asks list draws them: with session state
@@ -815,20 +811,35 @@ func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
 	return out
 }
 
-// episodeSectionHTML is the "Stalled / waiting" section of ctx's owner's Asks
-// list: one plain row per open episode, oldest first — where the session is,
-// its state and for how long, and a link to it. 🔴 NO ANSWER BOX: a row is
-// looked at, never answered. A quiet row is drawn muted and says why it has
-// not pushed. It is ONE <li> of the list, so the list's live refresh
-// (handleAttentionItems) redraws it: an Asks page left open shows a window
-// that starts waiting. A stop waiting on an answerable ask is that ask's card
-// on the list instead (episodeCarded), not a row. "" with session state off,
-// or with no open episode to draw.
+// episodeSectionHTML is the "Stalled / waiting" rows of ctx's owner's Asks
+// list (episodeRowsHTML), "" with none.
 func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
+	rows, _ := s.episodeRowsHTML(ctx, now)
+	return rows
+}
+
+// episodeRowsHTML is the "Stalled / waiting" rows of ctx's owner's Asks list,
+// drawn in its Waiting group (askGroupsHTML), and how many: one row per open
+// episode, oldest first. A row is ONE link to the session (its tap route,
+// attentionOpenURL), its head the session's name, its state and how long, and
+// its one line what it waits on — the waiting window's pending call or held
+// question, the very text its window's Waiting item would carry
+// (waitingSessionsIn: the host's words, cleaned and capped), nothing new read
+// from the host — or, for a session waiting on nothing muster can name, no
+// line. 🔴 NO ANSWER BOX: a row is looked at, never answered. A quiet row is
+// drawn muted and says why it has not pushed. It is part of the list, so the
+// list's live refresh (handleAttentionItems) redraws it: an Asks page left
+// open shows a window that starts waiting. A stop waiting on an answerable ask
+// is that ask's card on the list instead (episodeCarded), not a row. "" with
+// session state off, or with no open episode to draw.
+func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, int) {
 	if !s.sessionStateOn() {
-		return ""
+		return "", 0
 	}
 	eps, err := s.ext.Episodes.OpenEpisodes(ctx)
+	// What each mirrored window waits on, by its episode key: the waiting
+	// items of the SAME hub read (the hosts episodeWho names them over).
+	waits := map[string]attentionItem{}
 	if err == nil && len(eps) > 0 {
 		carded := s.episodeCarded(ctx)
 		kept := eps[:0:0]
@@ -838,14 +849,20 @@ func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 			}
 		}
 		eps = kept
+		if s.ext.Mirror != nil {
+			hs := s.ext.Mirror.Hosts(ctx)
+			for _, it := range s.waitingSessionsIn(ctx, hs) {
+				if key, _, _, ok := episodeWindowOf(hs, it); ok {
+					waits[key] = it
+				}
+			}
+		}
 	}
 	if err == nil && len(eps) == 0 {
-		return ""
+		return "", 0
 	}
 	var b strings.Builder
-	b.WriteString(`<li class="flex flex-col gap-2" data-attention-episodes-item><section class="flex flex-col gap-2" data-testid="attention-episodes" aria-labelledby="attention-episodes-h">
-<h2 id="attention-episodes-h" class="text-sm font-semibold text-fg">Stalled / waiting</h2>
-<ul class="flex flex-col gap-2" data-attention-episodes>
+	b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" data-testid="attention-episodes" data-attention-episodes>
 `)
 	if err != nil {
 		s.logger.Printf("attention: episodes: %v", err)
@@ -859,22 +876,25 @@ func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
 		if ep.State == sessionstate.StateNeedsYou {
 			state = "Needs you"
 		}
-		cls := flowsCardClass
+		cls := ui.AsksRowClass
 		quiet := ""
 		// A quiet reason is only ever held by an unpushed episode (SetQuiet
 		// refuses a pushed one, ClaimPush clears it).
 		if q, ok := episodeQuietText[ep.Quiet]; ok {
-			cls += " opacity-60"
+			cls += " " + ui.AsksQuietCardClass
 			quiet = ` · <span data-attention-episode-quiet="` + esc(ep.Quiet) + `">` + esc(q) + `</span>`
 		}
+		line := ""
+		if it, ok := waits[ep.Key]; ok && ep.Kind == sessionstate.KindMirror {
+			line = attentionWaitLineHTML(it)
+		}
 		key := episodeKey(ep.ID)
-		b.WriteString(`<li id="` + esc(key) + `" class="` + cls + `" data-attention-episode data-state="` + esc(ep.State) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(state) + `</span> · <code data-attention-episode-where>` + esc(who) + `</code> · <time datetime="` +
-			ep.OpenedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(ep.OpenedAt))) + `</time>` + quiet + `</span>
-<a href="` + esc(attentionOpenURL(key)) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-episode-open>` + askViewInSession + `</a>
-</li>
+		b.WriteString(`<li id="` + esc(key) + `" class="min-w-0" data-attention-episode data-state="` + esc(ep.State) + `"><a href="` + esc(attentionOpenURL(key)) + `" class="` + cls + `" data-attention-episode-open>
+<span class="` + ui.AsksHeadTextClass + ` gap-0.5"><span class="` + ui.AsksTitleClass + `" data-attention-episode-where>` + esc(who) + `</span>
+<span class="` + ui.AsksSubClass + `"><span class="font-semibold" data-attention-episode-state>` + esc(state) + `</span> · <time datetime="` +
+			ep.OpenedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(ep.OpenedAt))) + `</time>` + quiet + `</span>` + line + `</span>` + ui.AsksChevron + `</a></li>
 `)
 	}
-	b.WriteString("</ul>\n</section></li>\n")
-	return b.String()
+	b.WriteString("</ul>\n")
+	return b.String(), len(eps)
 }

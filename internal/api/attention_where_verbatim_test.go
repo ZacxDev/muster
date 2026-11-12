@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,7 +50,16 @@ var verbatimWhere = map[string]string{
 	sessionKey("ws", "a`b`c", "@13"):     "tmux a`b`c:4 @ ws",
 }
 
-var verbatimCardSource = regexp.MustCompile(`<li id="(session-[0-9a-f]+)"(?s:.*?)data-attention-source>([^<]*)</span>`)
+// verbatimCardSource is a waiting card's id, its title and the place under it.
+var verbatimCardSource = regexp.MustCompile(`<li id="(session-[0-9a-f]+)"(?s:.*?)data-attention-title>([^<]*)</span>(?s:.*?)data-attention-source>([^<]*)</span>`)
+
+// verbatimTitle is each window's card title: its label, plained, or — with
+// none — its tmux address, verbatim.
+var verbatimTitle = map[string]string{
+	sessionKey("ws", "_scratch_", "@11"): "mango:1",
+	sessionKey("ws", "*dev*", "@12"):     "*dev*:3",
+	sessionKey("ws", "a`b`c", "@13"):     "a`b`c:4",
+}
 
 // TestAWindowsTargetIsShownVerbatimOnThePushTheSummaryAndTheCard: the waiting
 // session's notification body, its summary title and why, and its card on the
@@ -77,9 +87,15 @@ func TestAWindowsTargetIsShownVerbatimOnThePushTheSummaryAndTheCard(t *testing.T
 	if len(cards) != len(verbatimWhere) {
 		t.Fatalf("%d cards, want %d", len(cards), len(verbatimWhere))
 	}
+	// The card titles the window by its name and shows its target, verbatim,
+	// under it (the label it leads with is the title, not repeated).
 	for _, m := range cards {
-		if got, want := html.UnescapeString(m[2]), verbatimWhere[m[1]]; got != want {
+		where := verbatimWhere[m[1]]
+		if got, want := html.UnescapeString(m[3]), where[strings.Index(where, "tmux "):]; got != want {
 			t.Errorf("%s: card source %q, want %q", m[1], got, want)
+		}
+		if got, want := html.UnescapeString(m[2]), verbatimTitle[m[1]]; got != want {
+			t.Errorf("%s: card title %q, want %q", m[1], got, want)
 		}
 	}
 }

@@ -1490,8 +1490,8 @@ card.
 
 Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts`; decided ones under Archived):
 
-- The message it answers, from the outside sender, is shown escaped in its own
-  box, labelled untrusted.
+- The message it answers, from the outside sender, is shown escaped as a
+  quote, labelled untrusted.
 - The reply is shown **exactly as it will be sent**: printable ASCII as itself,
   and every other character spelled out (`\u{e9}` for é, `\n` for a new line),
   with its length in characters. Nothing invisible can ride along.

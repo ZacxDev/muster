@@ -629,19 +629,26 @@ func draftCardHTML(c plugins.DraftCard) string {
 	id := strconv.FormatInt(d.ID, 10)
 	runes := strconv.Itoa(utf8.RuneCountInString(d.Body))
 	var b strings.Builder
-	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + flowsCardClass + `" data-draft-id="` + id +
+	// THE CARD (the Asks page's design pass): who drafted it and for which
+	// plugin, its state under that; the message it answers as a QUOTE, marked
+	// untrusted; the reply in its own box; then ONE primary action (Approve
+	// and send) with the secondary one small beside it.
+	b.WriteString(`<li id="` + draftCardAnchor(d.ID) + `" class="` + ui.AsksCardClass + `" data-draft-id="` + id +
 		`" data-draft-status="` + esc(string(d.Status)) + `">
-<span class="break-all text-sm font-semibold text-fg">` + esc(flows.VisibleEscape(d.AgentName)) + ` drafted a reply · ` +
-		esc(c.PluginLabel) + `</span>
-<span class="text-xs text-fg2" data-draft-state>` + esc(draftStatusText(d)) + `</span>
-<div class="flex flex-col gap-1 rounded-md bg-s1 px-3 py-2 ring-1 ring-inset ring-edge" data-draft-original>
-<span class="text-xs font-semibold text-fg2">The message it answers — from an outside sender, untrusted (message ` +
-		strconv.FormatInt(m.ID, 10) + `)</span>
-<span class="break-all text-xs text-fg2">from ` + esc(m.Sender) + ` · subject ` + esc(m.Subject) + `</span>
-<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
+<div class="` + ui.AsksHeadTextClass + `"><span class="break-all text-sm font-semibold text-fg" data-draft-agent>` + esc(flows.VisibleEscape(d.AgentName)) + `</span>
+<span class="break-words text-xs text-fg2">` + esc(c.PluginLabel) + ` · <span data-draft-state>` + esc(draftStatusText(d)) + `</span></span></div>
+<div class="` + ui.AsksQuoteClass + `" data-draft-original>
+<span class="break-all text-xs text-fg2"><span class="font-semibold">From ` + esc(m.Sender) + `</span> · untrusted · message ` +
+		strconv.FormatInt(m.ID, 10) + `</span>
+`)
+	if m.Subject != "" {
+		b.WriteString(`<span class="break-all text-xs text-fg2">` + esc(m.Subject) + `</span>
+`)
+	}
+	b.WriteString(`<pre class="whitespace-pre-wrap break-words text-xs text-fg2" data-draft-original-body>` + esc(m.Body) + `</pre>
 </div>
 <div class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge" data-draft-text data-runes="` + runes + `">
-<span class="text-xs font-semibold text-fg">The reply · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
+<span class="text-xs font-semibold text-fg">Reply · ` + runes + ` characters` + draftTextLead(d.Status) + `</span>
 <code class="whitespace-pre-wrap break-all font-mono text-xs text-fg" data-draft-body>` + esc(flows.VisibleEscape(d.Body)) + `</code>
 </div>
 `)
@@ -657,11 +664,12 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
 `)
 	}
+	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
-			b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` +
-				flowsQuietButton + `" data-draft-withdraw>Withdraw the approval</button></form>
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` +
+				ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
 `)
 		}
 	case plugins.DraftPending:
@@ -669,13 +677,12 @@ func draftCardHTML(c plugins.DraftCard) string {
 			// Not approvable until its plugin says it can send it (the store
 			// refuses it whatever the page draws): Reject only.
 			b.WriteString(`<span class="text-xs text-fg2" data-draft-awaiting-check>The plugin checks this reply before you can approve it.</span>
-<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
+<div class="` + ui.AsksActionsClass + `">` + reject + `</div>
 `)
 			break
 		}
-		b.WriteString(`<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form><button type="submit" class="` +
-			flowsButtonClass + ` w-full" data-draft-approve>Approve and send</button></form>
-<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + flowsQuietButton + `" data-draft-reject>Reject</button></form>
+		b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/approve" data-step-up-form class="min-w-0 flex-1"><button type="submit" class="` +
+			ui.AsksPrimaryButtonClass + `" data-draft-approve>Approve and send</button></form>` + reject + `</div>
 `)
 	}
 	b.WriteString("</li>\n")

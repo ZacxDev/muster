@@ -57,12 +57,12 @@ func TestAStalledRowNamesItsWindowByItsLabelNow(t *testing.T) {
 	f.statePass(t)
 	f.oneEpisode(t)
 	page := f.page(t, "/attention")
-	if !strings.Contains(page, `data-attention-episode-where>Gold:1 · tmux main:1 @ ws</code>`) {
+	if !strings.Contains(page, `data-attention-episode-where>Gold:1 · tmux main:1 @ ws</span>`) {
 		t.Fatalf("the row does not name the window by its label:\n%s", episodeRows(page))
 	}
 	f.renumber(6, "Gold:6")
 	page = f.page(t, "/attention")
-	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws</code>`) {
+	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws</span>`) {
 		t.Fatalf("the row does not name where the window is now:\n%s", episodeRows(page))
 	}
 	// Its host drops; the hub still lists the window (the grace period): the
@@ -71,7 +71,7 @@ func TestAStalledRowNamesItsWindowByItsLabelNow(t *testing.T) {
 	f.mirror.online = false
 	f.mirror.mu.Unlock()
 	page = f.page(t, "/attention")
-	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws (host offline)</code>`) {
+	if !strings.Contains(page, `data-attention-episode-where>Gold:6 · tmux main:6 @ ws (host offline)</span>`) {
 		t.Fatalf("the row does not mark its offline host:\n%s", episodeRows(page))
 	}
 }
@@ -97,7 +97,7 @@ func TestAStalledRowWhoseWindowMovedOnKeepsItsCodename(t *testing.T) {
 	f.mirror.windows[0].ClaudeSession = "5d4c3b2a-1908-4f7e-8d6c-5b4a39281706"
 	f.mirror.mu.Unlock()
 	page := f.page(t, "/attention")
-	if !strings.Contains(page, `data-attention-episode-where>Gold:1 · tmux main:1 @ ws</code>`) {
+	if !strings.Contains(page, `data-attention-episode-where>Gold:1 · tmux main:1 @ ws</span>`) {
 		t.Fatalf("the row lost its codename on the fallback:\n%s", episodeRows(page))
 	}
 }
