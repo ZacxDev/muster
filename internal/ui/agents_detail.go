@@ -537,7 +537,7 @@ func agentHeaderToolsWidth(n int, compact bool) string {
 //
 // textplain.Title (via plainOr), the SAME treatment the sidebar and the
 // switcher give this string — see textplain.Title for why it is stripped, not rendered.
-func agentTitle(v AgentDetailView) g.Node {
+func agentTitle(v AgentDetailView, extra ...g.Node) g.Node {
 	full := sessionTitle(v.SessionName, v.DisplayName, v.Name)
 	short, clamped := clampTitle(full)
 	const line = "overflow-hidden text-clip whitespace-nowrap"
@@ -572,6 +572,13 @@ func agentTitle(v AgentDetailView) g.Node {
 	// `[&[hidden]]:hidden`: the button's inline-flex utility would otherwise
 	// beat the UA's [hidden] rule and draw a "hidden" button anyway.
 	return Div(
+		// The id a rename's in-place answer swaps (AgentPageRenamed);
+		// extra is that answer's hx-swap-oob.
+		ID(AgentTitleID),
+		g.Group(extra),
+		// Focusable by script only: where a rename's in-place answer moves
+		// focus (renameScript), the control that now says the new name.
+		g.Attr("tabindex", "-1"),
 		g.Attr("data-agent-title", ""),
 		g.If(clamped, g.Attr("data-title-clamped", "")),
 		Class("mr-auto flex min-w-0 flex-1 items-center gap-0.5"),
@@ -643,8 +650,12 @@ func agentTitleFitScript() g.Node {
 })();`))
 }
 
-// agentTitlePopoverID is the header's full-title popover. One per document.
-const agentTitlePopoverID = "agent-title-full"
+// agentTitlePopoverID is the header's full-title popover, AgentTitleID the
+// title's box (agentTitle). One of each per document.
+const (
+	agentTitlePopoverID = "agent-title-full"
+	AgentTitleID        = "agent-title"
+)
 
 // agentDocTitle is the agent page's <title>: the same clamp as the header, so
 // a 600-character name does not become a 600-character tab label either.

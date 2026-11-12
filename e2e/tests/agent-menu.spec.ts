@@ -242,7 +242,8 @@ for (const vp of [
     });
 
     // RENAME, moved from the card: the menu's Rename opens the form, Save posts
-    // the display name and reloads the page, whose title then reads it.
+    // the display name and renames the page IN PLACE — no reload: the header
+    // and the tab read it, and focus is on the title.
     test('Rename opens its form, and Save renames the agent', async ({ page }) => {
       const name = `e2e-menu-rename-${vp.width}-${stamp}`;
       const id = fix('agent', '1', name, `e2e-menu-rename-token-not-a-real-one-${vp.width}-${stamp}`);
@@ -261,13 +262,16 @@ for (const vp of [
         await input.fill('Renamed by the menu ' + stamp);
         await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
         const posted = page.waitForResponse((r) => r.url().endsWith(`/agents/${id}/name`) && r.request().method() === 'POST');
-        const reloaded = page.waitForEvent('framenavigated', (f) => f === page.mainFrame());
+        const navs: string[] = [];
+        page.on('framenavigated', (f) => { if (f === page.mainFrame()) navs.push(f.url()); });
         await form.getByRole('button', { name: 'Save', exact: true }).click();
         expect((await posted).status()).toBe(200);
-        // The answer reloads the page: the marker is gone, the title is new.
-        await reloaded;
-        await page.waitForLoadState('load');
-        expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload ?? 0), 'the page reloaded').toBe(0);
+        await expect(form).toBeHidden();
+        await expect(page).toHaveTitle('Renamed by the menu ' + stamp + ' · muster');
+        // The answer renames in place: the marker survives, nothing navigated.
+        expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload ?? 0), 'the page was not reloaded').toBe(1);
+        expect(navs, 'nothing navigated the page').toEqual([]);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? '')).toBe('agent-title');
         // The tooltip carries the slug the header no longer spells.
         await expect(page.locator('[data-agent-title] h1')).toHaveAttribute('title', 'Renamed by the menu ' + stamp + ' · ' + name);
         await expect(page).toHaveTitle('Renamed by the menu ' + stamp + ' · muster');

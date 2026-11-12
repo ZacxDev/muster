@@ -207,8 +207,11 @@ for (const [label, viewport] of sizes) {
       const form = page.locator('#agent-rename form');
       await expect(form).toBeVisible();
       await form.locator('input[name="name"]').fill(name);
-      await Promise.all([page.waitForEvent('load'), form.getByRole('button', { name: 'Save', exact: true }).click()]);
+      // In place (no reload): the header and the tab follow, focus on the title.
+      await form.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(page.locator('#agent-rename')).toBeHidden();
       await expect(page.locator('header [data-agent-title-text]')).toHaveText(name);
+      await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? '')).toBe('agent-title');
       await expect(page).toHaveTitle(new RegExp(`^${name} · muster$`));
       expect((await agentRows()).find((r) => r.id === a.id)?.displayName).toBe(name);
       await sidebarShown(page);

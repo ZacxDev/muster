@@ -256,9 +256,10 @@ func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
 // 600-character token with no break opportunity included — and a title too
 // long for the viewport scrolls inside the panel instead of running off it
 // (floatingMenuScript's place() sets the height cap, from the viewport).
-func fullTitlePopover(pop, full string) g.Node {
+func fullTitlePopover(pop, full string, extra ...g.Node) g.Node {
 	return Div(
 		ID(pop),
+		g.Group(extra),
 		g.Attr("popover", "auto"),
 		g.Attr("role", "dialog"),
 		g.Attr("aria-label", "Full title"),
