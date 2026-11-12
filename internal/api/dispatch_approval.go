@@ -172,10 +172,12 @@ type approvalRequest struct {
 	// refile: the repo card a "Change repo" tap opens, or a clone card after
 	// another card's tap (heldDetail.Refile).
 	refile bool
-	// clone is the clone the request starts in, when muster settled one
-	// (clone_choice.go); clones are the clone card's choices.
-	clone  string
-	clones []mirror.AgentClone
+	// clone is the clone the request starts in, when muster settled one, and
+	// decision the host's answer it was settled from (clone_choice.go): the
+	// clone card's choices are mirror.ChooseClone's of it, and the hold stores
+	// it (heldDetail.CloneDecision) so no later call asks the host again.
+	clone    string
+	decision cloneDecision
 	// typed: a clone card in the owner's typed turn — no approval of the
 	// chief's brief, only the clone of a request they typed.
 	typed bool
@@ -268,7 +270,8 @@ func (s *Server) approvalCardFor(ctx context.Context, a agents.Agent, blank, hos
 	c := approvalCard{question: q, values: map[string]string{}}
 	if blank == blankClone {
 		// The host's own clones, live ones first (mirror.ChooseClone's order).
-		for _, cl := range r.clones {
+		_, choices := mirror.ChooseClone(r.decision.List)
+		for _, cl := range choices {
 			l := cloneLabel(cl)
 			c.labels = append(c.labels, l)
 			c.values[l] = clonePref + cl.Path

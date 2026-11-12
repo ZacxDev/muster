@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -408,6 +409,39 @@ func requestKeyOf(detail map[string]any) (key, hash string) {
 	return key, hash
 }
 
+// keyedReservation is THE predicate of a reservation a request_key names
+// (requestKeyMatch's, and KeyedReservationDetail's): the owner's ($1)
+// reservation carrying key $2 from the last ChiefDispatchWindow ($3 seconds),
+// unless a release ($4) names it as a refused reservation (its key is free).
+const keyedReservation = `r.action = '` + ActionChiefDispatch + `' AND r.detail ? 'request_key'
+		   AND r.user_id = $1 AND r.detail->>'request_key' = $2
+		   AND r.at > now() - make_interval(secs => $3)
+		   AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $4 AND x.user_id = $1 AND x.object = r.object
+		                    AND x.detail->>'refused_reservation' = r.id::text)`
+
+// KeyedReservationDetail is the detail of the principal's reservation that
+// request_key key names — the one a call with that key replays
+// (keyedReservation, requestKeyMatch's own predicate) — and whether there is
+// one. Read as the owner (row-level security, and user_id in the WHERE).
+func (s *PGStore) KeyedReservationDetail(ctx context.Context, key string) (json.RawMessage, bool, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return nil, false, errors.New("plugins: a reservation read needs a user principal")
+	}
+	var detail []byte
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT r.detail FROM audit_log r WHERE `+keyedReservation+` ORDER BY r.id DESC LIMIT 1`,
+			p.UserID, key, ChiefDispatchWindow.Seconds(), ActionChiefDispatchReleased).Scan(&detail)
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return detail, true, nil
+}
+
 // requestKeyMatch is THE request_key rule, decided by ReserveChiefDispatch
 // FIRST, under its lock — so a replay starts nothing, spends nothing, and runs
 // none of the caller's check (the owner's turn among it): owner's newest reservation from the last
@@ -429,11 +463,7 @@ func requestKeyMatch(ctx context.Context, tx pgx.Tx, owner int64, key, hash stri
 		       EXISTS (SELECT 1 FROM audit_log f WHERE f.action = $5 AND f.user_id = $1 AND f.object = r.object
 		                AND f.detail->>'reservation' = r.id::text)
 		  FROM audit_log r
-		 WHERE r.action = '`+ActionChiefDispatch+`' AND r.detail ? 'request_key'
-		   AND r.user_id = $1 AND r.detail->>'request_key' = $2
-		   AND r.at > now() - make_interval(secs => $3)
-		   AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $4 AND x.user_id = $1 AND x.object = r.object
-		                    AND x.detail->>'refused_reservation' = r.id::text)
+		 WHERE `+keyedReservation+`
 		 ORDER BY r.id DESC LIMIT 1`,
 		owner, key, ChiefDispatchWindow.Seconds(), ActionChiefDispatchReleased, ActionChiefDispatchFailed).Scan(&out.ReservationID, &out.Object, &stored, &out.Failed)
 	switch {

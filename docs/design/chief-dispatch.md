@@ -2636,11 +2636,23 @@ host's roots`. `agent_dispatch` had no way to choose. Operator decision:
   host's clones, live ones first. A list muster cannot carry (a path that is not
   absolute and clean, longer than 160 bytes, a control character, more than 8)
   is refused whole: no choice is made from part of it.
-- **When:** `toolHostDispatch` asks before anything is held or reserved, once
-  the host and the connected repository are known (`chooseClone`). A clone it
-  settles becomes the call's `clone` argument, so the approval card shows it
-  (`Clone: <path>`) and `held_hash` and the request_key's hash bind it (the
-  hash's `clone` is `omitempty`: a call with none hashes as before).
+- **When, and only once per request_key:** `toolHostDispatch` asks before
+  anything is held or reserved, on the first call that knows the host and the
+  connected repository (`chooseClone`). The host's answer is stored — on the
+  hold that call files (`heldDetail.clone_decision`) and on the reservation
+  that starts (`detail.clone_decision`) — and every later call with the key
+  takes it from there (its live reservation first, then its newest hold) and
+  asks the host nothing. So a retry, a waiting call, a replay or a completion
+  cannot re-derive a different clone when the host is offline, slow, or its
+  live window moved (audit #615 F1–F3: a retry was refused "use a new key",
+  and following that started a second agent in the other clone; an approved
+  hold read as changed). The clone it settles is shown on the approval card
+  (`Clone: <path>`) and carried by the spawn; `held_hash` and the request_key's
+  hash bind only a `clone` the CHIEF passed (`omitempty`: a call with none
+  hashes as before). A list that is not answered on that first call refuses
+  it — "can't be read right now; retry with the same request_key" — with
+  nothing held; a host that does not list its clones (an older mirror) decides
+  "no clone", and a `clone` named for it is refused as such.
 - **The clone card** (blank `clone`) stands in the approval card's place when
   the owner must choose: the whole request, the host's clones as its buttons,
   and "Don't start". It is raised after another card's tap (a host, model or

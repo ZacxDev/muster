@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // WHICH CLONE A HOST DISPATCH STARTS IN (clone_choice.go) over a real Postgres
@@ -29,6 +30,7 @@ type cloneAsk struct{ host, repo string }
 type cloneMirror struct {
 	mu   sync.Mutex
 	list map[string][]mirror.AgentClone
+	err  error // set: every list fails with it (a host that does not answer)
 	asks []cloneAsk
 }
 
@@ -43,6 +45,9 @@ func (m *spawnMirror) AgentClones(ctx context.Context, host, repo string) ([]mir
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.asks = append(c.asks, cloneAsk{host, repo})
+	if c.err != nil {
+		return nil, c.err
+	}
 	return append([]mirror.AgentClone(nil), c.list[host]...), nil
 }
 
@@ -64,6 +69,13 @@ func (c *cloneMirror) set(host string, clones ...mirror.AgentClone) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.list[host] = clones
+}
+
+// fail makes every list fail with err (nil: answer again).
+func (c *cloneMirror) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
 }
 
 func (c *cloneMirror) asked() []cloneAsk {
@@ -117,7 +129,9 @@ func TestSeveralClonesTheLiveSessionsCloneIsTheSpawns(t *testing.T) {
 	old := apCall("host/host-charlie/claude", apTooling, "live-3")
 	old["owner_asked"] = true
 	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, old))
-	if calls := f.m.spawnCalls(); len(calls) != 3 || calls[2].req.Clone != "" || len(cm.asked()) != 3 {
+	// Two lists asked for in all: the typed start's, and the approval card's
+	// call; its completion reused the card's (clone_choice.go, F3).
+	if calls := f.m.spawnCalls(); len(calls) != 3 || calls[2].req.Clone != "" || len(cm.asked()) != 2 {
 		t.Fatalf("an older host: spawn %+v, asks %+v; want no hint and no list asked for", calls, cm.asked())
 	}
 }
@@ -155,9 +169,19 @@ func TestSeveralClonesNoneOrBothLiveTheCardOffersThem(t *testing.T) {
 	if len(f.m.spawnCalls()) != 0 || f.allReservations(t) != 0 {
 		t.Fatal("a clone card reserved or spawned")
 	}
+	// F3: the card's own call again, and the waiting call, asked the host nothing.
+	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, call)); got != agentDispatchHeldWaiting {
+		t.Fatalf("the card's own call again: %q", got)
+	}
+	if n := len(cm.asked()); n != 1 {
+		t.Fatalf("%d clone lists asked for before the tap; want 1", n)
+	}
 	f.tap(t, card.ID, ccThird, authz.ViaSession)
 	f.untypedTurn(t)
 	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, complete))
+	if n := len(cm.asked()); n != 1 {
+		t.Fatalf("%d clone lists asked for by the completion; want still 1", n)
+	}
 	calls := f.m.spawnCalls()
 	if len(calls) != 1 || calls[0].req.Clone != ccThird || !strings.Contains(calls[0].req.Prompt, apApprovedPre) {
 		t.Fatalf("the tapped clone's spawn: %+v", calls)
@@ -192,13 +216,11 @@ func TestSeveralClonesNoneOrBothLiveTheCardOffersThem(t *testing.T) {
 // TestTheHeldHashBindsTheClone: after the owner tapped one clone, a completing
 // call naming ANOTHER of the host's clones is refused naming the one they
 // chose; a clone the host did not list is refused before anything else; a
-// clone on a pod target is refused; and an approval card filed with the one
-// live clone is refused as changed when the host's live clone moved before
-// the completing call (the hash binds the clone the card showed). Only the
-// exact call starts, in the tapped clone.
+// clone on a pod target is refused. Only the exact call starts, in the
+// tapped clone. (An approval's bound clone: TestAnApprovedHoldStartsInItsBoundClone.)
 func TestTheHeldHashBindsTheClone(t *testing.T) {
 	f := newApprovalFixture(t)
-	cm := f.withClones(t, dead(ccOld), dead(ccThird))
+	f.withClones(t, dead(ccOld), dead(ccThird))
 	f.untypedTurn(t)
 	if held := f.callRaw(f.chief, agentDispatchTool, apCall("host/host-bravo/claude", apRealRepo, "bind-1")); !strings.Contains(held, `"blanks":["clone"]`) {
 		t.Fatalf("not a clone card: %s", held)
@@ -226,22 +248,23 @@ func TestTheHeldHashBindsTheClone(t *testing.T) {
 	if calls := f.m.spawnCalls(); len(calls) != 1 || calls[0].req.Clone != ccThird {
 		t.Fatalf("the exact call's spawn: %+v", calls)
 	}
-	// The approval card's clone, settled by the host's one live clone, is bound.
-	cm.set("host-bravo", live(ccOld), dead(ccThird))
+	// A clone the CHIEF passed is part of what the approval card held: after
+	// the tap, the same call with another listed clone is refused as changed.
 	f.untypedTurn(t)
-	call := apCall("host/host-bravo/claude", apRealRepo, "bind-2")
-	if held := f.callRaw(f.chief, agentDispatchTool, call); !strings.Contains(held, `"blanks":["approve"]`) {
-		t.Fatalf("not an approval card: %s", held)
+	proposed := apCall("host/host-bravo/claude", apRealRepo, "bind-2")
+	proposed["clone"] = ccOld
+	if held := f.callRaw(f.chief, agentDispatchTool, proposed); !strings.Contains(held, `"blanks":["approve"]`) {
+		t.Fatalf("a chief-proposed clone: not an approval card: %s", held)
 	}
 	f.tap(t, f.newestCard(t).ID, approveLabel, authz.ViaSession)
-	cm.set("host-bravo", dead(ccOld), live(ccThird))
-	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, call)); got != fmt.Sprintf(agentDispatchHeldChanged, "bind-2") {
-		t.Fatalf("the live clone moved after the card: %q", got)
+	swapped := apCall("host/host-bravo/claude", apRealRepo, "bind-2")
+	swapped["clone"] = ccThird
+	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, swapped)); got != fmt.Sprintf(agentDispatchHeldChanged, "bind-2") {
+		t.Fatalf("another clone than the card held: %q", got)
 	}
-	cm.set("host-bravo", live(ccOld), dead(ccThird))
-	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, call))
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, proposed))
 	if calls := f.m.spawnCalls(); len(calls) != 2 || calls[1].req.Clone != ccOld {
-		t.Fatalf("the approved card's spawn: %+v", calls)
+		t.Fatalf("the approved proposal's spawn: %+v", calls)
 	}
 }
 
@@ -261,5 +284,124 @@ func TestAHostsBadCloneRefusalReachesTheChief(t *testing.T) {
 	got := errorText(t, f.callRaw(f.chief, agentDispatchTool, call))
 	if want := `host "host-bravo" refused the clone of ` + apRealRepo + ` muster named: ` + detail + `. Call again without clone, and muster asks your owner which`; got != want {
 		t.Fatalf("the refusal: %q\nwant %q", got, want)
+	}
+}
+
+// TestASameKeyRetryReplaysWhateverTheHostSaysNow (audit F1): a start in the
+// owner's typed turn goes to the host's one live clone. The same call again —
+// a retry of the same request_key — while the host's list cannot be read, and
+// again once the live clone has MOVED, REPLAYS that start: the host is not
+// asked again (one list in all), no second spawn is sent, and nothing tells
+// the chief to use a new key. (Before: the retry re-derived the clone into the
+// hash and was refused "used … for a different dispatch: use a new key" —
+// and following that started a second agent in the other clone.)
+func TestASameKeyRetryReplaysWhateverTheHostSaysNow(t *testing.T) {
+	f := newApprovalFixture(t)
+	cm := f.withClones(t, dead(ccOld), live(ccLive))
+	f.ownerTurn(t, f.chief, f.owner, "Start it mirrored on host-bravo with Claude.")
+	call := apCall("host/host-bravo/claude", apRealRepo, "retry-1")
+	call["owner_asked"] = true
+	id := hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, call))
+	cm.fail(mirror.ErrClonesUnanswered)
+	unread := f.callRaw(f.chief, agentDispatchTool, call)
+	cm.fail(nil)
+	cm.set("host-bravo", live(ccOld), dead(ccLive))
+	moved := f.callRaw(f.chief, agentDispatchTool, call)
+	// The request hash binds only what the CHIEF sent: with the reservation's
+	// stored decision gone (a reservation that carries none), the retry derives
+	// no clone at all — and still replays.
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE audit_log SET detail = detail - 'clone_decision' - 'clone'
+		WHERE action = $1 AND user_id = $2 AND detail->>'request_key' = 'retry-1'`, plugins.ActionChiefDispatch, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	bare := f.callRaw(f.chief, agentDispatchTool, call)
+	for name, text := range map[string]string{"the list unreadable": unread, "the live clone moved": moved, "no stored decision": bare} {
+		if !strings.Contains(text, `"replayed":true`) || !strings.Contains(text, fmt.Sprintf(`"host_dispatch_id":%d`, id)) {
+			t.Errorf("%s: the retry did not replay the start: %s", name, text)
+		}
+		if strings.Contains(text, "new key") {
+			t.Errorf("%s: the retry tells the chief to use a new key: %s", name, text)
+		}
+	}
+	if calls := f.m.spawnCalls(); len(calls) != 1 || calls[0].req.Clone != ccLive {
+		t.Fatalf("spawn requests %+v; want ONE, in %s", calls, ccLive)
+	}
+	if a := cm.asked(); len(a) != 1 {
+		t.Fatalf("%d clone lists asked for; want 1 (the first call's)", len(a))
+	}
+}
+
+// TestAnApprovedHoldStartsInItsBoundClone (audit F2): the approval card names
+// the host's one live clone; the owner approves; by the completing call the
+// host's live clone has moved — and, for a second request, its list cannot be
+// read at all. Each completion still starts, in the clone its card showed,
+// without asking the host again. (Before: refused "held with different
+// arguments", though the chief changed nothing.)
+func TestAnApprovedHoldStartsInItsBoundClone(t *testing.T) {
+	f := newApprovalFixture(t)
+	cm := f.withClones(t, live(ccOld), dead(ccThird))
+	approve := func(key string) map[string]any {
+		t.Helper()
+		f.untypedTurn(t)
+		call := apCall("host/host-bravo/claude", apRealRepo, key)
+		if held := f.callRaw(f.chief, agentDispatchTool, call); !strings.Contains(held, `"blanks":["approve"]`) {
+			t.Fatalf("%s: not an approval card: %s", key, held)
+		}
+		card := f.newestCard(t)
+		if !strings.Contains(card.Question, "\nClone: "+ccOld+"\n") {
+			t.Fatalf("%s: the card does not name the clone:\n%s", key, card.Question)
+		}
+		f.tap(t, card.ID, approveLabel, authz.ViaSession)
+		f.untypedTurn(t)
+		return call
+	}
+	call := approve("bound-1")
+	cm.set("host-bravo", dead(ccOld), live(ccThird))
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, call))
+	cm.set("host-bravo", live(ccOld), dead(ccThird))
+	call = approve("bound-2")
+	cm.fail(mirror.ErrClonesUnanswered)
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, call))
+	calls := f.m.spawnCalls()
+	if len(calls) != 2 || calls[0].req.Clone != ccOld || calls[1].req.Clone != ccOld {
+		t.Fatalf("the approved starts' spawns: %+v; want both in %s", calls, ccOld)
+	}
+	if a := cm.asked(); len(a) != 2 {
+		t.Fatalf("%d clone lists asked for; want 2 (one per card, none at completion)", len(a))
+	}
+}
+
+// TestAnOlderHostAndAnUnreadableListAreTwoRefusals: a clone named for a host
+// that does not list its clones (host-charlie, an older muster-mirror) is
+// refused as such — omit clone; a host that lists them but does not answer
+// NOW is refused as retryable with the same key, with or without a clone, and
+// nothing is held, reserved or sent. Once it answers, the same call goes on.
+func TestAnOlderHostAndAnUnreadableListAreTwoRefusals(t *testing.T) {
+	f := newApprovalFixture(t)
+	cm := f.withClones(t, dead(ccOld), live(ccLive))
+	f.withConnectedRepos(t, apWidgets, apTooling, apRealRepo)
+	f.ownerTurn(t, f.chief, f.owner, "Start it mirrored with Claude.")
+	old := apCall("host/host-charlie/claude", apTooling, "two-1")
+	old["owner_asked"], old["clone"] = true, ccOld
+	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, old)); got != fmt.Sprintf(agentDispatchCloneOldHost, "host-charlie") {
+		t.Fatalf("a clone for an older host: %q", got)
+	}
+	cm.fail(mirror.ErrClonesUnanswered)
+	call := apCall("host/host-bravo/claude", apRealRepo, "two-2")
+	call["owner_asked"] = true
+	withClone := apCall("host/host-bravo/claude", apRealRepo, "two-3")
+	withClone["owner_asked"], withClone["clone"] = true, ccLive
+	for name, c := range map[string]map[string]any{"no clone": call, "a clone": withClone} {
+		if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, c)); got != fmt.Sprintf(agentDispatchClonesUnread, "host-bravo") {
+			t.Errorf("%s, the list unreadable: %q", name, got)
+		}
+	}
+	if len(f.m.spawnCalls()) != 0 || f.allReservations(t) != 0 || len(f.cards(t)) != 0 {
+		t.Fatal("an unreadable list held, reserved or spawned")
+	}
+	cm.fail(nil)
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, call))
+	if calls := f.m.spawnCalls(); len(calls) != 1 || calls[0].req.Clone != ccLive {
+		t.Fatalf("once the list answers: %+v", calls)
 	}
 }

@@ -489,7 +489,12 @@ is the one card you see. The chief completes the start with `clone` set to the
 one you tapped; the clone is bound like a picked repository, so a call naming
 another is refused. The host takes the clone only if it is one of its own clones
 under its roots (`bad_clone` otherwise), and an older host that cannot list its
-clones is sent none and refuses several, as before (`no_repo`).
+clones is sent none and refuses several, as before (`no_repo`). The clone is
+decided **once per request**: muster asks the host on the chief's first call
+and keeps the answer with the held card and the start, so a retry, your
+approval's completion or a replay never asks again — a host that has since
+gone quiet, or a session that moved, cannot change where an approved request
+starts, nor start it twice.
 
 The agent's first message carries the chief's brief, marked as one **you
 approved on a card** (not one you typed), in place of the "relayed from a message
