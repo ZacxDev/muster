@@ -235,7 +235,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				docHead(v.Nav.Feat.Brand),
-				TitleEl(g.Text(mirrorViewName(v)+" · Mirrored · muster")),
+				TitleEl(g.Text(mirrorViewDocTitle(v))),
 				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
@@ -495,12 +495,23 @@ func mirrorViewName(v MirrorViewView) string {
 	return mirrorQualified(name, v.Qualifier)
 }
 
+// MirrorNameID is the Rendered view's header name (a human name's span,
+// mirrorViewEntryTitle), which the drift offer's in-place answer swaps
+// (RenderMirrorDriftRenamed).
+const MirrorNameID = "mv-name"
+
+// mirrorViewDocTitle is the Rendered view's <title>: its name, then where it
+// is. The page and the drift offer's in-place answer both draw it.
+func mirrorViewDocTitle(v MirrorViewView) string {
+	return mirrorViewName(v) + " · Mirrored · muster"
+}
+
 // mirrorViewEntryTitle is the header's name node: the human name with its
 // technical id as the tooltip (sessionNameTitle), else the entry's label or
 // title as its card draws it (mirrorEntryTitle).
 func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 	if v.SessionName.Human() {
-		return sessionNameTitle(v.SessionName, "")
+		return sessionNameTitle(v.SessionName, "", ID(MirrorNameID))
 	}
 	return mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, "")
 }

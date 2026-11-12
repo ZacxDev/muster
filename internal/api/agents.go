@@ -573,7 +573,8 @@ func (s *Server) handleAgentHeader(w http.ResponseWriter, r *http.Request) {
 // handleAgentName handles POST /agents/{id}/name: update the agent's display
 // name (the slug Name is immutable). The agent page's rename form posts it;
 // the answer reloads that page (HX-Refresh), so its header, its tab title and
-// the sidebar all read the new name. A blank name falls back to the slug.
+// the sidebar all read the new name — but the drift offer's Rename is answered
+// in place (name_drift.go). A blank name falls back to the slug.
 func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -590,12 +591,18 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	// prefilled with what the agent is called now, and a Save that kept an
 	// automatic (auto or task) name must not make it the person's.
 	a, gerr := s.ext.Agents.Get(ctx, id)
-	// done answers the rename: htmx reloads the page (HX-Refresh); a plain
-	// form post (no script) is sent back to the agent's page with a 303, as
-	// the mirrored session's rename route does.
-	done := func(changed bool) {
+	// done answers the rename: htmx reloads the page (HX-Refresh) — except
+	// the drift offer's Rename, answered in place with the page's name
+	// redrawn (name_drift.go); a plain form post (no script) is sent back to
+	// the agent's page with a 303, as the mirrored session's rename route
+	// does. renamed is the agent as it is now.
+	done := func(changed bool, renamed agents.Agent) {
 		if r.Header.Get("HX-Request") == "" && gerr == nil {
 			http.Redirect(w, r, ui.AgentPath(a.Name), http.StatusSeeOther)
+			return
+		}
+		if driftAnswerInPlace(r) && renamed.ID != 0 {
+			s.answerAgentDriftRenamed(w, r, renamed)
 			return
 		}
 		w.Header().Set("HX-Refresh", "true")
@@ -606,11 +613,11 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	}
 	if gerr == nil && name != "" {
 		if n := s.agentName(ctx, a); n.Source != sessionname.SourceManual && n.Human() && n.Text == name {
-			done(false)
+			done(false, a)
 			return
 		}
 	}
-	_, err = s.ext.Agents.SetDisplayName(ctx, id, name)
+	renamed, err := s.ext.Agents.SetDisplayName(ctx, id, name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -620,7 +627,7 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update name", http.StatusInternalServerError)
 		return
 	}
-	done(true)
+	done(true, renamed)
 }
 
 // advanceTaskToInProgress flips a task open→in_progress after a dispatch. It

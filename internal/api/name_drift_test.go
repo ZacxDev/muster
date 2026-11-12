@@ -179,3 +179,104 @@ func TestARenameRestartsTheDriftClock(t *testing.T) {
 		t.Fatal("three drifted changes after the rename, the oldest 40 minutes old, offer nothing")
 	}
 }
+
+// inPlaceForm is the drift offer's Rename as htmx posts it: the form's hidden
+// fields plus the hx-vals marker ("drift", ui.SessionDriftParam — spelled
+// literally: the contract the banner's markup carries).
+func inPlaceForm(name string) url.Values {
+	return url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"main"}, "window": {"@1"}, "back": {ref("main", "@1").ViewPath()},
+		"name": {name}, "drift": {"1"}}
+}
+
+// expectNoReload fails when rec could reload or navigate the page: an
+// HX-Refresh, an HX-Redirect or HX-Location, or an HTTP redirect.
+func expectNoReload(t *testing.T, what string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s = %d, want 200: %s", what, rec.Code, rec.Body)
+	}
+	for _, h := range []string{"HX-Refresh", "HX-Redirect", "HX-Location", "Location"} {
+		if v := rec.Header().Get(h); v != "" {
+			t.Errorf("%s answers %s: %q — the page would reload or navigate", what, h, v)
+		}
+	}
+}
+
+// TestTheOfferIsAnsweredInPlace: through the real routes, the drift offer's
+// two buttons as htmx posts them are answered WITHOUT a reload (operator: a
+// tap reloaded the whole page; both answered HX-Refresh). "Keep" deletes the
+// banner out of band and records the dismissal; "Rename" stores the manual
+// name (an ordinary rename) and answers with the header's name, its full
+// title, the <title> and the switcher redrawn with the NEW name, plus
+// agents:changed for the sidebar.
+func TestTheOfferIsAnsweredInPlace(t *testing.T) {
+	now := time.Now()
+	store := driftedStore(now)
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	h := s.Handler()
+	sub := focus.MirrorSubject(focusSID)
+
+	keep := pinPost(t, s, h, ui.SessionDriftDismissPath, url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"main"},
+		"window": {"@1"}, "title": {"Fixing the Stripe webhook retry"}, "back": {ref("main", "@1").ViewPath()}}, true)
+	expectNoReload(t, "keep", keep)
+	if body := keep.Body.String(); !strings.Contains(body, `<div id="session-drift" hx-swap-oob="delete"></div>`) ||
+		!strings.Contains(body, `id="session-drift-status" hx-swap-oob="innerHTML">Kept the name.`) {
+		t.Fatalf("keep's answer does not remove the banner in place:\n%s", body)
+	}
+	if store.rows[sub].Name.DriftDismissed != "Fixing the Stripe webhook retry" {
+		t.Fatalf("keep recorded %q", store.rows[sub].Name.DriftDismissed)
+	}
+
+	const offer = "Wiring the Stripe refund flow"
+	rec := pinPost(t, s, h, ui.SessionNamePath, inPlaceForm(offer), true)
+	expectNoReload(t, "rename", rec)
+	if got := store.rows[sub].Name.Manual; got != offer {
+		t.Fatalf("the offer's Rename stored manual name %q, want %q", got, offer)
+	}
+	if got := rec.Header().Get("HX-Trigger"); got != "agents:changed" {
+		t.Errorf("HX-Trigger %q, want agents:changed (the sidebar's refresh)", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<div id="session-drift" hx-swap-oob="delete"></div>`,
+		`hx-swap-oob="innerHTML">Renamed to “` + offer + `”.</p>`,
+		`<span id="mv-name" hx-swap-oob="outerHTML" data-mirror-name="" data-session-name="manual"`,
+		`>` + offer + `</span>`,
+		`<title>` + offer + ` · Mirrored · muster</title>`,
+		`id="session-rename" hx-swap-oob="outerHTML"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the rename's answer lacks %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Billing migration") {
+		t.Errorf("the answer still names the session by its old name:\n%s", body)
+	}
+}
+
+// TestTheOfferFallsBackWithoutScript: the same two forms posted WITHOUT htmx
+// (no script) are answered with a 303 back to the session's page, as before
+// — the marker changes nothing for them; and the rename DIALOG's Save (htmx,
+// no marker) still reloads the page, as it did.
+func TestTheOfferFallsBackWithoutScript(t *testing.T) {
+	store := driftedStore(time.Now())
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, windows: namedWindows()}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	h := s.Handler()
+	back := ref("main", "@1").ViewPath()
+	keep := pinPost(t, s, h, ui.SessionDriftDismissPath, url.Values{"kind": {"mirror"}, "host": {"ws"}, "session": {"main"},
+		"window": {"@1"}, "title": {"Fixing the Stripe webhook retry"}, "back": {back}}, false)
+	if keep.Code != http.StatusSeeOther || keep.Header().Get("Location") != back {
+		t.Fatalf("keep without script = %d to %q, want 303 to %q", keep.Code, keep.Header().Get("Location"), back)
+	}
+	rename := pinPost(t, s, h, ui.SessionNamePath, inPlaceForm("Wiring the Stripe refund flow"), false)
+	if rename.Code != http.StatusSeeOther || rename.Header().Get("Location") != back {
+		t.Fatalf("rename without script = %d to %q, want 303 to %q", rename.Code, rename.Header().Get("Location"), back)
+	}
+	dialog := inPlaceForm("Payments")
+	dialog.Del("drift")
+	if rec := pinPost(t, s, h, ui.SessionNamePath, dialog, true); rec.Code != http.StatusOK || rec.Header().Get("HX-Refresh") != "true" {
+		t.Fatalf("the dialog's Save = %d (HX-Refresh %q), want the reload it has always had", rec.Code, rec.Header().Get("HX-Refresh"))
+	}
+}

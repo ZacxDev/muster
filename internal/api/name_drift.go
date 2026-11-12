@@ -162,6 +162,53 @@ func (s *Server) handleDriftDismiss(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, switcherPinBack(r.PostFormValue("back")), http.StatusSeeOther)
 		return
 	}
-	w.Header().Set("HX-Refresh", "true")
-	w.WriteHeader(http.StatusOK)
+	// IN PLACE, NOT A RELOAD (operator: a tap on the offer reloaded the whole
+	// page — this answered HX-Refresh). The banner goes, out of band; nothing
+	// else on the page changes, so nothing else is drawn.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderDriftKept(w); err != nil {
+		s.logger.Printf("names: render the kept offer: %v", err)
+	}
+}
+
+// driftAnswerInPlace reports whether a rename was posted by the drift offer's
+// Rename with htmx (ui.SessionDriftParam, sent only by htmx): the rename
+// routes then answer with the page's name redrawn out of band
+// (answerAgentDriftRenamed, answerMirrorDriftRenamed) instead of a reload. A
+// plain form post is still answered with its 303, and the rename dialog's Save
+// still with HX-Refresh.
+func driftAnswerInPlace(r *http.Request) bool {
+	return r.Header.Get("HX-Request") != "" && r.PostFormValue(ui.SessionDriftParam) == "1"
+}
+
+// answerAgentDriftRenamed answers the offer's Rename on agent a's page (a as
+// it is NOW, renamed): its title, its rename dialogs and the switcher, drawn
+// by the helpers the page itself uses, with agents:changed for the sidebar.
+func (s *Server) answerAgentDriftRenamed(w http.ResponseWriter, r *http.Request, a agents.Agent) {
+	ctx := r.Context()
+	n := s.agentName(ctx, a)
+	noteID, _ := s.agentTaskStatus(ctx, a)
+	v := ui.AgentDetailView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: n, NoteID: noteID,
+		Card:     ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: n},
+		Switcher: s.switcher(ctx, ui.SwitcherCurrent{AgentID: a.ID})}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Trigger", "agents:changed")
+	if err := ui.RenderAgentDriftRenamed(w, v); err != nil {
+		s.logger.Printf("names: render agent %d renamed: %v", a.ID, err)
+	}
+}
+
+// answerMirrorDriftRenamed answers the offer's Rename on window e's Rendered
+// view (host h): its header's name and full title, its <title> and the
+// switcher, with agents:changed for the sidebar.
+func (s *Server) answerMirrorDriftRenamed(w http.ResponseWriter, r *http.Request, h mirror.HostView, e mirror.SessionView) {
+	ctx := r.Context()
+	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label,
+		Qualifier: e.Qualifier, SessionName: s.mirrorName(ctx, e),
+		Switcher: s.switcher(ctx, ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Trigger", "agents:changed")
+	if err := ui.RenderMirrorDriftRenamed(w, v); err != nil {
+		s.logger.Printf("names: render %s renamed: %v", e.SessionKey(), err)
+	}
 }

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"io"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -57,6 +58,10 @@ type renameDialog struct {
 	fields              [][2]string
 	current             string
 	placeholder, note   string
+	// oob draws the dialog as an out-of-band swap of the one on the page
+	// (the drift offer's in-place answer, RenderMirrorDriftRenamed): the
+	// prefill then reads the session's new name without a reload.
+	oob bool
 }
 
 // renamePopover is the rename dialog: a popover (top layer, out of flow), a
@@ -71,6 +76,7 @@ func renamePopover(d renameDialog) g.Node {
 	}
 	return Div(
 		ID(d.id),
+		g.If(d.oob, hx("hx-swap-oob", "outerHTML")),
 		g.Attr("popover", "auto"),
 		g.Attr("role", "dialog"),
 		g.Attr("aria-label", d.heading),
@@ -161,7 +167,10 @@ func sessionRenameMenuItem() g.Node {
 // switcherRenameDialog is the ⋯ menu's rename dialog for the page's own
 // session: an agent is renamed at its own route, a mirrored session at
 // SessionNamePath (by its window, whose conversation the name is for).
-func switcherRenameDialog(p *switcherPin) g.Node {
+func switcherRenameDialog(p *switcherPin) g.Node { return renamePopover(switcherRenameFields(p)) }
+
+// switcherRenameFields is switcherRenameDialog's content.
+func switcherRenameFields(p *switcherPin) renameDialog {
 	d := renameDialog{id: SessionRenameID, heading: "Rename session", current: p.name.Text,
 		note: renameNote(p.name.Technical)}
 	if p.rawManual != "" {
@@ -179,7 +188,7 @@ func switcherRenameDialog(p *switcherPin) g.Node {
 	} else {
 		d.action, d.fields = SessionNamePath, append(p.tagTarget.fields(), [2]string{"back", p.back})
 	}
-	return renamePopover(d)
+	return d
 }
 
 // nameIfHuman is n's text when it is a human name, "" otherwise: a palette
@@ -193,9 +202,12 @@ func nameIfHuman(n sessionname.Name) string {
 
 // sessionNameTitle is a human name as a header draws it: the name (already
 // plained), its technical id as the tooltip — where the codename, tmux address
-// and host the main UI no longer spells are found.
-func sessionNameTitle(n sessionname.Name, class string) g.Node {
+// and host the main UI no longer spells are found. extra is what a caller adds
+// to the span: the Rendered view's header gives it its id (MirrorNameID), which
+// the drift offer's in-place answer swaps.
+func sessionNameTitle(n sessionname.Name, class string, extra ...g.Node) g.Node {
 	return Span(
+		g.Group(extra),
 		g.If(class != "", Class(class)),
 		g.Attr("data-mirror-name", ""),
 		g.Attr("data-session-name", string(n.Source)),
@@ -206,6 +218,24 @@ func sessionNameTitle(n sessionname.Name, class string) g.Node {
 
 // SessionDriftDismissPath is "Keep the name" (internal/api name_drift.go).
 const SessionDriftDismissPath = "/sessions/name/drift-dismiss"
+
+// The drift offer's elements and the field its Rename posts.
+//
+//   - SessionDriftID is the banner; SessionDriftStatusID the polite live
+//     region beside it, which says what a tap did once the banner is gone.
+//   - SessionDriftParam=1 is sent (hx-vals, so only by htmx) with the
+//     banner's Rename: the rename routes then answer IN PLACE
+//     (RenderAgentDriftRenamed, RenderMirrorDriftRenamed) rather than with the
+//     reload (HX-Refresh) the rename dialog's Save is answered with.
+const (
+	SessionDriftID       = "session-drift"
+	SessionDriftStatusID = "session-drift-status"
+	SessionDriftParam    = "drift"
+)
+
+// driftExplain is the offer's tooltip: what the banner is, which the one-line
+// banner no longer spells out.
+const driftExplain = "This session's work has moved on from its name. Rename it to what it is about now, or keep the name: muster offers again only when the focus changes."
 
 // SessionDrift is a session page's rename OFFER (internal/focus DriftOffer):
 // its focus has moved on from its name, so the page offers the current focus
@@ -220,19 +250,26 @@ type SessionDrift struct {
 	Back         string
 }
 
-// driftBanner is the offer under a session page's header: what the session is
-// about now, "Rename to “<offer>”" (a rename to it — the name becomes the
-// person's) and "Keep the name" (dismissed until the focus changes again).
-// Server-drawn with the page, so it moves nothing in after paint; nothing for
-// no offer.
+// driftBanner is the offer under a session page's header, nothing for no
+// offer. Server-drawn with the page, so it moves nothing in after paint.
 //
-// STACKED, ONE THING PER ROW (operator decision): the copy, then the Rename
-// button, then "Keep the name" as a text link — in one flex row the three
-// competed for the width and a long offer squeezed the copy to a sliver. Each
-// row is at most the banner's width and wraps inside it (a long offer wraps
-// the copy and the button's own label, never the page). "Keep the name" is a
-// form POST like the button above it, styled as a link (no ring, no fill,
-// underlined on hover and keyboard focus), still a 44px-tall target.
+// 🔴 ONE LINE (operator: the stacked three-row card took too much height). A
+// short muted label, the offered name (truncated with an ellipsis, whole in
+// its tooltip), then the primary "Rename" and a quiet "Keep" text link (no
+// fill, no ring, underlined on hover and keyboard focus). Each button is a
+// 44px-tall target, so the banner is one 44px row; the label and the name
+// shrink, the buttons never do. flex-wrap is a floor for a very narrow screen:
+// when the name's box would fall under basis-40 the buttons take a second row,
+// never the page's width (e2e/tests/session-names.spec.ts measures 1280 and
+// 390 wide).
+//
+// Both are forms, so they work without script (a POST answered with a 303
+// back). With htmx they post with hx-swap="none" and the answer is out of
+// band: the banner is deleted, the status region says what happened, and — on
+// a Rename — every place the page names the session is redrawn with the new
+// name (RenderAgentDriftRenamed, RenderMirrorDriftRenamed). Nothing else on the
+// page is touched: no reload, so the composer's draft, the stream and the
+// scroll position stay as they were.
 func driftBanner(d *SessionDrift) g.Node {
 	if d == nil || d.Offer == "" {
 		return nil
@@ -244,23 +281,101 @@ func driftBanner(d *SessionDrift) g.Node {
 		}
 		return g.Group(nodes)
 	}
-	return Div(
-		ID("session-drift"),
-		g.Attr("data-session-drift", d.Offer),
-		hx("hx-boost", "false"),
-		Class("flex flex-col items-start gap-1 border-b border-line bg-s1 px-3 py-2 text-xs text-fg2"),
-		P(Class("max-w-full break-words"), g.Text("This session has moved on to “"+d.Offer+"”.")),
-		Form(Method("post"), Action(d.RenameAction), hx("hx-post", d.RenameAction), hx("hx-swap", "none"), Class("max-w-full"),
-			hidden([2]string{"name", d.Offer}),
-			Button(Type("submit"), g.Attr("data-session-drift-accept", ""),
-				Class("press inline-flex min-h-[44px] max-w-full items-center rounded-lg bg-accent px-3 py-1 text-left text-xs font-semibold break-words text-on-accent transition hover:bg-accent/90"),
-				g.Text("Rename to “"+d.Offer+"”"))),
-		Form(Method("post"), Action(SessionDriftDismissPath), hx("hx-post", SessionDriftDismissPath), hx("hx-swap", "none"), Class("max-w-full"),
-			hidden([2]string{"title", d.Offer}),
-			Button(Type("submit"), g.Attr("data-session-drift-dismiss", ""),
-				Class("inline-flex min-h-[44px] min-w-[44px] items-center px-1 text-xs font-semibold text-fg2 underline-offset-2 hover:text-fg hover:underline focus-visible:underline"),
-				g.Text("Keep the name"))),
-	)
+	return g.Group{
+		Div(
+			ID(SessionDriftID),
+			g.Attr("data-session-drift", d.Offer),
+			g.Attr("role", "region"),
+			g.Attr("aria-label", "Rename suggestion"),
+			hx("hx-boost", "false"),
+			Class("flex flex-wrap items-center gap-x-2 border-b border-line bg-s1 px-3 text-xs text-fg2"),
+			P(Class("flex min-w-0 flex-1 basis-40 items-center gap-1.5"),
+				Span(Class("shrink-0 cursor-help text-muted"), g.Attr("title", driftExplain), g.Text("Suggested name")),
+				Span(g.Attr("data-session-drift-offer", ""), Class("min-w-0 truncate font-semibold text-fg"), g.Attr("title", d.Offer), g.Text(d.Offer)),
+			),
+			Div(Class("ml-auto flex shrink-0 items-center"),
+				Form(Method("post"), Action(d.RenameAction), hx("hx-post", d.RenameAction), hx("hx-swap", "none"),
+					hx("hx-vals", `{"`+SessionDriftParam+`":"1"}`), hx("hx-disabled-elt", "find button"),
+					hidden([2]string{"name", d.Offer}),
+					Button(Type("submit"), g.Attr("data-session-drift-accept", ""), g.Attr("aria-label", "Rename to “"+d.Offer+"”"),
+						Class("press group inline-flex h-11 items-center rounded-md px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60"),
+						Span(Class("rounded-md bg-accent px-2.5 py-1 font-semibold text-on-accent transition group-hover:bg-accent/90"), g.Text("Rename")))),
+				Form(Method("post"), Action(SessionDriftDismissPath), hx("hx-post", SessionDriftDismissPath), hx("hx-swap", "none"),
+					hx("hx-disabled-elt", "find button"),
+					hidden([2]string{"title", d.Offer}),
+					Button(Type("submit"), g.Attr("data-session-drift-dismiss", ""), g.Attr("aria-label", "Keep the current name"),
+						Class("inline-flex h-11 min-w-[44px] items-center justify-center rounded-md px-2 font-semibold text-fg2 underline-offset-2 hover:text-fg hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60"),
+						g.Text("Keep"))),
+			),
+		),
+		P(ID(SessionDriftStatusID), g.Attr("role", "status"), g.Attr("aria-live", "polite"), Class("sr-only")),
+	}
+}
+
+// driftAnswered is what every in-place answer to the offer carries, out of
+// band: the banner deleted, and status in the live region beside it.
+func driftAnswered(status string) g.Node {
+	return g.Group{
+		Div(ID(SessionDriftID), hx("hx-swap-oob", "delete")),
+		P(ID(SessionDriftStatusID), hx("hx-swap-oob", "innerHTML"), g.Text(status)),
+	}
+}
+
+// RenderDriftKept is "Keep"'s answer for htmx: the banner goes, the live
+// region says so. The page's name is unchanged, so nothing else is drawn.
+func RenderDriftKept(w io.Writer) error { return driftAnswered("Kept the name.").Render(w) }
+
+// switcherRenamed is the switcher's part of an in-place rename: its rows and
+// counts (each pill names the session) and its ⋯ menu's rename dialog, whose
+// prefill is the name. Nothing without a switcher.
+func switcherRenamed(s *Switcher) g.Node {
+	if s == nil {
+		return nil
+	}
+	out := g.Group{switcherRefresh(s)}
+	if s.pin != nil {
+		d := switcherRenameFields(s.pin)
+		d.oob = true
+		out = append(out, renamePopover(d))
+	}
+	return out
+}
+
+// RenderAgentDriftRenamed is the offer's Rename answered in place on an
+// agent's page, v the page's view with its NEW name (v.SessionName): out of
+// band, the banner gone (driftAnswered), the header's title (agentTitle), the
+// agent menu's rename dialog (v.Card) and the switcher (v.Switcher); in band,
+// the document's <title> (htmx sets it from the answer). The same helpers the
+// page is drawn with, so the in-place name cannot differ from a reload's.
+func RenderAgentDriftRenamed(w io.Writer, v AgentDetailView) error {
+	out := g.Group{
+		driftAnswered("Renamed to “" + sessionTitle(v.SessionName, v.DisplayName, v.Name) + "”."),
+		agentTitle(v, hx("hx-swap-oob", "outerHTML")),
+		TitleEl(g.Text(agentDocTitle(v))),
+	}
+	if v.Card.ID != 0 {
+		d := agentRenameFields(v.Card)
+		d.oob = true
+		out = append(out, renamePopover(d))
+	}
+	return append(out, switcherRenamed(v.Switcher)).Render(w)
+}
+
+// RenderMirrorDriftRenamed is the offer's Rename answered in place on a
+// window's Rendered view, v the page's view with its NEW name: out of band,
+// the banner gone, the header's name (MirrorNameID) and its full-title
+// popover, and the switcher; in band, the document's <title>.
+func RenderMirrorDriftRenamed(w io.Writer, v MirrorViewView) error {
+	out := g.Group{
+		driftAnswered("Renamed to “" + mirrorViewName(v) + "”."),
+		// Only a human name is drawn by the span MirrorNameID names (a
+		// rename always gives one).
+		g.If(v.SessionName.Human(), sessionNameTitle(v.SessionName, "", ID(MirrorNameID), hx("hx-swap-oob", "outerHTML"))),
+		fullTitlePopover(mirrorTitlePopoverID, mirrorViewHeading(v), hx("hx-swap-oob", "outerHTML")),
+		TitleEl(g.Text(mirrorViewDocTitle(v))),
+		switcherRenamed(v.Switcher),
+	}
+	return out.Render(w)
 }
 
 // rawManual is raw — a manual name as typed — when n is a manual name, ""
