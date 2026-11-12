@@ -56,7 +56,7 @@ const adminPW = 'e2e-admin-password-not-a-real-one';
 const noUV = 'did not verify you';
 // The sign-in page's words (internal/api: PasskeyNotUsedNote, PasskeyUnknownRefusal).
 const notUsed = 'No passkey was used. You can try again, use a passkey from your phone, or sign in with your password. ' +
-  'If a password manager opened its own window, its “use another device” option hands over to the browser.';
+  'If a password manager opened instead, choose its option to use your browser, a phone or a security key.';
 const unknownCred = 'That passkey is no longer registered here. Sign in with your password, then add a new passkey under Account → Passkeys.';
 
 let server: Running | undefined;
@@ -231,14 +231,15 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   await expect(mp.locator('#passkey-signin-status')).toContainText(noUV);
   await expect(mp).toHaveURL(/\/login/);
   expect((await session(mctx)).at, 'no session for a no-UV assertion').toBeUndefined();
-  // After a failure the page re-arms: a new prefetch AND a new autofill
-  // request, both through the route. A reload while a handler is mid-fetch
-  // cancels its request, and the handler's fulfill then throws "Route is
-  // already handled". So wait for the new autofill request to be pending (its
-  // options were answered) and for every handler to finish, then unroute.
+  // The refused verify spent the challenge, so the page re-arms with a new
+  // prefetch through the route, which the restarted autofill request waits
+  // on. A reload while a handler is mid-fetch cancels its request, and the
+  // handler's fulfill then throws "Route is already handled". So wait for the
+  // new autofill request to be pending (its options were answered) and for
+  // every handler to finish, then unroute.
   await expect.poll(() => rec.events.slice(beforeClick).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
     'the page re-armed autofill').toBe(true);
-  await expect.poll(() => handled - handledAtClick, 'the new prefetch and autofill options went through the route').toBeGreaterThanOrEqual(2);
+  await expect.poll(() => handled - handledAtClick, 'the new prefetch went through the route').toBeGreaterThanOrEqual(1);
   await expect.poll(() => inFlight, 'every options handler finished').toBe(0);
   await mp.unrouteAll({ behavior: 'wait' });
 
@@ -395,11 +396,30 @@ test('autofill signs in; a button or the password form aborts a pending autofill
 
   // 4. DISMISSED (the authenticator will not verify: NotAllowedError) — the
   //    neutral words, and still on the sign-in page.
+  //    🔴 THE EDGE BUDGET: the edge rate-limits /login and the passkey routes
+  //    together with the password POST, so one /login view plus one dismissed
+  //    sheet makes ONE options request. Autofill and the button share the
+  //    prefetched challenge (only one of them ever verifies it), and a sheet
+  //    dismissed before any verify leaves it unspent, so the re-armed
+  //    autofill reuses it.
+  let optionsRequests = 0;
+  const countOptions = (r: { method(): string; url(): string }) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/auth/passkey/options') optionsRequests++;
+  };
+  mp.on('request', countOptions);
+  from = rec.events.length;
   await signOut(mp);
+  await expect.poll(() => rec.events.slice(from).filter((e) => e.kind === 'get' && e.mediation === 'conditional').length,
+    'the view armed autofill').toBeGreaterThanOrEqual(1);
   await setUserVerified(mauth, false);
+  from = rec.events.length;
   await mp.locator('#passkey-signin').click();
   await expect(mp.locator('#passkey-signin-status')).toHaveText(notUsed);
   await expect(mp).toHaveURL(/\/login/);
+  await expect.poll(() => rec.events.slice(from).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the dismissal re-armed autofill').toBe(true);
+  mp.off('request', countOptions);
+  expect(optionsRequests, 'options requests for one /login view plus one dismissed sheet').toBe(1);
   await setUserVerified(mauth, true);
 
   // 5. A PASSKEY THE ACCOUNT NO LONGER HAS: the admin removes the member's

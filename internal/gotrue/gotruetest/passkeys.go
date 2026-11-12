@@ -68,6 +68,14 @@ func (f *Fake) NewChallenge(registrationFor string) string {
 	return id
 }
 
+// FailAdminUserGet makes the next n GET /admin/users/{id} calls (the user's
+// app_metadata, AdminAppMetadata) answer 500.
+func (f *Fake) FailAdminUserGet(n int) {
+	f.mu.Lock()
+	f.adminUserGetFailures = n
+	f.mu.Unlock()
+}
+
 // FailAdminPasskeys makes the next n admin passkey calls answer 500 — a
 // GoTrue outage in the middle of a list-then-delete.
 func (f *Fake) FailAdminPasskeys(n int) {

@@ -119,7 +119,7 @@ func TestTheSignInPageOffersAutofillAndThePhoneButton(t *testing.T) {
 // anything), and the copy is pinned whole.
 func TestTheSignInPageWordsANoPasskeyOutcomeNeutrally(t *testing.T) {
 	const notUsed = "No passkey was used. You can try again, use a passkey from your phone, or sign in with your password. " +
-		"If a password manager opened its own window, its “use another device” option hands over to the browser."
+		"If a password manager opened instead, choose its option to use your browser, a phone or a security key."
 	const failedHere = "This device could not use a passkey. Try again, or sign in with your password."
 	if PasskeyNotUsedNote != notUsed || PasskeyDeviceFailedNote != failedHere {
 		t.Fatalf("the copy:\n%q\n%q", PasskeyNotUsedNote, PasskeyDeviceFailedNote)
@@ -301,6 +301,35 @@ func TestAnUnknownCredentialIsFlaggedOnlyWhenProvablyUnknown(t *testing.T) {
 	if _, flagged := body["credential_unknown"]; flagged || body["error"] == PasskeyUnknownRefusal || res.StatusCode == http.StatusOK {
 		t.Errorf("a refusal that is not a verification failure: %d %v", res.StatusCode, body)
 	}
+	// When GoTrue cannot answer, nothing is shown: an admin passkey list that
+	// fails (500), or app_metadata (the recorded ids) that cannot be read, is
+	// a plain refusal — never "unknown". recSub would be "unknown" if both
+	// answered (every passkey recorded, none "gone-7").
+	for _, c := range []struct {
+		name string
+		fail func()
+	}{
+		{"the admin passkey list fails", func() { w.fake.FailAdminPasskeys(1) }},
+		{"the recorded ids cannot be read", func() { w.fake.FailAdminUserGet(1) }},
+	} {
+		c.fail()
+		res := signIn("gone-7", recSub)
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		if _, flagged := body["credential_unknown"]; flagged || res.StatusCode != http.StatusUnauthorized || body["error"] != PasskeyRejectedRefusal {
+			t.Errorf("%s: %d %v; want a plain refusal", c.name, res.StatusCode, body)
+		}
+	}
+	// CONTROL: with both answering, the same sign-in IS "unknown".
+	if res := signIn("gone-7", recSub); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: %d", res.StatusCode)
+	} else {
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		if body["credential_unknown"] != true {
+			t.Fatalf("CONTROL: the same sign-in with GoTrue answering: %v", body)
+		}
+	}
 	// CONTROL: the recorded passkey itself still signs in.
 	if res := signIn("rec-1", recSub); res.StatusCode != http.StatusOK {
 		t.Fatalf("CONTROL: the recorded passkey: %d", res.StatusCode)
@@ -324,6 +353,24 @@ func TestASignInRecordsTheIdOfTheOnlyUnrecordedPasskey(t *testing.T) {
 	}
 	if got := w.recordedCredIDs(sub)[old]; got != b64url("old-key") {
 		t.Fatalf("the only unrecorded passkey after its sign-in: %q (all %v)", got, w.recordedCredIDs(sub))
+	}
+	// A RECORDED passkey signing in is never recorded again, onto another: with
+	// A recorded and a legacy B unrecorded, a sign-in with A leaves B
+	// unrecorded (the set stays withheld) — B never gets A's id, which would
+	// make the accepted set [A, A] and drop B from the password manager.
+	_, sub3, at3, rt3 := w.joinMember("pk-backfill3@invite.test")
+	if rec := w.addPasskey("a-key", gotruetest.FlagUPUV, withCookies(at3, rt3)); rec.Code != 200 {
+		t.Fatalf("add: %d", rec.Code)
+	}
+	legacy := w.fake.AddPasskey(sub3, "b-key")
+	if rec := w.passkeySignIn("a-key", gotruetest.FlagUPUV); rec.Code != 200 {
+		t.Fatalf("sign in with the recorded one: %d %s", rec.Code, rec.Body)
+	}
+	if got := w.recordedCredIDs(sub3)[legacy]; got != "" {
+		t.Fatalf("the legacy passkey after a sign-in with the recorded one got id %q (all %v)", got, w.recordedCredIDs(sub3))
+	}
+	if d, ok := pageSignal(t, do(w.edge, "GET", accountPasskeysPath, nil, withCookies(at3, rt3)).Body.String()); !ok || d.IDs != nil {
+		t.Fatalf("the signal with one unrecorded passkey: %+v (ok %v); want the set withheld", d, ok)
 	}
 	_, sub2, _, _ := w.joinMember("pk-backfill2@invite.test")
 	w.fake.AddPasskey(sub2, "two-a")

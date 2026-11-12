@@ -101,13 +101,20 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
     form aborts that request before the form posts.
   - **Sign in with a passkey.** The button first aborts the pending autofill
     request (a page can run one WebAuthn request at a time). That abort shows
-    nothing. Each request uses a challenge of its own, and a new one is
-    fetched when a request ends.
+    nothing. Autofill and the buttons share the page's one prefetched
+    challenge: a challenge is spent only by a verify, and only one request
+    ever verifies it. A new one is fetched only after a verify has spent it,
+    or when it is four minutes old. A closed passkey sheet keeps it, so a
+    sign-in page view makes one options request, however many sheets are
+    closed. This matters at the public edge, which rate-limits `/login` and
+    the passkey routes together with the password sign-in.
   - **Use a passkey from my phone.** The same request with the WebAuthn
     Level 3 hint `hybrid` (Chrome 128 and later), which goes straight to the
     phone's QR code. A password-manager extension that intercepts the request
-    may ignore the hint and show its own window. That window's "use another
-    device" option hands over to the browser's.
+    may ignore the hint and show its own window. The page then tells the
+    person to pick that window's option for the browser, a phone or a
+    security key. Password managers label that option differently, so the
+    page names no label.
 - When no passkey was used (the sheet was closed, the device has none for
   this site, or it timed out) the page says "No passkey was used" and lists
   the other ways in. It does not say "cancelled", because the browser does
@@ -146,6 +153,16 @@ one. 🔴 Until every passkey of an account has a known id,
 `signalAllAcceptedCredentials` is not sent for that account: a partial list
 would tell the password manager to drop a passkey that still works. The RP ID
 is read from the options GoTrue hands out.
+
+⚠ **An account with two or more passkeys added before muster recorded ids
+never gets the passkey-list signals.** A sign-in cannot tell which of two
+id-less passkeys was used, so it records nothing. Such an account then gets
+neither `signalAllAcceptedCredentials` nor `signalUnknownCredential`;
+`signalCurrentUserDetails` is still sent. To fix it, the person opens
+**Account → Passkeys**, adds a new passkey on each device (a new one records
+its id), then removes the old ones, leaving at most one without an id. An
+admin can also remove all of a user's passkeys (**Admin → Users → Remove
+passkeys**) and have the person add them again.
 
 ### Passkeys in the Android app
 
