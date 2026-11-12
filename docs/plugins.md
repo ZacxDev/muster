@@ -197,6 +197,16 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   before the mint, a popup blocker refuses at the tap: the panel says the tab
   was blocked and no code is minted. If the mint is refused, the blank tab is
   closed and the panel says why. An expired sign-in says to sign in again.
+- **In the Android app, New tab is Full screen.** The app sends every
+  origin but muster's to the system browser, so a new tab would leave the
+  app. Where the app's bridge object (`window.musterApp`, read in the main
+  frame) exists, the same header control reads **Full screen**: the same frame,
+  not reloaded and with no new mint, fills the screen at every width, the
+  header hidden, with an **Exit** button over its top right corner. Exit,
+  Escape and the app's Back leave full screen (Back through the
+  `back-claim` bridge message the panel posts while full screen, and
+  `window.musterBack`); Close or a second Escape closes the panel. In a
+  browser New tab is unchanged.
 - **The panel's frame:**
 
   ```html

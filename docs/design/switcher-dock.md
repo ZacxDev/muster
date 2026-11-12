@@ -779,6 +779,14 @@ small PR in that repo, **in the plan and shipped alongside Phase 1**
    boolean, anything else is refused. The existing main-frame and origin checks
    apply unchanged, which is why the dock always opens in the top document
    ([The view-swap frame](#the-view-swap-frame)).
+   **A second claimer: the Preview panel's full screen** (in the app, the
+   panel's New tab control is Full screen; `internal/ui/plugin_chip.go`). It
+   posts the same pair, through the MAIN frame's bridge also when the panel
+   is in the view-swap frame, and wraps the main frame's `musterBack` so a
+   press leaves full screen first and otherwise reaches the dock as before.
+   The shell holds one boolean, so the two share it: everything behind a
+   full-screen panel is inert, so the dock cannot be opened over it by a tap
+   and the pair cannot interleave that way.
 2. **The state.** `ShellBack` gains `claimed: Boolean`, and
    `isEnabled = claimed || canGoBack()`. So a dock open on the first page of
    history, where `canGoBack()` is false, still gets the press.
