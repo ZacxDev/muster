@@ -229,15 +229,18 @@ func agentDeleteConfirm(ids string) g.Node {
 
 // agentRenamePopover is the rename form, in a popover the menu's Rename opens
 // (renamePopover, the one rename dialog): a name input posting to
-// POST /agents/{id}/name, whose answer reloads the page (HX-Refresh), so the
-// header, the tab's title and the sidebar all read the new name. A name typed
+// POST /agents/{id}/name, whose answer renames the page in place (Renamed), so
+// the header, the tab's title and the sidebar all read the new name. A name typed
 // here is the agent's MANUAL name (agents.NameManual), which nothing automatic
 // replaces; an empty one hands the agent back to its automatic name.
 //
 // It is prefilled with what the agent is called now: its display name as
 // written when that is the person's own, else its resolved name when it is a
 // human one (an auto or task name) — never the slug, which is its placeholder.
-func agentRenamePopover(a AgentCardView) g.Node {
+func agentRenamePopover(a AgentCardView) g.Node { return renamePopover(agentRenameFields(a)) }
+
+// agentRenameFields is agentRenamePopover's content.
+func agentRenameFields(a AgentCardView) renameDialog {
 	ids := strconv.FormatInt(a.ID, 10)
 	current := ""
 	switch {
@@ -246,8 +249,8 @@ func agentRenamePopover(a AgentCardView) g.Node {
 	case a.SessionName.Human():
 		current = a.SessionName.Text
 	}
-	return renamePopover(renameDialog{id: AgentRenameID, action: "/agents/" + ids + "/name", heading: "Rename agent",
-		current: current, placeholder: a.Name, note: "slug: " + a.Name + " (fixed). Leave it empty to let muster name it."})
+	return renameDialog{id: AgentRenameID, action: "/agents/" + ids + "/name", heading: "Rename agent",
+		current: current, placeholder: a.Name, note: "slug: " + a.Name + " (fixed). Leave it empty to let muster name it."}
 }
 
 // agentNoticesBody is what the notices above the transcript hold: a failed

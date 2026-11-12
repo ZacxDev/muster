@@ -61,6 +61,8 @@ var noStoreLiterals = map[string]string{
 	"handleDeviceWeb":           "the Android shell's sign-in origins, re-read on every shell open",
 	"handleDeviceChallenge":     "a signed action's one-time nonce",
 	"handleDoctor":              "`muster doctor`'s report: live state (which hosts are connected now)",
+	"handleDriftDismiss":        "the drift offer's Keep answered in place: an action's answer, never to be replayed",
+	"answerRenamed":             "an htmx rename answered in place: the name as it is now",
 	"handleDispatchCard":        "a started agent's card: its live state",
 	"handleMirrorHost":          "a machine's own connection state, live",
 	"handleDevicePair":          "a pairing, with its one-time secret",

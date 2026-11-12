@@ -100,6 +100,14 @@ func viewFrameScript() g.Node {
     tell(window, 'hidden');
     tell(f.contentWindow, 'shown');
   }
+  // followTitle: the top window's tab reads the frame's title while the frame
+  // is on screen — after the frame's load (above), and after a rename it made
+  // in place (titled, below) — and, while the page's own view is, the own
+  // view's kept title is the tab's (so home() restores the renamed one).
+  function followTitle(f) {
+    if (!f.style.visibility) { try { document.title = f.contentDocument.title; } catch (e) {} }
+    else f.setAttribute('data-own-title', document.title);
+  }
   // home shows the page's own view again: the frame stays, hidden and live.
   function home(f) {
     f.style.visibility = 'hidden';
@@ -169,7 +177,7 @@ func viewFrameScript() g.Node {
       // address and title follow it.
       if (!f.style.visibility) {
         history.replaceState(history.state, '', where);
-        try { document.title = f.contentDocument.title; } catch (e) {}
+        followTitle(f);
       }
     });
     f.src = href;
@@ -179,6 +187,9 @@ func viewFrameScript() g.Node {
   // The top window's API, which a framed view calls.
   window.musterViews = {
     show: show,
+    // titled: a view's title changed in place (a rename, session_name.go's
+    // renameScript, from this window or its frame): the tab follows it.
+    titled: function () { var f = frame(); if (f) followTitle(f); },
     // showOwn: whether href is the page's own view — a link there from the frame
     // shows it instead of loading it again.
     // The own view's address may carry more than a link to it does (an agent

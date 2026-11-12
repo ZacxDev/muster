@@ -282,20 +282,6 @@ const AgentSendFromTerminal = "terminal"
 // size and says so in-band; the page renders that size inside #term-scroll,
 // which scrolls both ways and can be pinch-zoomed, and offers "Fit width".
 func AgentTerminalPage(v AgentTerminalView) g.Node {
-	// The page's name as a reader sees it (textplain): its <title>, its header.
-	// 🔴 PLAINED EXACTLY ONCE PER SINK. mirrorTerminalTitle (→ mirrorEntryTitle)
-	// applies the rule itself, so it takes the RAW name; handing it `title` ran
-	// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
-	// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
-	raw := displayOr(v.DisplayName, v.Name)
-	title := plainOr(v.DisplayName, v.Name)
-	// A session with a HUMAN name (internal/sessionname) is titled by it,
-	// already plained, with no qualifier or raw tmux name beside it: those
-	// are its technical id, the title's tooltip.
-	named := v.SessionName.Human()
-	if named {
-		title = v.SessionName.Text
-	}
 	back := v.BackHref
 	if back == "" {
 		back = AgentSessionHref(v.Name, 0)
@@ -308,7 +294,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				docHead(v.Nav.Feat.Brand),
-				TitleEl(g.Text("Terminal · "+terminalDocName(title, v.TitleQualifier, named)+" · muster")),
+				TitleEl(g.Text(terminalDocTitle(v))),
 				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
@@ -344,13 +330,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						// The title, then the viewer's tags on the session
 						// (sessionTagsHead), on one line.
 						Div(Class("flex min-w-0 items-center gap-1.5"),
-							H1(Class("min-w-0 flex-1 truncate text-sm font-semibold"),
-								g.If(named, sessionNameTitle(v.SessionName, "")),
-								g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
-								// A mirrored entry: its label (the raw session name its
-								// tooltip), and/or its qualifier — drawn like its card.
-								g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
-								g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
+							terminalTitle(v),
 							sessionTagsHeadNode(v.TagTarget, v.Tags)),
 						// The status line; below `sm` the Preview button is at its
 						// end (plugin_chip.go), so the title keeps its width.
@@ -1435,6 +1415,56 @@ func agentTerminalScript() g.Node {
 // terminalDocName is the terminal page's name in its <title>: a human name as
 // it is (no qualifier: that is its technical id), else the name with its
 // qualifier.
+// terminalNames is a Terminal page's name as a reader sees it (textplain):
+// raw, the name as written (for mirrorTerminalTitle); title, as its <title>
+// and header draw it; named, whether it is a human name.
+//
+// 🔴 PLAINED EXACTLY ONCE PER SINK. mirrorTerminalTitle (→ mirrorEntryTitle)
+// applies the rule itself, so it takes the RAW name; handing it `title` ran
+// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
+// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
+//
+// A session with a HUMAN name (internal/sessionname) is titled by it, already
+// plained, with no qualifier or raw tmux name beside it: those are its
+// technical id, the title's tooltip.
+func terminalNames(v AgentTerminalView) (raw, title string, named bool) {
+	raw = displayOr(v.DisplayName, v.Name)
+	title = plainOr(v.DisplayName, v.Name)
+	named = v.SessionName.Human()
+	if named {
+		title = v.SessionName.Text
+	}
+	return raw, title, named
+}
+
+// terminalDocTitle is a Terminal page's <title>: "Terminal · <name> · muster".
+// The page and a rename's in-place answer (TerminalRenamed) both draw it.
+func terminalDocTitle(v AgentTerminalView) string {
+	_, title, named := terminalNames(v)
+	return "Terminal · " + terminalDocName(title, v.TitleQualifier, named) + " · muster"
+}
+
+// TermTitleID is a Terminal page's header title (terminalTitle): what a
+// rename's in-place answer swaps, and focuses (by script only: tabindex -1).
+const TermTitleID = "term-title"
+
+// terminalTitle is a Terminal page's header title: a human name, else the
+// entry's label and qualifier as its card draws them, else the name; then the
+// mirrored badge. extra is a rename's in-place answer's hx-swap-oob
+// (TerminalRenamed): the whole heading is swapped, so a name given or cleared
+// draws as a reload would.
+func terminalTitle(v AgentTerminalView, extra ...g.Node) g.Node {
+	raw, title, named := terminalNames(v)
+	return H1(ID(TermTitleID), g.Group(extra), g.Attr("tabindex", "-1"),
+		Class("min-w-0 flex-1 truncate text-sm font-semibold focus:outline-none"),
+		g.If(named, sessionNameTitle(v.SessionName, "")),
+		g.If(!named && v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
+		// A mirrored entry: its label (the raw session name its tooltip),
+		// and/or its qualifier — drawn like its card.
+		g.If(!named && (v.RawName != "" || v.TitleQualifier != ""), mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
+		g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon))))
+}
+
 func terminalDocName(title, qualifier string, named bool) string {
 	if named {
 		return title
