@@ -31,6 +31,7 @@ DELETE /agent/approvals/{id}
 DELETE /agents/{id}
 DELETE /api/device
 DELETE /api/device/push
+DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}

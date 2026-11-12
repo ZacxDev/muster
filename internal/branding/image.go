@@ -145,36 +145,11 @@ var processMu sync.Mutex
 // one guards: size, signature, header (DecodeConfig), sides, pixel count,
 // decode, re-encode.
 func Process(data []byte) (Images, error) {
-	if len(data) == 0 {
-		return Images{}, ErrEmpty
-	}
-	if len(data) > MaxUploadBytes {
-		return Images{}, ErrTooLarge
-	}
-	f, err := sniff(data)
+	rgba, unlock, err := accept(data)
 	if err != nil {
 		return Images{}, err
 	}
-	cfg, err := decodeConfig(f, data)
-	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return Images{}, ErrCorrupt
-	}
-	if cfg.Width > MaxSide || cfg.Height > MaxSide {
-		return Images{}, ErrDimensions
-	}
-	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
-		return Images{}, ErrPixels
-	}
-
-	processMu.Lock()
-	defer processMu.Unlock()
-	rgba, err := decodeRGBA(f, data, cfg)
-	if err != nil {
-		return Images{}, err
-	}
-	// The decoder's image and state are unreachable now; return their memory
-	// before the scaler asks for its own (processMu's comment has the figures).
-	debug.FreeOSMemory()
+	defer unlock()
 	logo := fit(rgba, LogoMaxSide)
 	var out Images
 	if out.Logo, err = encodePNG(logo); err != nil {
@@ -183,14 +158,84 @@ func Process(data []byte) (Images, error) {
 	// The icons are scaled from the logo, not from rgba: for an upload within
 	// LogoMaxSide they are the same image, and for a larger one the scaler's
 	// scratch buffer is sized by the logo's height, not the upload's.
-	if out.Icon192, err = encodePNG(square(logo, Icon192)); err != nil {
-		return Images{}, err
-	}
-	if out.Icon512, err = encodePNG(square(logo, Icon512)); err != nil {
+	if out.Icon192, out.Icon512, err = icons(logo); err != nil {
 		return Images{}, err
 	}
 	out.ETag = ETagOf(out.Logo, out.Icon192, out.Icon512)
 	return out, nil
+}
+
+// AppIcon is an accepted app-icon upload as muster stores it: the two square
+// icons drawn from it, in place of the ones drawn from the logo. Nothing else
+// of it is kept.
+type AppIcon struct {
+	Icon192 []byte
+	Icon512 []byte
+}
+
+// ProcessIcon is Process for an app icon: the same checks in the same order
+// (the same errors), the same decode onto a fresh canvas, and the same square
+// icons — scaled to fit and centred on a transparent background, nothing
+// cropped — drawn from the upload (scaled to LogoMaxSide first, as the logo
+// is) instead of from the logo.
+func ProcessIcon(data []byte) (AppIcon, error) {
+	rgba, unlock, err := accept(data)
+	if err != nil {
+		return AppIcon{}, err
+	}
+	defer unlock()
+	var out AppIcon
+	if out.Icon192, out.Icon512, err = icons(fit(rgba, LogoMaxSide)); err != nil {
+		return AppIcon{}, err
+	}
+	return out, nil
+}
+
+// accept runs every check before the decode, in order and without the lock
+// (a refusal waits for no other upload), then takes processMu and decodes
+// data onto a fresh canvas. On success the caller holds processMu until it
+// calls unlock, so its scaling is inside the one-at-a-time bound too.
+func accept(data []byte) (rgba *image.RGBA, unlock func(), err error) {
+	if len(data) == 0 {
+		return nil, nil, ErrEmpty
+	}
+	if len(data) > MaxUploadBytes {
+		return nil, nil, ErrTooLarge
+	}
+	f, err := sniff(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg, err := decodeConfig(f, data)
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, nil, ErrCorrupt
+	}
+	if cfg.Width > MaxSide || cfg.Height > MaxSide {
+		return nil, nil, ErrDimensions
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
+		return nil, nil, ErrPixels
+	}
+	processMu.Lock()
+	if rgba, err = decodeRGBA(f, data, cfg); err != nil {
+		processMu.Unlock()
+		return nil, nil, err
+	}
+	// The decoder's image and state are unreachable now; return their memory
+	// before the scaler asks for its own (processMu's comment has the figures).
+	debug.FreeOSMemory()
+	return rgba, processMu.Unlock, nil
+}
+
+// icons is the two square icons drawn from src.
+func icons(src *image.RGBA) (i192, i512 []byte, err error) {
+	if i192, err = encodePNG(square(src, Icon192)); err != nil {
+		return nil, nil, err
+	}
+	if i512, err = encodePNG(square(src, Icon512)); err != nil {
+		return nil, nil, err
+	}
+	return i192, i512, nil
 }
 
 // decodeRGBA decodes data and copies its pixels onto a fresh RGBA canvas,

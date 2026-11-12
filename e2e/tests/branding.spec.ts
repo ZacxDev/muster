@@ -15,7 +15,8 @@ import {
 // browser against a real muster-server.
 //
 // 1. The ADMIN (password mode: the operator, user 1) uploads a logo and a name
-//    on Account → Instance branding. The header draws the logo (and it LOADS:
+//    on Account → Instance branding (then marks the logo as showing the name,
+//    and gives the server an app icon of its own, and removes it). The header draws the logo (and it LOADS:
 //    naturalWidth > 0) and the name; the shell's favicon and the manifest's
 //    icons are the logo's; the sign-in page, opened with no session, draws the
 //    logo and name; GET /api/instance names both. An SVG upload is refused
@@ -84,6 +85,46 @@ function makePNG(w: number, h: number): Buffer {
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }
+
+// A w×h PNG of one opaque colour (an app icon fixture distinct from the
+// gradient logo).
+function makeSolidPNG(w: number, h: number, [r, g, b]: [number, number, number]): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const raw = Buffer.alloc(h * (1 + 4 * w));
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * (1 + 4 * w) + 1 + 4 * x;
+      raw[p] = r;
+      raw[p + 1] = g;
+      raw[p + 2] = b;
+      raw[p + 3] = 255;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+// pixel: the [r, g, b, a] the browser decodes at (x, y) of the image at url.
+const pixel = (page: Page, url: string, x: number, y: number) =>
+  page.evaluate(async ([u, px, py]) => {
+    const img = new Image();
+    img.src = u as string;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    return Array.from(ctx.getImageData(px as number, py as number, 1, 1).data);
+  }, [url, x, y] as const);
 
 // loaded: the <img> really decoded an image (not a broken-image box).
 const loaded = (page: Page, sel: string) =>
@@ -172,6 +213,56 @@ test.describe('the admin', () => {
     await expect(lp.locator('[data-testid="login-brand"] [data-brand-name]')).toHaveText('Team Example');
     expect(await loaded(lp, '[data-testid="login-brand"] [data-brand-logo]')).toBe(true);
     await anon.close();
+
+    // The logo already shows the name: tick the box, and the header, the
+    // sidebar and the sign-in page draw the logo ALONE, its alt the name;
+    // GET /api/instance still names the server.
+    await page.goto(origin + '/account');
+    await expect(page.locator('#branding-logo-shows-name')).not.toBeChecked();
+    await page.check('#branding-logo-shows-name');
+    await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    await expect(page.locator('#branding-logo-shows-name')).toBeChecked();
+    await page.goto(origin + '/tasks');
+    await expect(page.locator('header [data-brand-logo]').first()).toHaveAttribute('alt', 'Team Example');
+    await expect(page.locator('#sidebar [data-brand-logo]')).toHaveAttribute('alt', 'Team Example');
+    await expect(page.locator('[data-brand-name]')).toHaveCount(0);
+    expect((await (await page.request.get(origin + '/api/instance')).json()).name).toBe('Team Example');
+    const anon2 = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const lp2 = await anon2.newPage();
+    await lp2.goto(origin + '/login');
+    await expect(lp2.locator('[data-testid="login-brand"] [data-brand-logo]')).toHaveAttribute('alt', 'Team Example');
+    await expect(lp2.locator('[data-testid="login-brand"] [data-brand-name]')).toHaveCount(0);
+    await anon2.close();
+    // Untick it: the name is drawn beside the logo again, and the logo's alt is empty.
+    await page.goto(origin + '/account');
+    await page.uncheck('#branding-logo-shows-name');
+    await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    await page.goto(origin + '/tasks');
+    await expect(page.locator('header [data-brand-name]').first()).toHaveText('Team Example');
+    await expect(page.locator('header [data-brand-logo]').first()).toHaveAttribute('alt', '');
+
+    // An app icon of its own: a solid green square. The icons become IT (green
+    // at the corner, where the wide logo's icon is transparent), the ETag rolls
+    // and the favicon follows; removing it brings the logo's icons back.
+    const green: [number, number, number] = [20, 200, 60];
+    await page.goto(origin + '/account');
+    await page.setInputFiles('#branding-app-icon', { name: 'icon.png', mimeType: 'image/png', buffer: makeSolidPNG(512, 512, green) });
+    await Promise.all([page.waitForURL(origin + '/account?branding=saved#branding'), page.click('#branding-save')]);
+    const withIcon = await (await page.request.get(origin + '/api/instance')).json();
+    const iconEtag: string = withIcon.logo.etag;
+    expect(iconEtag).not.toBe(etag);
+    expect(withIcon.logo.icon192).toBe('/brand/icon-192.png?v=' + iconEtag);
+    await page.goto(origin + '/tasks');
+    expect(await iconHref(page)).toBe('/brand/icon-192.png?v=' + iconEtag);
+    const corner = await pixel(page, '/brand/icon-192.png?v=' + iconEtag, 0, 0);
+    expect(corner[3]).toBe(255);
+    expect(Math.abs(corner[0] - green[0]) + Math.abs(corner[1] - green[1]) + Math.abs(corner[2] - green[2])).toBeLessThan(12);
+    await page.goto(origin + '/account');
+    await Promise.all([page.waitForURL(origin + '/account?branding=icon_removed#branding'), page.click('#branding-icon-remove')]);
+    await expect(section.getByText('App icon removed')).toBeVisible();
+    await expect(page.locator('#branding-icon-remove')).toHaveCount(0);
+    expect((await (await page.request.get(origin + '/api/instance')).json()).logo.etag).toBe(etag);
+    expect((await pixel(page, '/brand/icon-192.png?v=' + etag, 0, 0))[3]).toBe(0);
 
     // Reset the logo: the name stays, the icons go back to muster's.
     await page.goto(origin + '/account');

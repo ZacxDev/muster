@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -179,6 +180,60 @@ func TestProcessKeepsTheAspectInTheIcons(t *testing.T) {
 	}
 }
 
+// TestProcessIconDrawsTheIconsFromTheUpload: a solid blue 600×600 app icon
+// comes back as a 192×192 and a 512×512 PNG that are blue edge to edge (a
+// square fills the square), and a wide 60×20 one is letterboxed (transparent
+// above and below, blue across the middle row) — fit and centred, nothing
+// cropped, as the logo's icons are.
+func TestProcessIconDrawsTheIconsFromTheUpload(t *testing.T) {
+	blue := color.NRGBA{10, 40, 230, 255}
+	solid := func(w, h int) []byte {
+		img := image.NewNRGBA(image.Rect(0, 0, w, h))
+		draw.Draw(img, img.Bounds(), &image.Uniform{blue}, image.Point{}, draw.Src)
+		return pngOf(t, img)
+	}
+	isBlue := func(img image.Image, x, y int) bool {
+		c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+		return c.A == 255 && absDiff(c.R, blue.R) < 4 && absDiff(c.G, blue.G) < 4 && absDiff(c.B, blue.B) < 4
+	}
+	out, err := ProcessIcon(solid(600, 600))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		b    []byte
+		side int
+	}{{out.Icon192, Icon192}, {out.Icon512, Icon512}} {
+		img := decodePNG(t, c.b)
+		if b := img.Bounds(); b.Dx() != c.side || b.Dy() != c.side {
+			t.Fatalf("icon is %v, want %d×%d", b, c.side, c.side)
+		}
+		for _, p := range [][2]int{{0, 0}, {c.side / 2, c.side / 2}, {c.side - 1, c.side - 1}} {
+			if !isBlue(img, p[0], p[1]) {
+				t.Errorf("%d px icon at %v is %v, want the upload's blue", c.side, p, img.At(p[0], p[1]))
+			}
+		}
+	}
+	wide, err := ProcessIcon(solid(60, 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	icon := decodePNG(t, wide.Icon192)
+	if _, _, _, a := icon.At(96, 5).RGBA(); a != 0 {
+		t.Error("wide app icon: the band above is not transparent")
+	}
+	if !isBlue(icon, 1, 96) || !isBlue(icon, 190, 96) {
+		t.Error("wide app icon: the middle row is not blue edge to edge")
+	}
+}
+
+func absDiff(a, b uint8) uint8 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
 // TestProcessScalesALargeLogoDownOnly: a 2000×1000 upload is stored at
 // 1024×512 (LogoMaxSide on the longer side, aspect kept); a 40×20 one is not
 // scaled up (TestProcessAcceptsEachFormat).
@@ -257,13 +312,22 @@ func TestProcessRefusesEachBadUpload(t *testing.T) {
 		{"taller than 4096", headerOnlyPNG(10, 4097), ErrDimensions},
 		{"zero width", headerOnlyPNG(0, 10), ErrCorrupt},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, err := Process(c.data)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("Process = %v, want %s (%v)", err, c.want.Code, c.want)
-			}
-		})
+	// ProcessIcon (an app icon) runs the same checks, so the same table.
+	procs := map[string]func([]byte) error{
+		"Process":     func(d []byte) error { _, err := Process(d); return err },
+		"ProcessIcon": func(d []byte) error { _, err := ProcessIcon(d); return err },
+	}
+	for pname, proc := range procs {
+		for _, c := range cases {
+			t.Run(pname+"/"+c.name, func(t *testing.T) {
+				if err := proc(c.data); !errors.Is(err, c.want) {
+					t.Fatalf("%s = %v, want %s (%v)", pname, err, c.want.Code, c.want)
+				}
+			})
+		}
+		if err := proc(headerOnlyPNG(4096, 1025)); !errors.Is(err, ErrPixels) {
+			t.Errorf("%s: a pixel count over the cap within the side cap: %v, want ErrPixels", pname, err)
+		}
 	}
 	if len(big) <= MaxUploadBytes || len(big) > MaxUploadBytes+1024 {
 		t.Fatalf("control: the oversized fixture is %d bytes; want just over %d", len(big), MaxUploadBytes)

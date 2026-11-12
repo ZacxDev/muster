@@ -249,8 +249,9 @@ var isolationClasses = map[string]routeClass{
 	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
 	// Instance branding's writes (branding.go, requireAdminRole): an admin's
 	// session only, in either sign-in mode.
-	"PUT /api/instance/branding":         classAdminOnly,
-	"DELETE /api/instance/branding/logo": classAdminOnly,
+	"PUT /api/instance/branding":             classAdminOnly,
+	"DELETE /api/instance/branding/logo":     classAdminOnly,
+	"DELETE /api/instance/branding/app-icon": classAdminOnly,
 
 	"GET /{$}":                   classList,
 	"GET /agents":                classList,
