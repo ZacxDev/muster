@@ -59,11 +59,17 @@ func (f *flushingMem) All() []askattempt.Attempt {
 	return f.Mem.All()
 }
 
-// setAsk sets fields of am under its lock.
+// setAsk sets fields of am under BOTH of its locks: amu guards askMirror's own
+// fields, but f may also set the embedded fakeMirror's (statusReport, windows),
+// which fakeMirror.Hosts reads under fakeMirror.mu — from the server's
+// background ask watch, concurrently with the test. Holding only amu raced it.
+// Lock order: fakeMirror.mu, then amu (no fake method nests them the other way).
 func setAsk(am *askMirror, f func(a *askMirror)) {
+	am.fakeMirror.mu.Lock()
+	defer am.fakeMirror.mu.Unlock()
 	am.amu.Lock()
+	defer am.amu.Unlock()
 	f(am)
-	am.amu.Unlock()
 }
 
 // postAsk posts form to path as the operator (cookie "" is a fresh one).
