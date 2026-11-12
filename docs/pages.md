@@ -83,8 +83,12 @@ JSON up to 32 KiB (stored as `{"value": …}`). The built-in components use the
 same two calls. In your preview both answer `{preview: true}` and record
 nothing.
 
-The page has **no network**: `fetch`, images from elsewhere and fonts from
-elsewhere are refused by its policy. Put images inline as `data:` URIs.
+Inside the share page's frame the page has **no network**: `fetch`, images
+from elsewhere and fonts from elsewhere are refused by its policy. Put images
+inline as `data:` URIs. The policy cannot stop a top-level navigation, so the
+content is served only into a frame: a browser opening `/s/<token>/content`
+on its own (`Sec-Fetch-Dest: document`) gets the link's 404, and only muster's
+shell may frame it (`frame-ancestors 'self'`).
 
 ## Share links
 
@@ -96,13 +100,17 @@ body, whichever it is.
 🔴 **muster stores only the token's sha256, so a link is shown once**, to
 whoever made it: the agent, in `page_share_request`'s result, or you, on the
 page right after **Make a new link**. A lookup hashes the presented token and
-compares the hashes in constant time. Nothing — not the Pages screen, not
-`page_get`, not the database — can show a link again. If one is lost, make a
-new one and revoke the old.
+compares the hashes in constant time. Neither the Pages screen, `page_get` nor
+the database can show a link again. If one is lost, make a new one and revoke
+the old. ⚠ An agent's link **is** in that agent's transcript, and so with its
+model provider: `page_share_request`'s result carries it. Treat a link an agent
+asked for as shared with whatever sees that session.
 
 - **An agent asks** with `page_share_request`. That files a **pending** link
   and a question for you on the Asks page and your phone: *“<agent> asks to
-  share your page …”*, with the preview's address and **Approve link** /
+  share your page …”*, saying the link always shows the page's latest
+  published version — a version the agent publishes after you approve is
+  shown with no new approval — with the preview's address and **Approve link** /
   **Not now**. Approve link makes the link live; Not now declines it for good.
   Only you can decide it, in muster or on your paired phone: a mirrored
   session's `attention_answer` is refused, and so is any answer that is not one
@@ -149,7 +157,27 @@ deleted, and deleting the page deletes it (the files go first: if one cannot be
 deleted, the page is kept and Delete can be pressed again).
 
 - 🔴 **Do not add a lifecycle rule on `pages/`.** It would delete files a page
-  still shows.
+  still shows. With pages on, the boot check warns about any rule that would
+  expire objects there, a rule with no prefix included.
+- With pages and attachments on, muster writes and deletes one object under
+  `pages/` at boot, and refuses to boot when the key cannot.
+- Deleting a page first revokes its links (so no upload is recorded through
+  them after), then deletes its files' rows, then **every object under
+  `pages/<page id>/`, by listing the bucket** — so a file that arrived while the
+  page was being deleted goes too — and only then the page. A file stored but
+  not recorded (its link revoked meanwhile, a cap reached) is taken back at
+  once; when even that fails it is logged and counted
+  (`muster_page_upload_rollback_failures_total`), and the page's deletion still
+  removes it.
+- A page's files are limited to `MUSTER_PAGES_UPLOAD_BYTES` in all (500 MiB by
+  default); an upload that would pass it is refused, saying how much room is
+  left.
+- Strangers' uploads have their own slots — per link and for all pages on the
+  server — apart from yours, and one minute to deliver a file: a link holder
+  cannot keep your own attach busy.
+- **Rolling migration 0116 back** removes the `pages/%` upload rows but not
+  their objects. Delete those with the store's own tool, e.g.
+  `mc rm --recursive --force <alias>/<bucket>/pages/`.
 - The access key needs the same object permissions on
   `arn:aws:s3:::<bucket>/pages/*` as on `uploads/*`
   ([uploads.md](uploads.md#configuration)); the bundled store's key already has
@@ -207,6 +235,8 @@ component, never what was sent; at most one a minute per page.
 | a submit's data | 32 KiB |
 | responses per link | 1000, files included |
 | files per link | 50, each at most `MUSTER_UPLOAD_MAX_BYTES` |
+| a page's files in all | `MUSTER_PAGES_UPLOAD_BYTES` (500 MiB) |
+| page uploads in flight | 2 per link, 8 on the server (apart from the composer's), 1 minute each |
 | submits per link | 20 a minute |
 | uploads per link | 10 a minute |
 | failed link lookups per client address | 60 a minute, then 429 |
@@ -217,7 +247,7 @@ component, never what was sent; at most one a minute per page.
 `throttled`), `muster_page_responses_total{kind,outcome}` (`recorded`,
 `invalid`, `throttled`, `full`, `not_found`, `error`) and
 `muster_page_share_decisions_total{decision}` (`requested`, `approved`,
-`denied`, `minted`, `revoked`). No token, page id or viewer data is a label.
+`denied`, `minted`, `revoked`) and `muster_page_upload_rollback_failures_total`. No token, page id or viewer data is a label.
 
 ## Not done
 

@@ -222,6 +222,9 @@ type Extensions struct {
 	// database): no page tool is offered, the Pages screen answers the typed
 	// feature_disabled 404, and every share link answers 404.
 	Pages pages.Store
+	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES: the bytes one page's
+	// files may hold in all; 0 is pages.DefaultUploadBytesPerPage.
+	PagesUploadBytes int64
 
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the

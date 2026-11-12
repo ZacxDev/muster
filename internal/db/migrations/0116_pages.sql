@@ -10,7 +10,8 @@
 --   page_links      a share link: a 256-bit capability (/s/<token>). 🔴 ONLY
 --       ITS SHA-256 IS STORED (token_sha256, the lookup): the token itself is
 --       shown once — to the agent that asked for it, or to the owner who made
---       it — and is in no column, so reading this table yields no live link.
+--       it — and is in no column, so reading this table yields no live link
+--       (an agent's link is in its own transcript: page_share_request's result).
 --       Its state is 'pending' (an agent asked; the owner has not decided),
 --       'live', 'denied' or 'revoked'; ask_id is the owner card that decides a
 --       pending one.
@@ -50,6 +51,9 @@
 --   ALTER TABLE public.uploads DROP CONSTRAINT IF EXISTS uploads_object_key_check;
 --   ALTER TABLE public.uploads ADD CONSTRAINT uploads_object_key_check CHECK (object_key = 'uploads/' || public_id);
 --   DELETE FROM schema_migrations WHERE version = 116;
+-- 🔴 AND THE OBJECTS: the statements above remove the pages/% upload ROWS, not
+-- their bytes. Delete them with the store's own tool (a shell command, not
+-- SQL): mc rm --recursive --force <alias>/<bucket>/pages/
 
 SET LOCAL lock_timeout = '3s';
 

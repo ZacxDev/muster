@@ -80,6 +80,9 @@ type pageState struct {
 	uploads boundedWindow
 	pushes  boundedWindow
 	waits   pageWaits
+	// uploadSlots is the page uploads' in-flight slots, keyed by LINK — never
+	// the composer's (Server.uploadLimits, keyed by user).
+	uploadSlots pageSlots
 }
 
 // pagesOn reports whether pages are served here: a store, and the registry
@@ -141,9 +144,10 @@ func pageRouteLabel(r *http.Request) string {
 // owner through authz.ViaPageLink, with the link on its context.
 //
 // 🔴 NO OTHER CREDENTIAL IS READ: not a session cookie, not a bearer. The
-// failure limit is checked BEFORE the lookup and counts only failed lookups,
-// per client address, so guessing costs a 429 and no query; a live link's
-// requests never count against it.
+// failure limit counts only failed lookups, per client address, and is
+// applied only to a token that does NOT resolve: the lookup comes first, so
+// an address that is throttled (a shared NAT, one guesser behind it) still
+// opens a live link, and only its misses are answered 429.
 func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		route := pageRouteLabel(r)
@@ -152,16 +156,16 @@ func (s *Server) requirePageLink(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		key := clientIP(r)
-		if s.pageState.misses.count(key, s.now(), pageLimitWindow) >= pageMissLimit {
-			metrics.PageLinkRequests.WithLabelValues(route, "throttled").Inc()
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "Too many requests for links that do not exist. Wait a minute.", http.StatusTooManyRequests)
-			return
-		}
 		l, err := s.ext.Pages.LinkByToken(r.Context(), r.PathValue("token"))
 		if err != nil {
 			if !errors.Is(err, pages.ErrLinkNotFound) {
 				s.logger.Printf("pages: link lookup failed: %v", err)
+			}
+			if s.pageState.misses.count(key, s.now(), pageLimitWindow) >= pageMissLimit {
+				metrics.PageLinkRequests.WithLabelValues(route, "throttled").Inc()
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "Too many requests for links that do not exist. Wait a minute.", http.StatusTooManyRequests)
+				return
 			}
 			s.pageState.misses.add(key, s.now(), pageLimitWindow)
 			refusePageLink(w, route)
@@ -184,10 +188,22 @@ func (s *Server) pageRenderOptions(preview bool) pages.RenderOptions {
 // servePageContent is THE writer of a content document: every one — a link's
 // and the owner's preview's — is served with pages.SetContentHeaders, which
 // replaces the app's own page policy.
-func servePageContent(w http.ResponseWriter, body string) {
+//
+// 🔴 ONLY INTO A FRAME. A browser that says where the document is going
+// (Sec-Fetch-Dest) gets it only for an iframe: opened on its own, outside the
+// shell's frame, a page's script could still navigate (its CSP cannot stop a
+// top-level navigation), so a top-level open is refused with the one 404.
+// frame-ancestors 'self' then keeps every frame but muster's own. A client
+// that sends no Sec-Fetch-Dest runs no script of the page, and is served.
+func servePageContent(w http.ResponseWriter, r *http.Request, body string) bool {
+	if d := r.Header.Get("Sec-Fetch-Dest"); d != "" && d != "iframe" {
+		refusePageLink(w, "content")
+		return false
+	}
 	pages.SetContentHeaders(w.Header())
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, body)
+	return true
 }
 
 // serveShell writes a shell document.
@@ -235,8 +251,9 @@ func (s *Server) handlePageContent(w http.ResponseWriter, r *http.Request) {
 		refusePageLink(w, "content")
 		return
 	}
-	metrics.PageLinkRequests.WithLabelValues("content", "served").Inc()
-	servePageContent(w, pages.Content(v, s.pageRenderOptions(false)))
+	if servePageContent(w, r, pages.Content(v, s.pageRenderOptions(false))) {
+		metrics.PageLinkRequests.WithLabelValues("content", "served").Inc()
+	}
 }
 
 // pageWriteError answers a share-link write's refusal as JSON the shell hands
@@ -347,14 +364,18 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, "Send the file as multipart/form-data.", "invalid")
 		return
 	}
-	leave, err := s.uploadLimits.enter(l.OwnerID)
+	// 🔴 A STRANGER'S UPLOAD TAKES A PAGE SLOT, NEVER THE OWNER'S: the slots
+	// are per link and a server-wide page pool (pageState.uploadSlots), apart
+	// from the composer's per-user slots, with a shorter read deadline — so a
+	// link holder trickling bodies cannot make the owner's own attach busy.
+	leave, err := s.pageState.uploadSlots.enter(l.ID)
 	if err != nil {
 		w.Header().Set("Retry-After", "5")
-		fail(http.StatusTooManyRequests, "The server is busy with other uploads. Try again shortly.", "throttled")
+		fail(http.StatusTooManyRequests, "Too many files are arriving right now. Try again shortly.", "throttled")
 		return
 	}
 	defer leave()
-	deadline := time.Now().Add(s.uploadLimits.timeout())
+	deadline := time.Now().Add(pageUploadReadTimeout)
 	_ = http.NewResponseController(w).SetReadDeadline(deadline)
 	ctx, cancel := context.WithDeadline(ctx, deadline.Add(30*time.Second))
 	defer cancel()
@@ -368,6 +389,19 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, msg, outcome := pageStoreRefusal(err)
 		fail(status, msg, outcome)
+		return
+	}
+	// The page's byte quota: what its files may still add (MUSTER_PAGES_UPLOAD_BYTES).
+	quota := s.pageUploadQuota()
+	used, err := s.ext.Pages.UploadBytes(ctx, l.PageID)
+	if err != nil {
+		s.logger.Printf("pages: link %d: read its page's file total: %v", l.ID, err)
+		fail(http.StatusInternalServerError, "The file could not be stored. Try again later.", "error")
+		return
+	}
+	room := quota - used
+	if room <= 0 {
+		fail(http.StatusRequestEntityTooLarge, pageQuotaFull(quota), "full")
 		return
 	}
 	component := ""
@@ -399,10 +433,12 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		// Under the page's own prefix (pages/<id>/…), which the bucket's
 		// uploads/ lifecycle rule does not reach: kept until the page is
 		// deleted (handlePageDelete deletes them).
-		stored, err := svc.PutForPage(ctx, part, part.FileName(), l.PageID)
+		stored, err := svc.PutForPage(ctx, part, part.FileName(), l.PageID, room)
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			switch {
+			case errors.Is(err, uploads.ErrTooLarge) && room < svc.MaxBytes:
+				fail(http.StatusRequestEntityTooLarge, pageQuotaRoom(quota, room), "full")
 			case errors.Is(err, uploads.ErrTooLarge), errors.As(err, &tooBig):
 				fail(http.StatusRequestEntityTooLarge, "The file is larger than "+uploads.HumanSize(svc.MaxBytes)+".", "invalid")
 			case errors.Is(err, uploads.ErrEmpty):
@@ -417,9 +453,7 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// The file is stored but not recorded: take it away again, so no
 			// object outlives its row.
-			if _, rerr := svc.Revoke(ctx, stored.PublicID); rerr != nil {
-				s.logger.Printf("pages: link %d: revoke an unrecorded upload: %v", l.ID, rerr)
-			}
+			s.dropUnrecordedUpload(ctx, l, stored.PublicID)
 			status, msg, outcome := pageStoreRefusal(err)
 			if outcome == "error" {
 				s.logger.Printf("pages: link %d: record an upload: %v", l.ID, err)
@@ -731,7 +765,7 @@ func (s *Server) handlePageVersionContent(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	servePageContent(w, pages.Content(v, s.pageRenderOptions(true)))
+	_ = servePageContent(w, r, pages.Content(v, s.pageRenderOptions(true)))
 }
 
 // handlePageMintLink is the owner's "Make a new link": a live link at once.
@@ -812,11 +846,21 @@ func (s *Server) handlePageRollback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, pagePath(id), http.StatusSeeOther)
 }
 
-// handlePageDelete is the owner's "Delete this page": its files first — so a
-// failure leaves the page, and Delete can be pressed again, rather than
-// objects under pages/<id>/ that no lifecycle rule would ever remove — then
-// the page with every version, link and response, then the cards of links
-// still waiting.
+// handlePageDelete is the owner's "Delete this page".
+//
+// 🔴 THE ORDER IS WHAT LEAVES NO FILE BEHIND:
+//  1. every pending and live link is revoked (CloseLinks, one transaction
+//     under the page row's lock): from then on no upload is RECORDED — an
+//     upload already streaming finds its link revoked at AddResponse and
+//     takes its own object back (dropUnrecordedUpload);
+//  2. every file row of the page is revoked (its object deleted);
+//  3. every object under pages/<id>/ is deleted BY LISTING THE BUCKET
+//     (DeletePageFiles), so an object no row names — an upload that landed
+//     in the window — goes too;
+//  4. the page, with every version, link and response, is deleted.
+//
+// A failure before step 4 keeps the page (its links already closed), and
+// Delete can be pressed again: nothing is left that no page owns.
 func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.pagesOn() {
 		s.writeFeatureDisabled(w, r, features.Pages)
@@ -828,9 +872,18 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if _, err := s.ext.Pages.Page(ctx, id); err != nil {
+	closed, err := s.ext.Pages.CloseLinks(ctx, id)
+	if errors.Is(err, pages.ErrNotFound) {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
 		return
+	}
+	if err != nil {
+		s.logger.Printf("pages: page %d: close its links: %v", id, err)
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The page could not be deleted.", "", "")
+		return
+	}
+	for _, l := range closed {
+		s.withdrawLinkCard(ctx, l)
 	}
 	files, err := s.ext.Pages.Files(ctx, id)
 	if err != nil {
@@ -838,25 +891,30 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The page could not be deleted.", "", "")
 		return
 	}
+	if len(files) > 0 && s.ext.Uploads == nil {
+		s.renderPageDetail(w, r, id, http.StatusServiceUnavailable, "The page's files cannot be deleted while file uploads are off, so the page is kept.", "", "")
+		return
+	}
 	for _, f := range files {
-		if s.ext.Uploads == nil {
-			s.renderPageDetail(w, r, id, http.StatusServiceUnavailable, "The page's files cannot be deleted while file uploads are off, so the page is kept.", "", "")
-			return
-		}
 		objErr, err := s.ext.Uploads.Revoke(ctx, f)
-		if err != nil && !errors.Is(err, uploads.ErrNotFound) {
-			err = errors.Join(err, objErr)
-		} else {
-			err = objErr
+		if errors.Is(err, uploads.ErrNotFound) {
+			err = nil
 		}
-		if err != nil {
+		if err = errors.Join(err, objErr); err != nil {
 			s.logger.Printf("pages: page %d: delete file %s: %v", id, f, err)
 			s.renderPageDetail(w, r, id, http.StatusBadGateway, "A file of the page could not be deleted, so the page is kept. Try again.", "", "")
 			return
 		}
 	}
-	pending, err := s.ext.Pages.Delete(ctx, id)
-	if err != nil {
+	swept := 0
+	if s.ext.Uploads != nil {
+		if swept, err = s.ext.Uploads.DeletePageFiles(ctx, id); err != nil {
+			s.logger.Printf("pages: page %d: delete what is under its prefix: %v", id, err)
+			s.renderPageDetail(w, r, id, http.StatusBadGateway, "The page's files could not all be deleted, so the page is kept. Try again.", "", "")
+			return
+		}
+	}
+	if _, err := s.ext.Pages.Delete(ctx, id); err != nil {
 		if errors.Is(err, pages.ErrNotFound) {
 			s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
 			return
@@ -865,9 +923,46 @@ func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The page could not be deleted.", "", "")
 		return
 	}
-	for _, l := range pending {
-		s.withdrawLinkCard(ctx, l)
-	}
-	s.logger.Printf("pages: page %d deleted by its owner (%d file(s))", id, len(files))
+	s.logger.Printf("pages: page %d deleted by its owner (%d file row(s); %d object(s) under its prefix)", id, len(files), swept)
 	http.Redirect(w, r, pagesPath, http.StatusSeeOther)
 }
+
+// pageUploadReadTimeout is how long a stranger's upload has to deliver its
+// whole body: shorter than the composer's (a var so a test can shorten it).
+var pageUploadReadTimeout = time.Minute
+
+// pageUploadQuota is the bytes one page's files may hold in all.
+func (s *Server) pageUploadQuota() int64 {
+	if s.ext.PagesUploadBytes > 0 {
+		return s.ext.PagesUploadBytes
+	}
+	return pages.DefaultUploadBytesPerPage
+}
+
+// pageQuotaFull and pageQuotaRoom are the viewer's words for the quota.
+func pageQuotaFull(quota int64) string {
+	return "This page cannot take any more files: they are limited to " + uploads.HumanSize(quota) + " in all."
+}
+
+func pageQuotaRoom(quota, room int64) string {
+	return "The file is too large for this page: it has room for " + uploads.HumanSize(room) + " more (its files are limited to " +
+		uploads.HumanSize(quota) + " in all)."
+}
+
+// dropUnrecordedUpload takes back a file that was stored but could not be
+// recorded (its link revoked meanwhile, a cap reached). 🔴 A FAILURE HERE
+// LEAVES AN OBJECT UNDER pages/<id>/ THAT NO ROW NAMES: it is logged (ids
+// only) and counted, and the page's own deletion lists its prefix, so that
+// still removes it.
+func (s *Server) dropUnrecordedUpload(ctx context.Context, l pages.Link, publicID string) {
+	objErr, err := s.ext.Uploads.Revoke(context.WithoutCancel(ctx), publicID)
+	if err == nil && objErr == nil {
+		return
+	}
+	metrics.PageUploadRollbackFailures.Inc()
+	s.logger.Printf("pages: link %d of page %d: an unrecorded upload %s could not be taken back (row: %v; object: %v); "+
+		"it is removed with its page", l.ID, l.PageID, publicID, err, objErr)
+}
+
+// pageSlots is shareable pages' own upload slots (pageState.uploadSlots).
+type pageSlots = uploadLimits

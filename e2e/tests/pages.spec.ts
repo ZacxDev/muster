@@ -389,11 +389,11 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   await expect(opFrame.locator('#probe-cookie')).toHaveText('threw:SecurityError');
   await expect(opFrame.locator('#probe-fetch')).toHaveText(/^blocked:TypeError$/);
   await expect(opFrame.locator('#probe-nocors')).toHaveText(/^blocked:TypeError$/);
-  // …and opened DIRECTLY (no shell, no frame attribute): the header alone.
-  await op.goto(url + '/content');
-  await expect(op.locator('#probe-cookie')).toHaveText('threw:SecurityError');
-  await expect(op.locator('#probe-fetch')).toHaveText(/^blocked:TypeError$/);
-  await expect(op.locator('#probe-nocors')).toHaveText(/^blocked:TypeError$/);
+  // …and opened DIRECTLY, outside the shell's frame, it is not served at all
+  // (Sec-Fetch-Dest: document): none of its script runs.
+  const direct = await op.goto(url + '/content');
+  expect(direct?.status()).toBe(404);
+  await expect(op.locator('#probe-cookie')).toHaveCount(0);
   // The positive control: the SAME probe at muster's own top level, same
   // context, reads cookies without throwing and is answered 200.
   await op.goto(origin + '/pages');

@@ -25,7 +25,7 @@ questions, upload things, fill out a form etc."*
 | Who sees it | Its owner, signed in, at any time (a preview). Anyone else only through a **share link**: `/s/<token>`, 256 random bits, revocable |
 | Making a link | An agent **asks**; the owner **approves** it on the Asks page or their phone (an attention ask, owner's door only). The owner can also mint and revoke links on the Pages screen |
 | Serving | From muster's own host. The page's bytes are served at `/s/<token>/content` with `Content-Security-Policy: sandbox allow-scripts allow-forms; …` as an **HTTP header** (an opaque origin even on direct navigation), framed by a thin muster shell at `/s/<token>` that draws the instance branding |
-| Talking to muster | Page script has **no network at all** (`connect-src 'none'`). The SDK (`muster.submit`, `muster.upload`) posts a message to the shell, and the shell — muster's own fixed code — calls the capability routes with `credentials: 'omit'` |
+| Talking to muster | Inside the shell's frame, page script has **no network** (`connect-src 'none'`), and the content is served only into that frame. The SDK (`muster.submit`, `muster.upload`) posts a message to the shell, and the shell — muster's own fixed code — calls the capability routes with `credentials: 'omit'` |
 | Responses | Rows of the page, read by the creating agent with `page_responses` (as fenced DATA, optionally long-polled) and by the owner on the Pages screen; each pushes the owner. Uploads go through muster's existing upload path |
 | Shape | **In-tree, off by default** (`MUSTER_PAGES=1`, needs a database), in its own package `internal/pages` behind a narrow seam, not a plugin ([why](#core-not-a-plugin)) |
 
@@ -191,7 +191,7 @@ Two shapes were considered:
    since an opaque origin can be targeted no other way; the result holds
    nothing secret).
 
-Option 2 keeps page script with **no network at all**, keeps muster from ever
+Option 2 keeps page script with **no network** inside the frame (the content is served only into a frame), keeps muster from ever
 answering CORS for `null`, and puts the only code that talks to muster in
 muster's own file. The capability routes **authenticate by the link alone**
 and ignore cookies, so there is no ambient credential to forge and no CSRF
@@ -330,7 +330,7 @@ are kept under its own prefix until the page is deleted. Still open:
 ## Operator decisions
 
 1. **Link access:** anyone with the link — an unguessable capability URL
-   (≥ 128 bits), revocable. Expiry only as a stored nullable field. Optional
+   (≥ 128 bits), revocable. No expiry (round 0 deleted the stored field). Optional
    "require the viewer's email" is later.
 2. **Approval:** agents create and publish privately (the owner previews
    signed in); a link outsiders can open needs the owner's approval through the

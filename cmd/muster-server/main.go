@@ -99,6 +99,7 @@ import (
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 const (
@@ -761,8 +762,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// banner (logUploadsBanner) — never a refusal to boot.
 	ext.Uploads = buildUploads(cfg, a.pool, logger)
 	if ext.Uploads != nil {
-		checkUploadBucket(ext.Uploads, logger)
+		checkUploadBucket(ext.Uploads, ext.Pages != nil, logger)
 	}
+	// Shareable pages keep their files under pages/, which the access key's
+	// policy must reach too: proven at boot, or the boot is refused.
+	if err := probePagesStore(ctx, ext.Pages != nil, ext.Uploads); err != nil {
+		a.Close()
+		return nil, err
+	}
+	ext.PagesUploadBytes = cfg.PagesUploadBytes
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
@@ -1803,8 +1811,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 	switch {
 	case ext.Pages != nil:
+		quota := ext.PagesUploadBytes
+		if quota <= 0 {
+			quota = pages.DefaultUploadBytesPerPage
+		}
 		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner and ask before a share link goes live; "+
-			"links are served at %s<token>, sandboxed (an opaque origin, no page network)", envPages, pages.SharePrefix)
+			"links are served at %s<token>, sandboxed (an opaque origin, no page network); a page's files are kept under %s "+
+			"until it is deleted, %d bytes per page at most (%s)", envPages, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
 	case a.cfg.Pages:
 		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
 	default:

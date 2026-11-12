@@ -43,6 +43,10 @@ const (
 	MaxTitleRunes = 200
 )
 
+// DefaultUploadBytesPerPage bounds the files one page may hold in all
+// (MUSTER_PAGES_UPLOAD_BYTES overrides it): 500 MiB.
+const DefaultUploadBytesPerPage int64 = 500 << 20
+
 var (
 	// MaxVersionsPerPage bounds a page's versions.
 	MaxVersionsPerPage = 100

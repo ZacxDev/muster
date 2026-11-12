@@ -79,7 +79,7 @@ func pageBlocksSchema() map[string]any {
 			"{type:\"form\", id, label?, fields:[{name, label?, type, required?, options?}], submit_label?} — typed fields; " +
 			"{type:\"upload\", id, label, multiple?, submit_label?} — the viewer sends files; " +
 			"{type:\"approval\", id, label, comment?} — Approve / Decline, optionally with a comment; " +
-			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame with NO network; it saves data with " +
+			"{type:\"html\", html} — your own HTML and <script>, run in a locked-down frame (no network requests, and it is shown only inside muster's share page); it saves data with " +
 			"muster.submit(data) and files with muster.upload(file) (each returns a Promise), and reads muster.page {title, version}. " +
 			"Component ids are a letter then letters, digits, _ or -, unique on the page. Images must be inline (data: URIs); " +
 			"the whole page is at most 512 KiB.",

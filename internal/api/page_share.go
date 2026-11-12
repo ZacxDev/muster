@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -100,8 +99,12 @@ func (s *Server) pageShareForAnswer(ctx context.Context, id int64, answer string
 // pageShareQuestion is the card's question: who asks, which page, where to
 // preview it. The title is the agent's words (the Asks page escapes it).
 func (s *Server) pageShareQuestion(asker string, p pages.Page, reason string) string {
-	q := asker + " asks to share your page “" + truncate(p.Title, 120) + "” (version " + strconv.Itoa(p.CurrentVersion) +
-		") with anyone who has its link. Preview it first: " + s.pagePreviewURL(p.ID) + "."
+	// 🔴 THE APPROVAL IS FOR THE PAGE, NOT FOR ONE VERSION (operator
+	// decision, round 1): a live link shows whatever is published last, and a
+	// republish needs no new approval — so the card must not say otherwise.
+	q := asker + " asks to share your page “" + truncate(p.Title, 120) + "” with anyone who has its link. The link always shows " +
+		"the page's latest published version, including versions the agent publishes after you approve. See the page as it is now: " +
+		s.pagePreviewURL(p.ID) + "."
 	if reason = strings.TrimSpace(reason); reason != "" {
 		q += " Its reason: " + truncate(reason, 300)
 	}

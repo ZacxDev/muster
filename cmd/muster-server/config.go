@@ -286,6 +286,9 @@ const (
 	// agents publish pages and ask for share links; off by default, and it
 	// needs a database.
 	envPages = "MUSTER_PAGES"
+	// The bytes one page's files may hold in all (pages.DefaultUploadBytesPerPage
+	// when unset), a byte count from 1 MiB to 100 GiB.
+	envPagesUploadBytes = "MUSTER_PAGES_UPLOAD_BYTES"
 
 	// THE CLAUDE ACCOUNT USAGE POLLER (internal/ccusage, docs/jobs.md "Claude
 	// account usage"; ccusage_config.go parses them): its switch (off by
@@ -821,6 +824,8 @@ type config struct {
 
 	// Pages turns shareable pages on (MUSTER_PAGES=1; off by default).
 	Pages bool
+	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES (0: the default).
+	PagesUploadBytes int64
 
 	// CCUsage is the Claude account usage poller's (ccusage_config.go).
 	CCUsage ccUsageConfig
@@ -1743,6 +1748,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 	c.SessionState = envFlag(getenv, envSessionState)
 	c.DialDenyPrivate = envFlag(getenv, envDialDenyPrivate)
 	c.Pages = envFlag(getenv, envPages)
+	if v := strings.TrimSpace(getenv(envPagesUploadBytes)); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1<<20 || n > 100<<30 {
+			return config{}, fmt.Errorf("invalid %s %q: want a byte count from %d (1 MiB) to %d (100 GiB)", envPagesUploadBytes, v, 1<<20, int64(100<<30))
+		}
+		c.PagesUploadBytes = n
+	}
 	if c.AskLog, err = parseAskLog(getenv); err != nil {
 		return config{}, err
 	}

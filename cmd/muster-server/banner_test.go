@@ -486,7 +486,8 @@ var bannerExempt = map[string]string{
 		"poller's ON line; refused at boot without " + envCCUsagePushURL + ", which is refused with the poller off",
 	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
 		"whose OFF line names " + envCCUsagePoll,
-	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
+	envPagesUploadBytes: "printed with its value on the `shareable pages: ON` line; it means nothing with pages off, whose OFF line names " + envPages,
+	envAskLogTextTTL:    "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
 	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
 		"log off, whose OFF line names " + envAskLog,
 	envChiefRuntime: "set, the compose driver logs `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` at boot " +

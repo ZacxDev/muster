@@ -271,7 +271,9 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	}
 	ask, err := f.srv.ext.Attention.Get(f.as(f.owner, authz.ViaSession), askID)
 	if err != nil || !ask.OwnerCard || ask.Asker.AgentID != f.agent.ID || strings.Join(ask.Options, "|") != pageShareApproveLabel+"|"+pageShareDenyLabel ||
-		!strings.Contains(ask.Question, "/pages/"+strconv.FormatInt(id, 10)+"/preview") {
+		!strings.Contains(ask.Question, "/pages/"+strconv.FormatInt(id, 10)+"/preview") ||
+		// Y4: the approval is for the page, whatever is published later.
+		!strings.Contains(ask.Question, "always shows the page's latest published version") || strings.Contains(ask.Question, "(version") {
 		t.Fatalf("the card: %+v %v", ask, err)
 	}
 	links, _ := f.pages.Links(f.as(f.owner, authz.ViaSession), id)

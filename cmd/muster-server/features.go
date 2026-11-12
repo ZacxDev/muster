@@ -131,7 +131,7 @@ func featureCatalog() []features.Feature {
 		{ID: features.Pages, Name: "Shareable pages",
 			Description: "Agents publish pages for you — showcases, questions, forms, uploads, custom script in a sandbox — and ask before a link anyone can open goes live.",
 			Enable:      []features.Var{is(envPages, "1")},
-			Settings:    []string{envPublicURL}},
+			Settings:    []string{envPublicURL, envPagesUploadBytes}},
 		{ID: features.Plugins, NeedsChief: true, Name: "Plugins",
 			Description: "External bots post messages to your chief; it drafts replies you approve.",
 			Enable:      []features.Var{is(envPlugins, "1")}},

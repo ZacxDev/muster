@@ -48,6 +48,14 @@ type Store interface {
 	// Files is the public ids of every file sent through page id's links
 	// (its upload responses): what deleting the page must delete first.
 	Files(ctx context.Context, id int64) ([]string, error)
+	// CloseLinks revokes every pending or live link of page id, under the page
+	// row's lock, and returns them (their cards are the caller's to withdraw).
+	// From its commit on, no response — no upload — is recorded through any
+	// of them (AddResponse re-reads the link's state under its own lock).
+	CloseLinks(ctx context.Context, id int64) ([]Link, error)
+	// UploadBytes is the size of every file page id holds now (its upload
+	// responses' files, not revoked).
+	UploadBytes(ctx context.Context, id int64) (int64, error)
 	// Delete deletes page id, and with it every version, link and response
 	// (the composite keys cascade). It returns the links that were still
 	// pending, whose owner cards the caller withdraws.
@@ -316,6 +324,48 @@ func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
 		out = append(out, f)
 	}
 	return out, wrap("files", rows.Err())
+}
+
+// CloseLinks revokes a page's open links.
+func (s *PGStore) CloseLinks(ctx context.Context, id int64) ([]Link, error) {
+	var out []Link
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx, `SELECT id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&pid); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		rows, err := tx.Query(ctx, `UPDATE page_links SET state = 'revoked', decided_at = coalesce(decided_at, now())
+			WHERE page_id = $1 AND state IN ('pending', 'live') RETURNING `+linkCols, id)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			l, err := scanLink(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, l)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, wrap("close links", err)
+	}
+	return out, nil
+}
+
+// UploadBytes sums a page's live files (uploads is the owner's table too, so
+// row-level security scopes both sides of the join).
+func (s *PGStore) UploadBytes(ctx context.Context, id int64) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(sum(u.size_bytes), 0)::bigint FROM page_responses r
+		JOIN uploads u ON u.public_id = r.upload_public_id AND u.owner_id = r.owner_id
+		WHERE r.page_id = $1 AND r.kind = 'upload' AND u.revoked_at IS NULL`, id).Scan(&n)
+	return n, wrap("upload bytes", err)
 }
 
 // Delete deletes a page and returns its links that were pending.

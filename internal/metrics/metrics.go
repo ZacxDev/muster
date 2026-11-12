@@ -82,6 +82,15 @@ var (
 		Help: "Responses sent through shareable pages' links, by kind and outcome.",
 	}, []string{"kind", "outcome"})
 
+	// PageUploadRollbackFailures counts files stored through a page's link
+	// that could not be recorded AND could not be taken back (internal/api
+	// dropUnrecordedUpload): each leaves an object under pages/<id>/ that no
+	// row names until the page is deleted. Nonzero is worth a look.
+	PageUploadRollbackFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "muster_page_upload_rollback_failures_total",
+		Help: "Page uploads stored but neither recorded nor taken back (an object left under pages/<id>/).",
+	})
+
 	// PageShareDecisions counts what happens to share links: approved and
 	// denied (the owner's card), minted and revoked (the Pages screen and
 	// page_link_revoke), requested (page_share_request).
