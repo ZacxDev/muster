@@ -203,21 +203,31 @@ func (s *Server) noteHostOutcomeToChief(ctx context.Context, h plugins.HostDispa
 	}
 }
 
-// hostDispatchPlace is host dispatch h's window as muster names it
+// hostDispatchPlace is host dispatch h's window as a host lists it NOW
 // (mirror.SessionView.Place), for a codename-first push title
-// (names.go codenameLed): the listed window started for it — its label, else
-// its tmux address — else the stored agents:<window>; the zero Place when
-// neither is known. ctx reads the owner's windows.
+// (names.go codenameLed): the window started for it (its Dispatch tag), or its
+// stored tmux window id in the agents session — but only on a window that
+// carries no other dispatch's tag, since tmux window ids restart with the
+// tmux server. The zero Place (no front) when no listing shows it: the stored
+// value is a tmux window id, not a place the owner can type. ctx reads the
+// owner's windows.
 func (s *Server) hostDispatchPlace(ctx context.Context, h plugins.HostDispatch) mirror.Place {
-	if s.ext.Mirror != nil {
-		for _, e := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
-			if e.Host == h.Host && ((h.ID != 0 && e.Dispatch == h.ID) || (h.Window != "" && e.Session == mirror.AgentSpawnSession && e.Window == h.Window)) {
-				return e.Place()
-			}
-		}
-	}
-	if h.Host == "" || h.Window == "" {
+	if s.ext.Mirror == nil || h.Host == "" {
 		return mirror.Place{}
 	}
-	return mirror.Place{Code: mirror.AgentSpawnSession + ":" + h.Window, Host: h.Host}
+	list := mirror.Ordered(s.ext.Mirror.Hosts(ctx))
+	for _, e := range list {
+		if e.Host == h.Host && h.ID != 0 && e.Dispatch == h.ID {
+			return e.Place()
+		}
+	}
+	// Its stored window id, on a window tagged with NO dispatch: one tagged
+	// with this dispatch was found above, and one tagged with another is
+	// another dispatch's window that reused the id.
+	for _, e := range list {
+		if e.Host == h.Host && h.Window != "" && e.Session == mirror.AgentSpawnSession && e.Window == h.Window && e.Dispatch == 0 {
+			return e.Place()
+		}
+	}
+	return mirror.Place{}
 }

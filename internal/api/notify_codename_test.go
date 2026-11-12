@@ -43,8 +43,11 @@ func TestCodenameTitleLeadsWithTheCodenameAndHost(t *testing.T) {
 		{"Billing migration", " is asking", mirror.Place{Code: "scratch3:5", Host: "atlas"}, "scratch3:5@atlas · Billing migration is asking", "scratch3:5@atlas · Billing migration"},
 		// The human name IS the codename: the front replaces it, said once.
 		{"mango:1", " is asking", mango, "mango:1@atlas is asking", "mango:1@atlas"},
-		// No human name: the title already calls the session by its place.
-		{"", " is asking", mango, "", ""},
+		// No human name: the front, then the tmux address (a typeable target),
+		// then its host offline; an unlabelled window is the front alone.
+		{"", " is asking", mirror.Place{Code: "mango:1", Host: "atlas", Addr: "scratch13:1"}, "mango:1@atlas · tmux scratch13:1 is asking", "mango:1@atlas · tmux scratch13:1"},
+		{"", " is asking", mirror.Place{Code: "main:1", Host: "atlas", Addr: "main:1"}, "main:1@atlas is asking", "main:1@atlas"},
+		{"", " needs you", mirror.Place{Code: "mango:1", Host: "atlas", Addr: "scratch13:1", Offline: true}, "mango:1@atlas · tmux scratch13:1 (host offline) needs you", "mango:1@atlas · tmux scratch13:1 (host offline)"},
 		// No window: an agent, a session no window shows now.
 		{"Billing migration", " needs you", mirror.Place{}, "", ""},
 	} {
@@ -121,44 +124,51 @@ func TestEveryAttentionPushDeclaresItsCodenameTitle(t *testing.T) {
 	}
 }
 
-// TestACodenameTitleIsNotDeclaredWhereItWouldAddNothing: an unnamed window's
-// ask (called by its place, which starts with its codename and names its host)
-// and an agent's ask (no tmux window) declare no codename-first title — each
-// is sent as it is today; a window whose human name IS its codename declares
-// the front IN PLACE of the name ("kiwi:2@ws is asking", no codename twice).
-func TestACodenameTitleIsNotDeclaredWhereItWouldAddNothing(t *testing.T) {
+// TestAnUnnamedSessionsPushGetsTheFrontAndKeepsItsTmuxTarget: an unnamed
+// window's ask (today called by its place) now starts with the compact front
+// and keeps its tmux address after it — a typeable target, the label never a
+// window's only name — or is the front alone when the window has no label (the
+// front IS its address); its host offline is still said. A window whose human
+// name IS its codename gets the front IN PLACE of the name. An agent's ask (no
+// tmux window) and a waiting item no host lists declare nothing.
+func TestAnUnnamedSessionsPushGetsTheFrontAndKeepsItsTmuxTarget(t *testing.T) {
 	s := codenameServer(t, true)
 	store := s.ext.Focus.(*memFocus)
 	store.rows[focus.MirrorSubject("sid-same")] = focus.Focus{Subject: focus.MirrorSubject("sid-same"), Name: focus.Name{Manual: "kiwi:2"}}
 	store.rows[focus.AgentSubject(8)] = focus.Focus{Subject: focus.AgentSubject(8), Name: focus.Name{Auto: "Deploy importer"}}
 	unnamed := attentionItem{Key: "ask-2", Kind: attentionKindAsk, Source: "kiwi:2 · tmux side:2 @ ws", target: "tmux side:2 @ ws",
-		at: mirror.Place{Code: "kiwi:2", Host: "ws"}, subject: focus.MirrorSubject("sid-unnamed"), claudeSession: "sid-unnamed"}
+		at: mirror.Place{Code: "kiwi:2", Host: "ws", Addr: "side:2"}, subject: focus.MirrorSubject("sid-unnamed"), claudeSession: "sid-unnamed"}
+	unlabelled := attentionItem{Key: "ask-4", Kind: attentionKindAsk, Source: "tmux main:2 @ ws", target: "tmux main:2 @ ws",
+		at: mirror.Place{Code: "main:2", Host: "ws", Addr: "main:2"}, subject: focus.MirrorSubject("sid-plain"), claudeSession: "sid-plain"}
+	offline := unnamed
+	offline.Key, offline.Source, offline.at.Offline = "ask-5", "kiwi:2 · tmux side:2 @ ws (host offline)", true
 	same := unnamed
 	same.Key, same.subject, same.claudeSession = "ask-3", focus.MirrorSubject("sid-same"), "sid-same"
 	agent := askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 8, Label: plainName}, Question: "Deploy now?"})
 	waitingAgentless := attentionItem{Key: "session-x", Kind: attentionKindSession, Source: "A session"}
-	items := []attentionItem{unnamed, same, agent, waitingAgentless, namedAskItem()}
+	items := []attentionItem{unnamed, unlabelled, offline, same, agent, waitingAgentless, namedAskItem()}
 	s.withFocus(operatorCtx(), items)
-	if n := attentionNotification(items[1], false); n.Title != "kiwi:2 is asking" || n.CodenameTitle != "kiwi:2@ws is asking" || n.CodenameKeep != "kiwi:2@ws" {
-		t.Errorf("a name that is the codename: Title %q CodenameTitle %q keep %q", n.Title, n.CodenameTitle, n.CodenameKeep)
-	}
-	for i, want := range map[int]string{0: "kiwi:2 · tmux side:2 @ ws is asking", 2: "Deploy importer is asking", 3: "A session is waiting on you"} {
+	for i, c := range []struct{ title, first, keep string }{
+		{"kiwi:2 · tmux side:2 @ ws is asking", "kiwi:2@ws · tmux side:2 is asking", "kiwi:2@ws · tmux side:2"},
+		{"tmux main:2 @ ws is asking", "main:2@ws is asking", "main:2@ws"},
+		{"kiwi:2 · tmux side:2 @ ws (host offline) is asking", "kiwi:2@ws · tmux side:2 (host offline) is asking", "kiwi:2@ws · tmux side:2 (host offline)"},
+		{"kiwi:2 is asking", "kiwi:2@ws is asking", "kiwi:2@ws"},
+		{"Deploy importer is asking", "", ""},
+		{"A session is waiting on you", "", ""},
+		{"Billing migration · mango:1 @ ws is asking", "mango:1@ws · Billing migration is asking", "mango:1@ws · Billing migration"},
+	} {
 		n := attentionNotification(items[i], false)
-		if n.Title != want || n.CodenameTitle != "" || n.CodenameKeep != "" {
-			t.Errorf("item %d: Title %q CodenameTitle %q keep %q, want %q and none", i, n.Title, n.CodenameTitle, n.CodenameKeep, want)
+		if n.Title != c.title || n.CodenameTitle != c.first || n.CodenameKeep != c.keep {
+			t.Errorf("item %d: Title %q CodenameTitle %q keep %q, want %q, %q keep %q", i, n.Title, n.CodenameTitle, n.CodenameKeep, c.title, c.first, c.keep)
 		}
-	}
-	// The control: the named window in the same batch does declare one.
-	if n := attentionNotification(items[4], false); n.CodenameTitle != "mango:1@ws · Billing migration is asking" {
-		t.Fatalf("control: the named ask's CodenameTitle %q", n.CodenameTitle)
 	}
 }
 
 // TestAnEpisodesPushDeclaresItsCodenameTitle: "… needs you" and "… is
 // stalled" of the named window keep today's title and declare the
 // codename-first one, the codename once with "Show tmux sessions" on; an
-// unnamed window's (its place, codename first already) and an agent's
-// declare none.
+// unnamed one whose window no host lists now (its session's codename fallback,
+// a stored index) and an agent's declare none.
 func TestAnEpisodesPushDeclaresItsCodenameTitle(t *testing.T) {
 	ep := func(state string) sessionstate.Episode {
 		return sessionstate.Episode{ID: 51, Owner: 1, Kind: sessionstate.KindMirror, Host: "ws", Key: focusSID,
@@ -255,4 +265,45 @@ func TestGoNotifySendsTheCodenameTitleOnlyToAnOwnerWhoTurnedItOn(t *testing.T) {
 	}
 	_ = prefs.SetCodenameFirst(context.Background(), 7, false)
 	expect("switched off again", today)
+}
+
+// TestAnEpisodesFrontIsOnlyAWindowAHostListsNow: an episode's front names a
+// window the owner can jump to NOW — the window holding its conversation, or
+// the stored window itself, still listed — never a place rebuilt from what the
+// episode stored (the stored index may be stale after a tmux renumber). An
+// unnamed one keeps its tmux address after the front.
+func TestAnEpisodesFrontIsOnlyAWindowAHostListsNow(t *testing.T) {
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, statusReport: true, windows: []mirror.Window{
+		{Session: "scratch13", ID: "@1", Index: 1, Label: "mango:1", Claude: true, ClaudeSession: "sid-a"},
+		{Session: "scratch13", ID: "@2", Index: 2, Label: "mango:2", Claude: true, ClaudeSession: "sid-other"},
+	}}
+	store := &memFocus{rows: map[focus.Subject]focus.Focus{
+		focus.MirrorSubject("sid-named-gone"): {Subject: focus.MirrorSubject("sid-named-gone"), Name: focus.Name{Manual: "Gone session"}},
+	}}
+	s, _ := focusMirrorServer(t, fm, store, nil)
+	ep := func(key, host, window string, index int) sessionstate.Episode {
+		return sessionstate.Episode{ID: 61, Owner: 1, Kind: sessionstate.KindMirror, Host: host, Key: key,
+			TmuxSession: "scratch13", Window: window, Index: index, State: sessionstate.StateNeedsYou}
+	}
+	for _, c := range []struct {
+		what        string
+		ep          sessionstate.Episode
+		title, want string
+	}{
+		{"the window holding the conversation now", ep("sid-a", "ws", "@1", 1),
+			"mango:1 · tmux scratch13:1 @ ws needs you", "mango:1@ws · tmux scratch13:1 needs you"},
+		{"the stored window itself, still listed", ep("sid-gone", "ws", "@2", 2),
+			"mango:2 · tmux scratch13:2 @ ws needs you", "mango:2@ws · tmux scratch13:2 needs you"},
+		{"the stored window gone, its session's codename and a stored index", ep("sid-gone", "ws", "@7", 7),
+			"mango · tmux scratch13:7 @ ws needs you", ""},
+		{"a host that lists nothing of it", ep("sid-gone", "elsewhere", "@1", 1),
+			"tmux scratch13:1 @ elsewhere needs you", ""},
+		{"a NAMED session whose window is gone", ep("sid-named-gone", "ws", "@7", 7),
+			"Gone session needs you", ""},
+	} {
+		n := s.episodeNotification(operatorCtx(), c.ep, 0, nil)
+		if n.Title != c.title || n.CodenameTitle != c.want {
+			t.Errorf("%s: Title %q CodenameTitle %q, want %q, %q", c.what, n.Title, n.CodenameTitle, c.title, c.want)
+		}
+	}
 }

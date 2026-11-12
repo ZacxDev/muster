@@ -677,7 +677,7 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 		s.advanceTaskToInProgress(ctx, h.TaskID)
 		s.attentionChanged(owner, "task-routed-"+strconv.FormatInt(h.TaskID, 10))
 	}
-	s.pushSessionDispatch(owner, h, rec, p.Model)
+	s.pushSessionDispatch(ctx, owner, h, rec, p.Model)
 	if b := s.chiefBudgetNow(ctx); b != nil {
 		out["budget"] = b
 	}
@@ -756,12 +756,24 @@ func sessionDispatchLine(h heldDispatch, agentName, model string) string {
 	return who + " dispatched " + agentName + " (" + h.Target + ", " + sessionModelLabel(h.Kind, model) + ")"
 }
 
+// sessionDispatchTitle is an approved start's push title.
+const sessionDispatchTitle = "Agent dispatched from your session"
+
 // pushSessionDispatch is what an approved start says, once: a push to the
 // owner. (The chief sees the agent in its own ledger: the start is a
 // reservation there, and its budget's live_agents names it.)
-func (s *Server) pushSessionDispatch(owner int64, h heldDispatch, rec agents.Agent, model string) {
-	n := RouterNotification{Type: taskNotificationType, Title: "Agent dispatched from your session", Body: sessionDispatchLine(h, rec.Name, model),
+//
+// With "Start notification titles with the tmux name" its title starts with
+// the dispatching session's window codename@host, when a host lists the window
+// running that session now (ctx reads the owner's windows).
+func (s *Server) pushSessionDispatch(ctx context.Context, owner int64, h heldDispatch, rec agents.Agent, model string) {
+	n := RouterNotification{Type: taskNotificationType, Title: sessionDispatchTitle, Body: sessionDispatchLine(h, rec.Name, model),
 		Tag: "dispatch-approved-" + rec.Name, Data: map[string]string{"url": ui.AgentPath(rec.Name)}}
+	if s.ext.Mirror != nil && h.Host != "" && h.Session != "" {
+		if e, ok := sessionKeyEntry(s.ext.Mirror.Hosts(ctx), h.Host, h.Session); ok {
+			n.CodenameTitle, n.CodenameKeep = codenameLed(sessionDispatchTitle, e.Place())
+		}
+	}
 	if h.TaskID > 0 {
 		n.ID = strconv.FormatInt(h.TaskID, 10)
 	}

@@ -99,7 +99,7 @@ func TestAnEpisodesPushStartsWithTheCodenameWhenAsked(t *testing.T) {
 				t.Fatalf("pushes %+v, want one titled %q", ps, want[c.name][0])
 			}
 			page := f.page(t, "/attention")
-			if !strings.Contains(page, `data-attention-episode-where>`+want[c.name][1]+`</code>`) {
+			if !strings.Contains(page, `data-attention-episode-where>`+want[c.name][1]+`</span>`) {
 				t.Fatalf("the Stalled / waiting row does not read %q:\n%s", want[c.name][1], episodeRows(page))
 			}
 		})
@@ -275,8 +275,8 @@ func TestAFiledAsksPushStartsWithTheCodenameWhileTheAsksRowKeepsItsOwn(t *testin
 			if len(titles) != 1 || titles[0] != want {
 				t.Fatalf("the ask's push titles %q, want one %q", titles, want)
 			}
-			row := `<span data-attention-source data-attention-name title="Gold:1 · tmux main:1 @ ws">` + name + `</span>`
-			if page := f.page(t, "/attention"); !strings.Contains(page, row) {
+			row := `data-attention-title data-attention-name>` + name + `</span>`
+			if page := f.page(t, "/attention"); !strings.Contains(page, row) || !strings.Contains(page, `data-attention-source>tmux main:1 @ ws</span>`) {
 				i := strings.Index(page, "data-attention-source")
 				t.Fatalf("the Asks row is not %q:\n%s", name, page[max(0, i-100):min(len(page), max(0, i)+300)])
 			}

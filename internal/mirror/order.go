@@ -188,13 +188,24 @@ func (s SessionView) TitleAt() string {
 // tmux address — and its host, kept APART so a session whose name already IS
 // the codename can be told without parsing "mango:1 @ atlas" back. The zero
 // value is "no window".
-type Place struct{ Code, Host string }
+type Place struct {
+	Code, Host string
+	// Addr is the window's tmux address on its host ("scratch13:1", Address),
+	// "" when unknown; Offline marks a window whose host has dropped and the hub
+	// still lists. Neither is shown by String: they are for a title that must
+	// name a window by its typeable target too (internal/api codenamePlace).
+	Addr    string
+	Offline bool
+}
 
 // String is the place as it is shown: "mango:1 @ atlas" (TitleAt).
 func (p Place) String() string { return p.Code + " @ " + p.Host }
 
-// Place is the entry's Place: Title and Host.
-func (s SessionView) Place() Place { return Place{Code: s.Title(), Host: s.Host} }
+// Place is the entry's Place: Title and Host (and its Address, and whether its
+// host is offline).
+func (s SessionView) Place() Place {
+	return Place{Code: s.Title(), Host: s.Host, Addr: s.Address(), Offline: !s.Online}
+}
 
 // WhereTarget is the entry's WhereTarget.
 func (s SessionView) WhereTarget() string {

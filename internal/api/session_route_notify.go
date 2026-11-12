@@ -33,6 +33,10 @@ import (
 // informational notification (web/static/sw.js).
 const chiefRoutedPushType = "notify"
 
+// chiefRoutedHereTitle is a routed push's title after its window's
+// codename@host, which says where (codenameLed).
+const chiefRoutedHereTitle = "Chief routed it here"
+
 // chiefRoutedBodyMax bounds the notification's body.
 const chiefRoutedBodyMax = 160
 
@@ -77,6 +81,11 @@ func (s *Server) notifyChiefRouted(ctx context.Context, owner int64, r plugins.R
 	}
 	n := RouterNotification{Type: chiefRoutedPushType, ID: r.RouteID, Title: title, Body: truncate(body, chiefRoutedBodyMax),
 		Tag: chiefRoutedTag(r), TitleKeep: where}
+	// "Start notification titles with the tmux name": the target window's
+	// codename@host first (a window the route resolved over the hosts NOW).
+	if t.window.Host != "" {
+		n.CodenameTitle, n.CodenameKeep = codenameLed(chiefRoutedHereTitle, t.window.Place())
+	}
 	if url != "" {
 		n.Data = map[string]string{"url": url}
 	}

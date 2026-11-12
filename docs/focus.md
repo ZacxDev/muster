@@ -225,23 +225,30 @@ two windows):
     mango:1@laptop · Billing migration may be waiting on you   a chief notice
     mango:1@laptop · Billing migration needs you          a waiting episode ("… is stalled" likewise)
     mango:1@laptop · A session is waiting on you          the waiting window's own push
+    mango:1@laptop · Chief routed it here                 a chief route, its target window
+    mango:1@laptop · Agent dispatched from your session   an approved dispatch, the dispatching window
     agents:3@laptop · Claude Code is waiting for you: …   a host dispatch's outcome ("… finished: …" likewise)
-    agents:3@laptop · Your new session started            a successor's start
+    plum:4@laptop · Your new session started              a successor's start
 
 A title that already said the host (`… on laptop …`) drops it: the front
-says it. The session is named by its human name; with "Show tmux sessions"
-on too, the place is said once, at the front. A human name that IS the
-codename becomes the front (`mango:1@laptop is asking`). The switch changes
-push titles only (the browser's and the paired phone's alike), never the
-Asks list, the summary or the session lists.
+says it. A session is named by its human name; with "Show tmux sessions" on
+too, the place is said once, at the front. A human name that IS the codename
+becomes the front (`mango:1@laptop is asking`). A session with NO human name
+keeps its tmux address after the front, so the title still carries a
+typeable target — `mango:1@laptop · tmux scratch13:1 is asking`, or just
+`main:1@laptop is asking` for a window with no label — and its host offline
+is still said. The switch changes push titles only (the browser's and the
+paired phone's alike), never the Asks list, the summary or the session lists.
 
-Unchanged: a session with no human name (its title is already its place,
-codename first, with its host), an agent (no tmux window), a session no
-window shows now, and pushes about no tmux window (a task, a page, a
-connector request, "Agent dispatched from your session") or that already
-name the window by its place ("Chief routed it to mango:1 · …"). Off — or
-with no database, or when the switch cannot be read — every push title is
-byte for byte what it was.
+The front names only a window a host lists NOW — the owner jumps to it. So
+these keep their title unchanged: an agent (no tmux window); a session or
+episode whose window no host lists now (an episode's stored index may be
+stale after a tmux renumber, so its session's codename with that index is
+never a front); a host dispatch or a successor whose window is not listed
+(what is stored is a tmux window id, not a place); and pushes about no tmux
+window (a task, a page, a connector request). Off — or with no database, or
+when the switch cannot be read — every push title is byte for byte what it
+was.
 
 The rule is `codenameFront` / `codenameTitle` / `codenameLed`
 (`internal/api/names.go`); the push sink (`goNotify`) sends the declared

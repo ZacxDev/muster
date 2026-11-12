@@ -12,7 +12,6 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notifypref"
-	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 )
 
@@ -63,22 +62,6 @@ func TestAHostDispatchsOutcomePushStartsWithItsWindow(t *testing.T) {
 				t.Fatalf("pushes %+v, want one titled %q", ps, c.want)
 			}
 		})
-	}
-}
-
-// TestHostDispatchPlaceFallsBackToTheStoredWindow: a dispatch whose window no
-// listing shows now is named by the stored agents:<window>, and its host; one
-// with no window or host, by nothing.
-func TestHostDispatchPlaceFallsBackToTheStoredWindow(t *testing.T) {
-	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
-	if got := s.hostDispatchPlace(context.Background(), plugins.HostDispatch{ID: 7, Host: "atlas", Window: "@5"}); got != (mirror.Place{Code: "agents:@5", Host: "atlas"}) {
-		t.Fatalf("unlisted: %#v", got)
-	}
-	if got := codenameFront(s.hostDispatchPlace(context.Background(), plugins.HostDispatch{ID: 7, Host: "atlas", Window: "@5"})); got != "agents:@5@atlas" {
-		t.Fatalf("unlisted front: %q", got)
-	}
-	if got := s.hostDispatchPlace(context.Background(), plugins.HostDispatch{ID: 7, Host: "atlas"}); got != (mirror.Place{}) {
-		t.Fatalf("no window: %#v", got)
 	}
 }
 
