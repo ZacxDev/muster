@@ -60,15 +60,19 @@ type shipRuntime struct {
 	shepherd *officership.ShepherdGates
 }
 
-// officerHQ adapts officers.Client to officership.HQ.
-type officerHQ struct{ c *officers.Client }
+// officerHQ adapts an officer's backend to officership.HQ: its switch (a core
+// verb) and its ship verbs (officers.ShipBackend).
+type officerHQ struct {
+	c officers.Backend
+	s officers.ShipBackend
+}
 
 func (h officerHQ) Enabled(ctx context.Context) (bool, error) { return h.c.Enabled(ctx) }
 func (h officerHQ) PostNotice(ctx context.Context, path string, n officers.Notice) error {
-	return h.c.PostNotice(ctx, path, n)
+	return h.s.PostNotice(ctx, path, n)
 }
 func (h officerHQ) Preflight(ctx context.Context) (officers.Preflight, error) {
-	return h.c.Preflight(ctx)
+	return h.s.Preflight(ctx)
 }
 
 // shipREST is the REST client the gates use for one ship repository, as
@@ -131,7 +135,14 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		}
 		gh = ghFor[strings.ToLower(o.Repo)]
 	}
-	hq := officerHQ{c: s.officerRT.hq.Client(o)}
+	// 🔴 A SHIPPING OFFICER'S BACKEND MUST SERVE THE SHIP VERBS, or it does
+	// not ship: refused at boot, never a gate that fails open later.
+	b := s.officerRT.hq.Backend(o)
+	sb, err := officers.Serves[officers.ShipBackend](b, officers.CapShip)
+	if err != nil {
+		return nil, fmt.Errorf("officer %s: it ships, but %w", o.ID, err)
+	}
+	hq := officerHQ{c: b, s: sb}
 	rt := &shipRuntime{}
 	rt.gate = &officership.PushGate{Repo: o.Repo, Ship: sp, OfficerID: o.ID, GitHost: gitHost, APIHost: apiHost, Cred: cred,
 		ReadCred: s.deploymentReadCred(), OnRejected: reject, GH: gh, GHFor: ghFor, Now: cfg.Now, Logf: s.logger.Printf,
@@ -145,13 +156,13 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
-		OfficerShadow: hq.c.Shadow,
+		OfficerShadow: hq.s.Shadow,
 		Shadowed: func(item officers.Item, line string) {
 			s.officerRT.recordShadow(o.ID, item.ID, line)
 		},
 		// 🔴 muster's own call, after a clean draft create, with the
 		// authoring officer's token: no instance tool reaches it.
-		PROpened: hq.c.PROpened}
+		PROpened: hq.s.PROpened}
 	rt.gates = &officership.Gates{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, HQ: hq, Now: cfg.Now,
 		InFlight: func() (string, bool) { return "", false }}
 	if sp.IsShepherd() {
@@ -160,7 +171,7 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 			ItemHeld: func(ctx context.Context, instance, repo string, n int) (officers.Item, error) {
 				return itemHeldFor(ctx, hq.c, o.ID, instance, repo, n, cfg.Now)
 			},
-			OfficerShadow: hq.c.Shadow,
+			OfficerShadow: hq.s.Shadow,
 			Shadowed: func(item officers.Item, line string) {
 				s.officerRT.recordShadow(o.ID, item.ID, line)
 			}}
@@ -170,7 +181,7 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 			ItemByID: func(ctx context.Context, instance string, id officers.ItemID, repo string, n int) (officers.Item, error) {
 				return itemHeldByID(ctx, hq.c, o.ID, instance, id, repo, n, cfg.Now)
 			},
-			PostMergeAsk: hq.c.MergeAsk}
+			PostMergeAsk: hq.s.MergeAsk}
 	}
 	if sp.Rollout != nil {
 		rt.watch = &officership.Watcher{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, Gates: rt.gates, Now: cfg.Now, HTTP: cfg.ShipHTTP,
@@ -259,7 +270,7 @@ func (s *Server) deploymentReadCred() func(ctx context.Context, caller connector
 // item under a live lease at now. Anything else — another holder, an expired
 // lease, no such claimed item, HQ unreadable — is an error, and the new pull
 // request is refused.
-func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance string, item int, now func() time.Time) (officers.Item, error) {
+func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance string, item int, now func() time.Time) (officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return officers.Item{}, fmt.Errorf("HQ's claimed items could not be read: %v", err)
@@ -289,7 +300,7 @@ func itemClaimedBy(ctx context.Context, c *officers.Client, officerID, instance 
 // fixItemsHeld is the draft gate's FixItems: the pull-request fix items
 // (kind *.pr_fix) of officer officerID that HQ (read with its own token)
 // shows instance holding under a live lease at now.
-func fixItemsHeld(ctx context.Context, c *officers.Client, officerID, instance string, now func() time.Time) ([]officers.Item, error) {
+func fixItemsHeld(ctx context.Context, c officers.Backend, officerID, instance string, now func() time.Time) ([]officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return nil, fmt.Errorf("HQ's claimed items could not be read: %v", err)
@@ -328,20 +339,20 @@ func (s *Server) shepherdAuthorLogin(ctx context.Context, officerID string) (str
 // holding, under a live lease at now, of the officer whose subject_key names
 // pull request n of repo (officers.SameShepherdSubject). Anything else — no
 // such item, another holder, an expired lease, HQ unreadable — is an error.
-func itemHeldFor(ctx context.Context, c *officers.Client, officerID, instance, repo string, n int, now func() time.Time) (officers.Item, error) {
+func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, repo string, n int, now func() time.Time) (officers.Item, error) {
 	return shepherdItem(ctx, c, officerID, instance, "", repo, n, now)
 }
 
 // itemHeldByID is the merge ask's item gate (ShepherdGates.ItemByID):
 // itemHeldFor narrowed to item id — the one the instance names must be the
 // one it holds for that pull request.
-func itemHeldByID(ctx context.Context, c *officers.Client, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
+func itemHeldByID(ctx context.Context, c officers.Backend, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
 	return shepherdItem(ctx, c, officerID, instance, id, repo, n, now)
 }
 
 // shepherdItem is itemHeldFor and itemHeldByID: one read of HQ's claimed
 // items, one predicate. id "" is any item with the subject.
-func shepherdItem(ctx context.Context, c *officers.Client, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
+func shepherdItem(ctx context.Context, c officers.Backend, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return officers.Item{}, fmt.Errorf("HQ's claimed items could not be read: %v", err)

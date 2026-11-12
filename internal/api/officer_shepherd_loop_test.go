@@ -128,8 +128,11 @@ func TestTheMergeAsksBoundsAreHQs(t *testing.T) {
 func TestTheFakeDecodesTheMergeAskAsHQDoes(t *testing.T) {
 	r := newShepAPIRig(t)
 	id := r.hold(t)
-	c := r.s.officerRT.hq.Client(r.s.officerRT.reg.All()[1])
-	_, err := c.MergeAsk(context.Background(), officers.ItemID(id), []byte(`{"instance":"x","evidence":{"officer_item":{"item":"3901"}}}`))
+	c, err := officers.Serves[officers.ShipBackend](r.s.officerRT.hq.Backend(r.s.officerRT.reg.All()[1]), officers.CapShip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.MergeAsk(context.Background(), officers.ItemID(id), []byte(`{"instance":"x","evidence":{"officer_item":{"item":"3901"}}}`))
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("a string item id at the fake: %v, want HQ's 400", err)
 	}

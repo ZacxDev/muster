@@ -70,7 +70,7 @@ func instanceUsageAccount(o officers.Officer, a agents.Agent) string {
 // — logged, never a boot refusal: it needs no configuration, so an operator
 // cannot have asked for it — when there is no way to read an instance's
 // usage.
-func (s *Server) newUsageCollector(cfg OfficersConfig, hq *officers.ClientHQ) (*usage.Collector, error) {
+func (s *Server) newUsageCollector(cfg OfficersConfig, hq *officers.Backends) (*usage.Collector, error) {
 	src := cfg.UsageSource
 	if src == nil {
 		r, ok := s.ext.Gateway.(usageReader)
@@ -81,5 +81,5 @@ func (s *Server) newUsageCollector(cfg OfficersConfig, hq *officers.ClientHQ) (*
 		src = gatewayUsage{s: s, r: r}
 	}
 	return usage.New(usage.Config{Officers: cfg.Officers, Instances: officerFleet{s: s}.Instances, Source: src,
-		Poster: usage.NewClientPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.UsageInterval})
+		Poster: usage.NewBackendPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.UsageInterval})
 }

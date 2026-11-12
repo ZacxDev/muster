@@ -147,7 +147,7 @@ func (s *Server) pruneShadow(ctx context.Context, o officers.Officer, now time.T
 	if !has {
 		return nil
 	}
-	items, err := rt.hq.Client(o).AllItems(ctx, officers.StatusClaimed)
+	items, err := rt.hq.Backend(o).AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return err
 	}

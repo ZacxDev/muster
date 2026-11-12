@@ -94,7 +94,7 @@ func newRig(t *testing.T) *rig {
 		return r.listing[o.Tier], nil
 	}
 	c, err := New(Config{Officers: []officers.Officer{tiered, untier}, Instances: instances, Source: r.src,
-		Poster: NewClientPoster(officers.NewClientHQ(nil)), Logger: log.New(r.logs, "", 0), Now: func() time.Time { return testNow }})
+		Poster: NewBackendPoster(officers.NewBackends(nil)), Logger: log.New(r.logs, "", 0), Now: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
 	}

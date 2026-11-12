@@ -61,7 +61,7 @@ import (
 // officer is declared.
 type officerRuntime struct {
 	reg *officers.Registry
-	hq  *officers.ClientHQ
+	hq  *officers.Backends
 	rec *officers.Reconciler
 	// claimOwner names this process on an instance's session claim while it
 	// sends a re-prompt.
@@ -211,6 +211,9 @@ type OfficersConfig struct {
 	Officers []officers.Officer
 	// HTTPClient is the HQ client's transport; nil uses officers.NewClient's.
 	HTTPClient *http.Client
+	// Backend builds each officer's backend (officers.Backend); nil is HQ over
+	// HTTPClient (officers.NewClient). For tests.
+	Backend func(officers.Officer) officers.Backend
 	// Now is the wake loop's clock; nil is time.Now. For tests.
 	Now func() time.Time
 	// InstallSession installs the officer runtime's session source on the
@@ -305,7 +308,7 @@ func (g gatewayTranscripts) Read(ctx context.Context, o officers.Officer, instan
 // newTranscriptForwarder builds the forwarder when a declared officer enables
 // `transcript`, and nil otherwise. An enabled officer with no way to read a
 // transcript is a boot refusal, not a silent no-op.
-func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.ClientHQ) (*transcript.Forwarder, error) {
+func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.Backends) (*transcript.Forwarder, error) {
 	var on []string
 	for _, o := range cfg.Officers {
 		if o.TranscriptEnabled() {
@@ -323,7 +326,7 @@ func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.ClientH
 		}
 		src = gatewayTranscripts{s: s, r: r}
 	}
-	f, err := transcript.New(transcript.Config{Source: src, Poster: transcript.NewClientPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.TranscriptInterval})
+	f, err := transcript.New(transcript.Config{Source: src, Poster: transcript.NewBackendPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.TranscriptInterval})
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +352,11 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	reg := officers.NewRegistry(cfg.Officers)
 	hc := cfg.HTTPClient
-	hq := officers.NewClientHQ(func(o officers.Officer) *officers.Client { return officers.NewClient(o, hc) })
+	build := cfg.Backend
+	if build == nil {
+		build = func(o officers.Officer) officers.Backend { return officers.NewClient(o, hc) }
+	}
+	hq := officers.NewBackends(build)
 	fwd, err := s.newTranscriptForwarder(cfg, hq)
 	if err != nil {
 		return nil, err
@@ -386,7 +393,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	// (MUSTER_OFFICERS is read only then, so a change is a restart) and on
 	// the usage collector's cadence, sessions_today read through the SAME
 	// ledger that enforces the cap.
-	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: cfg.Officers, Poster: officers.NewClientPoolsPoster(hq),
+	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: cfg.Officers, Poster: officers.NewBackendPoolsPoster(hq),
 		Ledger: judgement, Logger: s.logger, Now: now, Interval: cfg.UsageInterval, Backoff: cfg.PoolsBackoff})
 	if err != nil {
 		return nil, err
@@ -930,7 +937,7 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	}
 	var allow []string
 	for _, d := range officerToolDefs() {
-		if officers.ToolOffered(o, d.Name) {
+		if s.officerToolServed(o, d.Name) {
 			allow = append(allow, d.Name)
 		}
 	}
@@ -1244,7 +1251,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	if !ok {
 		return toolErr("%s is available to officer instances only", name), true
 	}
-	if !officers.ToolOffered(o, name) {
+	if !s.officerToolServed(o, name) {
 		return toolErr("%s is not one of officer %s's tools", name, o.ID), true
 	}
 	var raw map[string]json.RawMessage
@@ -1269,7 +1276,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	if isShipTool(name) {
 		return s.dispatchShipTool(ctx, a, o, name, arguments), true
 	}
-	c := s.officerRT.hq.Client(o)
+	c := s.officerRT.hq.Backend(o)
 	switch name {
 	case officers.ToolKubeRead:
 		return s.officerKubeRead(ctx, a, o, c, arguments), true
@@ -1290,9 +1297,17 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	// whose field types would otherwise be a second, local schema.
 	switch name {
 	case officers.ToolObsQueries:
-		body, err := c.ObsQueries(ctx)
+		ob, serr := officers.Serves[officers.ObsBackend](c, officers.CapObs)
+		if serr != nil {
+			return notServedResult(name, serr), true
+		}
+		body, err := ob.ObsQueries(ctx)
 		return officerToolResult(name, body, err), true
 	case officers.ToolObsQuery:
+		ob, serr := officers.Serves[officers.ObsBackend](c, officers.CapObs)
+		if serr != nil {
+			return notServedResult(name, serr), true
+		}
 		args, perr := officers.ObsQueryArgs([]byte(orEmptyJSON(arguments)))
 		if perr != nil {
 			return toolErr("%v", perr), true
@@ -1319,12 +1334,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				if err := s.spendRead(o, item); err != nil {
 					return toolErr("%v", err), true
 				}
-				body, err := c.ObsQuery(ctx, args)
+				body, err := ob.ObsQuery(ctx, args)
 				s.settleRead(o, item, err)
 				return officerToolResult(name, body, err), true
 			}
 		}
-		body, err := c.ObsQuery(ctx, args)
+		body, err := ob.ObsQuery(ctx, args)
 		return officerToolResult(name, body, err), true
 	}
 	instance := a.Name
@@ -1503,7 +1518,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
 		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff}
 		var refused *officers.HQError
-		body, refused, err = c.CompleteDroppingCost(ctx, in.ItemID, instance, done)
+		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {
 			s.logger.Printf("officers: %s completed item %s without its cost: HQ refused cost_usd %.6f from %s: %s",
 				instance, in.ItemID, done.Cost.USD, done.Cost.From, refused.Error())
@@ -1540,7 +1555,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if perr != nil {
 			return toolErr("%v", perr), true
 		}
-		body, err = c.ReleaseCaptain(ctx, instance, post)
+		cb, serr := officers.Serves[officers.CaptainBackend](c, officers.CapCaptain)
+		if serr != nil {
+			return notServedResult(name, serr), true
+		}
+		body, err = cb.ReleaseCaptain(ctx, instance, post)
 	}
 	// An item's payload (payload.claims included) is HQ's data, handed on as
 	// HQ wrote it: officerToolResult returns HQ's body byte for byte. HQ
@@ -1561,8 +1580,12 @@ const askedNote = "asked. Your lease on this item has ENDED: HQ set it to waitin
 // forwarder and the LLM proxy's item meter stop for the item as on
 // complete/release, and the result says so
 // in words (askedNote): the instance's next move is to stop working the item.
-func (s *Server) officerAskPerson(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
-	body, err := c.CreateAsk(ctx, item, instance, ask)
+func (s *Server) officerAskPerson(ctx context.Context, c officers.Backend, o officers.Officer, instance string, item officers.ItemID, ask officers.Ask) string {
+	ab, err := officers.Serves[officers.AsksBackend](c, officers.CapAsks)
+	if err != nil {
+		return notServedResult(officers.ToolAskPerson, err)
+	}
+	body, err := ab.CreateAsk(ctx, item, instance, ask)
 	if err == nil {
 		s.officerItemEnded(o, instance, item)
 	}
@@ -1672,7 +1695,7 @@ var errNoClaimNext = errors.New("officers: HQ has no claim-next route")
 // nothing is claimable, {item: null, claimed: false, note} and no id. An HQ
 // without the route (404) is errNoClaimNext, which the tool answers with
 // noClaimNextNote.
-func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, instance string, lease int, tier string) ([]byte, officers.ItemID, error) {
+func (s *Server) officerClaimNext(ctx context.Context, c officers.Backend, instance string, lease int, tier string) ([]byte, officers.ItemID, error) {
 	body, err := c.ClaimNext(ctx, instance, lease, tier)
 	var hqErr *officers.HQError
 	if errors.As(err, &hqErr) && hqErr.Status == http.StatusNotFound {
@@ -1701,7 +1724,7 @@ func (s *Server) officerClaimNext(ctx context.Context, c *officers.Client, insta
 // other than item ("" = claim-next), or "" when it holds none. HQ's claimed
 // list is the truth; when it cannot be read the claim is refused (fail
 // closed: nothing is claimed without the check).
-func (s *Server) oneClaimRefusal(ctx context.Context, c *officers.Client, o officers.Officer, instance string, item officers.ItemID) string {
+func (s *Server) oneClaimRefusal(ctx context.Context, c officers.Backend, o officers.Officer, instance string, item officers.ItemID) string {
 	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		s.logger.Printf("officers: %s: %s refused for %s, the claimed items could not be read: %v", o.ID, officers.ToolClaim, instance, err)
@@ -1778,7 +1801,7 @@ const alreadyYoursNote = "already yours — lease renewed (you held this item un
 // tier is the calling instance's pool's (officers.Officer.Tier), sent on
 // every claim — the retry too — so HQ takes only an item of that tier (409
 // wrong_tier, passed back unchanged); "" (an untiered officer) sends none.
-func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item officers.ItemID, instance string, lease int, tier string) ([]byte, error) {
+func (s *Server) officerClaim(ctx context.Context, c officers.Backend, item officers.ItemID, instance string, lease int, tier string) ([]byte, error) {
 	body, err := c.Claim(ctx, item, instance, lease, tier)
 	var hqErr *officers.HQError
 	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
@@ -1876,6 +1899,22 @@ func (e *claimBlockedError) result() string {
 	})
 }
 
+// notServedResult is the refusal of tool name when the officer's backend does
+// not serve its verb (officers.ErrNotServed). An HQ backend serves every verb,
+// so an HQ officer never sees it; the listing (officerToolServed) does not
+// offer such a tool in the first place.
+func notServedResult(name string, err error) string {
+	return toolErr("%s is not available: %v", name, err)
+}
+
+// officerToolServed is THE rule for whether officer o's instances get tool
+// (officers.ToolServed): o's shape allows it AND o's backend serves its
+// capability. The listing (toolsFor), the session allow-list
+// (OfficerClaudeCodeSession), dispatch and the ask-image route all ask it.
+func (s *Server) officerToolServed(o officers.Officer, tool string) bool {
+	return officers.ToolServed(o, s.officerRT.hq.Backend(o).Capabilities(), tool)
+}
+
 // officerToolResult is HQ's answer as a tool result: HQ's JSON on success; a
 // structured refusal carrying HQ's status and body on a 4xx (a 409 on a claim
 // names the holder, which is what the instance needs); a plain retry-later on
@@ -1911,6 +1950,8 @@ func officerToolResult(name string, body []byte, err error) string {
 		return toolErr("HQ's answer to %s is over muster's 1 MiB cap, so none of it is passed on: ask for less (a smaller limit or page, a narrower filter) — the same call will fail again", name)
 	case errors.Is(err, officers.ErrHQUnavailable):
 		return toolErr("HQ is unavailable right now; try %s again in a minute", name)
+	case errors.Is(err, officers.ErrNotServed):
+		return notServedResult(name, err)
 	default:
 		return toolErr("%s failed", name)
 	}
@@ -1948,7 +1989,7 @@ func (s *Server) registerOfficerRoutes(mux Mux) {
 func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 	a, _ := agentFromContext(r.Context())
 	o, _, ok := s.officerOf(a)
-	if !ok || !officers.ToolOffered(o, officers.ToolAskPerson) {
+	if !ok || !s.officerToolServed(o, officers.ToolAskPerson) {
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": "only an officer instance may upload an ask image", "code": "not_an_officer"})
 		return
 	}
@@ -1974,7 +2015,12 @@ func (s *Server) handleOfficerAskImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := officers.AskFilename(path.Base(q.Get("filename")), ct, 1)
-	up, err := s.officerRT.hq.Client(o).UploadAskImage(r.Context(), name, ct, data)
+	ab, err := officers.Serves[officers.AsksBackend](s.officerRT.hq.Backend(o), officers.CapAsks)
+	if err != nil {
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "not_served"})
+		return
+	}
+	up, err := ab.UploadAskImage(r.Context(), name, ct, data)
 	if err == nil {
 		s.writeJSON(w, http.StatusCreated, up)
 		return

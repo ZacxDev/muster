@@ -66,7 +66,7 @@ func newCapRig(t *testing.T, tiers string) *capRig {
 // a restarted muster, which remembers nothing.
 func (r *capRig) restart(t *testing.T) {
 	t.Helper()
-	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(r.list), HQ: officers.NewClientHQ(nil), Fleet: r.fleet,
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(r.list), HQ: officers.NewBackends(nil), Fleet: r.fleet,
 		Logger: log.New(r.logs, "", 0), Now: r.clk.Now})
 	if err != nil {
 		t.Fatal(err)

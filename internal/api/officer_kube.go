@@ -161,7 +161,7 @@ func (s *Server) kubeGrantsDescription(ctx context.Context, g connectors.Grant) 
 }
 
 // officerKubeRead runs officer_kube_read for instance a of pool o.
-func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers.Officer, c *officers.Client, arguments string) string {
+func (s *Server) officerKubeRead(ctx context.Context, a agents.Agent, o officers.Officer, c officers.Backend, arguments string) string {
 	kr := s.officerRT.kube
 	if kr == nil {
 		return toolErr("officer_kube_read is not configured on this server")

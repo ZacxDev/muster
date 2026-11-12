@@ -101,7 +101,7 @@ func newCapVisRig(t *testing.T) *capVisRig {
 	r.add = func(subject string) string {
 		return hq.AddTieredItem(tierID, "gpu.alert", subject, officers.TierJudgement)
 	}
-	r.rec, err = officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewClientHQ(nil), Fleet: r.fleet,
+	r.rec, err = officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil), Fleet: r.fleet,
 		Logger: log.New(r.logs, "", 0), Now: clk.Now, Judgement: officers.NewJudgementLedger(r.store, nil, nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestTheCapLineIsPerOfficerAndResetsAtUTCMidnightWhateverTheClocksZone(t *te
 	}
 	store := &daySessions{days: map[string][]string{}}
 	logs := &bytes.Buffer{}
-	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewClientHQ(nil),
+	rec, err := officers.NewReconciler(officers.Config{Registry: officers.NewRegistry(list), HQ: officers.NewBackends(nil),
 		Fleet: &poolFleet{up: map[string]bool{}, kickoff: map[string]string{}}, Logger: log.New(logs, "", 0), Now: clk.Now,
 		Judgement: officers.NewJudgementLedger(store, nil, nil)})
 	if err != nil {

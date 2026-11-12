@@ -66,7 +66,11 @@ func obsRawToolDef() agents.ToolDef {
 }
 
 // officerObsRaw runs officer_obs_raw for instance a of pool o.
-func (s *Server) officerObsRaw(ctx context.Context, a agents.Agent, o officers.Officer, c *officers.Client, arguments string) string {
+func (s *Server) officerObsRaw(ctx context.Context, a agents.Agent, o officers.Officer, c officers.Backend, arguments string) string {
+	rb, err := officers.Serves[officers.ObsRawBackend](c, officers.CapObsRaw)
+	if err != nil {
+		return notServedResult(officers.ToolObsRaw, err)
+	}
 	rest, named, _, err := splitItemID([]byte(orEmptyJSON(arguments)))
 	if err != nil {
 		return toolErr("%v", err)
@@ -82,7 +86,7 @@ func (s *Server) officerObsRaw(ctx context.Context, a agents.Agent, o officers.O
 	if err := s.spendRead(o, item); err != nil {
 		return toolErr("%v", err)
 	}
-	ans, err := c.ObsRaw(ctx, body)
+	ans, err := rb.ObsRaw(ctx, body)
 	s.settleRead(o, item, err)
 	return officerToolResult(officers.ToolObsRaw, ans, err)
 }

@@ -50,6 +50,7 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 |---|---|---|
 | `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses, at boot, an id whose highest instance agent name (`officer-<type>-<slug>-<max>`) would not fit a namespace under the deployment's `MUSTER_AGENT_NAMESPACE_PREFIX` (63 minus the prefix: 50 under `muster-agent-`). |
 | `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
+| `backend` | `hq` | Which officer backend serves the officer: `hq` (the officer API above, with the officer's token) or `builtin` (muster's own Postgres — [the design](design/officers-first-class.md)). A `builtin` officer is a boot refusal, naming each field, if it declares `hq_url`, a `MUSTER_OFFICER_TOKEN_<NAME>`, `ship`, `ci_logs` or `transcript`; and, until the built-in backend is wired, in any case. Any other value is a boot refusal. |
 | `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account (which the [account failover](#account-failover) may change). |
 | `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
 | `poll_interval` | `1m` | How often HQ's open items are read when nothing else wakes the loop. At least `10s`. |

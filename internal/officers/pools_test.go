@@ -72,7 +72,7 @@ func newPoolsRig(t *testing.T) *poolsRig {
 func (r *poolsRig) reporter(t *testing.T, o officers.Officer) *officers.PoolsReporter {
 	t.Helper()
 	p, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: []officers.Officer{o},
-		Poster: officers.NewClientPoolsPoster(officers.NewClientHQ(nil)), Ledger: officers.NewJudgementLedger(r.store, nil, nil),
+		Poster: officers.NewBackendPoolsPoster(officers.NewBackends(nil)), Ledger: officers.NewJudgementLedger(r.store, nil, nil),
 		Logger: log.New(r.logs, "", 0), Now: func() time.Time { return r.clock }, Sleep: r.slp.sleep})
 	if err != nil {
 		t.Fatal(err)

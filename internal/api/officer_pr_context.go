@@ -50,11 +50,15 @@ func prContextToolResult(name string, body []byte, err error) string {
 }
 
 // officerPRContext runs officer_pr_context with client c.
-func officerPRContext(ctx context.Context, c *officers.Client, arguments string) string {
+func officerPRContext(ctx context.Context, c officers.Backend, arguments string) string {
+	pb, err := officers.Serves[officers.PRContextBackend](c, officers.CapPRContext)
+	if err != nil {
+		return notServedResult(officers.ToolPRContext, err)
+	}
 	a, err := officers.ParsePRContextArgs([]byte(orEmptyJSON(arguments)))
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	body, err := c.PRContext(ctx, a)
+	body, err := pb.PRContext(ctx, a)
 	return prContextToolResult(officers.ToolPRContext, body, err)
 }

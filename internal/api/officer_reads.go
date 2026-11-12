@@ -42,7 +42,7 @@ func splitItemID(raw []byte) (rest []byte, item officers.ItemID, present bool, e
 // heldItem is the item instance holds a LIVE claim on in HQ: the one it
 // names (which must be among them), or its only one. With required false, an
 // instance holding none gets "" and no error (a read that is no item's).
-func (s *Server) heldItem(ctx context.Context, c *officers.Client, instance string, named officers.ItemID, required bool) (officers.ItemID, error) {
+func (s *Server) heldItem(ctx context.Context, c officers.Backend, instance string, named officers.ItemID, required bool) (officers.ItemID, error) {
 	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
 		return "", err

@@ -87,16 +87,21 @@ type Poster interface {
 	Scrub(o officers.Officer, s string) string
 }
 
-type clientPoster struct{ hq *officers.ClientHQ }
+type backendPoster struct{ b *officers.Backends }
 
-// NewClientPoster is a Poster over each officer's own HQ client.
-func NewClientPoster(hq *officers.ClientHQ) Poster { return clientPoster{hq: hq} }
+// NewBackendPoster is a Poster over each officer's own backend. A backend
+// that does not serve transcripts answers officers.ErrNotServed.
+func NewBackendPoster(b *officers.Backends) Poster { return backendPoster{b: b} }
 
-func (p clientPoster) Post(ctx context.Context, o officers.Officer, item officers.ItemID, instance string, events []officers.TranscriptEvent) (officers.TranscriptAck, error) {
-	return p.hq.Client(o).PostTranscript(ctx, item, instance, events)
+func (p backendPoster) Post(ctx context.Context, o officers.Officer, item officers.ItemID, instance string, events []officers.TranscriptEvent) (officers.TranscriptAck, error) {
+	tb, err := officers.Serves[officers.TranscriptBackend](p.b.Backend(o), officers.CapTranscript)
+	if err != nil {
+		return officers.TranscriptAck{}, err
+	}
+	return tb.PostTranscript(ctx, item, instance, events)
 }
 
-func (p clientPoster) Scrub(o officers.Officer, s string) string { return p.hq.Client(o).Scrub(s) }
+func (p backendPoster) Scrub(o officers.Officer, s string) string { return p.b.Backend(o).Scrub(s) }
 
 // Defaults.
 const (

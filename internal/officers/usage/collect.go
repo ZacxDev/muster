@@ -69,13 +69,18 @@ type Poster interface {
 	PutUsage(ctx context.Context, o officers.Officer, r officers.UsageReport) error
 }
 
-type clientPoster struct{ hq *officers.ClientHQ }
+type backendPoster struct{ b *officers.Backends }
 
-// NewClientPoster is a Poster over each officer's own HQ client.
-func NewClientPoster(hq *officers.ClientHQ) Poster { return clientPoster{hq: hq} }
+// NewBackendPoster is a Poster over each officer's own backend. A backend
+// that does not serve usage answers officers.ErrNotServed.
+func NewBackendPoster(b *officers.Backends) Poster { return backendPoster{b: b} }
 
-func (p clientPoster) PutUsage(ctx context.Context, o officers.Officer, r officers.UsageReport) error {
-	return p.hq.Client(o).PutUsage(ctx, r)
+func (p backendPoster) PutUsage(ctx context.Context, o officers.Officer, r officers.UsageReport) error {
+	ub, err := officers.Serves[officers.UsageBackend](p.b.Backend(o), officers.CapUsage)
+	if err != nil {
+		return err
+	}
+	return ub.PutUsage(ctx, r)
 }
 
 const (

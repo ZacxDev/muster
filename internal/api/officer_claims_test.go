@@ -66,7 +66,7 @@ func TestPayloadClaimsReachTheInstanceByteForByte(t *testing.T) {
 	r.hq.SetPayload(id, string(raw))
 	// officer_items: exactly HQ's bytes.
 	out := r.tool(t, officers.ToolItems, map[string]any{})
-	page, err := r.s.officerRT.hq.Client(r.s.officerRT.reg.All()[1]).Items(context.Background(), officers.ItemsQuery{Status: officers.StatusOpen})
+	page, err := r.s.officerRT.hq.Backend(r.s.officerRT.reg.All()[1]).Items(context.Background(), officers.ItemsQuery{Status: officers.StatusOpen})
 	if err != nil {
 		t.Fatal(err)
 	}
