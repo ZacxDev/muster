@@ -45,7 +45,7 @@ function legMatch(): RegExp | RegExp[] {
 // directory. It was an unanchored /docshots\/.*\.spec\.ts/, which in a checkout
 // whose own directory name ends in "docshots" (e.g. a worktree called
 // muster-wt-docshots) matched every spec under it: `make screenshots` listed
-// 977 tests in 111 files instead of the docshots file's 13.
+// 977 tests in 111 files instead of the docshots file's own.
 const under = (d: string) => new RegExp(`^${esc(path.join(__dirname, d))}/.*\\.spec\\.ts$`);
 
 export default defineConfig({

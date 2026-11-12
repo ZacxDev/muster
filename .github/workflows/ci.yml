@@ -841,7 +841,7 @@ jobs:
   # revealBox() and this spec did not, so `make screenshots` failed at its
   # step-up (passkey) shot and the README kept a GIF of a page that no longer
   # existed. Every shot is taken here, into a temp dir — CI never rewrites
-  # docs/img — and docshots-verdict.mjs judges the JSON report: no failure, no
+  # docs/img — and `verdict.mjs --docshots` judges the JSON report: no failure, no
   # skip, every test from docshots/docs.spec.ts.
   docshots:
     name: docshots (screenshot spec, chromium)

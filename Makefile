@@ -358,7 +358,7 @@ screenshots:
 	  test "$$s" -le 2097152 || { echo "screenshots: $$f is over 2 MB"; exit 1; }; done
 
 # The screenshot spec as a CHECK: every shot taken, written to a temp dir, and
-# the JSON report judged by docshots-verdict.mjs (no failure, no skip, every
+# the JSON report judged by `verdict.mjs --docshots` (no failure, no skip, every
 # test from docshots/docs.spec.ts). 🔴 IT EXISTS BECAUSE THE GENERATOR ROTTED
 # UNSEEN: #479 collapsed the touch composer, the suite moved to revealBox() and
 # this spec did not, so `make screenshots` failed at its step-up (passkey) shot
@@ -367,7 +367,7 @@ screenshots:
 # `docshots` job runs this target.
 docshots-check:
 	@out=$$(mktemp -d) && cd e2e && MUSTER_E2E_DOCSHOTS=1 MUSTER_E2E_DOCSHOTS_OUT=$$out npx playwright test; rc=$$?; \
-	rm -rf "$$out"; node docshots-verdict.mjs test-results/results.json && exit $$rc
+	rm -rf "$$out"; node verdict.mjs --docshots test-results/results.json && exit $$rc
 
 # INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
 # temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
