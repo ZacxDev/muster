@@ -222,7 +222,7 @@ func Serves[T any](b Backend, capability string) (T, error) {
 
 // ToolCapability is THE map from an officer MCP tool to the backend
 // capability it needs: "" for a core-verb tool or one muster serves without
-// the backend (kube reads, CI logs read the cluster). known is false for a
+// the backend (kube reads; CI logs, though muster reads them, ride the ship capability like every ship tool). known is false for a
 // name this map does not classify — a new tool must be added here
 // deliberately (internal/api's ledger test fails on an unclassified one).
 func ToolCapability(tool string) (capability string, known bool) {

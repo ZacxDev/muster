@@ -19,7 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// officerBackendGolden is what every HQ officer shape is told and offered:
+// officerBackendGolden is what ten HQ officer pools are told and offered (it pins 21 of the 24 officer tools: no kube, ci_logs or shepherd shape — those three are held neutral by the capability ledger instead):
 // for each pool of each officer, the kickoff its first instance is given, the
 // MCP tools its session pre-allows, and the officer tools it is offered over
 // MCP, definitions included. It was RECORDED BEFORE the officer-backend
