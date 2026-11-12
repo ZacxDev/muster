@@ -241,6 +241,9 @@ var routeVias = map[authz.Via][]string{
 		"POST /account/chief",
 		// "Show tmux sessions" (notify_prefs.go): the session tier.
 		"POST /account/notifications/tmux",
+		// "Start notification titles with the tmux name" (notify_prefs.go):
+		// the session tier.
+		"POST /account/notifications/codename",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",

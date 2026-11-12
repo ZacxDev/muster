@@ -185,6 +185,7 @@ POST /account/credentials/openrouter
 POST /account/credentials/openrouter/delete
 POST /account/devices/pair
 POST /account/devices/{id}/remove
+POST /account/notifications/codename
 POST /account/notifications/tmux
 POST /account/passkeys/options
 POST /account/passkeys/verify

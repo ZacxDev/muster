@@ -709,11 +709,19 @@ func (s *Server) armSuccessionPush(owner, id int64) {
 			return
 		}
 		// The push names no session by the name adapter (the "Show tmux
-		// sessions" notification rule is notifyName's): the host only.
+		// sessions" notification rule is notifyName's): the host only — and,
+		// for "Start notification titles with the tmux name", the successor's
+		// window codename@host first, without the " on <host>" the front says.
 		title := "Your new session started on " + lv.Host
-		s.pushTask(owner, push.EventAgent, RouterNotification{Type: taskNotificationType, ID: proposalEventID(x), Title: title,
+		n := RouterNotification{Type: taskNotificationType, ID: proposalEventID(x), Title: title,
 			Body: "It continues " + firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey) + ". Open it.", Tag: proposalEventID(x),
-			Data: map[string]string{"url": lv.ViewPath}})
+			Data: map[string]string{"url": lv.ViewPath}}
+		if hs := s.hostDispatches(); hs != nil {
+			if hd, err := hs.HostDispatchByID(pctx, x.HostDispatchID); err == nil {
+				n.CodenameTitle, n.CodenameKeep = codenameLed("Your new session started", s.hostDispatchPlace(pctx, hd))
+			}
+		}
+		s.pushTask(owner, push.EventAgent, n)
 		s.logger.Printf("succession %d: no view opened the successor within %s; pushed its owner a link", id, delay)
 	})
 }
