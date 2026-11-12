@@ -85,8 +85,8 @@ type Fleet interface {
 	Reprompt(ctx context.Context, o Officer, n int, text string) error
 }
 
-// HQ is the part of the HQ API the loop uses. *Client satisfies it (per
-// officer); ClientHQ adapts a client factory to it.
+// HQ is the part of the officer-backend contract the loop uses, for any
+// officer. Backends adapts a per-officer Backend factory to it.
 type HQ interface {
 	AllItems(ctx context.Context, o Officer, status string) ([]Item, error)
 	Release(ctx context.Context, o Officer, item ItemID, instance string) error
@@ -98,54 +98,57 @@ type HQ interface {
 	Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error
 }
 
-// ClientHQ is HQ over one Client per officer, built by NewClient.
-type ClientHQ struct {
-	mu      sync.Mutex
-	clients map[string]*Client
-	build   func(Officer) *Client
+// Backends is every officer's Backend, built once per officer and cached. It
+// is THE way muster reaches an officer's backend: the wake loop (as HQ), the
+// MCP tools, the ship gates and the transcript, usage and pools pushers all
+// go through Backend(o).
+type Backends struct {
+	mu       sync.Mutex
+	backends map[string]Backend
+	build    func(Officer) Backend
 }
 
-// NewClientHQ returns an HQ that talks to each officer's own HQ with its own
-// token. build nil uses NewClient(o, nil).
-func NewClientHQ(build func(Officer) *Client) *ClientHQ {
+// NewBackends returns the backends built by build. build nil talks to each
+// officer's own HQ with its own token (NewClient(o, nil)).
+func NewBackends(build func(Officer) Backend) *Backends {
 	if build == nil {
-		build = func(o Officer) *Client { return NewClient(o, nil) }
+		build = func(o Officer) Backend { return NewClient(o, nil) }
 	}
-	return &ClientHQ{clients: map[string]*Client{}, build: build}
+	return &Backends{backends: map[string]Backend{}, build: build}
 }
 
-// Client returns the cached client for o.
-func (h *ClientHQ) Client(o Officer) *Client {
+// Backend returns the cached backend for o.
+func (h *Backends) Backend(o Officer) Backend {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	c, ok := h.clients[o.ID]
+	b, ok := h.backends[o.ID]
 	if !ok {
-		c = h.build(o)
-		h.clients[o.ID] = c
+		b = h.build(o)
+		h.backends[o.ID] = b
 	}
-	return c
+	return b
 }
 
 // AllItems implements HQ.
-func (h *ClientHQ) AllItems(ctx context.Context, o Officer, status string) ([]Item, error) {
-	return h.Client(o).AllItems(ctx, status)
+func (h *Backends) AllItems(ctx context.Context, o Officer, status string) ([]Item, error) {
+	return h.Backend(o).AllItems(ctx, status)
 }
 
 // Release implements HQ.
-func (h *ClientHQ) Release(ctx context.Context, o Officer, item ItemID, instance string) error {
-	_, err := h.Client(o).Release(ctx, item, instance)
+func (h *Backends) Release(ctx context.Context, o Officer, item ItemID, instance string) error {
+	_, err := h.Backend(o).Release(ctx, item, instance)
 	return err
 }
 
 // Complete implements HQ.
-func (h *ClientHQ) Complete(ctx context.Context, o Officer, item ItemID, instance string, done Completion) error {
-	_, err := h.Client(o).Complete(ctx, item, instance, done)
+func (h *Backends) Complete(ctx context.Context, o Officer, item ItemID, instance string, done Completion) error {
+	_, err := h.Backend(o).Complete(ctx, item, instance, done)
 	return err
 }
 
 // Heartbeat implements HQ.
-func (h *ClientHQ) Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error {
-	_, err := h.Client(o).Heartbeat(ctx, item, instance, leaseSeconds)
+func (h *Backends) Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error {
+	_, err := h.Backend(o).Heartbeat(ctx, item, instance, leaseSeconds)
 	return err
 }
 

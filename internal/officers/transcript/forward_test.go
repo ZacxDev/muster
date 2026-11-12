@@ -132,7 +132,7 @@ func newRig(t *testing.T, enabled bool, tweak func(*transcript.Config)) *rig {
 	r.o = officer(t, hq, enabled)
 	r.cfg = transcript.Config{
 		Source: r.src,
-		Poster: transcript.NewClientPoster(officers.NewClientHQ(nil)),
+		Poster: transcript.NewBackendPoster(officers.NewBackends(nil)),
 		Logger: log.New(r.log, "", 0),
 		Now:    func() time.Time { return r.now },
 	}

@@ -104,13 +104,18 @@ type PoolsPoster interface {
 	PutPools(ctx context.Context, o Officer, r PoolsReport) error
 }
 
-type clientPoolsPoster struct{ hq *ClientHQ }
+type backendPoolsPoster struct{ b *Backends }
 
-// NewClientPoolsPoster is a PoolsPoster over each officer's own HQ client.
-func NewClientPoolsPoster(hq *ClientHQ) PoolsPoster { return clientPoolsPoster{hq: hq} }
+// NewBackendPoolsPoster is a PoolsPoster over each officer's own backend. A
+// backend that does not serve pools answers ErrNotServed.
+func NewBackendPoolsPoster(b *Backends) PoolsPoster { return backendPoolsPoster{b: b} }
 
-func (p clientPoolsPoster) PutPools(ctx context.Context, o Officer, r PoolsReport) error {
-	return p.hq.Client(o).PutPools(ctx, r)
+func (p backendPoolsPoster) PutPools(ctx context.Context, o Officer, r PoolsReport) error {
+	pb, err := Serves[PoolsBackend](p.b.Backend(o), CapPools)
+	if err != nil {
+		return err
+	}
+	return pb.PutPools(ctx, r)
 }
 
 // DefaultPoolsInterval is the pools push's cadence: the usage collector's.
