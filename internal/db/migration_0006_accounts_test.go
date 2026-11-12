@@ -113,7 +113,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - session_episodes (0073, one row per stop of one of the owner's sessions).
 //   - officer_llm_usage (0075, the officer LLM proxy's per-day usage).
 //   - officer_judgement_sessions (0082, the judgement session cap's ledger).
-//   - officer_pr_loops (0117, a draft officer's review-loop announcements).
+//   - officer_pr_loops (0118, a draft officer's review-loop announcements).
 //   - session_tags (0086, the per-owner session tags).
 //   - asks (0089, the ask log: every question an agent put to its owner).
 //   - host_dispatches (0093, the chief's host spawns).

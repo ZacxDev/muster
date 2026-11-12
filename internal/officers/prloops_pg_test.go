@@ -11,7 +11,7 @@ import (
 )
 
 // A draft officer's review-loop announcements (prloops.go): one contract,
-// asserted on the memory store here and on officer_pr_loops (migration 0117)
+// asserted on the memory store here and on officer_pr_loops (migration 0118)
 // with a database — where the record also survives a new store on its own
 // pool (a restarted server, or the other replica).
 

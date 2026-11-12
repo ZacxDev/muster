@@ -29,7 +29,7 @@ import (
 //     authoring officer writes to it only under a held fix item
 //     (officership's loopWrite).
 //
-// Kept in muster's database (PGPRLoopStore, migration 0117) when it has one,
+// Kept in muster's database (PGPRLoopStore, migration 0118) when it has one,
 // so a restart and a second replica see the same record; else in this
 // process's memory (MemPRLoopStore), which a restart forgets.
 // ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ func (m *MemPRLoopStore) PRLoopState(_ context.Context, officer, repo string, pr
 	return m.rows[prLoopKey(officer, repo, pr)].State, nil
 }
 
-// PGPRLoopStore is PRLoopStore on officer_pr_loops (migration 0117), under
+// PGPRLoopStore is PRLoopStore on officer_pr_loops (migration 0118), under
 // row-level security: ctx must act as the officer's owner.
 type PGPRLoopStore struct{ pool *pgxpool.Pool }
 

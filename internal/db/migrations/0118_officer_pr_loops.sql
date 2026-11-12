@@ -1,4 +1,4 @@
--- muster 0117 — A DRAFT OFFICER'S REVIEW LOOPS, AS muster TOLD HQ
+-- muster 0118 — A DRAFT OFFICER'S REVIEW LOOPS, AS muster TOLD HQ
 -- (internal/officers prloops.go; docs/officers.md "The review loop through HQ").
 --
 --   officer_pr_loops   one row per (owner, officer, repository, pull request)
@@ -20,12 +20,12 @@
 -- rest, and --rls-on re-applies this file (db.RLSOn), so every statement is
 -- idempotent.
 --
--- Must apply after 0116 (the contiguity test refuses a gap).
+-- Must apply after 0117 (the contiguity test refuses a gap).
 --
 -- ROLLBACK. An older image never reads the table; roll the image back, then
 -- (optionally):
 --   DROP TABLE public.officer_pr_loops;
---   DELETE FROM schema_migrations WHERE version = 117;
+--   DELETE FROM schema_migrations WHERE version = 118;
 -- A pull request announced while rolled back is not recorded, so the newer
 -- image's loop rule does not apply to it.
 

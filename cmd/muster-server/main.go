@@ -843,7 +843,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// 0082), shared by every replica; a cap with no database is
 			// refused.
 			ocfg.Sessions = officers.NewPGSessionStore(a.pool)
-			// A draft officer's review-loop announcements (migration 0117):
+			// A draft officer's review-loop announcements (migration 0118):
 			// shared by replicas, kept across a restart.
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
 		}

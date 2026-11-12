@@ -169,6 +169,98 @@ func tmuxPlace(name string, at mirror.Place, tmux bool) string {
 	return at.String()
 }
 
+// codenameFront is THE RULE for "Start notification titles with the tmux
+// name" (notify_prefs.go): what a push title starts with — the window's
+// codename (the host's label for it, else its tmux address: at.Code, as "Show
+// tmux sessions" falls back) and its host, compact: "mango:1@laptop",
+// "scratch3:5@laptop". The host is in it because hosts build their labels from
+// one shared slot table, so "mango:1" alone can be two windows. "" for no
+// window (an agent, a session no window shows now).
+func codenameFront(at mirror.Place) string {
+	if at.Code == "" {
+		return ""
+	}
+	if at.Host == "" {
+		return at.Code
+	}
+	return at.Code + "@" + at.Host
+}
+
+// codenamePlace is how a codename-first title names a window by no human
+// name: codenameFront, then — when the front's codename is the host's label,
+// not the tmux address itself — " · tmux <address>", so the title still
+// carries a typeable target (mirror.Where's rule: a label is never a window's
+// only name), then the host-offline mark when its host has dropped:
+//
+//	mango:1@ws · tmux scratch13:1
+//	main:1@ws                       (an unlabelled window: the front IS its address)
+//
+// "" for no window.
+func codenamePlace(at mirror.Place) string {
+	front := codenameFront(at)
+	if front == "" {
+		return ""
+	}
+	if at.Addr != "" && at.Addr != at.Code {
+		front += mirror.QualifierSep + "tmux " + at.Addr
+	}
+	if at.Offline {
+		front += whereHostOffline
+	}
+	return front
+}
+
+// codenameTitle is a push title that names a mirrored session by words — its
+// HUMAN name, never notifyName's decorated one, so with "Show tmux sessions"
+// on too the place is said ONCE, at the front — followed by rest, with
+// codenameFront and " · " IN FRONT; keep is the part the title rule keeps
+// verbatim (goNotify's TitleKeep for it):
+//
+//	mango:1@laptop · Billing migration needs you
+//
+// A human name that IS the codename is replaced by the front ("mango:1@laptop
+// is asking": no codename twice). A session with NO human name is named by
+// codenamePlace ("mango:1@ws · tmux scratch13:1 is asking", "main:1@ws is
+// asking"). "" (the push keeps its title) for no window — at must be a window
+// a host lists NOW: the front is what the owner jumps to.
+func codenameTitle(words, rest string, at mirror.Place) (title, keep string) {
+	front := codenameFront(at)
+	switch {
+	case front == "":
+		return "", ""
+	case words == "":
+		keep = codenamePlace(at)
+		return keep + rest, keep
+	case words == at.Code:
+		return front + rest, front
+	}
+	keep = front + mirror.QualifierSep + words
+	return keep + rest, keep
+}
+
+// codenameLed is a push title about a tmux window that names it by no human
+// name — the waiting window's fixed title, a host dispatch's outcome, a
+// successor's start — with codenameFront and " · " in front, and keep the
+// front alone (the rest of title is plained as before):
+//
+//	mango:1@laptop · A session is waiting on you
+//	agents:3@atlas · Claude Code is waiting for you: …
+//
+// The caller passes title WITHOUT its own " on <host>", which the front now
+// says. "" for no window.
+//
+// Surfaces only DECLARE these titles (RouterNotification.CodenameTitle);
+// goNotify, the one push title sink, sends one instead of Title when the
+// owner turned the switch on. Every push title is classified
+// (TestEveryPushTitleIsClassifiedForCodenameFirst).
+func codenameLed(title string, at mirror.Place) (string, string) {
+	front := codenameFront(at)
+	if front == "" {
+		return "", ""
+	}
+	return front + mirror.QualifierSep + title, front
+}
+
 // storedName is sub's stored name halves, the zero value for none.
 func (s *Server) storedName(ctx context.Context, sub focus.Subject) focus.Name {
 	if s.ext.Focus == nil {

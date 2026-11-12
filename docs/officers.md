@@ -1561,7 +1561,7 @@ officers API:
   authoring officer is in shadow) is expected and logged as a note; any other
   failure is logged and posted as an HQ notice.
   - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
-    0117, in muster's database; in memory without one): `pending` until HQ's
+    0118, in muster's database; in memory without one): `pending` until HQ's
     200, then `in_loop` (the 200 named a loop item: the rule above applies)
     or `no_taker`, or `closed` (`officer_shadow`, or the pull request closed
     first). The draft sweep (every 5 minutes) re-announces **only** a

@@ -252,11 +252,11 @@ const askAttemptsMigrationVersion = 113
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
 const pagesMigrationVersion = 116
 
-// officerPRLoopsMigrationVersion is 0117: officer_pr_loops (a draft officer's
+// officerPRLoopsMigrationVersion is 0118: officer_pr_loops (a draft officer's
 // review-loop announcements, internal/officers prloops.go), owned and under
 // the same row-level security; same treatment again. Its body is idempotent.
 // 🔴 RENUMBER IT WITH THE FILE if the migration is renumbered at merge.
-const officerPRLoopsMigrationVersion = 117
+const officerPRLoopsMigrationVersion = 118
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
