@@ -98,6 +98,41 @@ type HQ interface {
 	Heartbeat(ctx context.Context, o Officer, item ItemID, instance string, leaseSeconds int) error
 }
 
+// SwitchGated is a backend whose on/off switch (Backend.Enabled) the wake
+// loop honours: while it answers false, the officer's instances are stopped
+// and none is started, whatever its queue holds. The built-in backend is one —
+// its switch (`muster officer def`) is the only "off" a builtin officer has.
+// HQ is NOT: the loop has always read only an HQ officer's items, and an HQ
+// officer's switch is HQ's to honour (its queue and its routes), so an HQ
+// officer's passes make no extra request.
+type SwitchGated interface {
+	// SwitchGatesWake marks the backend; it does nothing.
+	SwitchGatesWake()
+}
+
+// errSwitchedOff is observe's answer for an officer whose SwitchGated
+// backend is switched off: not a failure, a pass that stops its instances.
+var errSwitchedOff = errors.New("officers: the officer is switched off in its backend")
+
+// SwitchedOff reports whether o's backend is SwitchGated and switched off.
+// A backend that is not SwitchGated is never off (no request is made); an
+// unreadable switch is an error, never "on".
+func (h *Backends) SwitchedOff(ctx context.Context, o Officer) (bool, error) {
+	b := h.Backend(o)
+	if _, gated := b.(SwitchGated); !gated {
+		return false, nil
+	}
+	on, err := b.Enabled(ctx)
+	return !on && err == nil, err
+}
+
+// switchReader is the part of the loop's HQ that reads a SwitchGated
+// backend's switch (Backends.SwitchedOff), asserted so that an HQ without it
+// (every test fake) is never switched off.
+type switchReader interface {
+	SwitchedOff(ctx context.Context, o Officer) (bool, error)
+}
+
 // Backends is every officer's Backend, built once per officer and cached. It
 // is THE way muster reaches an officer's backend: the wake loop (as HQ), the
 // MCP tools, the ship gates and the transcript, usage and pools pushers all
@@ -471,6 +506,9 @@ type officerState struct {
 	// was last logged, so the line is written once per (officer, UTC day).
 	capReached   bool
 	capLoggedDay string
+	// switchedOff: the last pass found the officer's backend switch off
+	// (SwitchGated): logged when it turns off and when it turns on again.
+	switchedOff bool
 }
 
 // refusedCap is one refused cap escalation the loop remembers.
@@ -611,6 +649,9 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 
 	pools := o.Pools()
 	obs, err := r.observe(ctx, pools)
+	if errors.Is(err, errSwitchedOff) {
+		return r.switchedOffPass(ctx, o, now)
+	}
 	if err != nil {
 		r.mu.Lock()
 		// A pass that saw nothing cannot say the pool is held back by its
@@ -653,7 +694,10 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		// ever behind a revoked token is the wrong way to wait, so the officer is
 		// scaled to zero; it wakes normally once HQ answers again. Logged once
 		// per change, counted on the gauge.
-		if changed {
+		if changed && o.IsBuiltin() {
+			r.log.Printf("officers: %s: the built-in backend does not define this officer (answered %s on %d consecutive passes): a CONFIGURATION fault — define it in the built-in store (docs/officers.md). "+
+				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, refusal, strikes, next.Sub(now).Round(time.Second))
+		} else if changed {
 			r.log.Printf("officers: %s: HQ refuses this officer (HQ answered %s on %d consecutive passes): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+
 				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, refusal, strikes, TokenEnvPrefix, TokenEnvSuffix(o.ID), o.ID, next.Sub(now).Round(time.Second))
 		}
@@ -677,6 +721,10 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	if s.fault != "" {
 		r.log.Printf("officers: %s: HQ answers again (was a configuration fault: HQ answered %s)", o.ID, s.fault)
 		s.fault = ""
+	}
+	if s.switchedOff {
+		r.log.Printf("officers: %s: switched on again in its backend", o.ID)
+		s.switchedOff = false
 	}
 	s.strikes = 0
 	s.failures = 0
@@ -753,6 +801,41 @@ func (r *Reconciler) actAll(ctx context.Context, pools []Officer, ds []Decision,
 		res.Routine = &d
 	}
 	return res
+}
+
+// switchedOffPass is a pass for an officer whose SwitchGated backend is
+// switched off: every up instance of every pool is stopped, nothing is
+// started, and the officer is checked again after its poll interval (an
+// answer, not a failure: no backoff). Logged when the switch turns off; the
+// next ordinary pass logs it on again.
+func (r *Reconciler) switchedOffPass(ctx context.Context, o Officer, now time.Time) PassResult {
+	r.mu.Lock()
+	s := r.st(o.ID)
+	turned := !s.switchedOff
+	s.switchedOff = true
+	s.failures, s.strikes, s.fault, s.capReached = 0, 0, "", false
+	s.nextAt = now.Add(o.PollInterval)
+	r.mu.Unlock()
+	r.publish()
+	if turned {
+		r.log.Printf("officers: %s: switched OFF in its backend: stopping its instances; none starts until it is switched on", o.ID)
+	}
+	pools := o.Pools()
+	ds := make([]Decision, len(pools))
+	for i, p := range pools {
+		insts, err := r.fleet.Instances(ctx, p)
+		if err != nil {
+			return PassResult{Err: err}
+		}
+		ds[i] = Decision{StopReason: "switched off in its backend"}
+		for _, in := range insts {
+			if in.Up {
+				ds[i].Stop = append(ds[i].Stop, in.N)
+			}
+		}
+		sort.Ints(ds[i].Stop)
+	}
+	return r.actAll(ctx, pools, ds, nil)
 }
 
 // scaleDownForFault stops every up instance of o (HQ refuses it permanently).
@@ -846,6 +929,15 @@ func (r *Reconciler) publish() {
 // Any failed read fails the whole pass, as for an untiered officer.
 func (r *Reconciler) observe(ctx context.Context, pools []Officer) ([]Observation, error) {
 	o := pools[0]
+	if sw, ok := r.hq.(switchReader); ok {
+		off, err := sw.SwitchedOff(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		if off {
+			return nil, errSwitchedOff
+		}
+	}
 	open, err := r.hq.AllItems(ctx, o, StatusOpen)
 	if err != nil {
 		return nil, err

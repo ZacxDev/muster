@@ -141,6 +141,11 @@ type Officer struct {
 	// officer_kube_read over the clusters it names (kube.go). It needs Tiers.
 	// nil (the default) offers no cluster read.
 	Kube *Kube `json:"-"`
+	// Backend is which officer backend serves the officer: BackendHQ (an
+	// external HQ over HTTPS with the officer's token, the default) or
+	// BackendBuiltin (muster's own Postgres, internal/officers/builtin).
+	// Parse sets it; "" reads as BackendHQ (Officer.BackendKind).
+	Backend string `json:"-"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -155,12 +160,29 @@ func (o Officer) Token() string { return o.token }
 // builds an Officer outside Parse.
 func (o Officer) WithToken(token string) Officer { o.token = token; return o }
 
+// BackendKind is the officer's backend: BackendBuiltin, or BackendHQ (also
+// for an Officer built outside Parse with no Backend). THE one read of
+// Officer.Backend.
+func (o Officer) BackendKind() string {
+	if o.Backend == BackendBuiltin {
+		return BackendBuiltin
+	}
+	return BackendHQ
+}
+
+// IsBuiltin reports whether muster's built-in backend serves o.
+func (o Officer) IsBuiltin() bool { return o.BackendKind() == BackendBuiltin }
+
 // String names the officer without its token.
 func (o Officer) String() string {
-	if o.Tiers != nil {
-		return fmt.Sprintf("officer %s (hq %s, judgement max %d, routine max %d, idle %s, poll %s)", o.ID, o.HQURL, o.Tiers.Judgement.MaxInstances, o.Tiers.Routine.MaxInstances, o.IdleAfter, o.PollInterval)
+	where := "hq " + o.HQURL
+	if o.IsBuiltin() {
+		where = "backend builtin"
 	}
-	return fmt.Sprintf("officer %s (hq %s, max %d, idle %s, poll %s)", o.ID, o.HQURL, o.MaxInstances, o.IdleAfter, o.PollInterval)
+	if o.Tiers != nil {
+		return fmt.Sprintf("officer %s (%s, judgement max %d, routine max %d, idle %s, poll %s)", o.ID, where, o.Tiers.Judgement.MaxInstances, o.Tiers.Routine.MaxInstances, o.IdleAfter, o.PollInterval)
+	}
+	return fmt.Sprintf("officer %s (%s, max %d, idle %s, poll %s)", o.ID, where, o.MaxInstances, o.IdleAfter, o.PollInterval)
 }
 
 // GoString is String, so %#v cannot print the token either.
@@ -204,22 +226,18 @@ const (
 	// BackendHQ is an external HQ over HTTPS with the officer's token: the
 	// default, and the only backend before officer-backend/v1.
 	BackendHQ = "hq"
-	// BackendBuiltin is muster's own Postgres (internal/officers/builtin; not
-	// wired yet, muster#503 slice 5).
+	// BackendBuiltin is muster's own Postgres (internal/officers/builtin):
+	// the officer's type, charter, switch and queue live in muster's database,
+	// defined with `muster officer` (docs/officers.md).
 	BackendBuiltin = "builtin"
 )
 
-// errBuiltinNotWired is the refusal of a builtin officer that passes every
-// builtin rule: the built-in backend's store exists but no officer runs on it
-// yet (muster#503 slice 5 wires it). Refused, never run against nothing.
-var errBuiltinNotWired = errors.New(`backend "builtin" is not available in this build yet (muster does not run officers on it yet): declare "backend": "hq" or remove the officer`)
-
-// parseBackend is the declaration's backend: "" and "hq" are BackendHQ; and
-// "builtin" is refused at boot, FAIL CLOSED, when the officer declares
-// anything that only means something with an external HQ — hq_url, a token in
-// the environment, ship or ci_logs (the ship gates' notices, preflight and
-// switch are HQ's), or transcript forwarding (HQ's transcript store) — and,
-// until the built-in backend is wired, in any case (errBuiltinNotWired).
+// parseBackend is the declaration's backend: "" and "hq" are BackendHQ, and
+// "builtin" is BackendBuiltin — refused at boot, FAIL CLOSED, when the
+// officer declares anything that only means something with an external HQ:
+// hq_url, a token in the environment, ship or ci_logs (the ship gates'
+// notices, preflight and switch are HQ's), or transcript forwarding (HQ's
+// transcript store).
 func (d declared) parseBackend(getenv func(string) string) (string, error) {
 	switch strings.TrimSpace(d.Backend) {
 	case "", BackendHQ:
@@ -248,7 +266,7 @@ func (d declared) parseBackend(getenv func(string) string) (string, error) {
 	if len(refused) > 0 {
 		return "", fmt.Errorf(`backend "builtin" refuses %s`, strings.Join(refused, "; "))
 	}
-	return "", errBuiltinNotWired
+	return BackendBuiltin, nil
 }
 
 // Transcript is an officer's `transcript` block: whether its instances' live
@@ -442,15 +460,21 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	}
 	// The backend first: a builtin officer is refused (naming everything it
 	// may not declare) before any HQ-only check reads as the reason.
-	if _, err := d.parseBackend(getenv); err != nil {
+	backend, err := d.parseBackend(getenv)
+	if err != nil {
 		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 	}
-	u, err := url.Parse(o.HQURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return Officer{}, fmt.Errorf("officer %s: hq_url %q is not an http(s) URL", o.ID, d.HQURL)
-	}
-	if u.User != nil {
-		return Officer{}, fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+	o.Backend = backend
+	// 🔴 hq_url and the token are HQ's: a builtin officer has neither
+	// (parseBackend refused both), and its backend is muster's own database.
+	if !o.IsBuiltin() {
+		u, err := url.Parse(o.HQURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Officer{}, fmt.Errorf("officer %s: hq_url %q is not an http(s) URL", o.ID, d.HQURL)
+		}
+		if u.User != nil {
+			return Officer{}, fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+		}
 	}
 	if o.Model != "" {
 		if err := podagent.ValidModel(o.Model); err != nil {
@@ -613,6 +637,9 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
 		o.Tiers.Judgement.LLM, o.Tiers.Judgement.llmRaw = l, nil
+	}
+	if o.IsBuiltin() {
+		return o, nil
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

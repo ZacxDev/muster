@@ -748,4 +748,4 @@ Standing Claude Code agents with a job description, woken by a queue kept in
   `MUSTER_AGENT_CONNECT_URL`).
 - **Not available in the Compose stack**: `MUSTER_OFFICERS` and the
   per-officer `MUSTER_OFFICER_*_<NAME>` variables are not forwarded.
-- **Check:** `officers: ON — N declared in MUSTER_OFFICERS; …`.
+- **Check:** `officers: ON — N declared in MUSTER_OFFICERS (H on HQ, B on the built-in backend); …`, then one `officers: <id> backend …` line per officer.
