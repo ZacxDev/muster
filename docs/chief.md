@@ -321,8 +321,11 @@ asks you which with an `ask_owner` card. It never picks one for you.
 
 **Mirrored dispatch.** Say "mirrored" and the agent starts in a new window of
 the tmux session `agents` on one of your hosts, in a fresh git worktree, running
-Claude Code in its normal permission mode, or opencode, so its asks reach you on
-muster. "Mirrored on <host> with Claude" is `host/<host>/claude`; "mirrored on
+Claude Code or opencode. By default the host starts it **without permission
+prompts**, so it runs its tools without asking you; a host with
+`-agent-spawn-skip-permissions=false` starts Claude Code in its normal
+permission mode instead, so its asks reach you on muster
+([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). "Mirrored on <host> with Claude" is `host/<host>/claude`; "mirrored on
 <host> with opencode on <model>" is `host/<host>/opencode`, whose `model` is
 required: an OpenRouter id, which the host checks against its own opencode's
 models. Name no host and muster asks you with a card listing the hosts that can

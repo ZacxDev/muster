@@ -427,6 +427,16 @@ type Msg struct {
 	// (TypeAgentSpawn, agentspawn.go): -interactive with -agent-spawn, and
 	// each runtime's binary found. Empty for every other host.
 	AgentSpawn []string `json:"agentSpawn,omitempty"`
+	// AgentSpawnSkipPermissions (hello) is the host saying it starts the
+	// CLAUDE CODE agents it spawns WITHOUT permission prompts
+	// (-agent-spawn-skip-permissions, on by default; never on a root mirror,
+	// where Claude Code refuses bypassPermissions). It is one bool per host,
+	// not per runtime, because Claude Code's is the only wording muster varies
+	// by it: an opencode spawn is told it does not ask either way. muster only
+	// words its prompts by it (what the agent and the chief are told): the HOST
+	// builds the argv, and nothing muster sends changes it. An older host never
+	// sets it, and starts in normal permission mode, which is what false reads as.
+	AgentSpawnSkipPermissions bool `json:"agentSpawnSkipPermissions,omitempty"`
 	// Dispatch is the host dispatch an agent-spawn / agent-spawned is for, or
 	// the one a paste is for (ForDispatch: the host checks the window's tag).
 	Dispatch int64 `json:"dispatch,omitempty"`

@@ -190,6 +190,15 @@ These are binding, and this page does not reopen them.
    - Spawned agents count toward the chief's existing live and daily caps.
    - Claude Code starts in its **normal** permission mode, so its prompts reach
      the owner as asks (Claude's waiting state, already shipped).
+   - **Amended (operator, 2026-11-11: "muster doesn't deal with permission prompts, it assumes you are using automode/skip permissions … ensure [dispatched sessions] use skip permission … a setting, default on").** By default the host starts a spawned
+     agent **without permission prompts**: claude with `--permission-mode
+     bypassPermissions`, opencode with `--auto`. The host's
+     `-agent-spawn-skip-permissions=false` restores the two bullets above
+     exactly. The host says which in its hello (`agentSpawnSkipPermissions`),
+     and muster words the agent's prompt and the chief's `next` by it
+     ([mirroring.md](../mirroring.md#permission-prompts-in-a-spawned-agent)).
+     Where this page says "normal permission mode" or "no permission flag"
+     below, read it as that setting turned off.
    - **Amended (operator, #522 round 0, Q1 (a): "opencode should run with no
      asking").** opencode starts in its own **allow-by-default** mode and
      **does not ask**: muster enforces no ask-on-shell for it. Measured, with no
@@ -1126,7 +1135,10 @@ tell its owner where the agent is running.
 
 `next` for a host spawn reads: *"Started in a new window of the agents session
 on `<host>`. It asks your owner before using tools, and those asks reach them
-on muster. Do not start another."* For opencode the result also carries
+on muster. Do not start another."* — on a host with
+`-agent-spawn-skip-permissions=false`; by default (decision 3, amended) its
+second sentence is *"It runs without permission prompts (Claude Code's
+bypassPermissions mode), so it uses tools without asking."* For opencode the result also carries
 `model`.
 
 ### 2.8 Mirrored dispatch: choosing host, runtime and model
@@ -1648,8 +1660,11 @@ git -C <clone> worktree add --no-track -b muster/<dispatch>-<slug> <dir> refs/re
 
 The host builds the argv itself, from constants plus values it created: the
 session id it chose, and the path of the prompt file it wrote. muster sends no
-flag, no path and no binary. The spawn has **no permission flag of any kind**,
-so both programs start in their normal modes (decision 3). See
+flag, no path and no binary. The spawn had **no permission flag of any kind**,
+so both programs started in their normal modes (decision 3). **Amended
+(decision 3):** by default it now carries each runtime's own constant
+permission word (`--permission-mode bypassPermissions`, `--auto`); with
+`-agent-spawn-skip-permissions=false` it carries none, as described here. See
 [5.1](#51-who-can-trigger-a-spawn) for what a repository's own settings can
 still change.
 
@@ -2731,6 +2746,12 @@ agent the chief itself started on that task, which already holds the task's
 text, and which runs in normal permission mode, so any tool use it is talked
 into still asks the owner.
 
+**Amended (operator decision, 2026-11-11; decision 3, amended).** With the
+host's `-agent-spawn-skip-permissions` on (the default), a spawned window runs
+its tools without asking, so outside text a chief forwards into it (plugin
+task events among it) can make it run tools unattended. Such forwards are
+allowed. With the setting off, the bound above holds as written.
+
 The answer is today's, with `forwarded_to` becoming `{host, window,
 dispatch}` for a host target.
 
@@ -2924,7 +2945,7 @@ test of that option through the tool, with the same refusals.
 | server | **`connectedRepo(repo)`** (`task_routing.go:926-944`) passes, for **every** host target, before anything is reserved. This is the same check, and the same refusal sentences, a pod gets |
 | server | the caps hold |
 | host | `-interactive`, `-agent-spawn`, and the default tmux server; for opencode, `-opencode-send` and a token |
-| agent | **claude:** normal permission mode, so tool use the settings in force do not allow is an ask on muster. **opencode: no ask** (decision 3, amended): it runs allow-by-default, bounded by the owner's opencode deny rules and guard plugin, the repository allow-list on the host, and `connectedRepo` above |
+| agent | **claude:** by default (decision 3, amended) **no ask**: started with `--permission-mode bypassPermissions`; with the host's `-agent-spawn-skip-permissions=false`, normal permission mode, so tool use the settings in force do not allow is an ask on muster. **opencode: no ask** (decision 3, amended): it runs allow-by-default, bounded by the owner's opencode deny rules and guard plugin, the repository allow-list on the host, and `connectedRepo` above |
 | host | the repository is on `-agent-spawn-repos` (by its exact name, or `<owner>/*` for its owner; case-insensitive); the spawn rate limit holds; the audit log's first line is written ([5.5](#55-a-compromised-server)) |
 | host | the runtime is one of two constants; `repo` resolves to exactly one clone under a root; `base` passes `check-ref-format`; the tmux server already exists |
 
@@ -2997,6 +3018,12 @@ permission mode**, not an isolation boundary:
   that the owner's settings do not allow by default, so it reaches the owner
   as an ask. An owner, or a repository's settings (which `connectedRepo`
   bounds), that allows arbitrary shell also allows these.
+- **Amended (operator decision, 2026-11-11; decision 3, amended).** With the
+  host's `-agent-spawn-skip-permissions` on (the default), a spawned window
+  runs its tools without asking, so none of these reaches the owner as an ask,
+  and outside text forwarded into it ([3.10](#310-forwarding-into-a-host-spawned-agent))
+  can make it run tools unattended. Such forwards are allowed. With the
+  setting off, normal permission mode stands in the way as written above.
 - **What it does stop** is the plain case: an agent that simply calls
   `attention_answer`, or `agent_destroy` on its own dispatch, as itself.
 
@@ -3104,6 +3131,15 @@ per hour ([3.10](#310-forwarding-into-a-host-spawned-agent)).
       That is a mitigation, not a boundary. The settings in force are the
       owner's own plus the repository's `.claude/settings.json`, which can
       allow more.
+      **Amended (operator decision, 2026-11-11; decision 3, amended):** that
+      holds only with the host's `-agent-spawn-skip-permissions=false`. With
+      it on (the default), claude starts with `--permission-mode
+      bypassPermissions` and runs its tools without asking, so outside text
+      that reaches its window, in the first message or forwarded later
+      ([3.10](#310-forwarding-into-a-host-spawned-agent)), can make it run
+      tools unattended. Such forwards are allowed. A root host is the
+      exception: there claude keeps normal permission mode
+      ([mirroring.md](../mirroring.md#permission-prompts-in-a-spawned-agent)).
     - **opencode does not ask** (decision 3, amended): it runs in its own
       allow-by-default mode, and no ask stands between a relayed prompt and
       its tools. Its limits are the owner's opencode **deny rules and guard plugin**, the host's
@@ -3175,7 +3211,7 @@ increment below is measured against it, not against zero.
 | **repository allow-list** | `-agent-spawn-repos`, **empty by default**: only repositories the owner listed **on the host** can be spawned in, and only from one clone under a root. An entry `<owner>/*` (the operator's choice, Q1) admits every repository of that owner, matched by equality on the owner, never a prefix. Under this threat a wildcard bounds the OWNER only: within that owner, the bound is which repositories have a clone directly under a root, and `connectedRepo` is a server check that bounds nothing here. List exact names on a host whose roots hold clones you would not spawn in | [3.2](#32-the-flag), [3.3](#33-worktrees) |
 | **directory allow-list** | worktrees go only under `-agent-spawn-dir`, the trust entry is written only for a directory exactly two levels below it that this spawn created, and the prompt file only under `$XDG_RUNTIME_DIR` | [3.3](#33-worktrees), [3.6.1](#361-claude-codes-folder-trust-entry) |
 | **fixed programs and argv** | the runtime is one of two constants; the host builds every argv word from constants and values it validated; no flag, path or binary comes from the server; the model travels as a JSON field, never an argument, and must be in the host's own OpenRouter catalog | [3.6](#36-the-commands-and-prompt-delivery) |
-| **no permission flags** | neither runtime is ever started with a permission-skipping flag. (A repository's own settings can still allow more; the repository allow-list limits which repositories those are) | [3.6](#36-the-commands-and-prompt-delivery), [5.1](#51-who-can-trigger-a-spawn) |
+| **no permission flags** (**amended**, decision 3: only with `-agent-spawn-skip-permissions=false`; by default each runtime gets its own constant permission-skipping word, and the bounds that remain are the rows above and below, not an ask) | neither runtime is ever started with a permission-skipping flag. (A repository's own settings can still allow more; the repository allow-list limits which repositories those are) | [3.6](#36-the-commands-and-prompt-delivery), [5.1](#51-who-can-trigger-a-spawn) |
 | **rate limit** | `-agent-spawn-rate`, default 3 per 10 minutes and 10 per 24 hours, counted from the audit log below, so a mirror restart does not reset it | [3.2](#32-the-flag) |
 | **audit log** | every spawn request, refused or not, is recorded on the host before any work starts | below |
 | **forward limit** | 12 forwards per window per hour, and only into windows whose own tag matches | [3.10](#310-forwarding-into-a-host-spawned-agent) |

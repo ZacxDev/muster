@@ -156,8 +156,8 @@ func TestTmuxASpawnedOpenCodeRunsItsModelAndGetsThePromptAfterTheBind(t *testing
 			t.Fatalf("the session's directory %q, want the worktree %q (%v)", s.Location.Directory, w.Worktree, err)
 		}
 		argv := r.recOf(t, "oc-"+strconv.FormatInt(d, 10))
-		if !slices.Equal(argv, []string{"opencode", "--opencode-bin", filepath.Join(r.bin, "opencode"), "-s", sid}) {
-			t.Fatalf("prompt %q: the launcher saw %q; want [opencode --opencode-bin <the checked opencode> -s %s]", tail, argv, sid)
+		if !slices.Equal(argv, []string{"opencode", "--opencode-bin", filepath.Join(r.bin, "opencode"), "-s", sid, "--auto"}) {
+			t.Fatalf("prompt %q: the launcher saw %q; want [opencode --opencode-bin <the checked opencode> -s %s --auto]", tail, argv, sid)
 		}
 		wantName := "oc-" + strconv.FormatInt(d, 10) + "-9-fix-the-typo"
 		if got := r.tmux(t, "display-message", "-p", "-t", w.Window, "#{session_name} #{window_name}"); got != mirror.AgentSpawnSession+" "+wantName {

@@ -144,6 +144,11 @@ type HostView struct {
 	// AgentSpawn is the runtimes the host advertised it starts for the chief
 	// (Msg.AgentSpawn), for an -interactive host only; nil otherwise.
 	AgentSpawn []string
+	// AgentSpawnSkipPermissions: the host advertised that it starts its
+	// spawned Claude Code agents without permission prompts
+	// (Msg.AgentSpawnSkipPermissions);
+	// false whenever AgentSpawn is empty.
+	AgentSpawnSkipPermissions bool
 	// AgentClose: the host ends an agent window on muster's request
 	// (Msg.AgentClose, agentclose.go), for an -interactive host only.
 	AgentClose bool
@@ -431,6 +436,9 @@ type hostConn struct {
 	// agentSpawn: the runtimes the host advertised it spawns (Msg.AgentSpawn),
 	// for a v2 -interactive host only (agentspawn.go).
 	agentSpawn []string
+	// agentSpawnSkip: the host advertised Msg.AgentSpawnSkipPermissions beside
+	// a runtime it spawns.
+	agentSpawnSkip bool
 	// runtimeAnswers: per runtime that answers its own asks (RuntimeSpec.Answers),
 	// whether the host advertised that it does (Msg.OpenCodeAnswer), speaks
 	// v2 and is -interactive.
@@ -523,7 +531,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentClose: hc.agentClose,
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
 			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
 		hc.mu.Unlock()
@@ -799,6 +807,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
 		// Starting an agent likewise, and only the runtimes this muster knows.
 		hc.agentSpawn = spawnRuntimesOf(hello)
+		hc.agentSpawnSkip = hello.AgentSpawnSkipPermissions && len(hc.agentSpawn) > 0
 		// Ending an agent (agentclose.go): -interactive hosts only.
 		hc.agentClose = hello.AgentClose && hello.Interactive
 		// Each runtime's answer switch: answering its ask is a write into

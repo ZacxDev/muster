@@ -33,7 +33,10 @@ is in [A sent message shows at once](#a-sent-message-shows-at-once).
   on its terminal, a nested terminal multiplexer, or processes it cannot read,
   and nothing is pasted
   ([mirroring.md](mirroring.md#what-the-host-never-types-into)).
-- 🔴 **Never into a Claude Code prompt.** The Rendered view's Send, Send now and
+- 🔴 **Never into a Claude Code prompt.** muster assumes sessions run without
+  permission prompts (the agents a host starts for your chief do by default,
+  [mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)), so this
+  is the guard for one that appears anyway. The Rendered view's Send, Send now and
   a queued or routed message are refused while the window's Claude Code is
   waiting on you (a permission prompt, a question, a menu): the paste's Enter
   would answer it, for example approve a tool call. muster refuses a window its

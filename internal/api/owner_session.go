@@ -18,7 +18,9 @@ import "context"
 //
 // ⚠ A MITIGATION, NOT A BOUNDARY. The pane is the caller's claim
 // (X-Muster-Pane) and an agent with a shell can clear its own window's tag:
-// both are shell commands normal permission mode puts to the owner as an ask.
+// both are shell commands normal permission mode puts to the owner as an ask,
+// and a host-spawned agent started without permission prompts (its host's
+// default, -agent-spawn-skip-permissions) runs without any ask at all.
 // What it stops is the plain case — an agent calling attention_answer, or
 // agent_destroy on its own dispatch, as itself.
 // ---------------------------------------------------------------------------

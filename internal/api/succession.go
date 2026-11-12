@@ -229,16 +229,16 @@ func kickoffInvisible(r rune) bool {
 // kickoff came from, then THE KICKOFF EXACTLY AS COPIED, then muster's rules.
 // Nothing in it is cut: successorPromptRoom says what fits, and a kickoff over
 // it is refused before anything is proposed or started.
-func successorPrompt(runtime, host, repo string, x plugins.Proposal, kickoff string) string {
-	head, tail := successorPromptFrame(runtime, host, repo, x)
+func successorPrompt(runtime, host, repo string, x plugins.Proposal, kickoff string, skip bool) string {
+	head, tail := successorPromptFrame(runtime, host, repo, x, skip)
 	return head + kickoff + tail
 }
 
 // successorPromptFrame is the successor prompt's text before and after the
 // kickoff.
-func successorPromptFrame(runtime, host, repo string, x plugins.Proposal) (string, string) {
+func successorPromptFrame(runtime, host, repo string, x plugins.Proposal, skip bool) (string, string) {
 	head := mirror.SpawnPreface + " on " + host + ", in a fresh git worktree of " + repo +
-		" (a branch of its own, cut from the remote). " + spawnPermissionSentence(runtime) + "\n\n" +
+		" (a branch of its own, cut from the remote). " + spawnPermissionSentence(runtime, skip) + "\n\n" +
 		"muster: your owner tapped Start on a card that showed them the kickoff below, copied byte for byte from the transcript of " +
 		oneLine(x.SubjectRuntime) + " session " + oneLine(x.SubjectKey) + " on " + oneLine(x.SubjectHost)
 	if t := oneLine(x.SubjectTitle); t != "" {
@@ -251,10 +251,16 @@ func successorPromptFrame(runtime, host, repo string, x plugins.Proposal) (strin
 // oneLine is v on one line (a title or key in muster's own sentence).
 func oneLine(v string) string { return mirror.OneLine(strings.TrimSpace(v), 300) }
 
-// successorPromptRoom is how many kickoff bytes fit beside the frame.
+// successorPromptRoom is how many kickoff bytes fit beside the frame, with
+// EITHER permission sentence: the host's setting can change between the
+// proposal and the start, and a kickoff that fit must still fit.
 func successorPromptRoom(runtime, host, repo string, x plugins.Proposal) int {
-	head, tail := successorPromptFrame(runtime, host, repo, x)
-	return mirror.MaxSpawnPrompt - len(head) - len(tail)
+	room := mirror.MaxSpawnPrompt
+	for _, skip := range []bool{false, true} {
+		head, tail := successorPromptFrame(runtime, host, repo, x, skip)
+		room = min(room, mirror.MaxSpawnPrompt-len(head)-len(tail))
+	}
+	return room
 }
 
 // kickoffFirstLine is the kickoff's first non-blank line, cut for a card.
@@ -649,7 +655,7 @@ func (s *Server) reserveSuccession(ctx context.Context, x plugins.Proposal, t ho
 	owner := requestOwner(ctx)
 	name := "Continues " + firstNonBlank(oneLine(x.SubjectTitle), x.SubjectKey)
 	req := mirror.AgentSpawnReq{Runtime: t.Runtime, Repo: repo, Base: base, Model: wireModel,
-		Prompt: successorPrompt(t.Runtime, t.Host, repo, x, x.Kickoff), Name: cutRunes(name, 60)}
+		Prompt: successorPrompt(t.Runtime, t.Host, repo, x, x.Kickoff, s.hostSkipsPermissions(ctx, t.Host)), Name: cutRunes(name, 60)}
 	out := s.spawnReserved(ctx, owner, t, hd, req, object, 0)
 	s.logger.Printf("succession %d: %s started as host dispatch %d on %s (%s): %s", x.ID, mode, hd.ID, t.Host, firstNonBlank(base, "default branch"),
 		cutBytes(out, 200))

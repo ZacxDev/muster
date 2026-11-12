@@ -32,6 +32,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -126,6 +127,10 @@ const (
 	envAgentSpawnRepos = "MUSTER_MIRROR_AGENT_SPAWN_REPOS"
 	envAgentSpawnRate  = "MUSTER_MIRROR_AGENT_SPAWN_RATE"
 	envAgentSpawnLog   = "MUSTER_MIRROR_AGENT_SPAWN_LOG"
+	// envAgentSpawnSkipPermissions: -agent-spawn-skip-permissions, ON unless
+	// set to a false value (what strconv.ParseBool reads as false: 0, f, F,
+	// FALSE, false, False); any other non-bool value stops the daemon.
+	envAgentSpawnSkipPermissions = "MUSTER_MIRROR_AGENT_SPAWN_SKIP_PERMISSIONS"
 
 	// envAgentSpawnTenantServer: the one non-default tmux server a tenant's
 	// mirror may spawn on — it must name the server the mirror mirrors.
@@ -217,7 +222,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+")")
 	openCodeReadOnly := fs.Bool("opencode-read-only", envBool(envOpenCodeReadOnly), "read the opencode token file, and re-read it when it changes, but NEVER renew it: another muster-mirror on this host (tenant default's) renews it. Set on every muster-mirror@<tenant> instance, so exactly one daemon renews the token ("+envOpenCodeReadOnly+")")
 	openCodeSend := fs.Bool("opencode-send", envBool(envOpenCodeSend), "with -interactive: let muster SEND messages to opencode sessions on this host through the opencode server's API — only to a pane started with `muster-mirror opencode`, only while its session is idle, behind a fresh sign-in. OFF by default: whatever the agent there may run, a message from muster can ask it to ("+envOpenCodeSend+")")
-	agentSpawn := fs.Bool("agent-spawn", envBool(envAgentSpawn), "with -interactive, on the DEFAULT tmux server (or, with -agent-spawn-tenant-server, on the tenant tmux server this mirror mirrors): let your chief START a Claude Code agent (or an opencode one, with -opencode-send and a token too) on this host — a fresh git worktree of a repository on -agent-spawn-repos, cut from origin, and a window in tmux session `agents`, in normal permission mode. OFF by default: it starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ("+envAgentSpawn+")")
+	agentSpawn := fs.Bool("agent-spawn", envBool(envAgentSpawn), "with -interactive, on the DEFAULT tmux server (or, with -agent-spawn-tenant-server, on the tenant tmux server this mirror mirrors): let your chief START a Claude Code agent (or an opencode one, with -opencode-send and a token too) on this host — a fresh git worktree of a repository on -agent-spawn-repos, cut from origin, and a window in tmux session `agents`, without permission prompts unless -agent-spawn-skip-permissions=false. OFF by default: it starts a process here. The host enforces its own allow-list, rate limit and audit log whatever muster sends ("+envAgentSpawn+")")
+	// ON BY DEFAULT, so its env var is read as a bool where unset is true; a
+	// value that is not a bool stops the daemon below rather than guess.
+	skipPermsDefault, skipPermsErr := true, error(nil)
+	if v := getenv(envAgentSpawnSkipPermissions); v != "" {
+		skipPermsDefault, skipPermsErr = strconv.ParseBool(v)
+	}
+	agentSpawnSkipPermissions := fs.Bool("agent-spawn-skip-permissions", skipPermsDefault, "with -agent-spawn: start each spawned agent WITHOUT permission prompts — Claude Code with `--permission-mode bypassPermissions`, opencode with `--auto` — so it runs its tools without asking anyone (muster answers no permission prompt itself and assumes its sessions run without them). ON by default; =false starts them as before, in each CLI's normal permission mode. As root, claude starts in normal permission mode whatever this says: Claude Code refuses bypassPermissions as root ("+envAgentSpawnSkipPermissions+")")
 	agentSpawnRoots := fs.String("agent-spawn-roots", or(getenv(envAgentSpawnRoots), "~/src"), "colon-separated directories whose DIRECT children are the clones a spawned agent's worktree may be cut from ("+envAgentSpawnRoots+")")
 	agentSpawnDir := fs.String("agent-spawn-dir", or(getenv(envAgentSpawnDir), defaultAgentSpawnDir(getenv)), "where spawned agents' worktrees go, <dir>/<owner>__<repo>/<dispatch> ("+envAgentSpawnDir+")")
 	agentSpawnRepos := fs.String("agent-spawn-repos", getenv(envAgentSpawnRepos), "comma-separated <owner>/<repo> this host will spawn agents in. EMPTY BY DEFAULT: with none listed, -agent-spawn starts nothing ("+envAgentSpawnRepos+")")
@@ -369,6 +381,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 2
 	}
 
+	if skipPermsErr != nil {
+		fmt.Fprintf(stderr, "muster-mirror: %s=%q is not a bool (1, t, T, TRUE, true, True, 0, f, F, FALSE, false or False)\n", envAgentSpawnSkipPermissions, getenv(envAgentSpawnSkipPermissions))
+		return 2
+	}
 	spawnRepos, err := mirrorhost.ParseAgentSpawnRepos(*agentSpawnRepos)
 	if err != nil {
 		fmt.Fprintln(stderr, "muster-mirror:", err)
@@ -398,13 +414,16 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			previews = f
 		}
 	}
+	// Built here, before mirrorhost.New, so the startup line below words the
+	// permission mode from the very config the host spawns by.
+	spawnCfg := mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
+		Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
+		TenantServer: *agentSpawnTenantServer, KeepPermissionPrompts: !*agentSpawnSkipPermissions, Geteuid: geteuid}
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, OpenCodeSend: *openCodeSend, AllowHTTP: *allowHTTP, Logger: logger,
 		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
-		AgentSpawn: mirrorhost.AgentSpawnConfig{Enabled: *agentSpawn, Roots: spawnRoots, Dir: expandHome(*agentSpawnDir),
-			Repos: spawnRepos, Rate: *agentSpawnRate, Log: expandHome(*agentSpawnLog), Server: *url, RuntimeDir: getenv("XDG_RUNTIME_DIR"),
-			TenantServer: *agentSpawnTenantServer},
+		AgentSpawn:    spawnCfg,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
@@ -478,8 +497,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			if *agentSpawnTenantServer != "" {
 				server = fmt.Sprintf("the tenant tmux server %q (-agent-spawn-tenant-server)", *agentSpawnTenantServer)
 			}
-			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude (or opencode, with -opencode-send and a token) in tmux session %q on %s, in a new worktree of %s, rate %s, audit log %s",
-				"agents", server, strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog))
+			perms := spawnPermissionsLog(spawnCfg)
+			logger.Printf("muster-mirror: STARTING AGENTS IS ON (-agent-spawn): your chief may start claude (or opencode, with -opencode-send and a token) in tmux session %q on %s, in a new worktree of %s, rate %s, audit log %s, %s",
+				"agents", server, strings.Join(spawnRepos, ", "), *agentSpawnRate, expandHome(*agentSpawnLog), perms)
 		}
 	}
 	if *agentSpawnTenantServer != "" && !*agentSpawn {
@@ -563,6 +583,25 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 1
 	}
 	return 0
+}
+
+// geteuid is the mirror's effective uid, handed to the spawn config
+// (AgentSpawnConfig.Geteuid); a test replaces it to say "root".
+var geteuid = os.Geteuid
+
+// spawnPermissionsLog is the startup line's words for how spawned agents
+// start, read from the config the host spawns by — so the line cannot say
+// what the host does not do. As root, claude keeps its prompts whatever the
+// setting says (AgentSpawnConfig.ClaudeSkipsPermissions), and the line says why.
+func spawnPermissionsLog(sc mirrorhost.AgentSpawnConfig) string {
+	switch {
+	case sc.KeepPermissionPrompts:
+		return "in normal permission mode (-agent-spawn-skip-permissions=false)"
+	case !sc.ClaudeSkipsPermissions():
+		return "claude in normal permission mode because this mirror runs as root (effective uid 0) and Claude Code refuses " +
+			"bypassPermissions as root, opencode WITHOUT permission prompts (-agent-spawn-skip-permissions, --auto)"
+	}
+	return "WITHOUT permission prompts (-agent-spawn-skip-permissions): they run their tools without asking"
 }
 
 // runContext is the daemon's life: until SIGINT or SIGTERM. A test replaces it
