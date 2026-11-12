@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -24,7 +25,8 @@ import (
 //     when the row is that owner's (row-level security) AND that connection's
 //     host: a host settles only its own owner's dispatches addressed to it;
 //   - every listing the hub applies (SetListingNotify): a window carrying its
-//     row's dispatch makes it running; a running row (or a pending one past
+//     row's dispatch makes it running — the row's recorded window id is
+//     enough, whatever runs in it yet (dispatchWindowAlive); a running row (or a pending one past
 //     the 180 s countdown) missing from TWO listings in a row ends "window
 //     gone"; a window whose dispatch has ENDED raises one orphan notice;
 //   - a timer (RunHostDispatchSweep): a row whose host was not seen for 24
@@ -143,7 +145,7 @@ func (s *Server) reconcileListing(ctx context.Context, owner int64, host string,
 	known := map[int64]bool{}
 	for _, r := range rows {
 		known[r.ID] = true
-		w, present := dispatchWindow(r, tagged[r.ID])
+		w, present := dispatchWindowAlive(r, tagged[r.ID])
 		if n := len(tagged[r.ID]); n > 1 {
 			s.logger.Printf("host dispatch %d: WARNING: host %s lists %d windows tagged with it; only its own (%s) counts", r.ID, host, n, r.Window)
 		}
@@ -223,6 +225,52 @@ func dispatchWindow(r plugins.HostDispatch, cands []mirror.Window) (mirror.Windo
 		return ok[0], true
 	}
 	return mirror.Window{}, false
+}
+
+// dispatchWindowAlive is the window of this listing that keeps row r ALIVE,
+// and whether there is one: dispatchWindow's pick, or else the window whose id
+// is the one r recorded (r.Window), whatever runs in it yet.
+//
+// 🔴 A SPAWNED WINDOW IS TRACKED BY ITS TMUX WINDOW ID FOR ITS WHOLE LIFE, NOT
+// BY WHAT THE HOST CAN SEE RUNNING IN IT. The host reports a window Claude only
+// once it can read that session's transcript (mirrorhost.ClaudeLocator.resolve),
+// and Claude Code writes neither its sessions file nor its transcript until it
+// is past its startup screens — so a claude window waiting at one (measured,
+// Claude Code 2.1.289: the bypass-permissions acceptance screen) is listed,
+// with its id and its tag, but not as Claude. Gating liveness on the runtime
+// ended such a dispatch "window gone" ~3 minutes after the spawn while its
+// window still waited. The recorded id came from the host's own spawn reply
+// (or a first listing's adoption), never from the tag alone, and a forged tag
+// on another window still never moves it (dispatchWindow). Whether the agent
+// in it has STARTED is a different question: hostDispatchCardFromStore answers
+// it ("waiting at a prompt"), dispatchWindow and hostForwardReachable keep
+// requiring the runtime.
+func dispatchWindowAlive(r plugins.HostDispatch, cands []mirror.Window) (mirror.Window, bool) {
+	if w, ok := dispatchWindow(r, cands); ok {
+		return w, true
+	}
+	if r.Window != "" {
+		for _, w := range cands {
+			if w.ID == r.Window {
+				return w, true
+			}
+		}
+	}
+	return mirror.Window{}, false
+}
+
+// hostDispatchStartScreen is a running claude dispatch's card detail while its
+// window is listed but Claude Code has not started its first turn
+// (dispatchWindowAlive kept it alive; spawnRuntimeRuns says not yet).
+const hostDispatchStartScreen = "Waiting at a prompt: its window is open, but %s has not started its first turn — " +
+	"a startup screen may be waiting for an answer. Open the window on %s to see it."
+
+// hostDispatchRuntimeName is the CLI a host dispatch runs, by name, for prose.
+func hostDispatchRuntimeName(r plugins.HostDispatch) string {
+	if r.Runtime == mirror.SpawnRuntimeOpenCode {
+		return "opencode"
+	}
+	return "Claude Code"
 }
 
 // spawnRuntimeRuns reports whether listed window w runs host runtime runtime:
@@ -372,6 +420,11 @@ func (s *Server) hostDispatchCardFromStore(ctx context.Context, id int64) (ui.Di
 				}
 				for _, w := range v.Windows {
 					if w.ID == r.Window && w.Dispatch == r.ID {
+						if !spawnRuntimeRuns(r.Runtime, w) {
+							// Alive by its window id (dispatchWindowAlive), not started.
+							c.State, c.Detail = ui.DispatchWaiting, fmt.Sprintf(hostDispatchStartScreen, hostDispatchRuntimeName(r), r.Host)
+							continue
+						}
 						switch w.Status {
 						case mirror.StatusWaiting:
 							c.State = ui.DispatchWaiting

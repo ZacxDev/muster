@@ -111,8 +111,10 @@ func (r *spawnRig) tmux(t *testing.T, args ...string) string {
 
 // TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree: the feature,
 // for every prompt shape the design lists: the stub claude sees EXACTLY
-// [--session-id, <uuid>, --permission-mode, bypassPermissions, --, <prompt>]
-// (the default: no permission prompts), byte for byte; the prompt file is gone;
+// [--session-id, <uuid>, --permission-mode, bypassPermissions, --settings,
+// {"skipDangerousModePermissionPrompt":true}, --, <prompt>] (the default: no
+// permission prompts, and the bypass screen's consent for this process only),
+// byte for byte — so the JSON word crossed tmux and the wrapper intact; the prompt file is gone;
 // the window is in `agents`, named cc-<d>-<slug>, tagged with its dispatch
 // (its OWN option); it sits in a fresh worktree on muster/<d>-<slug> cut from
 // origin/main; Claude Code's trust entry names it; the owner's DIRTY clone has
@@ -136,8 +138,9 @@ func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) 
 		argv := r.argvOf(t, d)
 		// DEFAULT ON (-agent-spawn-skip-permissions): the permission words sit
 		// between the session id and `--`, as literals.
-		if want := []string{"--session-id", w.AgentSession, "--permission-mode", "bypassPermissions", "--", prompt}; !slices.Equal(argv, want) {
-			t.Fatalf("prompt %q: the stub saw %q; want [--session-id %s --permission-mode bypassPermissions -- <prompt>]", tail, argv, w.AgentSession)
+		if want := []string{"--session-id", w.AgentSession, "--permission-mode", "bypassPermissions",
+			"--settings", `{"skipDangerousModePermissionPrompt":true}`, "--", prompt}; !slices.Equal(argv, want) {
+			t.Fatalf("prompt %q: the stub saw %q; want [--session-id %s --permission-mode bypassPermissions --settings {...} -- <prompt>]", tail, argv, w.AgentSession)
 		}
 		if _, err := os.Stat(filepath.Join(promptDir(r.c.cfg.AgentSpawn.RuntimeDir), strconv.FormatInt(d, 10))); !os.IsNotExist(err) {
 			t.Fatalf("prompt %q: the prompt file is still there", tail)
@@ -184,6 +187,57 @@ func TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree(t *testing.T) 
 	if len(lines) != 3*len(prompts) || lines[1]["kind"] != "admit" || lines[2]["result"] != "spawned" || lines[2]["admitted"] != true {
 		t.Fatalf("audit: %d lines (%v)", len(lines), lines[:3])
 	}
+}
+
+// bypassScreenStub is a stub claude that behaves as Claude Code 2.1.289 does at
+// start (measured against the real binary, isolated config dir): started with
+// `--permission-mode bypassPermissions` and no settings source holding
+// skipDangerousModePermissionPrompt=true — here, no `--settings` word that
+// carries it — it shows the one-time acceptance screen and waits; otherwise it
+// starts its task. Either way it then stays.
+const bypassScreenStub = `#!/bin/sh
+bypass=; consent=; prev=
+for a in "$@"; do
+  if [ "$prev" = --permission-mode ] && [ "$a" = bypassPermissions ]; then bypass=1; fi
+  if [ "$prev" = --settings ]; then case "$a" in *'"skipDangerousModePermissionPrompt":true'*) consent=1;; esac; fi
+  prev=$a
+done
+if [ -n "$bypass" ] && [ -z "$consent" ]; then
+  printf 'WARNING: Claude Code running in Bypass Permissions mode\n> No, exit\n  Yes, I accept\nEnter to confirm\n'
+else
+  printf 'STUB STARTED ITS TASK\n'
+fi
+exec sleep 300
+`
+
+// TestTmuxASpawnedClaudeNeverStallsAtTheBypassScreen: the production defect,
+// on a real tmux pane. A skip-permissions spawn (the default) whose claude
+// shows the bypass acceptance screen unless it was given the consent: the
+// spawned pane shows the task starting, never the screen. The positive
+// control: the same stub with no --settings word shows the screen in a pane
+// of its own, so the pane read can see it.
+func TestTmuxASpawnedClaudeNeverStallsAtTheBypassScreen(t *testing.T) {
+	r := newSpawnRig(t)
+	stub := filepath.Join(r.tmp, "bin", "claude-bypass-screen")
+	if err := os.WriteFile(stub, []byte(bypassScreenStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.c.cfg.AgentSpawn.ClaudeBin = stub
+	w, e := r.spawn(t, 300, mirror.AgentSpawnReq{Runtime: "claude", Repo: "acme/widgets", Prompt: mirror.SpawnPreface + " fix it", Name: "bypass"})
+	if e != nil {
+		t.Fatalf("refused %+v", e)
+	}
+	pane := func(target string) string { return r.tmux(t, "capture-pane", "-p", "-t", target) }
+	waitFor(t, "the spawned pane to start or stall", func() bool {
+		p := pane(w.Pane)
+		return strings.Contains(p, "STUB STARTED ITS TASK") || strings.Contains(p, "Bypass Permissions mode")
+	})
+	if p := pane(w.Pane); strings.Contains(p, "Bypass Permissions mode") || !strings.Contains(p, "STUB STARTED ITS TASK") {
+		t.Fatalf("the spawned claude stalled at the bypass acceptance screen:\n%s", p)
+	}
+	// Positive control: without the consent word the stub shows the screen.
+	ctl := r.tmux(t, "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=base:", stub, "--permission-mode", "bypassPermissions", "--", "x")
+	waitFor(t, "the control pane to show the screen", func() bool { return strings.Contains(pane(ctl), "Bypass Permissions mode") })
 }
 
 // TestTmuxTheAllowListIsTheHostsWhateverTheServerSends: the same request is
