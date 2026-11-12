@@ -3,72 +3,64 @@ package officership
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/hqtest"
 )
 
-// validMergeAsk is a merge ask within every bound, for the rig's pull
-// request at its head.
-func validMergeAsk() MergeAskArgs {
-	raw := `{"item_id":"` + sItem + `","repo":"` + sRepo + `","pr":57,"head_sha":"` + oidA + `","base_ref":"trunk","base_sha":"` + oidB + `",
+// validMergeAskJSON is a merge ask's arguments for the rig's pull request at
+// its head; officer_item.item is HQ's INTEGER item id.
+const validMergeAskJSON = `{"item_id":"` + sItem + `","repo":"` + sRepo + `","pr":57,"head_sha":"` + oidA + `","base_ref":"trunk","base_sha":"` + oidB + `",
 	"summary":"Raise the memory limit","purpose":"The worker OOMs at 1Gi","how":"Settled over two audit rounds; CI green",
-	"evidence":{"officer_item":{"officer":"` + sOfficer + `","item":"` + sItem + `"},
+	"evidence":{"officer_item":{"officer":"investigate:example-infra","item":3901},
 	 "open_yellows":[{"where":"deploy.yaml:4","text":"a log line could be clearer"}],
-	 "protected_identity":{"result":"clean","detail":"render diff empty"},"settled_at":"2026-11-12T10:00:00Z","rollback":"revert the squash commit"}}`
-	a, err := ParseMergeAskArgs([]byte(raw))
+	 "protected_identity":{"result":"pass","detail":"render diff empty"},"settled_at":"2026-11-12T10:00:00Z","rollback":"revert the squash commit"}}`
+
+func validMergeAsk() MergeAskArgs {
+	a, err := ParseMergeAskArgs([]byte(validMergeAskJSON))
 	if err != nil {
 		panic(err)
 	}
 	return a
 }
 
-// TestTheMergeAskIsSentWithTheCallerAsInstance: muster sets `instance` to the
-// calling agent; the body carries every argument through, unchanged, and no
-// field HQ's body does not have.
-func TestTheMergeAskIsSentWithTheCallerAsInstance(t *testing.T) {
+// TestTheMergeAskBodyDecodesStrictlyAsHQs: the body muster sends decodes,
+// STRICTLY (unknown fields refused, every field its type), into a copy of
+// HQ's own request types (hqtest.DecodeMergeAsk) — so a key HQ lacks, or a
+// field of the wrong type (an item id as a string), fails here as it would
+// 400 at HQ — and carries every value through, `instance` set by muster.
+func TestTheMergeAskBodyDecodesStrictlyAsHQs(t *testing.T) {
 	asks := 0
 	r := shadowRig(&asks)
 	var sentItem officers.ItemID
 	var sent []byte
 	r.gates.PostMergeAsk = func(_ context.Context, item officers.ItemID, body []byte) ([]byte, error) {
 		sentItem, sent = item, body
-		return []byte(`{"merge":{"id":1},"ask":{"id":2},"item":{"id":"4401"}}`), nil
+		return []byte(`{"merge":{"id":1}}`), nil
 	}
-	ans, err := r.gates.MergeAsk(context.Background(), sInstance, validMergeAsk())
-	if err != nil {
+	a := validMergeAsk()
+	a.To = "example-owner"
+	if _, err := r.gates.MergeAsk(context.Background(), sInstance, a); err != nil {
 		t.Fatalf("a valid merge ask was refused: %v", err)
 	}
-	if string(ans) != `{"merge":{"id":1},"ask":{"id":2},"item":{"id":"4401"}}` || sentItem != sItem {
-		t.Fatalf("answer %s to item %s", ans, sentItem)
+	got, err := hqtest.DecodeMergeAsk(sent)
+	if err != nil {
+		t.Fatalf("HQ's decoder refuses muster's body: %v\n%s", err, sent)
 	}
-	var got map[string]any
-	if err := json.Unmarshal(sent, &got); err != nil {
-		t.Fatal(err)
+	want := hqtest.MergeAskRequest{Instance: sInstance, To: "example-owner", Repo: sRepo, PR: 57, HeadSHA: oidA, BaseRef: "trunk", BaseSHA: oidB,
+		Summary: "Raise the memory limit", Purpose: "The worker OOMs at 1Gi", How: "Settled over two audit rounds; CI green",
+		Evidence: hqtest.MergeAskEvidence{OfficerItem: hqtest.MergeAskItem{Officer: "investigate:example-infra", Item: 3901},
+			OpenYellows:       []hqtest.MergeAskFinding{{Where: "deploy.yaml:4", Text: "a log line could be clearer"}},
+			ProtectedIdentity: hqtest.MergeAskGate{Result: "pass", Detail: "render diff empty"}, SettledAt: "2026-11-12T10:00:00Z", Rollback: "revert the squash commit"}}
+	gb, _ := json.Marshal(got)
+	wb, _ := json.Marshal(want)
+	if string(gb) != string(wb) || sentItem != sItem {
+		t.Fatalf("HQ reads\n%s\nwant\n%s (item %s)", gb, wb, sentItem)
 	}
-	if got["instance"] != sInstance {
-		t.Fatalf("instance = %v, want the caller %s", got["instance"], sInstance)
-	}
-	keys := []string{}
-	for k := range got {
-		keys = append(keys, k)
-	}
-	for _, k := range []string{"instance", "repo", "pr", "head_sha", "base_ref", "base_sha", "summary", "purpose", "how", "evidence"} {
-		if _, ok := got[k]; !ok {
-			t.Errorf("the body has no %s (keys %v)", k, keys)
-		}
-	}
-	if len(got) != 10 {
-		t.Errorf("the body has keys %v, want exactly HQ's ten (no `to` when none was given)", keys)
-	}
-	ev := got["evidence"].(map[string]any)
-	if y := ev["open_yellows"].([]any); len(y) != 1 || y[0].(map[string]any)["where"] != "deploy.yaml:4" {
-		t.Errorf("the open yellows were not passed through: %v", ev["open_yellows"])
-	}
-	if got["head_sha"] != oidA || got["base_sha"] != oidB || got["pr"] != float64(sPR) {
-		t.Errorf("head/base/pr = %v %v %v", got["head_sha"], got["base_sha"], got["pr"])
+	if !strings.Contains(string(sent), `"item":3901`) {
+		t.Fatalf("officer_item.item is not sent as an integer: %s", sent)
 	}
 }
 
@@ -86,56 +78,45 @@ func TestAnInstanceArgumentIsRefused(t *testing.T) {
 	}
 }
 
-// TestTheMergeAskBoundsAreCheckedBeforeHQ: each bound broken alone is refused
-// by its own words, with no call to HQ (counted) and no item read.
-func TestTheMergeAskBoundsAreCheckedBeforeHQ(t *testing.T) {
-	long := func(n int) string { return strings.Repeat("é", n) }
-	for _, c := range []struct {
-		name string
-		edit func(a *MergeAskArgs)
-		want string
-	}{
-		{"no item", func(a *MergeAskArgs) { a.ItemID = "" }, "item_id is required"},
-		{"no pr", func(a *MergeAskArgs) { a.PR = 0 }, "pr is required"},
-		{"a short head", func(a *MergeAskArgs) { a.HeadSHA = oidA[:12] }, "full 40-hex"},
-		{"no summary", func(a *MergeAskArgs) { a.Summary = "  " }, "summary is required"},
-		{"summary over 300", func(a *MergeAskArgs) { a.Summary = long(301) }, "summary is 301 characters, over HQ's 300"},
-		{"purpose over 600", func(a *MergeAskArgs) { a.Purpose = long(601) }, "purpose is 601 characters, over HQ's 600"},
-		{"how over 900", func(a *MergeAskArgs) { a.How = long(901) }, "how is 901 characters, over HQ's 900"},
-		{"51 findings", func(a *MergeAskArgs) {
-			for len(a.Evidence.OpenYellows) < 51 {
-				a.Evidence.OpenYellows = append(a.Evidence.OpenYellows, a.Evidence.OpenYellows[0])
-			}
-		}, "open_yellows has 51 findings"},
-		{"a short text over 200", func(a *MergeAskArgs) { a.Evidence.OpenYellows[0].Where = long(201) }, "evidence.open_yellows[0].where is 201 characters, over HQ's 200"},
-		{"a long text over 2000", func(a *MergeAskArgs) { a.Evidence.OpenYellows[0].Text = long(2001) }, "evidence.open_yellows[0].text is 2001 characters, over HQ's 2000"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			asks, reads := 0, 0
-			r := shadowRig(&asks)
-			item := r.gates.ItemByID
-			r.gates.ItemByID = func(ctx context.Context, i string, id officers.ItemID, repo string, n int) (officers.Item, error) {
-				reads++
-				return item(ctx, i, id, repo, n)
-			}
-			a := validMergeAsk()
-			c.edit(&a)
-			_, err := r.gates.MergeAsk(context.Background(), sInstance, a)
-			if rf, ok := AsRefusal(err); !ok || rf.Gate != GateMergeAsk || !strings.Contains(rf.Reason, c.want) {
-				t.Fatalf("err = %v, want the bound %q", err, c.want)
-			}
-			if asks != 0 || reads != 0 {
-				t.Fatalf("HQ was called (asks %d, item reads %d) for an out-of-bounds ask", asks, reads)
-			}
-		})
+// TestANonIntegerItemIdIsRefusedLocally: HQ's item id is an integer; a string
+// (or a fraction) is refused by its own words, before HQ.
+func TestANonIntegerItemIdIsRefusedLocally(t *testing.T) {
+	for _, bad := range []string{`"3901"`, `39.5`} {
+		raw := strings.Replace(validMergeAskJSON, `"item":3901`, `"item":`+bad, 1)
+		_, err := ParseMergeAskArgs([]byte(raw))
+		if rf, ok := AsRefusal(err); !ok || !strings.Contains(rf.Reason, "evidence.officer_item.item must be an integer") {
+			t.Errorf("item %s: err = %v, want the integer refusal", bad, err)
+		}
 	}
-	// Exactly at each bound: accepted (the control for the off-by-one).
+}
+
+// TestLadderAndChecksAreRefusedLocally: HQ refuses them (it reads the ladder
+// and CI from its own records), so muster does first.
+func TestLadderAndChecksAreRefusedLocally(t *testing.T) {
+	for _, extra := range []string{`"ladder":{"rounds":[]}`, `"checks":[]`} {
+		raw := `{"item_id":"1","repo":"` + sRepo + `","pr":57,"evidence":{` + extra + `}}`
+		if _, err := ParseMergeAskArgs([]byte(raw)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Errorf("evidence with %s: err = %v, want an unknown-field refusal", extra, err)
+		}
+	}
+}
+
+// TestMusterChecksNoBoundsOfItsOwn: a summary over HQ's bound reaches HQ (whose
+// 400 is passed back verbatim by the tool); only the item id — needed to
+// build HQ's path — is muster's to check.
+func TestMusterChecksNoBoundsOfItsOwn(t *testing.T) {
 	asks := 0
 	r := shadowRig(&asks)
 	a := validMergeAsk()
-	a.Summary, a.Purpose, a.How = long(300), long(600), long(900)
+	a.Summary = strings.Repeat("é", 301)
+	a.Evidence.Rollback = ""
 	if _, err := r.gates.MergeAsk(context.Background(), sInstance, a); err != nil || asks != 1 {
-		t.Fatalf("an ask at every bound: err = %v, asks %d", err, asks)
+		t.Fatalf("an out-of-bounds ask: err = %v, asks %d; want it sent to HQ", err, asks)
+	}
+	a = validMergeAsk()
+	a.ItemID = ""
+	if _, err := r.gates.MergeAsk(context.Background(), sInstance, a); err == nil || !strings.Contains(err.Error(), "item_id is required") || asks != 1 {
+		t.Fatalf("no item id: err = %v, asks %d", err, asks)
 	}
 }
 
@@ -158,58 +139,5 @@ func TestTheMergeAskNeedsTheHeldItem(t *testing.T) {
 	a.Repo = "example-org/example-web"
 	if _, err := r.gates.MergeAsk(context.Background(), sInstance, a); err == nil || asks != 0 {
 		t.Fatalf("another repository: err = %v, asks %d", err, asks)
-	}
-}
-
-// TestTheMergeAskBodyIsExactlyHQsKeySet pins the EXACT keys of the body muster
-// sends, at every level (top, evidence, and each nested object), so a key
-// added or dropped on either side fails here — HQ refuses unknown fields.
-func TestTheMergeAskBodyIsExactlyHQsKeySet(t *testing.T) {
-	asks := 0
-	r := shadowRig(&asks)
-	var sent []byte
-	r.gates.PostMergeAsk = func(_ context.Context, _ officers.ItemID, body []byte) ([]byte, error) {
-		sent = body
-		return []byte(`{}`), nil
-	}
-	a := validMergeAsk()
-	a.To = "example-owner"
-	if _, err := r.gates.MergeAsk(context.Background(), sInstance, a); err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(sent, &got); err != nil {
-		t.Fatal(err)
-	}
-	keys := func(m map[string]any) string {
-		out := []string{}
-		for k := range m {
-			out = append(out, k)
-		}
-		sort.Strings(out)
-		return strings.Join(out, ",")
-	}
-	ev := got["evidence"].(map[string]any)
-	for _, c := range []struct{ where, got, want string }{
-		{"top", keys(got), "base_ref,base_sha,evidence,head_sha,how,instance,pr,purpose,repo,summary,to"},
-		{"evidence", keys(ev), "officer_item,open_yellows,protected_identity,rollback,settled_at"},
-		{"evidence.officer_item", keys(ev["officer_item"].(map[string]any)), "item,officer"},
-		{"evidence.open_yellows[0]", keys(ev["open_yellows"].([]any)[0].(map[string]any)), "text,where"},
-		{"evidence.protected_identity", keys(ev["protected_identity"].(map[string]any)), "detail,result"},
-	} {
-		if c.got != c.want {
-			t.Errorf("%s keys = %s, want exactly %s", c.where, c.got, c.want)
-		}
-	}
-}
-
-// TestLadderAndChecksAreRefusedLocally: HQ refuses them (it reads the ladder
-// and CI from its own records), so muster does first.
-func TestLadderAndChecksAreRefusedLocally(t *testing.T) {
-	for _, extra := range []string{`"ladder":{"rounds":[]}`, `"checks":[]`} {
-		raw := `{"item_id":"1","repo":"` + sRepo + `","pr":57,"evidence":{` + extra + `}}`
-		if _, err := ParseMergeAskArgs([]byte(raw)); err == nil || !strings.Contains(err.Error(), "unknown field") {
-			t.Errorf("evidence with %s: err = %v, want an unknown-field refusal", extra, err)
-		}
 	}
 }

@@ -77,7 +77,6 @@ type shepRig struct {
 	officerShadow    bool
 	officerShadowErr error
 	shadowLines      []string
-	shadowPush       []bool
 	// authorLogin is what the author officer's App reads as; authorErr fails it.
 	authorLogin string
 	authorErr   error
@@ -112,9 +111,8 @@ func newShepRig() *shepRig {
 			return r.item, nil
 		},
 		OfficerShadow: func(context.Context) (bool, error) { return r.officerShadow, r.officerShadowErr },
-		Shadowed: func(item officers.Item, line string, push bool) {
+		Shadowed: func(item officers.Item, line string) {
 			r.shadowLines = append(r.shadowLines, string(item.ID)+": "+line)
-			r.shadowPush = append(r.shadowPush, push)
 		}}
 	r.item = officers.Item{ID: sItem, SubjectKey: officers.ShepherdSubject(sRepo, sPR), Shadow: boolp(false),
 		Payload: json.RawMessage(sLoop(2, oidA, sVerdict("no-red", 2, oidA, "Round 2 found nothing blocking.", "🟡 a log line could be clearer")))}
@@ -822,7 +820,7 @@ func TestTheAuditVerdictIsReadOffTheHeldItem(t *testing.T) {
 	pr := PR{Number: sPR, HeadSHA: live}
 	item := func(payload string) officers.Item { return officers.Item{ID: sItem, Payload: json.RawMessage(payload)} }
 	clean := sLoop(3, live, sVerdict("no-red", 3, live, "Nothing blocking.", "🟡 naming", "🟢 nit"))
-	if err := AuditVerdictClear(item(clean), pr); err != nil {
+	if err := AuditVerdictClear(item(clean), pr, sOfficer); err != nil {
 		t.Fatalf("control: a clean no-red verdict at the head was refused: %v", err)
 	}
 	for _, c := range []struct {
@@ -830,7 +828,7 @@ func TestTheAuditVerdictIsReadOffTheHeldItem(t *testing.T) {
 	}{
 		{"no from.summary", sLoop(3, live, ""), "carries no auditor's report"},
 		{"no payload at all", "", "carries no auditor's report"},
-		{"no round on record", `{"pr_loop":{"repo":"` + sRepo + `","pr":57,"head_sha":"` + live + `"},"from":{"summary":"` + sVerdict("no-red", 3, live) + `"}}`, "no round on record"},
+		{"no round on record", `{"pr_loop":{"repo":"` + sRepo + `","pr":57,"head_sha":"` + live + `"},"from":{"officer_id":"audit:example-infra","kind":"findings","summary":"` + sVerdict("no-red", 3, live) + `"}}`, "no round on record"},
 		{"premise round 0", sLoop(0, live, sVerdict("no-red", 0, live)), "premise round 0"},
 		{"the item's loop is at another head", sLoop(3, other, sVerdict("no-red", 3, live)), "audited another head"},
 		{"line 1 unreadable", sLoop(3, live, "Verdict: no-red · round 3 · head "+live[:12]), "verdict line is unreadable"},
@@ -839,10 +837,14 @@ func TestTheAuditVerdictIsReadOffTheHeldItem(t *testing.T) {
 		{"the verdict names another head", sLoop(3, live, sVerdict("no-red", 3, other)), "the verdict names round 3 at head " + other[:12]},
 		{"a red verdict", sLoop(3, live, sVerdict("red", 3, live)), "the verdict is red, not no-red"},
 		{"a questioned verdict", sLoop(3, live, sVerdict("questioned", 3, live)), "the verdict is questioned, not no-red"},
+		{"the report names no source officer", `{"pr_loop":{"pr":57,"head_sha":"` + live + `","round":3},"from":{"kind":"findings","summary":"` + sVerdict("no-red", 3, live) + `"}}`, "names no source officer or kind"},
+		{"the report is the shepherd's own", `{"pr_loop":{"pr":57,"head_sha":"` + live + `","round":3},"from":{"officer_id":"` + sOfficer + `","kind":"findings","summary":"` + sVerdict("no-red", 3, live) + `"}}`, "of this shepherd's own type shepherd"},
+		{"the report is another shepherd's", `{"pr_loop":{"pr":57,"head_sha":"` + live + `","round":3},"from":{"officer_id":"shepherd:example-web","kind":"findings","summary":"` + sVerdict("no-red", 3, live) + `"}}`, "of this shepherd's own type shepherd"},
+		{"the report's kind is the shepherd's type", `{"pr_loop":{"pr":57,"head_sha":"` + live + `","round":3},"from":{"officer_id":"audit:example-infra","kind":"shepherd.findings","summary":"` + sVerdict("no-red", 3, live) + `"}}`, "came from an item of kind shepherd.findings"},
 		{"a 🔴 line under a no-red verdict", sLoop(3, live, sVerdict("no-red", 3, live, "  🔴 the limit is unbounded", "🟡 naming")), "has 1 🔴 findings"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := AuditVerdictClear(item(c.payload), pr)
+			err := AuditVerdictClear(item(c.payload), pr, sOfficer)
 			rf, ok := AsRefusal(err)
 			if !ok || rf.Gate != GateAudit || !strings.Contains(rf.Reason, c.want) {
 				t.Fatalf("err = %v, want the audit gate's %q", err, c.want)

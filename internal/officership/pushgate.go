@@ -90,20 +90,26 @@ type PushGate struct {
 	// instance holding under a live lease (fixpush.go). nil: no push is
 	// looked up.
 	FixItems func(ctx context.Context, instance string) ([]officers.Item, error)
-	// FixPushed records that a push to branch under fix item landed (GitHub's
-	// report says the ref applied): a hand-off of that item names a head that
-	// exists (api's officer_complete). nil records nothing.
-	FixPushed func(item officers.Item, branch string)
-	// OfficerShadow and Shadowed are this officer's ShadowRule (a push under
+	// Loops is a draft officer's review-loop record (fixpush.go): which of its
+	// pull requests HQ put in a loop (their writes then need a held fix
+	// item), and the announcements that never got HQ's 200 (the sweep
+	// re-announces those). nil: no loop rule, no re-announcement.
+	Loops PRLoops
+	// OfficerShadow and Shadowed are this officer's ShadowRule (a write under
 	// a fix item in shadow is refused and recorded).
 	OfficerShadow func(ctx context.Context) (bool, error)
-	Shadowed      func(item officers.Item, line string, push bool)
+	Shadowed      func(item officers.Item, line string)
 	// PROpened tells HQ a draft officer opened pull request p (POST
 	// /officers/{id}/pr-opened, with the officer's own token), so HQ can start
 	// its review loop. Called by muster only — never an instance's tool — and
 	// only on the clean branch of the create re-check (afterCreate). nil: HQ
 	// is not told.
 	PROpened func(ctx context.Context, p officers.PROpened) (officers.PROpenedAnswer, error)
+	// PROpenedBackoff replaces DefaultPROpenedBackoff (tests); Async runs an
+	// announcement off the create request (nil: a goroutine; tests run it
+	// inline).
+	PROpenedBackoff []time.Duration
+	Async           func(func())
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
@@ -344,9 +350,8 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 	// A push under a held pull-request fix item (fixpush.go): its pull
 	// request is the officer's own and open, and it is not in shadow —
 	// checked before anything is forwarded.
-	var fixes []fixPush
 	if g.Ship.IsDraft() {
-		if fixes, err = g.admitFixPush(r.Context(), sr, cmds); err != nil {
+		if err := g.admitFixPush(r.Context(), sr, cmds); err != nil {
 			return nil, err
 		}
 	}
@@ -383,12 +388,7 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 	if g.Ship.IsDraft() && len(cmds) > 0 {
 		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
 		// open pull request from a pushed branch is checked again.
-		// The same hook records each fix push GitHub applied (fixpush.go): a
-		// gate request carries ONE after-forward hook.
-		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) {
-			g.fixPushesLanded(fixes, res)
-			g.afterPush(ctx, sr, cmds, res)
-		})
+		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) { g.afterPush(ctx, sr, cmds, res) })
 	}
 	return out, nil
 }
@@ -571,7 +571,17 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 			if err != nil || !g.Ship.IsDraft() {
 				return err
 			}
-			return g.draftEdit(r.Context(), sr, gh, pr, m)
+			if err := g.draftEdit(r.Context(), sr, gh, pr, m); err != nil {
+				return err
+			}
+			var fields []string
+			for _, f := range []string{"title", "body"} {
+				if _, ok := m[f]; ok {
+					fields = append(fields, f)
+				}
+			}
+			closing := strings.EqualFold(jsonString(m["state"]), "closed")
+			return g.loopWrite(r.Context(), sr, gh, pr, callerInstance(r.Context()), editWould(sr.Repo, n, closing, fields))
 		})
 	case r.Method == http.MethodPost && len(tail) == 3 && tail[0] == "issues" && isNumber(tail[1]) && tail[2] == "comments":
 		n, _ := strconv.Atoi(tail[1])
@@ -580,7 +590,11 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 			if err != nil || !g.Ship.IsDraft() {
 				return err
 			}
-			return g.draftComment(r.Context(), sr, pr, jsonString(m["body"]))
+			body := jsonString(m["body"])
+			if err := g.draftComment(r.Context(), sr, pr, body); err != nil {
+				return err
+			}
+			return g.loopWrite(r.Context(), sr, gh, pr, callerInstance(r.Context()), commentWould(sr.Repo, n, body))
 		})
 	}
 	return nil, refused("%s api.github.com/%s", r.Method, path)

@@ -573,31 +573,151 @@ func (g *PushGate) afterCreate(ctx context.Context, sr officers.ShipRepo, branch
 	}
 }
 
-// prOpened tells HQ (PROpened) that pull request pr of sr was opened clean.
-// It never fails the create: an HQ that is told nothing is logged and, but
-// for the caller officer being in shadow (HQ's 409 officer_shadow, the
-// expected answer then, logged as a note), posted to HQ as a notice. It is
-// not retried.
+// DefaultPROpenedBackoff is the waits between pr-opened attempts after an
+// outage (HQ unreachable, a 5xx): three attempts in all. A 4xx is HQ's
+// decision and is not retried.
+var DefaultPROpenedBackoff = []time.Duration{2 * time.Second, 10 * time.Second}
+
+// prOpenedTimeout bounds one announcement, retries included.
+const prOpenedTimeout = 2 * time.Minute
+
+// prOpened tells HQ (PROpened) that pull request pr of sr was opened clean,
+// on its OWN context — detached from the create request, so neither the
+// client going away nor the create lock waits on it (run through Async). It
+// never fails the create.
+//
+// The announcement is recorded first (Loops: pending) and settled from HQ's
+// answer: a 200 naming a loop item is in_loop (the author's writes then need
+// a held fix item, fixpush.go), one naming none no_taker; 409 officer_shadow
+// — the expected answer for an officer in shadow, logged as a note — closed
+// (never re-announced). An outage is retried with backoff (PROpenedBackoff);
+// any other failure is logged and posted to HQ as a notice and stays pending,
+// which the sweep re-announces (sweepAnnounce).
 func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 	if g.PROpened == nil {
 		return
 	}
+	run := func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), prOpenedTimeout)
+		defer cancel()
+		if g.Loops != nil {
+			if err := g.Loops.Announced(ctx, sr.Repo, pr.Number, pr.HeadSHA); err != nil {
+				g.logf("officers: %s: the announcement of #%d in %s was not recorded: %v", g.OfficerID, pr.Number, sr.Repo, err)
+			}
+		}
+		backoff := g.PROpenedBackoff
+		if backoff == nil {
+			backoff = DefaultPROpenedBackoff
+		}
+		err := g.announceOpened(ctx, sr, pr, backoff)
+		if err != nil {
+			g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: pr.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
+				"officer %s: muster could not tell HQ that #%d in %s was opened at %s (pr-opened: %v); the pull request stands, and muster's sweep "+
+					"announces it again until HQ answers",
+				g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), err)})
+		}
+	}
+	if g.Async != nil {
+		g.Async(run)
+		return
+	}
+	go run()
+}
+
+// announceOpened is ONE announcement of pr (its attempts: one, then one per
+// wait of backoff while HQ is unavailable), settled from HQ's answer. It
+// returns the failure when HQ did not answer 200 or officer_shadow.
+func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr PR, backoff []time.Duration) error {
 	p := officers.PROpened{Repo: sr.Repo, PR: pr.Number, HeadSHA: pr.HeadSHA, HeadRef: pr.HeadRef, Base: baseOf(sr, pr), Author: pr.Author}
-	ans, err := g.PROpened(ctx, p)
+	var (
+		ans officers.PROpenedAnswer
+		err error
+	)
+	for i := 0; ; i++ {
+		ans, err = g.PROpened(ctx, p)
+		if err == nil || !retryableHQ(err) || i >= len(backoff) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%v (then: %v)", err, ctx.Err())
+		case <-time.After(backoff[i]):
+		}
+	}
+	settle := func(state string) {
+		if g.Loops == nil {
+			return
+		}
+		if serr := g.Loops.Settle(ctx, sr.Repo, pr.Number, state); serr != nil {
+			g.logf("officers: %s: the announcement of #%d in %s could not be settled %s: %v", g.OfficerID, pr.Number, sr.Repo, state, serr)
+		}
+	}
 	var hqErr *officers.HQError
 	switch {
 	case err == nil:
+		state := officers.PRLoopNoTaker
+		if len(ans.Items) > 0 {
+			state = officers.PRLoopInLoop
+		}
+		settle(state)
 		g.logf("officers: %s: told HQ #%d in %s was opened at %s: %d loop item(s), %d officer(s) skipped",
 			g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), len(ans.Items), len(ans.Skipped))
+		return nil
 	case errors.As(err, &hqErr) && hqErr.Status == http.StatusConflict && hqErr.Code() == "officer_shadow":
+		settle(officers.PRLoopClosed)
 		g.logf("officers: %s: note: HQ runs this officer in shadow, so #%d in %s starts no review loop (pr-opened answered 409 officer_shadow)",
 			g.OfficerID, pr.Number, sr.Repo)
+		return nil
 	default:
 		g.logf("officers: %s: HQ was not told #%d in %s was opened (pr-opened): %v", g.OfficerID, pr.Number, sr.Repo, err)
-		g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: pr.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
-			"officer %s: muster could not tell HQ that #%d in %s was opened at %s (pr-opened: %v); the pull request stands, but no review loop was started for it — start one by hand",
-			g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), err)})
+		return err
 	}
+}
+
+// retryableHQ reports whether err is an outage worth another attempt (HQ
+// unreachable, a 5xx), not one of HQ's decisions (a 4xx).
+func retryableHQ(err error) bool {
+	var re *officers.RetryableError
+	return errors.Is(err, officers.ErrHQUnavailable) || errors.As(err, &re)
+}
+
+// sweepAnnounce re-announces, once each (no retries, no notice: the next
+// sweep tries again), every announcement of this officer that never got
+// HQ's 200 (Loops.Pending) — and ONLY those: HQ's pr-opened restarts a loop
+// whose item has finished, so a pull request HQ acknowledged is never sent
+// again. One that is no longer open is closed (never sent).
+func (g *PushGate) sweepAnnounce(ctx context.Context) error {
+	if g.Loops == nil || g.PROpened == nil {
+		return nil
+	}
+	pending, err := g.Loops.Pending(ctx)
+	if err != nil {
+		return fmt.Errorf("the pending pr-opened announcements could not be read: %v", err)
+	}
+	var errs []error
+	for _, p := range pending {
+		sr, ok := g.Ship.RepoFor(g.Repo, p.Repo)
+		if !ok {
+			continue
+		}
+		gh := g.ghFor(sr.Repo)
+		if gh == nil {
+			continue
+		}
+		pr, err := gh.PR(ctx, p.PR)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: reading pull request #%d to announce it again: %v", sr.Repo, p.PR, err))
+			continue
+		}
+		if pr.State != "open" || pr.Merged {
+			if err := g.Loops.Settle(ctx, sr.Repo, p.PR, officers.PRLoopClosed); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		_ = g.announceOpened(ctx, sr, pr, nil)
+	}
+	return errors.Join(errs...)
 }
 
 // officerPRs is OfficerPRs(login, state) of sr, CROSS-CHECKED by the
@@ -777,6 +897,9 @@ func (g *PushGate) Sweep(ctx context.Context) error {
 			}
 		}
 		g.mu.Unlock()
+	}
+	if err := g.sweepAnnounce(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

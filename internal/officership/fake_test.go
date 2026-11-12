@@ -43,6 +43,14 @@ type fakeGH struct {
 	// readied is every node id MarkReady was called with; readyErr fails it.
 	readied  []string
 	readyErr error
+	// drafted is every node id ConvertToDraft was called with; draftErr fails
+	// it. afterReady, when set, runs inside MarkReady once it converted (a
+	// push racing the mutation).
+	// onPR, when set, may change what one PR read answers.
+	onPR       func(n int, p *PR)
+	drafted    []string
+	draftErr   error
+	afterReady func()
 	// listed is what a newest-N window of the repository's pull requests
 	// would hold (nothing reads it any more: a test sets it to show the gate
 	// no longer depends on one); listCalls counts OfficerPRs calls;
@@ -96,6 +104,9 @@ func (f *fakeGH) PR(_ context.Context, n int) (PR, error) {
 	p, ok := f.prs[n]
 	if !ok {
 		return PR{}, errNotFound
+	}
+	if f.onPR != nil {
+		f.onPR(n, &p) // a test's view of this read only
 	}
 	return p, nil
 }
@@ -212,6 +223,25 @@ func (f *fakeGH) MarkReady(_ context.Context, n int, nodeID string) error {
 	f.readied = append(f.readied, nodeID)
 	if p, ok := f.prs[n]; ok && p.NodeID == nodeID {
 		p.Draft = false
+		f.prs[n] = p
+	}
+	if f.afterReady != nil {
+		f.afterReady()
+	}
+	return nil
+}
+
+// ConvertToDraft records the node id (drafted) and makes the pull request a
+// draft again; draftErr fails it.
+func (f *fakeGH) ConvertToDraft(_ context.Context, n int, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.draftErr != nil {
+		return f.draftErr
+	}
+	f.drafted = append(f.drafted, nodeID)
+	if p, ok := f.prs[n]; ok && p.NodeID == nodeID {
+		p.Draft = true
 		f.prs[n] = p
 	}
 	return nil

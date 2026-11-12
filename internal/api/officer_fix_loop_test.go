@@ -149,13 +149,15 @@ func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	if out != nil || !errors.Is(err, connectors.ErrGateRefused) || !strings.Contains(err.Error(), want) {
 		t.Fatalf("a shadowed fix push: err = %v (forwarded %v), want %q", err, out != nil, want)
 	}
+	// A hand-off now is HQ's to refuse (409 nothing_pushed): muster keeps
+	// no memory of pushes to decide it, and passes HQ's answer back.
+	r.hq.RefuseCompletes(http.StatusConflict, "nothing_pushed", "no push reached #5 since the fix item was claimed")
 	res := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead}})
-	if !isToolErr(res) || !strings.Contains(res, "muster refused your push under it in shadow") || !strings.Contains(res, "complete it escalated instead") {
-		t.Fatalf("a handoff after a shadowed push: %s, want the refusal", res)
+	if !strings.Contains(res, `"code":"nothing_pushed"`) || !strings.Contains(res, `"status":409`) {
+		t.Fatalf("a handoff after a shadowed push: %s, want HQ's 409 verbatim", res)
 	}
-	if n := len(r.completes(fix)); n != 0 {
-		t.Fatalf("%d completes reached HQ", n)
-	}
+	r.hq.RefuseCompletes(0, "", "")
+	r.hq.ResetRequests()
 	if res := r.completeAs(r.authInst.Name, fix, "escalated", nil); isToolErr(res) {
 		t.Fatalf("complete escalated: %s", res)
 	}
@@ -196,25 +198,6 @@ func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	}
 }
 
-// fixRef is the authoring officer's #5 branch ref.
-const fixRef = "refs/heads/officer/investigate-delta-infra/5-fix"
-
-// land runs an admitted push's after-forward hook on GitHub's report-status
-// for fixRef: applied ("ok") or refused ("ng").
-func land(t *testing.T, out *http.Request, applied bool) {
-	t.Helper()
-	line := "ok " + fixRef + "\n"
-	if !applied {
-		line = "ng " + fixRef + " pre-receive hook declined\n"
-	}
-	after := connectors.AfterForwardOf(out)
-	if after == nil {
-		t.Fatal("the push carries no after-forward hook")
-	}
-	after(context.Background(), connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Complete: true,
-		Body: []byte(wirePkt("unpack ok\n") + wirePkt(line) + "0000")})
-}
-
 // heldFix puts a fix item for #5 in the authoring instance's live hold, out
 // of shadow, findings a string, and returns its id.
 func (r *shepAPIRig) heldFix(t *testing.T) string {
@@ -228,58 +211,6 @@ func (r *shepAPIRig) heldFix(t *testing.T) string {
 	r.hq.SetItemShadow(fix, &no)
 	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
 	return fix
-}
-
-// TestAFixHandoffNeedsAPushThatLanded: HQ refuses a fix's hand-off at an
-// unchanged head, so muster does first — no push, or a push GitHub refused
-// (ng), is refused naming the branch and the item, with nothing sent to HQ;
-// a complete WITHOUT a handoff is unaffected; a push GitHub applied lets
-// the hand-off through.
-func TestAFixHandoffNeedsAPushThatLanded(t *testing.T) {
-	r := newShepAPIRig(t)
-	fix := r.heldFix(t)
-	handoff := map[string]any{"handoff": map[string]any{"head_sha": fixHead}}
-	want := "no push landed on officer/investigate-delta-infra/5-fix while holding item " + fix
-	if out := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(out, want) {
-		t.Fatalf("no push: %s, want %q", out, want)
-	}
-	out, err := r.authPush(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	land(t, out, false)
-	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(res, want) {
-		t.Fatalf("a push GitHub refused: %s, want %q", res, want)
-	}
-	if n := len(r.completes(fix)); n != 0 {
-		t.Fatalf("%d completes reached HQ", n)
-	}
-	// Without a handoff: unaffected.
-	other := r.heldFix(t)
-	if res := r.completeAs(r.authInst.Name, other, "escalated", nil); isToolErr(res) {
-		t.Fatalf("an escalated complete without a push: %s", res)
-	}
-	// HQ unreadable at the fix lookup: refused (fail closed), not sent.
-	r.hq.SetDown(true)
-	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(res, "could not read HQ's items to check whether item "+fix) {
-		t.Fatalf("HQ down: %s", res)
-	}
-	r.hq.SetDown(false)
-	// An ORDINARY item of the draft officer: its hand-off is not this rule's.
-	plain := r.hq.AddItem(offShepAuth, "investigate.opened", officers.ShepherdSubject(shepRepoAPI, 7))
-	r.hq.SetClaim(plain, r.authInst.Name, time.Now().Add(time.Hour))
-	if res := r.completeAs(r.authInst.Name, plain, "done", handoff); isToolErr(res) {
-		t.Fatalf("an ordinary item's hand-off: %s", res)
-	}
-	// A landed push: the hand-off goes through.
-	out, err = r.authPush(t)
-	if err != nil {
-		t.Fatal(err)
-	}
-	land(t, out, true)
-	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); isToolErr(res) {
-		t.Fatalf("after a landed push: %s", res)
-	}
 }
 
 // TestTheFixHandoffGoesThroughOutOfShadow: a fix pushed out of shadow and
@@ -298,7 +229,6 @@ func TestTheFixHandoffGoesThroughOutOfShadow(t *testing.T) {
 	if err != nil || out == nil {
 		t.Fatalf("the fix push: %v", err)
 	}
-	land(t, out, true)
 	if res := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead}}); isToolErr(res) {
 		t.Fatalf("complete: %s", res)
 	}
@@ -338,30 +268,5 @@ func TestHandoffToTheAuthorIsTheShepherdsOnly(t *testing.T) {
 	out := r.completeAs(r.inst.Name, id2, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}})
 	if !strings.Contains(out, `"status":409`) || !strings.Contains(out, `"code":"audit_not_stopped"`) {
 		t.Fatalf("HQ's 409 came back as %s", out)
-	}
-}
-
-// TestAShepherdHandoffAfterAShadowedPushIsRefused: the shepherd's same case —
-// once its push under the item was refused in shadow, its hand-off of that
-// item is refused; an escalated complete still goes through with the block.
-func TestAShepherdHandoffAfterAShadowedPushIsRefused(t *testing.T) {
-	r := newShepAPIRig(t)
-	id := r.hold(t)
-	r.s.officerRT.recordShadow(offShep, officers.ItemID(id), "would have pushed 888888888888..3c5e7a9b1d2f to officer/investigate-delta-infra/5-fix", true)
-	out := r.completeAs(r.inst.Name, id, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}})
-	if !strings.Contains(out, "muster refused your push under it in shadow") || len(r.completes(id)) != 0 {
-		t.Fatalf("a shepherd's hand-off after a shadowed push: %s (completes %d)", out, len(r.completes(id)))
-	}
-	if out := r.completeAs(r.inst.Name, id, "escalated", nil); isToolErr(out) {
-		t.Fatalf("escalated: %s", out)
-	}
-	if b := r.completes(id); len(b) != 1 || !strings.Contains(string(b[0]), shadowHeader) || strings.Contains(string(b[0]), "handoff") {
-		t.Fatalf("the escalated complete sent %s", b)
-	}
-	// A shadowed NON-push write (a comment) does not block the hand-off.
-	id2 := r.hold(t)
-	r.s.officerRT.recordShadow(offShep, officers.ItemID(id2), "would have commented on x#5 (3 chars)", false)
-	if out := r.completeAs(r.inst.Name, id2, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}}); isToolErr(out) {
-		t.Fatalf("a hand-off after a shadowed comment: %s", out)
 	}
 }

@@ -6,9 +6,11 @@
 package hqtest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -1529,7 +1531,14 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		}
 	}
 	if verb == "merge-asks" {
-		s.MergeAskCalls = append(s.MergeAskCalls, s.reqs[len(s.reqs)-1])
+		req := s.reqs[len(s.reqs)-1]
+		s.MergeAskCalls = append(s.MergeAskCalls, req)
+		// HQ's decoder: one object of exactly its fields, of its types
+		// (DecodeMergeAsk); anything else is a 400 invalid, as HQ answers.
+		if _, err := DecodeMergeAsk(req.Raw); err != nil {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "body: " + err.Error(), "code": "invalid"})
+			return
+		}
 		if s.MergeAskStatus != 0 {
 			s.write(w, s.MergeAskStatus, map[string]any{"error": s.MergeAskMessage, "code": s.MergeAskCode})
 			return
@@ -1984,4 +1993,63 @@ func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance s
 			"delivery": map[string]any{"notice": "both", "inbox": true, "dm": "queued"}},
 		"item": *it,
 	})
+}
+
+// MergeAskRequest is a COPY of HQ's merge-ask create body (its officermerge
+// Request and Evidence types), field for field and type for type, so the
+// fake decodes muster's body exactly as HQ does. Keep it in step with HQ's.
+type MergeAskRequest struct {
+	Instance string           `json:"instance"`
+	To       string           `json:"to,omitempty"`
+	Repo     string           `json:"repo"`
+	PR       int64            `json:"pr"`
+	HeadSHA  string           `json:"head_sha"`
+	BaseRef  string           `json:"base_ref"`
+	BaseSHA  string           `json:"base_sha"`
+	Summary  string           `json:"summary"`
+	Purpose  string           `json:"purpose"`
+	How      string           `json:"how"`
+	Evidence MergeAskEvidence `json:"evidence"`
+}
+
+// MergeAskEvidence is HQ's Evidence.
+type MergeAskEvidence struct {
+	OfficerItem       MergeAskItem      `json:"officer_item"`
+	OpenYellows       []MergeAskFinding `json:"open_yellows"`
+	ProtectedIdentity MergeAskGate      `json:"protected_identity"`
+	SettledAt         string            `json:"settled_at"`
+	Rollback          string            `json:"rollback"`
+}
+
+// MergeAskItem is HQ's EvidenceItem: the item id is an INTEGER.
+type MergeAskItem struct {
+	Officer string `json:"officer"`
+	Item    int64  `json:"item"`
+}
+
+// MergeAskFinding is HQ's Finding.
+type MergeAskFinding struct {
+	Where string `json:"where"`
+	Text  string `json:"text"`
+}
+
+// MergeAskGate is HQ's Gate.
+type MergeAskGate struct {
+	Result string `json:"result"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// DecodeMergeAsk decodes raw as HQ does: one object, unknown fields refused,
+// every field its type.
+func DecodeMergeAsk(raw []byte) (MergeAskRequest, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var r MergeAskRequest
+	if err := dec.Decode(&r); err != nil {
+		return MergeAskRequest{}, err
+	}
+	if dec.More() {
+		return MergeAskRequest{}, errors.New("more than one JSON value")
+	}
+	return r, nil
 }

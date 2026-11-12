@@ -22,7 +22,7 @@ func shepMergeAsk(id string) map[string]any {
 	return map[string]any{"item_id": id, "repo": shepRepoAPI, "pr": 5, "head_sha": shepHeadAPI, "base_ref": "trunk",
 		"base_sha": "9999999999999999999999999999999999999999", "summary": "Raise the limit", "purpose": "The worker OOMs",
 		"how": "Two audit rounds; CI green",
-		"evidence": map[string]any{"officer_item": map[string]any{"officer": offShep, "item": id},
+		"evidence": map[string]any{"officer_item": map[string]any{"officer": offShepAuth, "item": 3901},
 			"open_yellows":       []any{map[string]any{"where": "deploy.yaml:4", "text": "naming"}},
 			"protected_identity": map[string]any{"result": "clean"}, "settled_at": "2026-11-12T10:00:00Z", "rollback": "revert"}}
 }
@@ -105,17 +105,40 @@ func TestTheMergeAskNeedsTheLiveHoldOfThatItemForThatPullRequest(t *testing.T) {
 	}
 }
 
-func TestTheMergeAskBoundsAreLocal(t *testing.T) {
+// TestTheMergeAsksBoundsAreHQs: muster checks no bound of its own — an
+// out-of-bounds summary reaches HQ, and HQ's 400 comes back verbatim.
+func TestTheMergeAsksBoundsAreHQs(t *testing.T) {
 	r := newShepAPIRig(t)
 	id := r.hold(t)
-	r.hq.ResetRequests()
+	r.hq.MergeAskStatus, r.hq.MergeAskCode, r.hq.MergeAskMessage = http.StatusBadRequest, "invalid", "summary is required: what the pull request does, in at most 300 characters"
 	args := shepMergeAsk(id)
 	args["summary"] = strings.Repeat("x", 301)
-	if out := r.mergeAsk(t, args); !strings.Contains(out, "summary is 301 characters, over HQ's 300") {
-		t.Fatalf("a long summary: %s", out)
+	out := r.mergeAsk(t, args)
+	if !strings.Contains(out, `"status":400`) || !strings.Contains(out, "in at most 300 characters") {
+		t.Fatalf("a long summary: %s, want HQ's 400 verbatim", out)
 	}
-	if n := len(r.hq.Requests()); n != 0 {
-		t.Fatalf("HQ saw %d request(s) for an out-of-bounds ask", n)
+	if n := len(r.hq.MergeAskRequests()); n != 1 {
+		t.Fatalf("HQ saw %d merge ask(s), want the one", n)
+	}
+}
+
+// TestTheFakeDecodesTheMergeAskAsHQDoes: the fake's merge-asks route decodes
+// strictly into the copy of HQ's types, so a body with a string item id is
+// its 400 — the control that the route CAN refuse what HQ refuses.
+func TestTheFakeDecodesTheMergeAskAsHQDoes(t *testing.T) {
+	r := newShepAPIRig(t)
+	id := r.hold(t)
+	c := r.s.officerRT.hq.Client(r.s.officerRT.reg.All()[1])
+	_, err := c.MergeAsk(context.Background(), officers.ItemID(id), []byte(`{"instance":"x","evidence":{"officer_item":{"item":"3901"}}}`))
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("a string item id at the fake: %v, want HQ's 400", err)
+	}
+	_, err = c.MergeAsk(context.Background(), officers.ItemID(id), []byte(`{"instance":"x","evidence":{"ladder":{"rounds":[]}}}`))
+	if err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("an unknown field at the fake: %v, want HQ's 400", err)
+	}
+	if out := r.mergeAsk(t, shepMergeAsk(id)); isToolErr(out) {
+		t.Fatalf("muster's own body at the fake: %s", out)
 	}
 }
 

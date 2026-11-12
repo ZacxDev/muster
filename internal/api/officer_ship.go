@@ -141,15 +141,13 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		ItemClaimed: func(ctx context.Context, instance string, item int) (officers.Item, error) {
 			return itemClaimedBy(ctx, hq.c, o.ID, instance, item, cfg.Now)
 		},
+		Loops: s.prLoopsFor(cfg, o),
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
-		FixPushed: func(item officers.Item, _ string) {
-			s.officerRT.recordFixPush(o.ID, item.ID)
-		},
 		OfficerShadow: hq.c.Shadow,
-		Shadowed: func(item officers.Item, line string, push bool) {
-			s.officerRT.recordShadow(o.ID, item.ID, line, push)
+		Shadowed: func(item officers.Item, line string) {
+			s.officerRT.recordShadow(o.ID, item.ID, line)
 		},
 		// 🔴 muster's own call, after a clean draft create, with the
 		// authoring officer's token: no instance tool reaches it.
@@ -163,8 +161,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 				return itemHeldFor(ctx, hq.c, o.ID, instance, repo, n, cfg.Now)
 			},
 			OfficerShadow: hq.c.Shadow,
-			Shadowed: func(item officers.Item, line string, push bool) {
-				s.officerRT.recordShadow(o.ID, item.ID, line, push)
+			Shadowed: func(item officers.Item, line string) {
+				s.officerRT.recordShadow(o.ID, item.ID, line)
 			}}
 		rt.gate.Shepherd = sh
 		rt.shepherd = &officership.ShepherdGates{Shepherd: sh, Now: cfg.Now,
@@ -222,6 +220,10 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 		if rt.watch != nil && !cfg.NoShipResume {
 			w := rt.watch
 			safeGo(s.logger, "officer rollout resume "+o.ID, func() { w.Resume(s.streams.context()) })
+		}
+		if !cfg.NoShipResume {
+			o := o
+			safeGo(s.logger, "officer shadow prune "+o.ID, func() { s.shadowPruneLoop(s.streams.context(), o) })
 		}
 		if o.Ship.IsDraft() && !cfg.NoShipResume {
 			o, rt := o, rt
@@ -718,4 +720,42 @@ func shipStageGrants(o officers.Officer) string {
 	return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), for %s only, behind muster's push gate: reads; pushes ONLY to refs/heads/%s* "+
 		"(never %s, never a tag); opening and editing its own pull requests and commenting; marking its own draft ready (%s). Merging and tagging happen only in muster, "+
 		"through the gated %s and %s tools (stage %s)", o.ID, sp.AppID, o.Repo, sp.BranchPrefix, sp.Base, officers.ToolMarkReady, officers.ToolMergePR, officers.ToolTagRelease, sp.Stage)
+}
+
+// prLoopsFor is draft officer o's review-loop record (officership.PRLoops)
+// over cfg.PRLoops, acting as o's owner (the database store is under
+// row-level security); nil for any other stage. With no store configured,
+// one in this process's memory, shared by every officer of this server.
+func (s *Server) prLoopsFor(cfg OfficersConfig, o officers.Officer) officership.PRLoops {
+	if !o.Ship.IsDraft() {
+		return nil
+	}
+	st := cfg.PRLoops
+	if st == nil {
+		s.officerRT.memLoopsOnce.Do(func() { s.officerRT.memLoops = officers.NewMemPRLoopStore() })
+		st = s.officerRT.memLoops
+	}
+	return prLoops{s: s, o: o, st: st}
+}
+
+type prLoops struct {
+	s  *Server
+	o  officers.Officer
+	st officers.PRLoopStore
+}
+
+func (p prLoops) as(ctx context.Context) context.Context { return p.s.officerPrincipal(ctx, p.o.Owner) }
+
+func (p prLoops) Announced(ctx context.Context, repo string, n int, head string) error {
+	return p.st.PRLoopAnnounced(p.as(ctx), p.o.ID, repo, n, head)
+}
+func (p prLoops) Settle(ctx context.Context, repo string, n int, state string) error {
+	return p.st.PRLoopSettle(p.as(ctx), p.o.ID, repo, n, state)
+}
+func (p prLoops) Pending(ctx context.Context) ([]officers.PRLoop, error) {
+	return p.st.PRLoopsPending(p.as(ctx), p.o.ID)
+}
+func (p prLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
+	st, err := p.st.PRLoopState(p.as(ctx), p.o.ID, repo, n)
+	return st == officers.PRLoopInLoop, err
 }

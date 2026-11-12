@@ -120,7 +120,7 @@ type Shepherd struct {
 	OfficerShadow func(ctx context.Context) (bool, error)
 	// Shadowed records a write refused in shadow ("would have …") against
 	// the item it was made under; nil records nothing.
-	Shadowed func(item officers.Item, line string, push bool)
+	Shadowed func(item officers.Item, line string)
 }
 
 // rule is the rule for login's pull requests in repo.
@@ -331,7 +331,7 @@ func (g *PushGate) admitShepherdPushLocked(ctx context.Context, sr officers.Ship
 	}
 	// 🔴 SHADOW BEFORE THE SCRATCH REF: nothing of a shadowed push reaches
 	// GitHub (the rewrite below is what would send it).
-	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch), true); on {
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch)); on {
 		return nil, nil, shadowRefused(why)
 	}
 	var nonce [12]byte
@@ -638,7 +638,7 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 				return shepherdRefused("a comment on #%d with the line %q, which reads as a command to a bot or a slash command (a line starting with / or @): "+
 					"comment automation in the repository could act on it; reword it so no line starts with / or @", n, truncate(line, 80))
 			}
-			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("commented on %s#%d (%d chars)", sr.Repo, n, utf8.RuneCountInString(body)), false); on {
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("commented on %s#%d (%d chars)", sr.Repo, n, utf8.RuneCountInString(body))); on {
 				return shadowRefused(why)
 			}
 			return nil
@@ -661,7 +661,7 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if pr.HeadSHA != want {
 				return shepherdRefused("update-branch of #%d at %s, which is not its head %s: re-read the pull request", n, shortSHA(want), shortSHA(pr.HeadSHA))
 			}
-			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("updated %s from its base", pr.HeadRef), false); on {
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("updated %s from its base", pr.HeadRef)); on {
 				return shadowRefused(why)
 			}
 			return nil
@@ -757,15 +757,36 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 		return out, refuse(GateWall, "#%d's head %s touches the wall: %s (%s)", n, short(pr.HeadSHA), strings.Join(v.Paths, ", "), v.Why)
 	}
 	pass(GateWall)
-	if err := AuditVerdictClear(item, pr); err != nil {
+	if err := AuditVerdictClear(item, pr, g.Shepherd.OfficerID); err != nil {
 		return out, err
 	}
 	pass(GateAudit)
-	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("marked %s#%d ready", sr.Repo, n), false); on {
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("marked %s#%d ready", sr.Repo, n)); on {
 		return out, refuse(GateShadow, "%s", why)
+	}
+	// 🔴 THE HEAD THE GATES PASSED IS THE HEAD MARKED READY: read again
+	// right before the mutation (a push since the first read is refused,
+	// nothing converted) and right after it (a push that raced the mutation
+	// is answered by converting the pull request back to draft).
+	if cur, err := gh.PR(ctx, n); err != nil || cur.HeadSHA != pr.HeadSHA {
+		if err != nil {
+			return out, refuse(GateReady, "could not read #%d again right before marking it ready (%v); nothing was converted", n, err)
+		}
+		return out, refuse(GateReady, "#%d's head moved from %s to %s while the gates ran; nothing was converted — call again to check the new head", n, short(pr.HeadSHA), short(cur.HeadSHA))
 	}
 	if err := gh.MarkReady(ctx, n, pr.NodeID); err != nil {
 		return out, refuse(GateReady, "GitHub did not confirm #%d ready for review (%v); it may still have been converted — re-read the pull request before calling again", n, err)
+	}
+	after, err := gh.PR(ctx, n)
+	if err != nil || after.HeadSHA != pr.HeadSHA {
+		why := fmt.Sprintf("its head could not be read again (%v)", err)
+		if err == nil {
+			why = fmt.Sprintf("its head moved from %s to %s while it was marked ready", short(pr.HeadSHA), short(after.HeadSHA))
+		}
+		if cerr := gh.ConvertToDraft(ctx, n, pr.NodeID); cerr != nil {
+			return out, refuse(GateReady, "#%d was marked ready but %s, and muster could NOT convert it back to draft (%v): it is ready for review at a head the gates did not check — tell a human", n, why, cerr)
+		}
+		return out, refuse(GateReady, "#%d was marked ready but %s, so muster converted it back to draft (the gates passed only %s); call again to check the new head", n, why, short(pr.HeadSHA))
 	}
 	out.Ready = true
 	pass(GateReady)

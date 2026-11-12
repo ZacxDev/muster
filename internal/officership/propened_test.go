@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -32,15 +33,35 @@ type prOpenedRig struct {
 	*draftRig
 	calls []officers.PROpened
 	err   error
+	// errs, when set, answers attempt i with errs[i] (then r.err).
+	errs  []error
+	items int
 	logs  []string
+	loops *fakeLoops
 }
 
 func newPROpenedRig() *prOpenedRig {
-	r := &prOpenedRig{draftRig: newDraftRig()}
+	r := &prOpenedRig{draftRig: newDraftRig(), loops: newFakeLoops(), items: 1}
 	r.g.PROpened = func(_ context.Context, p officers.PROpened) (officers.PROpenedAnswer, error) {
 		r.calls = append(r.calls, p)
-		return officers.PROpenedAnswer{}, r.err
+		err := r.err
+		if i := len(r.calls) - 1; i < len(r.errs) {
+			err = r.errs[i]
+		}
+		var ans officers.PROpenedAnswer
+		if err == nil {
+			ans.Items = make([]struct {
+				OfficerID string          `json:"officer_id"`
+				ItemID    officers.ItemID `json:"item_id"`
+				Created   bool            `json:"created"`
+			}, r.items)
+		}
+		return ans, err
 	}
+	// Inline, and no waits: the attempts are counted, not timed.
+	r.g.Async = func(f func()) { f() }
+	r.g.PROpenedBackoff = []time.Duration{0, 0}
+	r.g.Loops = r.loops
 	r.g.Logf = func(f string, a ...any) { r.logs = append(r.logs, fmt.Sprintf(f, a...)) }
 	r.infra.compares["trunk..."+prOpenedHead] = r.infra.compares["trunk..."+dBranch]
 	return r
@@ -133,4 +154,73 @@ func anyLog(logs []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestPROpenedIsRetriedOnAnOutageOnly: an outage (HQ unavailable) is retried
+// with backoff — three attempts in all — and a 200 on the third settles it;
+// a 4xx (HQ's decision) is not retried.
+func TestPROpenedIsRetriedOnAnOutageOnly(t *testing.T) {
+	r := newPROpenedRig()
+	down := fmt.Errorf("%w: answered 503", officers.ErrHQUnavailable)
+	r.errs = []error{down, down}
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	if len(r.calls) != 3 || r.loops.get(dInfra, dPR) != officers.PRLoopInLoop || len(r.notices) != 0 {
+		t.Fatalf("two outages then a 200: %d attempts, state %q, notices %d; want 3, in_loop, none", len(r.calls), r.loops.get(dInfra, dPR), len(r.notices))
+	}
+	r = newPROpenedRig()
+	r.err = down
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	if len(r.calls) != 3 || r.loops.get(dInfra, dPR) != officers.PRLoopPending || len(r.notices) != 1 {
+		t.Fatalf("a lasting outage: %d attempts, state %q, notices %d; want 3, pending (the sweep retries), one notice", len(r.calls), r.loops.get(dInfra, dPR), len(r.notices))
+	}
+	r = newPROpenedRig()
+	r.err = &officers.HQError{Status: http.StatusConflict, Body: []byte(`{"code":"officer_disabled"}`)}
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	if len(r.calls) != 1 || r.loops.get(dInfra, dPR) != officers.PRLoopPending {
+		t.Fatalf("a 409: %d attempts, state %q; want 1 (not retried), pending", len(r.calls), r.loops.get(dInfra, dPR))
+	}
+}
+
+// TestPROpenedSettlesTheLoopRecord: a 200 naming a loop item is in_loop, one
+// naming none no_taker, 409 officer_shadow closed.
+func TestPROpenedSettlesTheLoopRecord(t *testing.T) {
+	for want, set := range map[string]func(r *prOpenedRig){
+		officers.PRLoopInLoop:  func(r *prOpenedRig) {},
+		officers.PRLoopNoTaker: func(r *prOpenedRig) { r.items = 0 },
+		officers.PRLoopClosed: func(r *prOpenedRig) {
+			r.err = &officers.HQError{Status: http.StatusConflict, Body: []byte(`{"code":"officer_shadow"}`)}
+		},
+	} {
+		r := newPROpenedRig()
+		set(r)
+		r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+		if got := r.loops.get(dInfra, dPR); got != want {
+			t.Errorf("state %q, want %q", got, want)
+		}
+	}
+}
+
+// TestTheSweepReannouncesOnlyWhatNeverGotA200: a pending announcement is sent
+// again by the sweep (once) and settled; one HQ acknowledged — in_loop or
+// no_taker — is NEVER sent again (HQ would restart a finished loop); a
+// pending one whose pull request closed is closed, not sent.
+func TestTheSweepReannouncesOnlyWhatNeverGotA200(t *testing.T) {
+	r := newPROpenedRig()
+	r.infra.all = []PR{r.infra.prs[dPR]}
+	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopPending
+	r.loops.state[loopKey(dInfra, 40)] = officers.PRLoopInLoop
+	r.loops.state[loopKey(dInfra, 41)] = officers.PRLoopNoTaker
+	r.loops.state[loopKey(dInfra, 42)] = officers.PRLoopPending
+	r.infra.prs[42] = PR{Number: 42, State: "closed", HeadRef: "bot/engineering-example-web/19-gone", HeadRepo: dInfra, BaseRef: "trunk"}
+	_ = r.g.Sweep(context.Background())
+	if len(r.calls) != 1 || r.calls[0].PR != dPR {
+		t.Fatalf("the sweep announced %+v, want only #%d", r.calls, dPR)
+	}
+	if r.loops.get(dInfra, dPR) != officers.PRLoopInLoop || r.loops.get(dInfra, 42) != officers.PRLoopClosed {
+		t.Fatalf("after the sweep: #31 %q, #42 %q; want in_loop, closed", r.loops.get(dInfra, dPR), r.loops.get(dInfra, 42))
+	}
+	_ = r.g.Sweep(context.Background())
+	if len(r.calls) != 1 {
+		t.Fatalf("a second sweep sent %d announcements in all, want nothing sent again", len(r.calls))
+	}
 }

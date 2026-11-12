@@ -3,16 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/officers"
 )
 
-// payload.claims through officer_items, officer_claim and officer_brief
-// (officer_claims.go): byte for byte, but for a claims string over the cap,
-// which is withheld whole with a marker.
+// payload.claims through officer_items, officer_claim and officer_brief:
+// byte for byte, whatever its size (HQ bounds it; muster applies no cap).
+// An INVARIANT GUARD: muster has always passed HQ's body through.
 
 // claimsFixture is a claims string as HQ copies it: fenced blocks, a 🔴, CRLF
 // line ends, and characters a JSON encoder escapes.
@@ -84,44 +82,5 @@ func TestPayloadClaimsReachTheInstanceByteForByte(t *testing.T) {
 	}
 	if c, _ := payloadClaimsOf(t, r.tool(t, officers.ToolClaim, map[string]any{"item_id": id}), id); c != claimsFixture {
 		t.Fatalf("officer_claim claims %q", c)
-	}
-}
-
-func TestOverCapClaimsAreWithheldWholeNeverCut(t *testing.T) {
-	r := newShepAPIRig(t)
-	big := strings.Repeat("🔴 a claim line that goes on\r\n", maxClaimsBytes/30+50) // over the cap
-	if len(big) <= maxClaimsBytes {
-		t.Fatalf("fixture %d bytes is not over the cap", len(big))
-	}
-	at := strings.Repeat("x", maxClaimsBytes) // exactly at the cap: kept
-	idBig := r.hq.AddItem(offShep, "audit.round", officers.ShepherdSubject(shepRepoAPI, 5))
-	idAt := r.hq.AddItem(offShep, "audit.round", officers.ShepherdSubject(shepRepoAPI, 6))
-	for id, c := range map[string]string{idBig: big, idAt: at} {
-		raw, _ := json.Marshal(map[string]any{"claims": c, "pr_loop": map[string]any{"pr": 5}})
-		r.hq.SetPayload(id, string(raw))
-	}
-	out := r.tool(t, officers.ToolItems, map[string]any{})
-	c, w := payloadClaimsOf(t, out, idBig)
-	if c != claimsWithheldMarker(len(big)) || w != float64(len(big)) {
-		t.Fatalf("over the cap: claims %.80q withheld %v, want the marker and %d", c, w, len(big))
-	}
-	if strings.Contains(out, "🔴 a claim line") {
-		t.Fatal("a piece of the withheld claims reached the instance")
-	}
-	if c, w := payloadClaimsOf(t, out, idAt); c != at || w != nil {
-		t.Fatalf("at the cap: %d bytes withheld %v, want it whole", len(c), w)
-	}
-	if !strings.Contains(claimsWithheldMarker(len(big)), strconv.Itoa(len(big))+" bytes") {
-		t.Fatal("the marker does not say the size")
-	}
-	// Nothing over the cap in a long body: HQ's bytes unchanged.
-	r2 := newShepAPIRig(t)
-	id := r2.hq.AddItem(offShep, "audit.round", officers.ShepherdSubject(shepRepoAPI, 5))
-	raw, _ := json.Marshal(map[string]any{"claims": at, "note": "<kept & unescaped?>"})
-	r2.hq.SetPayload(id, string(raw))
-	out = r2.tool(t, officers.ToolItems, map[string]any{})
-	page, _ := r2.s.officerRT.hq.Client(r2.s.officerRT.reg.All()[1]).Items(context.Background(), officers.ItemsQuery{Status: officers.StatusOpen})
-	if out != string(page.Raw) {
-		t.Fatal("a body over the cap's length with no claims over it was re-encoded")
 	}
 }

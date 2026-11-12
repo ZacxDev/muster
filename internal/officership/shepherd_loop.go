@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/officers"
 )
@@ -94,7 +94,14 @@ func redFindings(summary string) int {
 // must carry no 🔴 line. It is the predicate HQ's merge-ask gate
 // (audit_not_stopped) applies over its own records; HQ checks again at the
 // merge ask, so this is the early refusal.
-func AuditVerdictClear(item officers.Item, pr PR) error {
+//
+// 🔴 THE REPORT MUST BE ANOTHER OFFICER'S: payload.from names the item the
+// report came from, and its officer must be of another TYPE than self (the
+// shepherd's officer id), as must its item kind's type (the kind's prefix
+// before its first '.', HQ's `<type>.<what>`). An officer's id is
+// `<type>:<area>`, so a report from the shepherd itself — or from any
+// officer of its type — never clears its own pull request.
+func AuditVerdictClear(item officers.Item, pr PR, self string) error {
 	p, err := ParseLoopPayload(item.Payload)
 	if err != nil {
 		return refuse(GateAudit, "item %s: %v", item.ID, err)
@@ -111,6 +118,21 @@ func AuditVerdictClear(item officers.Item, pr PR) error {
 	}
 	if strings.TrimSpace(summary) == "" {
 		return refuse(GateAudit, "item %s carries no auditor's report (payload.from.summary): mark ready follows an audit round HQ recorded, not the shepherd's own word", item.ID)
+	}
+	var fromID, fromKind string
+	if p.From != nil {
+		fromID, fromKind = p.From.OfficerID, p.From.Kind
+	}
+	selfType, _, _ := strings.Cut(self, ":")
+	fromType, _, _ := strings.Cut(fromID, ":")
+	kindType, _, _ := strings.Cut(fromKind, ".")
+	switch {
+	case strings.TrimSpace(fromID) == "" || strings.TrimSpace(fromKind) == "":
+		return refuse(GateAudit, "item %s's report names no source officer or kind (payload.from.officer_id, .kind): it cannot be read as an auditor's", item.ID)
+	case fromID == self || strings.EqualFold(fromType, selfType):
+		return refuse(GateAudit, "item %s's report is from officer %s, of this shepherd's own type %s: a shepherd's own word never clears its pull request", item.ID, fromID, selfType)
+	case strings.EqualFold(kindType, selfType):
+		return refuse(GateAudit, "item %s's report came from an item of kind %s, one of this shepherd's own type %s: it is not an auditor's", item.ID, fromKind, selfType)
 	}
 	round, haveRound := 0, false
 	if loop.Round != nil {
@@ -151,13 +173,11 @@ func AuditVerdictClear(item officers.Item, pr PR) error {
 // pull-request fix item (fixpush.go). Officer is the officer's id;
 // OfficerShadow reads HQ's officer row `shadow`; Shadowed records a refused
 // write ("would have …") against its item (appended to that item's
-// officer_complete summary, and — push true — what makes a later hand-off of
-// that item refused, since the head it would name was never pushed); nil
-// records nothing.
+// officer_complete summary); nil records nothing.
 type ShadowRule struct {
 	Officer       string
 	OfficerShadow func(ctx context.Context) (bool, error)
-	Shadowed      func(item officers.Item, line string, push bool)
+	Shadowed      func(item officers.Item, line string)
 }
 
 // shadowed decides whether a write under item runs in shadow: the item's own
@@ -187,21 +207,21 @@ func (r ShadowRule) shadowed(ctx context.Context, item officers.Item) (bool, str
 // refusal is "", false when the write may go ahead; else it records "would
 // have <would>" for item and returns the refusal text `shadow: would have
 // <would>` with why.
-func (r ShadowRule) refusal(ctx context.Context, item officers.Item, would string, push bool) (string, bool) {
+func (r ShadowRule) refusal(ctx context.Context, item officers.Item, would string) (string, bool) {
 	on, why := r.shadowed(ctx, item)
 	if !on {
 		return "", false
 	}
 	line := "would have " + would
 	if r.Shadowed != nil {
-		r.Shadowed(item, line, push)
+		r.Shadowed(item, line)
 	}
 	return "shadow: " + line + " (" + why + "; nothing was sent)", true
 }
 
 // shadowRefusal is the shepherd's writes asking ShadowRule.
-func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string, push bool) (string, bool) {
-	return ShadowRule{Officer: s.OfficerID, OfficerShadow: s.OfficerShadow, Shadowed: s.Shadowed}.refusal(ctx, item, would, push)
+func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string) (string, bool) {
+	return ShadowRule{Officer: s.OfficerID, OfficerShadow: s.OfficerShadow, Shadowed: s.Shadowed}.refusal(ctx, item, would)
 }
 
 // head12 is a sha's first 12 characters (all of it when shorter).
@@ -211,16 +231,6 @@ func head12(sha string) string {
 	}
 	return sha
 }
-
-// The merge ask's bounds, as HQ applies them (in runes).
-const (
-	maxMergeAskSummary = 300
-	maxMergeAskPurpose = 600
-	maxMergeAskHow     = 900
-	maxMergeAskList    = 50
-	maxMergeAskShort   = 200
-	maxMergeAskLong    = 2000
-)
 
 // MergeAskArgs are officer_shepherd_merge_ask's arguments: everything of HQ's
 // body but `instance`, which muster sets from the caller.
@@ -243,9 +253,12 @@ type MergeAskArgs struct {
 // refuses `ladder` and `checks` (400 unknown field), so the strict decoder
 // (ParseMergeAskArgs) refuses them here first.
 type MergeEvidence struct {
+	// OfficerItem names the AUTHORING officer's item: Item is HQ's integer
+	// item id (HQ decodes it as one, strictly; a string is a 400 there and
+	// refused here).
 	OfficerItem struct {
-		Officer string          `json:"officer"`
-		Item    officers.ItemID `json:"item"`
+		Officer string `json:"officer"`
+		Item    int64  `json:"item"`
 	} `json:"officer_item"`
 	OpenYellows []struct {
 		Where string `json:"where"`
@@ -291,65 +304,21 @@ func ParseMergeAskArgs(raw []byte) (MergeAskArgs, error) {
 	dec.DisallowUnknownFields()
 	var a MergeAskArgs
 	if err := dec.Decode(&a); err != nil {
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) && te.Field == "evidence.officer_item.item" {
+			return MergeAskArgs{}, refuse(GateMergeAsk, "evidence.officer_item.item must be an integer: the authoring officer's HQ item id (got a %s)", te.Value)
+		}
 		return MergeAskArgs{}, refuse(GateMergeAsk, "arguments: %v", err)
 	}
 	return a, nil
 }
 
-// check is the merge ask's local bounds, HQ's own: refused here before any
-// call to HQ.
+// check is the merge ask's STRUCTURE, all muster checks itself: an item id
+// it can put in HQ's path. Every bound (texts, lists, shas) is HQ's to check,
+// and HQ's 400 comes back verbatim — a second copy here would drift.
 func (a MergeAskArgs) check() error {
-	bad := func(format string, args ...any) error { return refuse(GateMergeAsk, format, args...) }
-	runes := utf8.RuneCountInString
-	text := func(name, v string, max int, required bool) error {
-		switch {
-		case required && strings.TrimSpace(v) == "":
-			return bad("%s is required", name)
-		case runes(v) > max:
-			return bad("%s is %d characters, over HQ's %d", name, runes(v), max)
-		}
-		return nil
-	}
 	if strings.TrimSpace(string(a.ItemID)) == "" || strings.ContainsAny(string(a.ItemID), "/?#") || len(a.ItemID) > 64 {
-		return bad("item_id is required: the HQ item you hold for the pull request")
-	}
-	if a.PR <= 0 {
-		return bad("pr is required (the pull request number)")
-	}
-	if !isOID(a.HeadSHA) || !isOID(a.BaseSHA) {
-		return bad("head_sha and base_sha are each a full 40-hex commit sha")
-	}
-	for _, f := range []struct {
-		name, v  string
-		max      int
-		required bool
-	}{
-		{"base_ref", a.BaseRef, maxMergeAskShort, true},
-		{"summary", a.Summary, maxMergeAskSummary, true},
-		{"purpose", a.Purpose, maxMergeAskPurpose, true},
-		{"how", a.How, maxMergeAskHow, true},
-		{"to", a.To, maxMergeAskShort, false},
-		{"evidence.officer_item.officer", a.Evidence.OfficerItem.Officer, maxMergeAskShort, false},
-		{"evidence.protected_identity.result", a.Evidence.ProtectedIdentity.Result, maxMergeAskShort, false},
-		{"evidence.protected_identity.detail", a.Evidence.ProtectedIdentity.Detail, maxMergeAskLong, false},
-		{"evidence.settled_at", a.Evidence.SettledAt, maxMergeAskShort, false},
-		{"evidence.rollback", a.Evidence.Rollback, maxMergeAskLong, false},
-	} {
-		if err := text(f.name, f.v, f.max, f.required); err != nil {
-			return err
-		}
-	}
-	e := a.Evidence
-	if len(e.OpenYellows) > maxMergeAskList {
-		return bad("evidence.open_yellows has %d findings, over HQ's %d", len(e.OpenYellows), maxMergeAskList)
-	}
-	for i, y := range e.OpenYellows {
-		if err := text(fmt.Sprintf("evidence.open_yellows[%d].where", i), y.Where, maxMergeAskShort, false); err != nil {
-			return err
-		}
-		if err := text(fmt.Sprintf("evidence.open_yellows[%d].text", i), y.Text, maxMergeAskLong, false); err != nil {
-			return err
-		}
+		return refuse(GateMergeAsk, "item_id is required: the HQ item you hold for the pull request")
 	}
 	return nil
 }
@@ -357,8 +326,8 @@ func (a MergeAskArgs) check() error {
 // MergeAsk is officer_shepherd_merge_ask: instance's request that HQ open a
 // merge ask for pull request a.PR of a.Repo at a.HeadSHA, under the item it
 // holds. In order: the officer is a shepherd and a.Repo one of its
-// repositories; the bounds (HQ's own, checked here so nothing out of bounds
-// reaches HQ); the item gate — HQ shows instance holding a.ItemID under a
+// repositories; the item id (the only structure muster needs: every bound is
+// HQ's, its 400 passed back verbatim); the item gate — HQ shows instance holding a.ItemID under a
 // live lease, its subject that pull request (ItemByID); shadow; then the
 // POST, with `instance` set here. It returns HQ's answer, or HQ's error
 // (*officers.HQError / *officers.RetryableError) for the caller to pass back
@@ -384,7 +353,7 @@ func (g *ShepherdGates) MergeAsk(ctx context.Context, instance string, a MergeAs
 	if err != nil {
 		return nil, refuse(GateItem, "HQ does not show %s holding item %s for %s: %v", instance, a.ItemID, officers.ShepherdSubject(a.Repo, a.PR), err)
 	}
-	if why, on := sh.shadowRefusal(ctx, item, fmt.Sprintf("asked HQ for a merge ask of %s#%d at %s", a.Repo, a.PR, head12(a.HeadSHA)), false); on {
+	if why, on := sh.shadowRefusal(ctx, item, fmt.Sprintf("asked HQ for a merge ask of %s#%d at %s", a.Repo, a.PR, head12(a.HeadSHA))); on {
 		return nil, refuse(GateShadow, "%s", why)
 	}
 	body, err := json.Marshal(mergeAskBody{Instance: instance, To: a.To, Repo: a.Repo, PR: a.PR, HeadSHA: a.HeadSHA, BaseRef: a.BaseRef,
