@@ -865,7 +865,7 @@ opened it, and the archived chats last, under **Archived**.
 **The context chip.** The chat bar shows how full the chat's context is: the
 model, then `used/window` (`152k/200k`), amber from 70% of the window and red
 from 90%; tap it for the exact count. It reads the chat's latest turn's usage
-row (`chief_turn_usage`; migration 0114 adds the chat, the model and
+row (`chief_turn_usage`; migration 0115 adds the chat, the model and
 `context_tokens` to it): the context the turn's LAST model request was sent —
 its input + cache read + cache write — not the turn's total, which with tool
 calls counts the conversation once per request. `ccd` reports the last call's

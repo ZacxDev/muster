@@ -2174,6 +2174,37 @@ func agentChatScript(name string) g.Node {
   // The global #chat-log afterSwap re-shows the row while this page's own turn
   // streams (see there).
   session.showWorking = showWorking;
+  // workingFromServer redraws ONLY the "working…" row from the server's count
+  // of this conversation's turns: it reads #chat-log's own partial and looks
+  // for the row's data-turn-in-flight mark, and touches nothing else.
+  //
+  // 🔴 NOT A #chat-log REFETCH. A socket closing or reopening mid-turn used to
+  // force one, and the swap removed what this page drew that the server never
+  // stored — a sent bubble still waiting for its echo — so the next echo had no
+  // bubble of its own to fill (e2e agent-chat-markdown "after a reconnect…").
+  // The partial is read as TEXT, never parsed into the page: no HTML from it is
+  // drawn here (TestAgentChatHTMLComesOnlyFromTheServer).
+  function workingFromServer() {
+    var src = logEl.getAttribute('hx-get');
+    if (!src || !window.fetch) return;
+    fetch(src, { credentials: 'include', cache: 'no-store' }).then(function (res) {
+      return res.ok ? res.text() : null;
+    }).then(function (body) {
+      if (body == null || session.disposed || session.streaming) return;
+      // The id is matched with '.' for its quotes so this script never itself
+      // contains the row's id attribute as text: a reader of the page that finds
+      // the row by it (the Go tests' workingShown) must find the row.
+      var running = new RegExp('id=.chat-working.[^>]*data-turn-in-flight').test(body);
+      var w = workingEl();
+      if (running) {
+        showWorking();
+        if (w) w.setAttribute('data-turn-in-flight', '');
+      } else {
+        hideWorking();
+        if (w) w.removeAttribute('data-turn-in-flight');
+      }
+    }).catch(function () {});
+  }
   function hideWorking() {
     var working = workingEl();
     if (!working) return;
@@ -2523,10 +2554,9 @@ func agentChatScript(name string) g.Node {
     madeAt = lastAt = Date.now(); beat = false;
     sock.onopen = function () {
       retry = 0; lastAt = Date.now();
-      // A RECONNECT redraws the log from the server (its "working…" included):
-      // whatever happened while there was no socket — a turn that ended, one
-      // that started — is on the server, not in this page.
-      if (why) { session.refetchOwed = true; owedRefetch(); }
+      // A RECONNECT redraws "working…" from the server: a turn that started or
+      // ended while there was no socket is the server's to say.
+      if (why) workingFromServer();
       if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
     };
     sock.onmessage = function (ev) {
@@ -2549,9 +2579,10 @@ func agentChatScript(name string) g.Node {
       // from the socket (handleAgentWS). 🔴 SO THE ROW IS NOT HIDDEN HERE. It used
       // to be, and then nothing redrew it: a dropped or replaced socket mid-turn
       // left "working…" gone while the chief worked, until the reply landed.
-      // The refetch draws the transcript as stored AND the row from the
-      // server's count — showing while the turn runs.
-      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); session.refetchOwed = true; owedRefetch(); }
+      // The row is redrawn from the server's count — showing while the turn
+      // runs (workingFromServer). A refetch the guard cancelled is still paid,
+      // as before.
+      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; resetTurn(); owedRefetch(); workingFromServer(); }
       retry++;
       // A hidden or offline page waits for its wake (live.go).
       if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));

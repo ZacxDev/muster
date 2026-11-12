@@ -59,7 +59,11 @@ const titles = (page: Page) =>
 
 test('one letter searches; the matches are ranked prefix, word start, then the rest, newest first in each; clearing restores the list', async ({ page }) => {
   await openThreads(page);
-  const recent = ['nothing here', 'unrelated', 'mykestrel', 'about the kestrel', 'kestrel follow-up', 'Kestrel notes'];
+  // The plain list is the switcher's order (agents.SwitcherOrder, PR #609): the
+  // chief's PRIMARY chat first — its default session, elected as the oldest,
+  // "Kestrel notes" — then the side chats, most recently active first. A search
+  // answer is ranked on its own and has no primary-first rule.
+  const recent = ['Kestrel notes', 'nothing here', 'unrelated', 'mykestrel', 'about the kestrel', 'kestrel follow-up'];
   await expect.poll(async () => (await titles(page)).slice(0, 6), { message: 'the plain list, most recent first' }).toEqual(recent);
 
   const ranked = ['kestrel follow-up', 'Kestrel notes', 'about the kestrel', 'unrelated', 'mykestrel'];

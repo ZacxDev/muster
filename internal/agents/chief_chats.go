@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// THE CHIEF'S PRIMARY AND SIDE CHATS (migration 0114; docs/chief.md).
+// THE CHIEF'S PRIMARY AND SIDE CHATS (migration 0115; docs/chief.md).
 //
 //   - PRIMARY: the agent's default session (is_default, 0030). Every delivery
 //     muster makes to the chief — plugin mail, attention answers, routing
@@ -79,7 +79,7 @@ func SwitcherOrder(chats []ChatListing) ChatSwitcher {
 // chat primary first (a fresh primary does both at once).
 var ErrArchivePrimary = errors.New("the primary chat cannot be archived; start a fresh primary instead, which archives this one")
 
-// ChatStore is the part of the session store migration 0114 added. PGStore
+// ChatStore is the part of the session store migration 0115 added. PGStore
 // implements it; a separate interface like SessionRuntimeStore, so the many
 // fakes of Store do not each grow these.
 type ChatStore interface {

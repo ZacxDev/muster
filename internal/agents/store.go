@@ -327,7 +327,7 @@ type ChatSession struct {
 	Runtime   string `json:"runtime"`
 	Model     string `json:"model"`
 	IsDefault bool   `json:"isDefault"`
-	// ArchivedAt is when the session was archived (migration 0114), nil while
+	// ArchivedAt is when the session was archived (migration 0115), nil while
 	// it is not: hidden from the chief's chat switcher, its history kept. The
 	// default (the chief's PRIMARY chat) is never archived.
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`

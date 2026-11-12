@@ -16,7 +16,7 @@ import (
 )
 
 // THE CHIEF'S PRIMARY AND SIDE CHATS (internal/agents chief_chats.go,
-// migration 0114; docs/chief.md#primary-and-side-chats).
+// migration 0115; docs/chief.md#primary-and-side-chats).
 //
 //	POST /agents/{id}/sessions/side              a new side chat
 //	POST /agents/{id}/sessions/{sid}/archive     archive a side chat
@@ -46,7 +46,7 @@ func (s *Server) registerChiefChatRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/{name}/chat-context", s.requireSession(s.handleChiefChatContext))
 }
 
-// chiefChatStore is the store's 0114 half, when it has one.
+// chiefChatStore is the store's 0115 half, when it has one.
 func (s *Server) chiefChatStore() (agents.ChatStore, bool) {
 	st, ok := s.ext.Agents.(agents.ChatStore)
 	return st, ok
@@ -357,7 +357,7 @@ func (s *Server) handleChiefChatContext(w http.ResponseWriter, r *http.Request) 
 // chiefChatViews is chief a's chats as the switcher lists them —
 // agents.SwitcherOrder: the primary first, the side chats by last activity,
 // the archived ones last (each marked) — with the unread dot, active marking
-// activeID. ok false on a store without the 0114 half (the caller lists as
+// activeID. ok false on a store without the 0115 half (the caller lists as
 // before). An ARCHIVED chat that is the one open is listed with the side chats,
 // so the open chat is always in the list.
 func (s *Server) chiefChatViews(ctx context.Context, a agents.Agent, activeID int64) ([]ui.SessionView, bool, error) {

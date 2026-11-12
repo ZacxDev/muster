@@ -13,7 +13,7 @@ import (
 // TestNoPrimaryIsEverElectedOntoAnArchivedChat (PR #609 round 1 F4, the
 // auditor's repro): an agent with NO default yet, whose legacy-key session —
 // the one the election prefers — is archived. Before the fix the next
-// DefaultSession elected it, the 0114 CHECK refused the UPDATE, and every
+// DefaultSession elected it, the 0115 CHECK refused the UPDATE, and every
 // delivery to the agent failed from then on.
 //
 //   - the election skips the archived session and picks a live one;

@@ -176,7 +176,7 @@ type Turn struct {
 	Known    bool
 	Duration time.Duration
 	// SessionID is the chat session the turn ran in (chat_sessions.id,
-	// migration 0114), 0 for none stored (a recap, a check); Model the model
+	// migration 0115), 0 for none stored (a recap, a check); Model the model
 	// that session ran on as muster knew it, "" unknown.
 	SessionID int64
 	Model     string

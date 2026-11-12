@@ -1,4 +1,4 @@
--- muster 0114 — THE CHIEF'S PRIMARY AND SIDE CHATS (docs/chief.md#primary-and-side-chats).
+-- muster 0115 — THE CHIEF'S PRIMARY AND SIDE CHATS (docs/chief.md#primary-and-side-chats).
 --
 --   chat_sessions.archived_at        when the session was archived, NULL while it
 --       is not. An archived session is hidden from the chief's chat switcher;
@@ -18,7 +18,7 @@
 --       the token columns are the turn's sums). NULL when no usage was reported,
 --       and for every row before this migration. The chip reads it.
 --
--- Must apply after 0113 (the contiguity test refuses a gap). New columns, one
+-- Must apply after 0114 (the contiguity test refuses a gap). New columns, one
 -- CHECK and one index on owned tables: their row-level security covers them;
 -- not re-applied by db.RLSOn. Idempotent.
 --
@@ -33,7 +33,7 @@
 --   ALTER TABLE chief_turn_usage DROP COLUMN IF EXISTS model;
 --   ALTER TABLE chief_turn_usage DROP COLUMN IF EXISTS session_id;
 --   ALTER TABLE chat_sessions DROP COLUMN IF EXISTS archived_at;
---   DELETE FROM schema_migrations WHERE version = 114;
+--   DELETE FROM schema_migrations WHERE version = 115;
 
 SET LOCAL lock_timeout = '3s';
 

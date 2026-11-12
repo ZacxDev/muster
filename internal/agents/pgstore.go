@@ -914,7 +914,7 @@ func (s *PGStore) DefaultSession(ctx context.Context, agentID int64, agentName s
 	if _, err := s.LatestOrCreateSession(ctx, agentID, agentName); err != nil {
 		return ChatSession{}, err
 	}
-	// 🔴 NEVER AN ARCHIVED SESSION (0114): the primary is never archived
+	// 🔴 NEVER AN ARCHIVED SESSION (0115): the primary is never archived
 	// (chat_sessions_primary_not_archived), so electing one failed the CHECK —
 	// and every delivery to the agent with it, for as long as the agent had no
 	// default (PR #609 round 1 F4).
@@ -975,7 +975,7 @@ func (s *PGStore) SetDefaultSession(ctx context.Context, agentID, sessionID int6
 		return err
 	}
 	// An archived session made primary is unarchived with it: the primary is never
-	// archived (0114's chat_sessions_primary_not_archived).
+	// archived (0115's chat_sessions_primary_not_archived).
 	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true, archived_at = NULL WHERE id = $1`, sessionID); err != nil {
 		return err
 	}
