@@ -326,12 +326,18 @@ func (c *Client) Items(ctx context.Context, q ItemsQuery) (ItemsPage, error) {
 // maxItemPages bounds AllItems: the wake loop needs a count, not a census.
 const maxItemPages = 5
 
-// AllItems reads up to maxItemPages pages of items in status.
+// AllItems reads up to maxItemPages pages of items in status (PageAll).
 func (c *Client) AllItems(ctx context.Context, status string) ([]Item, error) {
+	return PageAll(ctx, c.Items, status)
+}
+
+// PageAll is THE AllItems of every backend: up to maxItemPages pages of 100
+// items in status, read through items (a backend's Items).
+func PageAll(ctx context.Context, items func(context.Context, ItemsQuery) (ItemsPage, error), status string) ([]Item, error) {
 	var out []Item
 	q := ItemsQuery{Status: status, Limit: 100}
 	for i := 0; i < maxItemPages; i++ {
-		page, err := c.Items(ctx, q)
+		page, err := items(ctx, q)
 		if err != nil {
 			return nil, err
 		}

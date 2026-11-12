@@ -124,11 +124,14 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - cc_account_usage (0108, each pooled Claude account's latest utilization).
 //   - ask_attempts (0113, the answer-attempt log: one row per Submit or Dismiss of a question card).
 //   - pages, page_versions, page_links, page_responses (0116, shareable pages).
+//   - officer_types, officer_defs, officer_items, officer_schedules (0118, the
+//     built-in officer backend's store).
 var ownedAfter0006 = []string{"agent_focus", "asks", "ask_attempts", "host_dispatches", "agent_focus_history", "attention_asks", "cc_account_failovers", "cc_account_marks", "cc_account_usage", "chief_nudges", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "notify_preferences", "officer_judgement_sessions", "officer_llm_usage", "pins", "plugin_handoffs", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_episodes", "session_prs", "session_routes", "chief_proposals", "session_tags", "suggest_preferences", "suggest_usage", "task_ref_writes", "uploads", "user_credentials",
 	"routing_rules", "chief_turn_usage", "plugin_message_handling",
-	"pages", "page_versions", "page_links", "page_responses"}
+	"pages", "page_versions", "page_links", "page_responses",
+	"officer_types", "officer_defs", "officer_items", "officer_schedules"}
 
 // droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
 // stay in ownedTables because the backfill fixture stops at version 6, where
@@ -219,6 +222,16 @@ var wantForeignKeys = []string{
 	"page_responses|page_responses_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"page_responses|page_responses_page_fkey|FOREIGN KEY (page_id, owner_id) REFERENCES pages(id, owner_id) ON DELETE CASCADE",
 	"page_responses|page_responses_link_fkey|FOREIGN KEY (link_id, owner_id) REFERENCES page_links(id, owner_id) ON DELETE CASCADE",
+	// 0118: the built-in officer backend's rows are their owner's; an officer
+	// names its type, and an item or a schedule its officer, by the composite
+	// key, so none can name another owner's.
+	"officer_types|officer_types_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_defs|officer_defs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_defs|officer_defs_type_fkey|FOREIGN KEY (owner_id, type_key) REFERENCES officer_types(owner_id, key)",
+	"officer_items|officer_items_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_items|officer_items_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
+	"officer_schedules|officer_schedules_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"officer_schedules|officer_schedules_def_fkey|FOREIGN KEY (owner_id, officer) REFERENCES officer_defs(owner_id, officer)",
 	// 0094: one notification-preferences row per user.
 	"notify_preferences|notify_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	// 0100: a proposal is its owner's; its successor is a host dispatch.
