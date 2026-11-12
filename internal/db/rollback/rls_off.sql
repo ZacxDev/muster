@@ -262,7 +262,7 @@ BEGIN
         ALTER TABLE public.officer_judgement_sessions DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_judgement_sessions ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0118 (officer_pr_loops), when this schema has it; same reason as 0011.
+    -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN
         ALTER TABLE public.officer_pr_loops NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_pr_loops DISABLE ROW LEVEL SECURITY;
@@ -291,6 +291,22 @@ BEGIN
         ALTER TABLE public.notify_preferences NO FORCE ROW LEVEL SECURITY;
         ALTER TABLE public.notify_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.notify_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
+    -- 0118 (officer_types, officer_defs, officer_items, officer_schedules),
+    -- when this schema has them; same reason as 0011.
+    IF to_regclass('public.officer_types') IS NOT NULL THEN
+        ALTER TABLE public.officer_types NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_types DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_types ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_defs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_defs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_defs ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_items NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_items DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_items ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.officer_schedules NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_schedules DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.officer_schedules ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
     -- 0116 (pages, page_versions, page_links, page_responses), when this
     -- schema has them; same reason as 0011.

@@ -204,8 +204,8 @@ const (
 	// BackendHQ is an external HQ over HTTPS with the officer's token: the
 	// default, and the only backend before officer-backend/v1.
 	BackendHQ = "hq"
-	// BackendBuiltin is muster's own Postgres (muster#503 slices 4-5; not
-	// available yet).
+	// BackendBuiltin is muster's own Postgres (internal/officers/builtin; not
+	// wired yet, muster#503 slice 5).
 	BackendBuiltin = "builtin"
 )
 

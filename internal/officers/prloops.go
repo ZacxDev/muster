@@ -39,7 +39,7 @@ import (
 // answer was lost (a crash, a write that failed after HQ answered) stays
 // 'sending': never re-sent — an announcement lost, never a loop restarted.
 //
-// Kept in muster's database (PGPRLoopStore, migration 0118) when it has one,
+// Kept in muster's database (PGPRLoopStore, migration 0119) when it has one,
 // so a restart and a second replica see the same record; else in this
 // process's memory (MemPRLoopStore), which a restart forgets.
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ func (m *MemPRLoopStore) PRLoopsInLoop(_ context.Context, officer string) ([]PRL
 	return out, nil
 }
 
-// PGPRLoopStore is PRLoopStore on officer_pr_loops (migration 0118), under
+// PGPRLoopStore is PRLoopStore on officer_pr_loops (migration 0119), under
 // row-level security: ctx must act as the officer's owner.
 type PGPRLoopStore struct{ pool *pgxpool.Pool }
 

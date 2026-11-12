@@ -1570,7 +1570,7 @@ officers API:
   expected and logged as a note; any other failure is logged and posted as an
   HQ notice.
   - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
-    0118, in muster's database; in memory without one), and **claims it
+    0119, in muster's database; in memory without one), and **claims it
     before sending it**: `sending` while one process announces it; then
     `in_loop` (HQ's 200 named a loop item: the rule above applies) or
     `no_taker`; `closed` (`officer_shadow`, or the pull request seen closed or
