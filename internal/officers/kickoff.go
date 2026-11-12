@@ -312,6 +312,11 @@ func ToolOffered(o Officer, tool string) bool {
 		// item_asks.go: HQ also refuses a type without task_asks (403
 		// task_asks_off) and an item that is not a finding
 		return o.Type() == TaskReconcilerOfficerType
+	case ToolGapTask:
+		// gap_tasks.go: a datastore officer's, BOTH pools (the daily audit
+		// that finds the gaps is a routine item). HQ also refuses a type
+		// without gap_tasks (403 gap_tasks_off) and a lost lease.
+		return o.Type() == DatastoreOfficerType
 	case ToolFloodBlockPropose:
 		// item_asks.go: the JUDGEMENT pool only (operator decision on
 		// muster#565) — never the routine pool, never an untiered officer.
