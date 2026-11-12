@@ -132,6 +132,12 @@ const (
 	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
 	// officers.Parse). Officers are woken by polling HQ; there is no webhook.
 	envOfficers = "MUSTER_OFFICERS"
+	// The registry credential an officer pool's OWN runner image (`image`,
+	// docs/officers.md "A private runner image") is pulled with: the NAME of a
+	// kubernetes.io/dockerconfigjson Secret in muster's own namespace
+	// (MUSTER_AGENT_NETPOL_FROM_NAMESPACE), copied into each such instance's
+	// namespace and listed in its pod's imagePullSecrets. Unset: none.
+	envOfficerImagePullSecret = "MUSTER_OFFICER_IMAGE_PULL_SECRET"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -729,6 +735,11 @@ type config struct {
 	// Officers is MUSTER_OFFICERS parsed, each with its token
 	// (officers.Parse). Empty: the officer runtime is off.
 	Officers []officers.Officer
+	// OfficerImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET, trimmed;
+	// "" is none. OfficerImageRegistries is whether
+	// MUSTER_OFFICER_IMAGE_REGISTRIES is set (validateOfficerImagePullSecret).
+	OfficerImagePullSecret string
+	OfficerImageRegistries bool
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1621,6 +1632,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
 		return config{}, err
 	}
+	c.OfficerImagePullSecret = strings.TrimSpace(getenv(envOfficerImagePullSecret))
+	c.OfficerImageRegistries = strings.TrimSpace(getenv(officers.ImageRegistriesEnv)) != ""
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1953,6 +1966,65 @@ func (c config) validateAuthMode() error {
 	return nil
 }
 
+// validateOfficerImagePullSecret refuses a MUSTER_OFFICER_IMAGE_PULL_SECRET
+// that could not work, naming the variable:
+//
+//   - not a Secret name (a DNS subdomain): every officer instance on its own
+//     image would be refused at apply;
+//   - without the kubernetes provisioner and muster's own namespace
+//     (MUSTER_AGENT_NETPOL_FROM_NAMESPACE, the driver's SecretSourceNamespace):
+//     nothing would copy the Secret into an instance's namespace (and only the
+//     kubernetes driver can pull with one);
+//   - without MUSTER_OFFICER_IMAGE_REGISTRIES: no officer `image` can be
+//     allowed, so the credential would never be used — an armed switch that
+//     does nothing, refused rather than read as enabled.
+func (c config) validateOfficerImagePullSecret() error {
+	name := c.OfficerImagePullSecret
+	if name == "" {
+		return nil
+	}
+	if msgs := validation.IsDNS1123Subdomain(name); len(msgs) > 0 {
+		return fmt.Errorf("invalid %s %q: it names a Secret, and a Secret's name is a DNS subdomain (%s)",
+			envOfficerImagePullSecret, name, strings.Join(msgs, "; "))
+	}
+	if !c.agentNetworkPolicy() || c.AgentNetpolFromNS == "" {
+		return fmt.Errorf("%s is set but nothing would copy the Secret into an officer instance's namespace: it needs "+
+			"%s=%s with the %s kind and %s (muster's own namespace, where the Secret is kept). Set those, or unset it",
+			envOfficerImagePullSecret, envAgentProvisioner, provisionerK8s, agents.KindClaudeCode, envAgentNetpolFromNS)
+	}
+	if !c.OfficerImageRegistries {
+		return fmt.Errorf("%s is set but %s is not, so no officer `image` can be allowed and the Secret would never "+
+			"be used. Set %s, or unset %s", envOfficerImagePullSecret, officers.ImageRegistriesEnv,
+			officers.ImageRegistriesEnv, envOfficerImagePullSecret)
+	}
+	if !anyOfficerImage(c.Officers) {
+		return fmt.Errorf("%s is set but no officer in %s declares an `image` (or a tiers.<pool>.image), so the Secret "+
+			"would never be used. Declare the image, or unset %s", envOfficerImagePullSecret, envOfficers, envOfficerImagePullSecret)
+	}
+	// 🔴 ONE SECRET, ONE USE: a deploy-key pool's Secret is a key holder's
+	// mount source; the pull Secret is never also one (each copy holds exactly
+	// its own keys).
+	for _, pool := range slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys)) {
+		if c.AgentCCPoolDeployKeys[pool].Secret == name {
+			return fmt.Errorf("%s=%s is also pool %s's deploy-key Secret in %s (a key holder mounts it): one Secret cannot be "+
+				"both an image pull Secret and a key holder's; use two Secrets", envOfficerImagePullSecret, name, pool, envAgentCCPoolDeployKeys)
+		}
+	}
+	return nil
+}
+
+// anyOfficerImage reports whether any declared officer pool runs its own
+// runner image: an untiered officer's `image`, or a tiered one's
+// tiers.<pool>.image.
+func anyOfficerImage(os []officers.Officer) bool {
+	for _, o := range os {
+		if o.Image != "" || (o.Tiers != nil && (o.Tiers.Routine.Image != "" || o.Tiers.Judgement.Image != "")) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateConnectors refuses a connector configuration that could only fail
 // later, or that would quietly weaken a guarantee.
 //
@@ -2227,6 +2299,9 @@ func (c config) validate() error {
 			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
 	if err := c.validateShipReadRepos(); err != nil {
+		return err
+	}
+	if err := c.validateOfficerImagePullSecret(); err != nil {
 		return err
 	}
 	if err := c.validateConnectors(); err != nil {

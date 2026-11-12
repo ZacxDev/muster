@@ -480,6 +480,20 @@ type Spec struct {
 	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
 	// as before the field existed.
 	KeyHolder *KeyHolder `json:",omitempty"`
+
+	// ImagePullSecret, when set, names a registry credential the instance's
+	// image is pulled with: on Kubernetes, a `kubernetes.io/dockerconfigjson`
+	// Secret listed in the pod's imagePullSecrets. Like a [SecretMount] it is a
+	// REFERENCE to an object the operator made; muster never stores what it
+	// holds. A driver MAY copy it, its `.dockerconfigjson` key and type only,
+	// from a namespace the operator keeps it in (the kubernetes driver's
+	// Config.SecretSourceNamespace), and then refuses the apply when the source
+	// is missing, lacks that key, or is of another type. A DNS subdomain.
+	// Needs [Capabilities.ImagePullSecret].
+	//
+	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
+	// as before the field existed.
+	ImagePullSecret string `json:",omitempty"`
 }
 
 // KeyHolder is a container beside the instance's that alone mounts
@@ -719,6 +733,19 @@ func (s Spec) Validate() error {
 	}
 	if err := s.validateKeyHolder(seen); err != nil {
 		return err
+	}
+	if p := s.ImagePullSecret; p != "" && (!secretObjectName.MatchString(p) || len(p) > 253) {
+		return fmt.Errorf("%w: image pull secret %q is not a DNS subdomain (a Secret's name)", ErrInvalidSpec, p)
+	}
+	// 🔴 ONE SECRET, ONE USE: a Secret the key holder mounts is never also the
+	// image pull Secret, so each copy a driver makes holds exactly its own keys.
+	if k := s.KeyHolder; k != nil && s.ImagePullSecret != "" {
+		for _, m := range k.SecretMounts {
+			if m.Secret == s.ImagePullSecret {
+				return fmt.Errorf("%w: Secret %q is both the image pull Secret and a key holder mount (%s, at %q); use two Secrets",
+					ErrInvalidSpec, m.Secret, k.Name, m.Path)
+			}
+		}
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)

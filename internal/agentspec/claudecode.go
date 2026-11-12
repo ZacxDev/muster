@@ -430,6 +430,16 @@ func ccImage(cc *ClaudeCodeConfig, sess ClaudeCodeSession) string {
 	return cc.Image
 }
 
+// ccImagePullSecret is the registry credential a claude-code pod's image is
+// pulled with: the session's, and only when the session's own image is the one
+// ccImage picked. The deployment's image never gets it.
+func ccImagePullSecret(sess ClaudeCodeSession) string {
+	if strings.TrimSpace(sess.Image) == "" {
+		return ""
+	}
+	return strings.TrimSpace(sess.ImagePullSecret)
+}
+
 // buildClaudeCode is Build for a claude-code row. Pure, like Build.
 //
 // 🔴 EVERY MISSING INPUT IS A REFUSAL, NAMING IT. A claude-code pod with no
@@ -551,6 +561,8 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked() || poolLocked),
 		Labels:    labels,
 		Repo:      repo,
+
+		ImagePullSecret: ccImagePullSecret(opts.ClaudeCodeSession),
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}

@@ -51,8 +51,8 @@ func (i Isolation) String() string {
 //
 // 🔴 A CAPABILITY NOBODY BRANCHES ON IS NOT A GUARD, IT IS A FIELD. Every bool
 // here is refused on somewhere, and each one's refusal is spelled in exactly
-// one place: Files, Secrets, Persistence, ResourceLimits and NetworkIsolation
-// in [CheckSpec]; Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
+// one place: Files, Secrets, Persistence, ResourceLimits, NetworkIsolation,
+// Sidecar, KeyHolder and ImagePullSecret in [CheckSpec]; Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
 // entry points; Exec in [Exec] and [ExecTTY], one rule
 // reached by two entry points like Scale's. A predicate open-coded per
 // driver instead is a predicate that is wrong in all but one of them, in the
@@ -119,6 +119,12 @@ type Capabilities struct {
 	// own uid, mounts the holder's secrets into it alone, shares its directory
 	// read-only with the instance, and execs into it (ContainerExecer).
 	KeyHolder bool
+
+	// ImagePullSecret: the driver pulls the instance's image with the registry
+	// credential Spec.ImagePullSecret names. False means a spec carrying one is
+	// refused rather than started without it (a pod that cannot pull its image
+	// sits in ImagePullBackOff, which reads as a slow worker).
+	ImagePullSecret bool
 }
 
 // CheckSpec is THE capability branch. It is the answer to "Capabilities is
@@ -174,6 +180,10 @@ func CheckSpec(caps Capabilities, s Spec) error {
 	if k := s.KeyHolder; k != nil && (!caps.KeyHolder || !caps.Secrets || !caps.Files) {
 		return fmt.Errorf("%w: driver cannot run a key holder beside the instance, and the spec carries one (%q, holding %q)",
 			ErrUnsupported, k.Name, k.SecretMounts[0].Secret)
+	}
+	if !caps.ImagePullSecret && s.ImagePullSecret != "" {
+		return fmt.Errorf("%w: driver cannot pull an image with a registry credential, and the spec names one (Secret %q)",
+			ErrUnsupported, s.ImagePullSecret)
 	}
 	if !caps.Persistence && s.Workspace.Persist {
 		return fmt.Errorf("%w: driver has no persistent storage, and the spec asks for a persistent workspace at %q", ErrUnsupported, s.Workspace.Path)

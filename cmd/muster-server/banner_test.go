@@ -478,6 +478,9 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
+	envOfficerImagePullSecret: "a Secret's NAME, used only beside an officer pool's own `image`; refused at boot wherever it " +
+		"could do nothing (validateOfficerImagePullSecret: not a Secret name, no kubernetes provisioner or muster's namespace, " +
+		"no " + officers.ImageRegistriesEnv + "), and listed on the Features page under Officers",
 	envCCUsagePushURL: "printed on its own `claude account usage push: ON/OFF` line, which is drawn only under the poller's ON " +
 		"line; refused at boot with the poller off, whose OFF line names " + envCCUsagePoll,
 	envCCUsagePushToken:    "a secret, never printed; refused at boot without " + envCCUsagePushURL + ", whose state the push line prints",

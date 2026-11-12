@@ -97,8 +97,10 @@ type Config struct {
 	NetworkPolicy *NetworkPolicyConfig
 
 	// SecretSourceNamespace, when set, is where the Secrets a key holder mounts
-	// (provision.SecretMount) are kept — muster's own namespace — and apply
-	// copies each into the instance's namespace before the pod (secretcopy.go).
+	// (provision.SecretMount) and the image pull Secret
+	// (provision.Spec.ImagePullSecret) are kept — muster's own namespace — and
+	// apply copies each into the instance's namespace before the pod
+	// (secretcopy.go).
 	// Empty: the operator places them in the instance's namespace, unchanged.
 	SecretSourceNamespace string
 
@@ -213,6 +215,7 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		NetworkIsolation: d.cfg.NetworkPolicy != nil,
 		Sidecar:          true,
 		KeyHolder:        true,
+		ImagePullSecret:  true,
 	}
 }
 
@@ -699,9 +702,10 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	if err := d.applyNetworkPolicy(ctx, spec, ns); err != nil {
 		return err
 	}
-	// A key holder's Secrets, copied from muster's namespace (secretcopy.go):
-	// a missing one fails here, before the pod that would wait on it forever.
-	if err := d.copyKeyHolderSecrets(ctx, spec, ns); err != nil {
+	// A key holder's Secrets and the image pull Secret, copied from muster's
+	// namespace (secretcopy.go): a missing one fails here, before the pod that
+	// would wait on it forever.
+	if err := d.copySecrets(ctx, spec, ns); err != nil {
 		return err
 	}
 
@@ -822,6 +826,9 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	if err != nil {
 		return err
 	}
+	// The pull Secrets the pod uses now, read before the Deployment is
+	// replaced; the copies no longer wanted are swept after (secretcopy.go).
+	prevPull := d.previousPullSecrets(ctx, ns, dep.Name)
 	if err := d.upsertOwned("deployment", dep.Name, ns,
 		func() (map[string]string, error) {
 			return labelsOf(c.AppsV1().Deployments(ns).Get(ctx, dep.Name, metav1.GetOptions{}))
@@ -836,6 +843,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 		}); err != nil {
 		return applyFailed("apply deployment "+dep.Name, err)
 	}
+	d.sweepPullCopies(ctx, ns, prevPull, spec.ImagePullSecret)
 	return nil
 }
 

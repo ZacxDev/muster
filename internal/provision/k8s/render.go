@@ -685,6 +685,12 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		no := false
 		podSpec.AutomountServiceAccountToken = &no
 	}
+	// The registry credential the pod's images are pulled with: a Secret in the
+	// pod's own namespace (copied there from SecretSourceNamespace by
+	// copySecrets, when that is set). Unset, the field is not written at all.
+	if spec.ImagePullSecret != "" {
+		podSpec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: spec.ImagePullSecret}}
+	}
 	if len(spec.Init) > 0 {
 		podSpec.InitContainers = []corev1.Container{d.renderInitContainer(spec, container)}
 	}
