@@ -17,6 +17,7 @@
 //   node verdict.mjs REPORT                  the whole suite in one run (make e2e)
 //   node verdict.mjs --leg N REPORT          one CI leg
 //   node verdict.mjs --all REPORT REPORT…    every leg's report, summed
+//   node verdict.mjs --docshots REPORT       the docs screenshot spec (make docshots-check)
 //
 // The failed == 0 and skipped <= CAP rules hold in every mode. FLOOR is a TOTAL,
 // so it holds in the whole-suite and `--all` modes; a leg's floor defaults to 1.
@@ -31,7 +32,63 @@
 import fs from 'node:fs';
 import { specFiles } from './legs.mjs';
 
+// 🔴 --docshots: THE DOCS SCREENSHOT SPEC, RUN AS A CHECK (`make docshots-check`,
+// CI's `docshots` job). Stricter than the suite's modes, because the spec is a
+// generator nothing else runs: every test must come from DOCSHOTS_FILE (the
+// project's testMatch was once unanchored and collected 977 suite tests in a
+// checkout named *docshots), EXACTLY DOCSHOTS_COUNT must pass on their first and
+// only attempt, and NOTHING may skip, flake, not run, or pass as an expected
+// failure. A run error, or a missing or empty report, fails too.
+//
+// DOCSHOTS_COUNT is the number of test() calls docs.spec.ts makes in a default
+// run: 12, since mirror-terminal.png is opted out until #623 (see the spec). It
+// is the ONE copy of that count, and it is EXACT, not a floor: a shot added or
+// removed without editing it here fails the check, so the two cannot drift.
+const DOCSHOTS_FILE = 'docshots/docs.spec.ts';
+const DOCSHOTS_COUNT = 12;
+
+function docshotsVerdict(path) {
+  let report;
+  try {
+    const text = fs.readFileSync(path, 'utf8');
+    if (!text.trim()) throw new Error('the report is empty');
+    report = JSON.parse(text);
+  } catch (e) {
+    console.error(`FAIL: docshots: no readable report at ${path}: ${e.message}`);
+    return 1;
+  }
+  const errors = [];
+  for (const e of report.errors ?? []) errors.push(`run error: ${String(e.message ?? e).split('\n')[0]}`);
+  const files = new Map();
+  let passed = 0;
+  const visit = (suite) => {
+    for (const spec of suite.specs ?? []) {
+      const file = spec.file ?? suite.file;
+      files.set(file, (files.get(file) ?? 0) + 1);
+      for (const t of spec.tests ?? []) {
+        const statuses = (t.results ?? []).map((r) => r.status);
+        if (t.status === 'expected' && (t.expectedStatus ?? 'passed') === 'passed' && statuses.length === 1 && statuses[0] === 'passed') passed++;
+        else errors.push(`${file}: ${spec.title}: ${t.status} (expected ${t.expectedStatus ?? 'passed'}) [${statuses.join(',') || 'did not run'}]`);
+      }
+    }
+    for (const s of suite.suites ?? []) visit(s);
+  };
+  for (const s of report.suites ?? []) visit(s);
+  for (const [f, n] of files) if (f !== DOCSHOTS_FILE) errors.push(`${n} test(s) from ${f}: the docshots project collected a file that is not ${DOCSHOTS_FILE}`);
+  if (passed !== DOCSHOTS_COUNT) errors.push(`${passed} passed, want exactly ${DOCSHOTS_COUNT} (DOCSHOTS_COUNT: edit it with the spec)`);
+  console.log(`e2e verdict (docshots): ${passed} passed, ${errors.length} problem(s), files ${JSON.stringify(Object.fromEntries(files))}`);
+  for (const e of errors) console.error(`FAIL: docshots: ${e}`);
+  return errors.length ? 1 : 0;
+}
+
 const args = process.argv.slice(2);
+if (args[0] === '--docshots') {
+  if (args.length > 2) {
+    console.error(`usage: node verdict.mjs --docshots REPORT (got ${args.length - 1} reports)`);
+    process.exit(2);
+  }
+  process.exit(docshotsVerdict(args[1] ?? 'test-results/results.json'));
+}
 let mode = 'whole';
 let leg = '';
 if (args[0] === '--leg') {
