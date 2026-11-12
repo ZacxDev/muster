@@ -225,6 +225,11 @@ type attentionItem struct {
 	// owner's "Show tmux sessions" on, a mirrored session's
 	// name is followed by its window's codename and host (notifyName).
 	Name string `json:"name,omitempty"`
+	// human is the session's HUMAN name alone, as Name was before notifyName
+	// (withNamesFrom sets both), "" for none: what a codename-first push title
+	// puts after the codename (attentionNotification, names.go codenameTitle),
+	// so the codename is never said twice.
+	human string
 	// focusAt is when Focus was written (withFocus), for its age on the Asks
 	// list (ui.FocusAgeOf); zero for none or unknown.
 	focusAt time.Time
@@ -795,7 +800,7 @@ func (s *Server) withNamesFrom(ctx context.Context, fi focusIndex, items []atten
 			if n != "" && !read {
 				tmux, read = s.notifyTmuxOn(ctx, requestOwner(ctx)), true
 			}
-			items[i].Name = notifyName(n, items[i].at, tmux)
+			items[i].Name, items[i].human = notifyName(n, items[i].at, tmux), n
 		}
 	}
 }
@@ -915,6 +920,7 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 	}
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update, TitleKeep: keep}
+	n.CodenameTitle, n.CodenameKeep = attentionCodenameTitle(it)
 	if it.Kind == attentionKindAsk && it.AskID > 0 && !it.noActions {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
@@ -953,7 +959,29 @@ func attentionPushTitle(it attentionItem) string {
 		// it has one, else where to look: sessionKeyWhere).
 		return itemWho(it) + noticePushTitleSuffix
 	}
-	return itemWho(it) + " is asking"
+	return itemWho(it) + askPushTitleSuffix
+}
+
+// askPushTitleSuffix follows the asker in an ask's or a held question's
+// notification title.
+const askPushTitleSuffix = " is asking"
+
+// attentionCodenameTitle is item it's push title with its window's codename
+// first (names.go codenameTitle), for an owner who turned on "Start
+// notification titles with the tmux name": a waiting window's fixed title
+// gains the window's codename@host in front ("mango:1@ws · A session is
+// waiting on you"); an ask, a held question and a notice put it before the
+// session's HUMAN name ("mango:1@ws · Billing migration is asking"), never
+// before notifyName's decorated one. "" (the title as it is) for no window, or
+// for an ask, question or notice with no human name.
+func attentionCodenameTitle(it attentionItem) (title, keep string) {
+	switch it.Kind {
+	case attentionKindSession:
+		return codenameLed(sessionPushTitle, it.at)
+	case attentionKindNotice:
+		return codenameTitle(it.human, noticePushTitleSuffix, it.at)
+	}
+	return codenameTitle(it.human, askPushTitleSuffix, it.at)
 }
 
 // itemWho is who an item's push title names: the session's stable name when it

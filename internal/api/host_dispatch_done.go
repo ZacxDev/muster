@@ -162,13 +162,17 @@ func (s *Server) announceHostOutcome(ctx context.Context, h plugins.HostDispatch
 	id := strconv.FormatInt(h.ID, 10)
 	s.logger.Printf("host dispatch %s on %s %s", id, h.Host, verb)
 	s.broadcastTo(h.Owner, EventAgentChanged, "host-dispatch-"+id)
-	s.pushTask(h.Owner, push.EventAgentOutcome, RouterNotification{
+	n := RouterNotification{
 		Type:  taskNotificationType,
 		Title: hostDispatchRuntimeLabel(h) + " on " + h.Host + " " + verb + ": " + truncate(detail, outcomePushTitleMax),
 		Body:  body,
 		Tag:   "host-dispatch-" + id + "-outcome",
 		Data:  map[string]string{"url": ui.MirrorViewPath(h.Host, mirror.AgentSpawnSession)},
-	})
+	}
+	// "Start notification titles with the tmux name": its window's
+	// codename@host first, and no " on <host>" (the front says it).
+	n.CodenameTitle, n.CodenameKeep = codenameLed(hostDispatchRuntimeLabel(h)+" "+verb+": "+truncate(detail, outcomePushTitleMax), s.hostDispatchPlace(ctx, h))
+	s.pushTask(h.Owner, push.EventAgentOutcome, n)
 	s.noteHostOutcomeToChief(ctx, h, outcome, verb, note)
 }
 
@@ -197,4 +201,33 @@ func (s *Server) noteHostOutcomeToChief(ctx context.Context, h plugins.HostDispa
 	if err := s.writeChiefNote(pctx, chief, outcomeChiefNoteAbout(who, outcome, verb, detail)); err != nil {
 		s.logger.Printf("host dispatch %d: note to the chief: %v", h.ID, err)
 	}
+}
+
+// hostDispatchPlace is host dispatch h's window as a host lists it NOW
+// (mirror.SessionView.Place), for a codename-first push title
+// (names.go codenameLed): the window started for it (its Dispatch tag), or its
+// stored tmux window id in the agents session — but only on a window that
+// carries no other dispatch's tag, since tmux window ids restart with the
+// tmux server. The zero Place (no front) when no listing shows it: the stored
+// value is a tmux window id, not a place the owner can type. ctx reads the
+// owner's windows.
+func (s *Server) hostDispatchPlace(ctx context.Context, h plugins.HostDispatch) mirror.Place {
+	if s.ext.Mirror == nil || h.Host == "" {
+		return mirror.Place{}
+	}
+	list := mirror.Ordered(s.ext.Mirror.Hosts(ctx))
+	for _, e := range list {
+		if e.Host == h.Host && h.ID != 0 && e.Dispatch == h.ID {
+			return e.Place()
+		}
+	}
+	// Its stored window id, on a window tagged with NO dispatch: one tagged
+	// with this dispatch was found above, and one tagged with another is
+	// another dispatch's window that reused the id.
+	for _, e := range list {
+		if e.Host == h.Host && h.Window != "" && e.Session == mirror.AgentSpawnSession && e.Window == h.Window && e.Dispatch == 0 {
+			return e.Place()
+		}
+	}
+	return mirror.Place{}
 }

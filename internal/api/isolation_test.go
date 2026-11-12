@@ -588,6 +588,9 @@ var isolationClasses = map[string]routeClass{
 	// "Show tmux sessions" (notify_prefs.go): the caller's own
 	// row (list).
 	"POST /account/notifications/tmux": classList,
+	// "Start notification titles with the tmux name" (notify_prefs.go): the
+	// caller's own row (list).
+	"POST /account/notifications/codename": classList,
 	// The chip row's reports (numbers only): the window's address in the
 	// form — B naming A's window must 404.
 	"POST /mirror/view/suggest/event": classMirror,
