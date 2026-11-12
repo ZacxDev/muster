@@ -28,9 +28,15 @@ func TestAFullQueueLogsAtMostOncePerMinute(t *testing.T) {
 	write := metrics.AskCaptureErrors.WithLabelValues(KindAttention, StageWrite)
 	w0 := testutil.ToFloat64(write)
 	release := make(chan struct{})
-	r.Do(context.Background(), KindAttention, func(context.Context) error { <-release; return nil })
-	// The worker may or may not have taken the first off the queue yet; 51
-	// more always overflow a bound of one at least 49 times.
+	started := make(chan struct{})
+	r.Do(context.Background(), KindAttention, func(context.Context) error { close(started); <-release; return nil })
+	// Wait until the worker has taken the first capture off the queue and is
+	// parked inside it. Otherwise it could take it later — after the burst but
+	// before the Do after the clock advance — freeing the queue's one slot, so
+	// that last capture would be queued instead of dropped and no second line
+	// would be written. From here the burst's first capture fills the slot and
+	// every later Do is dropped.
+	<-started
 	for i := 0; i < 51; i++ {
 		r.Do(context.Background(), KindAttention, func(context.Context) error { return nil })
 	}
