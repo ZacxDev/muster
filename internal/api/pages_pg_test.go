@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/branding"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/uploads"
@@ -277,7 +278,16 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	if len(links) != 1 || links[0].State != pages.LinkPending {
 		t.Fatalf("links: %+v", links)
 	}
-	token := links[0].Token
+	// The url, shown ONCE, in the request's own result; only its hash is
+	// stored.
+	shareURL, _ := req["url"].(string)
+	if !strings.HasPrefix(shareURL, pagesPublicURL+pages.SharePrefix) {
+		t.Fatalf("page_share_request gave no url: %v", req)
+	}
+	token := strings.TrimPrefix(shareURL, pagesPublicURL+pages.SharePrefix)
+	if !pages.TokenShapeOK(token) || links[0].Token != "" || links[0].TokenSHA256 != pages.TokenHash(token) {
+		t.Fatalf("the stored link: %+v (token %q)", links[0], token)
+	}
 	if w := f.get(t, pages.LinkPath(token), nil); w.Code != http.StatusNotFound || w.Body.String() != pageLinkGone {
 		t.Fatalf("a pending link served: %d %s", w.Code, w.Body.String())
 	}
@@ -290,9 +300,10 @@ func TestAPageFromCreationToAStrangersResponse(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(askID, 10)+"/answer", body, merge(f.ownerHdr(), hdr)); w.Code != http.StatusSeeOther {
 		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
 	}
+	// page_get never shows it again, approved or not.
 	got = f.tool(t, f.agent, pageGetTool, map[string]any{"page_id": id})
-	if !strings.Contains(pageToolText(got), pagesPublicURL+pages.LinkPath(token)) {
-		t.Fatalf("an approved link's url is not shown: %v", got)
+	if strings.Contains(pageToolText(got), token) || !strings.Contains(pageToolText(got), `"state":"live"`) {
+		t.Fatalf("page_get after approval: %v", got)
 	}
 
 	// A stranger: the shell.
@@ -468,6 +479,7 @@ func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
 		}
 		pending(c.why)
 	}
+	tok := strings.TrimPrefix(req["url"].(string), pagesPublicURL+pages.SharePrefix)
 	// Not now, through the owner's own phone: denied, never to serve.
 	if _, err := f.srv.answerAskFrom(f.as(f.owner, authz.ViaDevice), askID, pageShareDenyLabel, attention.AnswerSource{}); err != nil {
 		t.Fatalf("Not now from the owner's phone: %v", err)
@@ -476,7 +488,7 @@ func TestOnlyTheOwnersOwnDoorApprovesALink(t *testing.T) {
 	if len(ls) != 1 || ls[0].State != pages.LinkDenied {
 		t.Fatalf("after Not now: %+v", ls)
 	}
-	if w := f.get(t, pages.LinkPath(ls[0].Token), nil); w.Code != http.StatusNotFound {
+	if w := f.get(t, pages.LinkPath(tok), nil); w.Code != http.StatusNotFound {
 		t.Fatalf("a denied link served: %d", w.Code)
 	}
 }
@@ -697,9 +709,14 @@ func TestTheOwnersScreenMintsShowsAndRevokesLinks(t *testing.T) {
 	f := newPageFixture(t)
 	id := f.create(t, f.agent, "Owner screen", `[{"type":"markdown","text":"first"}]`)
 	sid := strconv.FormatInt(id, 10)
-	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, f.ownerHdr()); w.Code != http.StatusSeeOther {
-		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	// The new link is shown ONCE, in the mint's own answer (no-store).
+	mint := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, f.ownerHdr())
+	m := regexp.MustCompile(`data-link-new>[^<]*<span[^>]*>[^<]*</span>\s*<input type="text" readonly value="` +
+		regexp.QuoteMeta(pagesPublicURL+pages.SharePrefix) + `([A-Za-z0-9_-]{43})"`).FindStringSubmatch(mint.Body.String())
+	if mint.Code != http.StatusOK || m == nil || mint.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("mint: %d %v %s", mint.Code, mint.Header(), mint.Body.String())
 	}
+	token := m[1]
 	// A mint without muster's Origin is refused (the owner's writes are
 	// same-origin).
 	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links", nil, map[string]string{"Cookie": sessionCookieFor(f.srv), "Origin": "null"}); w.Code != http.StatusForbidden {
@@ -709,9 +726,14 @@ func TestTheOwnersScreenMintsShowsAndRevokesLinks(t *testing.T) {
 	if len(ls) != 1 || ls[0].State != pages.LinkLive {
 		t.Fatalf("links: %+v", ls)
 	}
+	if w := f.get(t, pages.LinkPath(token), nil); w.Code != http.StatusOK {
+		t.Fatalf("the minted link does not serve: %d", w.Code)
+	}
+	// Afterwards the page shows its state and label — never the token.
 	detail := f.get(t, "/pages/"+sid, f.ownerHdr())
-	if !strings.Contains(detail.Body.String(), `value="`+pagesPublicURL+pages.LinkPath(ls[0].Token)+`"`) {
-		t.Fatalf("the detail page does not show the live link")
+	if strings.Contains(detail.Body.String(), token) || strings.Contains(detail.Body.String(), "data-link-new") ||
+		!strings.Contains(detail.Body.String(), `data-link-label>`+ls[0].Label()+`<`) {
+		t.Fatalf("the detail page after the mint: %s", detail.Body.String())
 	}
 	// It shows a bearer link: never cached. (That it loads no telemetry is
 	// apiNavSecret's, in nav_pages_test.go.)
@@ -731,7 +753,7 @@ func TestTheOwnersScreenMintsShowsAndRevokesLinks(t *testing.T) {
 	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/links/"+strconv.FormatInt(ls[0].ID, 10)+"/revoke", nil, f.ownerHdr()); w.Code != http.StatusSeeOther {
 		t.Fatalf("revoke: %d", w.Code)
 	}
-	if w := f.get(t, pages.LinkPath(ls[0].Token), nil); w.Code != http.StatusNotFound {
+	if w := f.get(t, pages.LinkPath(token), nil); w.Code != http.StatusNotFound {
 		t.Fatalf("a revoked link: %d", w.Code)
 	}
 }
@@ -838,3 +860,107 @@ func TestAShareLinkIsNeverLogged(t *testing.T) {
 }
 
 func logDiscard() *log.Logger { return log.New(io.Discard, "", 0) }
+
+// TestTheShellDrawsTheBrandAsEveryBrandedSurface: the shell follows ui.Brand's
+// own rules (#605): a name beside a logo; the logo ALONE, its alt the name,
+// when the logo already spells the name; the instance's icon as the favicon;
+// and nothing of muster's when nothing is set but muster's own icon.
+func TestTheShellDrawsTheBrandAsEveryBrandedSurface(t *testing.T) {
+	f := newPageFixture(t)
+	id := f.create(t, f.agent, "Branded", `[{"type":"markdown","text":"x"}]`)
+	l := f.liveLink(t, f.owner, id)
+	for _, c := range []struct {
+		name    string
+		b       branding.Branding
+		want    []string
+		notWant []string
+	}{
+		{"name and logo", branding.Branding{Name: "Example Studio", ETag: "e1"},
+			[]string{`<img src="/brand/logo.png?v=e1" alt="" data-brand-logo>`, `data-brand-name>Example Studio</span>`,
+				`<link rel="icon" type="image/png" sizes="192x192" href="/brand/icon-192.png?v=e1">`}, nil},
+		{"a wordmark logo", branding.Branding{Name: "Example Studio", ETag: "e2", LogoShowsName: true},
+			[]string{`<img src="/brand/logo.png?v=e2" alt="Example Studio" data-brand-logo>`, `href="/brand/icon-192.png?v=e2"`},
+			[]string{"data-brand-name"}},
+		{"a name alone", branding.Branding{Name: "Example Studio"},
+			[]string{`data-brand-name>Example Studio</span>`}, []string{"data-brand-logo"}},
+		{"nothing set", branding.Branding{},
+			[]string{`rel="icon"`}, []string{"data-brand-logo", "data-brand-name", "/brand/"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f.srv.ext.Branding = &scriptedBranding{script: []scriptedLoad{{b: c.b}}}
+			f.srv.brandingStored(c.b)
+			body := f.get(t, pages.LinkPath(l.Token), nil).Body.String()
+			for _, w := range c.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("the shell lacks %q", w)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(body, w) {
+					t.Errorf("the shell has %q", w)
+				}
+			}
+		})
+	}
+}
+
+// TestAPagesFilesAreKeptUnderItsPrefixUntilThePageIsDeleted: a file sent
+// through a link is stored at pages/<page id>/<public id> — not under
+// uploads/, the bucket's expiring prefix — and kept; deleting the page (the
+// owner's Delete, never another member's) deletes the object, the page, its
+// links (the link 404s) and withdraws a link's card still waiting.
+func TestAPagesFilesAreKeptUnderItsPrefixUntilThePageIsDeleted(t *testing.T) {
+	f := newPageFixture(t)
+	id := f.create(t, f.agent, "Files to delete", formBlocks)
+	sid := strconv.FormatInt(id, 10)
+	l := f.liveLink(t, f.owner, id)
+	w := f.upload(t, l.Token, "u1", "logo.png", []byte("\x89PNG\r\n\x1a\n"+strings.Repeat("\x00", 64)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	rs, _ := f.pages.Responses(f.as(f.owner, authz.ViaSession), id, 0, 10)
+	if len(rs) != 1 {
+		t.Fatalf("responses: %+v", rs)
+	}
+	key := "pages/" + sid + "/" + rs[0].UploadPublicID
+	var stored string
+	if err := f.pool.QueryRow(f.as(f.owner, authz.ViaSession), `SELECT object_key FROM uploads WHERE public_id = $1`, rs[0].UploadPublicID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != key || !f.objects.Has(key) {
+		t.Fatalf("the file is at %q (objects %v), want %q", stored, f.objects.Keys(), key)
+	}
+	for _, k := range f.objects.Keys() {
+		if strings.HasPrefix(k, "uploads/") {
+			t.Errorf("a page's file was stored under uploads/: %s", k)
+		}
+	}
+	// A pending link, whose card the delete withdraws.
+	req := f.tool(t, f.agent, pageShareRequestTool, map[string]any{"page_id": id})
+	askID := pnum(req["ask_id"])
+	// Another member's Delete: nothing goes.
+	f.session = f.other
+	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/delete", nil, f.ownerHdr()); w.Code != http.StatusNotFound {
+		t.Fatalf("another member's delete: %d", w.Code)
+	}
+	if !f.objects.Has(key) {
+		t.Fatal("another member's delete removed the page's file")
+	}
+	// The owner's.
+	f.session = f.owner
+	if w := f.call(t, http.MethodPost, "/pages/"+sid+"/delete", nil, f.ownerHdr()); w.Code != http.StatusSeeOther {
+		t.Fatalf("the owner's delete: %d %s", w.Code, w.Body.String())
+	}
+	if f.objects.Has(key) {
+		t.Errorf("deleting the page left its file %s", key)
+	}
+	if _, err := f.pages.Page(f.as(f.owner, authz.ViaSession), id); err == nil {
+		t.Error("the page is still there")
+	}
+	if w := f.get(t, pages.LinkPath(l.Token), nil); w.Code != http.StatusNotFound {
+		t.Errorf("a deleted page's link: %d", w.Code)
+	}
+	if a, err := f.srv.ext.Attention.Get(f.as(f.owner, authz.ViaSession), askID); err != nil || a.Status == attention.Open {
+		t.Errorf("the pending link's card: %v %v", a.Status, err)
+	}
+}

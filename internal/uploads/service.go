@@ -137,6 +137,20 @@ func (c *capReader) Read(p []byte) (int, error) {
 // failed write is cleaned up explicitly (abort any incomplete upload, delete
 // any object) under a fresh bounded context.
 func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored, error) {
+	return s.put(ctx, r, filename, ObjectKeyFor)
+}
+
+// PutForPage is Put for a file sent through shareable page pageID's link: the
+// same streaming, sniffing, caps and clean-up, under the page's own prefix
+// (PageObjectKeyFor), which the uploads/ lifecycle rule does not reach.
+func (s *Service) PutForPage(ctx context.Context, r io.Reader, filename string, pageID int64) (Stored, error) {
+	if pageID <= 0 {
+		return Stored{}, fmt.Errorf("uploads: a page's file needs its page")
+	}
+	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) })
+}
+
+func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor func(string) string) (Stored, error) {
 	br := bufio.NewReaderSize(r, SniffBytes)
 	head, perr := br.Peek(SniffBytes)
 	if len(head) == 0 {
@@ -150,7 +164,7 @@ func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored
 	if err != nil {
 		return Stored{}, err
 	}
-	key := ObjectKeyFor(id)
+	key := keyFor(id)
 	cr := &capReader{r: br, max: s.MaxBytes}
 	first := make([]byte, min(int64(PartSize), s.MaxBytes+1))
 	n, rerr := io.ReadFull(cr, first)

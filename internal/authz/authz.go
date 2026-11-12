@@ -171,7 +171,7 @@ const (
 	// everybody. One site mints it — internal/api's jobPrincipal — handed the
 	// owner of a head jobs.PGStore.Heads read under System.
 	ViaJobQueue Via = "job-queue"
-	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0113):
+	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0116):
 	// a viewer with no muster account, holding /s/<token>, acting as the
 	// page's OWNER for that one page only — the link's capability, never a
 	// session. internal/api's requirePageLink, on the /s/{token}/* routes.

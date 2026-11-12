@@ -147,6 +147,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /pages/{id}/links",
 		"POST /pages/{id}/links/{link}/revoke",
 		"POST /pages/{id}/rollback",
+		"POST /pages/{id}/delete",
 		// Routing rules (routing_rules.go) and the usage page (usage.go).
 		"GET /rules",
 		"POST /rules/{id}/disable",
@@ -468,7 +469,7 @@ var routeVias = map[authz.Via][]string{
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
-	// A page's SHARE LINK (0113) opens exactly the four share-link routes; the
+	// A page's SHARE LINK (0116) opens exactly the four share-link routes; the
 	// token is in the path (credential rewrites the path's placeholder).
 	authz.ViaPageLink: {
 		"GET /s/{token}",

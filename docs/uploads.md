@@ -40,7 +40,7 @@ The access key needs only this, on the bucket (S3/MinIO policy):
   "Statement": [
     {"Effect": "Allow",
      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
-     "Resource": ["arn:aws:s3:::<bucket>/uploads/*"]},
+     "Resource": ["arn:aws:s3:::<bucket>/uploads/*", "arn:aws:s3:::<bucket>/pages/*"]},
     {"Effect": "Allow",
      "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetLifecycleConfiguration",
                 "s3:ListBucketMultipartUploads"],
@@ -48,6 +48,9 @@ The access key needs only this, on the bucket (S3/MinIO policy):
   ]
 }
 ```
+
+`pages/*` is where files sent through a [shareable page](pages.md#files) are
+kept, until their page is deleted. Give it no lifecycle rule.
 
 `s3:AbortMultipartUpload` and `s3:ListBucketMultipartUploads` are what let a
 failed upload be cleaned up. A file over 5 MiB is written as a multipart

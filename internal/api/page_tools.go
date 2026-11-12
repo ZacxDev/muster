@@ -121,7 +121,7 @@ func pageToolDefs() []agents.ToolDef {
 				"blocks":  pageBlocksSchema(),
 			}, "page_id", "blocks")},
 		{Type: "function", Name: pageGetTool,
-			Description: "Read one of your pages: its title, versions, links (the address of a LIVE link only) and how many responses it has.",
+			Description: "Read one of your pages: its title, versions, links (each one's state and label — never its address, which page_share_request showed once) and how many responses it has.",
 			Parameters:  objSchema(map[string]any{"page_id": id}, "page_id")},
 		{Type: "function", Name: pageListTool,
 			Description: "List your pages, newest activity first: id, title, current version, live and pending links, responses.",
@@ -129,8 +129,9 @@ func pageToolDefs() []agents.ToolDef {
 		{Type: "function", Name: pageShareRequestTool,
 			Description: "Ask your owner for a share link to one of your pages: a link anyone can open without a muster account. Your owner " +
 				"sees the request in muster's Attention view and on their phone, previews the page and approves or declines. The link is " +
-				"NOT live until they approve. Returns the link's id and the ask's id: a dispatched agent is told the answer as a new message; " +
-				"a mirrored Claude Code session waits for it with attention_wait{id: ask_id}. Once approved, page_get shows the link's address.",
+				"NOT live until they approve. Returns the link's url — ONCE: muster keeps only its hash, so keep it — and the link's and the ask's ids: " +
+				"a dispatched agent is told the answer as a new message; a mirrored Claude Code session waits for it with attention_wait{id: ask_id}. " +
+				"Once approved, the url opens the page.",
 			Parameters: objSchema(map[string]any{
 				"page_id": id,
 				"reason":  strProp("Why, in one sentence your owner reads (e.g. \"to collect the client's launch-date preference\")."),
@@ -311,17 +312,16 @@ func pageIDArg(arguments string) (int64, string) {
 	return in.PageID, ""
 }
 
-// pageLinkView is a link as a tool shows it: its address only when live.
+// pageLinkView is a link as a tool shows it: never its address (only the
+// token's hash is stored; page_share_request showed the address once), and
+// its non-secret label.
 func (s *Server) pageLinkView(l pages.Link) map[string]any {
-	out := map[string]any{"link_id": l.ID, "state": string(l.State), "created_at": l.CreatedAt.UTC().Format(time.RFC3339)}
+	out := map[string]any{"link_id": l.ID, "state": string(l.State), "label": l.Label(), "created_at": l.CreatedAt.UTC().Format(time.RFC3339)}
 	if l.RequestedBy != "" {
 		out["requested_by"] = l.RequestedBy
 	}
 	if l.AskID > 0 {
 		out["ask_id"] = l.AskID
-	}
-	if l.Live(s.now()) {
-		out["url"] = s.pageLinkURL(l)
 	}
 	return out
 }
@@ -352,7 +352,7 @@ func (s *Server) toolPageGet(ctx context.Context, c pages.Creator, arguments str
 	}
 	return toolJSON(map[string]any{"page_id": p.ID, "title": p.Title, "current_version": p.CurrentVersion, "versions": vs, "links": ls,
 		"responses": len(resps), "preview_url": s.pagePreviewURL(p.ID),
-		"note": "A link's url is shown only while it is live. preview_url is for your owner, signed in."})
+		"note": "A link's url is never shown here: page_share_request gave it once. A link you no longer have the url of cannot be recovered — ask for a new one and revoke the old. preview_url is for your owner, signed in."})
 }
 
 func (s *Server) toolPageList(ctx context.Context, c pages.Creator) string {
@@ -413,9 +413,12 @@ func (s *Server) toolPageShareRequest(ctx context.Context, c toolCaller, creator
 	}
 	s.askFiled(a)
 	metrics.PageShareDecisions.WithLabelValues("requested").Inc()
-	return toolJSON(map[string]any{"page_id": p.ID, "link_id": l.ID, "ask_id": a.ID, "status": "pending",
+	// 🔴 THE ONE TIME THE ADDRESS IS SHOWN: only its hash is stored. It
+	// serves nothing until the owner approves it.
+	return toolJSON(map[string]any{"page_id": p.ID, "link_id": l.ID, "ask_id": a.ID, "status": "pending", "url": s.pageLinkURL(l),
+		"note": "Keep url: it is shown only this once (muster stores only its hash). It opens nothing until your owner approves it, and then opens the page for anyone who has it.",
 		"next": "Your owner decides on the Attention view or their phone. " + askNext(c, a.ID) +
-			" When the answer is \"" + pageShareApproveLabel + "\", page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows the link's url."})
+			" When the answer is \"" + pageShareApproveLabel + "\", url is live; page_get{page_id: " + strconv.FormatInt(p.ID, 10) + "} shows its state."})
 }
 
 func (s *Server) toolPageLinkRevoke(ctx context.Context, c pages.Creator, arguments string) string {

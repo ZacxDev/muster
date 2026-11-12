@@ -326,15 +326,15 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents/{id}/sessions/{sid}/archive":   classParam,
 	"POST /agents/{id}/sessions/{sid}/unarchive": classParam,
 	"GET /ui/agents/{name}/chat-context":         classParam,
-	"POST /agents/{id}/start":                  classParam,
-	"POST /agents/{id}/stop":                   classParam,
-	"POST /connectors/{name}/rotate":           classParam,
-	"POST /tasks/{id}/comments":                classParam,
-	"POST /tasks/{id}/edit":                    classParam,
-	"POST /tasks/{id}/complete":                classParam,
-	"POST /tasks/{id}/tags":                    classParam,
-	"POST /ui/connector-requests/{id}/approve": classParam,
-	"POST /ui/connector-requests/{id}/deny":    classParam,
+	"POST /agents/{id}/start":                    classParam,
+	"POST /agents/{id}/stop":                     classParam,
+	"POST /connectors/{name}/rotate":             classParam,
+	"POST /tasks/{id}/comments":                  classParam,
+	"POST /tasks/{id}/edit":                      classParam,
+	"POST /tasks/{id}/complete":                  classParam,
+	"POST /tasks/{id}/tags":                      classParam,
+	"POST /ui/connector-requests/{id}/approve":   classParam,
+	"POST /ui/connector-requests/{id}/deny":      classParam,
 	// A failed reference write's Retry and Dismiss (0076): {id} is A's
 	// reference, {wid} A's write on it (fill).
 	"POST /tasks/{id}/ref-writes/{wid}/retry":   classParam,
@@ -636,6 +636,7 @@ var isolationClasses = map[string]routeClass{
 	"POST /pages/{id}/links":               classParam,
 	"POST /pages/{id}/links/{link}/revoke": classParam,
 	"POST /pages/{id}/rollback":            classParam,
+	"POST /pages/{id}/delete":              classParam,
 	"GET /s/{token}":                       classPublic,
 	"GET /s/{token}/content":               classPublic,
 	"POST /s/{token}/submit":               classPublic,
@@ -1092,7 +1093,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aAsk, err := attention.NewPG(pool).Create(ua, attention.New{Asker: attention.Asker{AgentID: w.a.agent.ID, Label: w.a.agent.Name},
 		Question: w.canary + " asks", Options: []string{"yes", "no"}})
 	must(err, "an ask")
-	// A's shareable page (0113): canary-titled, two versions (so A's rollback
+	// A's shareable page (0116): canary-titled, two versions (so A's rollback
 	// has one to move to), a live link and a canary-carrying response — the
 	// objects the Pages routes name by id.
 	pgs := pages.NewPG(pool)
@@ -1106,6 +1107,10 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a page link")
 	_, err = pgs.AddResponse(ua, aPageLink, 2, "q1", pages.KindSubmit, []byte(`{"answer":"`+w.canary+` answered"}`), "")
 	must(err, "a page response")
+	// …and a second page of A's, the one POST /pages/{id}/delete names, so A's
+	// own delete (the control) leaves the first for every other route.
+	aPageDel, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page to delete", pgBlocks, pgSize)
+	must(err, "a page to delete")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
@@ -1117,7 +1122,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
-		page: aPage.ID, pageLink: aPageLink.ID}
+		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1128,7 +1133,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
-		page: ghostID, pageLink: ghostID}
+		page: ghostID, pageLink: ghostID, pageDel: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1194,7 +1199,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Focus:     focus.NewPG(pool),
 		SendQueue: sendqueue.NewPG(pool),
 		Uploads:   w.uploadSvc,
-		// Shareable pages (0113): A's page is a real object B must not reach.
+		// Shareable pages (0116): A's page is a real object B must not reach.
 		Pages: pages.NewPG(pool),
 		// The attention queue (0025): A's ask is a real object B must not reach.
 		Attention: attention.NewPG(pool),
@@ -1450,31 +1455,32 @@ type isoObjs struct {
 	task, agent, grant, comment, attach, chat int64
 	// The chief's chats (chief_chats.go): the chief's id and name, and a side
 	// chat of it — the routes only a CHIEF answers (o.agent is a worker).
-	chief, chiefChat int64
-	chiefName        string
-	token                                     int64  // a personal API token's id
-	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
-	plugin                                    int64  // a plugin's id (0015)
-	draft                                     int64  // a plugin reply draft's id (0015/0016)
-	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
-	pushDevice                                int64  // a Web Push device's id
-	device                                    int64  // a paired device's id (0039)
-	agentName, connName, tag, link            string
-	mirrorHost, mirrorSession                 string
-	queued                                    int64  // a queued message's id (0019)
-	upload                                    string // a file attachment's public id (0024)
-	route                                     string // a session route's id (0021)
-	pluginMsg                                 int64  // a plugin message's id (its retry route)
-	refWrite                                  int64  // a write queued on a plugin task reference (0072)
-	refTask                                   int64  // the reference refWrite is on (its retry/dismiss routes' {id})
-	ask                                       int64  // an attention ask's id (0025)
-	standing                                  int64  // a shared approval's id (0043)
+	chief, chiefChat               int64
+	chiefName                      string
+	token                          int64  // a personal API token's id
+	flowJob, runnerTok, flowReq    int64  // a browser-flow job's, runner token's and agent request's id
+	plugin                         int64  // a plugin's id (0015)
+	draft                          int64  // a plugin reply draft's id (0015/0016)
+	passkey                        string // a GoTrue passkey id (the gotrue twin's fake)
+	pushDevice                     int64  // a Web Push device's id
+	device                         int64  // a paired device's id (0039)
+	agentName, connName, tag, link string
+	mirrorHost, mirrorSession      string
+	queued                         int64  // a queued message's id (0019)
+	upload                         string // a file attachment's public id (0024)
+	route                          string // a session route's id (0021)
+	pluginMsg                      int64  // a plugin message's id (its retry route)
+	refWrite                       int64  // a write queued on a plugin task reference (0072)
+	refTask                        int64  // the reference refWrite is on (its retry/dismiss routes' {id})
+	ask                            int64  // an attention ask's id (0025)
+	standing                       int64  // a shared approval's id (0043)
 	// Routing rules (0107): one per write route, so the walk's order cannot
 	// make A's own answer the ghost's — rule is active (Disable's), ruleOff
 	// disabled (Enable's), ruleDel active (Delete's).
 	rule, ruleOff, ruleDel int64
-	// Shareable pages (0113): a page's id and one of its links'.
-	page, pageLink int64
+	// Shareable pages (0116): a page's id and one of its links', and the
+	// page the delete route names (its own, for ruleDel's reason).
+	page, pageLink, pageDel int64
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1558,6 +1564,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = o.upload
 	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
+	case path == "/pages/{id}/delete":
+		id = strconv.FormatInt(o.pageDel, 10)
 	case strings.HasPrefix(path, "/pages/{id}"):
 		id = strconv.FormatInt(o.page, 10)
 	}

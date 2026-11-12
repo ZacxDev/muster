@@ -23,7 +23,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// SHAREABLE PAGES (internal/pages, migration 0113; docs/pages.md, design
+// SHAREABLE PAGES (internal/pages, migration 0116; docs/pages.md, design
 // docs/design/pages.md). This file is the routes: the four share-link routes a
 // viewer reaches (/s/{token}…) and the owner's Pages screen. page_tools.go is
 // the agents' tools; page_share.go the owner's approval of a link.
@@ -100,6 +100,7 @@ func (s *Server) registerPageRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pagesPath+"/{id}/links", s.requireOperatorWrite(s.handlePageMintLink))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/links/{link}/revoke", s.requireOperatorWrite(s.handlePageRevokeLink))
 	mux.HandleFunc("POST "+pagesPath+"/{id}/rollback", s.requireOperatorWrite(s.handlePageRollback))
+	mux.HandleFunc("POST "+pagesPath+"/{id}/delete", s.requireOperatorWrite(s.handlePageDelete))
 }
 
 // pageLinkCtxKey carries the admitted share link to its handler.
@@ -196,13 +197,19 @@ func serveShell(w http.ResponseWriter, v pages.ShellView) {
 	_, _ = io.WriteString(w, pages.Shell(v))
 }
 
-// shellBrand is the instance branding as the shell draws it.
-func (s *Server) shellBrand(ctx context.Context) (name, logo string) {
+// shellBrand is the instance branding as the shell draws it — by ui.Brand's
+// own rules, as every branded surface does: the name only when it is drawn
+// beside the logo (DrawsName), the logo's alt text (LogoAlt), the app icon.
+func (s *Server) shellBrand(ctx context.Context, v pages.ShellView) pages.ShellView {
 	b := s.uiBrand(ctx)
 	if b.HasLogo() {
-		logo = b.Versioned(ui.BrandLogoPath)
+		v.BrandLogo, v.BrandLogoAlt = b.Versioned(ui.BrandLogoPath), b.LogoAlt()
 	}
-	return b.Name, logo
+	if b.DrawsName() {
+		v.BrandName = b.Name
+	}
+	v.Icon = b.Icon192()
+	return v
 }
 
 // handlePageShell is GET /s/{token}: the shell of the link's page.
@@ -214,10 +221,9 @@ func (s *Server) handlePageShell(w http.ResponseWriter, r *http.Request) {
 		refusePageLink(w, "shell")
 		return
 	}
-	name, logo := s.shellBrand(r.Context())
 	base := pages.LinkPath(l.Token)
 	metrics.PageLinkRequests.WithLabelValues("shell", "served").Inc()
-	serveShell(w, pages.ShellView{Title: v.Title, BrandName: name, BrandLogo: logo, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce()})
+	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title, FrameSrc: base + "/content", Base: base, Nonce: pages.NewNonce()}))
 }
 
 // handlePageContent is GET /s/{token}/content: the current version, sandboxed.
@@ -390,7 +396,10 @@ func (s *Server) handlePageUpload(w http.ResponseWriter, r *http.Request) {
 			fail(http.StatusBadRequest, "That is not an upload of this page.", "invalid")
 			return
 		}
-		stored, err := svc.Put(ctx, part, part.FileName())
+		// Under the page's own prefix (pages/<id>/…), which the bucket's
+		// uploads/ lifecycle rule does not reach: kept until the page is
+		// deleted (handlePageDelete deletes them).
+		stored, err := svc.PutForPage(ctx, part, part.FileName(), l.PageID)
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			switch {
@@ -450,8 +459,9 @@ func (s *Server) pageResponded(ctx context.Context, l pages.Link, v pages.Versio
 // pagePath is the owner's page of id.
 func pagePath(id int64) string { return pagesPath + "/" + strconv.FormatInt(id, 10) }
 
-// pageLinkURL is link l's address as the owner and the agent are given it:
-// absolute under MUSTER_PUBLIC_URL, else a path on this server.
+// pageLinkURL is a NEW link's address, the once it is shown (the link
+// CreateLink just returned holds its token; no stored link does): absolute
+// under MUSTER_PUBLIC_URL, else a path on this server.
 func (s *Server) pageLinkURL(l pages.Link) string {
 	return strings.TrimRight(s.ext.PublicURL, "/") + pages.LinkPath(l.Token)
 }
@@ -520,11 +530,15 @@ func (s *Server) handlePageDetail(w http.ResponseWriter, r *http.Request) {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
 		return
 	}
-	s.renderPageDetail(w, r, id, http.StatusOK, "", "")
+	s.renderPageDetail(w, r, id, http.StatusOK, "", "", "")
 }
 
 // renderPageDetail writes /pages/{id}: its versions, links and responses.
-func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int64, code int, problem, notice string) {
+//
+// shown, when not "", is a link's address shown ONCE — the link the owner just
+// made (handlePageMintLink). Only the token's hash is stored, so this response
+// is the only place the owner sees it.
+func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int64, code int, problem, notice, shown string) {
 	ctx := r.Context()
 	p, err := s.ext.Pages.Page(ctx, id)
 	if err != nil {
@@ -553,6 +567,13 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 	if notice != "" {
 		b.WriteString(`<p class="text-sm text-fg" role="status" data-page-notice>` + esc(notice) + `</p>`)
 	}
+	if shown != "" {
+		b.WriteString(`<div class="` + flowsCardClass + `" data-link-new>
+<span class="text-sm font-semibold text-fg">Your new link — copy it now. It is shown only this once; if you lose it, make a new one and revoke this one.</span>
+<input type="text" readonly value="` + esc(shown) + `" class="w-full rounded-md bg-bg px-3 py-2 font-mono text-xs text-fg ring-1 ring-inset ring-edge" data-link-url aria-label="The new link">
+</div>
+`)
+	}
 	// Links.
 	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Links</h2>
 <p class="text-sm text-fg2">Anyone with a live link can open this page and send responses. Revoking one stops it at once.</p>
@@ -565,12 +586,8 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		lid := strconv.FormatInt(l.ID, 10)
 		b.WriteString(`<li class="` + flowsCardClass + `" data-link-id="` + lid + `" data-link-state="` + string(l.State) + `">
 <span class="text-sm text-fg">` + esc(pageLinkStateText(l)) + `</span>
+<span class="font-mono text-xs text-fg2" data-link-label>` + esc(l.Label()) + `</span>
 `)
-		if l.State == pages.LinkLive {
-			u := s.pageLinkURL(l)
-			b.WriteString(`<input type="text" readonly value="` + esc(u) + `" class="w-full rounded-md bg-bg px-3 py-2 font-mono text-xs text-fg ring-1 ring-inset ring-edge" data-link-url aria-label="The link">
-`)
-		}
 		if l.State == pages.LinkLive || l.State == pages.LinkPending {
 			b.WriteString(`<form method="POST" action="` + base + `/links/` + lid + `/revoke"><button type="submit" class="` + flowsQuietButton + `" data-link-revoke>Revoke</button></form>
 `)
@@ -626,6 +643,9 @@ func (s *Server) renderPageDetail(w http.ResponseWriter, r *http.Request, id int
 		b.WriteString("</li>\n")
 	}
 	b.WriteString(`</ul>
+<h2 class="text-sm font-semibold text-fg">Delete</h2>
+<p class="text-sm text-fg2">Deletes the page, every version, link and response, and every file sent through it. It cannot be undone.</p>
+<form method="POST" action="` + base + `/delete"><button type="submit" class="` + flowsQuietButton + `" data-page-delete>Delete this page</button></form>
 <a href="` + pagesPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">All pages</a>
 </section>`)
 	// secret: it shows each live share link, a bearer capability, so it
@@ -688,10 +708,9 @@ func (s *Server) handlePagePreview(w http.ResponseWriter, r *http.Request) {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page or version.")
 		return
 	}
-	name, logo := s.shellBrand(r.Context())
-	serveShell(w, pages.ShellView{Title: v.Title, BrandName: name, BrandLogo: logo,
+	serveShell(w, s.shellBrand(r.Context(), pages.ShellView{Title: v.Title,
 		FrameSrc: pagePath(id) + "/versions/" + strconv.Itoa(v.Version) + "/content", Nonce: pages.NewNonce(),
-		Banner: "Preview of version " + strconv.Itoa(v.Version) + ". Only you can see this; nothing sent from it is recorded."})
+		Banner: "Preview of version " + strconv.Itoa(v.Version) + ". Only you can see this; nothing sent from it is recorded."}))
 }
 
 // handlePageVersionContent is GET /pages/{id}/versions/{v}/content: the
@@ -726,18 +745,20 @@ func (s *Server) handlePageMintLink(w http.ResponseWriter, r *http.Request) {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
 		return
 	}
-	_, err := s.ext.Pages.CreateLink(r.Context(), id, pages.LinkLive, "you")
+	l, err := s.ext.Pages.CreateLink(r.Context(), id, pages.LinkLive, "you")
 	switch {
 	case err == nil:
 		metrics.PageShareDecisions.WithLabelValues("minted").Inc()
-		http.Redirect(w, r, pagePath(id), http.StatusSeeOther)
+		// Not a redirect: the token is in this response alone (the page is
+		// no-store and loads no telemetry), never in a URL or a later read.
+		s.renderPageDetail(w, r, id, http.StatusOK, "", "", s.pageLinkURL(l))
 	case errors.Is(err, pages.ErrNotFound):
 		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
 	case errors.Is(err, pages.ErrTooMany):
-		s.renderPageDetail(w, r, id, http.StatusConflict, strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "), "")
+		s.renderPageDetail(w, r, id, http.StatusConflict, strings.TrimPrefix(err.Error(), pages.ErrTooMany.Error()+": "), "", "")
 	default:
 		s.logger.Printf("pages: page %d: mint a link: %v", id, err)
-		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The link could not be made.", "")
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The link could not be made.", "", "")
 	}
 }
 
@@ -763,7 +784,7 @@ func (s *Server) handlePageRevokeLink(w http.ResponseWriter, r *http.Request) {
 		s.renderPagesList(w, r, http.StatusNotFound, "No such link.")
 	default:
 		s.logger.Printf("pages: page %d: revoke link %d: %v", id, lid, err)
-		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The link could not be revoked.", "")
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The link could not be revoked.", "", "")
 	}
 }
 
@@ -785,8 +806,68 @@ func (s *Server) handlePageRollback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logger.Printf("pages: page %d: roll back to %d: %v", id, n, err)
-		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The version could not be changed.", "")
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The version could not be changed.", "", "")
 		return
 	}
 	http.Redirect(w, r, pagePath(id), http.StatusSeeOther)
+}
+
+// handlePageDelete is the owner's "Delete this page": its files first — so a
+// failure leaves the page, and Delete can be pressed again, rather than
+// objects under pages/<id>/ that no lifecycle rule would ever remove — then
+// the page with every version, link and response, then the cards of links
+// still waiting.
+func (s *Server) handlePageDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.pagesOn() {
+		s.writeFeatureDisabled(w, r, features.Pages)
+		return
+	}
+	id, ok := pageIDParam(r)
+	if !ok {
+		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
+		return
+	}
+	ctx := r.Context()
+	if _, err := s.ext.Pages.Page(ctx, id); err != nil {
+		s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
+		return
+	}
+	files, err := s.ext.Pages.Files(ctx, id)
+	if err != nil {
+		s.logger.Printf("pages: page %d: list its files: %v", id, err)
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The page could not be deleted.", "", "")
+		return
+	}
+	for _, f := range files {
+		if s.ext.Uploads == nil {
+			s.renderPageDetail(w, r, id, http.StatusServiceUnavailable, "The page's files cannot be deleted while file uploads are off, so the page is kept.", "", "")
+			return
+		}
+		objErr, err := s.ext.Uploads.Revoke(ctx, f)
+		if err != nil && !errors.Is(err, uploads.ErrNotFound) {
+			err = errors.Join(err, objErr)
+		} else {
+			err = objErr
+		}
+		if err != nil {
+			s.logger.Printf("pages: page %d: delete file %s: %v", id, f, err)
+			s.renderPageDetail(w, r, id, http.StatusBadGateway, "A file of the page could not be deleted, so the page is kept. Try again.", "", "")
+			return
+		}
+	}
+	pending, err := s.ext.Pages.Delete(ctx, id)
+	if err != nil {
+		if errors.Is(err, pages.ErrNotFound) {
+			s.renderPagesList(w, r, http.StatusNotFound, "No such page.")
+			return
+		}
+		s.logger.Printf("pages: page %d: delete: %v", id, err)
+		s.renderPageDetail(w, r, id, http.StatusInternalServerError, "The page could not be deleted.", "", "")
+		return
+	}
+	for _, l := range pending {
+		s.withdrawLinkCard(ctx, l)
+	}
+	s.logger.Printf("pages: page %d deleted by its owner (%d file(s))", id, len(files))
+	http.Redirect(w, r, pagesPath, http.StatusSeeOther)
 }

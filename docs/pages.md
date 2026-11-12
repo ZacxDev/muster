@@ -35,9 +35,9 @@ proves). Any other page reads as `no such page`.
 |---|---|
 | `page_create{title, blocks}` | Publishes a page (version 1). Returns `page_id` and `preview_url`, which only you can open, signed in. |
 | `page_update{page_id, title?, blocks}` | Publishes the next version and makes it current. Links keep working and show it. |
-| `page_get{page_id}` | Title, versions, links and the response count. A link's `url` is shown only while it is live. |
+| `page_get{page_id}` | Title, versions, links (each one's state and label, never its address) and the response count. |
 | `page_list{}` | The caller's pages. |
-| `page_share_request{page_id, reason?}` | Asks you for a share link (below). Returns `link_id` and `ask_id`. |
+| `page_share_request{page_id, reason?}` | Asks you for a share link (below). Returns the link's `url` — **once** — with `link_id` and `ask_id`. |
 | `page_responses{page_id, after_id?, wait_seconds?}` | What viewers sent, oldest first, after `after_id`, as one fenced block of JSON lines. `wait_seconds` (≤ 600) blocks until something arrives. At most 2 waits per caller at once. |
 | `page_link_revoke{page_id, link_id}` | Revokes a pending or live link at once. No tool makes a link live. |
 
@@ -90,8 +90,15 @@ elsewhere are refused by its policy. Put images inline as `data:` URIs.
 
 A link is `https://<MUSTER_PUBLIC_URL>/s/<token>`, where the token is 256
 random bits. It serves the page's current version until it is revoked. A link
-that is unknown, waiting for approval, declined, revoked or expired answers
-404 with one body, whichever it is.
+that is unknown, waiting for approval, declined or revoked answers 404 with one
+body, whichever it is.
+
+🔴 **muster stores only the token's sha256, so a link is shown once**, to
+whoever made it: the agent, in `page_share_request`'s result, or you, on the
+page right after **Make a new link**. A lookup hashes the presented token and
+compares the hashes in constant time. Nothing — not the Pages screen, not
+`page_get`, not the database — can show a link again. If one is lost, make a
+new one and revoke the old.
 
 - **An agent asks** with `page_share_request`. That files a **pending** link
   and a question for you on the Asks page and your phone: *“<agent> asks to
@@ -100,10 +107,10 @@ that is unknown, waiting for approval, declined, revoked or expired answers
   Only you can decide it, in muster or on your paired phone: a mirrored
   session's `attention_answer` is refused, and so is any answer that is not one
   of the two. A dispatched agent is told your answer as a new message; a
-  mirrored session reads it with `attention_wait{id: ask_id}`. Then
-  `page_get` shows the link's `url`.
-- **You mint one** with **Make a new link** on the page's screen. It is live
-  at once.
+  mirrored session reads it with `attention_wait{id: ask_id}`. The agent got
+  the link's `url` when it asked; it opens the page once you approve.
+- **You make one** with **Make a new link** on the page's screen. It is live
+  at once, and shown to you there, that once.
 - **Revoking** (on the page's screen, or `page_link_revoke`) stops it at once
   and withdraws its card if it was still waiting.
 
@@ -116,8 +123,10 @@ screen (`/pages/{id}`) has:
 
 - **Preview** (`/pages/{id}/preview`, any version with `?v=`): the page as a
   viewer sees it, in the same sandbox, recording nothing.
-- **Links**: each link's state and who asked; a live link's address to copy;
-  Revoke; Make a new link.
+- **Links**: each link's state, who asked, and a short label — when it was
+  made and the first 8 hex digits of its token's hash (`created 2026-11-11
+  14:02 UTC · 3fa9c2e1`), which tells links apart and opens nothing; Revoke;
+  Make a new link (its address shown once, on the answer).
 - **Versions**: each version, its preview, and **Show this version** (a
   rollback: the version becomes current, every link shows it, nothing is
   deleted).
@@ -125,8 +134,28 @@ screen (`/pages/{id}`) has:
   as **Download the file** (`/uploads/{id}/file`: an attachment, never shown
   inline as a page).
 
-The page's screen shows bearer links, so it loads no front-end telemetry and is
-never cached.
+- **Delete this page**: deletes the page, every version, link and response,
+  and every file sent through it. It cannot be undone.
+
+The page's screen can show a just-made link, so it loads no front-end
+telemetry and is never cached.
+
+## Files
+
+A file sent through a page's link is stored in the uploads bucket under the
+page's own prefix, `pages/<page id>/<random id>` — **not** under `uploads/`,
+whose lifecycle rule expires objects after days. It is kept until its page is
+deleted, and deleting the page deletes it (the files go first: if one cannot be
+deleted, the page is kept and Delete can be pressed again).
+
+- 🔴 **Do not add a lifecycle rule on `pages/`.** It would delete files a page
+  still shows.
+- The access key needs the same object permissions on
+  `arn:aws:s3:::<bucket>/pages/*` as on `uploads/*`
+  ([uploads.md](uploads.md#configuration)); the bundled store's key already has
+  them.
+- The signed `/f/` link an agent is given for a file still expires with the
+  uploads' link lifetime; the file itself does not.
 
 ## What a viewer sees
 
@@ -192,11 +221,9 @@ component, never what was sent; at most one a minute per page.
 
 ## Not done
 
-- A **pushed turn** into a dispatched agent's session per response. Today an
-  agent reads responses with `page_responses` (and may block in it), the
-  contract a mirrored session already has for answers.
-- **Link expiry**: the column exists and is enforced; nothing sets it.
+- **A turn pushed into the agent's session per response** is a planned
+  follow-up. Today an agent reads responses with `page_responses` (and may
+  block in it), the contract a mirrored session already has for answers, and
+  you are pushed.
 - **Require the viewer's email** per link.
 - **Page assets** uploaded once and referenced; today images are `data:` URIs.
-- A page upload is an ordinary upload: it lives as long as the bucket's
-  lifecycle rule keeps `uploads/` (8 days in the documented rule).

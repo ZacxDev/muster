@@ -314,7 +314,11 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   const req = await call('page_share_request', { page_id: pageID, reason: 'to collect the launch date' });
   expect(req.isError, JSON.stringify(req.body)).toBe(false);
   const askID = req.body.ask_id as number;
-  expect((await call('page_get', { page_id: pageID })).body.links).toEqual([expect.not.objectContaining({ url: expect.anything() })]);
+  // The url is in the request's result, once (only its hash is stored); it
+  // opens nothing until the owner approves.
+  const url = req.body.url as string;
+  expect(url, JSON.stringify(req.body)).toMatch(new RegExp(`^${origin}/s/[A-Za-z0-9_-]{43}$`));
+  expect((await page.request.get(url, { maxRedirects: 0 })).status()).toBe(404);
   await page.goto(origin + '/attention');
   const card = page.locator(`#ask-${askID}`);
   await expect(card).toContainText('asks to share your page');
@@ -324,9 +328,10 @@ test('an agent publishes a page, the owner approves its link, a stranger answers
   // router never carries — goNotify skips attention events there. The Go
   // test TestAPageFromCreationToAStrangersResponse asserts that push.)
 
+  // page_get shows its state, never its url.
   const got = await call('page_get', { page_id: pageID });
-  const url = ((got.body.links as { url?: string }[])[0] ?? {}).url ?? '';
-  expect(url, JSON.stringify(got.body)).toMatch(new RegExp(`^${origin}/s/[A-Za-z0-9_-]{43}$`));
+  expect((got.body.links as { state: string }[])[0].state).toBe('live');
+  expect(JSON.stringify(got.body)).not.toContain(url.slice(-43));
 
   // 3. A stranger: no cookie at all.
   const stranger = await browser.newContext({ viewport: { width: 390, height: 844 } });

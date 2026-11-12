@@ -131,7 +131,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO task_ref_writes (note_id, plugin_id, kind, status) VALUES ($1, $2, 'status', 'in_progress')`, func() []any { return []any{note, plugin} }, nil},
 		{`INSERT INTO pages (title, agent_id) VALUES ($1, $2) RETURNING id`, func() []any { return []any{"page-" + tag, agent} }, &page},
 		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
-		{`INSERT INTO page_links (page_id, token, token_sha256, state, decided_at) VALUES ($1, substr(md5($2) || md5($2), 1, 43), md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
+		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
 		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
 	}
 	for _, s := range steps {

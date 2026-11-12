@@ -96,7 +96,7 @@ var (
 	datePattern        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 )
 
-// ValidComponent reports whether s is shaped like a component id (0113's CHECK
+// ValidComponent reports whether s is shaped like a component id (0116's CHECK
 // on page_responses.component is the same shape, CustomComponent included).
 func ValidComponent(s string) bool { return componentIDPattern.MatchString(s) }
 

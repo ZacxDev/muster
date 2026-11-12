@@ -185,7 +185,7 @@ var (
 		// there is no principal to run as. Only what serving the file needs is
 		// handed on (its key, type, name, and whether it was revoked).
 		"internal/uploads.sys",
-		// Shareable pages (migration 0113): a share link's read of ONE live
+		// Shareable pages (migration 0116): a share link's read of ONE live
 		// link by the sha256 of the presented token (pages.PGStore.LinkByToken)
 		// — the link is the credential, and its row names the owner the
 		// request then acts as (authz.ViaPageLink). Only the link row is
@@ -240,7 +240,7 @@ var (
 		// 180 days, by age only, across every owner (asklog.PG.Purge), and
 		// returns only counts.
 		"internal/asklog.sys",
-		// The answer-attempt log (migration 0113): the retention sweep's one
+		// The answer-attempt log (migration 0116): the retention sweep's one
 		// helper. It deletes rows past 30 days, by age only, across every
 		// owner (askattempt.PG.Prune), and returns only a count.
 		"internal/askattempt.sys",
@@ -354,7 +354,7 @@ var (
 		"internal/api.(*Server).requirePluginToken",     // plugin tokens (0015): /plugin/v1/*
 		"internal/api.(*Server).requireDeviceToken",     // paired device credentials (0039): /api/device/*
 		"internal/api.(*Server).requireRunnerToken",     // browser-flow runner tokens (0012): /runner/flows/*
-		"internal/api.(*Server).requirePageLink",        // a page's share link (0113): /s/{token}/*
+		"internal/api.(*Server).requirePageLink",        // a page's share link (0116): /s/{token}/*
 		"internal/api.(*Server).requireSession",
 	}
 	// authzExports is authz's whole exported package scope. A new exported

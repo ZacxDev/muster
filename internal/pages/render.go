@@ -344,10 +344,17 @@ button.mp-secondary{background:transparent;color:var(--fg);border:1px solid var(
 type ShellView struct {
 	// Title is the page's title (an agent's words, escaped here).
 	Title string
-	// BrandName and BrandLogo are the instance's branding: its display name
-	// and its logo's URL ("" for none). No muster mark is drawn without them.
-	BrandName string
-	BrandLogo string
+	// BrandName and BrandLogo are the instance's branding as every branded
+	// surface draws it (ui.Brand): the name drawn beside the logo ("" when none
+	// is set, or the logo already spells it — Brand.DrawsName), the logo's URL
+	// ("" for none) and its alt text (Brand.LogoAlt). No muster mark is drawn
+	// without them.
+	BrandName    string
+	BrandLogo    string
+	BrandLogoAlt string
+	// Icon is the page's favicon and touch icon (Brand.Icon192: the
+	// instance's app icon or logo icon, muster's own when none is set).
+	Icon string
 	// FrameSrc is the content document's path.
 	FrameSrc string
 	// Base is the path the relay posts to (Base+"/submit", Base+"/upload");
@@ -369,14 +376,19 @@ func Shell(v ShellView) string {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex, nofollow">
 <title>` + esc(v.Title) + `</title>
-<style>:root{color-scheme:light dark}html,body{margin:0;height:100%;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+`)
+	if v.Icon != "" {
+		b.WriteString(`<link rel="icon" type="image/png" sizes="192x192" href="` + esc(v.Icon) + `"><link rel="apple-touch-icon" href="` + esc(v.Icon) + `">
+`)
+	}
+	b.WriteString(`<style>:root{color-scheme:light dark}html,body{margin:0;height:100%;background:Canvas;color:CanvasText;font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
 body{display:flex;flex-direction:column;min-height:100dvh}header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid color-mix(in srgb,CanvasText 15%,transparent)}
 header img{height:28px;width:auto;max-width:8rem;object-fit:contain}header .t{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 header .n{color:color-mix(in srgb,CanvasText 65%,transparent);white-space:nowrap}.banner{padding:8px 16px;font-size:14px;background:color-mix(in srgb,CanvasText 7%,transparent)}
 iframe{flex:1;width:100%;border:0;min-height:70vh}</style></head>
 <body><header data-page-brand>`)
 	if v.BrandLogo != "" {
-		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="" data-brand-logo>`)
+		b.WriteString(`<img src="` + esc(v.BrandLogo) + `" alt="` + esc(v.BrandLogoAlt) + `" data-brand-logo>`)
 	}
 	if v.BrandName != "" {
 		b.WriteString(`<span class="n" data-brand-name>` + esc(v.BrandName) + `</span>`)

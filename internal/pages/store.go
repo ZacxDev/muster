@@ -2,6 +2,7 @@ package pages
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// Store is the pages tables (migration 0113).
+// Store is the pages tables (migration 0116).
 //
 // 🔴 EVERY METHOD BUT LinkByToken RUNS UNDER THE CALLER'S PRINCIPAL. The
 // tables are under FORCE row-level security, so a request reads and writes
@@ -44,6 +45,13 @@ type Store interface {
 	Version(ctx context.Context, id int64, v int) (Version, error)
 	// SetCurrent makes version v current (a rollback).
 	SetCurrent(ctx context.Context, id int64, v int) (Page, error)
+	// Files is the public ids of every file sent through page id's links
+	// (its upload responses): what deleting the page must delete first.
+	Files(ctx context.Context, id int64) ([]string, error)
+	// Delete deletes page id, and with it every version, link and response
+	// (the composite keys cascade). It returns the links that were still
+	// pending, whose owner cards the caller withdraws.
+	Delete(ctx context.Context, id int64) ([]Link, error)
 
 	// CreateLink files a link to page id in state (LinkPending or LinkLive),
 	// asked for by requestedBy. ErrTooMany past MaxOpenLinksPerPage.
@@ -62,9 +70,9 @@ type Store interface {
 	// RevokeLink revokes link linkID of page id (pending or live); revoking
 	// twice is not an error.
 	RevokeLink(ctx context.Context, id, linkID int64) (Link, error)
-	// LinkByToken is the LIVE, unexpired link token names, read with NO
-	// principal (authz.System): it is how a viewer's request learns the
-	// owner it acts as. ErrLinkNotFound for anything else.
+	// LinkByToken is the LIVE link token names, found by the token's sha256
+	// and read with NO principal (authz.System): it is how a viewer's request
+	// learns the owner it acts as. ErrLinkNotFound for anything else.
 	LinkByToken(ctx context.Context, token string) (Link, error)
 
 	// AddResponse records one response through link l at version v.
@@ -292,12 +300,66 @@ func (s *PGStore) SetCurrent(ctx context.Context, id int64, v int) (Page, error)
 	return p, wrap("set current", err)
 }
 
-const linkCols = `id, owner_id, page_id, token, state, coalesce(ask_id, 0), requested_by, created_at, decided_at, expires_at`
+// Files lists a page's uploaded files.
+func (s *PGStore) Files(ctx context.Context, id int64) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT upload_public_id FROM page_responses WHERE page_id = $1 AND kind = 'upload' ORDER BY id`, id)
+	if err != nil {
+		return nil, wrap("files", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, wrap("files", err)
+		}
+		out = append(out, f)
+	}
+	return out, wrap("files", rows.Err())
+}
+
+// Delete deletes a page and returns its links that were pending.
+func (s *PGStore) Delete(ctx context.Context, id int64) ([]Link, error) {
+	var pending []Link
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx, `SELECT id FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&pid); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT `+linkCols+` FROM page_links WHERE page_id = $1 AND state = 'pending'`, id)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			l, err := scanLink(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			pending = append(pending, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM pages WHERE id = $1`, id)
+		return err
+	})
+	if err != nil {
+		return nil, wrap("delete", err)
+	}
+	return pending, nil
+}
+
+const linkCols = `id, owner_id, page_id, token_sha256, state, coalesce(ask_id, 0), requested_by, created_at, decided_at`
 
 func scanLink(row pgx.Row) (Link, error) {
 	var l Link
 	var state string
-	err := row.Scan(&l.ID, &l.OwnerID, &l.PageID, &l.Token, &state, &l.AskID, &l.RequestedBy, &l.CreatedAt, &l.DecidedAt, &l.ExpiresAt)
+	err := row.Scan(&l.ID, &l.OwnerID, &l.PageID, &l.TokenSHA256, &state, &l.AskID, &l.RequestedBy, &l.CreatedAt, &l.DecidedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Link{}, ErrLinkNotFound
 	}
@@ -331,14 +393,16 @@ func (s *PGStore) CreateLink(ctx context.Context, id int64, state LinkState, req
 			return fmt.Errorf("%w: page %d has %d open links (pending or live), the most a page may; revoke one first", ErrTooMany, id, open)
 		}
 		var err error
-		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token, token_sha256, state, requested_by, decided_at)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
-			id, tok, TokenHash(tok), string(state), truncate(requestedBy, 200)))
+		// 🔴 ONLY THE HASH IS WRITTEN; the token goes back to the caller once.
+		l, err = scanLink(tx.QueryRow(ctx, `INSERT INTO page_links (page_id, token_sha256, state, requested_by, decided_at)
+			VALUES ($1, $2, $3, $4, CASE WHEN $3 = 'pending' THEN NULL ELSE now() END) RETURNING `+linkCols,
+			id, TokenHash(tok), string(state), truncate(requestedBy, 200)))
 		return err
 	})
 	if err != nil {
 		return Link{}, wrap("create link", err)
 	}
+	l.Token = tok
 	return l, nil
 }
 
@@ -419,16 +483,19 @@ func (s *PGStore) LinkByToken(ctx context.Context, token string) (Link, error) {
 	if !TokenShapeOK(token) {
 		return Link{}, ErrLinkNotFound
 	}
+	want := TokenHash(token)
 	l, err := scanLink(s.pool.QueryRow(sys(ctx), `SELECT `+linkCols+` FROM page_links
-		WHERE token_sha256 = $1 AND state = 'live' AND (expires_at IS NULL OR expires_at > now())`, TokenHash(token)))
+		WHERE token_sha256 = $1 AND state = 'live'`, want))
 	if err != nil {
 		return Link{}, err
 	}
-	// The row's token is the presented one (the hash matched); a mismatch
-	// would be a hash collision, and is refused all the same.
-	if l.Token != token {
+	// The row's hash is compared again, in constant time: the index found
+	// it, and nothing about the comparison's timing depends on how much of
+	// the presented token was right.
+	if subtle.ConstantTimeCompare([]byte(l.TokenSHA256), []byte(want)) != 1 {
 		return Link{}, ErrLinkNotFound
 	}
+	l.Token = token
 	return l, nil
 }
 
@@ -452,7 +519,7 @@ func (s *PGStore) AddResponse(ctx context.Context, l Link, v int, component stri
 	var out Response
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var state string
-		if err := tx.QueryRow(ctx, `SELECT state FROM page_links WHERE id = $1 AND page_id = $2 AND (expires_at IS NULL OR expires_at > now()) FOR UPDATE`,
+		if err := tx.QueryRow(ctx, `SELECT state FROM page_links WHERE id = $1 AND page_id = $2 FOR UPDATE`,
 			l.ID, l.PageID).Scan(&state); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrLinkNotFound

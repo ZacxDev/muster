@@ -217,7 +217,7 @@ type Extensions struct {
 	// included, answers 404.
 	Uploads *uploads.Service
 
-	// Pages is shareable pages (internal/pages, migration 0113; MUSTER_PAGES=1;
+	// Pages is shareable pages (internal/pages, migration 0116; MUSTER_PAGES=1;
 	// pages.go, page_tools.go, page_share.go). nil (the default, or no
 	// database): no page tool is offered, the Pages screen answers the typed
 	// feature_disabled 404, and every share link answers 404.

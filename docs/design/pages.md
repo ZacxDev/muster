@@ -47,8 +47,6 @@ questions, upload things, fill out a form etc."*
   external network. No custom domains.
 - **Viewer accounts.** A link is a bearer capability; there is no viewer
   sign-in, and v1 records no viewer identity beyond what they submit.
-- **Link expiry in v1.** The column exists and is enforced; nothing sets it
-  yet ([phased plan](#phased-plan)).
 - **Making page content safe.** It is untrusted and is kept away from muster.
 
 ## What exists today (that this builds on)
@@ -98,7 +96,7 @@ So pages are in-tree and off by default, built to be split later:
 - The seam to cut for a plugin later is exactly `/s/*`: move serving to a
   separate host (the previews shape) and keep the store and tools here.
 
-## Data model (migration 0113)
+## Data model (migration 0116)
 
 All four tables are owned, under forced row-level security, with
 `owner_id DEFAULT muster.uid`, and every child names its page by
@@ -108,44 +106,29 @@ All four tables are owned, under forced row-level security, with
 |---|---|
 | `pages` | `title` (≤ 200), `current_version`, creator: `agent_id` **or** `mirror_host` (+ `creator_label`), `created_at`, `updated_at` |
 | `page_versions` | `page_id`, `version` (1, 2, …; unique per page), `title`, `blocks` JSONB, `size_bytes`, `created_by` label, `created_at`. Immutable: no `UPDATE` path |
-| `page_links` | `page_id`, `token` (43 chars, unique), `token_sha256` (unique, the lookup), `state` ∈ `pending`, `live`, `denied`, `revoked`; `ask_id` (the approval), `requested_by`, `created_at`, `decided_at`, `expires_at` (nullable; enforced, not settable in v1) |
+| `page_links` | `page_id`, `token_sha256` (unique, the lookup), `state` ∈ `pending`, `live`, `denied`, `revoked`; `ask_id` (the approval), `requested_by`, `created_at`, `decided_at` |
 | `page_responses` | `page_id`, `link_id`, `version`, `component`, `kind` ∈ `submit`, `upload`; `data` JSONB (≤ 32 KiB), `upload_public_id`, `created_at` |
 
-- **The token is stored, not only its hash** (unlike previews' share links).
-  The owner copies a link from the Pages screen long after it was approved, and
-  the agent reads it with `page_get` after approval. Everything a link reaches
-  is already in the same database, so the stored token adds only a viewer's
-  write (posting a response) to what a database reader has. Lookup is by
-  `token_sha256`, so no query compares the token itself. This is an open
-  question for the operator.
+- **Only the token's sha256 is stored** (operator decision, round 0). A link
+  is shown once — to the agent in `page_share_request`'s result, or to the
+  owner on the answer to **Make a new link** — and a lost one is replaced, not
+  recovered. A lookup hashes the presented token and compares in constant time.
 - **A creator** is the calling agent (`agent_id`) or the mirrored session's
   **host** (`mirror_host`). The tools act only on pages their caller created:
   a dispatched agent on its own, a mirrored session on its host's (the host is
   what the mirror token proves; the session id is the caller's claim).
 - Rollback is a pointer move (`current_version`); no version is deleted.
+- **A page's files** are kept under `pages/<page id>/` in the uploads bucket,
+  outside the expiring `uploads/` prefix, until the page is deleted (which
+  deletes them first). 0116 widens `uploads_object_key_check` to allow that key.
 - `db.RLSOff`/`RLSOn` treat the tables like every owned table.
 
 ## Routes
 
-| route | who | what |
-|---|---|---|
-| `GET /s/{token}` | anyone with the link | the **shell**: branding, the page title, a sandboxed frame of the content, the relay script |
-| `GET /s/{token}/content` | anyone with the link | the **content document** of the current version, sandboxed |
-| `POST /s/{token}/submit` | the link (via the shell) | one response: `{component, data}` |
-| `POST /s/{token}/upload` | the link (via the shell) | one file, multipart, to the upload store |
-| `GET /pages` | the owner's session | the Pages screen: every page, its links and response count |
-| `GET /pages/{id}` | the owner's session | versions, links (copy, revoke), responses (uploads downloadable) |
-| `GET /pages/{id}/preview` | the owner's session | the shell in preview mode (`?v=` any version); nothing is recorded |
-| `GET /pages/{id}/versions/{v}/content` | the owner's session | that version's content document, sandboxed exactly as a link's |
-| `POST /pages/{id}/links` | the owner's session, same origin | mint a live link |
-| `POST /pages/{id}/links/{link}/revoke` | the owner's session, same origin | revoke a link |
-| `POST /pages/{id}/rollback` | the owner's session, same origin | make `version` current |
-
-Downloads of uploaded files use the existing owner route
-`GET /uploads/{id}/file`, served by `uploads.SetServeHeaders`.
-
-A link that is unknown, pending, denied, revoked or expired answers **404**
-on all four `/s/` routes, with one body: nothing says which.
+The routes, and who reaches each, are in [pages.md](../pages.md): the four
+share-link routes under `/s/{token}` ([what a viewer sees](../pages.md#what-a-viewer-sees))
+and the owner's Pages screen ([the Pages screen](../pages.md#the-pages-screen)).
+A refused link is one 404 on every `/s/` route: nothing says why.
 
 ## The sandbox
 
@@ -154,18 +137,9 @@ the design must hold even when the page is opened **directly**, not framed.
 
 ### The content document
 
-`/s/{token}/content` and the owner's version route answer with exactly:
-
-```
-Content-Security-Policy: sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'
-X-Content-Type-Options: nosniff
-X-Frame-Options: SAMEORIGIN
-Referrer-Policy: no-referrer
-Cross-Origin-Resource-Policy: same-origin
-Permissions-Policy: camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), payment=()
-Cache-Control: no-store
-Content-Type: text/html; charset=utf-8
-```
+`/s/{token}/content` and the owner's version route are served with exactly the
+headers [pages.md lists](../pages.md#what-a-viewer-sees) (asserted whole by
+the tests). What they buy:
 
 - **`sandbox` without `allow-same-origin`, as a header.** The document gets an
   **opaque origin** however it is reached — framed, opened in a tab, or
@@ -280,9 +254,10 @@ SDK answers `{preview: true}` and records nothing.
    refused, and the owner card refuses it again in SQL), an answer equal to
    one of the card's options, and the link still `pending`. **Approve link**
    makes it `live`; **Not now** makes it `denied`.
-3. The asker learns the answer as from any ask (a dispatched agent by
-   delivery, a mirrored session through `attention_wait`), then reads the URL
-   with `page_get`. A pending or denied link never shows its URL.
+3. The asker got the link's URL once, in `page_share_request`'s result (only
+   its hash is stored); it learns the answer as from any ask (a dispatched
+   agent by delivery, a mirrored session through `attention_wait`), and the URL
+   opens the page from the approval on. A pending or denied link serves nothing.
 4. An answer in the session (the owner typing to the agent) settles the card
    without the hook: the link stays `pending` and serves nothing.
 
@@ -308,35 +283,15 @@ same-origin request, like every other owner write.
 
 ## Limits and quotas
 
-| scope | limit |
-|---|---|
-| a version's blocks (JSON) | 512 KiB, 100 blocks; an `html` block ≤ 256 KiB |
-| versions per page | 100 |
-| pages per owner | 200 |
-| open links per page (`pending` + `live`) | 10 |
-| a submit's `data` | 32 KiB |
-| responses per link | 1000 |
-| submits per link | 20 a minute |
-| uploads per link | 10 a minute, 50 in all; each file ≤ `MUSTER_UPLOAD_MAX_BYTES` |
-| unknown-token requests | 60 a minute per client address, then 429 |
-| owner pushes | 1 a minute per page |
-
-Uploads need attachments configured (`MUSTER_S3_*`); without them an `upload`
-block renders disabled and `/upload` answers 404. A page upload is an
-ordinary upload row of the owner's, so it lives as long as the bucket's
-lifecycle rule keeps `uploads/` ([uploads.md](../uploads.md)).
+The limits are in [pages.md](../pages.md#limits). Uploads need attachments
+configured; without them an `upload` block renders disabled.
 
 ## Telemetry
 
-- `muster_page_link_requests_total{route,outcome}` — `served`, `not_found`,
-  `throttled` per `/s/` route.
-- `muster_page_responses_total{kind,outcome}` — `recorded`, `invalid`,
-  `throttled`, `full`.
-- `muster_page_share_decisions_total{decision}` — `approved`, `denied`,
-  `minted`, `revoked`.
-- Spans are the middleware's, labelled by route **pattern**; the access log
-  writes `/s/[redacted]` for every `/s/` path, so no token reaches a log,
-  span or label. Viewer data is never logged.
+The metrics and their label values are in [pages.md](../pages.md#telemetry).
+Spans are the middleware's, labelled by route **pattern**; the access log
+writes `/s/[redacted]` for every `/s/` path, so no token reaches a log, span or
+label. Viewer data is never logged.
 
 ## Threat model
 
@@ -345,12 +300,12 @@ lifecycle rule keeps `uploads/` ([uploads.md](../uploads.md)).
 | Page script acts as muster | opaque origin by HTTP header; no cookies readable; no network | none known |
 | Page script reaches a muster route with the viewer's cookies | `connect-src 'none'`; `Origin: null` refused by `requireSameOrigin`; no CORS for `null` | a top-level **navigation** is not possible (no `allow-top-navigation`); a `GET` subresource is blocked by CSP |
 | Direct navigation to `/content` | the sandbox is a header, not the frame's attribute | none |
-| The link leaks | 256 bits; `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push | whoever it was given to |
+| The link leaks | 256 bits, stored only as its sha256 (a database read yields no live link); `no-referrer` on shell and content; `/s/[redacted]` in the access log; never in a push | whoever it was given to |
 | A link outlives intent | revoke on the Pages screen or with `page_link_revoke`; checked on every request | until revoked |
 | An agent shares without the owner | only `page_share_request`, which files an owner card; approval only through the owner's door; the hook and `answerSQL` both refuse `attention_answer` | the owner approving what they did not preview |
 | Prompt injection through responses | fenced DATA with a preface; the push carries no viewer text | the agent's own judgement |
 | Malicious uploads | sniffed type; served only through `SetServeHeaders` (attachment, sandbox CSP, `nosniff`); never inline on the shell or content | none known |
-| Exhaustion | [limits](#limits-and-quotas) | bandwidth |
+| Exhaustion | [limits](../pages.md#limits) | bandwidth |
 | User B reaches user A's pages | RLS on all four tables; composite keys; the isolation walk covers every new route | none |
 | The shell's relay is abused | accepts only its own frame's messages and two ops; calls only two fixed routes, `credentials: 'omit'` | equal to the page's own power |
 | A phishing page on muster's host | the shell shows the instance branding, so a page looks like the operator's; agents write pages only for their owner, who approves sharing | a page can draw a convincing form inside its frame |
@@ -359,20 +314,18 @@ lifecycle rule keeps `uploads/` ([uploads.md](../uploads.md)).
 
 | phase | what |
 |---|---|
-| **1 (this branch)** | migration 0113, `internal/pages`, the four `/s/` routes, the owner's Pages screen and preview, versions and rollback, links (agent request + owner approval, owner mint/revoke), the seven tools on both doors, built-in components, the SDK and custom JS, responses, uploads, the owner push, docs, isolation and principal ledgers, a browser spec |
-| **2** | a turn pushed into a dispatched agent's session per response (generalised exactly-once delivery); per-link expiry in the UI and `page_share_request{expires_in}`; "require the viewer's email" per link |
+| **1 (this branch)** | migration 0116, `internal/pages`, the four `/s/` routes, the owner's Pages screen and preview, versions and rollback, links (agent request + owner approval, owner mint/revoke), the seven tools on both doors, built-in components, the SDK and custom JS, responses, uploads, the owner push, docs, isolation and principal ledgers, a browser spec |
+| **2** | a turn pushed into a dispatched agent's session per response (generalised exactly-once delivery); "require the viewer's email" per link |
 | **3** | page assets uploaded once and referenced (instead of `data:` URIs); serving from a separate host if the operator wants a second wall |
 
 ## Open questions
 
-1. Store the link token (copyable later) or only its hash (shown once)? v1
-   stores it; [data model](#data-model-migration-0113).
-2. Should minting a link on the Pages screen need a fresh sign-in (step-up),
-   as previews' share links do? v1 does not.
-3. Should a dispatched agent get a pushed turn per response in phase 1 rather
-   than 2?
-4. Page uploads live only as long as the bucket's `uploads/` lifecycle rule
-   (8 days in the documented rule). Keep them longer under a second prefix?
+Answered in round 0: the token is stored as its hash only; responses reach the
+agent through `page_responses` (a pushed turn is a follow-up); a page's files
+are kept under its own prefix until the page is deleted. Still open:
+
+1. Should making a link on the Pages screen need a fresh sign-in (step-up),
+   as previews' share links do? It does not.
 
 ## Operator decisions
 

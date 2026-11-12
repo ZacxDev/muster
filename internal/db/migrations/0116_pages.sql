@@ -7,13 +7,20 @@
 --   page_versions   every version of a page, IMMUTABLE once written: its title
 --       and its blocks (markdown, built-in components, custom html). A
 --       republish adds a version; a rollback moves pages.current_version.
---   page_links      a share link: a 256-bit capability (/s/<token>), stored
---       with its sha256 (the lookup) and its state — 'pending' (an agent asked;
---       the owner has not decided), 'live', 'denied' or 'revoked'. ask_id is
---       the owner card that decides a pending one. expires_at is enforced by
---       the lookup and set by nothing yet.
+--   page_links      a share link: a 256-bit capability (/s/<token>). 🔴 ONLY
+--       ITS SHA-256 IS STORED (token_sha256, the lookup): the token itself is
+--       shown once — to the agent that asked for it, or to the owner who made
+--       it — and is in no column, so reading this table yields no live link.
+--       Its state is 'pending' (an agent asked; the owner has not decided),
+--       'live', 'denied' or 'revoked'; ask_id is the owner card that decides a
+--       pending one.
 --   page_responses  what a viewer sent through a link: a component's submit
 --       ('submit', data) or a file ('upload', the uploads row's public id).
+--   uploads.object_key  may also be 'pages/<page id>/<public id>': a file
+--       sent through a page's link is kept under its page's own prefix, which
+--       the bucket's 'uploads/' lifecycle rule does not reach, until the page
+--       is deleted (which deletes its objects). The key is still the random id
+--       behind a fixed prefix; nothing a viewer chose is part of it.
 --
 -- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, IN 0089's (asks) SHAPE. The one
 -- system-scope read is the link lookup by token hash (pages.PGStore.LinkByToken,
@@ -39,6 +46,9 @@
 --   DROP TABLE IF EXISTS public.page_links;
 --   DROP TABLE IF EXISTS public.page_versions;
 --   DROP TABLE IF EXISTS public.pages;
+--   DELETE FROM public.uploads WHERE object_key LIKE 'pages/%';
+--   ALTER TABLE public.uploads DROP CONSTRAINT IF EXISTS uploads_object_key_check;
+--   ALTER TABLE public.uploads ADD CONSTRAINT uploads_object_key_check CHECK (object_key = 'uploads/' || public_id);
 --   DELETE FROM schema_migrations WHERE version = 116;
 
 SET LOCAL lock_timeout = '3s';
@@ -91,14 +101,12 @@ CREATE TABLE IF NOT EXISTS public.page_links (
                   DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                   REFERENCES public.users (id),
     page_id       BIGINT      NOT NULL,
-    token         TEXT        NOT NULL CHECK (token ~ '^[A-Za-z0-9_-]{43}$'),
     token_sha256  TEXT        NOT NULL CHECK (token_sha256 ~ '^[0-9a-f]{64}$'),
     state         TEXT        NOT NULL CHECK (state IN ('pending', 'live', 'denied', 'revoked')),
     ask_id        BIGINT,
     requested_by  TEXT        NOT NULL DEFAULT '' CHECK (char_length(requested_by) <= 200),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at    TIMESTAMPTZ,
-    expires_at    TIMESTAMPTZ,
     CONSTRAINT page_links_page_fkey FOREIGN KEY (page_id, owner_id)
         REFERENCES public.pages (id, owner_id) ON DELETE CASCADE,
     -- A pending link has not been decided; every other state has.
@@ -108,7 +116,6 @@ CREATE TABLE IF NOT EXISTS public.page_links (
 ALTER TABLE public.page_links ALTER COLUMN owner_id
     SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
 
-CREATE UNIQUE INDEX IF NOT EXISTS page_links_token_key ON public.page_links (token);
 CREATE UNIQUE INDEX IF NOT EXISTS page_links_token_sha256_key ON public.page_links (token_sha256);
 CREATE UNIQUE INDEX IF NOT EXISTS page_links_id_owner_key ON public.page_links (id, owner_id);
 CREATE INDEX IF NOT EXISTS page_links_page ON public.page_links (page_id, created_at DESC);
@@ -160,6 +167,12 @@ BEGIN
             )$p$, t);
     END LOOP;
 END $$;
+
+-- A page's files: 'pages/<page id>/<public id>' beside 'uploads/<public id>'.
+ALTER TABLE public.uploads DROP CONSTRAINT IF EXISTS uploads_object_key_check;
+ALTER TABLE public.uploads ADD CONSTRAINT uploads_object_key_check CHECK (
+    object_key = 'uploads/' || public_id
+    OR (object_key ~ '^pages/[1-9][0-9]{0,18}/[A-Za-z0-9_-]{22}$' AND right(object_key, 23) = '/' || public_id));
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.pages TO muster_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.page_versions TO muster_app;

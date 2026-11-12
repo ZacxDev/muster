@@ -1,4 +1,4 @@
-// Package pages is shareable pages (migration 0113; docs/pages.md, design
+// Package pages is shareable pages (migration 0116; docs/pages.md, design
 // docs/design/pages.md): a page an agent writes for its owner, its immutable
 // versions, the share links that let someone without a muster account open it,
 // and what those viewers send back.
@@ -29,7 +29,7 @@ import (
 // The limits (docs/design/pages.md#limits-and-quotas). Vars where a test
 // lowers them.
 const (
-	// MaxVersionBytes bounds one version's blocks as JSON (0113's CHECK).
+	// MaxVersionBytes bounds one version's blocks as JSON (0116's CHECK).
 	MaxVersionBytes = 512 << 10
 	// MaxBlocks bounds a version's block count.
 	MaxBlocks = 100
@@ -39,7 +39,7 @@ const (
 	MaxMarkdownBytes = 64 << 10
 	// MaxSubmitBytes bounds a submit's data as JSON.
 	MaxSubmitBytes = 32 << 10
-	// MaxTitleRunes bounds a page's title (0113's CHECK).
+	// MaxTitleRunes bounds a page's title (0116's CHECK).
 	MaxTitleRunes = 200
 )
 
@@ -130,22 +130,34 @@ const (
 )
 
 // Link is one share link.
+//
+// 🔴 ITS TOKEN IS NOT STORED. Token is set only on the Link CreateLink returns
+// — the one moment the token exists outside a request — and on the Link
+// LinkByToken returns (the presented token, already matched); every other read
+// leaves it "". TokenSHA256 is what the table holds.
 type Link struct {
 	ID          int64
 	OwnerID     int64
 	PageID      int64
 	Token       string
+	TokenSHA256 string
 	State       LinkState
 	AskID       int64
 	RequestedBy string
 	CreatedAt   time.Time
 	DecidedAt   *time.Time
-	ExpiresAt   *time.Time
 }
 
-// Live reports whether l serves at now.
-func (l Link) Live(now time.Time) bool {
-	return l.State == LinkLive && (l.ExpiresAt == nil || l.ExpiresAt.After(now))
+// Label is a link's short, non-secret name for its owner: when it was made
+// and the first 8 hex digits of its token's hash ("created 2026-11-11 14:02
+// UTC · 3fa9c2e1"). The hash prefix tells two links apart; it is no part of
+// the token and opens nothing.
+func (l Link) Label() string {
+	h := l.TokenSHA256
+	if len(h) > 8 {
+		h = h[:8]
+	}
+	return "created " + l.CreatedAt.UTC().Format("2006-01-02 15:04") + " UTC · " + h
 }
 
 // ResponseKind is what a response is.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,10 +185,10 @@ func TestVersionsAndRollback(t *testing.T) {
 
 // TestALinkServesOnlyWhileLive walks a link's states through LinkByToken —
 // the System read that admits a viewer: pending serves nothing, approved
-// serves, revoked serves nothing again; denied never serves; an expired live
-// link serves nothing; a malformed or unknown token never reaches a row.
+// serves, revoked serves nothing again; denied never serves; a malformed or
+// unknown token never reaches a row.
 func TestALinkServesOnlyWhileLive(t *testing.T) {
-	s, pool := pgStore(t)
+	s, _ := pgStore(t)
 	two := asUser(2)
 	b, n := blocksOf(t, qBlocks)
 	p, _, err := s.Create(two, agentA, "Ask", b, n)
@@ -237,16 +238,9 @@ func TestALinkServesOnlyWhileLive(t *testing.T) {
 	if _, err := s.LinkByToken(context.Background(), d.Token); !errors.Is(err, ErrLinkNotFound) {
 		t.Errorf("a denied link served: %v", err)
 	}
-	// Expired (nothing sets expires_at yet; the lookup enforces it).
 	e, _ := s.CreateLink(two, p.ID, LinkLive, "you")
 	if _, err := s.LinkByToken(context.Background(), e.Token); err != nil {
-		t.Fatalf("control: a live link before it expires: %v", err)
-	}
-	if _, err := pool.Exec(two, `UPDATE page_links SET expires_at = now() - interval '1 second' WHERE id = $1`, e.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.LinkByToken(context.Background(), e.Token); !errors.Is(err, ErrLinkNotFound) {
-		t.Errorf("an expired link served: %v", err)
+		t.Fatalf("control: a live link: %v", err)
 	}
 	for _, bad := range []string{"", "nope", e.Token + "x", e.Token[:42] + "!"} {
 		if _, err := s.LinkByToken(context.Background(), bad); !errors.Is(err, ErrLinkNotFound) {
@@ -340,5 +334,44 @@ func TestTheOpenLinkAndPageCaps(t *testing.T) {
 	}
 	if _, err := s.CreateLink(two, p.ID, LinkDenied, "x"); err == nil {
 		t.Error("a link was created denied")
+	}
+}
+
+// TestALinksTokenIsNotStored: after CreateLink hands its token back, no column
+// of the link's row — read whole, as JSON, by the table's owner — holds the
+// token, and the one it is found by is its sha256. The control: the same scan
+// finds the hash, so a scan that sees nothing could not pass.
+func TestALinksTokenIsNotStored(t *testing.T) {
+	s, pool := pgStore(t)
+	two := asUser(2)
+	b, n := blocksOf(t, qBlocks)
+	p, _, err := s.Create(two, agentA, "Secret link", b, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []LinkState{LinkPending, LinkLive} {
+		l, err := s.CreateLink(two, p.ID, state, "you")
+		if err != nil || !TokenShapeOK(l.Token) {
+			t.Fatalf("CreateLink(%s): %+v %v", state, l, err)
+		}
+		var row string
+		if err := pool.QueryRow(two, `SELECT row_to_json(l)::text FROM page_links l WHERE id = $1`, l.ID).Scan(&row); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(row, l.Token) {
+			t.Errorf("the %s link's row holds its token: %s", state, row)
+		}
+		if !strings.Contains(row, `"token_sha256":"`+TokenHash(l.Token)+`"`) {
+			t.Errorf("control: the row does not hold the token's hash: %s", row)
+		}
+		// No read hands the token back.
+		got, err := s.Link(two, p.ID, l.ID)
+		if err != nil || got.Token != "" || got.TokenSHA256 != TokenHash(l.Token) {
+			t.Errorf("Link read back %+v %v; want no token, its hash", got, err)
+		}
+	}
+	var cols int
+	if err := pool.QueryRow(two, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'page_links' AND column_name = 'token'`).Scan(&cols); err != nil || cols != 0 {
+		t.Errorf("page_links has a token column (%d, %v)", cols, err)
 	}
 }

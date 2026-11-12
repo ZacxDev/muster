@@ -374,7 +374,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
-		// Shareable pages (migration 0113): off unless MUSTER_PAGES=1.
+		// Shareable pages (migration 0116): off unless MUSTER_PAGES=1.
 		if cfg.Pages {
 			ext.Pages = pages.NewPG(pool)
 		}
