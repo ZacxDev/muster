@@ -228,7 +228,7 @@ const (
 	BackendHQ = "hq"
 	// BackendBuiltin is muster's own Postgres (internal/officers/builtin):
 	// the officer's type, charter, switch and queue live in muster's database,
-	// defined with `muster officer` (docs/officers.md).
+	// written through the owner-scoped admin API (#503 slice 7).
 	BackendBuiltin = "builtin"
 )
 

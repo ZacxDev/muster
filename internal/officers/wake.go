@@ -101,7 +101,7 @@ type HQ interface {
 // SwitchGated is a backend whose on/off switch (Backend.Enabled) the wake
 // loop honours: while it answers false, the officer's instances are stopped
 // and none is started, whatever its queue holds. The built-in backend is one —
-// its switch (`muster officer def`) is the only "off" a builtin officer has.
+// its switch (officer_defs.enabled) is the only "off" a builtin officer has.
 // HQ is NOT: the loop has always read only an HQ officer's items, and an HQ
 // officer's switch is HQ's to honour (its queue and its routes), so an HQ
 // officer's passes make no extra request.
@@ -695,7 +695,7 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		// scaled to zero; it wakes normally once HQ answers again. Logged once
 		// per change, counted on the gauge.
 		if changed && o.IsBuiltin() {
-			r.log.Printf("officers: %s: the built-in backend does not define this officer (answered %s on %d consecutive passes): a CONFIGURATION fault — define it in the built-in store (docs/officers.md). "+
+			r.log.Printf("officers: %s: the built-in backend does not define this officer (answered %s on %d consecutive passes): a CONFIGURATION fault — define it in the built-in store (docs/design/officers-first-class.md). "+
 				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, refusal, strikes, next.Sub(now).Round(time.Second))
 		} else if changed {
 			r.log.Printf("officers: %s: HQ refuses this officer (HQ answered %s on %d consecutive passes): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+

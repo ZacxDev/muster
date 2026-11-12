@@ -546,13 +546,13 @@ func (s *Server) logOfficerBackend(o officers.Officer) {
 	on, err := b.Enabled(ctx)
 	switch {
 	case err != nil:
-		s.logger.Printf("officers: %s: the built-in store does not answer for it (%v): define it in the built-in store (docs/officers.md); until then its wake loop fails every pass", o.ID, err)
+		s.logger.Printf("officers: %s: the built-in store does not answer for it (%v): define it in the built-in store (docs/design/officers-first-class.md; the `muster officer` admin CLI is slice 7); until then its wake loop fails every pass", o.ID, err)
 	case !on:
 		s.logger.Printf("officers: %s: defined in the built-in store and switched OFF: no instance runs until it is switched on", o.ID)
 	default:
 		s.logger.Printf("officers: %s: defined in the built-in store and switched on", o.ID)
 	}
-	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back it up (docs/officers.md)", o.ID)
+	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
 }
 
 // officerOf is THE binding rule: the declared officer agent a is an instance
