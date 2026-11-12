@@ -1637,7 +1637,9 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 // notice's Dismiss, an opencode window's relayed answers) is a card whose head
 // is the link and whose controls sit under it, Dismiss a small icon button in
 // the card's footer, never in the head. No "View in session" / "Open the session" words: the card is
-// the way in.
+// the way in. The one exception is a held question's muted "Answer in session"
+// (attentionHeldCueHTML, operator decision 2026-11-12): it says WHERE the
+// answer goes, not how to get there.
 func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string {
 	esc := html.EscapeString
 	open := `<li id="` + esc(it.Key) + `" class="`
@@ -1673,9 +1675,13 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 `
 	}
 	switch {
-	case it.Kind == attentionKindSession && it.openCode == nil,
-		it.Kind == attentionKindQuestion && it.openCode == nil:
+	case it.Kind == attentionKindSession && it.openCode == nil:
 		return row(attentionWaitLineHTML(it))
+	case it.Kind == attentionKindQuestion && it.openCode == nil:
+		// A HELD QUESTION is answered in its session, never here: the row
+		// says so in one muted line under the question (operator decision
+		// 2026-11-12), inside the row link, so the card stays one link.
+		return row(attentionWaitLineHTML(it) + attentionHeldCueHTML)
 	case it.Kind == attentionKindTask:
 		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
 	}
@@ -1887,6 +1893,9 @@ func attentionWaitLineHTML(it attentionItem) string {
 	}
 	return `<span class="` + cls + `" data-attention-text>` + html.EscapeString(line) + `</span>`
 }
+
+// attentionHeldCueHTML is a held question's row cue: where it is answered.
+const attentionHeldCueHTML = `<span class="` + ui.AsksMutedTextClass + `" data-attention-held-cue>Answer in session</span>`
 
 // attentionEmptyHTML is the list's line when nothing is in it.
 const attentionEmptyHTML = `<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
