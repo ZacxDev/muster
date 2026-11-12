@@ -32,6 +32,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [usage.md](usage.md) — what the chief costs: every chief turn's tokens, who handled each plugin message (a routing rule, muster's own paths, or the chief), and the Usage page
 - [clankmail.md](clankmail.md) — pairing your chief with another operator's over ClankMail: keys, handle, peers, the first message, troubleshooting
 - [officers.md](officers.md) — officers: standing, queue-driven Claude Code agents whose queue and charter live in HQ; muster wakes them, scales them to zero, and holds their HQ token
+- [officers-builtin.md](officers-builtin.md) — officers on muster's own built-in backend: define a type, charter and officer with `muster officer`, enable it, asks and escalations through Attention
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**
@@ -55,7 +56,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
 - [design/switcher-dock.md](design/switcher-dock.md) — proposed: a swipe-up dock that lists the session switcher's views vertically on a phone
 - [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
-- [design/officers-first-class.md](design/officers-first-class.md) — slices 0–4 being built: the officer-backend contract (`officers.Backend`, capabilities), HQ as one implementation, and a built-in backend in muster's own Postgres
+- [design/officers-first-class.md](design/officers-first-class.md) — slices 0–7 built: the officer-backend contract (`officers.Backend`, capabilities), HQ as one implementation, and a built-in backend in muster's own Postgres
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"

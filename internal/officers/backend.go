@@ -280,7 +280,7 @@ var hqCapabilities = NewCapabilities(AllCapabilities()...)
 // it is OFFERED and served (the backend's Capabilities, read through Backends)
 // are one value: builtin.Backend.Capabilities returns exactly this, and a test
 // there pins it.
-var BuiltinCapabilities = NewCapabilities(CapTiers, CapInvestigation, CapCost)
+var BuiltinCapabilities = NewCapabilities(CapTiers, CapInvestigation, CapCost, CapAsks)
 
 // DeclaredCapabilities is what officer o's DECLARED backend serves:
 // BuiltinCapabilities for a builtin officer, HQ's (every capability) for any

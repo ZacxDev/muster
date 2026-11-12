@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/focus"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -377,6 +378,9 @@ type Server struct {
 	// officerRT is the officer runtime (officers.go); nil when no officer is
 	// declared (EnableOfficers).
 	officerRT *officerRuntime
+	// officerStore is the built-in officer backend's store (EnableOfficerStore);
+	// nil while it is off.
+	officerStore *builtin.Store
 	// chiefLLM is the admin's chief's place on the LLM proxy (chief_llm.go).
 	// nil unless EnableChiefLLM was called; while nil, every chief is refused
 	// by POST /llm/v1/messages as any non-routine agent is. Once set, only the
@@ -749,6 +753,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerApprovalRoutes(mux)
 	s.registerAgentWorkRoutes(mux)
 	s.registerOfficerRoutes(mux)
+	// The built-in officer store's admin API (officer_admin.go): 404 while it is off.
+	s.registerOfficerAdminRoutes(mux)
 	s.registerMirrorRoutes(mux)
 	// Suggested replies (suggest.go): the composer's set, its counts and the
 	// per-user toggle.

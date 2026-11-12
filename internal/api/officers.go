@@ -378,7 +378,8 @@ func (s *Server) officerBackendBuilder(cfg OfficersConfig) (func(officers.Office
 	return func(o officers.Officer) officers.Backend {
 		if o.IsBuiltin() {
 			owner := o.Owner
-			return builtin.NewBackend(store, o, now, func(ctx context.Context) context.Context { return s.officerPrincipal(ctx, owner) })
+			return builtin.NewBackend(store, o, now, func(ctx context.Context) context.Context { return s.officerPrincipal(ctx, owner) }).
+				WithAsker(officerAsker{s: s})
 		}
 		return officers.NewClient(o, hc)
 	}, nil

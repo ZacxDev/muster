@@ -75,7 +75,7 @@ var builtinKickoffWording = kickoffWording{
 	source:      "muster",
 	escalated:   "that is how this officer reaches its owner",
 	newWork:     "there is new work",
-	ask: "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, question, options?} (the `to` argument is ignored: the question goes to the officer's owner, on muster's Attention view and their phone; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer, and wakes an instance to take it up again.\n",
+	ask: "   If what you need is your officer's owner's decision on the item, you may instead ask them with %[1]s{item_id, to: \"owner\", question, options?, deadline_seconds?} (the question always goes to the officer's owner, on muster's Attention view and their phone, whatever `to` says; images are not served). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; muster re-opens it with the answer (its asks[]), and wakes an instance to take it up again; an ask left unanswered past its deadline escalates the item to the owner.\n",
 }
 
 func kickoffWordingFor(o Officer) kickoffWording {
