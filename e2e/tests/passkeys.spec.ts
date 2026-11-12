@@ -209,18 +209,37 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   // verifying, so the browser makes a correctly SIGNED assertion with UV=0 —
   // which GoTrue (UV "preferred") would accept. muster refuses it.
   await mauth.cdp.send('WebAuthn.setUserVerified', { authenticatorId: mauth.id, isUserVerified: false });
+  let inFlight = 0, handled = 0;
   await mp.route('**/auth/passkey/options', async (route) => {
-    const resp = await route.fetch();
-    const body = await resp.json();
-    body.options.userVerification = 'discouraged';
-    await route.fulfill({ response: resp, json: body });
+    inFlight++;
+    try {
+      const resp = await route.fetch();
+      const body = await resp.json();
+      body.options.userVerification = 'discouraged';
+      await route.fulfill({ response: resp, json: body });
+    } finally {
+      inFlight--; handled++;
+    }
   });
+  const beforeReload = rec.events.length;
   await mp.reload(); // the page prefetches its options: fetch them through the route
+  await expect.poll(() => rec.events.slice(beforeReload).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the reloaded page armed autofill').toBe(true);
+  await expect.poll(() => inFlight, 'the reloaded page\'s options handlers finished').toBe(0);
+  const beforeClick = rec.events.length, handledAtClick = handled;
   await mp.locator('#passkey-signin').click();
   await expect(mp.locator('#passkey-signin-status')).toContainText(noUV);
   await expect(mp).toHaveURL(/\/login/);
   expect((await session(mctx)).at, 'no session for a no-UV assertion').toBeUndefined();
-  // The page re-prefetches after a failure: let that in-flight handler finish.
+  // After a failure the page re-arms: a new prefetch AND a new autofill
+  // request, both through the route. A reload while a handler is mid-fetch
+  // cancels its request, and the handler's fulfill then throws "Route is
+  // already handled". So wait for the new autofill request to be pending (its
+  // options were answered) and for every handler to finish, then unroute.
+  await expect.poll(() => rec.events.slice(beforeClick).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the page re-armed autofill').toBe(true);
+  await expect.poll(() => handled - handledAtClick, 'the new prefetch and autofill options went through the route').toBeGreaterThanOrEqual(2);
+  await expect.poll(() => inFlight, 'every options handler finished').toBe(0);
   await mp.unrouteAll({ behavior: 'wait' });
 
   // With muster's own options (UV required) a non-verifying authenticator
