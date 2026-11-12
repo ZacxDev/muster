@@ -1632,11 +1632,11 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 // and the tmux target muted under it — and IS the link to the session when
 // there is one to open, with a chevron (a real <a>, never a div with a click
 // handler). An item with nothing to answer here (a waiting window, a held
-// question answered in the session, a reply draft, a task) is ONE link as a
+// question answered in the session, a task) is ONE link as a
 // whole (ui.AsksRowClass). An item with controls (an ask's answer form, a
 // notice's Dismiss, an opencode window's relayed answers) is a card whose head
-// is the link and whose controls sit under it, Dismiss a small icon button at
-// the head's end. No "View in session" / "Open the session" words: the card is
+// is the link and whose controls sit under it, Dismiss a small icon button in
+// the card's footer, never in the head. No "View in session" / "Open the session" words: the card is
 // the way in.
 func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string {
 	esc := html.EscapeString
@@ -1676,7 +1676,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	case it.Kind == attentionKindSession && it.openCode == nil,
 		it.Kind == attentionKindQuestion && it.openCode == nil:
 		return row(attentionWaitLineHTML(it))
-	case it.Kind == attentionKindPlugin, it.Kind == attentionKindTask:
+	case it.Kind == attentionKindTask:
 		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
 	}
 
@@ -1693,16 +1693,19 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	id := strconv.FormatInt(it.AskID, 10)
 	dismissForm := "ask-" + id + "-dismiss"
 	// 🔴 DISMISS IS ITS OWN FORM, posting to /cancel — the icon button only
-	// SITS in the head row, joined to that form by the form= attribute. A
+	// SITS in the card's FOOTER (the answer form's last row, or a notice's own
+	// row), joined to that form by the form= attribute. 🔴 NEVER IN THE HEAD:
+	// beside the head link's chevron a thumb aimed at "open the session" could
+	// cancel the ask, with no confirmation (Round 0 of #620). A
 	// formaction on the answer form would also send the typed answer and run
 	// through whatever binds the answer form's submit; this way the two posts
 	// are exactly what they were.
 	dismiss := ""
 	switch it.Kind {
 	case attentionKindAsk:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + ` -mr-1 -mt-1" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
 	case attentionKindNotice:
-		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + ` -mr-1 -mt-1" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
 	}
 	href := ""
 	switch it.Kind {
@@ -1711,7 +1714,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	default:
 		href = it.Link
 	}
-	b.WriteString(`<div class="flex min-w-0 items-start gap-1">` + attentionHeadHTML(it, now, href) + dismiss + "</div>\n")
+	b.WriteString(attentionHeadHTML(it, now, href) + "\n")
 	b.WriteString(focus)
 	b.WriteString(`<p class="` + ui.AsksTextClass + `" data-attention-text>` + text + `</p>
 `)
@@ -1724,16 +1727,13 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	case attentionKindNotice:
 		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
 		// dismissed, never answered (attention.ErrNotice). Its tmux target is
-		// in the head (the place it names, data-attention-source); the bare
-		// target a terminal jump takes is kept on the card.
-		if it.Target != "" {
-			b.WriteString(`<code class="sr-only" data-attention-target>` + esc(it.Target) + `</code>
-`)
-		}
-		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
+		// in the head (the place it names, data-attention-source); Dismiss is
+		// its footer, at the card's end.
+		b.WriteString(`<div class="flex justify-end">` + dismiss + `</div>
+<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 	case attentionKindAsk:
-		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, returnTo == ""))
+		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss, returnTo == ""))
 		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
 `)
 	default:
@@ -1761,7 +1761,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 // script, and the page's script focuses the box and keeps it open across a
 // live refresh). An ask with no options has nothing to hide the box behind:
 // it is drawn open. A session page's block keeps its box open.
-func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs string, behind bool) string {
+func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string, behind bool) string {
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + formAttrs + `>
@@ -1786,14 +1786,18 @@ func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs string, behin
 	box := `<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
 		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<div class="` + ui.AskFormActionsClass + `"><button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button></div>
-`
+` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
+	answer := `<button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button>`
+	// Dismiss ends the form's LAST row: beside "Type an answer" while the box
+	// is behind the options, else beside Answer (attentionItemHTML's footer
+	// rule). It belongs, by form=, to the /cancel form outside this one.
 	if collapse {
-		b.WriteString(`<details class="` + ui.AsksTypeClass + `" data-ask-type><summary class="` + ui.AsksTypeSummaryClass + `" data-ask-type-toggle>` + ui.AsksTypeIcon + `Type an answer</summary>
-<div class="` + ui.AsksTypeBodyClass + `">` + box + `</div></details>
+		b.WriteString(`<div class="flex min-w-0 items-start gap-2"><details class="` + ui.AsksTypeClass + ` flex-1" data-ask-type><summary class="` + ui.AsksTypeSummaryClass + `" data-ask-type-toggle>` + ui.AsksTypeIcon + `Type an answer</summary>
+<div class="` + ui.AsksTypeBodyClass + `">` + box + `<div class="` + ui.AskFormActionsClass + `">` + answer + `</div></div></details>` + dismiss + `</div>
 `)
 	} else {
-		b.WriteString(box)
+		b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
+`)
 	}
 	b.WriteString("</form>\n")
 	return b.String()

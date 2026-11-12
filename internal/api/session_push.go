@@ -758,7 +758,7 @@ func (s *Server) askListHTML(ctx context.Context, items []attentionItem, now tim
 
 // pageAttentionItems is items as the Asks list draws them: with session state
 // on, a plain waiting window session state covers (episodeCover — the hook's
-// own rule) is a row of the "Stalled / waiting" section (episodeSectionHTML),
+// own rule) is a row of the "Stalled / waiting" section (episodeRowsHTML),
 // not a list item too. 🔴 A CARDED ITEM (cardedItem: an answerable ask, or a
 // question muster cannot relay, whose card says why) STAYS A LIST ITEM, covered
 // or not: its card is where it is answered, or read, at once — only its PUSH
@@ -809,13 +809,6 @@ func (s *Server) episodeCarded(ctx context.Context) map[string]bool {
 		}
 	}
 	return out
-}
-
-// episodeSectionHTML is the "Stalled / waiting" rows of ctx's owner's Asks
-// list (episodeRowsHTML), "" with none.
-func (s *Server) episodeSectionHTML(ctx context.Context, now time.Time) string {
-	rows, _ := s.episodeRowsHTML(ctx, now)
-	return rows
 }
 
 // episodeRowsHTML is the "Stalled / waiting" rows of ctx's owner's Asks list,

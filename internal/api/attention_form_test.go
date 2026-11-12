@@ -33,14 +33,14 @@ func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
 		if answer == "" {
 			t.Fatalf("return %q: no answer form:\n%s", returnTo, out)
 		}
-		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" class="[^"]*">Answer</button></div>`)
+		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" class="[^"]*">Answer</button>(<button [^>]*form="ask-9-dismiss"[^>]*>.*?</button>)?</div>`)
 		if !row.MatchString(answer) {
-			t.Errorf("return %q: Answer is not in its own row inside the answer form:\n%s", returnTo, answer)
+			t.Errorf("return %q: Answer is not in its row inside the answer form:\n%s", returnTo, answer)
 		}
-		// Dismiss is a small icon button in the card's head, OUTSIDE the
-		// answer form, joined by form= to the separate /cancel form.
-		if strings.Contains(answer, `form="ask-9-dismiss"`) {
-			t.Errorf("return %q: Dismiss sits inside the answer form", returnTo)
+		// Dismiss is a small icon button ending the answer form's last row
+		// (the card's footer), joined by form= to the separate /cancel form.
+		if !strings.Contains(answer, `form="ask-9-dismiss"`) {
+			t.Errorf("return %q: Dismiss is not in the answer form's footer:\n%s", returnTo, answer)
 		}
 		if !regexp.MustCompile(`<button type="submit" form="ask-9-dismiss" aria-label="Dismiss without answering" title="Dismiss without answering"[^>]*>` +
 			regexp.QuoteMeta(ui.AsksDismissIcon) + `</button>`).MatchString(out) {

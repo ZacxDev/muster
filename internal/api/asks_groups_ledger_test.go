@@ -2,10 +2,13 @@ package api
 
 import "testing"
 
-// TestEveryAttentionKindHasAnAskTabGroup: a kind no group holds would vanish
-// from the Ask tab silently. The ledger is every kind the queue can hold.
-func TestEveryAttentionKindHasAnAskTabGroup(t *testing.T) {
-	held := map[string]string{}
+// TestEveryAttentionKindHasAHome: a kind no group holds would vanish from the
+// Ask tab silently. The ledger is every kind the queue can hold: each is in
+// exactly one Ask-tab group, except the reply draft, whose home is the Reply
+// drafts tab (askTabItems strips it from the Ask tab). A NEW kind with neither
+// fails here.
+func TestEveryAttentionKindHasAHome(t *testing.T) {
+	held := map[string]string{attentionKindPlugin: "the Reply drafts tab"}
 	for _, g := range askGroups {
 		for _, k := range g.kinds {
 			if prev, dup := held[k]; dup {

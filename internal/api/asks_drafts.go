@@ -112,8 +112,9 @@ func askTabItems(items []attentionItem) []attentionItem {
 
 // askGroups is the Ask tab's groups, in the order the page draws them: each
 // its key (data-asks-group, its label's id), its label, and the item kinds it
-// holds. A kind in none of them is drawn in no group — askGroupsHTML's test
-// pins that every kind the queue can hold is in one.
+// holds. A reply draft (attentionKindPlugin) is in none: it is the Reply
+// drafts tab's (askTabItems strips it first). TestEveryAttentionKindHasAHome
+// pins that every other kind the queue can hold is in one.
 var askGroups = []struct {
 	key, label string
 	kinds      []string
@@ -122,13 +123,12 @@ var askGroups = []struct {
 	{"notices", "Notices", []string{attentionKindNotice}},
 	{"waiting", "Waiting", []string{attentionKindSession}},
 	{"tasks", "Tasks to route", []string{attentionKindTask}},
-	{"drafts", "Reply drafts", []string{attentionKindPlugin}},
 }
 
 // askGroupsHTML is the Ask tab's list (its <ul>'s <li>s): one group per kind
 // that has something in it — its label with its count (ui.AsksGroupLabel),
 // then its cards, newest first within it — the session-state rows
-// (episodes, n of them: episodeSectionHTML's list) in the Waiting group after
+// (episodes, n of them: episodeRowsHTML's list) in the Waiting group after
 // its windows, and then the Answered group (answered, answeredAsksHTML's).
 // The items are the queue without its reply drafts (askTabItems: those are
 // the Reply drafts tab's). Nothing waiting and no rows: the empty line.

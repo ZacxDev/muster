@@ -63,7 +63,7 @@ func TestANoticeNamesWhereItsSessionIsNow(t *testing.T) {
 	items := []attentionItem{it}
 	s.withAskBoxes(ctx, items, true)
 	card := attentionItemsHTML(items, time.Now())
-	for _, want := range []string{`data-kind="notice"`, "tmux main:2 @ ws", `data-attention-target>main:2<`, "data-attention-session", "data-attention-dismiss"} {
+	for _, want := range []string{`data-kind="notice"`, "tmux main:2 @ ws", `data-attention-source>tmux main:2 @ ws<`, "data-attention-session", "data-attention-dismiss"} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the card lacks %q:\n%s", want, card)
 		}

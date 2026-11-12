@@ -153,7 +153,7 @@ func TestDismissIsASmallIconButtonWithAnAccessibleName(t *testing.T) {
 	for key, name := range map[string]string{"ask-1": "Dismiss without answering", "ask-5": "Dismiss"} {
 		li := itemLi(t, out, key)
 		id := strings.TrimPrefix(key, "ask-")
-		want := `<button type="submit" form="ask-` + id + `-dismiss" aria-label="` + name + `" title="` + name + `" class="` + ui.AsksIconButtonClass + ` -mr-1 -mt-1" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+		want := `<button type="submit" form="ask-` + id + `-dismiss" aria-label="` + name + `" title="` + name + `" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
 		if !strings.Contains(li, want) {
 			t.Errorf("%s: no icon Dismiss named %q:\n%s", key, name, li)
 		}
@@ -172,7 +172,7 @@ func TestTheAnswerBoxIsBehindTheOptionsOnTheAsksPage(t *testing.T) {
 	items := designItems()
 	items[0].dictate = ui.TranscribePath
 	li := itemLi(t, attentionItemsHTML(items, designNow), "ask-1")
-	det := regexp.MustCompile(`(?s)<details class="` + regexp.QuoteMeta(ui.AsksTypeClass) + `" data-ask-type>(.*?)</details>`).FindStringSubmatch(li)
+	det := regexp.MustCompile(`(?s)<details class="` + regexp.QuoteMeta(ui.AsksTypeClass) + ` flex-1" data-ask-type>(.*?)</details>`).FindStringSubmatch(li)
 	if det == nil {
 		t.Fatalf("no shut Type an answer on an ask with options:\n%s", li)
 	}
@@ -234,5 +234,54 @@ func TestADraftCardKeepsItsSafetyWithOnePrimaryAction(t *testing.T) {
 	gone.Draft.Status = plugins.DraftSuperseded
 	if got := draftCardHTML(gone); strings.Contains(got, "data-draft-approve") || strings.Contains(got, "data-draft-reject") {
 		t.Errorf("a replaced draft offers a decision:\n%s", got)
+	}
+}
+
+// headOf is the head of card li: from its start to the end of its head link
+// (or, with no link, its head block) — attentionHeadHTML's element.
+func headOf(t *testing.T, li string) string {
+	t.Helper()
+	for _, end := range []string{"</a>", "</div>"} {
+		if strings.Contains(li, `data-attention-session>`) && end == "</div>" {
+			continue
+		}
+		if i := strings.Index(li, end); i > 0 {
+			return li[:i+len(end)]
+		}
+	}
+	t.Fatalf("no head in:\n%s", li)
+	return ""
+}
+
+// TestDismissIsInTheCardsFooterNeverItsHead (Round 0 of #620): the ✕ never
+// sits in the head row beside the head link's chevron — a thumb aimed at
+// "open the session" must not cancel the ask. It ends the card instead, after
+// the question: the answer form's last row (beside "Type an answer", or beside
+// Answer), a notice's own footer row; on the Asks page and a session page's
+// block alike. RED at 674b99c9: the ✕ was the head row's last element.
+func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
+	items := append(designItems(), attentionItem{Key: "ask-5", Kind: attentionKindNotice, AskID: 5, Source: "tmux fern:3 @ atlas", Text: "Waiting on you?",
+		Since: designNow, sessionLink: "/mirror/view?host=atlas&session=fern&window=%403"})
+	for _, returnTo := range []string{"", "/agents/deploy-bot"} {
+		out := attentionItemsHTMLTo(items, designNow, returnTo)
+		for _, key := range []string{"ask-1", "ask-2", "ask-5"} {
+			li := itemLi(t, out, key)
+			head := headOf(t, li)
+			if strings.Contains(head, "data-attention-dismiss") {
+				t.Errorf("return %q, %s: Dismiss is in the head:\n%s", returnTo, key, head)
+			}
+			// The head is the card's first child, nothing beside it in a row.
+			if !strings.HasPrefix(li[strings.Index(li, ">\n")+2:], `<a href=`) && !strings.HasPrefix(li[strings.Index(li, ">\n")+2:], `<div class="`+ui.AsksHeadClass) {
+				t.Errorf("return %q, %s: the head is wrapped in a row with something else:\n%s", returnTo, key, li)
+			}
+			d, txt := strings.Index(li, "data-attention-dismiss"), strings.Index(li, "data-attention-text")
+			if d < 0 || txt < 0 || d < txt {
+				t.Errorf("return %q, %s: Dismiss does not come after the question:\n%s", returnTo, key, li)
+			}
+		}
+		// With options on the Asks page, the ✕ ends the "Type an answer" row.
+		if returnTo == "" && !regexp.MustCompile(`(?s)</details><button type="submit" form="ask-1-dismiss"`).MatchString(itemLi(t, out, "ask-1")) {
+			t.Errorf("the ✕ does not end the Type an answer row:\n%s", itemLi(t, out, "ask-1"))
+		}
 	}
 }

@@ -2,6 +2,7 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, repoRoot, versionTerm } from '../lib/env';
@@ -141,6 +142,19 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<{ t
   return { text: j.result!.content[0].text, isError: !!j.result!.isError };
 }
 
+// clearOf: the two elements' boxes are at least gap px apart (the space
+// between their rectangles, on whichever axis separates them), each a 44px
+// target where it is a button.
+async function clearOf(a: ReturnType<Page['locator']>, b: ReturnType<Page['locator']>, gap: number) {
+  const ra = (await a.boundingBox())!;
+  const rb = (await b.boundingBox())!;
+  const dx = Math.max(rb.x - (ra.x + ra.width), ra.x - (rb.x + rb.width), 0);
+  const dy = Math.max(rb.y - (ra.y + ra.height), ra.y - (rb.y + rb.height), 0);
+  expect(Math.max(dx, dy), `the chevron and the Dismiss button are ${Math.max(dx, dy)}px apart`).toBeGreaterThanOrEqual(gap);
+  expect(rb.height, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+  expect(rb.width, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+}
+
 async function ask(question: string, options: string[]): Promise<number> {
   const { text, isError } = await mcpCall('attention_ask', { question, options });
   expect(isError, text).toBe(false);
@@ -216,8 +230,11 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await expect(box).toBeVisible();
   await expect(box).toBeFocused();
   await box.blur();
-  // Dismiss is a small icon button, named for a screen reader.
-  await expect(askItem.getByRole('button', { name: 'Dismiss without answering' })).toHaveAttribute('title', 'Dismiss without answering');
+  // Dismiss is a small icon button, named for a screen reader, in the card's
+  // footer — never beside the head link's chevron (Round 0 of #620).
+  const dismissBtn = askItem.getByRole('button', { name: 'Dismiss without answering' });
+  await expect(dismissBtn).toHaveAttribute('title', 'Dismiss without answering');
+  await clearOf(askItem.locator('[data-attention-session] svg'), dismissBtn, 16);
 
   // The operator taps an option chip: that is the answer.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
