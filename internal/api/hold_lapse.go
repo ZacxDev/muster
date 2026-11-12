@@ -37,7 +37,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // cardHoldAge is plugins.CardHoldTTL in words, for the chief's sentences
-// (TestTheCardHoldAgeIsTheCardHoldTTL pins the two together).
+// (TestACardHoldLivesADayAndItsCardOutlivesIt pins the two together).
 const cardHoldAge = "24 hours"
 
 // holdLapsedAnswer is what the owner reads on a tap of a card whose hold lapsed.

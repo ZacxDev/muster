@@ -100,7 +100,15 @@ func TestAnExpiredHoldWithdrawsItsCardAndTellsTheChief(t *testing.T) {
 	fresh := f.approvalCardFor(t, "lapse-2")
 	f.ageHold(t, "lapse-1", "24 hours 1 minute")
 	f.ageHold(t, "lapse-2", "16 minutes")
-	f.sweepUntil(t, "withdraw the lapsed card", func() bool { return f.askStatus(t, lapsed.ID) != attention.Open })
+	// 🔴 WAIT FOR THE NOTE, NOT THE WITHDRAWAL: the sweep withdraws the card
+	// FIRST and writes the chief's note after it (withdrawLapsedCard), and a
+	// pass also works through every earlier test's lapsed holds in this
+	// package's database — so the card reads withdrawn before its note exists
+	// (CI: notes [] the moment the status moved; reproduced locally by delaying
+	// the note 300 ms after the withdrawal).
+	f.sweepUntil(t, "withdraw the lapsed card and note the chief", func() bool {
+		return f.askStatus(t, lapsed.ID) != attention.Open && len(f.lapseNotes(t, lapsed.ID)) > 0
+	})
 	if st := f.askStatus(t, lapsed.ID); st != attention.Cancelled {
 		t.Fatalf("the lapsed card is %s; want cancelled (withdrawn)", st)
 	}
