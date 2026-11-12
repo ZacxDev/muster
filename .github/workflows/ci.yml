@@ -833,6 +833,69 @@ jobs:
           mapfile -t picked < ../e2e-legs-picked.txt
           node verdict.mjs --all "${picked[@]}"
 
+  # Local: make docshots-check (what `make e2e` needs, plus Docker).
+  #
+  # 🔴 THE DOCS SCREENSHOT SPEC (e2e/docshots), RUN AS A CHECK. It is the
+  # generator behind docs/img and the README's GIFs, and nothing ran it between
+  # UI changes: #479 collapsed the touch composer, the suite moved to
+  # revealBox() and this spec did not, so `make screenshots` failed at its
+  # step-up (passkey) shot and the README kept a GIF of a page that no longer
+  # existed. Every shot is taken here, into a temp dir — CI never rewrites
+  # docs/img — and docshots-verdict.mjs judges the JSON report: no failure, no
+  # skip, every test from docshots/docs.spec.ts.
+  docshots:
+    name: docshots (screenshot spec, chromium)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: muster
+          POSTGRES_PASSWORD: muster
+          POSTGRES_DB: muster_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U muster -d muster_e2e"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      MUSTER_E2E_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_e2e?sslmode=disable
+      MUSTER_E2E_REQUIRE_FULL: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: install the harness
+        working-directory: e2e
+        run: npm ci --no-audit --no-fund
+
+      - name: install chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: make docshots-check
+        run: make docshots-check
+
+      - name: keep the report (and traces of failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docshots-results-attempt-${{ github.run_attempt }}
+          path: e2e/test-results/
+          retention-days: 7
+
   # ---------------------------------------------------------------------------
   # RELEASE DRY RUN — the tag-time release pipeline, exercised on every run.
   #

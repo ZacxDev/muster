@@ -12,7 +12,8 @@ import { baseURL } from './lib/env';
 // rewrites a committed image.
 const capture = process.env.MUSTER_E2E_CAPTURE === '1';
 // The `docshots` project regenerates docs/img/*.png (`make screenshots`). Like
-// capture, it runs only when asked (MUSTER_E2E_DOCSHOTS=1) and never in CI.
+// capture, it runs only when asked (MUSTER_E2E_DOCSHOTS=1); CI runs it as a
+// check only, its images sent to a temp dir (`make docshots-check`).
 const docshots = process.env.MUSTER_E2E_DOCSHOTS === '1';
 
 // 🔴 CI RUNS THE SUITE IN LEGS: MUSTER_E2E_LEG=N runs only leg N's spec files
@@ -40,6 +41,13 @@ function legMatch(): RegExp | RegExp[] {
   return files.map((f: string) => new RegExp(`(^|/)${esc(f)}$`));
 }
 
+// 🔴 testMatch IS TESTED AGAINST THE ABSOLUTE PATH, so it is anchored at THIS
+// directory. It was an unanchored /docshots\/.*\.spec\.ts/, which in a checkout
+// whose own directory name ends in "docshots" (e.g. a worktree called
+// muster-wt-docshots) matched every spec under it: `make screenshots` listed
+// 977 tests in 111 files instead of the docshots file's 13.
+const under = (d: string) => new RegExp(`^${esc(path.join(__dirname, d))}/.*\\.spec\\.ts$`);
+
 export default defineConfig({
   testDir: '.',
   globalSetup: './global-setup.ts',
@@ -53,9 +61,9 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   projects: docshots
-    ? [{ name: 'docshots', testMatch: /docshots\/.*\.spec\.ts/, use: { ...devices['Desktop Chrome'] } }]
+    ? [{ name: 'docshots', testMatch: under('docshots'), use: { ...devices['Desktop Chrome'] } }]
     : capture
-    ? [{ name: 'capture', testMatch: /capture\/.*\.spec\.ts/, use: { ...devices['Desktop Chrome'] } }]
+    ? [{ name: 'capture', testMatch: under('capture'), use: { ...devices['Desktop Chrome'] } }]
     : [
         {
           name: 'chromium',

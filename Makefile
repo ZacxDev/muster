@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: release-dry-run release-logic-test compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: release-dry-run release-logic-test compose-check compose-up-test features-config-test install-guide-test build vet run image test test-db test-db-down test-liveclaude leakscan css css-check check help verb-ledger icons e2e screenshots docshots-check
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -106,6 +106,7 @@ help:
 	@echo "  make check        vet + test + leakscan + css-check"
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
 	@echo "  make screenshots  regenerate docs/img/ (PNGs + phone-flow.gif) from fixture data (same database, plus Docker, ffmpeg)"
+	@echo "  make docshots-check  run the screenshot spec as a check, images to a temp dir (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
 	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
@@ -330,12 +331,15 @@ e2e:
 # and 2× (one desktop shot at 1280×800, also 2×), plus the README's two animations,
 # phone-flow.gif and ask-flow.gif, assembled here from the frames the spec writes
 # to e2e/.state/phone-flow/ and e2e/.state/ask-flow/. A
-# GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make
+# GENERATOR — CI never rewrites docs/img; what CI runs is `docshots-check`
+# below, the same spec with its images sent to a temp dir. Needs what `make
 # e2e` needs, plus Docker for the GoTrue container the passkey shot signs in
 # against, and ffmpeg for the animation. pngquant is used when present. On
 # NixOS:
 #   nix-shell -p ffmpeg pngquant --run 'make screenshots'
 # Every PNG must end up at or under 200 KB and each GIF under 2 MB either way.
+# Set MUSTER_E2E_PORT to move every port the harness binds (env.ts) off the
+# defaults when another checkout's suite may be running on this machine.
 # Each animation is <name>: frames in e2e/.state/<name>/frames.txt, the GIF at
 # docs/img/<name>.gif.
 FLOWS := phone-flow ask-flow
@@ -352,6 +356,18 @@ screenshots:
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 	@for n in $(FLOWS); do f=docs/img/$$n.gif; s=$$(wc -c < $$f); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 2097152 || { echo "screenshots: $$f is over 2 MB"; exit 1; }; done
+
+# The screenshot spec as a CHECK: every shot taken, written to a temp dir, and
+# the JSON report judged by docshots-verdict.mjs (no failure, no skip, every
+# test from docshots/docs.spec.ts). 🔴 IT EXISTS BECAUSE THE GENERATOR ROTTED
+# UNSEEN: #479 collapsed the touch composer, the suite moved to revealBox() and
+# this spec did not, so `make screenshots` failed at its step-up (passkey) shot
+# — "locator.fill: … waiting for locator('#mv-input') … element is not visible"
+# — and the README's ask-flow GIF kept showing the pre-#620 Asks page. CI's
+# `docshots` job runs this target.
+docshots-check:
+	@out=$$(mktemp -d) && cd e2e && MUSTER_E2E_DOCSHOTS=1 MUSTER_E2E_DOCSHOTS_OUT=$$out npx playwright test; rc=$$?; \
+	rm -rf "$$out"; node docshots-verdict.mjs test-results/results.json && exit $$rc
 
 # INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
 # temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
