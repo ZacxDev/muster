@@ -2,6 +2,7 @@ package officers_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,8 +24,22 @@ const (
 
 func prLoopContract(t *testing.T, ctx context.Context, st officers.PRLoopStore, reopen func() officers.PRLoopStore) {
 	t.Helper()
-	if s, err := st.PRLoopState(ctx, prLoopOfficer, prLoopRepo, 31); err != nil || s != "" {
-		t.Fatalf("never announced: %q %v", s, err)
+	state := func(st officers.PRLoopStore, pr int) string {
+		t.Helper()
+		s, err := st.PRLoopState(ctx, prLoopOfficer, prLoopRepo, pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	settle := func(pr int, to string) {
+		t.Helper()
+		if err := st.PRLoopSettle(ctx, prLoopOfficer, prLoopRepo, pr, to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := state(st, 31); s != "" {
+		t.Fatalf("never announced: %q", s)
 	}
 	if err := st.PRLoopAnnounced(ctx, prLoopOfficer, "Example-Org/Example-Infra", 31, prLoopHead); err != nil {
 		t.Fatal(err)
@@ -32,43 +47,108 @@ func prLoopContract(t *testing.T, ctx context.Context, st officers.PRLoopStore, 
 	if err := st.PRLoopAnnounced(ctx, prLoopOfficer, prLoopRepo, 32, prLoopHead); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := st.PRLoopState(ctx, prLoopOfficer, prLoopRepo, 31); s != officers.PRLoopPending {
-		t.Fatalf("announced: %q, want pending (repo compared without case)", s)
+	if s := state(st, 31); s != "sending" {
+		t.Fatalf("announced: %q, want sending — the announcing process's claim (repo compared without case)", s)
 	}
-	if err := st.PRLoopSettle(ctx, prLoopOfficer, prLoopRepo, 31, officers.PRLoopInLoop); err != nil {
-		t.Fatal(err)
-	}
+	settle(31, officers.PRLoopInLoop)
 	// A second announcement keeps the state: a pull request HQ acknowledged
-	// never goes back to pending.
+	// never goes back to being sent.
 	if err := st.PRLoopAnnounced(ctx, prLoopOfficer, prLoopRepo, 31, prLoopHead); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := st.PRLoopState(ctx, prLoopOfficer, prLoopRepo, 31); s != officers.PRLoopInLoop {
+	if s := state(st, 31); s != "in_loop" {
 		t.Fatalf("after a repeat announcement: %q, want in_loop kept", s)
 	}
-	pending, err := st.PRLoopsPending(ctx, prLoopOfficer)
-	if err != nil || len(pending) != 1 || pending[0].PR != 32 || pending[0].HeadSHA != prLoopHead {
-		t.Fatalf("pending %+v %v, want only #32 at its head", pending, err)
+	// A 'sending' row (#32: its answer never recorded) is never claimed.
+	notBefore := time.Now().Add(-time.Hour)
+	if c, e, err := st.PRLoopsClaim(ctx, prLoopOfficer, notBefore); err != nil || len(c)+len(e) != 0 {
+		t.Fatalf("claim with only sending and in_loop rows: claimed %+v expired %+v %v, want none", c, e, err)
 	}
-	if other, _ := st.PRLoopsPending(ctx, "draft:example-web"); len(other) != 0 {
-		t.Fatalf("another officer's pending: %+v", other)
+	// Pending (an outage recorded): claimed ONCE — a second claimer (another
+	// replica, a later sweep) gets nothing — and moved to sending.
+	settle(32, officers.PRLoopPending)
+	settle(34, officers.PRLoopPending)
+	c, e, err := st.PRLoopsClaim(ctx, prLoopOfficer, notBefore)
+	if err != nil || len(c) != 2 || len(e) != 0 {
+		t.Fatalf("claim: claimed %+v expired %+v %v, want #32 and #34", c, e, err)
 	}
-	if pending[0].AnnouncedAt.IsZero() {
-		t.Fatal("a pending announcement carries no announced-at time")
+	for _, r := range c {
+		if (r.PR != 32 && r.PR != 34) || r.State != "sending" || r.AnnouncedAt.IsZero() || (r.PR == 32 && r.HeadSHA != prLoopHead) {
+			t.Fatalf("claimed %+v: want #32 (at its head) or #34, sending, with an announced-at time", r)
+		}
 	}
-	if any, err := st.PRLoopsAnyInLoop(ctx, prLoopOfficer); err != nil || !any {
-		t.Fatalf("any in loop: %v %v, want true", any, err)
+	if s := state(st, 32); s != "sending" {
+		t.Fatalf("#32 after its claim: %q, want sending", s)
 	}
-	if any, err := st.PRLoopsAnyInLoop(ctx, "draft:example-web"); err != nil || any {
-		t.Fatalf("another officer's any in loop: %v %v, want false", any, err)
+	if c, e, _ := st.PRLoopsClaim(ctx, prLoopOfficer, notBefore); len(c)+len(e) != 0 {
+		t.Fatalf("a second claim: claimed %+v expired %+v, want nothing", c, e)
 	}
-	if err := st.PRLoopSettle(ctx, prLoopOfficer, prLoopRepo, 32, officers.PRLoopFailed); err != nil {
-		t.Fatalf("settle failed: %v", err)
+	// Past the age bound: failed, returned as expired, never claimed.
+	settle(34, officers.PRLoopPending)
+	c, e, err = st.PRLoopsClaim(ctx, prLoopOfficer, time.Now().Add(time.Hour))
+	if err != nil || len(c) != 0 || len(e) != 1 || e[0].PR != 34 || e[0].State != "failed" || state(st, 34) != "failed" {
+		t.Fatalf("an old pending row: claimed %+v expired %+v %v (state %q), want #34 expired and failed", c, e, err, state(st, 34))
+	}
+	// Another officer's rows are not its to claim.
+	settle(35, officers.PRLoopPending)
+	if c, e, _ := st.PRLoopsClaim(ctx, "draft:example-web", notBefore); len(c)+len(e) != 0 {
+		t.Fatalf("another officer's claim: claimed %+v expired %+v, want nothing", c, e)
+	}
+	// Two claimers at once share the pending rows, never one row twice.
+	for pr := 40; pr < 60; pr++ {
+		settle(pr, officers.PRLoopPending)
+	}
+	other := st
+	if reopen != nil {
+		other = reopen()
+	}
+	got := make([][]officers.PRLoop, 2)
+	var wg sync.WaitGroup
+	for i, s := range []officers.PRLoopStore{st, other} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, _, err := s.PRLoopsClaim(ctx, prLoopOfficer, notBefore)
+			if err != nil {
+				t.Error(err)
+			}
+			got[i] = c
+		}()
+	}
+	wg.Wait()
+	seen := map[int]int{}
+	for _, c := range got {
+		for _, r := range c {
+			seen[r.PR]++
+		}
+	}
+	if len(seen) != 21 { // #35 and #40..#59
+		t.Fatalf("two concurrent claims took %d distinct rows (%d + %d), want all 21", len(seen), len(got[0]), len(got[1]))
+	}
+	for pr, n := range seen {
+		if n != 1 {
+			t.Fatalf("#%d was claimed %d times by two concurrent claimers, want once", pr, n)
+		}
+	}
+	// In a loop: #31 only; another officer's: none.
+	in, err := st.PRLoopsInLoop(ctx, prLoopOfficer)
+	if err != nil || len(in) != 1 || in[0].PR != 31 || in[0].State != "in_loop" {
+		t.Fatalf("in loop %+v %v, want only #31", in, err)
+	}
+	if in, _ := st.PRLoopsInLoop(ctx, "draft:example-web"); len(in) != 0 {
+		t.Fatalf("another officer's in loop: %+v", in)
+	}
+	settle(31, officers.PRLoopClosed)
+	if in, _ := st.PRLoopsInLoop(ctx, prLoopOfficer); len(in) != 0 {
+		t.Fatalf("in loop after #31 closed: %+v, want none", in)
 	}
 	if reopen != nil {
 		again := reopen()
-		if s, _ := again.PRLoopState(ctx, prLoopOfficer, prLoopRepo, 31); s != officers.PRLoopInLoop {
-			t.Fatalf("a new store reads %q, want in_loop (the record survives a restart)", s)
+		if s := state(again, 31); s != "closed" {
+			t.Fatalf("a new store reads #31 %q, want closed (the record survives a restart)", s)
+		}
+		if s := state(again, 32); s != "sending" {
+			t.Fatalf("a new store reads #32 %q, want sending (a claim survives a restart)", s)
 		}
 	}
 }

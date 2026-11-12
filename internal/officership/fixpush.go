@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/officers"
@@ -22,13 +23,14 @@ import (
 // write with no such item is refused (403 naming the rule): between fix
 // rounds the pull request is the loop's, not the author's.
 //
-// Under a held fix item (in the loop or not): the pull request must be open
-// and the officer App's own, and the write is refused in shadow (ShadowRule,
-// the shepherd's rule) before anything reaches GitHub, its "would have …"
-// recorded for the item's completion. A pull request outside the loop, with
-// no fix item held, is the draft stage's as before. The draft stage's
-// content rules and re-checks apply to every write unchanged; a fix item
-// never opens a pull request (claimed).
+// Under a HELD fix item — whatever the local loop record says — the pull
+// request must be open and the officer App's own, and the write is refused in
+// shadow (ShadowRule, the shepherd's rule) before anything reaches GitHub,
+// its "would have …" recorded for the item's completion. HQ unreachable
+// refuses only a write to a pull request in its loop; outside it, the draft
+// stage's writes are as before. The draft stage's content rules and re-checks
+// apply to every write unchanged; a fix item never opens a pull request
+// (claimed).
 // ---------------------------------------------------------------------------
 
 // IsPRFix reports whether an HQ item kind is a pull-request fix item
@@ -39,17 +41,19 @@ func IsPRFix(kind string) bool { return strings.HasSuffix(kind, officers.PRFixKi
 // (officers.PRLoopStore, bound to the officer): written by prOpened from HQ's
 // answers, read by loopWrite and the sweep.
 type PRLoops interface {
-	// Announced records that muster is telling HQ repo#n was opened at head:
-	// pending until Settle. A pull request already recorded keeps its state.
+	// Announced records that this process is telling HQ repo#n was opened at
+	// head (state sending: claimed) until Settle. A pull request already
+	// recorded keeps its state.
 	Announced(ctx context.Context, repo string, n int, head string) error
 	// Settle records the announcement's outcome (officers.PRLoopInLoop, …).
 	Settle(ctx context.Context, repo string, n int, state string) error
-	// Pending lists the announcements that never got HQ's 200.
-	Pending(ctx context.Context) ([]officers.PRLoop, error)
+	// Claim fails the pending announcements first made before notBefore and
+	// claims the rest (pending -> sending, atomically across replicas).
+	Claim(ctx context.Context, notBefore time.Time) (claimed, expired []officers.PRLoop, err error)
 	// InLoop reports whether HQ put repo#n in a review loop.
 	InLoop(ctx context.Context, repo string, n int) (bool, error)
-	// AnyInLoop reports whether ANY of the officer's pull requests is in one.
-	AnyInLoop(ctx context.Context) (bool, error)
+	// InLoopPRs lists the officer's pull requests in a loop.
+	InLoopPRs(ctx context.Context) ([]officers.PRLoop, error)
 }
 
 // subjectPR is an item subject `<owner>/<name>#<n>`'s repository and number.
@@ -81,58 +85,85 @@ func (g *PushGate) heldFix(ctx context.Context, instance, repo string, n int) (o
 // on pull request pr of sr; would is what it does ("pushed …", "commented
 // on …").
 //
-// 🔴 THE LOCAL LOOP RECORD IS READ FIRST, AND HQ ONLY FOR A PULL REQUEST IN
-// THE LOOP: a write to a pull request outside its loop depends on neither HQ
-// nor anything else it did not depend on before. FAIL CLOSED for one in the
-// loop: HQ's items, or the record, unreadable is a refusal.
+//   - A HELD fix item for pr is honoured WHATEVER the local loop record says:
+//     the pull request open, the officer App's own, and its shadow. HQ is
+//     asked for the officer's held fix items on every write it can be asked.
+//   - 🔴 HQ UNREACHABLE fails closed only for a pull request in its loop (or
+//     whose loop record cannot be read); one out of the loop stays writable
+//     with HQ down, as the draft stage was before.
+//   - In the loop with no fix item held: refused.
+//   - A pull request in the loop that is seen closed or merged is moved out
+//     of it (closed), so the officer's "any in loop" does not stay true.
 func (g *PushGate) loopWrite(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, instance, would string) error {
-	if instance == "" || g.Loops == nil {
+	if instance == "" || (g.Loops == nil && g.FixItems == nil) {
 		return nil
 	}
-	in, err := g.Loops.InLoop(ctx, sr.Repo, pr.Number)
-	if err != nil {
-		return refused("muster could not read whether #%d is in its review loop (%v); try again", pr.Number, err)
+	in, inErr := false, error(nil)
+	if g.Loops != nil {
+		in, inErr = g.Loops.InLoop(ctx, sr.Repo, pr.Number)
 	}
-	if !in {
+	if inErr == nil && in && (pr.State != "open" || pr.Merged) {
+		g.settleLoop(ctx, sr.Repo, pr.Number, officers.PRLoopClosed)
+		in = false
+	}
+	it, held, hqErr := g.heldFix(ctx, instance, sr.Repo, pr.Number)
+	if hqErr != nil {
+		if inErr != nil || in {
+			return refused("muster could not read HQ's items to tell whether this write to #%d is under its pull-request fix item (%v); try again", pr.Number, hqErr)
+		}
 		return nil
 	}
-	it, held, err := g.heldFix(ctx, instance, sr.Repo, pr.Number)
-	if err != nil {
-		return refused("muster could not read HQ's items to tell whether this write to #%d is under its pull-request fix item (%v); try again", pr.Number, err)
+	if held {
+		if pr.State != "open" || pr.Merged {
+			return refused("a write to #%d under fix item %s: it is %s (merged %v); a fix goes to an open pull request", pr.Number, it.ID, pr.State, pr.Merged)
+		}
+		slug, err := gh.AppSlug(ctx)
+		if err != nil {
+			return refused("could not read this officer App's identity: %v", err)
+		}
+		if !strings.EqualFold(pr.Author, BotLogin(slug)) {
+			return refused("a write to #%d under fix item %s: it is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
+				pr.Number, it.ID, pr.Author, BotLogin(slug))
+		}
+		if why, on := g.shadowRule().refusal(ctx, it, would); on {
+			return shadowRefused(why)
+		}
+		return nil
 	}
-	if !held {
+	if inErr != nil {
+		return refused("muster could not read whether #%d is in its review loop (%v); try again", pr.Number, inErr)
+	}
+	if in {
 		return refused("#%d is in its review loop: a push, comment, edit or close of it needs the %s item for %s held under a live lease "+
 			"(HQ hands it to you after an audit round or the owner's feedback); without one the pull request is the loop's",
 			pr.Number, "*"+officers.PRFixKindSuffix, officers.ShepherdSubject(sr.Repo, pr.Number))
-	}
-	if pr.State != "open" || pr.Merged {
-		return refused("a write to #%d under fix item %s: it is %s (merged %v); a fix goes to an open pull request", pr.Number, it.ID, pr.State, pr.Merged)
-	}
-	slug, err := gh.AppSlug(ctx)
-	if err != nil {
-		return refused("could not read this officer App's identity: %v", err)
-	}
-	if !strings.EqualFold(pr.Author, BotLogin(slug)) {
-		return refused("a write to #%d under fix item %s: it is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
-			pr.Number, it.ID, pr.Author, BotLogin(slug))
-	}
-	if why, on := g.shadowRule().refusal(ctx, it, would); on {
-		return shadowRefused(why)
 	}
 	return nil
 }
 
 // admitFixPush is loopWrite for each ref of a draft officer's push: the
 // open pull requests the pushed branch heads. A push to a branch that heads
-// none is not changed — and 🔴 when the officer has NO pull request in a loop
-// at all, the branch's pull requests are not even looked up (a GitHub blip
-// must not block an unrelated push).
+// none is not changed — and 🔴 when there is nothing to check (no pull request
+// of the officer in a loop, and HQ shows the instance holding no fix item, or
+// cannot be read), the branch's pull requests are not even looked up, so a
+// GitHub blip blocks no unrelated push.
 func (g *PushGate) admitFixPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand) error {
 	instance := callerInstance(ctx)
-	if instance == "" || g.Loops == nil || len(cmds) == 0 {
+	if instance == "" || (g.Loops == nil && g.FixItems == nil) || len(cmds) == 0 {
 		return nil
 	}
-	if inAny, err := g.Loops.AnyInLoop(ctx); err == nil && !inAny {
+	need := false
+	if g.Loops != nil {
+		if prs, err := g.Loops.InLoopPRs(ctx); err != nil || len(prs) > 0 {
+			need = true
+		}
+	}
+	if !need && g.FixItems != nil {
+		if items, err := g.FixItems(ctx, instance); err == nil && len(items) > 0 {
+			need = true
+		}
+	}
+	if !need {
 		return nil
 	}
 	gh := g.ghFor(sr.Repo)

@@ -586,13 +586,15 @@ const prOpenedTimeout = 2 * time.Minute
 // client going away nor the create lock waits on it (run through Async). It
 // never fails the create.
 //
-// The announcement is recorded first (Loops: pending) and settled from HQ's
-// answer: a 200 naming a loop item is in_loop (the author's writes then need
-// a held fix item, fixpush.go), one naming none no_taker; 409 officer_shadow
-// — the expected answer for an officer in shadow, logged as a note — closed
-// (never re-announced). An outage is retried with backoff (PROpenedBackoff);
-// any other failure is logged and posted to HQ as a notice and stays pending,
-// which the sweep re-announces (sweepAnnounce).
+// The announcement is recorded first as 'sending' — this process's claim
+// (Loops.Announced) — and settled from HQ's answer: a 200 naming a loop item
+// in_loop (the author's writes then need a held fix item, fixpush.go), one
+// naming none no_taker; 409 officer_shadow — expected for an officer in
+// shadow, a note — closed; another permanent 4xx failed. A TRANSIENT failure
+// (HQ unreachable, a 5xx, 429, 401) is retried with backoff
+// (PROpenedBackoff), and if it lasts the record goes back to pending, which
+// the sweep claims and re-sends (sweepAnnounce). A failure is posted to HQ as
+// a notice.
 func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 	if g.PROpened == nil {
 		return
@@ -609,11 +611,9 @@ func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 		if backoff == nil {
 			backoff = DefaultPROpenedBackoff
 		}
-		err := g.announceOpened(ctx, sr, pr, backoff)
-		if err != nil {
+		if err := g.announceOpened(ctx, sr, pr, backoff); err != nil {
 			g.announce(ctx, officers.Notice{PR: pr.Number, HeadSHA: pr.HeadSHA, Channel: g.Ship.NoticeChannel, Summary: fmt.Sprintf(
-				"officer %s: muster could not tell HQ that #%d in %s was opened at %s (pr-opened: %v); the pull request stands, and muster's sweep "+
-					"announces it again until HQ answers",
+				"officer %s: muster could not tell HQ that #%d in %s was opened at %s (pr-opened: %v); the pull request stands",
 				g.OfficerID, pr.Number, sr.Repo, shortSHA(pr.HeadSHA), err)})
 		}
 	}
@@ -624,9 +624,11 @@ func (g *PushGate) prOpened(ctx context.Context, sr officers.ShipRepo, pr PR) {
 	go run()
 }
 
-// announceOpened is ONE announcement of pr (its attempts: one, then one per
-// wait of backoff while HQ is unavailable), settled from HQ's answer. It
-// returns the failure when HQ did not answer 200 or officer_shadow.
+// announceOpened is ONE announcement of pr, whose record this process holds
+// claimed ('sending'): its attempts (one, then one per wait of backoff while
+// the failure is transient), then the record settled from HQ's answer (see
+// prOpened). It returns the failure when HQ did not answer 200 or
+// officer_shadow.
 func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr PR, backoff []time.Duration) error {
 	p := officers.PROpened{Repo: sr.Repo, PR: pr.Number, HeadSHA: pr.HeadSHA, HeadRef: pr.HeadRef, Base: baseOf(sr, pr), Author: pr.Author}
 	var (
@@ -635,14 +637,16 @@ func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr 
 	)
 	for i := 0; ; i++ {
 		ans, err = g.PROpened(ctx, p)
-		if err == nil || !retryableHQ(err) || i >= len(backoff) {
+		if err == nil || !transientHQ(err) || i >= len(backoff) {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%v (then: %v)", err, ctx.Err())
+			err = fmt.Errorf("%w (then: %v)", err, ctx.Err())
 		case <-time.After(backoff[i]):
+			continue
 		}
+		break
 	}
 	settle := func(state string) { g.settleLoop(ctx, sr.Repo, pr.Number, state) }
 	var hqErr *officers.HQError
@@ -661,100 +665,134 @@ func (g *PushGate) announceOpened(ctx context.Context, sr officers.ShipRepo, pr 
 		g.logf("officers: %s: note: HQ runs this officer in shadow, so #%d in %s starts no review loop (pr-opened answered 409 officer_shadow)",
 			g.OfficerID, pr.Number, sr.Repo)
 		return nil
-	case errors.As(err, &hqErr):
-		// 🔴 ANOTHER 4xx IS HQ'S DECISION, NOT AN OUTAGE: the record is
-		// failed (logged once, here) and never re-sent.
-		settle(officers.PRLoopFailed)
-		g.logf("officers: %s: HQ refused pr-opened for #%d in %s (%v): not announced again", g.OfficerID, pr.Number, sr.Repo, err)
+	case transientHQ(err):
+		// Back to pending: the sweep claims and re-sends it, within its bound.
+		settle(officers.PRLoopPending)
+		g.logf("officers: %s: HQ was not told #%d in %s was opened (pr-opened, transient): %v; the sweep announces it again",
+			g.OfficerID, pr.Number, sr.Repo, err)
 		return err
 	default:
-		g.logf("officers: %s: HQ was not told #%d in %s was opened (pr-opened): %v", g.OfficerID, pr.Number, sr.Repo, err)
+		// 🔴 A PERMANENT 4xx IS HQ'S DECISION: failed (logged once, here),
+		// never re-sent.
+		settle(officers.PRLoopFailed)
+		g.logf("officers: %s: HQ refused pr-opened for #%d in %s (%v): not announced again", g.OfficerID, pr.Number, sr.Repo, err)
 		return err
 	}
 }
 
-// settleAttempts bounds settleLoop's writes of one outcome.
-const settleAttempts = 3
+// DefaultSettleBackoff is the waits between writes of one announcement's
+// outcome (settleLoop): four attempts in all.
+var DefaultSettleBackoff = []time.Duration{200 * time.Millisecond, time.Second, 5 * time.Second}
 
-// settleLoop records repo#n's outcome in Loops, retried (settleAttempts). An
-// outcome HQ GAVE (anything but pending) that still cannot be recorded is
-// marked acked in this process, so the sweep never re-sends it (a re-send
-// after a 200 would restart a finished loop).
+// settleLoop records repo#n's outcome in Loops, retried with backoff
+// (SettleBackoff). One that still cannot be written leaves the record as it
+// was — 'sending', claimed by this process — so it is NEVER re-sent, by this
+// process, after a restart or by another replica: an outcome HQ gave is never
+// followed by a second announcement (which, after a 200, would restart a
+// finished loop). The cost, logged: a transient failure whose 'pending' could
+// not be written is not announced again either.
 func (g *PushGate) settleLoop(ctx context.Context, repo string, n int, state string) {
 	if g.Loops == nil {
 		return
 	}
+	backoff := g.SettleBackoff
+	if backoff == nil {
+		backoff = DefaultSettleBackoff
+	}
 	var err error
-	for i := 0; i < settleAttempts; i++ {
+	for i := 0; ; i++ {
 		if err = g.Loops.Settle(ctx, repo, n, state); err == nil {
 			return
 		}
+		if i >= len(backoff) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(backoff[i]):
+			continue
+		}
+		break
 	}
-	g.logf("officers: %s: the announcement of #%d in %s could not be recorded %s after %d attempts: %v; this process will not announce it again",
-		g.OfficerID, n, repo, state, settleAttempts, err)
-	g.mu.Lock()
-	if g.acked == nil {
-		g.acked = map[string]bool{}
-	}
-	g.acked[strings.ToLower(repo)+"#"+strconv.Itoa(n)] = true
-	g.mu.Unlock()
+	g.logf("officers: %s: the announcement of #%d in %s could not be recorded %s (%v); it stays claimed and is never announced again",
+		g.OfficerID, n, repo, state, err)
 }
 
 // MaxReannounceAge bounds the sweep's re-sends: a pending announcement first
 // made longer ago than this is failed, not sent again.
 const MaxReannounceAge = 24 * time.Hour
 
-// retryableHQ reports whether err is an outage worth another attempt (HQ
-// unreachable, a 5xx), not one of HQ's decisions (a 4xx).
-func retryableHQ(err error) bool {
+// transientHQ reports whether err is a failure worth another attempt later:
+// HQ unreachable or a 5xx (ErrHQUnavailable, RetryableError, an HQError of
+// 5xx), 429 (rate limited) or 401 (a credential HQ may accept again). Every
+// other 4xx is a decision.
+func transientHQ(err error) bool {
 	var re *officers.RetryableError
-	return errors.Is(err, officers.ErrHQUnavailable) || errors.As(err, &re)
+	var hqErr *officers.HQError
+	if errors.Is(err, officers.ErrHQUnavailable) || errors.As(err, &re) {
+		return true
+	}
+	return errors.As(err, &hqErr) && (hqErr.Status >= 500 || hqErr.Status == http.StatusTooManyRequests || hqErr.Status == http.StatusUnauthorized)
 }
 
 // sweepAnnounce re-announces, once each (no retries, no notice: the next
-// sweep tries again), every announcement of this officer that never got
-// HQ's 200 (Loops.Pending) — and ONLY those: HQ's pr-opened restarts a loop
-// whose item has finished, so a pull request HQ acknowledged is never sent
-// again (nor one this process saw acknowledged but could not record: acked).
-// One that is no longer open is closed, and one first announced longer ago
-// than MaxReannounceAge is failed (logged once); neither is sent.
+// sweep tries again), every announcement of this officer that is pending —
+// an outage recorded — and ONLY those: HQ's pr-opened restarts a loop whose
+// item has finished, so one HQ answered is never sent again. The sweep CLAIMS
+// them (Loops.Claim: pending -> sending in one conditional write), so two
+// replicas sweeping at once never both send one. One first announced longer
+// ago than MaxReannounceAge is failed by the claim (logged once); one whose
+// pull request closed is closed; one whose pull request cannot be read goes
+// back to pending.
+//
+// It also moves every in_loop record whose pull request is closed or merged
+// to closed, so the officer's in-loop set (InLoopPRs) does not keep a loop
+// that ended.
 func (g *PushGate) sweepAnnounce(ctx context.Context) error {
-	if g.Loops == nil || g.PROpened == nil {
+	if g.Loops == nil {
 		return nil
-	}
-	pending, err := g.Loops.Pending(ctx)
-	if err != nil {
-		return fmt.Errorf("the pending pr-opened announcements could not be read: %v", err)
 	}
 	var errs []error
 	now := time.Now()
 	if g.Now != nil {
 		now = g.Now()
 	}
-	for _, p := range pending {
+	if inLoop, err := g.Loops.InLoopPRs(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("the in-loop pull requests could not be read: %v", err))
+	} else {
+		for _, p := range inLoop {
+			sr, ok := g.Ship.RepoFor(g.Repo, p.Repo)
+			gh := g.ghFor(sr.Repo)
+			if !ok || gh == nil {
+				continue
+			}
+			if pr, err := gh.PR(ctx, p.PR); err == nil && (pr.State != "open" || pr.Merged) {
+				g.settleLoop(ctx, sr.Repo, p.PR, officers.PRLoopClosed)
+			}
+		}
+	}
+	if g.PROpened == nil {
+		return errors.Join(errs...)
+	}
+	claimed, expired, err := g.Loops.Claim(ctx, now.Add(-MaxReannounceAge))
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("the pending pr-opened announcements could not be claimed: %v", err))...)
+	}
+	for _, p := range expired {
+		g.logf("officers: %s: #%d in %s was announced %s ago and HQ never answered; not announced again", g.OfficerID, p.PR, p.Repo,
+			now.Sub(p.AnnouncedAt).Round(time.Minute))
+	}
+	for _, p := range claimed {
 		sr, ok := g.Ship.RepoFor(g.Repo, p.Repo)
-		if !ok {
-			continue
-		}
-		g.mu.Lock()
-		acked := g.acked[strings.ToLower(p.Repo)+"#"+strconv.Itoa(p.PR)]
-		g.mu.Unlock()
-		if acked {
-			continue
-		}
-		if !p.AnnouncedAt.IsZero() && now.Sub(p.AnnouncedAt) > MaxReannounceAge {
-			g.settleLoop(ctx, sr.Repo, p.PR, officers.PRLoopFailed)
-			g.logf("officers: %s: #%d in %s was announced %s ago and HQ never answered; not announced again", g.OfficerID, p.PR, sr.Repo,
-				now.Sub(p.AnnouncedAt).Round(time.Minute))
-			continue
-		}
 		gh := g.ghFor(sr.Repo)
-		if gh == nil {
+		if !ok || gh == nil {
+			g.settleLoop(ctx, p.Repo, p.PR, officers.PRLoopPending)
 			continue
 		}
 		pr, err := gh.PR(ctx, p.PR)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: reading pull request #%d to announce it again: %v", sr.Repo, p.PR, err))
+			g.settleLoop(ctx, sr.Repo, p.PR, officers.PRLoopPending)
 			continue
 		}
 		if pr.State != "open" || pr.Merged {

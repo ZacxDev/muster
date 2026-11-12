@@ -1364,20 +1364,24 @@ neither: they are the instance's to read.
   item for `<repo>#<pr>` **held** under a live lease (read from HQ with the
   officer's token); with none (never claimed, released, or the lease
   lapsed), each is refused 403 ("#<n> is in its review loop …"). muster
-  reads its own loop record **first** and asks HQ only for a pull request in
-  the loop, so a write to one out of the loop depends on nothing new (HQ
-  down changes nothing for it); and an officer with no pull request in a
-  loop at all pushes without the branch's pull requests even being looked
-  up, so a GitHub blip blocks nothing it did not block before.
-- **Under the held fix item** of a pull request in its loop (the pushed
-  branch is the head of that pull request — named for the ORIGINAL item, not
-  the fix item): the pull request must be open and authored by this
-  officer's own App, and every write is refused in **shadow** ([below](#shadow)) before anything reaches
-  GitHub, with `shadow: would have <pushed <old12>..<new12> to <branch> |
-  commented on <repo>#<n> (<N> chars) | edited the title and body of
-  <repo>#<n> | closed <repo>#<n>>`. HQ's items, or the loop record,
-  unreadable is a refusal (fail closed). A fix item for another pull request
-  opens nothing here. The content rules and the re-checks apply unchanged.
+  asks HQ for the instance's held fix items on every such write. HQ
+  unreachable refuses only a write to a pull request in its loop (or whose
+  loop record cannot be read); a write to one out of the loop is admitted
+  with HQ down, as before. An officer with no pull request in a loop and no
+  fix item held (or HQ unreachable) pushes without the branch's pull requests
+  even being looked up, so a GitHub blip blocks nothing it did not block
+  before. A pull request in its loop that muster sees closed or merged — on a
+  write's read of it, or by the draft sweep — leaves the loop (`closed`).
+- **Under a held fix item** for a pull request — **whatever muster's loop
+  record says** (a lost or missing record lifts none of these checks; the
+  pushed branch is the head of that pull request, named for the ORIGINAL
+  item, not the fix item): the pull request must be open and authored by
+  this officer's own App, and every write is refused in **shadow**
+  ([below](#shadow)) before anything reaches GitHub, with `shadow: would
+  have <pushed <old12>..<new12> to <branch> | commented on <repo>#<n> (<N>
+  chars) | edited the title and body of <repo>#<n> | closed <repo>#<n>>`. A
+  fix item for another pull request opens nothing here. The content rules
+  and the re-checks apply unchanged.
 - A fix item **never opens a pull request**: a `POST pulls` whose branch's
   item HQ shows to be a `*.pr_fix` item is refused 403 ("a fix item pushes to
   the pull request's existing branch …").
@@ -1558,25 +1562,33 @@ officers API:
   `<slug>[bot]`). 🔴 muster calls it itself, server-side, only on the clean
   branch of a draft create's re-check (above); it is **no instance's tool**.
   HQ answers which loop items it created and which officers it skipped. It
-  runs on its own context, detached from the create, and never fails it. An
-  outage (HQ unreachable, a 5xx) is retried with backoff — three attempts in
-  all; a 4xx is HQ's decision and is not retried. A 409 `officer_shadow` (the
-  authoring officer is in shadow) is expected and logged as a note; any other
-  failure is logged and posted as an HQ notice.
+  runs on its own context, detached from the create, and never fails it. A
+  **transient** failure — HQ unreachable, a 5xx, 429, or 401 — is retried with
+  backoff, three attempts in all; any other 4xx is HQ's decision and is not
+  retried. A 409 `officer_shadow` (the authoring officer is in shadow) is
+  expected and logged as a note; any other failure is logged and posted as an
+  HQ notice.
   - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
-    0118, in muster's database; in memory without one): `pending` until HQ's
-    200, then `in_loop` (the 200 named a loop item: the rule above applies)
-    or `no_taker`; `closed` (`officer_shadow`, or the pull request closed
-    first); or `failed` (another 4xx — HQ's decision, logged once — or still
-    pending a day after it was first announced). Writing the outcome is
-    retried; one muster still cannot write after HQ answered is remembered by
-    the process so it is not sent again. The draft sweep (every 5 minutes)
-    re-announces **only** a `pending` one, and only within 24 hours of its
-    first announcement. HQ's `pr-opened` is idempotent only while the pull
-    request's loop item is live — a repeat after that item finished enqueues
-    a new one and restarts the loop, and the author's token cannot read the
-    shepherd's items to tell — so a pull request HQ acknowledged is never
-    sent again.
+    0118, in muster's database; in memory without one), and **claims it
+    before sending it**: `sending` while one process announces it; then
+    `in_loop` (HQ's 200 named a loop item: the rule above applies) or
+    `no_taker`; `closed` (`officer_shadow`, or the pull request seen closed or
+    merged); `failed` (a permanent 4xx — logged once — or still pending a day
+    after it was first announced); or back to `pending` after a transient
+    failure that lasted. The draft sweep (every 5 minutes) re-announces
+    **only** a `pending` one, within 24 hours of its first announcement, and
+    claims it first (`pending` → `sending` in one conditional `UPDATE … WHERE
+    state = 'pending' … RETURNING`), so two replicas sweeping at once never
+    both send it. Writing the outcome is retried with backoff (four writes
+    over about six seconds); one that still fails leaves the record
+    `sending`, which nothing re-sends — not this process, not after a
+    restart, not another replica. That is the chosen cost: an outcome lost
+    that way (or a crash mid-send) means that pull request is not announced
+    again, logged; it never means a loop restarted. HQ's `pr-opened` is
+    idempotent only while the pull request's loop item is live — a repeat
+    after that item finished enqueues a new one and restarts the loop, and the
+    author's token cannot read the shepherd's items to tell — so a pull
+    request HQ answered is never sent again.
 - **Loop items** carry `payload.pr_loop` =
   `{repo, pr, head_sha, round?, head_ref?, base?, author?}`; a shepherd's
   findings item also carries `payload.from` =

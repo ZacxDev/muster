@@ -752,11 +752,11 @@ func (p prLoops) Announced(ctx context.Context, repo string, n int, head string)
 func (p prLoops) Settle(ctx context.Context, repo string, n int, state string) error {
 	return p.st.PRLoopSettle(p.as(ctx), p.o.ID, repo, n, state)
 }
-func (p prLoops) Pending(ctx context.Context) ([]officers.PRLoop, error) {
-	return p.st.PRLoopsPending(p.as(ctx), p.o.ID)
+func (p prLoops) Claim(ctx context.Context, notBefore time.Time) (claimed, expired []officers.PRLoop, err error) {
+	return p.st.PRLoopsClaim(p.as(ctx), p.o.ID, notBefore)
 }
-func (p prLoops) AnyInLoop(ctx context.Context) (bool, error) {
-	return p.st.PRLoopsAnyInLoop(p.as(ctx), p.o.ID)
+func (p prLoops) InLoopPRs(ctx context.Context) ([]officers.PRLoop, error) {
+	return p.st.PRLoopsInLoop(p.as(ctx), p.o.ID)
 }
 func (p prLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
 	st, err := p.st.PRLoopState(p.as(ctx), p.o.ID, repo, n)

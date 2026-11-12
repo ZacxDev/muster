@@ -109,7 +109,9 @@ type PushGate struct {
 	// announcement off the create request (nil: a goroutine; tests run it
 	// inline).
 	PROpenedBackoff []time.Duration
-	Async           func(func())
+	// SettleBackoff replaces DefaultSettleBackoff (tests).
+	SettleBackoff []time.Duration
+	Async         func(func())
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
@@ -124,13 +126,9 @@ type PushGate struct {
 	// mu guards checked and misses, the re-check state (draftgate.go), and
 	// shepherdBusy, the shepherd's per-(repository, branch) push lock
 	// (shepherd.go lockBranch).
-	mu      sync.Mutex
-	checked map[string]string
-	misses  map[string]int
-	// acked holds the pull requests HQ answered pr-opened for (a 200, or a
-	// decision) whose record could not be settled: the sweep never re-sends
-	// one, though the record still reads pending (announceOpened).
-	acked        map[string]bool
+	mu           sync.Mutex
+	checked      map[string]string
+	misses       map[string]int
 	shepherdBusy map[string]bool
 }
 

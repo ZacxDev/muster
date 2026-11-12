@@ -46,7 +46,7 @@ func (f *fakeLoops) Announced(_ context.Context, repo string, n int, head string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.state[loopKey(repo, n)]; !ok {
-		f.state[loopKey(repo, n)], f.heads[loopKey(repo, n)] = officers.PRLoopPending, head
+		f.state[loopKey(repo, n)], f.heads[loopKey(repo, n)] = officers.PRLoopSending, head
 	}
 	return nil
 }
@@ -60,27 +60,39 @@ func (f *fakeLoops) Settle(_ context.Context, repo string, n int, state string) 
 	f.state[loopKey(repo, n)] = state
 	return nil
 }
-func (f *fakeLoops) AnyInLoop(context.Context) (bool, error) {
+
+// Claim is the store's: a pending row whose time (at; none set reads young)
+// is before notBefore is failed and expired, every other pending row claimed.
+func (f *fakeLoops) Claim(_ context.Context, notBefore time.Time) (claimed, expired []officers.PRLoop, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, st := range f.state {
-		if st == officers.PRLoopInLoop {
-			return true, nil
+	for k, st := range f.state {
+		if st != officers.PRLoopPending {
+			continue
+		}
+		r, n, _ := subjectPR(k)
+		p := officers.PRLoop{Repo: r, PR: n, HeadSHA: f.heads[k], AnnouncedAt: f.at[k]}
+		if at, ok := f.at[k]; ok && at.Before(notBefore) {
+			p.State, f.state[k] = officers.PRLoopFailed, officers.PRLoopFailed
+			expired = append(expired, p)
+		} else {
+			p.State, f.state[k] = officers.PRLoopSending, officers.PRLoopSending
+			claimed = append(claimed, p)
 		}
 	}
-	return false, nil
+	return claimed, expired, nil
 }
-func (f *fakeLoops) Pending(context.Context) ([]officers.PRLoop, error) {
+func (f *fakeLoops) InLoopPRs(context.Context) ([]officers.PRLoop, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []officers.PRLoop
 	for k, st := range f.state {
-		if st == officers.PRLoopPending {
+		if st == officers.PRLoopInLoop {
 			r, n, _ := subjectPR(k)
-			out = append(out, officers.PRLoop{Repo: r, PR: n, HeadSHA: f.heads[k], State: st, AnnouncedAt: f.at[k]})
+			out = append(out, officers.PRLoop{Repo: r, PR: n, State: st})
 		}
 	}
-	return out, nil
+	return out, f.readErr
 }
 func (f *fakeLoops) InLoop(_ context.Context, repo string, n int) (bool, error) {
 	f.mu.Lock()
@@ -294,8 +306,8 @@ func TestAFixItemOpensNoPullRequest(t *testing.T) {
 }
 
 // TestAWriteOutOfTheLoopNeedsNoHQ: with HQ down, a write to a pull request
-// out of its loop is admitted (the local record is read first; HQ is not
-// asked), and one in its loop is refused (fail closed).
+// out of its loop is admitted (HQ's outage fails closed only in the loop),
+// and one in its loop is refused (fail closed).
 func TestAWriteOutOfTheLoopNeedsNoHQ(t *testing.T) {
 	for _, w := range loopWriteCases() {
 		r := newFixRig()
@@ -313,12 +325,118 @@ func TestAWriteOutOfTheLoopNeedsNoHQ(t *testing.T) {
 	}
 }
 
+// TestAHeldFixItemIsCheckedWithNoLoopRecord: muster holds NO record of #31
+// in a loop (never announced, or HQ's answer lost), yet the instance holds
+// #31's fix item: each write is still checked under it — in shadow, refused
+// with its "would have …" line and nothing sent; the pull request another
+// App's, refused (a push: the draft stage refuses a comment, edit or close of
+// another's pull request before this rule). Control: no fix item held and no record, admitted.
+func TestAHeldFixItemIsCheckedWithNoLoopRecord(t *testing.T) {
+	for _, w := range loopWriteCases() {
+		t.Run(w.name+"/held in shadow", func(t *testing.T) {
+			r := newFixRig()
+			delete(r.loops.state, loopKey(dInfra, dPR))
+			r.held[0].Shadow = boolp(true)
+			out, err := w.do(r)
+			want := "shadow: would have " + w.would
+			if out != nil || err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("held in shadow, no loop record: err = %v (forwarded %v), want %q", err, out != nil, want)
+			}
+			if n := ghWrites(r.infra); n != 0 || len(r.lines) != 1 || r.lines[0] != fixItem+": would have "+w.would {
+				t.Fatalf("%d GitHub writes, recorded %q", n, r.lines)
+			}
+		})
+		t.Run(w.name+"/not held", func(t *testing.T) {
+			r := newFixRig()
+			delete(r.loops.state, loopKey(dInfra, dPR))
+			r.held = nil
+			if out, err := w.do(r); err != nil || out == nil {
+				t.Fatalf("control, no item and no record: err = %v, want admitted", err)
+			}
+		})
+		if w.name != "push" {
+			continue // the draft stage refuses a comment, edit or close of another's pull request first
+		}
+		t.Run(w.name+"/held, another App's", func(t *testing.T) {
+			r := newFixRig()
+			delete(r.loops.state, loopKey(dInfra, dPR))
+			pr := r.infra.prs[dPR]
+			pr.Author = "other-officer[bot]"
+			r.infra.prs[dPR] = pr
+			r.infra.all = []PR{pr}
+			out, err := w.do(r)
+			if out != nil || err == nil || !strings.Contains(err.Error(), "is authored by other-officer[bot], not this officer's App") {
+				t.Fatalf("held, another App's, no loop record: err = %v (forwarded %v)", err, out != nil)
+			}
+		})
+	}
+}
+
+// TestALoopEndsWhenItsPullRequestIsSeenClosed: #31 in_loop but merged (or
+// closed) on GitHub. A write's own read of it moves the record to closed;
+// so does the sweep. Either way the officer has no pull request in a loop,
+// and its next push to another branch looks nothing up. Control: open, the
+// record stays in_loop.
+func TestALoopEndsWhenItsPullRequestIsSeenClosed(t *testing.T) {
+	end := func(r *fixRig, merged bool) {
+		pr := r.infra.prs[dPR]
+		pr.State, pr.Merged = "closed", merged
+		r.infra.prs[dPR] = pr
+		r.infra.all = []PR{pr}
+		r.held = nil
+	}
+	for _, merged := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a write's read, merged %v", merged), func(t *testing.T) {
+			r := newFixRig()
+			end(r, merged)
+			_, _ = apiAdmit(r.g, http.MethodPost, fmt.Sprintf("repos/%s/issues/%d/comments", dInfra, dPR), map[string]any{"body": "Thanks."})
+			if got := r.loops.get(dInfra, dPR); got != officers.PRLoopClosed {
+				t.Fatalf("after a write read #31 closed: record %q, want closed", got)
+			}
+		})
+		t.Run(fmt.Sprintf("the sweep, merged %v", merged), func(t *testing.T) {
+			r := newFixRig()
+			end(r, merged)
+			_ = r.g.Sweep(context.Background())
+			if got := r.loops.get(dInfra, dPR); got != officers.PRLoopClosed {
+				t.Fatalf("after the sweep read #31 closed: record %q, want closed", got)
+			}
+			r.infra.byBranchErr = errors.New("fake GitHub: 502")
+			if out, err := r.pushAsInstance("refs/heads/" + dBranch); err != nil || out == nil {
+				t.Fatalf("a push once the loop ended, GitHub failing: err = %v, want admitted with no lookup", err)
+			}
+		})
+	}
+	r := newFixRig()
+	_ = r.g.Sweep(context.Background())
+	if got := r.loops.get(dInfra, dPR); got != officers.PRLoopInLoop {
+		t.Fatalf("control, #31 open: record %q after the sweep, want in_loop", got)
+	}
+}
+
+// TestAFixWriteToAClosedPullRequestIsRefused: under #31's held fix item, a
+// comment on #31 once it is merged is refused — a fix goes to an open pull
+// request — and nothing is sent.
+func TestAFixWriteToAClosedPullRequestIsRefused(t *testing.T) {
+	r := newFixRig()
+	pr := r.infra.prs[dPR]
+	pr.State, pr.Merged = "closed", true
+	r.infra.prs[dPR] = pr
+	r.infra.all = []PR{pr}
+	out, err := apiAdmit(r.g, http.MethodPost, fmt.Sprintf("repos/%s/issues/%d/comments", dInfra, dPR), map[string]any{"body": "Fixed."})
+	if out != nil || err == nil || !strings.Contains(err.Error(), "a fix goes to an open pull request") {
+		t.Fatalf("a fix comment on a merged pull request: err = %v (forwarded %v)", err, out != nil)
+	}
+}
+
 // TestNoLoopAtAllSkipsTheBranchLookup: an officer with no pull request in a
-// loop pushes without the branch's pull requests being looked up — a GitHub
-// failure there blocks nothing (zero lookups); with one in a loop the
-// lookup runs (control) and its failure refuses.
+// loop and no fix item held pushes without the branch's pull requests being
+// looked up — a GitHub failure there blocks nothing (zero lookups); with one
+// in a loop, or a fix item held with no loop record, the lookup runs
+// (controls) and its failure refuses.
 func TestNoLoopAtAllSkipsTheBranchLookup(t *testing.T) {
 	r := newFixRig()
+	r.held = nil
 	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopNoTaker
 	r.infra.byBranchErr = errors.New("fake GitHub: 502")
 	before := r.infra.byBranch
@@ -331,5 +449,11 @@ func TestNoLoopAtAllSkipsTheBranchLookup(t *testing.T) {
 	r.loops.state[loopKey(dInfra, 99)] = officers.PRLoopInLoop
 	if _, err := r.pushAsInstance("refs/heads/" + dBranch); err == nil || !strings.Contains(err.Error(), "could not look up the pull requests") {
 		t.Fatalf("control, a loop elsewhere: err = %v, want the lookup failure", err)
+	}
+	r = newFixRig()
+	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopNoTaker
+	r.infra.byBranchErr = errors.New("fake GitHub: 502")
+	if _, err := r.pushAsInstance("refs/heads/" + dBranch); err == nil || !strings.Contains(err.Error(), "could not look up the pull requests") {
+		t.Fatalf("control, a fix item held with no loop record: err = %v, want the lookup failure", err)
 	}
 }

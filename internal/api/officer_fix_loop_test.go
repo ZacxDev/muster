@@ -144,7 +144,6 @@ func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
 	yes := true
 	r.hq.SetItemShadow(fix, &yes)
-	r.putInLoop(t) // a fix item is a pull request's in its loop
 	out, err := r.authPush(t)
 	want := "shadow: would have pushed 111111111111.." + fixHead[:12] + " to officer/investigate-delta-infra/5-fix"
 	if out != nil || !errors.Is(err, connectors.ErrGateRefused) || !strings.Contains(err.Error(), want) {

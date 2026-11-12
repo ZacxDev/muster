@@ -62,6 +62,7 @@ func newPROpenedRig() *prOpenedRig {
 	// Inline, and no waits: the attempts are counted, not timed.
 	r.g.Async = func(f func()) { f() }
 	r.g.PROpenedBackoff = []time.Duration{0, 0}
+	r.g.SettleBackoff = []time.Duration{0, 0, 0}
 	r.g.Loops = r.loops
 	r.g.Logf = func(f string, a ...any) { r.logs = append(r.logs, fmt.Sprintf(f, a...)) }
 	r.infra.compares["trunk..."+prOpenedHead] = r.infra.compares["trunk..."+dBranch]
@@ -249,21 +250,155 @@ func TestAPermanentRefusalIsNotResent(t *testing.T) {
 	}
 }
 
-// TestASettleFailureAfterA200IsNeverResent: HQ answered 200 but the record
-// could not be written (Settle failing, retried): the record still reads
-// pending, yet the sweep never sends it again — a re-send after a 200
-// restarts a finished loop.
-func TestASettleFailureAfterA200IsNeverResent(t *testing.T) {
-	r := newPROpenedRig()
-	r.loops.settleErr = errors.New("fake store: down")
-	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
-	r.infra.all = []PR{r.infra.prs[dPR]}
-	if r.loops.settles != 3 || r.loops.get(dInfra, dPR) != officers.PRLoopPending {
-		t.Fatalf("settles %d, state %q; want 3 attempts and still pending", r.loops.settles, r.loops.get(dInfra, dPR))
+// storeLoops is PRLoops over the REAL memory store (officers.
+// MemPRLoopStore) for one officer — the record a restarted process, or
+// another replica, shares; settleErr fails its writes of an outcome.
+type storeLoops struct {
+	st        *officers.MemPRLoopStore
+	settleErr error
+	settles   int
+}
+
+const storeOfficer = "engineering:example-web"
+
+func (l *storeLoops) Announced(ctx context.Context, repo string, n int, head string) error {
+	return l.st.PRLoopAnnounced(ctx, storeOfficer, repo, n, head)
+}
+func (l *storeLoops) Settle(ctx context.Context, repo string, n int, state string) error {
+	l.settles++
+	if l.settleErr != nil {
+		return l.settleErr
 	}
-	_ = r.g.Sweep(context.Background())
-	if len(r.calls) != 1 {
-		t.Fatalf("the sweep re-sent an announcement HQ answered 200: %d announcements, want 1", len(r.calls))
+	return l.st.PRLoopSettle(ctx, storeOfficer, repo, n, state)
+}
+func (l *storeLoops) Claim(ctx context.Context, notBefore time.Time) (claimed, expired []officers.PRLoop, err error) {
+	return l.st.PRLoopsClaim(ctx, storeOfficer, notBefore)
+}
+func (l *storeLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
+	s, err := l.st.PRLoopState(ctx, storeOfficer, repo, n)
+	return s == officers.PRLoopInLoop, err
+}
+func (l *storeLoops) InLoopPRs(ctx context.Context) ([]officers.PRLoop, error) {
+	return l.st.PRLoopsInLoop(ctx, storeOfficer)
+}
+func (l *storeLoops) state(repo string, n int) string {
+	s, _ := l.st.PRLoopState(context.Background(), storeOfficer, repo, n)
+	return s
+}
+
+// onStore is a fresh pr-opened rig (a new process: nothing in memory but
+// the store) over st; opened, its GitHub already lists #31 (an officer's
+// one pull request per item, so not one about to be created).
+func onStore(st *officers.MemPRLoopStore, opened bool) (*prOpenedRig, *storeLoops) {
+	r := newPROpenedRig()
+	l := &storeLoops{st: st}
+	r.g.Loops = l
+	if opened {
+		r.infra.all = []PR{r.infra.prs[dPR]}
+	}
+	return r, l
+}
+
+// TestASettleFailureAfterA200IsNeverResentAcrossARestart: HQ answered 200
+// but the outcome could not be written (every Settle failing, retried with
+// backoff — four writes): the record stays 'sending', the announcing
+// process's claim. A RESTART (a fresh process over the same store) then
+// sweeps: nothing is sent — a re-send after a 200 restarts a finished loop —
+// and the record still reads sending. Control: the same restart over a
+// record an outage left pending re-sends it once.
+func TestASettleFailureAfterA200IsNeverResentAcrossARestart(t *testing.T) {
+	st := officers.NewMemPRLoopStore()
+	r, l := onStore(st, false)
+	l.settleErr = errors.New("fake store: down")
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	if len(r.calls) != 1 || l.settles != 4 || l.state(dInfra, dPR) != "sending" {
+		t.Fatalf("a 200 whose outcome could not be written: %d sent, %d writes, state %q; want 1, 4, sending", len(r.calls), l.settles, l.state(dInfra, dPR))
+	}
+	if !anyLog(r.logs, "it stays claimed and is never announced again") {
+		t.Fatalf("the lost outcome was not logged: %q", r.logs)
+	}
+	restarted, l2 := onStore(st, true)
+	_ = restarted.g.Sweep(context.Background())
+	_ = restarted.g.Sweep(context.Background())
+	if len(restarted.calls) != 0 || l2.state(dInfra, dPR) != "sending" {
+		t.Fatalf("after a restart: the sweep sent %d, state %q; want nothing sent, still sending", len(restarted.calls), l2.state(dInfra, dPR))
+	}
+
+	st = officers.NewMemPRLoopStore()
+	r, l = onStore(st, false)
+	r.err = fmt.Errorf("%w: answered 503", officers.ErrHQUnavailable)
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	if l.state(dInfra, dPR) != officers.PRLoopPending {
+		t.Fatalf("control: a lasting outage left %q, want pending", l.state(dInfra, dPR))
+	}
+	restarted, l2 = onStore(st, true)
+	_ = restarted.g.Sweep(context.Background())
+	_ = restarted.g.Sweep(context.Background())
+	if len(restarted.calls) != 1 || l2.state(dInfra, dPR) != officers.PRLoopInLoop {
+		t.Fatalf("control, after a restart: the sweep sent %d, state %q; want 1, in_loop", len(restarted.calls), l2.state(dInfra, dPR))
+	}
+}
+
+// TestTwoReplicasNeverBothReannounce: replica B sweeps WHILE replica A's
+// sweep is sending the same pending announcement (A's pr-opened runs B's
+// sweep): B sends nothing — A claimed the row before sending it — and after
+// both, exactly one announcement went out.
+func TestTwoReplicasNeverBothReannounce(t *testing.T) {
+	st := officers.NewMemPRLoopStore()
+	if err := st.PRLoopSettle(context.Background(), storeOfficer, dInfra, dPR, officers.PRLoopPending); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := onStore(st, true)
+	b, _ := onStore(st, true)
+	send := a.g.PROpened
+	a.g.PROpened = func(ctx context.Context, p officers.PROpened) (officers.PROpenedAnswer, error) {
+		_ = b.g.Sweep(ctx)
+		return send(ctx, p)
+	}
+	_ = a.g.Sweep(context.Background())
+	if len(a.calls) != 1 || len(b.calls) != 0 {
+		t.Fatalf("replica A sent %d, replica B (sweeping while A sent) %d; want 1 and 0", len(a.calls), len(b.calls))
+	}
+}
+
+// TestTransientFailuresAreRetriedLaterAndOthersAreFinal: 429, a 5xx (HQ
+// unreachable, and an HQError of 502) and 401 are TRANSIENT — retried with
+// backoff (three attempts), left pending, and re-sent by the sweep, which a
+// 200 then settles in_loop. Every other 4xx is final: one attempt, failed,
+// never re-sent.
+func TestTransientFailuresAreRetriedLaterAndOthersAreFinal(t *testing.T) {
+	for name, c := range map[string]struct {
+		err       error
+		transient bool
+	}{
+		"429":             {&officers.HQError{Status: http.StatusTooManyRequests, Body: []byte(`{"error":"slow down"}`)}, true},
+		"5xx unreachable": {fmt.Errorf("%w: answered 503", officers.ErrHQUnavailable), true},
+		"502":             {&officers.HQError{Status: http.StatusBadGateway, Body: []byte(`{"error":"bad gateway"}`)}, true},
+		"401":             {&officers.HQError{Status: http.StatusUnauthorized, Body: []byte(`{"error":"token expired"}`)}, true},
+		"403":             {&officers.HQError{Status: http.StatusForbidden, Body: []byte(`{"error":"not yours"}`)}, false},
+		"404":             {&officers.HQError{Status: http.StatusNotFound, Body: []byte(`{"error":"no officer"}`)}, false},
+		"422":             {&officers.HQError{Status: http.StatusUnprocessableEntity, Body: []byte(`{"error":"bad body"}`)}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newPROpenedRig()
+			r.err = c.err
+			r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+			r.infra.all = []PR{r.infra.prs[dPR]}
+			attempts, state := len(r.calls), r.loops.get(dInfra, dPR)
+			r.err = nil
+			_ = r.g.Sweep(context.Background())
+			_ = r.g.Sweep(context.Background())
+			if c.transient {
+				if attempts != 3 || state != officers.PRLoopPending || len(r.calls) != 4 || r.loops.get(dInfra, dPR) != officers.PRLoopInLoop {
+					t.Fatalf("transient: %d attempts then %q; after HQ recovered and two sweeps %d sent in all, %q; want 3, pending, 4, in_loop",
+						attempts, state, len(r.calls), r.loops.get(dInfra, dPR))
+				}
+				return
+			}
+			if attempts != 1 || state != officers.PRLoopFailed || len(r.calls) != 1 {
+				t.Fatalf("final: %d attempts then %q; %d sent after two sweeps; want 1, failed, 1", attempts, state, len(r.calls))
+			}
+		})
 	}
 }
 
