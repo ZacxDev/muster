@@ -144,9 +144,12 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
 			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
 		},
+		FixPushed: func(item officers.Item, _ string) {
+			s.officerRT.recordFixPush(o.ID, item.ID)
+		},
 		OfficerShadow: hq.c.Shadow,
-		Shadowed: func(item officers.Item, line string) {
-			s.officerRT.recordShadow(o.ID, item.ID, line)
+		Shadowed: func(item officers.Item, line string, push bool) {
+			s.officerRT.recordShadow(o.ID, item.ID, line, push)
 		},
 		// 🔴 muster's own call, after a clean draft create, with the
 		// authoring officer's token: no instance tool reaches it.
@@ -160,8 +163,8 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 				return itemHeldFor(ctx, hq.c, o.ID, instance, repo, n, cfg.Now)
 			},
 			OfficerShadow: hq.c.Shadow,
-			Shadowed: func(item officers.Item, line string) {
-				s.officerRT.recordShadow(o.ID, item.ID, line)
+			Shadowed: func(item officers.Item, line string, push bool) {
+				s.officerRT.recordShadow(o.ID, item.ID, line, push)
 			}}
 		rt.gate.Shepherd = sh
 		rt.shepherd = &officership.ShepherdGates{Shepherd: sh, Now: cfg.Now,
@@ -508,7 +511,7 @@ func shipToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolShepherdMergeAsk,
 			Description: "Ask HQ to open a MERGE ASK for a pull request YOU SHEPHERD, under the HQ item you hold for it: a human decides and merges; you never merge. " +
 				"muster names you as the instance itself (an `instance` argument is refused), checks that you hold item_id under a live lease and that its subject is <owner>/<name>#<pr>, " +
-				"checks HQ's bounds (summary ≤300, purpose ≤600, how ≤900 characters, each required; evidence.ladder.rounds 1–20; open_yellows and checks ≤50; short texts ≤200, long ≤2000), " +
+				"checks HQ's bounds (summary ≤300, purpose ≤600, how ≤900 characters, each required; open_yellows ≤50; short texts ≤200, long ≤2000), " +
 				"refuses it when HQ runs the item in shadow, then posts it with your officer's token. HQ checks again (the audit ladder stopped, CI, the approvers) and its refusal is passed back verbatim.",
 			Parameters: objSchema(map[string]any{
 				"item_id":  strProp("The HQ item you hold for the pull request."),
@@ -520,7 +523,7 @@ func shipToolDefs() []agents.ToolDef {
 				"summary":  strProp("What the change is, at most 300 characters."),
 				"purpose":  strProp("Why it should merge, at most 600 characters."),
 				"how":      strProp("How it was settled and verified, at most 900 characters."),
-				"evidence": map[string]any{"type": "object", "description": "HQ's evidence object: officer_item {officer, item}, ladder {rounds [{round, verdict, red, yellow}], stop_reason}, open_yellows [{where, text}], checks [{name, conclusion}], protected_identity {result, detail?}, settled_at, rollback."},
+				"evidence": map[string]any{"type": "object", "description": "HQ's evidence object, exactly: officer_item {officer, item}, open_yellows [{where, text}], protected_identity {result, detail?}, settled_at, rollback. No ladder and no checks: HQ reads the audit ladder and CI from its own records (and refuses them)."},
 				"to":       strProp("Optional: whom HQ should ask."),
 			}, "item_id", "repo", "pr", "head_sha", "base_ref", "base_sha", "summary", "purpose", "how", "evidence")},
 		{Type: "function", Name: officers.ToolRolloutStatus,

@@ -90,10 +90,14 @@ type PushGate struct {
 	// instance holding under a live lease (fixpush.go). nil: no push is
 	// looked up.
 	FixItems func(ctx context.Context, instance string) ([]officers.Item, error)
+	// FixPushed records that a push to branch under fix item landed (GitHub's
+	// report says the ref applied): a hand-off of that item names a head that
+	// exists (api's officer_complete). nil records nothing.
+	FixPushed func(item officers.Item, branch string)
 	// OfficerShadow and Shadowed are this officer's ShadowRule (a push under
 	// a fix item in shadow is refused and recorded).
 	OfficerShadow func(ctx context.Context) (bool, error)
-	Shadowed      func(item officers.Item, line string)
+	Shadowed      func(item officers.Item, line string, push bool)
 	// PROpened tells HQ a draft officer opened pull request p (POST
 	// /officers/{id}/pr-opened, with the officer's own token), so HQ can start
 	// its review loop. Called by muster only — never an instance's tool — and
@@ -340,8 +344,9 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 	// A push under a held pull-request fix item (fixpush.go): its pull
 	// request is the officer's own and open, and it is not in shadow —
 	// checked before anything is forwarded.
+	var fixes []fixPush
 	if g.Ship.IsDraft() {
-		if err := g.admitFixPush(r.Context(), sr, cmds); err != nil {
+		if fixes, err = g.admitFixPush(r.Context(), sr, cmds); err != nil {
 			return nil, err
 		}
 	}
@@ -378,7 +383,12 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 	if g.Ship.IsDraft() && len(cmds) > 0 {
 		// 🔴 THE PUSH RE-CHECK (draftgate.go): once GitHub has the push, every
 		// open pull request from a pushed branch is checked again.
-		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) { g.afterPush(ctx, sr, cmds, res) })
+		// The same hook records each fix push GitHub applied (fixpush.go): a
+		// gate request carries ONE after-forward hook.
+		out = connectors.WithAfterForward(out, func(ctx context.Context, res connectors.ForwardResult) {
+			g.fixPushesLanded(fixes, res)
+			g.afterPush(ctx, sr, cmds, res)
+		})
 	}
 	return out, nil
 }

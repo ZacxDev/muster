@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,17 +124,23 @@ func (r *shepAPIRig) authPush(t *testing.T) (*http.Request, error) {
 // wirePkt is s as one pkt-line of the push protocol.
 func wirePkt(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
 
+// fixFindings is HQ's `findings` on a fix item: the auditor's report, a
+// STRING, verbatim. muster never parses it.
+const fixFindings = "VERDICT: no-red · round 2 · head 888888888888\n🟡 a log line could be clearer\n🟢 nit: naming"
+
 // TestTheAuthorsFixItemThroughMuster: the authoring draft officer holds a
-// pr_fix item for its own #5 in HQ; in shadow its push is refused before
-// GitHub with the would-have line; the complete it then sends carries the
-// shadow block AND the handoff to HQ.
+// pr_fix item for its own #5 in HQ (findings a string, as HQ writes it); in
+// shadow its push is refused before GitHub with the would-have line; its
+// complete WITH a handoff is then refused (the head was never pushed) and
+// nothing reaches HQ; its complete escalated goes through and carries the
+// shadow block.
 func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	r := newShepAPIRig(t)
 	r.authGH.mu.Lock()
 	r.authGH.author = "delta-investigator[bot]"
 	r.authGH.mu.Unlock()
 	fix := r.hq.AddItem(offShepAuth, "investigate.pr_fix", officers.ShepherdSubject(shepRepoAPI, 5))
-	r.hq.SetPayload(fix, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`"},"findings":[],"from":{"officer_id":"audit:delta-infra"}}`)
+	r.hq.SetPayload(fix, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`"},"findings":`+strconv.Quote(fixFindings)+`,"from":{"officer_id":"audit:delta-infra"}}`)
 	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
 	yes := true
 	r.hq.SetItemShadow(fix, &yes)
@@ -142,28 +149,37 @@ func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	if out != nil || !errors.Is(err, connectors.ErrGateRefused) || !strings.Contains(err.Error(), want) {
 		t.Fatalf("a shadowed fix push: err = %v (forwarded %v), want %q", err, out != nil, want)
 	}
-	if res := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead}}); isToolErr(res) {
-		t.Fatalf("complete: %s", res)
+	res := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead}})
+	if !isToolErr(res) || !strings.Contains(res, "muster refused your push under it in shadow") || !strings.Contains(res, "complete it escalated instead") {
+		t.Fatalf("a handoff after a shadowed push: %s, want the refusal", res)
+	}
+	if n := len(r.completes(fix)); n != 0 {
+		t.Fatalf("%d completes reached HQ", n)
+	}
+	if res := r.completeAs(r.authInst.Name, fix, "escalated", nil); isToolErr(res) {
+		t.Fatalf("complete escalated: %s", res)
 	}
 	sent := r.completes(fix)
 	if len(sent) != 1 {
 		t.Fatalf("%d completes sent", len(sent))
 	}
 	var body struct {
-		Summary string            `json:"summary"`
-		Handoff map[string]string `json:"handoff"`
+		Summary string          `json:"summary"`
+		Handoff json.RawMessage `json:"handoff"`
 	}
 	if err := json.Unmarshal(sent[0], &body); err != nil {
 		t.Fatal(err)
 	}
 	wantSummary := "Fixed the naming the audit flagged.\n\n" + shadowHeader + "\n- would have pushed 111111111111.." + fixHead[:12] + " to officer/investigate-delta-infra/5-fix"
-	if body.Summary != wantSummary || body.Handoff["head_sha"] != fixHead {
-		t.Fatalf("complete summary %q handoff %v, want %q and the handoff", body.Summary, body.Handoff, wantSummary)
+	if body.Summary != wantSummary || body.Handoff != nil {
+		t.Fatalf("complete summary %q handoff %s, want %q and no handoff", body.Summary, body.Handoff, wantSummary)
 	}
 	// Not in shadow: the push is admitted (the existing draft rule, now with
 	// the fix item's checks passed).
 	no := false
 	fix2 := r.hq.AddItem(offShepAuth, "investigate.pr_fix", officers.ShepherdSubject(shepRepoAPI, 5))
+	// The owner's Feedback route: `feedback` instead of `findings`.
+	r.hq.SetPayload(fix2, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`"},"feedback":{"text":"rename the flag","by":"owner","at":"2026-11-12T10:00:00Z"},"from":{"officer_id":"`+offShep+`"}}`)
 	r.hq.SetItemShadow(fix2, &no)
 	r.hq.SetClaim(fix2, r.authInst.Name, time.Now().Add(time.Hour))
 	// Two items the rule must NOT read, each in shadow: an ordinary (not
@@ -177,5 +193,175 @@ func TestTheAuthorsFixItemThroughMuster(t *testing.T) {
 	r.hq.SetClaim(other, "officer-investigate-delta-infra-2", time.Now().Add(time.Hour))
 	if out, err := r.authPush(t); err != nil || out == nil {
 		t.Fatalf("a fix push out of shadow (an ordinary item and another instance's fix item in shadow beside it): %v", err)
+	}
+}
+
+// fixRef is the authoring officer's #5 branch ref.
+const fixRef = "refs/heads/officer/investigate-delta-infra/5-fix"
+
+// land runs an admitted push's after-forward hook on GitHub's report-status
+// for fixRef: applied ("ok") or refused ("ng").
+func land(t *testing.T, out *http.Request, applied bool) {
+	t.Helper()
+	line := "ok " + fixRef + "\n"
+	if !applied {
+		line = "ng " + fixRef + " pre-receive hook declined\n"
+	}
+	after := connectors.AfterForwardOf(out)
+	if after == nil {
+		t.Fatal("the push carries no after-forward hook")
+	}
+	after(context.Background(), connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Complete: true,
+		Body: []byte(wirePkt("unpack ok\n") + wirePkt(line) + "0000")})
+}
+
+// heldFix puts a fix item for #5 in the authoring instance's live hold, out
+// of shadow, findings a string, and returns its id.
+func (r *shepAPIRig) heldFix(t *testing.T) string {
+	t.Helper()
+	r.authGH.mu.Lock()
+	r.authGH.author = "delta-investigator[bot]"
+	r.authGH.mu.Unlock()
+	fix := r.hq.AddItem(offShepAuth, "investigate.pr_fix", officers.ShepherdSubject(shepRepoAPI, 5))
+	r.hq.SetPayload(fix, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`"},"findings":"any text at all, not JSON {[","from":{}}`)
+	no := false
+	r.hq.SetItemShadow(fix, &no)
+	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
+	return fix
+}
+
+// TestAFixHandoffNeedsAPushThatLanded: HQ refuses a fix's hand-off at an
+// unchanged head, so muster does first — no push, or a push GitHub refused
+// (ng), is refused naming the branch and the item, with nothing sent to HQ;
+// a complete WITHOUT a handoff is unaffected; a push GitHub applied lets
+// the hand-off through.
+func TestAFixHandoffNeedsAPushThatLanded(t *testing.T) {
+	r := newShepAPIRig(t)
+	fix := r.heldFix(t)
+	handoff := map[string]any{"handoff": map[string]any{"head_sha": fixHead}}
+	want := "no push landed on officer/investigate-delta-infra/5-fix while holding item " + fix
+	if out := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(out, want) {
+		t.Fatalf("no push: %s, want %q", out, want)
+	}
+	out, err := r.authPush(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	land(t, out, false)
+	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(res, want) {
+		t.Fatalf("a push GitHub refused: %s, want %q", res, want)
+	}
+	if n := len(r.completes(fix)); n != 0 {
+		t.Fatalf("%d completes reached HQ", n)
+	}
+	// Without a handoff: unaffected.
+	other := r.heldFix(t)
+	if res := r.completeAs(r.authInst.Name, other, "escalated", nil); isToolErr(res) {
+		t.Fatalf("an escalated complete without a push: %s", res)
+	}
+	// HQ unreadable at the fix lookup: refused (fail closed), not sent.
+	r.hq.SetDown(true)
+	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); !strings.Contains(res, "could not read HQ's items to check whether item "+fix) {
+		t.Fatalf("HQ down: %s", res)
+	}
+	r.hq.SetDown(false)
+	// An ORDINARY item of the draft officer: its hand-off is not this rule's.
+	plain := r.hq.AddItem(offShepAuth, "investigate.opened", officers.ShepherdSubject(shepRepoAPI, 7))
+	r.hq.SetClaim(plain, r.authInst.Name, time.Now().Add(time.Hour))
+	if res := r.completeAs(r.authInst.Name, plain, "done", handoff); isToolErr(res) {
+		t.Fatalf("an ordinary item's hand-off: %s", res)
+	}
+	// A landed push: the hand-off goes through.
+	out, err = r.authPush(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	land(t, out, true)
+	if res := r.completeAs(r.authInst.Name, fix, "done", handoff); isToolErr(res) {
+		t.Fatalf("after a landed push: %s", res)
+	}
+}
+
+// TestTheFixHandoffGoesThroughOutOfShadow: a fix pushed out of shadow and
+// landed is handed on — the complete carries the handoff byte for byte.
+func TestTheFixHandoffGoesThroughOutOfShadow(t *testing.T) {
+	r := newShepAPIRig(t)
+	r.authGH.mu.Lock()
+	r.authGH.author = "delta-investigator[bot]"
+	r.authGH.mu.Unlock()
+	fix := r.hq.AddItem(offShepAuth, "investigate.pr_fix", officers.ShepherdSubject(shepRepoAPI, 5))
+	r.hq.SetPayload(fix, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`"},"findings":"any text at all, not JSON {[","from":{}}`)
+	no := false
+	r.hq.SetItemShadow(fix, &no)
+	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
+	out, err := r.authPush(t)
+	if err != nil || out == nil {
+		t.Fatalf("the fix push: %v", err)
+	}
+	land(t, out, true)
+	if res := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead}}); isToolErr(res) {
+		t.Fatalf("complete: %s", res)
+	}
+	if b := r.completes(fix); len(b) != 1 || !strings.Contains(string(b[0]), `"handoff":{"head_sha":"`+fixHead+`"}`) {
+		t.Fatalf("the complete sent %s", b)
+	}
+}
+
+// TestHandoffToTheAuthorIsTheShepherdsOnly: `to: "author"` rides a shepherd's
+// complete byte for byte; any other value, or `to` on another officer, is
+// refused before HQ; HQ's 409s come back verbatim.
+func TestHandoffToTheAuthorIsTheShepherdsOnly(t *testing.T) {
+	r := newShepAPIRig(t)
+	id := r.hold(t)
+	if out := r.completeAs(r.inst.Name, id, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}}); isToolErr(out) {
+		t.Fatalf("a shepherd's hand-off to the author: %s", out)
+	}
+	if b := r.completes(id); len(b) != 1 || !strings.Contains(string(b[0]), `"handoff":{"head_sha":"`+fixHead+`","to":"author"}`) {
+		t.Fatalf("the complete sent %s", b)
+	}
+	id2 := r.hold(t)
+	if out := r.completeAs(r.inst.Name, id2, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "auditor"}}); !strings.Contains(out, `handoff.to must be \"author\"`) {
+		t.Fatalf("to: auditor: %s", out)
+	}
+	if n := len(r.completes(id2)); n != 0 {
+		t.Fatalf("to: auditor reached HQ %d time(s)", n)
+	}
+	fix := r.hq.AddItem(offShepAuth, "investigate.pr_fix", officers.ShepherdSubject(shepRepoAPI, 5))
+	r.hq.SetClaim(fix, r.authInst.Name, time.Now().Add(time.Hour))
+	if out := r.completeAs(r.authInst.Name, fix, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}}); !strings.Contains(out, "handoff.to is a shepherd's only") {
+		t.Fatalf("to on a draft officer: %s", out)
+	}
+	if n := len(r.completes(fix)); n != 0 {
+		t.Fatalf("to on a draft officer reached HQ %d time(s)", n)
+	}
+	r.hq.RefuseCompletes(http.StatusConflict, "audit_not_stopped", "the ladder of #5 has not stopped at "+fixHead[:12])
+	out := r.completeAs(r.inst.Name, id2, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}})
+	if !strings.Contains(out, `"status":409`) || !strings.Contains(out, `"code":"audit_not_stopped"`) {
+		t.Fatalf("HQ's 409 came back as %s", out)
+	}
+}
+
+// TestAShepherdHandoffAfterAShadowedPushIsRefused: the shepherd's same case —
+// once its push under the item was refused in shadow, its hand-off of that
+// item is refused; an escalated complete still goes through with the block.
+func TestAShepherdHandoffAfterAShadowedPushIsRefused(t *testing.T) {
+	r := newShepAPIRig(t)
+	id := r.hold(t)
+	r.s.officerRT.recordShadow(offShep, officers.ItemID(id), "would have pushed 888888888888..3c5e7a9b1d2f to officer/investigate-delta-infra/5-fix", true)
+	out := r.completeAs(r.inst.Name, id, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}})
+	if !strings.Contains(out, "muster refused your push under it in shadow") || len(r.completes(id)) != 0 {
+		t.Fatalf("a shepherd's hand-off after a shadowed push: %s (completes %d)", out, len(r.completes(id)))
+	}
+	if out := r.completeAs(r.inst.Name, id, "escalated", nil); isToolErr(out) {
+		t.Fatalf("escalated: %s", out)
+	}
+	if b := r.completes(id); len(b) != 1 || !strings.Contains(string(b[0]), shadowHeader) || strings.Contains(string(b[0]), "handoff") {
+		t.Fatalf("the escalated complete sent %s", b)
+	}
+	// A shadowed NON-push write (a comment) does not block the hand-off.
+	id2 := r.hold(t)
+	r.s.officerRT.recordShadow(offShep, officers.ItemID(id2), "would have commented on x#5 (3 chars)", false)
+	if out := r.completeAs(r.inst.Name, id2, "done", map[string]any{"handoff": map[string]any{"head_sha": fixHead, "to": "author"}}); isToolErr(out) {
+		t.Fatalf("a hand-off after a shadowed comment: %s", out)
 	}
 }

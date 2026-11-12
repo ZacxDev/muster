@@ -77,6 +77,7 @@ type shepRig struct {
 	officerShadow    bool
 	officerShadowErr error
 	shadowLines      []string
+	shadowPush       []bool
 	// authorLogin is what the author officer's App reads as; authorErr fails it.
 	authorLogin string
 	authorErr   error
@@ -111,8 +112,9 @@ func newShepRig() *shepRig {
 			return r.item, nil
 		},
 		OfficerShadow: func(context.Context) (bool, error) { return r.officerShadow, r.officerShadowErr },
-		Shadowed: func(item officers.Item, line string) {
+		Shadowed: func(item officers.Item, line string, push bool) {
 			r.shadowLines = append(r.shadowLines, string(item.ID)+": "+line)
+			r.shadowPush = append(r.shadowPush, push)
 		}}
 	r.item = officers.Item{ID: sItem, SubjectKey: officers.ShepherdSubject(sRepo, sPR), Shadow: boolp(false),
 		Payload: json.RawMessage(sLoop(2, oidA, sVerdict("no-red", 2, oidA, "Round 2 found nothing blocking.", "🟡 a log line could be clearer")))}

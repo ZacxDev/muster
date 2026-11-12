@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officership"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,13 +30,19 @@ const maxShadowLines = 50
 type shadowLedger struct {
 	lines   []string
 	dropped int
+	// pushRefused is set once a PUSH under the item was refused in shadow:
+	// the head a hand-off would name was never pushed (pushRefusedInShadow).
+	pushRefused bool
+	// landed is set once a push under the item (a fix item) LANDED: GitHub's
+	// report applied it (officership's FixPushed). fixHandoffRefusal.
+	landed bool
 }
 
 func shadowKey(officer string, item officers.ItemID) string { return officer + " " + string(item) }
 
 // recordShadow records line against officer's item (an identical line is
-// kept once).
-func (rt *officerRuntime) recordShadow(officer string, item officers.ItemID, line string) {
+// kept once); push marks it a refused push.
+func (rt *officerRuntime) recordShadow(officer string, item officers.ItemID, line string, push bool) {
 	rt.shadowMu.Lock()
 	defer rt.shadowMu.Unlock()
 	if rt.shadow == nil {
@@ -44,6 +53,9 @@ func (rt *officerRuntime) recordShadow(officer string, item officers.ItemID, lin
 	if l == nil {
 		l = &shadowLedger{}
 		rt.shadow[k] = l
+	}
+	if push {
+		l.pushRefused = true
 	}
 	for _, have := range l.lines {
 		if have == line {
@@ -70,6 +82,38 @@ func (rt *officerRuntime) shadowSummary(officer string, item officers.ItemID, su
 	}
 	rt.shadowMu.Unlock()
 	return withShadowBlock(summary, lines, dropped, max)
+}
+
+// recordFixPush records that a push under officer's fix item landed.
+func (rt *officerRuntime) recordFixPush(officer string, item officers.ItemID) {
+	rt.shadowMu.Lock()
+	defer rt.shadowMu.Unlock()
+	if rt.shadow == nil {
+		rt.shadow = map[string]*shadowLedger{}
+	}
+	k := shadowKey(officer, item)
+	if rt.shadow[k] == nil {
+		rt.shadow[k] = &shadowLedger{}
+	}
+	rt.shadow[k].landed = true
+}
+
+// fixPushLanded reports whether a push under officer's item landed, until the
+// item's completion forgets it.
+func (rt *officerRuntime) fixPushLanded(officer string, item officers.ItemID) bool {
+	rt.shadowMu.Lock()
+	defer rt.shadowMu.Unlock()
+	l := rt.shadow[shadowKey(officer, item)]
+	return l != nil && l.landed
+}
+
+// pushRefusedInShadow reports whether a push under officer's item was refused
+// in shadow (recordShadow with push), until the item's completion forgets it.
+func (rt *officerRuntime) pushRefusedInShadow(officer string, item officers.ItemID) bool {
+	rt.shadowMu.Lock()
+	defer rt.shadowMu.Unlock()
+	l := rt.shadow[shadowKey(officer, item)]
+	return l != nil && l.pushRefused
 }
 
 // forgetShadow drops officer's item's lines (once its completion carried them).
@@ -115,4 +159,40 @@ func withShadowBlock(summary string, lines []string, dropped, max int) string {
 		}
 	}
 	return summary + b.String()
+}
+
+// fixHandoffRefusal is why a draft officer's officer_complete WITH a hand-off
+// of item is refused, or "": HQ refuses a fix item's hand-off at an unchanged
+// head, so when item is a *.pr_fix item (read from HQ with the officer's
+// token) and no push under it LANDED during the hold (recordFixPush), muster
+// refuses first. Any other item, and any other stage, is "". 🔴 HQ's items
+// unreadable is a refusal (fail closed).
+func (s *Server) fixHandoffRefusal(ctx context.Context, o officers.Officer, c *officers.Client, instance string, item officers.ItemID) string {
+	if !o.Ship.IsDraft() || s.officerRT.fixPushLanded(o.ID, item) {
+		return ""
+	}
+	items, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return fmt.Sprintf("muster could not read HQ's items to check whether item %s is a fix item with a pushed fix (%v); try again", item, err)
+	}
+	for _, it := range items {
+		if it.ID != item || !officership.IsPRFix(it.Kind) {
+			continue
+		}
+		branch := "the branch of " + it.SubjectKey
+		if repo, n, ok := strings.Cut(it.SubjectKey, "#"); ok {
+			if rt := s.officerRT.ships[o.ID]; rt != nil && rt.gate != nil {
+				if gh := rt.gate.GHFor[strings.ToLower(repo)]; gh != nil {
+					if num, err := strconv.Atoi(n); err == nil {
+						if pr, err := gh.PR(ctx, num); err == nil && pr.HeadRef != "" {
+							branch = pr.HeadRef
+						}
+					}
+				}
+			}
+		}
+		return fmt.Sprintf("no push landed on %s while holding item %s: HQ refuses a fix's hand-off at an unchanged head. Push the fix, "+
+			"then complete done with the handoff — or complete escalated, or without a handoff", branch, item)
+	}
+	return ""
 }

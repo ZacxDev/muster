@@ -1150,10 +1150,11 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 }
 
 // completeHandoff checks officer_complete's `handoff` (raw as sent; absent or
-// null is none): exactly {"head_sha": <40 lower-case hex>}, and only on
-// outcome done (HQ refuses it on any other). It returns the hand-off to send,
-// or why it is refused — before anything reaches HQ.
-func completeHandoff(raw json.RawMessage, outcome string) (*officers.Handoff, string) {
+// null is none): {"head_sha": <40 lower-case hex>}, plus — a shepherd's only
+// (shepherd) — "to": "author"; and only on outcome done (HQ refuses it on any
+// other). It returns the hand-off to send, or why it is refused — before
+// anything reaches HQ.
+func completeHandoff(raw json.RawMessage, outcome string, shepherd bool) (*officers.Handoff, string) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, ""
@@ -1162,6 +1163,7 @@ func completeHandoff(raw json.RawMessage, outcome string) (*officers.Handoff, st
 	dec.DisallowUnknownFields()
 	var h struct {
 		HeadSHA *string `json:"head_sha"`
+		To      *string `json:"to"`
 	}
 	if err := dec.Decode(&h); err != nil {
 		return nil, fmt.Sprintf("handoff must be exactly {\"head_sha\": <40 lower-case hex>}: %v", err)
@@ -1169,10 +1171,20 @@ func completeHandoff(raw json.RawMessage, outcome string) (*officers.Handoff, st
 	if h.HeadSHA == nil || !officers.ValidHandoffHead(*h.HeadSHA) {
 		return nil, "handoff.head_sha must be the full commit sha, 40 lower-case hex"
 	}
+	out := &officers.Handoff{HeadSHA: *h.HeadSHA}
+	if h.To != nil {
+		if !shepherd {
+			return nil, "handoff.to is a shepherd's only (it hands a clean round's fixes to the pull request's author)"
+		}
+		if *h.To != officers.HandoffToAuthor {
+			return nil, fmt.Sprintf("handoff.to must be %q", officers.HandoffToAuthor)
+		}
+		out.To = *h.To
+	}
 	if outcome != "done" {
 		return nil, fmt.Sprintf("handoff goes with outcome done only (HQ refuses it on %s)", outcome)
 	}
-	return &officers.Handoff{HeadSHA: *h.HeadSHA}, ""
+	return out, ""
 }
 
 // officerToolDefFor is tool definition d as officer o's instances are
@@ -1445,9 +1457,21 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
-		handoff, bad := completeHandoff(in.Handoff, in.Outcome)
+		handoff, bad := completeHandoff(in.Handoff, in.Outcome, o.Ship.IsShepherd())
 		if bad != "" {
 			return toolErr("%s", bad), true
+		}
+		// 🔴 A HAND-OFF NAMES A HEAD THAT MUST EXIST: once muster refused a
+		// push under this item in shadow, the head the instance would hand
+		// on was never pushed, and an audit round would start at it.
+		if handoff != nil && s.officerRT.pushRefusedInShadow(o.ID, in.ItemID) {
+			return toolErr("item %s: muster refused your push under it in shadow, so the head you would hand on was never pushed; "+
+				"complete it %s instead, saying what you would have pushed (the shadow block muster appends lists it)", in.ItemID, "escalated"), true
+		}
+		if handoff != nil {
+			if why := s.fixHandoffRefusal(ctx, o, c, instance, in.ItemID); why != "" {
+				return toolErr("%s", why), true
+			}
 		}
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it

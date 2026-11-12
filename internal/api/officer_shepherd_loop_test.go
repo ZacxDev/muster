@@ -23,9 +23,7 @@ func shepMergeAsk(id string) map[string]any {
 		"base_sha": "9999999999999999999999999999999999999999", "summary": "Raise the limit", "purpose": "The worker OOMs",
 		"how": "Two audit rounds; CI green",
 		"evidence": map[string]any{"officer_item": map[string]any{"officer": offShep, "item": id},
-			"ladder":             map[string]any{"rounds": []any{map[string]any{"round": 1, "verdict": "no-red", "red": 0, "yellow": 1}}, "stop_reason": "no 🔴"},
 			"open_yellows":       []any{map[string]any{"where": "deploy.yaml:4", "text": "naming"}},
-			"checks":             []any{map[string]any{"name": "ci / gate", "conclusion": "success"}},
 			"protected_identity": map[string]any{"result": "clean"}, "settled_at": "2026-11-12T10:00:00Z", "rollback": "revert"}}
 }
 

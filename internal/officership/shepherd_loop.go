@@ -151,11 +151,13 @@ func AuditVerdictClear(item officers.Item, pr PR) error {
 // pull-request fix item (fixpush.go). Officer is the officer's id;
 // OfficerShadow reads HQ's officer row `shadow`; Shadowed records a refused
 // write ("would have …") against its item (appended to that item's
-// officer_complete summary); nil records nothing.
+// officer_complete summary, and — push true — what makes a later hand-off of
+// that item refused, since the head it would name was never pushed); nil
+// records nothing.
 type ShadowRule struct {
 	Officer       string
 	OfficerShadow func(ctx context.Context) (bool, error)
-	Shadowed      func(item officers.Item, line string)
+	Shadowed      func(item officers.Item, line string, push bool)
 }
 
 // shadowed decides whether a write under item runs in shadow: the item's own
@@ -185,21 +187,21 @@ func (r ShadowRule) shadowed(ctx context.Context, item officers.Item) (bool, str
 // refusal is "", false when the write may go ahead; else it records "would
 // have <would>" for item and returns the refusal text `shadow: would have
 // <would>` with why.
-func (r ShadowRule) refusal(ctx context.Context, item officers.Item, would string) (string, bool) {
+func (r ShadowRule) refusal(ctx context.Context, item officers.Item, would string, push bool) (string, bool) {
 	on, why := r.shadowed(ctx, item)
 	if !on {
 		return "", false
 	}
 	line := "would have " + would
 	if r.Shadowed != nil {
-		r.Shadowed(item, line)
+		r.Shadowed(item, line, push)
 	}
 	return "shadow: " + line + " (" + why + "; nothing was sent)", true
 }
 
 // shadowRefusal is the shepherd's writes asking ShadowRule.
-func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string) (string, bool) {
-	return ShadowRule{Officer: s.OfficerID, OfficerShadow: s.OfficerShadow, Shadowed: s.Shadowed}.refusal(ctx, item, would)
+func (s *Shepherd) shadowRefusal(ctx context.Context, item officers.Item, would string, push bool) (string, bool) {
+	return ShadowRule{Officer: s.OfficerID, OfficerShadow: s.OfficerShadow, Shadowed: s.Shadowed}.refusal(ctx, item, would, push)
 }
 
 // head12 is a sha's first 12 characters (all of it when shorter).
@@ -215,7 +217,6 @@ const (
 	maxMergeAskSummary = 300
 	maxMergeAskPurpose = 600
 	maxMergeAskHow     = 900
-	maxMergeAskRounds  = 20
 	maxMergeAskList    = 50
 	maxMergeAskShort   = 200
 	maxMergeAskLong    = 2000
@@ -237,29 +238,19 @@ type MergeAskArgs struct {
 	To       string          `json:"to,omitempty"`
 }
 
-// MergeEvidence is the merge ask's `evidence`, field for field HQ's.
+// MergeEvidence is the merge ask's `evidence`, field for field HQ's — and
+// nothing more: HQ reads the audit ladder and CI from its OWN records and
+// refuses `ladder` and `checks` (400 unknown field), so the strict decoder
+// (ParseMergeAskArgs) refuses them here first.
 type MergeEvidence struct {
 	OfficerItem struct {
 		Officer string          `json:"officer"`
 		Item    officers.ItemID `json:"item"`
 	} `json:"officer_item"`
-	Ladder struct {
-		Rounds []struct {
-			Round   int    `json:"round"`
-			Verdict string `json:"verdict"`
-			Red     int    `json:"red"`
-			Yellow  int    `json:"yellow"`
-		} `json:"rounds"`
-		StopReason string `json:"stop_reason"`
-	} `json:"ladder"`
 	OpenYellows []struct {
 		Where string `json:"where"`
 		Text  string `json:"text"`
 	} `json:"open_yellows"`
-	Checks []struct {
-		Name       string `json:"name"`
-		Conclusion string `json:"conclusion"`
-	} `json:"checks"`
 	ProtectedIdentity struct {
 		Result string `json:"result"`
 		Detail string `json:"detail,omitempty"`
@@ -339,7 +330,6 @@ func (a MergeAskArgs) check() error {
 		{"how", a.How, maxMergeAskHow, true},
 		{"to", a.To, maxMergeAskShort, false},
 		{"evidence.officer_item.officer", a.Evidence.OfficerItem.Officer, maxMergeAskShort, false},
-		{"evidence.ladder.stop_reason", a.Evidence.Ladder.StopReason, maxMergeAskLong, false},
 		{"evidence.protected_identity.result", a.Evidence.ProtectedIdentity.Result, maxMergeAskShort, false},
 		{"evidence.protected_identity.detail", a.Evidence.ProtectedIdentity.Detail, maxMergeAskLong, false},
 		{"evidence.settled_at", a.Evidence.SettledAt, maxMergeAskShort, false},
@@ -350,14 +340,6 @@ func (a MergeAskArgs) check() error {
 		}
 	}
 	e := a.Evidence
-	if n := len(e.Ladder.Rounds); n < 1 || n > maxMergeAskRounds {
-		return bad("evidence.ladder.rounds has %d rounds; HQ takes 1 to %d", n, maxMergeAskRounds)
-	}
-	for i, r := range e.Ladder.Rounds {
-		if err := text(fmt.Sprintf("evidence.ladder.rounds[%d].verdict", i), r.Verdict, maxMergeAskShort, false); err != nil {
-			return err
-		}
-	}
 	if len(e.OpenYellows) > maxMergeAskList {
 		return bad("evidence.open_yellows has %d findings, over HQ's %d", len(e.OpenYellows), maxMergeAskList)
 	}
@@ -366,17 +348,6 @@ func (a MergeAskArgs) check() error {
 			return err
 		}
 		if err := text(fmt.Sprintf("evidence.open_yellows[%d].text", i), y.Text, maxMergeAskLong, false); err != nil {
-			return err
-		}
-	}
-	if len(e.Checks) > maxMergeAskList {
-		return bad("evidence.checks has %d checks, over HQ's %d", len(e.Checks), maxMergeAskList)
-	}
-	for i, c := range e.Checks {
-		if err := text(fmt.Sprintf("evidence.checks[%d].name", i), c.Name, maxMergeAskShort, false); err != nil {
-			return err
-		}
-		if err := text(fmt.Sprintf("evidence.checks[%d].conclusion", i), c.Conclusion, maxMergeAskShort, false); err != nil {
 			return err
 		}
 	}
@@ -413,7 +384,7 @@ func (g *ShepherdGates) MergeAsk(ctx context.Context, instance string, a MergeAs
 	if err != nil {
 		return nil, refuse(GateItem, "HQ does not show %s holding item %s for %s: %v", instance, a.ItemID, officers.ShepherdSubject(a.Repo, a.PR), err)
 	}
-	if why, on := sh.shadowRefusal(ctx, item, fmt.Sprintf("asked HQ for a merge ask of %s#%d at %s", a.Repo, a.PR, head12(a.HeadSHA))); on {
+	if why, on := sh.shadowRefusal(ctx, item, fmt.Sprintf("asked HQ for a merge ask of %s#%d at %s", a.Repo, a.PR, head12(a.HeadSHA)), false); on {
 		return nil, refuse(GateShadow, "%s", why)
 	}
 	body, err := json.Marshal(mergeAskBody{Instance: instance, To: a.To, Repo: a.Repo, PR: a.PR, HeadSHA: a.HeadSHA, BaseRef: a.BaseRef,

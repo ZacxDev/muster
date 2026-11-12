@@ -116,6 +116,10 @@ func TestEveryShepherdWriteIsRefusedInShadow(t *testing.T) {
 				if wantLine := sItem + ": would have " + w.would; len(r.shadowLines) != 1 || r.shadowLines[0] != wantLine {
 					t.Fatalf("recorded %q, want [%q]", r.shadowLines, wantLine)
 				}
+				// Only a PUSH is recorded as one (it blocks the item's hand-off).
+				if wantPush := w.name == "push"; len(r.shadowPush) != 1 || r.shadowPush[0] != wantPush {
+					t.Fatalf("recorded push flags %v, want [%v]", r.shadowPush, wantPush)
+				}
 				if w.name == "push" || w.name == "comment" || w.name == "update-branch" {
 					if !errors.Is(err, connectors.ErrGateRefused) {
 						t.Fatalf("a shadowed %s is not a gate refusal (403): %v", w.name, err)

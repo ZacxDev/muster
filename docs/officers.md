@@ -750,12 +750,26 @@ dispatch both ask them.
   loop advances on a hand-off: the shepherd completing its opened item, every
   auditor round, and an author completing its fix item each send
   `handoff: {"head_sha": "<the pull request's head, 40 hex>"}`, and HQ
-  refuses those completes without it (`400 handoff_required`). muster
-  refuses, before HQ, a hand-off that is not exactly `{"head_sha"}` with 40
-  **lower-case** hex, or one on any outcome but `done` (HQ refuses that too),
-  and sends `"handoff"` only when one is given — an HQ that predates the
-  field never sees it. HQ's refusals (`400 handoff_required`, `409
-  round_cap`, `no_handoff_target`, `handoff_ambiguous`, `handoff_exists`)
+  refuses those completes without it (`400 handoff_required`). A
+  **shepherd** may add `"to": "author"` — the one value — to hand a clean
+  round's fixes to the pull request's authoring officer (HQ enqueues its
+  `*.pr_fix` item; [the draft stage](#the-draft-stage)). muster refuses,
+  before HQ, a hand-off with another key, a `head_sha` that is not 40
+  **lower-case** hex, `to` with another value or on any officer but a
+  shepherd, or one on any outcome but `done` (HQ refuses that too), and sends
+  `"handoff"` only when one is given — an HQ that predates the field never
+  sees it. Two more refusals keep a hand-off from naming a head that does not
+  exist: after muster refused a **push** under the item in shadow, the item's
+  hand-off is refused (complete it `escalated`; the shadow block says what
+  would have been pushed) — for a shepherd's item and an author's fix item
+  alike; and a draft officer's hand-off of a `*.pr_fix` item is refused unless
+  a push under it **landed** (GitHub's report applied it) while the item was
+  held ("no push landed on <branch> while holding item <id>"; HQ refuses a fix's
+  hand-off at an unchanged head). A complete without a hand-off is unaffected
+  by both. HQ's refusals (`400 handoff_required`, `409
+  round_cap`, `no_handoff_target`, `handoff_ambiguous`, `handoff_exists`,
+  and on a hand-off to the author `audit_not_stopped`, `officer_shadow`,
+  `no_author`)
   come back with HQ's status and body; HQ rolls the complete back, so the
   item stays held.
 
@@ -1274,7 +1288,9 @@ round's 🟡 findings, or a human approver's feedback, HQ hands the officer
 whose App opened the pull request an item of kind `<its type>.pr_fix`
 (muster keys on the `.pr_fix` suffix only), subject `<repo>#<pr>` (repository
 lower-cased), payload `{pr_loop: {repo, pr, head_sha, …}, findings |
-feedback, from}`.
+feedback, from}` — `findings` the clean round's auditor report as one
+**string**, verbatim, or `feedback` the owner's `{text, by, at}`. muster parses
+neither: they are the instance's to read.
 
 - A draft officer's push to one of its own branches is admitted **without an
   item**, as before (the branch shape and the push re-check above), and that
@@ -1292,7 +1308,8 @@ feedback, from}`.
   the pull request's existing branch …").
 - The next audit round starts when the author completes the fix item `done`
   with `handoff: {head_sha: <the new head>}` ([Completing an
-  item](#completing-an-item-outcomes-and-investigation)).
+  item](#completing-an-item-outcomes-and-investigation)) — refused by muster
+  until a push under the item has landed.
 
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no
@@ -1359,7 +1376,7 @@ on only when it is:
 | `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value, and no line whose first non-space character (after any `>` quote marks) is `/` or `@` — such a line reads as a slash command or a bot comment command (`@<bot> merge`), which automation in the repository could act on | 403, or 409 and a notice |
 | `PUT /repos/{repo}/pulls/{n}/update-branch` | the body is exactly `{"expected_head_sha": <the head>}` and it is the current head (GitHub merges the base into the head; never a rebase) | 403 |
 | `officer_shepherd_mark_ready {repo, pr}` | an open **draft**; the rule above; `checks`: `required_checks` is not empty and every entry is `success` on the head (none listed: refused — CI green cannot be confirmed); `wall`: `compare/{base}...{head}` passes the wall and the content rules; `audit`: the auditor's report on the held item clears the head (below); `shadow` (below); then GraphQL `markPullRequestReadyForReview` | a refusal naming the gate |
-| `officer_shepherd_merge_ask {item_id, repo, pr, head_sha, base_ref, base_sha, summary, purpose, how, evidence, to?}` | `repo` is one of the shepherd's; HQ's bounds, checked by muster before any call (below); the instance holds `item_id` under a live lease and its subject is `<repo>#<pr>`; `shadow`; then HQ's merge-ask route with the shepherd's token | a refusal naming the gate, or HQ's answer verbatim |
+| `officer_shepherd_merge_ask {item_id, repo, pr, head_sha, base_ref, base_sha, summary, purpose, how, evidence, to?}` | `repo` is one of the shepherd's; HQ's exact body and bounds, checked by muster before any call (below); the instance holds `item_id` under a live lease and its subject is `<repo>#<pr>`; `shadow`; then HQ's merge-ask route with the shepherd's token | a refusal naming the gate, or HQ's answer verbatim |
 
 Every write in this table — the push, the comment, update-branch, mark ready
 and the merge ask — is also refused in **shadow** ([below](#shadow)).
@@ -1472,19 +1489,18 @@ officers API:
   `{officer_id, item_id, kind, summary}`, `summary` being the auditor's
   report. muster does not depend on item kind names.
 - **The merge ask** — `POST {hq_url}/officers/{id}/items/{item}/merge-asks`
-  with the shepherd's token, body `{"instance", "to"?, "repo", "pr",
+  with the shepherd's token, body exactly `{"instance", "to"?, "repo", "pr",
   "head_sha", "base_ref", "base_sha", "summary", "purpose", "how",
-  "evidence"}`, `evidence` being `{"officer_item": {"officer", "item"},
-  "ladder": {"rounds": [{"round", "verdict", "red", "yellow"}],
-  "stop_reason"}, "open_yellows": [{"where", "text"}], "checks": [{"name",
-  "conclusion"}], "protected_identity": {"result", "detail"?}, "settled_at",
-  "rollback"}`. muster sets `instance` to the calling agent (an `instance`
-  argument is refused) and refuses an unknown field, then applies HQ's bounds
-  before any call: `summary` ≤300, `purpose` ≤600, `how` ≤900 characters, each
-  required; `ladder.rounds` 1–20; `open_yellows` and `checks` ≤50 each;
-  `base_ref`, `to`, `officer`, `verdict`, `where`, `name`, `conclusion`,
-  `result` and `settled_at` ≤200; `stop_reason`, `text`, `detail` and
-  `rollback` ≤2000; `head_sha` and `base_sha` 40 hex. HQ's answer, or its
+  "evidence"}`, `evidence` being exactly `{"officer_item": {"officer",
+  "item"}, "open_yellows": [{"where", "text"}], "protected_identity":
+  {"result", "detail"?}, "settled_at", "rollback"}` — no `ladder` and no
+  `checks`: HQ reads the audit ladder and CI from its own records and refuses
+  both (muster refuses them first, as unknown fields). muster sets `instance`
+  to the calling agent (an `instance` argument is refused) and refuses an
+  unknown field, then applies HQ's bounds before any call: `summary` ≤300,
+  `purpose` ≤600, `how` ≤900 characters, each required; `open_yellows` ≤50;
+  `base_ref`, `to`, `officer`, `where`, `result` and `settled_at` ≤200;
+  `text`, `detail` and `rollback` ≤2000; `head_sha` and `base_sha` 40 hex. HQ's answer, or its
   refusal (status, code, message — e.g. 422 `audit_not_stopped`, 409
   `officer_shadow`, 502 `github_unavailable`), is passed back verbatim.
 

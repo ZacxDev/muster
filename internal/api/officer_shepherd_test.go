@@ -76,6 +76,13 @@ func (f *shepFakeGH) PRComments(context.Context, int) ([]officership.Comment, er
 	}
 	return []officership.Comment{{Author: "delta-auditor", AuthorType: "User", Body: body}}, nil
 }
+
+// PRsForBranch answers none: the draft push re-check (afterPush) then has
+// nothing to read.
+func (f *shepFakeGH) PRsForBranch(context.Context, string, string) ([]officership.PR, error) {
+	return nil, nil
+}
+
 func (f *shepFakeGH) MarkReady(_ context.Context, n int, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

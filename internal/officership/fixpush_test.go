@@ -40,7 +40,12 @@ func newFixRig() *fixRig {
 		return r.held, r.heldErr
 	}
 	r.g.OfficerShadow = func(context.Context) (bool, error) { return r.officerShadow, nil }
-	r.g.Shadowed = func(it officers.Item, line string) { r.lines = append(r.lines, string(it.ID)+": "+line) }
+	r.g.Shadowed = func(it officers.Item, line string, push bool) {
+		if !push {
+			line += " (NOT recorded as a push)"
+		}
+		r.lines = append(r.lines, string(it.ID)+": "+line)
+	}
 	return r
 }
 
@@ -152,5 +157,34 @@ func TestAFixItemOpensNoPullRequest(t *testing.T) {
 	r.kinds[17] = "investigate.opened"
 	if err := r.create(goodCreate()); err != nil {
 		t.Fatalf("control: a create under an ordinary item: %v", err)
+	}
+}
+
+// TestOnlyAnAppliedFixPushCountsAsLanded: FixPushed hears of the push only when
+// GitHub's report-status says the ref APPLIED — not on "ng", not on a non-200,
+// not on a request never forwarded.
+func TestOnlyAnAppliedFixPushCountsAsLanded(t *testing.T) {
+	for name, c := range map[string]struct {
+		res  connectors.ForwardResult
+		want int
+	}{
+		"applied":       {connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Body: report("unpack ok", "ok refs/heads/"+dBranch)}, 1},
+		"refused (ng)":  {connectors.ForwardResult{Forwarded: true, Status: http.StatusOK, Body: report("unpack ok", "ng refs/heads/"+dBranch+" declined")}, 0},
+		"not a 200":     {connectors.ForwardResult{Forwarded: true, Status: http.StatusForbidden}, 0},
+		"not forwarded": {connectors.ForwardResult{}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newFixRig()
+			var landed []string
+			r.g.FixPushed = func(it officers.Item, branch string) { landed = append(landed, string(it.ID)+" "+branch) }
+			out, err := r.pushAsInstance("refs/heads/" + dBranch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			connectors.AfterForwardOf(out)(context.Background(), c.res)
+			if len(landed) != c.want || (c.want == 1 && landed[0] != fixItem+" "+dBranch) {
+				t.Fatalf("FixPushed %v, want %d call(s) for item %s on %s", landed, c.want, fixItem, dBranch)
+			}
+		})
 	}
 }

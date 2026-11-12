@@ -120,7 +120,7 @@ type Shepherd struct {
 	OfficerShadow func(ctx context.Context) (bool, error)
 	// Shadowed records a write refused in shadow ("would have …") against
 	// the item it was made under; nil records nothing.
-	Shadowed func(item officers.Item, line string)
+	Shadowed func(item officers.Item, line string, push bool)
 }
 
 // rule is the rule for login's pull requests in repo.
@@ -331,7 +331,7 @@ func (g *PushGate) admitShepherdPushLocked(ctx context.Context, sr officers.Ship
 	}
 	// 🔴 SHADOW BEFORE THE SCRATCH REF: nothing of a shadowed push reaches
 	// GitHub (the rewrite below is what would send it).
-	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch)); on {
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch), true); on {
 		return nil, nil, shadowRefused(why)
 	}
 	var nonce [12]byte
@@ -638,7 +638,7 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 				return shepherdRefused("a comment on #%d with the line %q, which reads as a command to a bot or a slash command (a line starting with / or @): "+
 					"comment automation in the repository could act on it; reword it so no line starts with / or @", n, truncate(line, 80))
 			}
-			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("commented on %s#%d (%d chars)", sr.Repo, n, utf8.RuneCountInString(body))); on {
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("commented on %s#%d (%d chars)", sr.Repo, n, utf8.RuneCountInString(body)), false); on {
 				return shadowRefused(why)
 			}
 			return nil
@@ -661,7 +661,7 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if pr.HeadSHA != want {
 				return shepherdRefused("update-branch of #%d at %s, which is not its head %s: re-read the pull request", n, shortSHA(want), shortSHA(pr.HeadSHA))
 			}
-			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("updated %s from its base", pr.HeadRef)); on {
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("updated %s from its base", pr.HeadRef), false); on {
 				return shadowRefused(why)
 			}
 			return nil
@@ -761,7 +761,7 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 		return out, err
 	}
 	pass(GateAudit)
-	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("marked %s#%d ready", sr.Repo, n)); on {
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("marked %s#%d ready", sr.Repo, n), false); on {
 		return out, refuse(GateShadow, "%s", why)
 	}
 	if err := gh.MarkReady(ctx, n, pr.NodeID); err != nil {

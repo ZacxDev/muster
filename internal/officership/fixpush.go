@@ -3,6 +3,7 @@ package officership
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -45,22 +46,23 @@ func subjectPR(subject string) (string, int, bool) {
 // officer App's own, and the push is not in shadow. A push under no held fix
 // item is not changed. 🔴 FAIL CLOSED: HQ's items, or the pull request,
 // unreadable is a refusal.
-func (g *PushGate) admitFixPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand) error {
+func (g *PushGate) admitFixPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand) ([]fixPush, error) {
 	instance := callerInstance(ctx)
 	if g.FixItems == nil || instance == "" || len(cmds) == 0 {
-		return nil
+		return nil, nil
 	}
 	items, err := g.FixItems(ctx, instance)
 	if err != nil {
-		return refused("muster could not read HQ's items to tell whether this push is under a pull-request fix item (%v); push again", err)
+		return nil, refused("muster could not read HQ's items to tell whether this push is under a pull-request fix item (%v); push again", err)
 	}
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
 	gh := g.ghFor(sr.Repo)
 	if gh == nil {
-		return fmt.Errorf("no GitHub reader for %s", sr.Repo)
+		return nil, fmt.Errorf("no GitHub reader for %s", sr.Repo)
 	}
+	var admitted []fixPush
 	for _, c := range cmds {
 		branch := strings.TrimPrefix(c.ref, "refs/heads/")
 		for _, it := range items {
@@ -70,28 +72,50 @@ func (g *PushGate) admitFixPush(ctx context.Context, sr officers.ShipRepo, cmds 
 			}
 			pr, err := gh.PR(ctx, n)
 			if err != nil {
-				return refused("could not read #%d, the pull request of fix item %s you hold: %v", n, it.ID, err)
+				return nil, refused("could not read #%d, the pull request of fix item %s you hold: %v", n, it.ID, err)
 			}
 			if pr.HeadRef != branch || !connectors.SameRepo(pr.HeadRepo, sr.Repo) {
 				continue // the fix item is another pull request's
 			}
 			if pr.State != "open" || pr.Merged {
-				return refused("a push to %s under fix item %s: #%d is %s (merged %v); a fix goes to an open pull request", branch, it.ID, n, pr.State, pr.Merged)
+				return nil, refused("a push to %s under fix item %s: #%d is %s (merged %v); a fix goes to an open pull request", branch, it.ID, n, pr.State, pr.Merged)
 			}
 			slug, err := gh.AppSlug(ctx)
 			if err != nil {
-				return refused("could not read this officer App's identity: %v", err)
+				return nil, refused("could not read this officer App's identity: %v", err)
 			}
 			if !strings.EqualFold(pr.Author, BotLogin(slug)) {
-				return refused("a push to %s under fix item %s: #%d is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
+				return nil, refused("a push to %s under fix item %s: #%d is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
 					branch, it.ID, n, pr.Author, BotLogin(slug))
 			}
-			if why, on := g.shadowRule().refusal(ctx, it, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch)); on {
-				return shadowRefused(why)
+			if why, on := g.shadowRule().refusal(ctx, it, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch), true); on {
+				return nil, shadowRefused(why)
 			}
+			admitted = append(admitted, fixPush{item: it, ref: c.ref, branch: branch})
 		}
 	}
-	return nil
+	return admitted, nil
+}
+
+// fixPush is one ref of a push admitted under a held fix item.
+type fixPush struct {
+	item        officers.Item
+	ref, branch string
+}
+
+// fixPushesLanded records (FixPushed) each of fixes whose ref GitHub's
+// report-status says it APPLIED; a ref it refused, or a report that does not
+// name it (no answer, none asked), is not a landed push.
+func (g *PushGate) fixPushesLanded(fixes []fixPush, res connectors.ForwardResult) {
+	if g.FixPushed == nil || len(fixes) == 0 || !res.Forwarded || (res.Status != 0 && res.Status != http.StatusOK) {
+		return
+	}
+	report := parseReportStatus(res.Body)
+	for _, f := range fixes {
+		if applied, known := report[f.ref]; known && applied {
+			g.FixPushed(f.item, f.branch)
+		}
+	}
 }
 
 // shadowRule is this gate's ShadowRule.

@@ -433,13 +433,21 @@ type Completion struct {
 	Handoff *Handoff `json:"-"`
 }
 
-// Handoff is a completion's `handoff`: exactly {"head_sha": <40 lower-case
-// hex>}. HQ decides which items and outcomes take one (it refuses it on any
+// Handoff is a completion's `handoff`: {"head_sha": <40 lower-case hex>},
+// and on a shepherd's complete optionally "to": "author". HQ decides which items and outcomes take one (it refuses it on any
 // outcome but done) and where it goes; muster checks only its shape
 // (ValidHandoffHead) and that the outcome is done.
 type Handoff struct {
 	HeadSHA string `json:"head_sha"`
+	// To is HandoffToAuthor on a shepherd's hand-off of a clean round's
+	// fixes to the pull request's authoring officer; "" (not sent) otherwise.
+	To string `json:"to,omitempty"`
 }
+
+// HandoffToAuthor is the one `handoff.to` value: a shepherd hands a clean
+// round's fixes to the pull request's AUTHORING officer (HQ enqueues its
+// *.pr_fix item).
+const HandoffToAuthor = "author"
 
 // handoffHeadRE is a hand-off head: a full commit sha, lower-case.
 var handoffHeadRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
