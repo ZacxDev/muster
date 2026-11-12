@@ -204,14 +204,15 @@ const (
 	// BackendHQ is an external HQ over HTTPS with the officer's token: the
 	// default, and the only backend before officer-backend/v1.
 	BackendHQ = "hq"
-	// BackendBuiltin is muster's own Postgres (internal/officers/builtin).
+	// BackendBuiltin is muster's own Postgres (muster#503 slices 4-5; not
+	// available yet).
 	BackendBuiltin = "builtin"
 )
 
 // errBuiltinNotWired is the refusal of a builtin officer that passes every
 // builtin rule: the built-in backend's store exists but no officer runs on it
 // yet (muster#503 slice 5 wires it). Refused, never run against nothing.
-var errBuiltinNotWired = errors.New(`backend "builtin" is not available in this build yet (its store exists; muster does not run officers on it until the wiring lands): declare "backend": "hq" or remove the officer`)
+var errBuiltinNotWired = errors.New(`backend "builtin" is not available in this build yet (muster does not run officers on it yet): declare "backend": "hq" or remove the officer`)
 
 // parseBackend is the declaration's backend: "" and "hq" are BackendHQ; and
 // "builtin" is refused at boot, FAIL CLOSED, when the officer declares

@@ -20,8 +20,8 @@ import (
 // interface and the optional ones below, never through a concrete client.
 //
 // *Client (HQ over HTTPS with the officer's token) is one implementation; a
-// built-in one in muster's own Postgres is the other (internal/officers/
-// builtin). backendtest is the conformance suite both must pass.
+// built-in one in muster's own Postgres is planned (muster#503 slice 4), and
+// a conformance suite both must pass (slice 3).
 //
 // Errors are the contract's three kinds, whatever the implementation: a
 // decision is *HQError (status + the backend's {code, …} JSON body: 404 no
@@ -141,7 +141,9 @@ const (
 
 // capabilityInterface is THE map from an optional verb's capability to the
 // interface that serves it. A capability not here (tiers, investigation,
-// cost) is a feature of the core verbs. backendtest asserts a backend
+// cost) is a feature of the core verbs: until the first narrower backend is
+// wired (slice 5) nothing branches on those three — they are vocabulary. A
+// conformance suite asserts a backend
 // implements every interface it advertises.
 var capabilityInterface = map[string]func(Backend) bool{
 	CapTranscript:  func(b Backend) bool { _, ok := b.(TranscriptBackend); return ok },
@@ -191,7 +193,7 @@ func (c Capabilities) Has(v string) bool {
 
 // Unimplemented is every capability b advertises without implementing the
 // interface that serves it (none: nil): a backend that does is broken, and
-// backendtest says so.
+// Unimplemented names it.
 func Unimplemented(b Backend) []string {
 	var out []string
 	for _, v := range b.Capabilities().Verbs {

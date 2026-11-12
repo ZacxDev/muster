@@ -55,7 +55,7 @@ multi-tenant backend.
 muster's whole backend dependency was **one concrete type**, `officers.Client`
 (`internal/officers/hq.go` plus a verb per file: `asks.go`, `item_asks.go`,
 `gap_tasks.go`, `tasks.go`, `pr_context.go`, `pools.go`, `obs.go`), reached
-through `ClientHQ.Client(o)` from **26 routes**:
+through `ClientHQ.Client(o)` from **25 routes**:
 
 | group | verbs (HQ route under the officer's base URL) | callers |
 |---|---|---|
@@ -210,7 +210,7 @@ release, items paging, brief from the type's charter) and `builtin.Backend`
 implementing `officers.Backend` over it with the contract's errors. Every
 timestamp comparison takes muster's clock as a parameter, never SQL `now()`,
 so the conformance suite can expire a lease without sleeping. Its capabilities
-on day 1: `tiers`, `investigation`, `cost`.
+on day 1: `tiers`, `investigation`, `cost` (vocabulary until slice 5 branches on them).
 
 ### Conformance (slice 3)
 
