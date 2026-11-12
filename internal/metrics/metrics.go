@@ -63,6 +63,42 @@ var (
 		Help: "Requests refused 421 because their Host is under MUSTER_PLUGIN_ORIGINS.",
 	})
 
+	// PageLinkRequests counts requests to a page's share-link routes
+	// (/s/{token}…, internal/api pages.go) by route (shell, content, submit,
+	// upload) and outcome: served, not_found (unknown, not live or expired —
+	// one answer for all) and throttled (too many failed lookups from one
+	// address). The token is never a label.
+	PageLinkRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_page_link_requests_total",
+		Help: "Requests to shareable pages' link routes, by route and outcome.",
+	}, []string{"route", "outcome"})
+
+	// PageResponses counts what viewers send through a page's link, by kind
+	// (submit, upload) and outcome: recorded, invalid (not what the component
+	// takes), throttled (the per-link rate), full (a per-link cap), not_found
+	// and error.
+	PageResponses = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_page_responses_total",
+		Help: "Responses sent through shareable pages' links, by kind and outcome.",
+	}, []string{"kind", "outcome"})
+
+	// PageUploadRollbackFailures counts files stored through a page's link
+	// that could not be recorded AND could not be taken back (internal/api
+	// dropUnrecordedUpload): each leaves an object under pages/<id>/ that no
+	// row names until the page is deleted. Nonzero is worth a look.
+	PageUploadRollbackFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "muster_page_upload_rollback_failures_total",
+		Help: "Page uploads stored but neither recorded nor taken back (an object left under pages/<id>/).",
+	})
+
+	// PageShareDecisions counts what happens to share links: approved and
+	// denied (the owner's card), minted and revoked (the Pages screen and
+	// page_link_revoke), requested (page_share_request).
+	PageShareDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_page_share_decisions_total",
+		Help: "Shareable pages' link requests, approvals, denials, mints and revocations.",
+	}, []string{"decision"})
+
 	// PluginHandoffs counts viewer hand-off codes (docs/plugins.md#viewer-hand-off)
 	// by purpose (`view`; `unknown` for a redeem that matched no code) and
 	// outcome: minted, rate_limited and refused (POST /plugin-handoffs);

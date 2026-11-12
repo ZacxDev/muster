@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/ZacxDev/muster/internal/features"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sessionstate"
 	"io"
@@ -450,6 +451,9 @@ var bannerLedger = []string{
 	// with its answer — transcript text, kept for the text TTL — so the log
 	// must say whether it is.
 	envAskLog,
+	// SHAREABLE PAGES ARE LEDGERED: ON, agents publish pages a share link
+	// serves to anyone holding it — so the log must say whether they do.
+	envPages,
 	// THE CLAUDE ACCOUNT USAGE POLLER IS LEDGERED: ON, muster-server calls the
 	// provider's usage endpoint with every pooled account's token, every
 	// interval — so the log must say whether it does.
@@ -482,7 +486,8 @@ var bannerExempt = map[string]string{
 		"poller's ON line; refused at boot without " + envCCUsagePushURL + ", which is refused with the poller off",
 	envCCUsagePollInterval: "printed with its value on the `claude account usage: ON` line; refused at boot with the poller off, " +
 		"whose OFF line names " + envCCUsagePoll,
-	envAskLogTextTTL: "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
+	envPagesUploadBytes: "printed with its value on the `shareable pages: ON` line; it means nothing with pages off, whose OFF line names " + envPages,
+	envAskLogTextTTL:    "printed with its value on the `ask log: ON` line; it means nothing with the log off, whose OFF line names " + envAskLog,
 	envAskLogClassify: "printed on the `ask log: ON` line in both its states (ON / off, naming itself); it means nothing with the " +
 		"log off, whose OFF line names " + envAskLog,
 	envChiefRuntime: "set, the compose driver logs `chief runtime: COMPOSE (MUSTER_CHIEF_RUNTIME=compose) — …` at boot " +
@@ -888,6 +893,8 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		DialDenyPrivate: true,
 		// The ask log: the banner branches on ext.AskLog (below).
 		AskLog: askLogConfig{On: true, TextTTL: 72 * time.Hour},
+		// Shareable pages: the banner branches on ext.Pages (below).
+		Pages: true,
 		// The usage poller: the banner branches on ext.CCUsageInterval (below).
 		CCUsage: ccUsageConfig{On: true, Interval: 5 * time.Minute},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
@@ -944,6 +951,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefNudge:      &api.ChiefNudges{Idle: 15 * time.Minute, HourlyCap: 4, Live: map[int64]bool{1: true}},
 		Episodes:        sessionstate.NewPG(nil),
 		AskLog:          &api.AskLog{Store: asklog.NewPG(nil), TextTTL: 72 * time.Hour},
+		Pages:           pages.NewPG(nil),
 		CCUsageInterval: 5 * time.Minute,
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)

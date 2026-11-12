@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -51,6 +52,9 @@ const (
 	// A paired device's credential (devices.ShapeOK): mdv_ + 43 base64url;
 	// principalDevices resolves it to user 1.
 	pDeviceToken = "mdv_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// A page's share-link token (pages.TokenShapeOK): 43 base64url;
+	// principalPages resolves it to a link of user 1's.
+	pPageToken = "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
 )
 
 // publicRoutes are served with no credential and therefore no Principal.
@@ -134,6 +138,16 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",
+		// Shareable pages (pages.go): the owner's Pages screen, preview and
+		// writes.
+		"GET /pages",
+		"GET /pages/{id}",
+		"GET /pages/{id}/preview",
+		"GET /pages/{id}/versions/{v}/content",
+		"POST /pages/{id}/links",
+		"POST /pages/{id}/links/{link}/revoke",
+		"POST /pages/{id}/rollback",
+		"POST /pages/{id}/delete",
 		// Routing rules (routing_rules.go) and the usage page (usage.go).
 		"GET /rules",
 		"POST /rules/{id}/disable",
@@ -455,6 +469,14 @@ var routeVias = map[authz.Via][]string{
 		// `muster doctor`'s this-host check (doctor.go): the token's own host.
 		"GET /mirror/host",
 	},
+	// A page's SHARE LINK (0116) opens exactly the four share-link routes; the
+	// token is in the path (credential rewrites the path's placeholder).
+	authz.ViaPageLink: {
+		"GET /s/{token}",
+		"GET /s/{token}/content",
+		"POST /s/{token}/submit",
+		"POST /s/{token}/upload",
+	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {
 		"DELETE /api/device",
@@ -551,6 +573,17 @@ func (principalDevices) Authenticate(_ context.Context, tok string) (devices.Dev
 	return devices.Device{}, devices.ErrBadToken
 }
 
+// principalPages resolves the one test share-link token to a live link of
+// user 1's page.
+type principalPages struct{ pages.Store }
+
+func (principalPages) LinkByToken(_ context.Context, tok string) (pages.Link, error) {
+	if tok == pPageToken {
+		return pages.Link{ID: 8, OwnerID: authz.OperatorUserID, PageID: 5, Token: tok, State: pages.LinkLive}, nil
+	}
+	return pages.Link{}, pages.ErrLinkNotFound
+}
+
 // principalMirrorTokens resolves the one test mirror token to user 1's host.
 type principalMirrorTokens struct{}
 
@@ -601,6 +634,7 @@ func newPrincipalTestServerWith(t *testing.T, cfg AuthConfig) (*Server, http.Han
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Agents: principalAgents{}, Connectors: principalConnectors{}, APITokens: principalAPITokens{},
 		Flows: principalFlows{}, Plugins: principalPlugins{}, MirrorTokens: principalMirrorTokens{}, Devices: principalDevices{},
+		Pages: principalPages{},
 		// The viewer routes are on, so their doors are probed too.
 		PluginOrigins: []plugins.OriginPattern{{Wildcard: true, Host: "plugin.example.test"}}})
 	seen := &[]authz.Principal{}
@@ -662,6 +696,9 @@ func credential(s *Server, req *http.Request, via authz.Via) {
 		req.Header.Set("Authorization", "Bearer "+pMirrorToken)
 	case authz.ViaDevice:
 		req.Header.Set("Authorization", "Bearer "+pDeviceToken)
+	case authz.ViaPageLink:
+		// The credential IS the path: concretePath wrote its placeholder.
+		req.URL.Path = strings.Replace(req.URL.Path, pages.SharePrefix+"x1", pages.SharePrefix+pPageToken, 1)
 	}
 }
 

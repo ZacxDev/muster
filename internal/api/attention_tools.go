@@ -421,6 +421,11 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 	if text, ok := s.dispatchPluginDraftTool(ctx, c, name, arguments); ok {
 		return text, true
 	}
+	// The page tools (page_tools.go): the page store, every agent and every
+	// mirrored session, each acting on the pages it made.
+	if text, ok := s.dispatchPageTool(ctx, c, name, arguments); ok {
+		return text, true
+	}
 	if !s.attentionToolsOn() {
 		return "", false
 	}

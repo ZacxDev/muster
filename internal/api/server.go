@@ -265,6 +265,9 @@ type Server struct {
 	transcribe transcribeLimits
 	// uploadLimits throttles the composer's attach button (uploads.go).
 	uploadLimits uploadLimits
+	// pageState is shareable pages' process state (pages.go): the share
+	// links' rate limits, the owner-push coalescing and page_responses' waits.
+	pageState pageState
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
@@ -764,6 +767,9 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	// Shareable pages (pages.go): the share links a viewer opens, and the
+	// owner's Pages screen.
+	s.registerPageRoutes(mux)
 	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
 	s.registerDoctorRoutes(mux)
 	// The feature registry (features.go): the Features page.

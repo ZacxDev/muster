@@ -29,6 +29,7 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -106,28 +107,32 @@ func fullyWiredServer(t *testing.T) *Server {
 		// is production's, so a fixture holding it would not be "wired".
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 		// NON-NIL on purpose: registration must not branch on the dial guard.
-		DialGuard:       &safedial.Guard{AllowLoopback: true},
-		Mirror:          stubMirror{},
-		Flows:           stubFlows{},
-		Plugins:         stubPlugins{},
-		Pins:            stubPins{},
-		SessionTags:     stubSessionTags{},
-		Recents:         stubRecents{},
-		Focus:           stubFocus{},
-		FocusSummarizer: stubSummarizer{},
-		FocusRetention:  time.Hour,
-		Suggest:         &suggest.Engine{},
-		ChiefPrefs:      &memChiefPrefs{},
-		NotifyPrefs:     &memNotifyPrefs{},
-		Branding:        &memBranding{},
-		ChiefNudge:      &ChiefNudges{},
-		ChiefNudges:     chiefnudge.NewPG(nil),
-		Episodes:        sessionstate.NewPG(nil),
-		AskLog:          &AskLog{Store: asklog.NewPG(nil)},
-		Routes:          stubRoutes{},
-		Attention:       stubAttention{},
-		MirrorTokens:    stubMirrorTokens{},
-		Routing:         &Routing{},
+		DialGuard: &safedial.Guard{AllowLoopback: true},
+		Mirror:    stubMirror{},
+		Flows:     stubFlows{},
+		// Shareable pages: registration must not branch on the store.
+		Pages: stubPages{},
+		// NON-ZERO, for AgentNamespacePrefix\'s reason.
+		PagesUploadBytes: 1 << 20,
+		Plugins:          stubPlugins{},
+		Pins:             stubPins{},
+		SessionTags:      stubSessionTags{},
+		Recents:          stubRecents{},
+		Focus:            stubFocus{},
+		FocusSummarizer:  stubSummarizer{},
+		FocusRetention:   time.Hour,
+		Suggest:          &suggest.Engine{},
+		ChiefPrefs:       &memChiefPrefs{},
+		NotifyPrefs:      &memNotifyPrefs{},
+		Branding:         &memBranding{},
+		ChiefNudge:       &ChiefNudges{},
+		ChiefNudges:      chiefnudge.NewPG(nil),
+		Episodes:         sessionstate.NewPG(nil),
+		AskLog:           &AskLog{Store: asklog.NewPG(nil)},
+		Routes:           stubRoutes{},
+		Attention:        stubAttention{},
+		MirrorTokens:     stubMirrorTokens{},
+		Routing:          &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
 		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch: stubChiefDispatch{},
@@ -176,6 +181,9 @@ type stubMirror struct{ Mirror }
 
 // stubFlows satisfies flows.Store for registration only; any method call panics.
 type stubFlows struct{ flows.Store }
+
+// stubPages satisfies pages.Store for registration only; any method call panics.
+type stubPages struct{ pages.Store }
 
 // stubPlugins satisfies plugins.Store for registration only; any method call panics.
 type stubPlugins struct{ plugins.Store }

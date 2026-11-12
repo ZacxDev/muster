@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message, device int64
+	var note, agent, session, plugin, message, device, page, link int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -129,6 +129,10 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO cc_account_failovers (agent_id, agent_name, from_account, to_account, reason) VALUES ($1, 'a', 'north', 'south', 'rate_limited')`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO session_routes (route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at) VALUES ('rt_' || substr(md5($1), 1, 24), $2, $3, 'mirror', 'sess', now() + interval '1 hour')`, func() []any { return []any{tag, message, agent} }, nil},
 		{`INSERT INTO task_ref_writes (note_id, plugin_id, kind, status) VALUES ($1, $2, 'status', 'in_progress')`, func() []any { return []any{note, plugin} }, nil},
+		{`INSERT INTO pages (title, agent_id) VALUES ($1, $2) RETURNING id`, func() []any { return []any{"page-" + tag, agent} }, &page},
+		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
+		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
+		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
 	}
 	for _, s := range steps {
 		var err error

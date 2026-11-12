@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +121,11 @@ type Objects struct {
 	incomplete map[string]int
 	// FailPut, when set, is what Put answers.
 	FailPut error
+	// FailDelete, when set, fails every Delete and DeletePrefix.
+	FailDelete error
+	// AfterDeletePrefix, when set, runs at the end of every DeletePrefix: a
+	// test's hook into the moment after a page's prefix is swept.
+	AfterDeletePrefix func()
 }
 
 var _ uploads.ObjectStore = (*Objects)(nil)
@@ -277,8 +283,44 @@ func (o *Objects) Get(_ context.Context, key string) (io.ReadCloser, int64, erro
 func (o *Objects) Delete(_ context.Context, key string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.FailDelete != nil {
+		return o.FailDelete
+	}
 	delete(o.objs, key)
 	return nil
+}
+
+// DeletePrefix deletes every stored key under prefix, then runs AfterDeletePrefix
+// (with no lock held), if set.
+func (o *Objects) DeletePrefix(_ context.Context, prefix string) (int, error) {
+	o.mu.Lock()
+	if prefix == "" {
+		o.mu.Unlock()
+		return 0, errors.New("uploadstest: refusing to delete the whole bucket")
+	}
+	if o.FailDelete != nil {
+		o.mu.Unlock()
+		return 0, o.FailDelete
+	}
+	n := 0
+	for k := range o.objs {
+		if strings.HasPrefix(k, prefix) {
+			delete(o.objs, k)
+			n++
+		}
+	}
+	hook := o.AfterDeletePrefix
+	o.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return n, nil
+}
+
+// Seed stores data at key directly, as an object no upload row names (an
+// upload's bytes that landed while its page was being deleted).
+func (o *Objects) Seed(key string, data []byte) {
+	o.store(key, data, "application/octet-stream", int64(len(data)))
 }
 
 // Check always answers.

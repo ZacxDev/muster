@@ -286,6 +286,22 @@ BEGIN
         ALTER TABLE public.notify_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.notify_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0116 (pages, page_versions, page_links, page_responses), when this
+    -- schema has them; same reason as 0011.
+    IF to_regclass('public.pages') IS NOT NULL THEN
+        ALTER TABLE public.pages NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.pages DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.pages ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_versions NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_versions DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_versions ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_links NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_links DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_links ALTER COLUMN owner_id SET DEFAULT 1;
+        ALTER TABLE public.page_responses NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_responses DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.page_responses ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0108 (cc_account_usage), when this schema has it; same reason as 0011.
     IF to_regclass('public.cc_account_usage') IS NOT NULL THEN
         ALTER TABLE public.cc_account_usage NO FORCE ROW LEVEL SECURITY;

@@ -47,6 +47,7 @@ docker compose logs muster | grep -E 'dictation:|file attachments:|web push:'
 | [Ask cards](#ask-cards) | Claude Code's multiple-choice questions answered from muster | a Claude Code hook per machine | off | per machine |
 | [Session state](#session-state) | one push per stop; the Stalled / waiting section | nothing | **on** in the Compose stack, upgrades included | 1 line to turn off |
 | [Ask log](#ask-log) | every question an agent asks you, with your answer and how long it took, recorded for review | nothing | off | 1 line |
+| [Pages](#pages) | agents publish pages — showcases, questions, forms, uploads, their own script in a sandbox — and ask before a link anyone can open goes live | `MUSTER_PUBLIC_URL`; attachments for uploads | off | 1 line |
 | [Connectors](#connectors) | stored credentials; members' own OpenRouter keys | an encryption key | off | 1 line |
 | [GitHub App](#github-app) | muster's GitHub identity; one-repository tokens for agents | a GitHub App you create, connectors | off | 4 lines |
 | [Accounts](#accounts) | per-user sign-in, passkeys, invites, roles | **a GoTrue server you run**, a second port | off (one shared password) | 4 lines + an override file |
@@ -417,6 +418,21 @@ it took ([asks.md](asks.md)). Telemetry only: nothing is answered for you.
 - **Privacy:** redacted on the way in, yours only, text cleared after the TTL.
 - **Check:** `ask log: ON (MUSTER_ASK_LOG=1) — …`; off, the line reads
   `ask log: OFF — MUSTER_ASK_LOG is unset; …`.
+
+### Pages
+
+Agents publish small pages for you — a showcase, questions, a form, file
+uploads, an approval, or their own script in a sandbox — and ask you before a
+link that anyone can open goes live. What viewers send comes back to the agent
+as data, and you are notified. [pages.md](pages.md).
+
+- **Needs:** the core's database, and `MUSTER_PUBLIC_URL` (links are written on
+  it). An `upload` block needs [attachments](#attachments).
+- **Turn it on:** `MUSTER_PAGES=1` in `.env`.
+- **Safety:** a page is served sandboxed, with no network; it never runs as
+  muster. You approve every link an agent asks for; you can revoke any link.
+- **Check:** `shareable pages: ON (MUSTER_PAGES=1) — …`; off, the line reads
+  `shareable pages: OFF — MUSTER_PAGES is unset`.
 
 ### Connectors
 

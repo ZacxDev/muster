@@ -16,6 +16,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
+- [pages.md](pages.md) — shareable pages: agents publish pages (showcases, questions, forms, uploads, their own script in a sandbox), you approve the share links, viewers' responses come back as data; the `page_*` tools, blocks, the SDK, the Pages screen
 - [push.md](push.md) — Web Push and the installable app
 - [branding.md](branding.md) — the server's own logo and name: set by an admin on the Account page, drawn in the header, on the sign-in page, as the app and notification icon, and published at `GET /api/instance` for the apps
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
@@ -57,5 +58,6 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
+- [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model
 - [design/previews-spike.md](design/previews-spike.md) — results: the previews phase-0 tunnel spike (HTTP/2 CONNECT over a WebSocket; loopback, the real Cloudflare edge, and the mesh host path)
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)

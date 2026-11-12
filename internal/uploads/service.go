@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -137,6 +139,55 @@ func (c *capReader) Read(p []byte) (int, error) {
 // failed write is cleaned up explicitly (abort any incomplete upload, delete
 // any object) under a fresh bounded context.
 func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored, error) {
+	return s.put(ctx, r, filename, ObjectKeyFor, s.MaxBytes)
+}
+
+// PutForPage is Put for a file sent through shareable page pageID's link: the
+// same streaming, sniffing, caps and clean-up, under the page's own prefix
+// (PageObjectKeyFor), which the uploads/ lifecycle rule does not reach.
+//
+// max (≤ MaxBytes; 0 or more is MaxBytes) caps this file below the
+// deployment's cap: what is left of its page's byte quota. One byte over is
+// ErrTooLarge, and nothing is stored.
+func (s *Service) PutForPage(ctx context.Context, r io.Reader, filename string, pageID, max int64) (Stored, error) {
+	if pageID <= 0 {
+		return Stored{}, fmt.Errorf("uploads: a page's file needs its page")
+	}
+	if max <= 0 || max > s.MaxBytes {
+		max = s.MaxBytes
+	}
+	return s.put(ctx, r, filename, func(id string) string { return PageObjectKeyFor(pageID, id) }, max)
+}
+
+// DeletePageFiles deletes every object under page pageID's prefix — by
+// listing the bucket, so an object no row names (an upload that landed while
+// the page was being deleted) goes too.
+func (s *Service) DeletePageFiles(ctx context.Context, pageID int64) (int, error) {
+	if pageID <= 0 {
+		return 0, fmt.Errorf("uploads: a page's files need their page")
+	}
+	return s.Objects.DeletePrefix(ctx, PagePrefix+strconv.FormatInt(pageID, 10)+"/")
+}
+
+// ProbePages writes one small object under PagePrefix and deletes it again:
+// that the credential may do both where a page's files go (the access key's
+// policy names prefixes, and uploads/ alone is not enough).
+func (s *Service) ProbePages(ctx context.Context) error {
+	id, err := NewPublicID()
+	if err != nil {
+		return err
+	}
+	key := PagePrefix + ".muster-probe-" + id
+	if err := s.Objects.Put(ctx, key, strings.NewReader("probe"), 5, "text/plain"); err != nil {
+		return fmt.Errorf("write %s: %w", key, err)
+	}
+	if err := s.Objects.Delete(ctx, key); err != nil {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *Service) put(ctx context.Context, r io.Reader, filename string, keyFor func(string) string, max int64) (Stored, error) {
 	br := bufio.NewReaderSize(r, SniffBytes)
 	head, perr := br.Peek(SniffBytes)
 	if len(head) == 0 {
@@ -150,9 +201,9 @@ func (s *Service) Put(ctx context.Context, r io.Reader, filename string) (Stored
 	if err != nil {
 		return Stored{}, err
 	}
-	key := ObjectKeyFor(id)
-	cr := &capReader{r: br, max: s.MaxBytes}
-	first := make([]byte, min(int64(PartSize), s.MaxBytes+1))
+	key := keyFor(id)
+	cr := &capReader{r: br, max: max}
+	first := make([]byte, min(int64(PartSize), max+1))
 	n, rerr := io.ReadFull(cr, first)
 	served := ServeAs(contentType).ContentType
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.writeTimeout())

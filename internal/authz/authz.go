@@ -171,6 +171,11 @@ const (
 	// everybody. One site mints it — internal/api's jobPrincipal — handed the
 	// owner of a head jobs.PGStore.Heads read under System.
 	ViaJobQueue Via = "job-queue"
+	// ViaPageLink is a SHARE LINK of a page (internal/pages, migration 0116):
+	// a viewer with no muster account, holding /s/<token>, acting as the
+	// page's OWNER for that one page only — the link's capability, never a
+	// session. internal/api's requirePageLink, on the /s/{token}/* routes.
+	ViaPageLink Via = "page-link"
 	// ViaSystem is a background loop acting for every user. Only System sets
 	// it.
 	ViaSystem Via = "system"
@@ -219,6 +224,8 @@ var requestVias = map[Via]bool{
 	// The job queue's runner, per job owner (internal/api's jobPrincipal).
 	// Without it the first job left queued by a restart PANICS here.
 	ViaJobQueue: true,
+	// A page's share link (internal/api's requirePageLink).
+	ViaPageLink: true,
 }
 
 // OperatorUserID is the user every principal names today: the operator, the

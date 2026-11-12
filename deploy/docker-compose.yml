@@ -182,6 +182,11 @@ services:
       MUSTER_ASK_LOG_TEXT_TTL: ${MUSTER_ASK_LOG_TEXT_TTL:-}
       MUSTER_ASK_LOG_CLASSIFY: ${MUSTER_ASK_LOG_CLASSIFY:-}
 
+      # Shareable pages: agents publish pages and ask before a share link goes
+      # live (docs/features.md#pages). Off by default; needs only the database.
+      MUSTER_PAGES: ${MUSTER_PAGES:-}
+      MUSTER_PAGES_UPLOAD_BYTES: ${MUSTER_PAGES_UPLOAD_BYTES:-}
+
       # Plugins and what routes through them (docs/features.md#plugins).
       MUSTER_PLUGINS: ${MUSTER_PLUGINS:-}
       MUSTER_PLUGIN_TASK_NAMESPACES: ${MUSTER_PLUGIN_TASK_NAMESPACES:-}

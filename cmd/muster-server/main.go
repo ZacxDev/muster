@@ -86,6 +86,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
@@ -98,6 +99,7 @@ import (
 	"github.com/ZacxDev/muster/internal/stepup"
 	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 const (
@@ -373,6 +375,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
+		// Shareable pages (migration 0116): off unless MUSTER_PAGES=1.
+		if cfg.Pages {
+			ext.Pages = pages.NewPG(pool)
+		}
 		// The ask log (migration 0089): off unless MUSTER_ASK_LOG=1.
 		if cfg.AskLog.On {
 			ext.AskLog = &api.AskLog{Store: asklog.NewPG(pool), TextTTL: cfg.AskLog.TextTTL, JevAtCapture: cfg.AskLog.JevAtCapture}
@@ -756,8 +762,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// banner (logUploadsBanner) — never a refusal to boot.
 	ext.Uploads = buildUploads(cfg, a.pool, logger)
 	if ext.Uploads != nil {
-		checkUploadBucket(ext.Uploads, logger)
+		checkUploadBucket(ext.Uploads, ext.Pages != nil, logger)
 	}
+	// Shareable pages keep their files under pages/, which the access key's
+	// policy must reach too: proven at boot, or the boot is refused.
+	if err := probePagesStore(ctx, ext.Pages != nil, ext.Uploads); err != nil {
+		a.Close()
+		return nil, err
+	}
+	ext.PagesUploadBytes = cfg.PagesUploadBytes
 
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
@@ -1795,6 +1808,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("chief nudges: INERT — %s=1 but there is no database", envChiefNudges)
 	default:
 		l.Printf("chief nudges: OFF — %s is unset", envChiefNudges)
+	}
+	switch {
+	case ext.Pages != nil:
+		quota := ext.PagesUploadBytes
+		if quota <= 0 {
+			quota = pages.DefaultUploadBytesPerPage
+		}
+		l.Printf("shareable pages: ON (%s=1) — agents publish pages for their owner and ask before a share link goes live; "+
+			"links are served at %s<token>, sandboxed (an opaque origin, no page network); a page's files are kept under %s "+
+			"until it is deleted, %d bytes per page at most (%s)", envPages, pages.SharePrefix, uploads.PagePrefix, quota, envPagesUploadBytes)
+	case a.cfg.Pages:
+		l.Printf("shareable pages: INERT — %s=1 but there is no database", envPages)
+	default:
+		l.Printf("shareable pages: OFF — %s is unset", envPages)
 	}
 	switch {
 	case ext.AskLog != nil:

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -102,6 +103,19 @@ const objectKeyPrefix = "uploads/"
 // 🔴 THE KEY IS THE RANDOM ID AND NOTHING ELSE. No filename, no owner, no type:
 // a name the browser chose never becomes part of a path anywhere.
 func ObjectKeyFor(id string) string { return objectKeyPrefix + id }
+
+// PagePrefix begins the object key of every file sent through a shareable
+// page's link (internal/pages): pages/<page id>/<public id>. It is NOT under
+// objectKeyPrefix on purpose: the bucket's lifecycle rule for uploads/ expires
+// objects after days, and a page's files are kept until the page is deleted.
+// 🔴 No lifecycle rule may name it (docs/pages.md).
+const PagePrefix = "pages/"
+
+// PageObjectKeyFor is the object key of upload id sent through page pageID's
+// link: the fixed prefix, the page's number and the random id, nothing else.
+func PageObjectKeyFor(pageID int64, id string) string {
+	return PagePrefix + strconv.FormatInt(pageID, 10) + "/" + id
+}
 
 // maxFilenameBytes caps a stored original filename.
 const maxFilenameBytes = 255

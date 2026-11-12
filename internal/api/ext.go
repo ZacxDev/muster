@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -215,6 +216,15 @@ type Extensions struct {
 	// draws an attach button and every upload route, the signed link
 	// included, answers 404.
 	Uploads *uploads.Service
+
+	// Pages is shareable pages (internal/pages, migration 0116; MUSTER_PAGES=1;
+	// pages.go, page_tools.go, page_share.go). nil (the default, or no
+	// database): no page tool is offered, the Pages screen answers the typed
+	// feature_disabled 404, and every share link answers 404.
+	Pages pages.Store
+	// PagesUploadBytes is MUSTER_PAGES_UPLOAD_BYTES: the bytes one page's
+	// files may hold in all; 0 is pages.DefaultUploadBytesPerPage.
+	PagesUploadBytes int64
 
 	// Credentials is the per-owner model-provider credential store behind
 	// Account → Credentials (internal/credentials). nil: none configured — the

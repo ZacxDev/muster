@@ -416,6 +416,14 @@ export const tailClampPort = port + 388;
 // opencode server reports a long model id and a large window.
 export const contextChipPort = port + 389;
 export const baseURL = `http://localhost:${port}`;
+// tests/pages.spec.ts: shareable pages end to end — its own server (mirror
+// plugin, pages and attachments on, a fake permission router capturing the
+// owner's notifications), its fake S3, the fake router, and its fake host's
+// loopback MCP endpoint (the agent's tools). (+400: clear of the blocks above.)
+export const pagesPort = port + 400;
+export const pagesFakeS3Port = port + 401;
+export const pagesRouterPort = port + 402;
+export const pagesMirrorMCPPort = port + 403;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
 // A third build: the update spec's "a newer build after a dismissal" case.

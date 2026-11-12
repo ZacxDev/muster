@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"strconv"
@@ -117,18 +118,37 @@ func buildUploads(cfg config, pool *pgxpool.Pool, logger *log.Logger) *uploads.S
 // result: a wrong credential or a missing bucket is found at boot rather than
 // by the first person who attaches a file. It does not turn the feature off —
 // the store may simply not be up yet.
-func checkUploadBucket(svc *uploads.Service, logger *log.Logger) {
+func checkUploadBucket(svc *uploads.Service, pagesOn bool, logger *log.Logger) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		logUploadBucketCheck(ctx, svc.Objects, logger)
+		logUploadBucketCheck(ctx, svc.Objects, pagesOn, logger)
 	}()
+}
+
+// probePagesStore is, with shareable pages and attachments both on, one write
+// and one delete under pages/ (uploads.Service.ProbePages), synchronously at
+// boot: a page's files are kept there, and a policy granting uploads/* alone
+// would store none and delete none. A failure refuses the boot, naming what
+// to grant.
+func probePagesStore(ctx context.Context, pagesOn bool, svc *uploads.Service) error {
+	if !pagesOn || svc == nil {
+		return nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := svc.ProbePages(pctx); err != nil {
+		return fmt.Errorf("shareable pages (%s=1) keep their files under %s in the uploads bucket, and the access key could not "+
+			"write and delete there (%v): grant s3:PutObject and s3:DeleteObject on arn:aws:s3:::<bucket>/%s* (docs/pages.md#files), "+
+			"or unset %s", envPages, uploads.PagePrefix, err, uploads.PagePrefix, envPages)
+	}
+	return nil
 }
 
 // logUploadBucketCheck is checkUploadBucket's body: the bucket, then whether a
 // lifecycle rule expires its uploads/ objects. An expired link leaves its
 // object behind, so without such a rule the bucket only grows.
-func logUploadBucketCheck(ctx context.Context, objects uploads.ObjectStore, logger *log.Logger) {
+func logUploadBucketCheck(ctx context.Context, objects uploads.ObjectStore, pagesOn bool, logger *log.Logger) {
 	if err := objects.Check(ctx); err != nil {
 		logger.Printf("uploads: WARNING — the bucket could not be reached at boot (%v); attaching a file "+
 			"will fail until it can. Check %s, %s and the access key's policy", err, envS3Endpoint, envS3Bucket)
@@ -144,6 +164,11 @@ func logUploadBucketCheck(ctx context.Context, objects uploads.ObjectStore, logg
 	case err != nil:
 		logger.Printf("uploads: the bucket answered at boot; reading its lifecycle failed (%v)", err)
 		return
+	}
+	if pagesOn && c.PagesExpire > 0 {
+		logger.Printf("uploads: WARNING — %d lifecycle rule(s) of the bucket expire objects under %s (a rule with no prefix "+
+			"counts): shareable pages keep their files there until the page is deleted, and such a rule deletes them "+
+			"while the page still shows them. Narrow the rule to uploads/ (docs/pages.md#files)", c.PagesExpire, uploads.PagePrefix)
 	}
 	if c.Expire == 0 {
 		logger.Printf("uploads: WARNING — the bucket has NO lifecycle rule expiring uploads/ objects. An expired " +

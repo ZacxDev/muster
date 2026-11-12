@@ -70,6 +70,7 @@ const (
 	Android              = "android"
 	Telemetry            = "telemetry"
 	Officers             = "officers"
+	Pages                = "pages"
 )
 
 // DocsPage is the document whose headings are the feature ids.

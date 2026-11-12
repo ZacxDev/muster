@@ -39,6 +39,10 @@ type ObjectStore interface {
 	// Stat is key's size, without its body. A missing key is ErrNotFound.
 	Stat(ctx context.Context, key string) (size int64, err error)
 	Delete(ctx context.Context, key string) error
+	// DeletePrefix deletes every object whose key starts with prefix (a
+	// listing, not rows: an object no row names goes too) and reports how
+	// many it deleted. prefix must not be empty.
+	DeletePrefix(ctx context.Context, prefix string) (int, error)
 	// Cleanup removes whatever a failed Put left at key: any incomplete
 	// multipart upload (aborted) and any object.
 	Cleanup(ctx context.Context, key string) error
@@ -56,6 +60,11 @@ type ObjectStore interface {
 type LifecycleCoverage struct {
 	Expire          int
 	AbortIncomplete int
+	// PagesExpire counts the enabled rules that would EXPIRE a shareable
+	// page's files (PagePrefix): a rule with no prefix, one that pages/ keys
+	// start with, or one under pages/. Every one of them is a mistake — those
+	// files are kept until their page is deleted.
+	PagesExpire int
 }
 
 // ErrLifecycleUnreadable is a lifecycle configuration the credential may not
@@ -222,6 +231,24 @@ func (c *S3) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// DeletePrefix lists every object under prefix and deletes each.
+func (c *S3) DeletePrefix(ctx context.Context, prefix string) (int, error) {
+	if prefix == "" {
+		return 0, errors.New("uploads: refusing to delete the whole bucket")
+	}
+	n := 0
+	for o := range c.mc.ListObjects(ctx, c.cfg.Bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if o.Err != nil {
+			return n, mapErr("list", o.Err)
+		}
+		if err := c.Delete(ctx, o.Key); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Cleanup aborts every incomplete multipart upload of key and deletes key.
 func (c *S3) Cleanup(ctx context.Context, key string) error {
 	if err := mapErr("abort", c.mc.RemoveIncompleteUpload(ctx, c.cfg.Bucket, key)); err != nil && !errors.Is(err, ErrNotFound) {
@@ -287,6 +314,9 @@ func Coverage(cfg *lifecycle.Configuration) LifecycleCoverage {
 			prefix = r.RuleFilter.Prefix
 		} else if r.RuleFilter.And.Prefix != "" {
 			prefix = r.RuleFilter.And.Prefix
+		}
+		if !r.Expiration.IsNull() && (strings.HasPrefix(PagePrefix, prefix) || strings.HasPrefix(prefix, PagePrefix)) {
+			out.PagesExpire++
 		}
 		if !strings.HasPrefix(objectKeyPrefix, prefix) {
 			continue

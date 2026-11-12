@@ -123,6 +123,14 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
   'GET /f/{id}': 'a file download (the signed link an agent fetches)',
   'GET /uploads/{id}/file': 'a file download (the owner\'s attachment thumbnail)',
+  // Shareable pages need MUSTER_PAGES and an agent-made page, which no server
+  // here has: pages.spec.ts measures them (its own server, the same bar).
+  'GET /pages': 'measured in pages.spec.ts (the Pages screen)',
+  'GET /pages/{id}': 'measured in pages.spec.ts (one page)',
+  'GET /pages/{id}/preview': 'measured in pages.spec.ts (the owner\'s preview shell)',
+  'GET /pages/{id}/versions/{v}/content': 'the sandboxed content document the preview frames',
+  'GET /s/{token}': 'measured in pages.spec.ts (a stranger\'s shell)',
+  'GET /s/{token}/content': 'the sandboxed content document the shell frames',
 };
 
 const BAR = 0.01;
