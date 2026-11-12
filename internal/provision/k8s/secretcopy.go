@@ -3,7 +3,6 @@ package k8s
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,8 +21,9 @@ import (
 //     `.dockerconfigjson` key only, and only from a source of type
 //     `kubernetes.io/dockerconfigjson`.
 //
-// A Secret named by both is one copy holding the union of the keys. It does
-// nothing when SecretSourceNamespace is empty (the operator places the Secrets
+// One Secret is never both (provision.Spec.Validate refuses it, and
+// muster-server refuses such a configuration at boot), so each copy holds
+// exactly its own keys. It does nothing when SecretSourceNamespace is empty (the operator places the Secrets
 // in the instance's namespace) or the spec names none.
 //
 // 🔴 A MISSING SOURCE, OR ONE WITHOUT A NEEDED KEY, FAILS THE APPLY, NAMING THE
@@ -80,8 +80,9 @@ func (d *Driver) copySecrets(ctx context.Context, spec provision.Spec, ns string
 				"Nothing that runs was written", provision.ErrInvalidSpec, user, name, src)
 		case apierrors.IsForbidden(err):
 			return nil, fmt.Errorf("%w: the apiserver refused (403 Forbidden) muster's get of Secret %q in namespace %q: %v. "+
-				"If the refusal is about RBAC, grant muster `get` on secrets in %q", provision.ErrUnsupported,
-				name, src, apierrors.ReasonForError(err), src)
+				"If the refusal is about RBAC, grant muster `get` on that one Secret in %q: a Role with resources: [secrets], "+
+				"resourceNames: [%s], verbs: [get], bound to muster's service account", provision.ErrUnsupported,
+				name, src, apierrors.ReasonForError(err), src, name)
 		case err != nil:
 			return nil, blind("get secret "+name+" in namespace "+src, err)
 		}
@@ -116,9 +117,9 @@ func (d *Driver) copySecrets(ctx context.Context, spec provision.Spec, ns string
 			return fmt.Errorf("%w: Secret %q in namespace %q has no key %q, which the instance's image is pulled with; "+
 				"nothing that runs was written", provision.ErrInvalidSpec, name, src, corev1.DockerConfigJsonKey)
 		}
-		if !slices.Contains(keys[name], corev1.DockerConfigJsonKey) {
-			keys[name] = append(keys[name], corev1.DockerConfigJsonKey)
-		}
+		// Never also a key holder's (Spec.Validate refuses the overlap), so
+		// this copy holds exactly its own key.
+		keys[name] = []string{corev1.DockerConfigJsonKey}
 	}
 	if ns == src {
 		return nil
@@ -130,8 +131,14 @@ func (d *Driver) copySecrets(ctx context.Context, spec provision.Spec, ns string
 		for _, k := range keys[name] {
 			data[k] = append([]byte(nil), from.Data[k]...)
 		}
+		labels := copyLabels(managedLabels)
+		if name == spec.ImagePullSecret {
+			// Marks it as THE pull copy, so sweepPullCopies can tell it from a
+			// key holder's copy.
+			labels[labelPullCopy] = "true"
+		}
 		cp := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: copyLabels(managedLabels)},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
 			Type:       from.Type,
 			Data:       data,
 		}
@@ -169,4 +176,65 @@ func (d *Driver) copySecrets(ctx context.Context, spec provision.Spec, ns string
 		}
 	}
 	return nil
+}
+
+// labelPullCopy marks a Secret copySecrets copied as an instance's image pull
+// Secret (provision.Spec.ImagePullSecret): sweepPullCopies deletes only
+// Secrets carrying it AND muster's ownership labels, never a key holder's copy
+// or a Secret muster did not make.
+const labelPullCopy = "muster.dev/image-pull-copy"
+
+// previousPullSecrets is what the instance's live Deployment pulls with now:
+// the names in its pod spec's imagePullSecrets. None when there is no
+// Deployment or it cannot be read. (A Deployment muster did not make is
+// refused by the write that follows, before any sweep; and the sweep deletes
+// only muster's own pull copies whatever names this returns.)
+func (d *Driver) previousPullSecrets(ctx context.Context, ns, name string) []string {
+	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, r := range dep.Spec.Template.Spec.ImagePullSecrets {
+		out = append(out, r.Name)
+	}
+	return out
+}
+
+// sweepPullCopies deletes the stale image pull Secret copies of an instance
+// once its Deployment is written: each of prev (previousPullSecrets, read
+// before the write) that is not current — the variable renamed, unset, or the
+// pool's own image dropped (current "") — and is muster's pull copy
+// (ownership labels, labelPullCopy, type kubernetes.io/dockerconfigjson). The
+// delete is preconditioned on the UID just read.
+//
+// ⚠ PER-INSTANCE NAMESPACES ONLY: in a shared namespace one copy serves every
+// worker that pulls with it, so one worker's change must not delete it. A
+// failure is logged, never the apply's: a stale copy holds a credential the
+// operator still keeps in the source, and the next apply sweeps again.
+func (d *Driver) sweepPullCopies(ctx context.Context, ns string, prev []string, current string) {
+	if !d.cfg.NamespacePerInstance || ns == d.cfg.SecretSourceNamespace {
+		return
+	}
+	c := d.cfg.Client.CoreV1()
+	for _, name := range prev {
+		if name == current {
+			continue
+		}
+		cur, err := c.Secrets(ns).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			d.log.Printf("k8s: the stale image pull Secret copy %s in namespace %s could not be read: %v", name, ns, apierrors.ReasonForError(err))
+			continue
+		}
+		if !owned(cur.Labels) || cur.Labels[labelPullCopy] != "true" || cur.Type != corev1.SecretTypeDockerConfigJson {
+			continue
+		}
+		uid := cur.UID
+		if err := c.Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); err != nil && !apierrors.IsNotFound(err) {
+			d.log.Printf("k8s: the stale image pull Secret copy %s in namespace %s was not deleted: %v", name, ns, apierrors.ReasonForError(err))
+		}
+	}
 }

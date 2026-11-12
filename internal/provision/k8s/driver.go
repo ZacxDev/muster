@@ -826,6 +826,9 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	if err != nil {
 		return err
 	}
+	// The pull Secrets the pod uses now, read before the Deployment is
+	// replaced; the copies no longer wanted are swept after (secretcopy.go).
+	prevPull := d.previousPullSecrets(ctx, ns, dep.Name)
 	if err := d.upsertOwned("deployment", dep.Name, ns,
 		func() (map[string]string, error) {
 			return labelsOf(c.AppsV1().Deployments(ns).Get(ctx, dep.Name, metav1.GetOptions{}))
@@ -840,6 +843,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 		}); err != nil {
 		return applyFailed("apply deployment "+dep.Name, err)
 	}
+	d.sweepPullCopies(ctx, ns, prevPull, spec.ImagePullSecret)
 	return nil
 }
 

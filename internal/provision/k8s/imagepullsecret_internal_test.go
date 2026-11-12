@@ -11,7 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -181,26 +183,210 @@ func TestABadImagePullSourceFailsTheApplyByName(t *testing.T) {
 	}
 }
 
-// TestASecretBothMountedAndPulledWithIsOneCopy: a key holder mounting key
-// ssh-privatekey of the same Secret the image is pulled with gets ONE copy
-// holding both keys (no other), of the source's type.
-func TestASecretBothMountedAndPulledWithIsOneCopy(t *testing.T) {
+// TestASecretBothMountedAndPulledWithIsRefused: one Secret named both as a
+// key holder mount and as the image pull Secret is refused (ErrInvalidSpec,
+// naming both uses) before anything is written; two Secrets are the control.
+func TestASecretBothMountedAndPulledWithIsRefused(t *testing.T) {
 	d, cs, _ := copyDriver(t)
 	ctx := context.Background()
 	seedSource(t, cs, pullSecretName, corev1.SecretTypeDockerConfigJson, map[string][]byte{
-		corev1.DockerConfigJsonKey: dockerConfig, "ssh-privatekey": keyBytes, "spare": []byte("x")})
+		corev1.DockerConfigJsonKey: dockerConfig, "ssh-privatekey": keyBytes})
 	spec := copySpec("both", pullSecretName)
 	spec.ImagePullSecret = pullSecretName
-	if err := d.Create(ctx, spec); err != nil {
-		t.Fatalf("create: %v", err)
+	err := d.Create(ctx, spec)
+	if !errors.Is(err, provision.ErrInvalidSpec) || !strings.Contains(err.Error(), `Secret "officer-image-pull" is both the image pull Secret and a key holder mount`) {
+		t.Fatalf("err = %v, want the one-Secret-one-use refusal", err)
 	}
-	got, err := cs.CoreV1().Secrets("muster-agent-both").Get(ctx, pullSecretName, metav1.GetOptions{})
+	if _, e := cs.CoreV1().Secrets("muster-agent-both").Get(ctx, pullSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(e) {
+		t.Fatalf("a copy was written (%v)", e)
+	}
+	// Control: the key holder on another Secret, each copy its own keys.
+	seedSource(t, cs, "app-deploy-key", corev1.SecretTypeSSHAuth, map[string][]byte{"ssh-privatekey": keyBytes})
+	spec = copySpec("two", "app-deploy-key")
+	spec.ImagePullSecret = pullSecretName
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatalf("two Secrets: %v", err)
+	}
+	pull, _ := cs.CoreV1().Secrets("muster-agent-two").Get(ctx, pullSecretName, metav1.GetOptions{})
+	key, _ := cs.CoreV1().Secrets("muster-agent-two").Get(ctx, "app-deploy-key", metav1.GetOptions{})
+	if !reflect.DeepEqual(keysOf(pull.Data), []string{corev1.DockerConfigJsonKey}) || !reflect.DeepEqual(keysOf(key.Data), []string{"ssh-privatekey"}) {
+		t.Fatalf("pull copy keys %v, key copy keys %v: want each exactly its own", keysOf(pull.Data), keysOf(key.Data))
+	}
+	if pull.Labels[labelPullCopy] != "true" || key.Labels[labelPullCopy] != "" {
+		t.Fatalf("pull-copy label: pull %q, key holder %q; want only the pull copy marked", pull.Labels[labelPullCopy], key.Labels[labelPullCopy])
+	}
+}
+
+// seedPull seeds a pull Secret source named name.
+func seedPull(t *testing.T, cs *fake.Clientset, name string) {
+	t.Helper()
+	seedSource(t, cs, name, corev1.SecretTypeDockerConfigJson, map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig})
+}
+
+func secretExists(cs *fake.Clientset, ns, name string) bool {
+	_, err := cs.CoreV1().Secrets(ns).Get(context.Background(), name, metav1.GetOptions{})
+	return err == nil
+}
+
+// TestAStalePullCopyIsSwept: the variable renamed (old copy deleted, new one
+// copied, the pod names the new one), unset and the pool's image dropped
+// (the copy deleted, the pod names none).
+func TestAStalePullCopyIsSwept(t *testing.T) {
+	ctx := context.Background()
+	const ns = "muster-agent-pulled"
+	t.Run("renamed", func(t *testing.T) {
+		d, cs, _ := copyDriver(t)
+		seedPull(t, cs, pullSecretName)
+		seedPull(t, cs, "officer-image-pull-2")
+		if err := d.Create(ctx, pullSpec("pulled")); err != nil {
+			t.Fatal(err)
+		}
+		next := pullSpec("pulled")
+		next.ImagePullSecret = "officer-image-pull-2"
+		if err := d.Update(ctx, next); err != nil {
+			t.Fatal(err)
+		}
+		if secretExists(cs, ns, pullSecretName) || !secretExists(cs, ns, "officer-image-pull-2") {
+			t.Fatalf("after a rename: old exists %v, new exists %v; want old deleted, new copied",
+				secretExists(cs, ns, pullSecretName), secretExists(cs, ns, "officer-image-pull-2"))
+		}
+		dep, _ := cs.AppsV1().Deployments(ns).Get(ctx, "pulled", metav1.GetOptions{})
+		if got := dep.Spec.Template.Spec.ImagePullSecrets; len(got) != 1 || got[0].Name != "officer-image-pull-2" {
+			t.Fatalf("imagePullSecrets %v", got)
+		}
+	})
+	t.Run("same name kept", func(t *testing.T) {
+		d, cs, _ := copyDriver(t)
+		seedPull(t, cs, pullSecretName)
+		if err := d.Create(ctx, pullSpec("pulled")); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Update(ctx, pullSpec("pulled")); err != nil {
+			t.Fatal(err)
+		}
+		if !secretExists(cs, ns, pullSecretName) {
+			t.Fatal("a re-apply under the same name deleted the copy its pod pulls with")
+		}
+	})
+	for name, next := range map[string]func() provision.Spec{
+		"unset": func() provision.Spec { s := pullSpec("pulled"); s.ImagePullSecret = ""; return s },
+		"image dropped": func() provision.Spec {
+			s := internalSpec("pulled") // back on the deployment's image: no pull Secret wanted
+			return s
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, cs, _ := copyDriver(t)
+			seedPull(t, cs, pullSecretName)
+			if err := d.Create(ctx, pullSpec("pulled")); err != nil {
+				t.Fatal(err)
+			}
+			if !secretExists(cs, ns, pullSecretName) {
+				t.Fatal("control: no copy was made")
+			}
+			if err := d.Update(ctx, next()); err != nil {
+				t.Fatal(err)
+			}
+			if secretExists(cs, ns, pullSecretName) {
+				t.Fatal("the stale pull copy was not deleted")
+			}
+			dep, _ := cs.AppsV1().Deployments(ns).Get(ctx, "pulled", metav1.GetOptions{})
+			if got := dep.Spec.Template.Spec.ImagePullSecrets; got != nil {
+				t.Fatalf("imagePullSecrets %v, want none", got)
+			}
+		})
+	}
+}
+
+// TestTheSweepNeverDeletesWhatIsNotAPullCopy is an INVARIANT GUARD (the base
+// deleted nothing at all, so it passed there too): a Secret under the old name
+// that muster did not make (no ownership labels), one muster made without the
+// pull-copy label (a key holder's copy), and a labelled one of another type
+// are left alone.
+func TestTheSweepNeverDeletesWhatIsNotAPullCopy(t *testing.T) {
+	ctx := context.Background()
+	const ns = "muster-agent-pulled"
+	ownedPull := copyLabels(managedLabels)
+	ownedPull[labelPullCopy] = "true"
+	for name, c := range map[string]struct {
+		labels map[string]string
+		typ    corev1.SecretType
+	}{
+		"unlabelled (a stranger's)":         {map[string]string{"by": "hand"}, corev1.SecretTypeDockerConfigJson},
+		"muster's, not a pull copy":         {copyLabels(managedLabels), corev1.SecretTypeDockerConfigJson},
+		"pull-copy label, not muster's":     {map[string]string{labelPullCopy: "true"}, corev1.SecretTypeDockerConfigJson},
+		"muster's pull label, another type": {ownedPull, corev1.SecretTypeOpaque},
+	} {
+		labels, typ := c.labels, c.typ
+		t.Run(name, func(t *testing.T) {
+			d, cs, _ := copyDriver(t)
+			seedPull(t, cs, pullSecretName)
+			if err := d.Create(ctx, pullSpec("pulled")); err != nil {
+				t.Fatal(err)
+			}
+			// Replace the copy with the Secret under test, same name and type.
+			if err := cs.CoreV1().Secrets(ns).Delete(ctx, pullSecretName, metav1.DeleteOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cs.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: pullSecretName, Namespace: ns, Labels: labels},
+				Type: typ, Data: map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig}}, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			unset := pullSpec("pulled")
+			unset.ImagePullSecret = ""
+			if err := d.Update(ctx, unset); err != nil {
+				t.Fatal(err)
+			}
+			if !secretExists(cs, ns, pullSecretName) {
+				t.Fatal("the sweep deleted a Secret that is not muster's pull copy")
+			}
+		})
+	}
+}
+
+// TestASharedNamespaceIsNeverSwept: in the shared layout one copy serves every
+// worker, so an instance that stops pulling leaves it.
+func TestASharedNamespaceIsNeverSwept(t *testing.T) {
+	cs := fake.NewClientset()
+	empty := ""
+	d, err := New(Config{Client: cs, Namespace: "agents-shared", WorkspaceStorageClass: &empty, SecretSourceNamespace: copySourceNS})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig, "ssh-privatekey": keyBytes}
-	if !reflect.DeepEqual(got.Data, want) || got.Type != corev1.SecretTypeDockerConfigJson {
-		t.Errorf("copy keys %v type %q, want both mounted and pulled keys only, type %q", keysOf(got.Data), got.Type,
-			corev1.SecretTypeDockerConfigJson)
+	ctx := context.Background()
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agents-shared"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	seedPull(t, cs, pullSecretName)
+	if err := d.Create(ctx, pullSpec("pulled")); err != nil {
+		t.Fatal(err)
+	}
+	if !secretExists(cs, "agents-shared", pullSecretName) {
+		t.Fatal("control: no copy in the shared namespace")
+	}
+	unset := pullSpec("pulled")
+	unset.ImagePullSecret = ""
+	if err := d.Update(ctx, unset); err != nil {
+		t.Fatal(err)
+	}
+	if !secretExists(cs, "agents-shared", pullSecretName) {
+		t.Fatal("the shared namespace's pull copy was swept")
+	}
+}
+
+// TestTheForbiddenHintNamesTheExactRBAC: a 403 on the source GET names the
+// Role the operator must add — that one Secret by resourceNames.
+func TestTheForbiddenHintNamesTheExactRBAC(t *testing.T) {
+	d, cs, _ := copyDriver(t)
+	cs.PrependReactor("get", "secrets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetNamespace() == copySourceNS {
+			return true, nil, apierrors.NewForbidden(corev1.Resource("secrets"), pullSecretName, errors.New("fake RBAC"))
+		}
+		return false, nil, nil
+	})
+	err := d.Create(context.Background(), pullSpec("pulled"))
+	want := `grant muster ` + "`get`" + ` on that one Secret in "ops-home": a Role with resources: [secrets], resourceNames: [officer-image-pull], verbs: [get]`
+	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want the hint %q", err, want)
 	}
 }

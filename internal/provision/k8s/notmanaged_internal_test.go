@@ -555,6 +555,11 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"namespaceAccess":    1,
 			"ensureRoleBinding":  1,
 			"instanceNamespaces": 1,
+			// The stale image pull Secret sweep (secretcopy.go): a by-name
+			// delete that needs MORE than ownership — the pull-copy label and
+			// the type — so it open-codes the predicate rather than going
+			// through deleteIfOwned. It deletes nothing that fails owned().
+			"sweepPullCopies": 1,
 		},
 	}
 

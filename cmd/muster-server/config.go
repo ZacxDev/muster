@@ -1997,7 +1997,32 @@ func (c config) validateOfficerImagePullSecret() error {
 			"be used. Set %s, or unset %s", envOfficerImagePullSecret, officers.ImageRegistriesEnv,
 			officers.ImageRegistriesEnv, envOfficerImagePullSecret)
 	}
+	if !anyOfficerImage(c.Officers) {
+		return fmt.Errorf("%s is set but no officer in %s declares an `image` (or a tiers.<pool>.image), so the Secret "+
+			"would never be used. Declare the image, or unset %s", envOfficerImagePullSecret, envOfficers, envOfficerImagePullSecret)
+	}
+	// 🔴 ONE SECRET, ONE USE: a deploy-key pool's Secret is a key holder's
+	// mount source; the pull Secret is never also one (each copy holds exactly
+	// its own keys).
+	for _, pool := range slices.Sorted(maps.Keys(c.AgentCCPoolDeployKeys)) {
+		if c.AgentCCPoolDeployKeys[pool].Secret == name {
+			return fmt.Errorf("%s=%s is also pool %s's deploy-key Secret in %s (a key holder mounts it): one Secret cannot be "+
+				"both an image pull Secret and a key holder's; use two Secrets", envOfficerImagePullSecret, name, pool, envAgentCCPoolDeployKeys)
+		}
+	}
 	return nil
+}
+
+// anyOfficerImage reports whether any declared officer pool runs its own
+// runner image: an untiered officer's `image`, or a tiered one's
+// tiers.<pool>.image.
+func anyOfficerImage(os []officers.Officer) bool {
+	for _, o := range os {
+		if o.Image != "" || (o.Tiers != nil && (o.Tiers.Routine.Image != "" || o.Tiers.Judgement.Image != "")) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateConnectors refuses a connector configuration that could only fail

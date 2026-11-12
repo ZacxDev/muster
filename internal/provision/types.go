@@ -737,6 +737,16 @@ func (s Spec) Validate() error {
 	if p := s.ImagePullSecret; p != "" && (!secretObjectName.MatchString(p) || len(p) > 253) {
 		return fmt.Errorf("%w: image pull secret %q is not a DNS subdomain (a Secret's name)", ErrInvalidSpec, p)
 	}
+	// 🔴 ONE SECRET, ONE USE: a Secret the key holder mounts is never also the
+	// image pull Secret, so each copy a driver makes holds exactly its own keys.
+	if k := s.KeyHolder; k != nil && s.ImagePullSecret != "" {
+		for _, m := range k.SecretMounts {
+			if m.Secret == s.ImagePullSecret {
+				return fmt.Errorf("%w: Secret %q is both the image pull Secret and a key holder mount (%s, at %q); use two Secrets",
+					ErrInvalidSpec, m.Secret, k.Name, m.Path)
+			}
+		}
+	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)
 		if err != nil {
