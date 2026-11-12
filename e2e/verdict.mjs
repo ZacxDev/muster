@@ -36,15 +36,16 @@ import { specFiles } from './legs.mjs';
 // CI's `docshots` job). Stricter than the suite's modes, because the spec is a
 // generator nothing else runs: every test must come from DOCSHOTS_FILE (the
 // project's testMatch was once unanchored and collected 977 suite tests in a
-// checkout named *docshots), at least DOCSHOTS_MIN must pass on their first and
+// checkout named *docshots), EXACTLY DOCSHOTS_COUNT must pass on their first and
 // only attempt, and NOTHING may skip, flake, not run, or pass as an expected
 // failure. A run error, or a missing or empty report, fails too.
 //
-// DOCSHOTS_MIN is the number of test() calls docs.spec.ts makes in a default run:
-// 12, since mirror-terminal.png is opted out until #623 (see the spec). It is
-// the ONE copy of that count; adding or removing a shot edits it here.
+// DOCSHOTS_COUNT is the number of test() calls docs.spec.ts makes in a default
+// run: 12, since mirror-terminal.png is opted out until #623 (see the spec). It
+// is the ONE copy of that count, and it is EXACT, not a floor: a shot added or
+// removed without editing it here fails the check, so the two cannot drift.
 const DOCSHOTS_FILE = 'docshots/docs.spec.ts';
-const DOCSHOTS_MIN = 12;
+const DOCSHOTS_COUNT = 12;
 
 function docshotsVerdict(path) {
   let report;
@@ -74,7 +75,7 @@ function docshotsVerdict(path) {
   };
   for (const s of report.suites ?? []) visit(s);
   for (const [f, n] of files) if (f !== DOCSHOTS_FILE) errors.push(`${n} test(s) from ${f}: the docshots project collected a file that is not ${DOCSHOTS_FILE}`);
-  if (passed < DOCSHOTS_MIN) errors.push(`${passed} passed is under the docshots floor of ${DOCSHOTS_MIN}`);
+  if (passed !== DOCSHOTS_COUNT) errors.push(`${passed} passed, want exactly ${DOCSHOTS_COUNT} (DOCSHOTS_COUNT: edit it with the spec)`);
   console.log(`e2e verdict (docshots): ${passed} passed, ${errors.length} problem(s), files ${JSON.stringify(Object.fromEntries(files))}`);
   for (const e of errors) console.error(`FAIL: docshots: ${e}`);
   return errors.length ? 1 : 0;

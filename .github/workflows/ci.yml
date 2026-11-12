@@ -843,6 +843,12 @@ jobs:
   # existed. Every shot is taken here, into a temp dir — CI never rewrites
   # docs/img — and `verdict.mjs --docshots` judges the JSON report: no failure, no
   # skip, every test from docshots/docs.spec.ts.
+  #
+  # ⚠ DELIBERATELY NOT IN `publish-gate`'s needs: a red docshots run cannot hold
+  # back an image publish, because what it guards is the docs generator, not
+  # what ships. It is still part of the `ci` run, so — like every job here — a
+  # red result on a main or tag run leaves that sha refused by the downstream
+  # release, which takes only a sha whose CI runs are ALL success.
   docshots:
     name: docshots (screenshot spec, chromium)
     runs-on: ubuntu-latest
@@ -993,7 +999,9 @@ jobs:
   #       this repository, so a main push has no version to give it.
   #
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
-  # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every
+  # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`) — with ONE deliberate
+  # exception, `docshots`, which is not in publish-gate's needs (see that job).
+  # A pull request builds every
   # image the same way and pushes nothing; it does log in read-only and probe the
   # tag it WOULD push, so the registry path is exercised before merge.
   #

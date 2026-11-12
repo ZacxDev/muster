@@ -432,7 +432,8 @@ test('dictation.png — the mic recording into the message box', async ({ page }
   await openOtter(page);
   const mic = page.locator('#mv-dictate');
   await expect(mic).toBeVisible();
-  await page.locator('#mv-input').focus();
+  // The box open, as docs/dictation.md's caption has it: the text lands there.
+  await revealBox(page);
   await mic.click();
   await expect(mic).toHaveAttribute('data-state', 'recording');
   await expect(page.locator('#mv-dictate-note')).toContainText('Recording 0:0');
@@ -448,8 +449,8 @@ test('dictation.png — the mic recording into the message box', async ({ page }
 // only" banner covers the terminal's first rows, the only ones with text — so
 // docs/img/mirror-terminal.png stays at the last good capture. Not a test.skip:
 // `verdict.mjs --docshots` refuses any skip. MUSTER_E2E_DOCSHOTS_TERMINAL=1 puts
-// it back (and verdict.mjs's DOCSHOTS_MIN counts the default run only); when
-// #623 is fixed, drop the condition and raise DOCSHOTS_MIN to 13.
+// it back (and verdict.mjs's DOCSHOTS_COUNT counts the default run only); when
+// #623 is fixed, drop the condition and raise DOCSHOTS_COUNT to 13.
 if (process.env.MUSTER_E2E_DOCSHOTS_TERMINAL === '1') test('mirror-terminal.png — the terminal view of a shell window', async ({ page }) => {
   await signIn(page);
   await page.goto(browserURL + '/mirror/terminal?' + q(host, 'kestrel', '@4'));
