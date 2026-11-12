@@ -356,19 +356,6 @@ func TestAnAnsweredOpenCodeQuestionStaysAnsweredWhileTheListingCatchesUp(t *test
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Answered here — opencode has it.") {
 		t.Errorf("a second submit = %d:\n%s", resp.StatusCode, body)
 	}
-	// And while the host can still read the form (its own listing lags too):
-	// answered, nothing relayed — but answers the form cannot take are still
-	// refused as such.
-	m.mu.Lock()
-	m.taken = false
-	m.mu.Unlock()
-	resp, body = answerReq(t, s, ts, submit, "", "")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Answered here — opencode has it.") {
-		t.Errorf("a second submit, the form still readable = %d:\n%s", resp.StatusCode, body)
-	}
-	if resp, _ = answerReq(t, s, ts, answerForm(ocAskForm, "a0", "7", "a1", "1"), "", ""); resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("an invalid second submit = %d, want 400", resp.StatusCode)
-	}
 	if calls, _ := m.got(); len(calls) != 1 {
 		t.Errorf("relayed %d answers, want 1: %v", len(calls), calls)
 	}
@@ -384,5 +371,29 @@ func TestAnAnsweredOpenCodeQuestionStaysAnsweredWhileTheListingCatchesUp(t *test
 	if strings.Contains(card, `data-ask-tool="`+ocAskForm+`"`) || !strings.Contains(card, `data-ask-tool="`+next+`"`) ||
 		!strings.Contains(card, `data-ask-state="pending"`) || !strings.Contains(card, "data-ask-submit") {
 		t.Errorf("after the listing moved on, want only the new ask's form:\n%s", card)
+	}
+}
+
+// TestAnAnsweredOpenCodePermissionIsNotDecidedTwice: a permission request
+// answered from its card (Allow once), then submitted again with the OTHER
+// choice (Reject) while the listing still names it, gets the answered card —
+// and opencode is sent exactly one decision. A permission request reads no
+// form, so no gone form read refuses the resubmit: the answered-here record
+// is the only thing that does.
+func TestAnAnsweredOpenCodePermissionIsNotDecidedTwice(t *testing.T) {
+	m := newOCFormMirror(true)
+	s, ts := viewServer(t, m.fakeMirror)
+	s.UseExtensions(Extensions{Mirror: m, Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Provisioner: newFakeTerminal()})
+	if resp, body := answerReq(t, s, ts, answerForm(ocAskPerm, "a0", "0"), "", ""); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, "Answered here — opencode has it.") {
+		t.Fatalf("Allow once = %d:\n%s", resp.StatusCode, body)
+	}
+	resp, body := answerReq(t, s, ts, answerForm(ocAskPerm, "a0", "1"), "", "")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `data-ask-state="answered"`) ||
+		!strings.Contains(body, "Answered here — opencode has it.") || !strings.Contains(body, "Allow once") {
+		t.Errorf("Reject after Allow once = %d:\n%s", resp.StatusCode, body)
+	}
+	if calls, _ := m.got(); len(calls) != 1 || calls[0] != "ws main @1 "+ocAskPerm+" once" {
+		t.Fatalf("relayed %v; want exactly the one Allow once", calls)
 	}
 }

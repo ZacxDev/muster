@@ -244,8 +244,9 @@ func (s *Server) handleOpenCodeAskAnswer(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if a, ok := s.openCodeAnsweredCard(r, h, e, tool); ok {
-		// Answered here already (the listing still names it): the answered
-		// card, never relayed twice.
+		// Answered here already (the listing still names it). A permission
+		// request reads no form, so nothing else refuses a resubmit — not even
+		// one with the other choice: the answered card, never relayed twice.
 		att.end("duplicate")
 		s.writeAskLive(w, http.StatusOK, a)
 		return
