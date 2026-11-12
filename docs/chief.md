@@ -466,6 +466,31 @@ and is not counted again; past either, the chief is told why and nothing is
 asked. What the card says started the turn is recorded when the turn begins, by
 the door that starts it, so it is always the turn the chief is in.
 
+**A card expires with its hold.** A dispatch card (a host, model, repository,
+clone or approval card) can be answered for **24 hours**. When its hold lapses
+unanswered, muster withdraws the card — it leaves your Attention list and your
+devices — and writes a note in the chief's chat (`[muster] your dispatch card
+<id> (request_key "<key>") expired unanswered … nothing was started`). A tap
+that reaches a card whose hold has just lapsed records nothing: it answers
+*"This request expired; ask your chief again."*, and nothing starts. (Before,
+the hold lapsed after 15 minutes while its card stayed open, so a later tap
+approved nothing.) `dispatch_request` holds from your own sessions still lapse
+after 15 minutes: no card waits on them.
+
+**Which clone a host start uses.** When the target host has **several clones**
+of the repository under its roots, muster asks the host for its own list of
+them first, each marked when one of the host's listed windows — your own
+sessions, not agents muster started — works in it (a worktree counts as its
+clone). The one clone your live sessions work in is used, and the approval card
+names it (`Clone: <path>`). When none of them is, or more than one is, the card
+offers the host's clones as its buttons instead (yours first, marked *(your live
+sessions work here)*), with **Don't start** — in a turn you typed too, where it
+is the one card you see. The chief completes the start with `clone` set to the
+one you tapped; the clone is bound like a picked repository, so a call naming
+another is refused. The host takes the clone only if it is one of its own clones
+under its roots (`bad_clone` otherwise), and an older host that cannot list its
+clones is sent none and refuses several, as before (`no_repo`).
+
 The agent's first message carries the chief's brief, marked as one **you
 approved on a card** (not one you typed), in place of the "relayed from a message
 your owner typed" preface. That is why the card shows the brief whole: without

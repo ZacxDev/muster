@@ -433,6 +433,8 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	// Claude Code's mode only (ClaudeSkipsPermissions: off as root): the one
 	// runtime whose wording muster varies by it (Msg.AgentSpawnSkipPermissions).
 	hello.AgentSpawnSkipPermissions = len(hello.AgentSpawn) > 0 && c.cfg.AgentSpawn.ClaudeSkipsPermissions()
+	// The clone list and the clone hint (clones.go): every host that spawns.
+	hello.AgentSpawnClones = len(hello.AgentSpawn) > 0
 	hello.AgentClose = conn.agentCloseOn()
 	if err := conn.send(hello); err != nil {
 		return err
@@ -572,6 +574,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeAgentClose:
 				if conn.version >= 2 {
 					go traced(m, conn.agentClose)
+				}
+			case mirror.TypeAgentClones:
+				if conn.version >= 2 {
+					go traced(m, conn.agentClones)
 				}
 			}
 		}

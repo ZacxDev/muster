@@ -149,6 +149,10 @@ type HostView struct {
 	// (Msg.AgentSpawnSkipPermissions);
 	// false whenever AgentSpawn is empty.
 	AgentSpawnSkipPermissions bool
+	// AgentSpawnClones: the host answers agent-clones and honours a spawn's
+	// clone hint (Msg.AgentSpawnClones, clones.go); false whenever AgentSpawn
+	// is empty.
+	AgentSpawnClones bool
 	// AgentClose: the host ends an agent window on muster's request
 	// (Msg.AgentClose, agentclose.go), for an -interactive host only.
 	AgentClose bool
@@ -502,7 +506,13 @@ type hostConn struct {
 	closes map[uint32]chan closeAnswer
 	// agentClose: the host advertised agent-close (an -interactive host).
 	agentClose bool
-	next       uint32
+	// cloneLists are the agent-clones requests waiting for the host's
+	// agent-clones-list, by id (the same id space; clones.go).
+	cloneLists map[uint32]chan clonesAnswer
+	// agentSpawnClones: the host advertised Msg.AgentSpawnClones beside a
+	// runtime it spawns (clones.go).
+	agentSpawnClones bool
+	next             uint32
 }
 
 type stream struct {
@@ -531,7 +541,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), GitHubRepos: maps.Clone(hc.githubRepos), Work: maps.Clone(hc.work), Previews: maps.Clone(hc.previews), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentClose: hc.agentClose,
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, AgentSpawn: slices.Clone(hc.agentSpawn), AgentSpawnSkipPermissions: hc.agentSpawnSkip, AgentSpawnClones: hc.agentSpawnClones, AgentClose: hc.agentClose,
 			OpenCodeAnswer: hc.runtimeAnswers[RuntimeOpenCode], OpenCodeSend: hc.gatedSends[RuntimeOpenCode],
 			OpenCodeForms: hc.openCodeForms && hc.version >= 2})
 		hc.mu.Unlock()
@@ -777,7 +787,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}, forms: map[uint32]chan formAnswer{},
-		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}, closes: map[uint32]chan closeAnswer{}}
+		resumes: map[uint32]chan resumeAnswer{}, spawns: map[uint32]chan spawnAnswer{}, closes: map[uint32]chan closeAnswer{}, cloneLists: map[uint32]chan clonesAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
@@ -808,6 +818,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		// Starting an agent likewise, and only the runtimes this muster knows.
 		hc.agentSpawn = spawnRuntimesOf(hello)
 		hc.agentSpawnSkip = hello.AgentSpawnSkipPermissions && len(hc.agentSpawn) > 0
+		hc.agentSpawnClones = hello.AgentSpawnClones && len(hc.agentSpawn) > 0
 		// Ending an agent (agentclose.go): -interactive hosts only.
 		hc.agentClose = hello.AgentClose && hello.Interactive
 		// Each runtime's answer switch: answering its ask is a write into
@@ -1130,6 +1141,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					h.agentClosed(hc, m)
 				}
+			case TypeAgentClonesList:
+				if hc.version >= 2 {
+					h.agentClonesListed(hc, m)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -1255,6 +1270,11 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.closes {
 		ch <- closeAnswer{err: ErrCloseUnconfirmed}
 		delete(hc.closes, id)
+	}
+	// A clone list asked for before the disconnect: none.
+	for id, ch := range hc.cloneLists {
+		ch <- clonesAnswer{err: ErrHostDisconnected}
+		delete(hc.cloneLists, id)
 	}
 	hc.mu.Unlock()
 	if current {

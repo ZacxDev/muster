@@ -69,9 +69,12 @@ type repoEntry struct {
 	at time.Time
 }
 
-// repoFound is one cwd's answer: its repo name (repoName) and the GitHub
-// <owner>/<name> its checkout's origin names (originGitHubRepo, "" for none).
-type repoFound struct{ name, github string }
+// repoFound is one cwd's answer: its repo name (repoName), the GitHub
+// <owner>/<name> its checkout's origin names (originGitHubRepo, "" for none),
+// and the MAIN working tree of its checkout's repository (mainTreeOf, "" for
+// none): the clone a worktree belongs to, which agent-clones marks live
+// (clones.go).
+type repoFound struct{ name, github, main string }
 
 // name is cwd's repo name (repoName), from the cache while it is fresh.
 func (r *repoNamer) name(cwd string) string { return r.lookup(cwd).name }
@@ -117,7 +120,9 @@ func (r *repoNamer) lookup(cwd string) repoFound {
 		name, top := repoTop(cwd, stat)
 		f := repoFound{name: name}
 		if top != "" {
-			f.github = originGitHubRepo(top, readFile)
+			common := commonGitDir(top, readFile)
+			f.github = originGitHubRepoIn(common, readFile)
+			f.main = mainTreeOf(common)
 		}
 		done <- f
 	}()
@@ -232,6 +237,16 @@ const gitConfigMax = 1 << 20
 // submodule's) `gitdir:` file, whose git dir may name a common dir
 // (`commondir`) — where the repository's config lives.
 func originGitHubRepo(top string, readFile func(string) ([]byte, error)) string {
+	return originGitHubRepoIn(commonGitDir(top, readFile), readFile)
+}
+
+// commonGitDir is the git dir holding the repository's config for the top
+// level top: top/.git when it is a directory, else the `gitdir:` file's git
+// dir — or, when that names a common dir (`commondir`, a worktree's), that.
+// "" when top's .git file is not a gitdir file. THE ONE RULE for a window's
+// repository: its GitHub name (originGitHubRepoIn) and its main working tree
+// (mainTreeOf) are both read from what it answers.
+func commonGitDir(top string, readFile func(string) ([]byte, error)) string {
 	gitDir := filepath.Join(top, ".git")
 	if b, err := readFile(gitDir); err == nil {
 		// A file (reading a directory errs): "gitdir: <path>".
@@ -251,6 +266,26 @@ func originGitHubRepo(top string, readFile func(string) ([]byte, error)) string 
 			}
 			gitDir = filepath.Clean(cd)
 		}
+	}
+	return gitDir
+}
+
+// mainTreeOf is the main working tree of the repository whose common git dir
+// is common: its parent when it is a `.git` directory, "" otherwise (a bare
+// repository, a submodule's git dir under .git/modules, none). resolveClone
+// names a clone by the same parent of the same common dir.
+func mainTreeOf(common string) string {
+	if common == "" || filepath.Base(common) != ".git" {
+		return ""
+	}
+	return filepath.Dir(common)
+}
+
+// originGitHubRepoIn is the GitHub <owner>/<name> of the config in git dir
+// gitDir ("" for none, or no gitDir).
+func originGitHubRepoIn(gitDir string, readFile func(string) ([]byte, error)) string {
+	if gitDir == "" {
+		return ""
 	}
 	b, err := readFile(filepath.Join(gitDir, "config"))
 	if err != nil || len(b) > gitConfigMax {

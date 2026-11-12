@@ -614,19 +614,28 @@ func TestATapThroughAMirroredSessionDoesNotBind(t *testing.T) {
 	}
 }
 
-// TestAHoldOlderThanFifteenMinutesBindsNothing: the same tap, on a hold 16
-// minutes old, is refused as no hold.
-func TestAHoldOlderThanFifteenMinutesBindsNothing(t *testing.T) {
+// TestAHoldPastItsTTLBindsNothing: the same tap, on a card hold just past
+// plugins.CardHoldTTL (24 hours and a minute old), is refused as no hold —
+// and one 16 minutes old (past the old 15-minute life) still binds.
+func TestAHoldPastItsTTLBindsNothing(t *testing.T) {
 	f := newHostFixture(t)
+	age := func(d string) {
+		t.Helper()
+		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE audit_log SET at = now() - $3::interval WHERE action = $1 AND user_id = $2`,
+			plugins.ActionDispatchHeld, f.owner, d); err != nil {
+			t.Fatal(err)
+		}
+	}
 	card := f.heldCard(t, "tap-3")
 	f.tap(t, card.ID, "host-bravo", authz.ViaSession)
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE audit_log SET at = now() - interval '16 minutes' WHERE action = $1 AND user_id = $2`,
-		plugins.ActionDispatchHeld, f.owner); err != nil {
-		t.Fatal(err)
-	}
-	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "tap-3", false))); got != `request_key "tap-3" holds no dispatch waiting for your owner's answer (or it is more than 15 minutes old): ask them again in the chat` {
+	age("24 hours 1 minute")
+	if got := errorText(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "tap-3", false))); got != `request_key "tap-3" holds no dispatch waiting for your owner's answer (or its card expired, 24 hours after it was raised): ask them again in the chat` {
 		t.Fatalf("an old hold: %q", got)
 	}
+	ctl := f.heldCard(t, "tap-4")
+	f.tap(t, ctl.ID, "host-bravo", authz.ViaSession)
+	age("16 minutes")
+	hostDispatchIDOf(t, f.callRaw(f.chief, agentDispatchTool, hostCall("host/host-bravo/claude", "tap-4", false)))
 }
 
 // TestMirroredWithNothingElseAsksTheHostThenTheModel: "mirrored" (host/?/?)

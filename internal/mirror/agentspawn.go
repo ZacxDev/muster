@@ -50,6 +50,9 @@ const (
 	SpawnBadBase     = "bad_base"
 	SpawnBadModel    = "bad_model"
 	SpawnFailed      = "failed"
+	// SpawnBadClone: the clone muster hinted (AgentSpawnReq.Clone) is not one
+	// of the host's own clones of the repository under its spawn roots now.
+	SpawnBadClone = "bad_clone"
 	// SpawnNotListed is not a refusal: the window exists but has not been in a
 	// listing on this connection yet. The row stays pending.
 	SpawnNotListed = "not_listed"
@@ -131,6 +134,14 @@ type AgentSpawnReq struct {
 	Name string `json:"name,omitempty"`
 	// Model is opencode's openrouter/<vendor>/<model>; refused on claude.
 	Model string `json:"model,omitempty"`
+	// Clone is muster's HINT of which of the host's clones of Repo to cut the
+	// worktree from: the main working tree's path EXACTLY as the host itself
+	// reported it in an agent-clones-list (clones.go). "" = the host's own
+	// rule (its only clone). A host that advertised AgentSpawnClones uses it
+	// only when it is one of the clones it enumerates now, and refuses
+	// (SpawnBadClone) anything else; an older host ignores the field and keeps
+	// refusing a repository with several clones (no_repo), never guessing.
+	Clone string `json:"clone,omitempty"`
 }
 
 // AgentSpawned is a successful agent-spawned's window (Msg.Spawned).
