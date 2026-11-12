@@ -20,8 +20,9 @@ import (
 // interface and the optional ones below, never through a concrete client.
 //
 // *Client (HQ over HTTPS with the officer's token) is one implementation; a
-// built-in one in muster's own Postgres is planned (muster#503 slice 4), and
-// a conformance suite both must pass (slice 3).
+// built-in one in muster's own Postgres (internal/officers/builtin, not yet
+// wired) is the other. internal/officers/backendtest is the conformance suite
+// both pass.
 //
 // Errors are the contract's three kinds, whatever the implementation: a
 // decision is *HQError (status + the backend's {code, …} JSON body: 404 no
