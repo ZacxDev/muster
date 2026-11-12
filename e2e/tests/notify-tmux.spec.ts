@@ -101,10 +101,12 @@ test.afterAll(async () => {
   mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify(Object.values(sids).map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
 });
 
-// askRow is the Asks list's name of the waiting window whose session is
-// named name (its <span data-attention-name>, the place in its tooltip).
+// askRow is the Asks list's name of the waiting window w: its card's title
+// (<span data-attention-name>), in the card whose place under it names w.
 const askRow = (page: Page, w: number) =>
-  page.locator(`[data-attention-item][data-kind="session"] [data-attention-name][title*="tnotify:${w} @"]`);
+  page
+    .locator('[data-attention-item][data-kind="session"]', { has: page.locator('[data-attention-source]', { hasText: `tnotify:${w} @` }) })
+    .locator('[data-attention-name]');
 
 async function setSwitch(page: Page, on: boolean) {
   await page.goto(origin + '/account');

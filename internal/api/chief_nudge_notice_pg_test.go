@@ -79,7 +79,7 @@ func TestChiefNudgeALiveNudgeIsNeverAnsweredNorRelayed(t *testing.T) {
 		t.Fatalf("an answer to the nudge: %d, want 409", w.Code)
 	}
 	card := noticeCard(f.page(t, "/attention"), d.AskID)
-	if card == "" || !strings.Contains(card, "Gold:1 · tmux main:1 @ ws") || strings.Contains(card, "data-attention-answer") || strings.Contains(card, "<textarea") {
+	if card == "" || !strings.Contains(card, `data-attention-title>Gold:1</span>`) || !strings.Contains(card, `data-attention-source>tmux main:1 @ ws</span>`) || strings.Contains(card, "data-attention-answer") || strings.Contains(card, "<textarea") {
 		t.Fatalf("the nudge's card (want the host and tmux target, no answer box):\n%s", card)
 	}
 	f.pass(t)

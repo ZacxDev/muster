@@ -2,6 +2,7 @@ import { execFileSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
 import { attentionConnectPort, attentionMirrorMCPPort, attentionPort, binDir, dsn, repoRoot, versionTerm } from '../lib/env';
@@ -141,6 +142,19 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<{ t
   return { text: j.result!.content[0].text, isError: !!j.result!.isError };
 }
 
+// clearOf: the two elements' boxes are at least gap px apart (the space
+// between their rectangles, on whichever axis separates them), each a 44px
+// target where it is a button.
+async function clearOf(a: ReturnType<Page['locator']>, b: ReturnType<Page['locator']>, gap: number) {
+  const ra = (await a.boundingBox())!;
+  const rb = (await b.boundingBox())!;
+  const dx = Math.max(rb.x - (ra.x + ra.width), ra.x - (rb.x + rb.width), 0);
+  const dy = Math.max(rb.y - (ra.y + ra.height), ra.y - (rb.y + rb.height), 0);
+  expect(Math.max(dx, dy), `the chevron and the Dismiss button are ${Math.max(dx, dy)}px apart`).toBeGreaterThanOrEqual(gap);
+  expect(rb.height, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+  expect(rb.width, 'Dismiss is a 44px target').toBeGreaterThanOrEqual(44);
+}
+
 async function ask(question: string, options: string[]): Promise<number> {
   const { text, isError } = await mcpCall('attention_ask', { question, options });
   expect(isError, text).toBe(false);
@@ -194,9 +208,35 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   // Newest first: the ask (just now) above the window (waiting since 30 s ago).
   await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
   await expect(page.locator('[data-attention-item]').nth(1)).toHaveAttribute('data-kind', 'session');
-  await expect(session.getByRole('link', { name: 'Open the session' })).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
+  // The waiting window is ONE link (the card itself, no "Open the session"
+  // words) to its rendered view; its one line is what it waits on.
+  const open = session.locator('a[data-attention-open]');
+  await expect(open).toHaveAttribute('href', /^\/mirror\/view\?host=e2e-attn-/);
+  await expect(open).toContainText('Bash: npm publish --tag next');
+  await expect(session.getByText('Open the session')).toHaveCount(0);
+  // The flat page: no intro, no "Back to muster"; each group labelled with
+  // its count.
+  await expect(page.getByText('Everything waiting on you')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Back to muster' })).toHaveCount(0);
+  await expect(page.locator('[data-asks-group="questions"] [data-asks-group-count]')).toHaveText('1');
+  await expect(page.locator('[data-asks-group="waiting"] [data-asks-group-count]')).toHaveText('1');
+  // The answer box is behind the options: shut until "Type an answer" opens
+  // it in place; opening it sends nothing.
+  const box = askItem.locator('textarea');
+  await expect(box).toBeHidden();
+  const typeIt = askItem.getByText('Type an answer', { exact: true });
+  expect((await typeIt.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+  await typeIt.click();
+  await expect(box).toBeVisible();
+  await expect(box).toBeFocused();
+  await box.blur();
+  // Dismiss is a small icon button, named for a screen reader, in the card's
+  // footer — never beside the head link's chevron (Round 0 of #620).
+  const dismissBtn = askItem.getByRole('button', { name: 'Dismiss without answering' });
+  await expect(dismissBtn).toHaveAttribute('title', 'Dismiss without answering');
+  await clearOf(askItem.locator('[data-attention-session] svg'), dismissBtn, 16);
 
-  // The operator taps an option.
+  // The operator taps an option chip: that is the answer.
   await Promise.all([page.waitForURL(origin + '/attention'), askItem.getByRole('button', { name: 'wait until Monday' }).click()]);
   const answer = await waited;
   expect(JSON.parse(answer.text)).toMatchObject({ id, status: 'answered', answer: 'wait until Monday' });
@@ -217,6 +257,9 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await Promise.all([page.waitForURL(origin + '/attention'), page.locator(`#ask-${id3}`).getByRole('button', { name: 'Dismiss without answering' }).click()]);
   expect(JSON.parse((await mcpCall('attention_wait', { id: id3, wait_seconds: 0 })).text)).toMatchObject({ status: 'cancelled' });
   await expect(page.locator('[data-attention-item][data-kind="ask"]')).toHaveCount(0);
+
+  // Tapping the waiting window's card opens its session.
+  await Promise.all([page.waitForURL(/\/mirror\/view\?host=e2e-attn-/), page.locator('[data-attention-item][data-kind="session"] a[data-attention-open]').tap()]);
 
   // The badge is back to the waiting window alone.
   await page.goto(origin + '/tasks');

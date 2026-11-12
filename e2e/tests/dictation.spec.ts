@@ -719,7 +719,8 @@ test.describe('an ask’s answer boxes', () => {
         await signIn(page, origin);
         await page.goto(origin + '/attention');
         const card = page.locator(`#ask-${mine}`);
-        await expect(card.locator('[data-attention-session]')).toHaveText('View in session');
+        // The card's head is its session link: the asker's name, no words.
+        await expect(card.locator('[data-attention-session]')).toContainText(asker);
         await expect(card.locator('[data-attention-session]')).toHaveAttribute('href', `/agents/${asker}`);
         const mic = page.locator(`#answer-${mine}-dictate`);
         await expect(mic).toBeVisible();
@@ -742,6 +743,35 @@ test.describe('an ask’s answer boxes', () => {
       });
     });
   }
+
+  // THE BOX BEHIND THE OPTIONS (the Asks page's design pass): an ask that
+  // offers options shows them first; its box and mic are shut behind "Type an
+  // answer", which opens them in place — focused, the mic shown — and sends
+  // nothing; Answer still sends what was typed.
+  test('the Asks list: an ask\u2019s options come first, its box and mic behind Type an answer', async ({ page }) => {
+    const id = Number(fix('ask', '1', asker, 'Which region?', 'eu-west', 'us-east'));
+    const sent = answers(page, id);
+    await signIn(page, origin);
+    await page.goto(origin + '/attention');
+    const card = page.locator(`#ask-${id}`);
+    await expect(card.locator('[data-attention-option]')).toHaveCount(2);
+    const box = page.locator(`#answer-${id}`);
+    const mic = page.locator(`#answer-${id}-dictate`);
+    const toggle = card.getByText('Type an answer', { exact: true });
+    await expect(box, 'the box is shut behind the options').toBeHidden();
+    await expect(mic).toBeHidden();
+    await toggle.click();
+    await expect(box).toBeVisible();
+    await expect(box).toBeFocused();
+    await expect(mic, 'the opened box has its mic').toBeVisible();
+    await expect(toggle).toBeHidden();
+    await noHorizontalScroll(page);
+    expect(sent(), 'opening the box sent nothing').toBe(0);
+    await box.fill('ap-south');
+    await card.getByRole('button', { name: 'Answer', exact: true }).click();
+    await expect.poll(sent, { message: 'answered' }).toBe(1);
+    await expect.poll(async () => (await page.request.get(`${origin}/attention/asks/${id}`)).text()).toContain('ap-south');
+  });
 
   // dismissElsewhere dismisses ask id from outside the page and resolves once
   // the page has HEARD the change (asks:changed is dispatched before the

@@ -635,12 +635,14 @@ their `host` and `target`.
 
 ## The Chief nudges tab
 
-`/attention?tab=nudges` lists your 50 newest decisions, newest first. Each card
-shows the session (focus title and host, or agent), the decision, the message
-that was or would have been sent, the quote and its message id — and where the
-quote is from, your Chief chat or your messages to the session — the covered
-action, the chief's reason, the outcome (including which guard suppressed it)
-and a **Shadow** or **Live** badge.
+`/attention?tab=nudges` lists your 50 newest decisions, newest first, under a
+**Decisions** label with their count. Each card shows the session (focus title
+and host, or agent) as its title, the decision and its age under it, a
+**Shadow** or **Live** badge, the message that was or would have been sent, and
+the outcome (including which guard suppressed it). Under its **Details**: the
+quote and its message id — and where the quote is from, your Chief chat or your
+messages to the session — the covered action, the stall classifier's verdict
+and the chief's reason.
 
 ## Records
 

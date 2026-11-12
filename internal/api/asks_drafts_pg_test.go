@@ -40,7 +40,28 @@ func htmlRegion(page, open, close string) string {
 	return page[i : i+j]
 }
 
-func askList(page string) string     { return htmlRegion(page, `<ul id="attention-items"`, "</ul>") }
+// askList is the Ask tab's whole <ul>: its groups hold <ul>s of their own, so
+// the region ends at the </ul> that closes it, not at the first one.
+func askList(page string) string {
+	i := strings.Index(page, `<ul id="attention-items"`)
+	if i < 0 {
+		return ""
+	}
+	depth := 0
+	for j := i; j < len(page); j++ {
+		switch {
+		case strings.HasPrefix(page[j:], "<ul"):
+			depth++
+		case strings.HasPrefix(page[j:], "</ul>"):
+			if depth--; depth == 0 {
+				return page[i : j+len("</ul>")]
+			}
+		}
+	}
+	return page[i:]
+}
+
+
 func pendingList(page string) string { return htmlRegion(page, `<ul id="asks-drafts-pending"`, "</ul>") }
 func archivedList(page string) string {
 	return htmlRegion(page, `<ul id="asks-drafts-archived"`, "</ul>")
@@ -494,8 +515,8 @@ func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 		t.Fatalf("draft: %s", out)
 	}
 	page := d.do("GET", "/attention", "", d.session(d.a, false, true)).Body.String()
-	want := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
-		`<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
+	want := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
+		`<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li></ul>`
 	if got := askList(page); got != want {
 		t.Fatalf("the Ask tab's list:\n%s\nwant exactly:\n%s", got, want)
 	}

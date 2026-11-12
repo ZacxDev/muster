@@ -872,9 +872,10 @@ func (s *Server) withAskBoxes(ctx context.Context, items []attentionItem, links 
 	}
 }
 
-// askViewInSession is the label of an ask's link to the session it is about:
-// the operator's own words, the same on the ask page and the Asks list, for a
-// mirrored session and an agent alike.
+// askViewInSession is the label of the ask page's link to the session an ask
+// is about (attention_ask_page.go), for a mirrored session and an agent alike.
+// The Asks list says no words for it: its card's head IS that link
+// (attentionHeadHTML).
 const askViewInSession = "View in session"
 
 // --- changes: SSE, push, waiters ---------------------------------------------
@@ -953,18 +954,6 @@ func attentionPushTitle(it attentionItem) string {
 		return itemWho(it) + noticePushTitleSuffix
 	}
 	return itemWho(it) + " is asking"
-}
-
-// attentionSourceSpan is an Asks row's who: the session's stable name, its
-// place (Source) as the tooltip — the technical id the main list no longer
-// spells — or, with no human name, the place itself.
-func attentionSourceSpan(it attentionItem) string {
-	esc := html.EscapeString
-	src := esc(textplain.TitleKeeping(it.Source, it.target))
-	if it.Name == "" {
-		return `<span data-attention-source>` + src + `</span>`
-	}
-	return `<span data-attention-source data-attention-name title="` + src + `">` + esc(it.Name) + `</span>`
 }
 
 // itemWho is who an item's push title names: the session's stable name when it
@@ -1508,14 +1497,15 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		}
 	}
 	var b strings.Builder
-	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="attention-page">
-<h1 class="text-balance text-base font-semibold text-fg">Asks</h1>
-<p class="text-sm text-fg2">Everything waiting on you: questions your agents asked and sessions waiting at a prompt` + asksIntroDrafts(s.ext.Plugins != nil) + `.</p>
+	// A FLAT PAGE (operator decision 2026-11-12): no card around it, no intro
+	// and no "Back to muster" — the heading, then the groups.
+	b.WriteString(`<section class="flex flex-col gap-3" data-testid="attention-page">
+<h1 class="text-balance px-1 text-base font-semibold text-fg">Asks</h1>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
 	now := s.now() // the server's clock: a focus title's age is the chief's and the push's (FocusAgeOf)
-	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
+	askList := `<ul id="attention-items" class="flex flex-col gap-3" data-testid="attention-items" aria-live="polite">` +
 		s.askListHTML(r.Context(), items, now) + `</ul>`
 	if s.ext.Plugins == nil && !s.chiefNudgesOn() {
 		b.WriteString(askList)
@@ -1535,9 +1525,9 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		b.WriteString(s.asksTabsHTML(askList, s.ext.Plugins != nil, pending, archived, nudges, tab))
 	}
 	b.WriteString(`
-<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
+	b.WriteString(asksTypeScript)
 	// The answer boxes' mic (once, after the list it reveals; the live
 	// refresh's new boxes are shown by ui.DictateRevealEvent).
 	b.WriteString(ui.DictateScriptHTML(s.dictatePath()))
@@ -1549,6 +1539,36 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	}
 	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
 }
+
+// asksTypeScript is "Type an answer"'s behaviour on the Asks list
+// (attentionAnswerFormHTML): opening it focuses its box, and which ones are
+// open (by their card's id) outlives the list's live refresh, which re-draws
+// the list (ui.AttentionLiveScript, followed by ui.DictateRevealEvent). The
+// <details> itself opens and shuts with no script. A refresh never runs
+// while a box has focus or text (ui's askBusyFunc), so what is typed is never
+// re-drawn away; this only keeps an empty open box open.
+const asksTypeScript = `<script>
+(function () {
+  var list = document.getElementById('attention-items');
+  if (!list) return;
+  var open = {};
+  list.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (!d || !d.matches || !d.matches('details[data-ask-type]')) return;
+    var li = d.closest('[data-attention-item]');
+    if (li && li.id) { if (d.open) open[li.id] = true; else delete open[li.id]; }
+    // A box re-opened by a refresh is not focused: focus is the owner's.
+    if (d.hasAttribute('data-restored')) { d.removeAttribute('data-restored'); return; }
+    if (d.open) { var t = d.querySelector('textarea'); if (t) try { t.focus(); } catch (err) {} }
+  }, true);
+  list.addEventListener(` + "'" + ui.DictateRevealEvent + "'" + `, function () {
+    Object.keys(open).forEach(function (id) {
+      var li = document.getElementById(id), d = li && li.querySelector('details[data-ask-type]');
+      if (d && !d.open) { d.setAttribute('data-restored', ''); d.open = true; } else if (!d) delete open[id];
+    });
+  });
+})();
+</script>`
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
 var attentionPageScript = ui.AttentionLiveScript("attention-items", "/attention/items", EventAttentionChanged)
@@ -1595,133 +1615,277 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 // (attention_asker.go). A form on a session page opts out of htmx's boost, so
 // it is a plain POST whose redirect reloads that page.
 func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string) string {
-	esc := html.EscapeString
-	back := ""
-	if returnTo != "" {
-		back = `<input type="hidden" name="return" value="` + esc(returnTo) + `">`
-	}
-	formAttrs := ""
-	if returnTo != "" {
-		formAttrs = ` hx-boost="false"`
-	}
 	if len(items) == 0 {
 		return attentionEmptyHTML
 	}
 	var b strings.Builder
 	for _, it := range items {
-		kind := map[string]string{attentionKindAsk: "Question", attentionKindSession: "Session waiting", attentionKindPlugin: "Reply draft",
-			attentionKindQuestion: "Session question", attentionKindTask: "Task to route", attentionKindNotice: "Notice"}[it.Kind]
-		age := ""
-		if !it.Since.IsZero() {
-			age = ` · <time datetime="` + it.Since.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(it.Since))) + `</time>`
-		}
-		offline := ""
-		if it.Offline {
-			offline = ` · <span data-attention-offline>host offline</span>`
-		}
-		b.WriteString(`<li id="` + esc(it.Key) + `" class="` + flowsCardClass + `" data-attention-item data-kind="` + esc(it.Kind) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · ` + attentionSourceSpan(it) + age + offline + `</span>
-`)
-		// Source (an agent's or window's name) and Focus (an LLM summary) are
-		// titles, so they read as their plain text (textplain).
-		if focus := textplain.Title(it.Focus); focus != "" {
-			b.WriteString(attentionFocusHTML(focus, ui.FocusAgeOf(it.focusAt, now)))
-		}
-		text, detail := esc(it.Text), esc(it.Detail)
-		if it.openCode != nil {
-			// An opencode ask quotes a command: drawn left to right and isolated
-			// (<bdi>), so right-to-left text in it cannot reorder what the
-			// person reads around it.
-			text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
-		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + text + `</p>
-`)
-		if it.Detail != "" {
-			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
-`)
-		}
-		b.WriteString(proposalBodyHTML(it.proposal))
-		switch it.Kind {
-		case attentionKindNotice:
-			// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
-			// dismissed, never answered (attention.ErrNotice).
-			id := strconv.FormatInt(it.AskID, 10)
-			if it.Target != "" {
-				b.WriteString(`<p class="break-words text-xs text-fg2">tmux <code data-attention-target>` + esc(it.Target) + `</code></p>
-`)
-			}
-			if it.sessionLink != "" {
-				b.WriteString(`<a href="` + esc(it.sessionLink) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-session>` + askViewInSession + `</a>
-`)
-			}
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `" data-attention-dismiss>Dismiss</button></form>
-`)
-		case attentionKindAsk:
-			id := strconv.FormatInt(it.AskID, 10)
-			// THE COMPACT ANSWER FORM (operator decision: one card must fit a
-			// session page's asks block on a phone with no inner scroll). The
-			// classes are ui's (ui.AskForm*: the stylesheet scans internal/ui,
-			// not this file), drawn here once for both the Asks queue and a
-			// session page's block. The options wrap as their own width; the box
-			// starts one line and grows as it is typed into (ui.AskFormInputClass,
-			// capped); Answer and Dismiss share one row.
-			//
-			// 🔴 DISMISS IS STILL ITS OWN FORM, posting to /cancel — the button
-			// only SITS in the answer form's row, joined to its form by the
-			// form= attribute. A formaction on the answer form would also send
-			// the typed answer and run through whatever binds the answer form's
-			// submit; this way the two posts are exactly what they were.
-			dismiss := "ask-" + id + "-dismiss"
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + formAttrs + `>
-` + back)
-			if len(it.Options) > 0 {
-				b.WriteString(`<div class="` + ui.AskFormOptionsClass + `">`)
-				for _, o := range it.Options {
-					b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + ui.AskFormOptionClass + `" data-attention-option>` + esc(o) + `</button>`)
-				}
-				b.WriteString("</div>\n")
-			}
-			// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
-			// mic finds its box and note by id (ui.DictateControlHTML). The mic
-			// FILLS the box at the caret; Answer is still the only send.
-			input := "answer-" + id
-			// The mic sits on the box's row, at its bottom edge, as on every other
-			// message box; its note is under the row. The label is for a screen
-			// reader; the box's placeholder says the same to the eye.
-			b.WriteString(`<label for="` + input + `" class="sr-only">Your answer</label>
-<div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
-				answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
-` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "") + `<div class="` + ui.AskFormActionsClass + `"><button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button><button type="submit" form="` + dismiss + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AskFormDismissClass + `">Dismiss</button></div>
-</form>
-<form id="` + dismiss + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
-`)
-			if it.sessionLink != "" {
-				b.WriteString(`<a href="` + esc(it.sessionLink) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" data-attention-session>` + askViewInSession + `</a>
-`)
-			}
-		case attentionKindSession:
-			b.WriteString(openCodeAskHTML(it))
-			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
-`)
-		case attentionKindQuestion:
-			if it.openCode != nil {
-				b.WriteString(openCodeAskHTML(it))
-				b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the session</a>
-`)
-				break
-			}
-			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Answer in the session</a>
-`)
-		case attentionKindPlugin:
-			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Review the draft</a>
-`)
-		case attentionKindTask:
-			b.WriteString(`<a href="` + esc(it.Link) + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Open the task</a>
-`)
-		}
-		b.WriteString("</li>\n")
+		b.WriteString(attentionItemHTML(it, now, returnTo))
 	}
 	return b.String()
+}
+
+// attentionItemHTML is ONE item's <li> (attentionItemsHTMLTo's).
+//
+// THE CARD (operator decision 2026-11-12, the Asks page's design pass): its
+// head names the session — attentionHeadHTML: the name as the title, the age
+// and the tmux target muted under it — and IS the link to the session when
+// there is one to open, with a chevron (a real <a>, never a div with a click
+// handler). An item with nothing to answer here (a waiting window, a held
+// question answered in the session, a task) is ONE link as a
+// whole (ui.AsksRowClass). An item with controls (an ask's answer form, a
+// notice's Dismiss, an opencode window's relayed answers) is a card whose head
+// is the link and whose controls sit under it, Dismiss a small icon button in
+// the card's footer, never in the head. No "View in session" / "Open the session" words: the card is
+// the way in.
+func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string {
+	esc := html.EscapeString
+	open := `<li id="` + esc(it.Key) + `" class="`
+	attrs := `" data-attention-item data-kind="` + esc(it.Kind) + `">
+`
+	// Source (an agent's or window's name) and Focus (an LLM summary) are
+	// titles, so they read as their plain text (textplain).
+	focus := ""
+	if f := textplain.Title(it.Focus); f != "" {
+		focus = attentionFocusHTML(f, ui.FocusAgeOf(it.focusAt, now))
+	}
+	text, detail := esc(it.Text), esc(it.Detail)
+	if it.openCode != nil {
+		// An opencode ask quotes a command: drawn left to right and isolated
+		// (<bdi>), so right-to-left text in it cannot reorder what the
+		// person reads around it.
+		text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
+	}
+	detailHTML := ""
+	if it.Detail != "" {
+		detailHTML = `<span class="` + ui.AsksMutedTextClass + `" data-attention-detail>` + detail + `</span>`
+	}
+
+	// A ROW: the whole card is the link (it.Link: the rendered view, the
+	// session's question card, the draft, the task). Its one line is what it
+	// waits on — a waiting window's pending call ("Bash: npm test"), a held
+	// question's first line — exactly the server's own text (it.Text: the
+	// host's words, cleaned and capped by mirror.CleanPending), escaped.
+	row := func(line string) string {
+		return open + `min-w-0` + attrs + `<a href="` + esc(it.Link) + `" class="` + ui.AsksRowClass + `" data-attention-open>
+<span class="` + ui.AsksHeadTextClass + ` gap-0.5">` + attentionHeadLines(it, now) + focus + line + detailHTML + `</span>` + ui.AsksChevron + `</a>
+</li>
+`
+	}
+	switch {
+	case it.Kind == attentionKindSession && it.openCode == nil,
+		it.Kind == attentionKindQuestion && it.openCode == nil:
+		return row(attentionWaitLineHTML(it))
+	case it.Kind == attentionKindTask:
+		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
+	}
+
+	// A CARD: a head, the text, the controls.
+	var b strings.Builder
+	b.WriteString(open + ui.AsksCardClass + attrs)
+	back, formAttrs := "", ""
+	if returnTo != "" {
+		back = `<input type="hidden" name="return" value="` + esc(returnTo) + `">`
+		// A form on a session page opts out of htmx's boost, so it is a plain
+		// POST whose redirect reloads that page.
+		formAttrs = ` hx-boost="false"`
+	}
+	id := strconv.FormatInt(it.AskID, 10)
+	dismissForm := "ask-" + id + "-dismiss"
+	// 🔴 DISMISS IS ITS OWN FORM, posting to /cancel — the icon button only
+	// SITS in the card's FOOTER (the answer form's last row, or a notice's own
+	// row), joined to that form by the form= attribute. 🔴 NEVER IN THE HEAD:
+	// beside the head link's chevron a thumb aimed at "open the session" could
+	// cancel the ask, with no confirmation (Round 0 of #620). A
+	// formaction on the answer form would also send the typed answer and run
+	// through whatever binds the answer form's submit; this way the two posts
+	// are exactly what they were.
+	dismiss := ""
+	switch it.Kind {
+	case attentionKindAsk:
+		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss without answering" title="Dismiss without answering" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+	case attentionKindNotice:
+		dismiss = `<button type="submit" form="` + dismissForm + `" aria-label="Dismiss" title="Dismiss" class="` + ui.AsksIconButtonClass + `" data-attention-dismiss>` + ui.AsksDismissIcon + `</button>`
+	}
+	href := ""
+	switch it.Kind {
+	case attentionKindAsk, attentionKindNotice:
+		href = it.sessionLink
+	default:
+		href = it.Link
+	}
+	b.WriteString(attentionHeadHTML(it, now, href) + "\n")
+	b.WriteString(focus)
+	b.WriteString(`<p class="` + ui.AsksTextClass + `" data-attention-text>` + text + `</p>
+`)
+	if it.Detail != "" {
+		b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
+`)
+	}
+	b.WriteString(proposalBodyHTML(it.proposal))
+	switch it.Kind {
+	case attentionKindNotice:
+		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or
+		// dismissed, never answered (attention.ErrNotice). Its tmux target is
+		// in the head (the place it names, data-attention-source); Dismiss is
+		// its footer, at the card's end.
+		b.WriteString(`<div class="flex justify-end">` + dismiss + `</div>
+<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
+`)
+	case attentionKindAsk:
+		b.WriteString(attentionAnswerFormHTML(it, id, back, formAttrs, dismiss, returnTo == ""))
+		b.WriteString(`<form id="` + dismissForm + `" method="POST" action="` + attentionPath + `/asks/` + id + `/cancel" hidden` + formAttrs + `>` + back + `</form>
+`)
+	default:
+		// An opencode window's ask: its relayed answers, or why it can't be
+		// answered here.
+		b.WriteString(openCodeAskHTML(it))
+	}
+	b.WriteString("</li>\n")
+	return b.String()
+}
+
+// attentionAnswerFormHTML is an ask's answer form.
+//
+// THE COMPACT ANSWER FORM (operator decision: one card must fit a session
+// page's asks block on a phone with no inner scroll). The classes are ui's
+// (the stylesheet scans internal/ui, not this file), drawn here once for both
+// the Asks queue and a session page's block. Tapping an option answers with
+// it, as it always has; the box starts one line and grows as it is typed into
+// (ui.AskFormInputClass, capped), and Answer sends it — nothing typed or
+// dictated is sent before Answer.
+//
+// ON THE ASKS PAGE (behind true) THE BOX IS BEHIND THE OPTIONS: an ask that
+// offers options draws them as full-width chips first and its box, mic and
+// Answer behind "Type an answer" (a <details>: it opens in place with no
+// script, and the page's script focuses the box and keeps it open across a
+// live refresh). An ask with no options has nothing to hide the box behind:
+// it is drawn open. A session page's block keeps its box open.
+func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss string, behind bool) string {
+	esc := html.EscapeString
+	var b strings.Builder
+	b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="` + ui.AskFormClass + `" data-attention-answer` + formAttrs + `>
+` + back)
+	collapse := behind && len(it.Options) > 0
+	if len(it.Options) > 0 {
+		optsClass, optClass := ui.AskFormOptionsClass, ui.AskFormOptionClass
+		if behind {
+			optsClass, optClass = ui.AsksOptionsClass, ui.AsksOptionClass
+		}
+		b.WriteString(`<div class="` + optsClass + `">`)
+		for _, o := range it.Options {
+			b.WriteString(`<button type="submit" name="option" value="` + esc(o) + `" class="` + optClass + `" data-attention-option>` + esc(o) + `</button>`)
+		}
+		b.WriteString("</div>\n")
+	}
+	// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
+	// mic finds its box and note by id (ui.DictateControlHTML). The mic FILLS
+	// the box at the caret; Answer is still the only send. The label is for a
+	// screen reader; the box's placeholder says the same to the eye.
+	input := "answer-" + id
+	box := `<label for="` + input + `" class="sr-only">Your answer</label>
+<div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
+		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
+` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
+	answer := `<button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button>`
+	// Dismiss ends the form's LAST row: beside "Type an answer" while the box
+	// is behind the options, else beside Answer (attentionItemHTML's footer
+	// rule). It belongs, by form=, to the /cancel form outside this one.
+	if collapse {
+		b.WriteString(`<div class="flex min-w-0 items-start gap-2"><details class="` + ui.AsksTypeClass + ` flex-1" data-ask-type><summary class="` + ui.AsksTypeSummaryClass + `" data-ask-type-toggle>` + ui.AsksTypeIcon + `Type an answer</summary>
+<div class="` + ui.AsksTypeBodyClass + `">` + box + `<div class="` + ui.AskFormActionsClass + `">` + answer + `</div></div></details>` + dismiss + `</div>
+`)
+	} else {
+		b.WriteString(box + `<div class="` + ui.AskFormActionsClass + `">` + answer + dismiss + `</div>
+`)
+	}
+	b.WriteString("</form>\n")
+	return b.String()
+}
+
+// attentionHeadHTML is an item card's head: its lines (attentionHeadLines)
+// and, with href, the head is the link to it, ended by a chevron.
+func attentionHeadHTML(it attentionItem, now time.Time, href string) string {
+	lines := `<span class="` + ui.AsksHeadTextClass + `">` + attentionHeadLines(it, now) + `</span>`
+	if href == "" {
+		return `<div class="` + ui.AsksHeadClass + ` flex-1">` + lines + `</div>`
+	}
+	return `<a href="` + html.EscapeString(href) + `" class="` + ui.AsksHeadLinkClass + ` flex-1" data-attention-session>` + lines + ui.AsksChevron + `</a>`
+}
+
+// attentionHeadLines is a card head's two lines: the title (attentionTitle) and,
+// muted under it, how long it has waited, the place it is at (the tmux target,
+// small: data-attention-source) and whether its host is offline.
+func attentionHeadLines(it attentionItem, now time.Time) string {
+	esc := html.EscapeString
+	title, src, srcIsTitle := attentionTitle(it)
+	if src == title {
+		// A name that IS its place (an agent named by its label): one line.
+		srcIsTitle = true
+	}
+	attrs := ` data-attention-title`
+	if it.Name != "" {
+		attrs += ` data-attention-name`
+	}
+	if srcIsTitle {
+		attrs += ` data-attention-source`
+	}
+	var sub []string
+	if !it.Since.IsZero() {
+		sub = append(sub, `<time datetime="`+it.Since.UTC().Format(time.RFC3339)+`">`+esc(attentionAge(now.Sub(it.Since)))+`</time>`)
+	}
+	if !srcIsTitle && src != "" {
+		sub = append(sub, `<span class="`+ui.AsksTargetClass+`" data-attention-source>`+esc(src)+`</span>`)
+	}
+	if it.Offline {
+		sub = append(sub, `<span data-attention-offline>host offline</span>`)
+	}
+	out := `<span class="` + ui.AsksTitleClass + `"` + attrs + `>` + esc(title) + `</span>`
+	if len(sub) > 0 {
+		out += `<span class="` + ui.AsksSubClass + `">` + strings.Join(sub, ` · `) + `</span>`
+	}
+	return out
+}
+
+// attentionTitle is what an item's head calls it, and the place it shows
+// under that (src, "" for none): the session's HUMAN name when it has one, its
+// place small under it; else a mirrored window's own name (its label, or its
+// tmux address: mirror.Place's Code) with its tmux target and host under it;
+// else its Source itself (an agent, muster, a plugin), and srcIsTitle says the
+// title IS the source.
+//
+// The place is the title rule's (textplain.TitleKeeping: the tmux target kept
+// VERBATIM), cut to start at the target when the window's own label leads it
+// ("Gold:1 · tmux main:1 @ ws" under a title of "Gold:1" is "tmux main:1 @
+// ws"), and keeps anything after the target ("(host offline)").
+func attentionTitle(it attentionItem) (title, src string, srcIsTitle bool) {
+	src = textplain.TitleKeeping(it.Source, it.target)
+	if it.target != "" {
+		if i := strings.Index(src, it.target); i > 0 {
+			src = src[i:]
+		}
+	}
+	switch {
+	case it.Name != "":
+		return it.Name, src, false
+	case it.target != "" && it.at.Code != "":
+		addr := strings.TrimSuffix(strings.TrimPrefix(it.target, "tmux "), " @ "+it.at.Host)
+		return textplain.TitleKeeping(it.at.Code, addr), src, false
+	}
+	return textplain.TitleKeeping(it.Source, it.target), "", true
+}
+
+// attentionWaitLineHTML is a waiting row's one line: what it waits on, as the
+// server already has it (it.Text — a pending call's summary, "Bash: npm test";
+// a held question, cut to its first line; sessionWaitingText when the host
+// named nothing). Escaped, never rendered as markup.
+func attentionWaitLineHTML(it attentionItem) string {
+	line := firstLine(strings.TrimSpace(it.Text))
+	cls := ui.AsksWaitLineClass
+	if it.Text == sessionWaitingText {
+		cls = ui.AsksMutedTextClass
+	}
+	return `<span class="` + cls + `" data-attention-text>` + html.EscapeString(line) + `</span>`
 }
 
 // attentionEmptyHTML is the list's line when nothing is in it.
@@ -2038,27 +2202,32 @@ func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Ti
 	}
 	esc := html.EscapeString
 	var b strings.Builder
-	b.WriteString(`<li class="pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-attention-answered-heading>Answered</li>` + "\n")
+	// The Answered group (askGroupsHTML's last): its label and count, then
+	// one muted card per answer — who asked and when, the question on one
+	// line, the answer, where it went, and Retry on a failed delivery.
+	b.WriteString(askGroupOpen("answered", "Answered", len(asks)) + `<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-answered" data-attention-answered-list>
+`)
 	for _, a := range asks {
 		id := strconv.FormatInt(a.ID, 10)
 		who := textplain.TitleKeeping(askSourceParts(a, hosts))
 		text, retry := answerDeliveryText(a, who, proposals[a.ID])
 		age := ""
 		if !a.ResolvedAt.IsZero() {
-			age = ` · <time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time>`
+			age = `<span class="` + ui.AsksSubClass + `"><time datetime="` + a.ResolvedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.ResolvedAt))) + `</time></span>`
 		}
-		b.WriteString(`<li id="answered-` + id + `" class="` + flowsCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(who) + `</span>` + age + `</span>
-<p class="break-words text-sm text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
+		b.WriteString(`<li id="answered-` + id + `" class="` + ui.AsksCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
+<span class="` + ui.AsksHeadTextClass + `"><span class="` + ui.AsksTitleClass + `" data-attention-source>` + esc(who) + `</span>` + age + `</span>
+<p class="` + ui.AsksMutedTextClass + `" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
 <p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
-` + answeredViaHTML(a) + `<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>
+` + answeredViaHTML(a) + `<p class="break-words text-xs text-fg2" data-attention-delivery>` + esc(text) + `</p>
 `)
 		if retry {
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver"><button type="submit" class="` + flowsQuietButton + `" data-attention-redeliver>Retry delivery</button></form>
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/redeliver"><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-attention-redeliver>Retry delivery</button></form>
 `)
 		}
 		b.WriteString("</li>\n")
 	}
+	b.WriteString("</ul></li>\n")
 	return b.String()
 }
 

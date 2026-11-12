@@ -1,11 +1,13 @@
 package api
 
 import (
+	"html"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // TestAHeldQuestionIsOneItemLinkedToItsSessionsView: a session whose
@@ -45,8 +47,16 @@ func TestAHeldQuestionIsOneItemLinkedToItsSessionsView(t *testing.T) {
 	if len(got) != 1 || got[0].Key != key || got[0].Kind != attentionKindQuestion || got[0].Text != "1. Which database?\n2. Migrate now?" || got[0].Link != view {
 		t.Fatalf("held + waiting: %+v", got)
 	}
-	if body := f.page(t, "/attention/items"); strings.Count(body, `id="`+key+`"`) != 1 || !strings.Contains(body, "Answer in the session") {
+	// The list draws it ONCE, and its card is one link to the session's view
+	// (where the question card is answered).
+	body := f.page(t, "/attention/items")
+	if strings.Count(body, `id="`+key+`"`) != 1 {
 		t.Fatalf("the view: %s", body)
+	}
+	li := body[strings.Index(body, `<li id="`+key+`"`):]
+	li = li[:strings.Index(li, "</li>")]
+	if !strings.Contains(li, `<a href="`+html.EscapeString(view)+`" class="`+ui.AsksRowClass+`" data-attention-open>`) || strings.Count(li, "<a ") != 1 {
+		t.Fatalf("the held question's card is not one link to its session's view: %s", li)
 	}
 	// Held while the host still says idle: the question is still listed, once.
 	f.setWindows(mirror.StatusIdle)

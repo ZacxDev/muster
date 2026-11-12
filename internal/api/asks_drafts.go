@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -109,11 +110,60 @@ func askTabItems(items []attentionItem) []attentionItem {
 	return out
 }
 
-// askTabListHTML is the Ask tab's list: the queue without its reply drafts
-// (its empty line then means "nothing on THIS tab"; the drafts' count is the
-// Reply drafts tab's label), then the Answered section.
-func askTabListHTML(items []attentionItem, answered string, now time.Time) string {
-	return attentionItemsHTML(askTabItems(items), now) + answered
+// askGroups is the Ask tab's groups, in the order the page draws them: each
+// its key (data-asks-group, its label's id), its label, and the item kinds it
+// holds. A reply draft (attentionKindPlugin) is in none: it is the Reply
+// drafts tab's (askTabItems strips it first). TestEveryAttentionKindHasAHome
+// pins that every other kind the queue can hold is in one.
+var askGroups = []struct {
+	key, label string
+	kinds      []string
+}{
+	{"questions", "Questions", []string{attentionKindAsk, attentionKindQuestion}},
+	{"notices", "Notices", []string{attentionKindNotice}},
+	{"waiting", "Waiting", []string{attentionKindSession}},
+	{"tasks", "Tasks to route", []string{attentionKindTask}},
+}
+
+// askGroupsHTML is the Ask tab's list (its <ul>'s <li>s): one group per kind
+// that has something in it — its label with its count (ui.AsksGroupLabel),
+// then its cards, newest first within it — the session-state rows
+// (episodes, n of them: episodeRowsHTML's list) in the Waiting group after
+// its windows, and then the Answered group (answered, answeredAsksHTML's).
+// The items are the queue without its reply drafts (askTabItems: those are
+// the Reply drafts tab's). Nothing waiting and no rows: the empty line.
+func askGroupsHTML(items []attentionItem, episodes string, n int, answered string, now time.Time) string {
+	items = askTabItems(items)
+	var b strings.Builder
+	for _, g := range askGroups {
+		var in []attentionItem
+		for _, it := range items {
+			if slices.Contains(g.kinds, it.Kind) {
+				in = append(in, it)
+			}
+		}
+		rows, count := "", len(in)
+		if g.key == "waiting" {
+			rows, count = episodes, count+n
+		}
+		if count == 0 && rows == "" {
+			continue
+		}
+		b.WriteString(askGroupOpen(g.key, g.label, count))
+		if len(in) > 0 {
+			b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-` + g.key + `">` + attentionItemsHTML(in, now) + `</ul>`)
+		}
+		b.WriteString(rows + "</li>\n")
+	}
+	if b.Len() == 0 {
+		b.WriteString(attentionEmptyHTML)
+	}
+	return b.String() + answered
+}
+
+// askGroupOpen opens one group's <li>: its label, with its count.
+func askGroupOpen(key, label string, n int) string {
+	return `<li class="` + ui.AsksGroupClass + `" data-asks-group="` + key + `">` + ui.AsksGroupLabel("asks-group-"+key, label, n) + "\n"
 }
 
 // splitDraftCards is cards as the two views: awaiting a decision (pending and
@@ -206,14 +256,14 @@ func draftIDs(cards []plugins.DraftCard) string {
 // draftsPanel is the Reply drafts tab's panel: its own two tabs, Awaiting
 // decision and Archived, the one sub selected.
 func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
-	pendingList := `<p class="text-xs text-fg2">Your chief drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
-<p id="asks-drafts-changed" role="status" class="flex flex-wrap items-center gap-2 rounded-md bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="drafts-changed" hidden>
+	// No intro prose (the design pass): each pending card's reply box says
+	// what approving sends, and an approved card's Withdraw is its own offer.
+	pendingList := `<p id="asks-drafts-changed" role="status" class="flex flex-wrap items-center gap-2 rounded-md bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="drafts-changed" hidden>
 <span>Drafts changed since you opened this list. The cards below are as you saw them.</span>
-<button type="button" class="` + flowsQuietButton + `" data-drafts-show-latest>Show the latest</button></p>
+<button type="button" class="` + ui.AsksSecondaryButtonClass + `" data-drafts-show-latest>Show the latest</button></p>
 <ul id="asks-drafts-pending" class="flex flex-col gap-2" data-testid="drafts-pending" data-draft-ids="` + draftIDs(pending) + `">` +
 		draftListHTML(pending, draftsPendingEmpty) + `</ul>`
-	archivedList := `<p class="text-xs text-fg2">Drafts you approved or rejected, and those replaced or expired, with what became of each. An approval the plugin has not collected yet can still be withdrawn.</p>
-<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul>`
+	archivedList := `<ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul>`
 	subSel := asksTabDrafts
 	if sub == asksTabArchived {
 		subSel = asksTabArchived
@@ -368,12 +418,3 @@ const asksPageScript = `<script>
   });
 })();
 </script>`
-
-// asksIntroDrafts is the page's intro clause for the drafts tab, "" without
-// plugins.
-func asksIntroDrafts(plugins bool) string {
-	if !plugins {
-		return ""
-	}
-	return " and, under Reply drafts, replies your chief drafted awaiting your approval"
-}

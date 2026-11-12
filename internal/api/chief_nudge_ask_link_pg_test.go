@@ -34,7 +34,7 @@ func attentionCardLink(page string, id int64) string {
 	if j := strings.Index(li, "</li>"); j >= 0 {
 		li = li[:j]
 	}
-	m := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>View in session</a>`).FindStringSubmatch(li)
+	m := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>`).FindStringSubmatch(li)
 	if m == nil {
 		return ""
 	}

@@ -1313,7 +1313,7 @@ func TestATaskEventKeepsTheRawTitleAndTheQueueShowsItPlain(t *testing.T) {
 		t.Fatalf("task items %+v, want 1", items)
 	}
 	html := attentionItemsHTML(items, time.Now())
-	if want := ": Rotate the key for C#</p>"; !strings.Contains(html, want) {
+	if want := ": Rotate the key for C#</span>"; !strings.Contains(html, want) {
 		t.Errorf("the attention queue does not show the title plain (%q):\n%s", want, html)
 	}
 }
