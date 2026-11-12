@@ -222,10 +222,10 @@ func TestTheOfferIsAnsweredInPlace(t *testing.T) {
 	expectNoReload(t, "keep", keep)
 	if body := keep.Body.String(); !strings.Contains(body, `<div id="session-drift" hx-swap-oob="delete"></div>`) ||
 		!strings.Contains(body, `id="session-drift-status" hx-swap-oob="innerHTML">Kept the name.`) {
-		t.Fatalf("keep's answer does not remove the banner in place:\n%s", body)
+		t.Errorf("keep's answer does not remove the banner in place:\n%s", body)
 	}
 	if store.rows[sub].Name.DriftDismissed != "Fixing the Stripe webhook retry" {
-		t.Fatalf("keep recorded %q", store.rows[sub].Name.DriftDismissed)
+		t.Errorf("keep recorded %q", store.rows[sub].Name.DriftDismissed)
 	}
 
 	const offer = "Wiring the Stripe refund flow"

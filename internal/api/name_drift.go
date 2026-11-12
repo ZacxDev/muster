@@ -23,7 +23,7 @@ import (
 // stopped being about its name for long enough (focus.DriftOffer). Accepting
 // is an ordinary rename by the person — POST /agents/{id}/name or
 // POST /sessions/name with that title — so the name it gives is MANUAL.
-// "Keep the name" records a dismissal at that focus title (POST
+// "Keep" records a dismissal at that focus title (POST
 // /sessions/name/drift-dismiss), which holds until the title changes.
 //
 // 🔴 EVERY STABLE NAME DRIFTS BUT A ROLE'S. A manual, task (dispatch) or auto
@@ -103,7 +103,7 @@ func (s *Server) mirrorDrift(r *http.Request, e mirror.SessionView, n sessionnam
 		Back:   mirrorRef(e).ViewPath()}
 }
 
-// registerSessionDriftRoutes wires "Keep the name": POST
+// registerSessionDriftRoutes wires "Keep": POST
 // /sessions/name/drift-dismiss with the session (kind=agent&agent_id=, or
 // kind=mirror&host=&session=&window=) and title, the offer dismissed. The
 // pins' conventions (session_names.go).
@@ -166,6 +166,7 @@ func (s *Server) handleDriftDismiss(w http.ResponseWriter, r *http.Request) {
 	// page — this answered HX-Refresh). The banner goes, out of band; nothing
 	// else on the page changes, so nothing else is drawn.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	if err := ui.RenderDriftKept(w); err != nil {
 		s.logger.Printf("names: render the kept offer: %v", err)
 	}
@@ -192,6 +193,7 @@ func (s *Server) answerAgentDriftRenamed(w http.ResponseWriter, r *http.Request,
 		Card:     ui.AgentCardView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionName: n},
 		Switcher: s.switcher(ctx, ui.SwitcherCurrent{AgentID: a.ID})}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("HX-Trigger", "agents:changed")
 	if err := ui.RenderAgentDriftRenamed(w, v); err != nil {
 		s.logger.Printf("names: render agent %d renamed: %v", a.ID, err)
@@ -207,6 +209,7 @@ func (s *Server) answerMirrorDriftRenamed(w http.ResponseWriter, r *http.Request
 		Qualifier: e.Qualifier, SessionName: s.mirrorName(ctx, e),
 		Switcher: s.switcher(ctx, ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("HX-Trigger", "agents:changed")
 	if err := ui.RenderMirrorDriftRenamed(w, v); err != nil {
 		s.logger.Printf("names: render %s renamed: %v", e.SessionKey(), err)

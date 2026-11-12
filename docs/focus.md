@@ -231,11 +231,22 @@ table.
 ### When the work moves on
 
 A name is frozen, but the work can move on. When it has, the session's page
-(an agent's page, a window's Rendered view) **offers** a rename under its
-header — "This session has moved on to "Fixing the Stripe webhook retry"",
-then a **Rename to "…"** button, then **Keep the name** as a text link, one
-per row (a long offer wraps inside the banner). muster never renames a session
-on its own. The offer is decided by `focus.DriftOffer`, from the session's
+(an agent's page, a window's Rendered view) **offers** a rename in a one-row
+banner under its header: **Suggested name** (what the banner is, in its
+tooltip), the offered title ("Fixing the Stripe webhook retry"), a **Rename**
+button and **Keep** as a quiet text link. A long title is cut with an ellipsis
+and shown whole in its tooltip; on a narrow phone the buttons may take a second
+row, never more. muster never renames a session on its own.
+
+Both buttons are answered **in place**, without reloading the page: the banner
+goes, a screen reader hears "Renamed to "…"" or "Kept the name", and on
+**Rename** every place the page names the session — its header, the full-title
+popover, the tab's title, the switcher's pills, the sidebar and the rename
+dialogs' prefill — reads the new name. Nothing else on the page is redrawn, so
+a draft in the composer, the open stream and the scroll position stay as they
+were. Without JavaScript both are plain form posts answered with a redirect
+back to the page. (The ⋯ menu's **Rename…** dialog still reloads the page when
+saved.) The offer is decided by `focus.DriftOffer`, from the session's
 focus history:
 
 - the **newest three** focus changes (`DriftMinTitles`) written **after the
@@ -258,8 +269,8 @@ focus history:
 
 A manual, task (dispatch) or auto name is offered a rename — a task's name
 never changes on its own, so this offer is how it moves on — but never a
-system name (the chief, an officer) or a technical fallback. **Rename to "…"**
-is an ordinary rename, so the new name is manual. **Keep the name** records
+system name (the chief, an officer) or a technical fallback. **Rename** is an
+ordinary rename, so the new name is manual. **Keep** records
 the dismissal per user (`agent_focus.drift_dismissed`, migration `0091`): the
 offer stays hidden while the focus title is the one it was dismissed at, and
 comes back when the title changes.

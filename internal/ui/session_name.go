@@ -216,7 +216,7 @@ func sessionNameTitle(n sessionname.Name, class string, extra ...g.Node) g.Node 
 	)
 }
 
-// SessionDriftDismissPath is "Keep the name" (internal/api name_drift.go).
+// SessionDriftDismissPath is the offer's "Keep" (internal/api name_drift.go).
 const SessionDriftDismissPath = "/sessions/name/drift-dismiss"
 
 // The drift offer's elements and the field its Rename posts.
@@ -254,7 +254,7 @@ type SessionDrift struct {
 // offer. Server-drawn with the page, so it moves nothing in after paint.
 //
 // 🔴 ONE LINE (operator: the stacked three-row card took too much height). A
-// short muted label, the offered name (truncated with an ellipsis, whole in
+// short muted label (a pencil below `sm`), the offered name (truncated with an ellipsis, whole in
 // its tooltip), then the primary "Rename" and a quiet "Keep" text link (no
 // fill, no ring, underlined on hover and keyboard focus). Each button is a
 // 44px-tall target, so the banner is one 44px row; the label and the name
@@ -290,7 +290,11 @@ func driftBanner(d *SessionDrift) g.Node {
 			hx("hx-boost", "false"),
 			Class("flex flex-wrap items-center gap-x-2 border-b border-line bg-s1 px-3 text-xs text-fg2"),
 			P(Class("flex min-w-0 flex-1 basis-40 items-center gap-1.5"),
-				Span(Class("shrink-0 cursor-help text-muted"), g.Attr("title", driftExplain), g.Text("Suggested name")),
+				// Below `sm` the label is a pencil (its words still read to a
+				// screen reader), so a phone's row gives its room to the name.
+				Span(Class("inline-flex shrink-0 cursor-help items-center text-muted"), g.Attr("title", driftExplain),
+					g.Raw(`<svg class="h-3.5 w-3.5 sm:hidden" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793ZM11.379 5.793 3 14.172V17h2.828l8.38-8.379-2.83-2.828Z"/></svg>`),
+					Span(Class("sr-only sm:not-sr-only"), g.Text("Suggested name"))),
 				Span(g.Attr("data-session-drift-offer", ""), Class("min-w-0 truncate font-semibold text-fg"), g.Attr("title", d.Offer), g.Text(d.Offer)),
 			),
 			Div(Class("ml-auto flex shrink-0 items-center"),

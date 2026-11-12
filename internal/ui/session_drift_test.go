@@ -30,7 +30,9 @@ func driftFixture() *SessionDrift {
 // driftGolden is the whole one-line banner and its status region, byte for
 // byte.
 const driftGolden = `<div id="session-drift" data-session-drift="Fixing the &#34;Stripe&#34; webhook retry &amp; refunds" role="region" aria-label="Rename suggestion" hx-boost="false" class="flex flex-wrap items-center gap-x-2 border-b border-line bg-s1 px-3 text-xs text-fg2">` +
-	`<p class="flex min-w-0 flex-1 basis-40 items-center gap-1.5"><span class="shrink-0 cursor-help text-muted" title="This session&#39;s work has moved on from its name. Rename it to what it is about now, or keep the name: muster offers again only when the focus changes.">Suggested name</span>` +
+	`<p class="flex min-w-0 flex-1 basis-40 items-center gap-1.5"><span class="inline-flex shrink-0 cursor-help items-center text-muted" title="This session&#39;s work has moved on from its name. Rename it to what it is about now, or keep the name: muster offers again only when the focus changes.">` +
+	`<svg class="h-3.5 w-3.5 sm:hidden" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M13.586 3.586a2 2 0 1 1 2.828 2.828l-.793.793-2.828-2.828.793-.793ZM11.379 5.793 3 14.172V17h2.828l8.38-8.379-2.83-2.828Z"/></svg>` +
+	`<span class="sr-only sm:not-sr-only">Suggested name</span></span>` +
 	`<span data-session-drift-offer="" class="min-w-0 truncate font-semibold text-fg" title="Fixing the &#34;Stripe&#34; webhook retry &amp; refunds">Fixing the &#34;Stripe&#34; webhook retry &amp; refunds</span></p>` +
 	`<div class="ml-auto flex shrink-0 items-center">` +
 	`<form method="post" action="/sessions/name/rename" hx-post="/sessions/name/rename" hx-swap="none" hx-vals="{&#34;drift&#34;:&#34;1&#34;}" hx-disabled-elt="find button">` +
