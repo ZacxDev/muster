@@ -729,7 +729,7 @@ listing and again at dispatch):
 | `officer_items` `{status?, limit?, cursor?}` | `GET /officers/{id}/items` (default `status=open`; the schema offers `open`, `claimed`, `waiting`, `done` and `escalated`; muster passes the filter to HQ as given) |
 | `officer_claim` `{item_id?, lease_seconds?}` | no `item_id`: `POST /officers/{id}/claim-next` (HQ picks the next item); with one: `POST …/items/{item}/claim` |
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
-| `officer_complete` `{item_id, outcome, summary, links?, investigation?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
+| `officer_complete` `{item_id, outcome, summary, links?, investigation?, handoff?}` | `POST …/items/{item}/complete`. `investigation` (judgement and untiered instances) is forwarded as sent; `handoff: {head_sha}` (outcome `done` only) is checked and forwarded; `outcome: needs_judgement` is a routine instance's only — see [Completing an item](#completing-an-item-outcomes-and-investigation) |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_ask_person` `{item_id, to, question, options?, image_ids?, context_url?, deadline_seconds?}` | `POST …/items/{item}/asks` (the images were uploaded by `ccd ask-image`) — see [Asking an HQ member](#asking-an-hq-member-officer_ask_person). **Ends the instance's lease** |
 | `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
@@ -817,6 +817,26 @@ dispatch both ask them.
   investigation is the judgement pool's. An `investigation` it sends anyway
   is **refused** by muster, naming `needs_judgement`, and nothing reaches HQ.
   It is never silently dropped.
+- **`handoff`** (every instance; HQ decides which items take it). HQ's review
+  loop advances on a hand-off: the shepherd completing its opened item, every
+  auditor round, and an author completing its fix item each send
+  `handoff: {"head_sha": "<the pull request's head, 40 hex>"}`, and HQ
+  refuses those completes without it (`400 handoff_required`). A
+  **shepherd** may add `"to": "author"` — the one value — to hand a clean
+  round's fixes to the pull request's authoring officer (HQ enqueues its
+  `*.pr_fix` item; [the draft stage](#the-draft-stage)). muster refuses,
+  before HQ, a hand-off with another key, a `head_sha` that is not 40
+  **lower-case** hex, `to` with another value or on any officer but a
+  shepherd, or one on any outcome but `done` (HQ refuses that too), and sends
+  `"handoff"` only when one is given — an HQ that predates the field never
+  sees it. Whether the head a hand-off names was pushed and is live is
+  **HQ's** check (`409 nothing_pushed`, `head_not_live`): muster keeps no
+  memory of pushes to decide it, and passes HQ's refusal back. HQ's refusals (`400 handoff_required`, `409
+  round_cap`, `no_handoff_target`, `handoff_ambiguous`, `handoff_exists`,
+  and on a hand-off to the author `audit_not_stopped`, `officer_shadow`,
+  `no_author`, `nothing_pushed`, `head_not_live`)
+  come back with HQ's status and body; HQ rolls the complete back, so the
+  item stays held.
 
 ### Observability queries
 
@@ -1315,7 +1335,9 @@ notice says whether it did. A close or a delete GitHub refuses is posted as
   means GitHub refused the push.
 - **A create.** The new pull request is checked again at the head GitHub
   created it on, so a push that lands between the create's check and GitHub's
-  create is caught.
+  create is caught. When that re-check is **clean**, muster tells HQ the pull
+  request was opened (`pr-opened`, [below](#the-review-loop-through-hq)), so
+  HQ can start its review loop for it.
 - **The sweep**, every 5 minutes: every open pull request of the officer, at its
   current head. A head already checked clean is not read again (muster keeps
   the last clean head per pull request, in memory: a restart re-reads each
@@ -1324,6 +1346,50 @@ notice says whether it did. A close or a delete GitHub refuses is posted as
 
 Until a re-check finishes (or, at worst, the next sweep), the pull request
 shows the change.
+
+**Fixing its own pull request (`*.pr_fix` items).** Fixes go to the
+**authoring** officer (operator decision, 2026-11-12): after a clean audit
+round's 🟡 findings, or a human approver's feedback, HQ hands the officer
+whose App opened the pull request an item of kind `<its type>.pr_fix`
+(muster keys on the `.pr_fix` suffix only), subject `<repo>#<pr>` (repository
+lower-cased), payload `{pr_loop: {repo, pr, head_sha, …}, findings |
+feedback, from}` — `findings` the clean round's auditor report as one
+**string**, verbatim, or `feedback` the owner's `{text, by, at}`. muster parses
+neither: they are the instance's to read.
+
+- **A pull request in its review loop is the loop's** (operator decision,
+  2026-11-12). Once HQ's 200 to muster's `pr-opened` named a loop item for
+  it ([below](#the-review-loop-through-hq): muster's durable record, never the
+  instance's word), the authoring officer's writes to it — a push to its
+  branch, a comment, a title or body edit, a close — need the `*.pr_fix`
+  item for `<repo>#<pr>` **held** under a live lease (read from HQ with the
+  officer's token); with none (never claimed, released, or the lease
+  lapsed), each is refused 403 ("#<n> is in its review loop …"). muster
+  asks HQ for the instance's held fix items on every such write. HQ
+  unreachable refuses only a write to a pull request in its loop (or whose
+  loop record cannot be read); a write to one out of the loop is admitted
+  with HQ down, as before. An officer with no pull request in a loop and no
+  fix item held (or HQ unreachable) pushes without the branch's pull requests
+  even being looked up, so a GitHub blip blocks nothing it did not block
+  before. A pull request in its loop that muster sees closed or merged — on a
+  write's read of it, or by the draft sweep — leaves the loop (`closed`).
+- **Under a held fix item** for a pull request — **whatever muster's loop
+  record says** (a lost or missing record lifts none of these checks; the
+  pushed branch is the head of that pull request, named for the ORIGINAL
+  item, not the fix item): the pull request must be open and authored by
+  this officer's own App, and every write is refused in **shadow**
+  ([below](#shadow)) before anything reaches GitHub, with `shadow: would
+  have <pushed <old12>..<new12> to <branch> | commented on <repo>#<n> (<N>
+  chars) | edited the title and body of <repo>#<n> | closed <repo>#<n>>`. A
+  fix item for another pull request opens nothing here. The content rules
+  and the re-checks apply unchanged.
+- A fix item **never opens a pull request**: a `POST pulls` whose branch's
+  item HQ shows to be a `*.pr_fix` item is refused 403 ("a fix item pushes to
+  the pull request's existing branch …").
+- The next audit round starts when the author completes the fix item `done`
+  with `handoff: {head_sha: <the new head>}` ([Completing an
+  item](#completing-an-item-outcomes-and-investigation)); HQ refuses it at an
+  unchanged head.
 
 **The orphan report.** Once a UTC day (first an hour after boot) muster lists
 each draft officer's branches, older than 7 days by their head commit, that no
@@ -1337,7 +1403,8 @@ A `shepherd` officer **shepherds other officers' pull requests**: it opens none
 of its own, and acts — with its **own** GitHub App, never the author's — only
 on a pull request another officer opened, to fix what an audit or CI found and
 take it to "ready for review". It never merges, closes or force-pushes: a
-human merges. It is offered `officer_shepherd_mark_ready` and none of
+human merges. It is offered `officer_shepherd_mark_ready` and
+`officer_shepherd_merge_ask`, and none of
 `officer_mark_ready`, `officer_merge_pr`, `officer_tag_release`,
 `officer_rollout_status` and `officer_ci_logs` (a `ci_logs` block is refused).
 **Off by default**: nothing is a shepherd unless a `ship` block says
@@ -1350,8 +1417,7 @@ human merges. It is offered `officer_shepherd_mark_ready` and none of
    "repos": [{"repo": "example-org/example-infra", "base": "trunk",
               "github_app": {"id": 222222, "account": "example-org:7654321"},
               "forbidden_paths": [".github/**"]}],
-   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"}],
-                "auditors": ["example-auditor"]},
+   "shepherd": {"authors": [{"login": "example-investigator[bot]", "officer": "investigate:example-infra"}]},
    "required_checks": ["ci / gate"],
    "notice": {"channel": "ch/example-alerts"}
  }}
@@ -1363,10 +1429,11 @@ on. Each entry is `{"login", "officer"}`: the login (an App's bot is
 same muster whose App it is. A bare login is refused at boot: a shepherd acts
 on officers' pull requests only, and the author's own wall always applies.
 
-**`ship.shepherd.auditors`** (optional, up to 16 logins): whose audit blocks
-`officer_shepherd_mark_ready` reads (below). None listed: mark ready is always
-refused. An author is never an auditor (refused at boot), and the shepherd's
-own App and the pull request's author are never read as one.
+**`ship.shepherd.auditors` is removed** (🔴 a breaking change): the audit
+verdict mark ready reads now comes from HQ (below), not from pull request
+comments by listed logins, and muster **refuses to boot** with the key set —
+even empty — rather than ignore it. Migrating: delete the key; the auditor
+becomes an HQ officer whose report HQ writes onto the shepherd's findings item.
 
 **The pull request rule** (`officership.Shepherd.Admit`, one rule every write
 below asks, read fresh at every call). A pull request is the shepherd's to act
@@ -1388,25 +1455,40 @@ on only when it is:
 | (before the branch moves) | the push is stored at a scratch ref first (below); then the pull request is admitted again and still at `old`, GitHub's `compare/{old}...{new}` is a fast-forward (`ahead`, 0 behind) of at most 50 commits and 100 files, and `compare/{base}...{new}` passes the wall below and the draft stage's content rules (forbidden paths, removed volume/database/canary manifests, secret shapes) | only then does the branch move; otherwise `git push` reports the ref **rejected** with the reason, nothing lands, and HQ is told |
 | `POST /repos/{repo}/issues/{n}/comments` | no credential-shaped value, and no line whose first non-space character (after any `>` quote marks) is `/` or `@` — such a line reads as a slash command or a bot comment command (`@<bot> merge`), which automation in the repository could act on | 403, or 409 and a notice |
 | `PUT /repos/{repo}/pulls/{n}/update-branch` | the body is exactly `{"expected_head_sha": <the head>}` and it is the current head (GitHub merges the base into the head; never a rebase) | 403 |
-| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**; the rule above; `checks`: `required_checks` is not empty and every entry is `success` on the head (none listed: refused — CI green cannot be confirmed); `wall`: `compare/{base}...{head}` passes the wall and the content rules; `audit`: the audit ladder stopped with no 🔴 at the head (below); then GraphQL `markPullRequestReadyForReview` | a refusal naming the gate |
+| `officer_shepherd_mark_ready {repo, pr}` | an open **draft**; the rule above; `checks`: `required_checks` is not empty and every entry is `success` on the head (none listed: refused — CI green cannot be confirmed); `wall`: `compare/{base}...{head}` passes the wall and the content rules; `audit`: the auditor's report on the held item clears the head (below); `shadow` (below); the head read **again** right before the mutation (moved: refused, nothing converted); then GraphQL `markPullRequestReadyForReview`; then the head read **again** — moved (a push raced the mutation), and muster converts it back to draft (GraphQL `convertPullRequestToDraft`) and says so | a refusal naming the gate |
+| `officer_shepherd_merge_ask {item_id, repo, pr, head_sha, base_ref, base_sha, summary, purpose, how, evidence, to?}` | `repo` is one of the shepherd's; HQ's exact body and bounds, checked by muster before any call (below); the instance holds `item_id` under a live lease and its subject is `<repo>#<pr>`; `shadow`; then HQ's merge-ask route with the shepherd's token | a refusal naming the gate, or HQ's answer verbatim |
+
+Every write in this table — the push, the comment, update-branch, mark ready
+and the merge ask — is also refused in **shadow** ([below](#shadow)).
 
 Refused **always**: `POST pulls` (it opens nothing), every `PATCH pulls/{n}`
 (so no title or body edit, no close, no reopen), the merge endpoint, the refs,
 tags, contents and merges APIs, GraphQL, every `DELETE`, a branch create or
 delete, and a non-fast-forward push (never lands).
 
-**The audit gate** reads the pull request's comments, deterministically: of
-the fenced blocks `` ```audit-round-<n> `` in comments by a listed `auditor`
-(GitHub's author of the comment; never the shepherd's own App, never the pull
-request's author), it takes the one with the **highest round number** that
-carries a findings ledger (`findings 🔴<count>`; a round with no ledger, such
-as a requirements round, is skipped; a later comment wins a tie). That block
-must say `findings 🔴0` — the ladder stopped with no 🔴 — and name the head:
-contain a hex token of 7 to 40 characters the head's sha starts with. An
-audit of an older head, a 🔴 count above 0, or no such block is a refusal.
-The verdict lives on the pull request, not in HQ, because a comment's author
-is GitHub's record: only a listed auditor can write it, and the shepherd can
-neither forge it (its own login is excluded) nor clear it.
+**The audit gate** reads the item the instance holds for the pull request
+(the one the `item` gate found), never the pull request's comments. HQ writes
+the auditor's report onto that item, verbatim, as `payload.from.summary`; the
+shepherd can neither write nor edit it. Mark ready passes the gate only when:
+
+- the report's first line is exactly
+  `VERDICT: <verdict> · round <n> · head <12 hex>` and the verdict is `no-red`;
+- its round is the item's `payload.pr_loop.round`, which is at least 1;
+- its head is the pull request's live head's first 12 hex, and the item's
+  `payload.pr_loop.head_sha` is the live head (all 40);
+- no line of the report (trimmed) starts with 🔴;
+- the report is another officer's: `payload.from` names an `officer_id` and
+  a `kind`, and neither is of the shepherd's own **type** (an officer id is
+  `<type>:<area>`, an item kind `<type>.<what>`) — so neither the shepherd
+  itself nor any officer of its type can clear its pull request.
+
+Each failure is a refusal naming its reason: no auditor's report, no round on
+record, premise round 0, the item audited another head, the verdict line is
+unreadable, the verdict names another round or head, the verdict is not
+`no-red`, N 🔴 findings, or a report of no source / the shepherd's own type. An audit comment on the pull request — by any
+login — counts for nothing. This is the predicate HQ's merge-ask gate
+(`audit_not_stopped`) applies over its own records of the auditor's items; HQ
+checks again at the merge ask, so muster's check is the early refusal.
 
 **The wall** (`officers.ShepherdRules`, the one place it is decided): for each
 (repository, author), the union of
@@ -1459,8 +1541,118 @@ ships to none of the shepherd's repositories, or uses the shepherd's own App
 merging or releasing stage reads (`review_check`, `review_app`, `migrations`,
 `sensitive_paths`, `rollout`, `quiet_hours`, `releases_per_day`,
 `min_release_gap`); no `notice` block (a refused push is announced); an
-authors entry with no `officer`; an auditor who is also an author; a `ci_logs`
+authors entry with no `officer`; a `shepherd.auditors` key (removed, above); a `ci_logs`
 block; or the same author in the same repository shepherded by two officers.
+
+#### The review loop through HQ
+
+A review loop is a `draft` officer's pull request worked to a merge decision
+by HQ's officers: the draft officer opens it, a `shepherd` settles and fixes
+it, a read-only auditor officer audits each round, and HQ asks a human to
+merge. A round's 🟡 findings and an approver's feedback go back to the
+**authoring** draft officer as a `*.pr_fix` item ([the draft
+stage](#the-draft-stage)), never to the shepherd. Every step that advances
+the loop completes its item `done` with a `handoff` ([Completing an
+item](#completing-an-item-outcomes-and-investigation)). muster's side of HQ's
+officers API:
+
+- **`pr-opened`** — `POST {hq_url}/officers/{id}/pr-opened` with the
+  **authoring** officer's own token, body exactly
+  `{"repo", "pr", "head_sha", "head_ref", "base", "author"}` (`author` is the
+  pull request's author as GitHub reports it at the create, the officer App's
+  `<slug>[bot]`). 🔴 muster calls it itself, server-side, only on the clean
+  branch of a draft create's re-check (above); it is **no instance's tool**.
+  HQ answers which loop items it created and which officers it skipped. It
+  runs on its own context, detached from the create, and never fails it. A
+  **transient** failure — HQ unreachable, a 5xx, 429, or 401 — is retried with
+  backoff, three attempts in all; any other 4xx is HQ's decision and is not
+  retried. A 409 `officer_shadow` (the authoring officer is in shadow) is
+  expected and logged as a note; any other failure is logged and posted as an
+  HQ notice.
+  - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
+    0119, in muster's database; in memory without one), and **claims it
+    before sending it**: `sending` while one process announces it; then
+    `in_loop` (HQ's 200 named a loop item: the rule above applies) or
+    `no_taker`; `closed` (`officer_shadow`, or the pull request seen closed or
+    merged); `failed` (a permanent 4xx — logged once — or still pending a day
+    after it was first announced); or back to `pending` after a transient
+    failure that lasted. The draft sweep (every 5 minutes) re-announces
+    **only** a `pending` one, within 24 hours of its first announcement, and
+    claims it first (`pending` → `sending` in one conditional `UPDATE … WHERE
+    state = 'pending' … RETURNING`), so two replicas sweeping at once never
+    both send it. Writing the outcome is retried with backoff (four writes
+    over about six seconds); one that still fails leaves the record
+    `sending`, which nothing re-sends — not this process, not after a
+    restart, not another replica. That is the chosen cost: an outcome lost
+    that way (or a crash mid-send) means that pull request is not announced
+    again, logged; it never means a loop restarted. HQ's `pr-opened` is
+    idempotent only while the pull request's loop item is live — a repeat
+    after that item finished enqueues a new one and restarts the loop, and the
+    author's token cannot read the shepherd's items to tell — so a pull
+    request HQ answered is never sent again.
+- **Loop items** carry `payload.pr_loop` =
+  `{repo, pr, head_sha, round?, head_ref?, base?, author?}`; a shepherd's
+  findings item also carries `payload.from` =
+  `{officer_id, item_id, kind, summary}`, `summary` being the auditor's
+  report. muster does not depend on item kind names.
+- **The merge ask** — `POST {hq_url}/officers/{id}/items/{item}/merge-asks`
+  with the shepherd's token, body exactly `{"instance", "to"?, "repo", "pr",
+  "head_sha", "base_ref", "base_sha", "summary", "purpose", "how",
+  "evidence"}`, `evidence` being exactly `{"officer_item": {"officer",
+  "item"}, "open_yellows": [{"where", "text"}], "protected_identity":
+  {"result", "detail"?}, "settled_at", "rollback"}` — no `ladder` and no
+  `checks`: HQ reads the audit ladder and CI from its own records and refuses
+  both (muster refuses them first, as unknown fields). `pr` and
+  `evidence.officer_item.item` are integers (HQ decodes them as such,
+  strictly; a string item id is refused by muster). muster sets `instance` to
+  the calling agent (an `instance` argument is refused) and checks only what
+  it needs to build the request (no unknown field, an item id for HQ's
+  path): every bound — texts, lists, shas — is HQ's, and its 400 comes back
+  verbatim. HQ's answer, or its
+  refusal (status, code, message — e.g. 422 `audit_not_stopped`, 409
+  `officer_shadow`, 502 `github_unavailable`), is passed back verbatim.
+
+- **`payload.claims`** — in shadow the shepherd fences its claims blocks in
+  its item summary (not on GitHub), and HQ copies them into the next audit
+  round item's payload as `payload.claims`, a string. A read-only auditor
+  officer whose item carries it writes it to a file and passes that to its
+  audit tool. muster hands it on as data: `officer_items`, `officer_claim`
+  and `officer_brief` return HQ's body **byte for byte** (fences, emoji and
+  CRLF line ends included), whatever its size: HQ bounds `payload.claims`
+  (16 KiB), and muster applies no second cap.
+
+**No merge tool for a shepherd or an auditor.** muster's gates are the only
+wall against an officer App merging (assume no branch ruleset). A `shepherd`
+officer and an officer with no `ship` block are offered none of
+`officer_merge_pr`, `officer_tag_release`, `officer_mark_ready` and
+`officer_rollout_status`, in any pool; a direct call is refused by the tool
+layer, and the stage gate under it refuses the shepherd's merge, tag and own
+mark-ready by itself. The shepherd's push gate refuses the merge endpoint,
+the refs, merges and contents APIs and GraphQL (above).
+
+#### Shadow
+
+HQ can run a shepherd's item — or the whole officer — in **shadow**: its writes
+are refused and recorded, never made. The item's `shadow` decides when HQ
+sends one; when it is absent (the officer's type has no shadow policy for
+items) the officer row's `shadow` decides; 🔴 a row that cannot be read is
+shadow (fail closed). In shadow every shepherd write — the push, the comment
+(deliberately: every write), update-branch, mark ready and the merge ask — is
+refused before anything reaches GitHub or HQ (a push creates no scratch ref)
+with `shadow: would have <pushed <old12>..<new12> to <branch> | commented on
+<repo>#<n> (<N> chars) | updated <branch> from its base | marked <repo>#<n>
+ready | asked HQ for a merge ask of <repo>#<n> at <head12>>`. muster keeps each
+line per (officer, item), in memory, and when an instance completes that item
+with `officer_complete` it appends a `Shadow (muster refused these writes):`
+block of them to the summary HQ receives — cut to HQ's summary bound, never
+the instance's own text. The lines end with their hold: a completion or a
+release forgets them at once, and every 5 minutes muster drops those of any
+item HQ no longer shows held under a live lease (a lapsed lease, an item
+finished or gone) — only lines recorded before that pass read HQ, so a line
+recorded while the read was in flight survives to the next. A restart
+forgets them. The same rule, and the same
+ledger, cover a draft officer's writes under a held `*.pr_fix` item
+([the draft stage](#the-draft-stage)).
 
 **Its App needs** Contents **read and write** (push to the branches it
 shepherds — the scratch ref and the compare-and-swap update included —

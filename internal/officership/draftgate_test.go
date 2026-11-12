@@ -50,6 +50,8 @@ type draftRig struct {
 	readCreds  []connectors.Caller
 	// claims is HQ's view: item -> the instance holding it (ItemClaimed).
 	claims map[int]string
+	// kinds is HQ's item kinds (unset: an ordinary item).
+	kinds map[int]string
 }
 
 func draftShipFx() *officers.Ship {
@@ -61,7 +63,7 @@ func draftShipFx() *officers.Ship {
 }
 
 func newDraftRig() *draftRig {
-	r := &draftRig{web: newFakeGH(), infra: newFakeGH(), claims: map[int]string{17: dInstance, 18: dInstance}}
+	r := &draftRig{web: newFakeGH(), infra: newFakeGH(), claims: map[int]string{17: dInstance, 18: dInstance}, kinds: map[int]string{}}
 	r.g = &PushGate{Repo: fxRepo, Ship: draftShipFx(), OfficerID: dOfficer, GitHost: "github.com", APIHost: "api.github.com",
 		GH: r.web, GHFor: map[string]GitHub{fxRepo: r.web, dInfra: r.infra},
 		Cred: func(_ context.Context, c connectors.Caller, _, _ string) (string, bool, error) {
@@ -74,11 +76,11 @@ func newDraftRig() *draftRig {
 		},
 		Announce: func(_ context.Context, n officers.Notice) error { r.notices = append(r.notices, n); return nil },
 		Now:      func() time.Time { return dNow },
-		ItemClaimed: func(_ context.Context, instance string, item int) error {
+		ItemClaimed: func(_ context.Context, instance string, item int) (officers.Item, error) {
 			if r.claims[item] != instance {
-				return fmt.Errorf("fake HQ: item %d is not claimed by %s", item, instance)
+				return officers.Item{}, fmt.Errorf("fake HQ: item %d is not claimed by %s", item, instance)
 			}
-			return nil
+			return officers.Item{ID: officers.ItemID(itoa(item)), Kind: r.kinds[item]}, nil
 		}}
 	// A clean comparison for the infra branch, and the infra pull request #31.
 	r.infra.compares["trunk..."+dBranch] = Compare{Status: "ahead", AheadBy: 1, Commits: []string{fxHead},

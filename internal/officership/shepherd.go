@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -56,9 +56,17 @@ import (
 //   - PUT pulls/<n>/update-branch with expected_head_sha = the current head
 //     (GitHub merges the base into the head; never a rebase).
 //
-// And one tool, ShepherdGates.MarkReady (officer_shepherd_mark_ready): only
-// once an auditor's latest audit block reports no 🔴 at the head, CI is green
-// at the head and the head passes the wall.
+// And two tools: ShepherdGates.MarkReady (officer_shepherd_mark_ready), only
+// once the auditor's report on the held item says the ladder stopped with no
+// 🔴 at the head (AuditVerdictClear), CI is green at the head and the head
+// passes the wall; and ShepherdGates.MergeAsk (officer_shepherd_merge_ask),
+// HQ's merge ask under the held item.
+//
+// 🔴 EVERY WRITE HONOURS SHADOW (shepherd_loop.go): when HQ runs the held
+// item (or, the item saying nothing, the officer) in shadow, the push,
+// comment, update-branch, mark-ready and merge ask are refused before
+// anything reaches GitHub or HQ, and what would have been done is recorded
+// for the item's completion.
 //
 // Everything else is refused: opening, editing (title, body, state — so
 // closing and reopening), merging, the merge and refs APIs, GraphQL, every
@@ -101,10 +109,18 @@ type Shepherd struct {
 	// AuthorLogin is the bot login of authoring officer id's OWN App, read at
 	// call time. nil, or an error: an author that names an officer is refused.
 	AuthorLogin func(ctx context.Context, officerID string) (string, error)
-	// ItemHeld is nil when HQ shows instance holding, under a live lease, an
-	// item of this officer whose subject is officers.ShepherdSubject(repo, n).
-	// nil func: everything is refused (fail closed).
-	ItemHeld func(ctx context.Context, instance, repo string, n int) error
+	// ItemHeld returns the item HQ shows instance holding, under a live
+	// lease, of this officer whose subject is officers.ShepherdSubject(repo,
+	// n); an error when there is none. nil func: everything is refused (fail
+	// closed).
+	ItemHeld func(ctx context.Context, instance, repo string, n int) (officers.Item, error)
+	// OfficerShadow reads HQ's officer row `shadow`, which decides when an
+	// item carries no `shadow` of its own. nil, or an error: shadow (fail
+	// closed).
+	OfficerShadow func(ctx context.Context) (bool, error)
+	// Shadowed records a write refused in shadow ("would have …") against
+	// the item it was made under; nil records nothing.
+	Shadowed func(item officers.Item, line string)
 }
 
 // rule is the rule for login's pull requests in repo.
@@ -120,67 +136,73 @@ func (s *Shepherd) rule(repo, login string) (officers.ShepherdRule, bool) {
 // Admit is THE shepherd rule (see the top of this file): it refuses (a
 // *Refusal) unless pull request pr of ship repository sr is one instance may
 // act on now, reporting each gate it passes, and returns the pull request's
-// rule. gh is sr's GitHub, as the shepherd's App. Every read failure is a
-// refusal: fail closed.
-func (s *Shepherd) Admit(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, instance string, pass func(string)) (officers.ShepherdRule, error) {
+// rule and the HQ item its item gate found (the one the instance holds for
+// it: the audit verdict and shadow are read off it). gh is sr's GitHub, as
+// the shepherd's App. Every read failure is a refusal: fail closed.
+func (s *Shepherd) Admit(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, instance string, pass func(string)) (officers.ShepherdRule, officers.Item, error) {
 	n := pr.Number
+	var none officers.Item
 	if s == nil || !s.Ship.IsShepherd() {
-		return officers.ShepherdRule{}, refuse(GateStage, "this officer is not a shepherd")
+		return officers.ShepherdRule{}, none, refuse(GateStage, "this officer is not a shepherd")
 	}
 	if pr.State != "open" || pr.Merged {
-		return officers.ShepherdRule{}, refuse(GatePR, "pull request #%d is %s (merged %v); a shepherd acts only on an open one", n, pr.State, pr.Merged)
+		return officers.ShepherdRule{}, none, refuse(GatePR, "pull request #%d is %s (merged %v); a shepherd acts only on an open one", n, pr.State, pr.Merged)
 	}
 	pass(GatePR)
 	if pr.BaseRef != sr.Base || !connectors.SameRepo(pr.BaseRepo, sr.Repo) {
-		return officers.ShepherdRule{}, refuse(GateBase, "pull request #%d targets %s:%s; a shepherd acts only on pull requests into %s:%s", n, pr.BaseRepo, pr.BaseRef, sr.Repo, sr.Base)
+		return officers.ShepherdRule{}, none, refuse(GateBase, "pull request #%d targets %s:%s; a shepherd acts only on pull requests into %s:%s", n, pr.BaseRepo, pr.BaseRef, sr.Repo, sr.Base)
 	}
 	pass(GateBase)
 	if !strings.HasPrefix(pr.HeadRef, sr.BranchPrefix) || !officers.ValidRefSuffix(pr.HeadRef) || !connectors.SameRepo(pr.HeadRepo, sr.Repo) {
-		return officers.ShepherdRule{}, refuse(GateHeadBranch, "pull request #%d comes from %s:%s; a shepherd acts only on a %s* branch of %s", n, pr.HeadRepo, pr.HeadRef, sr.BranchPrefix, sr.Repo)
+		return officers.ShepherdRule{}, none, refuse(GateHeadBranch, "pull request #%d comes from %s:%s; a shepherd acts only on a %s* branch of %s", n, pr.HeadRepo, pr.HeadRef, sr.BranchPrefix, sr.Repo)
 	}
 	pass(GateHeadBranch)
 	rule, ok := s.rule(sr.Repo, pr.Author)
 	if !ok {
-		return rule, refuse(GateAuthor, "pull request #%d is authored by %s, who is not one of this shepherd's authors in %s", n, pr.Author, sr.Repo)
+		return rule, none, refuse(GateAuthor, "pull request #%d is authored by %s, who is not one of this shepherd's authors in %s", n, pr.Author, sr.Repo)
 	}
 	if strings.HasSuffix(strings.ToLower(rule.Login), "[bot]") && pr.AuthorType != "Bot" {
-		return rule, refuse(GateAuthor, "pull request #%d is authored by %s typed %s; the listed login is an App's bot", n, pr.Author, pr.AuthorType)
+		return rule, none, refuse(GateAuthor, "pull request #%d is authored by %s typed %s; the listed login is an App's bot", n, pr.Author, pr.AuthorType)
 	}
 	slug, err := gh.AppSlug(ctx)
 	if err != nil {
-		return rule, refuse(GateAuthor, "could not read the shepherd App's identity: %v", err)
+		return rule, none, refuse(GateAuthor, "could not read the shepherd App's identity: %v", err)
 	}
 	if strings.EqualFold(pr.Author, BotLogin(slug)) {
-		return rule, refuse(GateAuthor, "pull request #%d is authored by the shepherd's own App (%s); a shepherd never acts on its own work", n, pr.Author)
+		return rule, none, refuse(GateAuthor, "pull request #%d is authored by the shepherd's own App (%s); a shepherd never acts on its own work", n, pr.Author)
 	}
 	if rule.AuthorOfficer == "" {
-		return rule, refuse(GateAuthor, "the listed author %s names no officer: a shepherd acts only on an officer's pull requests", rule.Login)
+		return rule, none, refuse(GateAuthor, "the listed author %s names no officer: a shepherd acts only on an officer's pull requests", rule.Login)
 	}
 	{
 		if s.AuthorLogin == nil {
-			return rule, refuse(GateAuthor, "the App of officer %s (the listed author %s) cannot be read here", rule.AuthorOfficer, rule.Login)
+			return rule, none, refuse(GateAuthor, "the App of officer %s (the listed author %s) cannot be read here", rule.AuthorOfficer, rule.Login)
 		}
 		login, err := s.AuthorLogin(ctx, rule.AuthorOfficer)
 		if err != nil {
-			return rule, refuse(GateAuthor, "could not read officer %s's App identity, so %s cannot be confirmed as its bot: %v", rule.AuthorOfficer, pr.Author, err)
+			return rule, none, refuse(GateAuthor, "could not read officer %s's App identity, so %s cannot be confirmed as its bot: %v", rule.AuthorOfficer, pr.Author, err)
 		}
 		if !strings.EqualFold(login, pr.Author) {
-			return rule, refuse(GateAuthor, "pull request #%d is authored by %s, but officer %s's App is %s: the listed login is not that officer's", n, pr.Author, rule.AuthorOfficer, login)
+			return rule, none, refuse(GateAuthor, "pull request #%d is authored by %s, but officer %s's App is %s: the listed login is not that officer's", n, pr.Author, rule.AuthorOfficer, login)
 		}
 	}
 	pass(GateAuthor)
 	if instance == "" {
-		return rule, refuse(GateItem, "a request from an unknown instance: its hold on the item for %s cannot be checked", officers.ShepherdSubject(sr.Repo, n))
+		return rule, none, refuse(GateItem, "a request from an unknown instance: its hold on the item for %s cannot be checked", officers.ShepherdSubject(sr.Repo, n))
 	}
 	if s.ItemHeld == nil {
-		return rule, refuse(GateItem, "muster cannot check HQ's items for %s", officers.ShepherdSubject(sr.Repo, n))
+		return rule, none, refuse(GateItem, "muster cannot check HQ's items for %s", officers.ShepherdSubject(sr.Repo, n))
 	}
-	if err := s.ItemHeld(ctx, instance, sr.Repo, n); err != nil {
-		return rule, refuse(GateItem, "HQ does not show %s holding the item for %s (claim it with %s first): %v", instance, officers.ShepherdSubject(sr.Repo, n), officers.ToolClaim, err)
+	item, err := s.ItemHeld(ctx, instance, sr.Repo, n)
+	if err != nil {
+		return rule, none, refuse(GateItem, "HQ does not show %s holding the item for %s (claim it with %s first): %v", instance, officers.ShepherdSubject(sr.Repo, n), officers.ToolClaim, err)
 	}
 	pass(GateItem)
-	return rule, nil
+	return rule, item, nil
 }
+
+// shadowRefused is a shepherd write refused (403) because it runs in shadow.
+func shadowRefused(why string) error { return fmt.Errorf("%w: %s", connectors.ErrGateRefused, why) }
 
 // shepherdRefused is a shepherd write refused (403), saying what a shepherd
 // never does.
@@ -299,13 +321,18 @@ func (g *PushGate) admitShepherdPushLocked(ctx context.Context, sr officers.Ship
 		return nil, nil, fmt.Errorf("could not read pull request #%d: %v", prs[0].Number, err)
 	}
 	instance := callerInstance(ctx)
-	rule, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, func(string) {})
+	rule, item, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, func(string) {})
 	if err != nil {
 		return nil, nil, asShepherdRefusal(pr.Number, err)
 	}
 	if pr.HeadSHA != c.oldOID {
 		return nil, nil, shepherdRefused("a push to %s from %s, which is not pull request #%d's head %s: only a fast-forward of the current head is pushed — fetch, and build on it",
 			branch, shortSHA(c.oldOID), pr.Number, shortSHA(pr.HeadSHA))
+	}
+	// 🔴 SHADOW BEFORE THE SCRATCH REF: nothing of a shadowed push reaches
+	// GitHub (the rewrite below is what would send it).
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("pushed %s..%s to %s", head12(c.oldOID), head12(c.newOID), branch)); on {
+		return nil, nil, shadowRefused(why)
 	}
 	var nonce [12]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -481,7 +508,7 @@ func (g *PushGate) verifyShepherdPush(ctx context.Context, sr officers.ShipRepo,
 	if err != nil {
 		return fmt.Sprintf("pull request #%d could not be read again (%v)", sp.pr.Number, err), nil, true
 	}
-	if _, err := g.Shepherd.Admit(ctx, sr, gh, pr, sp.instance, func(string) {}); err != nil {
+	if _, _, err := g.Shepherd.Admit(ctx, sr, gh, pr, sp.instance, func(string) {}); err != nil {
 		return asShepherdRefusal(pr.Number, err).Error(), nil, true
 	}
 	if pr.HeadSHA != sp.cmd.oldOID || pr.HeadRef != sp.branch {
@@ -578,62 +605,6 @@ func commandLine(body string) (string, bool) {
 	return "", false
 }
 
-// auditBlockRE is one audit block in a comment: a fenced `audit-round-<n>`
-// block (docs/officers.md "The shepherd stage").
-var auditBlockRE = regexp.MustCompile("(?s)```audit-round-([0-9]+)[^\\n]*\\n(.*?)```")
-
-// auditFindingsRE is a block's ledger of its 🔴 findings.
-var auditFindingsRE = regexp.MustCompile(`findings 🔴([0-9]+)`)
-
-// shaTokenRE is a hex token that may name a commit.
-var shaTokenRE = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
-
-// auditLadderClear is mark-ready's audit gate: among the pull request's
-// comments by one of the shepherd's auditors (never its own App's bot, never
-// the pull request's author), the audit block with the highest round number
-// that carries a findings ledger (`findings 🔴<n>`) must report 🔴0 — the
-// ladder stopped with no 🔴 — and name the pull request's head (a hex token of
-// 7 to 40 characters that the head starts with). A comment's author is
-// GitHub's, so only a listed auditor can write the verdict.
-func (s *Shepherd) auditLadderClear(ctx context.Context, gh GitHub, pr PR) error {
-	if s.Ship.Shepherd == nil || len(s.Ship.Shepherd.Auditors) == 0 {
-		return refuse(GateAudit, "this shepherd lists no ship.shepherd.auditors, so no audit verdict can be read: a pull request is marked ready only after an auditor's ladder stopped with no 🔴")
-	}
-	slug, err := gh.AppSlug(ctx)
-	if err != nil {
-		return refuse(GateAudit, "could not read the shepherd App's identity: %v", err)
-	}
-	comments, err := gh.PRComments(ctx, pr.Number)
-	if err != nil {
-		return refuse(GateAudit, "could not read #%d's comments: %v", pr.Number, err)
-	}
-	round, found := -1, ""
-	for _, c := range comments {
-		if !s.Ship.Shepherd.Auditor(c.Author) || strings.EqualFold(c.Author, BotLogin(slug)) || strings.EqualFold(c.Author, pr.Author) {
-			continue
-		}
-		for _, m := range auditBlockRE.FindAllStringSubmatch(c.Body, -1) {
-			n, err := strconv.Atoi(m[1])
-			if err != nil || !auditFindingsRE.MatchString(m[2]) || n < round {
-				continue
-			}
-			round, found = n, m[2]
-		}
-	}
-	if round < 0 {
-		return refuse(GateAudit, "no audit block with a findings ledger by an auditor (%s) on #%d", strings.Join(s.Ship.Shepherd.Auditors, ", "), pr.Number)
-	}
-	if red := auditFindingsRE.FindStringSubmatch(found)[1]; red != "0" {
-		return refuse(GateAudit, "the latest audit round (%d) on #%d reports %s 🔴: the ladder has not stopped", round, pr.Number, red)
-	}
-	for _, tok := range shaTokenRE.FindAllString(found, -1) {
-		if strings.HasPrefix(pr.HeadSHA, tok) {
-			return nil
-		}
-	}
-	return refuse(GateAudit, "the latest audit round (%d) on #%d does not name its head %s: it audited another commit", round, pr.Number, short(pr.HeadSHA))
-}
-
 // admitShepherdAPI is the REST half of the shepherd gate: a comment, or
 // update-branch, on a pull request Admit admits. Nothing else.
 func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh GitHub, tail []string, path string) (*http.Request, error) {
@@ -655,7 +626,8 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if err != nil {
 				return err
 			}
-			if _, err := g.Shepherd.Admit(r.Context(), sr, gh, pr, callerInstance(r.Context()), func(string) {}); err != nil {
+			_, item, err := g.Shepherd.Admit(r.Context(), sr, gh, pr, callerInstance(r.Context()), func(string) {})
+			if err != nil {
 				return asShepherdRefusal(n, err)
 			}
 			body := jsonString(m["body"])
@@ -665,6 +637,9 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if line, ok := commandLine(body); ok {
 				return shepherdRefused("a comment on #%d with the line %q, which reads as a command to a bot or a slash command (a line starting with / or @): "+
 					"comment automation in the repository could act on it; reword it so no line starts with / or @", n, truncate(line, 80))
+			}
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("commented on %s#%d (%d chars)", sr.Repo, n, utf8.RuneCountInString(body))); on {
+				return shadowRefused(why)
 			}
 			return nil
 		})
@@ -679,11 +654,15 @@ func (g *PushGate) admitShepherdAPI(r *http.Request, sr officers.ShipRepo, gh Gi
 			if err != nil {
 				return err
 			}
-			if _, err := g.Shepherd.Admit(r.Context(), sr, gh, pr, callerInstance(r.Context()), func(string) {}); err != nil {
+			_, item, err := g.Shepherd.Admit(r.Context(), sr, gh, pr, callerInstance(r.Context()), func(string) {})
+			if err != nil {
 				return asShepherdRefusal(n, err)
 			}
 			if pr.HeadSHA != want {
 				return shepherdRefused("update-branch of #%d at %s, which is not its head %s: re-read the pull request", n, shortSHA(want), shortSHA(pr.HeadSHA))
+			}
+			if why, on := g.Shepherd.shadowRefusal(r.Context(), item, fmt.Sprintf("updated %s from its base", pr.HeadRef)); on {
+				return shadowRefused(why)
 			}
 			return nil
 		})
@@ -698,6 +677,13 @@ type ShepherdGates struct {
 	// for any other.
 	GHFor func(repo string) GitHub
 	Now   func() time.Time
+	// ItemByID is the merge ask's item gate: item id as HQ shows it, an error
+	// unless instance holds it under a live lease and its subject is
+	// officers.ShepherdSubject(repo, n). PostMergeAsk POSTs the merge ask
+	// with the shepherd officer's own token (officers.Client.MergeAsk). nil:
+	// the merge ask is refused.
+	ItemByID     func(ctx context.Context, instance string, id officers.ItemID, repo string, n int) (officers.Item, error)
+	PostMergeAsk func(ctx context.Context, item officers.ItemID, body []byte) ([]byte, error)
 }
 
 // ShepherdReadyOutcome is what officer_shepherd_mark_ready did.
@@ -719,9 +705,11 @@ type ShepherdReadyOutcome struct {
 //     the head (none listed: refused — CI green cannot be confirmed);
 //  5. wall — base...head passes the authoring officer's wall and the draft
 //     rules (the same check a push passes before it lands);
-//  6. audit — auditLadderClear: an auditor's latest audit block reports no 🔴
-//     and names the head;
-//  7. ready — GitHub's GraphQL markPullRequestReadyForReview.
+//  6. audit — AuditVerdictClear over the item the item gate found: the
+//     auditor's report HQ recorded on it says no-red, at this round and head,
+//     with no 🔴 line;
+//  7. shadow — the item (or the officer) is not in shadow;
+//  8. ready — GitHub's GraphQL markPullRequestReadyForReview.
 func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n int) (ShepherdReadyOutcome, error) {
 	out := ShepherdReadyOutcome{Repo: repo, PR: n}
 	pass := func(name string) { out.Passed = append(out.Passed, name) }
@@ -748,7 +736,7 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 	if !pr.Draft || pr.NodeID == "" {
 		return out, refuse(GatePR, "pull request #%d is not a draft (or GitHub gave no node id); only a draft is marked ready", n)
 	}
-	rule, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, pass)
+	rule, item, err := g.Shepherd.Admit(ctx, sr, gh, pr, instance, pass)
 	if err != nil {
 		return out, err
 	}
@@ -769,12 +757,36 @@ func (g *ShepherdGates) MarkReady(ctx context.Context, instance, repo string, n 
 		return out, refuse(GateWall, "#%d's head %s touches the wall: %s (%s)", n, short(pr.HeadSHA), strings.Join(v.Paths, ", "), v.Why)
 	}
 	pass(GateWall)
-	if err := g.Shepherd.auditLadderClear(ctx, gh, pr); err != nil {
+	if err := AuditVerdictClear(item, pr, g.Shepherd.OfficerID); err != nil {
 		return out, err
 	}
 	pass(GateAudit)
+	if why, on := g.Shepherd.shadowRefusal(ctx, item, fmt.Sprintf("marked %s#%d ready", sr.Repo, n)); on {
+		return out, refuse(GateShadow, "%s", why)
+	}
+	// 🔴 THE HEAD THE GATES PASSED IS THE HEAD MARKED READY: read again
+	// right before the mutation (a push since the first read is refused,
+	// nothing converted) and right after it (a push that raced the mutation
+	// is answered by converting the pull request back to draft).
+	if cur, err := gh.PR(ctx, n); err != nil || cur.HeadSHA != pr.HeadSHA {
+		if err != nil {
+			return out, refuse(GateReady, "could not read #%d again right before marking it ready (%v); nothing was converted", n, err)
+		}
+		return out, refuse(GateReady, "#%d's head moved from %s to %s while the gates ran; nothing was converted — call again to check the new head", n, short(pr.HeadSHA), short(cur.HeadSHA))
+	}
 	if err := gh.MarkReady(ctx, n, pr.NodeID); err != nil {
 		return out, refuse(GateReady, "GitHub did not confirm #%d ready for review (%v); it may still have been converted — re-read the pull request before calling again", n, err)
+	}
+	after, err := gh.PR(ctx, n)
+	if err != nil || after.HeadSHA != pr.HeadSHA {
+		why := fmt.Sprintf("its head could not be read again (%v)", err)
+		if err == nil {
+			why = fmt.Sprintf("its head moved from %s to %s while it was marked ready", short(pr.HeadSHA), short(after.HeadSHA))
+		}
+		if cerr := gh.ConvertToDraft(ctx, n, pr.NodeID); cerr != nil {
+			return out, refuse(GateReady, "#%d was marked ready but %s, and muster could NOT convert it back to draft (%v): it is ready for review at a head the gates did not check — tell a human", n, why, cerr)
+		}
+		return out, refuse(GateReady, "#%d was marked ready but %s, so muster converted it back to draft (the gates passed only %s); call again to check the new head", n, why, short(pr.HeadSHA))
 	}
 	out.Ready = true
 	pass(GateReady)

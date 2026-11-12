@@ -110,6 +110,15 @@ type officerRuntime struct {
 	// (conversationConfirmed, from OfficerTurnContext). Guarded by workedMu.
 	workedMu sync.Mutex
 	worked   map[string]officers.ItemID
+	// memLoops is the review-loop record when no store is configured
+	// (prLoopsFor), made once.
+	memLoopsOnce sync.Once
+	memLoops     *officers.MemPRLoopStore
+	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
+	// refused in shadow, per (officer, item), appended to that item's
+	// officer_complete summary. Guarded by shadowMu.
+	shadowMu sync.Mutex
+	shadow   map[string]*shadowLedger
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -256,7 +265,11 @@ type OfficersConfig struct {
 	// Sessions keeps the judgement session cap's count
 	// (officers.PGSessionStore); REQUIRED when an officer declares
 	// tiers.judgement.max_sessions_per_day.
-	Sessions    officers.SessionStore
+	Sessions officers.SessionStore
+	// PRLoops keeps draft officers' review-loop announcements
+	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
+	// which a restart forgets.
+	PRLoops     officers.PRLoopStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
@@ -1141,6 +1154,19 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 		"summary": strProp("What you found and did, at most 24,576 characters."),
 		"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
 	}
+	// Every officer is offered it: HQ decides which items take a hand-off.
+	desc += " With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required."
+	handoffProps := map[string]any{"head_sha": strProp("40 lower-case hex.")}
+	handoffDesc := "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items " +
+		"(400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held."
+	if o.Ship.IsShepherd() {
+		// A shepherd's only: completeHandoff refuses `to` from any other.
+		handoffProps["to"] = map[string]any{"type": "string", "enum": []string{officers.HandoffToAuthor},
+			"description": "\"author\": hand a clean round's fixes to the pull request's authoring officer (HQ checks the ladder stopped clean at head_sha)."}
+		handoffDesc += " Add to: \"author\" to hand a clean round's 🟡/🟢 fixes to the pull request's authoring officer."
+	}
+	props["handoff"] = map[string]any{"type": "object", "additionalProperties": false, "description": handoffDesc,
+		"properties": handoffProps, "required": []string{"head_sha"}}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
@@ -1155,6 +1181,44 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	}
 	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
 		Parameters: objSchema(props, "item_id", "outcome", "summary")}
+}
+
+// completeHandoff checks officer_complete's `handoff` (raw as sent; absent or
+// null is none): {"head_sha": <40 lower-case hex>}, plus — a shepherd's only
+// (shepherd) — "to": "author"; and only on outcome done (HQ refuses it on any
+// other). It returns the hand-off to send, or why it is refused — before
+// anything reaches HQ.
+func completeHandoff(raw json.RawMessage, outcome string, shepherd bool) (*officers.Handoff, string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var h struct {
+		HeadSHA *string `json:"head_sha"`
+		To      *string `json:"to"`
+	}
+	if err := dec.Decode(&h); err != nil {
+		return nil, fmt.Sprintf("handoff must be exactly {\"head_sha\": <40 lower-case hex>}: %v", err)
+	}
+	if h.HeadSHA == nil || !officers.ValidHandoffHead(*h.HeadSHA) {
+		return nil, "handoff.head_sha must be the full commit sha, 40 lower-case hex"
+	}
+	out := &officers.Handoff{HeadSHA: *h.HeadSHA}
+	if h.To != nil {
+		if !shepherd {
+			return nil, "handoff.to is a shepherd's only (it hands a clean round's fixes to the pull request's author)"
+		}
+		if *h.To != officers.HandoffToAuthor {
+			return nil, fmt.Sprintf("handoff.to must be %q", officers.HandoffToAuthor)
+		}
+		out.To = *h.To
+	}
+	if outcome != "done" {
+		return nil, fmt.Sprintf("handoff goes with outcome done only (HQ refuses it on %s)", outcome)
+	}
+	return out, ""
 }
 
 // officerToolDefFor is tool definition d as officer o's instances are
@@ -1291,6 +1355,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// officer_complete's investigation block, kept as sent: HQ's decoder
 		// is its one schema (officers.Completion.InvestigationJSON).
 		Investigation json.RawMessage `json:"investigation"`
+		// officer_complete's hand-off, checked by completeHandoff.
+		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
 		To              string          `json:"to"`
 		Question        string          `json:"question"`
@@ -1433,6 +1499,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
+		handoff, bad := completeHandoff(in.Handoff, in.Outcome, o.Ship.IsShepherd())
+		if bad != "" {
+			return toolErr("%s", bad), true
+		}
+		// A hand-off's head is HQ's to check (409 nothing_pushed /
+		// head_not_live): muster keeps no memory of pushes to decide it.
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it
 		// (CompleteDroppingCost). It is read here, before officerItemEnded
@@ -1440,7 +1512,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// under the hold is still unbooked (the meter says inflight otherwise,
 		// and nothing is sent), so a figure that rides this call is complete.
 		cost, why := s.llmItemCost(o, instance, in.ItemID, in.Outcome)
-		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
+		// 🔴 THE SHADOW BLOCK RIDES THE SUMMARY HQ RECEIVES (officer_shadow.go):
+		// a shepherd's writes refused in shadow, under this item; cut to
+		// HQ's bound, never the instance's own text.
+		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
+		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {
@@ -1454,6 +1530,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				o.ID, instance, in.ItemID, in.Outcome, why)
 		}
 		if err == nil {
+			s.officerRT.forgetShadow(o.ID, in.ItemID)
 			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolRelease:
@@ -1462,6 +1539,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
 		if err == nil {
+			// The hold ended: its shadow lines go with it (a later holder's
+			// completion must not carry them).
+			s.officerRT.forgetShadow(o.ID, in.ItemID)
 			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolAskPerson:
@@ -1481,6 +1561,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = cb.ReleaseCaptain(ctx, instance, post)
 	}
+	// An item's payload (payload.claims included) is HQ's data, handed on as
+	// HQ wrote it: officerToolResult returns HQ's body byte for byte. HQ
+	// bounds it (claims at 16 KiB); muster applies no second cap.
 	return officerToolResult(name, body, err), true
 }
 

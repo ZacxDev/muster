@@ -194,6 +194,10 @@ type GitHub interface {
 	// POST pulls does), so this is the GraphQL markPullRequestReadyForReview
 	// mutation, and it errs unless GitHub answers pull request n, not a draft.
 	MarkReady(ctx context.Context, n int, nodeID string) error
+	// ConvertToDraft converts ready pull request n (GraphQL node nodeID) back
+	// to a draft (convertPullRequestToDraft): mark-ready's answer to a head
+	// that moved while it was converting.
+	ConvertToDraft(ctx context.Context, n int, nodeID string) error
 	// ClosePR closes pull request n (PATCH pulls/<n> state "closed"): the
 	// draft gate's answer to a push that put a refused change into an open
 	// pull request.
@@ -856,6 +860,44 @@ func (g *REST) MarkReady(ctx context.Context, n int, nodeID string) error {
 		return fmt.Errorf("GitHub answered no pull request while %s", op)
 	}
 	if pr := r.Data.Mark.PullRequest; pr.Number != n || pr.IsDraft {
+		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
+	}
+	return nil
+}
+
+const convertToDraftMutation = `mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { number isDraft } } }`
+
+// ConvertToDraft implements GitHub.
+func (g *REST) ConvertToDraft(ctx context.Context, n int, nodeID string) error {
+	op := "converting pull request #" + strconv.Itoa(n) + " back to draft"
+	var r struct {
+		Data struct {
+			Convert *struct {
+				PullRequest *struct {
+					Number  int  `json:"number"`
+					IsDraft bool `json:"isDraft"`
+				} `json:"pullRequest"`
+			} `json:"convertPullRequestToDraft"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := g.doURL(ctx, http.MethodPost, g.graphqlURL(), "", map[string]any{"query": convertToDraftMutation,
+		"variables": map[string]string{"id": nodeID}}, &r, op); err != nil {
+		return err
+	}
+	if len(r.Errors) > 0 {
+		msgs := make([]string, 0, len(r.Errors))
+		for _, e := range r.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return fmt.Errorf("GitHub refused %s: %s", op, truncate(strings.Join(msgs, "; "), 300))
+	}
+	if r.Data.Convert == nil || r.Data.Convert.PullRequest == nil {
+		return fmt.Errorf("GitHub answered no pull request while %s", op)
+	}
+	if pr := r.Data.Convert.PullRequest; pr.Number != n || !pr.IsDraft {
 		return fmt.Errorf("GitHub answered pull request #%d (draft %v) while %s", pr.Number, pr.IsDraft, op)
 	}
 	return nil

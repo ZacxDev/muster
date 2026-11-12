@@ -108,10 +108,16 @@ type (
 		ReleaseCaptain(ctx context.Context, instance string, p CaptainPost) ([]byte, error)
 	}
 	// ShipBackend is what a shipping officer's gates need of the backend
-	// beyond the switch: the sensitive-path notice and the backup preflight.
+	// beyond the switch: the sensitive-path notice and the backup preflight;
+	// and for the PR review loop, the officer's shadow switch (the fallback
+	// when an item carries no shadow of its own), the "PR opened" report
+	// muster makes after a clean draft create, and a shepherd's merge ask.
 	ShipBackend interface {
 		PostNotice(ctx context.Context, path string, n Notice) error
 		Preflight(ctx context.Context) (Preflight, error)
+		Shadow(ctx context.Context) (bool, error)
+		PROpened(ctx context.Context, p PROpened) (PROpenedAnswer, error)
+		MergeAsk(ctx context.Context, item ItemID, body []byte) ([]byte, error)
 	}
 )
 
@@ -248,7 +254,7 @@ func ToolCapability(tool string) (capability string, known bool) {
 		return CapGapTasks, true
 	case ToolPRContext:
 		return CapPRContext, true
-	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady, ToolShepherdReady, ToolCILogs:
+	case ToolMergePR, ToolTagRelease, ToolRolloutStatus, ToolMarkReady, ToolShepherdReady, ToolShepherdMergeAsk, ToolCILogs:
 		return CapShip, true
 	}
 	return "", false

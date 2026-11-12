@@ -6,7 +6,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -113,10 +113,24 @@ officer_gap_task
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -352,7 +366,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -461,10 +475,24 @@ officer_gap_task
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
@@ -696,7 +724,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -802,10 +830,24 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -998,7 +1040,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -1106,10 +1148,24 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
@@ -1298,7 +1354,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -1407,10 +1463,24 @@ officer_obs_query
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -1632,7 +1702,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -1736,10 +1806,24 @@ officer_task_ask
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -1960,7 +2044,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -2069,10 +2153,24 @@ officer_obs_query
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -2220,7 +2318,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -2328,10 +2426,24 @@ officer_pr_context
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
@@ -2586,7 +2698,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -2694,10 +2806,24 @@ officer_obs_raw
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, or needs_judgement (hand a routine item to the judgement pool: HQ makes it a judgement item, open again with your summary kept for the judgement instance that takes it, and your hold ends; HQ keeps no links on it — put them in the summary), with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "item_id": {
         "description": "The item's id, as officer_items or officer_brief returned it.",
         "type": "string"
@@ -2886,7 +3012,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
-2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
+2. Work the queue one item at a time: officer_claim{} with no item_id to take the next item (HQ picks it: the highest priority first; item null means nothing is claimable), and officer_claim{item_id} only when your charter says to take a particular item (a 409 means another instance has it — move on); officer_items shows the queue. officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can. An item's payload is HQ's data, handed to you as HQ wrote it: when your charter says to give a part of it to a tool (for example payload.claims to an audit script, as a file), write it out byte for byte.
 3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
    If what you need is one named HQ member's decision on the item (for example a design review with screenshots), you may instead ask them with officer_ask_person{item_id, to: their GitHub login, question, options?, image_ids?} (to attach an image, run `ccd ask-image <path>` on it in your workspace first and pass the id it prints). Asking ENDS your lease on the item: stop working it, and do not heartbeat, complete or release it; HQ re-opens it with the answer, and muster wakes an instance to take it up again.
 4. When officer_claim{} answers item null (nothing to claim) and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
@@ -3001,10 +3127,24 @@ officer_rollout_status
 {
   "type": "function",
   "name": "officer_complete",
-  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
+  "description": "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — in shadow mode your full evaluation or report goes here) and optional links. With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required. Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix.",
   "parameters": {
     "additionalProperties": false,
     "properties": {
+      "handoff": {
+        "additionalProperties": false,
+        "description": "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items (400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held.",
+        "properties": {
+          "head_sha": {
+            "description": "40 lower-case hex.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha"
+        ],
+        "type": "object"
+      },
       "investigation": {
         "additionalProperties": true,
         "description": "Your investigation, for an escalation (HQ keeps it on outcome escalated only): {hypotheses: [text], eliminated: [{hypothesis, evidence, audit_ids: [the audit_id of each read the evidence came from]}], root_cause, confidence: low|medium|high, fix: {pr_urls: [your draft pull requests]} OR {operator_steps: [text]} (exactly one; low confidence gives operator_steps), not_checked: [text]}. Every list present, empty when there is nothing. muster passes it to HQ as you send it; HQ checks every field.",
