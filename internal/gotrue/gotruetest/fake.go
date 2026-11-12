@@ -102,6 +102,8 @@ type Fake struct {
 	lastCredential  []byte
 	// adminPasskeyFailures: the next N admin passkey calls answer 500.
 	adminPasskeyFailures int
+	// adminUserGetFailures: the next N GET /admin/users/{id} calls answer 500.
+	adminUserGetFailures int
 	// settingsFailures: the next N GET /settings calls answer 500.
 	settingsFailures int
 }
@@ -516,6 +518,11 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
+			if f.adminUserGetFailures > 0 {
+				f.adminUserGetFailures--
+				writeErr(w, 500, "unexpected_failure", "injected failure")
+				return
+			}
 			writeJSON(w, 200, map[string]any{"id": id, "email": u.Email, "app_metadata": u.AppMetadata})
 		case http.MethodPut:
 			if md, ok := body["app_metadata"].(map[string]any); ok {

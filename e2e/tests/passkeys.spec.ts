@@ -7,7 +7,7 @@ import {
 } from '../lib/env';
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
-import { authenticator, credentialCount } from '../lib/webauthn';
+import { authenticator, credentialCount, credentialIds, recordWebAuthn, setUserVerified, toB64url, WebAuthnRecord } from '../lib/webauthn';
 import { landedHome } from '../lib/nav';
 
 // expectAgentPageHome: a sign-in landed on `/`, which — with no chief, and the
@@ -54,6 +54,10 @@ const viewport = { width: 412, height: 915 };
 const adminEmail = `pk-admin-${Date.now()}@example.com`;
 const adminPW = 'e2e-admin-password-not-a-real-one';
 const noUV = 'did not verify you';
+// The sign-in page's words (internal/api: PasskeyNotUsedNote, PasskeyUnknownRefusal).
+const notUsed = 'No passkey was used. You can try again, use a passkey from your phone, or sign in with your password. ' +
+  'If a password manager opened instead, choose its option to use your browser, a phone or a security key.';
+const unknownCred = 'That passkey is no longer registered here. Sign in with your password, then add a new passkey under Account → Passkeys.';
 
 let server: Running | undefined;
 
@@ -95,6 +99,18 @@ async function addPasskey(page: Page): Promise<void> {
   const before = await page.locator('#passkey-list [data-passkey-id]').count();
   await page.locator('#passkey-add').click();
   await expect(page.locator('#passkey-list [data-passkey-id]'), 'the new passkey is listed').toHaveCount(before + 1);
+}
+
+// The WebAuthn user handle GoTrue registers: the base64url of the subject's text.
+function userHandleOf(ctxCookies: { name: string; value: string }[]): string {
+  const at = ctxCookies.find((c) => c.name === 'muster_at')!.value;
+  const sub = String(JSON.parse(Buffer.from(at.split('.')[1], 'base64url').toString()).sub);
+  return Buffer.from(sub).toString('base64url');
+}
+
+// signals is the Signal API calls named name the page made since event from.
+function signals(rec: WebAuthnRecord, name: string, from = 0): unknown[] {
+  return rec.events.slice(from).filter((e) => e.kind === 'signal' && e.name === name).map((e) => e.arg);
 }
 
 async function signOut(page: Page): Promise<void> {
@@ -176,6 +192,7 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   // The member redeems it in its own browser, and lands on the passkey offer.
   const mctx = await browser.newContext({ viewport });
   const mp = await mctx.newPage();
+  const rec = await recordWebAuthn(mp, 'stub');
   const mauth = await authenticator(mp);
   await mp.goto(link);
   await mp.fill('#invite-email', memberEmail);
@@ -192,25 +209,46 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   // verifying, so the browser makes a correctly SIGNED assertion with UV=0 —
   // which GoTrue (UV "preferred") would accept. muster refuses it.
   await mauth.cdp.send('WebAuthn.setUserVerified', { authenticatorId: mauth.id, isUserVerified: false });
+  let inFlight = 0, handled = 0;
   await mp.route('**/auth/passkey/options', async (route) => {
-    const resp = await route.fetch();
-    const body = await resp.json();
-    body.options.userVerification = 'discouraged';
-    await route.fulfill({ response: resp, json: body });
+    inFlight++;
+    try {
+      const resp = await route.fetch();
+      const body = await resp.json();
+      body.options.userVerification = 'discouraged';
+      await route.fulfill({ response: resp, json: body });
+    } finally {
+      inFlight--; handled++;
+    }
   });
+  const beforeReload = rec.events.length;
   await mp.reload(); // the page prefetches its options: fetch them through the route
+  await expect.poll(() => rec.events.slice(beforeReload).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the reloaded page armed autofill').toBe(true);
+  await expect.poll(() => inFlight, 'the reloaded page\'s options handlers finished').toBe(0);
+  const beforeClick = rec.events.length, handledAtClick = handled;
   await mp.locator('#passkey-signin').click();
   await expect(mp.locator('#passkey-signin-status')).toContainText(noUV);
   await expect(mp).toHaveURL(/\/login/);
   expect((await session(mctx)).at, 'no session for a no-UV assertion').toBeUndefined();
-  // The page re-prefetches after a failure: let that in-flight handler finish.
+  // The refused verify spent the challenge, so the page re-arms with a new
+  // prefetch through the route, which the restarted autofill request waits
+  // on. A reload while a handler is mid-fetch cancels its request, and the
+  // handler's fulfill then throws "Route is already handled". So wait for the
+  // new autofill request to be pending (its options were answered) and for
+  // every handler to finish, then unroute.
+  await expect.poll(() => rec.events.slice(beforeClick).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the page re-armed autofill').toBe(true);
+  await expect.poll(() => handled - handledAtClick, 'the new prefetch went through the route').toBeGreaterThanOrEqual(1);
+  await expect.poll(() => inFlight, 'every options handler finished').toBe(0);
   await mp.unrouteAll({ behavior: 'wait' });
 
   // With muster's own options (UV required) a non-verifying authenticator
   // cannot even produce an assertion: refused in the browser.
+  // The browser's NotAllowedError is worded neutrally — no "cancelled".
   await mp.reload();
   await mp.locator('#passkey-signin').click();
-  await expect(mp.locator('#passkey-signin-status')).not.toHaveText('');
+  await expect(mp.locator('#passkey-signin-status')).toHaveText(notUsed);
   await expect(mp).toHaveURL(/\/login/);
   expect((await session(mctx)).at).toBeUndefined();
 
@@ -257,14 +295,170 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   await mp.fill('#reset-password', 'e2e-member-new-password-not-real');
   await mp.fill('#reset-password2', 'e2e-member-new-password-not-real');
   await mp.check('#reset-remove-passkeys');
+  const beforeReset = rec.events.length;
   await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=1'), mp.getByRole('button', { name: 'Set password' }).click()]);
   await expect(mp.getByRole('status')).toContainText('Your passkey was removed.');
+  // The page the reset lands on tells the password manager the account has
+  // no passkeys now (signalAllAcceptedCredentials with the empty set).
+  await expect.poll(() => signals(rec, 'signalAllAcceptedCredentials', beforeReset)).toEqual([
+    { rpId: 'localhost', userId: userHandleOf(await mctx.cookies(browserURL)), allAcceptedCredentialIds: [] },
+  ]);
   await mp.goto(browserURL + '/account/passkeys');
   await expect(mp.locator('#passkey-none'), 'the reset removed the passkey').toBeVisible();
   await signOut(mp);
   expect(await credentialCount(mauth), 'CONTROL: the device still holds the credential').toBe(1);
+  // GoTrue refuses it, and muster can show it is not the account's (it has
+  // none): the page says so and tells the password manager to drop it.
+  const beforeUnknown = rec.events.length;
   await mp.locator('#passkey-signin').click();
-  await expect(mp.locator('#passkey-signin-status')).toContainText('not accepted');
+  await expect(mp.locator('#passkey-signin-status')).toHaveText(unknownCred);
   await expect(mp).toHaveURL(/\/login/);
+  await expect.poll(() => signals(rec, 'signalUnknownCredential', beforeUnknown)).toEqual([
+    { rpId: 'localhost', credentialId: toB64url((await credentialIds(mauth))[0]) },
+  ]);
   await mctx.close();
+});
+
+test('autofill signs in; a button or the password form aborts a pending autofill; the phone button asks for hybrid; the Signal API hears every change, and its absence breaks nothing (real GoTrue, virtual authenticator)', async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const email = `pk-autofill-${Date.now()}@example.com`;
+  const pw = 'e2e-autofill-password-not-a-real-one';
+
+  // The admin (claimed by the first test) makes an invite.
+  await page.goto(browserURL + '/login');
+  await page.fill('#muster-email', adminEmail);
+  await page.fill('#muster-password', adminPW);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  await page.goto(browserURL + '/admin/invites');
+  await page.getByRole('button', { name: 'Create link' }).click();
+  const link = await page.locator('#once-link').inputValue();
+
+  const mctx = await browser.newContext({ viewport });
+  const mp = await mctx.newPage();
+  const rec = await recordWebAuthn(mp, 'stub');
+  const mauth = await authenticator(mp);
+  await mp.goto(link);
+  await mp.fill('#invite-email', email);
+  await mp.fill('#invite-password', pw);
+  await mp.fill('#invite-password2', pw);
+  await Promise.all([mp.waitForURL(browserURL + '/account/passkeys?welcome=1'), mp.getByRole('button', { name: 'Create account' }).click()]);
+  await addPasskey(mp);
+
+  // The passkeys page tells the password manager the account's whole set and
+  // its name: rpId, the user handle GoTrue registered, the one credential id.
+  const handle = userHandleOf(await mctx.cookies(browserURL));
+  const cred = toB64url((await credentialIds(mauth))[0]);
+  await expect.poll(() => signals(rec, 'signalAllAcceptedCredentials').at(-1)).toEqual(
+    { rpId: 'localhost', userId: handle, allAcceptedCredentialIds: [cred] });
+  await expect.poll(() => signals(rec, 'signalCurrentUserDetails').at(-1)).toEqual(
+    { rpId: 'localhost', userId: handle, name: email, displayName: email });
+
+  // 1. AUTOFILL. The sign-in page's email field asks for passkeys, and its
+  //    conditional request — answered at once by the virtual authenticator —
+  //    signs in with no tap at all.
+  rec.autofill = 'real';
+  let from = rec.events.length;
+  await signOut(mp);
+  await mp.waitForURL(landedHome(browserURL));
+  let gets = rec.events.slice(from).filter((e) => e.kind === 'get');
+  expect(gets.map((g) => g.mediation), 'one request, the conditional one: no button was involved').toEqual(['conditional']);
+  expect(gets[0].hasSignal, 'the conditional request can be aborted').toBe(true);
+  expect(rec.events.slice(from).find((e) => e.kind === 'settle' && e.n === gets[0].n)).toMatchObject({ outcome: 'ok', id: cred });
+  rec.autofill = 'hold';
+
+  // 2. THE BUTTON DURING A PENDING AUTOFILL: the page aborts the conditional
+  //    request BEFORE it starts the modal one, shows nothing for its own
+  //    abort, and signs in.
+  from = rec.events.length;
+  await signOut(mp);
+  await expect.poll(() => rec.events.slice(from).filter((e) => e.kind === 'get' && e.mediation === 'conditional').length,
+    'the autofill request is pending').toBe(1);
+  rec.statuses.length = 0;
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.locator('#passkey-signin').click()]);
+  let ev = rec.events.slice(from);
+  const cond = ev.find((e) => e.kind === 'get' && e.mediation === 'conditional');
+  const modalAt = ev.findIndex((e) => e.kind === 'get' && e.mediation === '');
+  const abortAt = ev.findIndex((e) => e.kind === 'abort' && e.n === cond.n);
+  expect(abortAt, 'the conditional request was aborted').toBeGreaterThanOrEqual(0);
+  expect(modalAt, 'a modal request followed').toBeGreaterThan(abortAt);
+  expect(ev[modalAt].conditionalPending, 'no conditional request was pending when the modal one began').toBe(false);
+  expect(ev[modalAt].hints, 'the plain button sends no hints').toBeNull();
+  expect(rec.statuses.filter((t) => t !== ''), 'the abort showed nothing').toEqual([]);
+
+  // 3. THE PHONE BUTTON: the same request, with hints ['hybrid'].
+  await signOut(mp);
+  from = rec.events.length;
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.locator('#passkey-signin-phone').click()]);
+  ev = rec.events.slice(from);
+  const phoneGet = ev.find((e) => e.kind === 'get' && e.mediation === '');
+  expect(phoneGet.hints).toEqual(['hybrid']);
+  expect(phoneGet.conditionalPending, 'the phone button aborts the autofill request too').toBe(false);
+
+  // 4. DISMISSED (the authenticator will not verify: NotAllowedError) — the
+  //    neutral words, and still on the sign-in page.
+  //    🔴 THE EDGE BUDGET: the edge rate-limits /login and the passkey routes
+  //    together with the password POST, so one /login view plus one dismissed
+  //    sheet makes ONE options request. Autofill and the button share the
+  //    prefetched challenge (only one of them ever verifies it), and a sheet
+  //    dismissed before any verify leaves it unspent, so the re-armed
+  //    autofill reuses it.
+  let optionsRequests = 0;
+  const countOptions = (r: { method(): string; url(): string }) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/auth/passkey/options') optionsRequests++;
+  };
+  mp.on('request', countOptions);
+  from = rec.events.length;
+  await signOut(mp);
+  await expect.poll(() => rec.events.slice(from).filter((e) => e.kind === 'get' && e.mediation === 'conditional').length,
+    'the view armed autofill').toBeGreaterThanOrEqual(1);
+  await setUserVerified(mauth, false);
+  from = rec.events.length;
+  await mp.locator('#passkey-signin').click();
+  await expect(mp.locator('#passkey-signin-status')).toHaveText(notUsed);
+  await expect(mp).toHaveURL(/\/login/);
+  await expect.poll(() => rec.events.slice(from).some((e) => e.kind === 'get' && e.mediation === 'conditional'),
+    'the dismissal re-armed autofill').toBe(true);
+  mp.off('request', countOptions);
+  expect(optionsRequests, 'options requests for one /login view plus one dismissed sheet').toBe(1);
+  await setUserVerified(mauth, true);
+
+  // 5. A PASSKEY THE ACCOUNT NO LONGER HAS: the admin removes the member's
+  //    passkeys; signing in with the one still on the device is refused as
+  //    unknown, and the page tells the password manager to drop it.
+  await page.goto(browserURL + '/admin/users');
+  await page.locator(`[data-user-email="${email}"]`).getByRole('button', { name: 'Remove passkeys' }).click();
+  await expect(page.locator('#admin-passkeys-removed')).toBeVisible();
+  from = rec.events.length;
+  await mp.locator('#passkey-signin').click();
+  await expect(mp.locator('#passkey-signin-status')).toHaveText(unknownCred);
+  await expect.poll(() => signals(rec, 'signalUnknownCredential', from)).toEqual([{ rpId: 'localhost', credentialId: cred }]);
+  await mctx.close();
+
+  // 6. NO SIGNAL API (older browsers): the pages that call it work, and throw
+  //    nothing.
+  const actx = await browser.newContext({ viewport });
+  const ap = await actx.newPage();
+  const errors: string[] = [];
+  ap.on('pageerror', (e) => errors.push(e.message));
+  const arec = await recordWebAuthn(ap, 'absent');
+  await authenticator(ap);
+  await ap.goto(browserURL + '/login');
+  expect(await ap.evaluate(() => typeof (window as any).PublicKeyCredential.signalAllAcceptedCredentials), 'CONTROL: the API is gone').toBe('undefined');
+  await ap.fill('#muster-email', email);
+  await ap.fill('#muster-password', pw);
+  // 7. THE PASSWORD FORM'S SUBMIT aborts the pending autofill request. The
+  //    double reports an abort only from the request's AbortSignal, which a
+  //    navigation does not fire, so the abort seen is the page's own; it is
+  //    reported synchronously in the submit, before the POST leaves.
+  await expect.poll(() => arec.events.filter((e) => e.kind === 'get' && e.mediation === 'conditional').length,
+    'the autofill request is pending').toBe(1);
+  const pending = arec.events.find((e) => e.kind === 'get' && e.mediation === 'conditional');
+  await Promise.all([ap.waitForURL(landedHome(browserURL)), ap.click('button[type=submit]')]);
+  await expect.poll(() => arec.events.some((e) => e.kind === 'abort' && e.n === pending.n),
+    'the submit aborted the autofill request').toBe(true);
+  await ap.goto(browserURL + '/account/passkeys');
+  await expect(ap.locator('#passkey-signal'), 'the page has a signal to send').toHaveCount(1);
+  await expect(ap.locator('#passkey-none')).toBeVisible();
+  expect(errors, 'no page error without the Signal API').toEqual([]);
+  await actx.close();
 });

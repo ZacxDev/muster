@@ -241,8 +241,12 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#reset-password', newPW);
   await mp.fill('#reset-password2', newPW);
   // A reset lands on /account, which says it revoked the API tokens (accounts PR 6).
-  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=kept'), mp.getByRole('button', { name: 'Set password' }).click()]);
-  await expect(mp.getByRole('status')).toContainText('Your API tokens were revoked');
+  // The member has no passkey yet, so the redirect says "none" and the note
+  // says nothing about passkeys (resetDonePath / resetPasskeysNote): telling
+  // someone their passkeys "were kept" would speak of passkeys they never had.
+  await Promise.all([mp.waitForURL(browserURL + '/account?reset=1&passkeys=none'), mp.getByRole('button', { name: 'Set password' }).click()]);
+  await expect(mp.getByRole('status')).toHaveText(
+    'Your password was reset. Your API tokens were revoked; create new ones under API tokens below.');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
   const again = await browser.newContext({ viewport });
