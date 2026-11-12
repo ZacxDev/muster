@@ -447,26 +447,39 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 func mirrorViewTitle(v MirrorViewView) g.Node {
 	return g.Group{
 		H1(
+			ID(MirrorHeadingID),
+			// Focusable by script only: where a rename's in-place answer moves
+			// focus (renameScript).
+			g.Attr("tabindex", "-1"),
 			g.Attr("data-agent-title", ""),
 			g.Attr("data-title-fit", "disable"),
 			Class("min-w-0 text-sm font-semibold"),
-			Button(
-				ID(mirrorTitleID),
-				Type("button"),
-				g.Attr("data-mv-title", ""),
-				g.Attr("data-agent-title-text", ""),
-				g.Attr("data-title-more", ""),
-				g.Attr("popovertarget", mirrorTitlePopoverID),
-				g.Attr("aria-haspopup", "dialog"),
-				g.Attr("aria-controls", mirrorTitlePopoverID),
-				g.Attr("aria-expanded", "false"),
-				Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
-				mirrorViewEntryTitle(v),
-				Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
-			),
+			mirrorViewTitleButton(v),
 		),
 		fullTitlePopover(mirrorTitlePopoverID, mirrorViewHeading(v)),
 	}
+}
+
+// mirrorViewTitleButton is the header's title (mirrorViewTitle): the whole
+// name — a human name, or the label it falls back to — and the host's badge.
+// extra is a rename's in-place answer's hx-swap-oob (MirrorViewRenamed): the
+// whole button is swapped, so a name given or cleared draws as a reload would.
+func mirrorViewTitleButton(v MirrorViewView, extra ...g.Node) g.Node {
+	return Button(
+		ID(mirrorTitleID),
+		g.Group(extra),
+		Type("button"),
+		g.Attr("data-mv-title", ""),
+		g.Attr("data-agent-title-text", ""),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", mirrorTitlePopoverID),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", mirrorTitlePopoverID),
+		g.Attr("aria-expanded", "false"),
+		Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
+		mirrorViewEntryTitle(v),
+		Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
+	)
 }
 
 // mirrorViewTitleRow is the header's first line: the title (mirrorViewTitle),
@@ -495,11 +508,6 @@ func mirrorViewName(v MirrorViewView) string {
 	return mirrorQualified(name, v.Qualifier)
 }
 
-// MirrorNameID is the Rendered view's header name (a human name's span,
-// mirrorViewEntryTitle), which the drift offer's in-place answer swaps
-// (RenderMirrorDriftRenamed).
-const MirrorNameID = "mv-name"
-
 // mirrorViewDocTitle is the Rendered view's <title>: its name, then where it
 // is. The page and the drift offer's in-place answer both draw it.
 func mirrorViewDocTitle(v MirrorViewView) string {
@@ -511,7 +519,7 @@ func mirrorViewDocTitle(v MirrorViewView) string {
 // title as its card draws it (mirrorEntryTitle).
 func mirrorViewEntryTitle(v MirrorViewView) g.Node {
 	if v.SessionName.Human() {
-		return sessionNameTitle(v.SessionName, "", ID(MirrorNameID))
+		return sessionNameTitle(v.SessionName, "")
 	}
 	return mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, "")
 }
@@ -550,7 +558,11 @@ const mirrorTitleHitClass = "after:absolute after:inset-x-0 after:top-1/2 after:
 // The rendered view's header title (mirrorViewTitle) and its popover. One of
 // each per document.
 const (
-	mirrorTitleID        = "mv-title"
+	mirrorTitleID = "mv-title"
+	// MirrorTitleID is mirrorTitleID, which a rename's answer swaps;
+	// MirrorHeadingID the heading around it, which takes focus after.
+	MirrorTitleID        = mirrorTitleID
+	MirrorHeadingID      = "mv-heading"
 	mirrorTitlePopoverID = "mv-title-full"
 )
 

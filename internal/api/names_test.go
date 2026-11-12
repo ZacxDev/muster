@@ -59,7 +59,7 @@ func TestAMirroredSessionIsHeadedByItsFrozenNameNotItsCodename(t *testing.T) {
 
 // TestAMirroredSessionsManualNameIsNeverOverwritten: through the real route
 // (POST /sessions/name, htmx) a rename stores a MANUAL name on the window's
-// conversation and the page reloads; the row then reads it; a later focus
+// conversation, answered in place (no reload); the row then reads it; a later focus
 // write that would freeze an auto name (nameable) leaves the manual name
 // heading the session; and "" hands it back to the auto name.
 func TestAMirroredSessionsManualNameIsNeverOverwritten(t *testing.T) {
@@ -69,9 +69,7 @@ func TestAMirroredSessionsManualNameIsNeverOverwritten(t *testing.T) {
 	h := s.Handler()
 	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "name": {"Payments"}}
 	rec := pinPost(t, s, h, ui.SessionNamePath, form, true)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Refresh") != "true" {
-		t.Fatalf("rename = %d (HX-Refresh %q) %s", rec.Code, rec.Header().Get("HX-Refresh"), rec.Body)
-	}
+	expectNoReload(t, "rename", rec)
 	if got := store.rows[focus.MirrorSubject(focusSID)].Name.Manual; got != "Payments" {
 		t.Fatalf("stored manual name %q, want Payments", got)
 	}

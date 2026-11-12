@@ -123,7 +123,7 @@ var uiExempt = map[string]exemption{
 	"mirror_ask.go askReadOnly o.Description":            {2, whyOption},
 	"subagent_cards.go subagentCallOf in.Description":    {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":    {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
-	"terminal.go AgentTerminalPage v.DisplayName":        {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
+	"terminal.go terminalNames v.DisplayName":            {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
 	"switcher.go mirrorCodeName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
 	"agent_actions.go agentRenameFields a.DisplayName":   {1, whyForm},
 	"switcher_pin.go newSwitcherPin e.agent.DisplayName": {1, whyForm},

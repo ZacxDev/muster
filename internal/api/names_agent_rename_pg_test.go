@@ -65,12 +65,14 @@ func mustAgent(t *testing.T, f *attnFixture, id int64) agents.Agent {
 }
 
 // TestTheOffersRenameOnAnAgentIsAnsweredInPlace: through the real route on a
-// real store, the drift offer's Rename as htmx posts it (ui.SessionDriftParam)
-// makes the agent's name manual — an ordinary rename — and is answered with
-// NO reload: the header's title, the <title> and both rename dialogs redrawn
-// with the new name, the banner deleted, agents:changed for the sidebar. The
-// same post without the marker (the rename dialog's Save) still reloads, and
-// without script it is still a 303 back to the agent's page.
+// real store, every htmx rename of an agent — the drift offer's Rename and the
+// rename dialog's Save post the same fields — makes its name manual (an
+// ordinary rename) and is answered with NO reload, on the page that posted
+// it: from the agent's page its title box, both rename dialogs and the
+// banner, the tab's title and focus on #agent-title; from its Terminal page
+// (no #agent-title there) the Terminal heading, "Terminal · … · muster" and
+// focus on #term-title. A CLEARED name (no human name left) draws the slug.
+// Without script it is still a 303 back to the agent's page.
 func TestTheOffersRenameOnAnAgentIsAnsweredInPlace(t *testing.T) {
 	f := newAttnFixture(t)
 	slug := "rename-inplace-" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -80,40 +82,41 @@ func TestTheOffersRenameOnAnAgentIsAnsweredInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/agents/" + strconv.FormatInt(a.ID, 10) + "/name"
-	const offer = "Wiring the refund flow"
-	form := url.Values{"kind": {"agent"}, "agent_id": {strconv.FormatInt(a.ID, 10)}, "back": {ui.AgentPath(slug)},
-		"name": {offer}, "drift": {"1"}}
-	rec := pinPost(t, f.srv, f.srv.Handler(), path, form, true)
-	expectNoReload(t, "the offer's rename", rec)
-	if got := mustAgent(t, f, a.ID); got.DisplayName != offer || got.DisplayNameSource != agents.NameManual {
-		t.Fatalf("the offer's Rename stored %q (%s), want %q manual", got.DisplayName, got.DisplayNameSource, offer)
+	form := func(name string) url.Values {
+		return url.Values{"kind": {"agent"}, "agent_id": {strconv.FormatInt(a.ID, 10)}, "back": {ui.AgentPath(slug)}, "name": {name}}
 	}
-	if got := rec.Header().Get("HX-Trigger"); got != "agents:changed" {
-		t.Errorf("HX-Trigger %q, want agents:changed", got)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`<div id="session-drift" hx-swap-oob="delete"></div>`,
-		`hx-swap-oob="innerHTML">Renamed to “` + offer + `”.</p>`,
-		`<div id="agent-title" hx-swap-oob="outerHTML"`,
-		`<title>` + offer + ` · muster</title>`,
-		`id="agent-rename" hx-swap-oob="outerHTML"`,
-		`value="` + offer + `" data-session-rename-input`,
+	for _, tc := range []struct {
+		what, name, page, swapped, focusOn, title string
+	}{
+		{"the offer's Rename", "Wiring the refund flow", ui.AgentPath(slug), `<div id="agent-title" hx-swap-oob="outerHTML"`, "agent-title", "Wiring the refund flow · muster"},
+		{"the dialog's Save", "Login fix", ui.AgentPath(slug), `<div id="agent-title" hx-swap-oob="outerHTML"`, "agent-title", "Login fix · muster"},
+		{"the Terminal page's dialog", "Login fix two", ui.AgentTerminalPath(slug), `<h1 id="term-title" hx-swap-oob="outerHTML"`, "term-title", "Terminal · Login fix two · muster"},
+		{"a cleared name", "", ui.AgentPath(slug), `<div id="agent-title" hx-swap-oob="outerHTML"`, "agent-title", slug + " · muster"},
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the answer lacks %s:\n%s", want, body)
+		rec := postFrom(t, f.srv, path, form(tc.name), tc.page)
+		expectNoReload(t, tc.what, rec)
+		got := mustAgent(t, f, a.ID)
+		if tc.name != "" && (got.DisplayName != tc.name || got.DisplayNameSource != agents.NameManual) {
+			t.Fatalf("%s stored %q (%s), want %q manual", tc.what, got.DisplayName, got.DisplayNameSource, tc.name)
+		}
+		if title, focusOn := settled(t, rec); title != tc.title || focusOn != tc.focusOn {
+			t.Errorf("%s: settles title %q focus %q, want %q on %s", tc.what, title, focusOn, tc.title, tc.focusOn)
+		}
+		if got := rec.Header().Get("HX-Trigger"); got != "agents:changed" {
+			t.Errorf("%s: HX-Trigger %q, want agents:changed", tc.what, got)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, tc.swapped) || strings.Contains(body, "<title") || strings.Contains(body, "Fix the login bug") {
+			t.Errorf("%s: the answer does not swap %s (or carries a <title>, or the old name):\n%s", tc.what, tc.swapped, body)
+		}
+		if tc.focusOn == "term-title" && strings.Contains(body, `id="agent-title"`) {
+			t.Errorf("%s: a Terminal page's answer swaps #agent-title, which it has not", tc.what)
+		}
+		if tc.name == "" && !strings.Contains(elementOf(body, tc.swapped, "</h1>"), ">"+slug+"<") {
+			t.Errorf("a cleared name: the title box does not fall back to the slug:\n%s", body)
 		}
 	}
-	if strings.Contains(body, "Fix the login bug") {
-		t.Errorf("the answer still names the agent by its old name:\n%s", body)
-	}
-	form.Del("drift")
-	form.Set("name", "Login fix")
-	if rec := pinPost(t, f.srv, f.srv.Handler(), path, form, true); rec.Code != http.StatusOK || rec.Header().Get("HX-Refresh") != "true" {
-		t.Fatalf("the dialog's Save = %d (HX-Refresh %q), want the reload", rec.Code, rec.Header().Get("HX-Refresh"))
-	}
-	form.Set("drift", "1")
-	if rec := pinPost(t, f.srv, f.srv.Handler(), path, form, false); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != ui.AgentPath(slug) {
+	if rec := pinPost(t, f.srv, f.srv.Handler(), path, form("Login fix"), false); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != ui.AgentPath(slug) {
 		t.Fatalf("without script = %d to %q, want 303 to %q", rec.Code, rec.Header().Get("Location"), ui.AgentPath(slug))
 	}
 }

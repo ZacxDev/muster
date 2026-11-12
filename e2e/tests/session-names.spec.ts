@@ -29,7 +29,9 @@ import { revealBox } from '../lib/composer';
 //      reload and a later nameable focus (never overwritten);
 //   5. a session whose focus moved on is OFFERED a rename in a one-row
 //      banner;
-//   6. Keep / Rename are answered in place — no reload.
+//   6. Keep / Rename are answered in place — no reload;
+//   7. on a Terminal page too: its ⋯ Rename… renames its own header and tab,
+//      and its framed Rendered view's Rename retitles the top tab.
 
 const rig = new MirrorRig(sessionNamesPort, 'e2e-names');
 const origin = rig.origin;
@@ -47,6 +49,11 @@ const driftSids = { phone: 'drift-phone-' + stamp, desktop: 'drift-desktop-' + s
 const driftWindows = { phone: 3, desktop: 4 };
 const inPlaceSids = { phone: 'inplace-phone-' + stamp, desktop: 'inplace-desktop-' + stamp };
 const inPlaceWindows = { phone: 5, desktop: 6 };
+// A fourth for the Terminal page (7.): its own dialog, and its framed
+// Rendered view's offer.
+const termSids = { phone: 'term-phone-' + stamp, desktop: 'term-desktop-' + stamp };
+const termWindows = { phone: 7, desktop: 8 };
+const termView = (w: number) => `/mirror/terminal?host=${host}&session=namesx&window=%40${w}`;
 // The drift test's second offer: long enough to wrap on a phone, short enough
 // to be a focus title (focus.TitleCapRunes, 60).
 const longOffer = 'Wiring the Stripe refund flow for partial capture retries';
@@ -80,7 +87,7 @@ test.beforeAll(async () => {
   mkchat({}, JSON.stringify([{ role: 'user', content: 'Hold the fixtures.' }]));
   const rows: string[] = [];
   for (const k of ['phone', 'desktop'] as const) {
-    for (const [sid, w] of [[sids[k], windows[k]], [driftSids[k], driftWindows[k]], [inPlaceSids[k], inPlaceWindows[k]]] as const) {
+    for (const [sid, w] of [[sids[k], windows[k]], [driftSids[k], driftWindows[k]], [inPlaceSids[k], inPlaceWindows[k]], [termSids[k], termWindows[k]]] as const) {
       const tr = path.join(rig.dir, sid + '.jsonl');
       fs.writeFileSync(tr, cc.prompt('Migrate the billing tables') + cc.reply('Reading the schema.'));
       rows.push(`namesx|@${w}|${w}|${w === 1 ? 1 : 0}|claude|${now - 60 * w}|${tr}`);
@@ -93,7 +100,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await rig.stop();
-  mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify([...Object.values(sids), ...Object.values(driftSids), ...Object.values(inPlaceSids)].map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
+  mkchat({ MUSTER_E2E_DELETE: '1', MUSTER_E2E_FOCUS: JSON.stringify([...Object.values(sids), ...Object.values(driftSids), ...Object.values(inPlaceSids), ...Object.values(termSids)].map((s) => ({ subject: 'mirror:' + s, title: 'x' }))) });
 });
 
 // rowOf is the sidebar row of window w (its <a>), from the live sidebar.
@@ -174,10 +181,24 @@ async function expectCompactOffer(page: Page, banner: Locator, phone: boolean, o
 // the draft is as typed. The marker is the discriminating check: the composer
 // keeps a draft across a reload on its own (it is stored), so the draft alone
 // could not see one.
-async function armNoReload(page: Page, draft: string) {
+async function markPage(page: Page) {
   const navs: string[] = [];
   page.on('framenavigated', (f) => { if (f === page.mainFrame()) navs.push(f.url()); });
   await page.evaluate(() => { (window as unknown as { __driftMarker: string }).__driftMarker = 'still-here'; });
+  return navs;
+}
+
+async function expectSamePage(page: Page, navs: string[], what: string) {
+  expect(await page.evaluate(() => (window as unknown as { __driftMarker?: string }).__driftMarker), `${what}: the page was not reloaded`).toBe('still-here');
+  expect(navs, `${what}: nothing navigated the page`).toEqual([]);
+}
+
+// focusedId is the id of the element focus is on (a rename moves it to the
+// page's title, not <body>).
+const focusedId = (page: Page) => page.evaluate(() => document.activeElement?.id ?? '');
+
+async function armNoReload(page: Page, draft: string) {
+  const navs = await markPage(page);
   // A touch screen's composer starts collapsed (internal/ui/composer_reveal.go).
   await revealBox(page);
   await page.locator('#mv-input').fill(draft);
@@ -185,8 +206,7 @@ async function armNoReload(page: Page, draft: string) {
 }
 
 async function expectNoReload(page: Page, navs: string[], draft: string, what: string) {
-  expect(await page.evaluate(() => (window as unknown as { __driftMarker?: string }).__driftMarker), `${what}: the page was not reloaded`).toBe('still-here');
-  expect(navs, `${what}: nothing navigated the page`).toEqual([]);
+  await expectSamePage(page, navs, what);
   await expect(page.locator('#mv-input'), `${what}: the typed draft is kept`).toHaveValue(draft);
 }
 
@@ -241,8 +261,16 @@ for (const vp of [
       const input = dialog.locator('input[name="name"]');
       await expect(input, 'prefilled with what it is called now').toHaveValue('Billing migration');
       await input.fill(`Payments ${vp.key}`);
-      await Promise.all([page.waitForEvent('load'), dialog.getByRole('button', { name: 'Save', exact: true }).click()]);
+      // IN PLACE, as the offer's Rename: the dialog closes, the header and the
+      // tab read the name, focus is on the title, and nothing reloaded.
+      const navs = await markPage(page);
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(dialog).toBeHidden();
       await expect(page.locator('header [data-session-name="manual"]')).toHaveText(`Payments ${vp.key}`);
+      await expect(page).toHaveTitle(`Payments ${vp.key} · Mirrored · muster`);
+      await expectSamePage(page, navs, 'the dialog Save');
+      await expect.poll(() => focusedId(page), 'focus is on the title').toBe('mv-heading');
+      page.removeAllListeners('framenavigated');
       await page.reload();
       await expect(page.locator('header [data-session-name="manual"]'), 'the name survives a reload').toHaveText(`Payments ${vp.key}`);
       // A later focus that would freeze a name changes nothing.
@@ -342,6 +370,7 @@ for (const vp of [
       await expect(banner).toHaveCount(0);
       await expectNoReload(page, navs, `draft kept ${vp.key}`, 'Keep');
       await expect(status, 'the change is announced').toHaveText('Kept the name.');
+      await expect.poll(() => focusedId(page), 'Keep: focus is on the title, not <body>').toBe('mv-heading');
       await expect(headerName, 'Keep renames nothing').toHaveText('Billing migration');
       page.removeAllListeners('framenavigated');
       await page.reload();
@@ -360,6 +389,7 @@ for (const vp of [
       await expect(page).toHaveTitle(`${longOffer} · Mirrored · muster`);
       await expect(page.locator('#mv-title-full'), 'the full title follows').toContainText(longOffer);
       await expect(status, 'the change is announced').toHaveText(`Renamed to “${longOffer}”.`);
+      await expect.poll(() => focusedId(page), 'Rename: focus is on the title, not <body>').toBe('mv-heading');
       // The ⋯ menu's Rename… now opens prefilled with the NEW name.
       await page.locator('#switcher-more-btn').first().click();
       await page.locator('#switcher-rename').click();
@@ -369,6 +399,64 @@ for (const vp of [
       await page.reload();
       await expect(page.locator('header [data-session-name="manual"]'), 'the rename is stored').toHaveText(longOffer);
       await expect(banner).toHaveCount(0);
+    });
+
+    // A TERMINAL PAGE has the ⋯ menu's Rename… too, but no #mv-title: its own
+    // heading and its own tab title ("Terminal · … · muster") follow, in place.
+    // Its Rendered view opens in a FRAME over it (view_swap.go): a Rename
+    // there retitles the TOP tab, which shows the frame. A name with a literal
+    // "&amp;" titles the tab exactly so (htmx's own <title> handling would
+    // decode it to "&").
+    test('a Terminal page renames in place, and so does its framed Rendered view', async ({ page }) => {
+      const tw = termWindows[vp.key];
+      const tsub = 'mirror:' + termSids[vp.key];
+      await signIn(page, origin);
+      await rig.waitListed(page, `walnut:${tw}`);
+      writeFocus([{ subject: tsub, title: 'Billing migration', tail: REAL_TAIL }]);
+      writeFocus([{ subject: tsub, title: 'Fixing the Stripe webhook retry', tail: REAL_TAIL,
+        historyTitles: ['Tracing the webhook retry queue', 'Reading the Stripe webhook docs'], historyAgeMinutes: 60 }]);
+      // The framed Rendered view's offer.
+      await page.goto(origin + termView(tw));
+      await expect(page).toHaveTitle('Terminal · Billing migration · muster');
+      await page.locator('#view-rendered').click();
+      const frameEl = page.locator('iframe[data-muster-view]');
+      await expect(frameEl).toBeVisible();
+      const framed = page.frameLocator('iframe[data-muster-view]');
+      await expect(framed.locator('#session-drift')).toHaveAttribute('data-session-drift', 'Fixing the Stripe webhook retry');
+      // Armed once the frame is open: the switch itself moves the address
+      // (history.replaceState), which Playwright counts as a navigation.
+      let navs = await markPage(page);
+      await expect(page, 'control: the top tab shows the frame').toHaveTitle('Billing migration · Mirrored · muster');
+      await framed.locator('[data-session-drift-accept]').click();
+      await expect(framed.locator('#session-drift')).toHaveCount(0);
+      await expect(framed.locator('header [data-session-name="manual"]')).toHaveText('Fixing the Stripe webhook retry');
+      await expect(page, 'the top tab follows the framed rename').toHaveTitle('Fixing the Stripe webhook retry · Mirrored · muster');
+      await expectSamePage(page, navs, 'the framed Rename');
+      page.removeAllListeners('framenavigated');
+
+      // The Terminal page's own ⋯ Rename…, with a name that holds a literal
+      // "&amp;" once plained: typed "R&amp;amp;D", it is called "R&amp;D"
+      // (the plaining decodes one entity), and its tab must read so — htmx's
+      // <title> handling would decode it again, to "R&D".
+      const typed = `R&amp;amp;D ${vp.key}`;
+      const name = `R&amp;D ${vp.key}`;
+      await page.goto(origin + termView(tw));
+      navs = await markPage(page);
+      await page.locator('#switcher-more-btn').first().click();
+      await page.locator('#switcher-rename').click();
+      const dialog = page.locator('#session-rename');
+      await expect(dialog).toBeVisible();
+      await dialog.locator('input[name="name"]').fill(typed);
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(dialog).toBeHidden();
+      await expect(page.locator('#term-title [data-session-name="manual"]')).toHaveText(name);
+      await expect.poll(() => page.evaluate(() => document.title), 'the tab reads the name exactly').toBe(`Terminal · ${name} · muster`);
+      await expectSamePage(page, navs, "the Terminal page's dialog Save");
+      await expect.poll(() => focusedId(page), 'focus is on the title').toBe('term-title');
+      page.removeAllListeners('framenavigated');
+      await page.reload();
+      expect(await page.evaluate(() => document.title), 'a reload titles the tab the same').toBe(`Terminal · ${name} · muster`);
+      await expect(page.locator('#term-title [data-session-name="manual"]')).toHaveText(name);
     });
   });
 }

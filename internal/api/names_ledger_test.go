@@ -46,8 +46,8 @@ var sessionNameCallers = []string{
 	"mirror.go Server.mirrorCards",                               // the sidebar rows, switcher pills and palette (mirrored)
 	"mirror_mcp.go Server.handleMirrorMCP",                       // a mirrored session's ask label
 	"mirror_view.go Server.handleMirrorViewPage",                 // the Rendered view's header and <title>
-	"name_drift.go Server.answerAgentDriftRenamed",               // the drift offer's Rename, answered in place: the agent page's header and <title>
-	"name_drift.go Server.answerMirrorDriftRenamed",              // the drift offer's Rename, answered in place: the Rendered view's header and <title>
+	"name_drift.go Server.answerAgentRenamed",                    // an htmx rename answered in place: the agent page's or its Terminal page's header and <title>
+	"name_drift.go Server.answerMirrorRenamed",                   // an htmx rename answered in place: the Rendered view's or Terminal page's header and <title>
 	"plugin_message_route_tools.go Server.routeSubjectFor",       // the route candidates the chief is offered
 	"pr_routes.go Server.prAuthorHint",                           // a plugin message's PR author hint
 	"session_names.go Server.mirrorNameUnchanged",                // a Save of the unchanged prefilled name is not a rename
@@ -105,8 +105,8 @@ var noTmuxAddress = map[string]string{
 	"mirror.go Server.handleMirrorTerminalPage":                  "a page header, not a notification",
 	"mirror_mcp.go Server.handleMirrorMCP":                       "an ask's STORED label: shown only when no window holds the session, so there is no address to vouch for",
 	"mirror_view.go Server.handleMirrorViewPage":                 "a page header, not a notification",
-	"name_drift.go Server.answerAgentDriftRenamed":               "a page header redrawn in place, not a notification",
-	"name_drift.go Server.answerMirrorDriftRenamed":              "a page header redrawn in place, not a notification",
+	"name_drift.go Server.answerAgentRenamed":                    "a page header redrawn in place, not a notification",
+	"name_drift.go Server.answerMirrorRenamed":                   "a page header redrawn in place, not a notification",
 	"plugin_message_route_tools.go Server.routeSubjectFor":       "a chief tool",
 	"pr_routes.go Server.prAuthorHint":                           "a plugin message hint",
 	"session_names.go Server.mirrorNameUnchanged":                "the rename form",

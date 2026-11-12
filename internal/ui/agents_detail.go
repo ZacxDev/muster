@@ -572,10 +572,13 @@ func agentTitle(v AgentDetailView, extra ...g.Node) g.Node {
 	// `[&[hidden]]:hidden`: the button's inline-flex utility would otherwise
 	// beat the UA's [hidden] rule and draw a "hidden" button anyway.
 	return Div(
-		// The id the drift offer's in-place answer swaps (RenderAgentDriftRenamed);
+		// The id a rename's in-place answer swaps (AgentPageRenamed);
 		// extra is that answer's hx-swap-oob.
 		ID(AgentTitleID),
 		g.Group(extra),
+		// Focusable by script only: where a rename's in-place answer moves
+		// focus (renameScript), the control that now says the new name.
+		g.Attr("tabindex", "-1"),
 		g.Attr("data-agent-title", ""),
 		g.If(clamped, g.Attr("data-title-clamped", "")),
 		Class("mr-auto flex min-w-0 flex-1 items-center gap-0.5"),

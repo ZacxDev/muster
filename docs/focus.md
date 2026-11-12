@@ -86,7 +86,7 @@ first of these that a session has wins:
 
 | rank | name | where it comes from |
 |---|---|---|
-| 1 | **manual** | the name you gave it: **Rename…** in the session's ⋯ menu (the bar on every session page), or an agent's own ⋯ menu. Nothing automatic ever replaces it. An empty name hands the session back to the rows below. |
+| 1 | **manual** | the name you gave it: **Rename…** in the session's ⋯ menu (the bar on every session page), or an agent's own ⋯ menu. Saving renames the page in place, with no reload: the page's header, its tab's title, the switcher and the sidebar read the new name, and focus moves to the title. Nothing automatic ever replaces it. An empty name hands the session back to the rows below. |
 | 2 | **system** | a name muster pinned for a role: the chief, an officer's instance. The rest of muster finds the role by it, so the automatic name never replaces it. |
 | 3 | **dispatch** | an agent dispatched from a task: `#42 · Fix the login bug`. It is the agent's stable name: it never changes on its own, and only a manual rename replaces it. |
 | 4 | **auto** | the session's **first good focus title**, frozen ([below](#the-name-bar)). Set once and never changed by a later focus. (A task-dispatched agent's auto name is frozen too, but never shown: its task name ranks above it.) |
@@ -244,9 +244,8 @@ goes, a screen reader hears "Renamed to "…"" or "Kept the name", and on
 popover, the tab's title, the switcher's pills, the sidebar and the rename
 dialogs' prefill — reads the new name. Nothing else on the page is redrawn, so
 a draft in the composer, the open stream and the scroll position stay as they
-were. Without JavaScript both are plain form posts answered with a redirect
-back to the page. (The ⋯ menu's **Rename…** dialog still reloads the page when
-saved.) The offer is decided by `focus.DriftOffer`, from the session's
+were; focus moves to the session's title. Without JavaScript both are plain
+form posts answered with a redirect back to the page. The offer is decided by `focus.DriftOffer`, from the session's
 focus history:
 
 - the **newest three** focus changes (`DriftMinTitles`) written **after the

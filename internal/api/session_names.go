@@ -27,11 +27,10 @@ import (
 //
 // The pins' conventions (pins.go): a browser-session route, CSRF-checked
 // (requireOperatorWrite), no step-up — a name is the viewer's own label and
-// sends nothing anywhere. Posted by htmx, the answer reloads the page
-// (HX-Refresh), so every surface reads the new name — except the drift
-// offer's Rename (ui.SessionDriftParam), answered IN PLACE with the page's
-// name redrawn out of band (name_drift.go); a plain form post is answered with
-// a 303 back to the session's page (switcherPinBack).
+// sends nothing anywhere. Posted by htmx (the drift offer's Rename, the
+// rename dialog's Save), it is answered IN PLACE on the page that posted it,
+// every name there redrawn out of band (name_drift.go); a plain form post is
+// answered with a 303 back to the session's page (switcherPinBack).
 func (s *Server) registerSessionNameRoutes(mux Mux) {
 	// Spelled literally (ui.SessionNamePath is the same string): the route
 	// walks in this package's tests read the pattern from the source.
@@ -92,13 +91,7 @@ func (s *Server) handleSessionName(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, switcherPinBack(r.PostFormValue("back")), http.StatusSeeOther)
 		return
 	}
-	// The drift offer's Rename is answered in place (name_drift.go); the
-	// rename dialog's Save reloads.
-	if driftAnswerInPlace(r) {
-		s.answerMirrorDriftRenamed(w, r, h, e)
-		return
-	}
-	w.Header().Set("HX-Refresh", "true")
-	w.Header().Set("HX-Trigger", "agents:changed")
-	w.WriteHeader(http.StatusOK)
+	// Every htmx rename is answered in place, on the page that posted it
+	// (name_drift.go).
+	s.answerMirrorRenamed(w, r, h, e)
 }

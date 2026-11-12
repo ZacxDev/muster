@@ -229,8 +229,8 @@ func agentDeleteConfirm(ids string) g.Node {
 
 // agentRenamePopover is the rename form, in a popover the menu's Rename opens
 // (renamePopover, the one rename dialog): a name input posting to
-// POST /agents/{id}/name, whose answer reloads the page (HX-Refresh), so the
-// header, the tab's title and the sidebar all read the new name. A name typed
+// POST /agents/{id}/name, whose answer renames the page in place (Renamed), so
+// the header, the tab's title and the sidebar all read the new name. A name typed
 // here is the agent's MANUAL name (agents.NameManual), which nothing automatic
 // replaces; an empty one hands the agent back to its automatic name.
 //
