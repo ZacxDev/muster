@@ -31,6 +31,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/safedial"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -523,6 +524,25 @@ const (
 	// Deployment's pod template.
 	envAgentNetpolFromNS     = "MUSTER_AGENT_NETPOL_FROM_NAMESPACE"
 	envAgentNetpolFromLabels = "MUSTER_AGENT_NETPOL_FROM_POD_LABELS"
+
+	// --- officer egress (kubernetes driver only; #503 slice 9) ---
+	//
+	// An officer instance is egress-locked (agentspec.claudeCodeNetworkFor): no
+	// public rule and no DNS rule, only muster's connect port. On a cluster with
+	// FQDN policies the operator admits the Anthropic API cluster-side; on one
+	// without them (flannel + the k3s NetworkPolicy controller) these two let
+	// muster admit it itself, by address. OFFICERS ONLY — never a locked pool
+	// worker, a task agent or the chief.
+	//
+	// envOfficerEgressCIDRs is a comma list of `<ipv4-cidr>:<port>` blocks an
+	// officer instance may open TCP connections to (parseOfficerEgressCIDRs:
+	// public, IPv4, canonical, no wider than a /16, no duplicates — refused at
+	// boot otherwise). Unset is none, and the spec is byte-identical to before.
+	envOfficerEgressCIDRs = "MUSTER_OFFICER_EGRESS_CIDRS"
+	// envOfficerEgressDNS=unfiltered gives an officer instance back the
+	// cluster-DNS rule (UDP/TCP 53 to the DNS pods, ANY name — a tunnel
+	// channel). Any other non-empty value is refused at boot. Unset is off.
+	envOfficerEgressDNS = "MUSTER_OFFICER_EGRESS_DNS"
 
 	// --- browser-test fixture (read ONLY by a `-tags e2eterm` build) ---
 	//
@@ -1159,6 +1179,100 @@ type config struct {
 	// kind is enabled on the kubernetes driver, and refused otherwise.
 	AgentNetpolFromNS     string
 	AgentNetpolFromLabels string
+
+	// OfficerEgressCIDRs is MUSTER_OFFICER_EGRESS_CIDRS parsed
+	// (parseOfficerEgressCIDRs): sorted by block then port. nil is none.
+	OfficerEgressCIDRs []provision.CIDRPort
+	// OfficerEgressDNS is MUSTER_OFFICER_EGRESS_DNS=unfiltered.
+	OfficerEgressDNS bool
+}
+
+// officerEgressDNSUnfiltered is the one value MUSTER_OFFICER_EGRESS_DNS takes.
+const officerEgressDNSUnfiltered = "unfiltered"
+
+// officerEgressSet reports whether either officer egress setting is set.
+func (c config) officerEgressSet() bool { return len(c.OfficerEgressCIDRs) > 0 || c.OfficerEgressDNS }
+
+// parseOfficerEgressCIDRs parses MUSTER_OFFICER_EGRESS_CIDRS: a comma list of
+// `<cidr>:<port>`, each held to provision.CheckEgressCIDR (the one rule, also
+// applied by Spec.Validate at dispatch). Blank entries are skipped (a trailing
+// comma). It REFUSES rather than skips a malformed entry or a duplicate: an
+// allow-list that silently dropped an entry the operator wrote would boot
+// with a different allow-list than the one they read. The result is sorted
+// by block then port, so the banner and the spec do not depend on order.
+func parseOfficerEgressCIDRs(v string) ([]provision.CIDRPort, error) {
+	var out []provision.CIDRPort
+	seen := map[provision.CIDRPort]bool{}
+	for _, raw := range strings.Split(v, ",") {
+		e := strings.TrimSpace(raw)
+		if e == "" {
+			continue
+		}
+		i := strings.LastIndex(e, ":")
+		if i < 0 {
+			return nil, fmt.Errorf("invalid %s entry %q: want <ipv4-cidr>:<port>, e.g. 192.0.2.0/24:443",
+				envOfficerEgressCIDRs, e)
+		}
+		port, err := strconv.Atoi(e[i+1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s entry %q: the port %q is not a number (want <ipv4-cidr>:<port>)",
+				envOfficerEgressCIDRs, e, e[i+1:])
+		}
+		c := provision.CIDRPort{CIDR: e[:i], Port: port}
+		if err := provision.CheckEgressCIDR(c); err != nil {
+			return nil, fmt.Errorf("invalid %s entry %q: %v", envOfficerEgressCIDRs, e, err)
+		}
+		if seen[c] {
+			return nil, fmt.Errorf("invalid %s: %s is listed twice", envOfficerEgressCIDRs, c)
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b provision.CIDRPort) int {
+		if a.CIDR != b.CIDR {
+			return strings.Compare(a.CIDR, b.CIDR)
+		}
+		return a.Port - b.Port
+	})
+	return out, nil
+}
+
+// officerEgressBannerLine is the boot banner's `officer egress:` line, drawn
+// under the claude-code network line whenever an agent NetworkPolicy is
+// written (validateOfficerEgress refuses either setting otherwise, so there is
+// no other state to announce).
+func officerEgressBannerLine(c config) string {
+	blocks := "no address blocks (" + envOfficerEgressCIDRs + " unset)"
+	if len(c.OfficerEgressCIDRs) > 0 {
+		s := make([]string, 0, len(c.OfficerEgressCIDRs))
+		for _, b := range c.OfficerEgressCIDRs {
+			s = append(s, b.String())
+		}
+		blocks = "TCP to [" + strings.Join(s, ", ") + "] (" + envOfficerEgressCIDRs + ")"
+	}
+	dns := "no cluster DNS (" + envOfficerEgressDNS + " unset)"
+	if c.OfficerEgressDNS {
+		dns = "cluster DNS UNFILTERED, any name (" + envOfficerEgressDNS + "=" + officerEgressDNSUnfiltered + ")"
+	}
+	return fmt.Sprintf("officer egress: an officer instance's lock admits %s and %s, on top of muster's connect port; "+
+		"officers only (never a locked pool worker, a task agent or the chief), applied when an officer instance is "+
+		"started", blocks, dns)
+}
+
+// validateOfficerEgress refuses an officer egress setting this deployment
+// writes no NetworkPolicy for: without one there is no lock for it to widen,
+// and an operator reading the setting would believe officers are confined to
+// it. It runs from validate() directly, not under the provisioner's checks,
+// so a deployment with no provisioner at all still hears it.
+func (c config) validateOfficerEgress() error {
+	if !c.officerEgressSet() || c.agentNetworkPolicy() {
+		return nil
+	}
+	return fmt.Errorf("%s or %s is set but this deployment writes no agent NetworkPolicy (it needs %s=%s and %s "+
+		"in %s): there is no officer egress lock for it to widen, so it would be an allow-list that confines "+
+		"nothing. Unset it, or run officers on the %s driver",
+		envOfficerEgressCIDRs, envOfficerEgressDNS, envAgentProvisioner, provisionerK8s, agents.KindClaudeCode,
+		envAgentKinds, provisionerK8s)
 }
 
 // agentKinds resolves the unset list to the gateway kind alone, for the reason
@@ -1548,6 +1662,19 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.AgentCCFailoverOff = true
 	default:
 		return config{}, fmt.Errorf("invalid %s %q: want on (the default) or off", envAgentCCFailover, v)
+	}
+	cidrs, err := parseOfficerEgressCIDRs(getenv(envOfficerEgressCIDRs))
+	if err != nil {
+		return config{}, err
+	}
+	c.OfficerEgressCIDRs = cidrs
+	switch v := strings.TrimSpace(getenv(envOfficerEgressDNS)); v {
+	case "":
+	case officerEgressDNSUnfiltered:
+		c.OfficerEgressDNS = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want %s, or unset (officer instances get no cluster DNS)",
+			envOfficerEgressDNS, v, officerEgressDNSUnfiltered)
 	}
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -2320,6 +2447,9 @@ func (c config) validate() error {
 		}
 	}
 	if err := c.validateChiefLLM(); err != nil {
+		return err
+	}
+	if err := c.validateOfficerEgress(); err != nil {
 		return err
 	}
 	return c.validateProvisioner()

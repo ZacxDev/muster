@@ -304,6 +304,54 @@ policy allows no port 53, so the only resolver path is the cluster's
 name-filtered one, and a query for a name the attacker controls is refused. On
 a cluster with no such policy the pod resolves nothing at all.
 
+#### On a cluster without FQDN policies (`MUSTER_OFFICER_EGRESS_*`)
+
+A plugin that implements plain Kubernetes NetworkPolicy and nothing more —
+flannel with the k3s NetworkPolicy controller, for one — cannot match a host
+name or filter DNS, so the cluster policy above cannot be written. Two
+opt-in, deployment-wide settings let muster admit what an officer needs
+itself, **by address** ([configuration](configuration.md)):
+
+```sh
+# EXAMPLE values — take the current ranges from Anthropic's published list,
+# https://platform.claude.com/docs/en/api/ip-addresses (IPv4 only: muster
+# admits no IPv6, and IPv4 reaches the API).
+MUSTER_OFFICER_EGRESS_CIDRS=160.79.104.0/23:443,153.61.224.0/22:443
+MUSTER_OFFICER_EGRESS_DNS=unfiltered
+```
+
+With both set, an officer instance's egress is exactly:
+
+- UDP/TCP 53 to the cluster's DNS pods (`MUSTER_OFFICER_EGRESS_DNS=unfiltered`
+  — needed here because both `api.anthropic.com` and muster's connect URL are
+  names);
+- TCP to each listed block on its port — one `ipBlock` rule per entry;
+- muster's connect port on muster's own pods (unchanged).
+
+Nothing else: no other public address, no private range (a block overlapping
+one is refused at boot, as is one wider than a /16), no IPv6, and no operator
+device. Ingress is unchanged. Only officer instances get these rules — a
+locked pool worker, a task agent and the chief do not, whatever the settings.
+Check an instance with
+`kubectl -n <namespace-prefix>officer-<…>-1 get networkpolicy -o yaml`: the
+egress list is the DNS rule, one `ipBlock` rule per block (no `except`), and the
+connect-port rule. As with the lock itself, a running instance keeps the policy
+it was started with until it is stopped and started.
+
+⚠ **What this costs against the cluster-side policy above**, plainly:
+
+- 🔴 **DNS is unfiltered, which is a tunnel.** The session can encode what its
+  pod holds in queries for a domain an attacker controls, and the cluster's
+  resolver forwards them. The name-filtered rule above closes this; nothing
+  here can.
+- **A block is coarse.** The officer reaches every host in each block on that
+  port, not one name. Admit Anthropic's published ranges and nothing else.
+- Everything under *What it still allows* above still holds — notably the
+  Anthropic API accepts any account's credential.
+
+Prefer the cluster-side policy wherever the plugin can express it; these
+settings are for the cluster where it cannot.
+
 ### A custom runner image (`image`)
 
 An officer may run its instances on its **own** image instead of the

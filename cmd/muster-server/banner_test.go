@@ -558,6 +558,11 @@ var bannerExempt = map[string]string{
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
 		"state: validateKinds refuses it unset when a policy would be written and set when none would be",
 	envAgentNetpolFromLabels: "the other half of the same selector; same line, same test and same boot refusals as " + envAgentNetpolFromNS,
+	envOfficerEgressCIDRs: "printed on its own `officer egress:` line in both states (the blocks listed, or \"no address " +
+		"blocks\"), drawn under the kubernetes arm of the `claude-code network:` line, which bannerBothDirections' " +
+		"fixture cannot render; refused at boot whenever no agent NetworkPolicy is written (validateOfficerEgress), so " +
+		"outside that arm there is no state to announce. TestTheOfficerEgressBannerLineSaysBothStates pins both",
+	envOfficerEgressDNS: "the other half of the same line, same test and same boot refusal as " + envOfficerEgressCIDRs,
 	envAgentCCEgressLockedPools: "printed on the claude-code arm of the `agent kinds:` line whenever a pool is locked (this " +
 		"list or a deploy key), naming the pools and the label the cluster policy selects; with no locked pool there is " +
 		"nothing locked to announce. Refused at boot without the kind. TestTheKindsBannerLineAnnouncesTheEgressLock pins it",
