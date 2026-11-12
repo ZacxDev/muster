@@ -186,6 +186,14 @@ Then it compresses each PNG with pngquant when it is installed, and fails if a
 PNG is over 200 KB or a GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
 PWA manifest's install-sheet screenshots.
 
+`make docshots-check` runs the same spec as a check, with its images written to
+a temp dir so `docs/img/` is untouched, and `node verdict.mjs --docshots` judges
+the report: exactly the expected number of passes, all from `docs.spec.ts`, and
+no skip. CI's `docshots` job runs it on every change, so a UI change that breaks
+the generator goes red at once. `mirror-terminal.png` is left out of both runs
+until #623 (its terminal comes out blank); `MUSTER_E2E_DOCSHOTS_TERMINAL=1` puts
+it back.
+
 ## What green does not prove
 
 - **`nix build` tests only the packages each derivation installs.** That is
