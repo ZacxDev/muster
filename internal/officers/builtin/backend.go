@@ -290,9 +290,10 @@ func (b *Backend) Complete(ctx context.Context, item officers.ItemID, instance s
 		inv, _ = json.Marshal(done.Investigation)
 	case len(bytes.TrimSpace(done.InvestigationJSON)) > 0 && !bytes.Equal(bytes.TrimSpace(done.InvestigationJSON), []byte("null")):
 		inv = bytes.TrimSpace(done.InvestigationJSON)
-		var obj map[string]any
-		if json.Unmarshal(inv, &obj) != nil {
-			return nil, refuse(http.StatusBadRequest, "invalid", "investigation must be a JSON object", nil)
+	}
+	if inv != nil {
+		if msg := investigationInvalid(inv, done.Outcome); msg != "" {
+			return nil, refuse(http.StatusBadRequest, "invalid", msg, nil)
 		}
 	}
 	var costUSD *float64

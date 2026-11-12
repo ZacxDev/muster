@@ -138,8 +138,13 @@ func TestEnqueueDedupesALiveSubject(t *testing.T) {
 	if _, err := b.Complete(ctxOp(), id, "i", officers.Completion{Outcome: "done", Summary: "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	if next, created, err := w.store.Enqueue(ctxOp(), 1, n, w.clock()); err != nil || !created || next == first {
+	next, created, err := w.store.Enqueue(ctxOp(), 1, n, w.clock())
+	if err != nil || !created || next == first {
 		t.Fatalf("enqueue after the item finished = %d created %v (%v), want a new item", next, created, err)
+	}
+	// with a finished and a live item for the subject, the dedupe answers the LIVE one
+	if again, created, err := w.store.Enqueue(ctxOp(), 1, n, w.clock()); err != nil || created || again != next {
+		t.Fatalf("enqueue beside a finished and a live item = %d created %v (%v), want the live %d", again, created, err, next)
 	}
 }
 
@@ -158,7 +163,9 @@ func TestAnotherOwnersOfficerIsInvisible(t *testing.T) {
 	asTwo := func(ctx context.Context) context.Context {
 		return authz.WithPrincipal(ctx, authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
 	}
-	other := builtin.NewBackend(builtin.NewStore(pool), officers.Officer{ID: backendtest.OfficerA, Owner: 2}, w.clock, asTwo)
+	// Owner 1, as user 1's own backend names it: only row-level security
+	// (not the backend's owner_id filter) can hide the rows from user 2.
+	other := builtin.NewBackend(builtin.NewStore(pool), officers.Officer{ID: backendtest.OfficerA, Owner: 1}, w.clock, asTwo)
 	if items, err := other.AllItems(context.Background(), ""); err != nil || len(items) != 0 {
 		t.Fatalf("user 2 sees %d of user 1's items (%v)", len(items), err)
 	}

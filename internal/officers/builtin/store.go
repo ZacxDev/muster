@@ -101,6 +101,10 @@ type NewItem struct {
 // (open, claimed or waiting) of that kind and subject — returns that one
 // (created false): the contract's dedupe, kept by a partial unique index.
 func (s *Store) Enqueue(ctx context.Context, owner int64, n NewItem, now time.Time) (id int64, created bool, err error) {
+	return s.enqueue(ctx, owner, n, now, false)
+}
+
+func (s *Store) enqueue(ctx context.Context, owner int64, n NewItem, now time.Time, retried bool) (id int64, created bool, err error) {
 	payload := n.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -124,6 +128,11 @@ func (s *Store) Enqueue(ctx context.Context, owner int64, n NewItem, now time.Ti
 	}
 	err = s.pool.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
 		AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) && !retried {
+		// the live item finished between the insert and the read: the
+		// subject is free again, so enqueue once more
+		return s.enqueue(ctx, owner, n, now, true)
+	}
 	return id, false, err
 }
 

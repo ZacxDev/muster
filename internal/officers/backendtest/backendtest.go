@@ -289,6 +289,43 @@ func Checks() []Check {
 			_, err := b.Complete(ctx, id, instA, officers.Completion{Outcome: "merged", Summary: "s"})
 			return wantRefused("an unknown outcome", err, 400, "")
 		}},
+		{"investigation is checked and kept on escalated only; cost is kept", func(ctx context.Context, w World) error {
+			b := w.Backend(OfficerA)
+			good := json.RawMessage(`{"hypotheses":["disk full"],"eliminated":[],"root_cause":"the data volume is full","confidence":"high","fix":{"operator_steps":["grow the volume"]},"not_checked":[]}`)
+			claim := func(subject string) (officers.ItemID, error) {
+				id := w.AddItem(OfficerA, "k", subject, officers.TierJudgement, "")
+				_, err := b.Claim(ctx, id, instA, lease, "")
+				return id, err
+			}
+			id, err := claim("s-done")
+			if err != nil {
+				return fmt.Errorf("claim: %v", err)
+			}
+			_, err = b.Complete(ctx, id, instA, officers.Completion{Outcome: "done", Summary: "s", InvestigationJSON: good})
+			if e := wantRefused("an investigation on outcome done", err, 400, ""); e != nil {
+				return e
+			}
+			_, err = b.Complete(ctx, id, instA, officers.Completion{Outcome: "escalated", Summary: "s", InvestigationJSON: json.RawMessage(`{"root_cause":"x"}`)})
+			if e := wantRefused("an investigation with no hypotheses", err, 400, ""); e != nil {
+				return e
+			}
+			if st, err := status(ctx, w, OfficerA, id); err != nil || st != officers.StatusClaimed {
+				return fmt.Errorf("a refused complete changed the item to %q (%v), want it still claimed", st, err)
+			}
+			if _, err := b.Complete(ctx, id, instA, officers.Completion{Outcome: "escalated", Summary: "disk", InvestigationJSON: good,
+				Cost: &officers.ItemCost{USD: 0.5, From: officers.CostFromLLMProxy}}); err != nil {
+				return fmt.Errorf("escalate with an investigation and a cost: %v", err)
+			}
+			it, err := item(ctx, w, OfficerA, id)
+			if err != nil {
+				return err
+			}
+			inv, _ := it["investigation"].(map[string]any)
+			if inv["root_cause"] != "the data volume is full" || it["cost_usd"] != 0.5 || it["cost_from"] != officers.CostFromLLMProxy {
+				return fmt.Errorf("escalated item = %v, want the investigation and the cost kept", it)
+			}
+			return nil
+		}},
 		{"release gives the holder's item back", func(ctx context.Context, w World) error {
 			id := w.AddItem(OfficerA, "ci.failure", "web:main", officers.TierJudgement, "")
 			b := w.Backend(OfficerA)
