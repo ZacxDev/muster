@@ -291,6 +291,16 @@ func TestAnUnknownCredentialIsFlaggedOnlyWhenProvablyUnknown(t *testing.T) {
 			t.Errorf("%s: %d %v", c.name, res.StatusCode, body)
 		}
 	}
+	// Only GoTrue's VERIFICATION failure is asked about. The same provably
+	// unknown credential refused for another reason — here a challenge GoTrue
+	// does not know — is that refusal, not "unknown".
+	res := postJSON(w.edge, passkeySignInVerifyPath, map[string]any{
+		"challenge_id": "no-such-challenge", "credential": gotruetest.AssertionFor("gone-6", emptySub, gotruetest.FlagUPUV)}).Result()
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if _, flagged := body["credential_unknown"]; flagged || body["error"] == PasskeyUnknownRefusal || res.StatusCode == http.StatusOK {
+		t.Errorf("a refusal that is not a verification failure: %d %v", res.StatusCode, body)
+	}
 	// CONTROL: the recorded passkey itself still signs in.
 	if res := signIn("rec-1", recSub); res.StatusCode != http.StatusOK {
 		t.Fatalf("CONTROL: the recorded passkey: %d", res.StatusCode)
