@@ -20,6 +20,27 @@ type memNotifyPrefs struct {
 	mu  sync.Mutex
 	on  map[int64]bool
 	err error
+	// first is "Start notification titles with the tmux name", owner → on.
+	first map[int64]bool
+}
+
+func (m *memNotifyPrefs) CodenameFirst(ctx context.Context, owner int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return false, m.err
+	}
+	return m.first[owner], nil
+}
+
+func (m *memNotifyPrefs) SetCodenameFirst(ctx context.Context, owner int64, on bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.first == nil {
+		m.first = map[int64]bool{}
+	}
+	m.first[owner] = on
+	return nil
 }
 
 func (m *memNotifyPrefs) TmuxAddress(ctx context.Context, owner int64) (bool, error) {

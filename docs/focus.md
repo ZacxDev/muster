@@ -166,7 +166,9 @@ question from a mirrored session, of a held question or of a chief notice,
 the Asks list row, the attention summary's `title` and `attention_list`'s
 `name` — and a stalled or waiting session's push title ("… needs you", "… is
 stalled") and its "Stalled / waiting" row. (A waiting window's own push keeps
-its fixed title and already says where it waits in its body.)
+its fixed title and already says where it waits in its body; to put the
+codename at the front of every push title instead, where a phone does not
+cut it, see [Tmux name first in push titles](#tmux-name-first-in-push-titles).)
 
 **In the session lists:** a pill on the switcher bar gets a second, smaller
 line under its name, the codename alone (`mango:1`: the pill's host icon
@@ -206,6 +208,56 @@ manual name `mango:1` on the window labelled `mango:1`: no second line, no
 session no window shows now gets no address (muster names no place it cannot
 see). Off — or with no database, or when the switch cannot be read — every
 text and every pill is byte for byte what it was before the switch existed.
+
+### Tmux name first in push titles
+
+A phone cuts the END of a notification title, so the codename "Show tmux
+sessions" adds after the name (`Billing migration · mango:1 @ atlas needs
+you`) is often the part that is lost — and the body, where the waiting
+window's own push says where it waits, is often collapsed. A second per-user
+switch, **Account → Notifications → Start notification titles with the tmux
+name** ("Puts each session's tmux name (like mango:1) at the front of its
+phone and browser notifications, so it shows even when the title is cut"),
+off for every user until they turn it on (`notify_preferences.codename_first`,
+migration 0117; no row is off), puts the window's codename at the FRONT of
+every push title that names a mirrored session:
+
+    mango:1 · Billing migration is asking          an agent question from a mirrored session, a held question
+    mango:1 · Billing migration may be waiting on you   a chief notice
+    mango:1 · Billing migration needs you          a waiting episode ("… is stalled" likewise)
+    mango:1 · A session is waiting on you          the waiting window's own push (its fixed title)
+
+It is independent of "Show tmux sessions": on alone it changes push titles
+only — never the Asks list, the attention summary or the session lists. With
+both on, a push title says the codename ONCE, at the front (`mango:1 ·
+Billing migration needs you`, not `mango:1 · Billing migration · mango:1 @
+atlas needs you`), while the lists keep "Show tmux sessions"' decorations
+unchanged. It applies to the browser's notification and the paired phone's
+(payload v2) alike: both are sent the one title chosen at the push sink.
+
+Only the codename leads, never the host: the front of the title stays short,
+and the body and the page a tap opens name the host. Two hosts that label a
+window alike would show the same codename; the session lists tell those apart
+by their host ([Show tmux sessions](#show-tmux-sessions)), and the push's tap
+opens the exact window either way.
+
+Nothing changes where the codename would add nothing: a session with no human
+name is already called by its place, which starts with its codename (`mango:1
+· tmux main:1 @ atlas is asking`); a human name that IS the codename is
+already the front (`mango:1 is asking`); an agent has no tmux window; a
+session no window shows now gets no codename. Pushes that name no session
+(a task, a page, a connector request, "Agent dispatched from your session"),
+or name a window only by its place already ("Chief routed it to mango:1 ·
+…"), are unchanged. Off — or with no database, or when the switch cannot be
+read — every push title is byte for byte what it was.
+
+It is decided in one place: each push that names a mirrored session declares
+its codename-first title through one rule (`codenameTitle`,
+`internal/api/names.go`), and the one push title sink (`goNotify`,
+`internal/api/server.go`) reads the owner's switch and sends that title
+instead. `TestEveryPushTitleIsClassifiedForCodenameFirst` puts every push
+title in the package on a ledger — one that declares the codename-first
+title, or one with why it does not — so a new push surface cannot skip it.
 
 ### The name bar
 

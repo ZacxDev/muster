@@ -330,13 +330,17 @@ func (s *Server) episodeNotification(octx context.Context, ep sessionstate.Episo
 		n.ID, n.Tag, n.Data = key, attentionTag(key), map[string]string{"url": attentionOpenURL(key)}
 		return n
 	}
-	who, keep := s.episodeWho(octx, ep, hosts)
+	who, keep, human, at := s.episodeWho(octx, ep, hosts)
 	verb := " is stalled"
 	if ep.State == sessionstate.StateNeedsYou {
 		verb = " needs you"
 	}
-	return RouterNotification{Type: attentionNotificationType, ID: key, Title: who + verb, Body: episodeBody(ep.State, idle),
+	n := RouterNotification{Type: attentionNotificationType, ID: key, Title: who + verb, Body: episodeBody(ep.State, idle),
 		Tag: attentionTag(key), Data: map[string]string{"url": attentionOpenURL(key)}, TitleKeep: keep}
+	// "Start notification titles with the tmux name": the codename before the
+	// HUMAN name, never before notifyName's decorated who (goNotify decides).
+	n.CodenameTitle, n.CodenameKeep = codenameTitle(human, verb, at)
+	return n
 }
 
 // episodeAsk is the answerable ask (answerableItem) mirrored episode ep's
@@ -381,17 +385,22 @@ func (s *Server) episodeAsk(octx context.Context, ep sessionstate.Episode, hosts
 // tmux address when its owner turned on "Show tmux sessions"
 // (notifyName, over the target episodePlace finds: the window holding it now,
 // else the stored one).
-func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep string) {
+//
+// human and at are that HUMAN name alone and that window (mirror.Place), for
+// a codename-first push title (names.go codenameTitle); "" and the zero Place
+// for an agent (no tmux window) and a session with no human name (its who IS
+// its place already).
+func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts []mirror.HostView) (who, keep, human string, at mirror.Place) {
 	if ep.Kind == sessionstate.KindAgent {
 		if s.ext.Agents != nil && ep.AgentID > 0 {
 			if a, err := s.ext.Agents.Get(octx, ep.AgentID); err == nil {
 				// Its stable name (internal/sessionname), plain already: kept
 				// whole by the title rule.
 				n := s.agentName(octx, a).Text
-				return n, n
+				return n, n, "", mirror.Place{}
 			}
 		}
-		return "An agent", ""
+		return "An agent", "", "", mirror.Place{}
 	}
 	where, target, at := episodePlace(ep, hosts)
 	if ep.Host != "" && ep.Key != "" {
@@ -402,11 +411,11 @@ func (s *Server) episodeWho(octx context.Context, ep sessionstate.Episode, hosts
 		sub := focus.MirrorSubject(ep.Key)
 		if n := (focusIndex{sub: {Subject: sub, Name: s.storedName(octx, sub)}}).humanMirrorName(ep.Key); n != "" {
 			// Plain already, and the place is the host's words: kept whole.
-			n = notifyName(n, at, s.notifyTmuxOn(octx, ep.Owner))
-			return n, n
+			who := notifyName(n, at, s.notifyTmuxOn(octx, ep.Owner))
+			return who, who, n, at
 		}
 	}
-	return where, target
+	return where, target, "", mirror.Place{}
 }
 
 // episodePlace is where mirrored episode ep's session is, as episodeWho names
@@ -864,7 +873,7 @@ func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, in
 	esc := html.EscapeString
 	hosts := s.episodeHosts(ctx, eps...)
 	for _, ep := range eps {
-		who, _ := s.episodeWho(ctx, ep, hosts)
+		who, _, _, _ := s.episodeWho(ctx, ep, hosts)
 		state := "Stalled"
 		if ep.State == sessionstate.StateNeedsYou {
 			state = "Needs you"

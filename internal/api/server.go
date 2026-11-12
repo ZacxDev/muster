@@ -484,6 +484,12 @@ type RouterNotification struct {
 	// TitleKeep is a part of Title the title rule keeps verbatim
 	// (textplain.TitleKeeping): a mirrored window's tmux target. "" for none.
 	TitleKeep string
+	// CodenameTitle is the title to send INSTEAD of Title when the owner
+	// turned on "Start notification titles with the tmux name" (the one rule,
+	// names.go codenameTitle, made it: the window's codename first), with
+	// CodenameKeep its TitleKeep. "" for a push that names no mirrored window:
+	// it always sends Title. goNotify decides, once, per owner.
+	CodenameTitle, CodenameKeep string
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -720,7 +726,8 @@ func (s *Server) registerAll(mux Mux) {
 	// The chief's per-user on/off switch on the Account page (chief_toggle.go).
 	mux.HandleFunc("POST "+accountChiefPath, s.requireOperatorWrite(s.handleAccountChief))
 	// "Show tmux sessions" on the Account page (notify_prefs.go).
-	mux.HandleFunc("POST "+accountNotifyTmuxPath, s.requireOperatorWrite(s.handleAccountNotifyTmux))
+	mux.HandleFunc("POST "+accountNotifyTmuxPath, s.requireOperatorWrite(s.handleAccountNotifySwitch))
+	mux.HandleFunc("POST "+accountNotifyCodenamePath, s.requireOperatorWrite(s.handleAccountNotifySwitch))
 
 	s.registerNotesRoutes(mux)
 	s.registerAgentRoutes(mux)
@@ -1413,7 +1420,15 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	// not titles and are sent as written. TestTheTitleSinkLedger
 	// (internal/textplain) pins both halves and that sendPush and router.Notify
 	// are reached from nowhere else.
-	n.Title = textplain.TitleKeeping(n.Title, n.TitleKeep)
+	//
+	// 🔴 AND THE ONE PLACE "Start notification titles with the tmux name" IS
+	// READ (notifyCodenameFirstOn): a push that declared a CodenameTitle
+	// (names.go codenameTitle) is sent under it instead when its owner turned
+	// the switch on — decided here, on the push's own goroutine (a read of the
+	// owner's preference must not block the caller), before the title rule.
+	// Off, unreadable, or no CodenameTitle: Title, byte for byte as before.
+	// Both kinds of device (the browser's payload and payload v2) and the
+	// router get the one title chosen here.
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
 	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the
@@ -1424,6 +1439,10 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
+		if n.CodenameTitle != "" && s.notifyCodenameFirstOn(s.attentionPrincipal(ctx, owner), owner) {
+			n.Title, n.TitleKeep = n.CodenameTitle, n.CodenameKeep
+		}
+		n.Title = textplain.TitleKeeping(n.Title, n.TitleKeep)
 		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
 			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
 				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions})

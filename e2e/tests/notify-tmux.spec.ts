@@ -477,5 +477,50 @@ for (const vp of [
       await page.goto(origin + '/attention');
       await expect(askRow(page, w)).toHaveText(name);
     });
+
+    // "START NOTIFICATION TITLES WITH THE TMUX NAME" (the second switch,
+    // migration 0117): its own state, saved and read back, independent of
+    // "Show tmux sessions" — and, since it changes PUSH titles only, the Asks
+    // row is exactly the name with it on. (The push titles themselves are
+    // pinned in Go: internal/api/notify_codename*_test.go.)
+    // 🔴 REGRESSION TEST: on origin/main the Account page has no such switch
+    // and POST /account/notifications/codename does not exist.
+    test('the tmux-name-first switch is off by default, saves and survives a reload on its own, and leaves the Asks row as it was', async ({ page }) => {
+      await signIn(page, origin);
+      await rig.waitListed(page, `cobalt:${w}`);
+      const sw = page.locator('[data-testid="notify-codename"]');
+      const tmux = page.locator('[data-testid="notify-tmux"]');
+      const button = page.locator('#notify-codename-toggle');
+      const flip = async (on: boolean) => {
+        await page.goto(origin + '/account');
+        await expect(sw).toHaveAttribute('data-state', on ? 'off' : 'on');
+        await Promise.all([page.waitForURL(/\/account\?notify=codename-saved#notify-codename$/), button.click()]);
+        await expect(sw).toHaveAttribute('data-state', on ? 'on' : 'off');
+        await expect(sw.getByRole('status'), 'the save is confirmed at this switch').toHaveText('Saved.');
+        await expect(tmux.getByRole('status'), 'and not at the other').toHaveCount(0);
+        await page.reload();
+        await expect(sw, 'the choice survives a reload').toHaveAttribute('data-state', on ? 'on' : 'off');
+        await expect(tmux, '"Show tmux sessions" is untouched').toHaveAttribute('data-state', 'off');
+      };
+      try {
+        await page.goto(origin + '/account');
+        await expect(sw).toHaveAttribute('data-state', 'off');
+        await expect(sw).toContainText('Start notification titles with the tmux name: Off.');
+        await expect(sw).toContainText('like mango:1');
+        await expect(button).toHaveText('Turn on: Start notification titles with the tmux name');
+        expect((await button.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
+        const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+        expect(o.sw, 'the Account page does not scroll sideways').toBeLessThanOrEqual(o.cw);
+
+        await flip(true);
+        await expect(button).toHaveText('Turn off: Start notification titles with the tmux name');
+        await page.goto(origin + '/attention');
+        await expect(askRow(page, w), 'a list is not a push title: exactly the name').toHaveText(name);
+
+        await flip(false);
+      } finally {
+        clearSwitch();
+      }
+    });
   });
 }

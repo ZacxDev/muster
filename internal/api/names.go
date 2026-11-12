@@ -169,6 +169,38 @@ func tmuxPlace(name string, at mirror.Place, tmux bool) string {
 	return at.String()
 }
 
+// codenameTitle is THE RULE for "Start notification titles with the tmux
+// name" (notify_prefs.go): the push title words+rest with the window's
+// codename and " · " IN FRONT, so a phone that cuts the END of a title still
+// shows which window it is — and keep, the part the title rule keeps verbatim
+// (the codename and words: goNotify's TitleKeep for it). words is the title's
+// own name for the session — its HUMAN name, never notifyName's decorated one,
+// so with "Show tmux sessions" on too the codename is said ONCE, at the front —
+// or, for a title that names no session (the waiting window's fixed
+// sessionPushTitle), the whole fixed title, with rest "":
+//
+//	mango:1 · Billing migration needs you
+//	mango:1 · A session is waiting on you
+//
+// "" (no codename-first title: the push keeps its title) when there is no
+// window (at.Code "": an agent, a session no window shows now), no human name
+// (words "": the title already calls the session by its place, which starts
+// with the codename), or a human name that IS the codename ("mango:1 is
+// asking" already leads with it). Only the CODENAME leads, never the host:
+// the title stays short, and the body and the tap's page name the host.
+//
+// The surface only DECLARES the title (RouterNotification.CodenameTitle);
+// goNotify, the one push title sink, sends it instead of Title when the
+// owner turned the switch on. Its callers are a ledger
+// (TestEveryPushTitleIsClassifiedForCodenameFirst).
+func codenameTitle(words, rest string, at mirror.Place) (title, keep string) {
+	if words == "" || at.Code == "" || words == at.Code {
+		return "", ""
+	}
+	keep = at.Code + mirror.QualifierSep + words
+	return keep + rest, keep
+}
+
 // storedName is sub's stored name halves, the zero value for none.
 func (s *Server) storedName(ctx context.Context, sub focus.Subject) focus.Name {
 	if s.ext.Focus == nil {

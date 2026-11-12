@@ -75,6 +75,15 @@ list, in the attention summary and on the session switcher's pills and dock
 rows; its POST is `/account/notifications/tmux`
 (`on=1|0`).
 
+Under it is **Start notification titles with the tmux name** (off unless you
+turn it on; independent of the switch above): every push title that names a
+mirrored session then starts with the window's codename, so a phone that cuts
+the end of a title still shows it — `mango:1 · Billing migration needs you`,
+`mango:1 · A session is waiting on you`
+([focus.md](focus.md#tmux-name-first-in-push-titles)). It changes push titles
+only, on the browser and on the paired phone alike; its POST is
+`/account/notifications/codename` (`on=1|0`).
+
 Push routes are session-authenticated and same-origin:
 `/api/push/{vapid-public-key,subscribe,unsubscribe}` and
 `/account/push/{test,preferences,{id}/remove}`.
