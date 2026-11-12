@@ -397,8 +397,15 @@ func (s *Server) noteDraftRefusedToChief(ctx context.Context, p plugins.Plugin, 
 	text := "[muster] Your reply draft " + strconv.FormatInt(d.ID, 10) + " to plugin message_id " + strconv.FormatInt(d.MessageID, 10) +
 		" was NOT sent: the plugin refused it " + when + ", saying «" + plugins.RefusalText(d.Detail) + "». The sender has no " +
 		"reply from it. If they still need one, draft a new reply with reply_draft that fixes what the plugin refused."
+	// The chief's PRIMARY chat (primarySession), not the session the plugin
+	// last recorded: after a fresh primary that one is archived.
+	primary, ok := s.chiefPrimaryID(ctx, *d.AgentID)
+	if !ok {
+		s.logger.Printf("plugins: draft %d refused: no primary chat of agent %d to tell", d.ID, *d.AgentID)
+		return
+	}
 	if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: *d.AgentID,
-		SessionID: *cur.ChiefSessionID, Role: "user", Content: text}); err != nil {
+		SessionID: primary, Role: "user", Content: text}); err != nil {
 		s.logger.Printf("plugins: draft %d refused: note to the chief: %v", d.ID, err)
 	}
 }

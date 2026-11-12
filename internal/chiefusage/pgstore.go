@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
@@ -68,11 +69,44 @@ func (s *PGStore) RecordTurn(ctx context.Context, t Turn) error {
 		ms = 0
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO chief_turn_usage (owner_id, chief_agent, trigger, plugin_name, sender, plugin_message_id,
-		outcome, rule_proposed, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, usage_known, duration_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		outcome, rule_proposed, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, usage_known, duration_ms,
+		session_id, model, context_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		o, t.Chief, kind, cut(t.Trigger.Plugin, 40), cut(t.Trigger.Sender, 320), nullID(t.Trigger.MessageID), outcome, t.RuleProposed,
-		max(t.Tokens.Input, 0), max(t.Tokens.Output, 0), max(t.Tokens.CacheRead, 0), max(t.Tokens.CacheCreation, 0), t.Known, ms)
+		max(t.Tokens.Input, 0), max(t.Tokens.Output, 0), max(t.Tokens.CacheRead, 0), max(t.Tokens.CacheCreation, 0), t.Known, ms,
+		nullID(t.SessionID), cut(t.Model, 200), contextArg(t))
 	return err
+}
+
+// contextArg is t's last-request fill as stored: NULL when no usage was reported.
+func contextArg(t Turn) any {
+	if !t.Known {
+		return nil
+	}
+	return max(t.ContextTokens, 0)
+}
+
+var _ ContextReader = (*PGStore)(nil)
+
+// LatestContext implements ContextReader: the newest row of the session that
+// the runtime reported usage for (usage_known), under row-level security — so
+// another owner's session reads as none.
+func (s *PGStore) LatestContext(ctx context.Context, sessionID int64) (SessionContext, bool, error) {
+	if sessionID <= 0 {
+		return SessionContext{}, false, nil
+	}
+	var c SessionContext
+	// The LAST request's fill (context_tokens); a row without it (written
+	// before it was recorded) reads its turn total, the best there is.
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(context_tokens, input_tokens + cache_read_tokens + cache_creation_tokens), model, created_at
+		FROM chief_turn_usage WHERE session_id = $1 AND usage_known ORDER BY id DESC LIMIT 1`, sessionID).Scan(&c.Tokens, &c.Model, &c.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SessionContext{}, false, nil
+	}
+	if err != nil {
+		return SessionContext{}, false, err
+	}
+	return c, true, nil
 }
 
 // RecordHandling implements Store. One row per message: a later handler

@@ -140,7 +140,7 @@ func (s *Server) chatTurnWhenFree(ctx context.Context, a agents.Agent, sessionKe
 	// asks that count is zero — a page reloaded then would draw no "working…"
 	// though a reply is coming. The count nests (one per turn), so this and
 	// chatTurn's own are one turn's two holds of the same rule, not two rules.
-	defer s.sessionTurns.begin(sessionKey)()
+	defer s.countSessionTurn(a, sessionKey)()
 	w := s.turns.join(a.ID)
 	defer s.turns.quit(a.ID, w)
 	told := ""

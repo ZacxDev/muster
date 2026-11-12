@@ -70,6 +70,7 @@ var noStoreLiterals = map[string]string{
 	"staticCacheControl":        "another build's /static/ bytes, or a page script's bare path (a CDN rewrites no-cache)",
 	"staticHandler":             "a missing /static/ file (an edge must not keep a script's 404)",
 	"handleAgentChatLog":        "the chat-log partial",
+	"handleChiefChatContext":    "the chief chat's context chip",
 	"handleAsksDrafts":          "an ask's draft answers",
 	"handleAttentionAsker":      "a page's open asks",
 	"handleAttentionBadge":      "the Asks badge",

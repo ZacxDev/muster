@@ -168,6 +168,8 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// or move the default session plugin deliveries and `chief ask` land in.
 	mux.HandleFunc("POST /agents/{id}/sessions", s.requireOperatorWrite(s.handleAgentSessionCreate))
 	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireOperatorWrite(s.handleAgentSessionDefault))
+	// The chief's primary and side chats (chief_chats.go).
+	s.registerChiefChatRoutes(mux)
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -1423,6 +1425,11 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// "working…" while a turn runs in this conversation, and the cards of the
 	// agents started in it (chat_log_live.go).
 	s.withChatLogLive(ctx, &view, active)
+	// The chief's chat bar: primary or side chat, its context, the chat
+	// actions (chief_chats.go).
+	if s.isChiefAgent(ctx, a) {
+		view.ChiefChat = chiefChatBarFor(a, active)
+	}
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
 	// The session switcher below the chat form (ui/switcher.go).
@@ -1558,8 +1565,24 @@ func (s *Server) resolveSessions(ctx context.Context, a agents.Agent, sessionPar
 			active = sess
 		}
 	}
+	// 🔴 THE CHIEF OPENS ON ITS PRIMARY CHAT, every other agent on its latest
+	// session. The chief's latest is whatever was touched last — a side chat the
+	// owner left, an old thread — while the primary is where every delivery
+	// lands (chief_chats.go).
+	chief := s.isChiefAgent(ctx, a)
+	if active.ID == 0 && chief {
+		active, _ = s.primarySession(ctx, a)
+	}
 	if active.ID == 0 {
 		active, _ = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	}
+	if chief {
+		if views, ok, err := s.chiefChatViews(ctx, a, active.ID); ok {
+			if err != nil {
+				s.logger.Printf("agents: list chats for %d: %v", a.ID, err)
+			}
+			return active, views, err
+		}
 	}
 	list, err := s.ext.Agents.ListSessions(ctx, a.ID)
 	if err != nil {
@@ -1856,6 +1879,18 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
+		// 🔴 THE CONVERSATION IS WORKING FROM THE MOMENT ITS MESSAGE IS READ, BEFORE
+		// THE ECHO (session_turns.go). The page draws "working…" on send, and any
+		// #chat-log render of this session from then on must agree with it. The
+		// count used to start only inside chatTurnWhenFree — after the echo, the
+		// asks answered, the message stored and the owner's turn marked — so a
+		// refetch landing in that window was drawn with the row HIDDEN while the
+		// turn was about to run, and nothing redrew it until the reply. The
+		// composer's POST already counted before it answered (startAgentTurn);
+		// this is the socket door doing the same. Ended when the turn returns, as
+		// chatTurn's own count is, so the chat.reply refetch after "done" draws
+		// it hidden.
+		endCount := s.countSessionTurn(a, session.SessionKey)
 		// The page drew the message as plain text the moment it sent it; this is
 		// its html (agentChatScript's 'sent'), sent for every message read, so the
 		// page's queue of waiting bubbles and these echoes stay one to one.
@@ -1864,6 +1899,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// message the gate refuses (the agent is being replaced) starts no turn,
 		// so it must not answer the agent's asks either.
 		if !s.turns.enter(a.ID) {
+			endCount()
 			_ = wsWriteJSON(ctx, c, map[string]string{"type": "error", "content": ErrAgentBeingReplaced.Error()})
 			continue
 		}
@@ -1883,7 +1919,10 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// (c.CloseRead's context, measured), not for the line this replaced.
 		tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), agentTurnBudget(a.Kind))
 		emit, stream := wsStreamEmit(ctx, c, s, a.Name)
-		parts, err := s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
+		parts, err := func() ([]agents.TurnPart, error) {
+			defer endCount() // a panic must not leave the count up (end is idempotent)
+			return s.runEnteredTurn(tctx, a, session, in.Text, ownerTypedBy(ctx), emit, nil)
+		}()
 		s.turns.leave(a.ID)
 		// The reply's last bubble is drawn rendered before the turn's end is said.
 		stream.end()
@@ -2150,18 +2189,21 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// the one function every chat door's turn passes.
 	ctx, turn := s.outcomeTurn(ctx, a)
 	defer turn.close(&reply, &err)
+	// "working…" for any page that opens this conversation while the turn runs.
+	// 🔴 DEFERRED BEFORE THE TELEMETRY BELOW, SO IT ENDS AFTER IT: the end tells
+	// open pages (EventChatTurn), and the context chip they then re-read is the
+	// turn's own usage row (chief_chats.go), which must be written by then.
+	defer s.countSessionTurn(a, sessionKey)()
 	// 🔴 THE CHIEF'S TOKEN TELEMETRY (chief_usage.go): every chief turn, from
 	// every door, is recorded here — its trigger (the door's), its outcome
 	// (the tools it called) and the tokens its runtime reported.
-	if ctx2, usage := s.beginChiefTurnUsage(ctx, a); usage != nil {
+	if ctx2, usage := s.beginChiefTurnUsage(ctx, a, sessionKey); usage != nil {
 		ctx, emit = ctx2, usage.observe(emit)
 		defer func() { usage.finish(ctx, err) }()
 	}
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
-	// "working…" for any page that opens this conversation while the turn runs.
-	defer s.sessionTurns.begin(sessionKey)()
 	// The session an owner card raised in this turn is answered in (both doors:
 	// the in-process dispatch reads ctx, a CLI's /mcp call the registry).
 	defer s.turnSessions.begin(a.ID, sessionKey)()

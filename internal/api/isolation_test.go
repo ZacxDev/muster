@@ -319,6 +319,12 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents/{id}/name":                   classParam,
 	"POST /agents/{id}/sessions":               classParam,
 	"POST /agents/{id}/sessions/{sid}/default": classParam,
+	// The chief's primary and side chats (chief_chats.go): A's chief, A's chat.
+	"POST /agents/{id}/sessions/side":            classParam,
+	"POST /agents/{id}/sessions/fresh-primary":   classParam,
+	"POST /agents/{id}/sessions/{sid}/archive":   classParam,
+	"POST /agents/{id}/sessions/{sid}/unarchive": classParam,
+	"GET /ui/agents/{name}/chat-context":         classParam,
 	"POST /agents/{id}/start":                  classParam,
 	"POST /agents/{id}/stop":                   classParam,
 	"POST /connectors/{name}/rotate":           classParam,
@@ -1085,7 +1091,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
-		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID}
+		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
+		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1234,6 +1241,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	w.aChief, err = as.GetByName(ua, agents.ChiefNameFor(w.a.uid))
 	must(err, "a chief")
+	// A side chat of A's chief, carrying the canary (chief_chats.go's routes).
+	aSide, err := as.CreateSession(ua, w.aChief.ID, w.aChief.Name)
+	must(err, "a chief side chat")
+	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.aChief.ID, SessionID: aSide.ID, Role: "user", Content: w.canary + " side chat", TypedBy: w.a.uid})
+	must(err, "a chief side chat line")
+	w.objA.chief, w.objA.chiefChat, w.objA.chiefName = w.aChief.ID, aSide.ID, w.aChief.Name
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
 		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	w.objA.grant = w.aGrantID
@@ -1397,6 +1410,10 @@ type isoObjs struct {
 	ccAccount                                 string
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
+	// The chief's chats (chief_chats.go): the chief's id and name, and a side
+	// chat of it — the routes only a CHIEF answers (o.agent is a worker).
+	chief, chiefChat int64
+	chiefName        string
 	token                                     int64  // a personal API token's id
 	flowJob, runnerTok, flowReq               int64  // a browser-flow job's, runner token's and agent request's id
 	plugin                                    int64  // a plugin's id (0015)
@@ -1428,7 +1445,17 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		method, path = pattern[:i], pattern[i+1:]
 	}
 	id := strconv.FormatInt(o.task, 10)
+	sid := strconv.FormatInt(o.chat, 10)
+	name := o.agentName
 	switch {
+	// The chief's chats (chief_chats.go): A's CHIEF and its side chat, named
+	// before the generic /agents/{id} below, which names A's worker.
+	case strings.HasSuffix(path, "/sessions/side") || strings.HasSuffix(path, "/sessions/fresh-primary") ||
+		strings.HasSuffix(path, "/sessions/{sid}/archive") || strings.HasSuffix(path, "/sessions/{sid}/unarchive"):
+		id, sid = strconv.FormatInt(o.chief, 10), strconv.FormatInt(o.chiefChat, 10)
+	case path == "/ui/agents/{name}/chat-context":
+		name = o.chiefName
+		path += "?" + url.Values{"session": {strconv.FormatInt(o.chiefChat, 10)}}.Encode()
 	case strings.Contains(path, "/agents/{id}") || strings.HasPrefix(path, "/ui/agents/{id}"):
 		id = strconv.FormatInt(o.agent, 10)
 	case strings.Contains(path, "connector-standing-grants/{id}"):
@@ -1496,7 +1523,6 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The asks block of A's agent (the agent page's), by name.
 		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
 	}
-	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
 	}
@@ -1507,7 +1533,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
 		"{wid}", strconv.FormatInt(o.refWrite, 10),
-		"{tag}", url.PathEscape(o.tag), "{sid}", strconv.FormatInt(o.chat, 10),
+		"{tag}", url.PathEscape(o.tag), "{sid}", sid,
 		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
 	).Replace(path)
 	if path == "/static/" {

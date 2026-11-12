@@ -57,6 +57,11 @@ func TestATurnsUsageIsSummedOverItsRequestsInBothShapes(t *testing.T) {
 	if in != 4200 || out != 460 || read != 56000 || create != 800 || !known {
 		t.Fatalf("the turn's usage = in %d out %d read %d create %d known %v; want 4200 460 56000 800 true", in, out, read, create, known)
 	}
+	// The context fill is the LAST request that reported usage — 3000 + 6000
+	// cached = 9000 — not the sum (60,200 + 800) of every request.
+	if fill, ok := sink.Context(); !ok || fill != 9000 {
+		t.Fatalf("the turn's context fill = %d (%v), want the last request's 9000", fill, ok)
+	}
 
 	// A turn whose only response carried none: unknown, zero.
 	n = 2
@@ -78,5 +83,23 @@ func TestUsageSplitClampsANonsenseCachedCount(t *testing.T) {
 	}{CachedTokens: 400}
 	if in, out, read, create := u.split(); in != 0 || out != 5 || read != 100 || create != 0 {
 		t.Fatalf("split = %d %d %d %d; want 0 5 100 0", in, out, read, create)
+	}
+}
+
+// TestCcdsLastCallFillIsTheContext: ccd's one response sums a whole turn and
+// names its last call's fill in context_tokens; that, not the sum, is the
+// context.
+func TestCcdsLastCallFillIsTheContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, completedWith(`{"input_tokens":6,"output_tokens":946,"cache_read_input_tokens":493988,"cache_creation_input_tokens":4751,"context_tokens":249972}`))
+	}))
+	t.Cleanup(srv.Close)
+	ctx, sink := WithTurnUsage(context.Background())
+	if _, err := streamResponses(ctx, srv.Client(), srv.URL+"/v1/responses", "", "", responsesRequest{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fill, ok := sink.Context(); !ok || fill != 249972 {
+		t.Fatalf("context = %d (%v), want 249972", fill, ok)
 	}
 }

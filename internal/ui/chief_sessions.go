@@ -54,9 +54,9 @@ func sessionDefaultBadge(sess SessionView) g.Node {
 	}
 	return Span(
 		g.Attr(sessionDefaultAttr, ""),
-		g.Attr("title", "Plugin messages and chief ask go to this thread"),
+		g.Attr("title", "The primary chat: every delivery to the chief — plugin mail, hand-backs, notes, chief ask — goes here"),
 		Class("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent ring-1 ring-inset ring-accent/50"),
-		g.Text("Default"),
+		g.Text("Primary"),
 	)
 }
 
@@ -74,9 +74,9 @@ func makeDefaultControl(sess SessionView) g.Node {
 		Button(
 			Type("submit"),
 			g.Attr(makeDefaultAttr, ""),
-			g.Attr("title", "Send plugin messages and chief ask to this thread"),
+			g.Attr("title", "Make this the primary chat: every delivery to the chief goes here"),
 			Class("press shrink-0 rounded-lg px-2 text-[11px] text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg"),
-			g.Text("Make default"),
+			g.Text("Make primary"),
 		),
 	)
 }

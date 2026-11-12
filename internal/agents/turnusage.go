@@ -31,6 +31,10 @@ type responsesUsage struct {
 	InputTokensDetails       *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
+	// ContextTokens: ccd's last-call context fill (podagent.Usage); nil from
+	// a runtime that reports one response per model request, where this
+	// response's own input + cache read + cache creation IS that request's.
+	ContextTokens *int64 `json:"context_tokens"`
 }
 
 // split is u as input (uncached), output, cache read and cache creation.
@@ -56,6 +60,8 @@ type TurnUsage struct {
 	mu                                      sync.Mutex
 	input, output, cacheRead, cacheCreation int64
 	known                                   bool
+	// context is the LAST request's context fill (Context).
+	context int64
 }
 
 // Snapshot is the tokens so far and whether any request reported usage.
@@ -66,6 +72,18 @@ func (t *TurnUsage) Snapshot() (input, output, cacheRead, cacheCreation int64, k
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.input, t.output, t.cacheRead, t.cacheCreation, t.known
+}
+
+// Context is the context the turn's LAST model request was sent — input +
+// cache read + cache creation of that request alone, not the turn's sum —
+// and whether any request reported usage.
+func (t *TurnUsage) Context() (tokens int64, known bool) {
+	if t == nil {
+		return 0, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.context, t.known
 }
 
 type turnUsageKey struct{}
@@ -91,4 +109,11 @@ func addTurnUsage(ctx context.Context, u *responsesUsage) {
 	t.cacheRead += read
 	t.cacheCreation += create
 	t.known = true
+	// Each response is one request on a Responses-API gateway, so its own
+	// tokens are that request's fill; ccd's one response sums a whole turn,
+	// and names its last call's fill.
+	t.context = in + read + create
+	if u.ContextTokens != nil {
+		t.context = max(*u.ContextTokens, 0)
+	}
 }

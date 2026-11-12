@@ -85,6 +85,13 @@ func (r *turnResult) addUsage(rec cctranscript.Record) {
 		return
 	}
 	sum := r.calls.sum()
+	// The LAST call's context fill (podagent.Usage.ContextTokens): what the
+	// chief chat's context chip shows, rather than the turn total.
+	if keys := r.calls.keys(); len(keys) > 0 {
+		last := r.calls.call(keys[len(keys)-1])
+		fill := last.InputTokens + last.CacheReadInputTokens + last.CacheCreationInputTokens
+		sum.ContextTokens = &fill
+	}
 	r.Usage = &sum
 }
 

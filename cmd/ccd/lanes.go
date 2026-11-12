@@ -103,6 +103,26 @@ import (
 // like the primary (blockedReporter), and one left there past stuckAfter may be
 // stopped for a new session (pickEvictLocked).
 //
+// 🔴 THE PINNED LANE (X-Muster-CC-Pinned: 1 — muster sets it on every turn of
+// the chief's PRIMARY chat when that chat is a lane, internal/api withRoute).
+// Every delivery muster makes to the chief goes to its primary, so its CLI must
+// never be the one stopped for an owner's side chat, nor refused at the cap:
+//
+//   - it is never evicted (pickEvictLocked skips it);
+//   - it does not count against maxLanes: a pinned lane is started whatever the
+//     cap, and an unpinned one is refused or evicts only among the unpinned;
+//   - ONE lane is pinned at a time — a turn that pins its lane unpins every
+//     other (after a fresh primary the old primary's lane becomes an ordinary
+//     one) — and an unpinning that leaves more unpinned lanes than the cap
+//     stops the least recently used idle ones until it does not (trimLocked),
+//     as does every release. So the cap is exceeded by the ONE pinned CLI, and
+//     beyond that only while every excess lane is held by a turn: each is
+//     stopped as soon as the turn holding it releases it (PR #609 round 2 N1 —
+//     before, each pin move left one more CLI running for good);
+//   - pinning is the LATEST turn's word, not fixed for the lane's life: a turn
+//     without the header unpins its lane (an old primary unarchived and talked
+//     to as a side chat).
+//
 // ⚠ WHAT A LANE DOES NOT HAVE, STATED: /healthz's ok is the primary's alone — a
 // lane that crash-loops is dropped and restarted by its next turn, it does not
 // fail the pod.
@@ -128,6 +148,9 @@ const (
 	// LANE HAS NO TOOLS" above). Read only on a turn that names a session; any
 	// other value is a lane with the CLI's usual tools.
 	headerCCToolless = "X-Muster-CC-Toolless"
+	// headerCCPinned: "1" pins the lane — the chief's PRIMARY chat (see "THE
+	// PINNED LANE" above). Read only on a turn that names a session.
+	headerCCPinned = "X-Muster-CC-Pinned"
 	// headerCCPromptAccepted: "1" on the 103 informational answer ccd writes
 	// the moment the CLI accepted the pasted prompt (its UserPromptSubmit
 	// matched it) — muster's agents.HeaderCCPromptAccepted, which marks an
@@ -173,6 +196,9 @@ type laneMode struct {
 	ephemeral bool
 	// toolless: headerCCToolless — the CLI starts with toollessArgs.
 	toolless bool
+	// pinned: headerCCPinned — the chief's primary (see "THE PINNED LANE").
+	// Unlike the two above it is the latest turn's word (setPinnedLocked).
+	pinned bool
 }
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model
@@ -456,6 +482,9 @@ type lane struct {
 	// toolless: the CLI starts with toollessArgs (headerCCToolless). Fixed for
 	// the lane's life; set before its supervisor first builds argv.
 	toolless bool
+	// pinned: the chief's primary (headerCCPinned): never evicted, not counted
+	// against the cap. Guarded by lanes.mu; set by setPinnedLocked.
+	pinned   bool
 	srv      *server
 	sup      *supervisor
 	term     laneTerminal
@@ -575,12 +604,15 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 				Message: fmt.Sprintf("session %q is toolless=%v, not %v: whether a session's CLI has tools is fixed", key, ln.toolless, mode.toolless)}
 		}
 		ln.reserved++
+		l.setPinnedLocked(ln, mode.pinned)
 		l.mu.Unlock()
 		return ln, nil
 	}
 	var evict *lane
 	stuck := false
-	if len(l.set) >= l.max {
+	// A pinned lane (the chief's primary) is started whatever the cap, and is
+	// not counted against it.
+	if !mode.pinned && l.unpinnedLocked() >= l.max {
 		evict, stuck = l.pickEvictLocked(ephemeral)
 		if evict == nil {
 			l.mu.Unlock()
@@ -595,6 +627,7 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 	}
 	ln := l.newLane(id, key, model, workdir)
 	ln.ephemeral, ln.toolless = ephemeral, mode.toolless
+	l.setPinnedLocked(ln, mode.pinned)
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
@@ -618,6 +651,54 @@ func (l *lanes) acquireIn(ctx context.Context, key, model, workdir string, mode 
 		ln.run(runCtx, l)
 	}()
 	return ln, nil
+}
+
+// unpinnedLocked is how many running lanes count against maxLanes: every one
+// but the pinned. Caller holds l.mu.
+func (l *lanes) unpinnedLocked() int {
+	n := 0
+	for _, ln := range l.set {
+		if !ln.pinned {
+			n++
+		}
+	}
+	return n
+}
+
+// setPinnedLocked records the latest turn's word on whether ln is pinned: a
+// pin unpins every other lane (one pinned lane at a time). Caller holds l.mu.
+func (l *lanes) setPinnedLocked(ln *lane, pinned bool) {
+	unpinned := ln.pinned && !pinned
+	if pinned {
+		for _, o := range l.set {
+			if o != ln && o.pinned {
+				log.Printf("ccd: session %s (%s) is no longer pinned: %s (%s) is", o.id, o.key, ln.id, ln.key)
+				o.pinned = false
+				unpinned = true
+			}
+		}
+	}
+	ln.pinned = pinned
+	if unpinned {
+		l.trimLocked()
+	}
+}
+
+// trimLocked stops the least recently used idle unpinned lanes no turn holds
+// while more unpinned lanes run than the cap allows — the excess an unpinning
+// leaves (setPinnedLocked). A lane a turn holds is never taken
+// (pickEvictLocked); release trims again once its turn is over. Caller holds
+// l.mu; each stop is lane.stop's bounded teardown, as release's is.
+func (l *lanes) trimLocked() {
+	for l.max > 0 && l.unpinnedLocked() > l.max {
+		ev, _ := l.pickEvictLocked(false)
+		if ev == nil {
+			return
+		}
+		delete(l.set, ev.id)
+		log.Printf("ccd: stopping idle session %s (%s): more sessions run than the cap (%d) since the pinned primary moved", ev.id, ev.key, l.max)
+		ev.stop()
+	}
 }
 
 // stuckLaneAfter is stuckAfter's default.
@@ -647,7 +728,8 @@ const stuckLaneAfter = 10 * time.Minute
 // check lane to take, the caller refuses the check (503 capacity).
 func (l *lanes) pickEvictLocked(forCheck bool) (evict *lane, stuck bool) {
 	for _, ln := range l.set {
-		if forCheck && !ln.ephemeral {
+		// The pinned lane (the chief's primary) is never stopped for another.
+		if ln.pinned || forCheck && !ln.ephemeral {
 			continue
 		}
 		if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
@@ -659,7 +741,7 @@ func (l *lanes) pickEvictLocked(forCheck bool) (evict *lane, stuck bool) {
 	}
 	var oldest time.Time
 	for _, ln := range l.set {
-		if ln.reserved != 0 || forCheck && !ln.ephemeral {
+		if ln.pinned || ln.reserved != 0 || forCheck && !ln.ephemeral {
 			continue
 		}
 		since, waiting := ln.srv.awaitingSince()
@@ -702,6 +784,8 @@ func (l *lanes) release(ln *lane) {
 		log.Printf("ccd: stopping check session %s (%s): its turn is over and a check's CLI is never kept", ln.id, ln.key)
 		ln.stop()
 	}
+	// An excess an unpinning left while every candidate was held (trimLocked).
+	l.trimLocked()
 }
 
 func (l *lanes) newLane(id, key, model, workdir string) *lane {

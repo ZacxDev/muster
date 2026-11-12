@@ -85,6 +85,10 @@ type DelivererConfig struct {
 	// Tools, when set, is the chief's restricted tool set (ChiefTools); the
 	// turn names only tools in it. Nil, or nil for a chief: unrestricted.
 	Tools func(ctx context.Context, chief agents.Agent) ChiefTools
+	// Primary, when set, is THE chief's primary chat (internal/api's
+	// primarySession): the one place muster picks the session a delivery to the
+	// chief goes to. Nil: the store's default session (0030), as before.
+	Primary func(ctx context.Context, chief agents.Agent) (agents.ChatSession, error)
 }
 
 // Deliverer hands one stored message to the owner's chief as a fenced turn: the
@@ -108,6 +112,8 @@ type Deliverer struct {
 	hints HintFunc
 	// tools: DelivererConfig.Tools.
 	tools func(ctx context.Context, chief agents.Agent) ChiefTools
+	// primary: DelivererConfig.Primary.
+	primary func(ctx context.Context, chief agents.Agent) (agents.ChatSession, error)
 	// owner names this process in an agent's session claim.
 	owner string
 }
@@ -125,7 +131,7 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 		return nil, errors.New("plugins: DelivererConfig.Turn is required (the tool-capable chat turn a message is delivered as)")
 	}
 	d := &Deliverer{store: cfg.Store, agents: cfg.Agents, gw: cfg.Gateway, run: cfg.Turn, log: cfg.Logger, turn: DefaultTurnTimeout,
-		routing: cfg.Routing, hints: cfg.Hints, tools: cfg.Tools}
+		routing: cfg.Routing, hints: cfg.Hints, tools: cfg.Tools, primary: cfg.Primary}
 	if d.log == nil {
 		d.log = log.New(io.Discard, "", 0)
 	}
@@ -356,7 +362,13 @@ func (d *Deliverer) attempted(parent context.Context, messageID int64, reason st
 // with p's label.
 func (d *Deliverer) session(ctx context.Context, p Plugin, chief agents.Agent) (agents.ChatSession, error) {
 	if st, ok := d.agents.(agents.SessionRuntimeStore); ok {
-		s, err := st.DefaultSession(ctx, chief.ID, chief.Name)
+		var s agents.ChatSession
+		var err error
+		if d.primary != nil {
+			s, err = d.primary(ctx, chief)
+		} else {
+			s, err = st.DefaultSession(ctx, chief.ID, chief.Name)
+		}
 		if err != nil {
 			return agents.ChatSession{}, err
 		}

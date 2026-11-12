@@ -299,7 +299,7 @@ func (s *Server) handleViewChief(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusConflict, AgentNotRunningNotice, noticeNotRunning)
 		return
 	}
-	sess, err := s.defaultSession(ctx, chief)
+	sess, err := s.primarySession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("view chief: the chief's default session: %v", err)
 		refuse(http.StatusInternalServerError, "could not open your chief's chat", noticeFailed)
@@ -395,7 +395,7 @@ func (s *Server) handleViewChiefLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read your chief", http.StatusInternalServerError)
 		return
 	}
-	sess, err := s.defaultSession(ctx, chief)
+	sess, err := s.primarySession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("view chief: strip: the chief's default session: %v", err)
 		http.Error(w, "could not open your chief's chat", http.StatusInternalServerError)

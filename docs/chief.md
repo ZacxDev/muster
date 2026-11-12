@@ -806,18 +806,112 @@ that still names it keeps booting; drop it from the deployment. A chief started
 before the removal keeps that container until its next **Stop → Start**, which
 re-applies its spec without it (and deletes its `<name>-sidecar-env` Secret).
 
-**The default session.** One session per agent is its default. Plugin
-deliveries and `muster chief ask` go to it, so they share one conversation
-instead of one per plugin. This is so whether or not
+**The default session.** One session per agent is its default — the chief's
+**primary chat** (next section). Every delivery goes to it, so they share one
+conversation instead of one per plugin. This is so whether or not
 `MUSTER_CHIEF_SESSION_RUNTIMES` is set; that setting only adds the runtime
 picker. Until you choose one, it is the chief's original
 session (the one keyed `agent:<name>:webchat`, or the oldest). Move it with
-`POST /agents/{id}/sessions/{sid}/default`.
+`POST /agents/{id}/sessions/{sid}/default` (**Make primary** in the panel's
+thread list).
 
 **Tool names.** The gateway runtime refuses a whole turn when one of the tools
 muster offers has the name of one of its built-in tools. `agents_list` was such
 a name and is now `fleet_list` on every runtime; a test pins every chief tool
 against the runtime's built-in names.
+
+## Primary and side chats
+
+The chief has one **primary chat** and any number of **side chats**.
+
+- **The primary chat** is the chief's default session. Everything muster
+  delivers to the chief lands there and nowhere else: plugin mail, a message
+  or task route's note, answer and hand-back, outcome and proposal notes, a
+  session's `chief_ask` question, a refused draft, a closed PR, a task
+  mention, a memo, a line typed on a session's view, and `muster chief ask`.
+  The chief page and the chief panel open on it. On a `claude-code` chief whose
+  primary is a `ccd` lane (after a **Fresh primary**), that lane is **pinned**
+  (`X-Muster-CC-Pinned`): `ccd` never stops its CLI for another session and does
+  not count it against `CCD_MAX_SESSIONS`, so a delivery always gets its CLI. When the pin moves (another fresh primary), `ccd` stops the least recently used idle lanes until the unpinned ones fit the cap again, and a former primary still finishing its handover is stopped when that turn ends: the cap is exceeded only by the one pinned CLI. Memos reach the primary on its own route (its lane), like every other delivery.
+- **A side chat** is a conversation of its own, for a question you do not want
+  in the primary's context. It starts with a fresh context and nothing is ever
+  delivered to it. On a `claude-code` chief it runs in a Claude Code CLI of its
+  own (a `ccd` lane, `X-Muster-CC-Session`), whether or not the runtime picker
+  is offered; on a gateway chief it is a new session key, which is a new
+  gateway conversation. Neither uses the recap conversation's key.
+- **Two things go back to the side chat they came from**, because they are that
+  chat's own thread going on, not deliveries: an answer to a question the chief
+  asked there (an `ask_owner` card answered from your phone), and the answer to
+  a request you routed from there (a request route). Once that chat is
+  **archived** — an old primary after a fresh one, or a side chat put away —
+  they go to the primary instead; nothing is ever delivered into an archived
+  chat.
+
+The chat bar over the transcript, on the chief page and in the panel, says
+which chat you are in and carries the actions:
+
+| on | action | what it does |
+|---|---|---|
+| every chat | **New side chat** | opens a side chat (the newest one is reused while it is still empty) |
+| the primary | **Fresh primary** | after a confirm, starts a new primary chat (below) |
+| a side chat | **Archive** | hides it from the switcher, keeps its history, and leaves you on the primary |
+| an archived chat | **Unarchive** | puts it back among the side chats |
+
+The primary cannot be archived. The switcher (the page's chat history, the
+panel's thread list) lists the primary first, marked **Primary**, then the side
+chats by last activity, each with a dot when a reply arrived since you last
+opened it, and the archived chats last, under **Archived**.
+
+**The context chip.** The chat bar shows how full the chat's context is: the
+model, then `used/window` (`152k/200k`), amber from 70% of the window and red
+from 90%; tap it for the exact count. It reads the chat's latest turn's usage
+row (`chief_turn_usage`; migration 0115 adds the chat, the model and
+`context_tokens` to it): the context the turn's LAST model request was sent —
+its input + cache read + cache write — not the turn's total, which with tool
+calls counts the conversation once per request. `ccd` reports the last call's
+fill beside the turn's totals (`context_tokens` in its usage); a Responses-API
+gateway reports one response per request, whose own tokens are that request's.
+It updates when a turn of the chief ends. The window is known for Claude models
+named by an alias or id (200k, or 1M with `[1m]`) and for OpenRouter models
+(the catalogue's `context_length`). With no model known — a `claude-code`
+chief on its CLI's default model — or no window known, the chip shows the
+count alone and is never tinted.
+
+**Fresh primary.** When the primary gets heavy, **Fresh primary** starts a new
+one:
+
+1. In one transaction, the new chat becomes the primary and the old one is
+   archived. A delivery picks its chat at the moment it is written, so each one
+   lands in exactly one of the two, and every one after the switch lands in the
+   new chat.
+2. muster sends the old chat one last turn asking the chief for a short
+   handover (what is in flight, what it waits on, what it promised you). The
+   chief writes it there, in the conversation that holds the context.
+3. The new primary's first turn carries that handover, so the new conversation
+   starts with it in its context.
+
+The new primary runs on the same kind of conversation a side chat does (a lane
+of its own on a `claude-code` chief, pinned — see above). One fresh primary
+runs at a time, handover included: a second request meanwhile (another tab, a
+double tap) is answered 409, "a fresh primary is already being made".
+
+**A capacity refusal is not sent.** `ccd`'s 503 `capacity` (every CLI it may
+run is mid-turn) is answered before it starts a CLI or pastes anything, so
+muster reads it as "nothing was sent": a plugin message, an answer or a memo
+refused so is queued again and delivered once a CLI frees, never settled
+unconfirmed.
+
+**"working…"** shows on every open chat of the chief while one of its turns
+runs, whichever door started it — this page, another tab, `muster chief ask`, a
+plugin delivery, a hand-back — and it stays up when the page's socket drops or
+reconnects mid-turn: it is drawn from the server's count of the turn, and the
+count starts the moment the server reads your message.
+
+The routes: `POST /agents/{id}/sessions/side`, `POST
+/agents/{id}/sessions/{sid}/archive` and `…/unarchive`, `POST
+/agents/{id}/sessions/fresh-primary`, and `GET
+/ui/agents/{name}/chat-context?session=N` for the chip. Each answers only for
+your own chief.
 
 ## Replacing the chief on another kind
 

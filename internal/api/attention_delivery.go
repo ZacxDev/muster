@@ -179,16 +179,20 @@ func (s *Server) answerSession(ctx context.Context, a agents.Agent, asked string
 	if asked != "" {
 		if list, err := s.ext.Agents.ListSessions(ctx, a.ID); err == nil {
 			for _, sess := range list {
-				if sess.SessionKey == asked {
+				// An ARCHIVED asking chat (an old primary after a fresh one, a side
+				// chat put away) is not answered into: the primary takes it (F2).
+				if sess.SessionKey == asked && sess.ArchivedAt == nil {
 					return sess, nil
 				}
 			}
 		}
 	}
-	if st, ok := s.ext.Agents.(agents.SessionRuntimeStore); ok {
-		return st.DefaultSession(ctx, a.ID, a.Name)
-	}
-	return s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
+	// 🔴 THE ASKING CHAT FIRST, ON PURPOSE, AND THE PRIMARY OTHERWISE. An answer
+	// to a question the chief asked in a SIDE chat is that chat's own thread
+	// going on — the owner answering it — not a delivery muster makes, so it
+	// goes back where it was asked; with no asking chat it is a delivery, and
+	// goes to the primary (primarySession) like every other.
+	return s.primarySession(ctx, a)
 }
 
 // startAnswerDelivery delivers ask id's answer in the background after the

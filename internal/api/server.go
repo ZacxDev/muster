@@ -78,6 +78,11 @@ const (
 	EventAgentChanged = "agent.changed"
 	// EventChatReply announces a persisted assistant turn.
 	EventChatReply = "chat.reply"
+	// EventChatTurn announces that a conversation of the named agent started
+	// or stopped working: its first turn began, or its last one ended
+	// (countSessionTurn). Open chats of the agent re-fetch #chat-log on it and
+	// draw "working…" from the server's count.
+	EventChatTurn = "chat.turn"
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
 	// EventAttentionChanged announces that something entered or left the
@@ -296,6 +301,9 @@ type Server struct {
 	// sessionTurns counts the turns running per chat session, which is what
 	// draws a reloaded page's "working…" (session_turns.go).
 	sessionTurns sessionTurnCount
+	// freshPrimaries holds each chief (by id) a fresh primary is being made
+	// for, switch and handover (chief_chats.go handleChiefFreshPrimary).
+	freshPrimaries sync.Map
 	// turnSessions is the chat session of each agent's running turn
 	// (turn_session.go): where an owner card it raises is answered.
 	turnSessions turnSessionRegistry

@@ -132,6 +132,7 @@ var uiExempt = map[string]exemption{
 	"agents.go modelFieldForDisplay m.Label":             {1, whyStatic},
 	"chief_sessions.go chiefNewSessionPicker rt.Label":   {2, whyStatic},
 	"components.go sidebarIn t.Label":                    {1, whyStatic},
+	"chief_chats.go chiefContextChip c.Title":            {2, "ContextView.Title is how the chip's number is derived — muster's own constant (ChiefContextTitle, set by ChiefContextView), never a session's or author's title"},
 	"nav_layout.go NavDocument v.Title":                  {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":                {1, whyStatic},
 	"switcher.go switcherEntry it.Label":                 {2, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},

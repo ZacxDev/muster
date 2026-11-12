@@ -150,7 +150,7 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 			// The owner types in a chat session of the chief's that is NOT its
 			// default one (where task deliveries go), so the answer's
 			// destination is measured, not the default.
-			def, err := f.srv.defaultSession(f.asOwner, f.chief)
+			def, err := f.srv.primarySession(f.asOwner, f.chief)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if again, err := f.srv.defaultSession(f.asOwner, f.chief); err != nil || again.ID != def.ID || asked.ID == def.ID {
+			if again, err := f.srv.primarySession(f.asOwner, f.chief); err != nil || again.ID != def.ID || asked.ID == def.ID {
 				t.Fatalf("control: default session %d then %d (%v), the owner's %d", def.ID, again.ID, err, asked.ID)
 			}
 			said := f.typedIn(t, f.owner, asked.ID, "Send this to whoever is on the changelog: "+ownersIdea)
@@ -243,7 +243,8 @@ func TestAnIdeaTheOwnerTypedGoesToTheSessionAndItsAnswerComesBackToTheirChat(t *
 
 			// The sweep delivers it to the chief session where the owner asked —
 			// as a note here (no provisioner: the chief cannot be given a turn) —
-			// exactly once, however often it runs.
+			// exactly once, however often it runs. That chat may be a SIDE chat:
+			// a request is that chat's own thread (PR #609 Q1).
 			for i := 0; i < 2; i++ {
 				if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 					t.Fatal(err)
@@ -523,7 +524,7 @@ func countContaining(msgs []string, sub string) int {
 func TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession(t *testing.T) {
 	f, _ := newRequestRouteFixture(t, false)
 	tok := f.withRouteReply(t)
-	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	def, err := f.srv.primarySession(f.asOwner, f.chief)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +553,7 @@ func TestARequestAnswerWhoseChatSessionWasDeletedReachesTheDefaultSession(t *tes
 func TestARequestAnswerNeverGoesToAnotherChiefsSession(t *testing.T) {
 	f, _ := newRequestRouteFixture(t, false)
 	tok := f.withRouteReply(t)
-	def, err := f.srv.defaultSession(f.asOwner, f.chief)
+	def, err := f.srv.primarySession(f.asOwner, f.chief)
 	if err != nil {
 		t.Fatal(err)
 	}

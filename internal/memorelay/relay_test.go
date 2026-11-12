@@ -172,6 +172,10 @@ type sentTurn struct {
 	agent   string
 	session string
 	message string
+	// lane and pinned: the X-Muster-CC-Session / -Pinned the turn's context
+	// routed it with (agents.TurnRouteFrom) — "" / false for no route.
+	lane   string
+	pinned bool
 }
 
 // fakeGateway records every Send and fails it with whatever `fail` holds for the agent.
@@ -210,7 +214,11 @@ func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKe
 	pasted := unsent(err) == ""
 	if pasted {
 		// The runtime pasted it (or may have): this is what "the agent saw" means below.
-		g.sends = append(g.sends, sentTurn{agent: name, session: sessionKey, message: message})
+		st := sentTurn{agent: name, session: sessionKey, message: message}
+		if rt, ok := agents.TurnRouteFrom(ctx); ok {
+			st.lane, st.pinned = rt.Header.Get(agents.HeaderCCSession), rt.Header.Get(agents.HeaderCCPinned) == "1"
+		}
+		g.sends = append(g.sends, st)
 	}
 	g.mu.Unlock()
 	if pasted && hook != nil {

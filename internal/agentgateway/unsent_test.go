@@ -66,8 +66,8 @@ func TestAResolveFailureFromInsideATurnReadsAsUnsent(t *testing.T) {
 // TestLanesFullReadsOnlyCcdsTypedCapacityRefusal: LanesFull is true for ccd's
 // typed 503 `capacity` (a turn whose explicit session found no free slot) and
 // for nothing else — not an untyped 503, not a typed 503 not_ready, not a 409
-// busy. And the capacity refusal is NOT one of Unsent's reasons: adding it there
-// would change every unsolicited deliverer's handling (unsent.go says why).
+// busy. And the capacity refusal IS one of Unsent's reasons (UnsentCapacity,
+// PR #609 round 1 F1): it is answered before anything is pasted.
 func TestLanesFullReadsOnlyCcdsTypedCapacityRefusal(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -98,8 +98,17 @@ func TestLanesFullReadsOnlyCcdsTypedCapacityRefusal(t *testing.T) {
 			if got := LanesFull(err); got != c.want {
 				t.Fatalf("LanesFull(%v) = %v, want %v", err, got, c.want)
 			}
-			if c.want && Unsent(err) != "" {
-				t.Fatalf("Unsent(%v) = %q, want \"\" (capacity is deliberately not an Unsent reason)", err, Unsent(err))
+			// A typed capacity is a NOT-SENT reason (PR #609 round 1 F1): ccd
+			// answers it before any lane exists or anything is pasted. Nothing
+			// else here is.
+			want := ""
+			if c.want {
+				want = UnsentCapacity
+			} else if c.name == "typed not_ready" {
+				want = UnsentNotReady
+			}
+			if got := Unsent(err); got != want {
+				t.Fatalf("Unsent(%v) = %q, want %q", err, got, want)
 			}
 		})
 	}

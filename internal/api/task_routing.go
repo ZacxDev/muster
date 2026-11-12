@@ -510,7 +510,7 @@ func (s *Server) forwardToTaskAgent(ctx context.Context, target agents.Agent, te
 			}
 		}
 	}
-	session, err := s.ext.Agents.LatestOrCreateSession(ctx, target.ID, target.Name)
+	session, err := s.deliverySession(ctx, target)
 	if err != nil {
 		return false, fmt.Errorf("the agent's conversation could not be opened: %w", err)
 	}

@@ -105,8 +105,8 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	// below can mark it: the panel's first paint already writes (the session it
 	// opens on), and the election is the store's one rule (agents.DefaultSession)
 	// rather than a second copy of it in the view. The search route only reads.
-	if st, ok := s.sessionRuntimeStore(); ok {
-		if _, err := st.DefaultSession(ctx, a.ID, a.Name); err != nil {
+	if _, ok := s.sessionRuntimeStore(); ok {
+		if _, err := s.primarySession(ctx, a); err != nil {
 			s.logger.Printf("chief: elect the default session of %d: %v", a.ID, err)
 		}
 	}
@@ -138,6 +138,8 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	// reloaded) while the chief's turn runs shows it, and the chat.reply refetch
 	// hides it once the reply is stored (chat_log_live.go).
 	s.withChatLogLive(ctx, &chat, active)
+	// The chat bar (chief_chats.go): the panel is the chief's by construction.
+	chat.ChiefChat = chiefChatBarFor(a, active)
 	write(ui.ChiefPanelView{
 		Configured:      true,
 		ThreadsFailed:   listErr != nil,

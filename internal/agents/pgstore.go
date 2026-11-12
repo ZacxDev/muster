@@ -556,13 +556,13 @@ func (s *PGStore) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
-const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default`
+const sessionCols = `id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default, archived_at`
 
 func scanSession(row interface {
 	Scan(dest ...any) error
 }) (ChatSession, error) {
 	var c ChatSession
-	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt, &c.Runtime, &c.Model, &c.IsDefault)
+	err := row.Scan(&c.ID, &c.AgentID, &c.SessionKey, &c.Title, &c.CreatedAt, &c.UpdatedAt, &c.ReadAt, &c.Runtime, &c.Model, &c.IsDefault, &c.ArchivedAt)
 	return c, err
 }
 
@@ -635,7 +635,7 @@ const searchSnippetLateral = `
 const searchRankedTitlesSQL = `
 		WITH cand AS (
 			SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 			       CASE WHEN s.title ILIKE $7 ESCAPE '\' THEN 0 ELSE 1 END AS rank
 			FROM chat_sessions s
 			WHERE s.agent_id = $1
@@ -645,7 +645,7 @@ const searchRankedTitlesSQL = `
 			LIMIT $6
 		)
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 		       COALESCE(m.snippet, '') AS snippet
 		FROM cand s` + searchSnippetLateral + `
 		ORDER BY s.rank, s.updated_at DESC, s.id DESC`
@@ -669,11 +669,11 @@ const searchRankedTitlesSQL = `
 // pins only that these are the statements SearchSessions sends.
 const searchRecentSQL = `
 		SELECT s.id, s.agent_id, s.session_key, s.title, s.created_at, s.updated_at, s.read_at,
-		       s.runtime, s.model, s.is_default,
+		       s.runtime, s.model, s.is_default, s.archived_at,
 		       COALESCE(m.snippet, '') AS snippet,
 		       (s.title ILIKE $3 ESCAPE '\' OR m.snippet IS NOT NULL) AS matched
 		FROM (
-			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default
+			SELECT id, agent_id, session_key, title, created_at, updated_at, read_at, runtime, model, is_default, archived_at
 			FROM chat_sessions
 			WHERE agent_id = $1
 			  AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6::timestamptz, $7::bigint))
@@ -760,7 +760,7 @@ func (s *PGStore) SearchSessions(ctx context.Context, agentID int64, q string, l
 				var m SessionMatch
 				var matched bool
 				if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet, &matched); err != nil {
+					&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.ArchivedAt, &m.Snippet, &matched); err != nil {
 					rows.Close()
 					return nil, err
 				}
@@ -797,7 +797,7 @@ func (s *PGStore) searchRows(ctx context.Context, query string, args ...any) ([]
 	for rows.Next() {
 		var m SessionMatch
 		if err := rows.Scan(&m.ID, &m.AgentID, &m.SessionKey, &m.Title,
-			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.Snippet); err != nil {
+			&m.CreatedAt, &m.UpdatedAt, &m.ReadAt, &m.Runtime, &m.Model, &m.IsDefault, &m.ArchivedAt, &m.Snippet); err != nil {
 			return nil, err
 		}
 		m.Snippet = strings.Join(strings.Fields(m.Snippet), " ")
@@ -914,16 +914,37 @@ func (s *PGStore) DefaultSession(ctx context.Context, agentID int64, agentName s
 	if _, err := s.LatestOrCreateSession(ctx, agentID, agentName); err != nil {
 		return ChatSession{}, err
 	}
-	_, err = s.pool.Exec(ctx, `
+	// 🔴 NEVER AN ARCHIVED SESSION (0115): the primary is never archived
+	// (chat_sessions_primary_not_archived), so electing one failed the CHECK —
+	// and every delivery to the agent with it, for as long as the agent had no
+	// default (PR #609 round 1 F4).
+	elect := func() error {
+		_, err := s.pool.Exec(ctx, `
 		UPDATE chat_sessions SET is_default = true
 		WHERE id = (
 			SELECT id FROM chat_sessions
-			WHERE agent_id = $1
+			WHERE agent_id = $1 AND archived_at IS NULL
 			ORDER BY (session_key = $2) DESC, created_at, id
 			LIMIT 1)
 		  AND NOT EXISTS (SELECT 1 FROM chat_sessions WHERE agent_id = $1 AND is_default)`,
-		agentID, legacySessionKey(agentName))
-	if err != nil && !isUniqueViolation(err) {
+			agentID, legacySessionKey(agentName))
+		if err != nil && !isUniqueViolation(err) {
+			return err
+		}
+		return nil
+	}
+	if err := elect(); err != nil {
+		return ChatSession{}, err
+	}
+	c, err = read()
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return c, err
+	}
+	// Every session is archived: a new one is the primary.
+	if _, err := s.CreateSession(ctx, agentID, agentName); err != nil {
+		return ChatSession{}, err
+	}
+	if err := elect(); err != nil {
 		return ChatSession{}, err
 	}
 	return read()
@@ -953,7 +974,9 @@ func (s *PGStore) SetDefaultSession(ctx context.Context, agentID, sessionID int6
 	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = false WHERE agent_id = $1 AND is_default AND id <> $2`, agentID, sessionID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true WHERE id = $1`, sessionID); err != nil {
+	// An archived session made primary is unarchived with it: the primary is never
+	// archived (0115's chat_sessions_primary_not_archived).
+	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true, archived_at = NULL WHERE id = $1`, sessionID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
