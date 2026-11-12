@@ -81,9 +81,9 @@ var switchCases = []struct {
 func TestAnEpisodesPushStartsWithTheCodenameWhenAsked(t *testing.T) {
 	want := map[string][2]string{ // push title, row
 		"both off":                {"Release prep needs you", "Release prep"},
-		"codename first only":     {"Gold:1 · Release prep needs you", "Release prep"},
+		"codename first only":     {"Gold:1@ws · Release prep needs you", "Release prep"},
 		"show tmux sessions only": {"Release prep · Gold:1 @ ws needs you", "Release prep · Gold:1 @ ws"},
-		"both on":                 {"Gold:1 · Release prep needs you", "Release prep · Gold:1 @ ws"},
+		"both on":                 {"Gold:1@ws · Release prep needs you", "Release prep · Gold:1 @ ws"},
 	}
 	for _, c := range switchCases {
 		t.Run(c.name, func(t *testing.T) {
@@ -144,9 +144,9 @@ func TestAMembersCodenameSwitchDoesNotReachTheOperatorsPush(t *testing.T) {
 func TestAHeldQuestionsEpisodePushStartsWithTheCodenameWhenAsked(t *testing.T) {
 	want := map[string]string{
 		"both off":                "Release prep is asking",
-		"codename first only":     "Gold:1 · Release prep is asking",
+		"codename first only":     "Gold:1@ws · Release prep is asking",
 		"show tmux sessions only": "Release prep · Gold:1 @ ws is asking",
-		"both on":                 "Gold:1 · Release prep is asking",
+		"both on":                 "Gold:1@ws · Release prep is asking",
 	}
 	for _, c := range switchCases {
 		t.Run(c.name, func(t *testing.T) {
@@ -217,7 +217,7 @@ func TestAHeldQuestionsDiffPushStartsWithTheCodenameWhenAsked(t *testing.T) {
 	f.notifyPrefs(t, true, true)
 	nameFocusSID(t, f, "Ledger cleanup")
 	titles := diffPushTitles(t, f, []askq.Question{{Question: "Which ledger?", Options: []askq.Option{{Label: "main"}, {Label: "archive"}}}})
-	if len(titles) != 1 || titles[0] != "main:1 · Ledger cleanup is asking" {
+	if len(titles) != 1 || titles[0] != "main:1@ws · Ledger cleanup is asking" {
 		t.Fatalf("held question pushes %q, want one led by its codename", titles)
 	}
 }
@@ -230,7 +230,7 @@ func TestAWaitingWindowsOwnPushStartsWithTheCodenameWhenAsked(t *testing.T) {
 	for _, c := range []struct {
 		first bool
 		want  string
-	}{{false, sessionPushTitle}, {true, "main:1 · A session is waiting on you"}} {
+	}{{false, sessionPushTitle}, {true, "main:1@ws · A session is waiting on you"}} {
 		t.Run(map[bool]string{true: "on", false: "off"}[c.first], func(t *testing.T) {
 			f := newAttnFixture(t)
 			f.notifyPrefs(t, false, c.first)
@@ -270,7 +270,7 @@ func TestAFiledAsksPushStartsWithTheCodenameWhileTheAsksRowKeepsItsOwn(t *testin
 			name := map[bool]string{false: "Ledger cleanup", true: "Ledger cleanup · Gold:1 @ ws"}[c.tmux]
 			want := name + " is asking"
 			if c.first {
-				want = "Gold:1 · Ledger cleanup is asking"
+				want = "Gold:1@ws · Ledger cleanup is asking"
 			}
 			if len(titles) != 1 || titles[0] != want {
 				t.Fatalf("the ask's push titles %q, want one %q", titles, want)

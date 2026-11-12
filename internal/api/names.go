@@ -169,36 +169,68 @@ func tmuxPlace(name string, at mirror.Place, tmux bool) string {
 	return at.String()
 }
 
-// codenameTitle is THE RULE for "Start notification titles with the tmux
-// name" (notify_prefs.go): the push title words+rest with the window's
-// codename and " · " IN FRONT, so a phone that cuts the END of a title still
-// shows which window it is — and keep, the part the title rule keeps verbatim
-// (the codename and words: goNotify's TitleKeep for it). words is the title's
-// own name for the session — its HUMAN name, never notifyName's decorated one,
-// so with "Show tmux sessions" on too the codename is said ONCE, at the front —
-// or, for a title that names no session (the waiting window's fixed
-// sessionPushTitle), the whole fixed title, with rest "":
+// codenameFront is THE RULE for "Start notification titles with the tmux
+// name" (notify_prefs.go): what a push title starts with — the window's
+// codename (the host's label for it, else its tmux address: at.Code, as "Show
+// tmux sessions" falls back) and its host, compact: "mango:1@laptop",
+// "scratch3:5@laptop". The host is in it because hosts build their labels from
+// one shared slot table, so "mango:1" alone can be two windows. "" for no
+// window (an agent, a session no window shows now).
+func codenameFront(at mirror.Place) string {
+	if at.Code == "" {
+		return ""
+	}
+	if at.Host == "" {
+		return at.Code
+	}
+	return at.Code + "@" + at.Host
+}
+
+// codenameTitle is a push title that names a mirrored session by words — its
+// HUMAN name, never notifyName's decorated one, so with "Show tmux sessions"
+// on too the place is said ONCE, at the front — followed by rest, with
+// codenameFront and " · " IN FRONT; keep is the part the title rule keeps
+// verbatim (goNotify's TitleKeep for it):
 //
-//	mango:1 · Billing migration needs you
-//	mango:1 · A session is waiting on you
+//	mango:1@laptop · Billing migration needs you
 //
-// "" (no codename-first title: the push keeps its title) when there is no
-// window (at.Code "": an agent, a session no window shows now), no human name
-// (words "": the title already calls the session by its place, which starts
-// with the codename), or a human name that IS the codename ("mango:1 is
-// asking" already leads with it). Only the CODENAME leads, never the host:
-// the title stays short, and the body and the tap's page name the host.
-//
-// The surface only DECLARES the title (RouterNotification.CodenameTitle);
-// goNotify, the one push title sink, sends it instead of Title when the
-// owner turned the switch on. Its callers are a ledger
-// (TestEveryPushTitleIsClassifiedForCodenameFirst).
+// A human name that IS the codename is replaced by the front ("mango:1@laptop
+// is asking": no codename twice). "" (the push keeps its title) for no window,
+// or no human name: the title already calls the session by its place, which
+// starts with its codename and names its host.
 func codenameTitle(words, rest string, at mirror.Place) (title, keep string) {
-	if words == "" || at.Code == "" || words == at.Code {
+	front := codenameFront(at)
+	if words == "" || front == "" {
 		return "", ""
 	}
-	keep = at.Code + mirror.QualifierSep + words
+	if words == at.Code {
+		return front + rest, front
+	}
+	keep = front + mirror.QualifierSep + words
 	return keep + rest, keep
+}
+
+// codenameLed is a push title about a tmux window that names it by no human
+// name — the waiting window's fixed title, a host dispatch's outcome, a
+// successor's start — with codenameFront and " · " in front, and keep the
+// front alone (the rest of title is plained as before):
+//
+//	mango:1@laptop · A session is waiting on you
+//	agents:3@atlas · Claude Code is waiting for you: …
+//
+// The caller passes title WITHOUT its own " on <host>", which the front now
+// says. "" for no window.
+//
+// Surfaces only DECLARE these titles (RouterNotification.CodenameTitle);
+// goNotify, the one push title sink, sends one instead of Title when the
+// owner turned the switch on. Every push title is classified
+// (TestEveryPushTitleIsClassifiedForCodenameFirst).
+func codenameLed(title string, at mirror.Place) (string, string) {
+	front := codenameFront(at)
+	if front == "" {
+		return "", ""
+	}
+	return front + mirror.QualifierSep + title, front
 }
 
 // storedName is sub's stored name halves, the zero value for none.

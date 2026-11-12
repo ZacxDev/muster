@@ -969,14 +969,15 @@ const askPushTitleSuffix = " is asking"
 // attentionCodenameTitle is item it's push title with its window's codename
 // first (names.go codenameTitle), for an owner who turned on "Start
 // notification titles with the tmux name": a waiting window's fixed title
-// gains the codename in front ("mango:1 · A session is waiting on you"); an
-// ask, a held question and a notice put it before the session's HUMAN name
-// ("mango:1 · Billing migration is asking"), never before notifyName's
-// decorated one. "" (the title as it is) for no window or no human name.
+// gains the window's codename@host in front ("mango:1@ws · A session is
+// waiting on you"); an ask, a held question and a notice put it before the
+// session's HUMAN name ("mango:1@ws · Billing migration is asking"), never
+// before notifyName's decorated one. "" (the title as it is) for no window, or
+// for an ask, question or notice with no human name.
 func attentionCodenameTitle(it attentionItem) (title, keep string) {
 	switch it.Kind {
 	case attentionKindSession:
-		return codenameTitle(sessionPushTitle, "", it.at)
+		return codenameLed(sessionPushTitle, it.at)
 	case attentionKindNotice:
 		return codenameTitle(it.human, noticePushTitleSuffix, it.at)
 	}

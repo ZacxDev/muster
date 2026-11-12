@@ -71,7 +71,7 @@ const accountNotifyCodenamePath = "/account/notifications/codename"
 // Its words on the Account page.
 const (
 	notifyCodenameLabel = "Start notification titles with the tmux name"
-	notifyCodenameHelp  = "Puts each session's tmux name (like mango:1) at the front of its phone and browser notifications, so it shows even when the title is cut."
+	notifyCodenameHelp  = "Puts each session's tmux name and host (like mango:1@laptop) at the front of its phone and browser notifications, so it shows even when the title is cut."
 )
 
 // notifySwitch is one of the Account page's notification switches: its DOM id

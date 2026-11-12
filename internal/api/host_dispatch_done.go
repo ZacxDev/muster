@@ -162,13 +162,17 @@ func (s *Server) announceHostOutcome(ctx context.Context, h plugins.HostDispatch
 	id := strconv.FormatInt(h.ID, 10)
 	s.logger.Printf("host dispatch %s on %s %s", id, h.Host, verb)
 	s.broadcastTo(h.Owner, EventAgentChanged, "host-dispatch-"+id)
-	s.pushTask(h.Owner, push.EventAgentOutcome, RouterNotification{
+	n := RouterNotification{
 		Type:  taskNotificationType,
 		Title: hostDispatchRuntimeLabel(h) + " on " + h.Host + " " + verb + ": " + truncate(detail, outcomePushTitleMax),
 		Body:  body,
 		Tag:   "host-dispatch-" + id + "-outcome",
 		Data:  map[string]string{"url": ui.MirrorViewPath(h.Host, mirror.AgentSpawnSession)},
-	})
+	}
+	// "Start notification titles with the tmux name": its window's
+	// codename@host first, and no " on <host>" (the front says it).
+	n.CodenameTitle, n.CodenameKeep = codenameLed(hostDispatchRuntimeLabel(h)+" "+verb+": "+truncate(detail, outcomePushTitleMax), s.hostDispatchPlace(ctx, h))
+	s.pushTask(h.Owner, push.EventAgentOutcome, n)
 	s.noteHostOutcomeToChief(ctx, h, outcome, verb, note)
 }
 
@@ -197,4 +201,23 @@ func (s *Server) noteHostOutcomeToChief(ctx context.Context, h plugins.HostDispa
 	if err := s.writeChiefNote(pctx, chief, outcomeChiefNoteAbout(who, outcome, verb, detail)); err != nil {
 		s.logger.Printf("host dispatch %d: note to the chief: %v", h.ID, err)
 	}
+}
+
+// hostDispatchPlace is host dispatch h's window as muster names it
+// (mirror.SessionView.Place), for a codename-first push title
+// (names.go codenameLed): the listed window started for it — its label, else
+// its tmux address — else the stored agents:<window>; the zero Place when
+// neither is known. ctx reads the owner's windows.
+func (s *Server) hostDispatchPlace(ctx context.Context, h plugins.HostDispatch) mirror.Place {
+	if s.ext.Mirror != nil {
+		for _, e := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
+			if e.Host == h.Host && ((h.ID != 0 && e.Dispatch == h.ID) || (h.Window != "" && e.Session == mirror.AgentSpawnSession && e.Window == h.Window)) {
+				return e.Place()
+			}
+		}
+	}
+	if h.Host == "" || h.Window == "" {
+		return mirror.Place{}
+	}
+	return mirror.Place{Code: mirror.AgentSpawnSession + ":" + h.Window, Host: h.Host}
 }

@@ -211,53 +211,42 @@ text and every pill is byte for byte what it was before the switch existed.
 
 ### Tmux name first in push titles
 
-A phone cuts the END of a notification title, so the codename "Show tmux
-sessions" adds after the name (`Billing migration · mango:1 @ atlas needs
-you`) is often the part that is lost — and the body, where the waiting
-window's own push says where it waits, is often collapsed. A second per-user
-switch, **Account → Notifications → Start notification titles with the tmux
-name** ("Puts each session's tmux name (like mango:1) at the front of its
-phone and browser notifications, so it shows even when the title is cut"),
-off for every user until they turn it on (`notify_preferences.codename_first`,
-migration 0117; no row is off), puts the window's codename at the FRONT of
-every push title that names a mirrored session:
+A per-user switch, **Account → Notifications → Start notification titles
+with the tmux name**, off until the user turns it on
+(`notify_preferences.codename_first`, migration 0117; no row is off), makes
+every push title about a tmux window START with that window's codename and
+host, compact — the host's label for the window (its tmux `session:window`
+when it sent none), `@`, and the host the session list shows — so a phone
+that cuts the end of a title still shows which window it is, and on which
+host (hosts share one table of codename labels, so `mango:1` alone can be
+two windows):
 
-    mango:1 · Billing migration is asking          an agent question from a mirrored session, a held question
-    mango:1 · Billing migration may be waiting on you   a chief notice
-    mango:1 · Billing migration needs you          a waiting episode ("… is stalled" likewise)
-    mango:1 · A session is waiting on you          the waiting window's own push (its fixed title)
+    mango:1@laptop · Billing migration is asking          an agent question from a mirrored session, a held question
+    mango:1@laptop · Billing migration may be waiting on you   a chief notice
+    mango:1@laptop · Billing migration needs you          a waiting episode ("… is stalled" likewise)
+    mango:1@laptop · A session is waiting on you          the waiting window's own push
+    agents:3@laptop · Claude Code is waiting for you: …   a host dispatch's outcome ("… finished: …" likewise)
+    agents:3@laptop · Your new session started            a successor's start
 
-It is independent of "Show tmux sessions": on alone it changes push titles
-only — never the Asks list, the attention summary or the session lists. With
-both on, a push title says the codename ONCE, at the front (`mango:1 ·
-Billing migration needs you`, not `mango:1 · Billing migration · mango:1 @
-atlas needs you`), while the lists keep "Show tmux sessions"' decorations
-unchanged. It applies to the browser's notification and the paired phone's
-(payload v2) alike: both are sent the one title chosen at the push sink.
+A title that already said the host (`… on laptop …`) drops it: the front
+says it. The session is named by its human name; with "Show tmux sessions"
+on too, the place is said once, at the front. A human name that IS the
+codename becomes the front (`mango:1@laptop is asking`). The switch changes
+push titles only (the browser's and the paired phone's alike), never the
+Asks list, the summary or the session lists.
 
-Only the codename leads, never the host: the front of the title stays short,
-and the body and the page a tap opens name the host. Two hosts that label a
-window alike would show the same codename; the session lists tell those apart
-by their host ([Show tmux sessions](#show-tmux-sessions)), and the push's tap
-opens the exact window either way.
+Unchanged: a session with no human name (its title is already its place,
+codename first, with its host), an agent (no tmux window), a session no
+window shows now, and pushes about no tmux window (a task, a page, a
+connector request, "Agent dispatched from your session") or that already
+name the window by its place ("Chief routed it to mango:1 · …"). Off — or
+with no database, or when the switch cannot be read — every push title is
+byte for byte what it was.
 
-Nothing changes where the codename would add nothing: a session with no human
-name is already called by its place, which starts with its codename (`mango:1
-· tmux main:1 @ atlas is asking`); a human name that IS the codename is
-already the front (`mango:1 is asking`); an agent has no tmux window; a
-session no window shows now gets no codename. Pushes that name no session
-(a task, a page, a connector request, "Agent dispatched from your session"),
-or name a window only by its place already ("Chief routed it to mango:1 ·
-…"), are unchanged. Off — or with no database, or when the switch cannot be
-read — every push title is byte for byte what it was.
-
-It is decided in one place: each push that names a mirrored session declares
-its codename-first title through one rule (`codenameTitle`,
-`internal/api/names.go`), and the one push title sink (`goNotify`,
-`internal/api/server.go`) reads the owner's switch and sends that title
-instead. `TestEveryPushTitleIsClassifiedForCodenameFirst` puts every push
-title in the package on a ledger — one that declares the codename-first
-title, or one with why it does not — so a new push surface cannot skip it.
+The rule is `codenameFront` / `codenameTitle` / `codenameLed`
+(`internal/api/names.go`); the push sink (`goNotify`) sends the declared
+title, and `TestEveryPushTitleIsClassifiedForCodenameFirst` classifies every
+push title in the package.
 
 ### The name bar
 

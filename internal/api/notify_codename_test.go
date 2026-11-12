@@ -18,37 +18,54 @@ import (
 // A phone cuts the END of a push title, so "Billing migration · mango:1 @ ws
 // needs you" loses the codename the owner needs to jump to the window. With
 // this switch on, every push title that names a mirrored session STARTS with
-// it: "mango:1 · Billing migration needs you". Off, its title is unchanged.
+// it, with its host: "mango:1@ws · Billing migration needs you". Off, its
+// title is unchanged.
 //
 // Every expected title below is a whole literal string.
 
-// TestCodenameTitleLeadsWithTheCodenameOnlyWhenItAddsOne pins the one rule:
-// the codename, " · ", the words and the rest — or nothing when there is no
-// window, no human name, or a human name that IS the codename.
-func TestCodenameTitleLeadsWithTheCodenameOnlyWhenItAddsOne(t *testing.T) {
+// TestCodenameTitleLeadsWithTheCodenameAndHost pins the one rule with whole
+// strings: the front is the codename and host, compact ("mango:1@atlas"), or
+// the tmux address and host when the host sent no label; then " · ", the
+// words and the rest. A human name that IS the codename becomes the front.
+// Nothing for no window or no human name.
+func TestCodenameTitleLeadsWithTheCodenameAndHost(t *testing.T) {
 	mango := mirror.Place{Code: "mango:1", Host: "atlas"}
 	for _, c := range []struct {
 		words, rest string
 		at          mirror.Place
 		title, keep string
 	}{
-		{"Billing migration", " needs you", mango, "mango:1 · Billing migration needs you", "mango:1 · Billing migration"},
-		{"Billing migration", " is stalled", mango, "mango:1 · Billing migration is stalled", "mango:1 · Billing migration"},
-		// The waiting window's fixed title: the whole title is the words.
-		{sessionPushTitle, "", mango, "mango:1 · A session is waiting on you", "mango:1 · A session is waiting on you"},
-		// A host that sent no label: its tmux address is the codename.
-		{"Billing migration", " is asking", mirror.Place{Code: "scratch3:5", Host: "atlas"}, "scratch3:5 · Billing migration is asking", "scratch3:5 · Billing migration"},
+		{"Billing migration", " needs you", mango, "mango:1@atlas · Billing migration needs you", "mango:1@atlas · Billing migration"},
+		{"Billing migration", " is stalled", mango, "mango:1@atlas · Billing migration is stalled", "mango:1@atlas · Billing migration"},
+		// The SAME codename on another host: the front tells them apart.
+		{"Billing migration", " needs you", mirror.Place{Code: "mango:1", Host: "laptop"}, "mango:1@laptop · Billing migration needs you", "mango:1@laptop · Billing migration"},
+		// A host that sent no label: its tmux session:window and host.
+		{"Billing migration", " is asking", mirror.Place{Code: "scratch3:5", Host: "atlas"}, "scratch3:5@atlas · Billing migration is asking", "scratch3:5@atlas · Billing migration"},
+		// The human name IS the codename: the front replaces it, said once.
+		{"mango:1", " is asking", mango, "mango:1@atlas is asking", "mango:1@atlas"},
 		// No human name: the title already calls the session by its place.
 		{"", " is asking", mango, "", ""},
-		// The human name IS the codename: "mango:1 is asking" leads with it.
-		{"mango:1", " is asking", mango, "", ""},
 		// No window: an agent, a session no window shows now.
 		{"Billing migration", " needs you", mirror.Place{}, "", ""},
-		{sessionPushTitle, "", mirror.Place{}, "", ""},
 	} {
 		title, keep := codenameTitle(c.words, c.rest, c.at)
 		if title != c.title || keep != c.keep {
-			t.Errorf("codenameTitle(%q, %q, %+v) = %q keep %q, want %q keep %q", c.words, c.rest, c.at, title, keep, c.title, c.keep)
+			t.Errorf("codenameTitle(%q, %q, %#v) = %q keep %q, want %q keep %q", c.words, c.rest, c.at, title, keep, c.title, c.keep)
+		}
+	}
+	for _, c := range []struct {
+		title      string
+		at         mirror.Place
+		want, keep string
+	}{
+		{sessionPushTitle, mango, "mango:1@atlas · A session is waiting on you", "mango:1@atlas"},
+		{"Claude Code is waiting for you: which branch?", mirror.Place{Code: "agents:3", Host: "atlas"}, "agents:3@atlas · Claude Code is waiting for you: which branch?", "agents:3@atlas"},
+		// A place with no host (none known): the codename alone.
+		{sessionPushTitle, mirror.Place{Code: "mango:1"}, "mango:1 · A session is waiting on you", "mango:1"},
+		{sessionPushTitle, mirror.Place{}, "", ""},
+	} {
+		if got, keep := codenameLed(c.title, c.at); got != c.want || keep != c.keep {
+			t.Errorf("codenameLed(%q, %#v) = %q keep %q, want %q keep %q", c.title, c.at, got, keep, c.want, c.keep)
 		}
 	}
 }
@@ -77,13 +94,13 @@ func TestEveryAttentionPushDeclaresItsCodenameTitle(t *testing.T) {
 		off, tmux, first, keep string
 	}{
 		{attentionKindAsk, "an agent question from a mirrored session",
-			"Billing migration is asking", "Billing migration · mango:1 @ ws is asking", "mango:1 · Billing migration is asking", "mango:1 · Billing migration"},
+			"Billing migration is asking", "Billing migration · mango:1 @ ws is asking", "mango:1@ws · Billing migration is asking", "mango:1@ws · Billing migration"},
 		{attentionKindQuestion, "a held question",
-			"Billing migration is asking", "Billing migration · mango:1 @ ws is asking", "mango:1 · Billing migration is asking", "mango:1 · Billing migration"},
+			"Billing migration is asking", "Billing migration · mango:1 @ ws is asking", "mango:1@ws · Billing migration is asking", "mango:1@ws · Billing migration"},
 		{attentionKindNotice, "a chief notice",
-			"Billing migration may be waiting on you", "Billing migration · mango:1 @ ws may be waiting on you", "mango:1 · Billing migration may be waiting on you", "mango:1 · Billing migration"},
+			"Billing migration may be waiting on you", "Billing migration · mango:1 @ ws may be waiting on you", "mango:1@ws · Billing migration may be waiting on you", "mango:1@ws · Billing migration"},
 		{attentionKindSession, "a waiting window's own push",
-			"A session is waiting on you", "A session is waiting on you", "mango:1 · A session is waiting on you", "mango:1 · A session is waiting on you"},
+			"A session is waiting on you", "A session is waiting on you", "mango:1@ws · A session is waiting on you", "mango:1@ws"},
 	}
 	for _, tmux := range []bool{false, true} {
 		s := codenameServer(t, tmux)
@@ -105,9 +122,10 @@ func TestEveryAttentionPushDeclaresItsCodenameTitle(t *testing.T) {
 }
 
 // TestACodenameTitleIsNotDeclaredWhereItWouldAddNothing: an unnamed window's
-// ask (called by its place, which starts with its codename), a window whose
-// human name IS its codename, and an agent's ask (no tmux window) declare no
-// codename-first title — each is sent as it is today.
+// ask (called by its place, which starts with its codename and names its host)
+// and an agent's ask (no tmux window) declare no codename-first title — each
+// is sent as it is today; a window whose human name IS its codename declares
+// the front IN PLACE of the name ("kiwi:2@ws is asking", no codename twice).
 func TestACodenameTitleIsNotDeclaredWhereItWouldAddNothing(t *testing.T) {
 	s := codenameServer(t, true)
 	store := s.ext.Focus.(*memFocus)
@@ -121,14 +139,17 @@ func TestACodenameTitleIsNotDeclaredWhereItWouldAddNothing(t *testing.T) {
 	waitingAgentless := attentionItem{Key: "session-x", Kind: attentionKindSession, Source: "A session"}
 	items := []attentionItem{unnamed, same, agent, waitingAgentless, namedAskItem()}
 	s.withFocus(operatorCtx(), items)
-	for i, want := range []string{"kiwi:2 · tmux side:2 @ ws is asking", "kiwi:2 is asking", "Deploy importer is asking", "A session is waiting on you"} {
+	if n := attentionNotification(items[1], false); n.Title != "kiwi:2 is asking" || n.CodenameTitle != "kiwi:2@ws is asking" || n.CodenameKeep != "kiwi:2@ws" {
+		t.Errorf("a name that is the codename: Title %q CodenameTitle %q keep %q", n.Title, n.CodenameTitle, n.CodenameKeep)
+	}
+	for i, want := range map[int]string{0: "kiwi:2 · tmux side:2 @ ws is asking", 2: "Deploy importer is asking", 3: "A session is waiting on you"} {
 		n := attentionNotification(items[i], false)
 		if n.Title != want || n.CodenameTitle != "" || n.CodenameKeep != "" {
 			t.Errorf("item %d: Title %q CodenameTitle %q keep %q, want %q and none", i, n.Title, n.CodenameTitle, n.CodenameKeep, want)
 		}
 	}
 	// The control: the named window in the same batch does declare one.
-	if n := attentionNotification(items[4], false); n.CodenameTitle != "mango:1 · Billing migration is asking" {
+	if n := attentionNotification(items[4], false); n.CodenameTitle != "mango:1@ws · Billing migration is asking" {
 		t.Fatalf("control: the named ask's CodenameTitle %q", n.CodenameTitle)
 	}
 }
@@ -148,10 +169,10 @@ func TestAnEpisodesPushDeclaresItsCodenameTitle(t *testing.T) {
 		state                  string
 		title, first, firstKey string
 	}{
-		{false, sessionstate.StateNeedsYou, "Billing migration needs you", "mango:1 · Billing migration needs you", "mango:1 · Billing migration"},
-		{false, sessionstate.StateStalled, "Billing migration is stalled", "mango:1 · Billing migration is stalled", "mango:1 · Billing migration"},
-		{true, sessionstate.StateNeedsYou, "Billing migration · mango:1 @ ws needs you", "mango:1 · Billing migration needs you", "mango:1 · Billing migration"},
-		{true, sessionstate.StateStalled, "Billing migration · mango:1 @ ws is stalled", "mango:1 · Billing migration is stalled", "mango:1 · Billing migration"},
+		{false, sessionstate.StateNeedsYou, "Billing migration needs you", "mango:1@ws · Billing migration needs you", "mango:1@ws · Billing migration"},
+		{false, sessionstate.StateStalled, "Billing migration is stalled", "mango:1@ws · Billing migration is stalled", "mango:1@ws · Billing migration"},
+		{true, sessionstate.StateNeedsYou, "Billing migration · mango:1 @ ws needs you", "mango:1@ws · Billing migration needs you", "mango:1@ws · Billing migration"},
+		{true, sessionstate.StateStalled, "Billing migration · mango:1 @ ws is stalled", "mango:1@ws · Billing migration is stalled", "mango:1@ws · Billing migration"},
 	} {
 		s := codenameServer(t, c.tmux)
 		n := s.episodeNotification(operatorCtx(), ep(c.state), 0, nil)
@@ -179,7 +200,7 @@ func TestAnEpisodesPushDeclaresItsCodenameTitle(t *testing.T) {
 // one the push was built with. A push that declared no codename title is
 // never changed, switch or not.
 func TestGoNotifySendsTheCodenameTitleOnlyToAnOwnerWhoTurnedItOn(t *testing.T) {
-	const today, first = "Billing migration · mango:1 @ ws needs you", "mango:1 · Billing migration needs you"
+	const today, first = "Billing migration · mango:1 @ ws needs you", "mango:1@ws · Billing migration needs you"
 	store := &memPush{}
 	web, native := ep("web-codename"), ep("native-codename")
 	claim(t, store, 7, web)
@@ -208,7 +229,7 @@ func TestGoNotifySendsTheCodenameTitleOnlyToAnOwnerWhoTurnedItOn(t *testing.T) {
 		return b.Title, v2.Title
 	}
 	episode := RouterNotification{Type: attentionNotificationType, ID: "e1", Title: today, TitleKeep: "Billing migration · mango:1 @ ws",
-		CodenameTitle: first, CodenameKeep: "mango:1 · Billing migration"}
+		CodenameTitle: first, CodenameKeep: "mango:1@ws · Billing migration"}
 	expect := func(what, want string) {
 		t.Helper()
 		if b, v2 := send(episode); b != want || v2 != want {

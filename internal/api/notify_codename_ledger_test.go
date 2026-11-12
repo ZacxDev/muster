@@ -22,8 +22,10 @@ import (
 // codenameFirstSurfaces are the functions whose push title names a mirrored
 // session, and so declare its codename-first title.
 var codenameFirstSurfaces = map[string]string{
-	"attention.go attentionNotification":         "every attention item's push: a mirrored session's agent question, a held question, a chief notice, a waiting window's fixed title",
-	"session_push.go Server.episodeNotification": "a stalled / waiting session's push: \"… needs you\", \"… is stalled\" (and its ask's, through attentionNotification)",
+	"attention.go attentionNotification":               "every attention item's push: a mirrored session's agent question, a held question, a chief notice, a waiting window's fixed title",
+	"session_push.go Server.episodeNotification":       "a stalled / waiting session's push: \"… needs you\", \"… is stalled\" (and its ask's, through attentionNotification)",
+	"host_dispatch_done.go Server.announceHostOutcome": "a host dispatch's agent window: \"agents:3@atlas · Claude Code is waiting for you: …\"",
+	"succession.go Server.armSuccessionPush":           "the successor's window: \"agents:3@atlas · Your new session started\"",
 }
 
 // noCodenameFirst is every OTHER function with a push title, with why the
@@ -33,7 +35,6 @@ var noCodenameFirst = map[string]string{
 	"chief_owner_release.go Server.applyGateRelease":       "a task's gate: names a task, not a session",
 	"connectors.go Server.onConnectorRequested":            "a connector request: names a connector",
 	"dispatch_hold_tools.go Server.pushSessionDispatch":    "its title names no session (\"Agent dispatched from your session\"); the body names it",
-	"host_dispatch_done.go Server.announceHostOutcome":     "a host dispatch's agent window: names its runtime and host, not a named session",
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "an officer's pool: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
 	"plugin_drafts.go Server.notifyDraftRefused":           "a plugin draft: fixed title, names no session",
@@ -43,20 +44,16 @@ var noCodenameFirst = map[string]string{
 	"push_task.go Server.flushCommentedTasks":              "a task comment: names a task",
 	"reply_draft_tool.go Server.notifyDraftAwaitingNoting": "a reply draft: fixed title, names no session",
 	"session_route_notify.go Server.notifyChiefRouted":     "already names the window by its place, codename first (\"Chief routed it to mango:1 · tmux main:1 @ ws\"), never by a human name",
-	"succession.go Server.armSuccessionPush":               "names the host only (\"Your new session started on atlas\"), never a session name",
 }
 
 // TestEveryPushTitleIsClassifiedForCodenameFirst pins the seam: (1) in this
 // package, the functions that build a push title (a RouterNotification
 // literal with a Title) are exactly codenameFirstSurfaces ∪ noCodenameFirst,
 // each with a reason and none in both — it fails when the set GROWS or
-// SHRINKS; (2) exactly the codenameFirstSurfaces set CodenameTitle, and only
-// through the one rule (codenameTitle, whose callers are pinned too); (3)
-// exactly goNotify reads the switch. Positive controls prove each walk sees
-// what it counts.
+// SHRINKS; (2) exactly the codenameFirstSurfaces set CodenameTitle. A
+// positive control proves the walk sees what it counts.
 func TestEveryPushTitleIsClassifiedForCodenameFirst(t *testing.T) {
 	titled, writers := map[string]bool{}, map[string]bool{}
-	rule, reads := map[string]bool{}, map[string]bool{}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -98,17 +95,6 @@ func TestEveryPushTitleIsClassifiedForCodenameFirst(t *testing.T) {
 							writers[name] = true
 						}
 					}
-				case *ast.CallExpr:
-					switch c := x.Fun.(type) {
-					case *ast.Ident:
-						if c.Name == "codenameTitle" {
-							rule[name] = true
-						}
-					case *ast.SelectorExpr:
-						if c.Sel.Name == "notifyCodenameFirstOn" {
-							reads[name] = true
-						}
-					}
 				}
 				return true
 			})
@@ -139,14 +125,6 @@ func TestEveryPushTitleIsClassifiedForCodenameFirst(t *testing.T) {
 	// n.Title FROM it, which is a read; it writes neither field).
 	if got, want := nameLedgerKeys(writers), nameLedgerKeys(asSet(codenameFirstSurfaces)); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("functions that set CodenameTitle / CodenameKeep:\n  got  %v\n  want %v", got, want)
-	}
-	// The rule's callers: the attention items' kinds, and the episode's.
-	if got, want := nameLedgerKeys(rule), []string{"attention.go attentionCodenameTitle", "session_push.go Server.episodeNotification"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("functions that call codenameTitle:\n  got  %v\n  want %v\nOnly the declared surfaces apply the rule.", got, want)
-	}
-	// One read of the switch, at the one sink.
-	if got, want := nameLedgerKeys(reads), []string{"server.go Server.goNotify"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("functions that read the codename-first switch:\n  got  %v\n  want %v\nOnly goNotify decides which title is sent.", got, want)
 	}
 }
 

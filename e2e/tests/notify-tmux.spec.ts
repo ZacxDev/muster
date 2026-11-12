@@ -506,7 +506,7 @@ for (const vp of [
         await page.goto(origin + '/account');
         await expect(sw).toHaveAttribute('data-state', 'off');
         await expect(sw).toContainText('Start notification titles with the tmux name: Off.');
-        await expect(sw).toContainText('like mango:1');
+        await expect(sw).toContainText('like mango:1@laptop');
         await expect(button).toHaveText('Turn on: Start notification titles with the tmux name');
         expect((await button.boundingBox())!.height, 'a 44px target').toBeGreaterThanOrEqual(44);
         const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
