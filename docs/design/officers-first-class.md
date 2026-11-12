@@ -1,6 +1,6 @@
 # Officers as a first-class feature (pluggable backend)
 
-**Status: slices 0–4 being built** (this revision supersedes the draft of
+**Status: slices 0–4 built (slices 3–4 not wired)** (this revision supersedes the draft of
 muster#503). Each slice below lands as its own pull request; slices 0–4 change
 nothing an existing HQ officer sees or does.
 
@@ -181,10 +181,11 @@ too ("not available in this build yet") rather than run against nothing.
 
 ## The built-in backend
 
-### Store (slice 4; not wired)
+### Store (slice 4, as built; not wired)
 
-Migration **0119** `officer_backend` (0117 is taken on main and 0118 by the
-in-flight shepherd-loop change, muster#617), four owned tables under FORCED
+Migration **0118** `officer_backend` (the next free number on main; the
+in-flight shepherd-loop change, muster#617, also numbered its migration 0118,
+so whichever merges second renumbers — the contiguity test refuses a gap), four owned tables under FORCED
 row-level security in migration 0082's shape (`owner_id` defaults to the
 principal, `owner_isolation` policy, re-applied by `db.RLSOn`, undone by
 `rollback/rls_off.sql`):
@@ -212,7 +213,7 @@ timestamp comparison takes muster's clock as a parameter, never SQL `now()`,
 so the conformance suite can expire a lease without sleeping. Its capabilities
 on day 1: `tiers`, `investigation`, `cost` (vocabulary until slice 5 branches on them).
 
-### Conformance (slice 3)
+### Conformance (slice 3, as built)
 
 `internal/officers/backendtest`: the lease, queue, tier and refusal rules as
 named checks over any `officers.Backend` plus a small `World` (seed an item,
@@ -223,7 +224,15 @@ claim on a live lease; a test runs the suite with the fault on and requires
 the double-claim check to fail — so the suite is shown able to go red against
 each backend, not only green. It also asserts the capabilities relationship:
 every capability a backend advertises is implemented
-(`officers.Unimplemented`).
+(`officers.Unimplemented`). The checks: capabilities; claim under a lease;
+a live lease refuses any other claim (the holder's own too); an expired lease
+is anyone's and lost to its holder (heartbeat and complete 409); heartbeat
+renews only the holder's; complete finishes once (410 on a claim after, 409
+on a second complete, 400 on an unknown outcome); release by the holder only;
+another officer's or an unknown item is 404; claim-next by priority then age,
+never blocked or held, then null; tiers on claim, claim-next and items;
+needs_judgement in place; concurrent claim-nexts hand each item out once;
+items by status; the switch and the brief.
 
 ### Day-1 scope of the built-in backend (slices 5–6)
 
@@ -252,7 +261,7 @@ S is up to 300 changed non-test lines, M up to 1,000.
 | 1 | `officers.Backend` + optional interfaces; HQ client implements them; every call site through `Backends`/`Serves` | M | merged, officer tests green in CI on the merged tree |
 | 2 | capabilities; `ToolCapability`/`ToolServed` gate listing, allow-list, dispatch; the golden | S | the golden green after the refactor and red on a mutated kickoff or a dropped HQ capability |
 | 3 | `backendtest` conformance suite + fault knob, run against HQ (hqtest) | M | green in CI; red with the fault on |
-| 4 | migration 0119 + `officers/builtin` store and backend, not wired; suite run against it | M | green in CI against Postgres; red with the fault on; the migration applies on the deployment |
+| 4 | migration 0118 + `officers/builtin` store and backend, not wired; suite run against it | M | green in CI against Postgres; red with the fault on; the migration applies on the deployment |
 | 5 | **wiring**: `Officer.Backend`, `Backends` routes builtin officers to `builtin.Backend`; capability-gated kickoff notes; drop the claim-next 404 sniff for backends that advertise it; boot line lists each officer's backend and offered tools; types/defs seeded from a declarative file | M | a builtin officer runs end to end on a dev deployment (item → pod → claim → complete) |
 | 6 | **Attention asks + escalation** for builtin officers | M | one Attention ask per ask, re-open on answer; one notification per recipient per escalated item, zero in shadow (tests) |
 | 7 | **admin REST + CLI `muster officer`**: list/enqueue/resolve items, types, defs | M | the CLI enqueues an item that a builtin officer then claims (test) |

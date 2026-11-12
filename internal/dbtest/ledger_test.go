@@ -177,6 +177,11 @@ var pgBackedPackages = []string{
 	// claims about one SQL statement's row lock and about the table, not
 	// about Go: only a real Postgres can make them.
 	"internal/officers",
+	// The built-in officer backend (migration 0118). "Two callers never claim
+	// one item", "a lease is judged by muster's clock", "a live subject is
+	// deduplicated" and "another owner's officer is invisible" are claims about
+	// FOR UPDATE SKIP LOCKED, a partial unique index and row-level security.
+	"internal/officers/builtin",
 	// Pins (migration 0017). "Another user cannot see, delete or make a pin of
 	// yours" and "deleting an agent deletes its pin" are claims about row-level
 	// security and a foreign key cascade.

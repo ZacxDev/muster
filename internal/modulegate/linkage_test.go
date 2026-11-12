@@ -59,6 +59,14 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/officers/backendtest": "the officer-backend conformance suite (muster#503 slice 3). " +
+		"Imported only by _test.go files: it runs against HQ's client over hqtest and against the " +
+		"built-in backend over Postgres, and a test harness has no place in a binary.",
+
+	"internal/officers/builtin": "the built-in officer backend (muster#503 slice 4), NOT WIRED YET: " +
+		"MUSTER_OFFICERS refuses \"backend\": \"builtin\" until the wiring slice links it into " +
+		"muster-server, which takes this entry out. Reached today by its own tests and the conformance suite.",
+
 	"internal/officers/hqtest": "the in-process fake of HQ's officers API the officer runtime's " +
 		"tests drive (internal/officers, internal/api). Imported only by _test.go files: a fake HQ " +
 		"linked into the server would answer claims for officers no real HQ knows.",

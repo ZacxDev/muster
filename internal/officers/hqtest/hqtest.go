@@ -177,6 +177,11 @@ type Server struct {
 	// ClaimNext serves POST /officers/{id}/claim-next (civ-hq docs/OFFICERS.md
 	// "Priority"); false — the default — is an HQ from before it: 404.
 	ClaimNext bool
+	// AllowDoubleClaim is a FAULT (the conformance suite's knob,
+	// internal/officers/backendtest): a claim by id of an item another
+	// instance holds under a live lease succeeds, as a broken backend's would.
+	// Never set outside the test that proves the suite catches it.
+	AllowDoubleClaim bool
 	// CommitThenFail, when non-zero, makes a claim (by id or claim-next)
 	// that succeeds COMMIT it and then answer this status instead: an HQ
 	// that took the claim but whose answer was lost (a timeout, a 5xx).
@@ -1487,7 +1492,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		// As HQ does (civ-hq docs/OFFICERS.md, lease semantics): ANY live lease
 		// refuses a claim — including the caller's own ("claiming your own live
 		// lease is a 409 too (use heartbeat)").
-		if live {
+		if live && !(s.AllowDoubleClaim && it.ClaimedBy != instance) {
 			s.write(w, http.StatusConflict, map[string]any{"error": "held", "code": "held", "held_by": it.ClaimedBy, "lease_expires_at": it.LeaseExpiresAt})
 			return
 		}

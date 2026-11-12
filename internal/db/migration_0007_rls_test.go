@@ -133,6 +133,10 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO page_versions (page_id, version, title, blocks, size_bytes) VALUES ($1, 1, 'v1', '[]', 2)`, func() []any { return []any{page} }, nil},
 		{`INSERT INTO page_links (page_id, token_sha256, state, decided_at) VALUES ($1, md5($2) || md5($2), 'live', now()) RETURNING id`, func() []any { return []any{page, "link-" + tag} }, &link},
 		{`INSERT INTO page_responses (page_id, link_id, version, component, kind, data) VALUES ($1, $2, 1, 'q1', 'submit', '{"answer":"yes"}')`, func() []any { return []any{page, link} }, nil},
+		{`INSERT INTO officer_types (key, charter) VALUES ('conf-' || lower($1), 'c')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_defs (officer, type_key) VALUES ('conf-' || lower($1) || ':a', 'conf-' || lower($1))`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_items (officer, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'k', 's')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO officer_schedules (officer, name, cron, kind, subject_key) VALUES ('conf-' || lower($1) || ':a', 'nightly', '0 6 * * *', 'k', 's')`, func() []any { return []any{tag} }, nil},
 	}
 	for _, s := range steps {
 		var err error
