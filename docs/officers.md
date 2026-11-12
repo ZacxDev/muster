@@ -1504,6 +1504,27 @@ officers API:
   refusal (status, code, message — e.g. 422 `audit_not_stopped`, 409
   `officer_shadow`, 502 `github_unavailable`), is passed back verbatim.
 
+- **`payload.claims`** — in shadow the shepherd fences its claims blocks in
+  its item summary (not on GitHub), and HQ copies them into the next audit
+  round item's payload as `payload.claims`, a string. A read-only auditor
+  officer whose item carries it writes it to a file and passes that to its
+  audit tool. muster hands it on as data: `officer_items`, `officer_claim`
+  and `officer_brief` return HQ's body **byte for byte** (fences, emoji and
+  CRLF line ends included). The one exception is size: a `payload.claims`
+  over **64 KiB** is withheld **whole** — replaced by a marker that names its
+  size and says not to audit without it, with `claims_withheld_bytes` beside
+  it, and muster logs it — never cut mid-block. Only then is that answer
+  re-encoded.
+
+**No merge tool for a shepherd or an auditor.** muster's gates are the only
+wall against an officer App merging (assume no branch ruleset). A `shepherd`
+officer and an officer with no `ship` block are offered none of
+`officer_merge_pr`, `officer_tag_release`, `officer_mark_ready` and
+`officer_rollout_status`, in any pool; a direct call is refused by the tool
+layer, and the stage gate under it refuses the shepherd's merge, tag and own
+mark-ready by itself. The shepherd's push gate refuses the merge endpoint,
+the refs, merges and contents APIs and GraphQL (above).
+
 #### Shadow
 
 HQ can run a shepherd's item — or the whole officer — in **shadow**: its writes

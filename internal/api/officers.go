@@ -1522,6 +1522,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = c.ReleaseCaptain(ctx, instance, post)
 	}
+	// 🔴 AN ITEM'S payload.claims IS HANDED ON AS HQ WROTE IT, but for size
+	// (officer_claims.go): one over the cap is withheld whole, never cut.
+	if err == nil && (name == officers.ToolBrief || name == officers.ToolItems || name == officers.ToolClaim) {
+		var withheld int
+		if body, withheld = capPayloadClaims(body); withheld > 0 {
+			s.logger.Printf("officers: %s %s by %s: withheld %d payload.claims over %d bytes", o.ID, name, instance, withheld, maxClaimsBytes)
+		}
+	}
 	return officerToolResult(name, body, err), true
 }
 
