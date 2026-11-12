@@ -1638,7 +1638,7 @@ func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string)
 // is the link and whose controls sit under it, Dismiss a small icon button in
 // the card's footer, never in the head. No "View in session" / "Open the session" words: the card is
 // the way in. The one exception is a held question's muted "Answer in session"
-// (attentionHeldCueHTML, operator decision 2026-11-12): it says WHERE the
+// (attentionHeldCueHTML, an operator decision): it says WHERE the
 // answer goes, not how to get there.
 func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string {
 	esc := html.EscapeString
@@ -1679,8 +1679,8 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 		return row(attentionWaitLineHTML(it))
 	case it.Kind == attentionKindQuestion && it.openCode == nil:
 		// A HELD QUESTION is answered in its session, never here: the row
-		// says so in one muted line under the question (operator decision
-		// 2026-11-12), inside the row link, so the card stays one link.
+		// says so in one muted line under the question (an operator
+		// decision), inside the row link, so the card stays one link.
 		return row(attentionWaitLineHTML(it) + attentionHeldCueHTML)
 	case it.Kind == attentionKindTask:
 		return row(`<span class="` + ui.AsksMutedTextClass + `" data-attention-text>` + text + `</span>`)
