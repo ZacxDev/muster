@@ -325,7 +325,13 @@ Claude Code or opencode. By default the host starts it **without permission
 prompts**, so it runs its tools without asking you; a host with
 `-agent-spawn-skip-permissions=false` starts Claude Code in its normal
 permission mode instead, so its asks reach you on muster
-([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). "Mirrored on <host> with Claude" is `host/<host>/claude`; "mirrored on
+([mirroring.md](mirroring.md#permission-prompts-in-a-spawned-agent)). A spawn
+without prompts passes Claude Code its bypass-mode consent for that process
+alone, so it does not stop at the one-time "Bypass Permissions mode" screen,
+and your own Claude Code settings are not changed. The dispatch follows its
+window by tmux window id: while the window is open the agent card stays live,
+reading **Waiting at a prompt** if Claude Code has not started its first turn
+yet, and the dispatch ends only once that window is gone. "Mirrored on <host> with Claude" is `host/<host>/claude`; "mirrored on
 <host> with opencode on <model>" is `host/<host>/opencode`, whose `model` is
 required: an OpenRouter id, which the host checks against its own opencode's
 models. Name no host and muster asks you with a card listing the hosts that can

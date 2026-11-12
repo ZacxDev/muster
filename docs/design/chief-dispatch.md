@@ -2216,6 +2216,16 @@ deadline check, and never runs.
    `host_seen_at = now()`. Then:
    - if the listing carries a window whose `dispatch` is the row's id, and
      whose runtime matches the row's: `running`, and `missing_listings = 0`;
+   - so does the window whose **id is the one the row recorded** (from the
+     host's spawn reply, or a first listing's adoption), whatever the host can
+     see running in it yet: a spawned window is tracked by its tmux window id
+     for its whole life. The host reports a window as Claude only once it can
+     read that session's transcript, and Claude Code writes none while it
+     waits at a startup screen, so gating on the runtime ended a dispatch
+     "window gone" about 3 minutes after its spawn while its window still
+     waited (`dispatchWindowAlive`). Another window carrying the tag never
+     counts; a row with no window recorded is adopted only by the runtime
+     rule above;
    - if it does not, and the row is `running`: `missing_listings + 1`;
    - if it does not, and the row is `pending` and **more than 180 s old**:
      `missing_listings + 1` as well. A younger `pending` row is not counted,
@@ -2318,6 +2328,7 @@ The card reads the row, and the hub's listing for the row's window:
 | `running` | the window `agents:<window>` on `<host>`, the runtime and model, the agent's status from the listing (`busy`, `idle`, `waiting`), and a link to the window page |
 | `running`, done | **Done**, "Finished: `<summary>`", and "close the window on `<host>` to end it and free its slot" (below) |
 | `running`, waiting (opencode) | **Waiting**, "Waiting for you: `<the reply's last line>`" (below) |
+| `running`, its window listed but not yet its runtime | **Waiting**, "Waiting at a prompt: its window is open, but `<CLI>` has not started its first turn — a startup screen may be waiting for an answer. Open the window on `<host>` to see it." |
 | `ended`, refused | the refusal's sentence ([3.1](#31-wire-messages-and-capability)) |
 | `ended`, otherwise | "Ended (`<why>`)"; for a kept worktree, its path and branch |
 
