@@ -486,8 +486,8 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"checkNamespaceOwned": 1,
 			// The read of the operator's SOURCE Secret, in muster's namespace:
 			// a read that cannot collide (secretcopy.go).
-			"copyKeyHolderSecrets": 1,
-			"Scale":                1,
+			"copySecrets": 1,
+			"Scale":       1,
 			// The second is the verification's 403 in binding mode, when the
 			// namespace is NOT gone: a read, not a collision.
 			"Destroy":    2,
@@ -521,9 +521,9 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		//
 		// The key holder's Secret copy (secretcopy.go) has one: its 403 that is
 		// not a terminating namespace is named instead, as above.
-		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "copyKeyHolderSecrets": 1},
+		"applyFailed": {"apply": 6, "applyNetworkPolicy": 2, "copySecrets": 1},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "copyKeyHolderSecrets": 1},
+		"upsertOwned": {"apply": 4, "applyNetworkPolicy": 1, "copySecrets": 1},
 		// The create-only-if-ours predicate: a bound claim, immutable in the
 		// fields that matter.
 		"createOwned": {"apply": 1},
@@ -555,6 +555,11 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 			"namespaceAccess":    1,
 			"ensureRoleBinding":  1,
 			"instanceNamespaces": 1,
+			// The stale image pull Secret sweep (secretcopy.go): a by-name
+			// delete that needs MORE than ownership — the pull-copy label and
+			// the type — so it open-codes the predicate rather than going
+			// through deleteIfOwned. It deletes nothing that fails owned().
+			"sweepPullCopies": 1,
 		},
 	}
 

@@ -344,6 +344,76 @@ promise — build it `FROM` the same `claude-code-agent` tag the deployment runs
 and rebuild it when that tag moves. The pod's spec (network policy, secrets,
 volume, security context) is the same whatever the image.
 
+#### A private runner image (`MUSTER_OFFICER_IMAGE_PULL_SECRET`)
+
+When the officer image lives in a **private** registry package, name a
+registry credential for it: `MUSTER_OFFICER_IMAGE_PULL_SECRET=officer-image-pull`.
+It is the NAME of a Secret of type `kubernetes.io/dockerconfigjson` (key
+`.dockerconfigjson`) that the operator keeps **in muster's own namespace**
+(`MUSTER_AGENT_NETPOL_FROM_NAMESPACE`), for example:
+
+```sh
+kubectl -n <muster's namespace> create secret docker-registry officer-image-pull \
+  --docker-server=ghcr.io --docker-username=<user> --docker-password=<read-only token>
+```
+
+Every instance of a pool that runs its **own** `image` (and only those: never a
+pool on the deployment's image, task agents, the chief or pool jobs) then gets,
+on the Kubernetes driver, whenever its spec is applied (dispatch, Start,
+reapply):
+
+- a **copy** of that Secret in its namespace, holding only `.dockerconfigjson`
+  and the type, under muster's ownership labels plus `muster.dev/image-pull-copy:
+  "true"` (the copy machinery a key holder's Secret uses: a co-named Secret
+  muster did not make is refused, never overwritten; the copy goes with the
+  instance's namespace), written before anything that runs;
+- `imagePullSecrets: [{name: officer-image-pull}]` on its pod.
+
+A source that is missing, has no `.dockerconfigjson`, or is not of type
+`kubernetes.io/dockerconfigjson` fails the dispatch or Start naming the Secret
+and its namespace (never its content), and no pod is written. muster never
+changes or deletes the source.
+
+**One Secret, one use.** The pull Secret is never also a deploy-key pool's
+Secret (`MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`, which a key holder mounts): boot
+refuses that configuration, naming both, and a spec that names one Secret for
+both is refused (`ErrInvalidSpec`) before anything is written. Each copy holds
+exactly its own key.
+
+**Rotating the registry token.** 🔴 A rotated token reaches an instance **only
+at its next apply** (dispatch, or Stop → Start): muster copies the source when
+it applies a spec, and its officer loop never re-applies a running instance.
+So keep the **old** token valid until every officer instance on a private
+image has restarted, then revoke it. (A node that already pulled the image
+keeps starting it from its cache either way.)
+
+**Stale copies are swept.** On each apply of an instance in its own namespace,
+muster deletes the pull copy its Deployment named before when it is no longer
+wanted — the variable renamed (the new one is copied), unset, or the pool's
+`image` dropped (back on the deployment's image) — but only a Secret carrying
+muster's ownership labels **and** `muster.dev/image-pull-copy`, of type
+`kubernetes.io/dockerconfigjson`: never a Secret muster did not make, never a
+key holder's copy. In the shared-namespace layout one copy serves every
+worker, so nothing is swept there.
+
+**RBAC:** muster's service account needs `get` on that one Secret in its own
+namespace, as for a key holder's Secret: a Role with
+`resources: [secrets]`, `resourceNames: [officer-image-pull]`, `verbs: [get]`,
+bound to it there ([provisioner.md](provisioner.md)). A 403 on that read names
+exactly this Role, with the Secret's name, in its refusal. The sweep uses the
+`get` and `delete` on Secrets in instance namespaces muster already needs.
+
+**Boot refuses** a value that is not a Secret name (a DNS subdomain), the
+variable without `MUSTER_AGENT_PROVISIONER=kubernetes`, the `claude-code` kind
+and `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` (nothing would copy it), and the
+variable without `MUSTER_OFFICER_IMAGE_REGISTRIES` (no officer `image` could be
+allowed), with no declared officer pool setting an image (neither an untiered
+`image` nor any `tiers.<pool>.image`) — each would never be used — and the
+same Secret named as a deploy-key pool's (above). Unset, nothing changes.
+Rollback: unset it (the next apply of each instance drops `imagePullSecrets`
+and deletes its pull copy; an image already pulled on a node may still start
+from the node's cache).
+
 ### Reading a repository (`repo`)
 
 The GitHub App connector mints a token only for the **calling agent's own

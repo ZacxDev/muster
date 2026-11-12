@@ -473,5 +473,13 @@ func Fingerprint(s Spec) string {
 			strings.Join(sortedEnvPairs(k.Env), "\x1f"), strings.Join(files, "\x1f"), strings.Join(mounts, "\x1f"), k.SharedDir,
 			k.Resources.CPURequest, k.Resources.CPULimit, k.Resources.MemoryRequest, k.Resources.MemoryLimit)
 	}
+
+	// THE IMAGE PULL SECRET COUNTS, AND ONLY WHEN SET — Security's rule, for
+	// Security's reason: it is rendered into the pod template (imagePullSecrets),
+	// and a spec without one keeps the fingerprint it had before the field
+	// existed. Its NAME only; the credential is the operator's object.
+	if s.ImagePullSecret != "" {
+		w("image-pull-secret", s.ImagePullSecret)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

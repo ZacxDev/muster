@@ -209,7 +209,7 @@ const claudeWrapper = `p=$(cat -- "$1" && printf x) || exit 97; p=${p%x}; rm -f 
 // argv's constants and tmux's own options). TestNoSpawnConstantWordEndsInASemicolon
 // asserts none ends in ';'.
 var spawnConstantWords = []string{claudeWrapper, loginScript, "-l", "-c", "--session-id", "--", "opencode", "--opencode-bin", "-s",
-	claudeSkipPermissions[0], claudeSkipPermissions[1], openCodeSkipPermissions,
+	claudeSkipPermissions[0], claudeSkipPermissions[1], claudeBypassAccepted[0], claudeBypassAccepted[1], openCodeSkipPermissions,
 	"new-window", "new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}", "-n", "-t", "-s", mirror.AgentSpawnSession,
 	"set-option", "-w", "automatic-rename", "off", mirror.DispatchOption, spawnNoConfig[0], spawnNoConfig[1]}
 
@@ -228,6 +228,32 @@ var (
 	openCodeSkipPermissions = "--auto"
 )
 
+// claudeBypassAccepted: THE SPAWN NEVER STALLS AT CLAUDE CODE'S BYPASS
+// ACCEPTANCE SCREEN, and the owner's configuration is not written for it.
+// Claude Code started in bypassPermissions mode shows a one-time screen
+// ("WARNING: Claude Code running in Bypass Permissions mode … ❯ No, exit / Yes,
+// I accept") and waits there — no turn starts, no transcript is written —
+// until someone answers it, unless its own setting
+// skipDangerousModePermissionPrompt is true in the user, local, FLAG or policy
+// settings (Claude Code 2.1.289's bundle: the screen is skipped when
+// `mz()` — that key in userSettings, localSettings, flagSettings or
+// policySettings — holds; project settings are deliberately not read for it;
+// "Yes, I accept" writes it to userSettings, ~/.claude/settings.json). The
+// FLAG source is `--settings <file-or-json>`, which loads settings for this
+// one process only and is always enabled, whatever --setting-sources says:
+// so the spawn passes the key inline, as a constant word, and NOTHING on disk
+// changes — the owner's own settings are never touched, and an agent the
+// owner starts by hand still gets the screen. Measured against the real
+// binary (an isolated CLAUDE_CONFIG_DIR, no settings file): without it, the
+// screen; with it, the prompt box and "bypass permissions on", and no
+// settings file written. Only alongside claudeSkipPermissions: a spawn in
+// normal permission mode passes neither (the screen never shows there).
+//
+// It is a CONSTANT word, not a host-built one (its braces and quotes are not
+// host-word characters): tmux receives it as one argv word, and the claude
+// wrapper passes "$@" on verbatim (TestTmuxASpawnedClaudeGetsThePromptVerbatimInATaggedWorktree).
+var claudeBypassAccepted = [2]string{"--settings", `{"skipDangerousModePermissionPrompt":true}`}
+
 // spawnArgv is the argv a spawn's window runs: THE one place it is built.
 // claude: the constant wrapper reads promptFile and appends the prompt after
 // `--`; opencode: the launcher (launcher, the absolute muster-mirror) on
@@ -243,7 +269,7 @@ func spawnArgv(shell, promptFile, bin, sid string, opencode bool, openCodeBin st
 	}
 	argv := []string{shell, "-l", "-c", claudeWrapper, shell, promptFile, bin, "--session-id", sid}
 	if skip {
-		argv = append(argv, claudeSkipPermissions[0], claudeSkipPermissions[1])
+		argv = append(argv, claudeSkipPermissions[0], claudeSkipPermissions[1], claudeBypassAccepted[0], claudeBypassAccepted[1])
 	}
 	return append(argv, "--")
 }

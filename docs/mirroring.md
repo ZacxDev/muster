@@ -1557,13 +1557,29 @@ and audit log above, and whatever deny rules your own CLI configuration has.
   or "You run in normal permission mode: your owner answers your asks on
   muster." A host from before this setting says nothing, and is described as
   normal permission mode, which is what it does.
-- **Claude Code's one-time consent.** Claude Code asks you once to accept
-  bypass mode before it first starts in it, and records the answer as
-  `skipDangerousModePermissionPrompt` in your user settings (read from the
-  CLI's own source; `cmd/ccd/seed.go` names the version). If you have never
-  accepted it, expect the first spawned window to stop at that dialog: answer
-  it in the Terminal view, or start `claude --permission-mode
-  bypassPermissions` once yourself. muster does not accept it for you.
+- **Claude Code's one-time consent.** Claude Code started in bypass mode
+  shows a one-time screen ("WARNING: Claude Code running in Bypass
+  Permissions mode … No, exit / Yes, I accept") and waits there unless
+  `skipDangerousModePermissionPrompt` is true in its user, local, flag or
+  policy settings; answering "Yes, I accept" writes it to your user settings.
+  A spawn that skips permissions passes that key **for its own process only**,
+  as `--settings '{"skipDangerousModePermissionPrompt":true}'` (Claude Code's
+  flag settings source, which is always read), so a spawned agent starts its
+  task without stopping at the screen, and **nothing on disk changes**: your
+  `~/.claude/settings.json` is not written, and a `claude` you start yourself
+  in bypass mode still asks you once. A spawn in normal permission mode
+  (`=false`, or a root mirror) passes neither flag. Read from Claude Code
+  2.1.289's own source and measured against it with an isolated config
+  directory; `internal/mirrorhost/agentspawn.go` (`claudeBypassAccepted`)
+  says how.
+- **A window waiting at a startup screen is still its dispatch.** Claude Code
+  writes no transcript until it is past its startup screens, so the host does
+  not list such a window as Claude yet. muster tracks a spawned window by its
+  tmux window id for its whole life: while the window is there its dispatch
+  stays running, and its card reads **Waiting at a prompt** ("its window is
+  open, but Claude Code has not started its first turn"). Open the window to
+  answer whatever it shows. The dispatch ends "window gone" only once that
+  window id is missing from two listings in a row.
 - **When your settings disable bypass mode.** If Claude Code's settings set
   `permissions.disableBypassPermissionsMode`, a spawned claude does not refuse
   to start: it prints "Bypass permissions mode was disabled by settings" and
