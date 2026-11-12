@@ -42,11 +42,17 @@ func hx(name, value string) g.Node { return g.Attr(name, value) }
 // With a single function there is no half to rename, and
 // TestTheWordmarkSpellsMuster can assert the WHOLE reassembled string against
 // this one node instead of hunting for a substring in a document.
+//
+// 🔴 ONE ELEMENT, NOT A GROUP. Both sites put it in an `inline-flex … gap-2`
+// box (the gap is for a logo beside the name, brandMark), and a bare group's
+// span and text node are then two FLEX ITEMS with the gap between them: every
+// instance without branding read "mu ster" (#570 to this fix, visible in the
+// regenerated docs/img shots). TestTheWordmarkIsOneFlexItem pins the markup.
 func wordmark() g.Node {
-	return g.Group{
+	return Span(
 		Span(Class("text-accent"), g.Text("mu")),
 		g.Text("ster"),
-	}
+	)
 }
 
 // Page renders muster's full document shell. dark is the default theme: <html>

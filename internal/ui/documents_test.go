@@ -646,6 +646,19 @@ func TestTheWordmarkSpellsMuster(t *testing.T) {
 	}
 }
 
+// TestTheWordmarkIsOneFlexItem: both sites hold the wordmark in an
+// `inline-flex … gap-2` box, where every child node is a flex item and the gap
+// falls between them. Rendered as a bare group (a span, then a text node) the
+// name was drawn "mu ster". The whole markup is pinned: one wrapping element,
+// the two syllables inside it.
+func TestTheWordmarkIsOneFlexItem(t *testing.T) {
+	const want = `<span><span class="text-accent">mu</span>ster</span>`
+	if got := renderString(t, wordmark()); got != want {
+		t.Errorf("the wordmark renders %q, want %q.\n"+
+			"Its container is inline-flex with a gap, so anything but ONE element is split by that gap on screen.", got, want)
+	}
+}
+
 // TestBothWordmarkSitesGoThroughTheOneRenderer is the other half: the helper
 // being correct is worth nothing if a call site stops using it.
 //
