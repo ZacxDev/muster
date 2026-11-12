@@ -9,7 +9,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix label <agent-id> <display-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
-//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question>   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question> [option…]   → prints the ask id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
@@ -41,7 +41,8 @@
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
 //	    drafts cascade), so later specs on the shared database see neither.
 //	  - ask: an OPEN attention_ask from the named agent — the row its /mcp
-//	    attention_ask call stores (internal/attention) — for a spec about what
+//	    attention_ask call stores (internal/attention), with the options given
+//	    after the question (none: a free-text ask) — for a spec about what
 //	    the Agents list does with it, not about the door (agent-cards.spec.ts
 //	    asks through the real /mcp door).
 //	  - rmask: deletes ONE ask of the owner's by id — what a spec that made one
@@ -325,13 +326,17 @@ func run(args []string) error {
 		}
 	case "ask":
 		owner, err := num(1)
-		if err != nil || len(args) != 4 {
-			return fmt.Errorf("usage: ask <owner-id> <agent-name> <question>")
+		if err != nil || len(args) < 4 {
+			return fmt.Errorf("usage: ask <owner-id> <agent-name> <question> [option…]")
+		}
+		opts, err := json.Marshal(append([]string{}, args[4:]...))
+		if err != nil {
+			return err
 		}
 		var id int64
-		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, expires_at)
-			SELECT $1, id, name, $3, now() + interval '1 hour' FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
-			owner, args[2], args[3]).Scan(&id); err != nil {
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, options, expires_at)
+			SELECT $1, id, name, $3, $4::jsonb, now() + interval '1 hour' FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3], string(opts)).Scan(&id); err != nil {
 			return fmt.Errorf("ask from %s: %w", args[2], err)
 		}
 		fmt.Println(id)

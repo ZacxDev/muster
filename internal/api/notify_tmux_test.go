@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,8 +110,9 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 		if it.Name != "Billing migration" || n.Title != "Billing migration is asking" || n.TitleKeep != "Billing migration" {
 			t.Fatalf("%s: name %q, push %q keep %q — want today's text", what, it.Name, n.Title, n.TitleKeep)
 		}
-		if span := attentionSourceSpan(it); span != `<span data-attention-source data-attention-name title="mango:1 · tmux main:1 @ ws">Billing migration</span>` {
-			t.Fatalf("%s: Asks row %s", what, span)
+		if head := attentionHeadLines(it, time.Now()); !strings.Contains(head, `data-attention-name>Billing migration</span>`) ||
+			!strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+			t.Fatalf("%s: Asks row %s", what, head)
 		}
 		if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != "Billing migration" {
 			t.Fatalf("%s: summary title %q", what, got)
@@ -132,8 +134,9 @@ func TestShowTmuxSessionNamesAnAttentionItemByItsNameAndAddress(t *testing.T) {
 	if n.Title != want+" is asking" || n.TitleKeep != want {
 		t.Fatalf("on: push title %q keep %q", n.Title, n.TitleKeep)
 	}
-	if span := attentionSourceSpan(it); span != `<span data-attention-source data-attention-name title="mango:1 · tmux main:1 @ ws">`+want+`</span>` {
-		t.Fatalf("on: Asks row %s", span)
+	if head := attentionHeadLines(it, time.Now()); !strings.Contains(head, `data-attention-name>`+want+`</span>`) ||
+		!strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+		t.Fatalf("on: Asks row %s", head)
 	}
 	if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != want {
 		t.Fatalf("on: summary title %q", got)

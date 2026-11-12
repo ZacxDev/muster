@@ -114,7 +114,7 @@ func TestTheAttentionQueueShowsPlainTitles(t *testing.T) {
 		Text:   "waiting",
 	}}, time.Now())
 	for _, want := range []string{
-		"<span data-attention-source>Opencode chat @ host-a</span>",
+		"data-attention-source>Opencode chat @ host-a</span>",
 		">Fixing old auth for C#</span>",
 	} {
 		if !strings.Contains(out, want) {

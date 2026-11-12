@@ -75,7 +75,7 @@ func TestAWaitingWindowStillWaitingAfterItsGracePushesOnce(t *testing.T) {
 	if q := f.quietOf(t, e.ID); q != "" {
 		t.Fatalf("quiet %q inside the grace, want none (the hold is not persisted)", q)
 	}
-	if sec := f.srv.episodeSectionHTML(asUser(authz.OperatorUserID), f.srv.now()); strings.Contains(sec, "data-attention-episode-quiet") {
+	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), f.srv.now()); strings.Contains(sec, "data-attention-episode-quiet") {
 		t.Fatalf("the held row is drawn quiet:\n%s", sec)
 	}
 	f.advance(31 * time.Second)

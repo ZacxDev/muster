@@ -76,8 +76,8 @@ func TestTheChiefsToolsNameASessionByItsStableName(t *testing.T) {
 }
 
 // TestAnAttentionItemAndItsPushCallTheSessionByItsName: an item about a
-// named session carries the name (withFocus), its Asks row shows the name
-// with its place as the tooltip, and its push title leads with the name
+// named session carries the name (withFocus), its Asks card shows the name
+// with its place under it, and its push title leads with the name
 // (kept whole by the title rule); an item about an unnamed session keeps its
 // place.
 func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
@@ -94,9 +94,11 @@ func TestAnAttentionItemAndItsPushCallTheSessionByItsName(t *testing.T) {
 	if n.Title != "Billing migration is asking" || n.TitleKeep != "Billing migration" {
 		t.Fatalf("push title %q keep %q", n.Title, n.TitleKeep)
 	}
-	span := attentionSourceSpan(it)
-	if !strings.Contains(span, `>Billing migration<`) || !strings.Contains(span, `title="mango:1 · tmux main:1 @ ws"`) {
-		t.Fatalf("Asks row who = %s", span)
+	// The Asks card's head: the name as its title, the place (its tmux target,
+	// the window's label cut off) small under it.
+	head := attentionHeadLines(it, time.Now())
+	if !strings.Contains(head, `data-attention-name>Billing migration</span>`) || !strings.Contains(head, `data-attention-source>tmux main:1 @ ws</span>`) {
+		t.Fatalf("Asks row who = %s", head)
 	}
 	// The status bar's summary titles the item as its push does.
 	if got := attentionSummaryItemOf(it, "", time.Now()).Title; got != "Billing migration" {

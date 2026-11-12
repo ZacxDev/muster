@@ -58,12 +58,12 @@ func TestANoticeNamesWhereItsSessionIsNow(t *testing.T) {
 	if got, want := s.pushTargetFor(ctx, 1, it), "/mirror/view?host=ws&session=main&window=%402"; got != want {
 		t.Fatalf("its tap opens %q, want %q", got, want)
 	}
-	// The Asks list's card: the place, the target, View in session and
-	// Dismiss — and no answer box, though dictation is on.
+	// The Asks list's card: the place, the target, its head linking the
+	// session, and Dismiss — and no answer box, though dictation is on.
 	items := []attentionItem{it}
 	s.withAskBoxes(ctx, items, true)
 	card := attentionItemsHTML(items, time.Now())
-	for _, want := range []string{">Notice<", "tmux main:2 @ ws", `data-attention-target>main:2<`, "data-attention-session", "data-attention-dismiss"} {
+	for _, want := range []string{`data-kind="notice"`, "tmux main:2 @ ws", `data-attention-source>tmux main:2 @ ws<`, "data-attention-session", "data-attention-dismiss"} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("the card lacks %q:\n%s", want, card)
 		}

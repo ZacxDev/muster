@@ -625,8 +625,9 @@ One push per episode, under the existing `attention` toggle:
 
 A section below the answerable items: one row per open episode, oldest first,
 showing the tmux session and window index, host, state, idle time and the
-`done` label where it applies, with a "View in session" link and no answer
-box. A left episode is a quiet row (drawn muted, counted apart, never pushed).
+`done` label where it applies, and no answer box; the row itself is the link
+to the session (since the Asks page's 2026-11-12 design pass the rows sit in
+its **Waiting** group, each with what its window waits on). A left episode is a quiet row (drawn muted, counted apart, never pushed).
 The page may still show a waiting window's `Detail` (its last words) as it
 does today; the push never does. Answerable asks stay above it, unchanged.
 

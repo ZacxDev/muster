@@ -212,7 +212,7 @@ func TestEveryAskCardCarriesItsOwnMicAndItsSessionLink(t *testing.T) {
 	links := regexp.MustCompile(`<li id="ask-(\d+)"[\s\S]*?(?:</li>)`).FindAllStringSubmatch(page, -1)
 	got := map[string]string{}
 	for _, l := range links {
-		if h := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>View in session</a>`).FindStringSubmatch(l[0]); h != nil {
+		if h := regexp.MustCompile(`<a href="([^"]+)"[^>]*data-attention-session>`).FindStringSubmatch(l[0]); h != nil {
 			got[l[1]] = h[1]
 		}
 	}
@@ -251,7 +251,7 @@ func TestNoServiceNoMicOnAnyAnswerBox(t *testing.T) {
 			t.Errorf("%s draws dictation with no service:\n%s", name, html)
 		}
 	}
-	if !strings.Contains(attentionItemsHTML(items, time.Now()), `data-attention-session>View in session</a>`) {
+	if !strings.Contains(attentionItemsHTML(items, time.Now()), `data-attention-session>`) {
 		t.Fatal("control: the links went with the mic")
 	}
 }
