@@ -53,6 +53,18 @@ func prLoopContract(t *testing.T, ctx context.Context, st officers.PRLoopStore, 
 	if other, _ := st.PRLoopsPending(ctx, "draft:example-web"); len(other) != 0 {
 		t.Fatalf("another officer's pending: %+v", other)
 	}
+	if pending[0].AnnouncedAt.IsZero() {
+		t.Fatal("a pending announcement carries no announced-at time")
+	}
+	if any, err := st.PRLoopsAnyInLoop(ctx, prLoopOfficer); err != nil || !any {
+		t.Fatalf("any in loop: %v %v, want true", any, err)
+	}
+	if any, err := st.PRLoopsAnyInLoop(ctx, "draft:example-web"); err != nil || any {
+		t.Fatalf("another officer's any in loop: %v %v, want false", any, err)
+	}
+	if err := st.PRLoopSettle(ctx, prLoopOfficer, prLoopRepo, 32, officers.PRLoopFailed); err != nil {
+		t.Fatalf("settle failed: %v", err)
+	}
 	if reopen != nil {
 		again := reopen()
 		if s, _ := again.PRLoopState(ctx, prLoopOfficer, prLoopRepo, 31); s != officers.PRLoopInLoop {

@@ -28,7 +28,10 @@ const shadowHeader = "Shadow (muster refused these writes):"
 const maxShadowLines = 50
 
 type shadowLedger struct {
-	lines   []string
+	lines []string
+	// at is when each line was recorded (pruneShadow keeps a line recorded
+	// after its HQ read).
+	at      []time.Time
 	dropped int
 }
 
@@ -58,6 +61,7 @@ func (rt *officerRuntime) recordShadow(officer string, item officers.ItemID, lin
 		return
 	}
 	l.lines = append(l.lines, line)
+	l.at = append(l.at, time.Now())
 }
 
 // shadowSummary is summary with officer's item's shadow block appended, at
@@ -124,6 +128,10 @@ func withShadowBlock(summary string, lines []string, dropped, max int) string {
 // shows held under a live lease — a lapsed lease, a hold ended elsewhere, an
 // item finished or gone — so the ledger holds only live holds (completion and
 // release forget theirs at once). An HQ that cannot be read prunes nothing.
+//
+// 🔴 now is taken BEFORE the HQ read, and only lines recorded before it are
+// dropped: a line recorded while the read was in flight (a claim HQ's answer
+// did not show yet) survives to the next pass.
 func (s *Server) pruneShadow(ctx context.Context, o officers.Officer, now time.Time) error {
 	rt := s.officerRT
 	prefix := o.ID + " "
@@ -151,10 +159,22 @@ func (s *Server) pruneShadow(ctx context.Context, o officers.Officer, now time.T
 	}
 	rt.shadowMu.Lock()
 	defer rt.shadowMu.Unlock()
-	for k := range rt.shadow {
-		if strings.HasPrefix(k, prefix) && !live[k] {
-			delete(rt.shadow, k)
+	for k, l := range rt.shadow {
+		if !strings.HasPrefix(k, prefix) || live[k] {
+			continue
 		}
+		var lines []string
+		var at []time.Time
+		for i, ln := range l.lines {
+			if i < len(l.at) && !l.at[i].Before(now) {
+				lines, at = append(lines, ln), append(at, l.at[i])
+			}
+		}
+		if len(lines) == 0 {
+			delete(rt.shadow, k)
+			continue
+		}
+		l.lines, l.at, l.dropped = lines, at, 0
 	}
 	return nil
 }

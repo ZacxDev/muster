@@ -40,6 +40,11 @@ func TestAnInLoopPullRequestNeedsTheFixItemHeldThroughHQ(t *testing.T) {
 	// Announced, but HQ named no loop item (no_taker), or still pending: not
 	// in the loop.
 	pg := r.s.callerOf(r.authInst).Gate.(*officership.PushGate)
+	// Another pull request in a loop, so the push's branch lookup runs and
+	// #5's own state is what decides.
+	if err := pg.Loops.Settle(context.Background(), shepRepoAPI, 99, officers.PRLoopInLoop); err != nil {
+		t.Fatal(err)
+	}
 	for _, st := range []string{officers.PRLoopPending, officers.PRLoopNoTaker, officers.PRLoopClosed} {
 		if err := pg.Loops.Settle(context.Background(), shepRepoAPI, 5, st); err != nil {
 			t.Fatal(err)
@@ -143,5 +148,25 @@ func TestShadowLinesEndWithTheirHold(t *testing.T) {
 	}
 	if kept("lapsed") || kept("gone") || !kept("live") {
 		t.Fatalf("after the prune: lapsed %v gone %v live %v; want only live kept", kept("lapsed"), kept("gone"), kept("live"))
+	}
+}
+
+// TestThePruneKeepsALineRecordedAfterItsRead: the prune's now is taken before
+// its HQ read; a line recorded after it (an item HQ's answer did not show
+// held yet) survives, one recorded before it does not.
+func TestThePruneKeepsALineRecordedAfterItsRead(t *testing.T) {
+	r := newShepAPIRig(t)
+	shep := r.s.officerRT.reg.All()[1]
+	id := r.hq.AddItem(offShep, "pr-shepherd.opened", officers.ShepherdSubject(shepRepoAPI, 5)) // open: not held
+	r.s.officerRT.recordShadow(offShep, officers.ItemID(id), "would have commented on x#5 (old)")
+	readAt := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	r.s.officerRT.recordShadow(offShep, officers.ItemID(id), "would have commented on x#5 (new)")
+	if err := r.s.pruneShadow(context.Background(), shep, readAt); err != nil {
+		t.Fatal(err)
+	}
+	got := r.s.officerRT.shadowSummary(offShep, officers.ItemID(id), "x", officers.MaxSummaryChars)
+	if !strings.Contains(got, "(new)") || strings.Contains(got, "(old)") {
+		t.Fatalf("after a prune at the read: %q, want the line recorded after it kept and the older one dropped", got)
 	}
 }

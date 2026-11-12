@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,6 +47,10 @@ const (
 	// shadow officer's pull request is never shepherded), or the pull request
 	// was closed before an announcement got through.
 	PRLoopClosed = "closed"
+	// PRLoopFailed: never re-announced — HQ refused it with another 4xx (a
+	// decision, not an outage), or it stayed pending past the sweep's age
+	// bound.
+	PRLoopFailed = "failed"
 )
 
 // PRLoop is one pull request's announcement.
@@ -54,6 +59,9 @@ type PRLoop struct {
 	PR      int
 	HeadSHA string
 	State   string
+	// AnnouncedAt is when the pull request was first announced (the sweep
+	// re-sends a pending one only within its age bound).
+	AnnouncedAt time.Time
 }
 
 // PRLoopStore keeps the announcements, per officer. ctx acts as the
@@ -68,6 +76,9 @@ type PRLoopStore interface {
 	PRLoopsPending(ctx context.Context, officer string) ([]PRLoop, error)
 	// PRLoopState is repo#pr's state ("" when it was never announced).
 	PRLoopState(ctx context.Context, officer, repo string, pr int) (string, error)
+	// PRLoopsAnyInLoop reports whether any of officer's pull requests is in a
+	// loop.
+	PRLoopsAnyInLoop(ctx context.Context, officer string) (bool, error)
 }
 
 func prLoopKey(officer, repo string, pr int) string {
@@ -79,11 +90,20 @@ type MemPRLoopStore struct {
 	mu   sync.Mutex
 	rows map[string]PRLoop
 	who  map[string]string // key -> officer
+	// Now is its clock (AnnouncedAt); nil is time.Now. For tests.
+	Now func() time.Time
 }
 
 // NewMemPRLoopStore is an empty memory store.
 func NewMemPRLoopStore() *MemPRLoopStore {
 	return &MemPRLoopStore{rows: map[string]PRLoop{}, who: map[string]string{}}
+}
+
+func (m *MemPRLoopStore) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+	return time.Now()
 }
 
 // PRLoopAnnounced implements PRLoopStore.
@@ -92,7 +112,7 @@ func (m *MemPRLoopStore) PRLoopAnnounced(_ context.Context, officer, repo string
 	defer m.mu.Unlock()
 	k := prLoopKey(officer, repo, pr)
 	if _, ok := m.rows[k]; !ok {
-		m.rows[k] = PRLoop{Repo: strings.ToLower(repo), PR: pr, HeadSHA: head, State: PRLoopPending}
+		m.rows[k] = PRLoop{Repo: strings.ToLower(repo), PR: pr, HeadSHA: head, State: PRLoopPending, AnnouncedAt: m.now()}
 		m.who[k] = officer
 	}
 	return nil
@@ -105,7 +125,7 @@ func (m *MemPRLoopStore) PRLoopSettle(_ context.Context, officer, repo string, p
 	k := prLoopKey(officer, repo, pr)
 	r, ok := m.rows[k]
 	if !ok {
-		r = PRLoop{Repo: strings.ToLower(repo), PR: pr}
+		r = PRLoop{Repo: strings.ToLower(repo), PR: pr, AnnouncedAt: m.now()}
 		m.who[k] = officer
 	}
 	r.State = state
@@ -133,6 +153,18 @@ func (m *MemPRLoopStore) PRLoopState(_ context.Context, officer, repo string, pr
 	return m.rows[prLoopKey(officer, repo, pr)].State, nil
 }
 
+// PRLoopsAnyInLoop implements PRLoopStore.
+func (m *MemPRLoopStore) PRLoopsAnyInLoop(_ context.Context, officer string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, r := range m.rows {
+		if m.who[k] == officer && r.State == PRLoopInLoop {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // PGPRLoopStore is PRLoopStore on officer_pr_loops (migration 0118), under
 // row-level security: ctx must act as the officer's owner.
 type PGPRLoopStore struct{ pool *pgxpool.Pool }
@@ -156,7 +188,7 @@ func (s *PGPRLoopStore) PRLoopSettle(ctx context.Context, officer, repo string, 
 
 // PRLoopsPending implements PRLoopStore.
 func (s *PGPRLoopStore) PRLoopsPending(ctx context.Context, officer string) ([]PRLoop, error) {
-	rows, err := s.pool.Query(ctx, `SELECT repo, pr, head_sha, state FROM officer_pr_loops WHERE officer = $1 AND state = 'pending' ORDER BY repo, pr`, officer)
+	rows, err := s.pool.Query(ctx, `SELECT repo, pr, head_sha, state, created_at FROM officer_pr_loops WHERE officer = $1 AND state = 'pending' ORDER BY repo, pr`, officer)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +196,7 @@ func (s *PGPRLoopStore) PRLoopsPending(ctx context.Context, officer string) ([]P
 	var out []PRLoop
 	for rows.Next() {
 		var r PRLoop
-		if err := rows.Scan(&r.Repo, &r.PR, &r.HeadSHA, &r.State); err != nil {
+		if err := rows.Scan(&r.Repo, &r.PR, &r.HeadSHA, &r.State, &r.AnnouncedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -180,4 +212,11 @@ func (s *PGPRLoopStore) PRLoopState(ctx context.Context, officer, repo string, p
 		return "", nil
 	}
 	return st, err
+}
+
+// PRLoopsAnyInLoop implements PRLoopStore.
+func (s *PGPRLoopStore) PRLoopsAnyInLoop(ctx context.Context, officer string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_pr_loops WHERE officer = $1 AND state = 'in_loop')`, officer).Scan(&exists)
+	return exists, err
 }

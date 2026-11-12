@@ -755,6 +755,9 @@ func (p prLoops) Settle(ctx context.Context, repo string, n int, state string) e
 func (p prLoops) Pending(ctx context.Context) ([]officers.PRLoop, error) {
 	return p.st.PRLoopsPending(p.as(ctx), p.o.ID)
 }
+func (p prLoops) AnyInLoop(ctx context.Context) (bool, error) {
+	return p.st.PRLoopsAnyInLoop(p.as(ctx), p.o.ID)
+}
 func (p prLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
 	st, err := p.st.PRLoopState(p.as(ctx), p.o.ID, repo, n)
 	return st == officers.PRLoopInLoop, err

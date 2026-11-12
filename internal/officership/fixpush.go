@@ -48,6 +48,8 @@ type PRLoops interface {
 	Pending(ctx context.Context) ([]officers.PRLoop, error)
 	// InLoop reports whether HQ put repo#n in a review loop.
 	InLoop(ctx context.Context, repo string, n int) (bool, error)
+	// AnyInLoop reports whether ANY of the officer's pull requests is in one.
+	AnyInLoop(ctx context.Context) (bool, error)
 }
 
 // subjectPR is an item subject `<owner>/<name>#<n>`'s repository and number.
@@ -77,54 +79,60 @@ func (g *PushGate) heldFix(ctx context.Context, instance, repo string, n int) (o
 
 // loopWrite is THE rule (see the top of this file) for one write by instance
 // on pull request pr of sr; would is what it does ("pushed …", "commented
-// on …"). 🔴 FAIL CLOSED: HQ's items or the loop record unreadable is a
-// refusal.
+// on …").
+//
+// 🔴 THE LOCAL LOOP RECORD IS READ FIRST, AND HQ ONLY FOR A PULL REQUEST IN
+// THE LOOP: a write to a pull request outside its loop depends on neither HQ
+// nor anything else it did not depend on before. FAIL CLOSED for one in the
+// loop: HQ's items, or the record, unreadable is a refusal.
 func (g *PushGate) loopWrite(ctx context.Context, sr officers.ShipRepo, gh GitHub, pr PR, instance, would string) error {
-	if instance == "" || (g.FixItems == nil && g.Loops == nil) {
-		return nil
-	}
-	it, held, err := g.heldFix(ctx, instance, sr.Repo, pr.Number)
-	if err != nil {
-		return refused("muster could not read HQ's items to tell whether this write to #%d is under a pull-request fix item (%v); try again", pr.Number, err)
-	}
-	if held {
-		if pr.State != "open" || pr.Merged {
-			return refused("a write to #%d under fix item %s: it is %s (merged %v); a fix goes to an open pull request", pr.Number, it.ID, pr.State, pr.Merged)
-		}
-		slug, err := gh.AppSlug(ctx)
-		if err != nil {
-			return refused("could not read this officer App's identity: %v", err)
-		}
-		if !strings.EqualFold(pr.Author, BotLogin(slug)) {
-			return refused("a write to #%d under fix item %s: it is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
-				pr.Number, it.ID, pr.Author, BotLogin(slug))
-		}
-		if why, on := g.shadowRule().refusal(ctx, it, would); on {
-			return shadowRefused(why)
-		}
-		return nil
-	}
-	if g.Loops == nil {
+	if instance == "" || g.Loops == nil {
 		return nil
 	}
 	in, err := g.Loops.InLoop(ctx, sr.Repo, pr.Number)
 	if err != nil {
 		return refused("muster could not read whether #%d is in its review loop (%v); try again", pr.Number, err)
 	}
-	if in {
+	if !in {
+		return nil
+	}
+	it, held, err := g.heldFix(ctx, instance, sr.Repo, pr.Number)
+	if err != nil {
+		return refused("muster could not read HQ's items to tell whether this write to #%d is under its pull-request fix item (%v); try again", pr.Number, err)
+	}
+	if !held {
 		return refused("#%d is in its review loop: a push, comment, edit or close of it needs the %s item for %s held under a live lease "+
 			"(HQ hands it to you after an audit round or the owner's feedback); without one the pull request is the loop's",
 			pr.Number, "*"+officers.PRFixKindSuffix, officers.ShepherdSubject(sr.Repo, pr.Number))
+	}
+	if pr.State != "open" || pr.Merged {
+		return refused("a write to #%d under fix item %s: it is %s (merged %v); a fix goes to an open pull request", pr.Number, it.ID, pr.State, pr.Merged)
+	}
+	slug, err := gh.AppSlug(ctx)
+	if err != nil {
+		return refused("could not read this officer App's identity: %v", err)
+	}
+	if !strings.EqualFold(pr.Author, BotLogin(slug)) {
+		return refused("a write to #%d under fix item %s: it is authored by %s, not this officer's App (%s); a fix goes to the officer's own pull request",
+			pr.Number, it.ID, pr.Author, BotLogin(slug))
+	}
+	if why, on := g.shadowRule().refusal(ctx, it, would); on {
+		return shadowRefused(why)
 	}
 	return nil
 }
 
 // admitFixPush is loopWrite for each ref of a draft officer's push: the
 // open pull requests the pushed branch heads. A push to a branch that heads
-// none is not changed.
+// none is not changed — and 🔴 when the officer has NO pull request in a loop
+// at all, the branch's pull requests are not even looked up (a GitHub blip
+// must not block an unrelated push).
 func (g *PushGate) admitFixPush(ctx context.Context, sr officers.ShipRepo, cmds []pushCommand) error {
 	instance := callerInstance(ctx)
-	if instance == "" || (g.FixItems == nil && g.Loops == nil) || len(cmds) == 0 {
+	if instance == "" || g.Loops == nil || len(cmds) == 0 {
+		return nil
+	}
+	if inAny, err := g.Loops.AnyInLoop(ctx); err == nil && !inAny {
 		return nil
 	}
 	gh := g.ghFor(sr.Repo)

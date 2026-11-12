@@ -6,8 +6,10 @@
 --       from HQ yet: the draft sweep re-announces it), 'in_loop' (HQ's 200
 --       named a loop item: the authoring officer then writes to the pull
 --       request only under a held *.pr_fix item), 'no_taker' (HQ's 200 named
---       none) or 'closed' (never re-announced: HQ answered officer_shadow, or
---       the pull request closed first).
+--       none), 'closed' (never re-announced: HQ answered officer_shadow, or
+--       the pull request closed first) or 'failed' (never re-announced: HQ
+--       refused it with another 4xx, or it stayed pending past the sweep's
+--       24-hour bound). created_at is when it was first announced.
 --
 -- 🔴 WHY muster KEEPS IT. HQ's pr-opened is idempotent only while the pull
 -- request's loop item is live; a repeat after that item finished enqueues a
@@ -40,7 +42,8 @@ CREATE TABLE IF NOT EXISTS public.officer_pr_loops (
     repo       TEXT        NOT NULL CHECK (repo ~ '^[a-z0-9._-]+/[a-z0-9._-]+$'),
     pr         INTEGER     NOT NULL CHECK (pr > 0),
     head_sha   TEXT        NOT NULL DEFAULT '' CHECK (head_sha ~ '^([0-9a-f]{40})?$'),
-    state      TEXT        NOT NULL CHECK (state IN ('pending', 'in_loop', 'no_taker', 'closed')),
+    state      TEXT        NOT NULL CHECK (state IN ('pending', 'in_loop', 'no_taker', 'closed', 'failed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT officer_pr_loops_one_row UNIQUE (owner_id, officer, repo, pr)
 );

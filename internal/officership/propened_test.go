@@ -2,6 +2,7 @@ package officership
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -176,8 +177,8 @@ func TestPROpenedIsRetriedOnAnOutageOnly(t *testing.T) {
 	r = newPROpenedRig()
 	r.err = &officers.HQError{Status: http.StatusConflict, Body: []byte(`{"code":"officer_disabled"}`)}
 	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
-	if len(r.calls) != 1 || r.loops.get(dInfra, dPR) != officers.PRLoopPending {
-		t.Fatalf("a 409: %d attempts, state %q; want 1 (not retried), pending", len(r.calls), r.loops.get(dInfra, dPR))
+	if len(r.calls) != 1 || r.loops.get(dInfra, dPR) != officers.PRLoopFailed {
+		t.Fatalf("a 409: %d attempts, state %q; want 1 (not retried), failed", len(r.calls), r.loops.get(dInfra, dPR))
 	}
 }
 
@@ -222,5 +223,71 @@ func TestTheSweepReannouncesOnlyWhatNeverGotA200(t *testing.T) {
 	_ = r.g.Sweep(context.Background())
 	if len(r.calls) != 1 {
 		t.Fatalf("a second sweep sent %d announcements in all, want nothing sent again", len(r.calls))
+	}
+}
+
+// TestAPermanentRefusalIsNotResent: a 4xx other than officer_shadow marks the
+// announcement failed, logged once; the sweep never sends it again.
+func TestAPermanentRefusalIsNotResent(t *testing.T) {
+	r := newPROpenedRig()
+	r.err = &officers.HQError{Status: http.StatusConflict, Body: []byte(`{"code":"pr_opened_ambiguous"}`)}
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	r.infra.all = []PR{r.infra.prs[dPR]}
+	if r.loops.get(dInfra, dPR) != officers.PRLoopFailed {
+		t.Fatalf("state %q, want failed", r.loops.get(dInfra, dPR))
+	}
+	_ = r.g.Sweep(context.Background())
+	_ = r.g.Sweep(context.Background())
+	n := 0
+	for _, l := range r.logs {
+		if strings.Contains(l, "HQ refused pr-opened for #31") {
+			n++
+		}
+	}
+	if len(r.calls) != 1 || n != 1 {
+		t.Fatalf("after two sweeps: %d announcements, %d refusal logs; want 1 and 1", len(r.calls), n)
+	}
+}
+
+// TestASettleFailureAfterA200IsNeverResent: HQ answered 200 but the record
+// could not be written (Settle failing, retried): the record still reads
+// pending, yet the sweep never sends it again — a re-send after a 200
+// restarts a finished loop.
+func TestASettleFailureAfterA200IsNeverResent(t *testing.T) {
+	r := newPROpenedRig()
+	r.loops.settleErr = errors.New("fake store: down")
+	r.createAndAnswer(t, createdBy(dPR, prOpenedHead, BotLogin(r.infra.slug)))
+	r.infra.all = []PR{r.infra.prs[dPR]}
+	if r.loops.settles != 3 || r.loops.get(dInfra, dPR) != officers.PRLoopPending {
+		t.Fatalf("settles %d, state %q; want 3 attempts and still pending", r.loops.settles, r.loops.get(dInfra, dPR))
+	}
+	_ = r.g.Sweep(context.Background())
+	if len(r.calls) != 1 {
+		t.Fatalf("the sweep re-sent an announcement HQ answered 200: %d announcements, want 1", len(r.calls))
+	}
+}
+
+// TestAnOldPendingAnnouncementIsNotResent: one first announced longer ago
+// than MaxReannounceAge is failed by the sweep, not sent; a young one is
+// sent (control).
+func TestAnOldPendingAnnouncementIsNotResent(t *testing.T) {
+	now := time.Date(2000, 1, 9, 12, 0, 0, 0, time.UTC)
+	r := newPROpenedRig()
+	r.g.Now = func() time.Time { return now }
+	r.infra.all = []PR{r.infra.prs[dPR]}
+	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopPending
+	r.loops.at[loopKey(dInfra, dPR)] = now.Add(-MaxReannounceAge - time.Minute)
+	_ = r.g.Sweep(context.Background())
+	if len(r.calls) != 0 || r.loops.get(dInfra, dPR) != officers.PRLoopFailed {
+		t.Fatalf("an old pending announcement: %d sent, state %q; want none sent, failed", len(r.calls), r.loops.get(dInfra, dPR))
+	}
+	r = newPROpenedRig()
+	r.g.Now = func() time.Time { return now }
+	r.infra.all = []PR{r.infra.prs[dPR]}
+	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopPending
+	r.loops.at[loopKey(dInfra, dPR)] = now.Add(-MaxReannounceAge + time.Minute)
+	_ = r.g.Sweep(context.Background())
+	if len(r.calls) != 1 {
+		t.Fatalf("control, a young pending announcement: %d sent, want 1", len(r.calls))
 	}
 }

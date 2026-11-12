@@ -1363,13 +1363,16 @@ neither: they are the instance's to read.
   branch, a comment, a title or body edit, a close — need the `*.pr_fix`
   item for `<repo>#<pr>` **held** under a live lease (read from HQ with the
   officer's token); with none (never claimed, released, or the lease
-  lapsed), each is refused 403 ("#<n> is in its review loop …"). A pull
-  request out of the loop, with no fix item held, is the draft stage's as
-  before.
-- **Under a held fix item** (the pushed branch is the head of the item's
-  pull request — named for the ORIGINAL item, not the fix item): the pull
-  request must be open and authored by this officer's own App, and every
-  write is refused in **shadow** ([below](#shadow)) before anything reaches
+  lapsed), each is refused 403 ("#<n> is in its review loop …"). muster
+  reads its own loop record **first** and asks HQ only for a pull request in
+  the loop, so a write to one out of the loop depends on nothing new (HQ
+  down changes nothing for it); and an officer with no pull request in a
+  loop at all pushes without the branch's pull requests even being looked
+  up, so a GitHub blip blocks nothing it did not block before.
+- **Under the held fix item** of a pull request in its loop (the pushed
+  branch is the head of that pull request — named for the ORIGINAL item, not
+  the fix item): the pull request must be open and authored by this
+  officer's own App, and every write is refused in **shadow** ([below](#shadow)) before anything reaches
   GitHub, with `shadow: would have <pushed <old12>..<new12> to <branch> |
   commented on <repo>#<n> (<N> chars) | edited the title and body of
   <repo>#<n> | closed <repo>#<n>>`. HQ's items, or the loop record,
@@ -1563,9 +1566,13 @@ officers API:
   - 🔴 **muster records every announcement** (`officer_pr_loops`, migration
     0118, in muster's database; in memory without one): `pending` until HQ's
     200, then `in_loop` (the 200 named a loop item: the rule above applies)
-    or `no_taker`, or `closed` (`officer_shadow`, or the pull request closed
-    first). The draft sweep (every 5 minutes) re-announces **only** a
-    `pending` one. HQ's `pr-opened` is idempotent only while the pull
+    or `no_taker`; `closed` (`officer_shadow`, or the pull request closed
+    first); or `failed` (another 4xx — HQ's decision, logged once — or still
+    pending a day after it was first announced). Writing the outcome is
+    retried; one muster still cannot write after HQ answered is remembered by
+    the process so it is not sent again. The draft sweep (every 5 minutes)
+    re-announces **only** a `pending` one, and only within 24 hours of its
+    first announcement. HQ's `pr-opened` is idempotent only while the pull
     request's loop item is live — a repeat after that item finished enqueues
     a new one and restarts the loop, and the author's token cannot read the
     shepherd's items to tell — so a pull request HQ acknowledged is never
@@ -1628,7 +1635,9 @@ block of them to the summary HQ receives — cut to HQ's summary bound, never
 the instance's own text. The lines end with their hold: a completion or a
 release forgets them at once, and every 5 minutes muster drops those of any
 item HQ no longer shows held under a live lease (a lapsed lease, an item
-finished or gone). A restart forgets them. The same rule, and the same
+finished or gone) — only lines recorded before that pass read HQ, so a line
+recorded while the read was in flight survives to the next. A restart
+forgets them. The same rule, and the same
 ledger, cover a draft officer's writes under a held `*.pr_fix` item
 ([the draft stage](#the-draft-stage)).
 

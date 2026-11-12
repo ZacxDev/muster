@@ -46,6 +46,8 @@ type fakeGH struct {
 	// drafted is every node id ConvertToDraft was called with; draftErr fails
 	// it. afterReady, when set, runs inside MarkReady once it converted (a
 	// push racing the mutation).
+	// byBranchErr, when set, fails PRsForBranch (still counted in byBranch).
+	byBranchErr error
 	// onPR, when set, may change what one PR read answers.
 	onPR       func(n int, p *PR)
 	drafted    []string
@@ -277,6 +279,9 @@ func (f *fakeGH) PRsForBranch(_ context.Context, branch, state string) ([]PR, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.byBranch++
+	if f.byBranchErr != nil {
+		return nil, f.byBranchErr
+	}
 	var out []PR
 	for _, p := range f.all {
 		if p.HeadRef == branch && stateIs(state, p.State) {

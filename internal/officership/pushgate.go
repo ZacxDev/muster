@@ -124,9 +124,13 @@ type PushGate struct {
 	// mu guards checked and misses, the re-check state (draftgate.go), and
 	// shepherdBusy, the shepherd's per-(repository, branch) push lock
 	// (shepherd.go lockBranch).
-	mu           sync.Mutex
-	checked      map[string]string
-	misses       map[string]int
+	mu      sync.Mutex
+	checked map[string]string
+	misses  map[string]int
+	// acked holds the pull requests HQ answered pr-opened for (a 200, or a
+	// decision) whose record could not be settled: the sweep never re-sends
+	// one, though the record still reads pending (announceOpened).
+	acked        map[string]bool
 	shepherdBusy map[string]bool
 }
 

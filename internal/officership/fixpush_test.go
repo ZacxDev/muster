@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -28,11 +29,15 @@ type fakeLoops struct {
 	mu      sync.Mutex
 	state   map[string]string
 	heads   map[string]string
+	at      map[string]time.Time
 	readErr error
+	// settleErr fails every Settle (counted in settles).
+	settleErr error
+	settles   int
 }
 
 func newFakeLoops() *fakeLoops {
-	return &fakeLoops{state: map[string]string{}, heads: map[string]string{}}
+	return &fakeLoops{state: map[string]string{}, heads: map[string]string{}, at: map[string]time.Time{}}
 }
 
 func loopKey(repo string, n int) string { return strings.ToLower(repo) + "#" + fmt.Sprint(n) }
@@ -48,8 +53,22 @@ func (f *fakeLoops) Announced(_ context.Context, repo string, n int, head string
 func (f *fakeLoops) Settle(_ context.Context, repo string, n int, state string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.settles++
+	if f.settleErr != nil {
+		return f.settleErr
+	}
 	f.state[loopKey(repo, n)] = state
 	return nil
+}
+func (f *fakeLoops) AnyInLoop(context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, st := range f.state {
+		if st == officers.PRLoopInLoop {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (f *fakeLoops) Pending(context.Context) ([]officers.PRLoop, error) {
 	f.mu.Lock()
@@ -58,7 +77,7 @@ func (f *fakeLoops) Pending(context.Context) ([]officers.PRLoop, error) {
 	for k, st := range f.state {
 		if st == officers.PRLoopPending {
 			r, n, _ := subjectPR(k)
-			out = append(out, officers.PRLoop{Repo: r, PR: n, HeadSHA: f.heads[k], State: st})
+			out = append(out, officers.PRLoop{Repo: r, PR: n, HeadSHA: f.heads[k], State: st, AnnouncedAt: f.at[k]})
 		}
 	}
 	return out, nil
@@ -271,5 +290,46 @@ func TestAFixItemOpensNoPullRequest(t *testing.T) {
 	r.kinds[17] = "investigate.opened"
 	if err := r.create(goodCreate()); err != nil {
 		t.Fatalf("control: a create under an ordinary item: %v", err)
+	}
+}
+
+// TestAWriteOutOfTheLoopNeedsNoHQ: with HQ down, a write to a pull request
+// out of its loop is admitted (the local record is read first; HQ is not
+// asked), and one in its loop is refused (fail closed).
+func TestAWriteOutOfTheLoopNeedsNoHQ(t *testing.T) {
+	for _, w := range loopWriteCases() {
+		r := newFixRig()
+		r.heldErr = errors.New("fake HQ: 503")
+		r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopNoTaker
+		r.loops.state[loopKey(dInfra, 99)] = officers.PRLoopInLoop // another PR in a loop: the push's lookup runs
+		if out, err := w.do(r); err != nil || out == nil {
+			t.Errorf("%s out of the loop with HQ down: err = %v, want admitted", w.name, err)
+		}
+		r = newFixRig()
+		r.heldErr = errors.New("fake HQ: 503")
+		if out, err := w.do(r); out != nil || err == nil || !strings.Contains(err.Error(), "could not read HQ's items") {
+			t.Errorf("%s in the loop with HQ down: err = %v, want refused", w.name, err)
+		}
+	}
+}
+
+// TestNoLoopAtAllSkipsTheBranchLookup: an officer with no pull request in a
+// loop pushes without the branch's pull requests being looked up — a GitHub
+// failure there blocks nothing (zero lookups); with one in a loop the
+// lookup runs (control) and its failure refuses.
+func TestNoLoopAtAllSkipsTheBranchLookup(t *testing.T) {
+	r := newFixRig()
+	r.loops.state[loopKey(dInfra, dPR)] = officers.PRLoopNoTaker
+	r.infra.byBranchErr = errors.New("fake GitHub: 502")
+	before := r.infra.byBranch
+	if out, err := r.pushAsInstance("refs/heads/" + dBranch); err != nil || out == nil {
+		t.Fatalf("no loop at all, GitHub failing: err = %v, want admitted", err)
+	}
+	if n := r.infra.byBranch - before; n != 0 {
+		t.Fatalf("%d branch lookups with no loop at all, want 0", n)
+	}
+	r.loops.state[loopKey(dInfra, 99)] = officers.PRLoopInLoop
+	if _, err := r.pushAsInstance("refs/heads/" + dBranch); err == nil || !strings.Contains(err.Error(), "could not look up the pull requests") {
+		t.Fatalf("control, a loop elsewhere: err = %v, want the lookup failure", err)
 	}
 }
