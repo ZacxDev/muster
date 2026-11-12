@@ -514,6 +514,11 @@ type ClaudeCodeSession struct {
 	// deployment's allowlist at boot (officers.ImageAllowed). "" runs the
 	// deployment's.
 	Image string
+	// ImagePullSecret names the registry credential Image is pulled with
+	// (provision.Spec.ImagePullSecret; for an officer,
+	// MUSTER_OFFICER_IMAGE_PULL_SECRET). It reaches the spec ONLY when Image
+	// is set: the deployment's own image is never pulled with it.
+	ImagePullSecret string
 	// BypassPermissions starts every session in the pod with every tool
 	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
 	// prompt at all. Set for an officer instance only.

@@ -23,6 +23,7 @@ var allCaps = provision.Capabilities{
 	Exec:           true,
 
 	NetworkIsolation: true,
+	ImagePullSecret:  true,
 }
 
 // TestCheckSpecRefusesExactlyTheCapabilityItLacks is the isolation-sensitive
@@ -37,6 +38,7 @@ var allCaps = provision.Capabilities{
 //	delete the !caps.ResourceLimits branch -> "ResourceLimits" RED
 //	delete the !caps.Scale branch          -> "Scale" RED
 //	delete the !caps.NetworkIsolation branch -> "NetworkIsolation" RED
+//	delete the !caps.ImagePullSecret branch  -> "ImagePullSecret" RED
 //
 // Each subtest also asserts the message NAMES the capability, so a mutation
 // that returns the WRONG branch's error is caught rather than counted as a
@@ -105,6 +107,12 @@ func TestCheckSpecRefusesExactlyTheCapabilityItLacks(t *testing.T) {
 				s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
 			},
 			mustSay: "cannot isolate an instance's network",
+		},
+		{
+			name:    "ImagePullSecret",
+			off:     func(c *provision.Capabilities) { c.ImagePullSecret = false },
+			ask:     func(s *provision.Spec) { s.ImagePullSecret = "officer-image-pull" },
+			mustSay: `cannot pull an image with a registry credential, and the spec names one (Secret "officer-image-pull")`,
 		},
 	}
 
@@ -202,5 +210,24 @@ func TestIsolationString(t *testing.T) {
 	}
 	if provision.IsolationNone >= provision.IsolationContainer {
 		t.Error("Isolation must be ordered so a caller can compare levels")
+	}
+}
+
+// TestAnImagePullSecretMustBeASecretName: Validate refuses a name no Secret
+// can have (it is driver-independent, so it holds before any capability), and
+// accepts a DNS subdomain.
+func TestAnImagePullSecretMustBeASecretName(t *testing.T) {
+	for _, bad := range []string{"Officer_Pull", "-pull", "pull/../x", strings.Repeat("a", 254)} {
+		spec := provisiontest.MinimalSpec("probe")
+		spec.ImagePullSecret = bad
+		err := provision.CheckSpec(allCaps, spec)
+		if !errors.Is(err, provision.ErrInvalidSpec) || !strings.Contains(err.Error(), "image pull secret") {
+			t.Errorf("%q: err = %v, want ErrInvalidSpec naming the image pull secret", bad, err)
+		}
+	}
+	spec := provisiontest.MinimalSpec("probe")
+	spec.ImagePullSecret = "registry.officer-image-pull"
+	if err := provision.CheckSpec(allCaps, spec); err != nil {
+		t.Fatalf("a DNS-subdomain name refused: %v", err)
 	}
 }

@@ -15,7 +15,9 @@ import (
 // TestAnOfficerInstanceRunsItsPoolsImage: the provisioner's session source
 // hands each instance its POOL's image — the untiered officer's own, the
 // judgement and routine pools' each their own — and an officer with none
-// gets "" (the deployment's image).
+// gets "" (the deployment's image). Each also carries
+// OfficersConfig.ImagePullSecret (MUSTER_OFFICER_IMAGE_PULL_SECRET), which
+// agentspec drops beside an empty image (ccImagePullSecret).
 func TestAnOfficerInstanceRunsItsPoolsImage(t *testing.T) {
 	const (
 		offImg, offImgTok   = "engineering:img-web", "fixture-officer-token-img-1a2b"
@@ -41,7 +43,8 @@ func TestAnOfficerInstanceRunsItsPoolsImage(t *testing.T) {
 		Judgement: officers.TierPool{Model: "opus", MaxInstances: 1, Image: judge}}
 	tier.Tier, tier.Model, tier.Image = officers.TierJudgement, "opus", judge
 	none := base(offNone, offNoneTok)
-	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{img, tier, none}, InstallSession: discardSession, NoShipResume: true}); err != nil {
+	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{img, tier, none}, InstallSession: discardSession, NoShipResume: true,
+		ImagePullSecret: "officer-image-pull"}); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
@@ -53,6 +56,9 @@ func TestAnOfficerInstanceRunsItsPoolsImage(t *testing.T) {
 		sess, ok := s.OfficerClaudeCodeSession(agents.Agent{Name: name, Kind: agents.KindClaudeCode})
 		if !ok || sess.Image != want {
 			t.Errorf("%s: session image %q (officer %v), want %q", name, sess.Image, ok, want)
+		}
+		if sess.ImagePullSecret != "officer-image-pull" {
+			t.Errorf("%s: session pull Secret %q, want the configured %q", name, sess.ImagePullSecret, "officer-image-pull")
 		}
 	}
 }

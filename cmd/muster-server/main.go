@@ -834,7 +834,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
-		ocfg := api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}
+		ocfg := officersConfig(cfg, prov)
 		if a.pool != nil {
 			// The LLM proxy's daily budget lives here (migration 0075); an
 			// officer that declares `llm` with no database is refused.
@@ -980,6 +980,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 // installSessionOn is prov's session-source installer for the officer
 // runtime, or nil when there is no provisioner (EnableOfficers then refuses).
+// officersConfig is the officer runtime's configuration from the environment:
+// the declared officers, the provisioner's session source and the officer
+// image pull Secret. EnableOfficers' database-backed stores are added by the
+// caller.
+func officersConfig(cfg config, prov *agentprovision.Adapter) api.OfficersConfig {
+	return api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov),
+		ImagePullSecret: cfg.OfficerImagePullSecret}
+}
+
 func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
 	if prov == nil {
 		return nil

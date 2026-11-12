@@ -89,6 +89,8 @@ type officerRuntime struct {
 	// loop reads it. now is the clock both use (OfficersConfig.Now).
 	judgement *officers.JudgementLedger
 	now       func() time.Time
+	// imagePullSecret is OfficersConfig.ImagePullSecret.
+	imagePullSecret string
 	// claimLocks serialises officer_claim per instance name (*sync.Mutex) for
 	// a capped judgement pool's one-claim rule (oneClaimRefusal) and a fresh
 	// pool's one item per conversation (freshClaimRefusal).
@@ -254,6 +256,11 @@ type OfficersConfig struct {
 	Sessions    officers.SessionStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
+	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
+	// officer pool's OWN runner image (`image`) is pulled with
+	// (agentspec.ClaudeCodeSession.ImagePullSecret, which reaches the pod spec
+	// only beside that image). "" is none.
+	ImagePullSecret string
 }
 
 // transcriptReader is the agent gateway's transcript read
@@ -395,8 +402,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, fwd: fwd, usage: uc, pools: pools, llm: px, judgement: judgement, now: now, kube: kube,
-		reads:      officers.NewReadBudget(officers.ReadsPerItem, now),
-		claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+		reads:           officers.NewReadBudget(officers.ReadsPerItem, now),
+		claimOwner:      fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid()),
+		imagePullSecret: cfg.ImagePullSecret}
 	if err := s.enableShips(cfg); err != nil {
 		s.officerRT = nil
 		return nil, err
@@ -940,7 +948,11 @@ func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (agentspec.ClaudeCodeS
 	// volume.
 	// Image: the pool's own runner image when it declares one (checked against
 	// MUSTER_OFFICER_IMAGE_REGISTRIES at boot), else the deployment's.
-	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image}
+	// ImagePullSecret: MUSTER_OFFICER_IMAGE_PULL_SECRET, passed for every
+	// instance; agentspec places it in the spec only beside Image
+	// (ccImagePullSecret), so a pool on the deployment's image never gets it.
+	sess := agentspec.ClaudeCodeSession{AllowMCPTools: allow, BypassPermissions: true, DisableAutoMemory: true, Image: o.Image,
+		ImagePullSecret: s.officerRT.imagePullSecret}
 	if _, _, proxied := officers.ProxyAgent(o, a.Name); proxied {
 		sess.LLMRoute = true
 		return sess, true
