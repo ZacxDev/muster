@@ -855,7 +855,7 @@ func (s *Server) episodeRowsHTML(ctx context.Context, now time.Time) (string, in
 		return "", 0
 	}
 	var b strings.Builder
-	b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" data-testid="attention-episodes" data-attention-episodes>
+	b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-waiting" data-testid="attention-episodes" data-attention-episodes>
 `)
 	if err != nil {
 		s.logger.Printf("attention: episodes: %v", err)

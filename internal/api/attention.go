@@ -2205,7 +2205,7 @@ func answeredAsksHTML(asks []attention.Ask, hosts []mirror.HostView, now time.Ti
 	// The Answered group (askGroupsHTML's last): its label and count, then
 	// one muted card per answer — who asked and when, the question on one
 	// line, the answer, where it went, and Retry on a failed delivery.
-	b.WriteString(askGroupOpen("answered", "Answered", len(asks)) + `<ul class="` + ui.AsksGroupListClass + `" data-attention-answered-list>
+	b.WriteString(askGroupOpen("answered", "Answered", len(asks)) + `<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-answered" data-attention-answered-list>
 `)
 	for _, a := range asks {
 		id := strconv.FormatInt(a.ID, 10)

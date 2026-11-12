@@ -151,7 +151,7 @@ func askGroupsHTML(items []attentionItem, episodes string, n int, answered strin
 		}
 		b.WriteString(askGroupOpen(g.key, g.label, count))
 		if len(in) > 0 {
-			b.WriteString(`<ul class="` + ui.AsksGroupListClass + `">` + attentionItemsHTML(in, now) + `</ul>`)
+			b.WriteString(`<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="asks-group-` + g.key + `">` + attentionItemsHTML(in, now) + `</ul>`)
 		}
 		b.WriteString(rows + "</li>\n")
 	}

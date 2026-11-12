@@ -42,7 +42,7 @@ func designItems() []attentionItem {
 	}
 }
 
-var groupLabel = regexp.MustCompile(`data-asks-group="([a-z]+)"><h2 [^>]*data-asks-group-label>([^<]+)<span[^>]*data-asks-group-count>(\d+)</span></h2>`)
+var groupLabel = regexp.MustCompile(`data-asks-group="([a-z]+)"><h2 [^>]*data-asks-group-label>([^<]+)<span class="sr-only">, </span><span[^>]*data-asks-group-count>(\d+)</span></h2>`)
 
 // TestTheAskTabIsGroupedUnderLabelsWithCounts: one label per group that holds
 // something, with its count, in the page's order (Questions, Notices,
@@ -282,6 +282,55 @@ func TestDismissIsInTheCardsFooterNeverItsHead(t *testing.T) {
 		// With options on the Asks page, the ✕ ends the "Type an answer" row.
 		if returnTo == "" && !regexp.MustCompile(`(?s)</details><button type="submit" form="ask-1-dismiss"`).MatchString(itemLi(t, out, "ask-1")) {
 			t.Errorf("the ✕ does not end the Type an answer row:\n%s", itemLi(t, out, "ask-1"))
+		}
+	}
+}
+
+// TestAGroupLabelReadsItsCountAndNamesItsList: a screen reader reads a group's
+// label as "Questions, 2" (a visually-hidden ", " between the words and the
+// count), and the group's list is labelled by that heading (aria-labelledby
+// naming the h2's id) — on the Ask tab's groups and the stalled rows' list.
+func TestAGroupLabelReadsItsCountAndNamesItsList(t *testing.T) {
+	if got := ui.AsksGroupLabel("asks-group-questions", "Questions", 2); !strings.Contains(got, `id="asks-group-questions"`) ||
+		!strings.Contains(got, `>Questions<span class="sr-only">, </span><span`) || !strings.Contains(got, `data-asks-group-count>2</span>`) {
+		t.Fatalf("the label does not read \"Questions, 2\": %s", got)
+	}
+	out := askGroupsHTML(askTabItems(designItems()), `<ul aria-labelledby="asks-group-waiting" data-testid="attention-episodes"></ul>`, 0, "", designNow)
+	for _, key := range []string{"questions", "waiting", "tasks"} {
+		if !strings.Contains(out, `<h2 id="asks-group-`+key+`"`) || !strings.Contains(out, `aria-labelledby="asks-group-`+key+`"`) {
+			t.Errorf("the %s group's list is not labelled by its heading:\n%s", key, out)
+		}
+	}
+}
+
+// TestCardTextIsEscapedEverywhere: markup in the head's title (a session's
+// Name), its place (Source/target; its tag-shaped markup is dropped by the
+// title rule first, so it carries bare < & " >), an option chip's label and a waiting
+// row's detail line is drawn as text: escaped, the raw tag never in the page.
+func TestCardTextIsEscapedEverywhere(t *testing.T) {
+	const evil = `<img src=x onerror=alert(1)>"&`
+	const want = `&lt;img src=x onerror=alert(1)&gt;&#34;&amp;`
+	// A place is a title: the title rule (textplain) drops a whole HTML tag
+	// before escaping, so its markup is the kind the rule keeps.
+	const placeEvil, placeWant = `1 < 2 & "x" >`, `1 &lt; 2 &amp; &#34;x&#34; &gt;`
+	items := []attentionItem{
+		{Key: "ask-1", Kind: attentionKindAsk, AskID: 1, Name: "Name " + evil, Source: "tmux fern:1 @ atlas " + placeEvil, target: "tmux fern:1 @ atlas",
+			at: mirror.Place{Code: "fern:1", Host: "atlas"}, Text: "q?", Options: []string{"opt " + evil}, Since: designNow},
+		{Key: "session-cccccccccccccccc", Kind: attentionKindSession, Source: "tmux fern:2 @ atlas", target: "tmux fern:2 @ atlas",
+			at: mirror.Place{Code: "fern:2", Host: "atlas"}, Text: "Bash: ls", Detail: "detail " + evil, Link: "/mirror/view", Since: designNow},
+	}
+	out := attentionItemsHTML(items, designNow)
+	if strings.Contains(out, "<img") || strings.Contains(out, `onerror=alert(1)>`) {
+		t.Fatalf("a raw tag reached the page:\n%s", out)
+	}
+	for name, frag := range map[string]string{
+		"title":  `data-attention-name>Name ` + want + `</span>`,
+		"place":  `data-attention-source>tmux fern:1 @ atlas ` + placeWant + `</span>`,
+		"option": `data-attention-option>opt ` + want + `</button>`,
+		"detail": `data-attention-detail>detail ` + want + `</span>`,
+	} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("the %s is not drawn escaped (want %q):\n%s", name, frag, out)
 		}
 	}
 }

@@ -87,11 +87,13 @@ const (
 )
 
 // AsksGroupLabel is one group's label: its name and its count, as an <h2>
-// with id (the group's aria-labelledby). The count is its own element, so the
-// label's words are the label's.
+// with id — what the group's own list names as its aria-labelledby (the
+// caller sets it). The count is its own element, so the label's words are the
+// label's; a visually-hidden ", " between them makes a screen reader say
+// "Questions, 2" rather than "Questions2".
 func AsksGroupLabel(id, label string, n int) string {
 	return `<h2 id="` + html.EscapeString(id) + `" class="flex items-center gap-2 px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg2" data-asks-group-label>` +
-		html.EscapeString(label) + `<span class="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-s2 px-1.5 text-[11px] font-semibold tabular-nums text-fg2" data-asks-group-count>` +
+		html.EscapeString(label) + `<span class="sr-only">, </span><span class="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-s2 px-1.5 text-[11px] font-semibold tabular-nums text-fg2" data-asks-group-count>` +
 		strconv.Itoa(n) + `</span></h2>`
 }
 

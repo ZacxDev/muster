@@ -2,11 +2,11 @@ package api
 
 import "testing"
 
-// TestEveryAttentionKindHasAHome: a kind no group holds would vanish from the
-// Ask tab silently. The ledger is every kind the queue can hold: each is in
-// exactly one Ask-tab group, except the reply draft, whose home is the Reply
-// drafts tab (askTabItems strips it from the Ask tab). A NEW kind with neither
-// fails here.
+// TestEveryAttentionKindHasAHome: every kind in this test's own list (kinds,
+// below) has exactly one home — one Ask-tab group, or, for the reply draft,
+// the Reply drafts tab (askTabItems strips it from the Ask tab) — and no group
+// holds a kind the list does not name. A kind in the list with no home fails;
+// a new kind constant nobody adds to the list is NOT caught here.
 func TestEveryAttentionKindHasAHome(t *testing.T) {
 	held := map[string]string{attentionKindPlugin: "the Reply drafts tab"}
 	for _, g := range askGroups {

@@ -45,7 +45,7 @@ func (s *Server) chiefNudgesPanelHTML(ctx context.Context, now time.Time) string
 		b.WriteString(problemNode("The chief's nudge decisions could not be read."))
 	}
 	b.WriteString(ui.AsksGroupLabel("nudges-decisions", "Decisions", len(list)) + `
-<ul class="` + ui.AsksGroupListClass + `" data-testid="nudges-list">`)
+<ul class="` + ui.AsksGroupListClass + `" aria-labelledby="nudges-decisions" data-testid="nudges-list">`)
 	if len(list) == 0 {
 		b.WriteString(`<li class="text-sm text-fg2" data-nudges-empty>No decisions yet. The chief looks at a session once it has been idle for ` +
 			esc(s.chiefNudgeIdle().String()) + `.</li>`)
