@@ -299,7 +299,7 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset ke
   await mctx.close();
 });
 
-test('autofill signs in; a button aborts a pending autofill; the phone button asks for hybrid; the Signal API hears every change, and its absence breaks nothing (real GoTrue, virtual authenticator)', async ({ page, browser }) => {
+test('autofill signs in; a button or the password form aborts a pending autofill; the phone button asks for hybrid; the Signal API hears every change, and its absence breaks nothing (real GoTrue, virtual authenticator)', async ({ page, browser }) => {
   test.setTimeout(180_000);
   const email = `pk-autofill-${Date.now()}@example.com`;
   const pw = 'e2e-autofill-password-not-a-real-one';
@@ -401,13 +401,22 @@ test('autofill signs in; a button aborts a pending autofill; the phone button as
   const ap = await actx.newPage();
   const errors: string[] = [];
   ap.on('pageerror', (e) => errors.push(e.message));
-  await recordWebAuthn(ap, 'absent');
+  const arec = await recordWebAuthn(ap, 'absent');
   await authenticator(ap);
   await ap.goto(browserURL + '/login');
   expect(await ap.evaluate(() => typeof (window as any).PublicKeyCredential.signalAllAcceptedCredentials), 'CONTROL: the API is gone').toBe('undefined');
   await ap.fill('#muster-email', email);
   await ap.fill('#muster-password', pw);
+  // 7. THE PASSWORD FORM'S SUBMIT aborts the pending autofill request. The
+  //    double reports an abort only from the request's AbortSignal, which a
+  //    navigation does not fire, so the abort seen is the page's own; it is
+  //    reported synchronously in the submit, before the POST leaves.
+  await expect.poll(() => arec.events.filter((e) => e.kind === 'get' && e.mediation === 'conditional').length,
+    'the autofill request is pending').toBe(1);
+  const pending = arec.events.find((e) => e.kind === 'get' && e.mediation === 'conditional');
   await Promise.all([ap.waitForURL(landedHome(browserURL)), ap.click('button[type=submit]')]);
+  await expect.poll(() => arec.events.some((e) => e.kind === 'abort' && e.n === pending.n),
+    'the submit aborted the autofill request').toBe(true);
   await ap.goto(browserURL + '/account/passkeys');
   await expect(ap.locator('#passkey-signal'), 'the page has a signal to send').toHaveCount(1);
   await expect(ap.locator('#passkey-none')).toBeVisible();

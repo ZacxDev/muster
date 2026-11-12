@@ -97,7 +97,8 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
     (`getClientCapabilities().conditionalGet` or
     `isConditionalMediationAvailable()`) the page starts a conditional
     request on load. The browser then lists the account's passkeys in the
-    field's suggestions, and picking one signs in.
+    field's suggestions, and picking one signs in. Submitting the password
+    form aborts that request before the form posts.
   - **Sign in with a passkey.** The button first aborts the pending autofill
     request (a page can run one WebAuthn request at a time). That abort shows
     nothing. Each request uses a challenge of its own, and a new one is

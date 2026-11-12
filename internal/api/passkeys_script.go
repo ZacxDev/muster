@@ -57,6 +57,8 @@ func jsStr(s string) string {
 //     shows nothing: it is the page's own. The modal request uses the
 //     prefetched challenge (PasskeyPrefetchJS: no network between the tap and
 //     WebAuthn), and both ceremonies get new challenges when they end.
+//   - 🔴 SO DOES THE PASSWORD FORM'S SUBMIT: it aborts the pending autofill
+//     request before the form posts, and none is started again on that page.
 //   - The phone button is the same request with hints: ['hybrid'] (WebAuthn
 //     Level 3; Chrome 128+), asking the browser to go straight to "use a phone
 //     or tablet" (the QR code). ⚠ A password-manager extension that
@@ -160,6 +162,17 @@ var passkeySignInJS = ui.PasskeyPrefetchJS + `
   }
   btn.addEventListener('click', function () { modal(null); });
   if (phone) { phone.addEventListener('click', function () { modal(['hybrid']); }); }
+  // The password form's submit ends the autofill request too: the person
+  // chose the password, so the page abandons the passkey request (and starts
+  // no other) rather than leave it pending while the form posts.
+  var pwForm = (document.getElementById('muster-password') || {}).form;
+  if (pwForm) {
+    pwForm.addEventListener('submit', function () {
+      var c = cond;
+      cond = null; left = true;
+      if (c) { c.ac.abort(); }
+    });
+  }
   startAutofill();
 })();
 `
