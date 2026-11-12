@@ -238,7 +238,10 @@ whole session runs with permissions bypassed while it reads untrusted text
 public IPv4 address, so one injected `curl` could send either token anywhere.
 So the lock is derived from the bypass (`agentspec.ClaudeCodeSession.EgressLocked`):
 there is no setting that gives an officer the bypass without it, and no other
-agent gets it.
+agent gets it. The one agent that runs bypassed **without** the lock is the
+`claude-code` chief, by an explicit, enumerated exception
+(`agentspec.ClaudeCodeSession.ChiefBypass`, refused for every other agent;
+[chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 
 On the Kubernetes driver, an officer instance's NetworkPolicy is the usual one
 **without the public rule and without the DNS rule**:

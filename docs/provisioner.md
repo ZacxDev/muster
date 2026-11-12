@@ -284,6 +284,9 @@ those agents with a build that still has the kind before upgrading.
   **Permission prompts.** These go to `ccd approve`. If
   `MUSTER_APPROVAL_GATE_URL` is configured, it relays the prompt to the
   permission router; otherwise the prompt falls back to the agent's own terminal.
+  Two agents never prompt: an officer instance and the `claude-code` chief run
+  every tool in `bypassPermissions` (`CCD_PERMISSION_MODE`), so nothing reaches
+  `ccd approve` from them ([chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 
 ### A claude-code agent's repository
 

@@ -597,6 +597,21 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		}
 		spec.Env = append(spec.Env, provision.EnvVar{Name: EnvCCDRepoMirror, Value: MirrorPath})
 	}
+	// 🔴 BYPASS WITHOUT THE LOCK IS THE CLAUDE-CODE CHIEF'S ALONE
+	// (ClaudeCodeSession.ChiefBypass, EgressLocked): refused for any other
+	// agent, whoever asks, and in the Compose container (whose posture is its
+	// nine pre-allowed tools and deny-if-unanswered).
+	if opts.ClaudeCodeSession.ChiefBypass {
+		if !agents.IsChiefName(a.Name) {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q asks for the chief's bypass (every tool, no prompt, "+
+				"public egress kept), which only the claude-code chief may have; any other agent's bypass is "+
+				"egress-locked (BypassPermissions)", a.Name)
+		}
+		if cfg.ComposeContainer {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q runs in the Compose container, whose pre-allowed "+
+				"tools are ComposeChiefAllowedMCPTools alone: the chief's bypass is not offered there", a.Name)
+		}
+	}
 	// The agent's own session settings (podagent/session.go), only when set:
 	// an agent without them keeps the spec — and so the fingerprint — it had.
 	// The Compose chief: exactly its read and route tools pre-allowed
@@ -627,7 +642,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		}
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvModel, Value: m})
 	}
-	if opts.ClaudeCodeSession.BypassPermissions {
+	// The officer's bypass (locked) or the chief's (not): the same pod
+	// variable either way; only EgressLocked differs.
+	if opts.ClaudeCodeSession.BypassPermissions || opts.ClaudeCodeSession.ChiefBypass {
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
 	}
 	if opts.ClaudeCodeSession.HQMCP {

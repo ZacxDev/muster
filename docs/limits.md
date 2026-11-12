@@ -55,6 +55,13 @@
   `gateway`-kind agent gets no NetworkPolicy at all. And a
   NetworkPolicy is only a declaration: the cluster's network plugin enforces it
   or does not, and muster cannot tell which.
+
+  🔴 **The `claude-code` chief runs every tool without a prompt AND keeps public
+  egress** — the one agent with the bypass and without the officers' lock
+  (operator decision, an accepted risk). It reads untrusted text (plugin
+  messages, task notes, mail), so a message could try to make it send
+  `CLAUDE_CODE_OAUTH_TOKEN` or its muster token to any public HTTPS host, and no
+  prompt would stop it ([chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 - **A machine job does not survive a restart, and its timeout does not stop the
   agent's turn.** The job API runs each job's turn inside the server process. A
   graceful shutdown fails the jobs that server holds (`interrupted`); after a

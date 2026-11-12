@@ -30,9 +30,12 @@ import (
 // WebFetch, Write, any MCP tool — ever stops on a permission prompt. Its only
 // value is that one; anything else is refused (ParsePermissionMode), so a typo
 // is a crash-looping pod naming the variable, never a silent posture. muster
-// writes it for an officer instance only (internal/api OfficerClaudeCodeSession,
+// writes it for an officer instance (internal/api OfficerClaudeCodeSession,
 // operator decision, PR #337 round 1): an officer has no approval relay anyone
-// watches, and reads its repository with git/curl through the proxy.
+// watches, and reads its repository with git/curl through the proxy — and for
+// the claude-code chief (agentspec.ClaudeCodeSession.ChiefBypass, operator
+// decision, PR #626), whose unanswered prompt would hang it at a terminal
+// nobody watches. The officer's pod is egress-locked; the chief's is not.
 // ---------------------------------------------------------------------------
 
 const (

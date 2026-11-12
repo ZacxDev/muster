@@ -15,14 +15,15 @@ import (
 // (PR #337 round 1, operator decision A: officer instances run with every tool
 // allowed; every other agent unchanged).
 //
-//   - CCD_PERMISSION_MODE=bypassPermissions (an officer instance): the
+//   - CCD_PERMISSION_MODE=bypassPermissions (an officer instance; since
+//     PR #626 also the claude-code chief, TestAnExistingChiefIsReseededIntoBypass): the
 //     permissions object is exactly the officer allow list plus
 //     defaultMode=bypassPermissions and disableAutoMode — the
 //     disableBypassPermissionsMode refusal is gone (the CLI refuses the mode
 //     while it is set) — and the disclaimer consent is recorded, so the pinned
 //     CLI starts at its prompt in bypass with no dialog for a pasted turn to
 //     answer.
-//   - unset (a task agent, the chief): the image's posture exactly, bypass
+//   - unset (a task agent, the Compose chief): the image's posture exactly, bypass
 //     disabled, no consent written.
 //
 // checkSeed agrees with each and refuses the other's file. A persisted

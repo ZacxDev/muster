@@ -559,6 +559,35 @@ To turn it on:
 If the chief has no `mcp__hq__` tools it says so; check the four steps above
 (`ccd seed` logs which one is missing when the pod starts).
 
+### The chief runs without permission prompts
+
+A `claude-code` chief runs **every** tool — muster's and HQ's MCP tools, Bash,
+Edit, Write, WebFetch, any other server's tools — with **no permission prompt**:
+its pod carries `CCD_PERMISSION_MODE=bypassPermissions`, and `ccd seed` starts
+every session in the pod in Claude Code's `bypassPermissions` mode. There is no
+setting; every `claude-code` chief has it. The Compose chief does not: it keeps
+its nine pre-allowed tools and denies every other prompt.
+
+**Why.** A prompt nobody answers falls back, after the approval card's deadline,
+to the prompt in the chief's own terminal, and nobody watches that terminal. The
+chief's turn then waits indefinitely, and every chat message answers `busy: the
+session is mid-turn`. Measured on a tenant: the chief's opening `fleet_list` sat
+at "Do you want to proceed?" for days.
+
+🔴 **Accepted risk: the chief keeps public internet access.** Officers run
+bypassed too, but their pods are egress-locked. The chief's is not (operator
+decision): it can still reach any public HTTPS host. The chief reads untrusted
+text — plugin messages, task notes, mail — so a message could try to make it
+send `CLAUDE_CODE_OAUTH_TOKEN` or its muster token out, and no prompt would stop
+it. The scope of the HQ token you store, and of every connector grant you give
+it, is what bounds what it can do with those
+([limits.md](limits.md)).
+
+**When it takes effect.** On the chief's next pod start — Stop, then Start
+([restarting the chief](#restarting-the-chief)). `ccd seed` re-imposes the
+settings on every pod start, so an existing chief picks it up then; `ccd seed
+--check` in the pod passes with `defaultMode` `bypassPermissions`.
+
 ## The chief on OpenRouter
 
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through

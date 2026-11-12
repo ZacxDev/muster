@@ -53,6 +53,7 @@ func TestTheComposeChiefsAllowedToolsArePinned(t *testing.T) {
 	for name, sess := range map[string]ClaudeCodeSession{
 		"its own allow list": {LLMRoute: true, AllowMCPTools: []string{"task_comment"}},
 		"the HQ server":      {LLMRoute: true, HQMCP: true},
+		"the chief's bypass": {LLMRoute: true, ChiefBypass: true},
 	} {
 		if _, err := Build(composeChiefAgent(), cfg, Options{ClaudeCodeSession: sess}); err == nil ||
 			!strings.Contains(err.Error(), "ComposeChiefAllowedMCPTools alone") {

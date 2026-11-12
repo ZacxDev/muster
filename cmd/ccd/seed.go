@@ -196,7 +196,9 @@ func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
 // primary, a workspace lane, a job lane — then runs with every tool allowed.
 //
 // 🔴 THIS IS THE ONE SETTINGS DOOR TO "ALLOW EVERYTHING", and muster opens it
-// for an officer instance only (internal/api OfficerClaudeCodeSession). It is
+// for two agents only: an officer instance (internal/api
+// OfficerClaudeCodeSession, egress-locked) and the claude-code chief
+// (agentspec.ClaudeCodeSession.ChiefBypass, public egress kept — PR #626). It is
 // distinct from the job-lane bypass (CCD_JOB_PERMISSION_MODE, jobmode.go),
 // which leaves defaultMode alone and reaches bypass only by a job lane's argv.
 // seed and checkSeed both call this (through seedSettings), so they cannot
