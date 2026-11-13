@@ -423,7 +423,7 @@ list or reloading closes both connections. Reloading opens the view you were
 on, and Back leaves the window, because a switch does not add a history entry.
 A dispatched claude-code agent's chat and Terminal switch the same way.
 
-![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux, which prints what reached it)](img/mirror-terminal.png)
+![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux; the shell lines are canned text it draws, not commands muster sent)](img/mirror-terminal.png)
 
 Rendered views stream bounded events: at most 300 when opened, taken from the
 last 4 MiB of the transcript, with each field capped. Anything in them that

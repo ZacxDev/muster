@@ -160,6 +160,9 @@ test.use({
 
 const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL: browserURL, MUSTER_GOTRUE_URL: gotrueURL, MUSTER_GOTRUE_JWT_SECRET: gotrueSecret });
 
+// The terminal shot's shell, in the fake's MUSTER_MIRROR_E2E_PROMPT.
+const TERMINAL_LINES = ['~/board $ git status', 'On branch main', 'nothing to commit, working tree clean', '~/board $ '];
+
 function startMirror(name: string, file: string) {
   const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', name], { env: serverEnv() }).toString().trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
@@ -175,6 +178,11 @@ function startMirror(name: string, file: string) {
       MUSTER_MIRROR_E2E_WINDOWS_FILE: file,
       MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile,
       MUSTER_MIRROR_E2E_WINDOW: '120x40',
+      // A shell's last lines, drawn ending on the window's bottom row, where a
+      // real prompt is: the 40-row window is taller than a phone's terminal,
+      // and the Terminal view holds such a view at its bottom, so the fake's
+      // row-1 banner alone left the terminal shot blank (#623).
+      MUSTER_MIRROR_E2E_PROMPT: TERMINAL_LINES.join('|'),
       // Re-read the windows often, so a session going waiting (the ask-flow's
       // question) reaches muster in a moment rather than on the 5 s default.
       MUSTER_MIRROR_E2E_REFRESH: '500ms',
@@ -445,18 +453,27 @@ test('dictation.png — the mic recording into the message box', async ({ page }
   await page.locator('#mv-input').fill('');
 });
 
-// 🔴 OPTED OUT UNTIL #623: regenerated, this shot is blank — the "Terminal
-// only" banner covers the terminal's first rows, the only ones with text — so
-// docs/img/mirror-terminal.png stays at the last good capture. Not a test.skip:
-// `verdict.mjs --docshots` refuses any skip. MUSTER_E2E_DOCSHOTS_TERMINAL=1 puts
-// it back (and verdict.mjs's DOCSHOTS_COUNT counts the default run only); when
-// #623 is fixed, drop the condition and raise DOCSHOTS_COUNT to 13.
-if (process.env.MUSTER_E2E_DOCSHOTS_TERMINAL === '1') test('mirror-terminal.png — the terminal view of a shell window', async ({ page }) => {
+// 🔴 THE SHOT MUST SHOW TERMINAL TEXT, not just hold it in the DOM: #623's
+// blank image had the fake's only line on row 1 of a window taller than the
+// page, scrolled out of #term-scroll by the view's bottom pin. The check counts
+// the rows drawn inside #term-scroll's visible rect that carry text.
+test('mirror-terminal.png — the terminal view of a shell window', async ({ page }) => {
   await signIn(page);
   await page.goto(browserURL + '/mirror/terminal?' + q(host, 'kestrel', '@4'));
   await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 20_000 });
   await expect(page.locator('#mv-input')).toBeEnabled();
   await page.locator('#mv-input').fill('make test');
+  const visibleRows = () =>
+    page.evaluate(() => {
+      const box = document.getElementById('term-scroll')!.getBoundingClientRect();
+      return [...document.querySelectorAll('#term .xterm-rows > div')]
+        .filter((r) => {
+          const b = r.getBoundingClientRect();
+          return b.top >= box.top - 0.5 && b.bottom <= box.bottom + 0.5 && (r.textContent ?? '').trim() !== '';
+        })
+        .map((r) => (r.textContent ?? '').trim());
+    });
+  await expect.poll(async () => (await visibleRows()).length, { message: 'rows with text inside the visible terminal' }).toBeGreaterThan(0);
   await shoot(page, 'mirror-terminal.png');
 });
 
