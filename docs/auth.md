@@ -262,7 +262,10 @@ put a message into whichever of your sessions created, or pushed the branch
 of, a pull request it names** — never another owner's session, and never one
 that only viewed or mentioned it. The authorship rows come only from `POST /api/pr-sessions`, with route
 reply's credential (a personal API token or the hook token); nothing a mail
-says can write one. 🔴 **Accepted risk: whoever holds that credential can
+says can write one. They are read back with `GET /api/pr-sessions` on the same
+fail-closed door, and only the caller's own: a row names a session id that
+`claude --resume` accepts and the host it ran on, so an unarmed server does not
+serve it. 🔴 **Accepted risk: whoever holds that credential can
 record any of the owner's Claude session ids as the author of any pull
 request or branch**, and the next review of it is then pasted into that
 session — the thread bind's risk, for review mail.

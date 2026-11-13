@@ -271,6 +271,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// (same-origin; api.FaroRelayPath) and the relay forwards to the receiver,
 	// so no LAN address and no key reach the browser.
 	ui.SetFaroConfig(cfg.faroSettings(api.BuildVersion))
+	// The update pill's "Update <this build> → <new>".
+	ui.SetBuildVersion(api.BuildVersion)
 	// The operator's own hosts: their icons by name. Checked
 	// by loadConfig; installed here, before any page is rendered.
 	if err := ui.SetHostPreferences(cfg.HostPrefs); err != nil {

@@ -20,6 +20,7 @@ The verb set is pinned in two places:
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)), `plugins deliver-to <plugin-id> officer:<id>` / `--clear` ([bind a plugin to an officer](plugins.md#a-plugin-bound-to-an-officer)) |
+| pull requests | `pr-session <owner>/<repo>#<n>` (which of your sessions created a pull request: [below](#which-session-created-a-pull-request)) |
 | setup | `doctor` ([below](#muster-doctor)) |
 | chief nudges | `nudge next` (a host's oldest chief-nudge notice as a tmux target: [below](#jumping-to-a-chief-nudge)) |
 | several servers | `tenant list`, `tenant current`, `tenant use`, `tenant add`, `tenant remove` ([below](#several-servers-tenants)) |
@@ -244,6 +245,37 @@ tmux switch-client -t "$(muster nudge next --host laptop | jq -r .target)"
 - **Credential:** a personal token or a bar-summary token. It reads the
   [attention summary](attention.md#the-summary-api), which is a user's own, so
   the shared hook token is refused (exit 3).
+
+## Which session created a pull request
+
+`pr-session` reads [`GET /api/pr-sessions`](plugins.md#which-session-created-a-pull-request):
+the Claude Code sessions recorded as creating a pull request, newest first.
+That is the sessions that **created** it (create rows, newest `first_seen`, not
+limited to routing's 30-day window), which can differ from the session a review
+is routed to (routing takes the newest `last_seen` inside that window and also
+matches a pushed head branch). It takes `<owner>/<repo>#<n>` or the pull
+request's GitHub URL:
+
+```sh
+muster pr-session acme/widget#12
+muster pr-session https://github.com/acme/widget/pull/12
+claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude_session')"
+```
+
+- **stdout** is the server's answer with a `resume` field (`claude --resume
+  <id>`) added to each row; **stderr** repeats each row as a line — session id,
+  host (or that no window showed it), `first_seen`, `kind` — followed by its
+  `claude --resume <id>` line.
+- **Exit status:** 0 with at least one row; **4** with nothing on stdout when
+  no session of yours is recorded as creating it; 2 for an argument that is not
+  a pull request (nothing is sent); **12** when the server does not have
+  pull-request routing configured (the read is served only there); and the
+  usual codes otherwise (3 for a refused credential, 6 for an unreachable
+  server, 7 for a server older than the read — its answer to the GET is a 405,
+  since it has only the hook's POST — and 9 for a server whose hook tier is not
+  armed).
+- **Credential:** the ordinary one — a personal token reads its owner's rows,
+  the shared hook token the machine user's.
 
 ## Other binaries
 

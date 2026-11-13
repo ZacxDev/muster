@@ -143,7 +143,9 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
     return;
   }
-  // Lets a page (and the e2e suite) ask which build is in control.
+  // Lets a page (and the e2e suite) ask which build a worker is. The update
+  // pill asks the WAITING worker this to show "Update <current> → <new>"
+  // (internal/ui/pwa.go, workerVersion); a waiting worker answers too.
   if (msg.type === 'GET_VERSION' && event.ports && event.ports[0]) {
     event.ports[0].postMessage({ build: BUILD });
   }
