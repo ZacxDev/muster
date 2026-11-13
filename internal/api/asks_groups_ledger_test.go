@@ -13,7 +13,8 @@ import (
 )
 
 // TestEveryAttentionKindHasAHome: every attention item kind this package
-// declares — every const named attentionKind* in its non-test source, read by
+// declares — every const or var named attentionKind* anywhere in its non-test
+// source (package level or inside a function), read by
 // parsing the source (attentionKindConsts), not from a hand-typed list — has
 // exactly one home: one Ask-tab group, or, for the reply draft, the Reply
 // drafts tab (askTabItems strips it from the Ask tab). A new kind constant
@@ -42,14 +43,15 @@ func TestEveryAttentionKindHasAHome(t *testing.T) {
 	}
 	for k, home := range held {
 		if _, ok := kinds[k]; !ok {
-			t.Errorf("%s holds kind %q, which no attentionKind* constant declares", home, k)
+			t.Errorf("%s holds kind %q, which no attentionKind* const or var declares", home, k)
 		}
 	}
 }
 
-// attentionKindConsts is every const named attentionKind* in this package's
-// non-test .go files, by value, each with its name: the kinds an attention
-// item can carry. A const it cannot read as a string literal fails the test.
+// attentionKindConsts is every const or var named attentionKind* anywhere in
+// this package's non-test .go files (package level or inside a function), by
+// value, each with its name: the kinds an attention item can carry. One it
+// cannot read as a string literal fails the test.
 func attentionKindConsts(t *testing.T) map[string]string {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -70,10 +72,12 @@ func attentionKindConsts(t *testing.T) map[string]string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, d := range af.Decls {
-			gd, ok := d.(*ast.GenDecl)
-			if !ok || gd.Tok != token.CONST {
-				continue
+		// The WHOLE file (ast.Inspect), not its top-level declarations alone:
+		// a kind declared inside a function, or as a var, is still a kind.
+		ast.Inspect(af, func(nd ast.Node) bool {
+			gd, ok := nd.(*ast.GenDecl)
+			if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
+				return true
 			}
 			for _, sp := range gd.Specs {
 				vs := sp.(*ast.ValueSpec)
@@ -95,7 +99,8 @@ func attentionKindConsts(t *testing.T) map[string]string {
 					out[v] = n.Name
 				}
 			}
-		}
+			return true
+		})
 	}
 	// Positive control: the parse sees the kinds the page is known to draw,
 	// so an empty read (wrong directory, wrong prefix) cannot pass as "every
