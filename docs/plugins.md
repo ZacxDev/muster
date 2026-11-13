@@ -203,10 +203,23 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   frame) exists, the same header control reads **Full screen**: the same frame,
   not reloaded and with no new mint, fills the screen at every width, the
   header hidden, with an **Exit** button over its top right corner. Exit,
-  Escape and the app's Back leave full screen (Back through the
-  `back-claim` bridge message the panel posts while full screen, and
-  `window.musterBack`); Close or a second Escape closes the panel. In a
-  browser New tab is unchanged.
+  Escape and the app's Back leave full screen; Close or a second Escape
+  closes the panel. In a browser New tab is unchanged.
+- **In the Android app, Back belongs to the panel while it is open.** The
+  panel posts a `back-claim` bridge message from open to close, full screen
+  or not, and the main frame's `window.musterBack` answers the app's press:
+  full screen, it leaves full screen; otherwise it closes the panel (the
+  switcher dock, if open over the side panel, closes first). Without the
+  claim the app's Back is the WebView's own, which walks the tab's joint
+  session history, subframe navigations included. So, as a second layer, the
+  panel's OWN loads add no entry to that history: each hand-off (and the
+  close) loads in a NEW frame element (src set before it is inserted) put in
+  the old one's place, and the gateway's session page opens a preview with
+  `location.replace`. ⚠ What the previewed page does inside the frame is
+  not muster's: an app's own `pushState` or a link it follows still adds
+  entries. While the panel is open Back is claimed, so they do not matter;
+  after it closes they belong to a frame that is gone, and each one takes a
+  Back press that does nothing.
 - **The panel's frame:**
 
   ```html

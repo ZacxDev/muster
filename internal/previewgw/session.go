@@ -531,6 +531,13 @@ func probeCode(err error) string {
 // closure; strips muster_code from the address bar; refreshes the list every
 // PollEvery while the page is visible; and opens a preview in this frame or
 // tab (Open) or a new tab (New tab) with a fresh entry code.
+//
+// 🔴 OPEN REPLACES THIS PAGE (location.replace), never adds an entry: inside
+// muster's panel this page is a frame, and a frame's navigations are entries
+// in the tab's joint session history, so Back (the Android shell's goBack)
+// walked the frame back to this page's already-spent entry URL, a white,
+// broken frame. In a tab of its own, Back from the preview likewise skips
+// this one-time page (its token lived only in the page's memory).
 const sessionScript = `(function(){
 var el=document.getElementById('boot');var boot=JSON.parse(el.textContent);el.remove();
 var token=boot.token,timer=null,dead=false;
@@ -556,6 +563,6 @@ list.addEventListener('click',function(e){var b=e.target.closest('button');if(!b
  status.textContent='Opening…';status.className='note';
  api('/__muster/open',body).then(function(r){if(r.status===401){expired();throw 0;}
   if(!r.ok)return r.text().then(function(t){throw t;});return r.json();})
- .then(function(a){status.textContent='';if(tab)tab.location.href=a.url;else location.assign(a.url);poll();})
+ .then(function(a){status.textContent='';if(tab)tab.location.href=a.url;else location.replace(a.url);poll();})
  .catch(function(t){if(tab)tab.close();if(!dead){status.textContent=typeof t==='string'?t:'The preview could not be opened.';status.className='err';}});});
 })();`

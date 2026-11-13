@@ -543,3 +543,24 @@ func TestASlowPathHostIsLabelled(t *testing.T) {
 		t.Fatalf("public host not labelled slow:\n%s", a.body)
 	}
 }
+
+// 🔴 The session page's Open, in its own frame or tab, REPLACES the page and
+// adds no history entry: inside muster's panel the page is a frame, and a
+// frame navigation is an entry in the tab's joint session history, which the
+// Android shell's Back (goBack) walked back to the page's spent entry URL — a
+// white, broken frame. Read off the page as served, its script included.
+// (e2e/tests/previews.spec.ts measures history.length across the real click.)
+func TestOpenReplacesTheSessionPage(t *testing.T) {
+	e := newGW(t, gwOpts{})
+	e.hostWithOffers(t, wire.Listener{Port: 5173, Process: "vite", Window: "@1"})
+	page := e.enter(t, e.fm.handoff("mpl_owner1", 1, "alpha", "main", "@1"), 10)
+	if !strings.Contains(page.body, "if(tab)tab.location.href=a.url;else location.replace(a.url);") {
+		t.Errorf("Open does not replace the page with location.replace(a.url)")
+	}
+	// No other way of navigating THIS document: an assign, or a location (or
+	// location.href) assignment that is not the new tab's.
+	selfNav := regexp.MustCompile(`location\.assign\(|(?:^|[^.\w])(?:window\.|document\.)?location(?:\.href)?\s*=[^=]`)
+	if m := selfNav.FindString(page.body); m != "" {
+		t.Errorf("the page navigates itself with an entry-adding %q", m)
+	}
+}

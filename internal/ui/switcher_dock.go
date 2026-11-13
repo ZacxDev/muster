@@ -185,6 +185,32 @@ const (
 	dockRowCurrentClass = "flex min-h-[56px] w-full flex-col justify-center gap-0.5 bg-accent/10 px-4 py-2 text-left text-sm text-accent"
 )
 
+// backClaimJS is the page's ONE back-claim function, musterClaimBack(who, on),
+// pasted into every script that claims the Android shell's Back: the switcher
+// dock ('dock') and each document's preview panel. The shell holds ONE claim
+// flag, and the dock can open over the side panel (from `sm` up nothing is
+// made inert behind the panel), so a holder releasing it must not clear the
+// claim another still needs. The holders are a space-separated list on the
+// MAIN frame's window (a string, so no object outlives the frame that made
+// it), and every call posts to the main frame's bridge (the shell refuses a
+// subframe's) whether ANY holder remains. Posting on every call, not only on
+// a change, re-asserts the claim if the shell dropped it (a press it timed
+// out on). Answers whether any holder remains.
+const backClaimJS = `function musterClaimBack(who, on) {
+    var S = window;
+    try { while (S !== S.top && S.parent && S.parent.document) S = S.parent; } catch (e) {}
+    var held = [];
+    try { held = String(S.__musterBackHolders || '').split(' ').filter(Boolean); } catch (e) {}
+    var i = held.indexOf(who);
+    if (on && i < 0) held.push(who);
+    if (!on && i >= 0) held.splice(i, 1);
+    try { S.__musterBackHolders = held.join(' '); } catch (e) {}
+    var b = null;
+    try { b = S.` + AppBridgeName + `; } catch (e) {}
+    try { if (b && typeof b.postMessage === 'function') b.postMessage(JSON.stringify({ type: 'back-claim', open: held.length > 0 })); } catch (e) {}
+    return held.length > 0;
+  }`
+
 // dockJS is the dock's script, part of appScript's static file (every page
 // with the sidebar). It binds ONCE PER WINDOW (window.musterDock); a boosted
 // navigation swaps the dialog with the body, so the dialog is looked up when
@@ -218,11 +244,12 @@ var dockJS = func() string {
   // THE SHELL'S CLAIM (the Android app, docs/design/switcher-dock.md "The
   // shell change"): while the dock is open the shell offers its Back press to
   // the page (window.musterBack) first. Posted only where the bridge exists.
+  // The app's claim is ONE flag the preview panel shares (backClaimJS).
   function claim(on) {
     claimed = on;
-    var b = window.` + AppBridgeName + `;
-    try { if (b && typeof b.postMessage === 'function') b.postMessage(JSON.stringify({ type: 'back-claim', open: on })); } catch (e) {}
+    musterClaimBack('dock', on);
   }
+  ` + backClaimJS + `
 
   // The bar's menus and the palette are outside the modal (inert under it):
   // opening the dock closes them first, in this document and the bar's.
