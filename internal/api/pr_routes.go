@@ -263,8 +263,15 @@ type prSessionRow struct {
 // handle — and the host it ran on; reading that on an unarmed server would be
 // a disclosure to anyone who can reach the machine port.
 //
-// It is not gated on pull-request ROUTING being on, unlike the report: what
-// was recorded stays readable after routing is switched off.
+// ⚠ IT IS SERVED ONLY WHERE PULL-REQUEST ROUTING IS CONFIGURED. The handler
+// checks only for the store, but cmd/muster-server wires ext.PRSessions only
+// with plugins, MUSTER_SESSION_ROUTING and a non-empty MUSTER_PR_MAIL_SENDERS;
+// anywhere else this answers the feature_disabled 404, as the report does.
+//
+// It answers the sessions that CREATED the pull request (create rows, newest
+// first_seen, not limited to PRSessionRetention), which can differ from the
+// session a review is routed to: ResolvePRSession takes the newest last_seen
+// inside the retention and also matches a pushed head branch.
 func (s *Server) handlePRSessionList(w http.ResponseWriter, r *http.Request) {
 	if s.ext.PRSessions == nil {
 		s.writeFeatureDisabled(w, r, features.PRMailRouting)

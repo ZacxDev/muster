@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -126,6 +127,34 @@ func TestPRSessionExitCodesAreDistinct(t *testing.T) {
 		h := newHarness(t)
 		if got := h.runCLI("--api-url", "http://127.0.0.1:1", "pr-session", "acme/widget#12"); got.code != exitNetwork {
 			t.Fatalf("exit %d; want %d", got.code, exitNetwork)
+		}
+	})
+	// A server from before the read (0055 onward) registers only POST
+	// /api/pr-sessions, so its stdlib mux answers the GET 405 — not the 404
+	// the generic route-absent case reads. A REAL ServeMux, not a fixture, so
+	// the status and body are what such a server writes.
+	t.Run("server older than the read", func(t *testing.T) {
+		h := newHarness(t)
+		old := http.NewServeMux()
+		old.HandleFunc("POST /api/pr-sessions", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
+		h.handle("GET /api/pr-sessions", old.ServeHTTP)
+		got := h.runCLI("pr-session", "acme/widget#12")
+		if got.code != exitRouteAbsent || got.stdout != "" {
+			t.Fatalf("exit %d stdout %q; want %d (stderr %q)", got.code, got.stdout, exitRouteAbsent, got.stderr)
+		}
+		// Control: that mux really answered 405 to the GET.
+		reqs := h.nonHealthRequests()
+		rec := httptest.NewRecorder()
+		old.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/pr-sessions?repo=acme%2Fwidget&pr=12", nil))
+		if len(reqs) != 1 || rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%d requests; the old mux answered %d, want 405", len(reqs), rec.Code)
+		}
+	})
+	t.Run("pull-request routing not configured", func(t *testing.T) {
+		h := newHarness(t)
+		h.json("GET /api/pr-sessions", http.StatusNotFound, `{"error":"feature_disabled","feature":"pr-mail-routing"}`)
+		if got := h.runCLI("pr-session", "acme/widget#12"); got.code != exitFeatureDisabled || got.stdout != "" {
+			t.Fatalf("exit %d stdout %q; want %d", got.code, got.stdout, exitFeatureDisabled)
 		}
 	})
 	t.Run("route absent", func(t *testing.T) {

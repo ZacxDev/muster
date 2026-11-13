@@ -414,7 +414,9 @@ func classify(req request, resp *http.Response, body []byte, envFile string) ([]
 		return nil, failf(exitServerError, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
 
 	case resp.StatusCode >= 400:
-		return nil, failf(exitUsage, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
+		e := failf(exitUsage, "%s %s: %d %s — %s", req.method, req.path, resp.StatusCode, http.StatusText(resp.StatusCode), serverError(body))
+		e.status = resp.StatusCode
+		return nil, e
 	}
 
 	if !isJSON {

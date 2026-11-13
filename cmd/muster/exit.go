@@ -68,6 +68,11 @@ type cliError struct {
 	code int
 	msg  string
 	err  error
+	// status is the HTTP status of an otherwise-unclassified 4xx (client.go's
+	// generic exitUsage case), 0 everywhere else. It lets one verb read a
+	// status the shared mapping has no case for — `pr-session` reads a 405 as
+	// a server older than its route — without changing that mapping for all.
+	status int
 }
 
 func (e *cliError) Error() string {

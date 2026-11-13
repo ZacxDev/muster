@@ -250,7 +250,11 @@ tmux switch-client -t "$(muster nudge next --host laptop | jq -r .target)"
 
 `pr-session` reads [`GET /api/pr-sessions`](plugins.md#which-session-created-a-pull-request):
 the Claude Code sessions recorded as creating a pull request, newest first.
-It takes `<owner>/<repo>#<n>` or the pull request's GitHub URL:
+That is the sessions that **created** it (create rows, newest `first_seen`, not
+limited to routing's 30-day window), which can differ from the session a review
+is routed to (routing takes the newest `last_seen` inside that window and also
+matches a pushed head branch). It takes `<owner>/<repo>#<n>` or the pull
+request's GitHub URL:
 
 ```sh
 muster pr-session acme/widget#12
@@ -264,9 +268,12 @@ claude --resume "$(muster pr-session acme/widget#12 | jq -r '.sessions[0].claude
   `claude --resume <id>` line.
 - **Exit status:** 0 with at least one row; **4** with nothing on stdout when
   no session of yours is recorded as creating it; 2 for an argument that is not
-  a pull request (nothing is sent); and the usual codes otherwise (3 for a
-  refused credential, 6 for an unreachable server, 7 for a server older than
-  the route, 9 for a server whose hook tier is not armed).
+  a pull request (nothing is sent); **12** when the server does not have
+  pull-request routing configured (the read is served only there); and the
+  usual codes otherwise (3 for a refused credential, 6 for an unreachable
+  server, 7 for a server older than the read — its answer to the GET is a 405,
+  since it has only the hook's POST — and 9 for a server whose hook tier is not
+  armed).
 - **Credential:** the ordinary one — a personal token reads its owner's rows,
   the shared hook token the machine user's.
 

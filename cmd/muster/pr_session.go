@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,8 +25,9 @@ import (
 // only). stdout is the server's answer with a `resume` command added to each
 // row; stderr has the same rows as lines a person reads, each followed by its
 // `claude --resume <id>`. No row recorded is exit 4 (exitNotFound) with nothing
-// on stdout — distinct from an error (1), a refused credential (3) and an
-// unreachable server (6).
+// on stdout — distinct from an error (1), a refused credential (3), an
+// unreachable server (6), a server older than the read (7, a 405 or 404) and a
+// server without pull-request routing configured (12).
 
 const prSessionsRoute = "/api/pr-sessions"
 
@@ -88,6 +90,14 @@ rows as lines. No session recorded for that pull request exits 4.`,
 			}
 			q := url.Values{"repo": {repo}, "pr": {strconv.FormatInt(n, 10)}}
 			raw, err := a.call(cmd.Context(), request{method: http.MethodGet, path: prSessionsRoute, query: q, cred: credHook})
+			// A server from before this read still registers POST
+			// /api/pr-sessions (0055), so its mux answers the GET 405 rather
+			// than the 404 the shared mapping reads as route-absent.
+			var ce *cliError
+			if errors.As(err, &ce) && ce.status == http.StatusMethodNotAllowed {
+				return failf(exitRouteAbsent, "GET %s answered 405: this server predates the read (it has only the hook's POST) — "+
+					"this client was built against %s", prSessionsRoute, cliVersion())
+			}
 			if err != nil {
 				return err
 			}

@@ -23,6 +23,7 @@ const (
 	listSessOtherRepo = "5e55a1d0-0000-4000-8000-00000000a004"
 	listSessPush      = "5e55a1d0-0000-4000-8000-00000000a005"
 	listSessOtherUser = "5e55a1d0-0000-4000-8000-00000000a006"
+	listSessMachine   = "5e55a1d0-0000-4000-8000-00000000a007"
 )
 
 // list GETs the read route with query q and token tok (the owner's personal
@@ -215,5 +216,41 @@ func TestPRSessionListIsOffWithNoAuthorshipStore(t *testing.T) {
 	f.srv.ext.PRSessions = nil
 	if code, body := f.list(t, "", listQuery(prRepo, "4817")); code != 404 || !strings.Contains(body, FeatureDisabledError) {
 		t.Fatalf("%d %s; want the feature_disabled 404", code, body)
+	}
+}
+
+// TestPRSessionListReadsEachCredentialsOwnRows: the same pull request has a row
+// of the machine user (where a report with the shared hook token lands) and a
+// row of the owner (a personal token's). The hook token reads exactly the
+// machine user's, the personal token exactly the owner's — neither empty, so
+// "not the other's" is not passing on a read that returns nothing.
+func TestPRSessionListReadsEachCredentialsOwnRows(t *testing.T) {
+	f := newPRFixture(t)
+	machine := machineUserID()
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_prs WHERE owner_id = $1 AND claude_session = $2`,
+			machine, listSessMachine)
+	})
+	if _, err := f.plugins.RecordPRSession(f.as(machine), listSessMachine, "", prCreated()); err != nil {
+		t.Fatal(err)
+	}
+	f.authored(t, f.asOwner, listSessNew, prCreated())
+	for _, c := range []struct {
+		name, tok, want, notWant string
+	}{
+		{"the shared hook token", connTestHookToken, listSessMachine, listSessNew},
+		{"the owner's personal token", "", listSessNew, listSessMachine},
+	} {
+		code, body := f.list(t, c.tok, listQuery(prRepo, "4817"))
+		if code != 200 {
+			t.Fatalf("%s: %d %s", c.name, code, body)
+		}
+		got := decodeListed(t, body)
+		if len(got.Sessions) != 1 || got.Sessions[0].ClaudeSession != c.want {
+			t.Fatalf("%s: %+v; want exactly %s", c.name, got.Sessions, c.want)
+		}
+		if strings.Contains(body, c.notWant) {
+			t.Fatalf("%s: the other principal's row %s is in %s", c.name, c.notWant, body)
+		}
 	}
 }
