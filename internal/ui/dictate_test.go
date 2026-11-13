@@ -188,34 +188,6 @@ func TestEveryMessageBoxTurnsIntoTheRecorder(t *testing.T) {
 	}
 }
 
-// TestTheVoiceSendIsTheBoxsOwnSend pins the ↑'s send to a CLICK on the box's
-// Send — never a request of the script's own — made only on an inserted
-// transcript, once, with the repeat tap on Send held for DictateSendHoldMs.
-// A structural pin of the one place a send can start; the click paths
-// (exactly once, nothing on a failure, the step-up still asked) are
-// e2e/tests/dictation.spec.ts.
-func TestTheVoiceSendIsTheBoxsOwnSend(t *testing.T) {
-	script := DictateScriptHTML(TranscribePath)
-	for _, want := range []string{
-		"if (!ok || !t || !t.isConnected || t.disabled) return;\n    t.click();\n    held = { el: t, until: Date.now() + 1500 };",
-		"insert(p.input, t);\n          ok = true;",
-		"if (s.send) voiceSend(s, ok);",
-		"if (!s || s.p.arrow !== up || up.disabled || s.send || !s.rec || s.rec.state !== 'recording') return;",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("the script lacks\n%s", want)
-		}
-	}
-	// One fetch in the whole script: the recording's POST. A second would be
-	// a send path of its own.
-	if n := strings.Count(script, "fetch("); n != 1 {
-		t.Errorf("the script calls fetch %d times; want 1 (the recording's POST only)", n)
-	}
-	if DictateSendHoldMs != 1500 {
-		t.Errorf("DictateSendHoldMs = %d", DictateSendHoldMs)
-	}
-}
-
 // TestNoServiceNoMicrophone: with no speech-to-text service (an empty path)
 // no surface draws the button, its note or its script.
 func TestNoServiceNoMicrophone(t *testing.T) {

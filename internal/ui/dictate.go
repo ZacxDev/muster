@@ -722,14 +722,16 @@ func dictateScript(path string) g.Node {
       if (active && active.p.btn.id === x.getAttribute('data-dictate-discard')) abandon();
       return;
     }
-    // ↑ : stop, transcribe, and send. 🔴 ONE TAP ARMS IT, ONCE: a tap on a
-    // ↑ that is not its recording's, not recording, or already armed does
-    // nothing, and the armed ↑ is disabled.
+    // ↑ : stop, transcribe, and send. A second tap before the recorder's
+    // stop cannot send twice: stop() is a no-op once the recorder is
+    // inactive, and the upload (and so the send) runs once per 'stop' event.
+    // The ↑ is disabled as the visible cue; the repeat tap AFTER the send is
+    // the hold's (voiceSend).
     var up = t.closest('[data-dictate-send]');
     if (up) {
       e.preventDefault();
       var s = active;
-      if (!s || s.p.arrow !== up || up.disabled || s.send || !s.rec || s.rec.state !== 'recording') return;
+      if (!s || s.p.arrow !== up || !s.rec) return;
       s.send = true;
       up.disabled = true;
       up.setAttribute('data-state', 'busy');
