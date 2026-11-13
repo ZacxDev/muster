@@ -226,7 +226,7 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 func (s *Server) callerOf(a agents.Agent) connectors.Caller {
 	_, _, officer := s.officerOf(a)
 	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a), ReadRepos: s.agentReadRepos(a),
-		ReadOnly: officer, Gate: s.shipGate(a)}
+		PublicReadRepos: s.agentPublicReadRepos(a), ReadOnly: officer, Gate: s.shipGate(a)}
 }
 
 // --- the proxy ------------------------------------------------------------------------
