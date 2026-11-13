@@ -741,3 +741,326 @@ test.describe('the pill, on a phone', () => {
     await expect(pill, 'a newer build is offered after a dismissal').toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE PILL'S VERSIONS, ITS RELOAD ICON, AND DRAGGING IT (operator, 2026-11-12).
+// Run at a phone (a finger: CDP touch events, so the pointer events are
+// pointerType "touch") and at a desktop (a mouse), each viewport set here.
+// ---------------------------------------------------------------------------
+
+const POS_KEY = 'muster.updatePill.pos'; // pwaScript's storage key
+const savedPos = (page: Page) => page.evaluate((k) => localStorage.getItem(k), POS_KEY);
+
+// Offers B over A for real: two builds, a waiting worker.
+async function offerB(page: Page): Promise<string> {
+  server = await startServer(versionA, updatePort);
+  const origin = `http://localhost:${updatePort}`;
+  await page.goto(origin + '/tasks');
+  await waitControlled(page);
+  await deployB();
+  await page.evaluate(checkForUpdate);
+  await expect(page.locator('#sw-update-toast')).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  return origin;
+}
+
+type Pt = { x: number; y: number };
+// press: a press at `from`, moved through `steps` points to `to`, released —
+// with the viewport's real input (a finger on the phone, a mouse on the
+// desktop).
+async function press(page: Page, touch: boolean, from: Pt, to: Pt, steps = 8): Promise<void> {
+  if (!touch) {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps });
+    await page.mouse.up();
+    return;
+  }
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] });
+  for (let i = 1; i <= steps; i++) {
+    const x = from.x + ((to.x - from.x) * i) / steps, y = from.y + ((to.y - from.y) * i) / steps;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+  }
+  // Held still before lifting, as a finger that places something does: a
+  // lift at full speed ends in a FLING, and Chromium spends the next tap on
+  // stopping it (measured: a tap on × right after a fast far press did not
+  // dismiss).
+  await page.waitForTimeout(200);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: to.x, y: to.y }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+}
+const pillBox = async (page: Page) => (await page.locator('#sw-update-toast').boundingBox())!;
+// A point on the pill's BODY: its left padding, clear of the text and buttons.
+const bodyPoint = (b: { x: number; y: number; height: number }): Pt => ({ x: b.x + 5, y: b.y + b.height / 2 });
+const centre = async (page: Page, sel: string): Promise<Pt> => {
+  const b = (await page.locator(sel).boundingBox())!;
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+};
+
+const pillViewports = [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }, touch: true },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, touch: false },
+];
+for (const vp of pillViewports) {
+  test.describe(`the pill ${vp.name}`, () => {
+    test.use(vp.use);
+
+    // The current version is the page's (rendered by build A), the new one is
+    // the WAITING worker's answer (build B's sw.js). Neither e2e build is an
+    // X.Y.Z release, so neither is a link.
+    test('the pill shows both versions when a worker is waiting', async ({ page }) => {
+      await offerB(page);
+      const pill = page.locator('#sw-update-toast');
+      await expect(pill).toHaveAttribute('data-sw-current', versionA);
+      await expect(pill.locator('[data-sw-versions]')).toBeVisible();
+      await expect(pill.locator('[data-sw-versions]')).toHaveText(`Update ${versionA} → ${versionB}`);
+      await expect(pill.locator('[data-sw-label]')).toBeHidden();
+      await expect(pill.locator('a'), 'no release link for a non-release build').toHaveCount(0);
+      expect(await page.evaluate(waitingState), 'the worker is still waiting').toBe('installed');
+      // The wider "a → b" pill is placed like the narrow one: in the corner,
+      // compact, covering no control. (The placement tests above offer the
+      // update on FULL loads, which build B's server answers, so the page is
+      // already B's and they see the narrow "Update available" form.)
+      const r = await page.evaluate(coverageJS);
+      expect(r.width, 'still a compact pill, not a bar').toBeLessThan(300);
+      expect(r.right, 'anchored to the right edge').toBeGreaterThan(r.vw - 32);
+      expect(r.covered, 'covers no control').toEqual([]);
+    });
+
+    // A release version links to that release's notes, and a tap opens them
+    // (the drag threshold does not eat it). The worker's ANSWER is replaced
+    // with a release version here — the e2e builds are not releases — so the
+    // page's drawing of a release is what is tested.
+    test('a release version links to its notes, and a tap on it opens them', async ({ page, context }) => {
+      await page.addInitScript(() => {
+        const orig = ServiceWorker.prototype.postMessage;
+        ServiceWorker.prototype.postMessage = function (this: ServiceWorker, msg: unknown, ...rest: unknown[]) {
+          const m = msg as { type?: string };
+          if (m && m.type === 'GET_VERSION' && this !== navigator.serviceWorker.controller) {
+            const ports = rest[0] as MessagePort[];
+            ports[0].postMessage({ build: '0.211.0' });
+            return;
+          }
+          return (orig as (...a: unknown[]) => void).call(this, msg, ...rest);
+        };
+      });
+      let notes = 0;
+      await context.route('https://github.com/**', (route) => { notes++; return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>notes</title>' }); });
+      await offerB(page);
+      const link = page.locator('#sw-update-toast a[data-sw-release]');
+      await expect(link).toHaveText('0.211.0');
+      await expect(link).toHaveAttribute('href', 'https://github.com/ZacxDev/muster/releases/tag/v0.211.0');
+      await expect(link).toHaveAttribute('target', '_blank');
+      const popup = context.waitForEvent('page');
+      if (vp.touch) await link.tap();
+      else await link.click();
+      const opened = await popup;
+      await opened.waitForLoadState();
+      expect(opened.url()).toBe('https://github.com/ZacxDev/muster/releases/tag/v0.211.0');
+      expect(notes, 'CONTROL: the notes page was really requested').toBeGreaterThan(0);
+      expect(await savedPos(page), 'a tap is not a drag').toBeNull();
+    });
+
+    // An older worker that does not answer GET_VERSION: the plain label, and
+    // Reload still takes the update.
+    test('the fallback label when the worker does not report its version, and Reload still works', async ({ page }) => {
+      await page.addInitScript(() => {
+        const orig = ServiceWorker.prototype.postMessage;
+        ServiceWorker.prototype.postMessage = function (this: ServiceWorker, msg: unknown, ...rest: unknown[]) {
+          const m = msg as { type?: string };
+          if (m && m.type === 'GET_VERSION' && this !== navigator.serviceWorker.controller) {
+            (window as unknown as { __unanswered: number }).__unanswered = ((window as unknown as { __unanswered: number }).__unanswered || 0) + 1;
+            return; // an old worker: never answers
+          }
+          return (orig as (...a: unknown[]) => void).call(this, msg, ...rest);
+        };
+      });
+      await offerB(page);
+      const pill = page.locator('#sw-update-toast');
+      expect(await page.evaluate(() => (window as unknown as { __unanswered?: number }).__unanswered ?? 0), 'CONTROL: the waiting worker was asked').toBeGreaterThan(0);
+      await expect(pill.locator('[data-sw-label]')).toHaveText('Update available');
+      await expect(pill.locator('[data-sw-label]')).toBeVisible();
+      await expect(pill.locator('[data-sw-versions]')).toBeHidden();
+      const reloaded = page.waitForEvent('load', { timeout: 15_000 });
+      const reload = page.getByRole('button', { name: 'Reload to update' });
+      if (vp.touch) await reload.tap();
+      else await reload.click();
+      await reloaded;
+      expect(await page.evaluate(controllerBuild)).toBe(versionB);
+    });
+
+    test('the reload icon activates the waiting worker', async ({ page }) => {
+      await page.addInitScript(() => {
+        sessionStorage.setItem('loads', String(Number(sessionStorage.getItem('loads') || '0') + 1));
+      });
+      await offerB(page);
+      const reload = page.getByRole('button', { name: 'Reload to update' });
+      await expect(reload).toHaveAttribute('data-sw-reload', '');
+      const box = (await reload.boundingBox())!;
+      expect(box.width, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+      expect(box.height, 'a 44px touch target').toBeGreaterThanOrEqual(44);
+      await expect(reload, 'an icon, no word').toHaveText('');
+      expect(await page.evaluate(controllerBuild)).toBe(versionA);
+      const before = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
+      const reloaded = page.waitForEvent('load', { timeout: 15_000 });
+      if (vp.touch) await reload.tap();
+      else await reload.click();
+      await reloaded;
+      expect(await page.evaluate(controllerBuild)).toBe(versionB);
+      expect(await page.evaluate(waitingState)).toBeNull();
+      expect(Number(await page.evaluate(() => sessionStorage.getItem('loads'))), 'exactly one reload').toBe(before + 1);
+    });
+
+    // Dragged, it stays where it was let go; that spot is remembered and the
+    // NEXT update (a third build) is offered there, not in the corner.
+    test('dragging moves the pill, and the next update is offered where it was left', async ({ page }) => {
+      await offerB(page);
+      const start = await pillBox(page);
+      expect(await savedPos(page), 'nothing saved before a drag').toBeNull();
+      const from = bodyPoint(start);
+      const d = { x: -137, y: 211 };
+      await press(page, vp.touch, from, { x: from.x + d.x, y: from.y + d.y });
+      const moved = await pillBox(page);
+      expect(Math.abs(moved.x - (start.x + d.x)), `followed the pointer in x: ${JSON.stringify({ start, moved })}`).toBeLessThan(1.5);
+      expect(Math.abs(moved.y - (start.y + d.y)), `followed the pointer in y: ${JSON.stringify({ start, moved })}`).toBeLessThan(1.5);
+      const saved = JSON.parse((await savedPos(page))!);
+      expect(Math.abs(saved.left - moved.x)).toBeLessThan(1.5);
+      expect(Math.abs(saved.top - moved.y)).toBeLessThan(1.5);
+      await expect(page.locator('#sw-update-toast')).toBeVisible();
+
+      // Take B, then deploy C: a new document, a new offer — at the saved spot.
+      const reloaded = page.waitForEvent('load', { timeout: 15_000 });
+      await page.locator('[data-sw-reload]').click();
+      await reloaded;
+      expect(await page.evaluate(controllerBuild)).toBe(versionB);
+      await expect(page.locator('#sw-update-toast')).toBeHidden();
+      await server!.stop();
+      server = await startServer(versionC, updatePort);
+      await page.evaluate(checkForUpdate);
+      await expect(page.locator('#sw-update-toast')).toBeVisible();
+      await expect(page.locator('#sw-update-toast [data-sw-versions]')).toHaveText(`Update ${versionB} → ${versionC}`);
+      const again = await pillBox(page);
+      expect(Math.abs(again.x - moved.x), `the next update is offered at the saved spot: ${JSON.stringify({ moved, again })}`).toBeLessThan(1.5);
+      expect(Math.abs(again.y - moved.y), `the next update is offered at the saved spot: ${JSON.stringify({ moved, again })}`).toBeLessThan(1.5);
+    });
+
+    // 🔴 TAPS ARE NOT DRAGS. A press that moves less than the threshold — on
+    // the body, on ×, on Reload — moves nothing and saves nothing, and a press
+    // on a button is never a drag even when it moves far.
+    test('a tap on the body, on × or on Reload does not start a drag', async ({ page }) => {
+      await offerB(page);
+      const start = await pillBox(page);
+      // Under the threshold, on the body.
+      const b = bodyPoint(start);
+      await press(page, vp.touch, b, { x: b.x - 3, y: b.y + 3 }, 3);
+      expect(await pillBox(page), 'a 3px press on the body moved the pill').toEqual(start);
+      expect(await savedPos(page)).toBeNull();
+      // A far press-and-move that starts on ×: a button is not a handle.
+      const x = await centre(page, '[data-sw-dismiss]');
+      await press(page, vp.touch, x, { x: x.x - 90, y: x.y + 120 });
+      expect(await savedPos(page), 'a press on × became a drag').toBeNull();
+      await expect(page.locator('#sw-update-toast')).toBeVisible();
+      expect(await pillBox(page), 'a press on × moved the pill').toEqual(start);
+      // A tap on ×: still a dismissal, and no drag. (A mouse click jitters
+      // 2px; a finger is a plain tap — whether a jittering touch is still a
+      // tap is Chromium's gesture slop, not the pill's.)
+      if (vp.touch) await page.locator('[data-sw-dismiss]').tap();
+      else await press(page, false, x, { x: x.x + 2, y: x.y - 2 }, 2);
+      await expect(page.locator('#sw-update-toast'), 'the jittery tap on × still dismissed').toBeHidden();
+      expect(await savedPos(page)).toBeNull();
+      // Re-offered (a full load re-offers a waiting update), a tap on Reload:
+      // still a reload, and no drag. (The reloaded document came from
+      // build B's server, so it IS B's page and the pill reads "Update
+      // available": a different width, the same corner.)
+      await page.reload();
+      await expect(page.locator('#sw-update-toast')).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      const corner = await pillBox(page);
+      expect([corner.x + corner.width, corner.y], 'no saved spot: the corner again').toEqual([start.x + start.width, start.y]);
+      const r = await centre(page, '[data-sw-reload]');
+      const reloaded = page.waitForEvent('load', { timeout: 15_000 });
+      if (vp.touch) await page.locator('[data-sw-reload]').tap();
+      else await press(page, false, r, { x: r.x - 2, y: r.y + 2 }, 2);
+      await reloaded;
+      expect(await page.evaluate(controllerBuild)).toBe(versionB);
+      expect(await savedPos(page), 'the tap on Reload became a drag').toBeNull();
+    });
+
+    // 🔴 CLAMPED: dragged past an edge, the pill stops AT the edge; a smaller
+    // viewport pulls it back inside; the original viewport puts it back at the
+    // spot it was left at (a clamp does not overwrite the saved spot).
+    test('the pill is clamped inside the viewport, while dragged and after a resize', async ({ page }) => {
+      await offerB(page);
+      const vw = vp.use.viewport.width, vh = vp.use.viewport.height;
+      const start = await pillBox(page);
+      const from = bodyPoint(start);
+      // To the bottom-right corner, held by the pill's LEFT end: the pill
+      // would hang a whole pill-width past the right edge. (The pointer stays
+      // inside the viewport, so every move is delivered.)
+      await press(page, vp.touch, from, { x: vw - 2, y: vh - 2 }, 10);
+      const edge = await pillBox(page);
+      const cw = await page.evaluate(() => document.documentElement.clientWidth);
+      expect(edge.x + edge.width, `inside the right edge: ${JSON.stringify(edge)}`).toBeLessThanOrEqual(cw + 0.5);
+      expect(edge.x + edge.width, `AT the right edge: ${JSON.stringify(edge)}`).toBeGreaterThan(cw - 1.5);
+      expect(edge.y + edge.height, `AT the bottom edge: ${JSON.stringify(edge)}`).toBeGreaterThan(vh - 1.5);
+      expect(edge.y + edge.height, `inside the bottom edge: ${JSON.stringify(edge)}`).toBeLessThanOrEqual(vh + 0.5);
+
+      // The viewport shrinks past it (a rotation, a resized window).
+      const small = { width: Math.max(Math.round(vw * 0.6), Math.ceil(edge.width) + 40), height: Math.round(vh * 0.55) };
+      expect(edge.x + edge.width > small.width && edge.y + edge.height > small.height, 'CONTROL: the smaller viewport really cuts the pill off').toBe(true);
+      await page.setViewportSize(small);
+      await expect
+        .poll(async () => {
+          const b = await pillBox(page);
+          return b.x + b.width <= small.width + 0.5 && b.y + b.height <= small.height + 0.5 && b.x >= -0.5 && b.y >= -0.5;
+        }, { message: 'the pill is pulled inside the smaller viewport' })
+        .toBe(true);
+      await page.setViewportSize(vp.use.viewport);
+      await expect
+        .poll(async () => { const b = await pillBox(page); return [Math.round(b.x), Math.round(b.y)]; }, { message: 'back at the spot it was left at' })
+        .toEqual([Math.round(edge.x), Math.round(edge.y)]);
+
+      // To the top-left corner, held by its text (a body point well inside
+      // the pill): it would hang past the left and top edges.
+      const back = await pillBox(page);
+      const from2 = await centre(page, '#sw-update-toast [data-sw-versions]');
+      expect(from2.x - back.x, 'CONTROL: held far enough in to overshoot the left edge').toBeGreaterThan(30);
+      await press(page, vp.touch, from2, { x: 1, y: 1 }, 10);
+      const tl = await pillBox(page);
+      expect(tl.x, `AT the left edge: ${JSON.stringify(tl)}`).toBeGreaterThanOrEqual(-0.5);
+      expect(tl.x).toBeLessThan(1.5);
+      expect(tl.y, `AT the top edge: ${JSON.stringify(tl)}`).toBeGreaterThanOrEqual(-0.5);
+      expect(tl.y).toBeLessThan(1.5);
+    });
+  });
+}
+
+// Storage that throws (a private window, blocked site data): the pill is still
+// offered, still drags, and the spot lives for the page.
+test.describe('the pill without storage', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
+
+  test('dragging works when localStorage throws', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new DOMException('denied', 'SecurityError'); } });
+    });
+    await offerB(page);
+    const start = await pillBox(page);
+    const from = bodyPoint(start);
+    await press(page, false, from, { x: from.x - 300, y: from.y + 250 });
+    const moved = await pillBox(page);
+    expect(Math.abs(moved.x - (start.x - 300))).toBeLessThan(1.5);
+    expect(Math.abs(moved.y - (start.y + 250))).toBeLessThan(1.5);
+    // A re-offer in this page (an in-app navigation's htmx:load) keeps the spot.
+    await page.evaluate(() => {
+      const t = document.getElementById('sw-update-toast')!;
+      t.hidden = true;
+      document.body.dispatchEvent(new Event('htmx:load', { bubbles: true }));
+    });
+    await expect(page.locator('#sw-update-toast')).toBeVisible();
+    const again = await pillBox(page);
+    expect([Math.round(again.x), Math.round(again.y)]).toEqual([Math.round(moved.x), Math.round(moved.y)]);
+  });
+});

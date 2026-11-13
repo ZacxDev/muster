@@ -2,10 +2,13 @@ package ui
 
 import (
 	"html"
+	"io/fs"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/web"
 )
 
 const swRegisterCall = "navigator.serviceWorker.register("
@@ -54,6 +57,101 @@ func TestTheUpdateToastSitsAtTheTop(t *testing.T) {
 	if !strings.Contains(h, `data-sw-dismiss=""`) {
 		t.Error("the update toast has no dismiss control")
 	}
+}
+
+// TestTheUpdatePillNamesTheRunningBuild: the pill carries the running build
+// (data-sw-current) and draws it as the from-version, with an empty slot for
+// the new one pwaScript fills; the fallback label is there for a worker that
+// does not answer. Each version is distinct from every literal the test names
+// elsewhere, so a hardcoded value cannot pass.
+func TestTheUpdatePillNamesTheRunningBuild(t *testing.T) {
+	old := buildVersion
+	t.Cleanup(func() { buildVersion = old })
+	SetBuildVersion("7.31.902")
+	h := renderString(t, Page("tasks", Features{}))
+	toast := between(h, `<div id="sw-update-toast"`, ">")
+	if !strings.Contains(toast, `data-sw-current="7.31.902"`) {
+		t.Errorf("the pill does not carry the running build: %q", toast)
+	}
+	pill := between(h, `<div id="sw-update-toast"`, `data-sw-dismiss`)
+	for _, want := range []string{
+		`<span data-sw-label="" class="whitespace-nowrap">Update available</span>`,
+		`<span data-sw-versions="" hidden="" class="whitespace-nowrap">Update `,
+		`>7.31.902</a> → <span data-sw-to=""></span></span>`,
+	} {
+		if !strings.Contains(pill, want) {
+			t.Errorf("the pill lacks %q:\n%s", want, pill)
+		}
+	}
+
+	// No build installed: no versions at all, only the label.
+	SetBuildVersion("")
+	h = renderString(t, updateToast())
+	if strings.Contains(h, "data-sw-versions") || !strings.Contains(h, "Update available") {
+		t.Errorf("with no build the pill must read only \"Update available\": %s", h)
+	}
+}
+
+// TestTheReleaseLinkIsOnlyForReleaseVersions: a version links to its release
+// notes (the public tag v<version>) only when it is X.Y.Z — what a release
+// stamps. A main push's short sha, "dev", the e2e builds and anything
+// prefixed or suffixed get plain text.
+func TestTheReleaseLinkIsOnlyForReleaseVersions(t *testing.T) {
+	for _, v := range []string{"0.211.0", "12.0.3"} {
+		h := renderString(t, updateToastFor(v))
+		want := `<a data-sw-from="" data-sw-release="` + v + `" href="https://github.com/ZacxDev/muster/releases/tag/v` + v + `" target="_blank" rel="noopener noreferrer"`
+		if !strings.Contains(h, want) {
+			t.Errorf("%s: no release-notes link (%s):\n%s", v, want, h)
+		}
+	}
+	for _, v := range []string{"dev", "0d8b419", "e2e-a", "v0.211.0", "0.211", "0.211.0-rc1", "0.211.0\n<x>"} {
+		h := renderString(t, updateToastFor(v))
+		if strings.Contains(h, "<a ") || strings.Contains(h, "releases/tag") {
+			t.Errorf("%q is not a release, but the pill links it:\n%s", v, h)
+		}
+		if !strings.Contains(h, `<span data-sw-from="" class="font-semibold">`) {
+			t.Errorf("%q: not drawn as plain text:\n%s", v, h)
+		}
+	}
+	// pwaScript tests the NEW version with the very same pattern.
+	if !strings.Contains(pwaJS(t), "var RELEASE_RE = /"+releaseVersionPattern+"/;") {
+		t.Error("pwaScript does not test the new version with releaseVersionPattern")
+	}
+}
+
+// TestReloadIsAnIconButton: Reload is a 44×44 icon button named "Reload to
+// update" that still carries data-sw-reload (pwaScript's handler), drawing an
+// SVG and no visible word.
+func TestReloadIsAnIconButton(t *testing.T) {
+	h := renderString(t, updateToastFor("1.2.3"))
+	b := regexp.MustCompile(`<button[^>]*data-sw-reload[^>]*>(.*?)</button>`).FindStringSubmatch(h)
+	if b == nil {
+		t.Fatalf("no data-sw-reload button:\n%s", h)
+	}
+	for _, want := range []string{`aria-label="Reload to update"`, ` h-11 `, ` w-11 `, `type="button"`} {
+		if !strings.Contains(b[0], want) {
+			t.Errorf("the reload button lacks %q: %s", want, b[0])
+		}
+	}
+	if !strings.HasPrefix(b[1], "<svg") || !strings.Contains(b[1], `aria-hidden="true"`) {
+		t.Errorf("the reload button is not an icon: %s", b[1])
+	}
+	if strings.Contains(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(b[1], ""), "Reload") {
+		t.Errorf("the reload button still draws a word: %s", b[1])
+	}
+	if !strings.Contains(h, `data-sw-dismiss`) {
+		t.Error("× is gone")
+	}
+}
+
+// pwaJS is the served pwa.js body.
+func pwaJS(t *testing.T) string {
+	t.Helper()
+	body, err := fs.ReadFile(web.Files, strings.TrimPrefix(pwaScriptSrc, "/"))
+	if err != nil {
+		t.Fatalf("%s: %v", pwaScriptSrc, err)
+	}
+	return string(body)
 }
 
 // TestPWAScriptRegistersBeforeThePushScript: pushScript consumes the
