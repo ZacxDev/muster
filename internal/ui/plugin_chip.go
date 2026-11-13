@@ -597,6 +597,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (watching) return;
     watching = true;
     window.addEventListener('resize', relayout);
+    // Back from the back/forward cache with the panel open: measured again.
+    window.addEventListener('pageshow', relayout);
     var vw = window;
     try { if (window.frameElement && window.frameElement.hasAttribute('`+ViewFrameAttr+`')) vw = window.parent; } catch (e) {}
     if (vw.visualViewport) {

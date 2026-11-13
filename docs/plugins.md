@@ -180,10 +180,28 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   nothing for a window with nothing to preview (without reading the plugin
   store), and nothing once the plugin's token is revoked.
 - **The panel.** The button opens the plugin's page in a sandboxed frame: a
-  side panel over the right of the page from `sm` (640 px) up, the whole
-  screen below it. **Close** or Escape closes it and unloads the page. Its
-  header has **New tab**, the same hand-off in a new tab. With more than one
-  live viewer plugin the header also has a picker (newest first).
+  full-height side panel at the right from `sm` (640 px) up, the screen above
+  the message bar below it. **Close** or Escape closes it and unloads the page.
+  Its header has **New tab**, the same hand-off in a new tab. With more than
+  one live viewer plugin the header also has a picker (newest first).
+- **The message bar stays usable while the panel is open.** The page's one
+  message bar is kept, never a second one:
+  - Below `sm` the panel ends at the bar's top and the bar stays live: typing,
+    Send, the mic, the paperclip, the `/` menu and the suggested replies,
+    whose popups open over the panel. The panel's bottom is measured from the
+    bar, so when the keyboard raises the bar the panel shrinks above it.
+  - From `sm` up the conversation and the bar end at the panel's left edge,
+    so Send and the replies stay in view beside it.
+  - In full screen (the Android app, below) the bar is hidden. A
+    semi-transparent round button at the bottom right, **Show message bar**,
+    shows it with the preview above it, and the same button (**Hide message
+    bar**) hides it again. Full screen always opens with the bar hidden.
+  - While the panel covers the conversation (below `sm`, and in full screen),
+    a reply from the agent puts a dot on the panel's title, or on the bar
+    button in full screen, where the header is hidden. The dot clears when the
+    conversation is in view again: the panel closes, or becomes a side panel.
+    Beside the page the replies stay in view, so there is no dot. A Terminal
+    view has no transcript to watch, so it has no dot.
 - **Both mint at click time.** The page posts `POST /plugin-handoffs` for that
   plugin and the window on screen, then goes to the URL it answers. A refused
   mint (the token revoked since the page loaded, the window gone, the rate
@@ -240,8 +258,10 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   stays: the Rendered | Terminal switch frames the other view of muster's own
   origin. Every other page's CSP is unchanged, and so are the two views' when
   there is no live viewer plugin.
-- **Nothing moves.** The button's first state is drawn with the page, and the
-  panel is `position: fixed`, so neither shifts the conversation.
+- **Nothing moves on load.** The button's first state is drawn with the page,
+  and the panel is `position: fixed`, so neither shifts the conversation. The
+  layout around the open panel is keyed on attributes set on `<html>` only
+  while it is open, so a page loads exactly as it did without them.
 - **Nothing is drawn**, nothing polls, and no `frame-src` is added, while
   `MUSTER_PLUGIN_ORIGINS` is unset, plugins are off, the owner has no live
   `viewer` plugin, or the window has no tmux window id (an older per-session
@@ -252,8 +272,11 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
   (read once per list, and not at all with plugins or
   `MUSTER_PLUGIN_ORIGINS` off).
 - **Escape** closes the panel only when no other dialog or popover is open.
-  **Full screen** (below `sm`) everything behind the panel is made inert while
-  it is open, so Tab stays in it; that is undone on close.
+  While the panel covers the page (below `sm`, and in full screen) everything
+  it covers is made inert, so Tab reaches only the panel and the message bar
+  (while the bar is shown). Dialogs and popovers are never made inert, so a
+  step-up confirm opened by a Send still answers. Beside the page nothing is
+  inert. All of it is undone on close.
 
 ## The plugin author's contract
 
