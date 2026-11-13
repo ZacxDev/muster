@@ -346,6 +346,15 @@ func (a *App) Renames() []string {
 
 // --- the connector ---------------------------------------------------------------
 
+// Hosts are the git and API hosts this App's connector serves (lowercase).
+// A nil App has none ("" "", which a caller reads as the defaults).
+func (a *App) Hosts() (git, api string) {
+	if a == nil {
+		return "", ""
+	}
+	return a.cfg.GitHost, a.cfg.APIHost
+}
+
 // Describe is the `github` connector's public description: the same hosts and
 // auth shape as the GitHub preset (basic, username x-access-token — the one
 // shape both git over HTTPS and the REST API accept), with no stored secret.
@@ -450,60 +459,14 @@ func (a *App) Problem(agentID int64) string {
 	return ""
 }
 
-// targetRepo is the repository a proxied request is for. scoped is false for an
-// API path that names no repository (/graphql, /rate_limit, /user …): those
-// carry the agent's token, which can reach only the agent's repository anyway.
-//
-// The path is FULLY percent-decoded first and compared without case, as GitHub
-// routes it:
-//
-//   - github.com: every path is <owner>/<repo>[.git]/… (git's smart-HTTP
-//     protocol, and the web URLs). A path with fewer segments is refused.
-//   - api.github.com: /repos/<owner>/<repo>/… (any case) names a repository;
-//     /repositories/<id>/… is REFUSED (an id muster cannot match to the
-//     agent's repository without another API call); any other path is not
-//     repository-scoped.
-//
-// Refused outright, because the upstream may resolve them to another
-// repository after this check: a `.` or `..` segment, a leading empty segment
-// (`%2Frepos/…` decodes to one), a `%` left after decoding (double encoding), a
-// backslash, and an escape that does not decode.
+// targetRepo is the repository a proxied request is for, decided by
+// connectors.GitHubTargetRepo on this App's hosts (the rule, and every path it
+// refuses, is documented there; the standing public read decides with it too).
+// scoped is false for an API path that names no repository (/graphql,
+// /rate_limit, /user …): those carry the agent's token, which can reach only
+// the agent's repository anyway.
 func (a *App) targetRepo(host, rest string) (repo string, scoped bool, err error) {
-	p, err := url.PathUnescape(rest)
-	if err != nil {
-		return "", false, errors.New("the request path does not decode")
-	}
-	if strings.ContainsAny(p, "%\\") {
-		return "", false, errors.New("the request path is encoded more than once or holds a backslash")
-	}
-	segs := strings.Split(p, "/")
-	if segs[0] == "" {
-		return "", false, errors.New("the request path begins with an empty segment")
-	}
-	for _, s := range segs {
-		if s == "." || s == ".." {
-			return "", false, errors.New("the request path has a '.' or '..' segment")
-		}
-	}
-	switch host {
-	case a.cfg.GitHost:
-		if len(segs) < 2 || segs[1] == "" {
-			return "", false, fmt.Errorf("%s/%s names no repository", host, p)
-		}
-		return segs[0] + "/" + strings.TrimSuffix(segs[1], ".git"), true, nil
-	case a.cfg.APIHost:
-		switch strings.ToLower(segs[0]) {
-		case "repos":
-			if len(segs) < 3 || segs[1] == "" || segs[2] == "" {
-				return "", false, fmt.Errorf("%s/%s names no repository", host, p)
-			}
-			return segs[1] + "/" + segs[2], true, nil
-		case "repositories":
-			return "", false, fmt.Errorf("%s/%s names a repository by id; use /repos/<owner>/<name>", host, p)
-		}
-		return "", false, nil
-	}
-	return "", false, fmt.Errorf("host %s is not served by the GitHub App connector", host)
+	return connectors.GitHubTargetRepo(a.cfg.GitHost, a.cfg.APIHost, host, rest)
 }
 
 // mintRequest is the body of every agent token mint. 🔴 IT IS THE WHOLE

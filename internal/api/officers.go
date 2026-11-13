@@ -542,6 +542,17 @@ func (s *Server) logOfficerBackend(o officers.Officer) {
 	if !o.IsBuiltin() {
 		return
 	}
+	if rr := o.StandingReadRepos(); len(rr) > 0 {
+		at := "the default branch"
+		if o.ReadAt == officers.ReadAtRelease {
+			at = "muster's release tag " + o.ReleaseTag
+			if o.ReleaseTag == "" {
+				at = "the default branch (this build is not a release, so it has no tag)"
+			}
+		}
+		s.logger.Printf("officers: %s: standing public read of %s at %s (no approval; anonymous, reads only, each checked public with GitHub)",
+			o.ID, strings.Join(rr, ", "), at)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), officerBootReadTimeout)
 	defer cancel()
 	on, err := b.Enabled(ctx)
@@ -595,11 +606,25 @@ func (s *Server) agentRepo(a agents.Agent) string {
 
 // agentReadRepos are the further repositories agent a may READ through the
 // GitHub App connector (connectors.Caller.ReadRepos): an officer instance's
-// officer's `read_repos` (officers.Officer.ReadRepos, read from the registry
-// like agentRepo), nil for every other agent.
+// officer's `read_repos` (officers.Officer.ApprovalReadRepos, read from the
+// registry like agentRepo) — none when they are a standing read
+// (agentPublicReadRepos) — nil for every other agent.
 func (s *Server) agentReadRepos(a agents.Agent) []string {
 	if o, _, ok := s.officerOf(a); ok {
-		return o.ReadRepos
+		return o.ApprovalReadRepos()
+	}
+	return nil
+}
+
+// agentPublicReadRepos are the PUBLIC repositories agent a reads through the
+// standing public read (connectors.Caller.PublicReadRepos): an instance of a
+// builtin officer declaring read_grant "standing"
+// (officers.Officer.StandingReadRepos, the one rule), nil for every other
+// agent — an HQ officer's, a shipping officer's and every task agent's
+// included.
+func (s *Server) agentPublicReadRepos(a agents.Agent) []string {
+	if o, _, ok := s.officerOf(a); ok {
+		return o.StandingReadRepos()
 	}
 	return nil
 }

@@ -699,6 +699,12 @@ func (s *Server) UseExtensions(ext Extensions) {
 			// this package's own streams, on whichever listener it arrived.
 			StreamsEnd: s.streams.context(),
 		}
+		// The standing public read is served on the GitHub App's own hosts when
+		// one is configured (the same platform its tokens are minted for), and
+		// on github.com / api.github.com otherwise (connectors' defaults).
+		if h, ok := ext.GitHubApp.(interface{ Hosts() (git, api string) }); ok && ext.GitHubApp != nil {
+			s.connectProxy.GitHubGitHost, s.connectProxy.GitHubAPIHost = h.Hosts()
+		}
 	}
 }
 
