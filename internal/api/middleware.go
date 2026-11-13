@@ -138,10 +138,15 @@ const permissionsPolicy = "microphone=(self)"
 // is server-rendered HTML + vendored htmx/idiomorph + inline <script> blocks and
 // `hx-on:` attributes. htmx compiles `hx-on:` handlers via `new Function`, so the
 // script-src needs BOTH 'unsafe-inline' (inline scripts + hx-on attrs) AND
-// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break. The
-// CSP still earns its keep by blocking external origins, framing (clickjacking),
-// base-uri and form-action hijacking; Referrer-Policy:no-referrer keeps the
-// magic-link token out of the Referer header.
+// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break.
+// ⚠ So the CSP is NOT an exfiltration barrier: an injected inline script can
+// always navigate (location = …), which no CSP directive governs. What it does
+// earn: framing (frame-ancestors, clickjacking), base-uri and form-action
+// hijacking, external SCRIPTS and styles (script-src/style-src 'self'), and
+// keeping the pages' own fetches same-origin (connect-src 'self', plus a Faro
+// collector when telemetry is on). img-src also admits other origins' brand
+// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
+// keeps the magic-link token out of the Referer header.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -153,6 +158,25 @@ func securityHeaders(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// serverSwitcherImgSrc is what the web app's server switcher may DRAW from
+// another origin (docs/design/web-server-switcher.md): another muster's
+// current logo icon, as a plain <img>, at the one path every muster serves it
+// on. The operator's decision on review ("Logo via <img>, no CORS"): nothing on
+// another origin is READ — connect-src stays 'self', and /api/instance and
+// /brand/* send no Access-Control-Allow-Origin.
+//
+// 🔴 ONE EXACT PATH, NOT AN ORIGIN AND NOT A PREFIX. The servers are the
+// person's own list, kept in their browser, so no origin can be named here; a
+// path source with no trailing slash matches that path only. http only for the
+// two loopback hosts the switcher accepts (development). ⚠ A source's path is
+// not checked after a redirect, and an image URL can carry a query: neither
+// matters for exfiltration, which a navigation already allows (above).
+// ⚠ A host wildcard does not match an IP address in a browser that follows the
+// CSP spec, so a server addressed by IP (other than 127.0.0.1) may show no
+// logo; the switcher then draws its colour and label.
+const serverSwitcherImgSrc = "https://*:*/brand/icon-192.png " +
+	"http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
 
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
 // source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
@@ -167,7 +191,7 @@ func contentSecurityPolicy(frameAncestors, frameSrc string) string {
 	csp := "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: " + serverSwitcherImgSrc + "; " +
 		"connect-src " + connectSrc + "; " +
 		"frame-ancestors " + frameAncestors + "; "
 	if frameSrc != "" {

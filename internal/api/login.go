@@ -303,6 +303,8 @@ func problemNode(problem string) string {
 // Every such page deletes the mirrored views' snapshots in this browser
 // (ui.SnapPurgeHTML): a sign-out lands here, and so does any sign-in, so one
 // user's cached conversations never outlive their session on a shared device.
+// They also keep a server switcher hand-off (#muster-from) across the sign-in
+// (ui.ServerHandoffKeepHTML).
 func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
@@ -316,6 +318,7 @@ func writeAuthDocument(w http.ResponseWriter, code int, brand ui.Brand, title, i
 <title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">
 ` + ui.SnapPurgeHTML() + `
+` + ui.ServerHandoffKeepHTML() + `
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">

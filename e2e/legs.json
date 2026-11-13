@@ -108,6 +108,7 @@
   "legs": {
     "1": [
       "tests/chief-in-view.spec.ts",
+      "tests/server-switcher.spec.ts",
       "tests/agents-switcher.spec.ts",
       "tests/composer-switcher.spec.ts",
       "tests/host-names.spec.ts",
