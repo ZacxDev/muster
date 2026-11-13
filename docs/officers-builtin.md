@@ -132,6 +132,71 @@ An officer declared here but not defined in the store answers 404 to the wake
 loop, which treats it as a configuration fault and keeps its instances at
 zero until you define it.
 
+## Officers in the Compose stack (host sessions)
+
+A builtin officer can run without Kubernetes: with `"runtime": "host"` each
+instance is a Claude Code window that muster asks ONE of your machines to
+start, through that machine's `muster-mirror` — the same host spawn the chief
+uses ([design/officers-on-hosts.md](design/officers-on-hosts.md)). This is how
+officers run in the Compose stack, which forwards `MUSTER_OFFICERS`.
+
+```sh
+# .env on the Compose install
+MUSTER_OFFICERS=[{"id":"marketing:example","backend":"builtin","runtime":"host","host":"laptop","repo":"example-org/example-site"}]
+```
+
+On the machine named by `host`, `muster-mirror` must run with `-interactive
+-agent-spawn` and the officer's `repo` on `-agent-spawn-repos` (one clone of it
+under `-agent-spawn-roots`), and be current enough to close windows and to
+accept an officer's first message (a muster-mirror from this version). Its
+user-scope `mcpServers.muster` entry ([attention.md](attention.md#mirrored-claude-code-sessions))
+is how an instance reaches its officer tools.
+
+What happens:
+
+- **Wake.** An item in its queue makes the wake loop start instance 1: muster
+  records the spawn and the host opens a window in its `agents` tmux session,
+  in a fresh worktree of `repo`, running Claude Code with the officer's first
+  message (behind the preface `muster: your owner's officer runtime started
+  you`), without permission prompts unless the host turned
+  `-agent-spawn-skip-permissions` off.
+- **Tools.** The instance is offered `officer_brief`, `officer_items`,
+  `officer_claim`, `officer_heartbeat`, `officer_complete`, `officer_release`
+  and `officer_ask_person`, through the mirror door. A call is served only to
+  the Claude session muster recorded for that spawn, in the window it
+  recorded; any other session gets a tool error. While a host officer is
+  declared, every mirrored session's tool list shows these tools (a list
+  carries no session); only the instance can use them.
+- **More work while it is up.** muster pastes the re-prompt into its window,
+  only while the host reports it idle.
+- **Scale to zero.** After `idle_scale_to_zero_after` with nothing to do,
+  muster closes the window (`/exit` at an idle prompt, the window closed after
+  30 s otherwise); the host then removes the worktree if it is clean. muster
+  closes only the window it recorded for that instance.
+- **Host offline.** The officer changes nothing until the host is back: its
+  items wait.
+
+Refused at boot, each named: `backend` other than `builtin`, no `host` or `repo`,
+and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `connectors`,
+`read_repos`, `llm`, `kube` (plus what every builtin officer refuses). Not
+offered on a host: `officer_post_draft` (an outbound draft is filed against an
+agent row, which a host instance has not), so an officer that needs
+[outbound drafts](#5b-outbound-drafts-through-a-bound-plugin) stays on pods.
+
+🔴 **The security model is the machine's, not a pod's.** An instance runs as
+the user `muster-mirror` runs as: that user's files, git and SSH credentials,
+network and other tmux windows; no egress lock and no read-only GitHub token —
+its worktree can be pushed with that user's credentials, and the first message
+telling it not to is prose, not a gate. The host's own allow-list, spawn rate
+limit (`-agent-spawn-rate`, default 3 per 10 minutes and 10 a day — it counts
+each wake, so raise it on that host if the officer wakes more often) and audit
+log still bound what muster can make it do. Declare one only on a machine whose
+user you would let run that charter unattended. The full list is in the
+[design](design/officers-on-hosts.md#security-what-changes-against-a-pod).
+
+**Check:** the boot log's `officers: <id> on: runtime host on <machine> …` line,
+and the ON line's `S on hosts` count.
+
 ## 4. Feed its queue
 
 ```sh

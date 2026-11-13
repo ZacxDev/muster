@@ -743,11 +743,29 @@ permission prompts. [configuration.md](configuration.md#muster-server-permission
 ### Officers
 
 Standing Claude Code agents with a job description, woken by a queue kept in
-**HQ**, an external server. [officers.md](officers.md).
+**HQ**, an external server, or in muster's own database (the
+[built-in backend](officers-builtin.md)). [officers.md](officers.md).
 
-- **Needs HQ, [dispatch](#dispatch) with the `claude-code` kind, and the
-  connector store's agent door** (`MUSTER_CONNECT_PORT`,
-  `MUSTER_AGENT_CONNECT_URL`).
-- **Not available in the Compose stack**: `MUSTER_OFFICERS` and the
-  per-officer `MUSTER_OFFICER_*_<NAME>` variables are not forwarded.
-- **Check:** `officers: ON — N declared in MUSTER_OFFICERS (H on HQ, B on the built-in backend); …`, then one `officers: <id> backend …` line per officer.
+Each officer's instances run on one of two runtimes (`runtime` in its
+`MUSTER_OFFICERS` entry):
+
+- **Pods** (the default): **needs [dispatch](#dispatch) with the `claude-code`
+  kind, and the connector store's agent door** (`MUSTER_CONNECT_PORT`,
+  `MUSTER_AGENT_CONNECT_URL`); HQ or the built-in backend. Not available in the
+  Compose stack.
+- **Host-spawned sessions** (`"runtime": "host"`, `"host": "<machine>"`): each
+  instance is a Claude Code window on ONE of your machines, started by its
+  `muster-mirror`. **Works in the Compose stack**: needs the database, the
+  built-in backend, and a `muster-mirror` on that machine with `-interactive
+  -agent-spawn` and the officer's `repo` on `-agent-spawn-repos`. Not available
+  there: HQ, tiers, models, connectors, `read_repos`, the LLM proxy, kube
+  reads, ship gates, transcripts and `officer_post_draft` (each a boot
+  refusal naming the field, or not offered). 🔴 The sessions run as that
+  machine's user with no pod isolation:
+  [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions),
+  [design](design/officers-on-hosts.md).
+- In the Compose stack `MUSTER_OFFICERS` is forwarded; a pod officer in it
+  refuses the boot (there is no provisioner). The per-officer
+  `MUSTER_OFFICER_*_<NAME>` variables are not forwarded (a host officer needs
+  none).
+- **Check:** `officers: ON — N declared in MUSTER_OFFICERS (H on HQ, B on the built-in backend; P in pods, S on hosts); …`, then one `officers: <id> backend …` line per officer, and for a host officer `officers: <id> on: runtime host on <machine> …`.

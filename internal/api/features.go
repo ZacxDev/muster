@@ -176,6 +176,7 @@ func toolFeatures(door mcpDoor) map[string]string {
 		add(features.Dispatch, chiefRestartToolDef())
 		add(features.TaskRouting, dispatchHoldToolDefs()...)
 		add(features.Pages, pageToolDefs()...)
+		add(features.Officers, hostOfficerToolDefs()...)
 	}
 	return m
 }

@@ -951,7 +951,9 @@ func (s *Server) actViewOnly(octx context.Context, c nudgeCandidate, d chiefnudg
 // mirror.SpawnPreface opens a host-spawned agent's first message (its spawn
 // prompt: the chief's relay and the task, never the owner's own words), so it
 // is never the owner's authority, however the transcript was read.
-var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface}
+// mirror.OfficerSpawnPreface opens a host officer instance's first message (its
+// kickoff), muster's text as well.
+var nudgeInjectedPrefixes = []string{RoutedPrefacePrefix, chiefnudge.NudgeLabel, mirror.SpawnPreface, mirror.OfficerSpawnPreface}
 
 // injectedBodyReader is the send queue's read of what muster itself queued
 // (sendqueue.PGStore.InjectedBodies); a queue without it adds nothing.

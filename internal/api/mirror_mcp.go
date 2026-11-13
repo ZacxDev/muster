@@ -326,6 +326,14 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.hostDispatches() != nil && !s.featureOff(features.TaskRouting) {
 		out = append(out, agentReportDoneToolDef())
 	}
+	// The officer tools a HOST officer's instances use (officer_host.go,
+	// docs/design/officers-on-hosts.md) — while a declared officer runs on a
+	// host. Listed for every session for agent_report_done's reason; the call
+	// binds it to the spawn muster recorded for the caller's session and
+	// window, and refuses any other session.
+	if s.hostOfficersOn() && !s.featureOff(features.Officers) {
+		out = append(out, hostOfficerToolDefs()...)
+	}
 	return out
 }
 
@@ -446,6 +454,12 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// the host-dispatch store): bound to THIS session's own dispatch.
 			if name == agentReportDoneTool {
 				return s.toolHostReportDone(r.Context(), t.Host, c.asker.MirrorSession, c.mirrorWindow, args)
+			}
+			// The officer tools (listed only with a host officer declared):
+			// bound to the host officer instance this session IS, then the
+			// agent door's own dispatchOfficerTool (officer_host.go).
+			if isOfficerTool(name) {
+				return s.toolHostOfficer(r.Context(), t.Host, c, name, args)
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text

@@ -29,7 +29,7 @@ func KickoffText(o Officer, n int) string {
 	if ToolServed(o, caps, ToolAskPerson) {
 		ask = fmt.Sprintf(w.ask, ToolAskPerson)
 	}
-	return fmt.Sprintf(`You are officer %[1]s, instance %[2]s of %[3]d (%[4]s). You are an officer: a standing agent that works a queue of items %[14]s for this officer. You have no muster task and no repository checkout; that is expected.
+	return fmt.Sprintf(`You are officer %[1]s, instance %[2]s of %[3]d (%[4]s). You are an officer: a standing agent that works a queue of items %[14]s for this officer. %[20]s
 
 Your officer tools (MCP server "muster"): %[5]s. They act for officer %[1]s only; %[15]s%[16]s
 
@@ -42,7 +42,31 @@ Start now:
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
 		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ask,
-		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork) + tierNote(o, w.source) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork, whereNote(o)) + tierNote(o, w.source) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+}
+
+// podWhere is what a pod instance is told about where it runs.
+const podWhere = "You have no muster task and no repository checkout; that is expected."
+
+// whereNote is the kickoff's sentence about where the instance runs: a pod
+// (podWhere, the text every pod officer has always been given), or a
+// host-spawned window in a worktree (docs/design/officers-on-hosts.md).
+func whereNote(o Officer) string {
+	if !o.OnHost() {
+		return podWhere
+	}
+	return fmt.Sprintf("You have no muster task. You run in a tmux window on %s that muster started for this officer, in a fresh git worktree of %s; that is expected.", o.Host, o.Repo)
+}
+
+// hostRepoNote replaces repoNote for a host officer (Officer.OnHost): its
+// repository is the worktree it runs in, read directly — no connector — and
+// it must not push. 🔴 "must not push" IS PROSE, NOT A GATE: the session runs
+// as the host's user with that user's git credentials (the design's security
+// section says so).
+func hostRepoNote(o Officer) string {
+	return fmt.Sprintf(`
+
+Your repository is %[1]s: your working directory is a worktree of it, cut from the remote's default branch. Read it there with the usual tools (git log, git show, reading files). Reading is all it is for: do not commit, push, open pull requests or change the clone; muster closes this window and its worktree when you are idle.`, o.Repo)
 }
 
 // kickoffWording is the part of KickoffText that names where the officer's
@@ -210,6 +234,9 @@ func repoNote(o Officer) string {
 	if o.Repo == "" {
 		return ""
 	}
+	if o.OnHost() {
+		return hostRepoNote(o)
+	}
 	if o.Ship != nil {
 		return shipNote(o) + readReposNote(o)
 	}
@@ -330,6 +357,12 @@ const (
 	ToolPostDraft = "officer_post_draft"
 )
 
+// hostTools are the officer tools a host officer's instances are offered
+// (ToolOffered).
+var hostTools = map[string]bool{
+	ToolBrief: true, ToolItems: true, ToolClaim: true, ToolHeartbeat: true, ToolComplete: true, ToolRelease: true, ToolAskPerson: true,
+}
+
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
 const ReleaseOfficerType = "release"
 
@@ -346,6 +379,13 @@ func (o Officer) Type() string {
 // for a judgement pool whose officer declares a readable cluster.
 // internal/api's listing and dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
+	// 🔴 A HOST OFFICER IS OFFERED THE QUEUE TOOLS AND officer_ask_person
+	// ONLY (docs/design/officers-on-hosts.md): every other officer tool is
+	// bound to a pod's agent row (an outbound draft, a connector, a ship
+	// gate) or served by no backend a host officer may have.
+	if o.OnHost() && !hostTools[tool] {
+		return false
+	}
 	switch tool {
 	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, ToolAskPerson, ToolObsQueries, ToolObsQuery:
 		return true
