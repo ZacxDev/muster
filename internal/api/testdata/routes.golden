@@ -34,6 +34,7 @@ DELETE /api/device/push
 DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
 DELETE /api/officers/defs/{officer}
+DELETE /api/officers/defs/{officer}/schedules/{name}
 DELETE /api/officers/types/{key}
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
@@ -81,6 +82,7 @@ GET /api/instance
 GET /api/jobs/{id}
 GET /api/officers/defs
 GET /api/officers/defs/{officer}/items
+GET /api/officers/defs/{officer}/schedules
 GET /api/officers/types
 GET /api/officers/types/{key}
 GET /api/openrouter/models
@@ -348,4 +350,5 @@ POST /uploads/{id}/revoke
 PUT /api/device/push
 PUT /api/instance/branding
 PUT /api/officers/defs/{officer}
+PUT /api/officers/defs/{officer}/schedules/{name}
 PUT /api/officers/types/{key}

@@ -183,7 +183,9 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			for _, route := range []string{"GET /api/officers/types", "GET /api/officers/types/marketing", "PUT /api/officers/types/marketing",
 				"DELETE /api/officers/types/marketing", "GET /api/officers/defs", "PUT /api/officers/defs/marketing:example",
 				"DELETE /api/officers/defs/marketing:example", "GET /api/officers/defs/marketing:example/items",
-				"POST /api/officers/defs/marketing:example/items", "POST /api/officers/defs/marketing:example/items/7/resolve"} {
+				"POST /api/officers/defs/marketing:example/items", "POST /api/officers/defs/marketing:example/items/7/resolve",
+				"GET /api/officers/defs/marketing:example/schedules", "PUT /api/officers/defs/marketing:example/schedules/nightly",
+				"DELETE /api/officers/defs/marketing:example/schedules/nightly"} {
 				h.json(route, http.StatusOK, `{"ok":true,"nested":{"a":1}}`)
 			}
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)

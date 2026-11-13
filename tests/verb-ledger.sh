@@ -79,6 +79,9 @@ officer def put
 officer item enqueue
 officer item ls
 officer item resolve
+officer schedule delete
+officer schedule ls
+officer schedule put
 officer type delete
 officer type get
 officer type ls
@@ -109,7 +112,8 @@ whoami"
 # 29 -> 30: `agent create` (POST /api/agents, docs/design/chief-dispatch.md phase 2).
 # 30 -> 40: the ten `officer type|def|item` verbs (the built-in officer store's
 #           admin API, docs/officers-builtin.md; muster#503 slice 7).
-WANT_COUNT=40
+# 40 -> 43: `officer schedule ls|put|delete` (slice 8).
+WANT_COUNT=43
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

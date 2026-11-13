@@ -233,6 +233,10 @@ var (
 		// are not users.
 		"internal/api.(*Server).SweepOfficerAttention",
 		"internal/api.(*Server).handleOfficerDefPut",
+		// …and its scheduler (#503 slice 8): FireDue reads every owner's due
+		// schedules and fires each with a compare-and-set, inserting the item
+		// with that schedule's own owner_id.
+		"internal/api.(*Server).RunOfficerScheduler",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).

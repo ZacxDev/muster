@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -286,5 +287,48 @@ func TestAnEscalationNobodyCanReceiveDoesNotHoldTheQueue(t *testing.T) {
 	}
 	if got := officerAsks(t, srv); len(got) != 1 || !strings.Contains(got[0].Question, "escalated item "+strconv.FormatInt(good, 10)) {
 		t.Fatalf("the owner's escalation behind it: %+v, want it raised in the same sweep", got)
+	}
+}
+
+// TestTheAdminAPIManagesSchedules: a schedule is put (its next fire computed
+// in UTC from now), listed and deleted through the admin API; a malformed
+// cron is a 400 naming the field; a schedule for an officer the caller does
+// not define is a 404; and the scheduler fires it into the officer's queue.
+func TestTheAdminAPIManagesSchedules(t *testing.T) {
+	f := newConnFixture(t)
+	srv, store := builtinOfficerServer(t, f, `[]`, &bytes.Buffer{})
+	defineBuiltin(t, store, "live")
+	h := srv.Handler()
+	base := "/api/officers/defs/" + builtinOfficerID + "/schedules"
+	if code, out := adminCall(t, h, "PUT", base+"/nightly", `{"cron":"61 * * * *","kind":"digest","subject_key":"d"}`); code != http.StatusBadRequest ||
+		!strings.Contains(out["error"].(string), "minute") {
+		t.Fatalf("a malformed cron: %d %v, want 400 naming the minute", code, out)
+	}
+	code, out := adminCall(t, h, "PUT", base+"/nightly", `{"cron":"0 6 * * *","kind":"digest","subject_key":"daily"}`)
+	if code != 200 || out["next_fire_at"] == nil || out["skip_if_live"] != true || out["enabled"] != true {
+		t.Fatalf("put: %d %v, want a next fire and the defaults", code, out)
+	}
+	if code, _ := adminCall(t, h, "PUT", "/api/officers/defs/nosuch:x/schedules/n", `{"cron":"0 6 * * *","kind":"k","subject_key":"s"}`); code != http.StatusNotFound {
+		t.Fatalf("a schedule for an undefined officer: %d, want 404", code)
+	}
+	next, err := time.Parse(time.RFC3339, out["next_fire_at"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fires, err := store.FireDue(authz.System(context.Background()), next.Add(time.Second), 10)
+	if err != nil || len(fires) != 1 || fires[0].Item == 0 {
+		t.Fatalf("the scheduler at the next fire: %+v (%v), want one item", fires, err)
+	}
+	if code, _ := adminCall(t, h, "GET", "/api/officers/defs/nosuch:x/schedules", ""); code != http.StatusNotFound {
+		t.Fatalf("schedules of an undefined officer: %d, want 404", code)
+	}
+	if code, out := adminCall(t, h, "GET", base, ""); code != 200 || len(out["schedules"].([]any)) != 1 {
+		t.Fatalf("list: %d %v", code, out)
+	}
+	if code, _ := adminCall(t, h, "DELETE", base+"/nightly", ""); code != 200 {
+		t.Fatalf("delete: %d", code)
+	}
+	if code, _ := adminCall(t, h, "DELETE", base+"/nightly", ""); code != http.StatusNotFound {
+		t.Fatalf("delete again: %d, want 404", code)
 	}
 }
