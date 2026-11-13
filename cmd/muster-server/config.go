@@ -1764,6 +1764,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
 		return config{}, err
 	}
+	// read_at "release": the tag of the release this binary IS, from its own
+	// build version — the one source, never configured by hand.
+	c.Officers = officers.StampReleaseTag(c.Officers, api.BuildVersion)
 	// Set at all — `[]` included — turns the officer runtime's built-in store
 	// on (its admin API and Attention sweep) even with no officer declared.
 	c.OfficersSet = strings.TrimSpace(getenv(envOfficers)) != ""

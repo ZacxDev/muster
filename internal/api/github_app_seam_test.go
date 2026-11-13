@@ -116,6 +116,20 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 				return
 			}
 			_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"full_name":"example-org/widget","private":true}]}`)
+		case strings.Count(p, "/") == 3 && strings.HasPrefix(p, "/repos/") && r.Header.Get("Authorization") == "":
+			// GET /repos/<owner>/<name> asked ANONYMOUSLY: the repository's
+			// metadata, as GitHub answers anyone — a public one's, and 404 for
+			// one it does not show (private, or absent). The standing public
+			// read's check (connectors.Proxy.publicCheck) asks this.
+			name := strings.TrimPrefix(p, "/repos/")
+			f.mu.Lock()
+			pub := f.public[name]
+			f.mu.Unlock()
+			if !pub {
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"full_name": name, "private": false, "visibility": "public"})
 		case strings.HasPrefix(p, "/repos/"):
 			// The REST API: record and echo what arrived (the echo exercises the
 			// proxy's redactor; the record is what GitHub was actually sent).

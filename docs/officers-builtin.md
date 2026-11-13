@@ -22,8 +22,9 @@ the exact content: the officer files an **outbound draft**
 (`officer_post_draft`), its owner approves the exact text and media, and a
 plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
 Only an officer whose type grants `outbound_drafts` gets that tool. Its only
-other ways out of its pod are muster's tools and the connectors its owner
-approves one request at a time: do not approve a connector that can write to
+other ways out of its pod are muster's tools, the connectors its owner
+approves one request at a time, and any PUBLIC repositories it is declared to
+read ([below](#letting-it-read-public-repositories-read_grant-standing)): do not approve a connector that can write to
 the outside world for one, and give it no `repo` with write access. The
 empty roster (no officer declared) exposes nothing.
 
@@ -131,6 +132,30 @@ officers: marketing:example: defined in the built-in store and switched on
 An officer declared here but not defined in the store answers 404 to the wake
 loop, which treats it as a configuration fault and keeps its instances at
 zero until you define it.
+
+### Letting it read public repositories (`read_grant: "standing"`)
+
+An officer that answers questions about a product needs its docs and source.
+When those are in PUBLIC repositories, declare them as a standing read: every
+instance reads them from its first turn, with no `github` request for its
+owner to approve on each scale-up.
+
+```yaml
+- name: MUSTER_OFFICERS
+  value: >-
+    [{"id": "marketing:example", "backend": "builtin", "max_instances": 1,
+      "idle_scale_to_zero_after": "30m",
+      "read_repos": ["example-org/product"], "read_grant": "standing", "read_at": "release"}]
+```
+
+muster serves the reads itself, anonymously (no credential), reads only, and
+only after GitHub confirms each repository is public; a private one, a write,
+or any other repository is refused or takes the ordinary per-instance grant.
+`read_at: "release"` points the instance at the tag of the muster release the
+server runs. Builtin officers only: on an HQ officer it is a boot refusal. The
+rules in full: [officers.md](officers.md#a-standing-public-read-read_grant-standing).
+The pod needs no GitHub egress (muster-server makes the call), so section 2b's
+egress is enough.
 
 ## 4. Feed its queue
 
