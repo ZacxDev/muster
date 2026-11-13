@@ -17,9 +17,11 @@ import (
 // a per-owner sweep met a team and its bare goroutine killed the process).
 //
 //   - usersOwners: the loop enumerates owners from the users table, through
-//     chiefnudge.PG.Owners or focus.PGStore.Owners, which filter with
-//     users.PersonIDs (TestAPerOwnerSweepNeverActsAsATeam runs two of them
-//     against a real team; TestEveryUsersReadIsLedgered pins the queries).
+//     chiefnudge.PG.Owners or focus.PGStore.Owners (the focus REFRESHER and
+//     the focus RETENTION sweep both act as each owner focus.Owners names),
+//     which filter with users.PersonIDs (TestAPerOwnerSweepNeverActsAsATeam
+//     runs two of them against a real team; TestOwnersNeverNamesATeam covers
+//     focus.Owners; TestEveryUsersReadIsLedgered pins the queries).
 //   - rowOwners: the loop acts as the owner of each row it handles; it reads
 //     no owner list from users (TestEveryUsersReadIsLedgered: those two are
 //     the only users-table owner lists in the module).
@@ -52,7 +54,7 @@ var backgroundLoops = map[string]string{
 	"a.officerPools.Run":             noOwner,
 	"a.srv.RunSuggestSweep":          noOwner,
 	"a.srv.RunTaskRetention":         noOwner,
-	"a.srv.RunFocusRetention":        noOwner,
+	"a.srv.RunFocusRetention":        usersOwners,
 	"a.srv.RunAskLogSweep":           noOwner,
 }
 

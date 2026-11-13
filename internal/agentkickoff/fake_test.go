@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
@@ -291,9 +292,15 @@ type fakeInstances struct {
 	insts []provision.Instance
 	err   error
 	calls int
+	// panics, while above zero, makes Instances panic (and counts down): a
+	// pass that panics, for the supervised-restart test.
+	panics atomic.Int32
 }
 
 func (f *fakeInstances) Instances(context.Context) ([]provision.Instance, error) {
+	if f.panics.Add(-1) >= 0 {
+		panic("fakeInstances: a pass panics")
+	}
 	f.calls++
 	return f.insts, f.err
 }
