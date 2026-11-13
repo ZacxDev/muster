@@ -579,7 +579,7 @@ in the same transaction that stores the message:
 | item field | value |
 |---|---|
 | `kind` | `plugin.<kind>`, e.g. `plugin.reply` |
-| `subject_key` | the message's `external_id`, so a repeat is the same item |
+| `subject_key` | `plugin:<plugin id>:<external_id>`, so a repeat is the same item and two plugins never share one |
 | `payload` | `{"plugin": "<name>", "plugin_id", "message_id", "external_id", "kind", "venue", "thread", "received_at", "message": "<fenced block>"}` |
 | tier, priority | judgement, normal |
 
@@ -613,8 +613,9 @@ below.
 reach muster only through the check, so `officer_post_draft` refuses a plugin
 without it. An outbound draft's check **never lapses**: it awaits the plugin's
 verdict until the draft expires (7 days). Turning **Checks replies** off for
-the plugin leaves its outbound drafts awaiting (they cannot be approved, and
-expire); turn it back on and the plugin checks them again.
+the plugin REFUSES its outbound drafts still awaiting the check (`rejected`,
+detail "the plugin's Checks replies was turned off…"), since none could be
+approved without it.
 
 An outbound draft's body may contain **public host names and URLs**, such as
 `github.com/example/project`, so a post can link to the project. Everything
@@ -714,8 +715,12 @@ ref has no bytes. The 12-hour sign-in rule and the push are as for every draft.
 
 A reply draft's claim is unchanged, plus `"kind": "reply"`. Before handing an
 outbound draft out, muster re-checks that its body and media still hash to
-what you approved; one that does not is **withdrawn** (rejected, with the
-detail "the body or media changed after approval") and never handed out.
+what you approved — the body's own hash, and the media hashes recorded at
+upload (the bytes in the object store are not re-read: the plugin's own
+re-hash below is the check on them); one that does not is **withdrawn**
+(rejected, with the detail "the body or media changed after approval") and
+never handed out. muster's database already refuses any change to the body
+or media after approval, so this is a second check, not the first.
 
 🔴 **The plugin re-hashes its own files before it posts.** Any file whose
 SHA-256 is not the claim's: post nothing and report
@@ -733,8 +738,10 @@ After the result, for an outbound draft filed with an `item_id`:
   (draft <id>)`) unless an instance holds it or it is already finished.
 - `ok: false`, or a `sendable: false` check: muster queues a new item for the
   officer, kind `draft.refused`, subject `draft:<id>`, with the draft id,
-  venue, target and the plugin's detail, so it can write a better one. A
-  draft you reject goes nowhere: that was your decision.
+  venue, target and the plugin's detail, so it can write a better one — at
+  most 3 such items wait at once per officer, so a plugin that refuses every
+  draft cannot loop the officer; past that only your push says so. A draft
+  you reject goes nowhere: that was your decision.
 
 ### Pairing a plugin without handling its token
 
@@ -743,8 +750,9 @@ or seen by anyone — the plugin receives it straight from muster.
 
 1. The plugin calls `POST /plugin/v1/pair` (no credential) and prints the
    `code` it gets back.
-2. Its owner sees the request in Attention and on `/plugins` with the same
-   code, compares the two, and approves or denies it.
+2. Its owner sees the request in Attention and on `/plugins`, and approves it
+   by typing the code the plugin printed (only its hash is stored, so the page
+   cannot show it: typing it IS the comparison), or denies it.
 3. The plugin polls `GET /plugin/v1/pair/{request_id}` with its
    `poll_secret`, and receives the token **once**.
 
@@ -768,7 +776,7 @@ or seen by anyone — the plugin receives it straight from muster.
 |---|---|
 | `202 {"request_id", "code", "poll_secret", "expires_at"}` | the request is waiting for the owner. `code` is 8 characters as `XXXX-XXXX` (no `0`, `1`, `I`, `L`, `O`, `U`); show it to the owner. Keep `poll_secret` private |
 | `400 {"error"}` | a field breaks a rule |
-| `429 {"error"}` | too many requests: 5 per source address in 10 minutes, 50 on the server. Retry after `Retry-After` |
+| `429 {"error"}` | too many requests: 5 per source address in 10 minutes, 50 on the server. Retry after `Retry-After`. ⚠ The server-wide allowance is one anyone can spend; when it is spent, mint the token on `/plugins` instead |
 
 The answer is the same `202` whether or not `owner` names an account, so the
 route says nothing about who has one; a request for no account simply
@@ -790,10 +798,11 @@ only the SHA-256 of the code and of the poll secret.
 
 #### Deciding a pairing request
 
-On `/plugins`, each pending request shows its code, name, label,
-capabilities, `deliver_to` and when it expires, with **Approve** (a sign-in
-from the last 12 hours, as approving a reply) and **Deny**. From your own
-mirrored Claude Code session:
+On `/plugins`, each pending request shows its name, label, capabilities,
+`deliver_to` and when it expires, with a **Code the plugin printed** field and
+**Approve** (a sign-in from the last 12 hours, as approving a reply; a code
+that does not match is refused) and **Deny**. From your own mirrored Claude
+Code session:
 
 | tool | what it does |
 |---|---|

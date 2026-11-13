@@ -485,6 +485,14 @@ func (s *Server) outboundSettled(ctx context.Context, p plugins.Plugin, d plugin
 			s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is: %v", d.ID, *d.OfficerItemID, officer, err)
 		}
 	case d.Status == plugins.DraftFailed || d.RefusedByCheck():
+		// 🔴 BOUNDED: a plugin that refuses every draft would otherwise turn
+		// each refusal into a new item and each item into a new draft, with no
+		// human in the loop. At most maxOpenRefusedItems wait at once; past
+		// that the owner's push (draftRefused) is the only signal.
+		if n, err := s.officerStore.CountLive(ctx, p.OwnerID, officer, "draft.refused"); err != nil || n >= maxOpenRefusedItems {
+			s.logger.Printf("plugins: draft %d refused; no draft.refused item for %s (%d already waiting, err %v)", d.ID, officer, n, err)
+			return
+		}
 		payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
 			"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "detail": plugins.RefusalText(d.Detail)})
 		if _, _, err := s.officerStore.Enqueue(ctx, p.OwnerID, builtin.NewItem{Officer: officer, Kind: "draft.refused",
@@ -493,6 +501,10 @@ func (s *Server) outboundSettled(ctx context.Context, p plugins.Plugin, d plugin
 		}
 	}
 }
+
+// maxOpenRefusedItems bounds the draft.refused items one officer may have
+// waiting (outboundSettled).
+const maxOpenRefusedItems = 3
 
 // outboundAttentionText is an outbound draft's Attention line.
 func outboundAttentionText(c plugins.DraftCard) string {

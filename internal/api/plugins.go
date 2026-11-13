@@ -92,6 +92,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// the viewer plugin's token redeems. Off until MUSTER_PLUGIN_ORIGINS is set.
 	s.registerPluginHandoffRoutes(mux)
 
+	// Plugin pairing (plugin_pairing.go): the unauthenticated request and the
+	// poll, and the owner's decisions on /plugins.
+	s.registerPluginPairRoutes(mux)
+
 	// 🔴 EVERY /plugin/v1/* ROUTE NAMES THE ONE CAPABILITY ITS TOKEN NEEDS
 	// (plugins.capabilities, 0102), and TestEveryPluginRouteNamesOneCapability
 	// is its ledger: a route added, dropped or moved to another capability turns
@@ -551,6 +555,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
+	b.WriteString(s.pairSectionHTML(r))
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
 	// them as it was (/plugins#draft-<id>, on a phone's older notification)

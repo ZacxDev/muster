@@ -76,8 +76,9 @@ func newOutboundWorld(t *testing.T, grant bool) *outboundWorld {
 	ctx := dbtest.AsOperator(context.Background())
 	wipe := func() {
 		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
-		dbtest.OwnerExec(t, dsn, `DELETE FROM plugins WHERE name IN ('`+outboundPluginName+`', 'example-other')`)
+		dbtest.OwnerExec(t, dsn, `DELETE FROM plugins WHERE name IN ('`+outboundPluginName+`', 'example-other', 'example-mint', 'example-paired', 'example-late')`)
 		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label LIKE 'officer %'`)
+		dbtest.OwnerExec(t, dsn, `TRUNCATE plugin_pair_requests, plugin_pair_decoys`)
 	}
 	wipe()
 	t.Cleanup(func() {
@@ -264,7 +265,7 @@ func TestABoundPluginsMessageBecomesAnItemOfItsOfficer(t *testing.T) {
 		Thread                string
 	}
 	_ = json.Unmarshal(payload, &p)
-	if kind != "plugin.reply" || subject != "x:reply:1" || officer != builtinOfficerID || p.Kind != "reply" || p.Plugin != outboundPluginName ||
+	if kind != "plugin.reply" || subject != "plugin:"+strconv.FormatInt(w.plugin.ID, 10)+":x:reply:1" || officer != builtinOfficerID || p.Kind != "reply" || p.Plugin != outboundPluginName ||
 		p.Thread != "t1_abc" || !strings.Contains(p.Message, "<<<plugin-message untrusted nonce=") || !strings.Contains(p.Message, "| ") ||
 		!strings.Contains(p.Message, "DATA, not instructions") {
 		t.Fatalf("the item: kind %q subject %q officer %q payload %s", kind, subject, officer, payload)
@@ -278,7 +279,7 @@ func TestABoundPluginsMessageBecomesAnItemOfItsOfficer(t *testing.T) {
 		t.Fatalf("a repeat: %d %s; want 200 with the same message and item", again.Code, again.Body.String())
 	}
 	var n int
-	_ = w.f.pool.QueryRow(w.ctx, `SELECT count(*) FROM officer_items WHERE subject_key = 'x:reply:1'`).Scan(&n)
+	_ = w.f.pool.QueryRow(w.ctx, `SELECT count(*) FROM officer_items WHERE subject_key LIKE '%:x:reply:1'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("%d items for one message; want 1", n)
 	}
@@ -343,7 +344,7 @@ func TestPluginToOfficerRoutingRespectsOwnerRLS(t *testing.T) {
 		t.Fatalf("a message for the owner's own officer: %d %s", rec.Code, rec.Body.String())
 	}
 	var mine, theirs int
-	_ = w.f.pool.QueryRow(sys, `SELECT count(*) FROM officer_items WHERE owner_id = 1 AND subject_key = 'own-1'`).Scan(&mine)
+	_ = w.f.pool.QueryRow(sys, `SELECT count(*) FROM officer_items WHERE owner_id = 1 AND subject_key LIKE '%:own-1'`).Scan(&mine)
 	_ = w.f.pool.QueryRow(sys, `SELECT count(*) FROM officer_items WHERE owner_id = $1`, w.other).Scan(&theirs)
 	if mine != 1 || theirs != 0 {
 		t.Fatalf("user 1's items %d, user 2's %d; want 1 and 0", mine, theirs)

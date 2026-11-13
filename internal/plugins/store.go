@@ -260,6 +260,23 @@ type NewPlugin struct {
 const ViewerOnlyDataScope = "none"
 
 func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
+	var tok string
+	var p Plugin
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		tok, p, err = s.createPluginTx(ctx, tx, in)
+		return err
+	})
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	return tok, p, nil
+}
+
+// createPluginTx is CreatePlugin in the caller's transaction tx, acting as
+// ctx's principal (the owner): the one minting path, the /plugins form's and
+// a pairing's hand-out (pairing.go).
+func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (string, Plugin, error) {
 	name, label, dataScope := in.Name, strings.TrimSpace(in.Label), in.DataScope
 	if err := ValidName(name); err != nil {
 		return "", Plugin{}, err
@@ -301,30 +318,36 @@ func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugi
 	if err != nil {
 		return "", Plugin{}, err
 	}
-	var p Plugin
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		p, err = scanPlugin(tx.QueryRow(ctx, `
-			INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')) RETURNING `+pluginCols,
-			name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo))
-		if err != nil {
-			return err
-		}
-		detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
-		if in.DeliverTo != "" {
-			detail["deliver_to"] = in.DeliverTo
-		}
-		if viewer {
-			detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
-		}
-		return audit(ctx, tx, "plugin.created", Object(p.ID), detail)
-	})
+	// A savepoint, so a name already taken is answered as ErrInvalid without
+	// aborting the caller's transaction.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	p, err := scanPlugin(sp.QueryRow(ctx, `
+		INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')) RETURNING `+pluginCols,
+		name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {
+		_ = sp.Rollback(ctx)
 		return "", Plugin{}, invalid("you already have a plugin named %q; revoke it first", name)
 	}
 	if err != nil {
+		_ = sp.Rollback(ctx)
+		return "", Plugin{}, err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return "", Plugin{}, err
+	}
+	detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
+	if viewer {
+		detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
+	}
+	if in.DeliverTo != "" {
+		detail["deliver_to"] = in.DeliverTo
+	}
+	if err := audit(ctx, tx, "plugin.created", Object(p.ID), detail); err != nil {
 		return "", Plugin{}, err
 	}
 	return tok, p, nil
@@ -377,6 +400,10 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 	})
 	return found, err
 }
+
+// ChecksOffDetail is an outbound draft's detail when its plugin's
+// draft_checks was turned off while it awaited the check (SetDraftChecks).
+const ChecksOffDetail = "the plugin's Checks replies was turned off before it checked this draft"
 
 // SetDraftChecks turns CapDraftChecks on or off for the principal's LIVE
 // plugin id, changing that one capability and no other (and the same token:
@@ -445,6 +472,28 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 		for _, d := range lapsed {
 			if err := audit(ctx, tx, "plugin.draft.check_lapsed", DraftObject(d.ID), map[string]any{
 				"why": "the plugin's draft_checks was turned off"}); err != nil {
+				return err
+			}
+		}
+		// An OUTBOUND draft cannot lapse into an approvable one (its media
+		// reach muster only through the check, outbound.go): it is REFUSED,
+		// as a check refusal is, so it stops counting against its officer's
+		// pending cap and its card says why.
+		out, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'refused', checked_at = now(), status = 'rejected',
+				decided_at = now(), detail = $2
+			WHERE id IN (SELECT id FROM plugin_reply_drafts WHERE plugin_id = $1 AND message_id IS NULL
+			              AND status = 'pending' AND check_state = 'awaiting' ORDER BY id FOR UPDATE)
+			RETURNING id`, id, ChecksOffDetail)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(out, pgx.RowTo[int64])
+		if err != nil {
+			return err
+		}
+		for _, did := range ids {
+			if err := audit(ctx, tx, "plugin.draft.check_refused", DraftObject(did), map[string]any{
+				"why": ChecksOffDetail}); err != nil {
 				return err
 			}
 		}

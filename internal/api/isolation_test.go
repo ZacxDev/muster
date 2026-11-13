@@ -461,6 +461,14 @@ var isolationClasses = map[string]routeClass{
 	// must get the ghost's 404 (row-level security).
 	"POST /plugins/{id}/draft-checks": classParam,
 	"POST /plugins/{id}/deliver-to":   classParam,
+	// A pairing request's decisions name it by id; another owner's is the
+	// ghost's 404 (row-level security).
+	"POST /plugins/pair/{id}/approve": classParam,
+	"POST /plugins/pair/{id}/deny":    classParam,
+	// The pairing door: no credential (the request) or a poll secret no walker
+	// holds (the poll).
+	"POST /plugin/v1/pair":             classPublic,
+	"GET /plugin/v1/pair/{request_id}": classPublic,
 	// An outbound draft's medium, its owner's (row-level security).
 	"GET /plugins/drafts/{id}/media/{n}": classParam,
 	// Routing rules (routing_rules.go, 0107): the page lists the caller's own

@@ -100,6 +100,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO officer_llm_usage (officer, instance, day, requests, cost_usd) VALUES ('triage:example-' || lower($1), 1, '2000-01-01', 1, 0.01)`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_judgement_sessions (officer, day, items) VALUES ('triage:example-' || lower($1), '2000-01-01', '{a}')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO officer_pr_loops (officer, repo, pr, state) VALUES ('draft:example-' || lower($1), 'example-org/example-web', 1, 'pending')`, func() []any { return []any{tag} }, nil},
+		{`INSERT INTO plugin_pair_requests (public_id, name, label, data_scope, capabilities, code_hash, poll_secret_hash, expires_at)
+			VALUES (left(md5($1) || md5($1), 22), 'example-pair', 'Pair', 'example', '{messages}', repeat('a', 64), repeat('b', 64), now() + interval '10 minutes')`, func() []any { return []any{tag} }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
 		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},

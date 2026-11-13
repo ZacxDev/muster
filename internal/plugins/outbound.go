@@ -248,7 +248,10 @@ func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, offic
 	if err != nil {
 		return Message{}, err
 	}
-	id, err := s.officers.EnqueueTx(ctx, tx, p.OwnerID, OfficerItem{Officer: officer, Kind: "plugin." + kind, SubjectKey: m.ExternalID, Payload: payload})
+	// The subject names the plugin too: external_id is unique per plugin
+	// only, so two plugins bound to one officer must never share an item.
+	id, err := s.officers.EnqueueTx(ctx, tx, p.OwnerID, OfficerItem{Officer: officer, Kind: "plugin." + kind,
+		SubjectKey: "plugin:" + strconv.FormatInt(p.ID, 10) + ":" + m.ExternalID, Payload: payload})
 	if err != nil {
 		return Message{}, err
 	}

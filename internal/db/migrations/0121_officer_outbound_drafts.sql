@@ -39,6 +39,7 @@
 -- outbound draft's NULL message_id into an int64 and fail: delete them first.
 --   DELETE FROM public.plugin_reply_drafts WHERE message_id IS NULL;
 --   UPDATE public.plugins SET deliver_to = NULL;
+--   UPDATE public.plugin_messages SET routed_to = NULL, routed_done_at = NULL WHERE routed_to = 'officer';
 --   then the reverse of each statement below, and
 --   DELETE FROM schema_migrations WHERE version = 121;
 

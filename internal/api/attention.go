@@ -741,6 +741,12 @@ func (s *Server) attentionItemsWith(ctx context.Context, hs []mirror.HostView, w
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
 	}
 	out = append(out, drafts...)
+	// Plugin pairing requests (plugin_pairing.go).
+	pairs, err := s.pendingPairItems(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("pairing requests: %w", err))
+	}
+	out = append(out, pairs...)
 	// Task events the chief has not taken (task_routing.go).
 	tasks, err := s.unroutedTaskItems(ctx)
 	if err != nil {

@@ -64,6 +64,11 @@ func (s *Server) pluginDraftToolsOn() bool { return s.ext.Plugins != nil }
 
 // pluginDraftToolDefs are the mirrored sessions' reply-draft tools.
 func pluginDraftToolDefs() []agents.ToolDef {
+	return append(pluginDraftOnlyToolDefs(), pluginPairToolDefs()...)
+}
+
+// pluginDraftOnlyToolDefs are the two reply-draft tools.
+func pluginDraftOnlyToolDefs() []agents.ToolDef {
 	return []agents.ToolDef{
 		{Type: "function", Name: pluginDraftsListTool,
 			Description: "List your owner's PENDING reply drafts — replies your owner's chief (or a session a message was routed to) wrote to " +
@@ -107,6 +112,10 @@ func (s *Server) dispatchPluginDraftTool(ctx context.Context, c toolCaller, name
 		return s.toolPluginDraftsList(ctx, c), true
 	case pluginDraftDecideTool:
 		return s.toolPluginDraftDecide(ctx, c, arguments), true
+	case pluginRequestsListTool:
+		return s.toolPluginRequestsList(ctx, c), true
+	case pluginRequestDecideTool:
+		return s.toolPluginRequestDecide(ctx, c, arguments), true
 	}
 	return "", false
 }
@@ -153,7 +162,7 @@ type pluginDraftView struct {
 	Venue       string                  `json:"venue,omitempty"`
 	Target      *plugins.OutboundTarget `json:"target,omitempty"`
 	Media       []pluginDraftMediaView  `json:"media,omitempty"`
-	MediaSHA256 []string                `json:"media_sha256,omitempty"`
+	MediaSHA256 *[]string               `json:"media_sha256,omitempty"`
 	Officer     string                  `json:"officer,omitempty"`
 	ReplyTo     *pluginDraftReplyToView `json:"reply_to,omitempty"`
 }
@@ -211,7 +220,8 @@ func (s *Server) toolPluginDraftsList(ctx context.Context, c toolCaller) string 
 		v.Kind = plugins.DraftKindReply
 		if d.IsOutbound() {
 			t := d.Target()
-			v.Kind, v.Venue, v.Target, v.MediaSHA256 = plugins.DraftKindOutbound, d.VenueText(), &t, d.MediaSHA256()
+			sums := d.MediaSHA256() // [] (never omitted) for a draft with no media: an approval must send it
+			v.Kind, v.Venue, v.Target, v.MediaSHA256 = plugins.DraftKindOutbound, d.VenueText(), &t, &sums
 			v.MessageID, v.Sender, v.Subject, v.Message = 0, "", "", ""
 			if d.Officer != nil {
 				v.Officer = *d.Officer

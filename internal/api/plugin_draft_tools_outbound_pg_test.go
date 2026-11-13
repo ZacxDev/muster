@@ -21,6 +21,11 @@ func TestPluginDraftDecideBindsAnOutboundDraftsMedia(t *testing.T) {
 	// officer store) to an officer, with draft_checks.
 	dbtest.OwnerExec(t, dsn, `UPDATE plugins SET deliver_to = 'officer:example:main', capabilities = '{messages,draft_checks}' WHERE id = `+
 		strconv.FormatInt(f.plugin.ID, 10))
+	// Unbound again after: later tests in this package share the fixture's
+	// database, and a bound plugin's messages go to no chief.
+	t.Cleanup(func() {
+		dbtest.OwnerExec(t, dsn, `UPDATE plugins SET deliver_to = NULL WHERE id = `+strconv.FormatInt(f.plugin.ID, 10))
+	})
 	const body = "A new post with two media."
 	d, err := f.plugins.FileOutbound(f.asOwner, f.chief.ID, f.owner, f.chief.Name, plugins.NewOutbound{Officer: "example:main",
 		Plugin: f.plugin.Name, Venue: "example.forum", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: body,

@@ -139,6 +139,7 @@ GET /pages/{id}
 GET /pages/{id}/preview
 GET /pages/{id}/versions/{v}/content
 GET /plugin/v1/drafts/checks
+GET /plugin/v1/pair/{request_id}
 GET /plugin/v1/self
 GET /plugin/v1/tasks
 GET /plugins
@@ -301,6 +302,7 @@ POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/handoffs/redeem
 POST /plugin/v1/messages
 POST /plugin/v1/messages/{id}/owner-answered
+POST /plugin/v1/pair
 POST /plugin/v1/task-writes/claim
 POST /plugin/v1/task-writes/{id}/result
 POST /plugin/v1/tasks
@@ -308,6 +310,8 @@ POST /plugins
 POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject
 POST /plugins/messages/{id}/retry
+POST /plugins/pair/{id}/approve
+POST /plugins/pair/{id}/deny
 POST /plugins/{id}/deliver-to
 POST /plugins/{id}/draft-checks
 POST /plugins/{id}/revoke

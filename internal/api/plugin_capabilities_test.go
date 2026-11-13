@@ -29,6 +29,10 @@ var pluginRouteCapabilities = map[string]string{
 	"GET /plugin/v1/drafts/checks":                 "draft_checks",
 	"POST /plugin/v1/drafts/{id}/check":            "draft_checks",
 	"POST /plugin/v1/drafts/{id}/media":            "draft_checks",
+	// Pairing (plugin_pairing.go): NO plugin token at all — the request
+	// carries none, the poll carries its poll secret.
+	"POST /plugin/v1/pair":             "none",
+	"GET /plugin/v1/pair/{request_id}": "none",
 }
 
 // goldenPluginRoutes is every /plugin/v1/* route in the checked-in route golden.
@@ -109,7 +113,7 @@ func TestEveryPluginRouteNamesOneCapability(t *testing.T) {
 			if viewerRefused {
 				t.Errorf("CONTROL %s with a viewer token: refused (%d); want it past the capability check", route, viewerCode)
 			}
-		case "any":
+		case "any", "none":
 			if viewerRefused || messagesRefused {
 				t.Errorf("%s: viewer-only %d, messages %d; want both past the capability check", route, viewerCode, messagesCode)
 			}

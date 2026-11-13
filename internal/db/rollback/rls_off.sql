@@ -262,6 +262,12 @@ BEGIN
         ALTER TABLE public.officer_judgement_sessions DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.officer_judgement_sessions ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0122 (plugin_pair_requests), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_pair_requests') IS NOT NULL THEN
+        ALTER TABLE public.plugin_pair_requests NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_pair_requests DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_pair_requests ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
     -- 0119 (officer_pr_loops), when this schema has it; same reason as 0011.
     IF to_regclass('public.officer_pr_loops') IS NOT NULL THEN
         ALTER TABLE public.officer_pr_loops NO FORCE ROW LEVEL SECURITY;

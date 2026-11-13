@@ -59,6 +59,11 @@ const (
 
 // publicRoutes are served with no credential and therefore no Principal.
 var publicRoutes = []string{
+	// Plugin pairing (plugin_pairing.go): a plugin with no token asks for one,
+	// and collects it with its poll secret. A request only waits for its
+	// owner's approval, which must name the code the plugin printed.
+	"POST /plugin/v1/pair",
+	"GET /plugin/v1/pair/{request_id}",
 	// The admin claim (accounts PR 4): how an anonymous visitor holding a
 	// single-use link stops being anonymous, like /login.
 	"GET /auth/claim",
@@ -136,6 +141,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /plugins/{id}/revoke",
 		"POST /plugins/{id}/draft-checks",
 		"POST /plugins/{id}/deliver-to",
+		"POST /plugins/pair/{id}/approve",
+		"POST /plugins/pair/{id}/deny",
 		"GET /plugins/drafts/{id}/media/{n}",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
