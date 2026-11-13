@@ -85,17 +85,27 @@ func TestTheBoxHasItsOwnRowAboveTheButtonRow(t *testing.T) {
 			continue
 		}
 		inputRow, buttonRow := byID(form, composerInputRowID), byID(form, composerButtonRowID)
-		if got := idsOf(elementChildren(inputRow)); strings.Join(got, " ") != "textarea#mv-input" {
-			t.Errorf("%s: the box's row holds %v, want the box alone", name, got)
+		// The box — and, with dictation, the recording's waveform, which is
+		// drawn hidden and takes the box's place while the mic records
+		// (dictate.go).
+		wantRow := "textarea#mv-input"
+		wave := byID(form, "mv-dictate-wave")
+		if wave != nil {
+			wantRow += " div#mv-dictate-wave"
+		}
+		if got := idsOf(elementChildren(inputRow)); strings.Join(got, " ") != wantRow {
+			t.Errorf("%s: the box's row holds %v, want %s", name, got, wantRow)
 		}
 		box := byID(doc, "mv-input")
 		if box == nil || within(box, buttonRow) {
 			t.Errorf("%s: the box is in the button row", name)
 		}
-		// Every control of the form is in the button row.
+		// Every control of the form is in the button row — but the waveform's
+		// ×, which is the box's place while recording.
 		var controls []string
 		walkNodes(form, func(n *html.Node) bool {
-			if n.Type == html.ElementNode && (n.Data == "button" || n.Data == "a" || n.Data == "label") && !within(n, buttonRow) {
+			if n.Type == html.ElementNode && (n.Data == "button" || n.Data == "a" || n.Data == "label") && !within(n, buttonRow) &&
+				(wave == nil || !within(n, wave)) {
 				controls = append(controls, n.Data+"#"+attrOf(n, "id"))
 			}
 			return true
@@ -134,7 +144,9 @@ func TestTheTerminalComposerIsOneRow(t *testing.T) {
 		for _, c := range elementChildren(byID(form, composerButtonRowID)) {
 			got = append(got, c.Data+"#"+attrOf(c, "id"))
 		}
-		if want := "input#mv-file button#mv-attach textarea#mv-input button#mv-dictate button#mv-send"; strings.Join(got, " ") != want {
+		// The waveform beside the box (it takes the box's place while
+		// recording) and the ↑ before Send (Send's place) — dictate.go.
+		if want := "input#mv-file button#mv-attach textarea#mv-input div#mv-dictate-wave button#mv-dictate button#mv-dictate-send button#mv-send"; strings.Join(got, " ") != want {
 			t.Errorf("%s: the row is %v, want %s", name, got, want)
 		}
 		if byID(doc, composerInputRowID) != nil {
@@ -227,9 +239,9 @@ func TestComposerButtonsAre40px(t *testing.T) {
 		return false
 	}
 	wantIDs := map[string]string{
-		"the Rendered view":               "label#mv-to button#mv-attach button#mv-text button#mv-dictate button#mv-send button#mv-send-more button#mv-send-chief button#switcher-more-btn",
+		"the Rendered view":               "label#mv-to button#mv-attach button#mv-text button#mv-dictate button#mv-dictate-send button#mv-send button#mv-send-more button#mv-send-chief button#switcher-more-btn",
 		"the Rendered view, features off": "a#mv-attach-off button#mv-text a#mv-dictate-off button#mv-send",
-		"a Terminal view":                 "button#mv-attach button#mv-dictate button#mv-send",
+		"a Terminal view":                 "button#mv-attach button#mv-dictate-discard button#mv-dictate button#mv-dictate-send button#mv-send",
 	}
 	for name, page := range composerSurfaces(t) {
 		doc := parseFragment(t, page)
@@ -262,7 +274,7 @@ func TestComposerButtonsAre40px(t *testing.T) {
 	}
 	// The agent chat's form: the same Send and mic classes.
 	chat := parseFragment(t, renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, Dictate: TranscribePath})))
-	for _, id := range []string{"chat-send", "chat-dictate"} {
+	for _, id := range []string{"chat-send", "chat-dictate", "chat-dictate-send", "chat-dictate-discard"} {
 		n := byID(chat, id)
 		if n == nil || !is40(attrOf(n, "class")) || is44(attrOf(n, "class")) {
 			t.Errorf("the agent chat's #%s is not a 40px target", id)

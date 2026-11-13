@@ -6,10 +6,27 @@ panel. So does every answer box of the [Asks](attention.md) queue: the
 question's own page (`/attention/asks/<id>`), each question on the Asks list,
 and the questions shown on a session's page.
 
-To use it, tap the mic, speak, and tap it again. The recording is transcribed
-and the text is **inserted into the box at the cursor**. It is never sent
-automatically: you read it and press Send (on an answer box, **Answer**). Send
-is the gated step it always was.
+To use it, tap the mic and speak. While it records, the box is replaced by a
+**live waveform** of your microphone, the time recorded so far, and a **×**.
+The mic turns into a **✓** and Send into a **↑**. Then:
+
+- **✓ (Stop and insert transcript)**: the recording is transcribed and the
+  text is **inserted into the box at the cursor**. Nothing is sent: you read
+  it and press Send (on an answer box, **Answer**).
+- **↑ (Transcribe and send)**: the recording is transcribed, inserted, and
+  sent at once, by the box's own Send. It goes through exactly what a tap on
+  Send does, so a mirrored session that needs you to confirm it's you still
+  asks first ([step-up](sending-and-step-up.md#step-up-confirm-its-you)). If
+  the transcription fails or hears nothing, nothing is sent: the reason is
+  shown and the box is left as it was. One tap sends once: a double tap, or a
+  second tap just after the send, sends nothing more.
+- **× (Discard recording)**: the recording is thrown away. Nothing is
+  transcribed and the box is left as it was.
+
+A recording also stops by itself after two minutes, and is then transcribed
+and inserted as with ✓. Every way a recording ends releases the microphone.
+With your system's "reduce motion" setting, the waveform is a calm level
+meter instead.
 
 The Asks list refreshes itself as the queue changes; a refresh waits while a mic
 on it is recording or transcribing, so the text always lands in its box.

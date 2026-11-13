@@ -217,7 +217,8 @@ func askLiveHTML(a attention.Ask, it attentionItem) string {
 // askComposerHTML is an open ask's answer box, pinned to the bottom of its
 // page: free text, posted to the queue's answer route, back to this page —
 // with the microphone (ui.DictateControlHTML) beside Answer when dictate is
-// not "". The mic FILLS the box at the caret; only Answer sends. Its script is
+// not "". The mic's ✓ FILLS the box at the caret; its ↑ fills it and clicks Answer
+// (ui.DictateSendHTML), so only Answer sends. Its script is
 // the composer's LAST child: the composer is drawn after the page's content,
 // and the script's first run reveals only the mics already parsed.
 func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOff bool) string {
@@ -237,7 +238,9 @@ func askComposerHTML(r *http.Request, a attention.Ask, dictate string, dictateOf
 <label for="ask-input" class="sr-only">Your answer</label>
 <textarea id="ask-input" name="answer" rows="1" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" enterkeyhint="send" placeholder="` +
 		"Your answer…" + `" class="max-h-40 min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl bg-s1 px-4 py-2.5 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-fg2 focus:outline-none focus:ring-2 focus:ring-focus"></textarea>
-` + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") + `<button type="submit" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
+` + ui.DictateWaveHTML(dictate, "ask-dictate") + answerMic(dictate, dictateOff, "ask-input", "ask-dictate-note", "ask-dictate") +
+		ui.DictateSendHTML(dictate, "ask-dictate", "ask-send", ui.DictateSendPill) +
+		`<button type="submit" id="ask-send" class="press min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-base font-semibold text-on-accent transition hover:bg-accent/90" data-ask-send>Answer</button>
 </form>` + ui.DictateScriptHTML(dictate)
 }
 

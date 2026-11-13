@@ -232,6 +232,70 @@ func TestEveryAskCardCarriesItsOwnMicAndItsSessionLink(t *testing.T) {
 	}
 }
 
+// TestEveryAnswerBoxTurnsIntoTheRecorder: the operator's 2026-11-12 decision
+// on the Asks boxes — the Asks list's cards, a session page's block and the
+// ask page's composer. Each mic has its waveform (the box's place, with the
+// × and the clock) right after ITS textarea, and its ↑ right before ITS
+// Answer, clicking and hiding exactly that Answer by id: never an option's
+// submit button, which is the form's FIRST submit (an implicit submission
+// would pick it). RED at origin/main: no waveform, no ↑, and Answer had no id.
+func TestEveryAnswerBoxTurnsIntoTheRecorder(t *testing.T) {
+	s := boxServer(t, true)
+	ctx := s.attentionPrincipal(context.Background(), 1)
+	items := boxListItems(t, s)
+	s.withAskBoxes(ctx, items, true)
+	r := httptest.NewRequest("GET", askPagePath(9), nil)
+	for name, page := range map[string]string{
+		"the list":     attentionItemsHTML(items, time.Now()),
+		"a block":      askerAsksHTML(items, "/agents/ptworker-7", time.Now()),
+		"the composer": askComposerHTML(r, attention.Ask{ID: 9}, ui.TranscribePath, false),
+	} {
+		tags := dictateTag.FindAllStringSubmatch(page, -1)
+		if len(tags) == 0 {
+			t.Fatalf("%s: no mic:\n%s", name, page)
+		}
+		for _, m := range tags {
+			mic, input := m[1], m[2]
+			submit, shape := input+"-submit", "flex-1 rounded-md"
+			if mic == "ask-dictate" {
+				submit, shape = "ask-send", "rounded-full px-5"
+			}
+			tag := regexp.MustCompile(`<button id="` + mic + `" type="button"[^>]*>`).FindString(page)
+			for _, want := range []string{`data-dictate-wave="` + mic + `-wave"`, `data-dictate-arrow="` + mic + `-send"`} {
+				if !strings.Contains(tag, want) {
+					t.Errorf("%s: mic %s lacks %s", name, mic, want)
+				}
+			}
+			wave := regexp.MustCompile(`(?s)<div id="` + mic + `-wave"[^>]*>.*?</div>`).FindString(page)
+			for _, want := range []string{`data-dictate-wave-for="` + mic + `" class="hidden `, `data-dictate-discard="` + mic + `" aria-label="Discard recording"`, `<canvas data-dictate-canvas`, `data-dictate-clock`} {
+				if !strings.Contains(wave, want) {
+					t.Errorf("%s: mic %s's waveform lacks %s: %q", name, mic, want, wave)
+				}
+			}
+			arrow := regexp.MustCompile(`<button id="` + mic + `-send" type="button"[^>]*>`).FindString(page)
+			for _, want := range []string{
+				`data-dictate-send="` + mic + `" data-dictate-submit="` + submit + `" data-dictate-hide="` + submit + `"`,
+				`aria-label="Transcribe and send"`, `class="group hidden `, shape,
+			} {
+				if !strings.Contains(arrow, want) {
+					t.Errorf("%s: mic %s's ↑ lacks %s: %s", name, mic, want, arrow)
+				}
+			}
+			// The Answer it clicks: a submit of that id, with no name (so it
+			// posts the typed answer, never an option), right after the ↑.
+			answer := regexp.MustCompile(`</button><button type="submit" id="` + submit + `" class="[^"]*"( data-ask-send)?>Answer</button>`)
+			if !answer.MatchString(page) {
+				t.Errorf("%s: mic %s's ↑ is not right before its Answer #%s:\n%s", name, mic, submit, page)
+			}
+			box, w, mi, a, ans := strings.Index(page, `<textarea id="`+input+`"`), strings.Index(page, `id="`+mic+`-wave"`),
+				strings.Index(page, `id="`+mic+`"`), strings.Index(page, `id="`+mic+`-send"`), strings.Index(page, `id="`+submit+`"`)
+			if !(box >= 0 && box < w && w < mi && mi < a && a < ans) {
+				t.Errorf("%s: order box %d < waveform %d < mic %d < ↑ %d < Answer %d does not hold", name, box, w, mi, a, ans)
+			}
+		}
+	}
+}
+
 // TestNoServiceNoMicOnAnyAnswerBox: with dictation off (dictatePath "") no
 // answer box draws a mic, a note or the script — the list, a session page's
 // block and the ask page's composer alike. The links do not depend on it.

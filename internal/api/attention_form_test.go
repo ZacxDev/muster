@@ -33,7 +33,8 @@ func TestTheAnswerFormIsCompactAndItsTwoPostsAreUnchanged(t *testing.T) {
 		if answer == "" {
 			t.Fatalf("return %q: no answer form:\n%s", returnTo, out)
 		}
-		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" class="[^"]*">Answer</button>(<button [^>]*form="ask-9-dismiss"[^>]*>.*?</button>)?</div>`)
+		// Answer carries its own id: the mic's ↑ clicks it, by id (ui/dictate.go).
+		row := regexp.MustCompile(`<div class="` + regexp.QuoteMeta(ui.AskFormActionsClass) + `"><button type="submit" id="answer-9-submit" class="[^"]*">Answer</button>(<button [^>]*form="ask-9-dismiss"[^>]*>.*?</button>)?</div>`)
 		if !row.MatchString(answer) {
 			t.Errorf("return %q: Answer is not in its row inside the answer form:\n%s", returnTo, answer)
 		}

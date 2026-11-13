@@ -83,6 +83,139 @@ func TestEveryMessageBoxHasTheMicrophone(t *testing.T) {
 	}
 }
 
+// recorderParts is what one mic's recorder draws around its box: the mic's
+// own tag, its waveform (box's place) and its ↑ (Send's place).
+type recorderParts struct{ mic, wave, arrow string }
+
+// recorderOf finds mic's recorder parts on page, failing the test when one is
+// missing. Every attribute is pinned at its exact value: a part that is drawn
+// but addresses another box would still pass a "contains data-dictate" check.
+func recorderOf(t *testing.T, name, page, mic, input string, submit, hide []string) recorderParts {
+	t.Helper()
+	var r recorderParts
+	r.mic = regexp.MustCompile(`<button id="` + mic + `" type="button"[^>]*>`).FindString(page)
+	r.wave = regexp.MustCompile(`(?s)<div id="` + mic + `-wave"[^>]*>.*?</canvas><span[^>]*>0:00</span></div>`).FindString(page)
+	r.arrow = regexp.MustCompile(`(?s)<button id="` + mic + `-send"[^>]*>.*?</button>`).FindString(page)
+	for _, want := range []string{
+		`data-dictate-input="` + input + `"`,
+		`data-dictate-wave="` + mic + `-wave"`,
+		`data-dictate-arrow="` + mic + `-send"`,
+	} {
+		if !strings.Contains(r.mic, want) {
+			t.Errorf("%s: the mic lacks %s: %s", name, want, r.mic)
+		}
+	}
+	// The waveform: hidden until a recording (the CLASS, as the mic's), for
+	// THIS mic, with the × that discards, the canvas and the clock.
+	if r.wave == "" {
+		t.Errorf("%s: no waveform #%s-wave on the page", name, mic)
+	}
+	for _, want := range []string{
+		`data-dictate-wave-for="` + mic + `" class="hidden `,
+		`<button id="` + mic + `-discard" type="button" data-dictate-discard="` + mic + `" aria-label="Discard recording" title="Discard recording"`,
+		`<canvas data-dictate-canvas="" aria-hidden="true"`,
+		`<span data-dictate-clock="" aria-hidden="true"`,
+	} {
+		if !strings.Contains(r.wave, want) {
+			t.Errorf("%s: the waveform lacks %s: %s", name, want, r.wave)
+		}
+	}
+	// The ↑: hidden until a recording, for THIS mic, clicking and hiding
+	// exactly the box's own Send.
+	if r.arrow == "" {
+		t.Errorf("%s: no ↑ #%s-send on the page", name, mic)
+	}
+	for _, want := range []string{
+		`type="button" data-dictate-send="` + mic + `"`,
+		`data-dictate-submit="` + strings.Join(submit, " ") + `"`,
+		`data-dictate-hide="` + strings.Join(hide, " ") + `"`,
+		`aria-label="Transcribe and send" title="Transcribe and send" class="group hidden `,
+		`data-dictate-up`,
+	} {
+		if !strings.Contains(r.arrow, want) {
+			t.Errorf("%s: the ↑ lacks %s: %s", name, want, r.arrow)
+		}
+	}
+	// Order: the box, its waveform, the mic; the ↑ right before the Send it
+	// stands in for.
+	box, wave, m := strings.Index(page, `<textarea id="`+input+`"`), strings.Index(page, `id="`+mic+`-wave"`), strings.Index(page, `id="`+mic+`"`)
+	if !(box >= 0 && box < wave && wave < m) {
+		t.Errorf("%s: order textarea(%d) < waveform(%d) < mic(%d) does not hold", name, box, wave, m)
+	}
+	return r
+}
+
+// TestEveryMessageBoxTurnsIntoTheRecorder: the operator's 2026-11-12 decision,
+// on every message box drawn in this package — the mirrored composer (both
+// views), an agent's Terminal composer, the agent chat page and the chief
+// panel's chat. While recording, the box's place is a waveform with a × and a
+// clock, the mic is a ✓ named "Stop and insert transcript", and Send's place
+// is a ↑ named "Transcribe and send" that clicks the box's own Send. RED at
+// origin/main: none of the three parts existed.
+func TestEveryMessageBoxTurnsIntoTheRecorder(t *testing.T) {
+	for name, page := range dictateSurfaces(t, TranscribePath) {
+		mic, input := "mv-dictate", "mv-input"
+		submit, hide := []string{"mv-send-chief", "mv-send"}, []string{"mv-send-group", "mv-send", "mv-send-chief"}
+		if strings.Contains(page, `id="chat-dictate"`) {
+			mic, input = "chat-dictate", "chat-input"
+			submit, hide = []string{"chat-send"}, []string{"chat-send"}
+		}
+		recorderOf(t, name, page, mic, input, submit, hide)
+		// The Send the ↑ clicks is on the page, as a submit, right after it.
+		send := submit[len(submit)-1]
+		if !regexp.MustCompile(`<button (id="` + send + `" type="submit"|type="submit" id="` + send + `")`).MatchString(page) {
+			t.Errorf("%s: the ↑ clicks #%s, which is no submit button on the page", name, send)
+		}
+		if a, s := strings.Index(page, `id="`+mic+`-send"`), strings.Index(page, `id="`+send+`"`); !(a >= 0 && a < s) {
+			t.Errorf("%s: the ↑ (%d) is not before Send (%d)", name, a, s)
+		}
+		// The mic's recording glyph is the ✓, not a stop square.
+		micFull := regexp.MustCompile(`(?s)<button id="` + mic + `" type="button".*?</button>`).FindString(page)
+		if !strings.Contains(micFull, `group-data-[state=recording]:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-dictate-check>`) {
+			t.Errorf("%s: the recording mic does not show the ✓: %s", name, micFull)
+		}
+		if strings.Contains(micFull, `<rect x="5" y="5" width="14" height="14"`) {
+			t.Errorf("%s: the recording mic still draws the stop square", name)
+		}
+	}
+	// The script names the ✓ and the ↑ as the markup does, and announces the
+	// ↑'s armed state.
+	script := DictateScriptHTML(TranscribePath)
+	for _, want := range []string{`"stop":"Stop and insert transcript"`, `"send":"Transcribe and send"`, `"sending":"Transcribing, then sending…"`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script lacks %s", want)
+		}
+	}
+}
+
+// TestTheVoiceSendIsTheBoxsOwnSend pins the ↑'s send to a CLICK on the box's
+// Send — never a request of the script's own — made only on an inserted
+// transcript, once, with the repeat tap on Send held for DictateSendHoldMs.
+// A structural pin of the one place a send can start; the click paths
+// (exactly once, nothing on a failure, the step-up still asked) are
+// e2e/tests/dictation.spec.ts.
+func TestTheVoiceSendIsTheBoxsOwnSend(t *testing.T) {
+	script := DictateScriptHTML(TranscribePath)
+	for _, want := range []string{
+		"if (!ok || !t || !t.isConnected || t.disabled) return;\n    t.click();\n    held = { el: t, until: Date.now() + 1500 };",
+		"insert(p.input, t);\n          ok = true;",
+		"if (s.send) voiceSend(s, ok);",
+		"if (!s || s.p.arrow !== up || up.disabled || s.send || !s.rec || s.rec.state !== 'recording') return;",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script lacks\n%s", want)
+		}
+	}
+	// One fetch in the whole script: the recording's POST. A second would be
+	// a send path of its own.
+	if n := strings.Count(script, "fetch("); n != 1 {
+		t.Errorf("the script calls fetch %d times; want 1 (the recording's POST only)", n)
+	}
+	if DictateSendHoldMs != 1500 {
+		t.Errorf("DictateSendHoldMs = %d", DictateSendHoldMs)
+	}
+}
+
 // TestNoServiceNoMicrophone: with no speech-to-text service (an empty path)
 // no surface draws the button, its note or its script.
 func TestNoServiceNoMicrophone(t *testing.T) {
@@ -172,7 +305,16 @@ func TestTheStringFormsAreTheSameControl(t *testing.T) {
 	if got, want := DictateScriptHTML(TranscribePath), renderString(t, dictateScript(TranscribePath)); got != want || !strings.Contains(got, "window.__musterDictate") {
 		t.Error("the script's string form is not the script")
 	}
-	for name, s := range map[string]string{"control": DictateControlHTML("", "a", "b", "c"), "note": DictateNoteHTML("", "b", ""), "script": DictateScriptHTML("")} {
+	if got, want := DictateWaveHTML(TranscribePath, "btn-7"), renderString(t, dictateWave(TranscribePath, "btn-7")); got != want || !strings.Contains(got, `id="btn-7-wave"`) {
+		t.Errorf("the waveform's string form:\n%s\nwant\n%s", got, want)
+	}
+	if got, want := DictateSendHTML(TranscribePath, "btn-7", "ok-7", DictateSendWide),
+		renderString(t, dictateSend(TranscribePath, "btn-7", DictateSendWide, []string{"ok-7"}, []string{"ok-7"})); got != want ||
+		!strings.Contains(got, `id="btn-7-send"`) || !strings.Contains(got, `data-dictate-submit="ok-7" data-dictate-hide="ok-7"`) {
+		t.Errorf("the ↑'s string form:\n%s\nwant\n%s", got, want)
+	}
+	for name, s := range map[string]string{"control": DictateControlHTML("", "a", "b", "c"), "note": DictateNoteHTML("", "b", ""), "script": DictateScriptHTML(""),
+		"wave": DictateWaveHTML("", "c"), "send": DictateSendHTML("", "c", "d", DictateSendPill)} {
 		if s != "" {
 			t.Errorf("the %s with no service: %q", name, s)
 		}

@@ -1845,15 +1845,22 @@ func attentionAnswerFormHTML(it attentionItem, id, back, formAttrs, dismiss stri
 		b.WriteString("</div>\n")
 	}
 	// 🔴 EVERY ID IS THE ASK'S OWN: the list draws one box per ask, and the
-	// mic finds its box and note by id (ui.DictateControlHTML). The mic FILLS
-	// the box at the caret; Answer is still the only send. The label is for a
+	// mic finds its box and note by id (ui.DictateControlHTML). The mic's ✓
+	// FILLS the box at the caret; its ↑ fills it and clicks Answer, so Answer
+	// is still the only send (ui/dictate.go). The label is for a
 	// screen reader; the box's placeholder says the same to the eye.
+	// While the mic records, the waveform takes the box's place and the ↑
+	// Answer's (ui.DictateWaveHTML, ui.DictateSendHTML); the ↑ sends by
+	// clicking THIS Answer (its id), never an option's button above it.
 	input := "answer-" + id
+	submit := input + "-submit"
 	box := `<label for="` + input + `" class="sr-only">Your answer</label>
 <div class="` + ui.AskFormBoxRowClass + `"><textarea id="` + input + `" name="answer" rows="1" placeholder="Your answer…" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + ui.AskFormInputClass + `"></textarea>` +
+		ui.DictateWaveHTML(it.dictate, input+"-dictate") +
 		answerMic(it.dictate, it.dictateOff, input, input+"-dictate-note", input+"-dictate") + `</div>
 ` + ui.DictateNoteHTML(it.dictate, input+"-dictate-note", "")
-	answer := `<button type="submit" class="` + ui.AskFormAnswerClass + `">Answer</button>`
+	answer := ui.DictateSendHTML(it.dictate, input+"-dictate", submit, ui.DictateSendWide) +
+		`<button type="submit" id="` + submit + `" class="` + ui.AskFormAnswerClass + `">Answer</button>`
 	// Dismiss ends the form's LAST row: beside "Type an answer" while the box
 	// is behind the options, else beside Answer (attentionItemHTML's footer
 	// rule). It belongs, by form=, to the /cancel form outside this one.
