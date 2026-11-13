@@ -308,12 +308,19 @@ test.describe('a phone', () => {
     await expect(page.locator('#mv-input')).toHaveValue(/^\/\S+ $/);
     await page.locator('#mv-input').fill('');
 
-    // THE MIC records from under the panel, its line over the panel.
+    // THE MIC records from under the panel, its line over the panel. While
+    // recording, the line the eye reads is the WAVEFORM in the box's place
+    // (with the elapsed time and the ×; dictate.go): the note is then only
+    // the screen reader's announcement, visually hidden (sr-only, a clipped
+    // 1px box), so it is the waveform that must be on top.
     const mic = page.locator('#mv-dictate');
     await mic.tap();
     await expect(mic).toHaveAttribute('data-state', 'recording');
-    await expect(page.locator('#mv-dictate-note')).toBeVisible();
-    expect(await onTop(page, '#mv-dictate-note'), 'the mic\'s line is on top').toBe('itself');
+    await expect(page.locator('#mv-dictate-note')).toContainText('Recording');
+    await expect(page.locator('#mv-dictate-note')).toHaveClass(/(^|\s)sr-only(\s|$)/);
+    await expect(page.locator('#mv-dictate-wave')).toBeVisible();
+    expect(await onTop(page, '#mv-dictate-wave'), 'the mic\'s line (the waveform) is on top').toBe('itself');
+    expect(await onTop(page, '#mv-dictate-discard'), 'its × is on top where it is tapped').toBe('itself');
     await panelOnBar(page, 'recording (the mic\'s line grew the bar)');
     await mic.tap();
     await expect(mic).not.toHaveAttribute('data-state', 'recording');

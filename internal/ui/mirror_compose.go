@@ -437,6 +437,8 @@ func mirrorComposer(v ComposerView) g.Node {
 				composerFieldMark(collapse),
 				Class("flex"),
 				box,
+				// The recording's waveform takes the box's place (dictate.go).
+				dictateWave(dictate, "mv-dictate"),
 			)),
 			Div(
 				ID(composerButtonRowID),
@@ -447,8 +449,10 @@ func mirrorComposer(v ComposerView) g.Node {
 				// The paperclip: a button of the row, never inside the box
 				// (attach.go), shown collapsed and open alike.
 				attachControlOrOff(upload, uploadOff),
-				// One row: the box, between the paperclip and the mic.
+				// One row: the box, between the paperclip and the mic — and,
+				// while recording, the waveform in its place (dictate.go).
 				g.If(!twoRows, box),
+				g.If(!twoRows, dictateWave(dictate, "mv-dictate")),
 				// "Type a message" — right before the mic (composer_reveal.go).
 				g.If(collapse, composerTextButton()),
 				dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
@@ -456,6 +460,11 @@ func mirrorComposer(v ComposerView) g.Node {
 				// Two rows: the row's room, so Send and the ⋯ stay at its right
 				// (in one row the box takes it).
 				g.If(twoRows, composerSpacer()),
+				// Send's place while recording: the ↑ that transcribes and sends
+				// by clicking the Send on screen — the chief's in chief mode,
+				// else the agent's (dictate.go).
+				dictateSend(dictate, "mv-dictate", DictateSendIcon,
+					[]string{"mv-send-chief", "mv-send"}, []string{"mv-send-group", "mv-send", "mv-send-chief"}),
 				sendSplit(v.Queue, off),
 				// The chief's Send, shown only in chief mode (view_chief.go).
 				g.If(v.Chief != nil, viewChiefSend(v)),

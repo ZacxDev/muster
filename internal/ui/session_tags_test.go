@@ -219,8 +219,10 @@ func TestEveryWriterOfTheBoxReveals(t *testing.T) {
 		// shown() after a write, and focusBox() for an empty Send (it writes
 		// nothing; it reveals so the focus has a box to go to).
 		"the pending send (composer_pending.go)": {mirrorComposerJS, 2},
-		"the mic (dictate.go)":                   {renderString(t, dictateScript(TranscribePath)), 1},
-		"the / menu (composer_menu.go)":          {renderString(t, composerMenuScript("/x")), 1},
+		// The transcript's insert, and a recording's start (it writes
+		// nothing; it reveals so the waveform has the box's row to stand in).
+		"the mic (dictate.go)":          {renderString(t, dictateScript(TranscribePath)), 2},
+		"the / menu (composer_menu.go)": {renderString(t, composerMenuScript("/x")), 1},
 		// The insert, and the row's × (which only focuses the box).
 		"the suggested replies (suggest_row.go)":  {renderString(t, suggestRowScript()), 2},
 		"the send queue's kept edit (send_queue)": {renderString(t, sendQueueScript()), 1},
