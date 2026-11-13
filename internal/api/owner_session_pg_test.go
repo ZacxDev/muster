@@ -27,6 +27,7 @@ import (
 func ownerTools(s *Server, ctx context.Context, c toolCaller) map[string]func() string {
 	return map[string]func() string{
 		"agent_destroy":            func() string { return s.toolAgentDestroy(ctx, c, `{"id": 1}`) },
+		"agents_list":              func() string { return s.toolAgentsList(ctx, c, `{}`) },
 		"attention_answer":         func() string { return s.toolAttentionAnswer(ctx, c, `{"id": 1, "answer": "yes"}`) },
 		"chief_restart":            func() string { return s.toolChiefRestart(ctx, c, `{}`) },
 		"connector_requests_list":  func() string { return s.toolConnectorRequestsList(ctx, c) },
@@ -41,7 +42,7 @@ func ownerTools(s *Server, ctx context.Context, c toolCaller) map[string]func() 
 	}
 }
 
-// TestOwnerToolsRefuseASessionMusterStartedForTheChief: each of the twelve
+// TestOwnerToolsRefuseASessionMusterStartedForTheChief: each of the thirteen
 // tools, called from a window whose listing carries a dispatch, is refused
 // with the owner-authority sentence; from the SAME session's window untagged
 // none is; from a window the host does not list, each is refused as unknown.
