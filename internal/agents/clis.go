@@ -12,9 +12,10 @@ package agents
 // still running, or one the CLI started by itself, counts as working. A live
 // CLI process with no sessions file is listed as Unaccounted, never left out.
 //
-// ⚠ CLAUDE CODE CLIs ONLY. Any other process running as the pod's user (one a
-// tool call left behind) can call muster's MCP door with the agent's token and
-// is not listed: ccd treats such processes as out of its reach.
+// Any other process running as the pod's user (one a tool call left behind) can
+// call muster's MCP door with the agent's token. It is not a CLI, so it is not
+// in CLIs; it is in Processes: ccd's scan of every live process it cannot
+// account for (cmd/ccd strays.go), made while answering the request.
 
 // CLIActivityVersion is the shape of the answer below.
 const CLIActivityVersion = 1
@@ -44,6 +45,32 @@ type CLIState struct {
 type CLIActivity struct {
 	Version int        `json:"version"`
 	CLIs    []CLIState `json:"clis"`
+	// Processes is ccd's stray-process scan, made while answering this very
+	// request (there is no cached copy to go stale). nil: a ccd from before
+	// the scan — owner_asked refuses.
+	Processes *ProcessReport `json:"processes,omitempty"`
+}
+
+// ProcessReport is ccd's scan for stray processes: live processes in the pod
+// that are not ccd, its ancestors, the CLIs it started, their tmux server, or
+// the few direct children it allows (its own helpers, hooks, the stdio MCP
+// server it registers). In practice a stray is something a tool call started
+// and left running.
+type ProcessReport struct {
+	// Scanned: the scan completed. False (with Error) when it could not be
+	// trusted — owner_asked refuses.
+	Scanned bool   `json:"scanned"`
+	Error   string `json:"error,omitempty"`
+	// Strays are the live processes the scan could not account for.
+	Strays []StrayProcess `json:"strays,omitempty"`
+}
+
+// StrayProcess is one process ProcessReport could not account for. Comm is the
+// process's own name, chosen by whoever started it: log it, never trust it.
+type StrayProcess struct {
+	PID  int    `json:"pid"`
+	PPID int    `json:"ppid"`
+	Comm string `json:"comm"`
 }
 
 // CLIStatusIdle is the one sessions-file status that means "not working".

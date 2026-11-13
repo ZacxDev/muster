@@ -62,7 +62,7 @@ func (p *podLanes) only(others ...agents.CLIState) {
 	p.act = agents.CLIActivity{Version: 1, CLIs: append([]agents.CLIState{
 		{Lane: ownerLane, Known: true, SessionID: "owner-cli", Status: "busy"},
 		{Primary: true, Known: true, SessionID: "primary-cli", Status: "idle"},
-	}, others...)}
+	}, others...), Processes: &agents.ProcessReport{Scanned: true}}
 }
 
 func (p *podLanes) fail(err error) {
@@ -329,6 +329,31 @@ func TestTaskDispatchRefusesWhileAnotherLaneWorks(t *testing.T) {
 	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseUnaccountedCLI, n)
 
 	f.pod.only(agents.CLIState{Lane: "agent:chief:webchat:quiet", Known: true, SessionID: "q", Status: "idle"})
+	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID)
+}
+
+// TestTaskDispatchRefusesWhileAStrayProcessRuns: during the owner's own turn,
+// with only the owner's lane working, a process a tool call left running in
+// the chief's pod (ccd's scan names a stray) refuses the release with its own
+// sentence, gate intact; a report that is missing (an older ccd) or failed
+// refuses too; once the stray has exited, the same call starts the agent.
+func TestTaskDispatchRefusesWhileAStrayProcessRuns(t *testing.T) {
+	f := newReleaseFixture(t)
+	n := f.fileGated(t, "a stray process runs")
+	f.ownerTurn(t, f.chief, f.owner, ownersTypedWords)
+	setScan := func(rep *agents.ProcessReport) {
+		f.pod.only()
+		f.pod.mu.Lock()
+		f.pod.act.Processes = rep
+		f.pod.mu.Unlock()
+	}
+	setScan(&agents.ProcessReport{Scanned: true, Strays: []agents.StrayProcess{{PID: 4711, PPID: 1, Comm: "sh"}}})
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseStrayProcess, n)
+	setScan(nil)
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseProcessesUnknown, n)
+	setScan(&agents.ProcessReport{Error: "read /proc: permission denied"})
+	f.mustRefuseRelease(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), chiefReleaseProcessesUnknown, n)
+	setScan(&agents.ProcessReport{Scanned: true})
 	f.startedOne(t, f.call(f.chief, agentDispatchTool, ownerAsked(n.ID)), n.ID)
 }
 

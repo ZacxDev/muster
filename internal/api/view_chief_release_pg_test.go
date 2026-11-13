@@ -52,7 +52,8 @@ func (g *releaseGateway) ChatWithTools(ctx context.Context, a agents.Agent, _, _
 }
 
 func (g *releaseGateway) CLIActivity(context.Context, agents.Agent) (agents.CLIActivity, error) {
-	return agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, Status: agents.CLIStatusIdle}}}, nil
+	return agents.CLIActivity{Version: 1, CLIs: []agents.CLIState{{Primary: true, Known: true, Status: agents.CLIStatusIdle}},
+		Processes: &agents.ProcessReport{Scanned: true}}, nil
 }
 
 // refusalFor is ownerTurnFor's answer during the turn whose text ends in line.

@@ -31,11 +31,11 @@ import (
 // listed; one ccd cannot name is listed as not Known. A live CLI PROCESS with no
 // matching sessions file is listed as Unaccounted (liveCLIs), never skipped.
 //
-// ⚠ WHAT IT DOES NOT SEE: a process that is not a Claude Code CLI. Any process
-// the CLI's tools leave behind (a detached loop a Bash call started) runs as the
-// same user with the agent's muster token, and can call muster's MCP door
-// directly; ccd already treats such processes as out of its reach (the hook
-// listener's note in server.go). This answer is about Claude Code CLIs only.
+// A process that is not a Claude Code CLI is not in CLIs: any process the CLI's
+// tools leave behind (a detached loop a Bash call started) runs as the same user
+// with the agent's muster token and can call muster's MCP door directly. Such a
+// process is reported separately, in Processes: every live process ccd cannot
+// account for (strays.go), scanned while answering this request.
 //
 // The wire is muster's agents.CLIActivity (TestTheCLIsAnswerIsMusters).
 
@@ -54,6 +54,10 @@ type cliEntry struct {
 type cliActivity struct {
 	Version int        `json:"version"`
 	CLIs    []cliEntry `json:"clis"`
+	// Processes is the stray-process scan (strays.go), made while answering
+	// this request. muster refuses owner_asked when it is absent (an older
+	// ccd), failed, or names a stray.
+	Processes *procReport `json:"processes,omitempty"`
 }
 
 // knownCLIs is the session id of the primary's CLI and each lane's, from their
@@ -179,7 +183,8 @@ func (s *server) handleCLIs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cliActivity{Version: cliActivityVersion,
-		CLIs: liveCLIs(s.cfg.ConfigDir, procRoot, s.knownCLIs(), s.cliBin())})
+		CLIs:      liveCLIs(s.cfg.ConfigDir, procRoot, s.knownCLIs(), s.cliBin()),
+		Processes: s.processReport(r.Context())})
 }
 
 // cliBin is the program ccd starts its CLIs as: the primary's supervisor's,

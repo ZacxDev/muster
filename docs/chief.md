@@ -588,6 +588,35 @@ it, is what bounds what it can do with those
 settings on every pod start, so an existing chief picks it up then; `ccd seed
 --check` in the pod passes with `defaultMode` `bypassPermissions`.
 
+🔴 **Turning the bypass off later does NOT clean the chief.** `ccd seed`
+replaces only the top-level keys of `settings.json` that its template names.
+Whatever a bypassed session wrote to the chief's volume survives Stop → Start:
+a `statusLine` or hooks in user settings, extra MCP servers in `.claude.json`,
+shell rc files, the workspace's `.claude/settings*.json`, its memory. **Leaving
+bypass is DESTROY AND RECREATE**, not Stop → Start (as for
+`MUSTER_AGENT_CC_BYPASS_POOLS`, [configuration.md](configuration.md#muster-server-agent-provisioning)):
+[replace the chief](#replacing-the-chief-on-another-kind) onto another account
+or kind, which deletes the agent and creates a new one under the same slug — a
+replace onto the same kind and account only re-applies it and deletes nothing.
+What that costs: the chief's chat history, focus, connector grants and
+workspace volume are deleted with it; grants have to be approved again for the
+new chief.
+
+**Owner-asked actions pause while a tool call's process runs.** Because no
+prompt stops the chief from starting a background process (`nohup … &`), such a
+process could wait for your next chat turn and then make an `owner_asked` call
+itself — releasing a gate, routing into your own session, starting an agent
+without an approval card. So every `owner_asked` check also reads ccd's scan of
+the chief's pod: any live process that is not ccd, the CLIs it started, their
+tmux server, or the few helpers ccd allows (its own tmux and git, a CLI's hook,
+the `hq mcp` server it registers) counts. While one runs, the chief is told
+*"a background process started by a tool call is still running in your pod;
+owner-asked actions are paused until it exits"* and nothing is released. The
+scan is made at the moment of the check. A chief image too old to report its
+processes, or a scan that fails, is refused the same way (fail closed). A stdio
+MCP server you add to the chief's `.claude.json` yourself also counts, and
+keeps owner-asked actions paused while it runs.
+
 ## The chief on OpenRouter
 
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through
