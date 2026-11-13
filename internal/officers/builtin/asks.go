@@ -38,14 +38,30 @@ import (
 const MaxAsksPerItem = 20
 
 // Asker raises, as the officer's owner, the Attention ask an instance's
-// officer_ask_person becomes, and withdraws one whose item could not then be
-// set waiting. internal/api implements it over its attention store. Raise's
+// officer_ask_person becomes, about the item about (what muster shows beside
+// the question: internal/api officerItemContext), and withdraws one whose
+// item could not then be set waiting. internal/api implements it over its attention store. Raise's
 // refusals are the contract's decisions (*officers.HQError: 400 for a bound
 // the question breaks, 409 when the owner's open asks are at their cap);
 // anything else is an outage.
 type Asker interface {
-	Raise(ctx context.Context, o officers.Officer, question string, options []string, timeout time.Duration) (askID int64, err error)
+	Raise(ctx context.Context, o officers.Officer, about AskAbout, question string, options []string, timeout time.Duration) (askID int64, err error)
 	Withdraw(ctx context.Context, o officers.Officer, askID int64)
+}
+
+// AskAbout is the item an ask or escalation notice is raised about, as the
+// store holds it: muster's own record, never the officer's words. Payload is
+// the item's payload (a plugin message's item carries the message's ids,
+// venue and thread: internal/plugins routeToOfficer).
+type AskAbout struct {
+	ItemID           int64
+	Kind, SubjectKey string
+	Payload          json.RawMessage
+}
+
+// about is it as an AskAbout.
+func (it itemRow) about() AskAbout {
+	return AskAbout{ItemID: it.ID, Kind: it.Kind, SubjectKey: it.SubjectKey, Payload: it.Payload}
 }
 
 // WithAsker sets the Asker b raises asks through, and returns b.
@@ -121,7 +137,7 @@ func (b *Backend) CreateAsk(ctx context.Context, item officers.ItemID, instance 
 			return nil, refuse(http.StatusConflict, "too_many_asks", fmt.Sprintf("the item already carries %d asks", MaxAsksPerItem), nil)
 		}
 		text := askQuestion(b.officer.ID, it, q)
-		raised, err = b.asker.Raise(ctx, b.officer, text, a.Options, timeout)
+		raised, err = b.asker.Raise(ctx, b.officer, it.about(), text, a.Options, timeout)
 		if err != nil {
 			raised = 0
 			return nil, err
@@ -308,6 +324,13 @@ func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string) (js
 type DueNotice struct {
 	Owner, Item, Recipient             int64
 	Officer, Kind, SubjectKey, Summary string
+	// Payload is the item's payload (AskAbout.Payload).
+	Payload json.RawMessage
+}
+
+// About is n's item as an AskAbout.
+func (n DueNotice) About() AskAbout {
+	return AskAbout{ItemID: n.Item, Kind: n.Kind, SubjectKey: n.SubjectKey, Payload: n.Payload}
 }
 
 // DueNotices is every owner's escalation notices not yet raised (and not
@@ -315,7 +338,7 @@ type DueNotice struct {
 // an id above after, oldest first (OpenAsks' paging). ctx must act for every
 // owner (the system scope).
 func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNotice, error) {
-	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, i.officer, i.kind, i.subject_key, coalesce(i.summary, '')
+	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, i.officer, i.kind, i.subject_key, coalesce(i.summary, ''), i.payload
 		FROM officer_items i, jsonb_array_elements(i.notices) n
 		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"attention_id": null, "suppressed": false}]' AND status = 'escalated'
 				AND id > $2 ORDER BY id LIMIT $1)
@@ -326,7 +349,7 @@ func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNo
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DueNotice, error) {
 		var d DueNotice
-		err := r.Scan(&d.Owner, &d.Item, &d.Recipient, &d.Officer, &d.Kind, &d.SubjectKey, &d.Summary)
+		err := r.Scan(&d.Owner, &d.Item, &d.Recipient, &d.Officer, &d.Kind, &d.SubjectKey, &d.Summary, &d.Payload)
 		return d, err
 	})
 }

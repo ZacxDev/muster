@@ -279,6 +279,10 @@ type attentionItem struct {
 	// own unrouted-message ask: unroutedPushText; a reply draft's
 	// draftPushBody); the page shows Text.
 	pushText string
+	// Context is what a builtin officer's ask is about (attention.Ask's,
+	// migration 0125), nil for none: drawn apart from the question on the
+	// card and the ask page (officerContextHTML), and in attention_list.
+	Context *attention.ItemContext `json:"context,omitempty"`
 	// choices are a held question's choice labels, listed in its push only
 	// (never in attention_list's options).
 	choices []string
@@ -432,6 +436,12 @@ func askItem(a attention.Ask, hosts ...mirror.HostView) attentionItem {
 		// muster's own unrouted-message ask: a compact push (unroutedPushText).
 		if t, ok := unroutedPushText(a.Question); ok {
 			it.pushText = t
+		}
+		// A builtin officer's ask about an item a plugin message became:
+		// officer, item, the note's first line (officerContextPushText).
+		if a.Context != nil {
+			it.Context = a.Context
+			it.pushText = officerContextPushText(a.Context, a.Question)
 		}
 	}
 	switch {
@@ -1782,6 +1792,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 	}
 	b.WriteString(attentionHeadHTML(it, now, href) + "\n")
 	b.WriteString(focus)
+	b.WriteString(officerNoteLabelHTML(it.Context))
 	b.WriteString(`<p class="` + ui.AsksTextClass + `" data-attention-text>` + text + `</p>
 `)
 	if it.Detail != "" {
@@ -1789,6 +1800,7 @@ func attentionItemHTML(it attentionItem, now time.Time, returnTo string) string 
 `)
 	}
 	b.WriteString(proposalBodyHTML(it.proposal))
+	b.WriteString(officerContextHTML(it.Context))
 	switch it.Kind {
 	case attentionKindNotice:
 		// 🔴 NO ANSWER BOX: a notice points at a session; it is looked at or

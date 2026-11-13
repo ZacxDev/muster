@@ -217,6 +217,31 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
   Dismissing it (or letting it expire) leaves the item escalated. A
   `--mode shadow` officer records its escalations and asks nobody.
 
+### What the owner is shown
+
+The ask's question is the officer's own words, under muster's line naming the
+officer and the item, and the card labels it **The officer's note**. For an
+item a plugin message became (`plugin.*`), muster attaches the item's context
+itself, read from the item and the stored message when it raises the ask —
+never from the officer's prose (`attention_asks.item_context`, migration 0125):
+
+- the officer, item id, kind and subject;
+- the source message in its own box, marked untrusted: plugin and message id,
+  venue and thread, the sender (with the UNVERIFIED mark unless the plugin
+  verified it), the body (sanitised: no control, format, bidi or invisible
+  characters; cut at 1500 characters or 30 lines with a visible "Cut here"),
+  and the message's `url` when the plugin sent one — as text, never a link;
+- a message muster cannot read then is shown as unread, with its venue and
+  thread.
+
+The source message is the **owner's**: an escalation's other recipients
+(`--escalate-to`) get the officer and item line only, never the message,
+which row-level security keeps from them.
+
+`attention_list` returns it as the item's `context`. The push stays short:
+`Officer <id> · item <n> · <the note's first line>` — no outside sender's
+words on a lock screen. An ask about any other item is unchanged.
+
 ## 5b. Outbound drafts through a bound plugin
 
 1. Grant the type the capability:

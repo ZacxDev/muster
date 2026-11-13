@@ -141,8 +141,8 @@ func ValidMediaRef(r string) bool { return mediaRefRE.MatchString(r) }
 // plugin's alone, and a reply names where and what it answers.
 func boundOfficer(p Plugin, in MessageIn) (string, error) {
 	if p.DeliverTo == nil {
-		if in.Kind != "" || in.Venue != "" {
-			return "", invalid("kind and venue are taken only by a plugin bound to an officer (deliver_to)")
+		if in.Kind != "" || in.Venue != "" || in.URL != "" {
+			return "", invalid("kind, venue and url are taken only by a plugin bound to an officer (deliver_to)")
 		}
 		return "", nil
 	}
@@ -240,8 +240,9 @@ func RenderOfficerMessage(p Plugin, m Message) string {
 }
 
 // routeToOfficer makes message m (just stored, in tx) an item in officer's
-// queue and records the item on it.
-func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, officer string, m Message) (Message, error) {
+// queue and records the item on it; url is MessageIn.URL ("" for none),
+// carried in the payload only.
+func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, officer string, m Message, url string) (Message, error) {
 	if s.officers == nil {
 		return Message{}, ErrOfficerUnavailable
 	}
@@ -249,10 +250,14 @@ func (s *PGStore) routeToOfficer(ctx context.Context, tx pgx.Tx, p Plugin, offic
 	if m.Kind != nil {
 		kind = *m.Kind
 	}
-	payload, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"plugin": p.Name, "plugin_id": p.ID, "message_id": m.ID, "external_id": m.ExternalID, "kind": kind,
 		"venue": m.Venue, "thread": m.Thread, "received_at": m.ReceivedAt, "message": RenderOfficerMessage(p, m),
-	})
+	}
+	if url != "" {
+		fields["url"] = url
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		return Message{}, err
 	}

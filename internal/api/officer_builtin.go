@@ -59,8 +59,9 @@ var _ builtin.Asker = officerAsker{}
 
 // Raise implements builtin.Asker: the ask, as the officer's OWNER, with
 // muster as its asker (nothing waits on its answer in a session: the sweep
-// carries it to the item), and the owner's devices told.
-func (a officerAsker) Raise(ctx context.Context, o officers.Officer, question string, options []string, timeout time.Duration) (int64, error) {
+// carries it to the item) and what it is about (officerItemContext), and the
+// owner's devices told.
+func (a officerAsker) Raise(ctx context.Context, o officers.Officer, about builtin.AskAbout, question string, options []string, timeout time.Duration) (int64, error) {
 	s := a.s
 	if s.ext.Attention == nil {
 		return 0, fmt.Errorf("%w: no attention store", officers.ErrHQUnavailable)
@@ -68,6 +69,7 @@ func (a officerAsker) Raise(ctx context.Context, o officers.Officer, question st
 	ask, err := s.ext.Attention.Create(s.attentionPrincipal(ctx, o.Owner), attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(o.ID)},
 		Question: question, Options: options, Timeout: timeout,
+		Context: s.officerItemContext(ctx, o.Owner, o.ID, about),
 	})
 	switch {
 	case errors.Is(err, attention.ErrInvalid):
@@ -252,6 +254,7 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 	a, err := s.ext.Attention.Create(rctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(n.Officer)},
 		Question: officerNoticeText(n),
+		Context:  officerNoticeContext(s.officerItemContext(ctx, n.Owner, n.Officer, n.About()), n),
 	})
 	var pg *pgconn.PgError
 	switch {

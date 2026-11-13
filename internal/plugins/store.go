@@ -569,8 +569,8 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 			if officer, err = boundOfficer(p, in); err != nil {
 				return err
 			}
-		} else if in.Kind != "" || in.Venue != "" {
-			return invalid("kind and venue are a plugin bound to an officer's")
+		} else if in.Kind != "" || in.Venue != "" || in.URL != "" {
+			return invalid("kind, venue and url are a plugin bound to an officer's")
 		}
 		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
 		// MaxPerHour / MaxQueued, task events (task_id set) against
@@ -618,7 +618,7 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 			return err
 		}
 		if officer != "" {
-			if m, err = s.routeToOfficer(ctx, tx, p, officer, m); err != nil {
+			if m, err = s.routeToOfficer(ctx, tx, p, officer, m, in.URL); err != nil {
 				return err
 			}
 		}

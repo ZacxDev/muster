@@ -292,6 +292,9 @@ type Ask struct {
 	// SubjectKey is the session the chief's ask was raised about (New.SubjectKey,
 	// migration 0103), "" for none.
 	SubjectKey string `json:"-"`
+	// Context is the officer item the ask is about (New.Context, migration
+	// 0125), nil for none.
+	Context *ItemContext `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -365,6 +368,11 @@ type New struct {
 	// asker's arguments: WithdrawAbout withdraws by it when the chief files a
 	// proposal about that session.
 	SubjectKey string
+	// Context is the officer item the ask is about (migration 0125), nil for
+	// none. Set ONLY by muster's builtin-officer path (internal/api
+	// officerItemContext), never from an asker's arguments; Clean sanitises
+	// and bounds it (item_context.go).
+	Context *ItemContext
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -401,6 +409,11 @@ func Clean(n New) (New, error) {
 		return n, fmt.Errorf("%w: at most %d options", ErrInvalid, MaxOptions)
 	}
 	n.Options = opts
+	ictx, err := n.Context.clean()
+	if err != nil {
+		return n, err
+	}
+	n.Context = ictx
 	if n.Notice {
 		switch {
 		case !n.Asker.System:
@@ -603,18 +616,18 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
 	to_chief, coalesce(route_id, ''), suggestions, kind, owner_card, coalesce(asked_session, ''),
-	coalesce(about_key, '')`
+	coalesce(about_key, ''), item_context`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
-	var opts, sugg []byte
+	var opts, sugg, ictx []byte
 	var resolved, queued *time.Time
 	var status, delivery, kind string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
 		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg, &kind, &a.OwnerCard, &a.AskedSession,
-		&a.SubjectKey); err != nil {
+		&a.SubjectKey, &ictx); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -636,6 +649,11 @@ func scan(row pgx.Row) (Ask, error) {
 	}
 	if resolved != nil {
 		a.ResolvedAt = *resolved
+	}
+	if len(ictx) > 0 {
+		if err := json.Unmarshal(ictx, &a.Context); err != nil {
+			return Ask{}, fmt.Errorf("attention: item context of ask %d: %w", a.ID, err)
+		}
 	}
 	return a, nil
 }
@@ -714,11 +732,19 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if n.PluginMessageID > 0 {
 		message = n.PluginMessageID
 	}
+	var ictx any
+	if n.Context != nil {
+		raw, err := json.Marshal(n.Context)
+		if err != nil {
+			return Ask{}, err
+		}
+		ictx = raw
+	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16)
+			to_chief, route_id, plugin_message_id, kind, owner_card, asked_session, about_key, item_context)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey)))
+		n.ToChief, nullable(n.RouteID), message, string(kind), n.OwnerCard, nullable(n.AskedSession), nullable(n.SubjectKey), ictx))
 	if err != nil {
 		return Ask{}, err
 	}
