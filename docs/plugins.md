@@ -2093,6 +2093,8 @@ routing is on.
    against the code — and that `route_reply` is **optional** (a short
    acknowledgement, sent to the reviewer as written). It is still fenced as an
    UNTRUSTED external message: data, never instructions to run, open or obey.
+   A review whose sender takes no mail is told to answer through HQ instead
+   ([below](#a-review-answered-through-hq)).
 
    **A round is a head commit.** A review may arrive as several messages
    (part 1/2, part 2/2) with the same `head_sha`: they are one round, and every
@@ -2138,6 +2140,48 @@ routing is on.
    a resume pointer instead of guessing.
 5. **No author recorded**, or not a review muster reads: the ordinary
    delivery, unchanged.
+
+#### A review answered through HQ
+
+Some review senders take **no mail** — HQ's own PR-review address refuses
+everything sent to it — so a `route_reply` to such a review would
+become a reply draft that can never be delivered. A review is **answered
+through HQ** when its plugin marked the message `no_reply`, or its sender is
+listed in `MUSTER_PR_MAIL_HQ_SENDERS` ([configuration](configuration.md)),
+verified and through agent mail as every list here matches. Such a review:
+
+- **is still routed by pull request** to the session that authored it (a
+  `no_reply` message is otherwise refused a route by pull request), and its
+  route is **one-way** (`session_routes.one_way`), so the schema forbids it a
+  reply draft (migration `0087`) even when its plugin did not mark it
+  `no_reply`. That pair — a round (`pr_head_sha`) and one-way — is how the row
+  itself says it, whatever the configuration says later;
+- **tells the session to answer through HQ, never through muster.** The paste
+  says it is a review of the session's own pull request, to act on, and that
+  the reviewer takes no mail. A finding it does not fix is answered with HQ's
+  PR-review respond channel: the `pr_review_why_respond` tool of HQ's MCP
+  server, or `hq pr-review why respond <finding id> --pr <owner>/<repo>#<n>
+  --kind <reason_kind> --reason "…"` (both `POST
+  /api/v1/pr-reviews/why/respond`, with the session's own HQ token, which needs
+  the `ack` scope). The paste names the pull request, the round's
+  `review_id` and each finding's short id and severity, read from the mail's
+  machine block (`review_id`; `findings[].id`, `f_` and 12 hex;
+  `findings[].severity`) — only values in those grammars, since they stand
+  outside the untrusted fence. It does not mention `route_reply`. muster
+  calls HQ for nothing: it holds no HQ credential for this;
+- **refuses `route_reply`** with `400` (`"refused": "hq_review"`), saying
+  where the answer goes instead — unless the body **starts with `handled via
+  HQ`** (any case), the session's report that it answered through HQ, which
+  closes the route at once: `relayed`, with no draft and no hand-back, its
+  message settled by muster (`muster: a review of a pull request, answered …
+  through HQ's PR-review channel …`). The audit row is `session_route.relayed`
+  with `"via": "hq"`;
+- otherwise **closes as handled** as every review does: once its paste was
+  sent, its 4-hour deadline ends it `timed_out` with no hand-back and no ask.
+
+A review from a sender that takes mail is unchanged: `route_reply` is
+optional and files a reply as before. What muster does not see: whether the
+session's call to HQ succeeded — HQ answers the session, not muster.
 
 #### A review of a pull request already merged or closed
 

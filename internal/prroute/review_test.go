@@ -1,0 +1,56 @@
+package prroute
+
+import (
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// ParseReview: the review_id and finding ids HQ's PR-review respond channel
+// takes, read from the same last json block ParseMail reads, each kept only
+// in its grammar (they are printed outside the untrusted fence).
+
+func reviewJSON(extra string) string {
+	return `{"repo":"` + mailRepo + `","pr":4817,"head_sha":"` + mailSHA + `"` + extra + `}`
+}
+
+func TestParseReviewReadsTheIDsFromTheLastBlock(t *testing.T) {
+	body := block("```", "json", reviewJSON(`,"review_id":"decoy_2213_r9","findings":[{"id":"f_dddddddddddd"}]`)) +
+		"\n" + block("```", "json", reviewJSON(`,"review_id":"widget-api_4817_r2","findings":[`+
+		`{"id":"f_0a1b2c3d4e5f","severity":"high","file":"a.go"},`+
+		`{"id":"f_9e8d7c6b5a40"},`+
+		`{"id":"F_0A1B2C3D4E5F","severity":"low"},`+
+		`{"id":"f_0a1b2c3d4e5","severity":"low"},`+
+		`{"id":12,"severity":"low"},`+
+		`{"id":"f_123456789abc","severity":"High!"}]`))
+	got, ok := ParseReview(body)
+	want := Review{Ref: Ref{Repo: mailRepo, PR: mailPR, HeadSHA: mailSHA}, ReviewID: "widget-api_4817_r2",
+		Findings: []Finding{{ID: "f_0a1b2c3d4e5f", Severity: "high"}, {ID: "f_9e8d7c6b5a40"}, {ID: "f_123456789abc"}}}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseReview = %+v, %v; want %+v", got, ok, want)
+	}
+}
+
+func TestParseReviewIsParseMailsVerdict(t *testing.T) {
+	// No repo: ParseMail refuses, so ParseReview does, whatever ids it holds.
+	if _, ok := ParseReview(block("```", "json", `{"pr":4817,"head_sha":"`+mailSHA+`","findings":[{"id":"f_0a1b2c3d4e5f"}]}`)); ok {
+		t.Fatal("ParseReview accepted a block ParseMail refuses")
+	}
+	// A bad review_id and a findings field of another shape: the Ref stands, no ids.
+	got, ok := ParseReview(block("```", "json", reviewJSON(`,"review_id":"has space","findings":"none"`)))
+	if !ok || got.ReviewID != "" || len(got.Findings) != 0 || got.Repo != mailRepo {
+		t.Fatalf("ParseReview = %+v, %v; want the Ref, no review id, no findings", got, ok)
+	}
+}
+
+func TestParseReviewBoundsTheFindings(t *testing.T) {
+	var fs []string
+	for i := 0; i < MaxReviewFindings+7; i++ {
+		fs = append(fs, `{"id":"f_`+strings.Repeat("0", 12-len(strconv.Itoa(i)))+strconv.Itoa(i)+`"}`)
+	}
+	got, ok := ParseReview(block("```", "json", reviewJSON(`,"findings":[`+strings.Join(fs, ",")+`]`)))
+	if !ok || len(got.Findings) != MaxReviewFindings || got.Findings[0].ID != "f_000000000000" {
+		t.Fatalf("%d findings (%v); want the first %d", len(got.Findings), ok, MaxReviewFindings)
+	}
+}

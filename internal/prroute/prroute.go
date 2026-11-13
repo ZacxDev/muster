@@ -126,6 +126,80 @@ func ParseMail(body string) (Ref, bool) {
 	return ref, true
 }
 
+// Review is what a review mail's machine block says beyond Ref: the round's
+// id and its findings' short ids — what HQ's PR-review respond channel takes
+// (`finding` as the short id WITH `pr`) to answer one.
+type Review struct {
+	Ref
+	// ReviewID is the block's review_id, "" when it is absent or not in
+	// reviewIDPattern.
+	ReviewID string
+	// Findings is the block's findings that carry a well-formed id, in the
+	// block's order, at most MaxReviewFindings.
+	Findings []Finding
+}
+
+// Finding is one finding's id and severity, both validated: muster prints
+// them OUTSIDE the untrusted fence (internal/api's hqReviewPreface), so only
+// text in these grammars is kept.
+type Finding struct {
+	// ID is the finding's short id, "f_" and 12 lower-case hex.
+	ID string
+	// Severity is the finding's severity (lower-case letters), "" when absent
+	// or not one.
+	Severity string
+}
+
+// MaxReviewFindings bounds Review.Findings: the gate keeps a handful per lane,
+// and the paste has a size cap.
+const MaxReviewFindings = 50
+
+var (
+	findingIDPattern = regexp.MustCompile(`^f_[0-9a-f]{12}$`)
+	reviewIDPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	severityPattern  = regexp.MustCompile(`^[a-z]{1,16}$`)
+)
+
+// ParseReview is ParseMail with the round's review_id and its findings' ids:
+// ok exactly when ParseMail's is (the same block, the same rules). A finding
+// without a well-formed id is left out, never repaired; a review_id or
+// severity outside its grammar reads as "".
+func ParseReview(body string) (Review, bool) {
+	ref, ok := ParseMail(body)
+	if !ok {
+		return Review{}, false
+	}
+	rv := Review{Ref: ref}
+	raw, _ := lastJSONBlock(body)
+	var in struct {
+		ReviewID any `json:"review_id"`
+		Findings []struct {
+			ID       any `json:"id"`
+			Severity any `json:"severity"`
+		} `json:"findings"`
+	}
+	// A findings field of another shape leaves the review with none.
+	_ = json.Unmarshal([]byte(raw), &in)
+	if s, isStr := in.ReviewID.(string); isStr && reviewIDPattern.MatchString(s) {
+		rv.ReviewID = s
+	}
+	for _, f := range in.Findings {
+		id, isStr := f.ID.(string)
+		if !isStr || !findingIDPattern.MatchString(id) {
+			continue
+		}
+		sev, _ := f.Severity.(string)
+		if !severityPattern.MatchString(sev) {
+			sev = ""
+		}
+		rv.Findings = append(rv.Findings, Finding{ID: id, Severity: sev})
+		if len(rv.Findings) == MaxReviewFindings {
+			break
+		}
+	}
+	return rv, true
+}
+
 // lastJSONBlock is the content of body's last CLOSED fenced block whose info
 // string is "json" — false unless only whitespace follows that block.
 func lastJSONBlock(body string) (string, bool) {
