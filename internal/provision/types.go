@@ -425,8 +425,12 @@ const MinEgressCIDRPrefixBits = 16
 // nonPublicEgressIPv4 is every IPv4 range an [Network.EgressCIDRs] entry may
 // not overlap. It is a SUPERSET of the kubernetes driver's public-rule
 // exceptions (which only have to carve the inside out of 0.0.0.0/0 on a
-// port): here an operator names the block, so anything that is not a routable
-// unicast public address is refused outright.
+// port): here an operator names the block, so every range that reaches the
+// cluster, the node or the operator's network — private, shared, loopback,
+// link-local — and the non-unicast ones are refused outright. ⚠ NOT every
+// special-purpose block: the RFC 5737 documentation nets, 198.18.0.0/15
+// (benchmarking, also used by some fake-IP proxies) and 192.0.0.0/24 are
+// accepted; the tests use the documentation nets as public fixtures.
 var nonPublicEgressIPv4 = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
 	netip.MustParsePrefix("10.0.0.0/8"),     // RFC 1918 — usual pod/service CIDRs
