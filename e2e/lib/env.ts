@@ -415,6 +415,13 @@ export const tailClampPort = port + 388;
 // server (the e2eterm binary, mirror plugin on) and one fake host whose fake
 // opencode server reports a long model id and a large window.
 export const contextChipPort = port + 389;
+// The message bar kept usable beside the preview panel
+// (preview-composer.spec.ts): its own server (mirror plugin, plugins and
+// MUSTER_PLUGIN_ORIGINS, speech-to-text and uploads configured so the mic and
+// the paperclip are drawn) and one interactive fake host. +391 is the
+// speech-to-text address it names, where nothing listens.
+export const previewComposerPort = port + 390;
+export const previewComposerSttPort = port + 391;
 export const baseURL = `http://localhost:${port}`;
 // tests/pages.spec.ts: shareable pages end to end — its own server (mirror
 // plugin, pages and attachments on, a fake permission router capturing the
