@@ -35,8 +35,8 @@ func TestAFailedNoticeReadMakesTheQueuePartial(t *testing.T) {
 	d := f.one(t)
 	f.srv.ext.ChiefNudges = failingByAsks{Store: f.nudges}
 	ctx := f.srv.attentionPrincipal(context.Background(), authz.OperatorUserID)
-	hosts := f.srv.ext.Mirror.Hosts(ctx)
-	items, err := f.srv.attentionItemsIn(ctx, hosts)
+	rd := f.srv.readAsks(ctx)
+	items, err := f.srv.attentionItemsWith(ctx, rd.hosts, rd.waiting)
 	if err == nil {
 		t.Fatal("a failed read of the notices' sessions did not make the queue partial")
 	}
@@ -49,7 +49,7 @@ func TestAFailedNoticeReadMakesTheQueuePartial(t *testing.T) {
 	if !found {
 		t.Fatalf("the notice is not listed (untargeted) on a partial read: %+v", items)
 	}
-	if sum := f.srv.attentionSummaryOf(authz.OperatorUserID, items, err != nil, hosts, time.Now()); !sum.Partial {
+	if sum := f.srv.attentionSummaryOf(authz.OperatorUserID, items, err != nil, rd.hosts, time.Now()); !sum.Partial {
 		t.Fatal("the summary is not partial")
 	}
 }

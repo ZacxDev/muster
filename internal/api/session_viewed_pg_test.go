@@ -90,7 +90,7 @@ func TestOpeningTheSessionsViewEndsItsEpisodeAndClearsThePush(t *testing.T) {
 	if !f.cleared(t, id) {
 		t.Fatal("cleared_at not set")
 	}
-	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), time.Now()); sec != "" {
+	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), f.srv.readAsks(asUser(authz.OperatorUserID)), time.Now()); sec != "" {
 		t.Fatalf("the Stalled / waiting row is still drawn:\n%s", sec)
 	}
 	f.handledTwoPassesLater(t, id, endViewed, 2)
@@ -386,7 +386,7 @@ func TestMigration0079EndsAPushedOpenEpisodeAndTheNextPassWithdrawsIt(t *testing
 	if got := f.pushes(); len(got) != 2 || got[1] != "resolved "+tag {
 		t.Fatalf("pushes: %v, want the push then its withdrawal", got)
 	}
-	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), time.Now()); sec != "" {
+	if sec, _ := f.srv.episodeRowsHTML(asUser(authz.OperatorUserID), f.srv.readAsks(asUser(authz.OperatorUserID)), time.Now()); sec != "" {
 		t.Fatalf("the Stalled / waiting row is still drawn:\n%s", sec)
 	}
 	f.handledTwoPassesLater(t, id, endReset, 2)
