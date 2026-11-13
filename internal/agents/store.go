@@ -441,6 +441,14 @@ type Store interface {
 	// model-timeout case), so this is evidence, not a verdict. The reconciler is
 	// what escalates a dead recipient to `error`.
 	SetKickoffError(ctx context.Context, id int64, msg string) error
+	// ClearKickoffFailure erases a recorded first-turn failure ([KickoffFailed])
+	// because a LATER turn on the agent completed: `kickoff_error=''` only where the
+	// row is kicked_off and the error is set. It touches nothing else — not
+	// kicked_off, not kickoff_attempts, not updated_at — and a row that is not
+	// kicked off (an owed agent's awaiting-grant / awaiting-clone marker, a
+	// never-delivered record) is never matched. Called from the one place every
+	// turn completes: internal/agentgateway's Send / SendWithTools.
+	ClearKickoffFailure(ctx context.Context, id int64) error
 	// MarkKickoffStuck sets an owed row to `error` with errMsg (and clears
 	// last_output, as UpdateStatus does) ONLY if the row is still the one the
 	// caller judged stuck — updated_at exactly seenUpdatedAt, which every stamp,

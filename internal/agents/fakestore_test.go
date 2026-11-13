@@ -276,6 +276,16 @@ func (f *fakeStore) SetKickoffError(ctx context.Context, id int64, msg string) e
 	return nil
 }
 
+func (f *fakeStore) ClearKickoffFailure(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if a, ok := f.agents[id]; ok && a.KickedOff && a.KickoffError != "" {
+		a.KickoffError = ""
+		f.agents[id] = a
+	}
+	return nil
+}
+
 func (f *fakeStore) kickedOff(id int64) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -493,6 +493,12 @@ explained above the transcript. To start a new agent, ask the chief, or use
 [`muster agent create`](#creating-an-agent-without-the-chief); an agent created
 stopped is started from its page.
 
+**kickoff failed** is not permanent: muster never re-sends a first turn on its
+own, but the badge and its explanation clear as soon as any later turn on that
+agent completes — your own message, a nudge or ask from the chief, a plugin or
+memo delivery. A later turn that fails, times out or comes back empty leaves it
+in place.
+
 ![An agent's page on a phone, its live status and its ⋯ menu open](img/agent-actions.png)
 
 ## How an agent's work ends

@@ -152,8 +152,18 @@ func KickoffOwed(a Agent) bool { return a.PendingNote != "" && !a.KickedOff }
 // ⚠ WHAT KEEPS IT FROM FIRING ON A SUCCESS: every production write of kickoff_error
 // on a kicked-off row is a post-stamp FAILURE (agentkickoff.recordError after the
 // stamp); agentprovision writes it only on a never-kicked-off row; and a successful
-// turn's agents.Store.RecordKickoffDelivery clears it — or, when that write failed,
-// the deliverer clears it itself.
+// first turn's agents.Store.RecordKickoffDelivery clears it — or, when that write
+// failed, the deliverer clears it itself.
+//
+// 🔴 AND IT DOES NOT OUTLIVE A LATER SUCCESS. The failed first turn is never
+// retried, so before the next clause existed nothing ever cleared it: an agent
+// that went on to complete many turns (operator chat, chief nudges and asks,
+// plugin and memo deliveries) read "kickoff failed" for ever. Now ANY later turn
+// that completes — no error and a non-blank reply — clears it through
+// agents.Store.ClearKickoffFailure, called from the one place every turn passes
+// (internal/agentgateway's Send / SendWithTools). kicked_off and
+// kickoff_attempts are untouched, so nothing is re-sent. A failed, timed-out or
+// blank later turn leaves the record.
 func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
 
 // KickoffNeverConnectedReason opens agents.kickoff_error when a stamped first turn

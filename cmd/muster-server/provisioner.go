@@ -242,7 +242,7 @@ func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, plan
 	//
 	// ⚠ nil IS A SUPPORTED OUTCOME, so this is a capability report and not an error
 	// check — see this function's own header on why neither nil is a failure.
-	gw, err := buildGatewayWith(cfg, driver, pool)
+	gw, err := buildGatewayWith(cfg, driver, pool, store)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -397,14 +397,18 @@ func buildStatusPromoter(cfg config, store agents.Store, prov *agentprovision.Ad
 // one. A deployment that names a driver is saying where instances live; naming a
 // runtime is saying what protocol the thing inside speaks.
 func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
-	return buildGatewayWith(cfg, driver, nil)
+	return buildGatewayWith(cfg, driver, nil, nil)
 }
 
 // buildGatewayWith is buildGateway with the claude-code account pool as the
 // gateway's failure marker. A nil pool leaves Accounts nil — NOT a typed nil
 // inside the interface, which would make the gateway's nil check pass and call
 // a method on a nil *Pool.
-func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool) (*agentgateway.Gateway, error) {
+//
+// store is the agents store, wired as the gateway's Kickoff so a completed turn
+// clears a stale "kickoff failed" record (agentgateway.Gateway.noteSuccess). A
+// nil store leaves Kickoff nil for the same typed-nil reason.
+func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool, store agents.Store) (*agentgateway.Gateway, error) {
 	rt, err := agentRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -419,6 +423,9 @@ func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Poo
 	}
 	if pool != nil {
 		gc.Accounts = pool
+	}
+	if store != nil {
+		gc.Kickoff = store
 	}
 	return agentgateway.New(gc)
 }
