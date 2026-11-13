@@ -901,20 +901,22 @@ func hqIntentHow(pr string) string {
 //   - a round WITH findings (Review.Listed > 0): answer a finding it does not
 //     fix through HQ's respond channel (hqRespondHow), naming the round's
 //     review_id and each finding's id and severity;
-//   - a round with NONE: nothing to answer finding by finding, so the respond
-//     channel is not named.
+//   - a round with NONE — a findings key holding an EMPTY array
+//     (Review.FindingsKnown, Listed 0): nothing to answer finding by finding,
+//     so the respond channel is not named.
 //
 // Both end with the intent pointer (hqIntentHow). The discriminator is the
-// machine block's findings array, never the mail's prose. A body ParseReview
-// cannot read (not one muster routes by pull request) gets the respond
-// pointer with placeholders: that it has no findings is not known.
+// machine block's findings array, never the mail's prose. Anything else — the
+// key missing, a value of another shape, a body ParseReview cannot read — is
+// UNKNOWN, and gets the respond pointer (with placeholders where the ids are
+// not known): that the round has no findings is never assumed.
 func hqReviewAsk(body string) (pr, ask string) {
 	pr = "<owner>/<repo>#<n>"
 	rv, ok := prroute.ParseReview(body)
 	if ok {
 		pr = prName(rv.Ref)
 	}
-	if ok && rv.Listed == 0 {
+	if ok && rv.FindingsKnown && rv.Listed == 0 {
 		return pr, "This round lists no findings, so there is nothing to answer finding by finding. " + hqIntentHow(pr)
 	}
 	ids := "Each finding's id (f_ and 12 hex) is in the routed message."

@@ -204,6 +204,34 @@ func TestAReviewAnsweredThroughHQWithNoFindingsPointsToTheIntentOnly(t *testing.
 	}
 }
 
+// A block whose findings are UNKNOWN — the key missing, or a value that is not
+// an array — is never read as "no findings": the paste and the refusal keep the
+// respond pointer, in its placeholder form.
+func TestAReviewAnsweredThroughHQWithUnknownFindingsKeepsTheRespondPointer(t *testing.T) {
+	pr := prRepo + "#" + strconv.Itoa(prNumber)
+	for i, c := range []struct{ name, extra string }{
+		{"missing key", `,"review_id":"` + hqReviewID + `"`},
+		{"object-shaped", `,"review_id":"` + hqReviewID + `","findings":{"id":"` + hqFindingOne + `"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newPRFixture(t)
+			f.authored(t, f.asOwner, routeSID, prCreated())
+			preface, refusal := hqPasteAndRefusal(t, f, "hq-unknown-"+strconv.Itoa(i), reviewBody(fullFields()+c.extra))
+			for name, text := range map[string]string{"preface": preface, "refusal": refusal} {
+				for _, want := range []string{"pr_review_why_respond tool of HQ's MCP server with finding <finding id>, pr " + pr,
+					"Each finding's id (f_ and 12 hex) is in the routed message.", "pr_review_why_set"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("the %s lacks %q:\n%s", name, want, text)
+					}
+				}
+				if strings.Contains(text, "lists no findings") {
+					t.Errorf("the %s reads unknown findings as none:\n%s", name, text)
+				}
+			}
+		})
+	}
+}
+
 // The same intent ask in front of a round WITH findings — HQ's real shape: both
 // pointers, the respond channel for the findings and pr_review_why_set for the
 // intent. The ask's prose decides nothing; the findings array does.

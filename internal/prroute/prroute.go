@@ -7,6 +7,7 @@
 package prroute
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -140,8 +141,13 @@ type Review struct {
 	// Listed is how many entries the block's findings array holds, ids or
 	// not: whether the round HAS findings, which Findings (well-formed ids
 	// only, bounded) cannot tell. 0 for a round with none — its mail asks
-	// nothing to answer finding by finding.
+	// nothing to answer finding by finding — and 0 when FindingsKnown is false.
 	Listed int
+	// FindingsKnown says the block HAS a findings key holding a JSON array.
+	// Without it — the key missing, or a value of another shape — whether the
+	// round has findings is UNKNOWN, never "none": Listed 0 then proves
+	// nothing.
+	FindingsKnown bool
 }
 
 // Finding is one finding's id and severity, both validated: muster prints
@@ -177,19 +183,29 @@ func ParseReview(body string) (Review, bool) {
 	rv := Review{Ref: ref}
 	raw, _ := lastJSONBlock(body)
 	var in struct {
-		ReviewID any `json:"review_id"`
-		Findings []struct {
-			ID       any `json:"id"`
-			Severity any `json:"severity"`
-		} `json:"findings"`
+		ReviewID any             `json:"review_id"`
+		Findings json.RawMessage `json:"findings"`
 	}
-	// A findings field of another shape leaves the review with none.
+	// ParseMail decoded this block, so it is a JSON object: only the two
+	// fields' shapes can differ, and each is checked on its own.
 	_ = json.Unmarshal([]byte(raw), &in)
 	if s, isStr := in.ReviewID.(string); isStr && reviewIDPattern.MatchString(s) {
 		rv.ReviewID = s
 	}
-	rv.Listed = len(in.Findings)
-	for _, f := range in.Findings {
+	var findings []struct {
+		ID       any `json:"id"`
+		Severity any `json:"severity"`
+	}
+	// 🔴 A MISSING OR MIS-SHAPED findings IS UNKNOWN, NOT EMPTY. Only a present
+	// JSON array (null is not one) is read; anything else leaves FindingsKnown
+	// false, so a caller never takes "no findings" from an absence.
+	if t := bytes.TrimSpace(in.Findings); len(t) > 0 && t[0] == '[' && json.Unmarshal(t, &findings) == nil {
+		rv.FindingsKnown = true
+	} else {
+		findings = nil
+	}
+	rv.Listed = len(findings)
+	for _, f := range findings {
 		id, isStr := f.ID.(string)
 		if !isStr || !findingIDPattern.MatchString(id) {
 			continue

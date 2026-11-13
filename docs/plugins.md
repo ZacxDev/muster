@@ -1922,9 +1922,11 @@ hand-back and audit rows as any message route. What differs:
   comes back to the chief with what it can do with a message nobody can
   answer: route it to another session, file the work
   (`task_create_gated` and `task_route_attention`), or settle it.
-- **Only the chief's own route.** Your own door
-  ([`plugin_message_route`](#routing-a-message-from-your-own-session)), a route
-  by thread and a pull-request route still refuse a `no_reply` message; and a
+- **Only the chief's own route** — and an approved routing rule's, and a
+  pull-request route's, which makes a `no_reply` review one-way and
+  [answered through HQ](#a-review-answered-through-hq). Your own door
+  ([`plugin_message_route`](#routing-a-message-from-your-own-session)) and a
+  route by thread still refuse a `no_reply` message; and a
   **task event**, though `no_reply`, is refused by `message_id` with a pointer
   to its task: route the task with `task_id` instead.
 

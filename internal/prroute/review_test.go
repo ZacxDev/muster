@@ -27,7 +27,7 @@ func TestParseReviewReadsTheIDsFromTheLastBlock(t *testing.T) {
 	got, ok := ParseReview(body)
 	want := Review{Ref: Ref{Repo: mailRepo, PR: mailPR, HeadSHA: mailSHA}, ReviewID: "widget-api_4817_r2",
 		Findings: []Finding{{ID: "f_0a1b2c3d4e5f", Severity: "high"}, {ID: "f_9e8d7c6b5a40"}, {ID: "f_123456789abc"}},
-		Listed:   6}
+		Listed:   6, FindingsKnown: true}
 	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseReview = %+v, %v; want %+v", got, ok, want)
 	}
@@ -46,20 +46,27 @@ func TestParseReviewIsParseMailsVerdict(t *testing.T) {
 }
 
 // Listed counts the findings array whatever its ids: a round whose findings
-// all have malformed ids still HAS findings; an empty array has none.
+// all have malformed ids still HAS findings; an empty array has none. 🔴 Only
+// a PRESENT ARRAY is known (FindingsKnown): a missing key, null, an object or
+// a string is unknown, never "no findings".
 func TestParseReviewListedCountsTheArray(t *testing.T) {
 	for _, c := range []struct {
-		extra string
-		want  int
+		name, extra string
+		known       bool
+		listed      int
 	}{
-		{`,"findings":[]`, 0},
-		{``, 0},
-		{`,"findings":[{"id":"NOT-AN-ID"},{"severity":"low"}]`, 2},
-		{`,"findings":[{"id":"f_0a1b2c3d4e5f"}]`, 1},
+		{"empty array", `,"findings":[]`, true, 0},
+		{"empty array, spaced", `,"findings": [ ]`, true, 0},
+		{"one finding", `,"findings":[{"id":"f_0a1b2c3d4e5f"}]`, true, 1},
+		{"malformed ids still count", `,"findings":[{"id":"NOT-AN-ID"},{"severity":"low"}]`, true, 2},
+		{"missing key", ``, false, 0},
+		{"object-shaped", `,"findings":{"id":"f_0a1b2c3d4e5f"}`, false, 0},
+		{"null", `,"findings":null`, false, 0},
+		{"string", `,"findings":"none"`, false, 0},
 	} {
 		got, ok := ParseReview(block("```", "json", reviewJSON(c.extra)))
-		if !ok || got.Listed != c.want {
-			t.Errorf("%q: Listed %d (%v), want %d", c.extra, got.Listed, ok, c.want)
+		if !ok || got.FindingsKnown != c.known || got.Listed != c.listed {
+			t.Errorf("%s: FindingsKnown %v Listed %d (%v), want %v and %d", c.name, got.FindingsKnown, got.Listed, ok, c.known, c.listed)
 		}
 	}
 }
