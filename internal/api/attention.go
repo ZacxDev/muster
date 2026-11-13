@@ -673,17 +673,8 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 // A source that cannot be read is left out and named in the error; the rest
 // are still returned.
 func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
-	var hs []mirror.HostView
-	if s.ext.Mirror != nil {
-		hs = s.ext.Mirror.Hosts(ctx)
-	}
-	return s.attentionItemsIn(ctx, hs)
-}
-
-// attentionItemsIn is attentionItems with its waiting sessions taken from hs,
-// one read of ctx's principal's hosts (waitingSessionsIn).
-func (s *Server) attentionItemsIn(ctx context.Context, hs []mirror.HostView) ([]attentionItem, error) {
-	return s.attentionItemsWith(ctx, hs, s.waitingSessionsIn(ctx, hs))
+	rd := s.readAsks(ctx)
+	return s.attentionItemsWith(ctx, rd.hosts, rd.waiting)
 }
 
 // asksRead is ONE read of ctx's owner's hub for an Asks render (readAsks):
@@ -707,9 +698,11 @@ func (s *Server) readAsks(ctx context.Context) asksRead {
 	return asksRead{hosts: hs, waiting: s.waitingSessionsIn(ctx, hs)}
 }
 
-// attentionItemsWith is attentionItemsIn with hs's waiting sessions already
-// read (waiting: waitingSessionsIn over hs). waiting is copied in, never
-// changed: an Asks render draws its episode rows from the same slice.
+// attentionItemsWith is attentionItems over one read of ctx's principal's
+// hub already made (readAsks): hs, and waiting, waitingSessionsIn over hs. A
+// caller that also shows the hosts passes the SAME read. waiting is copied
+// in, never changed: an Asks render draws its episode rows from the same
+// slice.
 func (s *Server) attentionItemsWith(ctx context.Context, hs []mirror.HostView, waiting []attentionItem) ([]attentionItem, error) {
 	var out []attentionItem
 	var errs []error

@@ -16,9 +16,10 @@ import (
 // on every SSE event and 60 s tick) reads ctx's owner's hosts ONCE and draws
 // every part from that snapshot — the items, which of them session state
 // covers, the "Stalled / waiting" rows, the stops a card already shows, and
-// the rows' session names. A second read is a second walk of every host, and
-// a host flapping between two reads would be online in one part of the list
-// and offline in another.
+// the rows' session names. The point is ONE CONSISTENT SNAPSHOT per render,
+// not cost (Hub.Hosts is an in-memory copy under a lock): a host flapping
+// between two reads would be online in one part of the list and offline in
+// another.
 //
 // 🔴 REGRESSION TEST. At origin/main the refresh read the hosts five times
 // (attentionItems, pageAttentionItems, episodeCarded, episodeRowsHTML,
