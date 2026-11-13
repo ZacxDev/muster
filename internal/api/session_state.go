@@ -254,7 +254,14 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 		// still waiting (sessionStateStep), and the episode ends when that
 		// listing shows it not waiting — so a drop cannot push a stop answered
 		// long ago, nor leave a later real prompt without its push.
-		if ep.Kind == sessionstate.KindMirror && ep.Waiting && ep.StreakKey != "" &&
+		//
+		// 🔴 NOR FOR A WAIT A CONNECTED PASS ALREADY FOUND MISSING (audit round
+		// 2): with missed_passes above 0 the host's last listings showed the
+		// window gone (its Claude Ctrl-C'd, the shell left), so a drop before
+		// the threshold must not push "needs you" for a session that no longer
+		// exists. A window still waiting when the host dropped has 0 (any pass
+		// that saw it reset the count) and is pushed as before.
+		if ep.Kind == sessionstate.KindMirror && ep.Waiting && ep.StreakKey != "" && ep.MissedPasses == 0 &&
 			s.hostsUnread.unreadFor(owner, ep.Host, dropped[ep.Host], sp.now) >= s.waitingGrace {
 			s.settleEpisode(octx, ep, heldWaitFacts(ep, sp.now), sp.now.Sub(ep.OpenedAt), sp.hs)
 		}
@@ -294,8 +301,10 @@ func (s *Server) missedPass(octx context.Context, ep sessionstate.Episode, now t
 // listedUnkeyed reports whether hs lists mirrored episode ep's window — on its
 // host, online and reporting status, at its tmux session and window id —
 // with no session key (stateWindowKey "") WHILE ITS PANE STILL RUNS AN AGENT
-// (Claude Code, or opencode): present, though the stall facts cannot see it
-// (a host that lists windows before their session ids). A window listed under
+// (Claude Code, or opencode — or a Claude Code pane the host could not match
+// to its transcript, which it lists as no runtime with its no-view note,
+// Window.AgentNote): present, though the stall facts cannot see it (a host
+// that lists windows before their session ids). A window listed under
 // ANOTHER key holds another conversation now, so ep's session is missing from
 // it.
 //
@@ -312,7 +321,7 @@ func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) bool {
 		for _, w := range h.Windows {
 			if w.Session == ep.TmuxSession && w.ID == ep.Window {
 				key, _ := stateWindowKey(w)
-				return key == "" && (w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode)
+				return key == "" && (w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode || w.AgentNote != "")
 			}
 		}
 	}

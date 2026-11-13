@@ -137,6 +137,11 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		// opencode API send, docs/design/opencode-first-class.md).
 		"internal/api/send_queue.go (declarations) ×2",
 		"internal/api/send_queue.go queueWordsOf ×1",
+		// Session state's "listed without its key" rule (session_state.go): a
+		// pane still running an agent — Claude Code, opencode, or a Claude pane
+		// the host could not match to its transcript (AgentNote) — is present;
+		// one that runs none is gone. It is nudgeWindowKey's runtime set.
+		"internal/api/session_state.go listedUnkeyed ×1",
 		// A chief subject's runtime LABEL (view_chief.go): a Claude Code window
 		// has no RuntimeSpec (Spec is false for it), so it is named "claude"
 		// here; every other runtime's name comes from its spec. It decides
