@@ -508,6 +508,9 @@ func (s *Server) stallFacts(octx context.Context, inFlight map[string]bool, hs [
 		if err != nil {
 			s.logger.Printf("chief nudges: owner %d: agents: %v", owner, err)
 		}
+		// A host officer instance's row is never provisioned and is seen as its
+		// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+		list = agents.ProvisionedOnly(list)
 		read.agentsRead = err == nil
 		isChief := chiefPredicate(list)
 		// 🔴 ONE PROVISIONER LIST PER READ, NOT ONE PER AGENT (live_status.go:

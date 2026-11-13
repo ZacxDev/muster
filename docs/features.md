@@ -757,11 +757,13 @@ Each officer's instances run on one of two runtimes (`runtime` in its
   instance is a Claude Code window on ONE of your machines, started by its
   `muster-mirror`. **Works in the Compose stack**: needs the database, the
   built-in backend, and a `muster-mirror` on that machine with `-interactive
-  -agent-spawn` and the officer's `repo` on `-agent-spawn-repos`. Not available
-  there: HQ, tiers, models, connectors, `read_repos`, the LLM proxy, kube
-  reads, ship gates, transcripts and `officer_post_draft` (each a boot
-  refusal naming the field, or not offered). 🔴 The sessions run as that
-  machine's user with no pod isolation:
+  -agent-spawn` and the officer's `repo` on `-agent-spawn-repos`. Outbound
+  drafts (`officer_post_draft`, approved by the owner) and `connectors`
+  (approved per request; not `github`) work. Not available there: HQ, tiers,
+  models, `read_repos`, the LLM proxy, kube reads, ship gates and transcripts
+  (each a boot refusal naming the field, or not offered). 🔴 The sessions run
+  as that machine's user with no pod isolation — muster's approval is the
+  sanctioned path for its posts, not a boundary:
   [officers-builtin.md](officers-builtin.md#officers-in-the-compose-stack-host-sessions),
   [design](design/officers-on-hosts.md).
 - In the Compose stack `MUSTER_OFFICERS` is forwarded; a pod officer in it

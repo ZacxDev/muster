@@ -416,6 +416,9 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list agents: %w", err)
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	rows = agents.ProvisionedOnly(rows)
 	var owed []agents.Agent
 	for _, a := range rows {
 		if d.owesFirstTurn(a) {

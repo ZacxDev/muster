@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -43,6 +44,18 @@ import (
 // an officer instance's only when the row muster recorded for the caller's
 // (host, Claude session) — both from the host's own spawn reply — names the
 // caller's window as listed now (hostSpawnBoundTo): agent_report_done's rule.
+// It is checked on EVERY call, and resolves to the instance's AGENT ROW: a row
+// nothing provisions (agents.Agent.RunsOnHost, migration 0125), created by the
+// first start and kept across scale-to-zero, which its outbound drafts and
+// connector grants are filed against — exactly as a pod instance's are.
+//
+// 🔴 A BOUND INSTANCE IS NOT ITS OWNER'S SESSION. The mirror door gives the
+// owner's own sessions operator powers (attention_answer, the connector and
+// draft decisions, agent_destroy …). A call bound to a host officer instance
+// runs ONLY hostInstanceTool's set — so the instance cannot approve its own
+// draft or connector request through muster. (It runs as the machine's user,
+// so muster's approval is the SANCTIONED path, not a boundary: the design's
+// security section says so.)
 // ---------------------------------------------------------------------------
 
 // The host fleet's sentences.
@@ -52,6 +65,7 @@ const (
 	officerHostNoClose   = "officers: %s: host %s does not close windows (an older muster-mirror), so muster could never scale this officer to zero; not starting it"
 	officerHostNoStore   = "officers: %s runs on a host, and this server keeps no host spawns (it needs the database)"
 	officerHostNoMirror  = "officers: %s run on hosts (\"runtime\": \"host\"), and this server has no mirror hub to reach a host through"
+	officerHostNoAgents  = "officers: %s run on hosts, and each host instance has an agent row (its drafts and connector grants hang on it): this server has no agents store (it needs the database)"
 	officerHostNoSpawner = "officers: %s: this muster cannot reach hosts"
 )
 
@@ -184,6 +198,9 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 		return fmt.Errorf("officers: %s: its first message is %d bytes, over a host spawn's %d", o.ID, len(prompt), mirror.MaxSpawnPrompt)
 	}
 	name := o.InstanceName(n)
+	if _, err := s.ensureHostInstanceRow(octx, o, n); err != nil {
+		return err
+	}
 	row, err := st.InsertHostSpawn(octx, o.ID, name, o.Host)
 	if err != nil {
 		return fmt.Errorf("officers: record %s's spawn: %w", name, err)
@@ -218,6 +235,38 @@ func (f officerFleet) hostStart(ctx context.Context, o officers.Officer, n int, 
 	return nil
 }
 
+// ensureHostInstanceRow is instance n's agent row, created on its first start:
+// stopped, the gateway kind with no namespace, account or pool, RunsOnHost the
+// officer's host — a row agentprovision.Adapter refuses every lifecycle call
+// on, and the stopped-agent reaper never selects. 🔴 KEPT ACROSS SCALE-TO-ZERO,
+// never removed by muster: a pending outbound draft and the instance's
+// connector grants reference it (a deleted row would cascade them away while
+// the owner may still be deciding). A row of that name that is not this
+// host's — a pod instance's from before the officer moved, or another host's
+// — is refused, naming it: it is never adopted or rewritten.
+func (s *Server) ensureHostInstanceRow(ctx context.Context, o officers.Officer, n int) (agents.Agent, error) {
+	name := o.InstanceName(n)
+	if a, err := s.ext.Agents.GetByName(ctx, name); err == nil {
+		if a.RunsOnHost != o.Host {
+			where := "a pod instance's"
+			if !a.Provisioned() {
+				where = "host " + a.RunsOnHost + "'s"
+			}
+			return agents.Agent{}, fmt.Errorf("officers: %s: an agent row of that name exists as %s; destroy it before %s can run on host %s", name, where, o.ID, o.Host)
+		}
+		return a, nil
+	}
+	a, err := s.ext.Agents.Create(ctx, agents.Agent{Name: name, DisplayName: fmt.Sprintf("officer %s #%s (on %s)", o.ID, o.InstanceLabel(n), o.Host),
+		DisplayNameSource: agents.NameSystem, Status: agents.StatusStopped, Kind: agents.KindGateway, RunsOnHost: o.Host,
+		// The database takes the owner from ctx's principal (the officer's
+		// owner); stated here too, for a store that does not.
+		OwnerID: o.Owner})
+	if err != nil {
+		return agents.Agent{}, fmt.Errorf("officers: create %s's agent row: %w", name, err)
+	}
+	return a, nil
+}
+
 // applyOfficerSpawnReply applies one agent-spawned frame to the officer spawn
 // it names, as the CONNECTION's owner and host, reporting whether the frame
 // was an officer spawn's at all (false: leave it to the chief's reconciler).
@@ -234,6 +283,8 @@ func (s *Server) applyOfficerSpawnReply(ctx context.Context, owner int64, host s
 	if err != nil {
 		return false
 	}
+	// A clearer log line only: the store's own WHERE host = $2 is the guard
+	// that acts (round 0's D1; not counted as mutation-covered).
 	if r.Host != host {
 		s.logger.Printf("officers: a reply for spawn %d arrived on host %s, but it was sent to %s: dropped", r.ID, host, r.Host)
 		return true
@@ -359,10 +410,11 @@ func hostSpawnBoundTo(r officers.HostSpawn, window string) bool {
 // officer instance it IS: the spawn row muster recorded for the caller's
 // session on the caller's host, bound to the caller's window, of a declared
 // host officer on that host. The agent it returns is the instance by name
-// with no row (ID 0): dispatchOfficerTool's runtime check reads that.
+// it returns is the instance's own row — never provisioned (RunsOnHost this
+// host), of the officer's owner — or ok false.
 func (s *Server) officerHostCaller(ctx context.Context, host, sid, window string) (agents.Agent, bool) {
 	st := s.officerHostSpawns()
-	if st == nil || sid == "" {
+	if st == nil || sid == "" || s.ext.Agents == nil {
 		return agents.Agent{}, false
 	}
 	r, err := st.HostSpawnForSession(ctx, host, sid)
@@ -373,34 +425,122 @@ func (s *Server) officerHostCaller(ctx context.Context, host, sid, window string
 	if !ok || !o.OnHost() || o.Host != host || o.ID != r.Officer {
 		return agents.Agent{}, false
 	}
-	return agents.Agent{Name: r.Instance, DisplayName: "officer " + o.ID, Kind: agents.KindClaudeCode, OwnerID: o.Owner}, true
+	a, err := s.ext.Agents.GetByName(ctx, r.Instance)
+	if err != nil || a.Provisioned() || a.RunsOnHost != host || a.OwnerID != o.Owner {
+		return agents.Agent{}, false
+	}
+	return a, true
 }
 
-// toolHostOfficer is an officer tool on the mirror door: run for the host
-// officer instance the caller is (officerHostCaller), through the SAME
-// dispatchOfficerTool the agent door uses, or refused naming why.
-func (s *Server) toolHostOfficer(ctx context.Context, host string, c toolCaller, name, arguments string) string {
+// hostInstanceTool reports whether name is one a host officer instance may run
+// on the mirror door: the officer tools, the agent connector tools, and the
+// attention tools an agent has. Nothing else — no operator power.
+func hostInstanceTool(name string) bool {
+	switch name {
+	case attentionAskTool, attentionWaitTool, attentionCancelTool:
+		return true
+	}
+	return isOfficerTool(name) || isAgentConnectorTool(name)
+}
+
+// isAgentConnectorTool reports whether name is one of connectorToolDefs: an
+// AGENT's connector tools (never the operator's decide tools).
+func isAgentConnectorTool(name string) bool {
+	for _, d := range connectorToolDefs() {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hostOfficerMirrorTool is the mirror door's routing for a host officer
+// instance, run on EVERY call while a host officer is declared: a call bound
+// to an instance (officerHostCaller) runs only hostInstanceTool's set, as that
+// instance's agent row; an unbound call to an instance-only tool (an officer or
+// agent connector tool) is refused. ok false: not this rule's — the door
+// routes it as before.
+func (s *Server) hostOfficerMirrorTool(ctx context.Context, host string, c toolCaller, name, arguments string) (string, bool) {
+	if !s.hostOfficersOn() {
+		return "", false
+	}
+	instanceOnly := isOfficerTool(name) || isAgentConnectorTool(name)
 	if c.openCodeSession() {
-		return toolErr("%s", openCodeToolRefusal(name))
+		if instanceOnly {
+			return toolErr("%s", openCodeToolRefusal(name)), true
+		}
+		return "", false
 	}
-	a, ok := s.officerHostCaller(ctx, host, c.asker.MirrorSession, c.mirrorWindow)
-	if !ok {
-		return toolErr(officerHostToolRefusal, name)
+	a, bound := s.officerHostCaller(ctx, host, c.asker.MirrorSession, c.mirrorWindow)
+	switch {
+	case !bound && instanceOnly:
+		return toolErr(officerHostToolRefusal, name), true
+	case !bound:
+		return "", false
+	case !hostInstanceTool(name):
+		return toolErr("%s", fmt.Sprintf(officerHostInstanceRefusal, a.Name, name)), true
 	}
-	text, _ := s.dispatchOfficerTool(ctx, a, name, arguments)
+	return s.toolHostOfficerInstance(ctx, a, c, name, arguments), true
+}
+
+// officerHostInstanceRefusal answers a host officer instance naming a tool of
+// its owner's sessions.
+const officerHostInstanceRefusal = "this window is host officer instance %s, not one of your owner's sessions: %s is refused. " +
+	"An instance gets its officer tools, the connector tools (connectors_list, connector_request, connector_status, postgres_query) and attention_ask"
+
+// toolHostOfficerInstance runs tool name for host officer instance a (its
+// agent row): the officer tools through the SAME dispatchOfficerTool the agent
+// door uses, the connector tools through the agent door's own handlers (the
+// officer's connector rule, the grant per agent), the attention tools as the
+// calling session.
+func (s *Server) toolHostOfficerInstance(ctx context.Context, a agents.Agent, c toolCaller, name, arguments string) string {
+	if text, ok := s.dispatchOfficerTool(ctx, a, name, arguments); ok {
+		return text
+	}
+	if isAgentConnectorTool(name) {
+		return s.hostConnectorTool(ctx, a, name, arguments)
+	}
+	text, _ := s.dispatchCallerTool(ctx, c, name, arguments)
 	return text
 }
 
-// officerRuntimeRefusal is why agent a may not use officer o's tools on this
-// door, or "": a host officer's tools are its host instances' (no agent row,
-// a.ID 0), a pod officer's its pods' (a row). So an old pod row left from
-// before an officer moved to a host — same name — reaches nothing, and no
-// mirrored session reaches a pod officer.
+// hostConnectorTool is an agent connector tool for host instance a, with the
+// agent door's argument shapes.
+func (s *Server) hostConnectorTool(ctx context.Context, a agents.Agent, name, arguments string) string {
+	switch name {
+	case "connectors_list":
+		return s.toolConnectorsList(ctx, a)
+	case "connector_request":
+		var in struct{ Name, Reason string }
+		if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
+			return toolErr("arguments are {name, reason}")
+		}
+		return s.toolConnectorRequest(ctx, a, in.Name, in.Reason)
+	case "connector_status":
+		var in struct {
+			Name        string `json:"name"`
+			WaitSeconds int    `json:"wait_seconds"`
+		}
+		if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
+			return toolErr("arguments are {name, wait_seconds?}")
+		}
+		return s.toolConnectorStatus(ctx, a, in.Name, in.WaitSeconds)
+	case postgresQueryToolName:
+		return s.toolPostgresQuery(ctx, a, arguments)
+	}
+	return toolErr("unknown tool %q", name)
+}
+
+// officerRuntimeRefusal is why agent a may not use officer o's tools, or "": a
+// host officer's tools are its host instances' rows' (RunsOnHost its host),
+// a pod officer's its pods' (provisioned rows). So an old pod row left from
+// before an officer moved to a host — same name — reaches nothing, a host row
+// reaches no pod officer, and a row of another host reaches nothing.
 func officerRuntimeRefusal(o officers.Officer, a agents.Agent, tool string) string {
 	switch {
-	case o.OnHost() && a.ID != 0:
+	case o.OnHost() && a.RunsOnHost != o.Host:
 		return fmt.Sprintf("officer %s runs on host %s: %s is served to its host instances only", o.ID, o.Host, tool)
-	case !o.OnHost() && a.ID == 0:
+	case !o.OnHost() && !a.Provisioned():
 		return fmt.Sprintf("officer %s runs in pods: %s is served to its pod instances only", o.ID, tool)
 	}
 	return ""
@@ -426,6 +566,16 @@ func hostOfficerToolDefs() []agents.ToolDef {
 		}
 	}
 	return out
+}
+
+// hostConnectorToolsOn reports whether the mirror door lists the agent
+// connector tools for host instances: a host officer declares a connector,
+// and the connector store is on.
+func (s *Server) hostConnectorToolsOn() bool {
+	if s.officerRT == nil || s.ext.Connectors == nil {
+		return false
+	}
+	return slices.ContainsFunc(s.officerRT.reg.All(), func(o officers.Officer) bool { return o.OnHost() && len(o.Connectors) > 0 })
 }
 
 // officerSpawnIDs is which of a listing's dispatch tags on host are officer

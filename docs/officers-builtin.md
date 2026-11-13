@@ -17,15 +17,27 @@ mention them.
 
 ## ⚠ Before you declare one on a real deployment
 
-Every outward action an officer takes passes an Attention approval that shows
-the exact content: the officer files an **outbound draft**
+Every outward action an officer takes **through muster** passes an Attention
+approval that shows the exact content: the officer files an **outbound draft**
 (`officer_post_draft`), its owner approves the exact text and media, and a
 plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
-Only an officer whose type grants `outbound_drafts` gets that tool. Its only
-other ways out of its pod are muster's tools and the connectors its owner
-approves one request at a time: do not approve a connector that can write to
-the outside world for one, and give it no `repo` with write access. The
-empty roster (no officer declared) exposes nothing.
+This holds for pod and host officers alike, and a host instance cannot approve
+its own draft or connector request through muster. Only an officer whose type
+grants `outbound_drafts` gets that tool.
+
+- **On a pod** that approval is also the only way out: its other ways out of
+  its pod are muster's tools and the connectors its owner approves one request
+  at a time. Do not approve a connector that can write to the outside world for
+  one, and give it no `repo` with write access.
+- 🔴 **On a host** (`"runtime": "host"`) the approval is the **sanctioned
+  path, not an enforcement boundary.** The instance runs as the machine's
+  user, with that user's credentials and network: a host marketing officer
+  COULD post directly (a browser session, a CLI token, an API key in that
+  user's files), and its `repo` is a pushable checkout with that user's git
+  credentials. Its charter is what keeps it on the sanctioned path
+  ([below](#officers-in-the-compose-stack-host-sessions)).
+
+The empty roster (no officer declared) exposes nothing.
 
 ## 1. Turn the runtime on (the empty roster)
 
@@ -160,34 +172,51 @@ What happens:
   message (behind the preface `muster: your owner's officer runtime started
   you`), without permission prompts unless the host turned
   `-agent-spawn-skip-permissions` off.
+- **Its agent row.** Each instance has an agent row of its own name that
+  nothing starts or stops (no provisioner, no reaper; it is not shown in the
+  agent list — the instance is its mirrored window). Its outbound drafts and
+  connector grants are filed against it. It is created by the first start and
+  kept when the window closes, so a draft or a grant outlives the window.
 - **Tools.** The instance is offered `officer_brief`, `officer_items`,
-  `officer_claim`, `officer_heartbeat`, `officer_complete`, `officer_release`
-  and `officer_ask_person`, through the mirror door. A call is served only to
-  the Claude session muster recorded for that spawn, in the window it
-  recorded; any other session gets a tool error. While a host officer is
-  declared, every mirrored session's tool list shows these tools (a list
-  carries no session); only the instance can use them.
+  `officer_claim`, `officer_heartbeat`, `officer_complete`, `officer_release`,
+  `officer_ask_person` and `officer_post_draft` (with the type's
+  `outbound_drafts` grant), and — when the officer declares `connectors` —
+  `connectors_list`, `connector_request`, `connector_status` and
+  `postgres_query`, through the mirror door. Every call is bound to the Claude
+  session muster recorded for that spawn, in the window it recorded, and runs
+  as the instance's agent row; any other session gets a tool error. A bound
+  instance gets ONLY these (and `attention_ask`): the operator's tools on the
+  mirror door — deciding a draft or a connector request, answering an ask —
+  are refused to it. While a host officer is declared, every mirrored
+  session's tool list shows these tools (a list carries no session); only the
+  instance can use them.
+- **Connectors.** Each `connector_request` is decided by its owner, per
+  request, never from a shared approval — as for a pod. Not `github`: it works
+  through an HTTP proxy with an agent token no host session holds; the
+  instance reads its repository from its worktree.
 - **More work while it is up.** muster pastes the re-prompt into its window,
   only while the host reports it idle.
 - **Scale to zero.** After `idle_scale_to_zero_after` with nothing to do,
   muster closes the window (`/exit` at an idle prompt, the window closed after
   30 s otherwise); the host then removes the worktree if it is clean. muster
-  closes only the window it recorded for that instance.
+  closes only the window it recorded for that instance — the one exception to
+  "muster never closes a host-spawned window", and declaring `"runtime":
+  "host"` is the consent to it ([decisions.md](decisions.md#a-host-officers-window-is-the-one-window-muster-closes-by-itself)).
 - **Host offline.** The officer changes nothing until the host is back: its
   items wait.
 
 Refused at boot, each named: `backend` other than `builtin`, no `host` or `repo`,
-and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `connectors`,
-`read_repos`, `llm`, `kube` (plus what every builtin officer refuses). Not
-offered on a host: `officer_post_draft` (an outbound draft is filed against an
-agent row, which a host instance has not), so an officer that needs
-[outbound drafts](#5b-outbound-drafts-through-a-bound-plugin) stays on pods.
+and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos`,
+`llm`, `kube` (plus what every builtin officer refuses). `connectors` and
+[outbound drafts](#5b-outbound-drafts-through-a-bound-plugin) work on a host.
 
 🔴 **The security model is the machine's, not a pod's.** An instance runs as
 the user `muster-mirror` runs as: that user's files, git and SSH credentials,
 network and other tmux windows; no egress lock and no read-only GitHub token —
-its worktree can be pushed with that user's credentials, and the first message
-telling it not to is prose, not a gate. The host's own allow-list, spawn rate
+its `repo` worktree is a pushable checkout with that user's credentials, and
+the first message telling it not to is prose, not a gate. muster's approval of
+its drafts is the sanctioned path, not a boundary: it could post directly with
+whatever that user can reach. The host's own allow-list, spawn rate
 limit (`-agent-spawn-rate`, default 3 per 10 minutes and 10 a day — it counts
 each wake, so raise it on that host if the officer wakes more often) and audit
 log still bound what muster can make it do. Declare one only on a machine whose

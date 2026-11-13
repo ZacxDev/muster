@@ -129,6 +129,23 @@ looking at. So each viewer gets its own linked session with `ignore-size`. This 
 throughout: its current window and size did not change while a viewer opened
 another window, typed into it, pasted into it, and left.
 
+## A host officer's window is the one window muster closes by itself
+
+muster never closes a host-spawned window: the chief's dispatches are closed by
+the owner (chief-dispatch decision 17 / D7), and by the 2026-11-09 rule nothing about
+one of the owner's sessions is ended without the owner's tap
+([chief-in-agent-view](design/chief-in-agent-view.md)). An officer on a host
+needs a stop for scale-to-zero, and leaving it to the instance obeying "exit
+when idle" is not a mechanism. So, by operator decision (2026-11-13, "Yes,
+opt-in is enough"), **declaring an officer `"runtime": "host"` is the owner's
+consent for muster to close that officer's instance windows** — only the
+window muster recorded from the spawn reply, running the conversation it
+recorded, through the existing `agent-close` (`/exit` at an idle prompt, the
+window closed after the grace otherwise). No other window, and no
+chief-dispatched window, is closed this way. The ledger of `CloseAgent`'s
+callers names both: the owner's tap and the host officer fleet's `Stop`.
+[design/officers-on-hosts.md](design/officers-on-hosts.md#closing-a-window-the-exception-to-d7).
+
 ## Step-up: twelve hours, per browser session
 
 Typing into a mirrored session can run commands on a host, so it needs a recent

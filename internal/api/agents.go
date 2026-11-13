@@ -211,6 +211,9 @@ func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []u
 	if err != nil {
 		return nil, nil, err
 	}
+	// A host officer instance's row is never provisioned and is seen as its
+	// window (agents.ProvisionedOnly; the hostRowConsumers ledger).
+	list = agents.ProvisionedOnly(list)
 	// A chief its owner turned off is left out of the list, the sidebar and the
 	// switcher (chief_toggle.go). It is not deleted: turning it on lists it again.
 	list = s.withoutOffChief(ctx, list)

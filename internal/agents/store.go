@@ -100,6 +100,10 @@ type Agent struct {
 	// a rename (migration 0091): the moment a name the drift offer measures
 	// against took effect (internal/focus DriftOffer's since).
 	DisplayNameAt time.Time `json:"-"`
+	// RunsOnHost is the mirror host a HOST OFFICER INSTANCE's row stands for
+	// (migration 0125, docs/design/officers-on-hosts.md); "" for every other
+	// agent. Such a row is never provisioned: see Provisioned.
+	RunsOnHost string `json:"runsOnHost,omitempty"`
 	Repo              string `json:"repo"` // owner/name
 	RepoBranch        string `json:"repoBranch"`
 	NoteID            *int64 `json:"noteId,omitempty"`

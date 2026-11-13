@@ -1,6 +1,16 @@
 -- muster 0125 — OFFICER INSTANCES AS HOST-SPAWNED SESSIONS
 -- (internal/officers hostspawns.go; docs/design/officers-on-hosts.md).
 --
+--   agents.runs_on_host   the mirror host a HOST OFFICER INSTANCE's agent row
+--       stands for ('' for every other row): the row a host instance's
+--       officer_post_draft and connector grants hang on, which NOTHING
+--       provisions — agentprovision.Adapter refuses every lifecycle call on
+--       it, the stopped-agent reaper's predicate excludes it, and every
+--       consumer that iterates agent rows is classified in
+--       internal/agents' hostRowConsumers ledger. The CHECK keeps such a row
+--       out of the cluster's shapes: no namespace, no Claude account (so it is
+--       the gateway kind), no worker pool.
+--
 --   officer_host_spawns   one row per host-spawned Claude Code session muster
 --       asked a mirror host to start for an instance of a `"runtime": "host"`
 --       officer: the officer, the instance agent name, the host, and what the
@@ -24,7 +34,12 @@
 -- ROLLBACK. An older image never reads the table; roll the image back, then
 -- (optionally):
 --   DROP TABLE public.officer_host_spawns;
+--   DELETE FROM public.agents WHERE runs_on_host <> '';   -- the host instances' rows
+--   ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_runs_on_host_check;
+--   ALTER TABLE public.agents DROP COLUMN IF EXISTS runs_on_host;
 --   DELETE FROM schema_migrations WHERE version = 125;
+-- 🔴 Delete the host rows BEFORE rolling the image back: an older image reads
+-- them as ordinary stopped gateway agents it could Start.
 -- A host officer's window left running is then an ordinary window on its host.
 
 SET LOCAL lock_timeout = '3s';
@@ -69,3 +84,11 @@ GRANT SELECT, INSERT, UPDATE ON public.officer_host_spawns TO muster_app;
 -- nextval() on the shared sequence (an identity column's own inserts need no
 -- grant; an explicit nextval does).
 GRANT USAGE ON SEQUENCE public.host_dispatches_id_seq TO muster_app;
+
+-- The host officer instance's agent row (header).
+ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS runs_on_host TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_runs_on_host_check;
+ALTER TABLE public.agents ADD CONSTRAINT agents_runs_on_host_check CHECK (
+    runs_on_host = ''
+    OR (runs_on_host ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' AND namespace = '' AND kind = 'gateway' AND cc_account = '' AND worker_pool = '')
+);

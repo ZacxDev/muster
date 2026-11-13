@@ -307,17 +307,19 @@ func (d declared) parseRuntime(backend string) (runtime, host string, err error)
 	if strings.TrimSpace(d.CCAccount) != "" || d.CCFailover {
 		refused = append(refused, "cc_account/cc_failover (the host runs its own claude on its own login)")
 	}
-	if len(d.Connectors) > 0 {
-		refused = append(refused, "connectors (granted per agent row, and a host instance has none)")
-	}
+	// connectors are ALLOWED: a host instance has an agent row (migration
+	// 0125) its grants hang on, each decided by the owner per request, and
+	// they are used through MCP tools muster runs server-side
+	// (postgres_query) — no token reaches the session.
 	if len(d.ReadRepos) > 0 {
-		refused = append(refused, "read_repos (read through the github connector, which a host instance has not)")
+		refused = append(refused, "read_repos (further repositories are read through the github connector's HTTP proxy, "+
+			"which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host)")
 	}
 	if present(d.LLM) {
-		refused = append(refused, "llm (the LLM proxy authenticates a pod's agent token)")
+		refused = append(refused, "llm (the LLM proxy routes a pod's Claude Code through it, and needs tiers)")
 	}
 	if present(d.Kube) {
-		refused = append(refused, "kube (kube reads authenticate a pod's agent token)")
+		refused = append(refused, "kube (kube reads are the judgement pool's, and need tiers)")
 	}
 	if len(refused) > 0 {
 		return "", "", fmt.Errorf(`runtime "host" refuses %s`, strings.Join(refused, "; "))
@@ -409,8 +411,12 @@ var connectorNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // MayRequestConnector is THE rule for which connectors officer o's instances
 // may request and use: `github`, plus the ones o declares in `connectors`.
 func MayRequestConnector(o Officer, name string) bool {
+	// 🔴 NOT github ON A HOST: the github connector is used through the HTTP
+	// proxy with the agent's own token, which never reaches a host session —
+	// a grant would be approved for nothing. A host instance reads its
+	// repository from its worktree.
 	if name == GitHubConnector {
-		return true
+		return !o.OnHost()
 	}
 	// kube-read: the judgement pool of an officer with a `kube` block only
 	// (kube.go). Never by declaring it in `connectors`, which is refused.

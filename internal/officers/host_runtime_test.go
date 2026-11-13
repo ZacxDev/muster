@@ -73,7 +73,6 @@ func TestTheHostRuntimeRefusesWhatItCannotHonour(t *testing.T) {
 		{"image", hostDecl(`,"image":"registry.example.test/runner@sha256:` + strings.Repeat("a", 64) + `"`), "image (", noEnv},
 		{"cc_account", hostDecl(`,"cc_account":"acct-x"`), "cc_account/cc_failover (", noEnv},
 		{"cc_failover", hostDecl(`,"cc_failover":true`), "cc_account/cc_failover (", noEnv},
-		{"connectors", hostDecl(`,"connectors":["pg-example"]`), "connectors (", noEnv},
 		{"read_repos", hostDecl(`,"read_repos":["example-org/other"]`), "read_repos (", noEnv},
 		{"llm", hostDecl(`,"llm":{"daily_usd":1}`), "llm (", noEnv},
 		{"kube", hostDecl(`,"kube":{"clusters":["c1"]}`), "kube (", noEnv},
@@ -98,7 +97,7 @@ func TestAHostOfficerIsOfferedTheQueueToolsAndAskOnly(t *testing.T) {
 	host := pod
 	host.Runtime, host.Host, host.Repo = officers.RuntimeHost, "host-alpha", "example-org/example-site"
 	want := map[string]bool{officers.ToolBrief: true, officers.ToolItems: true, officers.ToolClaim: true, officers.ToolHeartbeat: true,
-		officers.ToolComplete: true, officers.ToolRelease: true, officers.ToolAskPerson: true}
+		officers.ToolComplete: true, officers.ToolRelease: true, officers.ToolAskPerson: true, officers.ToolPostDraft: true}
 	all := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease,
 		officers.ToolAskPerson, officers.ToolPostDraft, officers.ToolObsQueries, officers.ToolObsQuery, officers.ToolObsRaw, officers.ToolKubeRead,
 		officers.ToolMergePR, officers.ToolTaskList, officers.ToolGapTask, officers.ToolReleaseEvaluation}
@@ -107,9 +106,39 @@ func TestAHostOfficerIsOfferedTheQueueToolsAndAskOnly(t *testing.T) {
 			t.Errorf("host officer: ToolOffered(%s) = %v, want %v", tool, got, want[tool])
 		}
 	}
-	// Positive control: the rule is the runtime's, not the officer's shape.
-	if !officers.ToolOffered(pod, officers.ToolPostDraft) {
-		t.Fatal("control: the same builtin officer on pods is not offered officer_post_draft")
+	// Positive control: the rule is the runtime's, not the officer's shape —
+	// the same builtin officer on pods is offered officer_obs_queries' gate's
+	// answer for its own shape (HQ-only tools aside), so compare a tool the
+	// host rule alone withholds: officer_obs_queries is ToolOffered for a pod.
+	if !officers.ToolOffered(pod, officers.ToolObsQueries) {
+		t.Fatal("control: the same builtin officer on pods is not offered officer_obs_queries")
+	}
+}
+
+// TestAHostOfficerMayDeclareConnectorsButNotGitHub: connectors parse on a host
+// officer (its instance has an agent row the grants hang on), and the
+// connector rule gives it exactly the declared ones — never github, which is
+// used through the HTTP proxy with a token a host session never holds. The
+// control: the same officer on pods may request github.
+func TestAHostOfficerMayDeclareConnectorsButNotGitHub(t *testing.T) {
+	list, err := officers.Parse(hostDecl(`,"connectors":["pg-example"]`), noEnv, "muster-agent-")
+	if err != nil {
+		t.Fatalf("connectors on a host officer: %v", err)
+	}
+	o := list[0]
+	if !officers.MayRequestConnector(o, "pg-example") || officers.MayRequestConnector(o, "other-db") {
+		t.Fatalf("host officer connectors: pg-example %v, other-db %v", officers.MayRequestConnector(o, "pg-example"), officers.MayRequestConnector(o, "other-db"))
+	}
+	if officers.MayRequestConnector(o, officers.GitHubConnector) {
+		t.Fatal("a host officer may request github")
+	}
+	pod := o
+	pod.Runtime, pod.Host = "", ""
+	if !officers.MayRequestConnector(pod, officers.GitHubConnector) {
+		t.Fatal("control: the same officer on pods may not request github")
+	}
+	if k := officers.KickoffText(o, 1); !strings.Contains(k, "connector_request") || !strings.Contains(k, "pg-example") {
+		t.Errorf("the host kickoff does not teach its connectors: %.200q", k)
 	}
 }
 

@@ -361,6 +361,9 @@ const (
 // (ToolOffered).
 var hostTools = map[string]bool{
 	ToolBrief: true, ToolItems: true, ToolClaim: true, ToolHeartbeat: true, ToolComplete: true, ToolRelease: true, ToolAskPerson: true,
+	// officer_post_draft: filed against the instance's agent row (migration
+	// 0125), the type's outbound_drafts grant read at call time, as on pods.
+	ToolPostDraft: true,
 }
 
 // ReleaseOfficerType is the officer type whose instances evaluate releases.
@@ -379,10 +382,10 @@ func (o Officer) Type() string {
 // for a judgement pool whose officer declares a readable cluster.
 // internal/api's listing and dispatch both ask it.
 func ToolOffered(o Officer, tool string) bool {
-	// 🔴 A HOST OFFICER IS OFFERED THE QUEUE TOOLS AND officer_ask_person
-	// ONLY (docs/design/officers-on-hosts.md): every other officer tool is
-	// bound to a pod's agent row (an outbound draft, a connector, a ship
-	// gate) or served by no backend a host officer may have.
+	// 🔴 A HOST OFFICER IS OFFERED THE QUEUE TOOLS, officer_ask_person AND
+	// officer_post_draft ONLY (docs/design/officers-on-hosts.md): every other
+	// officer tool needs tiers, a ship gate or an HQ, none of which a host
+	// officer may have.
 	if o.OnHost() && !hostTools[tool] {
 		return false
 	}

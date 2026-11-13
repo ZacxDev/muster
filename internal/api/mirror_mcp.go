@@ -333,6 +333,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	// window, and refuses any other session.
 	if s.hostOfficersOn() && !s.featureOff(features.Officers) {
 		out = append(out, hostOfficerToolDefs()...)
+		// And the agent connector tools, for a host officer that declares a
+		// connector: served to its instances only (hostOfficerMirrorTool).
+		if s.hostConnectorToolsOn() && !s.featureOff(features.Connectors) {
+			out = append(out, connectorToolDefs()...)
+		}
 	}
 	return out
 }
@@ -414,6 +419,13 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 				}
 				c = toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: s.mirrorLabel(r.Context(), e)}, mirrorWindow: e.Window}
 			}
+			// 🔴 A HOST OFFICER INSTANCE FIRST (officer_host.go), on every call
+			// while a host officer is declared: a session bound to one runs only
+			// the instance's tools, as its agent row — never an operator power —
+			// and nobody else runs an instance-only tool.
+			if text, ok := s.hostOfficerMirrorTool(r.Context(), t.Host, c, name, args); ok {
+				return text
+			}
 			// 🔴 BY THE RESOLVED CALLER, NOT THE HEADER THAT CARRIED IT: an
 			// opencode caller runs only openCodeMirrorTools, however it was
 			// bound (toolCaller.openCodeSession, the one predicate).
@@ -454,12 +466,6 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// the host-dispatch store): bound to THIS session's own dispatch.
 			if name == agentReportDoneTool {
 				return s.toolHostReportDone(r.Context(), t.Host, c.asker.MirrorSession, c.mirrorWindow, args)
-			}
-			// The officer tools (listed only with a host officer declared):
-			// bound to the host officer instance this session IS, then the
-			// agent door's own dispatchOfficerTool (officer_host.go).
-			if isOfficerTool(name) {
-				return s.toolHostOfficer(r.Context(), t.Host, c, name, args)
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text

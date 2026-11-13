@@ -431,6 +431,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		if cfg.HostSpawns == nil {
 			return nil, fmt.Errorf(officerHostNoStore, strings.Join(hosts, ", "))
 		}
+		if s.ext.Agents == nil {
+			return nil, fmt.Errorf(officerHostNoAgents, strings.Join(hosts, ", "))
+		}
 	}
 	reg := officers.NewRegistry(cfg.Officers)
 	build, err := s.officerBackendBuilder(cfg)
@@ -662,7 +665,7 @@ func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
 	if !ok || officers.MayRequestConnector(o, name) {
 		return nil
 	}
-	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name, declared: o.Connectors}
+	return errOfficerConnector{agent: a.Name, officer: o.ID, connector: name, declared: o.Connectors, onHost: o.OnHost()}
 }
 
 // errOfficerConnector is officerConnectorRefusal's refusal. It is
@@ -671,9 +674,16 @@ func (s *Server) officerConnectorRefusal(a agents.Agent, name string) error {
 type errOfficerConnector struct {
 	agent, officer, connector string
 	declared                  []string
+	// onHost: a host officer, which may use only the connectors it declares
+	// (officers.MayRequestConnector refuses it github).
+	onHost bool
 }
 
 func (e errOfficerConnector) Error() string {
+	if e.onHost {
+		return fmt.Sprintf("%s is an instance of host officer %s, which may use only the connectors it declares (%s); %q was refused",
+			e.agent, e.officer, strings.Join(e.declared, ", "), e.connector)
+	}
 	if len(e.declared) == 0 {
 		return fmt.Sprintf("%s is an instance of officer %s, and an officer may use only the %q connector (to read its "+
 			"repository); %q was refused", e.agent, e.officer, officers.GitHubConnector, e.connector)

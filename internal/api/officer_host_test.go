@@ -168,7 +168,8 @@ func hostOfficer(hqURL string) officers.Officer {
 
 // newHostOfficerRig is the server with officer A in pods (withPod) and officer
 // B on a host. Without withPod the roster is B alone and the server has NO
-// agents store, provisioner or kinds: the Compose stack's shape.
+// provisioner, gateway or kinds — only the agents store: the Compose stack's
+// shape.
 func newHostOfficerRig(t *testing.T, withPod bool) *hostOfficerRig {
 	t.Helper()
 	hq := hqtest.New(map[string]string{offATok: offA, offBTok: offB})
@@ -178,13 +179,13 @@ func newHostOfficerRig(t *testing.T, withPod bool) *hostOfficerRig {
 	r.spawns.Now = r.now
 	hq.Now = r.now
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(logs, "", 0))
-	ext := Extensions{Mirror: r.m, SessionLiveness: stubLiveness{}}
+	r.store = &officerAgents{}
+	ext := Extensions{Mirror: r.m, SessionLiveness: stubLiveness{}, Agents: r.store}
 	r.host = hostOfficer(hq.BaseURL())
 	list := []officers.Officer{r.host}
 	if withPod {
-		r.store = &officerAgents{}
 		r.prov = &officerProv{store: r.store, phase: map[string]provision.Phase{}}
-		ext.Agents, ext.Provisioner, ext.Gateway, ext.Kinds = r.store, r.prov, &repromptChat{}, stubKinds{pick: "acct-one"}
+		ext.Provisioner, ext.Gateway, ext.Kinds = r.prov, &repromptChat{}, stubKinds{pick: "acct-one"}
 		r.pod = officers.Officer{ID: offA, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
 		list = append([]officers.Officer{r.pod}, list...)
 	}
@@ -394,33 +395,49 @@ func TestAHostInstanceIsRepromptedOnlyWhenIdle(t *testing.T) {
 
 // TestTheHostOfficerToolsAreBoundToTheRecordedWindow: the mirror door serves an
 // officer tool to the session muster recorded for the spawn, in its recorded
-// window — and refuses the same session in another window, an unknown
-// session, and an opencode caller; the agent door refuses a ROW named like the
-// host instance (an officer that moved off pods).
+// window, AS THE INSTANCE'S AGENT ROW — and on every call refuses the same
+// session in another window, another session, a row on a host the officer is
+// not declared on, and an opencode caller; the agent door refuses a
+// provisioned row named like the host instance (an officer that moved off
+// pods).
 func TestTheHostOfficerToolsAreBoundToTheRecordedWindow(t *testing.T) {
 	r := newHostOfficerRig(t, false)
 	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: hostOffOwner, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
+	row, err := r.s.ensureHostInstanceRow(ctx, r.host, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h, _ := r.spawns.InsertHostSpawn(ctx, offB, officers.InstanceName(offB, 1), hostOffHost)
 	_, _ = r.spawns.RecordHostSpawnWindow(ctx, h.ID, hostOffHost, "@91", hostOffSess)
 	r.hq.Charters[offB] = "# Triage\nLook at each one."
 	caller := func(sid, window string) toolCaller {
 		return toolCaller{asker: attention.Asker{MirrorHost: hostOffHost, MirrorSession: sid}, mirrorWindow: window}
 	}
+	call := func(host string, c toolCaller, tool, args string) string {
+		out, ok := r.s.hostOfficerMirrorTool(ctx, host, c, tool, args)
+		if !ok {
+			t.Fatalf("%s was not routed by the host officer rule", tool)
+		}
+		return out
+	}
 
-	if out := r.s.toolHostOfficer(ctx, hostOffHost, caller(hostOffSess, "@91"), officers.ToolBrief, ``); isToolErr(out) || !strings.Contains(out, "Triage") {
+	if out := call(hostOffHost, caller(hostOffSess, "@91"), officers.ToolBrief, ``); isToolErr(out) || !strings.Contains(out, "Triage") {
 		t.Fatalf("the instance's own call = %s, want its brief", out)
+	}
+	if a, ok := r.s.officerHostCaller(ctx, hostOffHost, hostOffSess, "@91"); !ok || a.ID != row.ID || a.RunsOnHost != hostOffHost {
+		t.Fatalf("the binding = %+v %v, want the instance's row %d", a, ok, row.ID)
 	}
 	for name, c := range map[string]toolCaller{
 		"another window":  caller(hostOffSess, "@92"),
 		"another session": caller("22222222-3333-4444-8555-666666666666", "@91"),
 		"no window":       caller(hostOffSess, ""),
 	} {
-		if out := r.s.toolHostOfficer(ctx, hostOffHost, c, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "is an officer tool") {
+		if out := call(hostOffHost, c, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "is an officer tool") {
 			t.Errorf("%s: %s, want the binding refusal", name, out)
 		}
 	}
 	// The same session and window, reported on ANOTHER host: not bound.
-	if out := r.s.toolHostOfficer(ctx, hostOffOther, caller(hostOffSess, "@91"), officers.ToolBrief, ``); !isToolErr(out) {
+	if out := call(hostOffOther, caller(hostOffSess, "@91"), officers.ToolBrief, ``); !isToolErr(out) {
 		t.Errorf("another host: %s, want refused", out)
 	}
 	// A row on ANOTHER host, called from that host in its own recorded window:
@@ -428,21 +445,120 @@ func TestTheHostOfficerToolsAreBoundToTheRecordedWindow(t *testing.T) {
 	// officer moved between hosts leaves such rows).
 	other, _ := r.spawns.InsertHostSpawn(ctx, offB, officers.InstanceName(offB, 1), hostOffOther)
 	_, _ = r.spawns.RecordHostSpawnWindow(ctx, other.ID, hostOffOther, "@93", "33333333-4444-4555-8666-777777777777")
-	if out := r.s.toolHostOfficer(ctx, hostOffOther, caller("33333333-4444-4555-8666-777777777777", "@93"), officers.ToolBrief, ``); !isToolErr(out) {
+	if out := call(hostOffOther, caller("33333333-4444-4555-8666-777777777777", "@93"), officers.ToolBrief, ``); !isToolErr(out) {
 		t.Errorf("a row on a host the officer is not declared on: %s, want refused", out)
 	}
 	oc := caller("opencode:ses_x", "@91")
-	if out := r.s.toolHostOfficer(ctx, hostOffHost, oc, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "opencode") {
+	if out := call(hostOffHost, oc, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "opencode") {
 		t.Errorf("opencode caller: %s, want refused", out)
 	}
 	// A tool a host officer is not offered, from the instance itself.
-	if out := r.s.toolHostOfficer(ctx, hostOffHost, caller(hostOffSess, "@91"), officers.ToolPostDraft, `{}`); !isToolErr(out) || !strings.Contains(out, "is not one of officer") {
-		t.Errorf("post_draft from a host instance: %s, want not offered", out)
+	if out := call(hostOffHost, caller(hostOffSess, "@91"), officers.ToolObsQuery, `{}`); !isToolErr(out) || !strings.Contains(out, "is not one of officer") {
+		t.Errorf("obs from a host instance: %s, want not offered", out)
 	}
-	// The agent door: a ROW with the instance's name (left from pods) reaches nothing.
-	row := agents.Agent{ID: 931, Name: officers.InstanceName(offB, 1), OwnerID: hostOffOwner}
-	if out, _ := r.s.dispatchOfficerTool(ctx, row, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "served to its host instances only") {
-		t.Errorf("agent door, a row named like the host instance: %s, want the runtime refusal", out)
+	// The row the binding resolves must be this host's, never a provisioned
+	// one: the same recorded session and window over a row that reads as a
+	// pod's is refused.
+	r.store.mu.Lock()
+	for i := range r.store.rows {
+		if r.store.rows[i].ID == row.ID {
+			r.store.rows[i].RunsOnHost = ""
+		}
+	}
+	r.store.mu.Unlock()
+	if out := call(hostOffHost, caller(hostOffSess, "@91"), officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "is an officer tool") {
+		t.Errorf("the recorded window over a provisioned row: %s, want the binding refusal", out)
+	}
+	// The agent door: a PROVISIONED row with the instance's name reaches nothing.
+	pod := agents.Agent{ID: 931, Name: officers.InstanceName(offB, 1), OwnerID: hostOffOwner}
+	if out, _ := r.s.dispatchOfficerTool(ctx, pod, officers.ToolBrief, ``); !isToolErr(out) || !strings.Contains(out, "served to its host instances only") {
+		t.Errorf("agent door, a provisioned row named like the host instance: %s, want the runtime refusal", out)
+	}
+}
+
+// TestAHostInstanceIsNotItsOwnersSession: a call bound to a host officer
+// instance runs only the instance's tools — the operator's tools on the mirror
+// door (deciding a draft or a connector request, answering an ask, destroying
+// an agent) are refused, so an instance cannot approve its own outbound draft
+// or connector request through muster. An UNBOUND session's call to an
+// instance-only tool is refused too, and its own tools are left to the door.
+func TestAHostInstanceIsNotItsOwnersSession(t *testing.T) {
+	r := newHostOfficerRig(t, false)
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: hostOffOwner, Role: authz.RoleAdmin, Via: authz.ViaMirrorHost})
+	if _, err := r.s.ensureHostInstanceRow(ctx, r.host, 1); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := r.spawns.InsertHostSpawn(ctx, offB, officers.InstanceName(offB, 1), hostOffHost)
+	_, _ = r.spawns.RecordHostSpawnWindow(ctx, h.ID, hostOffHost, "@91", hostOffSess)
+	inst := toolCaller{asker: attention.Asker{MirrorHost: hostOffHost, MirrorSession: hostOffSess}, mirrorWindow: "@91"}
+	for _, tool := range []string{"plugin_draft_decide", "connector_request_decide", attentionAnswerTool, agentDestroyTool, "dispatch_approve", chiefAskTool} {
+		out, ok := r.s.hostOfficerMirrorTool(ctx, hostOffHost, inst, tool, `{}`)
+		if !ok || !isToolErr(out) || !strings.Contains(out, "not one of your owner's sessions") {
+			t.Errorf("%s from the instance: %v %s, want refused", tool, ok, out)
+		}
+	}
+	user := toolCaller{asker: attention.Asker{MirrorHost: hostOffHost, MirrorSession: "44444444-5555-4666-8777-888888888888"}, mirrorWindow: "@7"}
+	if out, ok := r.s.hostOfficerMirrorTool(ctx, hostOffHost, user, "connector_request", `{"name":"pg-example"}`); !ok || !isToolErr(out) {
+		t.Errorf("an unbound session's connector_request: %v %s, want refused", ok, out)
+	}
+	if _, ok := r.s.hostOfficerMirrorTool(ctx, hostOffHost, user, "plugin_draft_decide", `{}`); ok {
+		t.Error("an unbound session's own operator tool was taken by the host officer rule")
+	}
+}
+
+// TestAHostInstancesAgentRowIsMadeOnceAndKept: the first start creates the
+// instance's row — stopped, never provisioned (RunsOnHost its host, no
+// namespace or account), the officer's owner's; scale-to-zero keeps it; the
+// next start reuses it. A provisioned row of that name (left from pods) is
+// refused, never adopted.
+func TestAHostInstancesAgentRowIsMadeOnceAndKept(t *testing.T) {
+	r := newHostOfficerRig(t, false)
+	ctx := context.Background()
+	first := r.hq.AddItem(offB, "triage.look", "svc:row-1")
+	r.rec.Check(ctx, offB, true)
+	h := r.waitSpawned(t)
+	r.store.mu.Lock()
+	created := append([]agents.Agent(nil), r.store.created...)
+	r.store.mu.Unlock()
+	if len(created) != 1 {
+		t.Fatalf("%d agent rows created, want 1", len(created))
+	}
+	a := created[0]
+	if a.Name != officers.InstanceName(offB, 1) || a.RunsOnHost != hostOffHost || a.Provisioned() || a.Status != agents.StatusStopped ||
+		a.Namespace != "" || a.CCAccount != "" || agents.ResolveKind(a.Kind) != agents.KindGateway || a.OwnerID != hostOffOwner {
+		t.Fatalf("the instance's row = %+v", a)
+	}
+	// Scale to zero, then wake again: the same row.
+	r.m.list(hostOffHost, listed(h))
+	r.hq.Complete(first)
+	r.rec.Check(ctx, offB, true)
+	r.advance(31 * time.Minute)
+	r.rec.Check(ctx, offB, true)
+	r.waitCloses(t, 1)
+	r.m.list(hostOffHost)
+	if _, err := r.store.GetByName(ctx, a.Name); err != nil {
+		t.Fatalf("scale-to-zero removed the row: %v", err)
+	}
+	r.hq.AddItem(offB, "triage.look", "svc:row-2")
+	r.rec.Check(ctx, offB, true)
+	r.waitSpawned(t)
+	r.store.mu.Lock()
+	n := len(r.store.created)
+	r.store.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("a second start created another row (%d)", n)
+	}
+
+	// A provisioned row of the instance's name is refused, naming it.
+	r2 := newHostOfficerRig(t, false)
+	r2.store.rows = append(r2.store.rows, agents.Agent{ID: 77, Name: officers.InstanceName(offB, 1), Namespace: "ns-x", OwnerID: hostOffOwner})
+	r2.hq.AddItem(offB, "triage.look", "svc:row-3")
+	res := r2.rec.Check(ctx, offB, true)
+	if len(res.ActErrs) != 1 || !strings.Contains(res.ActErrs[0].Error(), "exists as a pod instance's") {
+		t.Fatalf("start over a pod row = %+v, want the refusal naming it", res)
+	}
+	if n, _, _ := r2.m.counts(); n != 0 {
+		t.Fatal("a spawn was sent over a pod row")
 	}
 }
 
@@ -477,12 +593,12 @@ func TestTheMirrorDoorListsTheHostOfficerToolsOnlyWithAHostOfficer(t *testing.T)
 	}
 	r := newHostOfficerRig(t, false)
 	got := names(r.s)
-	for _, want := range []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolAskPerson} {
+	for _, want := range []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolAskPerson, officers.ToolPostDraft} {
 		if !got[want] {
 			t.Errorf("mirror door lacks %s with a host officer declared", want)
 		}
 	}
-	for _, not := range []string{officers.ToolPostDraft, officers.ToolObsQuery, officers.ToolKubeRead, officers.ToolMergePR} {
+	for _, not := range []string{officers.ToolObsQuery, officers.ToolKubeRead, officers.ToolMergePR} {
 		if got[not] {
 			t.Errorf("mirror door lists %s, which a host officer is not offered", not)
 		}
@@ -500,7 +616,7 @@ func TestTheMirrorDoorListsTheHostOfficerToolsOnlyWithAHostOfficer(t *testing.T)
 // TestEnableOfficersRefusesByRuntime: an all-host roster boots with no agents
 // store, provisioner or kinds (the Compose stack); a pod officer beside it
 // still needs them, named; a host officer needs a mirror hub and the spawn
-// store, each named.
+// store and the agents store (its instances' rows), each named.
 func TestEnableOfficersRefusesByRuntime(t *testing.T) {
 	hq := hqtest.New(map[string]string{offATok: offA, offBTok: offB})
 	t.Cleanup(hq.Close)
@@ -508,9 +624,11 @@ func TestEnableOfficersRefusesByRuntime(t *testing.T) {
 	pod := officers.Officer{ID: offA, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: time.Hour, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
 	srv := func(m Mirror) *Server {
 		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
-		s.UseExtensions(Extensions{Mirror: m, SessionLiveness: stubLiveness{}})
+		s.UseExtensions(Extensions{Mirror: m, SessionLiveness: stubLiveness{}, Agents: &officerAgents{}})
 		return s
 	}
+	noAgents := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
+	noAgents.UseExtensions(Extensions{Mirror: newHostOfficerMirror(), SessionLiveness: stubLiveness{}})
 	if _, err := srv(newHostOfficerMirror()).EnableOfficers(OfficersConfig{Officers: []officers.Officer{host}, HostSpawns: officers.NewMemHostSpawnStore()}); err != nil {
 		t.Fatalf("an all-host roster with no provisioner: %v, want it to boot", err)
 	}
@@ -526,6 +644,8 @@ func TestEnableOfficersRefusesByRuntime(t *testing.T) {
 			offB + ` run on hosts ("runtime": "host"), and this server has no mirror hub`},
 		{"host, no spawn store", srv(newHostOfficerMirror()), OfficersConfig{Officers: []officers.Officer{host}},
 			offB + " runs on a host, and this server keeps no host spawns"},
+		{"host, no agents store", noAgents, OfficersConfig{Officers: []officers.Officer{host}, HostSpawns: officers.NewMemHostSpawnStore()},
+			offB + " run on hosts, and each host instance has an agent row"},
 	} {
 		if _, err := c.s.EnableOfficers(c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
@@ -562,9 +682,22 @@ func TestBothRuntimesShareTheOfficerPolicy(t *testing.T) {
 	if r.m.spawns[0].req.Name != officers.InstanceName(offB, 1) {
 		t.Errorf("the spawn was for %q, want the host officer's instance", r.m.spawns[0].req.Name)
 	}
+	// Each instance has a row; only the pod's is provisioned, and the
+	// provisioner was asked about the pod's row alone.
+	rows := map[string]agents.Agent{}
 	for _, a := range r.store.created {
-		if a.Name != officers.InstanceName(offA, 1) {
-			t.Errorf("an agent row was created for %q: only the pod officer's instance has one", a.Name)
+		rows[a.Name] = a
+	}
+	podRow, hostRow := rows[officers.InstanceName(offA, 1)], rows[officers.InstanceName(offB, 1)]
+	if !podRow.Provisioned() || hostRow.Provisioned() || hostRow.RunsOnHost != hostOffHost || len(rows) != 2 {
+		t.Fatalf("rows = %+v, want a provisioned pod row and a host row on %s", rows, hostOffHost)
+	}
+	r.prov.mu.Lock()
+	moved := append(append([]int64(nil), r.prov.dispatch...), r.prov.starts...)
+	r.prov.mu.Unlock()
+	for _, id := range moved {
+		if id != podRow.ID {
+			t.Errorf("the provisioner was asked to move agent %d, want only the pod row %d", id, podRow.ID)
 		}
 	}
 }
@@ -579,9 +712,11 @@ func TestTheHostOfficerSeamsAreALedger(t *testing.T) {
 	assertCallers(t, ".", "hostStart", []string{"officers.go:Start"})
 	assertCallers(t, ".", "hostReprompt", []string{"officers.go:Reprompt"})
 	assertCallers(t, ".", "hostStop", []string{"officers.go:Stop"})
-	assertCallers(t, ".", "toolHostOfficer", []string{"mirror_mcp.go:handleMirrorMCP"})
-	assertCallers(t, ".", "officerHostCaller", []string{"officer_host.go:toolHostOfficer"})
-	assertCallers(t, ".", "dispatchOfficerTool", []string{"agent.go:dispatchAgentTool", "officer_host.go:toolHostOfficer"})
+	assertCallers(t, ".", "hostOfficerMirrorTool", []string{"mirror_mcp.go:handleMirrorMCP"})
+	assertCallers(t, ".", "officerHostCaller", []string{"officer_host.go:hostOfficerMirrorTool"})
+	assertCallers(t, ".", "toolHostOfficerInstance", []string{"officer_host.go:hostOfficerMirrorTool"})
+	assertCallers(t, ".", "dispatchOfficerTool", []string{"agent.go:dispatchAgentTool", "officer_host.go:toolHostOfficerInstance"})
+	assertCallers(t, ".", "ensureHostInstanceRow", []string{"officer_host.go:hostStart"})
 	assertCallers(t, ".", "InsertHostSpawn", []string{"officer_host.go:hostStart"})
 	assertCallers(t, ".", "RecordHostSpawnWindow", []string{"officer_host.go:applyOfficerSpawnReply"})
 	assertCallers(t, ".", "RecordHostSpawnRefusal", []string{"officer_host.go:applyOfficerSpawnReply"})

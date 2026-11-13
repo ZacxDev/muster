@@ -1,9 +1,16 @@
 # Officers on hosts: officer instances as host-spawned sessions
 
-**Status: v1 built in this pull request.** Operator decision (2026-11-13):
-officers run in the Docker Compose stack as **host-spawned Claude Code
-sessions** — a tmux window on one opted-in machine, started through that
-machine's `muster-mirror` — rather than through a Docker-socket provisioner.
+**Status: built in this pull request (round 1 after the round-0 audit).**
+Operator decisions (2026-11-13):
+
+- officers run in the Docker Compose stack as **host-spawned Claude Code
+  sessions** — a tmux window on one opted-in machine, started through that
+  machine's `muster-mirror` — rather than through a Docker-socket provisioner;
+- **"Add it in this PR"**: each host instance gets an **agent row that nothing
+  starts or stops**, so `officer_post_draft` and `connectors` work on a host;
+- **"Yes, opt-in is enough"**: declaring `"runtime": "host"` is the owner's
+  consent for muster to close that officer's recorded instance windows to
+  scale to zero (see [Closing a window](#closing-a-window-the-exception-to-d7)).
 
 Symbols are named rather than line-numbered: the code moves weekly.
 
@@ -26,12 +33,13 @@ host's loopback endpoint. An officer instance needs nothing more than that.
 | where an instance runs | a Deployment in the cluster | a window in the `agents` tmux session on the machine named by `host` |
 | what starts it | `officerFleet.Start` → agent row + provisioner | `officerFleet.Start` → an `officer_host_spawns` row + `agent-spawn` to that host |
 | working directory | the pod's workspace, no checkout | a fresh worktree of `repo`, cut by the host from its own clone (chief-dispatch §3.3) |
-| instance identity | the agent row's name `officer-<slug>-<n>` | the same name, recorded on the spawn row; the window is bound by muster's record (below), never by a tag |
+| instance identity | the agent row's name `officer-<slug>-<n>` | an agent row of the same name that nothing provisions (`agents.runs_on_host`, below), plus the spawn row; the window is bound by muster's record, never by a tag |
 | first message | the kickoff, delivered by the kickoff deliverer through ccd | the same kickoff (`KickoffText`), sent as the spawn's prompt behind `mirror.OfficerSpawnPreface` |
 | a new turn for an idle instance (`Reprompt`) | ccd's gateway, under the session claim | a paste into its window, only while the host reports it idle (`AgentState`), stamped with the spawn id (`mirror.ForDispatch`) |
 | scale to zero (`Stop`) | provisioner Stop (agent and volume kept) | `agent-close` on that window: `/exit` at an idle prompt, the window closed after the grace otherwise; the host then removes the worktree if it is clean |
 | up / down (`Instances`) | the agent row and the provisioner's instances | the latest spawn row per instance, against the host's live listing: a recorded window the host lists with that spawn's id is up; a row still waiting for its reply is up for 180 s (the chief's pending countdown); anything else is down |
-| officer MCP tools | the agent door (`/mcp`), bound by the agent's own token | the mirror door (`/mirror/mcp`), bound by the caller's (host, Claude session) to a spawn row and then to the caller's window as listed — the rule `agent_report_done` uses (`callerHostDispatch`) |
+| officer MCP tools | the agent door (`/mcp`), bound by the agent's own token | the mirror door (`/mirror/mcp`), bound on EVERY call by the caller's (host, Claude session) to a spawn row, then to the caller's window as listed — the rule `agent_report_done` uses (`callerHostDispatch`) — then to the instance's agent row |
+| outbound drafts, connector grants | filed against the agent row | the same: filed against the instance's agent row |
 
 **The policy is not duplicated.** Both runtimes are one `officers.Fleet`
 (`officerFleet`) handed to one `officers.Reconciler`: `Decide`, the backoff,
@@ -51,6 +59,41 @@ name its mirror token was minted for). That host must be connected, run
 the host's own setting, so the machine opts in, not muster. One host per
 officer in v1: no failover between machines.
 
+### The instance's agent row
+
+Every instance has an `agents` row named like a pod instance's, created by its
+first start (`ensureHostInstanceRow`) with `runs_on_host` = its host
+(migration 0125). It exists so that what a pod instance files against its
+row — an outbound draft (the drafts table's trigger requires an agent id) and
+a connector grant (granted per agent, decided per request) — works unchanged.
+
+- **Nothing provisions it.** `agentprovision.Adapter` refuses every lifecycle
+  call on it (Dispatch, Start, StartIfLive, Stop, Destroy, ReapplyProfiles)
+  before any driver call (`refuseHostRow`). The stopped-agent reaper's
+  predicate excludes it. `agents_runs_on_host_check` keeps it out of every
+  cluster shape: no namespace, no Claude account (so the gateway kind), no
+  worker pool.
+- **Every consumer that iterates agent rows is classified.** A test finds them
+  by TYPE (every call of `agents.Store.List` / `AgentsByNoteIDs` in the
+  module) and holds a ledger: each one either skips the row
+  (`agents.ProvisionedOnly`, checked in its body) — the loops that act (the
+  kickoff deliverer, the status poller, the memo relay, the watchdog, usage,
+  stall nudges, focus) and the lists shown to a person (the agent list and
+  sidebar, the palette, the chief's fleet and session lists, the fleet report)
+  — or only reads it in a way it cannot mislead (lookups by name, task or
+  pool). The ledger fails when the set grows or shrinks.
+- **Lifecycle: created on the first spawn, KEPT on scale-to-zero, never
+  deleted by muster.** A pending outbound draft and the instance's connector
+  grants reference the row; deleting it at every scale-to-zero would cascade
+  them away while the owner may still be deciding, and recreate a grant the
+  owner already decided. Its stored status stays `stopped`: the row is never
+  provisioned; the instance's liveness is the window (the spawn row against the
+  host's listing). It is not shown in the agent list; the instance is seen as
+  its mirrored window.
+- **A row of that name that is not this host's** (a pod instance's left from
+  before the officer moved, or another host's) is refused at start, naming it
+  — never adopted or rewritten.
+
 ### Lifecycle
 
 1. **Wake.** A pass finds claimable items with no instance up; `Decide` says
@@ -65,13 +108,14 @@ officer in v1: no failover between machines.
    refusal is recorded and the instance reads as down on the next pass, which
    may start it again (the host's own rate limit bounds that).
 3. **Work.** The instance calls `officer_brief`, `officer_claim`… through the
-   host's MCP endpoint. muster binds each call to the spawn row.
+   host's MCP endpoint. muster binds each call to the spawn row and the
+   instance's agent row.
 4. **More work while up.** `Decide`'s `Reprompt` pastes the re-prompt into the
    window, only when the host reports the session idle; otherwise the pass gets
    `ErrInstanceBusy` and tries again.
 5. **Idle.** After `idle_scale_to_zero_after` with nothing claimable and
    nothing held, `Stop` closes the window through `agent-close`. A session that
-   does not exit within the grace has its window closed.
+   does not exit within the grace has its window closed. The agent row stays.
 6. **Host offline.** `Instances` fails blind — "cannot see" is not "nothing is
    up" — so the pass changes nothing and backs off, as an unreadable fleet does
    for a pod officer.
@@ -83,22 +127,41 @@ officer in v1: no failover between machines.
   host-spawned window gets: the host's user-scope `mcpServers.muster` entry and
   its per-host loopback secret (chief-dispatch §3.5). muster adds nothing to
   its environment.
-- **The tools are the queue tools and `officer_ask_person`** (`officer_brief`,
-  `officer_items`, `officer_claim`, `officer_heartbeat`, `officer_complete`,
-  `officer_release`, `officer_ask_person`). `officers.ToolOffered` says so for
-  every host officer, so the kickoff, the listing, the boot line and the
-  dispatch agree.
-- **The mirror door lists them to every session of the owner's hosts while a
-  host officer is declared** — `tools/list` carries no session (the same
-  reason `agent_report_done` is listed for every session). A call from a
-  session that is not a host officer's instance gets a tool error naming why.
+- **The officer tools are the queue tools, `officer_ask_person` and
+  `officer_post_draft`** (the type's `outbound_drafts` grant read at call
+  time, as on pods). `officers.ToolOffered` says so for every host officer, so
+  the kickoff, the listing, the boot line and the dispatch agree.
+- **The connector tools** (`connectors_list`, `connector_request`,
+  `connector_status`, `postgres_query`) run as the instance's row through the
+  agent door's own handlers: the officer's connector rule, each request decided
+  by the owner, never a shared approval. Not `github`: it is used through the
+  HTTP proxy with the agent's token, which never reaches a host session, so
+  `MayRequestConnector` refuses it on a host (the instance reads its
+  repository from its worktree). `postgres_query` runs server-side, so no
+  credential reaches the session either.
+- **A bound instance is not its owner's session.** The mirror door gives the
+  owner's own sessions operator tools (`attention_answer`,
+  `connector_request_decide`, `plugin_draft_decide`, `agent_destroy` …). A
+  call bound to a host instance runs ONLY its own tools (the officer tools, the
+  connector tools, `attention_ask`/`_wait`/`_cancel`); anything else is
+  refused naming the instance (`hostOfficerMirrorTool`). So an instance cannot
+  approve its own draft or connector request **through muster**.
+- **The mirror door lists these tools to every session of the owner's hosts
+  while a host officer is declared** (the connector tools only when one
+  declares a connector) — `tools/list` carries no session (the same reason
+  `agent_report_done` is listed for every session; round 0's D2, kept). A call
+  from a session that is not a host officer's instance gets a tool error naming
+  why.
 
 ## What works on the host runtime, and what is refused at boot
 
 Works: the built-in backend's queue, leases, the switch, schedules, asks to
-the owner through Attention, escalations, `max_instances` (one window each),
-`idle_scale_to_zero_after`, `poll_interval`, `owner`, `repo` (now the
-worktree's repository).
+the owner through Attention, escalations, **outbound drafts**
+(`officer_post_draft` → the owner's Attention approval of the exact text and
+media → the bound plugin posts), **`connectors`** (each request approved by the
+owner; `postgres_query`), `max_instances` (one window each),
+`idle_scale_to_zero_after`, `poll_interval`, `owner`, `repo` (now a pushable
+worktree: see Security).
 
 Refused at boot, each naming the field and why (`officers.parseRuntime`):
 
@@ -110,19 +173,20 @@ Refused at boot, each naming the field and why (`officers.parseRuntime`):
 | `tiers` | each pool runs its own model, and the host spawn of Claude Code takes no model |
 | `model` | the same: the host's Claude Code runs its own default |
 | `image`, `cc_account`, `cc_failover` | pod and account-pool settings; the host runs its own `claude` on its own login |
-| `connectors`, `read_repos` | connectors are granted per agent row, and a host instance has none; it reads its repository from its worktree |
-| `llm`, `kube` | the LLM proxy and kube reads authenticate the pod's agent token |
+| `read_repos` | further repositories are read through the `github` connector's HTTP proxy, which takes the agent's token in the session's environment, and none is put there; read them from a clone on the host |
+| `llm` | the LLM proxy routes a pod's Claude Code through it (`CCD_LLM_ROUTE`), and it needs `tiers` |
+| `kube` | kube reads are the judgement pool's, and need `tiers` |
 | `ship`, `ci_logs`, `transcript` | already refused for every builtin officer |
 | `runtime` other than `pod` or `host` | unknown runtime |
 
-And at `EnableOfficers`: a host officer with no mirror hub is refused. A
-roster whose officers are all on hosts no longer needs the agent store, a
-provisioner or the `claude-code` kind; a pod officer beside it still does.
+And at `EnableOfficers`: a host officer with no mirror hub, no host spawn
+store or no agents store is refused, each named. A roster whose officers are
+all on hosts no longer needs a provisioner or the `claude-code` kind; a pod
+officer beside it still does.
 
 Not offered on a host (absent from the tool list and the kickoff, never
-silently broken): `officer_post_draft` (an outbound draft is filed against the
-instance's agent row, `plugins.FileOutbound`), the obs tools (the built-in
-backend serves none anyway), and every ship, kube, task and gap tool.
+silently broken): the obs tools (the built-in backend serves none anyway), and
+every ship, kube, task and gap tool; and the `github` connector.
 
 ## Security: what changes against a pod
 
@@ -134,10 +198,20 @@ State it plainly; the operator chose this knowing it.
   and type into their other tmux windows. A pod officer's whole isolation story
   ([officers-builtin.md](../officers-builtin.md#-before-you-declare-one-on-a-real-deployment))
   does not apply.
-- **Its repository access is the user's, not a read-only token.** A pod
-  officer's GitHub access is a read-only App token minted per request; a host
-  officer works in a real worktree and can push with whatever credentials the
-  user's git has. The kickoff tells it not to push; that is prose, not a gate.
+- **Its `repo` is a pushable checkout with the user's credentials, not a
+  read-only token.** A pod officer's GitHub access is a read-only App token
+  minted per request; a host officer works in a real worktree of `repo` and can
+  push with whatever credentials the user's git has. The kickoff tells it not
+  to push; that is prose, not a gate.
+- **muster's approval is the SANCTIONED path, not an enforcement boundary.**
+  `officer_post_draft` puts every post behind the owner's Attention approval of
+  the exact text and media, and the instance cannot approve its own draft or
+  connector request through muster. But the session runs with the machine
+  user's credentials and network: a host marketing officer COULD post directly
+  (a browser session, a CLI token, an API key in that user's files). On a pod,
+  the missing credentials and the egress lock make the approval the only way
+  out; on a host nothing does. The charter is what keeps it on the sanctioned
+  path.
 - **It runs without permission prompts** by default (the host's
   `-agent-spawn-skip-permissions`, on unless the host turns it off).
 - **Its tool identity is a selector bound to muster's record, not a
@@ -156,25 +230,29 @@ State it plainly; the operator chose this knowing it.
 Declare a host officer only on a machine whose user you would let run that
 charter unattended.
 
-## Open questions
+## Closing a window: the exception to D7
 
-1. **muster closes an officer's window on its own.** chief-dispatch decision
-   17 / D7 says muster never closes a host-spawned window: the owner closes it.
-   Scale-to-zero needs a stop, so v1 closes an **officer** window (and only
-   one: the window muster recorded for that instance, running the conversation
-   it recorded) through the existing `agent-close` message, without the
-   owner's tap. Recommended and built: declaring `runtime: "host"` is the
-   owner's opt-in to that. The alternative — never close; the instance exits
-   itself when the queue is empty — leaves scale-to-zero to the model's
-   obedience, which is not a mechanism.
-2. **`officer_post_draft` on a host.** It needs an agent row id
-   (`plugins.FileOutbound`). Options: let an outbound draft be filed by an
-   officer instance name with no row, or give host instances a row that no
-   provisioner acts on. Neither is built; v1 does not offer the tool, and an
-   officer that needs outbound drafts stays on pods.
-3. **HQ officers on hosts.** The queue tools would work (the token stays in
-   muster-server), but HQ's usage, transcript and pools ledgers would read
-   empty. v1 refuses `backend: hq` with `runtime: host`.
+chief-dispatch decision 17 / D7 says muster never closes a host-spawned window
+(the owner closes it), and the 2026-11-09 rule (chief-in-agent-view) says
+nothing about one of the owner's sessions is ended without the owner's tap.
+**A host officer's scale-to-zero is the one exception** (operator decision
+2026-11-13, "Yes, opt-in is enough"): declaring `"runtime": "host"` is the
+owner's consent for muster to close **only that officer's recorded instance
+windows** — the window muster recorded from the spawn reply, running the
+conversation it recorded — through the existing `agent-close` (`/exit` at an
+idle prompt, the window closed after the grace otherwise). No other window,
+and no chief-dispatched window, is ever closed this way. Recorded in
+[decisions.md](../decisions.md#a-host-officers-window-is-the-one-window-muster-closes-by-itself).
+
+## Resolved questions
+
+1. **Closing an officer's window by itself:** yes, by opt-in (above).
+2. **`officer_post_draft` on a host:** built — the instance's agent row
+   (option b), with the consumers ledger and the adapter's refusal as its
+   guards.
+3. **HQ officers on hosts:** still refused. The queue tools would work, but
+   HQ's usage, transcript and pools ledgers would read empty; the Compose
+   target has no HQ.
 
 ## Tests
 
@@ -183,9 +261,18 @@ charter unattended.
 - the wake loop over a host-spawn fake: a queue item starts instance 1 (one
   spawn, prompt behind the officer preface), the pending row counts up, idle
   past the window closes it, a host offline changes nothing.
-- tool wiring: a call from the instance's own session and window is served; the
-  same session in another window, another session, and a non-officer session
-  are refused; the listing has the host tools only.
+- tool wiring: a call from the instance's own session and window is served as
+  its agent row; the same session in another window, another session, a row on
+  another host, a provisioned row under the recorded window, and a non-officer
+  session are refused; the instance's operator tools are refused; the listing
+  has the host tools only.
+- the agent row: created on the first spawn, kept on scale-to-zero, reused,
+  never provisioned (the adapter refuses all six lifecycle calls), never
+  reaped (the predicate itself, Postgres), no cluster shape (the CHECK); every
+  agent-row consumer ledgered by type.
+- end to end on Postgres: `officer_post_draft` from a host instance through
+  the owner's approval and the plugin's claim and result to a completed item;
+  `connector_request` from a host instance files a pending grant for its row.
 - seam: one `Reconciler`, one fleet, both runtimes driven by the same `Decide`;
   `dispatchOfficerTool` reached from exactly the agent door and the mirror
   door's host binding; `SpawnAgent` and `CloseAgent` callers widened by exactly
