@@ -787,26 +787,61 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if err != nil {
 		return "", "", err
 	}
-	if kind != agents.KindClaudeCode {
-		if p.CCAccount != "" {
-			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
-		}
-		return kind, "", nil
+	account, err = s.resolveAccount(ctx, kind, p.CCAccount, p.Model)
+	if err != nil {
+		return "", "", err
 	}
-	if p.Model != "" {
-		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
+	return kind, account, nil
+}
+
+// resolveAccount is resolveKindAccount's account half, for an already-resolved
+// kind: the Claude account a new agent of kind runs on — pin when it names one
+// of the caller's accounts, else the pool's choice — or the refusal. A pin on
+// any other kind is refused, and so is a model on claude-code. It reads and
+// writes nothing but the account pool's own read (SelectClaudeAccount), so a
+// door that must refuse BEFORE it holds anything (dispatch_request) asks it
+// too: one rule, the one POST /api/agents applies at the create.
+func (s *Server) resolveAccount(ctx context.Context, kind, pin, model string) (string, error) {
+	if kind != agents.KindClaudeCode {
+		if pin != "" {
+			return "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
+		}
+		return "", nil
+	}
+	if model != "" {
+		return "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
 	// A repository IS taken (unlike a model): ccd checks it out before it starts
 	// the CLI and runs the CLI in the checkout (agentspec.podRepo,
 	// cmd/ccd/checkout.go).
 	if s.ext.Kinds == nil {
-		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
+		return "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
 	}
-	account, err = s.ext.Kinds.SelectClaudeAccount(ctx, callerID(ctx), p.CCAccount)
+	account, err := s.ext.Kinds.SelectClaudeAccount(ctx, callerID(ctx), pin)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
+		return "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
 	}
-	return kind, account, nil
+	return account, nil
+}
+
+// checkWorkerPool is THE worker-pool rule of an agent's create (POST
+// /api/agents and every door through createAndDispatchAgent, and
+// dispatch_request before it holds): a pool is machine jobs', which run on
+// claude-code agents only (migration 0041's agents_worker_pool_check refuses
+// the row as well), and its name is agents.ValidWorkerPool's. A pool exists by
+// its members: there is no registry of pools to look a name up in, so a valid
+// name is a known pool (a new one forms with its first worker). nil for no
+// pool.
+func checkWorkerPool(kind, pool string) error {
+	switch {
+	case pool == "":
+		return nil
+	case kind != agents.KindClaudeCode:
+		return fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused, pool, agents.KindClaudeCode)
+	case !agents.ValidWorkerPool(pool):
+		return fmt.Errorf("%w: worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'", ErrDispatchRefused, pool)
+	}
+	return nil
 }
 
 // resolveRepoBranch decides which branch a repo-backed agent clones. An explicit
@@ -860,15 +895,9 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		return agents.Agent{}, err
 	}
 	// A worker pool is machine jobs', which run on claude-code agents only
-	// (migration 0041's agents_worker_pool_check refuses the row as well).
-	if p.WorkerPool != "" {
-		if kind != agents.KindClaudeCode {
-			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q: only a %s agent can be a machine-job worker", ErrDispatchRefused,
-				p.WorkerPool, agents.KindClaudeCode)
-		}
-		if !agents.ValidWorkerPool(p.WorkerPool) {
-			return agents.Agent{}, fmt.Errorf("%w: worker_pool %q is not 1-63 of [a-z0-9-], not starting with '-'", ErrDispatchRefused, p.WorkerPool)
-		}
+	// (checkWorkerPool, the one rule).
+	if err := checkWorkerPool(kind, p.WorkerPool); err != nil {
+		return agents.Agent{}, err
 	}
 	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
 	// door (the forms, the API, agent_dispatch): its session starts PRE-TRUSTED

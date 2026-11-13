@@ -67,7 +67,26 @@ import (
 // door is the owner's own sessions only; every request and approval is an
 // audit row naming the host and the session; an approval pushes the owner;
 // the chief's caps apply (the start is a reservation on its ledger); and the started agent opens a draft
-// pull request at most.
+// pull request at most (a pool worker opens none: it serves its pool's machine
+// jobs).
+//
+// A POOL WORKER AND A CLAUDE ACCOUNT. worker_pool and cc_account are POST
+// /api/agents' fields (agent_create_api.go), checked at the request by THE
+// SAME rules the create applies (checkWorkerPool, resolveAccount: one rule,
+// one place), held, checked again at the approval, and passed to the create
+// as held. A pool worker follows the chief's agent_dispatch rule — claude-code
+// only, no task_id, the repository optional, as POST /api/agents has it — but
+// on THIS door it takes NO prompt (dispatchRequestPoolPrompt): it is started
+// with no first turn (StartWithoutKickoff), as a worker that waits for jobs.
+//
+// 🔴 WHY NO PROMPT FOR A POOL WORKER HERE: a pool may carry deployment
+// privileges — its job turns run without permission prompts
+// (MUSTER_AGENT_CC_BYPASS_POOLS), or its pod holds a private repository's
+// mirror (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS). A mirror token (leaked, or a
+// prompt-injected session) may add a worker to such a pool, but may not hand
+// that worker instructions of its own: the worker's only turns are the pool's
+// jobs. Refused at the request, and again at the approval for a hold filed any
+// other way (an older binary, a direct write).
 // ---------------------------------------------------------------------------
 
 const (
@@ -78,7 +97,7 @@ const (
 // The refusals, each its own sentence.
 const (
 	dispatchHoldMirrorOnly = "%s is available only to your owner's own mirrored Claude Code sessions"
-	dispatchRequestArgs    = "arguments are {target, prompt, model?, repo?, base?, task_id?}"
+	dispatchRequestArgs    = "arguments are {target, prompt, model?, repo?, base?, task_id?, worker_pool?, cc_account?}"
 	dispatchApproveArgs    = "arguments are {hold_id}"
 
 	dispatchRequestOptOut   = "your owner has not opted in to muster starting agents for them (MUSTER_CHIEF_DISPATCH_OWNERS): nothing was held"
@@ -86,7 +105,11 @@ const (
 		"(with model, an OpenRouter id openrouter/<provider>/<model>). Use the one your owner named; never choose one for them"
 	dispatchRequestMirrored = "mirrored dispatch (an agent in one of your owner's own tmux sessions) is not available yet: nothing " +
 		"was held, and no cluster agent was held in its place. Tell your owner so"
-	dispatchRequestPrompt   = "prompt is required without task_id: the work your owner asked for"
+	dispatchRequestPrompt = "prompt is required without task_id (a worker_pool agent takes none): the work your owner asked for"
+	// dispatchRequestPoolPrompt refuses a worker_pool request with a prompt.
+	dispatchRequestPoolPrompt = "a worker_pool agent takes no prompt from a session: it needs none (it starts with no first turn " +
+		"and serves its pool's machine jobs), and a session may not give a pool's worker instructions of its own. Omit prompt: " +
+		"nothing was held"
 	dispatchRequestModel    = "model is only for pod/gateway: a claude-code agent takes its model from its own configuration"
 	dispatchRequestTaskRepo = "task %d already names its repository (%s): omit repo"
 	dispatchRequestLiveCap  = "your owner already has the most live agents muster may start for them (budget: live has reached " +
@@ -94,12 +117,14 @@ const (
 	dispatchRequestDailyCap = "muster has started the most agents allowed for your owner in a day (budget: today has reached " +
 		"daily_cap): nothing was held"
 
-	dispatchApproveNoHold    = "no held dispatch %q of your owner's: dispatch_approve takes the hold_id dispatch_request returned"
-	dispatchApproveExpired   = "hold %s expired unapproved at %s (a hold can be approved for 15 minutes): call dispatch_request again"
-	dispatchApproveConsumed  = "hold %s was already approved: a hold starts one agent, once. Nothing new was started"
-	dispatchApproveChanged   = "hold %s can no longer start as it was held: %s. Nothing was started"
-	dispatchApproveBusy      = "hold %s could not be approved now: another start of your owner's held the reservation too long. Nothing was started and the hold is not used: call dispatch_approve again"
-	dispatchApproveRepoMoved = "task %d's repository changed while it was being checked: call dispatch_approve again"
+	dispatchApproveNoHold     = "no held dispatch %q of your owner's: dispatch_approve takes the hold_id dispatch_request returned"
+	dispatchApproveExpired    = "hold %s expired unapproved at %s (a hold can be approved for 15 minutes): call dispatch_request again"
+	dispatchApproveConsumed   = "hold %s was already approved: a hold starts one agent, once. Nothing new was started"
+	dispatchApproveChanged    = "hold %s can no longer start as it was held: %s. Nothing was started"
+	dispatchApproveBusy       = "hold %s could not be approved now: another start of your owner's held the reservation too long. Nothing was started and the hold is not used: call dispatch_approve again"
+	dispatchApproveRepoMoved  = "task %d's repository changed while it was being checked: call dispatch_approve again"
+	dispatchApprovePoolPrompt = "hold %s is a worker_pool start with a prompt, which a session may not approve: a worker_pool " +
+		"agent takes no prompt from a session. Nothing was started: call dispatch_request again without prompt"
 )
 
 // dispatchRequestToolDef / dispatchApproveToolDef are the two verbs' listings.
@@ -110,18 +135,26 @@ func dispatchRequestToolDef() agents.ToolDef {
 			"until dispatch_approve is called with the returned hold_id, within 15 minutes, once. target: pod/claude-code (Claude " +
 			"Code; when your owner said Claude or named a Claude model; no model) or pod/gateway (any other model your owner named, " +
 			"as model: its OpenRouter model id or name, which muster resolves). Never choose a target or model your owner did not name. " +
-			"The agent opens a draft pull request at most. Your owner is notified when it starts.",
+			"With worker_pool (pod/claude-code only, no task_id) the agent is a machine-job worker in that pool: it serves the pool's " +
+			"jobs, takes NO prompt (a request with one is refused: it starts with no first turn, waits for jobs, and a session may " +
+			"not give a pool's worker instructions) and opens no pull request. " +
+			"cc_account (pod/claude-code only) pins the Claude account it runs on; omit it for muster's own choice. Otherwise the " +
+			"agent opens a draft pull request at most. Your owner is notified when it starts.",
 		Parameters: objSchema(map[string]any{
 			"target": strProp("pod/claude-code or pod/gateway, from what your owner said. Required; there is no default."),
 			"prompt": map[string]any{"type": "string", "maxLength": chiefPromptMax,
-				"description": "The work, in your owner's words, at most 8 KiB. Required without task_id. The agent receives it marked as " +
-					"relayed from your owner's session."},
+				"description": "The work, in your owner's words, at most 8 KiB. Required without task_id; refused with worker_pool " +
+					"(a pool worker takes no prompt). The agent receives it marked as relayed from your owner's session."},
 			"model": strProp("For pod/gateway only: the model your owner named — its OpenRouter model id or name; muster resolves it " +
 				"(an unknown one is refused with the closest ids)."),
 			"repo": strProp("The repository to work in (owner/name): one of your owner's connected GitHub repositories. On a task, " +
 				"only when the task names none."),
 			"base":    strProp("The branch to start from. Omit it for the repository's default branch."),
 			"task_id": intProp("One of your owner's open tasks to start the agent on. Omit it to start from the prompt alone.", 1, 1<<53),
+			"worker_pool": strProp("For pod/claude-code only, without task_id: make the agent a machine-job worker in this pool " +
+				"(1-63 of [a-z0-9-]), as your owner named it. A pool worker holds a live slot for as long as it runs."),
+			"cc_account": strProp("For pod/claude-code only: the Claude account to run on, one of your owner's, as your owner named " +
+				"it. Omit it for muster's own choice."),
 		}, "target")}
 }
 
@@ -180,12 +213,14 @@ func (s *Server) dispatchHoldCaller(ctx context.Context, c toolCaller, tool stri
 
 // dispatchRequestIn is dispatch_request's arguments.
 type dispatchRequestIn struct {
-	Target string `json:"target"`
-	Prompt string `json:"prompt"`
-	Model  string `json:"model"`
-	Repo   string `json:"repo"`
-	Base   string `json:"base"`
-	TaskID int64  `json:"task_id"`
+	Target     string `json:"target"`
+	Prompt     string `json:"prompt"`
+	Model      string `json:"model"`
+	Repo       string `json:"repo"`
+	Base       string `json:"base"`
+	TaskID     int64  `json:"task_id"`
+	WorkerPool string `json:"worker_pool"`
+	CCAccount  string `json:"cc_account"`
 }
 
 // heldDispatch is a hold's detail: the request exactly as it will start, and
@@ -204,6 +239,11 @@ type heldDispatch struct {
 	Repo          string `json:"repo,omitempty"`
 	Base          string `json:"base,omitempty"`
 	TaskID        int64  `json:"task_id,omitempty"`
+	// WorkerPool / CCAccount are POST /api/agents' fields, as requested and
+	// checked (holdPlacementRefusal); the create takes them as held. CCAccount
+	// "" is muster's own choice, made at the create.
+	WorkerPool string `json:"worker_pool,omitempty"`
+	CCAccount  string `json:"cc_account,omitempty"`
 	// Prompt is the cleaned prompt, in full: what the agent will be told.
 	Prompt       string `json:"prompt,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256"`
@@ -249,6 +289,12 @@ func holdSummary(h heldDispatch) string {
 	if h.TaskID > 0 {
 		b.WriteString(" on task #" + strconv.FormatInt(h.TaskID, 10))
 	}
+	if h.WorkerPool != "" {
+		b.WriteString(" as a machine-job worker in pool " + h.WorkerPool)
+	}
+	if h.CCAccount != "" {
+		b.WriteString(" on Claude account " + h.CCAccount)
+	}
 	if h.Repo != "" {
 		b.WriteString(" in " + h.Repo)
 		if h.Base != "" {
@@ -271,7 +317,35 @@ func decodeDispatchRequest(arguments string) (dispatchRequestIn, bool) {
 	}
 	in.Target, in.Model = strings.TrimSpace(in.Target), strings.TrimSpace(in.Model)
 	in.Repo, in.Base = strings.TrimSpace(in.Repo), strings.TrimSpace(in.Base)
+	in.WorkerPool, in.CCAccount = strings.TrimSpace(in.WorkerPool), strings.TrimSpace(in.CCAccount)
 	return in, true
+}
+
+// holdPlacementRefusal is POST /api/agents' worker-pool and Claude-account
+// checks for a start of kind on repo, "" when they pass: checkWorkerPool and
+// resolveAccount — the very predicates createAndDispatchAgent runs at the
+// create — and the spec build's deploy-key repository rule
+// (JobWorkspace.PoolRepoRefusal), asked before a hold is filed and again
+// before it is approved. A start naming no account is not asked about one:
+// muster chooses it at the create, as for any claude-code start.
+func (s *Server) holdPlacementRefusal(ctx context.Context, kind, pool, repo, account string) string {
+	if err := checkWorkerPool(kind, pool); err != nil {
+		return err.Error()
+	}
+	// A pool with a deploy key serves its one repository: the spec build's own
+	// rule (agentspec.PoolRepoRefusal), asked here so a mismatch refuses before
+	// a hold is filed or spent, not after, at the build.
+	if pool != "" && s.ext.JobWorkspace != nil {
+		if err := s.ext.JobWorkspace.PoolRepoRefusal(agents.Agent{WorkerPool: pool, Repo: repo}); err != nil {
+			return "repo: the agent " + err.Error()
+		}
+	}
+	if account != "" {
+		if _, err := s.resolveAccount(ctx, kind, account, ""); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
 }
 
 // dispatchRequestDeploymentRefusal is chiefDispatchDeploymentRefusal — the
@@ -339,7 +413,13 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 		return dispatchModelRefusal(mr, s.chiefBudgetNow(ctx))
 	}
 	model := mr.Model
-	if in.TaskID == 0 && strings.TrimSpace(in.Prompt) == "" {
+	// A pool worker serves machine jobs: no task (agent_dispatch's rule and
+	// sentence), and on this door no prompt (refused below, after the pool's
+	// own checks).
+	if in.WorkerPool != "" && in.TaskID > 0 {
+		return refuse(agentDispatchPoolNoTask)
+	}
+	if in.TaskID == 0 && in.WorkerPool == "" && strings.TrimSpace(in.Prompt) == "" {
 		return refuse(dispatchRequestPrompt)
 	}
 	prompt, ok := cleanPrompt(in.Prompt)
@@ -349,6 +429,14 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
 		return refuse(err.Error())
+	}
+	if why := s.holdPlacementRefusal(ctx, kind, in.WorkerPool, in.Repo, in.CCAccount); why != "" {
+		return refuse(why)
+	}
+	// After the pool's own checks (so a bad pool reads as that): a pool worker
+	// takes no prompt on this door (see the header).
+	if in.WorkerPool != "" && strings.TrimSpace(in.Prompt) != "" {
+		return refuse(dispatchRequestPoolPrompt)
 	}
 	effective := in.Repo
 	fromTask := false
@@ -393,7 +481,7 @@ func (s *Server) toolDispatchRequest(ctx context.Context, c toolCaller, argument
 	}
 	h := heldDispatch{Door: heldDoorMCP, Host: c.asker.MirrorHost, Session: c.asker.MirrorSession, SessionLabel: sessionLabel(c),
 		Target: in.Target, Kind: kind, Model: model, Repo: in.Repo, Base: in.Base, TaskID: in.TaskID, Prompt: prompt,
-		PromptSHA256: promptDigest(prompt), PromptBytes: len(prompt)}
+		PromptSHA256: promptDigest(prompt), PromptBytes: len(prompt), WorkerPool: in.WorkerPool, CCAccount: in.CCAccount}
 	if mr.Resolved {
 		h.ModelInput = mr.Input // the value as given, beside the id it resolved to
 	}
@@ -421,10 +509,22 @@ func (s *Server) holdAnswer(ctx context.Context, hold plugins.DispatchHold, h he
 	if h.TaskID > 0 {
 		out["task_id"] = h.TaskID
 	}
+	addPlacement(out, h)
 	if b := s.chiefBudgetNow(ctx); b != nil {
 		out["budget"] = b
 	}
 	return toolJSON(out)
+}
+
+// addPlacement adds a held start's worker pool and Claude account, when it
+// names them, to an answer or an audit row.
+func addPlacement(m map[string]any, h heldDispatch) {
+	if h.WorkerPool != "" {
+		m["worker_pool"] = h.WorkerPool
+	}
+	if h.CCAccount != "" {
+		m["cc_account"] = h.CCAccount
+	}
 }
 
 // dispatchApproveBeforeReserve, when set (tests only), runs between the early
@@ -490,6 +590,12 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if why := s.dispatchRequestDeploymentRefusal(owner); why != "" {
 		return refuse(why)
 	}
+	// 🔴 A pool worker with a prompt is refused here too, before the hold is
+	// spent: dispatch_request never files one, so such a hold came some other
+	// way (see the header).
+	if h.WorkerPool != "" && strings.TrimSpace(h.Prompt) != "" {
+		return refuse(fmt.Sprintf(dispatchApprovePoolPrompt, id))
+	}
 	// What can have moved since the request is checked again — the target's
 	// kind (an enabled kind, a credential the owner still holds) and the
 	// repository — with its own sentence.
@@ -501,6 +607,11 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
 		return changed(err.Error())
+	}
+	// The pool and the account, by the create's own rules again: an account
+	// the owner no longer has refuses here, before the hold is spent.
+	if why := s.holdPlacementRefusal(ctx, kind, h.WorkerPool, h.Repo, h.CCAccount); why != "" {
+		return changed(why)
 	}
 	onTask := h.TaskID > 0
 	effective := h.Repo
@@ -537,6 +648,7 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if h.Prompt != "" {
 		detail["instructions"] = h.Prompt
 	}
+	addPlacement(detail, h)
 	var (
 		task      notes.Note
 		taskModel string
@@ -615,8 +727,10 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	// exactly as the chief's agent_dispatch. DispatchedBy is the owner's chief,
 	// when they have one that is on: its budget already counts this start, and
 	// its chat is told the outcome as for an agent it started.
+	// The pool and the account EXACTLY as held: read from the hold, never
+	// re-derived (createAndDispatchAgent checks them a last time).
 	p := dispatchParams{Kind: kind, Repo: h.Repo, RepoBranch: h.Base, Model: h.Model, Kickoff: true, TrackOutcome: true,
-		DispatchedBy: s.ownersChiefID(ctx)}
+		DispatchedBy: s.ownersChiefID(ctx), WorkerPool: h.WorkerPool, CCAccount: h.CCAccount}
 	from := "a session on host " + h.Host
 	if onTask {
 		if task.Repo == "" {
@@ -635,8 +749,13 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 		}
 		p.DisplayName = dispatchDisplayName(task.ID, task.Body)
 		p.NoteID = &task.ID
-	} else {
+	} else if h.Prompt != "" {
 		p.NoteText = renderSessionRelay(h.Prompt, from, false) + sessionDispatchRulesNoTask
+	} else {
+		// A pool worker (never held with a prompt) claims no first turn: created
+		// `provisioning`, then started, holding its live slot throughout
+		// (agent_dispatch's StartWithoutKickoff).
+		p.Kickoff, p.StartWithoutKickoff = false, true
 	}
 	if kind == agents.KindClaudeCode {
 		p.Model = "" // claudeCodeNoModel
@@ -659,14 +778,23 @@ func (s *Server) toolDispatchApprove(ctx context.Context, c toolCaller, argument
 	if onTask {
 		approved["task_id"] = h.TaskID
 	}
+	addPlacement(approved, h)
 	if err := retryOnce(func() error { return s.ext.ChiefDispatch.RecordDispatchApproved(ctx, hold.ID, approved) }); err != nil {
 		s.logger.Printf("dispatch_approve: audit %s's start of %s, after a retry: %v", hold.ID, rec.Name, err)
 	}
 	s.logger.Printf("dispatch: %s approved from %s: started %d (%s, %s, %s)", hold.ID, approver, rec.ID, rec.Name, h.Target, p.Model)
-	out := map[string]any{"hold_id": hold.ID, "target": h.Target, "agent_id": rec.ID, "agent": rec.Name,
-		"next": "Started. It opens a draft pull request at most. Your owner was notified. Do not approve again."}
+	next := "Started. It opens a draft pull request at most. Your owner was notified. Do not approve again."
+	if h.WorkerPool != "" {
+		next = "Started. It serves machine jobs in pool " + h.WorkerPool + " and opens no pull request. Your owner was notified. " +
+			"Do not approve again."
+	}
+	out := map[string]any{"hold_id": hold.ID, "target": h.Target, "agent_id": rec.ID, "agent": rec.Name, "next": next}
 	if p.Model != "" {
 		out["model"] = p.Model
+	}
+	addPlacement(out, h)
+	if rec.CCAccount != "" {
+		out["cc_account"] = rec.CCAccount // the pin as held, or muster's choice made at the create
 	}
 	if st.agentUnrecorded {
 		out["error"] = fmt.Sprintf(agentDispatchAgentUnrecorded, rec.Name)

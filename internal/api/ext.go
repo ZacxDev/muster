@@ -487,6 +487,12 @@ type JobWorkspace interface {
 	// worker pool (one with a deploy key), not by the job. For a pool job
 	// before its worker is chosen, a carries only the pool's name.
 	StripsRepoConfig(a agents.Agent) bool
+	// PoolRepoRefusal is why agent a — of which only its WorkerPool, Repo and
+	// Name are read — would be refused at spec build for working on a
+	// repository other than its pool's deploy key's (agentspec.PoolRepoRefusal,
+	// the very rule the build applies), or nil. A held dispatch asks it before
+	// it is filed and before it is spent.
+	PoolRepoRefusal(a agents.Agent) error
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error

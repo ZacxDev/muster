@@ -505,6 +505,13 @@ func (a *Adapter) StripsRepoConfig(ag agents.Agent) bool {
 	return agentspec.StripsRepoConfig(ag, a.spec)
 }
 
+// PoolRepoRefusal is agentspec.PoolRepoRefusal with this adapter's
+// configuration: why ag's spec would be refused for working on a repository
+// other than its pool's deploy key's, or nil.
+func (a *Adapter) PoolRepoRefusal(ag agents.Agent) error {
+	return agentspec.PoolRepoRefusal(ag, a.spec)
+}
+
 // jobFetchWithKey has ag's KEY HOLDER — the container of its pod that alone
 // holds the pool's deploy key k, under its own uid — probe the key for write
 // access and fetch pull request pr's head (and baseSHA) of repo into its

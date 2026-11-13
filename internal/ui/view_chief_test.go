@@ -117,6 +117,11 @@ func TestTheChiefToggleIsTheRowsFirstControl(t *testing.T) {
 		form = regexp.MustCompile(`(?s)<noscript>.*?</noscript>`).ReplaceAllString(form, "")
 		var ids []string
 		for _, m := range formControlRE.FindAllStringSubmatch(form, -1) {
+			// The recording waveform's ×, in the box's row: it is the box's
+			// place while the mic records, not a control of the row (dictate.go).
+			if m[2] == "mv-dictate-discard" {
+				continue
+			}
 			ids = append(ids, m[2])
 		}
 		// The switch sits in the row, but its form owner is its own empty
