@@ -1,4 +1,4 @@
--- muster 0123 — WHEN AN EPISODE IS 'gone', AND WHAT ITS RETURN KEEPS
+-- muster 0124 — WHEN AN EPISODE IS 'gone', AND WHAT ITS RETURN KEEPS
 -- (internal/sessionstate; docs/design/session-state.md, "gone").
 --
 --   session_episodes.missed_passes   how many CONSECUTIVE state passes found
@@ -29,18 +29,18 @@
 --       (streakDecision compares roots), as its push is (pushed_at, carried
 --       in the same INSERT). Not a foreign key: it is compared, never joined.
 --
--- Must apply after 0122 (the contiguity test refuses a gap); 🔴 RENUMBER IT
--- if another migration takes 0123 first. Not re-applied by db.RLSOn (it
+-- Must apply after 0123 (the contiguity test refuses a gap); 🔴 RENUMBER IT
+-- if another migration takes 0124 first. Not re-applied by db.RLSOn (it
 -- changes no policy, grant or default); the columns inherit the table's
 -- row-level security. Idempotent.
 --
--- ROLLBACK. An image from before 0123 never reads or writes the columns (it
+-- ROLLBACK. An image from before 0124 never reads or writes the columns (it
 -- ends an episode 'gone' on the first pass that misses it, as before) and can
 -- run against this schema unchanged. To remove them:
 --   ALTER TABLE session_episodes DROP COLUMN IF EXISTS missed_passes;
 --   ALTER TABLE session_episodes DROP COLUMN IF EXISTS dead_listed;
 --   ALTER TABLE session_episodes DROP COLUMN IF EXISTS resumed_from;
---   DELETE FROM schema_migrations WHERE version = 123;
+--   DELETE FROM schema_migrations WHERE version = 124;
 
 SET LOCAL lock_timeout = '3s';
 

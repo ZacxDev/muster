@@ -45,14 +45,14 @@ type Episode struct {
 	// none. Not final: a later reason to push clears it (ClaimPush).
 	Quiet string
 	// MissedPasses is how many consecutive state passes found the session
-	// missing (migration 0123; Missed, Present, Observe).
+	// missing (migration 0124; Missed, Present, Observe).
 	MissedPasses int
 	// DeadListed: the LAST connected pass that found the session missing saw
 	// its window LISTED, at its place, as a pane holding no agent of its
 	// conversation (a shell, a new Claude conversation, a reason muster
 	// cannot read) — positive evidence the session is dead, not an omission.
 	// Set and cleared by Missed; cleared by Present and Observe (migration
-	// 0123).
+	// 0124).
 	DeadListed bool
 	// ResumedFrom is the first episode of the stop this one resumed (it opened
 	// after that stop ended 'gone', on the same streak: resumedReasons); 0
