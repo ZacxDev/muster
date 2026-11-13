@@ -134,6 +134,11 @@ type Draft struct {
 	OfficerItemID       *int64       `json:"officerItemId,omitempty"`
 	ApprovedBodySHA256  *string      `json:"-"`
 	ApprovedMediaSHA256 []string     `json:"-"`
+	// DecisionReason is the reason its OWNER gave with a rejection (or a
+	// withdrawal), when they gave one (migration 0123, DraftDecision.Reason):
+	// shown on the card's history, and an outbound draft's officer is told it
+	// (internal/api outboundSettled). nil otherwise.
+	DecisionReason *string `json:"-"`
 }
 
 // RefusalOutcome is where a refused draft goes (Draft.Refusal).
@@ -327,6 +332,39 @@ type DraftDecision struct {
 	// The approval records it, with BodySHA256, as the binding the claim
 	// re-checks. Ignored for a reply draft.
 	MediaSHA256 []string
+	// Reason is the owner's optional reason for a REJECTION (a withdrawal
+	// included): plain text, at most MaxDecisionReasonRunes characters
+	// (ScreenDecisionReason), stored on the draft (0123) and its audit row.
+	// "" is none. An approval with a reason is refused.
+	Reason string
+}
+
+// MaxDecisionReasonRunes bounds an owner's rejection reason (0123's CHECK
+// says the same).
+const MaxDecisionReasonRunes = 1000
+
+// ScreenDecisionReason is an owner's rejection reason as it is stored: CRLF
+// as LF, trimmed, "" for none; or an ErrInvalid. 🔴 PLAIN TEXT: valid UTF-8,
+// no NUL, no control or invisible character but a newline or a tab
+// (fence.Unsafe), at most MaxDecisionReasonRunes — it is repeated to an
+// officer as an item's detail and drawn on the card.
+func ScreenDecisionReason(reason string) (string, error) {
+	reason = strings.TrimSpace(strings.ReplaceAll(reason, "\r\n", "\n"))
+	if reason == "" {
+		return "", nil
+	}
+	if !utf8.ValidString(reason) {
+		return "", invalid("reason must be UTF-8 text")
+	}
+	if n := utf8.RuneCountInString(reason); n > MaxDecisionReasonRunes {
+		return "", invalid("reason is %d characters; at most %d", n, MaxDecisionReasonRunes)
+	}
+	for _, r := range reason {
+		if r != '\n' && r != '\t' && fence.Unsafe(r) {
+			return "", invalid("reason is plain text: no control or invisible characters (found U+%04X)", r)
+		}
+	}
+	return reason, nil
 }
 
 // DraftBodySHA256 is the lowercase hex SHA-256 of a draft body: what
@@ -397,14 +435,15 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
 	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
-	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256`
+	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256,
+	decision_reason`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
 		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
 		&d.CheckState, &d.CheckedAt,
 		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
-		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256}
+		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256, &d.DecisionReason}
 }
 
 // zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
@@ -829,12 +868,23 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 	default:
 		return Draft{}, invalid("unknown decision source %q", dec.Via.Via)
 	}
+	reason, err := ScreenDecisionReason(dec.Reason)
+	if err != nil {
+		return Draft{}, err
+	}
+	if dec.Approve && reason != "" {
+		return Draft{}, invalid("a reason goes with a rejection, not an approval")
+	}
+	var reasonArg *string
+	if reason != "" {
+		reasonArg = &reason
+	}
 	if err := s.sweep(ctx); err != nil {
 		return Draft{}, err
 	}
 	approve := dec.Approve
 	var d Draft
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockedDraft(ctx, tx, id)
 		if errors.Is(err, ErrReplyInFlight) && (!approve || cur.Status != DraftPending) {
 			err = nil
@@ -856,10 +906,14 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 		if dec.Via.Via != "" {
 			detail["decided_via"] = dec.Via.String()
 		}
+		if reasonArg != nil {
+			detail["reason"] = *reasonArg
+		}
 		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil && dec.Via.Via != DraftViaMCP {
 			if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-				SET status = 'rejected', decided_at = now(), approved_at = NULL, approved_body_sha256 = NULL, approved_media_sha256 = NULL
-				WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
+				SET status = 'rejected', decided_at = now(), approved_at = NULL, approved_body_sha256 = NULL, approved_media_sha256 = NULL,
+				    decision_reason = $2
+				WHERE id = $1 RETURNING `+draftCols, id, reasonArg)); err != nil {
 				return err
 			}
 			detail["message_id"], detail["approved_at"] = d.MessageID, cur.ApprovedAt.UTC().Format(time.RFC3339)
@@ -876,10 +930,11 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			d = cur
 			return ErrDraftUnchecked
 		}
-		q, action := `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.rejected"
-		args := []any{id}
+		q, action := `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), decision_reason = $2 WHERE id = $1 RETURNING `+draftCols, "plugin.draft.rejected"
+		args := []any{id, reasonArg}
 		if approve {
 			q, action = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.approved"
+			args = []any{id}
 		}
 		if approve && cur.IsOutbound() {
 			// 🔴 AN OUTBOUND APPROVAL BINDS THE BODY AND EVERY MEDIUM (outbound.go):

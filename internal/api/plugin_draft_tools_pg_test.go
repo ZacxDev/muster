@@ -277,6 +277,38 @@ func TestAMirroredSessionRejectsAReplyDraft(t *testing.T) {
 	}
 }
 
+// TestPluginDraftDecideCarriesTheOwnersReason: plugin_draft_decide's reason
+// reaches the store over the real MCP door — stored on the draft, on its
+// audit row, and echoed — and an approval naming one is refused, the draft
+// left pending.
+func TestPluginDraftDecideCarriesTheOwnersReason(t *testing.T) {
+	f := newDraftToolFixture(t)
+	const body = "Maybe later."
+	id := f.draft(t, "dt-reason", "Ada <ada@example.invalid>", true, body)
+	text, isErr := f.mcp(t, f.tok, routeSID, "plugin_draft_decide", map[string]any{"id": id, "decision": "approve", "body_sha256": sha(body),
+		"reason": "looks fine"})
+	if !isErr || !strings.Contains(text, "a reason goes with a rejection") {
+		t.Fatalf("an approval with a reason: %s; want refused", text)
+	}
+	if r := f.row(t, id); r.status != "pending" {
+		t.Fatalf("after the refused approval the draft is %s", r.status)
+	}
+	text, isErr = f.mcp(t, f.tok, routeSID, "plugin_draft_decide", map[string]any{"id": id, "decision": "reject", "body_sha256": sha(body),
+		"reason": "Not a reply we send to strangers."})
+	if isErr || !strings.Contains(text, `"reason":"Not a reply we send to strangers."`) {
+		t.Fatalf("a rejection with a reason: %s", text)
+	}
+	var stored, audited string
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce(d.decision_reason, ''), coalesce((SELECT a.detail->>'reason'
+		FROM audit_log a WHERE a.object = $2 AND a.action = 'plugin.draft.rejected'), '') FROM plugin_reply_drafts d WHERE d.id = $1`,
+		id, plugins.DraftObject(id)).Scan(&stored, &audited); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "Not a reply we send to strangers." || audited != stored {
+		t.Fatalf("stored %q, audited %q", stored, audited)
+	}
+}
+
 // TestPluginDraftDecideRefusesABodyItDidNotRead: a well-formed body_sha256 of
 // any OTHER text is refused (the store's check, under the row lock), as is a
 // malformed one or none (the tool's), and the draft stays pending, undecided,

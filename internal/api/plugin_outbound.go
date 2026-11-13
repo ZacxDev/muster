@@ -38,8 +38,12 @@ import (
 //   - officer_post_draft, a builtin officer's tool;
 //   - what a result means for the officer's item.
 
-// officerPluginLink is plugins.OfficerLink over the builtin officer store.
-type officerPluginLink struct{ store *builtin.Store }
+// officerPluginLink is plugins.OfficerLink over the builtin officer store;
+// now is the officer runtime's clock (the one leases are written by).
+type officerPluginLink struct {
+	store *builtin.Store
+	now   func() time.Time
+}
 
 var _ plugins.OfficerLink = officerPluginLink{}
 
@@ -56,11 +60,24 @@ func (l officerPluginLink) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64
 	return id, err
 }
 
+func (l officerPluginLink) WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, item int64, instance string) error {
+	err := l.store.WaitOnDraftTx(ctx, tx, owner, officer, item, instance, l.now())
+	if errors.Is(err, builtin.ErrNotHeld) {
+		return plugins.ErrItemNotHeld
+	}
+	return err
+}
+
 // linkPluginsToOfficers wires the plugin store to the builtin officer store
 // (EnableOfficerStore): a plugin can then be bound to an officer.
 func (s *Server) linkPluginsToOfficers(store *builtin.Store) {
 	if ps, ok := s.ext.Plugins.(*plugins.PGStore); ok && store != nil {
-		ps.WithOfficerLink(officerPluginLink{store: store})
+		ps.WithOfficerLink(officerPluginLink{store: store, now: func() time.Time {
+			if s.officerRT != nil {
+				return s.officerRT.clock()
+			}
+			return time.Now()
+		}})
 	}
 }
 
@@ -374,8 +391,9 @@ func postDraftToolDef() agents.ToolDef {
 			"NOTHING IS SENT by this call: it files a draft. The plugin checks it and uploads the media, your owner reads the exact text and sees every image and video, " +
 			"and only an approval lets the plugin post exactly that, once. Write the body exactly as it should appear. " +
 			"Public links (for example the project's repository) are allowed; internal host names, IP addresses and secrets are refused. " +
-			"Give item_id when the draft is for an item you hold: muster completes it with the post's reference once it is posted, and if the plugin refuses the draft " +
-			"you get a draft.refused item saying why.",
+			"Give item_id when the draft is for an item you hold: the item then WAITS ON THE DRAFT and leaves your hands (no holder), so do not complete or release it. " +
+			"muster completes it with the post's reference once it is posted; if the plugin refuses the draft or your owner rejects it, muster closes it and " +
+			"queues a draft.refused item saying why (your owner's reason, or the plugin's), which is where you redraft.",
 		Parameters: objSchema(map[string]any{
 			"plugin": strProp("The name of the plugin bound to your officer."),
 			"venue":  strProp("Where it goes, as the plugin names it: 1-64 lower-case letters, digits, '.', '_' and '-'."),
@@ -422,16 +440,20 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 		return toolErr("arguments are {plugin, venue, target: {kind, ref?}, body, media?, item_id?}: %v", err)
 	}
 	n := plugins.NewOutbound{Officer: o.ID, Plugin: in.Plugin, Venue: in.Venue, Target: in.Target, Body: in.Body, Media: in.Media}
-	if strings.TrimSpace(string(in.ItemID)) != "" {
-		item, err := s.heldItemOf(ctx, c, a.Name, in.ItemID)
-		if err != nil {
-			return toolErr("%v", err)
+	if named := strings.TrimSpace(string(in.ItemID)); named != "" {
+		// Whether this instance holds it is decided in the filing's
+		// transaction, under the item's row lock (plugins.FileOutbound).
+		item, err := strconv.ParseInt(named, 10, 64)
+		if err != nil || item <= 0 {
+			return toolErr("you hold no live claim on item %s: claim it first, or leave item_id out", named)
 		}
 		n.ItemID = &item
 	}
 	d, err := s.ext.Plugins.FileOutbound(s.officerPrincipal(ctx, o.Owner), a.ID, o.Owner, a.Name, n)
 	switch {
 	case err == nil:
+	case errors.Is(err, plugins.ErrItemNotHeld):
+		return toolErr("you hold no live claim on item %s: claim it first, or leave item_id out", in.ItemID)
 	case errors.Is(err, plugins.ErrNotFound):
 		return toolErr("plugin %q is not a live plugin of your owner's bound to officer %s", in.Plugin, o.ID)
 	case errors.Is(err, plugins.ErrInvalid), errors.Is(err, plugins.ErrTooManyPendingDrafts):
@@ -442,65 +464,96 @@ func (s *Server) officerPostDraft(ctx context.Context, a agents.Agent, o officer
 	}
 	s.logger.Printf("officers: %s filed outbound draft %d (%s %s on %s)", a.Name, d.ID, d.Target().Kind, d.VenueText(), in.Plugin)
 	s.draftStatusMoved(o.Owner, d.ID)
-	return toolJSON(map[string]any{"draft_id": d.ID, "status": d.Status, "check": d.CheckState,
-		"note": "filed, NOT sent: the plugin checks it and uploads its media, then your owner decides. Do not say it was posted."})
-}
-
-// heldItemOf is item named, when instance holds it under a live lease.
-func (s *Server) heldItemOf(ctx context.Context, c officers.Backend, instance string, named officers.ItemID) (int64, error) {
-	claimed, err := c.AllItems(ctx, officers.StatusClaimed)
-	if err != nil {
-		return 0, fmt.Errorf("your items could not be read: %v", err)
+	out := map[string]any{"draft_id": d.ID, "status": d.Status, "check": d.CheckState,
+		"note": "filed, NOT sent: the plugin checks it and uploads its media, then your owner decides. Do not say it was posted."}
+	if n.ItemID != nil {
+		out["item"] = fmt.Sprintf("item %d now waits on this draft with no holder: do not complete or release it. muster completes it when the post goes out, "+
+			"or closes it and queues a draft.refused item if the draft is refused or rejected.", *n.ItemID)
 	}
-	now := s.officerRT.clock()
-	for _, it := range claimed {
-		if it.ID == named && it.ClaimedBy == instance && it.LeaseLive(now) {
-			id, err := strconv.ParseInt(string(it.ID), 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("item %s has no numeric id", named)
-			}
-			return id, nil
-		}
-	}
-	return 0, fmt.Errorf("you hold no live claim on item %s: claim it first, or leave item_id out", named)
+	return toolJSON(out)
 }
 
 // --- the result, for the officer -----------------------------------------------------
 
-// outboundSettled is what follows a fresh result or refusal of OUTBOUND draft
-// d, for its officer: a send reported ok completes the item it was filed for
-// (unless an instance holds it or it is finished); a refusal — a failed send
-// or a refused check — queues a draft.refused item, so the officer can write a
-// better one. Best effort: the draft's own state is already recorded.
-func (s *Server) outboundSettled(ctx context.Context, p plugins.Plugin, d plugins.Draft) {
+// Who settled an outbound draft unsent, as outboundSettled's caller knows it
+// (never inferred from the row: a check refusal and an owner rejection are
+// both status rejected).
+const (
+	// settledByPlugin: a failed send, or a refused check (draftRefused).
+	settledByPlugin = "plugin"
+	// settledByOwner: the owner rejected it, or withdrew an unclaimed
+	// approval (decideDraftAs).
+	settledByOwner = "owner"
+)
+
+// OwnerRejectedNoReason is a draft.refused item's detail for an owner
+// rejection that gave no reason.
+const OwnerRejectedNoReason = "rejected by the owner, no reason given"
+
+// outboundSettled is what follows a fresh result, refusal or rejection of
+// OUTBOUND draft d, for its officer: a send reported ok completes the item it
+// was filed for (done, with the post's reference — the item waits on the
+// draft, builtin.WaitOnDraftTx); anything that ended it unsent (by: the
+// plugin's failed send or refused check, or the owner's rejection) queues a
+// draft.refused item saying why — the plugin's detail, or the owner's reason
+// — so the officer can write a better one, and closes the item the draft was
+// for, naming that follow-up. Best effort: the draft's own state is already
+// recorded.
+func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Draft, by string) {
 	if s.officerStore == nil || d.Officer == nil || !d.IsOutbound() {
 		return
 	}
 	officer, now := *d.Officer, time.Now()
 	ctx = context.WithoutCancel(ctx)
-	switch {
-	case d.Status == plugins.DraftSent && d.OfficerItemID != nil:
-		summary := "posted " + d.ExternalRef + " (draft " + strconv.FormatInt(d.ID, 10) + ")"
-		if _, err := s.officerStore.ResolveItem(ctx, p.OwnerID, officer, *d.OfficerItemID, "done", summary, now); err != nil {
-			s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is: %v", d.ID, *d.OfficerItemID, officer, err)
+	if d.Status == plugins.DraftSent {
+		if d.OfficerItemID != nil {
+			summary := "posted " + d.ExternalRef + " (draft " + strconv.FormatInt(d.ID, 10) + ")"
+			if _, err := s.officerStore.ResolveItem(ctx, owner, officer, *d.OfficerItemID, "done", summary, now); err != nil {
+				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is: %v", d.ID, *d.OfficerItemID, officer, err)
+			}
 		}
-	case d.Status == plugins.DraftFailed || d.RefusedByCheck():
-		// 🔴 BOUNDED: a plugin that refuses every draft would otherwise turn
-		// each refusal into a new item and each item into a new draft, with no
-		// human in the loop. At most maxOpenRefusedItems wait at once; past
-		// that the owner's push (draftRefused) is the only signal.
-		if n, err := s.officerStore.CountLive(ctx, p.OwnerID, officer, "draft.refused"); err != nil || n >= maxOpenRefusedItems {
-			s.logger.Printf("plugins: draft %d refused; no draft.refused item for %s (%d already waiting, err %v)", d.ID, officer, n, err)
+		return
+	}
+	var detail, ended string
+	switch by {
+	case settledByOwner:
+		if d.Status != plugins.DraftRejected {
 			return
 		}
-		payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
-			"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "detail": plugins.RefusalText(d.Detail)})
-		if _, _, err := s.officerStore.Enqueue(ctx, p.OwnerID, builtin.NewItem{Officer: officer, Kind: "draft.refused",
-			SubjectKey: "draft:" + strconv.FormatInt(d.ID, 10), Payload: payload}, now); err != nil {
-			s.logger.Printf("plugins: draft %d refused; the draft.refused item for %s: %v", d.ID, officer, err)
+		detail, ended = OwnerRejectedNoReason, "rejected by the owner"
+		if d.DecisionReason != nil && strings.TrimSpace(*d.DecisionReason) != "" {
+			detail = *d.DecisionReason
 		}
+	case settledByPlugin:
+		if d.Status != plugins.DraftFailed && !d.RefusedByCheck() {
+			return
+		}
+		detail, ended = plugins.RefusalText(d.Detail), "refused by the plugin"
+	default:
+		return
 	}
+	payload, _ := json.Marshal(map[string]any{"draft_id": d.ID, "item_id": d.OfficerItemID, "venue": d.VenueText(),
+		"target": d.Target(), "media": d.MediaRefs, "status": d.Status, "by": by, "detail": detail})
+	// 🔴 BOUNDED, IN ONE TRANSACTION (builtin.EnqueueBounded): a plugin that
+	// refuses every draft would otherwise turn each refusal into a new item
+	// and each item into a new draft, with no human in the loop. At most
+	// maxOpenRefusedItems wait at once, counted and inserted under one lock so
+	// two settling at once cannot both pass the count; past that the owner's
+	// push (draftRefused) is the only signal, and the item the draft was for
+	// stays waiting for the owner to resolve.
+	prefix := "draft " + strconv.FormatInt(d.ID, 10) + " was " + ended + ", not posted."
+	id, _, err := s.officerStore.EnqueueBounded(ctx, owner, builtin.NewItem{Officer: officer, Kind: draftRefusedKind,
+		SubjectKey: "draft:" + strconv.FormatInt(d.ID, 10), Payload: payload}, maxOpenRefusedItems, d.OfficerItemID, prefix, now)
+	if err != nil {
+		s.logger.Printf("plugins: draft %d %s; no %s item for %s: %v", d.ID, ended, draftRefusedKind, officer, err)
+		return
+	}
+	s.logger.Printf("plugins: draft %d %s; %s item %d for %s", d.ID, ended, draftRefusedKind, id, officer)
 }
+
+// draftRefusedKind is the kind of the item an officer gets for its outbound
+// draft that ended unsent.
+const draftRefusedKind = "draft.refused"
 
 // maxOpenRefusedItems bounds the draft.refused items one officer may have
 // waiting (outboundSettled).

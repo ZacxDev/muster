@@ -324,6 +324,9 @@ func (b *Backend) Complete(ctx context.Context, item officers.ItemID, instance s
 			return nil, err
 		}
 		now := b.now()
+		if it.Status == officers.StatusWaiting {
+			return nil, waitingRefusal(it)
+		}
 		if !it.live(now) || it.ClaimedBy != instance {
 			return nil, leaseLost()
 		}
@@ -369,6 +372,9 @@ func (b *Backend) Release(ctx context.Context, item officers.ItemID, instance st
 		it, err := b.lockItem(ctx, tx, item)
 		if err != nil {
 			return nil, err
+		}
+		if it.Status == officers.StatusWaiting {
+			return nil, waitingRefusal(it)
 		}
 		if it.Status != officers.StatusClaimed || it.ClaimedBy != instance {
 			return nil, leaseLost()

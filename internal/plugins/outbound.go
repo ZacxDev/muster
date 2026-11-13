@@ -95,6 +95,9 @@ var (
 	// ErrOfficerUnavailable: the officer a plugin is (to be) bound to is not
 	// defined for its owner, or the built-in store is off.
 	ErrOfficerUnavailable = errors.New("plugins: the officer is not defined for this plugin's owner")
+	// ErrItemNotHeld: an outbound draft named an item_id its instance does
+	// not hold under a live lease (OfficerLink.WaitOnDraftTx).
+	ErrItemNotHeld = errors.New("plugins: the instance holds no live claim on that item")
 	// ErrMediaMissing: a ref of the outbound draft has no uploaded bytes yet.
 	ErrMediaMissing = errors.New("plugins: the draft's media are not all uploaded")
 	// ErrMediaConflict: other bytes are already stored for that ref.
@@ -182,6 +185,11 @@ type OfficerLink interface {
 	// EnqueueTx adds the item, or answers the live item of the same kind and
 	// subject. ErrOfficerUnavailable when the officer is not owner's.
 	EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, item OfficerItem) (int64, error)
+	// WaitOnDraftTx, inside the filing's transaction, sets officer's item
+	// (which instance must hold under a live lease: ErrItemNotHeld
+	// otherwise) WAITING with no holder: it waits on the outbound draft filed
+	// for it, which settles it (internal/api outboundSettled). See FileOutbound.
+	WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, officer string, item int64, instance string) error
 }
 
 // WithOfficerLink wires the builtin officer store; without one, a bound
@@ -461,6 +469,9 @@ func ScreenOutbound(body string, denyWords []string) (string, error) {
 // media reach muster only through the check). The draft awaits the plugin's
 // check, which NEVER LAPSES (check_due_at is its expiry): without the check
 // the owner could be asked to approve a post whose media muster never saw.
+// With in.ItemID, the item agentName holds is set waiting on the draft in the
+// same transaction (OfficerLink.WaitOnDraftTx; ErrItemNotHeld when it does
+// not hold it).
 func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agentName string, in NewOutbound) (Draft, error) {
 	if ownerID <= 0 || agentID <= 0 {
 		return Draft{}, invalid("the agent has no owner")
@@ -504,6 +515,20 @@ func (s *PGStore) FileOutbound(ctx context.Context, agentID, ownerID int64, agen
 		if pending >= MaxPendingDraftsPerAgent {
 			return fmt.Errorf("%w: %d await your owner (the limit is %d); wait for a decision",
 				ErrTooManyPendingDrafts, pending, MaxPendingDraftsPerAgent)
+		}
+		if in.ItemID != nil {
+			// 🔴 THE ITEM WAITS ON THE DRAFT, IN THIS TRANSACTION: the instance
+			// must hold it under a live lease now (checked under the item's row
+			// lock, not before), and it leaves the instance's hands — waiting,
+			// no holder — so it can be neither completed early nor re-claimed
+			// and drafted twice while its draft is out. The draft's settlement
+			// finishes it (internal/api outboundSettled).
+			if s.officers == nil {
+				return ErrOfficerUnavailable
+			}
+			if err := s.officers.WaitOnDraftTx(ctx, tx, ownerID, in.Officer, *in.ItemID, agentName); err != nil {
+				return err
+			}
 		}
 		media := in.Media
 		if media == nil {

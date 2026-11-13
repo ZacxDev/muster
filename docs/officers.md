@@ -860,9 +860,10 @@ drafts tab, and the plugin, on the owner's own machine, claims and posts it.
 | `target` | `{"kind": "post"}`, or `{"kind": "reply", "ref": "<upstream reference>"}` (1 to 200 bytes, no spaces) |
 | `body` | the exact text: at most 16 KiB, screened as a reply draft is, except that public host names and URLs are allowed ([plugins.md](plugins.md#outbound-drafts-officer_post_draft)) |
 | `media` | optional, at most 4 distinct refs `<angle>/<id>` (lower-case letters, digits, `.`, `_`, `-`), resolved by the plugin on its machine |
-| `item_id` | optional: an item this instance holds under a live lease. When the post goes out muster completes it with the post's reference; when the plugin refuses it, muster queues a `draft.refused` item |
+| `item_id` | optional: an item this instance holds under a live lease. Filing hands the item to the draft: it is `waiting` with no holder until the draft settles, and a `officer_complete` or `officer_release` of it is refused saying so. When the post goes out muster completes it with the post's reference; when the plugin refuses the draft or the owner rejects it, muster queues a `draft.refused` item (the plugin's detail, or the owner's reason) and finishes this one `no_action` naming it ([plugins.md](plugins.md#the-result)) |
 
-It answers `{"draft_id", "status": "pending", "check": "awaiting"}`. Nothing
+It answers `{"draft_id", "status": "pending", "check": "awaiting"}` (and,
+with `item_id`, an `item` note saying the item now waits on the draft). Nothing
 is sent: the plugin checks the draft and uploads its media, then the owner
 decides. At most 20 of an officer's drafts may await a decision. The tool is
 offered to an instance only while its type grants the capability (read at

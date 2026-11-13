@@ -181,7 +181,7 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 			s.draftRefused(r.Context(), p, d, true)
 		}
 		if fresh && d.Status == plugins.DraftSent {
-			s.outboundSettled(r.Context(), p, d)
+			s.outboundSettled(r.Context(), p.OwnerID, d, settledByPlugin)
 		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
@@ -315,7 +315,7 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 		// An officer's outbound draft: the owner is told, and its officer
 		// gets a draft.refused item (plugin_outbound.go).
 		s.notifyDraftRefused(p, d, refusalToOfficer)
-		s.outboundSettled(ctx, p, d)
+		s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin)
 	case plugins.RefusalAnsweredElsewhere:
 		// Another reply went, or is on its way: nothing goes back anywhere.
 		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
@@ -514,9 +514,13 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	// the media's SHA-256 it showed: the store refuses an approval of anything
 	// else (plugins.DraftDecision).
 	dec := plugins.DraftDecision{Approve: how == "approve", Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}}
+	_ = r.ParseForm()
 	if how == "approve" {
-		_ = r.ParseForm()
 		dec.BodySHA256, dec.MediaSHA256 = r.PostForm.Get("body_sha256"), formMediaSHA256(r)
+	} else {
+		// The Reject (and Withdraw) form's optional reason: stored on the
+		// draft, and an outbound draft's officer is told it.
+		dec.Reason = r.PostForm.Get("reason")
 	}
 	d, refused := s.decideDraftAs(r.Context(), id, dec)
 	if refused != nil {
@@ -538,8 +542,10 @@ type draftRefusal struct {
 // (plugin_draft_tools.go, from a mirrored session). One store call —
 // plugins.PGStore.DecideDraftFrom, which makes the body and state refusals
 // under the row lock — one wording of every refusal, and one
-// aftermath: an approval wakes waiting claims, and the decided draft leaves the
-// attention queue with its notification withdrawn on the owner's devices.
+// aftermath: an approval wakes waiting claims, a rejection of an outbound
+// draft goes back to its officer (outboundSettled), and the decided draft
+// leaves the attention queue with its notification withdrawn on the owner's
+// devices.
 func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftDecision) (plugins.Draft, *draftRefusal) {
 	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
 	if err != nil {
@@ -551,6 +557,14 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 	}
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
+	}
+	if !dec.Approve {
+		// 🔴 AN OWNER'S REJECTION OF AN OFFICER'S OUTBOUND DRAFT GOES BACK TO
+		// THE OFFICER, with the owner's reason (a draft.refused item, bounded
+		// like a plugin's refusal), and closes the item it was filed for. A
+		// reply draft's rejection goes nowhere, as before: its chief or
+		// session is not told (outboundSettled decides which, in one place).
+		s.outboundSettled(ctx, d.OwnerID, d, settledByOwner)
 	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
@@ -697,16 +711,22 @@ func draftCardHTML(c plugins.DraftCard) string {
 		b.WriteString(`<span class="break-all text-xs text-fg2" data-draft-detail>the plugin said: ` + esc(flows.VisibleEscape(d.Detail)) + `</span>
 `)
 	}
+	if d.DecisionReason != nil {
+		// The owner's own words with a rejection (0123), on the card's history.
+		b.WriteString(`<span class="break-words text-xs text-fg2" data-draft-reason>Your reason: ` + esc(flows.VisibleEscape(*d.DecisionReason)) + `</span>
+`)
+	}
 	if d.Status == plugins.DraftPending && c.EarlierUnconfirmed {
 		b.WriteString(`<span class="text-xs font-semibold text-fg" data-draft-twice>An earlier reply to this message is unconfirmed: it may already have been sent. If you approve this one, the sender may get both.</span>
 `)
 	}
-	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
+	reject := `<form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+		draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-reject>Reject</button></form>`
 	switch d.Status {
 	case plugins.DraftApproved:
 		if d.ClaimedAt == nil {
-			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject"><button type="submit" class="` +
-				ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
+			b.WriteString(`<div class="` + ui.AsksActionsClass + `"><form method="POST" action="` + pluginsPath + `/drafts/` + id + `/reject" class="flex flex-wrap items-center gap-2">` +
+				draftReasonFieldHTML(d.ID) + `<button type="submit" class="` + ui.AsksSecondaryButtonClass + `" data-draft-withdraw>Withdraw the approval</button></form></div>
 `)
 		}
 	case plugins.DraftPending:
@@ -735,6 +755,15 @@ func draftCardHTML(c plugins.DraftCard) string {
 	}
 	b.WriteString("</li>\n")
 	return b.String()
+}
+
+// draftReasonFieldHTML is the Reject (and Withdraw) form's optional reason:
+// plain text, bounded as the store bounds it (plugins.ScreenDecisionReason).
+// For an officer's outbound draft the officer is told it.
+func draftReasonFieldHTML(id int64) string {
+	return `<label class="sr-only" for="draft-reason-` + strconv.FormatInt(id, 10) + `">Reason for rejecting (optional)</label>` +
+		`<input id="draft-reason-` + strconv.FormatInt(id, 10) + `" name="reason" maxlength="` + strconv.Itoa(plugins.MaxDecisionReasonRunes) +
+		`" placeholder="Reason (optional)" autocomplete="off" class="min-w-0 flex-1 ` + flowsInputClass + `" data-draft-reason-input>`
 }
 
 // draftTextLabel names the card's text: a reply's, or an outbound draft's

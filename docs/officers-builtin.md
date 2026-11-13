@@ -208,6 +208,15 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
    the owner sees the exact text, images and videos on the Reply drafts tab,
    and approval binds the body and every medium's SHA-256. The plugin claims
    it, re-hashes its files, posts, reads the post back and reports the result.
+5. With `item_id`, the item **waits on the draft** (no holder; the instance
+   cannot complete or release it). Posted: muster completes it with the
+   post's reference. Refused by the plugin, or rejected by the owner (with an
+   optional reason, on the card or `plugin_draft_decide`): muster queues a
+   `draft.refused` item whose `detail` says why, and finishes the waiting item
+   `no_action` naming it — at most 3 `draft.refused` items wait at once
+   ([plugins.md](plugins.md#the-result)). Put what the officer should do with a
+   `draft.refused` item (read `detail`, redraft with its own `item_id`) in its
+   charter.
 
 ## 6. Switch it off
 
