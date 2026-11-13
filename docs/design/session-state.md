@@ -327,6 +327,14 @@ An episode is one stop of one session.
     start (a quick tool call, a background task's notice) does not end it;
   - **gone** (`gone`): its window left a host that is online and reporting.
 
+  **A stop back from `gone` on the same streak keeps its push**
+  (`sessionstate.Resumed`): a reporting host's listing can omit a window for
+  a pass and list it again unchanged. The episode that opens for it then
+  carries the ended one's `pushed_at` (set in the same `INSERT`), so a stop
+  already pushed is not pushed a second time. One that ended `gone` before it
+  was pushed carries nothing and is pushed as any new stop. A new streak, or
+  a new session key, is a new stop.
+
   **A handled stop is not opened again on the same streak**
   (`sessionstate.Handled`: `viewed`, and the one-time `reset` below): while
   the session sits where it was, neither the pass nor the waiting hook opens

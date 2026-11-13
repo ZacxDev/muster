@@ -85,6 +85,38 @@ func Handled(reason string) bool {
 // it.
 var handledReasons = []string{EndViewed, EndReset}
 
+// Resumed reports whether a stop that ended for reason, and is seen again on
+// the SAME streak, is that same stop back — so a new episode for it carries
+// the ended one's push (PG.Open) and is not pushed again.
+//
+// 🔴 ONLY 'gone'. A window can drop out of a reporting host's listing for a
+// pass and come back unchanged (measured on a live fleet, about hourly: every
+// idle window of one host ended gone in one pass, opened again on its
+// unchanged streak a pass later, and each was pushed again once the chief's
+// wait ran out — a burst of the same stops). The streak is the host's own status time (or an agent's newest
+// message), so an EQUAL streak means the session has not run since — any turn,
+// a resume or a new process writes a new one, and a genuinely closed window
+// replaced by a new conversation is a new session key altogether. The other
+// reasons are not the same stop: 'worked' and 'owner' mean the session moved
+// (see Handled for why 'owner' can still carry an unchanged streak), and
+// 'viewed'/'reset' never reopen on their streak at all (Handled).
+//
+// 🔴 IT CARRIES THE PUSH, NEVER A SILENCE: an ended stop that was never pushed
+// (held in its grace or the chief's wait, or quiet) carries nothing, so its
+// return is pushed exactly as a new stop would be — the hold delays, it never
+// silences.
+func Resumed(reason string) bool {
+	for _, r := range resumedReasons {
+		if reason == r {
+			return true
+		}
+	}
+	return false
+}
+
+// resumedReasons is Resumed's set, as PG.Open reads it.
+var resumedReasons = []string{EndGone}
+
 // EndAfter is how long a session must work, continuously, before its episode
 // ends on its own (the design's N). A shorter blip — a quick tool call, a
 // background task's notice — does not end one, so one stop of a session that

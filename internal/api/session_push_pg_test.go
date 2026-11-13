@@ -329,10 +329,15 @@ func TestTheRepushFloorDelaysButNeverDropsAPush(t *testing.T) {
 	f := newStateFixture(t, false)
 	f.statePass(t)
 	first := f.oneEpisode(t)
-	// The first stop ends at once, as gone-and-back would, its notification closed.
+	// The first stop ends at once, as gone-and-back would, its notification
+	// closed — and the session stops AGAIN on a new streak (it ran in
+	// between): a NEW stop inside the floor. (Back on the SAME streak it would
+	// be the same stop, which carries the first push and is never pushed again
+	// — sessionstate.Resumed, session_gone_resume_pg_test.go.)
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE session_episodes SET ended_at = now(), end_reason = 'gone', cleared_at = now() WHERE id = $1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
+	f.statusSince(mirror.StatusIdle, nudgeSince+60_000, 20*time.Minute)
 	f.statePass(t)
 	list := f.episodes(t)
 	if len(list) != 2 {

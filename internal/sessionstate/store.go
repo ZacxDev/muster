@@ -71,7 +71,9 @@ type Store interface {
 	// the session already has an open episode (session_episodes_one_open) —
 	// another pass, or another replica, won it — and when the session's latest
 	// episode ended Handled on e.StreakKey (the stop was dealt with, and the
-	// session has not moved since).
+	// session has not moved since). 🔴 When that latest episode ended Resumed
+	// ('gone') on e.StreakKey, the new one carries its PushedAt: the same stop,
+	// back, is not pushed a second time (zero when it was never pushed).
 	Open(ctx context.Context, e Episode) (Episode, bool, error)
 	// OpenEpisodes is the caller's open episodes, oldest first.
 	OpenEpisodes(ctx context.Context) ([]Episode, error)
@@ -240,9 +242,19 @@ func (p *PG) Open(ctx context.Context, e Episode) (Episode, bool, error) {
 	// the backlog reset — on the streak e names, nothing is written. The
 	// session has not moved since, so a new episode would push the stop again.
 	// A streak of "" names nothing and never matches.
+	//
+	// 🔴 A STOP BACK FROM 'gone' ON THE SAME STREAK KEEPS ITS PUSH (Resumed):
+	// when the session's latest episode ended gone on the streak e names, the
+	// new episode is written with THAT episode's pushed_at — so a stop already
+	// pushed counts as pushed and is not pushed again, and one never pushed
+	// (held, quiet) stays unpushed and is pushed as any other. One statement,
+	// so no pass can see the row without it.
 	row := p.pool.QueryRow(ctx, `INSERT INTO session_episodes (session_kind, session_key, seq, state, waiting, asked, runtime,
-			mirror_host, mirror_session, mirror_window, window_index, agent_id, chat_session_id, streak_key)
-		SELECT $1, $2, coalesce(max(seq), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			mirror_host, mirror_session, mirror_window, window_index, agent_id, chat_session_id, streak_key, pushed_at)
+		SELECT $1, $2, coalesce(max(seq), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		  (SELECT last.pushed_at FROM session_episodes last
+		    WHERE last.session_kind = $1 AND last.session_key = $2 AND last.seq = max(session_episodes.seq)
+		      AND last.end_reason = ANY($15) AND last.streak_key = $13 AND $13 <> '')
 		  FROM session_episodes WHERE session_kind = $1 AND session_key = $2
 		HAVING NOT EXISTS (SELECT 1 FROM session_episodes last
 		  WHERE last.session_kind = $1 AND last.session_key = $2 AND last.seq = max(session_episodes.seq)
@@ -250,7 +262,7 @@ func (p *PG) Open(ctx context.Context, e Episode) (Episode, bool, error) {
 		ON CONFLICT DO NOTHING
 		RETURNING `+cols,
 		e.Kind, e.Key, e.State, e.Waiting, e.Asked, cut(e.Runtime, 32), cut(e.Host, 200), cut(e.TmuxSession, 200), cut(e.Window, 32),
-		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100), handledReasons)
+		e.Index, nullID(e.AgentID), nullID(e.ChatSessionID), cut(e.StreakKey, 100), handledReasons, resumedReasons)
 	out, err := scan(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Episode{}, false, nil

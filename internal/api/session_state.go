@@ -29,7 +29,12 @@ import (
 //     replicas) — unless its last episode ended HANDLED on the same streak
 //     (sessionstate.Handled: the owner opened it, or the 0079 reset), so a
 //     stop the owner dealt with is not pushed again while it sits still — and
-//     one another process opened anyway is ended again (PG.EndRepeat);
+//     one another process opened anyway is ended again (PG.EndRepeat). 🔴 ONE
+//     BACK FROM 'gone' ON THE SAME STREAK IS THE SAME STOP (sessionstate.Resumed):
+//     its new episode carries the ended one's push, so a window that dropped
+//     out of its host's listing for a pass and came back without running is
+//     not pushed a second time; one that was never pushed carries nothing and
+//     is pushed as any stop;
 //   - an open episode follows its session (state, where it is, its streak) and
 //     ENDS when the OWNER ACTS in the session after it opened — a message of
 //     their own, or a waiting prompt answered (sessionstate.OwnerActed;
@@ -39,7 +44,10 @@ import (
 //     host that is online, reporting status, and has sent its window list. A
 //     host that dropped or has not been read, a failed agent list, a failed
 //     transcript read, a failed classifier: none of them ends an episode or
-//     quiets one.
+//     quiets one. ('gone' is decided only on a CONNECTED host's listing — a
+//     host that is merely offline ends nothing — but such a listing can omit
+//     a window for a pass; the resume rule above keeps that from pushing the
+//     stop again when it is listed back.)
 //
 // 🔴 THE CLASSIFIER RUNS ONLY WHERE THE CHIEF'S NUDGES WOULD RUN IT: the
 // feature on and the owner's chief on (docs/chief-nudges.md, "The stall
