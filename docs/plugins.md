@@ -601,15 +601,16 @@ another owner's officer reads as missing. Each change writes a
 
 #### Inbound: `POST /plugin/v1/messages` from a bound plugin
 
-The same route and body, with three more fields:
+The same route and body, with four more fields:
 
 | field | required | rule |
 |---|---|---|
 | `kind` | no | `plan`, `reply`, `snapshot` or `note` (the default). |
 | `venue` | with `kind: "reply"` | Where it happened: 1 to 64 lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit (`reddit`, `x`, `example.forum`). |
 | `thread` | with `kind: "reply"` | The upstream reference of the human reply to answer (the field every message already has). |
+| `url` | no | Where the message can be read upstream (a post's permalink): an absolute `http` or `https` URL with a host and no userinfo, at most 2048 bytes, with no spaces, control or invisible characters. It rides in the item's `payload.url` (not on the message row) and is shown to the owner **as text, never as a link** on an ask about the item. |
 
-`kind` and `venue` are refused (400) on a plugin with no `deliver_to`.
+`kind`, `venue` and `url` are refused (400) on a plugin with no `deliver_to`.
 
 Instead of a chief turn, muster creates one **item** in the officer's queue,
 in the same transaction that stores the message:
@@ -618,12 +619,17 @@ in the same transaction that stores the message:
 |---|---|
 | `kind` | `plugin.<kind>`, e.g. `plugin.reply` |
 | `subject_key` | `plugin:<plugin id>:<external_id>`, so a repeat is the same item and two plugins never share one |
-| `payload` | `{"plugin": "<name>", "plugin_id", "message_id", "external_id", "kind", "venue", "thread", "received_at", "message": "<fenced block>"}` |
+| `payload` | `{"plugin": "<name>", "plugin_id", "message_id", "external_id", "kind", "venue", "thread", "received_at", "message": "<fenced block>"}`, plus `"url"` when the message carried one |
 | tier, priority | judgement, normal |
 
 `payload.message` is the sender, subject and body as a fenced **untrusted**
 block, exactly as a chief turn shows a message: the officer reads it as data,
 never as instructions.
+
+When the officer asks its owner about such an item or escalates it, the owner's
+Attention ask carries the message itself — venue, thread, sender (UNVERIFIED
+unless the plugin verified it), body and url — built by muster from the item,
+apart from the officer's note ([officers-builtin.md](officers-builtin.md#what-the-owner-is-shown)).
 
 | answer | meaning |
 |---|---|

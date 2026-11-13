@@ -25,6 +25,7 @@ package fence
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -140,4 +141,28 @@ func Sanitize(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// MaxURLBytes bounds a URL [WebURL] keeps.
+const MaxURLBytes = 2048
+
+// WebURL is u when it is a URL an outside source may hand muster to SHOW AS
+// TEXT: an absolute http or https URL with a host and no userinfo, at most
+// [MaxURLBytes] bytes of UTF-8 with no space and no [Unsafe] code point; ""
+// otherwise. It says nothing about where the URL leads: nothing muster draws
+// from it is a link.
+func WebURL(u string) string {
+	if u == "" || len(u) > MaxURLBytes || !utf8.ValidString(u) {
+		return ""
+	}
+	for _, r := range u {
+		if r == ' ' || Unsafe(r) {
+			return ""
+		}
+	}
+	p, err := url.Parse(u)
+	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" || p.User != nil {
+		return ""
+	}
+	return u
 }
