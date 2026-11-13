@@ -45,7 +45,7 @@ import (
 
 // hostStepUpTools is THE LEDGER of the mirror door's owner-authority tools, by
 // name, with what a confirmation card says it asks to do. Every other mirror
-// door tool is classified in hostStepUpExempt (TestEveryMirrorToolIsClassified
+// door tool is classified in hostStepUpExempt (TestEveryMirrorToolIsClassifiedForTheStepUp
 // fails when a new one is neither).
 var hostStepUpTools = map[string]string{
 	attentionAnswerTool:        "answer one of your open asks as you",
@@ -251,14 +251,22 @@ func (s *Server) hostDecisionForAnswer(ctx context.Context, id int64, answer str
 		s.logger.Printf("step-up: card %d refused: %s from %s/%s not run", id, d.tool, d.host, d.caller.asker.MirrorSession)
 		return true, nil
 	}
-	mctx := authz.WithPrincipal(context.WithoutCancel(ctx), s.principalFor(ctx, d.owner, authz.ViaMirrorHost))
-	out := s.runStepUpTool(mctx, d.host, d.caller, d.tool, d.args)
+	out := s.runStepUpTool(s.stepUpPrincipal(ctx, d.owner), d.host, d.caller, d.tool, d.args)
 	outcome := "ran"
 	if isToolErr(out) {
 		outcome = "ran and was refused: " + mirror.OneLine(out, 200)
 	}
 	s.logger.Printf("step-up: card %d confirmed on the owner's phone: %s from %s/%s %s", id, d.tool, d.host, d.caller.asker.MirrorSession, outcome)
 	return true, nil
+}
+
+// stepUpPrincipal is the principal a CONFIRMED owner-authority call runs
+// under: the SAME owner whose phone just confirmed it (hostDecisionForAnswer
+// checked the device principal's user is the card's owner), at the door the
+// call was asked through — authz.ViaMirrorHost — so the tool runs exactly as
+// the mirror door would have run it. Never another user id.
+func (s *Server) stepUpPrincipal(ctx context.Context, owner int64) context.Context {
+	return authz.WithPrincipal(context.WithoutCancel(ctx), s.principalFor(ctx, owner, authz.ViaMirrorHost))
 }
 
 // runStepUpTool runs a confirmed owner-authority tool exactly as the mirror
