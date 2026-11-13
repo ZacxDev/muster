@@ -559,6 +559,67 @@ To turn it on:
 If the chief has no `mcp__hq__` tools it says so; check the four steps above
 (`ccd seed` logs which one is missing when the pod starts).
 
+### The chief runs without permission prompts
+
+A `claude-code` chief runs **every** tool — muster's and HQ's MCP tools, Bash,
+Edit, Write, WebFetch, any other server's tools — with **no permission prompt**:
+its pod carries `CCD_PERMISSION_MODE=bypassPermissions`, and `ccd seed` starts
+every session in the pod in Claude Code's `bypassPermissions` mode. There is no
+setting; every `claude-code` chief has it. The Compose chief does not: it keeps
+its nine pre-allowed tools and denies every other prompt.
+
+**Why.** A prompt nobody answers falls back, after the approval card's deadline,
+to the prompt in the chief's own terminal, and nobody watches that terminal. The
+chief's turn then waits indefinitely, and every chat message answers `busy: the
+session is mid-turn`. Measured on a tenant: the chief's opening `fleet_list` sat
+at "Do you want to proceed?" for days.
+
+🔴 **Accepted risk: the chief keeps public internet access.** Officers run
+bypassed too, but their pods are egress-locked. The chief's is not (operator
+decision): it can still reach any public HTTPS host. The chief reads untrusted
+text — plugin messages, task notes, mail — so a message could try to make it
+send `CLAUDE_CODE_OAUTH_TOKEN` or its muster token out, and no prompt would stop
+it. The scope of the HQ token you store, and of every connector grant you give
+it, is what bounds what it can do with those
+([limits.md](limits.md)).
+
+**When it takes effect.** On the chief's next pod start — Stop, then Start
+([restarting the chief](#restarting-the-chief)). `ccd seed` re-imposes the
+settings on every pod start, so an existing chief picks it up then; `ccd seed
+--check` in the pod passes with `defaultMode` `bypassPermissions`.
+
+🔴 **Turning the bypass off later does NOT clean the chief.** `ccd seed`
+replaces only the top-level keys of `settings.json` that its template names.
+Whatever a bypassed session wrote to the chief's volume survives Stop → Start:
+a `statusLine` or hooks in user settings, extra MCP servers in `.claude.json`,
+shell rc files, the workspace's `.claude/settings*.json`, its memory. **Leaving
+bypass is DESTROY AND RECREATE**, not Stop → Start (as for
+`MUSTER_AGENT_CC_BYPASS_POOLS`, [configuration.md](configuration.md#muster-server-agent-provisioning)):
+[replace the chief](#replacing-the-chief-on-another-kind) onto another account
+or kind, which deletes the agent and creates a new one under the same slug — a
+replace onto the same kind and account only re-applies it and deletes nothing.
+What that costs: the chief's chat history, focus, connector grants and
+workspace volume are deleted with it; grants have to be approved again for the
+new chief.
+
+🔴 **Accepted risk: a process the chief starts can act with your authority.**
+No prompt stops the chief from starting a background process (`nohup … &`). That
+process runs as the same user as the chief's Claude Code CLI and holds the
+chief's muster token. It can wait for your next chat turn and then make an
+`owner_asked` call itself — releasing a gate, routing into your own session,
+starting an agent without an approval card. muster's `owner_asked` check
+verifies that your turn is in flight and that no other Claude Code CLI in the
+pod is working; nothing in the pod can tell a process a tool call started
+apart from the CLI, so the check cannot refuse it. The operator accepted this
+together with the token-exfiltration risk above. A message the chief reads is
+therefore as dangerous as one that tries to make it exfiltrate a token.
+
+⚠ **Named limit: the chief's agent token is not tied to its pod.** Anyone
+holding it who can reach a muster port that serves `POST /mcp` — the connect
+port (`MUSTER_CONNECT_PORT`) and, in muster itself, the main port too, unless
+your front door blocks `/mcp` — can act as the chief, including waiting for one
+of your turns to make an `owner_asked` call.
+
 ## The chief on OpenRouter
 
 A `claude-code` chief can run on OpenRouter instead of a Claude account, through

@@ -1177,12 +1177,14 @@ Each refusal has its own sentence, in this order:
      finishing), `muster chief ask`, a job, and another session's delivery. A
      ccd that cannot answer — unreachable, or an image without the route —
      refuses. Also refused while muster holds the chief's session claim for a
-     turn it started. ⚠ This holds against Claude Code CLIs, **not against
-     any process** running as the pod's user: one a tool call left behind (a
-     detached loop a Bash call started; a job's session runs with
-     `bypassPermissions`) holds the agent's muster token and can call muster's
-     MCP door directly. ccd already treats such processes as out of its
-     reach;
+     turn it started. 🔴 This holds against Claude Code CLIs, **not against
+     any process** running as the pod's user — an accepted risk: one a tool
+     call left behind (a detached loop a Bash call started; the claude-code
+     chief runs every tool with no prompt, and a job's session runs with
+     `bypassPermissions`) holds the agent's muster token, can wait for your
+     turn and call muster's MCP door with your authority, and nothing in the
+     pod can tell it from the CLI
+     ([chief.md](chief.md#the-chief-runs-without-permission-prompts));
    - the call came over MCP, from a Claude Code session. A chief session on
      the gateway runtime runs its tools inside muster and is no CLI, so it
      can never pass `owner_asked`.

@@ -532,8 +532,20 @@ type ClaudeCodeSession struct {
 	ImagePullSecret string
 	// BypassPermissions starts every session in the pod with every tool
 	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
-	// prompt at all. Set for an officer instance only.
+	// prompt at all. Set for an officer instance only. It also egress-locks
+	// the pod (EgressLocked); the chief's unlocked bypass is ChiefBypass.
 	BypassPermissions bool
+	// ChiefBypass is the claude-code CHIEF's bypass: the same
+	// podagent.EnvPermissionMode=bypassPermissions as BypassPermissions (every
+	// session in the pod runs every tool with no permission prompt), but
+	// WITHOUT the egress lock — the pod keeps public 443 and cluster DNS. It is
+	// THE ONE EXCEPTION to "no bypass without the lock" (see EgressLocked):
+	// Build refuses it for any agent but the reserved chief slug, and in the
+	// Compose container. Set unconditionally for the claude-code chief by
+	// internal/agentprovision (operator decision, PR #626: an unanswered
+	// prompt falls back to a terminal nobody watches and hangs the chief; the
+	// token-exfiltration risk of untrusted text it reads is accepted).
+	ChiefBypass bool
 	// HQMCP offers the HQ MCP server and allows every one of its tools
 	// (podagent.EnvHQMCP, internal/podagent/hqmcp.go). Set for the chief only.
 	HQMCP bool
@@ -568,10 +580,16 @@ type ClaudeCodeSession struct {
 // officer reads public PRs) while its pod holds CLAUDE_CODE_OAUTH_TOKEN and
 // MUSTER_HOOK_TOKEN; "public internet on 443" lets one injected `curl` send them
 // anywhere. Deriving the lock from the bypass means no configuration can have
-// the bypass without the lock. Today only an officer instance sets
-// BypassPermissions (internal/api OfficerClaudeCodeSession), so only officers
-// are locked; task agents, the chief and bypass JOB lanes
-// (MUSTER_AGENT_CC_BYPASS_POOLS, a different mechanism) keep the public rule.
+// the bypass without the lock — WITH ONE ENUMERATED EXCEPTION: the claude-code
+// chief (ChiefBypass), which runs bypassed with public egress kept, an accepted
+// risk (operator decision, PR #626): a message it reads could try to make it
+// send CLAUDE_CODE_OAUTH_TOKEN or its muster token out. Build refuses
+// ChiefBypass for every other agent, and
+// TestBypassWithoutTheLockIsExactlyTheClaudeCodeChief (internal/agentprovision)
+// pins the set. Today only an officer instance sets BypassPermissions
+// (internal/api OfficerClaudeCodeSession), so only officers are locked; task
+// agents, the chief and bypass JOB lanes (MUSTER_AGENT_CC_BYPASS_POOLS, a
+// different mechanism) keep the public rule.
 func (s ClaudeCodeSession) EgressLocked() bool { return s.BypassPermissions }
 
 // Build assembles the spec for one agent.

@@ -54,12 +54,25 @@ import (
 //     another lane. A live CLI process with no sessions file to say what it is
 //     doing counts as working (its own refusal). A ccd that cannot answer
 //     (unreachable, an image without the route) refuses: fail closed.
-//     ⚠ NOT AGAINST ARBITRARY SAME-USER PROCESSES: a process a tool call left
-//     running in the pod (a detached loop a Bash call started; a job lane runs
-//     with bypassPermissions) is no CLI, holds the agent's muster token, and
-//     can call the MCP door directly while the owner's turn runs. ccd already
-//     treats such processes as out of its reach (server.go's hook-listener
-//     note); this guard does not change that.
+//     🔴 ACCEPTED RISK — NOT AGAINST ARBITRARY SAME-USER PROCESSES (operator
+//     decision, PR #626). A process a tool call starts in the pod (a detached
+//     loop a Bash call left running; the claude-code chief runs every tool
+//     with no prompt, and a job lane runs with bypassPermissions) runs as the
+//     same user as the CLI and holds the agent's muster token. It can wait for
+//     the owner's next turn — when this check passes — and call the MCP door
+//     itself, so its owner_asked call carries the owner's authority (a gate
+//     released, a route into the owner's own session, an agent started with no
+//     approval card). Nothing inside the pod can tell such a process from the
+//     CLI: they share one uid, so it can read, impersonate or hide behind any
+//     process ccd could allow (a process-table scan was built and broken three
+//     ways in audit, and removed). The operator accepted this together with the
+//     token-exfiltration risk of the chief's bypass.
+//     ⚠ NAMED LIMIT: the chief's agent token is not tied to its pod. Anyone
+//     holding it who can reach a muster port that serves POST /mcp — the
+//     connect port (MUSTER_CONNECT_PORT, api.OnlyConnectSurface) and, in
+//     muster itself, the main port too, unless the deployment's front door
+//     blocks /mcp — can act as the chief, including waiting for an owner turn
+//     to make an owner_asked call.
 //  3. NO MUSTER-STARTED TURN HOLDS THE CHIEF'S SESSION CLAIM. Mostly implied by
 //     2 now; kept because the claim is taken before a delivery's CLI turn
 //     starts, so it also covers the instant before that CLI reports busy.

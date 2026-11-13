@@ -1308,12 +1308,18 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	// (operator decision): no blanket HQ approval there.
 	// The Compose chief's prose names exactly the tools it can run there
 	// (agentspec.ChiefInstructionsCompose).
+	// ChiefBypass: the same chief, and no other agent, runs every tool with no
+	// permission prompt and public egress kept (operator decision, PR #626): an
+	// unanswered prompt falls back to a terminal nobody watches and hangs the
+	// chief mid-turn; the token-exfiltration risk is accepted. Not the Compose
+	// chief, which keeps its nine tools and deny-if-unanswered.
 	instructions := agentspec.ChiefInstructionsClaudeCode(cfg.Plugins, cfg.SessionRouting)
 	if cfg.ComposeContainer {
 		instructions = agentspec.ChiefInstructionsCompose(cfg.Plugins, cfg.SessionRouting)
 	}
 	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: instructions,
-		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, LLMRoute: route}})
+		ClaudeCodeSession: agentspec.ClaudeCodeSession{HQMCP: !cfg.ComposeContainer, ChiefBypass: !cfg.ComposeContainer,
+			LLMRoute: route}})
 }
 
 // ChiefLLMRouted is THE predicate for whether agent ag runs on the LLM route

@@ -150,8 +150,10 @@ three things in that session's `settings.json` at provision time (the pod's
   WHOLE POD as running without approvals: anything in it, including the agent's
   own muster token (`MUSTER_HOOK_TOKEN`), is reachable by a command the session
   runs. Any value of `CCD_PERMISSION_MODE` other than unset or exactly
-  `bypassPermissions` is refused and the pod does not start. **No other agent
-  gets it**: task agents and the chief keep the image's posture (default mode,
+  `bypassPermissions` is refused and the pod does not start. **One other agent
+  gets it**: the `claude-code` chief, which runs bypassed too but keeps public
+  egress (an accepted risk, [chief.md](chief.md#the-chief-runs-without-permission-prompts));
+  task agents and the Compose chief keep the image's posture (default mode,
   bypass disabled, prompts routed for approval). This needs a
   `claude-code-agent` image built from this version: an older `ccd` ignores the
   variable, and the officer would keep prompting.
@@ -238,7 +240,10 @@ whole session runs with permissions bypassed while it reads untrusted text
 public IPv4 address, so one injected `curl` could send either token anywhere.
 So the lock is derived from the bypass (`agentspec.ClaudeCodeSession.EgressLocked`):
 there is no setting that gives an officer the bypass without it, and no other
-agent gets it.
+agent gets it. The one agent that runs bypassed **without** the lock is the
+`claude-code` chief, by an explicit, enumerated exception
+(`agentspec.ClaudeCodeSession.ChiefBypass`, refused for every other agent;
+[chief.md](chief.md#the-chief-runs-without-permission-prompts)).
 
 On the Kubernetes driver, an officer instance's NetworkPolicy is the usual one
 **without the public rule and without the DNS rule**:
