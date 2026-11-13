@@ -53,7 +53,8 @@ usable. That lets you bind the operator's login before you switch modes.
   streams and within 30 seconds for new requests.
 - **Data is per user.** Every user-data row has an `owner_id`, enforced by
   Postgres row-level security (see [schema.md](schema.md)). Each user has their
-  own tasks, agents, tokens and chief. An admin's ordinary pages show only the
+  own tasks, agents and tokens, and on Kubernetes their own chief (the Compose
+  stack runs only the admin's chief: [features.md](features.md#chief)). An admin's ordinary pages show only the
   admin's own rows; the cross-user views are on `/admin/*`.
 - **Credentials:** members bring their own Claude and OpenRouter credentials
   (`/account/credentials`, which needs the connector key). The pool configured in
