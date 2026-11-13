@@ -743,7 +743,7 @@ test.describe('the pill, on a phone', () => {
 });
 
 // ---------------------------------------------------------------------------
-// THE PILL'S VERSIONS, ITS RELOAD ICON, AND DRAGGING IT (operator, 2026-11-12).
+// THE PILL'S VERSIONS, ITS RELOAD ICON, AND DRAGGING IT (operator's choice, #640).
 // Run at a phone (a finger: CDP touch events, so the pointer events are
 // pointerType "touch") and at a desktop (a mouse), each viewport set here.
 // ---------------------------------------------------------------------------

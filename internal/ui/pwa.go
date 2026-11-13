@@ -104,7 +104,7 @@ const reloadIcon = `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke=
 // updateToast is the "new version" prompt. Hidden until pwaScript sees a
 // waiting worker; its Reload button hands control to that worker.
 //
-// It reads "Update <current> → <new>" (operator, 2026-11-12). The current
+// It reads "Update <current> → <new>" (operator's choice, #640). The current
 // version is rendered here (data-sw-current, and the from-version); the new
 // one is asked of the WAITING worker by pwaScript (sw.js answers GET_VERSION
 // with the build the server stamped into it) and drawn into [data-sw-to]. Until
@@ -126,7 +126,7 @@ const reloadIcon = `<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke=
 // 🔴 IT IS A COMPACT PILL IN THE TOP-RIGHT CORNER — NOT A BAR AT THE BOTTOM. It used to float 5.5rem above the bottom edge, which
 // on a phone is exactly where the composer, Send, the FAB and the chat button
 // live: the operator reported it "blocking the UI", and chose this shape
-// ("Updated · Reload ×", top-right; since 2026-11-12 "Update a → b ⟳ ×", and
+// ("Updated · Reload ×", top-right; since #640 "Update a → b ⟳ ×", and
 // draggable — a remembered spot wins over the corner). The classes below put it in the corner
 // under the safe-area insets; pwaScript's placeToast slides it DOWN past any
 // control it would sit on (a header icon, a filter chip) before it is shown. It is `fixed` and sized to its content, so it takes no layout space,
