@@ -109,7 +109,6 @@ func (c *ItemContext) clean() (*ItemContext, error) {
 		src := SourceMessage{Plugin: oneLine(s.Plugin), MessageID: s.MessageID, Venue: oneLine(s.Venue), Thread: oneLine(s.Thread),
 			Sender: oneLine(s.Sender), SenderVerified: s.SenderVerified, URL: fence.WebURL(s.URL), Unread: s.Unread}
 		src.Body, src.Truncated = SourceBody(s.Body)
-		src.Truncated = src.Truncated || s.Truncated
 		out.Source = &src
 	}
 	return &out, nil
