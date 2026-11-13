@@ -6,10 +6,36 @@ panel. So does every answer box of the [Asks](attention.md) queue: the
 question's own page (`/attention/asks/<id>`), each question on the Asks list,
 and the questions shown on a session's page.
 
-To use it, tap the mic, speak, and tap it again. The recording is transcribed
-and the text is **inserted into the box at the cursor**. It is never sent
-automatically: you read it and press Send (on an answer box, **Answer**). Send
-is the gated step it always was.
+To use it, tap the mic and speak. While it records, the box is replaced by a
+**live waveform** of your microphone, the time recorded so far, and a **×**.
+The mic turns into a **✓** and Send into a **↑**. Then:
+
+- **✓ (Stop and insert transcript)**: the recording is transcribed and the
+  text is **inserted into the box at the cursor**. Nothing is sent: you read
+  it and press Send (on an answer box, **Answer**).
+- **↑ (Transcribe and send)**: the recording is transcribed and sent at once,
+  by the box's own Send. What is sent is **what was already in the box,
+  followed by the transcript**; while you record, that draft is shown on one
+  line beside the waveform so you know it goes too. It goes through exactly
+  what a tap on Send does, so a mirrored session that needs you to confirm
+  it's you still asks first
+  ([step-up](sending-and-step-up.md#step-up-confirm-its-you)). If the
+  transcription fails or hears nothing, nothing is sent: the reason is shown
+  and the box is left as it was. If Send can't be used when the transcript
+  comes back (for example while an agent is still answering), the text is put
+  in the box and not sent, and the note says so. The ↑ is disabled while Send
+  is.
+- **One tap sends once.** For 1.5 seconds after a voice send, a tap on Send is
+  ignored: Send is back where the ↑ was, so the second tap of a double tap
+  would otherwise send again. A new recording sent with ↑ in that time is
+  still sent.
+- **× (Discard recording)**: the recording is thrown away. Nothing is
+  transcribed and the box is left as it was.
+
+A recording also stops by itself after two minutes, and is then transcribed
+and inserted as with ✓. Every way a recording ends releases the microphone.
+With your system's "reduce motion" setting, the waveform is a calm level
+meter instead.
 
 The Asks list refreshes itself as the queue changes; a refresh waits while a mic
 on it is recording or transcribing, so the text always lands in its box.

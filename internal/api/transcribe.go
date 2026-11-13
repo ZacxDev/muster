@@ -23,8 +23,10 @@ import (
 // The browser records (MediaRecorder) and posts the recording here as the raw
 // request body; muster forwards it to the speech-to-text service with ITS OWN
 // credential (internal/stt) and answers with the text, as text/plain. The page
-// inserts that text into the message box at the caret — it is never sent: the
-// operator reads it and presses Send, which is the gated step.
+// inserts that text into the message box at the caret. This route never sends
+// anything: the mic's ✓ leaves the text for the operator to send, and its ↑
+// sends it by clicking the box's own Send, which is the gated step either way
+// (internal/ui/dictate.go).
 //
 // 🔴 ONE ROUTE FOR EVERY MESSAGE BOX. A mirrored session's two views and an
 // agent's two views all post here; what the text is FOR is decided by the Send

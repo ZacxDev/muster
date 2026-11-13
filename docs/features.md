@@ -139,8 +139,10 @@ ask, a task ready for review. [push.md](push.md).
 
 ### Dictation
 
-A microphone on every message box; the transcript lands in the box for you to
-check before Send. [dictation.md](dictation.md) has the protocol and limits.
+A microphone on every message box, with a live waveform while it records: ✓
+puts the transcript in the box for you to check before Send, ↑ transcribes and
+sends it through the box's own Send. [dictation.md](dictation.md) has the
+protocol and limits.
 
 - **Needs:** a speech-to-text service that answers OpenAI's
   `POST /v1/audio/transcriptions`. Three ways:

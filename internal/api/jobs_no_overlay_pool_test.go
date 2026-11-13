@@ -30,6 +30,9 @@ func (w *jobWorkspace) StripsRepoConfig(a agents.Agent) bool {
 	return w.stripPools[a.WorkerPool]
 }
 
+// PoolRepoRefusal refuses nothing: the job fixture's pools have no deploy key.
+func (w *jobWorkspace) PoolRepoRefusal(agents.Agent) error { return nil }
+
 // TestRepoConfigOverlayIsNotAJobField: the field is gone — a body carrying it
 // is an unknown field (400), recording nothing, whatever its value.
 func TestRepoConfigOverlayIsNotAJobField(t *testing.T) {

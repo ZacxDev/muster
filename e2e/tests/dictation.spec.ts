@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Page, request as pwRequest } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { signIn } from '../lib/signin';
-import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, repoRoot, sttToken, versionTerm } from '../lib/env';
+import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, password, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
 import { revealBox } from '../lib/composer';
@@ -248,21 +248,22 @@ async function dictate(page: Page, box: Box, viewportWidth: number): Promise<str
   const posted = page.waitForResponse((r) => new URL(r.url()).pathname === '/transcribe');
   await mic.click();
   await expect(mic).toHaveAttribute('data-state', 'recording');
-  // Visibly recording: the danger colour, and the stop glyph in place of the mic.
+  // Visibly recording: a raised colour, and the ✓ glyph in place of the mic.
   // (Polled: the colour change is a CSS transition.)
   await expect.poll(bg, { message: 'the recording mic is coloured differently' }).not.toBe(idleBg);
   await expect(mic.locator('svg').nth(0)).toBeHidden();
-  await expect(mic.locator('svg').nth(1)).toBeVisible();
-  await expect(mic).toHaveAttribute('aria-label', 'Stop recording');
-  // Pressing the mic did not take focus from the box (the caret, and a phone's
-  // keyboard, stay where they were).
-  await expect(input).toBeFocused();
+  await expect(mic.locator('svg[data-dictate-check]')).toBeVisible();
+  await expect(mic).toHaveAttribute('aria-label', 'Stop and insert transcript');
+  // The waveform has the box's place while recording (dictate.go).
+  const wave = page.locator(box.mic + '-wave');
+  await expect(wave).toBeVisible();
+  await expect(input).toBeHidden();
   await expect(page.locator(box.note)).toContainText('Recording 0:0');
   await expect(page.locator(box.note)).toContainText('/ 2:00');
   // The row did not move when recording began (the note grows the composer
-  // UPWARD; the input row keeps its place at the bottom).
-  const ib2 = (await input.boundingBox())!;
-  expect(Math.abs(ib2.y + ib2.height - (ib.y + ib.height)), 'the input row stayed put').toBeLessThanOrEqual(1);
+  // UPWARD; the waveform sits where the box's row was, at the bottom).
+  const wb = (await wave.boundingBox())!;
+  expect(Math.abs(wb.y + wb.height - (ib.y + ib.height)), 'the input row stayed put').toBeLessThanOrEqual(2);
   await page.waitForTimeout(1300);
   await mic.click();
   const resp = await posted;
@@ -616,7 +617,8 @@ test('a server with no speech-to-text service draws no microphone', async ({ bro
 
 // THE ASKS' ANSWER BOXES (internal/api attention_ask_page.go, attention.go):
 // the ask page's pinned box and every ask card on the Asks list carry the same
-// mic. It FILLS the box at the caret and sends nothing; Answer is the send.
+// mic. Its ✓ FILLS the box at the caret and sends nothing; its ↑ fills it and
+// clicks Answer, which is the send either way.
 // The asker is a seeded agent (e2e/pluginfix), so each card also links the
 // asking agent's page as "View in session".
 //
@@ -679,7 +681,8 @@ test.describe('an ask’s answer boxes', () => {
     const p0 = posted();
     await mic.click();
     await expect(mic).toHaveAttribute('data-state', 'recording');
-    await expect(input).toBeFocused();
+    await expect(page.locator(box.mic + '-wave'), 'the waveform has the box’s place').toBeVisible();
+    await expect(input).toBeHidden();
     await expect(page.locator(box.note)).toContainText('Recording 0:0');
     await page.waitForTimeout(1300);
     await mic.click();
@@ -857,4 +860,675 @@ test.describe('an ask’s answer boxes', () => {
     await mic.click();
     await expect(input, 'the recording landed in its box').toHaveValue(FAKE_TEXT);
   });
+  // 🔴 THE ↑ SENDS ONCE (operator decision 2026-11-12): a double tap on the ↑
+  // arms it once (it is disabled from the first tap), and a REPEAT TAP on the
+  // spot just after the send — where Answer is back by then — is swallowed
+  // for DictateSendHoldMs. The ask page's Answer is a native form post (no
+  // script of its own empties the box), so a second tap that got through
+  // WOULD post the answer twice: the answer post is held open here (routed,
+  // released after the second tap) so the page is still there to be tapped.
+  for (const vp of [
+    { name: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+    { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+  ]) {
+    test(`${vp.name}: the ask page's ↑ answers once — a double tap and a repeat tap send nothing more`, async ({ browser }) => {
+      const ctx = await browser.newContext({ ...vp.use, permissions: ['microphone'] });
+      const page = await ctx.newPage();
+      try {
+        const id = ask('Voice answer once? ' + vp.name);
+        await routeTranscribe(page);
+        const sent = answers(page, id);
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        await page.route(`**/attention/asks/${id}/answer`, async (r) => {
+          await gate;
+          await r.continue();
+        });
+        await signIn(page, origin);
+        await page.goto(`${origin}/attention/asks/${id}`);
+        const input = page.locator('#ask-input');
+        const mic = page.locator('#ask-dictate');
+        const up = page.locator('#ask-dictate-send');
+        const answer = page.locator('#ask-send');
+        await expect(mic).toBeVisible();
+        await expect(up, 'the ↑ is hidden until a recording').toBeHidden();
+        const ab = (await answer.boundingBox())!;
+        await mic.click();
+        await expect(mic).toHaveAttribute('data-state', 'recording');
+        await expect(up).toBeVisible();
+        await expect(up).toHaveAttribute('aria-label', 'Transcribe and send');
+        await expect(answer, 'the ↑ has Answer’s place').toBeHidden();
+        await page.waitForTimeout(1000);
+        const spot = (await up.boundingBox())!;
+        // Control: the ↑'s centre is on Answer's own box, so a tap there once
+        // Answer is back lands on Answer.
+        const cx = spot.x + spot.width / 2, cy = spot.y + spot.height / 2;
+        expect(cx >= ab.x && cx <= ab.x + ab.width && cy >= ab.y && cy <= ab.y + ab.height, `the ↑ ${JSON.stringify(spot)} sits on Answer ${JSON.stringify(ab)}`).toBe(true);
+        const posted = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === `/attention/asks/${id}/answer`);
+        // The double tap: two presses on the ↑, back to back.
+        await page.mouse.click(cx, cy);
+        await page.mouse.click(cx, cy);
+        await posted;
+        const at = Date.now();
+        expect(sent(), 'the ↑ answered').toBe(1);
+        // The repeat tap, on the same spot: Answer is back there (both are
+        // the row's last control, right-aligned, and Answer is the wider).
+        // Raw mouse input: the page is mid-navigation (the post is held), and
+        // a locator would wait for that navigation to finish.
+        await page.mouse.click(cx, cy);
+        // Inside the hold (DictateSendHoldMs, 1500 ms): the tap the guard is for.
+        expect(Date.now() - at, 'the repeat tap came within the hold').toBeLessThan(1000);
+        await page.waitForTimeout(600);
+        expect(sent(), 'one answer post for one ↑, double tap and repeat tap included').toBe(1);
+        release();
+        await expect(page.locator('[data-ask-answer]')).toContainText(FAKE_TEXT);
+        expect(sent(), 'still one').toBe(1);
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
+});
+
+// THE RECORDER (operator decision 2026-11-12, internal/ui/dictate.go): while
+// the mic records, a LIVE WAVEFORM of the microphone takes the box's place,
+// with the elapsed time and a × that discards; the mic is a ✓ (stop and
+// insert, no send) and Send's place is a ↑ (transcribe and send, through the
+// box's own Send). Every way a recording ends lets go of the microphone's
+// tracks, the waveform's animation frame and its AudioContext.
+//
+// The page is instrumented from its first script (instrument): every stream
+// getUserMedia hands out, every AudioContext made, every MediaRecorder, and
+// every animation frame whose callback is the waveform's (dictateFrame) —
+// the browser's own answers to "is the microphone held", "is the audio graph
+// open", "is the animation still running". Each is read live first (the
+// positive control) before it is read as released.
+//
+// /transcribe is answered in the page (page.route), for the rate-limit reason
+// the view-switch tests give; what these tests check is the page.
+type Instr = { live: number; streams: number; open: number; acs: number; frames: number };
+async function instrument(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown> & { __streams: MediaStream[]; __acs: AudioContext[]; __recs: MediaRecorder[]; __frames: number };
+    w.__streams = [];
+    w.__acs = [];
+    w.__recs = [];
+    w.__frames = 0;
+    const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = (cs) =>
+      gum(cs).then((s) => {
+        w.__streams.push(s);
+        return s;
+      });
+    const AC = window.AudioContext;
+    w.AudioContext = class extends AC {
+      constructor(o?: AudioContextOptions) {
+        super(o);
+        w.__acs.push(this);
+      }
+    };
+    const MR = window.MediaRecorder;
+    w.MediaRecorder = class extends MR {
+      constructor(s: MediaStream, o?: MediaRecorderOptions) {
+        super(s, o);
+        w.__recs.push(this);
+      }
+    };
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      const ours = cb.name === 'dictateFrame';
+      return raf((t) => {
+        if (ours) w.__frames++;
+        cb(t);
+      });
+    };
+  });
+}
+async function instr(page: Page): Promise<Instr> {
+  return page.evaluate(() => {
+    const w = window as unknown as { __streams: MediaStream[]; __acs: AudioContext[]; __frames: number };
+    return {
+      live: w.__streams.flatMap((s) => s.getTracks()).filter((t) => t.readyState === 'live').length,
+      streams: w.__streams.length,
+      open: w.__acs.filter((a) => a.state !== 'closed').length,
+      acs: w.__acs.length,
+      frames: w.__frames,
+    };
+  });
+}
+// expectHeld: the positive control — a recording holds one live track, one
+// open AudioContext, and its frames run.
+async function expectHeld(page: Page, what: string) {
+  const a = await instr(page);
+  expect(a.live, `${what}: the recording holds a live track`).toBe(1);
+  expect(a.open, `${what}: the waveform's AudioContext is open`).toBe(1);
+  await expect.poll(async () => (await instr(page)).frames, { message: `${what}: the waveform's frames run` }).toBeGreaterThan(a.frames + 3);
+}
+// expectReleased: no live track, every AudioContext closed, and no frame of
+// the waveform's runs any more.
+async function expectReleased(page: Page, what: string) {
+  await expect.poll(async () => (await instr(page)).live, { message: `${what}: no microphone track is live`, timeout: 10_000 }).toBe(0);
+  await expect.poll(async () => (await instr(page)).open, { message: `${what}: every AudioContext is closed`, timeout: 10_000 }).toBe(0);
+  const f0 = (await instr(page)).frames;
+  await page.waitForTimeout(400);
+  expect((await instr(page)).frames, `${what}: no waveform frame ran after the end`).toBe(f0);
+}
+// canvasFrames samples the waveform's canvas n times, every ms.
+async function canvasFrames(page: Page, sel: string, n: number, ms: number): Promise<string[]> {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(await page.locator(sel).evaluate((c: HTMLCanvasElement) => c.toDataURL()));
+    await page.waitForTimeout(ms);
+  }
+  return out;
+}
+async function inked(page: Page, sel: string): Promise<number> {
+  return page.locator(sel).evaluate((c: HTMLCanvasElement) => {
+    const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+    return n;
+  });
+}
+
+test.describe('the recorder: a live waveform, ✓ inserts, ↑ sends, × discards', () => {
+  // posts counts /transcribe POSTs; body is what it answers (status 200
+  // unless status says otherwise).
+  async function routeStt(page: Page, o: { body?: string; status?: number } = {}): Promise<() => number> {
+    let n = 0;
+    await page.route('**/transcribe', async (r) => {
+      if (r.request().method() !== 'POST') return r.continue();
+      n++;
+      await r.fulfill({ status: o.status ?? 200, contentType: 'text/plain; charset=utf-8', body: o.body ?? ` ${FAKE_TEXT} ` });
+    });
+    return () => n;
+  }
+  // mirrorSends counts the Rendered view's send posts.
+  function mirrorSends(page: Page): () => number {
+    let n = 0;
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname === '/mirror/view/send') n++;
+    });
+    return () => n;
+  }
+  async function openRendered(page: Page) {
+    await signIn(page, origin);
+    fs.rmSync(transcript + '.pasted', { force: true });
+    await page.goto(origin + '/mirror/view?' + q(claudeWin));
+    await expect(page.locator('#mv-dictate'), `the composer (mirror log:\n${mirrorLog})`).toBeVisible({ timeout: 20_000 });
+    await revealBox(page);
+  }
+  const ui = (page: Page) => ({
+    input: page.locator('#mv-input'),
+    mic: page.locator('#mv-dictate'),
+    wave: page.locator('#mv-dictate-wave'),
+    canvas: '#mv-dictate-wave canvas',
+    clock: page.locator('#mv-dictate-wave [data-dictate-clock]'),
+    discard: page.locator('#mv-dictate-wave [data-dictate-discard]'),
+    up: page.locator('#mv-dictate-send'),
+    send: page.locator('#mv-send'),
+    note: page.locator('#mv-dictate-note'),
+  });
+  async function expectIdle(page: Page, what: string) {
+    const u = ui(page);
+    await expect(u.mic, `${what}: the mic is idle`).toHaveAttribute('data-state', 'idle');
+    await expect(u.wave, `${what}: the waveform is gone`).toBeHidden();
+    await expect(u.input, `${what}: the box is back`).toBeVisible();
+    await expect(u.up, `${what}: the ↑ is gone`).toBeHidden();
+    await expect(u.send, `${what}: Send is back`).toBeVisible();
+    await expect(u.send).toHaveAttribute('aria-label', 'Send');
+  }
+
+  for (const vp of [
+    { name: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+    { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+  ]) {
+    test.describe(vp.name, () => {
+      test.use(vp.use);
+
+      test('the waveform takes the box’s place and moves with the microphone; × throws the recording away', async ({ page }) => {
+        await instrument(page);
+        const posts = await routeStt(page);
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await expect(u.wave, 'no waveform before a recording').toBeHidden();
+        await expect(u.up, 'no ↑ before a recording').toBeHidden();
+        await u.input.fill('kept words');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(u.mic).toHaveAttribute('aria-label', 'Stop and insert transcript');
+        await expect(u.wave).toBeVisible();
+        await expect(u.input, 'the waveform is in the box’s place').toBeHidden();
+        await expect(u.discard).toHaveAttribute('aria-label', 'Discard recording');
+        await expect(u.up, 'the ↑ is in Send’s place').toBeVisible();
+        await expect(u.up).toHaveAttribute('aria-label', 'Transcribe and send');
+        await expect(u.send).toBeHidden();
+        await expect(u.wave).toHaveAttribute('data-motion', 'full');
+        // The waveform fits the screen and the page does not scroll sideways.
+        const wb = (await u.wave.boundingBox())!;
+        expect(wb.x + wb.width).toBeLessThanOrEqual(vp.use.viewport.width);
+        await noHorizontalScroll(page);
+        await expectHeld(page, 'recording');
+        // It is DRAWN, and it MOVES: the canvas has ink, and its pixels change
+        // from frame to frame (the fake microphone's tone comes and goes).
+        await expect.poll(() => inked(page, u.canvas), { message: 'the waveform is drawn' }).toBeGreaterThan(0);
+        const shots = await canvasFrames(page, u.canvas, 8, 200);
+        expect(new Set(shots).size, 'the waveform changes over frames').toBeGreaterThanOrEqual(3);
+        await expect(u.clock).toHaveText(/^0:0[1-9]$/);
+        await u.discard.click();
+        await expectIdle(page, '×');
+        await expect(u.input, '× left the box as it was').toHaveValue('kept words');
+        await expect(u.note).toBeHidden();
+        await expectReleased(page, '×');
+        await page.waitForTimeout(300);
+        expect(posts(), '× posted nothing to /transcribe').toBe(0);
+        expect(sends(), '× sent nothing').toBe(0);
+      });
+
+      test('✓ inserts the transcript at the caret and sends nothing', async ({ page }) => {
+        await instrument(page);
+        const posts = await routeStt(page);
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('please now');
+        await u.input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expectHeld(page, '✓');
+        await page.waitForTimeout(800);
+        await u.mic.click();
+        await expect(u.input).toHaveValue(`please ${FAKE_TEXT} now`);
+        await expectIdle(page, '✓');
+        await expect(u.input).toBeFocused();
+        await expectReleased(page, '✓');
+        expect(posts(), 'one recording posted').toBe(1);
+        await page.waitForTimeout(500);
+        expect(sends(), '✓ sent nothing').toBe(0);
+        expect(read(transcript + '.pasted'), 'nothing pasted').toBe('');
+      });
+
+      // ↑ goes through the box's OWN Send, so a mirrored send that needs a
+      // fresh sign-in still asks. ⚠ The stale refusal is PLAYED (one
+      // intercepted response, shaped as the server's: 403 + X-Muster-Step-Up),
+      // as mirrored.spec.ts does, because a password-mode session cannot be
+      // aged in a browser test; the dialog, the confirm route and the retried
+      // send are real, and so is the paste.
+      test('↑ transcribes and sends once through Send — and the confirm-it’s-you step-up still asks', async ({ page }) => {
+        await instrument(page);
+        const posts = await routeStt(page);
+        const sends = mirrorSends(page);
+        let refused = 0;
+        await page.route('**/mirror/view/send?*', async (route) => {
+          if (refused++ === 0) {
+            await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+            return;
+          }
+          await route.continue();
+        });
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expectHeld(page, '↑');
+        await page.waitForTimeout(800);
+        await u.up.click();
+        const dialog = page.locator('#term-confirm');
+        await expect(dialog, 'the send asked for the step-up').toBeVisible();
+        expect(read(transcript + '.pasted'), 'nothing is pasted while the confirm is open').toBe('');
+        await expectReleased(page, '↑');
+        await page.fill('#term-confirm-password', password);
+        await page.click('#term-confirm-submit');
+        await expect(dialog).toBeHidden();
+        await expect.poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` }).toBe(`%e2e-dict-@1 ${FAKE_TEXT}\n`);
+        await expectIdle(page, '↑');
+        expect(posts(), 'one recording posted').toBe(1);
+        expect(sends(), 'one send, refused once for the step-up and retried once').toBe(2);
+        await page.waitForTimeout(800);
+        expect(read(transcript + '.pasted'), 'pasted once').toBe(`%e2e-dict-@1 ${FAKE_TEXT}\n`);
+        await page.unroute('**/mirror/view/send?*');
+      });
+
+      // 🔴 NOTHING IS SENT UNLESS A TRANSCRIPT WAS INSERTED. The box holds text
+      // here, so a send that slipped through would be seen (an empty box sends
+      // nothing anyway).
+      for (const c of [
+        { name: 'nothing heard', stt: { body: ' ' }, note: 'Nothing was heard in that recording. Try again, closer to the mic.' },
+        { name: 'the service failed', stt: { status: 503, body: 'The transcription service did not answer, so nothing was transcribed. Try again in a moment.' }, note: 'The transcription service did not answer, so nothing was transcribed. Try again in a moment.' },
+      ]) {
+        test(`↑ with ${c.name}: nothing is sent, the reason is shown, the box is as it was`, async ({ page }) => {
+          await instrument(page);
+          const posts = await routeStt(page, c.stt);
+          const sends = mirrorSends(page);
+          await openRendered(page);
+          const u = ui(page);
+          await u.input.fill('kept');
+          await u.mic.click();
+          await expect(u.mic).toHaveAttribute('data-state', 'recording');
+          await page.waitForTimeout(800);
+          await u.up.click();
+          await expect.poll(posts).toBe(1);
+          await expect(u.mic).toHaveAttribute('data-state', 'idle');
+          await page.waitForTimeout(600);
+          // The targeted assertion first: a send that leaked would also empty
+          // the box, and this must be what reports it.
+          expect(sends(), `${c.name}: nothing was sent`).toBe(0);
+          expect(read(transcript + '.pasted'), 'nothing pasted').toBe('');
+          await expectIdle(page, c.name);
+          await expect(u.note).toBeVisible();
+          await expect(u.note).toHaveText(c.note);
+          await expect(u.input).toHaveValue('kept');
+          await expectReleased(page, c.name);
+        });
+      }
+
+      // EVERY WAY A RECORDING ENDS lets go of the microphone, the audio graph
+      // and the animation: ✓, ↑, ×, a recorder error, the length cap, the page
+      // going (pagehide), and the view switch hiding the view.
+      test('every way a recording ends releases the microphone, the AudioContext and the animation frame', async ({ page }) => {
+        test.setTimeout(120_000);
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        const exits: { name: string; end: () => Promise<void> }[] = [
+          { name: '✓', end: () => u.mic.click() },
+          { name: '↑', end: () => u.up.click() },
+          { name: '×', end: () => u.discard.click() },
+          { name: 'a recorder error', end: () => page.evaluate(() => { const r = (window as unknown as { __recs: MediaRecorder[] }).__recs; r[r.length - 1].dispatchEvent(new Event('error')); }) },
+          { name: 'the length cap', end: () => page.waitForTimeout(2500) },
+          { name: 'pagehide', end: () => page.evaluate(() => window.dispatchEvent(new Event('pagehide'))) },
+          { name: 'the view switch hiding the view', end: () => page.evaluate(() => window.dispatchEvent(new Event('muster:view-hidden'))) },
+        ];
+        for (const x of exits) {
+          await u.input.fill('');
+          if (x.name === 'the length cap') await u.mic.evaluate((b) => b.setAttribute('data-dictate-max', '2'));
+          else await u.mic.evaluate((b) => b.setAttribute('data-dictate-max', '120'));
+          await u.mic.click();
+          await expect(u.mic, x.name).toHaveAttribute('data-state', 'recording');
+          await expectHeld(page, x.name);
+          await x.end();
+          await expectReleased(page, x.name);
+          await expectIdle(page, x.name);
+          if (x.name === 'a recorder error') await expect(u.note).toHaveText('The recording stopped with an error, so nothing was transcribed. Try again.');
+        }
+      });
+
+      test('under prefers-reduced-motion the waveform is a calm level meter', async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        await u.mic.click();
+        await expect(u.wave).toHaveAttribute('data-motion', 'reduced');
+        await expect.poll(() => inked(page, u.canvas), { message: 'the meter is drawn' }).toBeGreaterThan(0);
+        // Calm: at most 5 redraws a second (a full waveform redraws 20).
+        const a = await instr(page);
+        await page.waitForTimeout(1000);
+        const shots = await canvasFrames(page, u.canvas, 5, 50);
+        expect(new Set(shots).size, 'no more than two distinct meter frames in 250 ms').toBeLessThanOrEqual(3);
+        await u.discard.click();
+        await expectReleased(page, 'reduced');
+        expect(a.frames).toBeGreaterThan(0);
+      });
+
+      // Y1: the ↑ follows its Send's disabled state LIVE (an agent's turn
+      // disables #chat-send and enables it again; here the Rendered view's
+      // Send is disabled and enabled by hand, the same attribute). And a
+      // transcript that comes back while Send is disabled stays in the box,
+      // unsent, saying why.
+      test('the ↑ follows Send’s disabled state live; a Send disabled during the transcription leaves the text in the box, unsent', async ({ page }) => {
+        await instrument(page);
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let posts = 0;
+        await page.route('**/transcribe', async (r) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          posts++;
+          await gate;
+          await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
+        });
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(u.up).toBeEnabled();
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = true));
+        await expect(u.up, 'Send disabled mid-recording disables the ↑').toBeDisabled();
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = false));
+        await expect(u.up, 'Send enabled again enables the ↑').toBeEnabled();
+        await page.waitForTimeout(500);
+        await u.up.click();
+        await expect.poll(() => posts).toBe(1);
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = true));
+        release();
+        await expect(u.note).toHaveText('Inserted, not sent: Send is unavailable right now.');
+        await expect(u.input).toHaveValue(FAKE_TEXT);
+        await page.waitForTimeout(600);
+        expect(sends(), 'nothing was sent').toBe(0);
+        await expectReleased(page, 'Y1');
+        await u.send.evaluate((b: HTMLButtonElement) => (b.disabled = false));
+      });
+
+      // Y2: the hold swallows a TAP on Send, never the script's own click for
+      // the next voice send: two ↑ in quick succession both send.
+      test('two voice sends in quick succession both send', async ({ page }) => {
+        await instrument(page);
+        let k = 0;
+        await page.route('**/transcribe', async (r) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          k++;
+          await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: `voice send number ${k}` });
+        });
+        const times: number[] = [];
+        page.on('request', (r) => {
+          if (r.method() === 'POST' && new URL(r.url()).pathname === '/mirror/view/send') times.push(Date.now());
+        });
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        for (let i = 0; i < 2; i++) {
+          await u.mic.click();
+          await expect(u.mic).toHaveAttribute('data-state', 'recording');
+          await page.waitForTimeout(300);
+          await u.up.click();
+          await expect.poll(() => times.length, { timeout: 10_000 }).toBe(i + 1);
+        }
+        expect(times[1] - times[0], 'the second voice send came inside the first one’s hold').toBeLessThan(1500);
+        await expect
+          .poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` })
+          .toBe('%e2e-dict-@1 voice send number 1\n%e2e-dict-@1 voice send number 2\n');
+      });
+
+      // Y3 (operator decision "Draft + transcript, draft shown"): the ↑ sends
+      // what was in the box FOLLOWED BY the transcript — wherever the caret
+      // was — and while recording the draft is previewed on one line (cut
+      // with an ellipsis, whole in its title). An empty box shows no preview.
+      test('the ↑ sends the draft followed by the transcript, and previews the draft while recording', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        const preview = page.locator('#mv-dictate-wave [data-dictate-draft]');
+        const draft = 'my draft that runs on well past the width of the waveform row so the preview has to cut it short';
+        await u.input.fill(draft);
+        await u.input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(0, 0));
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(preview, 'the draft is previewed').toBeVisible();
+        await expect(preview).toContainText(draft);
+        await expect(preview).toHaveAttribute('title', draft);
+        const pb = (await preview.boundingBox())!;
+        expect(pb.height, 'one line').toBeLessThan(30);
+        expect(await preview.evaluate((el) => el.scrollWidth > el.clientWidth), 'cut with an ellipsis').toBe(true);
+        await page.waitForTimeout(500);
+        await u.up.click();
+        await expect.poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` }).toBe(`%e2e-dict-@1 ${draft} ${FAKE_TEXT}\n`);
+        await expect(preview).toBeHidden();
+        // An empty box: no preview.
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await expect(u.wave).toBeVisible();
+        await expect(preview, 'no draft, no preview').toBeHidden();
+        await u.discard.click();
+        await expectIdle(page, 'empty');
+      });
+
+      // Y4: the ↑ presses the Send on screen WHEN THE TRANSCRIPT COMES BACK.
+      // ⚠ SIMULATED CHIEF MODE: this server runs no chief, so the page is
+      // given a stand-in of view_chief.go's switch — a checkbox and an
+      // #mv-send-chief, shown and hidden by the same kind of :has() rule
+      // (viewChiefOn). What is real is the ↑'s choice between the two.
+      test('the chief switch flipped while recording: the ↑ presses the Send on screen at the end', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        const sends = mirrorSends(page);
+        await openRendered(page);
+        const u = ui(page);
+        await page.evaluate(() => {
+          const st = document.createElement('style');
+          st.textContent =
+            '#mv-send-chief{display:none}#mv-compose:has(#wave-chief:checked) #mv-send-chief{display:inline-flex}' +
+            '#mv-compose:has(#wave-chief:checked) :is(#mv-send,#mv-send-group){display:none!important}';
+          document.head.appendChild(st);
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.id = 'wave-chief';
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.id = 'mv-send-chief';
+          b.textContent = 'chief';
+          (window as unknown as { __chief: number }).__chief = 0;
+          b.addEventListener('click', () => (window as unknown as { __chief: number }).__chief++);
+          const row = document.getElementById('mv-button-row')!;
+          row.prepend(cb);
+          row.appendChild(b);
+        });
+        const chief = () => page.evaluate(() => (window as unknown as { __chief: number }).__chief);
+        // Agent mode at the start, chief mode at the end: the chief's Send.
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.locator('#wave-chief').check();
+        await page.waitForTimeout(400);
+        await u.up.click();
+        await expect.poll(chief, { message: 'the chief’s Send was pressed' }).toBe(1);
+        await page.waitForTimeout(500);
+        expect(sends(), 'the agent’s Send was not').toBe(0);
+        // Chief mode at the start, agent mode at the end: the agent's Send.
+        await u.input.fill('');
+        await page.waitForTimeout(1600); // past the hold
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.locator('#wave-chief').uncheck();
+        await page.waitForTimeout(400);
+        await u.up.click();
+        await expect.poll(sends, { message: 'the agent’s Send was pressed' }).toBe(1);
+        expect(await chief(), 'the chief’s was not').toBe(1);
+        // Let the paste land before the test ends: the host writes it after
+        // the request, and a later test's fresh paste file must not get it.
+        await expect.poll(() => read(transcript + '.pasted'), { message: `pasted (log:\n${mirrorLog})` }).toBe(`%e2e-dict-@1 ${FAKE_TEXT}\n`);
+      });
+
+      // Y5: focus goes to the ✓ when a recording starts, and back into the
+      // box on every end — ✓, ↑ and ×.
+      test('focus: on the ✓ while recording, back in the box after ✓, ↑ and ×', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        await openRendered(page);
+        const u = ui(page);
+        const focused = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName);
+        for (const x of [
+          { name: '✓', end: () => u.mic.click() },
+          { name: '↑', end: () => u.up.click() },
+          { name: '×', end: () => u.discard.click() },
+        ]) {
+          await u.input.fill('');
+          await page.waitForTimeout(1600); // past any hold
+          await u.mic.click();
+          await expect(u.mic).toHaveAttribute('data-state', 'recording');
+          await expect.poll(focused, { message: `${x.name}: focus is on the ✓ while recording` }).toBe('mv-dictate');
+          await page.waitForTimeout(300);
+          await x.end();
+          await expect(u.mic).toHaveAttribute('data-state', 'idle');
+          await expect.poll(focused, { message: `${x.name}: focus is back in the box` }).toBe('mv-input');
+        }
+      });
+
+      // G2: a voice send whose step-up is CANCELLED is not sent, and its text
+      // is back in the box (the send path's own rule; the ↑ adds nothing).
+      test('↑ then the step-up cancelled: nothing is sent and the transcript is back in the box', async ({ page }) => {
+        await instrument(page);
+        await routeStt(page);
+        let refused = 0;
+        await page.route('**/mirror/view/send?*', async (route) => {
+          refused++;
+          await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        });
+        await openRendered(page);
+        const u = ui(page);
+        await u.input.fill('');
+        await u.mic.click();
+        await expect(u.mic).toHaveAttribute('data-state', 'recording');
+        await page.waitForTimeout(500);
+        await u.up.click();
+        const dialog = page.locator('#term-confirm');
+        await expect(dialog).toBeVisible();
+        await page.locator('#term-confirm-cancel').click();
+        await expect(dialog).toBeHidden();
+        await expect(u.input, 'the transcript is back in the box').toHaveValue(FAKE_TEXT);
+        await page.waitForTimeout(600);
+        expect(refused, 'one send, refused for the step-up, never retried').toBe(1);
+        expect(read(transcript + '.pasted'), 'nothing pasted').toBe('');
+        await page.unroute('**/mirror/view/send?*');
+      });
+
+      // The agent chat's ↑ clicks #chat-send: the message goes over the chat's
+      // own socket, once.
+      test('the agent chat: ↑ transcribes and sends once through #chat-send', async ({ page }) => {
+        test.setTimeout(150_000);
+        await instrument(page);
+        await signIn(page, origin);
+        const a = await runningAgent(page);
+        await page.goto(`${origin}/agents/${a.name}`);
+        const mic = page.locator('#chat-dictate');
+        const up = page.locator('#chat-dictate-send');
+        const send = page.locator('#chat-send');
+        const log = page.locator('#chat-log');
+        await expect(mic).toBeVisible({ timeout: 20_000 });
+        const said = `${FAKE_TEXT} ${vp.use.isMobile ? 'phone' : 'desktop'} ${Date.now().toString(36)}`;
+        let n = 0;
+        await page.route('**/transcribe', async (r) => {
+          if (r.request().method() !== 'POST') return r.continue();
+          n++;
+          await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: said });
+        });
+        const before = await log.locator('[data-bubble="user"]', { hasText: said }).count();
+        await page.locator('#chat-input').fill('');
+        await mic.click();
+        await expect(mic).toHaveAttribute('data-state', 'recording');
+        await expect(page.locator('#chat-dictate-wave')).toBeVisible();
+        await expect(page.locator('#chat-input')).toBeHidden();
+        await expect(up).toBeVisible();
+        await expect(send).toBeHidden();
+        await expectHeld(page, 'chat');
+        await page.waitForTimeout(800);
+        await up.click();
+        await expect(log.locator('[data-bubble="user"]', { hasText: said })).toHaveCount(before + 1, { timeout: 30_000 });
+        await expect(page.locator('#chat-input')).toHaveValue('');
+        await expect(send).toBeVisible();
+        await expect(up).toBeHidden();
+        await expectReleased(page, 'chat');
+        await page.waitForTimeout(1500);
+        await expect(log.locator('[data-bubble="user"]', { hasText: said }), 'sent once').toHaveCount(before + 1);
+        expect(n, 'one recording posted').toBe(1);
+      });
+    });
+  }
 });

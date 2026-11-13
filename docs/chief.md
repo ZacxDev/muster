@@ -753,8 +753,8 @@ have their own door instead, in **two verbs, with no tap** (operator decision:
 *"dispatch and then another verb to approve the dispatch so I don't need to
 click anything"*):
 
-1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?}` checks
-   the start and **holds** it. Nothing runs yet. It answers `{hold_id, summary,
+1. `dispatch_request {target, prompt, model?, repo?, base?, task_id?,
+   worker_pool?, cc_account?}` checks the start and **holds** it. Nothing runs yet. It answers `{hold_id, summary,
    expires_at}`. It takes no idempotency key: a repeated request files a second
    hold, which starts nothing and lapses after 15 minutes.
 2. `dispatch_approve {hold_id}` starts **exactly** what was held, once, within 15
@@ -777,6 +777,26 @@ The checks are `agent_dispatch`'s, minus the chief's own:
 - A task must be open, not gated, and have no live agent.
 - A repository must be one you connected.
 - Your budget must have room.
+- `worker_pool` and `cc_account` are `POST /api/agents`' fields
+  ([`muster agent create`](cli.md)), checked by the **same rules** the create
+  applies, at the request and again at the approval: both are for
+  `pod/claude-code` only (refused on `pod/gateway`); the pool name must be one
+  the create takes (1-63 of `[a-z0-9-]`, not starting with `-`; a pool exists
+  by its workers, so a new name forms a new pool); the account must be one of
+  your Claude accounts, and omitting it leaves the choice to muster at the
+  start. A pool worker serves its pool's machine jobs ([jobs.md](jobs.md)): it
+  takes **no `task_id`** and **no `prompt`** — it starts with no first turn and
+  waits for jobs, as the chief's `agent_dispatch` starts one with none — and
+  its repository is optional, as for `POST /api/agents`, except that a pool
+  with a deploy key (`MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`) takes only its key's
+  repository (the spec build's own rule, asked at the request and the
+  approval). It opens no pull request. A prompt is refused because a pool may
+  carry deployment privileges (job turns without permission prompts, or a
+  private repository's mirror), and a session may add a worker to it but not
+  give that worker instructions of its own; a hold with a prompt is refused at
+  the approval too. The approval starts the agent in the held pool on the held
+  account, and an account you no longer have refuses the approval before the
+  hold is spent.
 
 The start goes through the chief's own reservation and create. So it counts
 toward the chief's live and daily caps, and the budget the chief sees includes

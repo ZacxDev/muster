@@ -49,6 +49,10 @@ const (
 	ccdRateLimited = `{"error":{"type":"rate_limited","code":"rate_limit","upstream_status":429,"message":"You've hit your limit · resets 5pm"}}`
 	ccdAuthFailed  = `{"error":{"type":"auth_failed","code":"authentication_failed","upstream_status":401,"message":"OAuth access token is invalid"}}`
 	ccdBusy        = `{"error":{"type":"busy","code":"busy","upstream_status":0,"message":"a turn is in progress"}}`
+	// ccd's answer for an edge/CDN challenge page (cmd/ccd failure.go
+	// edgeChallengePage): turn_failed, while the CLI's code and the upstream
+	// status still say authentication_failed / 403.
+	ccdEdgeChallenge = `{"error":{"type":"turn_failed","code":"authentication_failed","upstream_status":403,"message":"an edge/CDN challenge page answered the request, not the model API (the credential was not judged; if it persists, check the egress): Please run /login · API Error: 403 Attention Required! | Cloudflare"}}`
 	// ccd's answer for a pane parked on the CLI's usage-limit menu (cmd/ccd
 	// failure.go limitMenuFailure): 409, nothing typed, no upstream status.
 	ccdLimitMenu = `{"error":{"type":"rate_limited","code":"rate_limit","message":"You’ve hit your weekly limit · resets Nov 2, 1am (UTC) — the CLI's pane shows its usage-limit menu (a select menu (❯ 1. Stop and wait for limit to reset)); nothing was typed — the account hit its limit"}}`
@@ -85,6 +89,9 @@ func TestATypedCcdFailureMarksTheClaudeAccount(t *testing.T) {
 		{"rate limited", 429, ccdRateLimited, ccAgent(), "7|work|rate_limited|You've hit your limit · resets 5pm"},
 		{"auth failed", 502, ccdAuthFailed, ccAgent(), "7|work|auth_failed|OAuth access token is invalid"},
 		{"busy is not an account fault", 409, ccdBusy, ccAgent(), ""},
+		// Invariant guard (green before the ccd change too): the mark keys on
+		// the TYPE alone, never on the CLI's code or the upstream status.
+		{"an edge challenge is not an account fault", 502, ccdEdgeChallenge, ccAgent(), ""},
 		{"an untyped 429 (a proxy) is not ccd", 429, `slow down`, ccAgent(), ""},
 		{"a gateway-kind agent never marks", 429, ccdRateLimited, fixtureAgent(), ""},
 	}

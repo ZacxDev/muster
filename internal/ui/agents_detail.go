@@ -1105,8 +1105,13 @@ func agentChatPane(v AgentDetailView) g.Node {
 					Placeholder("Message the agent…"),
 					Class(composerInputClass),
 				),
+				// The recording's waveform takes the box's place (dictate.go).
+				dictateWave(v.Dictate, "chat-dictate"),
 				dictateControl(v.Dictate, "chat-input", "chat-dictate-note", "chat-dictate"),
 				g.If(v.Dictate == "" && v.DictateOff, dictateOffControl("chat-dictate-off")),
+				// Send's place while recording: the ↑ that transcribes and
+				// sends by clicking #chat-send (dictate.go).
+				dictateSend(v.Dictate, "chat-dictate", DictateSendIcon, []string{"chat-send"}, []string{"chat-send"}),
 				Button(
 					Type("submit"),
 					ID("chat-send"),
