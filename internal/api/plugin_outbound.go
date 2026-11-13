@@ -538,9 +538,11 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	// refuses every draft would otherwise turn each refusal into a new item
 	// and each item into a new draft, with no human in the loop. At most
 	// maxOpenRefusedItems wait at once, counted and inserted under one lock so
-	// two settling at once cannot both pass the count; past that the owner's
-	// push (draftRefused) is the only signal, and the item the draft was for
-	// stays waiting for the owner to resolve.
+	// two settling at once cannot both pass the count. Past it nothing is
+	// queued and the item the draft was for stays waiting for the owner to
+	// resolve by hand: for a plugin's refusal the owner's push (draftRefused)
+	// says so; for the owner's own rejection NOTHING does (an open gap, PR
+	// #643's audit, recorded there).
 	prefix := "draft " + strconv.FormatInt(d.ID, 10) + " was " + ended + ", not posted."
 	id, _, err := s.officerStore.EnqueueBounded(ctx, owner, builtin.NewItem{Officer: officer, Kind: draftRefusedKind,
 		SubjectKey: "draft:" + strconv.FormatInt(d.ID, 10), Payload: payload}, maxOpenRefusedItems, d.OfficerItemID, prefix, now)

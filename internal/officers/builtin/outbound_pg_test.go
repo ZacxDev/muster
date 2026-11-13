@@ -165,6 +165,42 @@ func TestAnItemWaitingOnADraftCannotBeCompletedOrReleased(t *testing.T) {
 	}
 }
 
+// TestDraftWaitingItemsDoNotFillTheAskSweepsPage (regression guard, PR #643
+// audit round 1): items waiting on a draft carry no ask; if they counted in
+// OpenAsks' page, a page of them returned no row and the sweep (which reads a
+// short page as the last) never reached the asked item behind them. With
+// more draft-waiting items than the page holds, ahead of it by id, the asked
+// item's open ask is still in the first page.
+func TestDraftWaitingItemsDoNotFillTheAskSweepsPage(t *testing.T) {
+	w := newPGWorld(t, false)
+	ctx := ctxOp()
+	b := w.b[backendtest.OfficerA]
+	const page = 5
+	for i := 0; i < page+1; i++ {
+		id := w.AddItem(backendtest.OfficerA, "plugin.reply", "d-"+strconv.Itoa(i), "", "")
+		if _, err := b.Claim(ctx, id, "inst-1", 600, ""); err != nil {
+			t.Fatal(err)
+		}
+		n, _ := strconv.ParseInt(string(id), 10, 64)
+		if err := w.waitOnDraft(n, "inst-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked := w.AddItem(backendtest.OfficerA, "plugin.reply", "asked", "", "")
+	n, _ := strconv.ParseInt(string(asked), 10, 64)
+	if _, err := w.store.Pool().Exec(ctx, `UPDATE officer_items SET status = 'waiting',
+		asks = '[{"ask_id": 77, "question": "q", "asked_by": "inst-1", "asked_at": "2000-01-01T00:00:00Z", "status": "open"}]' WHERE id = $1`, n); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.store.OpenAsks(ctx, 0, page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Item != n || got[0].AskID != 77 {
+		t.Fatalf("the first page of open asks: %+v; want item %d's ask 77", got, n)
+	}
+}
+
 // waitOnDraft runs WaitOnDraftTx in a transaction of its own.
 func (w *pgWorld) waitOnDraft(id int64, instance string) error {
 	ctx := ctxOp()

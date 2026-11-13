@@ -1,5 +1,6 @@
 -- muster 0123 — THE OWNER'S REASON FOR REJECTING A DRAFT (internal/plugins
--- drafts.go DraftDecision.Reason; docs/plugins.md "Rejecting with a reason").
+-- drafts.go DraftDecision.Reason; docs/plugins.md "The card" and
+-- "The result").
 --
 --   plugin_reply_drafts.decision_reason
 --       optional plain text the owner gave with a rejection (the Asks card's

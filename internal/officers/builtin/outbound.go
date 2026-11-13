@@ -113,14 +113,18 @@ func (s *Store) EnqueueBounded(ctx context.Context, owner int64, n NewItem, max 
 // what it waits on (its asks name an open one, or else the outbound draft
 // filed for it): the code is the contract's, the words are the instance's.
 func waitingRefusal(it itemRow) error {
-	why := "it waits on the outbound draft filed for it, and muster finishes it when that draft is posted, refused or rejected"
+	return refuse(409, "lease_lost", fmt.Sprintf("item %d is waiting with no holder: %s. There is nothing for you to complete or release on it.", it.ID, waitingWhy(it)), nil)
+}
+
+// waitingWhy is what a WAITING item waits on: an open ask (asks.go), or else
+// the outbound draft filed for it. Claim's refusal says it too.
+func waitingWhy(it itemRow) string {
 	var asks []askEntry
 	_ = json.Unmarshal(it.Asks, &asks)
 	for _, a := range asks {
 		if a.Status == AskOpen {
-			why = "it waits on an open ask, and is re-opened once the ask is answered"
-			break
+			return "it waits on an open ask, and is re-opened once the ask is answered"
 		}
 	}
-	return refuse(409, "lease_lost", fmt.Sprintf("item %d is waiting with no holder: %s. There is nothing for you to complete or release on it.", it.ID, why), nil)
+	return "it waits on the outbound draft filed for it, and muster finishes it when that draft is posted, refused or rejected"
 }
