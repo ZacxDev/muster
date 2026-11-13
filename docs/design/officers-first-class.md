@@ -1,6 +1,6 @@
 # Officers as a first-class feature (pluggable backend)
 
-**Status: slices 0–4 built (slices 3–4 not wired)** (this revision supersedes the draft of
+**Status: slices 0–5 built** (this revision supersedes the draft of
 muster#503). Each slice below lands as its own pull request; slices 0–4 change
 nothing an existing HQ officer sees or does.
 
@@ -143,11 +143,15 @@ verb group: `asks`, `task-asks`, `flood-blocks`, `gap-tasks`, `tasks-read`,
   and every offered tool definition of ten HQ officer pools (every type pack,
   both tiers, a shipping officer). It is byte-identical after slices 1–2.
 
-Kickoff notes are **not** yet capability-gated: that is slice 5, when the
-first narrower backend is wired, and the golden is what lets it change the
-kickoff of a builtin officer without touching an HQ one.
+Kickoff notes are capability-gated (slice 5): `KickoffText` is written from
+`officers.DeclaredCapabilities(o)` — `BuiltinCapabilities` for a builtin
+officer, every capability for HQ — through the same `ToolServed` rule, and a
+builtin officer's text names muster, not HQ, as where its queue, charter and
+switch live. `builtin.Backend.Capabilities` returns exactly
+`BuiltinCapabilities` (a seam test pins the two as one value). The golden is
+byte-identical after slice 5.
 
-### Per-officer backend (as built: the declaration; wiring is slice 5)
+### Per-officer backend (as built: the declaration and the wiring)
 
 `MUSTER_OFFICERS` entries take `"backend": "hq" | "builtin"`, default `hq`.
 There is **no global flag**: one deployment may run HQ officers and builtin
@@ -162,8 +166,17 @@ something with an external HQ:
   switch);
 - `transcript` (forwarding goes to an HQ's transcript store).
 
-Until slice 5 lands, a builtin officer that passes all of those is refused
-too ("not available in this build yet") rather than run against nothing.
+A builtin officer that passes all of those runs on `builtin.Backend`
+(slice 5): `EnableOfficers` builds it over the store in muster's database,
+every statement acting as the officer's owner under row-level security, and
+refuses at boot when there is no database. The boot log prints, per officer,
+its backend, what it serves and the officer tools each pool is offered; for a
+builtin officer also whether the store defines it and its switch, and that
+its queue now needs muster's database backed up. The wake loop honours a
+builtin officer's switch (`officers.SwitchGated`): switched off, its
+instances are stopped and none starts; an HQ officer's switch is not read
+(no extra request). An officer the store does not define answers 404, which
+the loop treats as a configuration fault.
 
 ### Semantics (unchanged from the draft; the conformance suite pins them)
 
@@ -211,7 +224,7 @@ release, items paging, brief from the type's charter) and `builtin.Backend`
 implementing `officers.Backend` over it with the contract's errors. Every
 timestamp comparison takes muster's clock as a parameter, never SQL `now()`,
 so the conformance suite can expire a lease without sleeping. Its capabilities
-on day 1: `tiers`, `investigation`, `cost` (vocabulary until slice 5 branches on them).
+on day 1: `tiers`, `investigation`, `cost` (`officers.BuiltinCapabilities`).
 
 ### Conformance (slice 3, as built)
 
@@ -262,7 +275,7 @@ S is up to 300 changed non-test lines, M up to 1,000.
 | 2 | capabilities; `ToolCapability`/`ToolServed` gate listing, allow-list, dispatch; the golden | S | the golden green after the refactor and red on a mutated kickoff or a dropped HQ capability |
 | 3 | `backendtest` conformance suite + fault knob, run against HQ (hqtest) | M | green in CI; red with the fault on |
 | 4 | migration 0118 + `officers/builtin` store and backend, not wired; suite run against it | M | green in CI against Postgres; red with the fault on; the migration applies on the deployment |
-| 5 | **wiring**: `Officer.Backend`, `Backends` routes builtin officers to `builtin.Backend`; capability-gated kickoff notes; drop the claim-next 404 sniff for backends that advertise it; boot line lists each officer's backend and offered tools; types/defs seeded from a declarative file | M | a builtin officer runs end to end on a dev deployment (item → pod → claim → complete) |
+| 5 | **wiring** (built): `Officer.Backend`, `Backends` routes builtin officers to `builtin.Backend`; capability-gated kickoff notes; boot line lists each officer's backend and offered tools; the wake loop honours a builtin officer's switch. Not done, deliberately: the claim-next 404 sniff stays (the built-in backend never answers claim-next 404, so it is inert for it), and no declarative seed file (charters live only in Postgres: Open questions) | M | a builtin officer runs end to end on a dev deployment (item → pod → claim → complete) |
 | 6 | **Attention asks + escalation** for builtin officers | M | one Attention ask per ask, re-open on answer; one notification per recipient per escalated item, zero in shadow (tests) |
 | 7 | **admin REST + CLI `muster officer`**: list/enqueue/resolve items, types, defs | M | the CLI enqueues an item that a builtin officer then claims (test) |
 | 8 | **schedules**: cron fire with `skip_if_live`, missed fires collapse to one, once across replicas | M | a schedule fires once across a restart and two replicas (tests) |
@@ -332,6 +345,11 @@ out by a process on the operator's own machine.
 ## Open questions
 
 - Shadow suppressing builtin escalation notifications: yes on day 1 (above).
-- One merged config file for builtin officers (types, charters, defs,
-  schedules), or `MUSTER_OFFICERS` plus a declarative file: decided in slice 5.
+- One merged config file for builtin officers, or `MUSTER_OFFICERS` plus a
+  declarative file: **decided (slice 5): neither file.** `MUSTER_OFFICERS`
+  declares the runtime side (pools, models, `"backend": "builtin"`); the
+  type, charter, definition and schedules live only in muster's Postgres,
+  written through the owner-scoped admin API and `muster officer` CLI
+  (slice 7). A charter is the operator's instructions and never belongs in
+  a repository a deployment publishes.
 - Escalation recipients beyond muster users (email, webhook): not day 1.

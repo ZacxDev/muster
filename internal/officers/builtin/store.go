@@ -3,9 +3,10 @@
 // deployment can run officers with no external HQ
 // (docs/design/officers-first-class.md).
 //
-// 🔴 NOT WIRED YET. MUSTER_OFFICERS refuses "backend": "builtin" until the
-// wiring slice lands; today this package is reached only by its tests and
-// the conformance suite (internal/officers/backendtest).
+// It serves every officer MUSTER_OFFICERS declares with "backend": "builtin"
+// (internal/api officerBackendBuilder builds one Backend per officer, acting
+// as its owner); internal/officers/backendtest is the conformance suite it
+// passes beside HQ's client.
 package builtin
 
 import (

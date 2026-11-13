@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
@@ -846,6 +847,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// A draft officer's review-loop announcements (migration 0119):
 			// shared by replicas, kept across a restart.
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
+			// A builtin officer's type, charter, switch and queue live here
+			// too (migration 0118); one declared with no database is refused.
+			ocfg.Builtin = builtin.NewStore(a.pool)
 		}
 		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
@@ -1500,7 +1504,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
 	// server could not enable refuses the boot (newApp), so the two agree.
 	if len(a.cfg.Officers) > 0 {
-		l.Printf("officers: ON — %d declared in %s; woken by polling HQ", len(a.cfg.Officers), envOfficers)
+		var hq, bi int
+		for _, o := range a.cfg.Officers {
+			if o.IsBuiltin() {
+				bi++
+			} else {
+				hq++
+			}
+		}
+		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend); woken by polling their backends", len(a.cfg.Officers), envOfficers, hq, bi)
 	} else {
 		l.Printf("officers: OFF (%s declares none)", envOfficers)
 	}

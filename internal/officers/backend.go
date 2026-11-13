@@ -20,8 +20,8 @@ import (
 // interface and the optional ones below, never through a concrete client.
 //
 // *Client (HQ over HTTPS with the officer's token) is one implementation; a
-// built-in one in muster's own Postgres (internal/officers/builtin, not yet
-// wired) is the other. internal/officers/backendtest is the conformance suite
+// built-in one in muster's own Postgres (internal/officers/builtin, for an
+// officer declared "backend": "builtin") is the other. internal/officers/backendtest is the conformance suite
 // both pass.
 //
 // Errors are the contract's three kinds, whatever the implementation: a
@@ -148,10 +148,10 @@ const (
 
 // capabilityInterface is THE map from an optional verb's capability to the
 // interface that serves it. A capability not here (tiers, investigation,
-// cost) is a feature of the core verbs: until the first narrower backend is
-// wired (slice 5) nothing branches on those three — they are vocabulary. A
-// conformance suite asserts a backend
-// implements every interface it advertises.
+// cost) is a feature of the core verbs, which every backend wired today
+// serves; nothing branches on those three yet — they are vocabulary. A
+// conformance suite asserts a backend implements every interface it
+// advertises.
 var capabilityInterface = map[string]func(Backend) bool{
 	CapTranscript:  func(b Backend) bool { _, ok := b.(TranscriptBackend); return ok },
 	CapUsage:       func(b Backend) bool { _, ok := b.(UsageBackend); return ok },
@@ -273,6 +273,26 @@ func ToolServed(o Officer, caps Capabilities, tool string) bool {
 // route yet, and muster has always offered HQ officers every tool their shape
 // allows; a route HQ lacks still answers 404 at call time, as before.
 var hqCapabilities = NewCapabilities(AllCapabilities()...)
+
+// BuiltinCapabilities is what the built-in backend (internal/officers/builtin)
+// serves beyond the core verbs. It is defined HERE, beside HQ's, so that what
+// an instance is TOLD (KickoffText, which cannot import the backend) and what
+// it is OFFERED and served (the backend's Capabilities, read through Backends)
+// are one value: builtin.Backend.Capabilities returns exactly this, and a test
+// there pins it.
+var BuiltinCapabilities = NewCapabilities(CapTiers, CapInvestigation, CapCost)
+
+// DeclaredCapabilities is what officer o's DECLARED backend serves:
+// BuiltinCapabilities for a builtin officer, HQ's (every capability) for any
+// other. THE rule for the kickoff, which is written before any backend is
+// built; the tool listing, allow-list and dispatch read the built backend's
+// own Capabilities, which equal it.
+func DeclaredCapabilities(o Officer) Capabilities {
+	if o.IsBuiltin() {
+		return BuiltinCapabilities
+	}
+	return hqCapabilities
+}
 
 // Capabilities implements Backend: HQ advertises everything (hqCapabilities).
 func (c *Client) Capabilities() Capabilities { return hqCapabilities }

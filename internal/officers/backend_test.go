@@ -147,8 +147,8 @@ func TestThePushersGoThroughServes(t *testing.T) {
 
 // TestABuiltinOfficerIsRefusedFailClosed: `backend` is hq (default) or
 // builtin; a builtin officer declaring anything only an external HQ gives
-// meaning to is refused naming each such field, and until the built-in
-// backend is wired a clean builtin officer is refused too.
+// meaning to is refused naming each such field (a clean one parses:
+// TestACleanBuiltinOfficerParsesWithNoHQ).
 func TestABuiltinOfficerIsRefusedFailClosed(t *testing.T) {
 	const id = "marketing:example"
 	tok := officers.TokenEnvPrefix + officers.TokenEnvSuffix(id)
@@ -175,7 +175,6 @@ func TestABuiltinOfficerIsRefusedFailClosed(t *testing.T) {
 		{"ci_logs", `,"backend":"builtin","ci_logs":{}`, nil, []string{"refuses ci_logs"}},
 		{"transcript", `,"backend":"builtin","transcript":{"enabled":true}`, nil, []string{"refuses transcript"}},
 		{"all at once", `,"backend":"builtin","hq_url":"https://x.example","transcript":{"enabled":true}`, withTok, []string{"hq_url", tok, "transcript"}},
-		{"clean, not wired", `,"backend":"builtin"`, nil, []string{"is not available in this build yet"}},
 	} {
 		err := parse(c.fields, c.env)
 		if err == nil {

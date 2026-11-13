@@ -26,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/officership"
@@ -211,9 +212,14 @@ type OfficersConfig struct {
 	Officers []officers.Officer
 	// HTTPClient is the HQ client's transport; nil uses officers.NewClient's.
 	HTTPClient *http.Client
-	// Backend builds each officer's backend (officers.Backend); nil is HQ over
-	// HTTPClient (officers.NewClient). For tests.
+	// Backend builds each officer's backend (officers.Backend); nil is, per
+	// officer, HQ over HTTPClient (officers.NewClient) or — for a builtin
+	// officer — the built-in backend over Builtin. For tests.
 	Backend func(officers.Officer) officers.Backend
+	// Builtin is the built-in backend's store (internal/officers/builtin,
+	// migration 0118) in muster's own database. REQUIRED when an officer
+	// declares "backend": "builtin": EnableOfficers refuses one without it.
+	Builtin *builtin.Store
 	// Now is the wake loop's clock; nil is time.Now. For tests.
 	Now func() time.Time
 	// InstallSession installs the officer runtime's session source on the
@@ -334,6 +340,50 @@ func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.Backend
 	return f, nil
 }
 
+// officersServing is the officers of list whose declared backend serves
+// capability (officers.DeclaredCapabilities): the pools and usage pushes run
+// for those only, so an officer whose backend keeps no such ledger (a builtin
+// one) is never pushed to — and never logged as refusing — every cadence.
+func officersServing(list []officers.Officer, capability string) []officers.Officer {
+	var out []officers.Officer
+	for _, o := range list {
+		if officers.DeclaredCapabilities(o).Has(capability) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// officerBackendBuilder is how EnableOfficers builds each officer's backend:
+// cfg.Backend when set (tests); otherwise HQ over cfg.HTTPClient for an HQ
+// officer, and the built-in backend over cfg.Builtin for a builtin one — its
+// every statement run AS THE OFFICER'S OWNER (officerPrincipal), so row-level
+// security confines it to that owner's types, officers and items. A builtin
+// officer with no store is refused here, at boot: never run against nothing.
+func (s *Server) officerBackendBuilder(cfg OfficersConfig) (func(officers.Officer) officers.Backend, error) {
+	if cfg.Backend != nil {
+		return cfg.Backend, nil
+	}
+	var builtins []string
+	for _, o := range cfg.Officers {
+		if o.IsBuiltin() {
+			builtins = append(builtins, o.ID)
+		}
+	}
+	if len(builtins) > 0 && cfg.Builtin == nil {
+		return nil, fmt.Errorf("officers: %s declare \"backend\": \"builtin\", whose queue lives in muster's database, and there is none (set DATABASE_URL)",
+			strings.Join(builtins, ", "))
+	}
+	hc, store, now := cfg.HTTPClient, cfg.Builtin, cfg.Now
+	return func(o officers.Officer) officers.Backend {
+		if o.IsBuiltin() {
+			owner := o.Owner
+			return builtin.NewBackend(store, o, now, func(ctx context.Context) context.Context { return s.officerPrincipal(ctx, owner) })
+		}
+		return officers.NewClient(o, hc)
+	}, nil
+}
+
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
 // caller to Run. It needs the agents store and the provisioner (an officer is
 // nothing without instances), and the claude-code kind.
@@ -351,10 +401,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
 	}
 	reg := officers.NewRegistry(cfg.Officers)
-	hc := cfg.HTTPClient
-	build := cfg.Backend
-	if build == nil {
-		build = func(o officers.Officer) officers.Backend { return officers.NewClient(o, hc) }
+	build, err := s.officerBackendBuilder(cfg)
+	if err != nil {
+		return nil, err
 	}
 	hq := officers.NewBackends(build)
 	fwd, err := s.newTranscriptForwarder(cfg, hq)
@@ -393,7 +442,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	// (MUSTER_OFFICERS is read only then, so a change is a restart) and on
 	// the usage collector's cadence, sessions_today read through the SAME
 	// ledger that enforces the cap.
-	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: cfg.Officers, Poster: officers.NewBackendPoolsPoster(hq),
+	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: officersServing(cfg.Officers, officers.CapPools), Poster: officers.NewBackendPoolsPoster(hq),
 		Ledger: judgement, Logger: s.logger, Now: now, Interval: cfg.UsageInterval, Backoff: cfg.PoolsBackoff})
 	if err != nil {
 		return nil, err
@@ -457,7 +506,53 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		s.logger.Printf("officers: %s on: %s, idle scale-to-zero after %s per pool, poll %s, repo %s",
 			o.ID, strings.Join(pools, "; "), o.IdleAfter, o.PollInterval, repo)
 	}
+	for _, o := range reg.All() {
+		s.logOfficerBackend(o)
+	}
 	return rec, nil
+}
+
+// officerBootReadTimeout bounds the boot read of a builtin officer's switch.
+const officerBootReadTimeout = 5 * time.Second
+
+// logOfficerBackend is officer o's boot line about its backend: which one,
+// what it serves, and the officer tools each pool is offered — so a tool a
+// backend does not serve is visibly absent, never silently (the design's
+// "hidden tools" risk). For a builtin officer, also whether the built-in store
+// defines it (and its switch), and the backup duty its queue brings.
+func (s *Server) logOfficerBackend(o officers.Officer) {
+	b := s.officerRT.hq.Backend(o)
+	caps := b.Capabilities()
+	var offered []string
+	for _, p := range o.Pools() {
+		var tools []string
+		for _, d := range officerToolDefs() {
+			if officers.ToolServed(p, caps, d.Name) {
+				tools = append(tools, d.Name)
+			}
+		}
+		label := "tools"
+		if p.Tier != "" {
+			label = p.Tier + " tools"
+		}
+		offered = append(offered, label+" "+strings.Join(tools, ","))
+	}
+	s.logger.Printf("officers: %s backend %s (%s; serves %s); %s", o.ID, o.BackendKind(), caps.Contract, strings.Join(caps.Verbs, ","), strings.Join(offered, "; "))
+	if !o.IsBuiltin() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), officerBootReadTimeout)
+	defer cancel()
+	on, err := b.Enabled(ctx)
+	switch {
+	case err != nil:
+		s.logger.Printf("officers: %s: the built-in store does not answer for it (%v): define it in the built-in store (docs/design/officers-first-class.md; the `muster officer` admin CLI is slice 7); until then its wake loop fails every pass", o.ID, err)
+	case !on:
+		s.logger.Printf("officers: %s: defined in the built-in store and switched OFF: no instance runs until it is switched on", o.ID)
+	default:
+		s.logger.Printf("officers: %s: defined in the built-in store and switched on", o.ID)
+	}
+	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
 }
 
 // officerOf is THE binding rule: the declared officer agent a is an instance
@@ -867,7 +962,8 @@ func failureKind(err error) string {
 // kept). A claim it still holds is released by the loop's next pass, which
 // sees its holder down.
 //
-// Its Claude usage is pushed to HQ first (usage.Collector.Flush), while its
+// Its Claude usage is pushed to HQ first (usage.Collector.Flush; only when
+// its backend serves usage — never for a builtin officer), while its
 // ccd can still answer: the collector reads only up instances, so without it
 // the hour the instance stopped in would sit partial at HQ until it next
 // runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
@@ -878,7 +974,7 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 	if err != nil {
 		return err
 	}
-	if rt := f.s.officerRT; rt != nil && rt.usage != nil {
+	if rt := f.s.officerRT; rt != nil && rt.usage != nil && officers.DeclaredCapabilities(o).Has(officers.CapUsage) {
 		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
