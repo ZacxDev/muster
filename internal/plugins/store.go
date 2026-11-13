@@ -418,6 +418,9 @@ const ChecksOffDetail = "the plugin's Checks replies was turned off before it ch
 // awaiting its check LAPSES in the same transaction (check_state 'lapsed', as
 // LapseDraftCheck does at its deadline), so it is an ordinary pending draft the
 // owner may approve; lapsed is them, for internal/api to ask the owner about.
+// An OUTBOUND draft awaiting its check is REFUSED instead (outbound.go: it
+// cannot be approved without the plugin's check), audited
+// plugin.draft.check_refused.
 // Audited: plugin.capability.changed {capability, old, new}, and a
 // plugin.draft.check_lapsed per draft.
 func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {

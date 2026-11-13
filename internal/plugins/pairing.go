@@ -235,9 +235,6 @@ func (s *PGStore) CreatePairRequest(ctx context.Context, in PairIn, source strin
 		if recent >= MaxPairsPerWindow {
 			return ErrRateLimited
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM plugin_pair_decoys WHERE expires_at < $1`, now.Add(-PairTTL)); err != nil {
-			return err
-		}
 		var owner int64
 		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE disabled_at IS NULL
 			AND lower(coalesce(nullif(email, ''), display_name)) = lower($1) ORDER BY id LIMIT 1`, strings.TrimSpace(in.Owner)).Scan(&owner)

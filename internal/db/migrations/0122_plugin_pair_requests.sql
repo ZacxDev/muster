@@ -10,7 +10,11 @@
 --   plugin_pair_decoys    the same answer for a request naming NO account: its
 --                         public id, poll secret hash and expiry only, so the
 --                         unauthenticated door says nothing about who has an
---                         account. No owner, nothing to decide.
+--                         account. No owner, nothing to decide. 🔴 NEVER swept
+--                         while plugin_pair_requests is not: a decoy must
+--                         answer a poll exactly as a real request does at
+--                         every age (an expired real request says "expired";
+--                         a swept decoy would say 404, naming the account).
 --
 -- 🔴 plugin_pair_requests IS OWNED AND UNDER FORCED ROW-LEVEL SECURITY, in
 -- 0015's shape: only its owner reads or decides it. The unauthenticated door

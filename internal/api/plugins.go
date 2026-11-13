@@ -453,7 +453,7 @@ func (s *Server) handlePluginDraftChecksToggle(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if changed {
-		s.logger.Printf("plugins: plugin %d: draft_checks turned %v by its owner; %d awaiting draft(s) lapsed", id, on == "1", len(lapsed))
+		s.logger.Printf("plugins: plugin %d: draft_checks turned %v by its owner; %d awaiting reply draft(s) lapsed (any outbound draft awaiting its check was refused)", id, on == "1", len(lapsed))
 	}
 	for _, d := range lapsed {
 		m, merr := s.ext.Plugins.Message(r.Context(), d.MessageID)

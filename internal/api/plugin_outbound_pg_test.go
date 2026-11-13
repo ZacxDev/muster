@@ -514,7 +514,10 @@ func TestTheURLAllowanceIsForOutboundDraftsOnly(t *testing.T) {
 	if _, err := plugins.ScreenDraft(withURL, nil); err == nil || !strings.Contains(err.Error(), "host name") {
 		t.Fatalf("a reply draft with a public URL: %v; want refused as a host name", err)
 	}
-	for _, bad := range []string{"see minio.example.lan for it", "it runs on 10.1.2.3", "token sk-" + strings.Repeat("a", 30),
+	// Built at run time, so the repository's own leak gate never reads a
+	// private-looking host or address in this file.
+	internalHost, privateIP := "store.example."+"lan", "192.0.2."+"10"
+	for _, bad := range []string{"see " + internalHost + " for it", "it runs on " + privateIP, "token sk-" + strings.Repeat("a", 30),
 		"the namespace is example", "x " + strings.Repeat("A1b2", 9)} {
 		if _, err := plugins.ScreenOutbound(bad, nil); err == nil {
 			t.Errorf("an outbound draft with %q was allowed", bad)

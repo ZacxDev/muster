@@ -155,6 +155,16 @@ func TestAPairingRequestOnlyItsOwnerDecidesAndItExpires(t *testing.T) {
 	if got, code := w.poll(d.RequestID, d.PollSecret); code != http.StatusOK || got["status"] != "pending" {
 		t.Fatalf("polling a request for no account: %d %v; want pending, as a real one", code, got)
 	}
+	// Long expired, with later requests filed meanwhile: a decoy still answers
+	// what an expired real request answers (c above), never a 404.
+	if _, err := w.f.pool.Exec(authz.System(w.ctx), `UPDATE plugin_pair_decoys SET created_at = now() - interval '1 hour',
+		expires_at = now() - interval '50 minutes' WHERE public_id = $1`, d.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	w.pair(strings.Replace(pairBody, "example-paired", "example-later", 1))
+	if got, code := w.poll(d.RequestID, d.PollSecret); code != http.StatusOK || got["status"] != "expired" {
+		t.Fatalf("polling a long-expired request for no account: %d %v; want expired, as a real one", code, got)
+	}
 }
 
 // TestAPairingApprovalChecksWhatMintingChecks: approving a request that

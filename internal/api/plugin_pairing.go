@@ -37,7 +37,6 @@ const (
 	pairPath        = pluginAPIPrefix + "/pair"
 	pairPerAddress  = 5
 	pairBodyLimit   = 8 << 10
-	pairDecideLimit = 50
 )
 
 // pairLimiter counts each source address's pairing requests in the last
