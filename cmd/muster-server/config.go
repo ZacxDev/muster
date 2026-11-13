@@ -203,12 +203,6 @@ const (
 	// on. Unset (the default): off — the route answers 404 and every message is
 	// handed on as before.
 	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
-	// The pull-request review senders ("<owner>/<handle>,…", the same grammar)
-	// whose address takes NO mail: a routed review from one is answered through
-	// HQ's PR-review respond channel, never by route_reply (a no_reply message
-	// is answered that way whatever this lists). Read only with
-	// MUSTER_PR_MAIL_SENDERS set. Unset: only no_reply reviews are.
-	envPRMailHQSenders = "MUSTER_PR_MAIL_HQ_SENDERS"
 	// A FLEET-REPORT REQUEST (internal/api/fleet_report.go): the agent-mail
 	// senders ("<owner>/<handle>,…", MUSTER_PR_MAIL_SENDERS's grammar) whose
 	// VERIFIED mail, when its body is a fleet_report_request, muster answers
@@ -793,9 +787,6 @@ type config struct {
 	// that does not parse); empty is pull-request routing off.
 	PRMailSendersRaw string
 	PRMailSenders    plugins.PRMailSenders
-	// PRMailHQSenders is MUSTER_PR_MAIL_HQ_SENDERS, parsed (loadConfig refuses
-	// one that does not parse).
-	PRMailHQSenders plugins.AgentMailSenders
 	// FleetReportSenders and FleetReportPaths are MUSTER_FLEET_REPORT_SENDERS
 	// and MUSTER_FLEET_REPORT_PATHS, parsed (loadConfig refuses either that
 	// does not parse, and senders without paths); empty senders is off.
@@ -1725,11 +1716,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envPRMailSenders, err)
 	}
 	c.PRMailSenders = prSenders
-	hqSenders, err := plugins.ParseAgentMailSenders(strings.TrimSpace(getenv(envPRMailHQSenders)))
-	if err != nil {
-		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envPRMailHQSenders, err)
-	}
-	c.PRMailHQSenders = hqSenders
 	frSenders, err := plugins.ParseAgentMailSenders(strings.TrimSpace(getenv(envFleetReportSenders)))
 	if err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envFleetReportSenders, err)

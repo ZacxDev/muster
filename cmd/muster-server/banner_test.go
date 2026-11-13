@@ -478,8 +478,6 @@ var bannerLedger = []string{
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
 var bannerExempt = map[string]string{
-	envPRMailHQSenders: "printed with its count on the `pull-request routing: ON` lines; it means nothing with pull-request " +
-		"routing off, whose OFF and INERT lines name " + envPRMailSenders,
 	envOfficerImagePullSecret: "a Secret's NAME, used only beside an officer pool's own `image`; refused at boot wherever it " +
 		"could do nothing (validateOfficerImagePullSecret: not a Secret name, no kubernetes provisioner or muster's namespace, " +
 		"no " + officers.ImageRegistriesEnv + "), and listed on the Features page under Officers",

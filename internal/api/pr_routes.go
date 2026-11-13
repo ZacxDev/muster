@@ -44,22 +44,6 @@ type PRMail struct {
 	// Senders is MUSTER_PR_MAIL_SENDERS: whose verified agent mail is read as
 	// a pull-request review. Empty is the feature off.
 	Senders plugins.PRMailSenders
-	// HQSenders is MUSTER_PR_MAIL_HQ_SENDERS: the listed senders whose review
-	// cannot be answered by MAIL — the address refuses all mail — so the
-	// session answers its findings through HQ's PR-review respond channel
-	// (prReviewViaHQ). A no_reply message is answered that way whatever this
-	// says; this covers a sender whose plugin does not mark it no_reply.
-	HQSenders plugins.AgentMailSenders
-}
-
-// prReviewViaHQ reports whether review message m of plugin p is answered
-// through HQ's PR-review respond channel, never by mail: its plugin marked it
-// no_reply, or its sender is one MUSTER_PR_MAIL_HQ_SENDERS names (verified,
-// through agent mail, as every list here matches). The ONE rule: prRoute marks
-// the route by it (RouteOrigin.ViaHQ), and from then on the row says it
-// (plugins.Route.AnswersViaHQ).
-func (s *Server) prReviewViaHQ(p plugins.Plugin, m plugins.Message) bool {
-	return m.NoReply || (s.ext.PRMail != nil && s.ext.PRMail.HQSenders.Allows(p.Name, m.Sender, m.SenderVerified))
 }
 
 // routedByPR: a route by pull request (routeByPR).
@@ -124,8 +108,9 @@ func (s *Server) prRoute(ctx context.Context, p plugins.Plugin, m plugins.Messag
 	}
 	// The round (ref.HeadSHA) goes on the route row: the supersede keys on it
 	// (supersedePRRoutes), and it marks the route as a review's (Route.IsPRReview).
-	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref), HeadSHA: ref.HeadSHA,
-		ViaHQ: s.prReviewViaHQ(p, m)}, host: hit.Host,
+	// A no_reply review is routed too, one-way: it is answered through HQ
+	// (Route.AnswersViaHQ; plugins.PGStore.CreateRouteFrom).
+	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref), HeadSHA: ref.HeadSHA}, host: hit.Host,
 		target: "the session that authored pull request " + prName(ref), what: "a review of pull request " + prName(ref)}, true
 }
 

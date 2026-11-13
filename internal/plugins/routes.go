@@ -36,8 +36,9 @@ import (
 // route's is (FinishAnswerToChiefRoute), and never becomes a reply draft —
 // RelayRoute still refuses a no_reply message, and 0087 forbids a draft on the
 // row — so the sender is never contacted. A pull-request review answered
-// through HQ is one-way too (Route.AnswersViaHQ), so it can never become a
-// draft; its session answers through HQ and reports it (SettleRouteViaHQ).
+// through HQ — a no_reply one, routed by pull request — is one-way too
+// (Route.AnswersViaHQ): route_reply refuses it, and it closes as handled by its
+// deadline (TimeOutRoute).
 //
 // A route carries the OWNER'S OWN REQUEST instead (request_text, migration
 // 0084): the chief's relay of a message the owner typed in its chat, checked by
@@ -133,10 +134,6 @@ type RouteStore interface {
 	// that is not that plugin's; ErrStampNoThread / ErrStampThreadMismatch
 	// (with the route as it is) for a stamp not bound to its conversation.
 	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
-	// SettleRouteViaHQ closes routeID — an AnswersViaHQ route still routed —
-	// as HANDLED: the session reported (body, a HandledViaHQ report) that it
-	// answered the review through HQ. See PGStore.SettleRouteViaHQ.
-	SettleRouteViaHQ(ctx context.Context, routeID, body string) (r Route, fresh bool, err error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -200,10 +197,9 @@ type Route struct {
 	// route, and on a review route made before 0070.
 	PRHeadSHA string
 	// OneWay marks a route carrying a no_reply plugin message (migration
-	// 0087): a heads-up whose answer goes to the chief only — or a review
-	// answered through HQ (AnswersViaHQ), whatever its message's no_reply,
-	// which route_reply never answers as a reply (internal/api's
-	// answerHQReviewRoute).
+	// 0087): a heads-up whose answer goes to the chief only — or, on a review
+	// route, a review answered through HQ (AnswersViaHQ), which route_reply
+	// never answers (internal/api's answerHQReviewRoute).
 	OneWay bool
 	// Redraft marks a RouteSendFailed route whose hand-back goes back to the
 	// session it was routed to, to write the reply again (migration 0112),
@@ -218,26 +214,11 @@ func (r Route) IsPRReview() bool { return r.PRHeadSHA != "" }
 
 // AnswersViaHQ reports whether r is a pull-request review whose findings the
 // session answers through HQ's PR-review respond channel, never by mail: a
-// review route (IsPRReview) that is ONE-WAY. Only CreateRouteFrom with a
-// RouteViaPR origin marked ViaHQ makes that pair — a route by pull request of
-// any other no_reply message is refused (ErrNoReply), and no other origin
-// records a round — so the row itself says it, whatever the configuration is
-// by the time the session answers. The ONE predicate: the paste
-// (internal/api's hqReviewPreface) and route_reply's refusal both branch on it.
+// review route (IsPRReview) that is ONE-WAY, which CreateRouteFrom makes for
+// a RouteViaPR origin exactly when the message is no_reply (no other origin
+// records a round). The ONE predicate: the paste (internal/api's
+// hqReviewPreface) and route_reply's refusal both branch on it.
 func (r Route) AnswersViaHQ() bool { return r.IsPRReview() && r.OneWay }
-
-// HandledViaHQMarker opens the body a session sends route_reply to report
-// that it answered an AnswersViaHQ route's findings through HQ
-// (HandledViaHQ): the one body such a route takes, which closes it as handled
-// (SettleRouteViaHQ) instead of filing a reply nobody can deliver.
-const HandledViaHQMarker = "handled via HQ"
-
-// HandledViaHQ reports whether body is a "handled via HQ" report: it starts
-// with HandledViaHQMarker, ignoring case and leading space.
-func HandledViaHQ(body string) bool {
-	b := strings.TrimSpace(body)
-	return len(b) >= len(HandledViaHQMarker) && strings.EqualFold(b[:len(HandledViaHQMarker)], HandledViaHQMarker)
-}
 
 // RouteTarget names the session a route goes to: a kind ("agent", "mirror"),
 // its key (the agent id, the Claude session id) and what it is called.
@@ -334,13 +315,6 @@ type RouteOrigin struct {
 	Via, Host, Session, Thread, PR, HeadSHA string
 	Rule                                    int64
 	Redraft, Refusal                        string
-	// ViaHQ, on a RouteViaPR origin only, marks a review whose reply cannot be
-	// MAILED — its message is no_reply, or its sender is one the deployment
-	// names as answered through HQ (internal/api's prReviewViaHQ): the session
-	// answers its findings through HQ's PR-review respond channel instead. The
-	// route is made ONE-WAY (CreateRouteFrom), so it can never become a reply
-	// draft, and Route.AnswersViaHQ reads it back from the row.
-	ViaHQ bool
 }
 
 // RouteViaRedraft is RouteOrigin.Via for a route muster makes to hand a
@@ -447,15 +421,12 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 //
 // 🔴 A no_reply MESSAGE IS ROUTED ONE-WAY BY THE CHIEF ONLY (origin zero) — and
 // by an approved routing rule (RouteViaRule), which does what the chief's
-// route_to_session would. Every other origin — the owner's door, a route by
-// thread or pull request — still refuses it (ErrNoReply), as does a TASK EVENT
-// (IsTaskEvent: its task is routed with task_id instead). The route is marked
-// one_way in its row, so its answer can only ever go to the chief.
-//
-// 🔴 EXCEPT A REVIEW ANSWERED THROUGH HQ (a RouteViaPR origin with ViaHQ): it
-// is routed by pull request whether or not its message is no_reply, and is
-// ALWAYS one_way — so 0087's check forbids it a reply draft even when its
-// plugin did not mark the message no_reply — and Route.AnswersViaHQ says so.
+// route_to_session would — and by a route by pull request (RouteViaPR): a
+// no_reply review is answered through HQ (Route.AnswersViaHQ), never by mail.
+// Every other origin — the owner's door, a route by thread — still refuses it
+// (ErrNoReply), as does a TASK EVENT (IsTaskEvent: its task is routed with
+// task_id instead). The route is marked one_way in its row, so 0087's check
+// forbids it a reply draft.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -484,15 +455,14 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound
 		}
-		viaHQ := origin.Via == RouteViaPR && origin.ViaHQ
-		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule && !viaHQ) || IsTaskEvent(m)) {
+		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule && origin.Via != RouteViaPR) || IsTaskEvent(m)) {
 			return ErrNoReply
 		}
 		if inFlight != nil {
 			return inFlight
 		}
 		var err error
-		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil, m.NoReply || viaHQ)
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin, nil, m.NoReply)
 		return err
 	})
 	return r, err
@@ -648,65 +618,6 @@ func (s *PGStore) FinishTaskRoute(ctx context.Context, routeID string) (Route, e
 		return audit(ctx, tx, "session_route.relayed", RouteObject(routeID), map[string]any{"task_id": cur.TaskID})
 	})
 	return r, err
-}
-
-// SettleRouteViaHQ: see RouteStore. The session reported, in body, that it
-// answered an AnswersViaHQ route's review through HQ's PR-review respond
-// channel — the answer went out, by the session's own hand — so the route goes
-// routed → relayed in ONE step (answered_at and reply_body set, as 0021's
-// answer check needs), owing the chief NO hand-back, with NO draft (0087
-// forbids one on a one-way row), and its message is settled by muster in the
-// same transaction, so the unrouted sweep raises no "not acted on" ask.
-//
-// fresh is false when the route was already settled with exactly this body (a
-// retried report). A route that is not AnswersViaHQ is ErrRouteNotFound, a
-// body that is not a HandledViaHQ report ErrInvalid, and any other state
-// ErrRouteClosed. body is screened as an answer to the chief is
-// (ScreenDraft, no deny words: it never leaves muster).
-//
-// Locks the message row, then the route (lockRouteMessageFirst), as
-// TimeOutRoute does: both write the message.
-func (s *PGStore) SettleRouteViaHQ(ctx context.Context, routeID, body string) (r Route, fresh bool, err error) {
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		cur, err := lockRouteMessageFirst(ctx, tx, routeID)
-		if err != nil {
-			return err
-		}
-		r = cur
-		if !cur.AnswersViaHQ() {
-			return ErrRouteNotFound
-		}
-		if body, err = ScreenDraft(body, nil); err != nil {
-			return err
-		}
-		if !HandledViaHQ(body) {
-			return invalid("a report that the review was answered through HQ starts with %q", HandledViaHQMarker)
-		}
-		switch {
-		case cur.State == RouteRelayed && cur.ReplyBody == body:
-			return nil
-		case cur.State != RouteRouted:
-			return ErrRouteClosed
-		}
-		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'relayed', answered_at = now(),
-			finished_at = now(), reply_body = $2, handback = NULL WHERE route_id = $1 RETURNING `+routeCols, routeID, body)); err != nil {
-			return err
-		}
-		fresh = true
-		if err := audit(ctx, tx, "session_route.relayed", RouteObject(routeID), map[string]any{
-			"message_id": cur.MessageID, "one_way": true, "via": "hq", "bytes": len(body)}); err != nil {
-			return err
-		}
-		return settleByMusterTx(ctx, tx, cur.MessageID, prReviewViaHQSettle(cur), map[string]any{"route_id": routeID})
-	})
-	return r, fresh, err
-}
-
-// prReviewViaHQSettle is the settle reason of r's message once the session
-// reported it answered the review through HQ (SettleRouteViaHQ).
-func prReviewViaHQSettle(r Route) string {
-	return SettledByMuster + "a review of a pull request, answered by the session that authored it through HQ's " +
-		"PR-review channel (route " + r.RouteID + "); its sender takes no mail"
 }
 
 // RoutableMessages is the principal's newest inbound plugin messages that a

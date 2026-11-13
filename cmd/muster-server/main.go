@@ -677,7 +677,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			// Pull-request routing (MUSTER_PR_MAIL_SENDERS): a review mail from a
 			// listed, verified sender goes to the session that authored its PR.
 			if len(cfg.PRMailSenders) > 0 {
-				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders, HQSenders: cfg.PRMailHQSenders}
+				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
 				ext.PRSessions = pluginStore
 				// A review of a pull request already merged or closed is settled
 				// by muster (api/pr_closed.go) — only with the GitHub App, its
@@ -1745,9 +1745,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
 			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
 			envPRMailSenders, len(ext.PRMail.Senders))
-		l.Printf("pull-request routing: a no_reply review, and one from the %d sender(s) of %s, is answered through HQ's "+
-			"PR-review respond channel; route_reply on its route is refused unless it reports %q",
-			len(ext.PRMail.HQSenders), envPRMailHQSenders, plugins.HandledViaHQMarker)
 		if ext.ClosedPRs != nil {
 			l.Printf("pull-request routing: a review of a pull request the GitHub App reports already merged or closed is settled by " +
 				"muster (no paste, no hand-back, no ask); a pull request it cannot read is handled as open")

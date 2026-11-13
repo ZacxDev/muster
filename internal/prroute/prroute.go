@@ -137,6 +137,11 @@ type Review struct {
 	// Findings is the block's findings that carry a well-formed id, in the
 	// block's order, at most MaxReviewFindings.
 	Findings []Finding
+	// Listed is how many entries the block's findings array holds, ids or
+	// not: whether the round HAS findings, which Findings (well-formed ids
+	// only, bounded) cannot tell. 0 for a round with none — its mail asks
+	// nothing to answer finding by finding.
+	Listed int
 }
 
 // Finding is one finding's id and severity, both validated: muster prints
@@ -183,6 +188,7 @@ func ParseReview(body string) (Review, bool) {
 	if s, isStr := in.ReviewID.(string); isStr && reviewIDPattern.MatchString(s) {
 		rv.ReviewID = s
 	}
+	rv.Listed = len(in.Findings)
 	for _, f := range in.Findings {
 		id, isStr := f.ID.(string)
 		if !isStr || !findingIDPattern.MatchString(id) {
