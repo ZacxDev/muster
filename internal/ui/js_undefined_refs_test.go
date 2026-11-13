@@ -286,6 +286,7 @@ var jsKnownGlobals = map[string]bool{
 	"Intl": true, "TextEncoder": true, "TextDecoder": true,
 	"MouseEvent": true, "DOMParser": true, "Uint8Array": true, "Uint16Array": true,
 	"ArrayBuffer": true, "FileReader": true, "XMLHttpRequest": true, "Element": true,
+	"MessageChannel": true,
 }
 
 // inlineScriptBodies returns the JavaScript body of every inline <script> in a
