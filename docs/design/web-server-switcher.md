@@ -1,0 +1,179 @@
+# Design: a server switcher in the web app
+
+**Status: implemented** (this page's first commit is the design; the code
+follows it on the same branch). The Android app's switcher is the reference:
+[ZacxDev/muster-android](https://github.com/ZacxDev/muster-android) README,
+"Several muster servers (0.2.0)", and [multi-tenant.md](multi-tenant.md)
+phase 3.
+
+## The ask
+
+Operator decision, 2026-11-13: give the installable web app (the PWA) the
+Android app's server switcher. A bar shows the server in view (colour and
+label); tap it for the list of servers, **Add server** and **Manage servers**;
+each server's branding comes from its own
+[`GET /api/instance`](../branding.md#the-instance-document); every paired
+server still notifies, and a notification's tap opens that server; two
+servers never share an origin or a session.
+
+This reverses one line of [multi-tenant.md](multi-tenant.md#operator-decisions)
+("The PWA is out of scope: a browser already isolates servers by origin").
+The isolation is still the browser's; what is new is a way to get from one
+server to another.
+
+## The constraint
+
+A web app is bound to one origin. The Android app gives each server its own
+WebView profile (own cookies, storage and service workers) inside one app; a
+page cannot do that. Everything a muster page can keep (cookies,
+`localStorage`, IndexedDB, its service worker and push subscription) is its
+origin's, and is invisible to another muster's pages. So the question is not
+"how do we hold several sessions in one page" (we cannot) but "how does a
+person get from one server's page to another's quickly, and see which one
+they are on".
+
+## Options
+
+### (a) A list per origin; switching navigates the window (chosen)
+
+Each muster origin keeps, in its own `localStorage`, a list of servers: their
+origins and cached display data (name, a small logo, its etag), nothing else.
+The switcher draws that list; picking a server is a top-level navigation to
+its origin. Each server keeps its own sign-in, cookies, service worker and
+push subscription, exactly as if the person had typed its address.
+
+- **Branding** is fetched by the page, cross-origin, from the other server's
+  `GET /api/instance` and `/brand/icon-192.png?v=…`, with no credentials and
+  no referrer. Two server changes make that possible:
+  - those two public, per-server, credential-free routes answer
+    `Access-Control-Allow-Origin: *` (they already are served to anyone; CORS
+    only lets another origin's script *read* them);
+  - the pages' CSP `connect-src` gains those two paths on any `https` origin
+    (and on `http://localhost` / `http://127.0.0.1`, for development):
+    `https://*:*/api/instance https://*:*/brand/ …`. Nothing else on another
+    origin becomes reachable from a page's script.
+  The logo is stored as a `data:` URL, so `img-src` does not change. An older
+  server (no CORS header), or one behind a sign-in proxy that redirects, just
+  shows its host as its label.
+- **The list is per origin**, so a server added on A is not on B's list. The
+  switch carries one thing across: A's own origin, in the URL fragment of the
+  navigation (`#muster-from=<A's origin>`; a fragment is never sent to a
+  server). B's page reads it, removes it from the address bar, and, when A is
+  not in B's list, **offers** to add it ("Add <host> to this server's
+  switcher?"). It never adds it by itself: anyone can link to
+  `B/#muster-from=…`, so the person decides, seeing the exact host.
+- **Privacy.** The list holds origins and public display data only. Nothing
+  of one server (a cookie, a token, a path, a page's data) is ever sent to
+  another: the fetches are `credentials: 'omit'`, `referrerPolicy:
+  'no-referrer'`, and muster's pages already send `Referrer-Policy:
+  no-referrer`, so the navigation carries no Referer. A pasted address is
+  reduced to its origin before it is stored, so a path or a query (which might
+  hold a token) is never kept or fetched; an address with a user name or
+  password in it is refused.
+
+### (b) A hub page embedding the others in frames (rejected)
+
+One server's page frames the others. Every muster response says
+`frame-ancestors 'none'` / `X-Frame-Options: DENY` (clickjacking), and lifting
+that for "another muster" would need each server to know the others. Even
+then: a framed server is third-party to the hub, so its sign-in cookie is a
+third-party cookie (blocked by Safari, partitioned by Chrome); passkeys in a
+cross-origin frame need `publickey-credentials-get` delegation from the hub;
+push and the service worker are the hub's, not the framed server's; and the
+installed app would be the hub's alone. Every one of the Android app's
+guarantees would be weaker than (a)'s.
+
+### (c) The server keeps the list, or proxies the branding (rejected)
+
+Storing each person's other servers on a server (in its database) tells that
+server which other muster deployments the person uses, and fetching their
+branding server-side makes every muster a URL-fetching proxy (an SSRF surface
+the project has avoided: `internal/safedial`). A server-side list would follow
+the person across browsers, which (a) cannot; that is the only gain, and it
+is not worth either cost.
+
+### (d) A signed export/import of the list (not now)
+
+A list could be exported from A and imported on B. The fragment hand-off in
+(a) covers the common case (two or three servers, added once) with one tap;
+an export format is a contract to keep forever. Not built; nothing in (a)
+prevents it later.
+
+## Where it sits in the web layout
+
+Android draws a bar above the page. The web app's equivalent place is the
+sidebar, under its brand row: the sidebar is on every signed-in page, a rail
+on a wide screen and a slide-out (the menu button) on a phone. The row is the
+server in view: its colour, its label, a chevron. It opens a menu: the
+servers (the one in view marked current), **Add server**, **Manage servers**.
+It is drawn by the server at a fixed height, and the script only fills it in,
+so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
+
+## Rules of the list
+
+- An entry is an origin: `https:`, or `http:` only for `localhost` and
+  `127.0.0.1`. No user name or password. A path, query or fragment typed with
+  it is dropped (only the origin is kept).
+- At most 8 servers, the server in view included (the Android app's palette
+  has 8 colours).
+- No duplicates (compared by origin, so `https://a.example` and
+  `https://A.example:443/x` are one).
+- The server in view is always on its own list, first, and cannot be removed
+  from it.
+- Each server's colour comes from its origin, the same way on every server's
+  list (a hash of the origin picks the palette slot; a clash takes the next
+  free slot, in origin order), so a server keeps its colour from one list to
+  the next when the lists hold the same servers.
+- The label is the person's own label, else the server's display name from
+  `/api/instance`, else its host (and port when not the default).
+- Branding is refreshed when a server is added, and when the switcher draws
+  and the cached copy is older than 15 minutes (as the Android app does). The
+  logo is re-fetched only when `/api/instance`'s `logo.etag` changes; the
+  logo's URL must be on that server's own origin, a PNG, at most 256 KiB.
+  The name is at most 64 characters, with control and text-direction
+  characters removed, and is drawn as text, never markup.
+
+## Web vs Android
+
+| | Android 0.2.0 | web (this design) |
+|---|---|---|
+| see which server is in view | bar above the page: colour, label | sidebar row: colour, label (on a phone, inside the menu) |
+| switch | instant, each server's WebView kept | a page load of the other server's origin |
+| separate sign-ins | per-server WebView profile | per-origin by the browser, always |
+| add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |
+| the list | one list for the app | one list **per server, per browser**; a switch offers to add the server you came from |
+| branding (name, logo, etag) | `GET /api/instance`, every 15 min | the same document, cross-origin, when stale (15 min) |
+| notifications from every server | yes, one UnifiedPush instance each | yes, if notifications were turned on **on each server** (Web Push is per origin); each arrives with that server's icon |
+| a notification's tap opens its server | yes, and switches the bar | yes: the server's own service worker opens its own page |
+| label on a notification | server label as subtext | not added: the icon (the server's logo) is the cue |
+| manage: rename, remove | yes, and remove ends the pairing | rename the label, remove from the list; removing does not sign out or turn off that server's notifications (do that on that server) |
+| installed app | one app | each server installs as its own app; the switcher in an installed app opens the other server in the browser's out-of-scope view (or that server's own installed app, where the browser hands links to it) |
+| passkeys | per server (asset links) | per origin, unchanged |
+
+## UNVERIFIED
+
+- **iOS Safari, installed to the home screen**: a navigation to another
+  origin from a standalone web app opens it in an in-app Safari view (or
+  Safari itself, depending on the iOS version), not in the standalone window.
+  Not measured on a device.
+- **Chrome / Edge installed apps**: whether a switch opens the other server's
+  own installed app ("link capturing") depends on the browser version and
+  settings. Not measured.
+- A browser that clears `localStorage` for an installed app separately from
+  the tab (Safari keeps separate storage for a home-screen app) has a
+  separate list there.
+
+## Tests
+
+- `e2e/servers.test.mjs` (node): the address rules (https only but loopback,
+  no credentials, origin only), dedupe, the cap, colours, labels, the branding
+  cache (etag, same-origin logo, size, name sanitising), the fetch options (no
+  credentials, no referrer), the fragment hand-off.
+- `internal/api`: `GET /api/instance` and `/brand/*` answer
+  `Access-Control-Allow-Origin: *` and nothing that would let credentials
+  through; the CSP's `connect-src` names exactly those paths.
+- `e2e/tests/server-switcher.spec.ts`: phone and desktop; a second, fake
+  server (its own origin) whose name, logo and etag the spec controls; the
+  real muster under a second origin for a real cross-origin branding read;
+  adding, rejecting bad addresses, renaming, removing, switching, and the
+  hand-off offer on the other side.
