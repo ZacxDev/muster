@@ -52,7 +52,7 @@ const (
 	// ccd's answer for an edge/CDN challenge page (cmd/ccd failure.go
 	// edgeChallengePage): turn_failed, while the CLI's code and the upstream
 	// status still say authentication_failed / 403.
-	ccdEdgeChallenge = `{"error":{"type":"turn_failed","code":"authentication_failed","upstream_status":403,"message":"an edge/CDN challenge page answered the request, not the model API (transient; the credential was not judged): Please run /login · API Error: 403 Attention Required! | Cloudflare"}}`
+	ccdEdgeChallenge = `{"error":{"type":"turn_failed","code":"authentication_failed","upstream_status":403,"message":"an edge/CDN challenge page answered the request, not the model API (the credential was not judged; if it persists, check the egress): Please run /login · API Error: 403 Attention Required! | Cloudflare"}}`
 	// ccd's answer for a pane parked on the CLI's usage-limit menu (cmd/ccd
 	// failure.go limitMenuFailure): 409, nothing typed, no upstream status.
 	ccdLimitMenu = `{"error":{"type":"rate_limited","code":"rate_limit","message":"You’ve hit your weekly limit · resets Nov 2, 1am (UTC) — the CLI's pane shows its usage-limit menu (a select menu (❯ 1. Stop and wait for limit to reset)); nothing was typed — the account hit its limit"}}`

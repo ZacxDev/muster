@@ -59,7 +59,7 @@ const observedEdgeChallenge = "Please run /login · API Error: 403 Attention Req
 
 // 🔴 AN EDGE CHALLENGE IS NOT A CREDENTIAL REJECTION. auth_failed makes muster
 // mark the account until its token is replaced; a CDN challenge page never
-// reached the API and is transient, so it must come back turn_failed — which no
+// reached the API, so it says nothing about the credential and must come back turn_failed — which no
 // consumer marks an account for — whatever code and status the CLI attached.
 func TestAnEdgeChallengePageIsNotAnAuthFailure(t *testing.T) {
 	for _, in := range []apiError{

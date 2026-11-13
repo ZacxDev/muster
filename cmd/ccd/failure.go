@@ -119,7 +119,7 @@ func classifyAPIError(e apiError) *failure {
 		// when the account's token is replaced. See edgeChallengePage.
 		f.Status, f.Type = http.StatusBadGateway, failTurn
 		f.Message = "an edge/CDN challenge page answered the request, not the model API " +
-			"(transient; the credential was not judged): " + e.Message
+			"(the credential was not judged; if it persists, check the egress): " + e.Message
 	case e.Code == codeRateLimit:
 		f.Status, f.Type = http.StatusTooManyRequests, failRateLimited
 	case e.Code == "authentication_failed":
