@@ -142,3 +142,72 @@ func (s *Store) SetBlocked(ctx context.Context, owner int64, id int64, blocked b
 	_, err := s.pool.Exec(ctx, `UPDATE officer_items SET blocked = $3 WHERE owner_id = $1 AND id = $2`, owner, id, blocked)
 	return err
 }
+
+// Defined reports whether owner defines officer (read under ctx's principal:
+// another owner's officer of the same id reads as not defined).
+func (s *Store) Defined(ctx context.Context, owner int64, officer string) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND officer = $2)`, owner, officer).Scan(&ok)
+	return ok, err
+}
+
+// EnqueueTx is Enqueue inside the caller's transaction tx (a plugin message
+// becoming an item, in the transaction that stores the message): the new
+// item's id, or the live item of the same kind and subject. An officer owner
+// does not define is ErrNotFound — checked first, so the transaction is never
+// aborted by the foreign key.
+func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem, now time.Time) (int64, error) {
+	var defined bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_defs WHERE owner_id = $1 AND officer = $2)`,
+		owner, n.Officer).Scan(&defined); err != nil {
+		return 0, err
+	}
+	if !defined {
+		return 0, fmt.Errorf("%w: officer %s", ErrNotFound, n.Officer)
+	}
+	payload := n.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	tier, prio := n.Tier, n.Priority
+	if tier == "" {
+		tier = "judgement"
+	}
+	if prio == "" {
+		prio = "normal"
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `INSERT INTO officer_items (owner_id, officer, kind, subject_key, payload, tier, priority, not_before, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		ON CONFLICT (owner_id, officer, kind, subject_key) WHERE status IN ('open', 'claimed', 'waiting') DO NOTHING
+		RETURNING id`, owner, n.Officer, n.Kind, n.SubjectKey, payload, tier, prio, n.NotBefore, now).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
+			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&id)
+	}
+	return id, classify(err)
+}
+
+// CountLive is how many of officer's items of kind are live (open, claimed
+// or waiting), for owner.
+func (s *Store) CountLive(ctx context.Context, owner int64, officer, kind string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
+		AND status IN ('open', 'claimed', 'waiting')`, owner, officer, kind).Scan(&n)
+	return n, err
+}
+
+// CapOutboundDrafts is the type capability that offers a builtin officer
+// officer_post_draft: "capabilities": ["outbound_drafts"] in its type's
+// policy (docs/officers.md "Outbound drafts").
+const CapOutboundDrafts = "outbound_drafts"
+
+// TypeGrants reports whether officer's TYPE (the id's part before the colon),
+// as owner defines it, lists capability in its policy's "capabilities". A
+// type that is missing, or whose policy has no such array, grants nothing.
+func (s *Store) TypeGrants(ctx context.Context, owner int64, officer, capability string) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT coalesce((SELECT jsonb_typeof(policy->'capabilities') = 'array' AND policy->'capabilities' ? $3
+		FROM officer_types WHERE owner_id = $1 AND key = split_part($2, ':', 1)), false)`, owner, officer, capability).Scan(&ok)
+	return ok, err
+}

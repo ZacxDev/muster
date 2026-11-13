@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -115,6 +118,22 @@ type Draft struct {
 	// returns; never stored, never read back. internal/api acts on it — the
 	// push's wording, the sweep, the chief's note — and reads nothing again.
 	Refusal RefusalOutcome `json:"-"`
+	// An OUTBOUND draft's (migration 0121, outbound.go): MessageID is 0, and
+	// PluginID names its plugin. Venue, TargetKind/TargetRef, MediaRefs and
+	// Officer/OfficerItemID are what the officer filed; Media is what the
+	// plugin uploaded for the refs; the Approved* hashes are what the owner
+	// approved (set with ApprovedAt, cleared by a withdrawal). All nil/empty
+	// on a reply draft.
+	PluginID            *int64       `json:"pluginId,omitempty"`
+	Venue               *string      `json:"venue,omitempty"`
+	TargetKind          *string      `json:"targetKind,omitempty"`
+	TargetRef           *string      `json:"targetRef,omitempty"`
+	MediaRefs           []string     `json:"mediaRefs,omitempty"`
+	Media               []DraftMedia `json:"media,omitempty"`
+	Officer             *string      `json:"officer,omitempty"`
+	OfficerItemID       *int64       `json:"officerItemId,omitempty"`
+	ApprovedBodySHA256  *string      `json:"-"`
+	ApprovedMediaSHA256 []string     `json:"-"`
 }
 
 // RefusalOutcome is where a refused draft goes (Draft.Refusal).
@@ -135,6 +154,9 @@ const (
 	// RefusalNoRoute: no route took it (the chief filed it, or its route had
 	// moved on): the chief is to be told directly.
 	RefusalNoRoute RefusalOutcome = "no_route"
+	// RefusalOutbound: an officer's outbound draft (outbound.go): its officer
+	// is told, by a draft.refused item (internal/api).
+	RefusalOutbound RefusalOutcome = "outbound"
 )
 
 // DraftCheckState is a draft's pre-approval check by its plugin (0112's
@@ -187,6 +209,30 @@ type Claim struct {
 	MessageExternalID string    `json:"message_external_id"`
 	Body              string    `json:"body"`
 	ApprovedAt        time.Time `json:"approved_at"`
+	// Kind is "reply" (a reply draft) or "outbound" (outbound.go). Only an
+	// outbound claim carries the fields below (Claim.MarshalJSON).
+	Kind       string         `json:"kind"`
+	BodySHA256 string         `json:"body_sha256,omitempty"`
+	Venue      string         `json:"venue,omitempty"`
+	Target     OutboundTarget `json:"target"`
+	Media      []ClaimMedia   `json:"media"`
+}
+
+// The draft kinds a claim or a check listing names.
+const (
+	DraftKindReply    = "reply"
+	DraftKindOutbound = "outbound"
+)
+
+// MarshalJSON is the claim's wire form: a reply draft's four fields plus its
+// kind; an outbound draft's also its body hash, venue, target and media.
+func (c Claim) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"draft_id": c.DraftID, "message_external_id": c.MessageExternalID, "body": c.Body,
+		"approved_at": c.ApprovedAt, "kind": c.Kind}
+	if c.Kind == DraftKindOutbound {
+		out["body_sha256"], out["venue"], out["target"], out["media"] = c.BodySHA256, c.Venue, c.Target, c.Media
+	}
+	return json.Marshal(out)
 }
 
 // DraftResult is what a plugin reports after trying to send a claimed draft.
@@ -208,6 +254,11 @@ type DraftCard struct {
 	// Route is the session route the draft came from (Draft.RouteID's row), or
 	// the zero RouteTarget for a draft the chief filed itself.
 	Route RouteTarget
+	// ReplyTo is, for an outbound draft replying on a thread, the message its
+	// plugin delivered with that venue and thread — the human reply it
+	// answers (untrusted) — when one arrived; nil otherwise. Message is the
+	// zero Message on every outbound card.
+	ReplyTo *Message
 }
 
 var (
@@ -266,8 +317,16 @@ type DraftDecision struct {
 	Via DraftDecisionSource
 	// BodySHA256, when set, must be the lowercase hex SHA-256 of the draft's
 	// stored body (ErrDraftBodyMismatch): the decision is on exactly the text
-	// the decider read. Required for DraftViaMCP.
+	// the decider read. Required for DraftViaMCP, and for any approval of an
+	// outbound draft.
 	BodySHA256 string
+	// MediaSHA256, for an OUTBOUND draft, is the SHA-256 of each medium the
+	// decider saw, in the draft's ref order (Draft.MediaSHA256): an approval
+	// must carry it (empty, not nil, for a draft with no media), and it is
+	// refused unless it is exactly the uploaded media (ErrDraftMediaMismatch).
+	// The approval records it, with BodySHA256, as the binding the claim
+	// re-checks. Ignored for a reply draft.
+	MediaSHA256 []string
 }
 
 // DraftBodySHA256 is the lowercase hex SHA-256 of a draft body: what
@@ -291,6 +350,12 @@ func DraftObject(id int64) string { return "plugin_draft:" + strconv.FormatInt(i
 // address, a credential or the deployment's own names to an outside party. It is
 // never the gate; the approval is.
 func ScreenDraft(body string, denyWords []string) (string, error) {
+	return screenDraft(body, denyWords, flows.AgentTextRefusal)
+}
+
+// screenDraft is ScreenDraft with the deny screen refusal (ScreenOutbound's
+// differs: public host names pass).
+func screenDraft(body string, denyWords []string, refusal func(string, []string) string) (string, error) {
 	if !utf8.ValidString(body) || strings.ContainsRune(body, 0) {
 		return "", invalid("body must be UTF-8 text without NUL")
 	}
@@ -304,7 +369,7 @@ func ScreenDraft(body string, denyWords []string) (string, error) {
 	if why := flows.HiddenCharRefusal(body); why != "" {
 		return "", invalid("body: %s", why)
 	}
-	if why := flows.AgentTextRefusal(body, denyWords); why != "" {
+	if why := refusal(body, denyWords); why != "" {
 		return "", invalid("body: %s", why)
 	}
 	return body, nil
@@ -331,12 +396,31 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 }
 
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
-	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at`
+	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id, check_state, checked_at,
+	plugin_id, venue, target_kind, target_ref, media_refs, media, officer, officer_item_id, approved_body_sha256, approved_media_sha256`
 
 func draftDest(d *Draft, st *string) []any {
-	return []any{&d.ID, &d.OwnerID, &d.MessageID, &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
+	return []any{&d.ID, &d.OwnerID, (*zeroIfNull)(&d.MessageID), &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
 		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
-		&d.CheckState, &d.CheckedAt}
+		&d.CheckState, &d.CheckedAt,
+		&d.PluginID, &d.Venue, &d.TargetKind, &d.TargetRef, &d.MediaRefs, &d.Media, &d.Officer, &d.OfficerItemID,
+		&d.ApprovedBodySHA256, &d.ApprovedMediaSHA256}
+}
+
+// zeroIfNull scans a nullable bigint as 0 for NULL: an outbound draft's
+// message_id (0121), so Draft.MessageID stays an int64 and 0 means "none".
+type zeroIfNull int64
+
+func (z *zeroIfNull) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*z = 0
+	case int64:
+		*z = zeroIfNull(v)
+	default:
+		return fmt.Errorf("plugins: message_id is %T", src)
+	}
+	return nil
 }
 
 // checkDueSQL is the check_due_at a NEW draft is filed with, given the SQL
@@ -554,14 +638,14 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, limit)
+	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, limit, limit)
 }
 
 // DraftCard is one of the principal's drafts as a card (after a sweep):
 // what the Asks page draws for a just-decided draft that DraftCards' cut
 // left out. ErrNotFound for none (or another owner's: row-level security).
 func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
-	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, id)
+	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, id, 1)
 	if err != nil {
 		return DraftCard{}, err
 	}
@@ -571,12 +655,37 @@ func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
 	return cards[0], nil
 }
 
-// draftCards is DraftCards' and DraftCard's one query, tail its WHERE /
-// ORDER BY / LIMIT.
-func (s *PGStore) draftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
+// draftCards is DraftCards' and DraftCard's two queries — the reply drafts
+// (each with its message) and the outbound drafts (outbound.go: its plugin,
+// and the human reply it answers) — tail their WHERE / ORDER BY / LIMIT,
+// merged in DraftCards' order and cut to limit.
+func (s *PGStore) draftCards(ctx context.Context, tail string, arg any, limit int) ([]DraftCard, error) {
 	if err := s.sweep(ctx); err != nil {
 		return nil, err
 	}
+	out, err := s.replyDraftCards(ctx, tail, arg)
+	if err != nil {
+		return nil, err
+	}
+	outbound, err := s.outboundDraftCards(ctx, tail, arg)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, outbound...)
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, pj := out[i].Draft.Status == DraftPending, out[j].Draft.Status == DraftPending
+		if pi != pj {
+			return pi
+		}
+		return out[i].Draft.ID > out[j].Draft.ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *PGStore) replyDraftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
 		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
@@ -607,10 +716,59 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, arg any) ([]Draft
 	return out, rows.Err()
 }
 
+// outboundDraftCards is the outbound half of draftCards: each card's plugin,
+// and — for a reply target — the human reply its plugin delivered with that
+// venue and thread (OutboundReplyTo), when one arrived.
+func (s *PGStore) outboundDraftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, p.name, p.label
+		  FROM plugin_reply_drafts d
+		  JOIN plugins p ON p.id = d.plugin_id
+		 `+outboundTail(tail), arg)
+	if err != nil {
+		return nil, err
+	}
+	out := []DraftCard{}
+	for rows.Next() {
+		var c DraftCard
+		d, err := scanDraftWith(rows, &c.PluginName, &c.PluginLabel)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		c.Draft = d
+		out = append(out, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		d := out[i].Draft
+		if t := d.Target(); t.Kind == TargetReply {
+			m, ok, err := s.OutboundReplyTo(ctx, *d.PluginID, d.VenueText(), t.Ref)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				out[i].ReplyTo = &m
+			}
+		}
+	}
+	return out, nil
+}
+
+// outboundTail is draftCards' tail restricted to outbound drafts.
+func outboundTail(tail string) string {
+	if rest, ok := strings.CutPrefix(tail, "WHERE "); ok {
+		return "WHERE d.message_id IS NULL AND " + rest
+	}
+	return "WHERE d.message_id IS NULL " + tail
+}
+
 // lockedDraft locks draft id after its message (lockMessage, the lock order
 // every draft write takes), answering the message's in-flight check as well.
 func lockedDraft(ctx context.Context, tx pgx.Tx, id int64) (Draft, error) {
-	var messageID int64
+	var messageID *int64
 	err := tx.QueryRow(ctx, `SELECT message_id FROM plugin_reply_drafts WHERE id = $1`, id).Scan(&messageID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Draft{}, ErrNotFound
@@ -618,9 +776,14 @@ func lockedDraft(ctx context.Context, tx pgx.Tx, id int64) (Draft, error) {
 	if err != nil {
 		return Draft{}, err
 	}
-	_, inFlight := lockMessage(ctx, tx, messageID, id)
-	if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
-		return Draft{}, inFlight
+	// An outbound draft (no message, outbound.go) has no message to lock and
+	// no sibling reply in flight: its own row is the lock.
+	var inFlight error
+	if messageID != nil {
+		_, inFlight = lockMessage(ctx, tx, *messageID, id)
+		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
+			return Draft{}, inFlight
+		}
 	}
 	cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+draftCols+` FROM plugin_reply_drafts WHERE id = $1 FOR UPDATE`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -695,7 +858,8 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 		}
 		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil && dec.Via.Via != DraftViaMCP {
 			if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-				SET status = 'rejected', decided_at = now(), approved_at = NULL WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
+				SET status = 'rejected', decided_at = now(), approved_at = NULL, approved_body_sha256 = NULL, approved_media_sha256 = NULL
+				WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
 				return err
 			}
 			detail["message_id"], detail["approved_at"] = d.MessageID, cur.ApprovedAt.UTC().Format(time.RFC3339)
@@ -713,10 +877,32 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			return ErrDraftUnchecked
 		}
 		q, action := `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.rejected"
+		args := []any{id}
 		if approve {
 			q, action = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.approved"
 		}
-		if d, err = scanDraft(tx.QueryRow(ctx, q, id)); err != nil {
+		if approve && cur.IsOutbound() {
+			// 🔴 AN OUTBOUND APPROVAL BINDS THE BODY AND EVERY MEDIUM (outbound.go):
+			// refused while a ref has no bytes, or unless the decider names exactly
+			// the stored body's and media's hashes; the hashes are recorded and the
+			// claim re-checks them (ClaimDraft).
+			if missing := cur.MissingMedia(); len(missing) > 0 {
+				d = cur
+				return MissingMediaError{Missing: missing}
+			}
+			if dec.BodySHA256 == "" || dec.MediaSHA256 == nil {
+				d = cur
+				return invalid("an approval of an outbound draft names the body_sha256 and media_sha256 of what it approves")
+			}
+			if !slices.Equal(dec.MediaSHA256, cur.MediaSHA256()) {
+				d = cur
+				return ErrDraftMediaMismatch
+			}
+			q = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now(),
+				approved_body_sha256 = $2, approved_media_sha256 = $3 WHERE id = $1 RETURNING ` + draftCols
+			args = append(args, DraftBodySHA256(cur.Body), cur.MediaSHA256())
+		}
+		if d, err = scanDraft(tx.QueryRow(ctx, q, args...)); err != nil {
 			return err
 		}
 		detail["message_id"] = d.MessageID
@@ -736,37 +922,84 @@ func (s *PGStore) ClaimDraft(ctx context.Context, pluginID int64) (Claim, bool, 
 	if err := s.sweep(ctx); err != nil {
 		return Claim{}, false, err
 	}
-	var c Claim
-	found := false
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `
-			SELECT d.id, m.external_id, d.body, d.approved_at
+	// An outbound draft whose binding broke is withdrawn and the next one
+	// tried; a bounded number per call, so one claim cannot spin.
+	for range maxClaimTries {
+		c, found, retry, err := s.claimOne(ctx, pluginID)
+		if err != nil || found || !retry {
+			return c, found, err
+		}
+	}
+	return Claim{}, false, nil
+}
+
+// maxClaimTries bounds how many broken outbound drafts one claim withdraws
+// before it answers "nothing".
+const maxClaimTries = 5
+
+// claimOne is one attempt of ClaimDraft. retry: it withdrew an outbound
+// draft whose body or media no longer hash to what was approved.
+//
+// 🔴 THE BINDING IS RE-CHECKED UNDER THE ROW LOCK, BEFORE THE LEASE (Draft.
+// BindingHolds): the body is immutable and the media cannot change once
+// approved (0121's triggers), so this fires only if something got past both
+// — and then the owner's approval no longer describes what would be sent, so
+// nothing is handed out and the approval is withdrawn, audited.
+func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found, retry bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var ext string
+		d, err := scanDraftWith(tx.QueryRow(ctx, `
+			SELECT `+prefixed("d", draftCols)+`, coalesce(m.external_id, '')
 			  FROM plugin_reply_drafts d
-			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
-			 WHERE m.plugin_id = $1 AND d.status = 'approved' AND d.claimed_at IS NULL
-			   AND d.expires_at > now() AND NOT m.no_reply
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE coalesce(m.plugin_id, d.plugin_id) = $1 AND d.status = 'approved' AND d.claimed_at IS NULL
+			   AND d.expires_at > now() AND NOT coalesce(m.no_reply, false)
 			 ORDER BY d.approved_at, d.id
 			 LIMIT 1
-			   FOR UPDATE OF d SKIP LOCKED`, pluginID).Scan(&c.DraftID, &c.MessageExternalID, &c.Body, &c.ApprovedAt)
+			   FOR UPDATE OF d SKIP LOCKED`, pluginID), &ext)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		if d.IsOutbound() && !d.BindingHolds() {
+			if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
+				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1`, d.ID, BindingBrokenDetail); err != nil {
+				return err
+			}
+			retry = true
+			return audit(ctx, tx, "plugin.draft.binding_broken", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": BindingBrokenDetail})
+		}
 		if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts
 			SET claimed_at = now(), lease_until = now() + make_interval(secs => $2) WHERE id = $1`,
-			c.DraftID, LeaseDuration.Seconds()); err != nil {
+			d.ID, LeaseDuration.Seconds()); err != nil {
 			return err
 		}
+		c = Claim{DraftID: d.ID, MessageExternalID: ext, Body: d.Body, ApprovedAt: d.ApprovedAt.UTC(), Kind: DraftKindReply}
+		if d.IsOutbound() {
+			c.Kind, c.BodySHA256, c.Venue, c.Target, c.Media = DraftKindOutbound, *d.ApprovedBodySHA256, d.VenueText(), d.Target(), claimMediaOf(d)
+		}
 		found = true
-		return audit(ctx, tx, "plugin.draft.claimed", DraftObject(c.DraftID), map[string]any{"plugin_id": pluginID})
+		return audit(ctx, tx, "plugin.draft.claimed", DraftObject(d.ID), map[string]any{"plugin_id": pluginID})
 	})
-	if err != nil || !found {
-		return Claim{}, false, err
+	if err != nil {
+		return Claim{}, false, false, err
 	}
-	c.ApprovedAt = c.ApprovedAt.UTC()
-	return c, true, nil
+	return c, found, retry, nil
+}
+
+// BindingBrokenDetail is an outbound draft's detail when the claim withdrew
+// it (claimOne).
+const BindingBrokenDetail = "the body or media changed after approval"
+
+// scanDraftWith scans draftCols then extra destinations.
+func scanDraftWith(row pgx.Row, extra ...any) (Draft, error) {
+	var d Draft
+	var st string
+	err := row.Scan(append(draftDest(&d, &st), extra...)...)
+	d.Status = DraftStatus(st)
+	return d, err
 }
 
 // FinishDraft records plugin pluginID's result for a draft IT claimed: sent when
@@ -808,23 +1041,25 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 		// (lockMessage): a result and a filing, approval or withdrawal of the same
 		// message's drafts are serialised rather than deadlocking, and the
 		// supersede below sees every sibling committed before it.
-		var messageID int64
+		var messageID *int64
 		err := tx.QueryRow(ctx, `SELECT d.message_id FROM plugin_reply_drafts d
-			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
-			 WHERE d.id = $1 AND m.plugin_id = $2`, draftID, pluginID).Scan(&messageID)
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND coalesce(m.plugin_id, d.plugin_id) = $2`, draftID, pluginID).Scan(&messageID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := lockMessage(ctx, tx, messageID, draftID); err != nil && !errors.Is(err, ErrReplyInFlight) {
-			return err
+		if messageID != nil {
+			if _, err := lockMessage(ctx, tx, *messageID, draftID); err != nil && !errors.Is(err, ErrReplyInFlight) {
+				return err
+			}
 		}
 		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+prefixed("d", draftCols)+`
 			  FROM plugin_reply_drafts d
-			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
-			 WHERE d.id = $1 AND m.plugin_id = $2
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND coalesce(m.plugin_id, d.plugin_id) = $2
 			   FOR UPDATE OF d`, draftID, pluginID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
@@ -866,7 +1101,7 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 		// 🔴 THE MESSAGE-SCOPED SUPERSEDE (see the doc comment). Lock order: the
 		// message (above), this row, then its siblings in id order. This row is
 		// `sent` by now, so the status filter already excludes it.
-		if want == DraftSent {
+		if want == DraftSent && !cur.IsOutbound() {
 			rows, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET status = 'superseded', decided_at = now()
 				WHERE id IN (SELECT id FROM plugin_reply_drafts
 				              WHERE message_id = $1
@@ -1009,6 +1244,10 @@ func (s *PGStore) LapseDraftCheck(ctx context.Context, id int64) (Draft, bool, e
 // before it (and it went to a mirrored session, for a chief that still
 // exists). A draft with no route, or whose route moved on, changes nothing here.
 func refuseRouteDraftTx(ctx context.Context, tx pgx.Tx, d Draft, detail string) (RefusalOutcome, error) {
+	if d.IsOutbound() {
+		// No message, no route, no sibling reply: its officer is told.
+		return RefusalOutbound, nil
+	}
 	// 🔴 ANOTHER REPLY TO THE MESSAGE WENT OUT, OR IS ON ITS WAY: the sender
 	// has (or is getting) an answer, so this refusal is recorded on the draft
 	// only. A route is left as it is — no send_failed, no hand-back — or a
@@ -1058,6 +1297,22 @@ type AwaitingCheck struct {
 	MessageExternalID string    `json:"message_external_id"`
 	Body              string    `json:"body"`
 	CreatedAt         time.Time `json:"created_at"`
+	// Kind is DraftKindReply or DraftKindOutbound; only an outbound entry
+	// carries the fields below (AwaitingCheck.MarshalJSON).
+	Kind   string         `json:"kind"`
+	Venue  string         `json:"venue,omitempty"`
+	Target OutboundTarget `json:"target"`
+	Media  []CheckMedia   `json:"media"`
+}
+
+// MarshalJSON is the checks listing's wire form (docs/plugins.md).
+func (a AwaitingCheck) MarshalJSON() ([]byte, error) {
+	out := map[string]any{"draft_id": a.DraftID, "message_external_id": a.MessageExternalID, "body": a.Body,
+		"created_at": a.CreatedAt, "kind": a.Kind}
+	if a.Kind == DraftKindOutbound {
+		out["venue"], out["target"], out["media"] = a.Venue, a.Target, a.Media
+	}
+	return json.Marshal(out)
 }
 
 // MaxChecksListed bounds one GET /plugin/v1/drafts/checks.
@@ -1074,18 +1329,21 @@ func (s *PGStore) DraftsAwaitingCheck(ctx context.Context, pluginID int64, limit
 	if err := s.sweep(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT d.id, m.external_id, d.body, d.created_at
+	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, coalesce(m.external_id, '')
 		  FROM plugin_reply_drafts d
-		  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
-		 WHERE m.plugin_id = $1 AND d.status = 'pending' AND d.check_state = 'awaiting' AND d.expires_at > now()
+		  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+		 WHERE coalesce(m.plugin_id, d.plugin_id) = $1 AND d.status = 'pending' AND d.check_state = 'awaiting' AND d.expires_at > now()
 		 ORDER BY d.id LIMIT $2`, pluginID, limit)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (AwaitingCheck, error) {
-		var a AwaitingCheck
-		err := r.Scan(&a.DraftID, &a.MessageExternalID, &a.Body, &a.CreatedAt)
-		a.CreatedAt = a.CreatedAt.UTC()
+		var ext string
+		d, err := scanDraftWith(r, &ext)
+		a := AwaitingCheck{DraftID: d.ID, MessageExternalID: ext, Body: d.Body, CreatedAt: d.CreatedAt.UTC(), Kind: DraftKindReply}
+		if d.IsOutbound() {
+			a.Kind, a.Venue, a.Target, a.Media = DraftKindOutbound, d.VenueText(), d.Target(), checkMediaOf(d)
+		}
 		return a, err
 	})
 }
@@ -1121,8 +1379,8 @@ func (s *PGStore) CheckDraft(ctx context.Context, pluginID, draftID int64, v Dra
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var mine bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts d
-			  JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
-			 WHERE d.id = $1 AND m.plugin_id = $2)`, draftID, pluginID).Scan(&mine); err != nil {
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND coalesce(m.plugin_id, d.plugin_id) = $2)`, draftID, pluginID).Scan(&mine); err != nil {
 			return err
 		}
 		if !mine {
@@ -1143,6 +1401,13 @@ func (s *PGStore) CheckDraft(ctx context.Context, pluginID, draftID int64, v Dra
 			return nil // the same verdict again: the stored draft is the answer
 		case !cur.AwaitingCheck():
 			return ErrDraftState
+		}
+		if v.Sendable && cur.IsOutbound() {
+			// 🔴 THE OWNER IS NEVER ASKED TO APPROVE A POST WHOSE MEDIA MUSTER
+			// HAS NOT SEEN (outbound.go): sendable waits for every ref's bytes.
+			if missing := cur.MissingMedia(); len(missing) > 0 {
+				return MissingMediaError{Missing: missing}
+			}
 		}
 		action, q, args := "plugin.draft.checked", `UPDATE plugin_reply_drafts SET check_state = 'sendable', checked_at = now()
 			WHERE id = $1 RETURNING `+draftCols, []any{draftID}
@@ -1224,7 +1489,7 @@ type PendingDraft struct {
 // restart still has its notification withdrawn when it expires. Ids, owners
 // and deadlines only — no body is read.
 func (s *PGStore) PendingDrafts(ctx context.Context) ([]PendingDraft, error) {
-	rows, err := s.pool.Query(authz.System(ctx), `SELECT id, owner_id, message_id, expires_at FROM plugin_reply_drafts WHERE status = 'pending'`)
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT id, owner_id, coalesce(message_id, 0), expires_at FROM plugin_reply_drafts WHERE status = 'pending'`)
 	if err != nil {
 		return nil, err
 	}

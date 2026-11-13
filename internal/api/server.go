@@ -213,6 +213,8 @@ type Server struct {
 	// draftWake wakes waiting claims when this process approves a draft.
 	pluginRetrying sync.Map
 	draftWake      draftSignal
+	// pairLimit is POST /plugin/v1/pair's per-address allowance (plugin_pairing.go).
+	pairLimit pairLimiter
 	// refWriteWake wakes waiting task-write claims when this process queues a
 	// write on a plugin task reference (task_ref_queue.go).
 	refWriteWake draftSignal

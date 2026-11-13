@@ -34,7 +34,8 @@ counts per window (below).
    has a **Preview** button with that count, beside the Rendered | Terminal
    switch (on a phone, in the header's second row, under the title); the
    sidebar marks the window's row too. The button opens a panel
-   (a side panel on a wide screen, the whole screen on a phone) that mints a
+   (a side panel on a wide screen, the screen above the message bar on a
+   phone; the message bar stays usable either way) that mints a
    hand-off code at the click and shows the gateway's **session page**,
    `https://w.<zone>/__muster/enter`, in its frame; the panel's **New tab**
    does the same in a new tab (in the Android app, **Full screen** instead:

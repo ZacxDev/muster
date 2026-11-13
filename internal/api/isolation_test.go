@@ -368,6 +368,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/pr-sessions": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
+	// Binding a plugin to a builtin officer (plugin_outbound.go), hook tier, as its owner.
+	"PUT /api/plugins/{id}/deliver-to": classAdmin,
 	// The built-in officer store's admin API (officer_admin.go): hook tier
 	// (personal token: its owner; shared hook token: the operator), every
 	// store call naming the caller's owner and under its principal.
@@ -381,6 +383,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/officers/defs/{officer}/items":               classAdmin,
 	"POST /api/officers/defs/{officer}/items":              classAdmin,
 	"POST /api/officers/defs/{officer}/items/{id}/resolve": classAdmin,
+	"GET /api/officers/defs/{officer}/schedules":           classAdmin,
+	"PUT /api/officers/defs/{officer}/schedules/{name}":    classAdmin,
+	"DELETE /api/officers/defs/{officer}/schedules/{name}": classAdmin,
 	"POST /api/tasks/{id}/comments":                        classAdmin,
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
@@ -455,6 +460,17 @@ var isolationClasses = map[string]routeClass{
 	// Checks replies on an existing plugin names A's plugin by id: B's session
 	// must get the ghost's 404 (row-level security).
 	"POST /plugins/{id}/draft-checks": classParam,
+	"POST /plugins/{id}/deliver-to":   classParam,
+	// A pairing request's decisions name it by id; another owner's is the
+	// ghost's 404 (row-level security).
+	"POST /plugins/pair/{id}/approve": classParam,
+	"POST /plugins/pair/{id}/deny":    classParam,
+	// The pairing door: no credential (the request) or a poll secret no walker
+	// holds (the poll).
+	"POST /plugin/v1/pair":             classPublic,
+	"GET /plugin/v1/pair/{request_id}": classPublic,
+	// An outbound draft's medium, its owner's (row-level security).
+	"GET /plugins/drafts/{id}/media/{n}": classParam,
 	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
 	// rules; each write names a rule by id, and another owner's is not found.
 	// The usage page reads the caller's own telemetry rows only.
@@ -528,6 +544,7 @@ var isolationClasses = map[string]routeClass{
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
 	"GET /plugin/v1/drafts/checks":      classPlugin,
 	"POST /plugin/v1/drafts/{id}/check": classPlugin,
+	"POST /plugin/v1/drafts/{id}/media": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
@@ -1140,6 +1157,9 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aOffItem, _, err := ost.Enqueue(ua, w.a.uid, builtin.NewItem{Officer: aOffType + ":a", Kind: "iso", SubjectKey: "iso",
 		Payload: json.RawMessage(`{"note":"` + w.canary + ` item"}`)}, time.Now())
 	must(err, "an officer item")
+	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
+		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
+	must(err, "an officer schedule")
 	w.officerStore = ost
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
@@ -1532,7 +1552,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The built-in officer store's admin API: its own path names, and a
 		// body each route accepts, so a refusal is about WHOSE row.
 		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
-			"{id}", strconv.FormatInt(o.officerItem, 10)).Replace(path)
+			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly").Replace(path)
 		switch {
 		case method == http.MethodGet || method == http.MethodDelete:
 			return method, path, ""
@@ -1542,6 +1562,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
 		case strings.Contains(path, "/types/"):
 			return method, path, `{"name":"iso","charter":"iso-write"}`
+		case strings.Contains(path, "/schedules/"):
+			return method, path, `{"cron":"0 6 * * *","kind":"iso","subject_key":"iso"}`
 		}
 		return method, path, `{}`
 	}
@@ -1882,9 +1904,10 @@ var sideEffectControlled = map[string]string{
 	// "someone else's object" for the status to tell apart. That B's PUT of A's
 	// key writes a row of B's and leaves A's untouched is
 	// TestTheAdminAPIIsOwnerScoped's (officer_builtin_attention_pg_test.go).
-	"PUT /api/officers/types/{key}":    "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
-	"PUT /api/officers/defs/{officer}": "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
-	"POST /agents/{id}/start":          "the provisioner acted for A (isoProvisioner records it), never for B",
+	"PUT /api/officers/types/{key}":                     "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}":                  "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}/schedules/{name}": "an upsert of the caller's own officer's schedule: B's names B's own (absent) officer → 404 like a ghost; controlled in TestTheAdminAPIIsOwnerScoped",
+	"POST /agents/{id}/start":                           "the provisioner acted for A (isoProvisioner records it), never for B",
 	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
 	// challenge its own device asked for, signed by that device's step-up key,
 	// so A's device's bare request is refused like the ghost's. Its control is
@@ -1939,6 +1962,22 @@ var sideEffectControlled = map[string]string{
 	// passkey (303, gone from GoTrue), after a fresh session of B's was
 	// refused it (404, still there).
 	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
+	// 🔴 THE OUTBOUND-DRAFT ROUTES NAME AN OUTBOUND DRAFT OR A PLUGIN THIS
+	// WORLD'S WALK CANNOT REACH: A's draft here is a reply draft (no media),
+	// a medium upload is refused on its headers before any lookup, and the
+	// admin door's {id} is not substituted. Their owner isolation — B's
+	// plugin cannot upload to A's draft, B's session cannot read A's medium,
+	// B's token cannot rebind A's plugin, each answering what a ghost gets —
+	// is TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go).
+	"POST /plugin/v1/drafts/{id}/media":  "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"GET /plugins/drafts/{id}/media/{n}": "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"PUT /api/plugins/{id}/deliver-to":   "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a pairing poll's credential is
+	// the poll secret no walker holds, so A's own answer is the ghost's 404.
+	// Its control is TestAPairedTokenIsHandedOutOnceAndOnlyWithTheCode: the
+	// same route with the secret answers pending, then the token once; with
+	// none or a wrong one, that 404.
+	"GET /plugin/v1/pair/{request_id}": "a poll secret no walker holds; controlled in plugin_pairing_pg_test.go",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where

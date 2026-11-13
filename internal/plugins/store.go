@@ -146,6 +146,15 @@ type Store interface {
 	UnroutedAsksToClose(ctx context.Context, limit int) ([]UnroutedAsk, error)
 	// SettleByAsk settles the message ask askID was raised for, with reason.
 	SettleByAsk(ctx context.Context, askID int64, reason string) (bool, error)
+	// A plugin bound to an officer (outbound.go, migration 0121).
+	// SetDeliverTo binds one of the principal's live plugins to an officer
+	// defined for its owner, or unbinds it ("").
+	SetDeliverTo(ctx context.Context, id int64, deliverTo string) (p Plugin, changed bool, err error)
+	// FileOutbound stores an officer's outbound draft for its bound plugin.
+	FileOutbound(ctx context.Context, agentID, ownerID int64, agentName string, in NewOutbound) (Draft, error)
+	// UploadDraftMedia records one ref's uploaded bytes for an outbound draft
+	// awaiting its plugin's check.
+	UploadDraftMedia(ctx context.Context, pluginID, draftID int64, m DraftMedia) (DraftMedia, bool, error)
 }
 
 // PGStore is the Postgres Store.
@@ -154,6 +163,10 @@ type PGStore struct {
 	// denyWords are the deployment's own names a reply draft may not carry
 	// (WithAgentDenyWords; drafts.go).
 	denyWords []string
+	// officers is the builtin officer store a bound plugin delivers to
+	// (WithOfficerLink; outbound.go). nil: bindings and their messages are
+	// refused.
+	officers OfficerLink
 }
 
 // NewPG returns the Postgres store.
@@ -161,13 +174,13 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id, capabilities, origin, entry_url, deliver_to`
 
 // pluginDest is the scan destinations for pluginCols, in its order. THE ONE
 // COPY, as messageDest: every reader of pluginCols scans through it.
 func pluginDest(p *Plugin) []any {
 	return []any{&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL}
+		&p.ChiefAgentID, &p.ChiefSessionID, &p.Capabilities, &p.Origin, &p.EntryURL, &p.DeliverTo}
 }
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
@@ -177,7 +190,7 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason, thread, human_conversation`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason, thread, human_conversation, kind, venue, officer_item_id`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -186,7 +199,7 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
 		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt,
-		&m.SettleReason, &m.Thread, &m.HumanConversation}
+		&m.SettleReason, &m.Thread, &m.HumanConversation, &m.Kind, &m.Venue, &m.OfficerItemID}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {
@@ -237,6 +250,9 @@ type NewPlugin struct {
 	Capabilities           []Capability
 	// Origin and EntryURL: set exactly when Capabilities has CapViewer.
 	Origin, EntryURL string
+	// DeliverTo binds the new plugin to an officer ("officer:<id>", "" for
+	// none): checked as SetDeliverTo checks it.
+	DeliverTo string
 }
 
 // ViewerOnlyDataScope is the data scope a token without CapMessages stores
@@ -244,6 +260,23 @@ type NewPlugin struct {
 const ViewerOnlyDataScope = "none"
 
 func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugin, error) {
+	var tok string
+	var p Plugin
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		tok, p, err = s.createPluginTx(ctx, tx, in)
+		return err
+	})
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	return tok, p, nil
+}
+
+// createPluginTx is CreatePlugin in the caller's transaction tx, acting as
+// ctx's principal (the owner): the one minting path, the /plugins form's and
+// a pairing's hand-out (pairing.go).
+func (s *PGStore) createPluginTx(ctx context.Context, tx pgx.Tx, in NewPlugin) (string, Plugin, error) {
 	name, label, dataScope := in.Name, strings.TrimSpace(in.Label), in.DataScope
 	if err := ValidName(name); err != nil {
 		return "", Plugin{}, err
@@ -269,31 +302,52 @@ func (s *PGStore) CreatePlugin(ctx context.Context, in NewPlugin) (string, Plugi
 	if viewer {
 		origin, entry = &in.Origin, &in.EntryURL
 	}
+	if err := ValidDeliverTo(in.DeliverTo); err != nil {
+		return "", Plugin{}, err
+	}
+	if in.DeliverTo != "" {
+		if !slices.Contains(caps, CapMessages) {
+			return "", Plugin{}, invalid("only a plugin with messages can be bound to an officer")
+		}
+		owner, _ := authz.From(ctx)
+		if err := s.officerDefined(ctx, owner.UserID, OfficerOf(in.DeliverTo)); err != nil {
+			return "", Plugin{}, err
+		}
+	}
 	tok, err := NewToken()
 	if err != nil {
 		return "", Plugin{}, err
 	}
-	var p Plugin
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		p, err = scanPlugin(tx.QueryRow(ctx, `
-			INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url)
-			VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+pluginCols,
-			name, label, HashToken(tok), dataScope, caps, origin, entry))
-		if err != nil {
-			return err
-		}
-		detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
-		if viewer {
-			detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
-		}
-		return audit(ctx, tx, "plugin.created", Object(p.ID), detail)
-	})
+	// A savepoint, so a name already taken is answered as ErrInvalid without
+	// aborting the caller's transaction.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return "", Plugin{}, err
+	}
+	p, err := scanPlugin(sp.QueryRow(ctx, `
+		INSERT INTO plugins (name, label, token_hash, data_scope, capabilities, origin, entry_url, deliver_to)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, '')) RETURNING `+pluginCols,
+		name, label, HashToken(tok), dataScope, caps, origin, entry, in.DeliverTo))
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "plugins_owner_name_live" {
+		_ = sp.Rollback(ctx)
 		return "", Plugin{}, invalid("you already have a plugin named %q; revoke it first", name)
 	}
 	if err != nil {
+		_ = sp.Rollback(ctx)
+		return "", Plugin{}, err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return "", Plugin{}, err
+	}
+	detail := map[string]any{"name": name, "data_scope": dataScope, "capabilities": caps}
+	if viewer {
+		detail["origin"], detail["entry_url"] = in.Origin, in.EntryURL
+	}
+	if in.DeliverTo != "" {
+		detail["deliver_to"] = in.DeliverTo
+	}
+	if err := audit(ctx, tx, "plugin.created", Object(p.ID), detail); err != nil {
 		return "", Plugin{}, err
 	}
 	return tok, p, nil
@@ -347,6 +401,10 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 	return found, err
 }
 
+// ChecksOffDetail is an outbound draft's detail when its plugin's
+// draft_checks was turned off while it awaited the check (SetDraftChecks).
+const ChecksOffDetail = "the plugin's Checks replies was turned off before it checked this draft"
+
 // SetDraftChecks turns CapDraftChecks on or off for the principal's LIVE
 // plugin id, changing that one capability and no other (and the same token:
 // the plugin keeps its row — its rules, chief session, queued messages and
@@ -360,6 +418,9 @@ func (s *PGStore) Revoke(ctx context.Context, id int64) (bool, error) {
 // awaiting its check LAPSES in the same transaction (check_state 'lapsed', as
 // LapseDraftCheck does at its deadline), so it is an ordinary pending draft the
 // owner may approve; lapsed is them, for internal/api to ask the owner about.
+// An OUTBOUND draft awaiting its check is REFUSED instead (outbound.go: it
+// cannot be approved without the plugin's check), audited
+// plugin.draft.check_refused.
 // Audited: plugin.capability.changed {capability, old, new}, and a
 // plugin.draft.check_lapsed per draft.
 func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plugin, changed bool, lapsed []Draft, err error) {
@@ -417,6 +478,28 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 				return err
 			}
 		}
+		// An OUTBOUND draft cannot lapse into an approvable one (its media
+		// reach muster only through the check, outbound.go): it is REFUSED,
+		// as a check refusal is, so it stops counting against its officer's
+		// pending cap and its card says why.
+		out, err := tx.Query(ctx, `UPDATE plugin_reply_drafts SET check_state = 'refused', checked_at = now(), status = 'rejected',
+				decided_at = now(), detail = $2
+			WHERE id IN (SELECT id FROM plugin_reply_drafts WHERE plugin_id = $1 AND message_id IS NULL
+			              AND status = 'pending' AND check_state = 'awaiting' ORDER BY id FOR UPDATE)
+			RETURNING id`, id, ChecksOffDetail)
+		if err != nil {
+			return err
+		}
+		ids, err := pgx.CollectRows(out, pgx.RowTo[int64])
+		if err != nil {
+			return err
+		}
+		for _, did := range ids {
+			if err := audit(ctx, tx, "plugin.draft.check_refused", DraftObject(did), map[string]any{
+				"why": ChecksOffDetail}); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return p, changed, lapsed, err
@@ -461,7 +544,9 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		// insert made by one transaction at a time per plugin: two concurrent POSTs
 		// cannot both see 59 and both land the 60th-and-61st.
 		var live bool
-		err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL FROM plugins WHERE id = $1 FOR UPDATE`, pluginID).Scan(&live)
+		var p Plugin
+		err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL, id, owner_id, name, deliver_to FROM plugins WHERE id = $1 FOR UPDATE`,
+			pluginID).Scan(&live, &p.ID, &p.OwnerID, &p.Name, &p.DeliverTo)
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
 			return ErrNotFound
 		}
@@ -475,6 +560,17 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		// 🔴 A PLUGIN BOUND TO AN OFFICER (outbound.go): its message becomes an
+		// item in that officer's queue, in THIS transaction — never a chief
+		// turn. Task events are muster's own and never take this path.
+		officer := ""
+		if taskID == nil {
+			if officer, err = boundOfficer(p, in); err != nil {
+				return err
+			}
+		} else if in.Kind != "" || in.Venue != "" {
+			return invalid("kind and venue are a plugin bound to an officer's")
 		}
 		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
 		// MaxPerHour / MaxQueued, task events (task_id set) against
@@ -506,16 +602,25 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		if routedTo != "" {
 			routed = routedTo
 		}
+		if officer != "" {
+			routed = RoutedToOfficer
+		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
 			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id,
-			                             routed_to, status, delivered_at, thread, human_conversation)
+			                             routed_to, status, delivered_at, thread, human_conversation, kind, venue, routed_done_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text,
 			        CASE WHEN $10::text IS NULL THEN 'queued' ELSE 'delivered' END,
-			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END, nullif($11, ''), $12) RETURNING `+messageCols,
+			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END, nullif($11, ''), $12, nullif($13, ''), nullif($14, ''),
+			        CASE WHEN $10::text = 'officer' THEN now() END) RETURNING `+messageCols,
 			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed, in.Thread,
-			in.HumanConversation))
+			in.HumanConversation, officerKind(officer, in.Kind), in.Venue))
 		if err != nil {
 			return err
+		}
+		if officer != "" {
+			if m, err = s.routeToOfficer(ctx, tx, p, officer, m); err != nil {
+				return err
+			}
 		}
 		created = true
 		return nil

@@ -56,7 +56,8 @@ func (s *Server) draftFiled(owner int64, d plugins.Draft) {
 		s.attention.drafts = map[int64]draftNote{}
 	}
 	for id, n := range s.attention.drafts {
-		if n.message == d.MessageID && id != d.ID {
+		// An outbound draft (MessageID 0) supersedes nothing.
+		if d.MessageID != 0 && n.message == d.MessageID && id != d.ID {
 			gone = append(gone, id)
 			delete(s.attention.drafts, id)
 		}

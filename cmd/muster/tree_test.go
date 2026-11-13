@@ -54,7 +54,7 @@ import (
 // 29 → 30: `agent create` (agent_create.go), POST /api/agents — the machine
 // route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
 // phase 2), on its own agent-create token.
-const wantVerbCount = 40
+const wantVerbCount = 44
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -110,6 +110,8 @@ var wiring = []struct {
 	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 	// Retrying an unconfirmed plugin message (plugin_retry.go).
 	{"plugins retry", []string{"plugins", "retry", "6"}, "POST /api/plugins/messages/6/retry"},
+	// Binding a plugin to a builtin officer (plugin_outbound.go).
+	{"plugins deliver-to", []string{"plugins", "deliver-to", "6", "officer:example:main"}, "PUT /api/plugins/6/deliver-to"},
 	// The built-in officer store's admin API (officer.go, #503 slice 7): ten
 	// verbs. `officer type put` reads its charter from a file (stdin here: the
 	// runner passes none, so the empty charter is what is sent).
@@ -123,6 +125,10 @@ var wiring = []struct {
 	{"officer item ls", []string{"officer", "item", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/items"},
 	{"officer item enqueue", []string{"officer", "item", "enqueue", "marketing:example", "--kind", "post", "--subject", "s1"}, "POST /api/officers/defs/marketing:example/items"},
 	{"officer item resolve", []string{"officer", "item", "resolve", "marketing:example", "7"}, "POST /api/officers/defs/marketing:example/items/7/resolve"},
+	// Schedules (slice 8): three more.
+	{"officer schedule ls", []string{"officer", "schedule", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/schedules"},
+	{"officer schedule put", []string{"officer", "schedule", "put", "marketing:example", "nightly", "--cron", "0 6 * * *", "--kind", "k", "--subject", "s"}, "PUT /api/officers/defs/marketing:example/schedules/nightly"},
+	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
 	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
@@ -286,6 +292,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"status":"cancelled"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
+			h.json("PUT /api/plugins/6/deliver-to", http.StatusOK, `{"plugin_id":6,"plugin_name":"example-relay","deliver_to":"officer:example:main"}`)
 			h.json("GET /api/officers/types", http.StatusOK, `{"types":[]}`)
 			h.json("GET /api/officers/types/marketing", http.StatusOK, `{"key":"marketing"}`)
 			h.json("PUT /api/officers/types/marketing", http.StatusOK, `{"key":"marketing","charter_version":1}`)
@@ -296,6 +303,9 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/officers/defs/marketing:example/items", http.StatusOK, `{"items":[]}`)
 			h.json("POST /api/officers/defs/marketing:example/items", http.StatusCreated, `{"id":7,"created":true}`)
 			h.json("POST /api/officers/defs/marketing:example/items/7/resolve", http.StatusOK, `{"item":{"id":7}}`)
+			h.json("GET /api/officers/defs/marketing:example/schedules", http.StatusOK, `{"schedules":[]}`)
+			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
+			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)

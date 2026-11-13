@@ -17,11 +17,12 @@ mention them.
 
 ## ⚠ Before you declare one on a real deployment
 
-Every outward action an officer takes is meant to pass an Attention ask that
-shows the exact content (a muster draft the owner approves, carried out by a
-relay on the owner's own machine — the design's *Phase-3 gated outward
-posting*). **That path is not built yet.** Until it is, a builtin officer's
-only ways out of its pod are muster's tools and the connectors its owner
+Every outward action an officer takes passes an Attention approval that shows
+the exact content: the officer files an **outbound draft**
+(`officer_post_draft`), its owner approves the exact text and media, and a
+plugin on the owner's own machine posts it ([§ 5b](#5b-outbound-drafts-through-a-bound-plugin)).
+Only an officer whose type grants `outbound_drafts` gets that tool. Its only
+other ways out of its pod are muster's tools and the connectors its owner
 approves one request at a time: do not approve a connector that can write to
 the outside world for one, and give it no `repo` with write access. The
 empty roster (no officer declared) exposes nothing.
@@ -41,7 +42,7 @@ sweep. No officer runs yet. The boot log says:
 
 ```
 officers: ON — empty roster (MUSTER_OFFICERS declares none)
-officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s
+officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s, schedules every 30s (UTC cron)
 ```
 
 Unset (or blank), the store is off and every `/api/officers/…` route answers
@@ -80,6 +81,28 @@ statement names the caller as owner).
 `PUT` replaces: a flag you leave out takes its default. `delete` is refused
 (409) while something still names the row: a type an officer uses, an officer
 with items or schedules.
+
+## 2b. Let its instances reach the model (egress)
+
+An officer instance's pod is egress-locked: no public address and no DNS,
+only muster's connector door. On a cluster whose policy engine filters by
+name (a Cilium `toFQDNs` rule) the operator allows Anthropic there. On one
+that cannot (flannel with the k3s NetworkPolicy controller), let muster write
+the allow by address:
+
+```yaml
+- name: MUSTER_OFFICER_EGRESS_CIDRS        # Anthropic's published API ranges (example: check
+  value: "160.79.104.0/23:443,153.61.224.0/22:443"   # https://platform.claude.com/docs/en/api/ip-addresses)
+- name: MUSTER_OFFICER_EGRESS_DNS          # the API and muster's connect URL are names
+  value: "unfiltered"
+```
+
+An officer pod then reaches exactly: cluster DNS, those blocks on 443, and
+muster's connector door. IPv4 only; private, shared and reserved ranges and
+anything wider than a /16 are refused at boot. Unfiltered DNS is a channel a
+prompt-injected session could leak through by name — see
+[officers.md](officers.md#on-a-cluster-without-fqdn-policies-muster_officer_egress_)
+and [configuration.md](configuration.md) for the risk stated in full.
 
 ## 3. Declare it in `MUSTER_OFFICERS`
 
@@ -123,6 +146,31 @@ kind and subject returns that item (`created: false`). The wake loop starts
 an instance for claimable work within its poll interval. `resolve` is refused
 (409) while an instance holds the item under a live lease.
 
+## 4b. Schedules (cron, UTC)
+
+```sh
+muster officer schedule put marketing:example weekly-digest \
+    --cron "0 9 * * 1" --kind digest.weekly --subject weekly --priority normal
+muster officer schedule ls marketing:example
+muster officer schedule delete marketing:example weekly-digest
+```
+
+Five fields (minute hour day-of-month month day-of-week), evaluated in
+**UTC**; `*`, numbers, ranges `a-b`, lists and steps `*/n`; day-of-week 0–6 (0
+or 7 Sunday); when both day fields are restricted a day matches if either
+does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
+
+- **once**: a fire is a compare-and-set on the schedule's `next_fire_at`, so of
+  two replicas (or a restarted muster) exactly one enqueues, in the same
+  transaction as the advance;
+- **missed fires collapse to one**: after downtime a schedule fires once, then
+  at its next future time;
+- `--skip-if-live` (default): a fire while an item of that kind and subject
+  is still live enqueues nothing; `--skip-if-live=false` makes every fire its
+  own item (`<subject>@<fire minute>`);
+- a switched-off officer is not fed, and its schedules still advance (no
+  backlog on switching it back on).
+
 ## 5. Asks and escalations, through Attention
 
 - **An instance's question** — `officer_ask_person{item_id, to: "owner",
@@ -144,6 +192,23 @@ an instance for claimable work within its poll interval. `resolve` is refused
   Dismissing it (or letting it expire) leaves the item escalated. A
   `--mode shadow` officer records its escalations and asks nobody.
 
+## 5b. Outbound drafts through a bound plugin
+
+1. Grant the type the capability:
+   `muster officer type put marketing --name "Marketing" --charter-file ./charter.md --policy '{"capabilities":["outbound_drafts"]}'`.
+2. Mint (or [pair](plugins.md#pairing-a-plugin-without-handling-its-token)) a
+   plugin with `messages` and `draft_checks`, and bind it:
+   `deliver_to = officer:marketing:example`
+   ([plugins.md](plugins.md#a-plugin-bound-to-an-officer)). The binding is
+   refused unless the officer is defined for the same owner.
+3. The plugin's messages (`kind`: `plan`, `reply`, `snapshot`, `note`) arrive
+   as `plugin.<kind>` items with the message fenced as untrusted.
+4. The officer files `officer_post_draft{plugin, venue, target, body, media?,
+   item_id?}`. The plugin checks the draft and uploads each medium's bytes;
+   the owner sees the exact text, images and videos on the Reply drafts tab,
+   and approval binds the body and every medium's SHA-256. The plugin claims
+   it, re-hashes its files, posts, reads the post back and reports the result.
+
 ## 6. Switch it off
 
 `muster officer def put marketing:example --enabled=false`: the wake loop
@@ -161,5 +226,7 @@ running it; its store rows stay.
 | PUT / DELETE | `/api/officers/defs/{officer}` | PUT `{enabled?, mode?, escalate_to?}` |
 | GET / POST | `/api/officers/defs/{officer}/items` | GET `?status=&limit=`; POST `{kind, subject_key, payload?, tier?, priority?, not_before?}` |
 | POST | `/api/officers/defs/{officer}/items/{id}/resolve` | `{outcome, summary}` |
+| GET | `/api/officers/defs/{officer}/schedules` | |
+| PUT / DELETE | `/api/officers/defs/{officer}/schedules/{name}` | PUT `{cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}` |
 
 All behind the hook tier (`requireArmedHookToken`); 404 while the store is off.

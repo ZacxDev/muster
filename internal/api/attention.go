@@ -659,6 +659,9 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
 			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID), pushText: draftPushBody(c.Message, c.PluginLabel)}
+		if c.Draft.IsOutbound() {
+			it.Text, it.Detail = outboundAttentionText(c), "Draft: "+mirror.OneLine(c.Draft.Body, draftReplyMax)
+		}
 		// The agent that drafted it (none once that agent is deleted).
 		if c.Draft.AgentID != nil {
 			it.card.agentID = *c.Draft.AgentID
@@ -738,6 +741,12 @@ func (s *Server) attentionItemsWith(ctx context.Context, hs []mirror.HostView, w
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
 	}
 	out = append(out, drafts...)
+	// Plugin pairing requests (plugin_pairing.go).
+	pairs, err := s.pendingPairItems(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("pairing requests: %w", err))
+	}
+	out = append(out, pairs...)
 	// Task events the chief has not taken (task_routing.go).
 	tasks, err := s.unroutedTaskItems(ctx)
 	if err != nil {
