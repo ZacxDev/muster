@@ -84,6 +84,9 @@ type PRSession struct {
 	PR       int64
 	HeadRef  string
 	LastSeen time.Time
+	// FirstSeen is when the row was first reported. Only ListPRSessions
+	// reads it; the other reads leave it zero.
+	FirstSeen time.Time
 }
 
 // PRSessionRetention is how long a row nobody re-reports is kept: each report
@@ -123,10 +126,47 @@ type PRSessionStore interface {
 	// rows are the oldest — once the busy sessions had MaxSessionRefs newer
 	// ones between them.
 	SessionRefs(ctx context.Context, claudeSessions []string, mentions []prroute.Mention, branches []string) ([]PRSession, error)
+	// ListPRSessions is every one of the principal's rows that records a
+	// session CREATING pull request pr of repo (that repo, that number), newest
+	// first by first_seen (the id breaks a tie), at most MaxListedPRSessions. A
+	// push row names no number (session_prs_kind_shape), so it is never one of
+	// them, and only a gh-pr-create row has one. Rows are listed while they are still stored, past
+	// PRSessionRetention included: this is the read path over what was
+	// recorded (GET /api/pr-sessions), not a routing decision.
+	ListPRSessions(ctx context.Context, repo string, pr int64) ([]PRSession, error)
 }
 
 // MaxSessionRefs bounds SessionRefs: the hint reads it on every delivery.
 const MaxSessionRefs = 500
+
+// MaxListedPRSessions bounds ListPRSessions. One pull request is created by
+// one session, rarely re-created by a second; the bound only stops a
+// pathological table from becoming an unbounded response.
+const MaxListedPRSessions = 100
+
+// ListPRSessions: see PRSessionStore.
+func (s *PGStore) ListPRSessions(ctx context.Context, repo string, pr int64) ([]PRSession, error) {
+	rows, err := s.pool.Query(ctx, `SELECT claude_session, coalesce(host, ''), kind, repo, pr, coalesce(head_ref, ''),
+			first_seen, last_seen
+		FROM session_prs
+		WHERE repo = $1 AND pr = $2
+		ORDER BY first_seen DESC, id DESC LIMIT $3`, strings.ToLower(repo), pr, MaxListedPRSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PRSession{}
+	for rows.Next() {
+		var p PRSession
+		var kind string
+		if err := rows.Scan(&p.ClaudeSession, &p.Host, &kind, &p.Repo, &p.PR, &p.HeadRef, &p.FirstSeen, &p.LastSeen); err != nil {
+			return nil, err
+		}
+		p.Kind = prroute.Kind(kind)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
 
 // RecordPRSession: see PRSessionStore.
 func (s *PGStore) RecordPRSession(ctx context.Context, claudeSession, host string, sig prroute.Signal) (bool, error) {

@@ -418,6 +418,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
+		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
 		"PUT /api/plugins/{id}/deliver-to",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
@@ -472,6 +473,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
+		"GET /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
 		"PUT /api/plugins/{id}/deliver-to",
 		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
@@ -855,6 +857,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
 		"POST /api/plugin-threads":                             true,
 		"POST /api/pr-sessions":                                true,
+		"GET /api/pr-sessions":                                 true,
 		"POST /api/plugins/messages/{id}/retry":                true,
 		"PUT /api/plugins/{id}/deliver-to":                     true,
 		"GET /api/officers/types":                              true,
