@@ -511,41 +511,48 @@ func scanDraft(row pgx.Row) (Draft, error) {
 // holds nothing it waits for; and its rows are taken in id order
 // (sweepDrafts), so two sweeps cannot deadlock each other either.
 func (s *PGStore) sweep(ctx context.Context) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error { return sweepDrafts(ctx, tx) })
+	return s.inTx(ctx, func(tx pgx.Tx) error { return s.sweepDrafts(ctx, tx) })
 }
 
 // sweepDrafts settles what time has decided, for the principal's rows: a draft
 // pending or approved-but-unclaimed past its expiry is `expired`, and a claim
 // whose lease lapsed without a result is `unconfirmed` — the at-most-once rule
 // acting. Each is audited, one row per draft, as whichever principal's request
-// ran the sweep.
-func sweepDrafts(ctx context.Context, tx pgx.Tx) error {
-	for _, step := range []struct{ q, action, why string }{
+// ran the sweep; and an OUTBOUND draft's officer item is settled in the same
+// transaction (outboundEnded: its item never waits on a draft that ended).
+func (s *PGStore) sweepDrafts(ctx context.Context, tx pgx.Tx) error {
+	for _, step := range []struct {
+		q, action, why string
+		how            OutboundEnd
+	}{
 		{`UPDATE plugin_reply_drafts SET status = 'expired', decided_at = coalesce(decided_at, now())
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
 			              WHERE status IN ('pending', 'approved') AND claimed_at IS NULL AND expires_at <= now()
 			              ORDER BY id FOR UPDATE)
-			RETURNING id`,
-			"plugin.draft.expired", "not sent within 7 days of being written"},
+			RETURNING ` + draftCols,
+			"plugin.draft.expired", "not sent within 7 days of being written", OutboundExpired},
 		{`UPDATE plugin_reply_drafts SET status = 'unconfirmed'
 			WHERE id IN (SELECT id FROM plugin_reply_drafts
 			              WHERE status = 'approved' AND claimed_at IS NOT NULL AND lease_until <= now()
 			              ORDER BY id FOR UPDATE)
-			RETURNING id`,
-			"plugin.draft.unconfirmed", "lease lapsed without a result"},
+			RETURNING ` + draftCols,
+			"plugin.draft.unconfirmed", "lease lapsed without a result", OutboundUnconfirmed},
 	} {
 		rows, err := tx.Query(ctx, step.q)
 		if err != nil {
 			return err
 		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		ds, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) })
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
-			if err := audit(ctx, tx, step.action, DraftObject(id), map[string]any{"why": step.why}); err != nil {
+		for _, d := range ds {
+			if err := audit(ctx, tx, step.action, DraftObject(d.ID), map[string]any{"why": step.why}); err != nil {
 				return err
 			}
+		}
+		if err := s.outboundEnded(ctx, tx, ds, step.how); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1019,12 +1026,17 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 			return err
 		}
 		if d.IsOutbound() && !d.BindingHolds() {
-			if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
-				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1`, d.ID, BindingBrokenDetail); err != nil {
+			withdrawn, err := scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now(), approved_at = NULL,
+				approved_body_sha256 = NULL, approved_media_sha256 = NULL, detail = $2 WHERE id = $1 RETURNING `+draftCols, d.ID, BindingBrokenDetail))
+			if err != nil {
 				return err
 			}
 			retry = true
-			return audit(ctx, tx, "plugin.draft.binding_broken", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": BindingBrokenDetail})
+			if err := audit(ctx, tx, "plugin.draft.binding_broken", DraftObject(d.ID), map[string]any{"plugin_id": pluginID, "why": BindingBrokenDetail}); err != nil {
+				return err
+			}
+			// Its officer's item is settled with it (outboundEnded).
+			return s.outboundEnded(ctx, tx, []Draft{withdrawn}, OutboundBindingBroken)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE plugin_reply_drafts
 			SET claimed_at = now(), lease_until = now() + make_interval(secs => $2) WHERE id = $1`,

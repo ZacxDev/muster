@@ -312,10 +312,14 @@ func (s *Server) draftRefused(ctx context.Context, p plugins.Plugin, d plugins.D
 	s.logger.Printf("plugins: plugin %d refused draft %d (sending %v): %s", p.ID, d.ID, sending, outcome)
 	switch outcome {
 	case plugins.RefusalOutbound:
-		// An officer's outbound draft: the owner is told, and its officer
-		// gets a draft.refused item (plugin_outbound.go).
-		s.notifyDraftRefused(p, d, refusalToOfficer)
-		s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin)
+		// An officer's outbound draft: its officer gets a draft.refused item
+		// (plugin_outbound.go) — or, past the bound, is NOT told — and the
+		// owner's push says which.
+		where := refusalToOfficer
+		if s.outboundSettled(ctx, p.OwnerID, d, settledByPlugin) {
+			where = refusalOfficerNotTold
+		}
+		s.notifyDraftRefused(p, d, where)
 	case plugins.RefusalAnsweredElsewhere:
 		// Another reply went, or is on its way: nothing goes back anywhere.
 		s.notifyDraftRefused(p, d, refusalAnsweredElsewhere)
@@ -347,6 +351,10 @@ const (
 	refusalAnsweredElsewhere
 	// refusalToOfficer: an outbound draft's officer, as a draft.refused item.
 	refusalToOfficer
+	// refusalOfficerNotTold: nowhere — the outbound draft's officer already
+	// has maxOpenRefusedItems draft.refused items, so it was not told, and
+	// the item the draft was for is closed.
+	refusalOfficerNotTold
 )
 
 // The refused draft push's title (muster's), and its body's bound.
@@ -390,9 +398,35 @@ func draftRefusedPushBody(label, detail string, where int) string {
 		tail = " Another reply to this message was already sent or is on its way, so nothing more is done."
 	case refusalToOfficer:
 		tail = " It went back to the officer that wrote it."
+	case refusalOfficerNotTold:
+		tail = officerNotToldTail
 	}
 	// Where it goes first: a long reason is what the bound cuts, never that.
 	return truncate(body+" refused it."+tail+" It said: "+plugins.RefusalText(detail), draftRefusedPushBodyMax)
+}
+
+// officerNotToldTail is what a push about an outbound draft that ended
+// unsent says when its officer was NOT told (draftEndFor's bound).
+var officerNotToldTail = " Its officer was NOT told: it already has " + strconv.Itoa(maxOpenRefusedItems) + " open " + draftRefusedKind +
+	" items. The item the draft was for is closed."
+
+// OfficerNotToldPushTitle is the push to an owner whose rejection of an
+// outbound draft did not reach its officer (notifyOfficerNotTold).
+const OfficerNotToldPushTitle = "A rejection did not reach the officer"
+
+// notifyOfficerNotTold pushes owner that their rejection of outbound draft d
+// did not reach its officer (past the bound), on a tag of its own: the
+// draft's tag is cleared as the decision settles it (draftSettled), and
+// two pushes on one tag race.
+func (s *Server) notifyOfficerNotTold(owner int64, d plugins.Draft) {
+	s.goNotify(owner, push.EventPlugin, RouterNotification{
+		Type:  "plugin",
+		ID:    strconv.FormatInt(d.ID, 10),
+		Title: OfficerNotToldPushTitle,
+		Body:  truncate("You rejected an outbound draft on "+d.VenueText()+"."+officerNotToldTail, draftRefusedPushBodyMax),
+		Tag:   draftTag(d.ID) + "-officer",
+		Data:  map[string]string{"url": draftLink(d.ID)},
+	}, nil)
 }
 
 // noteDraftRefusedToChief tells the chief that filed refused draft d (no
@@ -564,7 +598,10 @@ func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftD
 		// like a plugin's refusal), and closes the item it was filed for. A
 		// reply draft's rejection goes nowhere, as before: its chief or
 		// session is not told (outboundSettled decides which, in one place).
-		s.outboundSettled(ctx, d.OwnerID, d, settledByOwner)
+		// Past the bound the officer is NOT told: the owner is, here.
+		if s.outboundSettled(ctx, d.OwnerID, d, settledByOwner) {
+			s.notifyOfficerNotTold(d.OwnerID, d)
+		}
 	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).

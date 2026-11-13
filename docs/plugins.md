@@ -787,15 +787,37 @@ After the result, for an outbound draft filed with an `item_id`:
   none) — so it can write a better one. In the same transaction the item the
   draft was for is finished `no_action`, its summary naming the new item: the
   work continues there.
+- **Ended by muster itself**, in the same transaction that ends the draft
+  (the draft sweep that runs before any draft is read, filed, checked or
+  claimed, and the claim):
+  - the draft **expires** (not sent within 7 days of being written): a
+    `draft.refused` item, `status: "expired"`, `by: "muster"`, and the item
+    the draft was for is finished `no_action` naming it;
+  - the claim finds its **binding broken** (the body or media no longer what
+    you approved) and withdraws it: the same, `status: "rejected"`,
+    `by: "muster"`, `detail: "the body or media changed after approval"`;
+  - 🔴 the draft becomes **unconfirmed** (the plugin collected it and its
+    lease lapsed with no result): it **may have been posted**, so muster
+    never hands it back to be redrafted, which could post it twice. No
+    `draft.refused` item is queued; the item the draft was for is
+    **escalated** to you instead, and the escalation's Attention ask says the
+    draft may be live and to check the venue. Answering sends the item back
+    to the officer with your answer; dismissing leaves it escalated. A late
+    result for that draft is still recorded on the draft.
 - 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,
   counted and inserted in one transaction under one lock, so neither a plugin
   that refuses every draft nor two refusals at the same instant can loop the
-  officer past it. Past the bound nothing is queued, the item the draft was for
-  stays waiting, and only your push (for a plugin's refusal) says so: resolve
-  the item by hand (`POST /api/officers/defs/{officer}/items/{id}/resolve`).
-- ⚠ A draft that **expires** undecided, becomes **unconfirmed**, or whose
-  binding broke at the claim settles nothing: its item stays waiting until you
-  resolve it by hand. (An unconfirmed draft's late result still settles it.)
+  officer past it. Past the bound nothing is queued and the officer is **not
+  told**, but the item the draft was for is still settled, its summary saying
+  so, and you are told: a push for a plugin's refusal or your own rejection
+  (the item is finished `no_action`), or, for an expiry or a broken binding,
+  an escalation of the item to you (its Attention ask).
+- No terminal state of a draft leaves its item waiting. An item is settled
+  only while it waits on that draft: one you already finished by hand, one an
+  instance holds under a live lease, or one that waits on a newer draft of its
+  own (still pending or approved) is left as it is. An item left **claimed**
+  by a draft filed before items waited on their drafts (muster 0.218.0) is
+  settled the same way once its lease has lapsed.
 
 ### Pairing a plugin without handling its token
 
