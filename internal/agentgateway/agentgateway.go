@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +117,18 @@ type Config struct {
 	// failures against the Claude account it runs on. Optional: nil means no
 	// claude-code kind is enabled, and nothing is marked.
 	Accounts AccountMarker
+	// Kickoff clears an agent's stale "kickoff failed" record when a later turn
+	// on it completes (agents.Store.ClearKickoffFailure; the agents store
+	// satisfies it). Optional: nil means the record is cleared only by a
+	// re-delivered first turn, as before.
+	Kickoff KickoffFailureClearer
+}
+
+// KickoffFailureClearer is the one thing this package needs from the agents
+// store. Narrow for the reason AccountMarker is: a chat path has no business
+// writing any other column of the row.
+type KickoffFailureClearer interface {
+	ClearKickoffFailure(ctx context.Context, id int64) error
 }
 
 // AccountMarker is the one thing this package needs from the Claude account pool
@@ -152,6 +165,7 @@ type Gateway struct {
 	model    string
 	client   *http.Client
 	accounts AccountMarker
+	kickoff  KickoffFailureClearer
 	// failover is the account failover (UseFailover); nil = none.
 	failoverMu sync.RWMutex
 	failover   AccountFailover
@@ -198,6 +212,7 @@ func New(cfg Config) (*Gateway, error) {
 		model:    cfg.Model,
 		client:   cfg.Client,
 		accounts: cfg.Accounts,
+		kickoff:  cfg.Kickoff,
 	}
 	if g.client == nil {
 		g.client = &http.Client{Timeout: DefaultTurnTimeout}
@@ -291,10 +306,13 @@ func (g *Gateway) Send(ctx context.Context, t Target, sessionKey, message string
 	reply, err := agents.RunToollessTurn(ctx, client, agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, "", message, textDeltasOnly(emit))
 	if !errors.Is(err, agents.ErrResponsesUnsupported) {
-		return reply, g.noteFailure(ctx, t, err)
+		err = g.noteFailure(ctx, t, err)
+	} else {
+		reply, err = agents.ChatStream(ctx, client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
+			g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
 	}
-	return agents.ChatStream(ctx, client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
-		g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
+	g.noteSuccess(ctx, t, reply, err)
+	return reply, err
 }
 
 // clientFor returns the HTTP client a kind's turns use: the configured client,
@@ -356,6 +374,40 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	return err
 }
 
+// noteSuccess clears the agent's stale "kickoff failed" record
+// (agents.KickoffFailed) when this turn COMPLETED: no error and a non-blank
+// reply. Which records clear is the store's decision, not this function's: a
+// resend-safe cause (agents.KickoffResendSafe) is kept by
+// agents.Store.ClearKickoffFailure's own predicate.
+//
+// 🔴 IT IS HERE, NOT AT EACH CALLER, BECAUSE THIS IS THE ONE PLACE EVERY TURN
+// PASSES THROUGH. Chat and ChatWithTools are Resolve + Send / SendWithTools, and
+// every turn muster runs — an operator chat turn, a chief nudge, a chief_ask, a
+// task forward, an attention delivery, a memo relay, a plugin delivery and the
+// first turn itself — goes through one of the two. The first-turn failure is
+// recorded once and never retried (at-most-once), so before this nothing but a
+// re-delivered first turn ever cleared it, and an agent that had completed many
+// turns since kept the badge for ever.
+//
+// ⚠ "COMPLETED" IS THE KICKOFF DELIVERER'S OWN TEST, so a turn this clears for is
+// one internal/agentkickoff would have called delivered: an error, or a blank
+// reply (agents.KickoffEmptyReplyReason), clears nothing. On the first turn
+// itself the clear is redundant with RecordKickoffDelivery and harmless.
+//
+// ⚠ A FAILED CLEAR IS NOT RETURNED: the turn succeeded, and turning a
+// delivered reply into an error over a badge would be the worse defect. The
+// next completed turn retries it. It runs on a context detached from the
+// turn's, as noteFailure's mark does, so a caller that hangs up on the reply
+// does not cancel it.
+func (g *Gateway) noteSuccess(ctx context.Context, t Target, reply string, err error) {
+	if err != nil || strings.TrimSpace(reply) == "" || g.kickoff == nil || t.agentID <= 0 {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
+	defer cancel()
+	_ = g.kickoff.ClearKickoffFailure(cctx, t.agentID)
+}
+
 // markTimeout bounds the account-mark write.
 const markTimeout = 5 * time.Second
 
@@ -402,7 +454,9 @@ func (g *Gateway) ChatWithTools(ctx context.Context, a agents.Agent, sessionKey,
 func (g *Gateway) SendWithTools(ctx context.Context, t Target, sessionKey, instructions, message string, tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error) {
 	reply, err := agents.RunToolLoop(ctx, g.clientFor(t.kind), agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, instructions, message, tools, dispatch, emit)
-	return reply, g.noteFailure(ctx, t, err)
+	err = g.noteFailure(ctx, t, err)
+	g.noteSuccess(ctx, t, reply, err)
+	return reply, err
 }
 
 // reach resolves where an agent is and what credential talks to it — the two

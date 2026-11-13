@@ -413,6 +413,42 @@ func (s *PGStore) SetKickoffError(ctx context.Context, id int64, msg string) err
 	return err
 }
 
+// ClearKickoffFailure erases a stale first-turn failure once a later turn on the
+// agent completed (see the Store contract). At-most-once kickoff is untouched:
+// kicked_off and kickoff_attempts are not written, so nothing is re-sent.
+//
+// 🔴 updated_at IS DELIBERATELY NOT BUMPED, for the same reason SetKickoffError
+// does not bump it. The dwell clock (agents.DecideReconcile's ActionRetryKickoff
+// bound, MarkKickoffStuck's equality) is read only for OWED rows, which the
+// `kicked_off` conjunct already excludes — so bumping could not help there and
+// could only disturb a row it was never meant to touch. Erasing stale evidence is
+// not a transition; the turn that justified it already moved the agent's order
+// through its transcript message.
+//
+// ⚠ THE `kicked_off` CONJUNCT IS LOAD-BEARING: on a row that is NOT kicked off,
+// kickoff_error is the checkout-wait marker (WaitedForCheckout) or a
+// not-delivered record, and an operator chat turn to such an agent must not erase
+// either. Pinned by TestClearKickoffFailureLeavesAnOwedRowAlone.
+//
+// 🔴 A RESEND-SAFE CAUSE IS KEPT (operator decision). A first turn whose recorded
+// cause PROVES the task was never delivered — [KickoffResendSafe]: the
+// never-connected, not-accepted and busy prefixes — keeps its badge and its
+// "safe to re-send" remedy after a later turn completes, because that later turn
+// did not carry the task and the operator still owes the re-send. Only causes
+// under which the task may have arrived (timeout, shutdown, transport error,
+// empty reply, unrecognised text) are cleared. The three prefixes are the SAME
+// constants KickoffResendSafe reads, passed as parameters, so the SQL cannot drift
+// from it. Pinned by TestClearKickoffFailureKeepsAResendSafeCause.
+func (s *PGStore) ClearKickoffFailure(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET kickoff_error=''
+		WHERE id=$1 AND kicked_off AND kickoff_error<>''
+		  AND NOT starts_with(kickoff_error, $2)
+		  AND NOT starts_with(kickoff_error, $3)
+		  AND NOT starts_with(kickoff_error, $4)`,
+		id, KickoffNeverConnectedReason, KickoffNotAcceptedReason, KickoffBusyReason)
+	return err
+}
+
 // MarkKickoffStuck is the conditional `error` write for an owed row the deliverer
 // judged stuck (see the Store contract). updated_at is compared for EQUALITY with
 // the value the caller read: every writer that moves the row on (UpdateStatus,
