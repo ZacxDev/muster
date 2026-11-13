@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // dispatch_request's worker_pool and cc_account, and agents_list
@@ -101,15 +103,36 @@ func TestDispatchRequestHoldsAPoolWorkerAndApproveStartsItAsHeld(t *testing.T) {
 	}
 }
 
-// TestAPoolWorkerWithAPromptIsKickedOffAndAutoChoosesItsAccount: with a
-// prompt the pool worker gets it as its first turn (a kickoff Dispatch), and
-// with cc_account omitted it runs on the pool's own choice, unpinned.
-func TestAPoolWorkerWithAPromptIsKickedOffAndAutoChoosesItsAccount(t *testing.T) {
+// TestAPoolWorkerTakesNoPromptFromASession: on the mirror door a worker_pool
+// request WITH a prompt is refused with its own sentence — a pool may carry
+// deployment privileges (bypass job lanes, a private repository's mirror), and
+// a session may add a worker to it but not give it instructions — and holds
+// and starts nothing, whitespace-only prompts aside (they are no prompt). The
+// same request without the prompt is held and approved, on the pool's own
+// account choice, unpinned, with no first turn.
+func TestAPoolWorkerTakesNoPromptFromASession(t *testing.T) {
 	h, _ := newPoolHoldFixture(t)
-	held := h.request(t, map[string]any{"target": "pod/claude-code", "worker_pool": "render-pool", "prompt": "Warm the cache first."})
+	for _, args := range []map[string]any{
+		{"target": "pod/claude-code", "worker_pool": "render-pool", "prompt": "Warm the cache first."},
+		{"target": "pod/claude-code", "worker_pool": "render-pool", "cc_account": "acct-pinned", "prompt": "Deploy it."},
+	} {
+		text, isErr, rpc := h.tool(t, h.ws, focusSID, dispatchRequestTool, args)
+		if rpc != nil || !isErr || !strings.Contains(errorText(t, text), dispatchRequestPoolPrompt) {
+			t.Fatalf("dispatch_request %v answered %v %s; want the pool-prompt refusal", args, rpc, text)
+		}
+	}
+	if n := h.auditRows(t, plugins.ActionDispatchHeld); n != 0 {
+		t.Fatalf("%d hold rows after the refusals, want none", n)
+	}
+	h.nothingStarted(t)
+	if !strings.Contains(dispatchRequestToolDef().Description, "takes NO prompt") {
+		t.Error("dispatch_request's description does not say a worker_pool agent takes no prompt")
+	}
+
+	held := h.request(t, map[string]any{"target": "pod/claude-code", "worker_pool": "render-pool", "prompt": "  "})
 	d, _ := h.auditDetail(t, plugins.ActionDispatchHeld, held.HoldID)
-	if _, named := d["cc_account"]; named || d["worker_pool"] != "render-pool" {
-		t.Errorf("hold row %v: want the pool and no account (muster's choice)", d)
+	if _, named := d["cc_account"]; named || d["worker_pool"] != "render-pool" || d["prompt"] != nil {
+		t.Errorf("hold row %v: want the pool, no account (muster's choice) and no prompt", d)
 	}
 	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
 	if isErr {
@@ -119,13 +142,90 @@ func TestAPoolWorkerWithAPromptIsKickedOffAndAutoChoosesItsAccount(t *testing.T)
 	if len(list) != 1 {
 		t.Fatalf("agents %+v, want one", list)
 	}
-	a := list[0]
-	if a.WorkerPool != "render-pool" || a.CCAccount != "acct-auto" || a.CCAccountPinned ||
-		!strings.Contains(a.PendingNote, "| Warm the cache first.") {
-		t.Errorf("agent %+v: want a render-pool worker on the pool's choice acct-auto, unpinned, told the prompt", a)
+	if a := list[0]; a.WorkerPool != "render-pool" || a.CCAccount != "acct-auto" || a.CCAccountPinned || a.PendingNote != "" {
+		t.Errorf("agent %+v: want a render-pool worker on the pool's choice acct-auto, unpinned, with no first turn", a)
 	}
-	if n := h.prov.calls(1); n != 1 || !h.prov.kickoffs[0] {
-		t.Errorf("provisioner dispatches %d (kickoffs %v), want one with a kickoff", n, h.prov.kickoffs)
+	if n := h.prov.calls(0); n != 0 {
+		t.Errorf("%d kickoff dispatch(es), want none", n)
+	}
+}
+
+// TestApproveRefusesAPoolHoldWithAPrompt: the approval checks again (defence
+// in depth) — a hold naming a pool AND a prompt, filed other than through
+// dispatch_request (which never files one), is refused before the
+// reservation: nothing started or reserved, the hold still open.
+func TestApproveRefusesAPoolHoldWithAPrompt(t *testing.T) {
+	h, _ := newPoolHoldFixture(t)
+	const prompt = "Ship the release with the pool's key."
+	detail := heldDispatch{Door: heldDoorMCP, Host: "ws", Session: focusSID, SessionLabel: "main:@1 @ ws", Target: "pod/claude-code",
+		Kind: agents.KindClaudeCode, WorkerPool: "render-pool", Prompt: prompt, PromptSHA256: promptDigest(prompt),
+		PromptBytes: len(prompt)}.detail()
+	hold, err := h.plugins.FileDispatchHold(h.asOwner, detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": hold.ID})
+	if want := fmt.Sprintf(dispatchApprovePoolPrompt, hold.ID); !isErr || !strings.Contains(errorText(t, text), want) {
+		t.Fatalf("approval of a pool hold with a prompt answered %s; want %q", text, want)
+	}
+	h.nothingStarted(t)
+	if got, err := h.plugins.DispatchHold(h.asOwner, hold.ID); err != nil || !got.Open() {
+		t.Fatalf("the hold after the refusal: %+v %v; want still open", got, err)
+	}
+}
+
+// deployKeyWorkspace answers PoolRepoRefusal by agentspec's own rule over cfg
+// (read through a pointer, so a test can add a key mid-flight); its other
+// JobWorkspace methods are unused here.
+type deployKeyWorkspace struct {
+	JobWorkspace
+	cfg *agentspec.Config
+}
+
+func (w deployKeyWorkspace) PoolRepoRefusal(a agents.Agent) error { return agentspec.PoolRepoRefusal(a, *w.cfg) }
+
+// TestADeployKeyPoolOnAnotherRepoIsRefusedBeforeTheHoldIsSpent: a pool with a
+// deploy key serves its one repository — the spec build's rule
+// (agentspec.PoolRepoRefusal), asked at the request (nothing held) and again
+// at the approval (a key added after the request refuses it before the
+// reservation; the hold stays open). The key's own repository is held.
+func TestADeployKeyPoolOnAnotherRepoIsRefusedBeforeTheHoldIsSpent(t *testing.T) {
+	cfg := &agentspec.Config{ClaudeCode: &agentspec.ClaudeCodeConfig{
+		PoolDeployKeys: map[string]agentspec.PoolDeployKey{"private-pool": {Repo: "example/app", Secret: "k"}}}}
+	names := &[]string{"acct-auto"}
+	h := newHoldFixture(t, func(ext *Extensions) {
+		ext.Kinds = accountKinds{stubKinds: stubKinds{pick: "acct-auto"}, names: names}
+		ext.JobWorkspace = deployKeyWorkspace{cfg: cfg}
+	})
+	h.withConnectedRepos(t, "example/app", "example/other")
+	h.srv.ext.Users = users.NewPG(h.pool) // the mirror door reads the owner's (admin) role here
+	for _, args := range []map[string]any{
+		{"target": "pod/claude-code", "worker_pool": "private-pool", "repo": "example/other"},
+		{"target": "pod/claude-code", "worker_pool": "private-pool"},
+	} {
+		text, isErr, rpc := h.tool(t, h.ws, focusSID, dispatchRequestTool, args)
+		if rpc != nil || !isErr || !strings.Contains(errorText(t, text), `whose deploy key is for repository "example/app"`) {
+			t.Fatalf("dispatch_request %v answered %v %s; want the deploy-key repository refusal", args, rpc, text)
+		}
+	}
+	if n := h.auditRows(t, plugins.ActionDispatchHeld); n != 0 {
+		t.Fatalf("%d hold rows after the refusals, want none", n)
+	}
+	h.nothingStarted(t)
+	// Positive control: the key's own repository is held.
+	h.request(t, map[string]any{"target": "pod/claude-code", "worker_pool": "private-pool", "repo": "example/app"})
+
+	// At the approval: held while the pool had no key, refused once it has one.
+	held := h.request(t, map[string]any{"target": "pod/claude-code", "worker_pool": "later-pool", "repo": "example/other"})
+	cfg.ClaudeCode.PoolDeployKeys["later-pool"] = agentspec.PoolDeployKey{Repo: "example/app", Secret: "k"}
+	text, isErr, _ := h.tool(t, h.ws, focusSID, dispatchApproveTool, map[string]any{"hold_id": held.HoldID})
+	if want := "hold " + held.HoldID + " can no longer start as it was held"; !isErr || !strings.Contains(errorText(t, text), want) ||
+		!strings.Contains(errorText(t, text), `whose deploy key is for repository "example/app", but it works on "example/other"`) {
+		t.Fatalf("approval after the key was added answered %s", text)
+	}
+	h.nothingStarted(t)
+	if hold, err := h.plugins.DispatchHold(h.asOwner, held.HoldID); err != nil || !hold.Open() {
+		t.Fatalf("the hold after the refusal: %+v %v; want still open", hold, err)
 	}
 }
 
@@ -184,7 +284,7 @@ func TestDispatchRequestRefusesABadPoolOrAccount(t *testing.T) {
 	h.nothingStarted(t)
 	// Positive control: the same fixture holds a valid pool request, so the
 	// refusals above are the pool and account rules, not a broken door.
-	h.request(t, cc(map[string]any{"worker_pool": "render-pool", "cc_account": "acct-pinned"}))
+	h.request(t, cc(map[string]any{"worker_pool": "render-pool", "cc_account": "acct-pinned", "prompt": ""}))
 }
 
 // TestAnAccountGoneBeforeTheApprovalRefusesItAndKeepsTheHold: the account is

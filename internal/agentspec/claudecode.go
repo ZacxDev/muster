@@ -408,6 +408,21 @@ func PoolDeployKeyFor(a agents.Agent, cfg Config) (PoolDeployKey, bool) {
 	return k, ok
 }
 
+// PoolRepoRefusal is THE rule that a deploy-key pool's worker works on that
+// key's one repository: nil when agent a is in no pool with a deploy key
+// ([PoolDeployKeyFor]) or works on its repository ([SameRepo]), else why not,
+// as a clause that follows the agent's name ("is in worker pool …"). Build
+// refuses the spec by it; the API asks it before it spends a held start on an
+// agent Build would refuse. a needs only its WorkerPool, Repo and Name.
+func PoolRepoRefusal(a agents.Agent, cfg Config) error {
+	k, ok := PoolDeployKeyFor(a, cfg)
+	if !ok || SameRepo(a.Repo, k.Repo) {
+		return nil
+	}
+	return fmt.Errorf("is in worker pool %q, whose deploy key is for repository %q, but it works on %q; a pool with a "+
+		"deploy key serves that one repository", a.WorkerPool, k.Repo, a.Repo)
+}
+
 // StripsRepoConfig reports whether a job on agent a gets NONE of its
 // repository's agent configuration — every `.claude/`, the root CLAUDE.md,
 // CLAUDE.local.md, AGENTS.md and .mcp.json removed from its worktree and none
@@ -595,10 +610,8 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	// repository it was never meant for (and GitHub would refuse it there anyway,
 	// a deploy key being one repository's).
 	if k, ok := PoolDeployKeyFor(a, cfg); ok {
-		if !SameRepo(a.Repo, k.Repo) {
-			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is in worker pool %q, whose deploy key is for "+
-				"repository %q, but it works on %q; a pool with a deploy key serves that one repository",
-				a.Name, a.WorkerPool, k.Repo, a.Repo)
+		if err := PoolRepoRefusal(a, cfg); err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q %w", a.Name, err)
 		}
 		cmd, err := podagent.MirrorHolderCommand(k.Repo, MirrorPath, DeployKeyPath, KnownHostsPath)
 		if err != nil {

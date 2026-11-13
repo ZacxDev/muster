@@ -785,10 +785,16 @@ The checks are `agent_dispatch`'s, minus the chief's own:
   by its workers, so a new name forms a new pool); the account must be one of
   your Claude accounts, and omitting it leaves the choice to muster at the
   start. A pool worker serves its pool's machine jobs ([jobs.md](jobs.md)): it
-  takes **no `task_id`**, its **prompt is optional** (without one it starts
-  with no first turn and waits for jobs, as the chief's `agent_dispatch` starts
-  one), and its repository is optional, as for `POST /api/agents`. It opens no
-  pull request. The approval starts the agent in the held pool on the held
+  takes **no `task_id`** and **no `prompt`** — it starts with no first turn and
+  waits for jobs, as the chief's `agent_dispatch` starts one with none — and
+  its repository is optional, as for `POST /api/agents`, except that a pool
+  with a deploy key (`MUSTER_AGENT_CC_POOL_DEPLOY_KEYS`) takes only its key's
+  repository (the spec build's own rule, asked at the request and the
+  approval). It opens no pull request. A prompt is refused because a pool may
+  carry deployment privileges (job turns without permission prompts, or a
+  private repository's mirror), and a session may add a worker to it but not
+  give that worker instructions of its own; a hold with a prompt is refused at
+  the approval too. The approval starts the agent in the held pool on the held
   account, and an account you no longer have refuses the approval before the
   hold is spent.
 
