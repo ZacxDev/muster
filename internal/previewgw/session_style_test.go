@@ -3,6 +3,8 @@ package previewgw
 import (
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,6 +32,42 @@ func TestSessionPageButtonsAreReadable(t *testing.T) {
 		}
 		if r := contrast(t, c.resolve(t, "body", "color"), c.resolve(t, "body", "background")); r < 4.5 {
 			t.Errorf("%s: page text is %.2f:1 against its background; want at least 4.5:1", scheme, r)
+		}
+	}
+}
+
+// 🔴 A notice page's "Open muster" link is readable in BOTH colour schemes:
+// the stylesheet the rendered notice actually carries sets the link's colour
+// (never the UA's default blue/purple, which is unreadable on the dark
+// background), at least WCAG AA (4.5:1) against the page background.
+func TestNoticeLinkIsReadable(t *testing.T) {
+	g := &Gateway{cfg: Config{PublicURL: "https://muster.example"}}
+	rec := httptest.NewRecorder()
+	g.renderNotice(rec, http.StatusForbidden, "Open this from muster", "body")
+	html := rec.Body.String()
+	if !strings.Contains(html, `<a href="https://muster.example"`) {
+		t.Fatalf("notice has no link to muster:\n%s", html)
+	}
+	_, css, ok := strings.Cut(html, "<style")
+	if ok {
+		_, css, ok = strings.Cut(css, ">")
+	}
+	if ok {
+		css, _, ok = strings.Cut(css, "</style>")
+	}
+	if !ok {
+		t.Fatalf("notice carries no <style> element:\n%s", html)
+	}
+	for _, dark := range []bool{false, true} {
+		scheme := map[bool]string{false: "light", true: "dark"}[dark]
+		c := cascade(t, css, dark)
+		fg := c.resolve(t, "a", "color")
+		if fg == "" {
+			t.Errorf("%s: link color is left to the UA; the page must set it", scheme)
+			continue
+		}
+		if r := contrast(t, fg, c.resolve(t, "body", "background")); r < 4.5 {
+			t.Errorf("%s: link %s is %.2f:1 against the page; want at least 4.5:1", scheme, fg, r)
 		}
 	}
 }
