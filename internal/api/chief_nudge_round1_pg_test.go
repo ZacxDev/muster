@@ -151,10 +151,14 @@ func TestANudgeStillQueuedWhenItsStopWasPushedIsNeverPasted(t *testing.T) {
 }
 
 // TestAnOldStopsDecisionNeverQuietsANewStop (round 1, step-2 gap b): the chief
-// left a stop that asked nothing (quiet). Its window goes and comes back with
-// the same idle-since, so a NEW stop opens on the SAME streak. The old stop's
-// leave must not quiet it: it pushes (once the chief's wait has passed — it
-// is never judged again, its streak being decided). RED at 8620057e: no push.
+// left a stop that asked nothing (quiet). The stop ENDS on the owner's action
+// ('owner': the owner answered, so any stop after it is new — though, read a
+// pass late, it can end carrying the same streak), and a NEW stop opens on
+// the SAME streak. The old stop's leave must not quiet it: it pushes (once the
+// chief's wait has passed — it is never judged again, its streak being
+// decided). RED at 8620057e: no push. (Until #635 this test ended the first
+// stop 'gone'; a stop back from 'gone' on its streak is now the SAME stop and
+// keeps the chief's decision — TestAQuietedStopBackFromGoneStaysQuiet.)
 func TestAnOldStopsDecisionNeverQuietsANewStop(t *testing.T) {
 	f, _ := newNeedsYouFixture(t, jevNothing, true)
 	f.gw.set(`{"decision":"leave","reason":"it is done"}`)
@@ -163,7 +167,7 @@ func TestAnOldStopsDecisionNeverQuietsANewStop(t *testing.T) {
 	if q := f.quietOf(t, first.ID); q != sessionstate.QuietLeft {
 		t.Fatalf("precondition: quiet %q", q)
 	}
-	if ended, err := f.eps.End(asUser(authz.OperatorUserID), first.ID, sessionstate.EndGone, f.srv.now()); err != nil || !ended {
+	if ended, err := f.eps.End(asUser(authz.OperatorUserID), first.ID, sessionstate.EndOwner, f.srv.now()); err != nil || !ended {
 		t.Fatalf("end: %v %v", ended, err)
 	}
 	f.statePass(t)

@@ -1,12 +1,13 @@
 package sessionstate
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
 
 // TestAStopBackFromGoneOnItsStreakKeepsItsPush (regression): PG.Open's resume
-// rule (Resumed). When a session's LATEST episode ended 'gone' on the streak
+// rule (resumedReasons). When a session's LATEST episode ended 'gone' on the streak
 // being opened, the new episode is written carrying that episode's pushed_at —
 // so the stop's one push claim refuses it (ClaimPush false) and it is never
 // pushed a second time. Every other shape carries nothing: a stop that ended
@@ -54,8 +55,8 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 	t.Run("pushed, gone, back on its streak: carried, and never claimed again", func(t *testing.T) {
 		first := stop(t, 2, "k-carry", "since:111", true, EndGone)
 		back := reopen(t, 2, "k-carry", "since:111")
-		if back.Seq != first.Seq+1 || !back.Open() || !back.PushedAt.Equal(pushedAt) || back.Quiet != "" {
-			t.Fatalf("the stop back from gone: %+v, want seq %d carrying pushed_at %v", back, first.Seq+1, pushedAt)
+		if back.Seq != first.Seq+1 || !back.Open() || !back.PushedAt.Equal(pushedAt) || back.Quiet != "" || back.ResumedFrom != first.ID {
+			t.Fatalf("the stop back from gone: %+v, want seq %d carrying pushed_at %v, resumed from %d", back, first.Seq+1, pushedAt, first.ID)
 		}
 		if ok, err := p.ClaimPush(asUser(2), back.ID, pushedAt.Add(2*time.Hour)); err != nil || ok {
 			t.Fatalf("the stop back from gone was claimed for a second push: %v %v", ok, err)
@@ -64,8 +65,16 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 		if ended, err := p.End(asUser(2), back.ID, EndGone, pushedAt.Add(3*time.Hour)); err != nil || !ended {
 			t.Fatalf("end: %v %v", ended, err)
 		}
-		if again := reopen(t, 2, "k-carry", "since:111"); !again.PushedAt.Equal(pushedAt) {
-			t.Fatalf("gone twice: %+v, want pushed_at %v", again, pushedAt)
+		// The stop's FIRST episode stays the link (not the one in between).
+		if again := reopen(t, 2, "k-carry", "since:111"); !again.PushedAt.Equal(pushedAt) || again.ResumedFrom != first.ID {
+			t.Fatalf("gone twice: %+v, want pushed_at %v, resumed from %d", again, pushedAt, first.ID)
+		}
+	})
+
+	t.Run("unpushed, gone, back on its streak: no push to carry, but the same stop", func(t *testing.T) {
+		first := stop(t, 2, "k-unpushed", "since:222", false, EndGone)
+		if back := reopen(t, 2, "k-unpushed", "since:222"); !back.PushedAt.IsZero() || back.ResumedFrom != first.ID {
+			t.Fatalf("the unpushed stop back: %+v, want no push, resumed from %d", back, first.ID)
 		}
 	})
 
@@ -75,7 +84,6 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 		reason          string
 		streak, streak2 string
 	}{
-		{"unpushed, gone, back on its streak", false, EndGone, "since:222", "since:222"},
 		{"pushed, gone, back on a NEW streak", true, EndGone, "since:333", "since:334"},
 		{"pushed, ended owner, same streak", true, EndOwner, "since:444", "since:444"},
 		{"pushed, ended worked, same streak", true, EndWorked, "since:555", "since:555"},
@@ -84,8 +92,8 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 		t.Run(c.name+": carries nothing", func(t *testing.T) {
 			key := "k-" + c.name
 			stop(t, 2, key, c.streak, c.pushed, c.reason)
-			if back := reopen(t, 2, key, c.streak2); !back.PushedAt.IsZero() {
-				t.Fatalf("carried a push: %+v", back)
+			if back := reopen(t, 2, key, c.streak2); !back.PushedAt.IsZero() || back.ResumedFrom != 0 {
+				t.Fatalf("carried the stop: %+v", back)
 			}
 		})
 	}
@@ -95,10 +103,10 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 		// The other key at the SAME seq as k-mine's gone episode, so only the
 		// key tells them apart.
 		stop(t, 2, "k-other", "since:665", false, EndWorked)
-		if other := reopen(t, 2, "k-other", "since:666"); !other.PushedAt.IsZero() {
+		if other := reopen(t, 2, "k-other", "since:666"); !other.PushedAt.IsZero() || other.ResumedFrom != 0 {
 			t.Fatalf("another key carried the push: %+v", other)
 		}
-		if theirs := reopen(t, 3, "k-mine", "since:666"); !theirs.PushedAt.IsZero() || theirs.Owner != 3 {
+		if theirs := reopen(t, 3, "k-mine", "since:666"); !theirs.PushedAt.IsZero() || theirs.ResumedFrom != 0 || theirs.Owner != 3 {
 			t.Fatalf("another user's same key carried the push: %+v", theirs)
 		}
 	})
@@ -106,18 +114,66 @@ func TestAStopBackFromGoneOnItsStreakKeepsItsPush(t *testing.T) {
 	t.Run("only the LATEST episode is resumed", func(t *testing.T) {
 		stop(t, 2, "k-latest", "since:777", true, EndGone)
 		stop(t, 2, "k-latest", "since:778", false, EndGone)
-		if back := reopen(t, 2, "k-latest", "since:777"); !back.PushedAt.IsZero() {
+		if back := reopen(t, 2, "k-latest", "since:777"); !back.PushedAt.IsZero() || back.ResumedFrom != 0 {
 			t.Fatalf("an older gone episode's push was carried past a later stop: %+v", back)
 		}
 	})
 }
 
-// TestResumedIsGoneAlone pins Resumed's set: only 'gone' is the same stop
-// back. A widened set would carry the push of a stop the owner answered.
-func TestResumedIsGoneAlone(t *testing.T) {
-	for _, r := range []string{EndGone, EndWorked, EndOwner, EndViewed, EndReset, ""} {
-		if got, want := Resumed(r), r == EndGone; got != want {
-			t.Errorf("Resumed(%q) = %v, want %v", r, got, want)
+// TestResumedReasonsIsGoneAlone pins PG.Open's carry set: only 'gone' is the
+// same stop back. A widened set would carry the push of a stop the owner
+// answered.
+func TestResumedReasonsIsGoneAlone(t *testing.T) {
+	if !slices.Equal(resumedReasons, []string{EndGone}) {
+		t.Fatalf("resumedReasons = %q, want [gone]", resumedReasons)
+	}
+}
+
+// TestMissedPassesCountAndReset: Missed counts consecutive missing passes on
+// an open episode (0 on an ended one); Present and Observe reset the count;
+// the count is read back on the episode.
+func TestMissedPassesCountAndReset(t *testing.T) {
+	p := pgStore(t)
+	ctx := asUser(2)
+	e, _, err := p.Open(ctx, stalledEp("k-miss"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() int {
+		t.Helper()
+		got, ok, err := p.OpenFor(ctx, KindMirror, "k-miss")
+		if err != nil || !ok {
+			t.Fatalf("read: %v %v", ok, err)
 		}
+		return got.MissedPasses
+	}
+	for want := 1; want <= 2; want++ {
+		if n, err := p.Missed(ctx, e.ID); err != nil || n != want {
+			t.Fatalf("missed #%d: %d %v", want, n, err)
+		}
+	}
+	if n := read(); n != 2 {
+		t.Fatalf("read back: %d", n)
+	}
+	if err := p.Present(ctx, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := read(); n != 0 {
+		t.Fatalf("after Present: %d", n)
+	}
+	if n, _ := p.Missed(ctx, e.ID); n != 1 {
+		t.Fatalf("missed after Present: %d", n)
+	}
+	if err := p.Observe(ctx, e.ID, Observation{State: StateStalled, StreakKey: "since:1", At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if n := read(); n != 0 {
+		t.Fatalf("after Observe: %d", n)
+	}
+	if _, err := p.End(ctx, e.ID, EndGone, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := p.Missed(ctx, e.ID); err != nil || n != 0 {
+		t.Fatalf("missed on an ended episode: %d %v", n, err)
 	}
 }

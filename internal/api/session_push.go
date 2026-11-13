@@ -32,20 +32,11 @@ import (
 // any ended episode whose push is still shown, so a stop that ended while
 // muster was down is closed too).
 //
-// 🔴 A STOP BACK FROM 'gone' ON THE SAME STREAK IS NOT PUSHED AGAIN: its new
-// episode is opened already carrying the ended one's pushed_at
-// (sessionstate.Resumed, PG.Open — one statement), so it is never claimed
-// and never sent. Measured on a live fleet: a reporting host's listing
-// dropped all its idle windows for one pass about hourly, each ended gone,
-// opened again on its unchanged streak the next pass and was pushed again
-// once episodeChiefWait ran out — a burst of the same stops each time, which
-// neither the claim (a new row) nor the repush floor (the last push an hour
-// back) stopped. The first push's notification is still closed when it ends
-// gone (above) and is not shown again; the stop stays on the Asks page. A
-// stop that ended gone UNPUSHED (held in its grace or the chief's wait)
-// carries nothing: its return is pushed once, as any stop's — the hold
-// delays, it never silences. A new streak (the session ran) or a new session
-// key (a new conversation in a new window) is a new stop and pushes.
+// A STOP BACK FROM 'gone' ON THE SAME STREAK IS NOT PUSHED AGAIN: its new
+// episode opens already carrying the ended one's pushed_at, and the chief's
+// decision on it (streakDecision) — sessionstate.resumedReasons says why; a
+// backstop since an episode ends gone only after episodeGoneMisses missing
+// passes (session_state.go).
 //
 // WHEN IT PUSHES (episodeVerdict):
 //   - a WAITING window — 🔴 WHATEVER IT WAITS ON: a prompt muster cannot
@@ -251,9 +242,12 @@ func (s *Server) episodeChiefJudges(octx context.Context, owner int64) bool {
 
 // streakDecision is the chief's decision for ep's streak, if any. A failed
 // read is no decision (the stop then pushes after episodeChiefWait). 🔴 A
-// DECISION TAKEN IN ANOTHER EPISODE IS NOT THIS STOP'S: a window gone and back
-// with the same idle-since opens a new stop on the same streak, and the old
-// stop's sent nudge or leave must not quiet it.
+// DECISION TAKEN IN ANOTHER EPISODE IS NOT THIS STOP'S — EXCEPT THE SAME STOP
+// RESUMED: an episode opened after its session's latest one ended 'gone' on
+// the same streak links that stop's first episode (Episode.ResumedFrom, set
+// by PG.Open under sessionstate.resumedReasons), and the chief's decision
+// taken there holds here, as its push does. Any other episode's decision (a
+// stop the owner handled, one that ended worked or owner) does not.
 func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (chiefnudge.Decision, bool) {
 	r, ok := s.ext.ChiefNudges.(streakDecisionReader)
 	if !ok || s.ext.ChiefNudges == nil || ep.StreakKey == "" {
@@ -264,7 +258,7 @@ func (s *Server) streakDecision(octx context.Context, ep sessionstate.Episode) (
 		s.logger.Printf("session state: episode %d: the chief's decision: %v", ep.ID, err)
 		return chiefnudge.Decision{}, false
 	}
-	if found && d.EpisodeID != 0 && d.EpisodeID != ep.ID {
+	if found && d.EpisodeID != 0 && d.EpisodeID != ep.ID && d.EpisodeID != ep.ResumedFrom {
 		return chiefnudge.Decision{}, false
 	}
 	return d, found

@@ -333,7 +333,7 @@ func TestTheRepushFloorDelaysButNeverDropsAPush(t *testing.T) {
 	// closed — and the session stops AGAIN on a new streak (it ran in
 	// between): a NEW stop inside the floor. (Back on the SAME streak it would
 	// be the same stop, which carries the first push and is never pushed again
-	// — sessionstate.Resumed, session_gone_resume_pg_test.go.)
+	// — sessionstate.resumedReasons, session_gone_resume_pg_test.go.)
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE session_episodes SET ended_at = now(), end_reason = 'gone', cleared_at = now() WHERE id = $1`, first.ID); err != nil {
 		t.Fatal(err)
 	}

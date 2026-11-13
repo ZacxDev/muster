@@ -325,15 +325,31 @@ An episode is one stop of one session.
     continuously for at least `N` (default 120 s), or a turn completes after
     at least `N` of work. A busy blip shorter than `N` that the owner did not
     start (a quick tool call, a background task's notice) does not end it;
-  - **gone** (`gone`): its window left a host that is online and reporting.
+  - **gone** (`gone`): its window is missing from a host that is online
+    and reporting, on `episodeGoneMisses` (3, about 90 s) consecutive passes.
+    A window the host lists without its session key is present, not missing;
+    a pass whose host is offline or unread counts for nothing. The count is
+    persisted on the episode (`missed_passes`, migration 0121), so a restart
+    neither loses it nor starts it over.
 
-  **A stop back from `gone` on the same streak keeps its push**
-  (`sessionstate.Resumed`): a reporting host's listing can omit a window for
-  a pass and list it again unchanged. The episode that opens for it then
-  carries the ended one's `pushed_at` (set in the same `INSERT`), so a stop
-  already pushed is not pushed a second time. One that ended `gone` before it
-  was pushed carries nothing and is pushed as any new stop. A new streak, or
-  a new session key, is a new stop.
+  **Why not end it on the first missing pass.** A connected host's listing
+  can leave a window out for one pass (measured on a live fleet, about
+  hourly: every idle window of one host at once). Ended on that pass, each
+  episode's notification was withdrawn and, listed again the next pass on its
+  unchanged streak, it opened a new episode and was pushed again: a burst of
+  the same stops. Now a one-pass omission ends nothing; a genuinely closed
+  window still ends within about 90 s.
+
+  **A stop back from `gone` on the same streak keeps its push** (the
+  backstop, for an omission longer than the threshold;
+  `sessionstate.resumedReasons` holds the reasoning): the episode that opens
+  for it carries the ended one's `pushed_at` (set in the same `INSERT`), so a
+  stop already pushed is not pushed a second time; and it links the stop's
+  first episode (`resumed_from`), so the Chief's decision on it (a sent
+  nudge, a "leave" on a stop that asked nothing) still quiets it. One that
+  ended `gone` before it was pushed, unjudged, carries nothing and is pushed
+  as any new stop. A new streak, or a new session key, is a new stop, judged
+  afresh.
 
   **A handled stop is not opened again on the same streak**
   (`sessionstate.Handled`: `viewed`, and the one-time `reset` below): while

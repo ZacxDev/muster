@@ -39,7 +39,7 @@ const (
 // The reasons an episode ends.
 const (
 	EndWorked = "worked" // the session worked, continuously, for EndAfter
-	EndGone   = "gone"   // its window left a host that is online and reporting status
+	EndGone   = "gone"   // its window left a host that is online and reporting status, for several passes (api: episodeGoneMisses)
 	EndOwner  = "owner"  // the owner acted in the session after it opened (OwnerActed)
 	// EndViewed: the owner opened the session's own page in muster (its
 	// rendered view, its terminal, an agent's conversation) after it opened.
@@ -85,36 +85,36 @@ func Handled(reason string) bool {
 // it.
 var handledReasons = []string{EndViewed, EndReset}
 
-// Resumed reports whether a stop that ended for reason, and is seen again on
-// the SAME streak, is that same stop back — so a new episode for it carries
-// the ended one's push (PG.Open) and is not pushed again.
+// resumedReasons is the end reasons whose stop, seen again on the SAME
+// streak, is that same stop back: PG.Open writes the new episode carrying the
+// ended one's pushed_at, so a stop already pushed is never pushed again, and
+// linking the stop's first episode (Episode.ResumedFrom), so a chief's
+// decision on it — a sent nudge, a "leave" on a stop that asked nothing —
+// still quiets it (api streakDecision). 🔴
+// THE ONE PLACE THIS RULE IS REASONED (pointers: PG.Open, session_push.go,
+// session_state.go; docs/design/session-state.md, "gone").
 //
-// 🔴 ONLY 'gone'. A window can drop out of a reporting host's listing for a
-// pass and come back unchanged (measured on a live fleet, about hourly: every
-// idle window of one host ended gone in one pass, opened again on its
-// unchanged streak a pass later, and each was pushed again once the chief's
-// wait ran out — a burst of the same stops). The streak is the host's own status time (or an agent's newest
-// message), so an EQUAL streak means the session has not run since — any turn,
-// a resume or a new process writes a new one, and a genuinely closed window
-// replaced by a new conversation is a new session key altogether. The other
+// 🔴 ONLY 'gone'. A connected host's listing can leave a window out and list
+// it again unchanged (measured on a live fleet, about hourly: every idle
+// window of one host ended gone in one pass, opened again on its unchanged
+// streak the next, and was pushed again once the chief's wait ran out — a
+// burst of the same stops). The pass now ends an episode gone only after
+// several consecutive missing passes (episodeGoneMisses, internal/api), so a
+// one-pass omission ends nothing; this carry is the BACKSTOP for an omission
+// longer than that. The streak is the host's own status time (or an agent's
+// newest message), so an EQUAL streak means the session has not run since —
+// any turn, a resume or a new process writes a new one, and a new
+// conversation in a new window is a new session key altogether. The other
 // reasons are not the same stop: 'worked' and 'owner' mean the session moved
 // (see Handled for why 'owner' can still carry an unchanged streak), and
 // 'viewed'/'reset' never reopen on their streak at all (Handled).
 //
-// 🔴 IT CARRIES THE PUSH, NEVER A SILENCE: an ended stop that was never pushed
-// (held in its grace or the chief's wait, or quiet) carries nothing, so its
-// return is pushed exactly as a new stop would be — the hold delays, it never
-// silences.
-func Resumed(reason string) bool {
-	for _, r := range resumedReasons {
-		if reason == r {
-			return true
-		}
-	}
-	return false
-}
-
-// resumedReasons is Resumed's set, as PG.Open reads it.
+// 🔴 IT CARRIES WHAT THE STOP HAD, NEVER A NEW SILENCE: a stop that was never
+// pushed carries no push; one the chief never judged carries no decision —
+// held in its grace or the chief's wait, its return is pushed exactly as a
+// new stop would be (the hold delays, it never silences). Only a decision the
+// chief already took on this very stop and streak carries over. The first push's notification is closed when its episode ends
+// gone and is not shown again; the stop stays on the Asks page.
 var resumedReasons = []string{EndGone}
 
 // EndAfter is how long a session must work, continuously, before its episode
