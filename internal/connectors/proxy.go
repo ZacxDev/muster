@@ -100,6 +100,13 @@ type Caller struct {
 	// caller. A stored connector ignores it. The grant is approved for
 	// RepoScope(Repo, ReadRepos).
 	ReadRepos []string
+	// PublicReadRepos are PUBLIC repositories (owner/name) the caller may READ
+	// through the `github` connector with NO grant: the standing public read
+	// (public_read.go) — anonymous, reads only, each verified public with
+	// GitHub. Set for an instance of a builtin officer that declares
+	// read_grant "standing" (api.Server.agentPublicReadRepos); nil for every
+	// other caller. They are never part of the grant's RepoScope.
+	PublicReadRepos []string
 	// ReadOnly asks a virtual connector that mints a credential (the GitHub
 	// App) for a READ-ONLY one for this caller, whatever its own mode. Set for
 	// an officer instance (api.Server.callerOf). A stored connector ignores
@@ -319,7 +326,15 @@ type Proxy struct {
 	// cmd/muster-server's shutdown, before either listener drains. See
 	// endOnShutdown.
 	StreamsEnd context.Context
+	// Now is the clock the standing public read's verdict cache reads; nil is
+	// time.Now (tests set it).
+	Now func() time.Time
+	// GitHubGitHost and GitHubAPIHost are the hosts a standing public read is
+	// served on; "" is GitHubGitHost / GitHubAPIHost. The api package sets
+	// them from a configured GitHub App's own hosts.
+	GitHubGitHost, GitHubAPIHost string
 
+	public        publicCache // the standing public read's verdicts
 	transportOnce sync.Once
 	built         http.RoundTripper // Policy.Transport(), built once
 	transport     http.RoundTripper // SetTransport's override
@@ -512,6 +527,20 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	if r.Header.Get("Upgrade") != "" {
 		refuse(http.StatusBadRequest, RefusalBody{Error: "protocol upgrades are not forwarded by the connector proxy"},
 			"upgrade refused")
+		return
+	}
+
+	// 🔴 A STANDING PUBLIC READ IS DECIDED BEFORE ANY GRANT IS READ OR FILED:
+	// it needs none, so the owner is never prompted for it (public_read.go).
+	// Only a request that targets one of the caller's PublicReadRepos takes
+	// this branch, and it never falls through: a write to one is refused here.
+	if repo, ok := p.publicReadTarget(caller, connector, host, rest); ok {
+		if pr, ok := authz.From(ctx); ok && pr.RoleUncertain {
+			w.Header().Set("Retry-After", "5")
+			refuse(http.StatusServiceUnavailable, RefusalBody{Error: ErrRoleUncertain.Error()}, "role uncertain")
+			return
+		}
+		p.servePublicRead(w, r, caller, connector, host, rest, repo, &status, &detail, refuse)
 		return
 	}
 
@@ -868,6 +897,11 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		*detail = "event stream ended at server shutdown"
 	}
 
+	// A standing public read (Access{}) has no grant and uses no connector's
+	// credential: nothing to stamp.
+	if acc.Grant.ID == 0 {
+		return
+	}
 	bg := context.WithoutCancel(ctx)
 	if err := p.Store.TouchGrant(bg, acc.Grant.ID); err != nil {
 		p.logf("connectors: touch grant %d: %v", acc.Grant.ID, err)

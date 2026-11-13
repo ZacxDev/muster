@@ -42,7 +42,7 @@ Start now:
 %[12]s`,
 		o.ID, o.InstanceLabel(n), o.MaxInstances, o.InstanceName(n), tools,
 		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease, closingLine(o), ask,
-		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork) + tierNote(o, w.source) + repoNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
+		w.produces, w.credential, w.backendNote, w.source, w.escalated, w.newWork) + tierNote(o, w.source) + repoNote(o) + standingReadNote(o) + connectorsNote(o) + kubeNote(o) + obsRawNote(o, caps) + releaseNote(o, caps) + freshNote(o)
 }
 
 // kickoffWording is the part of KickoffText that names where the officer's
@@ -232,12 +232,44 @@ muster attaches a READ-ONLY token limited to %[1]s to each request on your behal
 // with a READ-ONLY token limited to the one repository it names. Nothing for
 // an officer without any, whose text is unchanged.
 func readReposNote(o Officer) string {
-	if len(o.ReadRepos) == 0 {
+	rr := o.ApprovalReadRepos()
+	if len(rr) == 0 {
 		return ""
 	}
 	return fmt.Sprintf(`
 You may also READ these repositories through the same %[1]q connector and the same approval, in the same two ways (git clone https://github.com/<owner>/<name>.git, or the REST API at /repos/<owner>/<name>/…): %[2]s. Each request to one of them carries a READ-ONLY token limited to that one repository; any other repository is reached anonymously.`,
-		GitHubConnector, strings.Join(o.ReadRepos, ", "))
+		GitHubConnector, strings.Join(rr, ", "))
+}
+
+// standingReadNote is what an officer with a standing public read
+// (Officer.StandingReadRepos) is told: which repositories, that it needs no
+// approval, the REF to read them at (muster's own release tag for read_at
+// "release", Officer.ReleaseTag), and the two recipes with the proxy URL
+// written out — git's https://github.com/ is NOT routed through the proxy for
+// an instance without an approved grant (podagent's git routing follows the
+// grant), so the clone names the proxy itself. Nothing for every other
+// officer, whose text is unchanged.
+func standingReadNote(o Officer) string {
+	rr := o.StandingReadRepos()
+	if len(rr) == 0 {
+		return ""
+	}
+	ref, branch, query, at := "", "", "", "Read them at their default branch."
+	if o.ReadAt == ReadAtRelease {
+		if o.ReleaseTag != "" {
+			ref = o.ReleaseTag
+			branch, query = " --branch "+ref, "?ref="+ref
+			at = fmt.Sprintf("Read them at tag %[1]s: %[1]s is the release of muster this server runs, so a question about how muster behaves is answered from that tag, not from the default branch (which may hold unreleased work). Cite the file paths you read (for example docs/…, internal/…) wherever your charter asks for sources.", ref)
+		} else {
+			at = "muster could not name its release tag (this build is not a release), so read them at their default branch, and say so wherever you cite them."
+		}
+	}
+	return fmt.Sprintf(`
+
+Public repositories you may READ with no approval: %[1]s. muster serves reads of them through its %[2]q connector with NO credential (a standing grant your operator declared for this officer: muster checks with GitHub that each is public, and serves reads only), so do not connector_request for them and do not wait on connector_status. %[3]s
+- git: `+"`git -c \"http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN\" -c \"http.$MUSTER_CONNECT_URL/.followRedirects=false\" clone --depth 1%[4]s \"$MUSTER_CONNECT_URL/connect/%[2]s/github.com/<owner>/<name>.git\"`"+`, then read the clone.
+- the REST API: `+"`curl -sS -H \"Authorization: Bearer $MUSTER_HOOK_TOKEN\" \"$MUSTER_CONNECT_URL/connect/%[2]s/api.github.com/repos/<owner>/<name>/contents/<path>%[5]s\"`"+` — GitHub allows few anonymous API reads an hour, so prefer the clone.
+A push, or any other write, to them is refused.`, strings.Join(rr, ", "), GitHubConnector, at, branch, query)
 }
 
 // onlyConnector is how repoNote and shipNote describe the github connector:
