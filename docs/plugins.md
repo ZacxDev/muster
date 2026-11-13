@@ -32,7 +32,7 @@ The whole loop:
 | door | who | routes |
 |---|---|---|
 | The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/drafts/{id}/renew`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
 | A plugin **pairing** | none (then a poll secret) | `POST /plugin/v1/pair`, `GET /plugin/v1/pair/{request_id}`: [pairing a plugin](#pairing-a-plugin-without-handling-its-token) |
 
 A plugin token is shown once, when you create it. muster stores only its
@@ -440,6 +440,27 @@ waiting for it, and a message already being delivered is not handed over twice.
 | `404 {"error"}` | no such reply claimed by this plugin (another plugin's, another owner's, or none) |
 | `409 {"error", "draft_id", "status"}` | the reply already has the **other** result, or it was never claimed |
 
+### `POST /plugin/v1/drafts/{id}/renew`: keep a long send's claim
+
+A send that takes longer than the 2-minute lease (a post made through a
+browser, say) renews the lease before it lapses, so a slow success is not
+swept **unconfirmed** under it. No body. Each renewal extends the lease to 2
+minutes from now (`plugins.LeaseDuration`), and never past **10 minutes after
+the claim** (`plugins.MaxLeaseTotal`): a plugin cannot hold a draft for ever.
+Renew about once a minute while the send runs. Reply drafts and outbound
+drafts renew the same way, and renewing is optional.
+
+| answer | meaning |
+|---|---|
+| `200 {"draft_id", "lease_until", "lease_max"}` | renewed: report the result before `lease_until`, or renew again; `lease_max` is the bound |
+| `404 {"error"}` | no such draft claimed by this plugin (another plugin's, another owner's, or none) |
+| `409 {"error", "draft_id", "code": "lease_lapsed"}` | the lease already lapsed (whether or not muster has marked the draft unconfirmed yet): it is unconfirmed and stays so. Report its result anyway: a late result is still recorded |
+| `409 {"error", "draft_id", "code": "lease_at_max"}` | the lease already runs to `lease_max`: report the result before then |
+| `409 {"error", "draft_id", "status", "code": "not_claimed"}` | the draft is not claimed, or already has its result |
+
+Only a live lease is renewed. A lapsed one means muster has given the claim up
+(at most once, below), so renewing it would revive nothing.
+
 ### Check a reply before it can be approved
 
 A plugin minted with `draft_checks` checks each **pending** reply draft before
@@ -544,7 +565,8 @@ Each step writes an audit row: `plugin.draft.failed` or
 muster hands an approved reply to a claim **once**. Two concurrent claims never
 receive the same reply.
 
-If no result arrives within the 2-minute lease, the reply becomes
+If no result arrives within the 2-minute lease (renewed or not: see
+[renew](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)), the reply becomes
 **unconfirmed**. muster does not know whether you sent it, so it **never offers
 it again**, and your owner cannot approve it again either. If the sender still
 needs an answer, the chief can draft a new reply to the message; its card warns
@@ -787,15 +809,46 @@ After the result, for an outbound draft filed with an `item_id`:
   none) — so it can write a better one. In the same transaction the item the
   draft was for is finished `no_action`, its summary naming the new item: the
   work continues there.
+- **Ended by muster itself**, in the same transaction that ends the draft
+  (the draft sweep that runs before any draft is read, filed, checked or
+  claimed, and the claim):
+  - the draft **expires** (not sent within 7 days of being written): a
+    `draft.refused` item, `status: "expired"`, `by: "muster"`, and the item
+    the draft was for is finished `no_action` naming it;
+  - the claim finds its **binding broken** (the body or media no longer what
+    you approved) and withdraws it: the same, `status: "rejected"`,
+    `by: "muster"`, `detail: "the body or media changed after approval"`;
+  - you turn the plugin's **Checks replies off** while the draft awaits its
+    check, which refuses it: the same, `status: "rejected"`, `by: "muster"`,
+    `detail` saying Checks replies was turned off;
+  - 🔴 the draft becomes **unconfirmed** (the plugin collected it and its
+    lease lapsed with no result): it **may have been posted**, so muster
+    never hands it back to be redrafted, which could post it twice. No
+    `draft.refused` item is queued; the item the draft was for is
+    **escalated** to you instead, and the escalation's Attention ask says the
+    draft may be live and to check the venue. Answering sends the item back
+    to the officer with your answer; dismissing leaves it escalated. A
+    **late `ok: true`** for that draft (a slow post that did go out) completes
+    the item `done` with the post's reference after all, and withdraws the
+    escalation's open asks, so you are not left with a stale "may have been
+    posted" question. It does not if a newer draft was filed for the item,
+    or if you sent the item back and it was escalated again since. A
+    plugin whose sends run long should [renew its lease](#post-pluginv1draftsidrenew-keep-a-long-sends-claim)
+    so the draft never goes unconfirmed in the first place.
 - 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,
   counted and inserted in one transaction under one lock, so neither a plugin
   that refuses every draft nor two refusals at the same instant can loop the
-  officer past it. Past the bound nothing is queued, the item the draft was for
-  stays waiting, and only your push (for a plugin's refusal) says so: resolve
-  the item by hand (`POST /api/officers/defs/{officer}/items/{id}/resolve`).
-- ⚠ A draft that **expires** undecided, becomes **unconfirmed**, or whose
-  binding broke at the claim settles nothing: its item stays waiting until you
-  resolve it by hand. (An unconfirmed draft's late result still settles it.)
+  officer past it. Past the bound nothing is queued and the officer is **not
+  told**, but the item the draft was for is still settled, its summary saying
+  so, and you are told: a push for a plugin's refusal or your own rejection
+  (the item is finished `no_action`), or, for an expiry or a broken binding,
+  an escalation of the item to you (its Attention ask).
+- No terminal state of a draft leaves its item waiting. An item is settled
+  only while it waits on that draft: one you already finished by hand, one an
+  instance holds under a live lease, or one that waits on a newer draft of its
+  own (still pending or approved) is left as it is. An item left **claimed**
+  by a draft filed before items waited on their drafts (muster 0.218.0) is
+  settled the same way once its lease has lapsed.
 
 ### Pairing a plugin without handling its token
 

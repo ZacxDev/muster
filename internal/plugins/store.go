@@ -117,6 +117,9 @@ type Store interface {
 	DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
+	// RenewDraft extends pluginID's live lease on a draft it claimed, within
+	// MaxLeaseTotal of the claim.
+	RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error)
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
 	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (d Draft, fresh bool, err error)
@@ -486,21 +489,22 @@ func (s *PGStore) SetDraftChecks(ctx context.Context, id int64, on bool) (p Plug
 				decided_at = now(), detail = $2
 			WHERE id IN (SELECT id FROM plugin_reply_drafts WHERE plugin_id = $1 AND message_id IS NULL
 			              AND status = 'pending' AND check_state = 'awaiting' ORDER BY id FOR UPDATE)
-			RETURNING id`, id, ChecksOffDetail)
+			RETURNING `+draftCols, id, ChecksOffDetail)
 		if err != nil {
 			return err
 		}
-		ids, err := pgx.CollectRows(out, pgx.RowTo[int64])
+		refused, err := pgx.CollectRows(out, func(r pgx.CollectableRow) (Draft, error) { return scanDraft(r) })
 		if err != nil {
 			return err
 		}
-		for _, did := range ids {
-			if err := audit(ctx, tx, "plugin.draft.check_refused", DraftObject(did), map[string]any{
+		for _, d := range refused {
+			if err := audit(ctx, tx, "plugin.draft.check_refused", DraftObject(d.ID), map[string]any{
 				"why": ChecksOffDetail}); err != nil {
 				return err
 			}
 		}
-		return nil
+		// Its officer's item is settled with it (outboundEnded).
+		return s.outboundEnded(ctx, tx, refused, OutboundChecksOff)
 	})
 	return p, changed, lapsed, err
 }

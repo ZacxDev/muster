@@ -235,13 +235,16 @@ does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
    it, re-hashes its files, posts, reads the post back and reports the result.
 5. With `item_id`, the item **waits on the draft** (no holder; the instance
    cannot complete or release it). Posted: muster completes it with the
-   post's reference. Refused by the plugin, or rejected by the owner (with an
-   optional reason, on the card or `plugin_draft_decide`): muster queues a
+   post's reference. Refused by the plugin, rejected by the owner (with an
+   optional reason, on the card or `plugin_draft_decide`), expired, or
+   withdrawn at the claim for a broken binding: muster queues a
    `draft.refused` item whose `detail` says why, and finishes the waiting item
-   `no_action` naming it — at most 3 `draft.refused` items wait at once
-   ([plugins.md](plugins.md#the-result)). Put what the officer should do with a
-   `draft.refused` item (read `detail`, redraft with its own `item_id`) in its
-   charter.
+   `no_action` naming it — at most 3 `draft.refused` items wait at once; past
+   that the item is still settled and the owner told. Unconfirmed (it may
+   have been posted): nothing is queued and the item is escalated to the
+   owner ([plugins.md](plugins.md#the-result)). Put what the officer should do
+   with a `draft.refused` item (read `detail`, redraft with its own `item_id`)
+   in its charter.
 
 ## 6. Switch it off
 

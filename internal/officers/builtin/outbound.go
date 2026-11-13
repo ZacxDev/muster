@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // --- an item and the outbound draft filed for it ---------------------------------
@@ -20,20 +22,24 @@ import (
 //
 //   - posted: muster completes it `done` with the post's reference
 //     (Store.ResolveItem);
-//   - refused by its plugin or rejected by its owner: muster queues a
-//     draft.refused item and, in the same transaction, finishes the waiting
-//     item `no_action` naming that follow-up (EnqueueBounded) — so the work
-//     continues on ONE item, never two. Past the bound (no follow-up queued)
-//     the item stays waiting: the owner's push is the signal, and the owner
-//     resolves it by hand.
+//   - ended unsent — refused by its plugin, rejected by its owner, expired
+//     undecided, withdrawn at the claim for a broken binding, or refused
+//     unchecked when Checks replies is turned off: muster
+//     queues a draft.refused item and, in the same transaction, finishes the
+//     waiting item `no_action` naming that follow-up (DraftEndedTx) — so the
+//     work continues on ONE item, never two. Past the bound no follow-up is
+//     queued and the item is STILL finished, saying the officer was not told
+//     (the owner is told: a push, or an escalation);
+//   - unconfirmed (its plugin's lease lapsed with no result, so it may have
+//     been posted): no follow-up — the officer must never redraft it blindly
+//     — and the item is ESCALATED to its owner, who is asked through the
+//     existing escalation notice.
+//
+// No terminal state of a draft leaves its item waiting.
 
 // ErrNotHeld is WaitOnDraftTx's refusal: the instance holds no live claim on
 // the item.
 var ErrNotHeld = errors.New("builtin: the instance holds no live claim on the item")
-
-// ErrAtBound is EnqueueBounded's refusal: the officer already has max live
-// items of that kind. Nothing was written.
-var ErrAtBound = errors.New("builtin: the officer has as many live items of that kind as it may")
 
 // WaitOnDraftTx sets owner's officer's item id WAITING with no holder, inside
 // the caller's transaction tx (the outbound draft's filing), provided
@@ -56,57 +62,240 @@ func (s *Store) WaitOnDraftTx(ctx context.Context, tx pgx.Tx, owner int64, offic
 	return err
 }
 
-// EnqueueBounded enqueues n (as Enqueue: the live item of the same kind and
-// subject is the answer, created false) unless owner's officer n.Officer
-// already has max live items of kind n.Kind (ErrAtBound, nothing written).
-//
-// 🔴 THE COUNT AND THE INSERT ARE ONE TRANSACTION, SERIALISED PER (owner,
-// officer, kind) BY AN ADVISORY LOCK: two refusals settling at once cannot
-// both read max-1 and both insert. A plain transaction would not do it (READ
-// COMMITTED reads neither's uncommitted row).
-//
-// With settle, item *settle — when it is still WAITING with no open ask —
-// is finished in the same transaction, outcome no_action, its summary
-// settlePrefix and the new item's id: the work moves to the new item. A
-// settle item that is not waiting is left as it is.
-func (s *Store) EnqueueBounded(ctx context.Context, owner int64, n NewItem, max int, settle *int64, settlePrefix string, now time.Time) (id int64, created bool, err error) {
+// DraftEnd is how the outbound draft filed for an item ended UNSENT — a
+// refusal, a rejection, an expiry, a lapsed lease, a broken binding — and
+// what muster does about it (Store.DraftEnded). internal/api words it.
+type DraftEnd struct {
+	Officer string
+	// Draft is the draft's id; Item the item it was filed for, 0 for none.
+	Draft, Item int64
+	// Ended is the item's summary: what became of the draft, one sentence
+	// ("draft 5 expired, not posted.").
+	Ended string
+	// FollowUp is the item the officer redrafts from (a draft.refused one),
+	// queued unless Max live items of its kind already wait. nil when the
+	// officer must NOT redraft (an unconfirmed draft, which may have been
+	// posted): the item is then ESCALATED to the officer's owner.
+	FollowUp *NewItem
+	Max      int
+	// EscalateAtBound: past the bound the item is escalated to its owner
+	// (the existing Attention notice), for a caller that has no other way
+	// to tell them; otherwise it is finished no_action and the caller tells
+	// the owner (internal/api's push).
+	EscalateAtBound bool
+}
+
+// DraftSettled is what Store.DraftEnded did.
+type DraftSettled struct {
+	// FollowUp is the follow-up item's id: new, or the live one of the same
+	// subject. 0 when none was queued.
+	FollowUp int64
+	// AtBound: a follow-up was due and the bound refused it — the officer
+	// was NOT told.
+	AtBound bool
+	// Item is what became of the item: its new status (done, escalated),
+	// or "" when it was left as it was.
+	Item string
+}
+
+// DraftEnded is DraftEndedTx in a transaction of its own.
+func (s *Store) DraftEnded(ctx context.Context, owner int64, e DraftEnd, now time.Time) (DraftSettled, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, false, err
+		return DraftSettled{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('officer_items.bounded'), hashtext($1::bigint::text || '/' || $2::text || '/' || $3::text))`,
-		owner, n.Officer, n.Kind); err != nil {
-		return 0, false, err
+	out, err := s.DraftEndedTx(ctx, tx, owner, e, now)
+	if err != nil {
+		return DraftSettled{}, err
 	}
-	var live int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
-		AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind).Scan(&live); err != nil {
-		return 0, false, err
-	}
-	if live >= max {
-		return 0, false, fmt.Errorf("%w: %d of %d", ErrAtBound, live, max)
-	}
-	var existed bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
-		AND subject_key = $4 AND status IN ('open', 'claimed', 'waiting'))`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&existed); err != nil {
-		return 0, false, err
-	}
-	if id, err = s.EnqueueTx(ctx, tx, owner, n, now); err != nil {
-		return 0, false, err
-	}
-	if settle != nil {
-		summary := fmt.Sprintf("%s The work continues on item %d.", settlePrefix, id)
-		if _, err := tx.Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'no_action', summary = $4, updated_at = $5
-			WHERE owner_id = $1 AND officer = $2 AND id = $3 AND status = 'waiting' AND NOT asks @> '[{"status": "open"}]'`,
-			owner, n.Officer, *settle, summary, now); err != nil {
-			return 0, false, err
+	return out, tx.Commit(ctx)
+}
+
+// DraftEndedTx settles, inside the caller's transaction tx (the one that
+// ended the draft, where it can), owner's officer's outbound draft e.Draft
+// that ended unsent:
+//
+//   - with e.FollowUp, that item is queued for the officer to redraft from —
+//     unless e.Max live items of its kind already wait (AtBound);
+//   - the item the draft was filed for (e.Item) is SETTLED, never left
+//     waiting: finished no_action naming the follow-up; escalated to its
+//     owner when there is no follow-up to queue (e.FollowUp nil); past the
+//     bound, finished no_action saying the officer was not told, or
+//     escalated (e.EscalateAtBound).
+//
+// The item is settled only while it waits on this draft: WAITING with no
+// open ask — or CLAIMED under a lapsed lease, an item filed for before items
+// waited on their drafts (muster 0.218.0) — and no OTHER draft for it is
+// still pending or approved. Any other item is left as it is (an owner who
+// finished it by hand, an instance working it now).
+//
+// 🔴 THE BOUND'S COUNT AND THE INSERT ARE SERIALISED PER (owner, officer,
+// kind) BY A TRANSACTION-SCOPED ADVISORY LOCK: two refusals settling at once
+// cannot both read max-1 and both insert. A plain transaction would not do
+// it (READ COMMITTED reads neither's uncommitted row).
+func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e DraftEnd, now time.Time) (DraftSettled, error) {
+	var out DraftSettled
+	if n := e.FollowUp; n != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('officer_items.bounded'), hashtext($1::bigint::text || '/' || $2::text || '/' || $3::text))`,
+			owner, n.Officer, n.Kind); err != nil {
+			return out, err
+		}
+		// The same draft's follow-up already live is the answer, bound or not.
+		err := tx.QueryRow(ctx, `SELECT id FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3 AND subject_key = $4
+			AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind, n.SubjectKey).Scan(&out.FollowUp)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return out, err
+		}
+		if out.FollowUp == 0 {
+			var live int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
+				AND status IN ('open', 'claimed', 'waiting')`, owner, n.Officer, n.Kind).Scan(&live); err != nil {
+				return out, err
+			}
+			if live >= e.Max {
+				out.AtBound = true
+			} else if out.FollowUp, err = s.EnqueueTx(ctx, tx, owner, *n, now); errors.Is(err, ErrNotFound) {
+				// The officer is gone: there is no one to redraft, and no item.
+				return DraftSettled{}, nil
+			} else if err != nil {
+				return out, err
+			}
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, err
+	if e.Item <= 0 {
+		return out, nil
 	}
-	return id, !existed, nil
+	it, err := scanItem(tx.QueryRow(ctx, `SELECT `+itemCols+` FROM officer_items WHERE owner_id = $1 AND officer = $2 AND id = $3 FOR UPDATE`,
+		owner, e.Officer, e.Item))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return out, err
+	}
+	var asks []askEntry
+	_ = json.Unmarshal(it.Asks, &asks)
+	for _, a := range asks {
+		if a.Status == AskOpen {
+			return out, nil
+		}
+	}
+	lapsed := it.Status == officers.StatusClaimed && !it.live(now)
+	if it.Status != officers.StatusWaiting && !lapsed {
+		return out, nil
+	}
+	var other bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2
+		AND id <> $3 AND status IN ('pending', 'approved'))`, owner, it.ID, e.Draft).Scan(&other); err != nil {
+		return out, err
+	}
+	if other {
+		return out, nil
+	}
+	summary := e.Ended
+	escalate := e.FollowUp == nil
+	switch {
+	case out.FollowUp > 0:
+		summary += fmt.Sprintf(" The work continues on item %d.", out.FollowUp)
+	case out.AtBound:
+		summary += fmt.Sprintf(" Its officer was not told: it already has %d open %s items.", e.Max, e.FollowUp.Kind)
+		escalate = e.EscalateAtBound
+	}
+	if escalate {
+		notices, err := noticesFor(ctx, tx, owner, e.Officer)
+		if err != nil {
+			return out, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE officer_items SET status = 'escalated', outcome = 'escalated', notices = $2, summary = $3,
+			claimed_by = NULL, lease_expires_at = NULL, updated_at = $4 WHERE id = $1`, it.ID, notices, summary, now); err != nil {
+			return out, err
+		}
+		out.Item = officers.StatusEscalated
+		return out, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'no_action', summary = $2,
+		claimed_by = NULL, lease_expires_at = NULL, updated_at = $3 WHERE id = $1`, it.ID, summary, now); err != nil {
+		return out, err
+	}
+	out.Item = officers.StatusDone
+	return out, nil
+}
+
+// DraftPosted settles owner's officer's item id, the item outbound draft
+// draft was filed for, now that the draft was reported POSTED: done, with
+// summary. It is the owner's ResolveItem (refused while an instance holds the
+// item under a live lease; finished items are left as they are) widened by
+// one case, the LATE result: an item ESCALATED because its draft ended
+// unconfirmed (DraftEndedTx) is settled too, provided no newer draft was
+// filed for it — the owner's question ("may it have been posted?") is now
+// answered — and withdraw names the escalation asks already raised, for the
+// caller to withdraw. settled false: the item was left as it is.
+//
+// 🔴 ONLY THE ESCALATION THIS DRAFT CAUSED: an item the owner sent back
+// (SettleEscalation re-opens it, recording an asks entry) and that was
+// escalated again since is about something else, so an asks entry made at or
+// after claimedAt — the draft's claim, before it went unconfirmed — leaves it
+// escalated.
+func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id, draft int64, claimedAt time.Time, summary string, now time.Time) (settled bool, withdraw []OpenEscalation, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	it, err := scanItem(tx.QueryRow(ctx, `SELECT `+itemCols+` FROM officer_items WHERE owner_id = $1 AND officer = $2 AND id = $3 FOR UPDATE`,
+		owner, officer, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	switch {
+	case it.Status == officers.StatusDone, it.live(now):
+		return false, nil, nil
+	case it.Status == officers.StatusEscalated:
+		var newer bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2 AND id > $3)`,
+			owner, it.ID, draft).Scan(&newer); err != nil {
+			return false, nil, err
+		}
+		if newer {
+			return false, nil, nil
+		}
+		var handled bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM officer_items i, jsonb_array_elements(i.asks) e
+			WHERE i.id = $1 AND (e->>'asked_at')::timestamptz >= $2)`, it.ID, claimedAt).Scan(&handled); err != nil {
+			return false, nil, err
+		}
+		if handled {
+			return false, nil, nil
+		}
+		rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
+			WHERE i.id = $1 AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb`, it.ID)
+		if err != nil {
+			return false, nil, err
+		}
+		if withdraw, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
+			e := OpenEscalation{Owner: owner, Item: it.ID, Officer: officer}
+			err := r.Scan(&e.Recipient, &e.AttentionID)
+			return e, err
+		}); err != nil {
+			return false, nil, err
+		}
+	}
+	// Done is enough for the escalation's notices: an unraised one is never
+	// raised (DueNotices reads escalated items only), and a raised one's
+	// answer re-opens nothing (SettleEscalation re-opens only while
+	// escalated).
+	if _, err := tx.Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'done', summary = $2, claimed_by = NULL, lease_expires_at = NULL,
+		updated_at = $3 WHERE id = $1`, it.ID, summary, now); err != nil {
+		return false, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, nil, err
+	}
+	return true, withdraw, nil
 }
 
 // waitingRefusal is the lease_lost refusal of a verb on a WAITING item, saying
@@ -126,5 +315,5 @@ func waitingWhy(it itemRow) string {
 			return "it waits on an open ask, and is re-opened once the ask is answered"
 		}
 	}
-	return "it waits on the outbound draft filed for it, and muster finishes it when that draft is posted, refused or rejected"
+	return "it waits on the outbound draft filed for it, and muster settles it when that draft ends: posted, refused, rejected, expired or unconfirmed"
 }
