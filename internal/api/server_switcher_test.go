@@ -8,26 +8,24 @@ import (
 )
 
 // THE WEB APP'S SERVER SWITCHER, the server half
-// (docs/design/web-server-switcher.md): another muster's page may READ this
-// server's instance document and brand images, and this server's pages may
-// fetch exactly those two paths on another origin.
+// (docs/design/web-server-switcher.md). The operator's decision on review, "Logo
+// via <img>, no CORS": no other origin may READ this server's instance
+// document or brand images, and this server's pages read nothing on another
+// origin; they may only DRAW another muster's /brand/icon-192.png.
 
-// TestTheInstanceDocumentAndBrandImagesAreReadableFromAnyOrigin: GET
-// /api/instance and every /brand/ image answer Access-Control-Allow-Origin "*"
-// — with no logo (the 404) and with one, on a 200 and on a 304 — and never
-// Access-Control-Allow-Credentials, so a credentialed read stays unreadable.
-//
-// 🔴 REGRESSION: on main neither route sends the header, and the switcher on
-// another origin cannot read a server's name or logo.
-func TestTheInstanceDocumentAndBrandImagesAreReadableFromAnyOrigin(t *testing.T) {
+// TestTheInstanceDocumentAndBrandImagesAreNotReadableFromOtherOrigins:
+// GET /api/instance and every /brand/ image — 404 with no logo, 200 and 304
+// with one — carry no Access-Control-Allow-Origin and no
+// Access-Control-Allow-Credentials, so another origin's script cannot read
+// them (an <img> can still draw an image: that needs no CORS).
+func TestTheInstanceDocumentAndBrandImagesAreNotReadableFromOtherOrigins(t *testing.T) {
 	_, h, mem, cookie := brandingServer(t)
 	check := func(what string, hd http.Header) {
 		t.Helper()
-		if got := hd.Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "*" {
-			t.Errorf("%s: Access-Control-Allow-Origin %q, want exactly [*]", what, got)
-		}
-		if got := hd.Get("Access-Control-Allow-Credentials"); got != "" {
-			t.Errorf("%s: Access-Control-Allow-Credentials %q, want none", what, got)
+		for _, k := range []string{"Access-Control-Allow-Origin", "Access-Control-Allow-Credentials"} {
+			if got := hd.Values(k); len(got) != 0 {
+				t.Errorf("%s: %s %q, want none", what, k, got)
+			}
 		}
 	}
 	paths := []string{BrandLogoPath, BrandIcon192Path, BrandIcon512Path}
@@ -49,7 +47,7 @@ func TestTheInstanceDocumentAndBrandImagesAreReadableFromAnyOrigin(t *testing.T)
 			t.Fatalf("%s: %d", p, rec.Code)
 		}
 		check(p+" 200", rec.Header())
-		req, _ := http.NewRequest(http.MethodGet, p, nil)
+		req := httptest.NewRequest(http.MethodGet, p, nil)
 		req.Header.Set("If-None-Match", `"`+mem.b.ETag+`"`)
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
@@ -60,35 +58,49 @@ func TestTheInstanceDocumentAndBrandImagesAreReadableFromAnyOrigin(t *testing.T)
 	}
 }
 
-// TestOnlyThePublicBrandRoutesAreOpenToOtherOrigins: the header is the two
-// public routes' own, not the middleware's — a signed-in page, an API route
-// and the manifest carry none.
-func TestOnlyThePublicBrandRoutesAreOpenToOtherOrigins(t *testing.T) {
-	_, h, _, cookie := brandingServer(t)
-	for _, p := range []string{"/tasks", "/api/tasks", "/manifest.webmanifest", "/account"} {
-		if got := get(h, p, cookie, p == "/tasks" || p == "/account").Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("%s: Access-Control-Allow-Origin %q, want none", p, got)
-		}
+// TestTheSwitchersLogoPathIsServedUnversioned: the path the switcher draws
+// (servers.js LOGO_PATH) with NO ?v= — it cannot know the etag without reading
+// /api/instance — answers the current icon, revalidated (no-cache + ETag), and
+// 404 with no logo, so the switcher's <img> falls back to colour and label.
+func TestTheSwitchersLogoPathIsServedUnversioned(t *testing.T) {
+	_, h, mem, cookie := brandingServer(t)
+	if rec := get(h, "/brand/icon-192.png", nil, false); rec.Code != http.StatusNotFound {
+		t.Fatalf("no logo: %d, want 404", rec.Code)
+	}
+	putLogo(t, h, who{cookie: cookie}, "", testLogoPNG(t, 24, 12))
+	rec := get(h, "/brand/icon-192.png", nil, false)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" ||
+		rec.Header().Get("Cache-Control") != "no-cache" || rec.Header().Get("ETag") != `"`+mem.b.ETag+`"` {
+		t.Fatalf("unversioned icon: %d %v", rec.Code, rec.Header())
 	}
 }
 
-// TestThePagesMayFetchOnlyTheSwitchersPathsOnOtherOrigins: the CSP's
-// connect-src is 'self' plus, on any https origin (and the two loopback http
-// hosts), /api/instance exactly and the /brand/ prefix — and nothing else: no
-// bare scheme source (https:), no "*", no other path.
-func TestThePagesMayFetchOnlyTheSwitchersPathsOnOtherOrigins(t *testing.T) {
-	csp := contentSecurityPolicy("'none'", "")
-	var connect string
+// cspDirective is one directive of csp, as its fields ("" when absent).
+func cspDirective(csp, name string) []string {
 	for _, d := range strings.Split(csp, ";") {
-		if d = strings.TrimSpace(d); strings.HasPrefix(d, "connect-src ") {
-			connect = d
+		if f := strings.Fields(d); len(f) > 0 && f[0] == name {
+			return f
 		}
 	}
-	want := []string{"connect-src", "'self'",
-		"https://*:*/api/instance", "https://*:*/brand/",
-		"http://localhost:*/api/instance", "http://localhost:*/brand/",
-		"http://127.0.0.1:*/api/instance", "http://127.0.0.1:*/brand/"}
-	if got := strings.Fields(connect); strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("connect-src\n %q\nwant\n %q", got, want)
+	return nil
+}
+
+// TestThePagesReadNothingOnOtherOriginsAndDrawOnlyTheLogoPath: connect-src is
+// main's ('self' alone), and img-src is main's ('self' data:) plus EXACTLY the
+// switcher's logo path on any https origin and the two loopback http hosts —
+// no bare scheme, no "*", no /brand/ prefix, no other path.
+//
+// 🔴 REGRESSION (against this PR's first revision, f191b0f8): connect-src
+// carried /api/instance and /brand/ on any https origin.
+func TestThePagesReadNothingOnOtherOriginsAndDrawOnlyTheLogoPath(t *testing.T) {
+	for _, fa := range []string{"'none'", "'self'"} {
+		csp := contentSecurityPolicy(fa, "")
+		if got := strings.Join(cspDirective(csp, "connect-src"), " "); got != "connect-src 'self'" {
+			t.Errorf("frame-ancestors %s: %q, want connect-src 'self'", fa, got)
+		}
+		want := "img-src 'self' data: https://*:*/brand/icon-192.png http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
+		if got := strings.Join(cspDirective(csp, "img-src"), " "); got != want {
+			t.Errorf("frame-ancestors %s:\n %q\nwant\n %q", fa, got, want)
+		}
 	}
 }

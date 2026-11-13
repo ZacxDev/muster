@@ -186,23 +186,8 @@ func instanceDoc(b branding.Branding) InstanceDoc {
 }
 
 func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
-	allowAnyOriginToRead(w)
 	w.Header().Set("Cache-Control", instanceMaxAge)
 	s.writeJSON(w, http.StatusOK, instanceDoc(s.instanceBranding(r.Context())))
-}
-
-// allowAnyOriginToRead lets another origin's page READ this response: the
-// web app's server switcher (docs/design/web-server-switcher.md) on one muster
-// fetches another muster's instance document and its 192 px icon.
-//
-// 🔴 "*" AND NOTHING ELSE, AND THAT IS WHAT KEEPS CREDENTIALS OUT. A browser
-// never pairs "*" with credentials: a credentialed request's response is
-// unreadable under "*", and no Access-Control-Allow-Credentials is ever sent.
-// So only what an anonymous caller already gets (these routes take no
-// session) becomes readable, and nothing per-user is on them. No Vary:
-// Origin either, since the answer is the same for every origin.
-func allowAnyOriginToRead(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
 // --- GET /brand/* ---------------------------------------------------------------
@@ -229,7 +214,6 @@ func (s *Server) handleBrandIcon512(w http.ResponseWriter, r *http.Request) {
 // and loads nothing).
 func (s *Server) serveBrandImage(w http.ResponseWriter, r *http.Request, pick func(branding.Branding) []byte) {
 	b := s.instanceBranding(r.Context())
-	allowAnyOriginToRead(w)
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "default-src 'none'")

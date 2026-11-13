@@ -138,10 +138,15 @@ const permissionsPolicy = "microphone=(self)"
 // is server-rendered HTML + vendored htmx/idiomorph + inline <script> blocks and
 // `hx-on:` attributes. htmx compiles `hx-on:` handlers via `new Function`, so the
 // script-src needs BOTH 'unsafe-inline' (inline scripts + hx-on attrs) AND
-// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break. The
-// CSP still earns its keep by blocking external origins, framing (clickjacking),
-// base-uri and form-action hijacking; Referrer-Policy:no-referrer keeps the
-// magic-link token out of the Referer header.
+// 'unsafe-eval' (the Function constructor) or modal-close/form-reset break.
+// ⚠ So the CSP is NOT an exfiltration barrier: an injected inline script can
+// always navigate (location = …), which no CSP directive governs. What it does
+// earn: framing (frame-ancestors, clickjacking), base-uri and form-action
+// hijacking, external SCRIPTS and styles (script-src/style-src 'self'), and
+// keeping the pages' own fetches same-origin (connect-src 'self', plus a Faro
+// collector when telemetry is on). img-src also admits other origins' brand
+// icon at one fixed path (serverSwitcherImgSrc). Referrer-Policy:no-referrer
+// keeps the magic-link token out of the Referer header.
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -154,22 +159,21 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// serverSwitcherConnectSrc is what the web app's server switcher may read on
-// ANOTHER origin (docs/design/web-server-switcher.md): another muster's
-// instance document and its /brand/ images, which it fetches with no
-// credentials to draw that server's name and logo.
+// serverSwitcherImgSrc is what the web app's server switcher may DRAW from
+// another origin (docs/design/web-server-switcher.md): another muster's
+// current logo icon, as a plain <img>, at the one path every muster serves it
+// on. The operator's decision on review ("Logo via <img>, no CORS"): nothing on
+// another origin is READ — connect-src stays 'self', and /api/instance and
+// /brand/* send no Access-Control-Allow-Origin.
 //
-// 🔴 PATHS, NOT ORIGINS. The servers are the person's own list, kept in their
-// browser, so no origin can be named here; a path-scoped source on any host is
-// the narrowest policy that still works: /api/instance exactly, and /brand/ as
-// a prefix. http only for the two loopback hosts the switcher accepts
-// (development). ⚠ A source's path is not checked after a redirect, so the
-// switcher's fetches refuse redirects (redirect: 'error', web/static/servers.js).
-// ⚠ This is not an exfiltration barrier and never was one: script-src carries
-// 'unsafe-inline', and a navigation is not governed by connect-src.
-const serverSwitcherConnectSrc = "https://*:*/api/instance https://*:*/brand/ " +
-	"http://localhost:*/api/instance http://localhost:*/brand/ " +
-	"http://127.0.0.1:*/api/instance http://127.0.0.1:*/brand/"
+// 🔴 ONE EXACT PATH, NOT AN ORIGIN AND NOT A PREFIX. The servers are the
+// person's own list, kept in their browser, so no origin can be named here; a
+// path source with no trailing slash matches that path only. http only for the
+// two loopback hosts the switcher accepts (development). ⚠ A source's path is
+// not checked after a redirect, and an image URL can carry a query: neither
+// matters for exfiltration, which a navigation already allows (above).
+const serverSwitcherImgSrc = "https://*:*/brand/icon-192.png " +
+	"http://localhost:*/brand/icon-192.png http://127.0.0.1:*/brand/icon-192.png"
 
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
 // source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
@@ -177,14 +181,14 @@ const serverSwitcherConnectSrc = "https://*:*/api/instance https://*:*/brand/ " 
 // policy is exactly what it was before plugins could be framed (child frames
 // then fall back to default-src 'self').
 func contentSecurityPolicy(frameAncestors, frameSrc string) string {
-	connectSrc := "'self' " + serverSwitcherConnectSrc
+	connectSrc := "'self'"
 	if telemetryConnectSrc != "" {
 		connectSrc += " " + telemetryConnectSrc
 	}
 	csp := "default-src 'self'; " +
 		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
 		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: " + serverSwitcherImgSrc + "; " +
 		"connect-src " + connectSrc + "; " +
 		"frame-ancestors " + frameAncestors + "; "
 	if frameSrc != "" {

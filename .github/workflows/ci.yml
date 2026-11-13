@@ -257,9 +257,9 @@ jobs:
         run: node --test e2e/sw-install.test.mjs
       # The server switcher's list rules (web/static/servers.js): addresses
       # (https only but loopback, no credentials, origin only), dedupe, the
-      # cap, the branding cache, and the cross-origin reads' options (no
-      # credentials, no referrer, no redirects). Node only, < 1 s.
-      - name: servers.js keeps only origins and reads other servers anonymously
+      # cap, labels, the logo path, and that the script makes no request of
+      # its own. Node only, < 1 s.
+      - name: servers.js keeps only origins and reads nothing from other servers
         if: ${{ !cancelled() }}
         run: node --test e2e/servers.test.mjs
 

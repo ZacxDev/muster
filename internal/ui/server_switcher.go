@@ -32,9 +32,12 @@ func serverDot() g.Node {
 		Class("inline-block h-3 w-3 shrink-0 rounded-full bg-muted ring-1 ring-inset ring-black/20"))
 }
 
-// serverLogo is a server's cached logo, hidden until the script has one.
+// serverLogo is a server's logo, hidden until it has loaded: this server's
+// own, or another's /brand/icon-192.png drawn straight from that server
+// (servers.js logoSrc). No crossorigin attribute, so it is never a CORS
+// request; no Referer.
 func serverLogo() g.Node {
-	return Img(g.Attr("data-server-logo", ""), Alt(""), g.Attr("hidden", ""), Width("20"), Height("20"),
+	return Img(g.Attr("data-server-logo", ""), Alt(""), g.Attr("hidden", ""), g.Attr("referrerpolicy", "no-referrer"), Width("20"), Height("20"),
 		Class("h-5 w-5 shrink-0 rounded object-contain"))
 }
 

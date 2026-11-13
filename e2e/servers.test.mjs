@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'web', 'static', 'servers.js'), 'utf8');
-const sandbox = { URL, JSON, TextDecoder, btoa, Math, Array, String, Number, Uint8Array, Promise, isFinite };
+const sandbox = { URL, JSON, Math, Array, String, Number };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(src, sandbox);
 const core = sandbox.musterServersCore;
@@ -25,7 +25,6 @@ const deq = (a, b, m) => assert.deepEqual(plain(a), plain(b), m);
 
 const SELF = 'https://a.example.com';
 const B = 'https://b.example.net';
-const NOW = 1_000_000_000_000;
 
 test('the core loads without a DOM', () => {
   assert.equal(typeof core.parseServer, 'function');
@@ -129,8 +128,7 @@ test('a stored entry is re-checked: a bad origin, or one that is not its own ori
   };
   const l = core.normalize(stored, SELF);
   deq(l.map((s) => s.origin), [SELF, 'https://c.example.net']);
-  assert.equal(l[1].logo, '', 'a logo that is not a PNG data: URL is not kept');
-  assert.equal(l[1].etag, '');
+  deq(l[1], { origin: 'https://c.example.net', label: 'C' }, 'an entry keeps its origin and label, nothing else');
   deq(core.normalize({ v: 2, servers: [{ origin: B }] }, SELF).map((s) => s.origin), [SELF], 'another version is not read');
   deq(core.normalize('garbage', SELF).map((s) => s.origin), [SELF]);
 });
@@ -148,16 +146,15 @@ test('load and save survive a missing or throwing storage', () => {
   assert.equal(core.save(bad, l), false);
 });
 
-test('labels: the person’s own, else the server’s name, else its host', () => {
+test('labels: the person’s own, else (this server only) its own name, else the host', () => {
   let l = core.add(core.normalize(null, 'http://localhost:8105'), 'https://b.example.net:8443').list;
-  assert.equal(core.display(l[0]), 'localhost:8105');
-  assert.equal(core.display(l[1]), 'b.example.net:8443');
-  l[1].name = 'Team B';
-  assert.equal(core.display(l[1]), 'Team B');
+  assert.equal(core.display(l[0], ''), 'localhost:8105');
+  assert.equal(core.display(l[1], ''), 'b.example.net:8443');
+  assert.equal(core.display(l[0], 'Team A'), 'Team A', 'this server’s own name, which its page already has');
   l = core.rename(l, l[1].origin, '  Work  ');
-  assert.equal(core.display(l[1]), 'Work');
+  assert.equal(core.display(l[1], ''), 'Work');
   l = core.rename(l, l[1].origin, '');
-  assert.equal(core.display(l[1]), 'Team B', 'an empty label clears it');
+  assert.equal(core.display(l[1], ''), 'b.example.net:8443', 'an empty label clears it');
   assert.equal(core.hostLabel('https://b.example.net:443'), 'b.example.net');
 });
 
@@ -183,128 +180,23 @@ test('colours: one per server, from the origin, the same on every list holding t
   assert.ok(new Set(lone).size > 1, `a lone server's colour comes from its origin: ${lone}`);
 });
 
-test('stale: unread, older than the TTL, or from the future', () => {
-  assert.equal(core.stale({ checkedAt: 0 }, NOW), true);
-  assert.equal(core.stale({ checkedAt: NOW - core.TTL_MS + 1 }, NOW), false);
-  assert.equal(core.stale({ checkedAt: NOW - core.TTL_MS - 1 }, NOW), true);
-  assert.equal(core.stale({ checkedAt: NOW + 60_000 }, NOW), true);
+// ---- logos -------------------------------------------------------------------
+
+test('another server’s logo is its own fixed icon path, and nothing of this page', () => {
+  assert.equal(core.logoSrc(B), `${B}/brand/icon-192.png`);
+  assert.equal(core.logoSrc('http://localhost:8105'), 'http://localhost:8105/brand/icon-192.png');
+  // Only ever built from a kept origin, so no path, query or credential of a
+  // typed address can reach it.
+  const l = core.add(core.normalize(null, SELF), 'https://b.example.net/x?token=mst_synthetic_0000').list;
+  assert.equal(core.logoSrc(l[1].origin), `${B}/brand/icon-192.png`);
 });
 
-// ---- branding ---------------------------------------------------------------
-
-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
-const resp = (status, body, headers = {}) => ({
-  ok: status >= 200 && status < 300,
-  status,
-  headers: { get: (k) => headers[k.toLowerCase()] ?? null },
-  arrayBuffer: async () => (typeof body === 'string' ? new TextEncoder().encode(body) : body).buffer,
-});
-// A fake server: each path answers from routes; every call is recorded with
-// its options.
-function fakeFetch(routes) {
-  const calls = [];
-  const f = async (url, opts) => {
-    calls.push({ url, opts: plain(opts) });
-    const r = routes[url];
-    if (!r) return resp(404, '');
-    return typeof r === 'function' ? r() : r;
-  };
-  f.calls = calls;
-  return f;
-}
-const doc = (name, etag) => JSON.stringify({ name, logo: etag ? { url: `/brand/logo.png?v=${etag}`, icon192: `/brand/icon-192.png?v=${etag}`, icon512: `/brand/icon-512.png?v=${etag}`, etag } : null });
-
-test('🔴 every read sends no credentials and no referrer, follows no redirect, and goes only to the server’s own /api/instance and /brand/', async () => {
-  const f = fakeFetch({
-    [`${B}/api/instance`]: resp(200, doc('Team B', 'aa11')),
-    [`${B}/brand/icon-192.png?v=aa11`]: resp(200, PNG),
-  });
-  const e = core.normalize({ v: 1, servers: [{ origin: B }] }, SELF)[1];
-  await core.refresh(e, f, NOW);
-  deq(f.calls.map((c) => c.url), [`${B}/api/instance`, `${B}/brand/icon-192.png?v=aa11`]);
-  for (const c of f.calls) {
-    deq(c.opts, { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', mode: 'cors' }, c.url);
-  }
-});
-
-test('the name, the logo as a PNG data: URL, and its etag are cached', async () => {
-  const f = fakeFetch({
-    [`${B}/api/instance`]: resp(200, doc('  Team‮ B ', 'aa11')),
-    [`${B}/brand/icon-192.png?v=aa11`]: resp(200, PNG),
-  });
-  const e = core.normalize({ v: 1, servers: [{ origin: B }] }, SELF)[1];
-  const n = await core.refresh(e, f, NOW);
-  assert.equal(n.name, 'Team B');
-  assert.equal(n.etag, 'aa11');
-  assert.equal(n.logo, 'data:image/png;base64,' + Buffer.from(PNG).toString('base64'));
-  assert.equal(n.checkedAt, NOW);
-  // And it survives a save/load (the data: URL passes the stored-logo check).
-  assert.equal(core.normalize({ v: 1, servers: [n] }, SELF)[1].logo, n.logo);
-});
-
-test('the logo is fetched again only when the etag changes', async () => {
-  let icon = 0;
-  let etag = 'aa11';
-  const routes = {
-    [`${B}/api/instance`]: () => resp(200, doc('Team B', etag)),
-    [`${B}/brand/icon-192.png?v=aa11`]: () => { icon++; return resp(200, PNG); },
-    [`${B}/brand/icon-192.png?v=bb22`]: () => { icon++; return resp(200, Uint8Array.from([...PNG, 9])); },
-  };
-  const f = fakeFetch(routes);
-  let e = core.normalize({ v: 1, servers: [{ origin: B }] }, SELF)[1];
-  e = await core.refresh(e, f, NOW);
-  assert.equal(icon, 1);
-  const first = e.logo;
-  e = await core.refresh(e, f, NOW + 1);
-  assert.equal(icon, 1, 'same etag: the cached logo, no fetch');
-  assert.equal(e.logo, first);
-  etag = 'bb22';
-  e = await core.refresh(e, f, NOW + 2);
-  assert.equal(icon, 2, 'new etag: fetched');
-  assert.notEqual(e.logo, first);
-  assert.equal(e.etag, 'bb22');
-  // The logo removed on the server: the cache drops it.
-  routes[`${B}/api/instance`] = () => resp(200, doc('Team B', null));
-  e = await core.refresh(e, f, NOW + 3);
-  assert.equal(e.logo, '');
-  assert.equal(e.etag, '');
-});
-
-test('a logo on another origin, outside /brand/, not a PNG or too large is not kept', async () => {
-  const base = core.normalize({ v: 1, servers: [{ origin: B }] }, SELF)[1];
-  const cases = {
-    'another origin': { logo: { icon192: 'https://evil.example.org/brand/icon-192.png', etag: 'aa11' } },
-    'protocol-relative': { logo: { icon192: '//evil.example.org/brand/i.png', etag: 'aa11' } },
-    'not under /brand/': { logo: { icon192: '/api/tasks', etag: 'aa11' } },
-  };
-  for (const [what, d] of Object.entries(cases)) {
-    const f = fakeFetch({ [`${B}/api/instance`]: resp(200, JSON.stringify(d)) });
-    const n = await core.refresh(base, f, NOW);
-    assert.equal(n.logo, '', what);
-    deq(f.calls.map((c) => c.url), [`${B}/api/instance`], `${what}: no second fetch`);
-  }
-  const notPNG = fakeFetch({ [`${B}/api/instance`]: resp(200, doc('B', 'aa11')), [`${B}/brand/icon-192.png?v=aa11`]: resp(200, '<svg/>') });
-  assert.equal((await core.refresh(base, notPNG, NOW)).logo, '', 'not a PNG');
-  const big = new Uint8Array(core.MAX_LOGO_BYTES + 1);
-  big.set(PNG);
-  const tooBig = fakeFetch({ [`${B}/api/instance`]: resp(200, doc('B', 'aa11')), [`${B}/brand/icon-192.png?v=aa11`]: resp(200, big) });
-  assert.equal((await core.refresh(base, tooBig, NOW)).logo, '', 'over the cap');
-  const declared = fakeFetch({ [`${B}/api/instance`]: resp(200, doc('B', 'aa11')), [`${B}/brand/icon-192.png?v=aa11`]: resp(200, PNG, { 'content-length': String(10 ** 9) }) });
-  assert.equal((await core.refresh(base, declared, NOW)).logo, '', 'a declared length over the cap');
-});
-
-test('a failed read keeps what was cached, and waits for the TTL', async () => {
-  const cached = core.normalize({ v: 1, servers: [{ origin: B, name: 'Team B', etag: 'aa11', logo: 'data:image/png;base64,AAAA', checkedAt: 1 }] }, SELF)[1];
-  const failures = [
-    fakeFetch({}),
-    fakeFetch({ [`${B}/api/instance`]: resp(200, '{not json') }),
-    fakeFetch({ [`${B}/api/instance`]: resp(200, 'x'.repeat(64 * 1024 + 1)) }),
-    async () => { throw new TypeError('CORS or network'); },
-  ];
-  for (const f of failures) {
-    const n = await core.refresh(cached, f, NOW);
-    deq([n.name, n.etag, n.logo], ['Team B', 'aa11', 'data:image/png;base64,AAAA']);
-    assert.equal(n.checkedAt, NOW);
+test('🔴 the script makes no request of its own: no fetch, XHR, beacon, socket or event stream', () => {
+  // The behavioural check is the e2e spec (no cross-origin fetch/XHR seen);
+  // this pins the source so a read cannot creep back in unnoticed.
+  const code = src.replace(/^\s*\/\/.*$/gm, ''); // whole-line comments only
+  for (const api of ['fetch(', 'XMLHttpRequest', 'sendBeacon', 'WebSocket', 'EventSource', 'importScripts']) {
+    assert.ok(!code.includes(api), `servers.js calls ${api}`);
   }
 });
 

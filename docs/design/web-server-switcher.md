@@ -11,8 +11,9 @@ phase 3.
 Operator decision, 2026-11-13: give the installable web app (the PWA) the
 Android app's server switcher. A bar shows the server in view (colour and
 label); tap it for the list of servers, **Add server** and **Manage servers**;
-each server's branding comes from its own
-[`GET /api/instance`](../branding.md#the-instance-document); every paired
+on Android each server's branding comes from its own
+[`GET /api/instance`](../branding.md#the-instance-document) (on the web, only
+the logo, drawn as an image: [option (a)](#a-a-list-per-origin-switching-navigates-the-window-chosen)); every paired
 server still notifies, and a notification's tap opens that server; two
 servers never share an origin or a session.
 
@@ -37,24 +38,41 @@ they are on".
 ### (a) A list per origin; switching navigates the window (chosen)
 
 Each muster origin keeps, in its own `localStorage`, a list of servers: their
-origins and cached display data (name, a small logo, its etag), nothing else.
-The switcher draws that list; picking a server is a top-level navigation to
-its origin. Each server keeps its own sign-in, cookies, service worker and
-push subscription, exactly as if the person had typed its address.
+origins and the person's own label for each, nothing else. The switcher draws
+that list; picking a server is a top-level navigation to its origin. Each
+server keeps its own sign-in, cookies, service worker and push subscription,
+exactly as if the person had typed its address.
 
-- **Branding** is fetched by the page, cross-origin, from the other server's
-  `GET /api/instance` and `/brand/icon-192.png?v=…`, with no credentials and
-  no referrer. Two server changes make that possible:
-  - those two public, per-server, credential-free routes answer
-    `Access-Control-Allow-Origin: *` (they already are served to anyone; CORS
-    only lets another origin's script *read* them);
-  - the pages' CSP `connect-src` gains those two paths on any `https` origin
-    (and on `http://localhost` / `http://127.0.0.1`, for development):
-    `https://*:*/api/instance https://*:*/brand/ …`. Nothing else on another
-    origin becomes reachable from a page's script.
-  The logo is stored as a `data:` URL, so `img-src` does not change. An older
-  server (no CORS header), or one behind a sign-in proxy that redirects, just
-  shows its host as its label.
+- **Nothing on another origin is read.** Operator decision, 2026-11-13, on
+  this PR's round-0 review ("Logo via <img>, no CORS"). The first revision
+  read each server's name and logo cross-origin from its `/api/instance`
+  with `Access-Control-Allow-Origin: *`. That let any website read the name and
+  logo of a muster the visitor can reach but the internet cannot (a LAN, a
+  tailnet, `localhost`), which confirms that the visitor runs one there and
+  names the team. So:
+  - **the logo** is a plain `<img>` of the other server's
+    `/brand/icon-192.png`: the unversioned path every muster already serves
+    (the current icon, `no-cache` plus an `ETag`, so a new logo shows at
+    once; 404 with no logo). A browser draws a cross-origin image, but no
+    script can read it. It needs no CORS and no server change. The tag has
+    no `crossorigin` attribute, so it is not a CORS request, and it has
+    `referrerpolicy="no-referrer"`. A 404, or a server that is down, leaves
+    the colour and the label. Logos are requested only while the list is on
+    screen;
+  - **the label** is the person's own, else the host. Another server's
+    display name is not shown: reading it would need the cross-origin read
+    this decision removes. (The server in view still shows its own name,
+    which its page already has.);
+  - **the CSP**: `connect-src` is unchanged (`'self'`). `img-src` gains
+    exactly `/brand/icon-192.png` on any `https` origin, and on
+    `http://localhost` / `http://127.0.0.1` for development. It gains no
+    other path and no prefix;
+  - **cookies on the image request**: muster's session cookies are
+    `SameSite=Lax` and host-only, so a cross-site image request carries none.
+    Two musters on the same site (sibling subdomains, or two ports of one
+    host) are *same-site*, and there the image request carries the other
+    server's **own** cookie to that same server, to a public route that
+    ignores it. Nothing of the server in view travels with it.
 - **The list is per origin**, so a server added on A is not on B's list. The
   switch carries one thing across: A's own origin, in the URL fragment of the
   navigation (`#muster-from=<A's origin>`; a fragment is never sent to a
@@ -62,14 +80,13 @@ push subscription, exactly as if the person had typed its address.
   not in B's list, **offers** to add it ("Add <host> to this server's
   switcher?"). It never adds it by itself: anyone can link to
   `B/#muster-from=…`, so the person decides, seeing the exact host.
-- **Privacy.** The list holds origins and public display data only. Nothing
-  of one server (a cookie, a token, a path, a page's data) is ever sent to
-  another: the fetches are `credentials: 'omit'`, `referrerPolicy:
-  'no-referrer'`, and muster's pages already send `Referrer-Policy:
-  no-referrer`, so the navigation carries no Referer. A pasted address is
-  reduced to its origin before it is stored, so a path or a query (which might
-  hold a token) is never kept or fetched; an address with a user name or
-  password in it is refused.
+- **Privacy.** The list holds origins and labels only. Nothing of one server
+  (a cookie, a token, a path, a page's data) is ever sent to another. The
+  only cross-origin requests are the logo images, with no referrer. muster's
+  pages already send `Referrer-Policy: no-referrer`, so the navigation
+  carries no Referer either. A pasted address is reduced to its origin before
+  it is stored, so a path or a query (which might hold a token) is never kept
+  or requested. An address with a user name or password in it is refused.
 
 ### (b) A hub page embedding the others in frames (rejected)
 
@@ -124,14 +141,12 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
   list (a hash of the origin picks the palette slot; a clash takes the next
   free slot, in origin order), so a server keeps its colour from one list to
   the next when the lists hold the same servers.
-- The label is the person's own label, else the server's display name from
-  `/api/instance`, else its host (and port when not the default).
-- Branding is refreshed when a server is added, and when the switcher draws
-  and the cached copy is older than 15 minutes (as the Android app does). The
-  logo is re-fetched only when `/api/instance`'s `logo.etag` changes; the
-  logo's URL must be on that server's own origin, a PNG, at most 256 KiB.
-  The name is at most 64 characters, with control and text-direction
-  characters removed, and is drawn as text, never markup.
+- The label is the person's own, else the host (and the port when it is not
+  the default). The server in view's own entry falls back to its own display
+  name before its host. A label is at most 64 characters, with control and
+  text-direction characters removed, and is drawn as text, never markup.
+- Another server's logo is `<origin>/brand/icon-192.png`, built from the
+  stored origin alone, requested only while the list is shown.
 
 ## Web vs Android
 
@@ -142,7 +157,8 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
 | separate sign-ins | per-server WebView profile | per-origin by the browser, always |
 | add a server | Add server, then pair the phone | Add server (an address); sign in there as usual |
 | the list | one list for the app | one list **per server, per browser**; a switch offers to add the server you came from |
-| branding (name, logo, etag) | `GET /api/instance`, every 15 min | the same document, cross-origin, when stale (15 min) |
+| the other server's name | from its `GET /api/instance` | **not shown**: the label is yours, else the host (no cross-origin read, by operator decision) |
+| the other server's logo | from `/api/instance`, cached by etag | drawn as an `<img>` of its `/brand/icon-192.png` (current icon, revalidated by the browser); colour and label when it has none |
 | notifications from every server | yes, one UnifiedPush instance each | yes, if notifications were turned on **on each server** (Web Push is per origin); each arrives with that server's icon |
 | a notification's tap opens its server | yes, and switches the bar | yes: the server's own service worker opens its own page |
 | label on a notification | server label as subtext | not added: the icon (the server's logo) is the cue |
@@ -162,18 +178,29 @@ so it moves nothing when it loads (the layout-shift gate, `cls.spec.ts`).
 - A browser that clears `localStorage` for an installed app separately from
   the tab (Safari keeps separate storage for a home-screen app) has a
   separate list there.
+- **The `img-src` source `https://*:*/brand/icon-192.png`** was measured in
+  Chromium only: the wildcard host, both the default and a non-default port,
+  and other paths refused. Safari and Firefox were not run.
 
 ## Tests
 
 - `e2e/servers.test.mjs` (node): the address rules (https only but loopback,
-  no credentials, origin only), dedupe, the cap, colours, labels, the branding
-  cache (etag, same-origin logo, size, name sanitising), the fetch options (no
-  credentials, no referrer), the fragment hand-off.
-- `internal/api`: `GET /api/instance` and `/brand/*` answer
-  `Access-Control-Allow-Origin: *` and nothing that would let credentials
-  through; the CSP's `connect-src` names exactly those paths.
-- `e2e/tests/server-switcher.spec.ts`: phone and desktop; a second, fake
-  server (its own origin) whose name, logo and etag the spec controls; the
-  real muster under a second origin for a real cross-origin branding read;
-  adding, rejecting bad addresses, renaming, removing, switching, and the
-  hand-off offer on the other side.
+  no credentials, origin only), dedupe, the cap, colours, labels, an entry
+  keeping only its origin and label, the logo path built from the origin
+  alone, and a source check that the script makes no request of its own (no
+  fetch, XHR, beacon, socket or event stream).
+- `internal/api`: `GET /api/instance` and `/brand/*` send no
+  `Access-Control-Allow-Origin` (404, 200, 304); the unversioned icon path is
+  served revalidated; `connect-src` is `'self'` and `img-src` adds exactly
+  the icon path.
+- `e2e/tests/server-switcher.spec.ts`, at phone and desktop sizes:
+  - a fake second server with no CORS header, whose logo the spec turns on
+    and off;
+  - zero cross-origin fetch or XHR from the page, next to the controls of a
+    same-origin read and a cross-origin image;
+  - the logo request is an image (`no-cors`) with no cookie, referrer or
+    Origin, and none is made while the menu is shut;
+  - the real muster under a second origin: its data cannot be read (CSP and
+    no CORS), and only the icon path can be drawn;
+  - adding, rejecting bad addresses, renaming, removing, switching, and the
+    hand-off offer on the other side.

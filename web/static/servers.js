@@ -4,20 +4,26 @@
 //
 // A web page is bound to its origin: it cannot hold another server's sign-in,
 // storage or service worker, and it does not try. Each server keeps its own
-// list, in its own localStorage, of ORIGINS and the display data its
-// GET /api/instance publishes (name, a small logo, the logo's etag). Picking a
-// server is a top-level navigation; that server's own cookies decide whether
-// you are signed in there.
+// list, in its own localStorage, of ORIGINS and the person's own label for
+// each, nothing else. Picking a server is a top-level navigation; that
+// server's own cookies decide whether you are signed in there.
 //
-// 🔴 NOTHING OF THIS SERVER IS EVER SENT TO ANOTHER. The only requests to
-// another origin are its public /api/instance and /brand/ icon, made with
-// FETCH_OPTIONS: no credentials, no referrer, no redirects. The switch's
-// navigation carries this server's ORIGIN (in the fragment, which no server
-// receives) and nothing else; muster's pages send Referrer-Policy:
-// no-referrer, so it carries no Referer either. A typed address is reduced to
-// its origin before it is kept, so a path or query (which may hold a token) is
-// never stored or fetched, and an address with a user name or password is
-// refused outright.
+// 🔴 THIS SCRIPT READS NOTHING FROM ANOTHER ORIGIN (the operator's decision
+// on review, "Logo via <img>, no CORS"): no fetch, no XHR. Another server's
+// logo is an <img> pointing at its public /brand/icon-192.png (logoSrc), which
+// the browser DRAWS but no script can read; the page's CSP img-src allows that
+// one path on another origin and nothing else (internal/api middleware.go).
+// The image request carries no Referer (referrerpolicy="no-referrer" on the
+// tag, and muster's pages send Referrer-Policy: no-referrer) and is not a CORS
+// request (no crossorigin attribute). A server with no logo answers 404 and
+// the row shows its colour and label. Logos are requested only while the list
+// is on screen, never on a page load with the menu shut.
+//
+// 🔴 NOTHING OF THIS SERVER IS EVER SENT TO ANOTHER. The switch's navigation
+// carries this server's ORIGIN (in the fragment, which no server receives) and
+// nothing else. A typed address is reduced to its origin before it is kept,
+// so a path or query (which may hold a token) is never stored or requested,
+// and an address with a user name or password is refused outright.
 //
 // 🔴 THE FRAGMENT IS AN OFFER, NEVER AN ADD. Anyone can link to
 // <server>/#muster-from=<origin>; the page asks before adding that origin,
@@ -33,11 +39,6 @@
   // At most this many servers on one list, this one included: the Android
   // app's palette has eight colours, and so does this one.
   var MAX = 8;
-  // A server's branding is read again when the copy is older than this (the
-  // Android app reads it every 15 minutes).
-  var TTL_MS = 15 * 60 * 1000;
-  var MAX_INSTANCE_BYTES = 64 * 1024;
-  var MAX_LOGO_BYTES = 256 * 1024;
   var MAX_LABEL = 64;
   var FROM = 'muster-from';
   // The Android app's palette (core/auth Tenants.PALETTE), in its order.
@@ -45,10 +46,10 @@
   // The only hosts an http:// server may have (development). Everything else
   // is https.
   var LOOPBACK = { 'localhost': true, '127.0.0.1': true };
-  // 🔴 EVERY CROSS-ORIGIN READ USES THESE, AND ONLY THESE.
-  var FETCH_OPTIONS = { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', mode: 'cors' };
-  var PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-  var DATA_PNG = 'data:image/png;base64,';
+  // Another server's logo: its current 192 px icon, at the unversioned path
+  // every muster serves (internal/api branding.go: no-cache + ETag, 404 when no
+  // logo is set). The ONE cross-origin path the CSP's img-src allows.
+  var LOGO_PATH = '/brand/icon-192.png';
 
   // parseServer turns what a person typed into a server's origin, or says why
   // not: 'empty', 'invalid', 'credentials' (a user name or password in it), or
@@ -110,20 +111,11 @@
     return out;
   }
 
-  function validEtag(x) { return typeof x === 'string' && /^[0-9a-f]{1,64}$/.test(x) ? x : ''; }
-  function validLogo(x) { return typeof x === 'string' && x.indexOf(DATA_PNG) === 0 && x.length <= DATA_PNG.length + Math.ceil(MAX_LOGO_BYTES / 3) * 4 ? x : ''; }
-
-  // entry is one server as kept: the origin and its display data, nothing else.
+  // entry is one server as kept: its origin and the person's label, nothing
+  // else (a stored entry's other fields are dropped).
   function entry(origin, o) {
     o = o || {};
-    return {
-      origin: origin,
-      label: cleanText(o.label),
-      name: cleanText(o.name),
-      etag: validEtag(o.etag),
-      logo: validLogo(o.logo),
-      checkedAt: typeof o.checkedAt === 'number' && isFinite(o.checkedAt) ? o.checkedAt : 0,
-    };
+    return { origin: origin, label: cleanText(o.label) };
   }
 
   // normalize makes a stored value a valid list: every origin re-checked (one
@@ -175,7 +167,7 @@
     return list.filter(function (s) { return s.origin !== origin; });
   }
 
-  // rename sets origin's own label ('' clears it: the name or host shows).
+  // rename sets origin's own label ('' clears it: the host shows).
   function rename(list, origin, label) {
     return list.map(function (s) {
       if (s.origin !== origin) return s;
@@ -185,78 +177,14 @@
     });
   }
 
-  // display is the label a server is drawn with: the person's own, else the
-  // server's name, else its host.
-  function display(s) { return s.label || s.name || hostLabel(s.origin); }
+  // display is the label a server is drawn with: the person's own, else
+  // name (this server's own display name, which its page already has), else
+  // its host. Another server's name is never read.
+  function display(s, name) { return s.label || name || hostLabel(s.origin); }
 
-  function stale(s, now) { return !s.checkedAt || now - s.checkedAt > TTL_MS || s.checkedAt > now; }
-
-  // logoURL is the icon an instance document names (icon192, else url),
-  // resolved against the server's origin — or null when it is not on that
-  // origin, or not under /brand/.
-  function logoURL(origin, doc) {
-    var logo = doc && doc.logo;
-    if (!logo || typeof logo !== 'object') return null;
-    var ref = typeof logo.icon192 === 'string' ? logo.icon192 : (typeof logo.url === 'string' ? logo.url : '');
-    if (!ref) return null;
-    var u;
-    try { u = new URL(ref, origin + '/'); } catch (e) { return null; }
-    if (u.origin !== origin || u.pathname.indexOf('/brand/') !== 0) return null;
-    return u.href;
-  }
-
-  function isPNG(bytes) {
-    if (bytes.length < PNG_SIG.length) return false;
-    for (var i = 0; i < PNG_SIG.length; i++) if (bytes[i] !== PNG_SIG[i]) return false;
-    return true;
-  }
-
-  function base64(bytes) {
-    var s = '';
-    for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-    return root.btoa(s);
-  }
-
-  // readBounded reads a response's body, or null past max bytes.
-  async function readBounded(r, max) {
-    var len = Number(r.headers && r.headers.get && r.headers.get('content-length'));
-    if (len > max) return null;
-    var buf = new Uint8Array(await r.arrayBuffer());
-    return buf.length > max ? null : buf;
-  }
-
-  // refresh reads s's branding from its own origin with fetchFn (window.fetch
-  // in the page) and answers the updated entry. The logo is fetched only when
-  // the document's etag differs from the cached one (or none is cached). Any
-  // failure keeps what was cached, and stamps checkedAt so the next try waits
-  // for the TTL.
-  async function refresh(s, fetchFn, now) {
-    var next = entry(s.origin, s);
-    next.checkedAt = now;
-    try {
-      var r = await fetchFn(s.origin + '/api/instance', FETCH_OPTIONS);
-      if (!r || !r.ok) return next;
-      var body = await readBounded(r, MAX_INSTANCE_BYTES);
-      if (!body) return next;
-      var doc = JSON.parse(new TextDecoder().decode(body));
-      if (!doc || typeof doc !== 'object') return next;
-      next.name = cleanText(doc.name);
-      var etag = validEtag(doc.logo && doc.logo.etag);
-      if (!etag) { next.etag = ''; next.logo = ''; return next; }
-      if (etag === s.etag && validLogo(s.logo)) return next;
-      var url = logoURL(s.origin, doc);
-      if (!url) { next.etag = ''; next.logo = ''; return next; }
-      var ri = await fetchFn(url, FETCH_OPTIONS);
-      if (!ri || !ri.ok) return next;
-      var bytes = await readBounded(ri, MAX_LOGO_BYTES);
-      if (!bytes || !isPNG(bytes)) return next;
-      next.logo = DATA_PNG + base64(bytes);
-      next.etag = etag;
-      return next;
-    } catch (e) {
-      return next;
-    }
-  }
+  // logoSrc is the <img> src for origin's logo: that origin's fixed icon path,
+  // nothing of this page in it.
+  function logoSrc(origin) { return origin + LOGO_PATH; }
 
   // switchHref is where picking target sends this window: target's root,
   // carrying this server's origin (self) in the fragment for the offer.
@@ -275,10 +203,10 @@
   }
 
   var core = {
-    KEY: KEY, MAX: MAX, TTL_MS: TTL_MS, PALETTE: PALETTE, FETCH_OPTIONS: FETCH_OPTIONS, MAX_LOGO_BYTES: MAX_LOGO_BYTES,
+    KEY: KEY, MAX: MAX, PALETTE: PALETTE, LOGO_PATH: LOGO_PATH,
     parseServer: parseServer, hostLabel: hostLabel, cleanText: cleanText, colours: colours, normalize: normalize,
-    load: load, save: save, add: add, remove: remove, rename: rename, display: display, stale: stale,
-    logoURL: logoURL, refresh: refresh, switchHref: switchHref, handoff: handoff,
+    load: load, save: save, add: add, remove: remove, rename: rename, display: display, logoSrc: logoSrc,
+    switchHref: switchHref, handoff: handoff,
   };
   root.musterServersCore = core;
   if (typeof document === 'undefined') return;
@@ -304,28 +232,39 @@
   function $(id) { return document.getElementById(id); }
 
   // fill draws one server into a cloned template's [data-server-*] slots.
-  function fill(node, s, colour, box) {
+  // logos: whether another server's logo may be requested now (the list is
+  // on screen). This server's own logo is its own, versioned path.
+  function fill(node, s, colour, box, logos) {
     var dot = node.querySelector('[data-server-dot]');
     if (dot) dot.style.backgroundColor = colour;
     var label = node.querySelector('[data-server-label]');
-    if (label) label.textContent = display(s);
+    if (label) label.textContent = display(s, s.origin === self ? selfName(box) : '');
     var host = node.querySelector('[data-server-host]');
     if (host) host.textContent = hostLabel(s.origin);
     var img = node.querySelector('[data-server-logo]');
-    if (img) {
-      var src = s.origin === self ? (box.getAttribute('data-self-logo') || '') : s.logo;
-      if (src) { img.src = src; img.hidden = false; } else { img.removeAttribute('src'); img.hidden = true; }
-    }
+    if (!img) return;
+    var src = s.origin === self ? (box.getAttribute('data-self-logo') || '') : (logos ? logoSrc(s.origin) : '');
+    img.hidden = true;
+    if (!src) { img.removeAttribute('src'); return; }
+    // Shown once it has loaded; a failure (no logo: 404, a server that is
+    // down, a refusal) leaves the colour and the label.
+    img.referrerPolicy = 'no-referrer';
+    img.addEventListener('load', function () { img.hidden = false; });
+    img.addEventListener('error', function () { img.hidden = true; img.removeAttribute('src'); });
+    img.src = src;
   }
 
-  function render() {
+  function selfName(box) { return cleanText(box.getAttribute('data-self-name') || ''); }
+  function menuOpen() { var m = $('server-switcher-menu'); return !!m && !m.hidden; }
+
+  function render(logos) {
     var box = $('server-switcher');
     if (!box) return;
+    if (logos === undefined) logos = menuOpen();
     var list = current();
     var mine = list[0];
-    if (!mine.name) mine.name = cleanText(box.getAttribute('data-self-name') || '');
     var cols = colours(list.map(function (s) { return s.origin; }));
-    fill(box.querySelector('#server-switcher-toggle'), mine, cols[self], box);
+    fill(box.querySelector('#server-switcher-toggle'), mine, cols[self], box, false);
 
     var ul = $('server-switcher-list');
     var tpl = $('server-item-tpl');
@@ -334,7 +273,7 @@
       list.forEach(function (s) {
         var li = tpl.content.firstElementChild.cloneNode(true);
         var a = li.querySelector('a');
-        fill(li, s, cols[s.origin], box);
+        fill(li, s, cols[s.origin], box, logos);
         a.setAttribute('data-server-origin', s.origin);
         if (s.origin === self) {
           a.setAttribute('href', '/');
@@ -356,11 +295,11 @@
       rows.textContent = '';
       list.forEach(function (s) {
         var li = rtpl.content.firstElementChild.cloneNode(true);
-        fill(li, s, cols[s.origin], box);
+        fill(li, s, cols[s.origin], box, logos);
         li.setAttribute('data-server-origin', s.origin);
         var input = li.querySelector('input');
         input.value = s.label;
-        input.placeholder = s.name || hostLabel(s.origin);
+        input.placeholder = (s.origin === self && selfName(box)) || hostLabel(s.origin);
         input.setAttribute('aria-label', 'Label for ' + hostLabel(s.origin));
         var rm = li.querySelector('[data-server-remove]');
         if (s.origin === self) {
@@ -368,40 +307,10 @@
           var tag = li.querySelector('[data-server-current]');
           if (tag) tag.hidden = false;
         } else {
-          rm.setAttribute('aria-label', 'Remove ' + display(s));
+          rm.setAttribute('aria-label', 'Remove ' + display(s, ''));
         }
         rows.appendChild(li);
       });
-    }
-  }
-
-  // refreshStale reads every stale server's branding (never this one: its
-  // own page already draws it), one at a time, and redraws after each.
-  var refreshing = false;
-  async function refreshStale() {
-    if (refreshing || typeof root.fetch !== 'function') return;
-    refreshing = true;
-    try {
-      var list = current();
-      for (var i = 0; i < list.length; i++) {
-        var s = list[i];
-        if (s.origin === self || !stale(s, Date.now())) continue;
-        var next = await refresh(s, root.fetch.bind(root), Date.now());
-        // Merge into what is stored NOW: the person may have renamed or
-        // removed it meanwhile.
-        var now = current();
-        var changed = false;
-        now = now.map(function (x) {
-          if (x.origin !== next.origin) return x;
-          changed = true;
-          var m = entry(x.origin, next);
-          m.label = x.label;
-          return m;
-        });
-        if (changed) { persist(now); render(); }
-      }
-    } finally {
-      refreshing = false;
     }
   }
 
@@ -411,7 +320,7 @@
     if (!t || !menu) return;
     menu.hidden = !open;
     t.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) refreshStale();
+    if (open) render(true);
   }
 
   function showError(el, code) {
@@ -452,7 +361,6 @@
       persist(r.list);
       addDlg.close();
       render();
-      refreshStale();
       t.focus();
     }
     ['server-add', 'server-manage', 'server-offer'].forEach(function (id) {
@@ -463,7 +371,7 @@
     });
 
     var manDlg = $('server-manage');
-    $('server-manage-open').addEventListener('click', function () { render(); manDlg.showModal(); });
+    $('server-manage-open').addEventListener('click', function () { render(true); manDlg.showModal(); });
     manDlg.addEventListener('close', function () { render(); t.focus(); });
     var rows = $('server-manage-list');
     rows.addEventListener('change', function (e) {
@@ -472,7 +380,7 @@
       if (!input || !li) return;
       persist(rename(current(), li.getAttribute('data-server-origin'), input.value));
       input.blur();
-      render();
+      render(true);
     });
     rows.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); e.target.dispatchEvent(new Event('change', { bubbles: true })); }
@@ -482,7 +390,7 @@
       var li = e.target.closest('[data-server-origin]');
       if (!b || !li) return;
       persist(remove(current(), li.getAttribute('data-server-origin'), self));
-      render();
+      render(true);
       var first = rows.querySelector('input');
       if (first) first.focus();
     });
@@ -492,7 +400,7 @@
       $('server-offer-add').addEventListener('click', function () {
         var o = offer.getAttribute('data-origin');
         var r = add(current(), o);
-        if (r.ok) { persist(r.list); render(); refreshStale(); }
+        if (r.ok) { persist(r.list); render(); }
         offer.close();
       });
     }

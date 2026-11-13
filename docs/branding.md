@@ -144,8 +144,8 @@ The file refusals above apply to the app icon too, with the same codes.
 
 | route | who | what it does |
 |---|---|---|
-| `GET /api/instance` | anyone | The [instance document](#the-instance-document). `Cache-Control: public, max-age=300`. `Access-Control-Allow-Origin: *`, so another muster's page (the web app's [server switcher](push.md#several-servers-the-server-switcher)) can read it. |
-| `GET /brand/logo.png`, `/brand/icon-192.png`, `/brand/icon-512.png` | anyone | The images, cached by URL (below). 404 when no logo is set. `Access-Control-Allow-Origin: *`, as above. |
+| `GET /api/instance` | anyone | The [instance document](#the-instance-document). `Cache-Control: public, max-age=300`. No CORS header: another site's script cannot read it. |
+| `GET /brand/logo.png`, `/brand/icon-192.png`, `/brand/icon-512.png` | anyone | The images, cached by URL (below). 404 when no logo is set. No CORS header. Another muster's pages draw `/brand/icon-192.png`, unversioned, as the web app's [server switcher](push.md#several-servers-the-server-switcher) logo. |
 | `PUT /api/instance/branding` | an admin's browser session | `multipart/form-data`, each part optional: `logo` (a file), `app_icon` (a file), `name` (empty clears it) and `logo_shows_name` (`true` or `false`). At least one must be sent. A part left out leaves that setting as it is. `logo_shows_name` may be sent more than once, and the last value counts: the Account page sends a hidden `false` before the checkbox, so an unticked box (which a browser does not send) still saves `false`. Answers with the instance document. |
 | `DELETE /api/instance/branding/logo` | an admin's browser session | Removes the logo and the app icon, and keeps the name. Answers with the instance document. |
 | `DELETE /api/instance/branding/app-icon` | an admin's browser session | Removes the app icon: the icons are made from the logo again. Answers with the instance document. |
@@ -214,7 +214,7 @@ an app that has not signed in yet:
 - `icon192` and `icon512` are the [app icon](#an-app-icon-of-its-own)'s when
   one is set.
 
-These field names are a contract with the Android app's server switcher, and with the web app's (`web/static/servers.js`).
+These field names are a contract with the Android app's server switcher. (The web app's switcher does not read this document: it draws another server's `/brand/icon-192.png` as an image.)
 
 The document does not carry the
 [logo-shows-the-name](#a-logo-that-spells-the-name) setting. The switcher lists

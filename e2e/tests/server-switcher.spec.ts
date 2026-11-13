@@ -10,22 +10,28 @@ import { baseURL, port, serverSwitcherStubPort } from '../lib/env';
 // docs/design/web-server-switcher.md), in a real browser against the real
 // shared muster, at a phone's width and a desktop's.
 //
+// The operator's decision on review, "Logo via <img>, no CORS": the page READS
+// nothing on another origin (no fetch, no XHR); another server's logo is a
+// plain <img> of its /brand/icon-192.png, and its label is the person's own or
+// its host.
+//
 // Three origins:
 //   A    — the shared server, as every spec reaches it (localhost).
 //   A2   — the SAME server reached as 127.0.0.1: another origin to the
-//          browser, so a read of its /api/instance from A is a real
-//          cross-origin read through muster's own CORS header and CSP.
-//   STUB — a fake second server (node:http, here) whose name, logo and etag
-//          the spec sets, and which records every request it gets.
+//          browser, so A's CSP and A2's headers are muster's own.
+//   STUB — a fake second server (node:http, here) with no CORS header at all,
+//          whose logo the spec turns on and off, and which records every
+//          request it gets.
 //
-// 🔴 REGRESSION TEST: on origin/main the sidebar has no #server-switcher, the
-// instance document has no Access-Control-Allow-Origin and the CSP's
-// connect-src is 'self' alone.
+// 🔴 REGRESSION TEST: on origin/main the sidebar has no #server-switcher and
+// img-src is 'self' data: alone. Against this PR's first revision (f191b0f8)
+// the "reads nothing" checks are red: it fetched /api/instance and the icon.
 
 const A = baseURL;
 const A2 = `http://127.0.0.1:${port}`;
 const STUB = `http://127.0.0.1:${serverSwitcherStubPort}`;
 const hostOf = (o: string) => new URL(o).host;
+const LOGO = '/brand/icon-192.png';
 
 // A w×h one-colour PNG (no binary fixture in the repo).
 function png(w: number, h: number, rgb: [number, number, number]): Buffer {
@@ -45,27 +51,21 @@ function png(w: number, h: number, rgb: [number, number, number]): Buffer {
 
 interface Seen { method: string; url: string; headers: http.IncomingHttpHeaders }
 const stub = {
-  name: 'Team Stub' as string | null,
-  etag: 'e1' as string | null,
+  logo: true,
   seen: [] as Seen[],
   server: undefined as http.Server | undefined,
 };
-const icons: Record<string, Buffer> = { e1: png(32, 32, [200, 40, 40]), e2: png(32, 32, [40, 40, 200]) };
+const icon = png(32, 32, [200, 40, 40]);
 
 test.beforeAll(async () => {
+  // 🔴 NO Access-Control-Allow-Origin anywhere: a script on A could not read
+  // a byte of this server; only an <img> can draw its icon.
   stub.server = http.createServer((req, res) => {
     stub.seen.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers });
     const u = new URL(req.url ?? '/', STUB);
-    const cors = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
-    if (u.pathname === '/api/instance') {
-      const e = stub.etag;
-      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ name: stub.name, logo: e ? { url: `/brand/logo.png?v=${e}`, icon192: `/brand/icon-192.png?v=${e}`, icon512: `/brand/icon-512.png?v=${e}`, etag: e } : null }));
-      return;
-    }
-    if (u.pathname === '/brand/icon-192.png' && icons[u.searchParams.get('v') ?? '']) {
-      res.writeHead(200, { ...cors, 'Content-Type': 'image/png' });
-      res.end(icons[u.searchParams.get('v')!]);
+    if (u.pathname === LOGO && stub.logo) {
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+      res.end(icon);
       return;
     }
     if (u.pathname === '/') {
@@ -73,7 +73,7 @@ test.beforeAll(async () => {
       res.end('<!doctype html><title>stub</title><h1 id="stub-home">the other server</h1>');
       return;
     }
-    res.writeHead(404, cors);
+    res.writeHead(404, { 'Cache-Control': 'no-store' });
     res.end();
   });
   await new Promise<void>((resolve) => stub.server!.listen(serverSwitcherStubPort, '127.0.0.1', resolve));
@@ -119,6 +119,25 @@ async function addServer(page: Page, address: string) {
   await page.locator('#server-add-input').press('Enter');
 }
 
+// watch records every request the page makes, by kind: fetch/XHR to another
+// origin (must stay 0), fetch/XHR to its own (the positive control: the
+// listener sees fetches), and images from another origin (the control that it
+// sees cross-origin requests at all).
+function watch(page: Page) {
+  const seen = { foreignReads: [] as string[], ownReads: 0, foreignImages: [] as string[] };
+  page.on('request', (r) => {
+    const t = r.resourceType();
+    const own = new URL(r.url()).origin === new URL(page.url()).origin;
+    if (t === 'fetch' || t === 'xhr') {
+      if (own) seen.ownReads++;
+      else seen.foreignReads.push(r.url());
+    } else if (t === 'image' && !own && !r.url().startsWith('data:')) {
+      seen.foreignImages.push(r.url());
+    }
+  });
+  return seen;
+}
+
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 } } },
@@ -126,18 +145,18 @@ for (const vp of [
   test.describe(vp.name, () => {
     test.use(vp.use);
 
-    test('shows the server in view; adds a server, refusing bad addresses; reads its name and logo; renames; removes', async ({ page }) => {
-      const consoleErrors: string[] = [];
-      page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-      stub.name = 'Team Stub';
-      stub.etag = 'e1';
+    test('shows the server in view; adds a server, refusing bad addresses; draws its logo with no read of it; renames; removes', async ({ page }) => {
+      const cspErrors: string[] = [];
+      page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) cspErrors.push(m.text()); });
+      stub.logo = true;
       stub.seen = [];
       await fresh(page);
+      const seen = watch(page);
 
-      // The server in view: one entry, current, labelled by its name or host.
+      // The server in view: one entry, current, labelled by its own name
+      // (server-rendered, same origin) or its host.
       const self = await (await page.request.get(A + '/api/instance')).json();
-      const selfLabel = self.name ?? hostOf(A);
-      await expect(page.locator('#server-switcher-toggle [data-server-label]')).toHaveText(selfLabel);
+      await expect(page.locator('#server-switcher-toggle [data-server-label]')).toHaveText(self.name ?? hostOf(A));
       await openSwitcher(page);
       await expect(items(page)).toHaveCount(1);
       await expect(item(page, A)).toHaveAttribute('aria-current', 'true');
@@ -159,62 +178,60 @@ for (const vp of [
       await expect(page.locator('#server-switcher-toggle')).toBeFocused();
       await expect(items(page)).toHaveCount(2);
       const s = item(page, STUB);
-      // Its name and logo, read from its own /api/instance and icon.
-      await expect(s.locator('[data-server-label]')).toHaveText('Team Stub');
+      // Its label is its host; its logo is drawn (a real decode, 32 px) from
+      // its own icon path, with no CORS header anywhere on the stub.
+      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
       await expect(s.locator('[data-server-host]')).toHaveText(hostOf(STUB));
       await expect(s.locator('[data-server-logo]')).toBeVisible();
-      expect(await s.locator('[data-server-logo]').evaluate((i) => (i as HTMLImageElement).src.startsWith('data:image/png;base64,') && (i as HTMLImageElement).naturalWidth === 32)).toBe(true);
-      // Its colour is painted.
+      expect(await s.locator('[data-server-logo]').evaluate((i) => [(i as HTMLImageElement).src, (i as HTMLImageElement).naturalWidth, (i as HTMLImageElement).crossOrigin, (i as HTMLImageElement).referrerPolicy]))
+        .toEqual([STUB + LOGO, 32, null, 'no-referrer']);
       expect(await s.locator('[data-server-dot]').evaluate((d) => (d as HTMLElement).style.backgroundColor)).toMatch(/^rgb\(/);
-      const href = await s.getAttribute('href');
-      expect(href).toBe(`${STUB}/#muster-from=${encodeURIComponent(A)}`);
+      expect(await s.getAttribute('href')).toBe(`${STUB}/#muster-from=${encodeURIComponent(A)}`);
 
-      // 🔴 What reached the other server: its two public paths, no cookie,
-      // no authorization, no referrer, nothing of the pasted path or token.
-      expect(stub.seen.map((r) => r.url)).toEqual(['/api/instance', '/brand/icon-192.png?v=e1']);
+      // 🔴 What reached the other server: its icon, as an IMAGE (no-cors), with
+      // no cookie, no authorization, no referrer, no Origin — and nothing else.
+      expect(new Set(stub.seen.map((r) => r.url))).toEqual(new Set([LOGO]));
       for (const r of stub.seen) {
+        expect(r.headers['sec-fetch-dest'], r.url).toBe('image');
+        expect(r.headers['sec-fetch-mode'], r.url).toBe('no-cors');
         expect(r.headers.cookie, r.url).toBeUndefined();
         expect(r.headers.authorization, r.url).toBeUndefined();
         expect(r.headers.referer, r.url).toBeUndefined();
-        expect(r.headers.origin, r.url).toBe(A);
+        expect(r.headers.origin, r.url).toBeUndefined();
       }
       const kept = JSON.stringify(await stored(page));
       expect(kept).not.toContain('mst_');
       expect(kept).not.toContain('/tasks');
 
+      // 🔴 The page read NOTHING on another origin: zero cross-origin
+      // fetch/XHR — next to a same-origin read and a cross-origin image, which
+      // prove the listener sees both kinds.
+      await page.evaluate(() => fetch('/api/instance').then((r) => r.text()));
+      expect(seen.foreignReads).toEqual([]);
+      expect(seen.ownReads).toBeGreaterThan(0);
+      expect(seen.foreignImages).toContain(STUB + LOGO);
+
+      // With the menu shut, a page load asks the other server for nothing.
+      stub.seen = [];
+      await page.reload();
+      await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'false');
+      await page.waitForTimeout(300);
+      expect(stub.seen).toEqual([]);
+
+      // A server with no logo (404): the colour and the label, no broken image.
+      stub.logo = false;
+      await openSwitcher(page);
+      await expect.poll(() => stub.seen.map((r) => r.url)).toContain(LOGO);
+      await expect(s.locator('[data-server-logo]')).toBeHidden();
+      await expect(s.locator('[data-server-dot]')).toBeVisible();
+      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
+
       // The same server again: refused as a duplicate.
-      await addServer(page, hostOf(STUB).replace(/^/, 'http://') + '/');
+      await addServer(page, 'http://' + hostOf(STUB) + '/');
       await expect(page.locator('#server-add-error')).toHaveText(/already on the list/);
       await page.locator('#server-add [data-dialog-close]').click();
 
-      // The etag: the same one is not fetched again; a new one is.
-      const markStale = () => page.evaluate(() => {
-        const v = JSON.parse(localStorage.getItem('muster-servers')!);
-        for (const s of v.servers) s.checkedAt = 0;
-        localStorage.setItem('muster-servers', JSON.stringify(v));
-      });
-      const reopen = async () => {
-        await page.locator('#server-switcher-toggle').click();
-        await expect(page.locator('#server-switcher-toggle')).toHaveAttribute('aria-expanded', 'false');
-        await page.locator('#server-switcher-toggle').click();
-      };
-      const firstLogo = await s.locator('[data-server-logo]').getAttribute('src');
-      await markStale();
-      await reopen();
-      await expect.poll(() => stub.seen.length).toBe(3);
-      expect(stub.seen[2].url).toBe('/api/instance');
-      // That read is written back (checkedAt stamped) before the next one.
-      await expect.poll(async () => (await stored(page)).servers[1].checkedAt).toBeGreaterThan(0);
-      expect(stub.seen.length, 'the same etag: the icon is not fetched again').toBe(3);
-      stub.etag = 'e2';
-      stub.name = 'Team Stub Renamed';
-      await markStale();
-      await reopen();
-      await expect(s.locator('[data-server-label]')).toHaveText('Team Stub Renamed');
-      await expect.poll(() => stub.seen.map((r) => r.url).slice(3)).toEqual(['/api/instance', '/brand/icon-192.png?v=e2']);
-      await expect.poll(() => s.locator('[data-server-logo]').getAttribute('src')).not.toBe(firstLogo);
-
-      // Rename, then clear the label: the name shows again.
+      // Rename, then clear the label: the host shows again.
       await page.locator('#server-manage-open').click();
       const manage = page.locator('#server-manage');
       await expect(manage).toHaveJSProperty('open', true);
@@ -226,7 +243,7 @@ for (const vp of [
       await expect(s.locator('[data-server-label]')).toHaveText('Work');
       await row.locator('input').fill('');
       await row.locator('input').press('Enter');
-      await expect(s.locator('[data-server-label]')).toHaveText('Team Stub Renamed');
+      await expect(s.locator('[data-server-label]')).toHaveText(hostOf(STUB));
 
       // Remove it: the list is this server alone again.
       await row.locator('[data-server-remove]').click();
@@ -245,7 +262,11 @@ for (const vp of [
       await page.keyboard.press('Enter');
       await expect(page.locator('#server-switcher-menu')).toBeVisible();
 
-      expect(consoleErrors.filter((e) => /Content Security Policy|content security policy/i.test(e))).toEqual([]);
+      // An attempted read the CSP stops is not a request event at all (the
+      // mutation sweep measured it): it shows as a connect-src violation, so
+      // "no read" is both lists empty.
+      expect(seen.foreignReads).toEqual([]);
+      expect(cspErrors).toEqual([]);
     });
   });
 }
@@ -253,24 +274,56 @@ for (const vp of [
 test.describe('another muster (desktop)', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('a real cross-origin read of another muster’s instance document, and nothing else of it', async ({ page }) => {
-    const cspErrors: string[] = [];
-    page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) cspErrors.push(m.text()); });
+  test('another muster’s data cannot be read from this page; only its icon path can be drawn', async ({ page }) => {
     await fresh(page);
-    // The CSP parsed: no source in it was refused as invalid.
-    expect(cspErrors.filter((e) => /invalid|ignored/i.test(e))).toEqual([]);
-    const opts = { credentials: 'omit', referrerPolicy: 'no-referrer', redirect: 'error', mode: 'cors' } as const;
-    // Positive: muster's own CORS header and A's CSP let A read A2's document.
-    const doc = await page.evaluate(async ([u, o]) => (await fetch(u as string, o as RequestInit)).json(), [A2 + '/api/instance', opts] as const);
-    expect(Object.keys(doc).sort()).toEqual(['logo', 'name']);
-    // Negative: any other path on another origin is refused by the CSP (not
-    // just by CORS) — the request never leaves the page.
-    const refused = await page.evaluate(async ([u, o]) => {
+    // A2's instance document and icon carry no CORS header.
+    for (const p of ['/api/instance', LOGO]) {
+      const r = await page.request.get(A2 + p);
+      expect(r.headers()['access-control-allow-origin'], p).toBeUndefined();
+    }
+    // A's CSP refuses any read of another origin, /api/instance included.
+    const read = (u: string) => page.evaluate(async (url) => {
       const seen: string[] = [];
-      document.addEventListener('securitypolicyviolation', (e) => seen.push(e.violatedDirective));
-      try { await fetch(u as string, o as RequestInit); return 'fetched'; } catch { await new Promise((r) => setTimeout(r, 50)); return seen.join(',') || 'threw'; }
-    }, [A2 + '/api/tasks', opts] as const);
-    expect(refused).toBe('connect-src');
+      const h = (e: SecurityPolicyViolationEvent) => seen.push(e.violatedDirective);
+      document.addEventListener('securitypolicyviolation', h);
+      let out = 'fetched';
+      try { await fetch(url, { credentials: 'omit', mode: 'cors' }); } catch { out = 'threw'; }
+      await new Promise((r) => setTimeout(r, 50));
+      document.removeEventListener('securitypolicyviolation', h);
+      return `${out} ${seen.join(',')}`;
+    }, u);
+    expect(await read(A2 + '/api/instance')).toBe('threw connect-src');
+    expect(await read(A2 + LOGO)).toBe('threw connect-src');
+    // Drawing: the icon path loads past the CSP (the shared server has no logo
+    // set, so it answers 404 — an error event, not a violation); any other
+    // path on another origin is refused by img-src.
+    const draw = (u: string) => page.evaluate(async (url) => {
+      const seen: string[] = [];
+      const h = (e: SecurityPolicyViolationEvent) => seen.push(e.violatedDirective);
+      document.addEventListener('securitypolicyviolation', h);
+      const img = new Image();
+      img.referrerPolicy = 'no-referrer';
+      const out = await new Promise<string>((res) => { img.onload = () => res('load'); img.onerror = () => res('error'); img.src = url; });
+      await new Promise((r) => setTimeout(r, 50));
+      document.removeEventListener('securitypolicyviolation', h);
+      return `${out} ${seen.join(',')}`.trim();
+    }, u);
+    // Each A2 request's outcome: the server's status, or the browser's reason
+    // for failing it. Playwright emits a request event even for one the CSP
+    // stops, so the outcome — not the event — tells "sent" from "refused".
+    const outcome: Record<string, string> = {};
+    const key = (u: string) => new URL(u).pathname;
+    page.on('response', (r) => { if (r.url().startsWith(A2 + '/')) outcome[key(r.url())] = String(r.status()); });
+    page.on('requestfailed', (r) => { if (r.url().startsWith(A2 + '/')) outcome[key(r.url())] ??= r.failure()?.errorText ?? 'failed'; });
+    expect(await draw(A2 + LOGO)).toBe('error');
+    expect(await draw(A2 + '/brand/logo.png')).toBe('error img-src');
+    expect(await draw(A2 + '/brand/icon-192.png.evil')).toBe('error img-src');
+    await expect.poll(() => Object.keys(outcome).length).toBe(3);
+    expect(outcome['/brand/logo.png']).toBe('csp');
+    expect(outcome['/brand/icon-192.png.evil']).toBe('csp');
+    // The icon path went out past the CSP (the shared server has no logo: a
+    // 404, which the browser may also refuse to hand an <img> — but not by CSP).
+    expect(outcome[LOGO]).not.toBe('csp');
   });
 
   test('switching opens the other server; it offers to add the server you came from', async ({ page }) => {
@@ -282,7 +335,7 @@ test.describe('another muster (desktop)', () => {
     await addServer(page, A2);
     await expect(page.locator('#server-add')).toHaveJSProperty('open', false);
     await expect(item(page, A2)).toHaveCount(1);
-    await expect.poll(async () => ((await stored(page)).servers[1] ?? {}).checkedAt > 0).toBe(true);
+    await expect(item(page, A2).locator('[data-server-label]')).toHaveText(hostOf(A2));
 
     const nav = page.waitForRequest((r) => r.isNavigationRequest() && r.url().startsWith(A2 + '/'));
     await item(page, A2).click();

@@ -73,6 +73,10 @@ Decided; this page does not reopen them.
 
 - **Clients in scope:** "Android app, CLI, Host mirror". The PWA is **out of
   scope**: a browser already isolates servers by origin.
+  ⚠ **Reversed for the PWA** by a later operator decision (2026-11-13): the web
+  app has a server switcher of its own, a per-origin list that switches by
+  navigation, designed in [web-server-switcher.md](web-server-switcher.md).
+  The browser still does the isolating; nothing on this page changes.
 - **A tenant is "Separate servers":** a different muster deployment at a
   different URL, each with its own account and credential.
 - **Switching: "Active + switcher".** One tenant is in view at a time and is

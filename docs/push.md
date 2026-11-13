@@ -232,29 +232,34 @@ what it cannot match is [design/web-server-switcher.md](design/web-server-switch
 - **The way back:** the first time you switch to a server from another, it
   offers to add the server you came from to its own list. It asks; it never
   adds it by itself.
-- **Names and logos** come from each server's own
-  [`GET /api/instance`](branding.md#the-instance-document), read with no
-  cookies and no referrer, when a server is added and then at most every 15
-  minutes. The logo is fetched again only when its etag changes. A server
-  older than this feature, or one behind a sign-in proxy that does not let
-  `/api/instance` through ([branding.md](branding.md#behind-an-edge-that-signs-people-in)),
-  shows its address instead.
-- **Manage servers** renames a server's label (empty: its name or address
-  again) and removes a server from the list. Removing does not sign you out
+- **Labels and logos:** another server is labelled by its address until you
+  give it a label of your own. Its display name is not shown, because this
+  page never reads another server's data. Its [logo](branding.md) is drawn
+  straight from that server (an image of its `/brand/icon-192.png`, with no
+  referrer), and only while the list is open. A server with no logo, or one
+  that is down or behind a sign-in proxy that does not let `/brand/` through
+  ([branding.md](branding.md#behind-an-edge-that-signs-people-in)), shows its
+  colour and label. The server you are on shows its own name.
+- **Manage servers** renames a server's label (empty: its address again) and
+  removes a server from the list. Removing does not sign you out
   of it or turn off its notifications: do that on that server.
 - **Notifications:** turn them on on each server (Web Push belongs to one
   address). Each server's notifications then arrive with its own icon, and a
   tap opens that server.
 - **Where the list is kept:** in this browser, for this server's address
-  (`localStorage`, key `muster-servers`): the addresses and each server's
-  name, logo and label, nothing else. It is not synced to other browsers or
+  (`localStorage`, key `muster-servers`): the addresses and your labels,
+  nothing else. It is not synced to other browsers or
   devices, each server has its own list, and anyone who uses this browser
   profile on this server sees it. On iOS an app added to the Home Screen keeps
   a list separate from Safari's.
-- **What another server receives** from this one: nothing but the requests for
-  its public `/api/instance` and `/brand/` icon, with no cookie and no
-  referrer, and the navigation when you switch, which carries no referrer and
-  no path of this server. These two routes answer
-  `Access-Control-Allow-Origin: *` so another server's page can read them, and
-  muster's pages may fetch exactly these two paths on another address
-  (`connect-src`).
+- **What another server receives** from this one: nothing but the image
+  request for its public `/brand/icon-192.png`, with no referrer, and the
+  navigation when you switch, which carries no referrer and no path of this
+  server. No script on this page reads anything from another server.
+  muster's pages may *draw* exactly that one path from another address (the
+  CSP's `img-src`). `connect-src` stays `'self'`, and `/api/instance` and
+  `/brand/` send no CORS header. muster's sign-in cookies are
+  `SameSite=Lax`, so a cross-site image request carries none. Between two
+  servers on one site (sibling subdomains, or two ports of one host) it may
+  carry the other server's own cookie, to that same server's public image
+  route.
