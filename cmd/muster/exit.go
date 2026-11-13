@@ -68,6 +68,11 @@ type cliError struct {
 	code int
 	msg  string
 	err  error
+	// status is the HTTP status of an otherwise-unclassified 4xx (client.go's
+	// generic exitUsage case), 0 everywhere else. It lets one verb read a
+	// status the shared mapping has no case for — `pr-session` reads a 405 as
+	// a server older than its route — without changing that mapping for all.
+	status int
 }
 
 func (e *cliError) Error() string {
@@ -118,7 +123,8 @@ const exitCodeHelp = `Exit codes:
   2  usage error (bad flags, ambiguous agent name, empty path parameter)
   3  auth failure (401/403) — the server examined the credential this request presented
      and rejected it. The message names the variable to check; the value is never printed
-  4  not found (404 on a known route)
+  4  not found (404 on a known route; ` + "`pr-session`" + `: no session is recorded as creating
+     that pull request — stdout is empty)
   5  conflict (409 — e.g. editing an in-progress task)
   6  network unreachable (DNS, connection refused, a broken connection) — nothing
      arrived, so a retry is free. A DEADLINE is 10, not this

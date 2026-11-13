@@ -86,6 +86,7 @@ GET /api/officers/defs/{officer}/schedules
 GET /api/officers/types
 GET /api/officers/types/{key}
 GET /api/openrouter/models
+GET /api/pr-sessions
 GET /api/projects
 GET /api/push/vapid-public-key
 GET /api/sessions/{id}/tasks

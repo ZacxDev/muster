@@ -366,6 +366,9 @@ var isolationClasses = map[string]routeClass{
 	// A pull request a session authored (pr_routes.go): route reply's door,
 	// acting as the owner.
 	"POST /api/pr-sessions": classAdmin,
+	// …and the read over those rows (handlePRSessionList), on the same door;
+	// row-level security answers B's query with B's rows only.
+	"GET /api/pr-sessions": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
 	// Binding a plugin to a builtin officer (plugin_outbound.go), hook tier, as its owner.
