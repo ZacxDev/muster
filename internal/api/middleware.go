@@ -154,13 +154,30 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// serverSwitcherConnectSrc is what the web app's server switcher may read on
+// ANOTHER origin (docs/design/web-server-switcher.md): another muster's
+// instance document and its /brand/ images, which it fetches with no
+// credentials to draw that server's name and logo.
+//
+// 🔴 PATHS, NOT ORIGINS. The servers are the person's own list, kept in their
+// browser, so no origin can be named here; a path-scoped source on any host is
+// the narrowest policy that still works: /api/instance exactly, and /brand/ as
+// a prefix. http only for the two loopback hosts the switcher accepts
+// (development). ⚠ A source's path is not checked after a redirect, so the
+// switcher's fetches refuse redirects (redirect: 'error', web/static/servers.js).
+// ⚠ This is not an exfiltration barrier and never was one: script-src carries
+// 'unsafe-inline', and a navigation is not governed by connect-src.
+const serverSwitcherConnectSrc = "https://*:*/api/instance https://*:*/brand/ " +
+	"http://localhost:*/api/instance http://localhost:*/brand/ " +
+	"http://127.0.0.1:*/api/instance http://127.0.0.1:*/brand/"
+
 // contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
 // source: 'none' for every response but allowSameOriginFrame's. frameSrc, when
 // not empty, is a frame-src directive's sources; "" writes none, so the
 // policy is exactly what it was before plugins could be framed (child frames
 // then fall back to default-src 'self').
 func contentSecurityPolicy(frameAncestors, frameSrc string) string {
-	connectSrc := "'self'"
+	connectSrc := "'self' " + serverSwitcherConnectSrc
 	if telemetryConnectSrc != "" {
 		connectSrc += " " + telemetryConnectSrc
 	}

@@ -17,7 +17,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [pages.md](pages.md) — shareable pages: agents publish pages (showcases, questions, forms, uploads, their own script in a sandbox), you approve the share links, viewers' responses come back as data; the `page_*` tools, blocks, the SDK, the Pages screen
-- [push.md](push.md) — Web Push and the installable app
+- [push.md](push.md) — Web Push and the installable app, and the server switcher (several muster servers in one browser)
 - [branding.md](branding.md) — the server's own logo and name: set by an admin on the Account page, drawn in the header, on the sign-in page, as the app and notification icon, and published at `GET /api/instance` for the apps
 - [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
 - [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
@@ -58,6 +58,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [design/opencode-first-class.md](design/opencode-first-class.md) — proposed: opencode as a first-class runtime, starting with an API send from the Rendered view
 - [design/officers-first-class.md](design/officers-first-class.md) — slices 0–7 built: the officer-backend contract (`officers.Backend`, capabilities), HQ as one implementation, and a built-in backend in muster's own Postgres
 - [design/multi-tenant.md](design/multi-tenant.md) — proposed: one CLI, mirror host or Android app talking to several muster servers
+- [design/web-server-switcher.md](design/web-server-switcher.md) — implemented: the web app's server switcher (a per-origin list, switching by navigation), and what it can and cannot match of the Android app's
 - [design/previews.md](design/previews.md) — phase 1 built ([previews.md](previews.md)); proposed for pods and share links: a preview-gateway plugin that serves an agent's local dev server (on a mirrored host, later in a pod) to its owner inside muster, through small reusable plugin seams, with expiring share links
 - [design/ask-autoapproval.md](design/ask-autoapproval.md) — phase 1 (the [ask log](asks.md)) built; proposed: a log of what agents ask, a review UI, and owner-promoted rules that auto-answer "continue" and "merge when green"
 - [design/pages.md](design/pages.md) — phase 1 built ([pages.md](pages.md)): shareable pages served sandboxed from muster's own host — the opaque-origin content, the postMessage relay, the owner-approved links, the threat model

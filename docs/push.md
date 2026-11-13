@@ -209,3 +209,52 @@ as **payload v2**:
 - **Shortcuts:** New task, Tasks, Agents.
 - **The badge:** the app icon shows the ready-for-review count, kept current over
   the page's event stream.
+
+## Several servers (the server switcher)
+
+If you use more than one muster server (a separate deployment at its own
+address, with its own account), the sidebar's top row switches between them.
+It is the web app's counterpart of the Android app's switcher; the design and
+what it cannot match is [design/web-server-switcher.md](design/web-server-switcher.md).
+
+- **The row** shows the server you are on: its colour and its label. On a
+  phone it is in the menu (the button at the top left). Tap it, or press Enter
+  on it, for the list of servers; the one you are on is marked **In view**.
+  Escape closes the list.
+- **Add server** asks for the other server's address
+  (`https://muster.example.com`; `http://` only for `localhost` or
+  `127.0.0.1`). Only the address's origin is kept: a path or anything after
+  `?` is dropped. An address with a user name or password in it is refused.
+  At most 8 servers, this one included.
+- **Switching** opens the other server in this window. You sign in there as
+  usual; each server keeps its own sign-in, and its own installed app if you
+  installed it.
+- **The way back:** the first time you switch to a server from another, it
+  offers to add the server you came from to its own list. It asks; it never
+  adds it by itself.
+- **Names and logos** come from each server's own
+  [`GET /api/instance`](branding.md#the-instance-document), read with no
+  cookies and no referrer, when a server is added and then at most every 15
+  minutes. The logo is fetched again only when its etag changes. A server
+  older than this feature, or one behind a sign-in proxy that does not let
+  `/api/instance` through ([branding.md](branding.md#behind-an-edge-that-signs-people-in)),
+  shows its address instead.
+- **Manage servers** renames a server's label (empty: its name or address
+  again) and removes a server from the list. Removing does not sign you out
+  of it or turn off its notifications: do that on that server.
+- **Notifications:** turn them on on each server (Web Push belongs to one
+  address). Each server's notifications then arrive with its own icon, and a
+  tap opens that server.
+- **Where the list is kept:** in this browser, for this server's address
+  (`localStorage`, key `muster-servers`): the addresses and each server's
+  name, logo and label, nothing else. It is not synced to other browsers or
+  devices, each server has its own list, and anyone who uses this browser
+  profile on this server sees it. On iOS an app added to the Home Screen keeps
+  a list separate from Safari's.
+- **What another server receives** from this one: nothing but the requests for
+  its public `/api/instance` and `/brand/` icon, with no cookie and no
+  referrer, and the navigation when you switch, which carries no referrer and
+  no path of this server. These two routes answer
+  `Access-Control-Allow-Origin: *` so another server's page can read them, and
+  muster's pages may fetch exactly these two paths on another address
+  (`connect-src`).

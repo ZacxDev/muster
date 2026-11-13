@@ -16,10 +16,13 @@ import (
 
 // The CSP every response carried BEFORE the session-view chip, spelled out as
 // literals (never built by contentSecurityPolicy, which is what is under
-// test): every page but the switch's four, and the switch's four.
+// test): every page but the switch's four, and the switch's four. Their
+// connect-src has since gained the server switcher's cross-origin reads
+// (serverSwitcherConnectSrc, docs/design/web-server-switcher.md), on every
+// page alike.
 const (
-	cspBeforeNone = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
-	cspBeforeSelf = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	cspBeforeNone = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*:*/api/instance https://*:*/brand/ http://localhost:*/api/instance http://localhost:*/brand/ http://127.0.0.1:*/api/instance http://127.0.0.1:*/brand/; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	cspBeforeSelf = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*:*/api/instance https://*:*/brand/ http://localhost:*/api/instance http://localhost:*/brand/ http://127.0.0.1:*/api/instance http://127.0.0.1:*/brand/; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 	chipZone      = "https://*.viewer.example.net"
 	chipZone2     = "https://p.other.example.org"
 )
@@ -121,7 +124,7 @@ func TestTheSessionViewsFrameTheOwnersViewerOriginsAndNoOtherPageChanges(t *test
 		viewerRow(7, "Previews", chipZone, "https://w.viewer.example.net/__muster/enter"),
 		viewerRow(5, "Second", chipZone, "https://x.viewer.example.net/enter"),
 		viewerRow(4, "Elsewhere", chipZone2, "https://p.other.example.org/in"))
-	want := "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; " +
+	want := "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*:*/api/instance https://*:*/brand/ http://localhost:*/api/instance http://localhost:*/brand/ http://127.0.0.1:*/api/instance http://127.0.0.1:*/brand/; frame-ancestors 'self'; " +
 		"frame-src 'self' " + chipZone + " " + chipZone2 + "; base-uri 'self'; form-action 'self'"
 	for path, win := range map[string]string{ref("scratch2", "@7").ViewPath(): "@7", ref("scratch2", "@7").TerminalPath(): "@7", ref("scratch2", "@4").TerminalPath(): "@4"} {
 		resp, page := get(path)
