@@ -186,7 +186,7 @@ func TestAnExpiredAskEscalatesWithItsNotices(t *testing.T) {
 		if status != officers.StatusEscalated || len(notices) != 2 || notices[0]["recipient"] != float64(1) || notices[1]["recipient"] != float64(2) {
 			t.Fatalf("%s: after expiry: %s notices %v, want escalated with one notice each for users 1 and 2", mode, status, notices)
 		}
-		due, err := w.store.DueNotices(authz.System(ctx), 10)
+		due, err := w.store.DueNotices(authz.System(ctx), 0, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -219,7 +219,7 @@ func TestAnEscalatingCompleteWritesItsNoticesOnce(t *testing.T) {
 	if _, err := b.Complete(ctx, esc, "i1", officers.Completion{Outcome: "escalated", Summary: "needs a human"}); err != nil {
 		t.Fatal(err)
 	}
-	due, err := w.store.DueNotices(authz.System(ctx), 10)
+	due, err := w.store.DueNotices(authz.System(ctx), 0, 10)
 	if err != nil || len(due) != 1 || due[0].Recipient != 1 || due[0].Summary != "needs a human" || due[0].Item != mustInt(esc) {
 		t.Fatalf("due after an escalation: %+v (%v), want one notice to the owner carrying the summary", due, err)
 	}
@@ -231,7 +231,7 @@ func TestAnEscalatingCompleteWritesItsNoticesOnce(t *testing.T) {
 	if err != nil || won {
 		t.Fatalf("second raiser of the same notice: %v, %v; want it to lose", won, err)
 	}
-	if due, _ := w.store.DueNotices(authz.System(ctx), 10); len(due) != 0 {
+	if due, _ := w.store.DueNotices(authz.System(ctx), 0, 10); len(due) != 0 {
 		t.Fatalf("a raised notice is still due: %+v", due)
 	}
 }
@@ -314,7 +314,7 @@ func TestAnAnsweredEscalationSendsTheItemBack(t *testing.T) {
 			t.Fatalf("raise for user %d: %v %v", r, won, err)
 		}
 	}
-	open, err := w.store.OpenEscalations(sys, 10)
+	open, err := w.store.OpenEscalations(sys, 0, 10)
 	if err != nil || len(open) != 2 {
 		t.Fatalf("open escalation asks: %+v (%v), want two", open, err)
 	}
@@ -334,7 +334,7 @@ func TestAnAnsweredEscalationSendsTheItemBack(t *testing.T) {
 	if again, _, err := w.store.SettleEscalation(sys, 1, item, 2, 5002, true, "late", w.clock()); err != nil || again {
 		t.Fatalf("a second recipient's later answer: %v %v, want nothing", again, err)
 	}
-	if open, _ := w.store.OpenEscalations(sys, 10); len(open) != 0 {
+	if open, _ := w.store.OpenEscalations(sys, 0, 10); len(open) != 0 {
 		t.Fatalf("escalation asks still open after the item went back: %+v", open)
 	}
 
@@ -347,5 +347,62 @@ func TestAnAnsweredEscalationSendsTheItemBack(t *testing.T) {
 	}
 	if status, _, _ := w.item(officers.ItemID(strconv.FormatInt(dismissed, 10))); status != officers.StatusEscalated {
 		t.Fatalf("a dismissed escalation left the item %s, want escalated", status)
+	}
+}
+
+// TestTheSweepReadsPageByItem: OpenAsks pages by ITEM (every open ask of an
+// item in the same page), so a page full of asks still awaiting an answer
+// never hides the items after it — the caller pages on from the last id.
+func TestTheSweepReadsPageByItem(t *testing.T) {
+	w, b, _ := asksWorld(t)
+	ctx := context.Background()
+	var ids []int64
+	for _, subj := range []string{"p1", "p2", "p3"} {
+		id := w.AddItem(backendtest.OfficerA, "k", subj, officers.TierJudgement, "")
+		claimed(t, b, id)
+		must(b.CreateAsk(ctx, id, "i1", officers.Ask{Question: subj}))
+		ids = append(ids, mustInt(id))
+	}
+	// a second open ask on the first item: both must come in its page
+	if _, err := w.store.Pool().Exec(ctxOp(), `UPDATE officer_items SET asks = asks || '[{"ask_id": 4242, "status": "open"}]' WHERE id = $1`, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	sys := authz.System(ctx)
+	p1, err := w.store.OpenAsks(sys, 0, 1)
+	if err != nil || len(p1) != 2 || p1[0].Item != ids[0] || p1[1].Item != ids[0] {
+		t.Fatalf("page 1 (one item): %+v (%v), want both asks of item %d", p1, err, ids[0])
+	}
+	p2, err := w.store.OpenAsks(sys, ids[0], 2)
+	if err != nil || len(p2) != 2 || p2[0].Item != ids[1] || p2[1].Item != ids[2] {
+		t.Fatalf("page 2 after item %d: %+v (%v), want items %d and %d", ids[0], p2, err, ids[1], ids[2])
+	}
+}
+
+// TestAnUnraisableEscalationIsGivenUp: NoticeAbandoned marks a recipient's
+// unraised entry suppressed and settled, so it is never due again, and
+// leaves the other recipients' entries due.
+func TestAnUnraisableEscalationIsGivenUp(t *testing.T) {
+	w, b, _ := asksWorld(t)
+	addUser2(t)
+	if err := w.store.PutDef(ctxOp(), 1, builtin.Def{Officer: backendtest.OfficerA, Enabled: true, EscalateTo: []int64{2}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	id := w.AddItem(backendtest.OfficerA, "k", "s", officers.TierJudgement, "")
+	claimed(t, b, id)
+	if _, err := b.Complete(ctx, id, "i1", officers.Completion{Outcome: "escalated", Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	sys := authz.System(ctx)
+	if err := w.store.NoticeAbandoned(sys, 1, mustInt(id), 2); err != nil {
+		t.Fatal(err)
+	}
+	due, err := w.store.DueNotices(sys, 0, 10)
+	if err != nil || len(due) != 1 || due[0].Recipient != 1 {
+		t.Fatalf("due after giving up user 2: %+v (%v), want only the owner's", due, err)
+	}
+	missing, err := w.store.UsersExist(sys, []int64{1, 2, 987654})
+	if err != nil || len(missing) != 1 || missing[0] != 987654 {
+		t.Fatalf("UsersExist: %v (%v), want [987654]", missing, err)
 	}
 }

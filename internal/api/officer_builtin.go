@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -124,53 +126,82 @@ func (s *Server) SweepOfficerAttention(ctx context.Context) {
 		return
 	}
 	sys := authz.System(ctx)
-	open, err := s.officerStore.OpenAsks(sys, officerAttentionBatch)
-	if err != nil {
-		s.logger.Printf("officers: the built-in asks could not be read: %v", err)
-	}
-	for _, oa := range open {
-		a, err := s.ext.Attention.Get(s.attentionPrincipal(ctx, oa.Owner), oa.AskID)
-		status, answer := "", ""
-		switch {
-		case errors.Is(err, attention.ErrNotFound):
-			status = builtin.AskWithdrawn // gone from the owner's asks: nothing will answer it
-		case err != nil:
-			s.logger.Printf("officers: %s: item %d: ask %d could not be read: %v", oa.Officer, oa.Item, oa.AskID, err)
-			continue
-		case a.Status == attention.Answered || a.Status == attention.AnsweredInSession:
-			status, answer = builtin.AskAnswered, a.Answer
-		case a.Status == attention.Cancelled:
-			status = builtin.AskWithdrawn
-		case a.Status == attention.Expired:
-			status = builtin.AskExpired
-		default:
-			continue // still open
-		}
-		got, err := s.officerStore.ResolveAsk(s.officerPrincipal(ctx, oa.Owner), oa.Owner, oa.Item, oa.AskID, status, answer, s.officerNow())
+	pageThrough(func(after int64) ([]builtin.OpenAsk, error) {
+		return s.officerStore.OpenAsks(sys, after, officerAttentionBatch)
+	},
+		func(oa builtin.OpenAsk) int64 { return oa.Item }, s.settleOfficerAsk, "asks", s.logger.Printf)
+	pageThrough(func(after int64) ([]builtin.DueNotice, error) {
+		return s.officerStore.DueNotices(sys, after, officerAttentionBatch)
+	},
+		func(n builtin.DueNotice) int64 { return n.Item }, func(n builtin.DueNotice) { s.raiseOfficerNotice(ctx, sys, n) }, "escalations", s.logger.Printf)
+	pageThrough(func(after int64) ([]builtin.OpenEscalation, error) {
+		return s.officerStore.OpenEscalations(sys, after, officerAttentionBatch)
+	}, func(e builtin.OpenEscalation) int64 { return e.Item }, func(e builtin.OpenEscalation) { s.settleOfficerEscalation(ctx, sys, e) },
+		"escalation asks", s.logger.Printf)
+}
+
+// officerAttentionPages bounds the pages one sweep reads of each kind
+// (officerAttentionBatch items a page).
+const officerAttentionPages = 50
+
+// pageThrough reads page after page (each a page of items above the last
+// one's id) and handles every row, until a page holds fewer than a batch of
+// items or officerAttentionPages pages are read. Paging is what keeps rows
+// that are still waiting (an ask nobody has answered yet) from crowding
+// settled ones out of every sweep.
+func pageThrough[T any](read func(after int64) ([]T, error), item func(T) int64, handle func(T), what string, logf func(string, ...any)) {
+	var after int64
+	for page := 0; page < officerAttentionPages; page++ {
+		rows, err := read(after)
 		if err != nil {
-			s.logger.Printf("officers: %s: item %d: record ask %d (%s): %v", oa.Officer, oa.Item, oa.AskID, status, err)
-			continue
+			logf("officers: the built-in %s could not be read: %v", what, err)
+			return
 		}
-		switch got {
-		case builtin.Reopened:
-			s.logger.Printf("officers: %s: item %d re-opened: its owner's ask %d was %s", oa.Officer, oa.Item, oa.AskID, status)
-		case builtin.Escalated:
-			s.logger.Printf("officers: %s: item %d escalated: its ask %d to the owner expired unanswered", oa.Officer, oa.Item, oa.AskID)
+		items := map[int64]bool{}
+		for _, r := range rows {
+			handle(r)
+			items[item(r)] = true
+			if id := item(r); id > after {
+				after = id
+			}
+		}
+		if len(items) < officerAttentionBatch {
+			return
 		}
 	}
-	due, err := s.officerStore.DueNotices(sys, officerAttentionBatch)
+}
+
+// settleOfficerAsk carries open ask oa's settled Attention ask back onto its
+// item (ResolveAsk); still open: nothing.
+func (s *Server) settleOfficerAsk(oa builtin.OpenAsk) {
+	ctx := context.Background()
+	a, err := s.ext.Attention.Get(s.attentionPrincipal(ctx, oa.Owner), oa.AskID)
+	status, answer := "", ""
+	switch {
+	case errors.Is(err, attention.ErrNotFound):
+		status = builtin.AskWithdrawn // gone from the owner's asks: nothing will answer it
+	case err != nil:
+		s.logger.Printf("officers: %s: item %d: ask %d could not be read: %v", oa.Officer, oa.Item, oa.AskID, err)
+		return
+	case a.Status == attention.Answered || a.Status == attention.AnsweredInSession:
+		status, answer = builtin.AskAnswered, a.Answer
+	case a.Status == attention.Cancelled:
+		status = builtin.AskWithdrawn
+	case a.Status == attention.Expired:
+		status = builtin.AskExpired
+	default:
+		return // still open
+	}
+	got, err := s.officerStore.ResolveAsk(s.officerPrincipal(ctx, oa.Owner), oa.Owner, oa.Item, oa.AskID, status, answer, s.officerNow())
 	if err != nil {
-		s.logger.Printf("officers: the built-in escalations could not be read: %v", err)
+		s.logger.Printf("officers: %s: item %d: record ask %d (%s): %v", oa.Officer, oa.Item, oa.AskID, status, err)
+		return
 	}
-	for _, n := range due {
-		s.raiseOfficerNotice(ctx, sys, n)
-	}
-	esc, err := s.officerStore.OpenEscalations(sys, officerAttentionBatch)
-	if err != nil {
-		s.logger.Printf("officers: the built-in escalation asks could not be read: %v", err)
-	}
-	for _, e := range esc {
-		s.settleOfficerEscalation(ctx, sys, e)
+	switch got {
+	case builtin.Reopened:
+		s.logger.Printf("officers: %s: item %d re-opened: its owner's ask %d was %s", oa.Officer, oa.Item, oa.AskID, status)
+	case builtin.Escalated:
+		s.logger.Printf("officers: %s: item %d escalated: its ask %d to the owner expired unanswered", oa.Officer, oa.Item, oa.AskID)
 	}
 }
 
@@ -217,8 +248,18 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(n.Officer)},
 		Question: officerNoticeText(n),
 	})
-	if err != nil {
-		s.logger.Printf("officers: %s: item %d: the escalation notice to user %d could not be raised: %v", n.Officer, n.Item, n.Recipient, err)
+	var pg *pgconn.PgError
+	switch {
+	case errors.Is(err, attention.ErrInvalid) || errors.As(err, &pg) && pg.Code == "23503":
+		// Never raisable (no such user to ask, or a text Attention refuses):
+		// given up for good, so it cannot hold the queue or retry for ever.
+		s.logger.Printf("officers: %s: item %d: the escalation to user %d cannot be raised and is given up: %v", n.Officer, n.Item, n.Recipient, err)
+		if aerr := s.officerStore.NoticeAbandoned(sys, n.Owner, n.Item, n.Recipient); aerr != nil {
+			s.logger.Printf("officers: %s: item %d: give up the escalation to user %d: %v", n.Officer, n.Item, n.Recipient, aerr)
+		}
+		return
+	case err != nil:
+		s.logger.Printf("officers: %s: item %d: the escalation to user %d could not be raised: %v", n.Officer, n.Item, n.Recipient, err)
 		return
 	}
 	won, err := s.officerStore.NoticeRaised(sys, n.Owner, n.Item, n.Recipient, a.ID)

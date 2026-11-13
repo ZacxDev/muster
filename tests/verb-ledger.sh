@@ -73,6 +73,16 @@ flow enqueue
 flow ls
 flow status
 nudge next
+officer def delete
+officer def ls
+officer def put
+officer item enqueue
+officer item ls
+officer item resolve
+officer type delete
+officer type get
+officer type ls
+officer type put
 plugins retry
 route reply
 task comment
@@ -97,7 +107,9 @@ whoami"
 # 23 -> 28: the five `tenant` verbs (phase 1 of docs/design/multi-tenant.md).
 # 28 -> 29: `nudge next` (a host's oldest chief-nudge notice).
 # 29 -> 30: `agent create` (POST /api/agents, docs/design/chief-dispatch.md phase 2).
-WANT_COUNT=30
+# 30 -> 40: the ten `officer type|def|item` verbs (the built-in officer store's
+#           admin API, docs/officers-builtin.md; muster#503 slice 7).
+WANT_COUNT=40
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

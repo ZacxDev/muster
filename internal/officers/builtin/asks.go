@@ -166,13 +166,16 @@ type OpenAsk struct {
 	AskID   int64
 }
 
-// OpenAsks is every owner's open asks on waiting items, oldest item first,
-// at most limit. ctx must act for every owner (the system scope): it is the
-// sweep that settles them.
-func (s *Store) OpenAsks(ctx context.Context, limit int) ([]OpenAsk, error) {
+// OpenAsks is every owner's open asks on waiting items: one PAGE of at most
+// limit items with an id above after, oldest first (every open ask of each).
+// The caller pages on with the last item's id, so asks still awaiting an
+// answer can never crowd settled ones out of a sweep. ctx must act for every
+// owner (the system scope): it is the sweep that settles them.
+func (s *Store) OpenAsks(ctx context.Context, after int64, limit int) ([]OpenAsk, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, i.officer, (e->>'ask_id')::bigint
 		FROM officer_items i, jsonb_array_elements(i.asks) e
-		WHERE i.status = 'waiting' AND e->>'status' = 'open' ORDER BY i.id LIMIT $1`, limit)
+		WHERE i.id IN (SELECT id FROM officer_items WHERE status = 'waiting' AND id > $2 ORDER BY id LIMIT $1)
+			AND e->>'status' = 'open' ORDER BY i.id`, limit, after)
 	if err != nil {
 		return nil, err
 	}
@@ -302,14 +305,16 @@ type DueNotice struct {
 }
 
 // DueNotices is every owner's escalation notices not yet raised (and not
-// suppressed) on items still escalated, oldest item first, at most limit. ctx must act for every owner
-// (the system scope).
-func (s *Store) DueNotices(ctx context.Context, limit int) ([]DueNotice, error) {
+// suppressed) on items still escalated: one page of at most limit items with
+// an id above after, oldest first (OpenAsks' paging). ctx must act for every
+// owner (the system scope).
+func (s *Store) DueNotices(ctx context.Context, after int64, limit int) ([]DueNotice, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, i.officer, i.kind, i.subject_key, coalesce(i.summary, '')
 		FROM officer_items i, jsonb_array_elements(i.notices) n
-		WHERE i.notices @> '[{"attention_id": null, "suppressed": false}]' AND i.status = 'escalated'
+		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"attention_id": null, "suppressed": false}]' AND status = 'escalated'
+				AND id > $2 ORDER BY id LIMIT $1)
 			AND n->'attention_id' = 'null'::jsonb AND n->'suppressed' = 'false'::jsonb
-		ORDER BY i.id LIMIT $1`, limit)
+		ORDER BY i.id`, limit, after)
 	if err != nil {
 		return nil, err
 	}
@@ -353,13 +358,15 @@ type OpenEscalation struct {
 	Officer                             string
 }
 
-// OpenEscalations is every owner's raised, unsettled escalation asks, oldest
-// item first, at most limit. ctx must act for every owner (the system scope).
-func (s *Store) OpenEscalations(ctx context.Context, limit int) ([]OpenEscalation, error) {
+// OpenEscalations is every owner's raised, unsettled escalation asks: one
+// page of at most limit items with an id above after, oldest first (OpenAsks'
+// paging). ctx must act for every owner (the system scope).
+func (s *Store) OpenEscalations(ctx context.Context, after int64, limit int) ([]OpenEscalation, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, (n->>'attention_id')::bigint, i.officer
 		FROM officer_items i, jsonb_array_elements(i.notices) n
-		WHERE i.notices @> '[{"settled": false}]' AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb
-		ORDER BY i.id LIMIT $1`, limit)
+		WHERE i.id IN (SELECT id FROM officer_items WHERE notices @> '[{"settled": false}]' AND id > $2 ORDER BY id LIMIT $1)
+			AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb
+		ORDER BY i.id`, limit, after)
 	if err != nil {
 		return nil, err
 	}
@@ -447,4 +454,33 @@ func (s *Store) SettleEscalation(ctx context.Context, owner, item, recipient, at
 		return false, nil, err
 	}
 	return reopened, withdraw, nil
+}
+
+// NoticeAbandoned gives up recipient's unraised escalation entry on owner's
+// item: muster could not raise it (the recipient is not a user it can ask), so
+// it is marked suppressed and settled and never retried — one recipient that
+// cannot be asked must not hold the others' escalations, or this one's
+// retries, forever. ctx must act for every owner.
+func (s *Store) NoticeAbandoned(ctx context.Context, owner, item, recipient int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE officer_items SET notices = (
+			SELECT jsonb_agg(CASE WHEN (n->>'recipient')::bigint = $3 AND n->'attention_id' = 'null'::jsonb
+				THEN n || '{"suppressed": true, "settled": true}'::jsonb ELSE n END ORDER BY ord)
+			FROM jsonb_array_elements(notices) WITH ORDINALITY t(n, ord))
+		WHERE owner_id = $1 AND id = $2 AND notices @> jsonb_build_array(jsonb_build_object('recipient', $3::bigint, 'attention_id', null))`,
+		owner, item, recipient)
+	return err
+}
+
+// UsersExist reports the ids among ids that are not muster users (none: nil).
+// ctx must read every user (the system scope): users is self-read under
+// row-level security.
+func (s *Store) UsersExist(ctx context.Context, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT x FROM unnest($1::bigint[]) x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
 }

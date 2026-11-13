@@ -40,6 +40,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/notifypref"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/pages"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -829,6 +830,8 @@ type isoWorld struct {
 	// (canary-named), the object Remove names.
 	deviceTokens map[int64]string
 	aDevice      devices.Device
+	// officerStore is the built-in officer store both servers serve.
+	officerStore *builtin.Store
 	aPlugin2     plugins.Plugin
 	aDraft       plugins.Draft
 }
@@ -1128,6 +1131,17 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aPageDel, _, err := pgs.Create(ua, pages.Creator{AgentID: w.a.agent.ID, Label: w.a.agent.Name}, w.canary+" page to delete", pgBlocks, pgSize)
 	must(err, "a page to delete")
 
+	// A's built-in officer (0118): a type whose charter, and an item whose
+	// payload, carry the canary — what the /api/officers routes name.
+	ost := builtin.NewStore(pool)
+	aOffType := "iso-" + w.suffix
+	must(ost.PutType(ua, w.a.uid, builtin.Type{Key: aOffType, Name: "iso", Charter: w.canary + " charter"}), "an officer type")
+	must(ost.PutDef(ua, w.a.uid, builtin.Def{Officer: aOffType + ":a", Enabled: true}), "an officer")
+	aOffItem, _, err := ost.Enqueue(ua, w.a.uid, builtin.NewItem{Officer: aOffType + ":a", Kind: "iso", SubjectKey: "iso",
+		Payload: json.RawMessage(`{"note":"` + w.canary + ` item"}`)}, time.Now())
+	must(err, "an officer item")
+	w.officerStore = ost
+
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
@@ -1138,7 +1152,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
 		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
 		pluginMsg: aMsg.ID, refWrite: aRefWrite.ID, refTask: aRef.Note.ID, rule: aRuleOn, ruleOff: aRuleOff, ruleDel: aRuleDel,
-		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID}
+		page: aPage.ID, pageLink: aPageLink.ID, pageDel: aPageDel.ID,
+		officerType: aOffType, officer: aOffType + ":a", officerItem: aOffItem}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -1149,7 +1164,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
 		device: ghostID, refWrite: ghostID, refTask: ghostID, rule: ghostID, ruleOff: ghostID, ruleDel: ghostID,
 		chief: ghostID, chiefChat: ghostID, chiefName: "ghost-agent" + w.suffix,
-		page: ghostID, pageLink: ghostID, pageDel: ghostID}
+		page: ghostID, pageLink: ghostID, pageDel: ghostID,
+		officerType: "ghostofficer", officer: "ghostofficer:a", officerItem: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
@@ -1236,6 +1252,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	// "Show tmux sessions" (0094): A's switch is A's.
 	ext.NotifyPrefs = notifypref.NewPG(pool)
 	srv.UseExtensions(ext)
+	srv.EnableOfficerStore(w.officerStore)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	// The admin pages need GoTrue and the account store; the session tier stays
@@ -1254,6 +1271,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	gtSrv := New(w.bus, AuthConfig{Mode: AuthModeGoTrue, HookToken: isoHookToken, ServiceToken: isoServiceToken},
 		log.New(io.Discard, "", 0))
 	gtSrv.UseExtensions(ext)
+	gtSrv.EnableOfficerStore(w.officerStore)
 	gtSrv.UseRouter(w.router)
 	gtSrv.UseApprovalGate(&isoGate{})
 	// Accounts too, so the twin SERVES the admin pages (accounts PR 5): a
@@ -1466,6 +1484,10 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	// The built-in officer store (officer_admin.go): a type key, an officer
+	// id (<type>:a) and an item of it.
+	officerType, officer                      string
+	officerItem                               int64
 	ccAccount                                 string
 	user, invite                              int64
 	task, agent, grant, comment, attach, chat int64
@@ -1505,6 +1527,23 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	method, path = http.MethodGet, pattern
 	if i := strings.IndexByte(pattern, ' '); i > 0 {
 		method, path = pattern[:i], pattern[i+1:]
+	}
+	if strings.HasPrefix(path, "/api/officers/") {
+		// The built-in officer store's admin API: its own path names, and a
+		// body each route accepts, so a refusal is about WHOSE row.
+		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
+			"{id}", strconv.FormatInt(o.officerItem, 10)).Replace(path)
+		switch {
+		case method == http.MethodGet || method == http.MethodDelete:
+			return method, path, ""
+		case strings.HasSuffix(path, "/resolve"):
+			return method, path, `{"outcome":"no_action","summary":"iso"}`
+		case strings.HasSuffix(path, "/items"):
+			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
+		case strings.Contains(path, "/types/"):
+			return method, path, `{"name":"iso","charter":"iso-write"}`
+		}
+		return method, path, `{}`
 	}
 	id := strconv.FormatInt(o.task, 10)
 	sid := strconv.FormatInt(o.chat, 10)
@@ -1838,7 +1877,14 @@ func sortedRoutes() []string {
 // control cannot be read off the status. Each has its control asserted on the
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
-	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 UPSERTS: a PUT writes the CALLER's own row under the key in the path,
+	// so A's own PUT and a PUT naming a ghost both succeed — there is no
+	// "someone else's object" for the status to tell apart. That B's PUT of A's
+	// key writes a row of B's and leaves A's untouched is
+	// TestTheAdminAPIIsOwnerScoped's (officer_builtin_attention_pg_test.go).
+	"PUT /api/officers/types/{key}":    "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}": "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"POST /agents/{id}/start":          "the provisioner acted for A (isoProvisioner records it), never for B",
 	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
 	// challenge its own device asked for, signed by that device's step-up key,
 	// so A's device's bare request is refused like the ghost's. Its control is

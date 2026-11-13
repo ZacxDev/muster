@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 )
@@ -212,6 +213,17 @@ func (s *Server) handleOfficerDefPut(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "escalate_to holds user ids (positive numbers)"})
 			return
 		}
+	}
+	// Every recipient must be a user muster can ask: an id that is not one
+	// would be an escalation nobody can ever receive. Read in the system
+	// scope — users is self-read under row-level security — and answering
+	// only which of the caller's own ids are missing.
+	if missing, err := s.officerStore.UsersExist(authz.System(r.Context()), in.EscalateTo); err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	} else if len(missing) > 0 {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "escalate_to names users that do not exist", "missing": missing})
+		return
 	}
 	d, err := s.officerStore.PutDefReturning(r.Context(), adminOwner(r), builtin.Def{Officer: r.PathValue("officer"), Enabled: on, Mode: in.Mode, EscalateTo: in.EscalateTo})
 	if err != nil {

@@ -181,6 +181,9 @@ func TestTheAdminAPIDefinesAnOfficerAndFeedsItsQueue(t *testing.T) {
 	if code, out := adminCall(t, h, "PUT", "/api/officers/defs/"+builtinOfficerID, `{}`); code != 200 || out["enabled"] != true || out["declared"] != true {
 		t.Fatalf("put def: %d %v, want enabled and declared", code, out)
 	}
+	if code, out := adminCall(t, h, "PUT", "/api/officers/defs/"+builtinOfficerID, `{"escalate_to":[987654]}`); code != http.StatusBadRequest || out["missing"] == nil {
+		t.Fatalf("escalate_to naming no user: %d %v, want 400 naming it", code, out)
+	}
 	if code, _ := adminCall(t, h, "PUT", "/api/officers/defs/nosuchtype:x", `{}`); code != http.StatusNotFound {
 		t.Fatalf("an officer of an undefined type: %d, want 404", code)
 	}
@@ -249,5 +252,39 @@ func TestTheAdminAPIIsOwnerScoped(t *testing.T) {
 	}
 	if code, out := adminCall(t, srv.Handler(), "GET", "/api/officers/types/marketing", ""); code != 200 || out["charter"] != "operator's" {
 		t.Fatalf("the operator's type after user 2's attempts: %d %v", code, out)
+	}
+}
+
+// TestAnEscalationNobodyCanReceiveDoesNotHoldTheQueue: an escalation entry
+// for a user id that does not exist (written past the admin API's check, as
+// a deleted user would leave it) is given up by the sweep — and the owner's
+// entry on a later item is still raised in the same sweep.
+func TestAnEscalationNobodyCanReceiveDoesNotHoldTheQueue(t *testing.T) {
+	f := newConnFixture(t)
+	srv, store := builtinOfficerServer(t, f, `[{"id":"`+builtinOfficerID+`","backend":"builtin"}]`, &bytes.Buffer{})
+	defineBuiltin(t, store, "live")
+	ctx := dbtest.AsOperator(context.Background())
+	bad, _, err := store.Enqueue(ctx, 1, builtin.NewItem{Officer: builtinOfficerID, Kind: "k", SubjectKey: "bad"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, _, err := store.Enqueue(ctx, 1, builtin.NewItem{Officer: builtinOfficerID, Kind: "k", SubjectKey: "good"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE officer_items SET status = 'escalated', outcome = 'escalated', summary = 'x',
+		notices = CASE WHEN id = $1 THEN '[{"recipient": 987654, "suppressed": false, "attention_id": null, "settled": false}]'::jsonb
+			ELSE '[{"recipient": 1, "suppressed": false, "attention_id": null, "settled": false}]'::jsonb END
+		WHERE id IN ($1, $2)`, bad, good); err != nil {
+		t.Fatal(err)
+	}
+	srv.SweepOfficerAttention(context.Background())
+	var badN string
+	_ = f.pool.QueryRow(ctx, `SELECT notices::text FROM officer_items WHERE id = $1`, bad).Scan(&badN)
+	if !strings.Contains(badN, `"suppressed": true`) {
+		t.Fatalf("the unreceivable escalation after a sweep: %s, want it given up", badN)
+	}
+	if got := officerAsks(t, srv); len(got) != 1 || !strings.Contains(got[0].Question, "escalated item "+strconv.FormatInt(good, 10)) {
+		t.Fatalf("the owner's escalation behind it: %+v, want it raised in the same sweep", got)
 	}
 }
