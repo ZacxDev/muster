@@ -250,7 +250,8 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // their own session — with the connector store; plugin_drafts_list /
 // plugin_draft_decide — the operator deciding a reply draft — with the plugin
 // store; and agent_destroy — the
-// operator tearing down one of their agents — with the attention tools; and
+// operator tearing down one of their agents — with the attention tools;
+// agents_list — the owner reading their agents — with the agent store; and
 // dispatch_request / dispatch_approve — the operator starting an agent in two
 // verbs — with the chief's dispatch on. No
 // dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
@@ -271,6 +272,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 		if s.chiefAskOn() {
 			out = append(out, chiefAskToolDef())
 		}
+	}
+	// agents_list — the owner reading their own agents through their own
+	// session (agents_list_tool.go) — with the agent store.
+	if s.ext.Agents != nil {
+		out = append(out, agentsListToolDef())
 	}
 	// chief_restart — the operator restarting their own chief through their own
 	// session (chief_restart_tool.go) — with the agent store and a provisioner.
@@ -415,6 +421,10 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// dispatchCallerTool, so no gateway agent can name it.
 			if name == chiefRestartTool {
 				return s.toolChiefRestart(r.Context(), c, args)
+			}
+			// So is agents_list (listed only with the agent store).
+			if name == agentsListTool {
+				return s.toolAgentsList(r.Context(), c, args)
 			}
 			// route_reply is this door's alone: it is not in dispatchCallerTool,
 			// which a gateway agent reaches naming any tool.

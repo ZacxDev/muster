@@ -12,7 +12,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one
 - [suggested-replies.md](suggested-replies.md) — AI-suggested replies for a mirrored session's composer: when they appear, what is sent, and how they stay grounded
 - [asks.md](asks.md) — the ask log: every question an agent puts to you, its answer and how long it took, recorded for review (phase 1 of ask auto-approval)
-- [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) destroying an agent (`agent_destroy`), restarting your chief (`chief_restart`) or starting an agent (`dispatch_request` + `dispatch_approve`) from your own mirrored session
+- [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) destroying an agent (`agent_destroy`) or listing your agents (`agents_list`), restarting your chief (`chief_restart`) or starting an agent (`dispatch_request` + `dispatch_approve`) from your own mirrored session
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
