@@ -118,11 +118,11 @@ var wiring = []struct {
 	{"officer type put", []string{"officer", "type", "put", "marketing", "--charter-file", "-"}, "PUT /api/officers/types/marketing"},
 	{"officer type delete", []string{"officer", "type", "delete", "marketing"}, "DELETE /api/officers/types/marketing"},
 	{"officer def ls", []string{"officer", "def", "ls"}, "GET /api/officers/defs"},
-	{"officer def put", []string{"officer", "def", "put", "marketing:zacx"}, "PUT /api/officers/defs/marketing:zacx"},
-	{"officer def delete", []string{"officer", "def", "delete", "marketing:zacx"}, "DELETE /api/officers/defs/marketing:zacx"},
-	{"officer item ls", []string{"officer", "item", "ls", "marketing:zacx"}, "GET /api/officers/defs/marketing:zacx/items"},
-	{"officer item enqueue", []string{"officer", "item", "enqueue", "marketing:zacx", "--kind", "post", "--subject", "s1"}, "POST /api/officers/defs/marketing:zacx/items"},
-	{"officer item resolve", []string{"officer", "item", "resolve", "marketing:zacx", "7"}, "POST /api/officers/defs/marketing:zacx/items/7/resolve"},
+	{"officer def put", []string{"officer", "def", "put", "marketing:example"}, "PUT /api/officers/defs/marketing:example"},
+	{"officer def delete", []string{"officer", "def", "delete", "marketing:example"}, "DELETE /api/officers/defs/marketing:example"},
+	{"officer item ls", []string{"officer", "item", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/items"},
+	{"officer item enqueue", []string{"officer", "item", "enqueue", "marketing:example", "--kind", "post", "--subject", "s1"}, "POST /api/officers/defs/marketing:example/items"},
+	{"officer item resolve", []string{"officer", "item", "resolve", "marketing:example", "7"}, "POST /api/officers/defs/marketing:example/items/7/resolve"},
 	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
@@ -291,11 +291,11 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("PUT /api/officers/types/marketing", http.StatusOK, `{"key":"marketing","charter_version":1}`)
 			h.json("DELETE /api/officers/types/marketing", http.StatusOK, `{"deleted":"marketing"}`)
 			h.json("GET /api/officers/defs", http.StatusOK, `{"defs":[]}`)
-			h.json("PUT /api/officers/defs/marketing:zacx", http.StatusOK, `{"officer":"marketing:zacx"}`)
-			h.json("DELETE /api/officers/defs/marketing:zacx", http.StatusOK, `{"deleted":"marketing:zacx"}`)
-			h.json("GET /api/officers/defs/marketing:zacx/items", http.StatusOK, `{"items":[]}`)
-			h.json("POST /api/officers/defs/marketing:zacx/items", http.StatusCreated, `{"id":7,"created":true}`)
-			h.json("POST /api/officers/defs/marketing:zacx/items/7/resolve", http.StatusOK, `{"item":{"id":7}}`)
+			h.json("PUT /api/officers/defs/marketing:example", http.StatusOK, `{"officer":"marketing:example"}`)
+			h.json("DELETE /api/officers/defs/marketing:example", http.StatusOK, `{"deleted":"marketing:example"}`)
+			h.json("GET /api/officers/defs/marketing:example/items", http.StatusOK, `{"items":[]}`)
+			h.json("POST /api/officers/defs/marketing:example/items", http.StatusCreated, `{"id":7,"created":true}`)
+			h.json("POST /api/officers/defs/marketing:example/items/7/resolve", http.StatusOK, `{"item":{"id":7}}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)

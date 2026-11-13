@@ -9,11 +9,22 @@ contract both backends implement are in
 
 What a builtin officer gets on day 1: the six queue tools (brief, items,
 claim, heartbeat, complete, release), tiers, the investigation block, item
-cost, and **asks to its owner through muster's Attention view**. What it does
+cost, **asks to its owner through muster's Attention view**, and escalations its owner can answer back. What it does
 not get: HQ's observability, transcripts, usage and pools ledgers, derived
 asks, gap tasks, task reads, PR context, the ship gates and the release
 captain — it is not offered those tools and its first message does not
 mention them.
+
+## ⚠ Before you declare one on a real deployment
+
+Every outward action an officer takes is meant to pass an Attention ask that
+shows the exact content (a muster draft the owner approves, carried out by a
+relay on the owner's own machine — the design's *Phase-3 gated outward
+posting*). **That path is not built yet.** Until it is, a builtin officer's
+only ways out of its pod are muster's tools and the connectors its owner
+approves one request at a time: do not approve a connector that can write to
+the outside world for one, and give it no `repo` with write access. The
+empty roster (no officer declared) exposes nothing.
 
 ## 1. Turn the runtime on (the empty roster)
 
@@ -124,10 +135,14 @@ an instance for claimable work within its poll interval. `resolve` is refused
   default) escalates the item to the owner. `to` is not a routing input here
   and images are not served.
 - **An escalation** — `officer_complete{outcome: "escalated"}`, an expired ask,
-  or the wall-time cap — writes, in the same transaction, one notice per
+  or the wall-time cap — writes, in the same transaction, one entry per
   recipient (the owner and each `--escalate-to` user). The sweep raises each
-  as an Attention **notice** (no answer; dismiss it) exactly once, even with
-  two replicas. A `--mode shadow` officer records its notices and raises none.
+  as an Attention **ask** — the officer asking a human to act — exactly once,
+  even with two replicas. **An answer flows back to the officer**: the item
+  re-opens as a judgement item with the answer on its `asks[]`, the next
+  instance claims it, and the other recipients' asks are withdrawn.
+  Dismissing it (or letting it expire) leaves the item escalated. A
+  `--mode shadow` officer records its escalations and asks nobody.
 
 ## 6. Switch it off
 

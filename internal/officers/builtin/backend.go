@@ -97,7 +97,7 @@ type itemRow struct {
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
 	// Asks are the Attention asks raised on the item (officer_ask_person,
-	// migration 0119), with their answers once given.
+	// migration 0120), with their answers once given.
 	Asks json.RawMessage `json:"asks"`
 }
 

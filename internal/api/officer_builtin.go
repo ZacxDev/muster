@@ -23,8 +23,9 @@ import (
 //     Attention ask to the officer's OWNER (muster's own: no agent waits on
 //     its answer — the item does);
 //   - RunOfficerAttentionSweep settles those asks back onto their items
-//     (re-open on answer or withdrawal, escalate on expiry) and raises each
-//     escalated item's notices as Attention notices, once per recipient.
+//     (re-open on answer or withdrawal, escalate on expiry), raises each
+//     escalated item's recipients' Attention asks once per recipient, and
+//     carries an answer to one back to the officer (the item re-opens).
 //
 // Both act through the store (internal/officers/builtin), whose rows are the
 // truth, so they hold across a restart and across replicas.
@@ -114,9 +115,10 @@ func (s *Server) RunOfficerAttentionSweep(ctx context.Context, interval time.Dur
 // SweepOfficerAttention is one pass: every open ask on a waiting builtin
 // item whose Attention ask has settled is recorded on the item (answered,
 // withdrawn or expired) — re-opening it once none is open, escalating it on
-// expiry — and every escalated item's notice not yet raised is raised as an
-// Attention notice to its recipient, recorded once (NoticeRaised: a replica
-// that loses the race withdraws its duplicate).
+// expiry — every escalated item's recipient not yet asked is raised an
+// Attention ask, recorded once (NoticeRaised: a replica that loses the race
+// withdraws its duplicate), and every settled escalation ask is carried back
+// (settleOfficerEscalation).
 func (s *Server) SweepOfficerAttention(ctx context.Context) {
 	if s.officerStore == nil || s.ext.Attention == nil {
 		return
@@ -158,20 +160,62 @@ func (s *Server) SweepOfficerAttention(ctx context.Context) {
 	}
 	due, err := s.officerStore.DueNotices(sys, officerAttentionBatch)
 	if err != nil {
-		s.logger.Printf("officers: the built-in escalation notices could not be read: %v", err)
+		s.logger.Printf("officers: the built-in escalations could not be read: %v", err)
 	}
 	for _, n := range due {
 		s.raiseOfficerNotice(ctx, sys, n)
 	}
+	esc, err := s.officerStore.OpenEscalations(sys, officerAttentionBatch)
+	if err != nil {
+		s.logger.Printf("officers: the built-in escalation asks could not be read: %v", err)
+	}
+	for _, e := range esc {
+		s.settleOfficerEscalation(ctx, sys, e)
+	}
 }
 
-// raiseOfficerNotice raises escalation notice n as an Attention notice to
-// its recipient and records it; the loser of a race withdraws its copy.
+// settleOfficerEscalation carries recipient e's settled escalation ask back
+// to its item: an ANSWER re-opens the item for the officer with the answer on
+// it, and the other recipients' asks are withdrawn; a dismissal or expiry
+// only records it settled (the item stays escalated). Still open: nothing.
+func (s *Server) settleOfficerEscalation(ctx, sys context.Context, e builtin.OpenEscalation) {
+	rctx := s.attentionPrincipal(ctx, e.Recipient)
+	a, err := s.ext.Attention.Get(rctx, e.AttentionID)
+	answered, answer := false, ""
+	switch {
+	case errors.Is(err, attention.ErrNotFound):
+	case err != nil:
+		s.logger.Printf("officers: %s: item %d: escalation ask %d could not be read: %v", e.Officer, e.Item, e.AttentionID, err)
+		return
+	case a.Status == attention.Answered || a.Status == attention.AnsweredInSession:
+		answered, answer = true, a.Answer
+	case a.Status == attention.Open:
+		return
+	}
+	reopened, withdraw, err := s.officerStore.SettleEscalation(sys, e.Owner, e.Item, e.Recipient, e.AttentionID, answered, answer, s.officerNow())
+	if err != nil {
+		s.logger.Printf("officers: %s: item %d: record escalation ask %d: %v", e.Officer, e.Item, e.AttentionID, err)
+		return
+	}
+	if reopened {
+		s.logger.Printf("officers: %s: item %d sent back to the officer: user %d answered its escalation", e.Officer, e.Item, e.Recipient)
+	} else if answered {
+		s.logger.Printf("officers: %s: item %d: user %d answered its escalation, but the item could not be re-opened (no longer escalated, or another live item holds its subject); the answer is recorded on the escalation only", e.Officer, e.Item, e.Recipient)
+	}
+	for _, w := range withdraw {
+		if _, err := s.cancelAsk(s.attentionPrincipal(ctx, w.Recipient), w.AttentionID); err != nil && !errors.Is(err, attention.ErrNotOpen) {
+			s.logger.Printf("officers: %s: item %d: withdraw user %d's escalation ask %d: %v", w.Officer, w.Item, w.Recipient, w.AttentionID, err)
+		}
+	}
+}
+
+// raiseOfficerNotice raises escalation n as an Attention ask to its
+// recipient and records it; the loser of a race withdraws its copy.
 func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotice) {
 	rctx := s.attentionPrincipal(ctx, n.Recipient)
 	a, err := s.ext.Attention.Create(rctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(n.Officer)},
-		Question: officerNoticeText(n), Notice: true,
+		Question: officerNoticeText(n),
 	})
 	if err != nil {
 		s.logger.Printf("officers: %s: item %d: the escalation notice to user %d could not be raised: %v", n.Officer, n.Item, n.Recipient, err)
@@ -190,18 +234,22 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 	s.askFiled(a)
 }
 
-// officerNoticeText is an escalation notice: which officer escalated which
-// item, and its summary (bounded to Attention's question limit).
+// officerEscalationTail ends every escalation ask: what answering does.
+const officerEscalationTail = "\n\nAnswer to send the item back to the officer with your answer; dismiss it to leave the item escalated."
+
+// officerNoticeText is an escalation's Attention ask: which officer escalated
+// which item, its summary (bounded to Attention's question limit), and what
+// an answer does.
 func officerNoticeText(n builtin.DueNotice) string {
 	head := fmt.Sprintf("Officer %s escalated item %d (%s %s) to you:\n\n", n.Officer, n.Item, n.Kind, n.SubjectKey)
 	sum := strings.TrimSpace(n.Summary)
 	if sum == "" {
 		sum = "(no summary)"
 	}
-	if room := attention.MaxQuestionRunes - utf8.RuneCountInString(head); utf8.RuneCountInString(sum) > room {
+	if room := attention.MaxQuestionRunes - utf8.RuneCountInString(head) - utf8.RuneCountInString(officerEscalationTail); utf8.RuneCountInString(sum) > room {
 		sum = string([]rune(sum)[:room-1]) + "…"
 	}
-	return head + sum
+	return head + sum + officerEscalationTail
 }
 
 // officerNow is the officer runtime's clock, or time.Now without one.

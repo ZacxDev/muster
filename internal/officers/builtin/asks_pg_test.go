@@ -286,3 +286,66 @@ func addUser2(t *testing.T) {
 	t.Helper()
 	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (2, 'member') ON CONFLICT DO NOTHING`)
 }
+
+// TestAnAnsweredEscalationSendsTheItemBack: an escalation is asked of each
+// recipient; the first ANSWER re-opens the item for the officer (open,
+// judgement, no outcome, the answer on its asks[]) and names the other
+// recipients' asks to withdraw; a later answer changes nothing. A DISMISSED
+// escalation leaves its item escalated.
+func TestAnAnsweredEscalationSendsTheItemBack(t *testing.T) {
+	w, b, _ := asksWorld(t)
+	addUser2(t)
+	if err := w.store.PutDef(ctxOp(), 1, builtin.Def{Officer: backendtest.OfficerA, Enabled: true, EscalateTo: []int64{2}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sys := authz.System(ctx)
+	escalate := func(subject string) int64 {
+		id := w.AddItem(backendtest.OfficerA, "k", subject, officers.TierRoutine, "")
+		claimed(t, b, id)
+		if _, err := b.Complete(ctx, id, "i1", officers.Completion{Outcome: "escalated", Summary: "which tone?"}); err != nil {
+			t.Fatal(err)
+		}
+		return mustInt(id)
+	}
+	item := escalate("answered")
+	for r, att := range map[int64]int64{1: 5001, 2: 5002} {
+		if won, err := w.store.NoticeRaised(sys, 1, item, r, att); err != nil || !won {
+			t.Fatalf("raise for user %d: %v %v", r, won, err)
+		}
+	}
+	open, err := w.store.OpenEscalations(sys, 10)
+	if err != nil || len(open) != 2 {
+		t.Fatalf("open escalation asks: %+v (%v), want two", open, err)
+	}
+	reopened, withdraw, err := w.store.SettleEscalation(sys, 1, item, 1, 5001, true, "keep it dry", w.clock())
+	if err != nil || !reopened || len(withdraw) != 1 || withdraw[0].Recipient != 2 || withdraw[0].AttentionID != 5002 {
+		t.Fatalf("the owner's answer: reopened %v withdraw %+v (%v); want re-opened and user 2's ask withdrawn", reopened, withdraw, err)
+	}
+	var status, tier string
+	var outcome *string
+	if err := w.store.Pool().QueryRow(ctxOp(), `SELECT status, tier, outcome FROM officer_items WHERE id = $1`, item).Scan(&status, &tier, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	_, asks, _ := w.item(officers.ItemID(strconv.FormatInt(item, 10)))
+	if status != officers.StatusOpen || tier != officers.TierJudgement || outcome != nil || len(asks) != 1 || asks[0]["answer"] != "keep it dry" {
+		t.Fatalf("after the answer: %s/%s outcome %v asks %v; want open judgement, no outcome, the answer on it", status, tier, outcome, asks)
+	}
+	if again, _, err := w.store.SettleEscalation(sys, 1, item, 2, 5002, true, "late", w.clock()); err != nil || again {
+		t.Fatalf("a second recipient's later answer: %v %v, want nothing", again, err)
+	}
+	if open, _ := w.store.OpenEscalations(sys, 10); len(open) != 0 {
+		t.Fatalf("escalation asks still open after the item went back: %+v", open)
+	}
+
+	dismissed := escalate("dismissed")
+	if _, err := w.store.NoticeRaised(sys, 1, dismissed, 1, 6001); err != nil {
+		t.Fatal(err)
+	}
+	if re, _, err := w.store.SettleEscalation(sys, 1, dismissed, 1, 6001, false, "", w.clock()); err != nil || re {
+		t.Fatalf("a dismissed escalation: reopened %v (%v), want not", re, err)
+	}
+	if status, _, _ := w.item(officers.ItemID(strconv.FormatInt(dismissed, 10))); status != officers.StatusEscalated {
+		t.Fatalf("a dismissed escalation left the item %s, want escalated", status)
+	}
+}

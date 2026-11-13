@@ -181,9 +181,9 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","nested":{"a":1}}`)
 			for _, route := range []string{"GET /api/officers/types", "GET /api/officers/types/marketing", "PUT /api/officers/types/marketing",
-				"DELETE /api/officers/types/marketing", "GET /api/officers/defs", "PUT /api/officers/defs/marketing:zacx",
-				"DELETE /api/officers/defs/marketing:zacx", "GET /api/officers/defs/marketing:zacx/items",
-				"POST /api/officers/defs/marketing:zacx/items", "POST /api/officers/defs/marketing:zacx/items/7/resolve"} {
+				"DELETE /api/officers/types/marketing", "GET /api/officers/defs", "PUT /api/officers/defs/marketing:example",
+				"DELETE /api/officers/defs/marketing:example", "GET /api/officers/defs/marketing:example/items",
+				"POST /api/officers/defs/marketing:example/items", "POST /api/officers/defs/marketing:example/items/7/resolve"} {
 				h.json(route, http.StatusOK, `{"ok":true,"nested":{"a":1}}`)
 			}
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/askimage"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -27,13 +28,13 @@ import (
 //     Attention view and their phone), through an Asker — `to` is not a
 //     routing input here: there is no HQ member directory, only the owner;
 //   - asking ENDS the lease: the item is `waiting` with no holder, the ask
-//     recorded on it (officer_items.asks, migration 0119);
+//     recorded on it (officer_items.asks, migration 0120);
 //   - once no ask on it is open — each answered or withdrawn — the item is
 //     re-opened with the answers on it, and the wake loop wakes an instance
 //     for it; an ask that EXPIRES unanswered escalates the item to its owner
 //     (Store.ResolveAsk, driven by internal/api's sweep).
 
-// MaxAsksPerItem bounds the asks one item may carry (0119's CHECK is 20).
+// MaxAsksPerItem bounds the asks one item may carry (0120's CHECK is 20).
 const MaxAsksPerItem = 20
 
 // Asker raises, as the officer's owner, the Attention ask an instance's
@@ -258,11 +259,16 @@ func (s *Store) ResolveAsk(ctx context.Context, owner, item, askID int64, status
 
 // --- escalation notices ------------------------------------------------------
 
-// noticeEntry is one element of officer_items.notices.
+// noticeEntry is one element of officer_items.notices: one recipient of an
+// escalation. AttentionID is the Attention ask muster raised for it (null
+// until raised); Settled is false until that ask is answered, dismissed or
+// expired (or withdrawn because another recipient's answer re-opened the
+// item).
 type noticeEntry struct {
 	Recipient   int64  `json:"recipient"`
 	Suppressed  bool   `json:"suppressed"`
 	AttentionID *int64 `json:"attention_id"`
+	Settled     bool   `json:"settled"`
 }
 
 // noticesFor is who an escalation of officer's item notifies: its owner and
@@ -284,7 +290,7 @@ func noticesFor(ctx context.Context, tx pgx.Tx, owner int64, officer string) (js
 			continue
 		}
 		seen[r] = true
-		out = append(out, noticeEntry{Recipient: r, Suppressed: mode == "shadow"})
+		out = append(out, noticeEntry{Recipient: r, Suppressed: mode == "shadow", Settled: mode == "shadow"})
 	}
 	return json.Marshal(out)
 }
@@ -296,12 +302,12 @@ type DueNotice struct {
 }
 
 // DueNotices is every owner's escalation notices not yet raised (and not
-// suppressed), oldest item first, at most limit. ctx must act for every owner
+// suppressed) on items still escalated, oldest item first, at most limit. ctx must act for every owner
 // (the system scope).
 func (s *Store) DueNotices(ctx context.Context, limit int) ([]DueNotice, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, i.officer, i.kind, i.subject_key, coalesce(i.summary, '')
 		FROM officer_items i, jsonb_array_elements(i.notices) n
-		WHERE i.notices @> '[{"attention_id": null, "suppressed": false}]'
+		WHERE i.notices @> '[{"attention_id": null, "suppressed": false}]' AND i.status = 'escalated'
 			AND n->'attention_id' = 'null'::jsonb AND n->'suppressed' = 'false'::jsonb
 		ORDER BY i.id LIMIT $1`, limit)
 	if err != nil {
@@ -330,4 +336,115 @@ func (s *Store) NoticeRaised(ctx context.Context, owner, item, recipient, attent
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// --- an escalation's answer flows back to the officer -------------------------
+//
+// An escalation is raised as an Attention ASK to each recipient (the owner and
+// escalate_to): the officer is asking a human to act. A recipient who ANSWERS
+// sends the item back to the officer — re-opened as a judgement item with the
+// answer on its asks[] — and the other recipients' asks are withdrawn. A
+// dismissed or expired escalation leaves the item escalated: nobody sent it
+// back.
+
+// OpenEscalation is one raised escalation ask not yet settled.
+type OpenEscalation struct {
+	Owner, Item, Recipient, AttentionID int64
+	Officer                             string
+}
+
+// OpenEscalations is every owner's raised, unsettled escalation asks, oldest
+// item first, at most limit. ctx must act for every owner (the system scope).
+func (s *Store) OpenEscalations(ctx context.Context, limit int) ([]OpenEscalation, error) {
+	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, (n->>'recipient')::bigint, (n->>'attention_id')::bigint, i.officer
+		FROM officer_items i, jsonb_array_elements(i.notices) n
+		WHERE i.notices @> '[{"settled": false}]' AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb
+		ORDER BY i.id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
+		var e OpenEscalation
+		err := r.Scan(&e.Owner, &e.Item, &e.Recipient, &e.AttentionID, &e.Officer)
+		return e, err
+	})
+}
+
+// SettleEscalation records how recipient's escalation ask attentionID of
+// owner's item settled. answered (with answerText) re-opens the item for the
+// officer — status open, judgement tier, no outcome, the answer appended to
+// its asks[] — ONLY while it is still escalated and no other live item holds
+// its subject; withdraw then names the other recipients' still-open asks to
+// withdraw. Any other settlement (dismissed, expired) only marks the
+// recipient settled. One transaction, conditional on the entry being
+// unsettled, so two replicas settle it once. ctx must act for every owner
+// (the recipient need not be the owner).
+func (s *Store) SettleEscalation(ctx context.Context, owner, item, recipient, attentionID int64, answered bool, answerText string, now time.Time) (reopened bool, withdraw []OpenEscalation, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var officer, status string
+	err = tx.QueryRow(ctx, `UPDATE officer_items SET notices = (
+			SELECT jsonb_agg(CASE WHEN (n->>'recipient')::bigint = $3 AND (n->>'attention_id')::bigint = $4
+				THEN n || '{"settled": true}'::jsonb ELSE n END ORDER BY ord)
+			FROM jsonb_array_elements(notices) WITH ORDINALITY t(n, ord))
+		WHERE owner_id = $1 AND id = $2
+			AND notices @> jsonb_build_array(jsonb_build_object('recipient', $3::bigint, 'attention_id', $4::bigint, 'settled', false))
+		RETURNING officer, status`, owner, item, recipient, attentionID).Scan(&officer, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	if answered && status == officers.StatusEscalated {
+		entry, _ := json.Marshal([]askEntry{{AskID: attentionID, Question: "escalation", AskedBy: fmt.Sprintf("user %d", recipient),
+			AskedAt: now, Status: AskAnswered, Answer: answerText, ResolvedAt: &now}})
+		// A savepoint: re-opening fails on the live-subject index when another
+		// live item now holds this subject, and that must not undo the
+		// settlement above.
+		if _, err := tx.Exec(ctx, `SAVEPOINT reopen`); err != nil {
+			return false, nil, err
+		}
+		_, rerr := tx.Exec(ctx, `UPDATE officer_items SET status = 'open', outcome = NULL, tier = 'judgement', asks = asks || $3::jsonb,
+			notices = (SELECT jsonb_agg(CASE WHEN n->'settled' = 'false'::jsonb AND n->'attention_id' = 'null'::jsonb
+				THEN n || '{"settled": true}'::jsonb ELSE n END ORDER BY ord) FROM jsonb_array_elements(notices) WITH ORDINALITY t(n, ord)),
+			updated_at = $4 WHERE owner_id = $1 AND id = $2`, owner, item, entry, now)
+		var pg *pgconn.PgError
+		switch {
+		case rerr == nil:
+			reopened = true
+		case errors.As(rerr, &pg) && pg.Code == "23505":
+			if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT reopen`); err != nil {
+				return false, nil, err
+			}
+		default:
+			return false, nil, rerr
+		}
+		if reopened {
+			rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
+				WHERE i.owner_id = $1 AND i.id = $2 AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb`, owner, item)
+			if err != nil {
+				return false, nil, err
+			}
+			withdraw, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
+				e := OpenEscalation{Owner: owner, Item: item, Officer: officer}
+				err := r.Scan(&e.Recipient, &e.AttentionID)
+				return e, err
+			})
+			if err != nil {
+				return false, nil, err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE officer_items SET notices = (SELECT jsonb_agg(n || '{"settled": true}'::jsonb ORDER BY ord)
+				FROM jsonb_array_elements(notices) WITH ORDINALITY t(n, ord)) WHERE owner_id = $1 AND id = $2`, owner, item); err != nil {
+				return false, nil, err
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, nil, err
+	}
+	return reopened, withdraw, nil
 }

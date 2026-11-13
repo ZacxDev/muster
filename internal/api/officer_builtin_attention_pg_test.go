@@ -98,9 +98,10 @@ func TestABuiltinOfficersAskReachesTheOwnerAndTheAnswerComesBack(t *testing.T) {
 }
 
 // TestABuiltinEscalationNotifiesEachRecipientOnceAndNobodyInShadow: an
-// escalating complete becomes one Attention notice per recipient however
-// many sweeps run (two here, as two replicas would), and none at all for a
-// shadow officer.
+// escalating complete becomes one answerable Attention ask per recipient
+// however many sweeps run (two here, as two replicas would), and none at all
+// for a shadow officer; the owner's answer sends the item back to the
+// officer, whose next claim reads it.
 func TestABuiltinEscalationNotifiesEachRecipientOnceAndNobodyInShadow(t *testing.T) {
 	for _, mode := range []string{"live", "shadow"} {
 		f := newConnFixture(t)
@@ -128,9 +129,19 @@ func TestABuiltinEscalationNotifiesEachRecipientOnceAndNobodyInShadow(t *testing
 			}
 			continue
 		}
-		if len(got) != 1 || got[0].Kind != attention.KindNotice || !strings.Contains(got[0].Question, "the draft names an unreleased feature") ||
-			!strings.Contains(got[0].Question, "escalated item "+item) {
-			t.Fatalf("live: Attention after two sweeps: %+v, want exactly one notice carrying the summary", got)
+		if len(got) != 1 || got[0].Kind == attention.KindNotice || !strings.Contains(got[0].Question, "the draft names an unreleased feature") ||
+			!strings.Contains(got[0].Question, "escalated item "+item) || !strings.HasSuffix(got[0].Question, officerEscalationTail) {
+			t.Fatalf("live: Attention after two sweeps: %+v, want exactly one answerable ask carrying the summary", got)
+		}
+		// The owner's answer flows back: the item re-opens for the officer
+		// with the answer on it, and the next claim reads it.
+		if _, err := srv.ext.Attention.Answer(srv.attentionPrincipal(context.Background(), 1), got[0].ID, "drop the feature name and post"); err != nil {
+			t.Fatal(err)
+		}
+		srv.SweepOfficerAttention(context.Background())
+		claim := srv.dispatchAgentTool(ctx, a, officers.ToolClaim, `{}`)
+		if isToolErr(claim) || !strings.Contains(claim, `"id":`+item) || !strings.Contains(claim, "drop the feature name and post") {
+			t.Fatalf("claim after the owner answered the escalation: %s, want item %s with the answer", claim, item)
 		}
 	}
 }
