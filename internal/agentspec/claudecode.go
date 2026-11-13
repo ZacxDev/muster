@@ -107,7 +107,7 @@ func ClaudeCodeNetwork() provision.Network {
 // connector store ([Config.ConnectURL]), egress to muster's connector port — the
 // one allowance that lets the pod reach muster, and only that surface of it.
 //
-// 🔴 WITH egressLocked ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE AND
+// 🔴 FOR AN officer ([ClaudeCodeSession.EgressLocked]) THE PUBLIC RULE AND
 // THE DNS RULE ARE BOTH GONE: the pod may reach muster's connect port, and
 // NOTHING else — no name resolution, not even the Anthropic API. That is
 // deliberate, and it is what makes the lock mean anything: a NetworkPolicy
@@ -117,21 +117,43 @@ func ClaudeCodeNetwork() provision.Network {
 // cluster-side name-filtered DNS rule (Cilium rules.dns) narrows nothing while
 // this policy still allows port 53 to the DNS pods. The operator ships both;
 // without them a locked pod cannot resolve or reach the API at all (closed,
-// loud: every turn fails). See docs/officers.md "The instance's network".
+// loud: every turn fails) — unless the deployment admits them by address
+// (the officer egress settings, below). See docs/officers.md "The instance's
+// network".
 //
-// An egress-locked pool's worker ([PoolEgressLocked]) is locked the same way,
-// by the same flag: muster writes no DNS and no public rule, and the operator's
-// cluster policy, which selects the pod by [LabelEgress]=[EgressLocked], is the
-// only allow (docs/jobs.md "A pool's egress lock").
-func claudeCodeNetworkFor(cfg Config, egressLocked bool) provision.Network {
+// An egress-locked pool's worker ([PoolEgressLocked]) is locked the same way:
+// muster writes no DNS and no public rule, and the operator's cluster policy,
+// which selects the pod by [LabelEgress]=[EgressLocked], is the only allow
+// (docs/jobs.md "A pool's egress lock").
+//
+// 🔴 THE OFFICER EGRESS SETTINGS ([Config.OfficerEgressCIDRs],
+// [Config.OfficerEgressDNS]) REACH AN OFFICER AND NOTHING ELSE. They exist
+// for a cluster without FQDN policies, where the lock above would leave an
+// officer unable to reach the Anthropic API at all; they give an officer back
+// exactly the named blocks and, when asked, DNS. A locked POOL worker does NOT
+// get them, even when it is also an officer session: a deploy-key pool is
+// locked to keep a private repository's mirror from leaving, and a
+// deployment-wide officer setting must not widen that lock behind the
+// operator's back — a pool's allow stays the operator's own cluster policy.
+// Every other agent (task agents, the chief, unlocked workers) keeps the
+// public rule and DNS and is unchanged.
+func claudeCodeNetworkFor(cfg Config, officer, poolLocked bool) provision.Network {
 	// The Compose container: not confined (Config.ComposeContainer).
 	if cfg.ComposeContainer {
 		return provision.Network{}
 	}
 	n := ClaudeCodeNetwork()
-	if egressLocked {
+	if officer || poolLocked {
 		n.PublicEgressTCPPorts = nil
 		n.NoClusterDNS = true
+	}
+	if officer && !poolLocked {
+		if len(cfg.OfficerEgressCIDRs) > 0 {
+			n.EgressCIDRs = slices.Clone(cfg.OfficerEgressCIDRs)
+		}
+		if cfg.OfficerEgressDNS {
+			n.NoClusterDNS = false
+		}
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		n.ControllerEgressTCPPorts = []int{cfg.ConnectPort}
@@ -558,7 +580,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
-		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked() || poolLocked),
+		Network:   claudeCodeNetworkFor(cfg, opts.ClaudeCodeSession.EgressLocked(), poolLocked),
 		Labels:    labels,
 		Repo:      repo,
 

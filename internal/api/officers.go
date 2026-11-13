@@ -26,6 +26,7 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/llmproxy"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/officers/transcript"
 	"github.com/ZacxDev/muster/internal/officers/usage"
 	"github.com/ZacxDev/muster/internal/officership"
@@ -110,6 +111,15 @@ type officerRuntime struct {
 	// (conversationConfirmed, from OfficerTurnContext). Guarded by workedMu.
 	workedMu sync.Mutex
 	worked   map[string]officers.ItemID
+	// memLoops is the review-loop record when no store is configured
+	// (prLoopsFor), made once.
+	memLoopsOnce sync.Once
+	memLoops     *officers.MemPRLoopStore
+	// shadow is the shepherd's shadow ledger (officer_shadow.go): the writes
+	// refused in shadow, per (officer, item), appended to that item's
+	// officer_complete summary. Guarded by shadowMu.
+	shadowMu sync.Mutex
+	shadow   map[string]*shadowLedger
 	// stale is, per instance name of a fresh_session_per_item pool, true once
 	// its ccd accepted a turn asking for a new conversation WITHOUT naming one
 	// (an image that predates agents.HeaderCCNewConversation): muster sends it
@@ -202,9 +212,14 @@ type OfficersConfig struct {
 	Officers []officers.Officer
 	// HTTPClient is the HQ client's transport; nil uses officers.NewClient's.
 	HTTPClient *http.Client
-	// Backend builds each officer's backend (officers.Backend); nil is HQ over
-	// HTTPClient (officers.NewClient). For tests.
+	// Backend builds each officer's backend (officers.Backend); nil is, per
+	// officer, HQ over HTTPClient (officers.NewClient) or — for a builtin
+	// officer — the built-in backend over Builtin. For tests.
 	Backend func(officers.Officer) officers.Backend
+	// Builtin is the built-in backend's store (internal/officers/builtin,
+	// migration 0118) in muster's own database. REQUIRED when an officer
+	// declares "backend": "builtin": EnableOfficers refuses one without it.
+	Builtin *builtin.Store
 	// Now is the wake loop's clock; nil is time.Now. For tests.
 	Now func() time.Time
 	// InstallSession installs the officer runtime's session source on the
@@ -256,7 +271,11 @@ type OfficersConfig struct {
 	// Sessions keeps the judgement session cap's count
 	// (officers.PGSessionStore); REQUIRED when an officer declares
 	// tiers.judgement.max_sessions_per_day.
-	Sessions    officers.SessionStore
+	Sessions officers.SessionStore
+	// PRLoops keeps draft officers' review-loop announcements
+	// (officers.PGPRLoopStore); nil keeps them in this process's memory,
+	// which a restart forgets.
+	PRLoops     officers.PRLoopStore
 	LLMUpstream string
 	LLMHTTP     *http.Client
 	// ImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET: the Secret an
@@ -321,6 +340,50 @@ func (s *Server) newTranscriptForwarder(cfg OfficersConfig, hq *officers.Backend
 	return f, nil
 }
 
+// officersServing is the officers of list whose declared backend serves
+// capability (officers.DeclaredCapabilities): the pools and usage pushes run
+// for those only, so an officer whose backend keeps no such ledger (a builtin
+// one) is never pushed to — and never logged as refusing — every cadence.
+func officersServing(list []officers.Officer, capability string) []officers.Officer {
+	var out []officers.Officer
+	for _, o := range list {
+		if officers.DeclaredCapabilities(o).Has(capability) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// officerBackendBuilder is how EnableOfficers builds each officer's backend:
+// cfg.Backend when set (tests); otherwise HQ over cfg.HTTPClient for an HQ
+// officer, and the built-in backend over cfg.Builtin for a builtin one — its
+// every statement run AS THE OFFICER'S OWNER (officerPrincipal), so row-level
+// security confines it to that owner's types, officers and items. A builtin
+// officer with no store is refused here, at boot: never run against nothing.
+func (s *Server) officerBackendBuilder(cfg OfficersConfig) (func(officers.Officer) officers.Backend, error) {
+	if cfg.Backend != nil {
+		return cfg.Backend, nil
+	}
+	var builtins []string
+	for _, o := range cfg.Officers {
+		if o.IsBuiltin() {
+			builtins = append(builtins, o.ID)
+		}
+	}
+	if len(builtins) > 0 && cfg.Builtin == nil {
+		return nil, fmt.Errorf("officers: %s declare \"backend\": \"builtin\", whose queue lives in muster's database, and there is none (set DATABASE_URL)",
+			strings.Join(builtins, ", "))
+	}
+	hc, store, now := cfg.HTTPClient, cfg.Builtin, cfg.Now
+	return func(o officers.Officer) officers.Backend {
+		if o.IsBuiltin() {
+			owner := o.Owner
+			return builtin.NewBackend(store, o, now, func(ctx context.Context) context.Context { return s.officerPrincipal(ctx, owner) })
+		}
+		return officers.NewClient(o, hc)
+	}, nil
+}
+
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
 // caller to Run. It needs the agents store and the provisioner (an officer is
 // nothing without instances), and the claude-code kind.
@@ -338,10 +401,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
 	}
 	reg := officers.NewRegistry(cfg.Officers)
-	hc := cfg.HTTPClient
-	build := cfg.Backend
-	if build == nil {
-		build = func(o officers.Officer) officers.Backend { return officers.NewClient(o, hc) }
+	build, err := s.officerBackendBuilder(cfg)
+	if err != nil {
+		return nil, err
 	}
 	hq := officers.NewBackends(build)
 	fwd, err := s.newTranscriptForwarder(cfg, hq)
@@ -380,7 +442,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	// (MUSTER_OFFICERS is read only then, so a change is a restart) and on
 	// the usage collector's cadence, sessions_today read through the SAME
 	// ledger that enforces the cap.
-	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: cfg.Officers, Poster: officers.NewBackendPoolsPoster(hq),
+	pools, err := officers.NewPoolsReporter(officers.PoolsReporterConfig{Officers: officersServing(cfg.Officers, officers.CapPools), Poster: officers.NewBackendPoolsPoster(hq),
 		Ledger: judgement, Logger: s.logger, Now: now, Interval: cfg.UsageInterval, Backoff: cfg.PoolsBackoff})
 	if err != nil {
 		return nil, err
@@ -444,7 +506,53 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 		s.logger.Printf("officers: %s on: %s, idle scale-to-zero after %s per pool, poll %s, repo %s",
 			o.ID, strings.Join(pools, "; "), o.IdleAfter, o.PollInterval, repo)
 	}
+	for _, o := range reg.All() {
+		s.logOfficerBackend(o)
+	}
 	return rec, nil
+}
+
+// officerBootReadTimeout bounds the boot read of a builtin officer's switch.
+const officerBootReadTimeout = 5 * time.Second
+
+// logOfficerBackend is officer o's boot line about its backend: which one,
+// what it serves, and the officer tools each pool is offered — so a tool a
+// backend does not serve is visibly absent, never silently (the design's
+// "hidden tools" risk). For a builtin officer, also whether the built-in store
+// defines it (and its switch), and the backup duty its queue brings.
+func (s *Server) logOfficerBackend(o officers.Officer) {
+	b := s.officerRT.hq.Backend(o)
+	caps := b.Capabilities()
+	var offered []string
+	for _, p := range o.Pools() {
+		var tools []string
+		for _, d := range officerToolDefs() {
+			if officers.ToolServed(p, caps, d.Name) {
+				tools = append(tools, d.Name)
+			}
+		}
+		label := "tools"
+		if p.Tier != "" {
+			label = p.Tier + " tools"
+		}
+		offered = append(offered, label+" "+strings.Join(tools, ","))
+	}
+	s.logger.Printf("officers: %s backend %s (%s; serves %s); %s", o.ID, o.BackendKind(), caps.Contract, strings.Join(caps.Verbs, ","), strings.Join(offered, "; "))
+	if !o.IsBuiltin() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), officerBootReadTimeout)
+	defer cancel()
+	on, err := b.Enabled(ctx)
+	switch {
+	case err != nil:
+		s.logger.Printf("officers: %s: the built-in store does not answer for it (%v): define it in the built-in store (docs/design/officers-first-class.md; the `muster officer` admin CLI is slice 7); until then its wake loop fails every pass", o.ID, err)
+	case !on:
+		s.logger.Printf("officers: %s: defined in the built-in store and switched OFF: no instance runs until it is switched on", o.ID)
+	default:
+		s.logger.Printf("officers: %s: defined in the built-in store and switched on", o.ID)
+	}
+	s.logger.Printf("officers: %s: its type, charter and queue live in muster's database — back that database up", o.ID)
 }
 
 // officerOf is THE binding rule: the declared officer agent a is an instance
@@ -854,7 +962,8 @@ func failureKind(err error) string {
 // kept). A claim it still holds is released by the loop's next pass, which
 // sees its holder down.
 //
-// Its Claude usage is pushed to HQ first (usage.Collector.Flush), while its
+// Its Claude usage is pushed to HQ first (usage.Collector.Flush; only when
+// its backend serves usage — never for a builtin officer), while its
 // ccd can still answer: the collector reads only up instances, so without it
 // the hour the instance stopped in would sit partial at HQ until it next
 // runs. Best-effort and bounded (usage.FlushTimeout): the stop goes ahead
@@ -865,7 +974,7 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 	if err != nil {
 		return err
 	}
-	if rt := f.s.officerRT; rt != nil && rt.usage != nil {
+	if rt := f.s.officerRT; rt != nil && rt.usage != nil && officers.DeclaredCapabilities(o).Has(officers.CapUsage) {
 		rt.usage.Flush(ctx, o, a.Name)
 	}
 	f.s.clearAgentWork(a.ID)
@@ -1141,6 +1250,19 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 		"summary": strProp("What you found and did, at most 24,576 characters."),
 		"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
 	}
+	// Every officer is offered it: HQ decides which items take a hand-off.
+	desc += " With outcome done, `handoff: {head_sha}` hands the item's pull request on at that head (the review loop's next round); HQ says when it is required."
+	handoffProps := map[string]any{"head_sha": strProp("40 lower-case hex.")}
+	handoffDesc := "Optional, outcome done only: {head_sha: the pull request's head you hand on, 40 lower-case hex}. HQ requires it on some loop items " +
+		"(400 handoff_required) and refuses it where it does not fit; a refused complete leaves the item held."
+	if o.Ship.IsShepherd() {
+		// A shepherd's only: completeHandoff refuses `to` from any other.
+		handoffProps["to"] = map[string]any{"type": "string", "enum": []string{officers.HandoffToAuthor},
+			"description": "\"author\": hand a clean round's fixes to the pull request's authoring officer (HQ checks the ladder stopped clean at head_sha)."}
+		handoffDesc += " Add to: \"author\" to hand a clean round's 🟡/🟢 fixes to the pull request's authoring officer."
+	}
+	props["handoff"] = map[string]any{"type": "object", "additionalProperties": false, "description": handoffDesc,
+		"properties": handoffProps, "required": []string{"head_sha"}}
 	if officers.CompleteTakesInvestigation(o) {
 		desc += " Escalating an item of an officer type that investigates needs `investigation`: HQ refuses the escalation without it, and its refusal names what to fix."
 		// 🔴 AN OPEN OBJECT, as officer_obs_query's arguments: HQ's decoder
@@ -1155,6 +1277,44 @@ func completeToolDef(o officers.Officer) agents.ToolDef {
 	}
 	return agents.ToolDef{Type: "function", Name: officers.ToolComplete, Description: desc,
 		Parameters: objSchema(props, "item_id", "outcome", "summary")}
+}
+
+// completeHandoff checks officer_complete's `handoff` (raw as sent; absent or
+// null is none): {"head_sha": <40 lower-case hex>}, plus — a shepherd's only
+// (shepherd) — "to": "author"; and only on outcome done (HQ refuses it on any
+// other). It returns the hand-off to send, or why it is refused — before
+// anything reaches HQ.
+func completeHandoff(raw json.RawMessage, outcome string, shepherd bool) (*officers.Handoff, string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var h struct {
+		HeadSHA *string `json:"head_sha"`
+		To      *string `json:"to"`
+	}
+	if err := dec.Decode(&h); err != nil {
+		return nil, fmt.Sprintf("handoff must be exactly {\"head_sha\": <40 lower-case hex>}: %v", err)
+	}
+	if h.HeadSHA == nil || !officers.ValidHandoffHead(*h.HeadSHA) {
+		return nil, "handoff.head_sha must be the full commit sha, 40 lower-case hex"
+	}
+	out := &officers.Handoff{HeadSHA: *h.HeadSHA}
+	if h.To != nil {
+		if !shepherd {
+			return nil, "handoff.to is a shepherd's only (it hands a clean round's fixes to the pull request's author)"
+		}
+		if *h.To != officers.HandoffToAuthor {
+			return nil, fmt.Sprintf("handoff.to must be %q", officers.HandoffToAuthor)
+		}
+		out.To = *h.To
+	}
+	if outcome != "done" {
+		return nil, fmt.Sprintf("handoff goes with outcome done only (HQ refuses it on %s)", outcome)
+	}
+	return out, ""
 }
 
 // officerToolDefFor is tool definition d as officer o's instances are
@@ -1291,6 +1451,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// officer_complete's investigation block, kept as sent: HQ's decoder
 		// is its one schema (officers.Completion.InvestigationJSON).
 		Investigation json.RawMessage `json:"investigation"`
+		// officer_complete's hand-off, checked by completeHandoff.
+		Handoff json.RawMessage `json:"handoff"`
 		// officer_ask_person's.
 		To              string          `json:"to"`
 		Question        string          `json:"question"`
@@ -1433,6 +1595,12 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true
 		}
+		handoff, bad := completeHandoff(in.Handoff, in.Outcome, o.Ship.IsShepherd())
+		if bad != "" {
+			return toolErr("%s", bad), true
+		}
+		// A hand-off's head is HQ's to check (409 nothing_pushed /
+		// head_not_live): muster keeps no memory of pushes to decide it.
 		// 🔴 THE COST NEVER FAILS A COMPLETE: an unknown one is not sent, and
 		// one HQ refuses is dropped and the complete sent again without it
 		// (CompleteDroppingCost). It is read here, before officerItemEnded
@@ -1440,7 +1608,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		// under the hold is still unbooked (the meter says inflight otherwise,
 		// and nothing is sent), so a figure that rides this call is complete.
 		cost, why := s.llmItemCost(o, instance, in.ItemID, in.Outcome)
-		done := officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links, InvestigationJSON: inv, Cost: cost}
+		// 🔴 THE SHADOW BLOCK RIDES THE SUMMARY HQ RECEIVES (officer_shadow.go):
+		// a shepherd's writes refused in shadow, under this item; cut to
+		// HQ's bound, never the instance's own text.
+		summary := s.officerRT.shadowSummary(o.ID, in.ItemID, in.Summary, officers.MaxSummaryChars)
+		done := officers.Completion{Outcome: in.Outcome, Summary: summary, Links: in.Links, InvestigationJSON: inv, Cost: cost, Handoff: handoff}
 		var refused *officers.HQError
 		body, refused, err = officers.CompleteDroppingCost(ctx, c, in.ItemID, instance, done)
 		if refused != nil {
@@ -1454,6 +1626,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 				o.ID, instance, in.ItemID, in.Outcome, why)
 		}
 		if err == nil {
+			s.officerRT.forgetShadow(o.ID, in.ItemID)
 			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolRelease:
@@ -1462,6 +1635,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
 		if err == nil {
+			// The hold ended: its shadow lines go with it (a later holder's
+			// completion must not carry them).
+			s.officerRT.forgetShadow(o.ID, in.ItemID)
 			s.officerItemEnded(o, instance, in.ItemID)
 		}
 	case officers.ToolAskPerson:
@@ -1481,6 +1657,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = cb.ReleaseCaptain(ctx, instance, post)
 	}
+	// An item's payload (payload.claims included) is HQ's data, handed on as
+	// HQ wrote it: officerToolResult returns HQ's body byte for byte. HQ
+	// bounds it (claims at 16 KiB); muster applies no second cap.
 	return officerToolResult(name, body, err), true
 }
 

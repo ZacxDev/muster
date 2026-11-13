@@ -80,6 +80,6 @@ func (s *Server) newUsageCollector(cfg OfficersConfig, hq *officers.Backends) (*
 		}
 		src = gatewayUsage{s: s, r: r}
 	}
-	return usage.New(usage.Config{Officers: cfg.Officers, Instances: officerFleet{s: s}.Instances, Source: src,
+	return usage.New(usage.Config{Officers: officersServing(cfg.Officers, officers.CapUsage), Instances: officerFleet{s: s}.Instances, Source: src,
 		Poster: usage.NewBackendPoster(hq), Logger: s.logger, Now: cfg.Now, Interval: cfg.UsageInterval})
 }

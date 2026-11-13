@@ -105,11 +105,9 @@ func (s *Server) handleAttentionSummary(w http.ResponseWriter, r *http.Request) 
 	// ONE read of the hub, for the items' waiting sessions and the hosts both:
 	// a host that flaps between two reads would otherwise be offline in one
 	// and online in the other.
-	var hosts []mirror.HostView
-	if s.ext.Mirror != nil {
-		hosts = s.ext.Mirror.Hosts(ctx)
-	}
-	items, err := s.attentionItemsIn(ctx, hosts)
+	rd := s.readAsks(ctx)
+	hosts := rd.hosts
+	items, err := s.attentionItemsWith(ctx, hosts, rd.waiting)
 	if err != nil {
 		s.logger.Printf("attention: summary: %v", err)
 	}

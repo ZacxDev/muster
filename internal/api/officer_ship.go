@@ -149,20 +149,39 @@ func (s *Server) buildShip(cfg OfficersConfig, o officers.Officer) (*shipRuntime
 		Announce: func(ctx context.Context, n officers.Notice) error {
 			return hq.PostNotice(ctx, sp.NoticeURLPath(o.ID), n)
 		},
-		ItemClaimed: func(ctx context.Context, instance string, item int) error {
+		ItemClaimed: func(ctx context.Context, instance string, item int) (officers.Item, error) {
 			return itemClaimedBy(ctx, hq.c, o.ID, instance, item, cfg.Now)
-		}}
+		},
+		Loops: s.prLoopsFor(cfg, o),
+		FixItems: func(ctx context.Context, instance string) ([]officers.Item, error) {
+			return fixItemsHeld(ctx, hq.c, o.ID, instance, cfg.Now)
+		},
+		OfficerShadow: hq.s.Shadow,
+		Shadowed: func(item officers.Item, line string) {
+			s.officerRT.recordShadow(o.ID, item.ID, line)
+		},
+		// 🔴 muster's own call, after a clean draft create, with the
+		// authoring officer's token: no instance tool reaches it.
+		PROpened: hq.s.PROpened}
 	rt.gates = &officership.Gates{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, HQ: hq, Now: cfg.Now,
 		InFlight: func() (string, bool) { return "", false }}
 	if sp.IsShepherd() {
 		sh := &officership.Shepherd{OfficerID: o.ID, Repo: o.Repo, Ship: sp, Rules: officers.ShepherdRules(o, s.officerRT.reg.All()),
 			AuthorLogin: s.shepherdAuthorLogin,
-			ItemHeld: func(ctx context.Context, instance, repo string, n int) error {
+			ItemHeld: func(ctx context.Context, instance, repo string, n int) (officers.Item, error) {
 				return itemHeldFor(ctx, hq.c, o.ID, instance, repo, n, cfg.Now)
+			},
+			OfficerShadow: hq.s.Shadow,
+			Shadowed: func(item officers.Item, line string) {
+				s.officerRT.recordShadow(o.ID, item.ID, line)
 			}}
 		rt.gate.Shepherd = sh
 		rt.shepherd = &officership.ShepherdGates{Shepherd: sh, Now: cfg.Now,
-			GHFor: func(repo string) officership.GitHub { return ghFor[strings.ToLower(repo)] }}
+			GHFor: func(repo string) officership.GitHub { return ghFor[strings.ToLower(repo)] },
+			ItemByID: func(ctx context.Context, instance string, id officers.ItemID, repo string, n int) (officers.Item, error) {
+				return itemHeldByID(ctx, hq.c, o.ID, instance, id, repo, n, cfg.Now)
+			},
+			PostMergeAsk: hq.s.MergeAsk}
 	}
 	if sp.Rollout != nil {
 		rt.watch = &officership.Watcher{OfficerID: o.ID, Repo: o.Repo, Ship: sp, GH: gh, Gates: rt.gates, Now: cfg.Now, HTTP: cfg.ShipHTTP,
@@ -213,6 +232,10 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 			w := rt.watch
 			safeGo(s.logger, "officer rollout resume "+o.ID, func() { w.Resume(s.streams.context()) })
 		}
+		if !cfg.NoShipResume {
+			o := o
+			safeGo(s.logger, "officer shadow prune "+o.ID, func() { s.shadowPruneLoop(s.streams.context(), o) })
+		}
 		if o.Ship.IsDraft() && !cfg.NoShipResume {
 			o, rt := o, rt
 			safeGo(s.logger, "officer orphan report "+o.ID, func() { s.orphanReportLoop(s.streams.context(), o, rt) })
@@ -247,10 +270,10 @@ func (s *Server) deploymentReadCred() func(ctx context.Context, caller connector
 // item under a live lease at now. Anything else — another holder, an expired
 // lease, no such claimed item, HQ unreadable — is an error, and the new pull
 // request is refused.
-func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance string, item int, now func() time.Time) error {
+func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance string, item int, now func() time.Time) (officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
-		return fmt.Errorf("HQ's claimed items could not be read: %v", err)
+		return officers.Item{}, fmt.Errorf("HQ's claimed items could not be read: %v", err)
 	}
 	at := time.Now()
 	if now != nil {
@@ -263,15 +286,36 @@ func itemClaimedBy(ctx context.Context, c officers.Backend, officerID, instance 
 		}
 		switch {
 		case it.OfficerID != "" && it.OfficerID != officerID:
-			return fmt.Errorf("item %d belongs to officer %s", item, it.OfficerID)
+			return officers.Item{}, fmt.Errorf("item %d belongs to officer %s", item, it.OfficerID)
 		case it.ClaimedBy != instance:
-			return fmt.Errorf("item %d is claimed by %s", item, it.ClaimedBy)
+			return officers.Item{}, fmt.Errorf("item %d is claimed by %s", item, it.ClaimedBy)
 		case !it.LeaseLive(at):
-			return fmt.Errorf("the lease on item %d has expired", item)
+			return officers.Item{}, fmt.Errorf("the lease on item %d has expired", item)
 		}
-		return nil
+		return it, nil
 	}
-	return fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+	return officers.Item{}, fmt.Errorf("item %d is not among officer %s's claimed items in HQ", item, officerID)
+}
+
+// fixItemsHeld is the draft gate's FixItems: the pull-request fix items
+// (kind *.pr_fix) of officer officerID that HQ (read with its own token)
+// shows instance holding under a live lease at now.
+func fixItemsHeld(ctx context.Context, c officers.Backend, officerID, instance string, now func() time.Time) ([]officers.Item, error) {
+	items, err := c.AllItems(ctx, officers.StatusClaimed)
+	if err != nil {
+		return nil, fmt.Errorf("HQ's claimed items could not be read: %v", err)
+	}
+	at := time.Now()
+	if now != nil {
+		at = now()
+	}
+	var out []officers.Item
+	for _, it := range items {
+		if (it.OfficerID == "" || it.OfficerID == officerID) && it.ClaimedBy == instance && it.LeaseLive(at) && officership.IsPRFix(it.Kind) {
+			out = append(out, it)
+		}
+	}
+	return out, nil
 }
 
 // shepherdAuthorLogin is officership.Shepherd.AuthorLogin: the bot login of
@@ -291,14 +335,27 @@ func (s *Server) shepherdAuthorLogin(ctx context.Context, officerID string) (str
 }
 
 // itemHeldFor is the shepherd's item gate (officership.Shepherd.ItemHeld):
-// nil when HQ (read with officer officerID's own token) shows instance
-// holding, under a live lease at now, an item of the officer whose subject_key
-// names pull request n of repo (officers.SameShepherdSubject). Anything else —
-// no such item, another holder, an expired lease, HQ unreadable — is an error.
-func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, repo string, n int, now func() time.Time) error {
+// the item HQ (read with officer officerID's own token) shows instance
+// holding, under a live lease at now, of the officer whose subject_key names
+// pull request n of repo (officers.SameShepherdSubject). Anything else — no
+// such item, another holder, an expired lease, HQ unreadable — is an error.
+func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, repo string, n int, now func() time.Time) (officers.Item, error) {
+	return shepherdItem(ctx, c, officerID, instance, "", repo, n, now)
+}
+
+// itemHeldByID is the merge ask's item gate (ShepherdGates.ItemByID):
+// itemHeldFor narrowed to item id — the one the instance names must be the
+// one it holds for that pull request.
+func itemHeldByID(ctx context.Context, c officers.Backend, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
+	return shepherdItem(ctx, c, officerID, instance, id, repo, n, now)
+}
+
+// shepherdItem is itemHeldFor and itemHeldByID: one read of HQ's claimed
+// items, one predicate. id "" is any item with the subject.
+func shepherdItem(ctx context.Context, c officers.Backend, officerID, instance string, id officers.ItemID, repo string, n int, now func() time.Time) (officers.Item, error) {
 	items, err := c.AllItems(ctx, officers.StatusClaimed)
 	if err != nil {
-		return fmt.Errorf("HQ's claimed items could not be read: %v", err)
+		return officers.Item{}, fmt.Errorf("HQ's claimed items could not be read: %v", err)
 	}
 	at := time.Now()
 	if now != nil {
@@ -306,7 +363,16 @@ func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, r
 	}
 	var why []string
 	for _, it := range items {
-		if !officers.SameShepherdSubject(it.SubjectKey, repo, n) || (it.OfficerID != "" && it.OfficerID != officerID) {
+		if it.OfficerID != "" && it.OfficerID != officerID {
+			continue
+		}
+		if id != "" && it.ID != id {
+			continue
+		}
+		if !officers.SameShepherdSubject(it.SubjectKey, repo, n) {
+			if id != "" {
+				why = append(why, fmt.Sprintf("item %s is about %s, not %s", it.ID, it.SubjectKey, officers.ShepherdSubject(repo, n)))
+			}
 			continue
 		}
 		switch {
@@ -315,13 +381,16 @@ func itemHeldFor(ctx context.Context, c officers.Backend, officerID, instance, r
 		case !it.LeaseLive(at):
 			why = append(why, fmt.Sprintf("the lease on item %s has expired", it.ID))
 		default:
-			return nil
+			return it, nil
 		}
 	}
 	if len(why) > 0 {
-		return fmt.Errorf("%s", strings.Join(why, "; "))
+		return officers.Item{}, fmt.Errorf("%s", strings.Join(why, "; "))
 	}
-	return fmt.Errorf("no claimed item of officer %s has subject %s", officerID, officers.ShepherdSubject(repo, n))
+	if id != "" {
+		return officers.Item{}, fmt.Errorf("item %s is not among officer %s's claimed items in HQ", id, officerID)
+	}
+	return officers.Item{}, fmt.Errorf("no claimed item of officer %s has subject %s", officerID, officers.ShepherdSubject(repo, n))
 }
 
 // draftSweepLoop runs draft officer o's sweep (officership.PushGate.Sweep)
@@ -452,6 +521,24 @@ func shipToolDefs() []agents.ToolDef {
 				"that you hold the item whose subject is <owner>/<name>#<pr>, and that every required check is green on the head; then converts it with GitHub's GraphQL mutation. " +
 				"There is no way back to draft, and you never merge: a human does. A refusal names the gate that failed.",
 			Parameters: objSchema(map[string]any{"repo": strProp("The repository, owner/name."), "pr": intProp("The pull request number.", 1, 999999999)}, "repo", "pr")},
+		{Type: "function", Name: officers.ToolShepherdMergeAsk,
+			Description: "Ask HQ to open a MERGE ASK for a pull request YOU SHEPHERD, under the HQ item you hold for it: a human decides and merges; you never merge. " +
+				"muster names you as the instance itself (an `instance` argument is refused), checks that you hold item_id under a live lease and that its subject is <owner>/<name>#<pr>, " +
+				"checks HQ's bounds (summary ≤300, purpose ≤600, how ≤900 characters, each required; open_yellows ≤50; short texts ≤200, long ≤2000), " +
+				"refuses it when HQ runs the item in shadow, then posts it with your officer's token. HQ checks again (the audit ladder stopped, CI, the approvers) and its refusal is passed back verbatim.",
+			Parameters: objSchema(map[string]any{
+				"item_id":  strProp("The HQ item you hold for the pull request."),
+				"repo":     strProp("The repository, owner/name."),
+				"pr":       intProp("The pull request number.", 1, 999999999),
+				"head_sha": strProp("The pull request's head, 40 hex, as you settled it."),
+				"base_ref": strProp("The base branch."),
+				"base_sha": strProp("The base branch's head, 40 hex."),
+				"summary":  strProp("What the change is, at most 300 characters."),
+				"purpose":  strProp("Why it should merge, at most 600 characters."),
+				"how":      strProp("How it was settled and verified, at most 900 characters."),
+				"evidence": map[string]any{"type": "object", "description": "HQ's evidence object, exactly: officer_item {officer, item}, open_yellows [{where, text}], protected_identity {result, detail?}, settled_at, rollback. No ladder and no checks: HQ reads the audit ladder and CI from its own records (and refuses them)."},
+				"to":       strProp("Optional: whom HQ should ask."),
+			}, "item_id", "repo", "pr", "head_sha", "base_ref", "base_sha", "summary", "purpose", "how", "evidence")},
 		{Type: "function", Name: officers.ToolRolloutStatus,
 			Description: "Read muster's rollout watch of your latest release: phase, verdict (watching, healthy, not_live, unhealthy, superseded), the revert pull request and rollback tag if one was made, and its events. Put the verdict in your item's officer_complete summary.",
 			Parameters:  objSchema(map[string]any{})},
@@ -466,7 +553,7 @@ func shipToolDefs() []agents.ToolDef {
 
 func isShipTool(name string) bool {
 	return name == officers.ToolMergePR || name == officers.ToolTagRelease || name == officers.ToolRolloutStatus || name == officers.ToolMarkReady || name == officers.ToolCILogs ||
-		name == officers.ToolShepherdReady
+		name == officers.ToolShepherdReady || name == officers.ToolShepherdMergeAsk
 }
 
 // dispatchShipTool runs a shipping officer's tool for instance a of o.
@@ -543,6 +630,21 @@ func (s *Server) dispatchShipTool(ctx context.Context, a agents.Agent, o officer
 			return shipRefusal(name, err, res.Passed)
 		}
 		return toolJSON(map[string]any{"ready": true, "result": res, "next": "a human reviews and merges it; complete your item with what you did"})
+	case officers.ToolShepherdMergeAsk:
+		if rt.shepherd == nil {
+			return toolErr("officer %s is not a shepherd", o.ID)
+		}
+		args, err := officership.ParseMergeAskArgs([]byte(orEmptyJSON(arguments)))
+		if err != nil {
+			return shipRefusal(name, err, nil)
+		}
+		body, err := rt.shepherd.MergeAsk(ctx, a.Name, args)
+		s.logShip(o, a, name, fmt.Sprintf("%s#%d at %s item %s", args.Repo, args.PR, args.HeadSHA, args.ItemID), nil, err)
+		if _, refused := officership.AsRefusal(err); refused {
+			return shipRefusal(name, err, nil)
+		}
+		// HQ's answer, or HQ's refusal (status, code, message) verbatim.
+		return officerToolResult(name, body, err)
 	case officers.ToolRolloutStatus:
 		if rt.watch == nil {
 			return toolErr("officer %s has no rollout watch configured", o.ID)
@@ -613,8 +715,9 @@ func shipStageGrants(o officers.Officer) string {
 		}
 		return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), behind muster's push gate, stage %s: reads; on OTHER officers' pull requests only (authored by %s) in %s, "+
 			"and only one whose HQ item the instance holds: fast-forward pushes verified against the authoring officer's forbidden paths BEFORE the branch moves (a push that fails never lands), "+
-			"comments, update-branch, and marking ready once an auditor's ladder stopped with no 🔴 at the head (%s). It never opens, edits, closes or merges a pull request, never creates or deletes a branch and never force-pushes",
-			o.ID, sp.AppID, sp.Stage, strings.Join(authors, ", "), strings.Join(repos, "; "), officers.ToolShepherdReady)
+			"comments, update-branch, marking ready once the auditor's report HQ recorded on the held item says the ladder stopped with no 🔴 at the head (%s), "+
+			"and asking HQ for a merge ask (%s); every write refused while HQ runs the item in shadow. It never opens, edits, closes or merges a pull request, never creates or deletes a branch and never force-pushes",
+			o.ID, sp.AppID, sp.Stage, strings.Join(authors, ", "), strings.Join(repos, "; "), officers.ToolShepherdReady, officers.ToolShepherdMergeAsk)
 	}
 	if sp.IsDraft() {
 		var repos []string
@@ -628,4 +731,45 @@ func shipStageGrants(o officers.Officer) string {
 	return fmt.Sprintf("officer %s's OWN GitHub App (ID %d), for %s only, behind muster's push gate: reads; pushes ONLY to refs/heads/%s* "+
 		"(never %s, never a tag); opening and editing its own pull requests and commenting; marking its own draft ready (%s). Merging and tagging happen only in muster, "+
 		"through the gated %s and %s tools (stage %s)", o.ID, sp.AppID, o.Repo, sp.BranchPrefix, sp.Base, officers.ToolMarkReady, officers.ToolMergePR, officers.ToolTagRelease, sp.Stage)
+}
+
+// prLoopsFor is draft officer o's review-loop record (officership.PRLoops)
+// over cfg.PRLoops, acting as o's owner (the database store is under
+// row-level security); nil for any other stage. With no store configured,
+// one in this process's memory, shared by every officer of this server.
+func (s *Server) prLoopsFor(cfg OfficersConfig, o officers.Officer) officership.PRLoops {
+	if !o.Ship.IsDraft() {
+		return nil
+	}
+	st := cfg.PRLoops
+	if st == nil {
+		s.officerRT.memLoopsOnce.Do(func() { s.officerRT.memLoops = officers.NewMemPRLoopStore() })
+		st = s.officerRT.memLoops
+	}
+	return prLoops{s: s, o: o, st: st}
+}
+
+type prLoops struct {
+	s  *Server
+	o  officers.Officer
+	st officers.PRLoopStore
+}
+
+func (p prLoops) as(ctx context.Context) context.Context { return p.s.officerPrincipal(ctx, p.o.Owner) }
+
+func (p prLoops) Announced(ctx context.Context, repo string, n int, head string) error {
+	return p.st.PRLoopAnnounced(p.as(ctx), p.o.ID, repo, n, head)
+}
+func (p prLoops) Settle(ctx context.Context, repo string, n int, state string) error {
+	return p.st.PRLoopSettle(p.as(ctx), p.o.ID, repo, n, state)
+}
+func (p prLoops) Claim(ctx context.Context, notBefore time.Time) (claimed, expired []officers.PRLoop, err error) {
+	return p.st.PRLoopsClaim(p.as(ctx), p.o.ID, notBefore)
+}
+func (p prLoops) InLoopPRs(ctx context.Context) ([]officers.PRLoop, error) {
+	return p.st.PRLoopsInLoop(p.as(ctx), p.o.ID)
+}
+func (p prLoops) InLoop(ctx context.Context, repo string, n int) (bool, error) {
+	st, err := p.st.PRLoopState(p.as(ctx), p.o.ID, repo, n)
+	return st == officers.PRLoopInLoop, err
 }

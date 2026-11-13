@@ -359,6 +359,17 @@ type Config struct {
 	// the documentation says "network not confined" (docs/chief.md). Never set
 	// it for a driver that can confine: the spec would stop asking.
 	ComposeContainer bool
+	// OfficerEgressCIDRs are named public IPv4 blocks, each on one TCP port,
+	// that an OFFICER instance's network admits on top of its lock
+	// (MUSTER_OFFICER_EGRESS_CIDRS): for a cluster whose network plugin cannot
+	// name a host, so the Anthropic API is admitted by its published address
+	// ranges instead of a cluster-side FQDN policy. Empty (the default) changes
+	// nothing. See claudeCodeNetworkFor for who gets them — officers only.
+	OfficerEgressCIDRs []provision.CIDRPort
+	// OfficerEgressDNS gives an OFFICER instance back the cluster-DNS rule its
+	// lock removes (MUSTER_OFFICER_EGRESS_DNS=unfiltered): port 53 to the DNS
+	// pods, any name. False (the default) changes nothing.
+	OfficerEgressDNS bool
 	// WorkspacePath defaults to [DefaultWorkspacePath].
 	WorkspacePath string
 	// WorkspaceSize is the workspace volume size, e.g. "10Gi". Empty leaves the

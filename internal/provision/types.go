@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
@@ -340,8 +341,8 @@ type Network struct {
 	//     whatever the driver is configured to treat as its controller (muster
 	//     itself);
 	//   - outbound: name resolution (unless NoClusterDNS), plus
-	//     PublicEgressTCPPorts on public addresses and ControllerEgressTCPPorts
-	//     on the controller. Nothing else.
+	//     PublicEgressTCPPorts on public addresses, ControllerEgressTCPPorts
+	//     on the controller and EgressCIDRs to their blocks. Nothing else.
 	Isolate bool
 	// PublicEgressTCPPorts are the TCP ports the instance may reach on public
 	// addresses. Empty with Isolate set means "name resolution only".
@@ -375,11 +376,108 @@ type Network struct {
 	// omitempty: every spec that keeps cluster DNS marshals byte-identically to
 	// before the field existed (the agentspec goldens pin that).
 	NoClusterDNS bool `json:",omitempty"`
+	// EgressCIDRs are named public IPv4 blocks the instance may open TCP
+	// connections to, each on one port — "this address range, this port", as
+	// opposed to PublicEgressTCPPorts' "any public address". It exists for an
+	// instance that has NO public rule (muster's officer instances) and must
+	// still reach one service, on a cluster whose network plugin cannot name
+	// a host (no FQDN policy): the operator admits that service's published
+	// address ranges instead.
+	//
+	// 🔴 EVERY ENTRY IS PUBLIC, BOUNDED AND CANONICAL ([CheckEgressCIDR]):
+	// IPv4 only, no wider than /[MinEgressCIDRPrefixBits], host bits zero, and
+	// overlapping no private, loopback, link-local, shared (CGNAT), multicast
+	// or reserved range. A block reaching inside the cluster or the
+	// operator's LAN would undo the confinement the rest of this type
+	// describes, so [Spec.Validate] refuses it rather than leave each driver
+	// to cut it out.
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED, for PublicEgressTCPPorts' reason.
+	// A driver that claims NetworkIsolation must render it; there is no
+	// separate capability, because Validate ties it to Isolate and CheckSpec
+	// refuses Isolate on a driver without the capability (closed, not
+	// dropped).
+	//
+	// omitempty: every spec without it marshals byte-identically to before the
+	// field existed (the agentspec goldens pin that).
+	EgressCIDRs []CIDRPort `json:",omitempty"`
+}
+
+// CIDRPort is one entry of [Network.EgressCIDRs]: a public IPv4 block in
+// canonical CIDR form (e.g. "192.0.2.0/24" — never "192.0.2.7/24") and one
+// TCP port.
+type CIDRPort struct {
+	CIDR string
+	Port int
+}
+
+// String is the entry as an operator writes it: "<cidr>:<port>".
+func (c CIDRPort) String() string { return c.CIDR + ":" + strconv.Itoa(c.Port) }
+
+// MinEgressCIDRPrefixBits is the widest block [CheckEgressCIDR] accepts: a
+// /16 (65,536 addresses). A service's published ranges are far narrower
+// (Anthropic's API ranges are a /22 and a /23); a block wider than a /16
+// spans more than one organisation's allocation and stops being an
+// allow-list of one endpoint — it is "most of the internet on this port"
+// with extra steps, which is PublicEgressTCPPorts' job, not this field's.
+const MinEgressCIDRPrefixBits = 16
+
+// nonPublicEgressIPv4 is every IPv4 range an [Network.EgressCIDRs] entry may
+// not overlap. It is a SUPERSET of the kubernetes driver's public-rule
+// exceptions (which only have to carve the inside out of 0.0.0.0/0 on a
+// port): here an operator names the block, so every range that reaches the
+// cluster, the node or the operator's network — private, shared, loopback,
+// link-local — and the non-unicast ones are refused outright. ⚠ NOT every
+// special-purpose block: the RFC 5737 documentation nets, 198.18.0.0/15
+// (benchmarking, also used by some fake-IP proxies) and 192.0.0.0/24 are
+// accepted; the tests use the documentation nets as public fixtures.
+var nonPublicEgressIPv4 = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
+	netip.MustParsePrefix("10.0.0.0/8"),     // RFC 1918 — usual pod/service CIDRs
+	netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 shared space — overlays, meshes
+	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
+	netip.MustParsePrefix("169.254.0.0/16"), // link-local — cloud metadata, node DNS caches
+	netip.MustParsePrefix("172.16.0.0/12"),  // RFC 1918
+	netip.MustParsePrefix("192.168.0.0/16"), // RFC 1918 — the usual LAN
+	netip.MustParsePrefix("224.0.0.0/4"),    // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and the broadcast address
+}
+
+// CheckEgressCIDR is the ONE rule for an [Network.EgressCIDRs] entry, used by
+// [Spec.Validate] and by muster-server's boot parse (so an operator hears the
+// refusal at boot, naming the variable, rather than at the first dispatch).
+func CheckEgressCIDR(c CIDRPort) error {
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("port %d out of range (want 1-65535)", c.Port)
+	}
+	p, err := netip.ParsePrefix(c.CIDR)
+	if err != nil {
+		return fmt.Errorf("%q is not a CIDR block (want e.g. 192.0.2.0/24)", c.CIDR)
+	}
+	if !p.Addr().Is4() {
+		return fmt.Errorf("%q is not an IPv4 block: an isolated instance gets no IPv6 egress at all, so an IPv6 "+
+			"entry would admit nothing", c.CIDR)
+	}
+	if p != p.Masked() {
+		return fmt.Errorf("%q has host bits set; write the block itself, %s", c.CIDR, p.Masked())
+	}
+	if p.Bits() < MinEgressCIDRPrefixBits {
+		return fmt.Errorf("%q is wider than a /%d; name the service's own published ranges, not a provider's "+
+			"whole allocation", c.CIDR, MinEgressCIDRPrefixBits)
+	}
+	for _, np := range nonPublicEgressIPv4 {
+		if p.Overlaps(np) {
+			return fmt.Errorf("%q overlaps the non-public range %s (private, loopback, link-local, shared, multicast "+
+				"or reserved addresses reach the cluster, the node or the operator's network)", c.CIDR, np)
+		}
+	}
+	return nil
 }
 
 // IsZero reports whether nothing is declared.
 func (n Network) IsZero() bool {
-	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS
+	return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 && len(n.ControllerEgressTCPPorts) == 0 && !n.NoClusterDNS &&
+		len(n.EgressCIDRs) == 0
 }
 
 // Spec is the complete desired state of one instance.
@@ -703,6 +801,20 @@ func (s Spec) Validate() error {
 	if !s.Network.Isolate && s.Network.NoClusterDNS {
 		return fmt.Errorf("%w: network sets NoClusterDNS without Isolate; on an unconfined instance that "+
 			"restricts nothing and reads as if it did", ErrInvalidSpec)
+	}
+	if !s.Network.Isolate && len(s.Network.EgressCIDRs) > 0 {
+		return fmt.Errorf("%w: network names egress CIDRs %v without Isolate; on an unconfined instance that "+
+			"list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.EgressCIDRs)
+	}
+	cidrs := map[CIDRPort]bool{}
+	for _, c := range s.Network.EgressCIDRs {
+		if err := CheckEgressCIDR(c); err != nil {
+			return fmt.Errorf("%w: network egress CIDR %s: %v", ErrInvalidSpec, c, err)
+		}
+		if cidrs[c] {
+			return fmt.Errorf("%w: network egress CIDR %s appears twice", ErrInvalidSpec, c)
+		}
+		cidrs[c] = true
 	}
 	ctrl := map[int]bool{}
 	for _, p := range s.Network.ControllerEgressTCPPorts {

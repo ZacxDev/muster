@@ -64,8 +64,9 @@ func (f *shepFakeGH) Compare(_ context.Context, base, head string) (officership.
 		Files: []officership.File{{Path: "apps/x/deploy.yaml", Status: "modified", Changes: 1, Patch: "@@ -1 +1 @@\n-a: 1\n+a: 2"}}}, nil
 }
 
-// PRComments is the auditor's verdict at the head (the mark-ready audit
-// gate), unless auditBody replaces it.
+// PRComments is an old-style clean audit comment at the head, unless
+// auditBody replaces it: the audit gate no longer reads comments, so it
+// passes nothing (TestTheShepherdReadsTheVerdictFromHQThroughItsRuntime).
 func (f *shepFakeGH) PRComments(context.Context, int) ([]officership.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,6 +76,17 @@ func (f *shepFakeGH) PRComments(context.Context, int) ([]officership.Comment, er
 	}
 	return []officership.Comment{{Author: "delta-auditor", AuthorType: "User", Body: body}}, nil
 }
+
+// PRsForBranch answers the fixture pull request #5 for its branch, none for
+// any other (the draft push's loop rule and re-check read it).
+func (f *shepFakeGH) PRsForBranch(ctx context.Context, branch, _ string) ([]officership.PR, error) {
+	pr, _ := f.PR(ctx, 5)
+	if branch != pr.HeadRef {
+		return nil, nil
+	}
+	return []officership.PR{pr}, nil
+}
+
 func (f *shepFakeGH) MarkReady(_ context.Context, n int, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,9 +121,8 @@ func newShepAPIRig(t *testing.T) *shepAPIRig {
 	shep := officers.Officer{ID: offShep, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1,
 		Repo: shepRepoAPI, Ship: &officers.Ship{Stage: officers.StageShepherd, Base: "trunk", BranchPrefix: "officer/", AppID: 7102,
 			RequiredChecks: []string{"ci / gate"}, NoticePath: officers.DefaultNoticePath, NoticeChannel: "ch/example-alerts",
-			Repos: []officers.ShipRepo{{Repo: shepRepoAPI, Base: "trunk", BranchPrefix: "officer/", AppID: 7102, ForbiddenPaths: []string{".github/**"}}},
-			Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: "delta-investigator[bot]", Officer: offShepAuth}},
-				Auditors: []string{"delta-auditor"}}}}.WithToken(offShepTok)
+			Repos:    []officers.ShipRepo{{Repo: shepRepoAPI, Base: "trunk", BranchPrefix: "officer/", AppID: 7102, ForbiddenPaths: []string{".github/**"}}},
+			Shepherd: &officers.Shepherd{Authors: []officers.ShepherdAuthor{{Login: "delta-investigator[bot]", Officer: offShepAuth}}}}}.WithToken(offShepTok)
 	r := &shepAPIRig{s: s, hq: hq, shepGH: &shepFakeGH{slug: "delta-shepherd", author: "delta-investigator[bot]"},
 		authGH: &shepFakeGH{slug: "delta-investigator"}}
 	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{author, shep}, InstallSession: discardSession, NoShipResume: true,
@@ -132,6 +143,21 @@ func newShepAPIRig(t *testing.T) *shepAPIRig {
 	}
 	r.inst, r.authInst = add(shep, 961), add(author, 962)
 	return r
+}
+
+// shepCleanLoop is a loop item's payload whose auditor report (written by
+// HQ) clears #5 at its head in round 1.
+const shepCleanLoop = `{"pr_loop":{"repo":"` + shepRepoAPI + `","pr":5,"head_sha":"` + shepHeadAPI + `","round":1},` +
+	`"from":{"officer_id":"audit:delta-infra","item_id":7001,"kind":"findings","summary":"VERDICT: no-red · round 1 · head ` + "888888888888" + `\n🟡 one naming nit"}}`
+
+// hold puts a new item for #5 in the shepherd instance's live hold, its
+// payload the clean loop, and returns its id.
+func (r *shepAPIRig) hold(t *testing.T) string {
+	t.Helper()
+	id := r.hq.AddItem(offShep, "pr-shepherd.opened", officers.ShepherdSubject(shepRepoAPI, 5))
+	r.hq.SetPayload(id, shepCleanLoop)
+	r.hq.SetClaim(id, r.inst.Name, time.Now().Add(time.Hour))
+	return id
 }
 
 func (r *shepAPIRig) ready(t *testing.T) string {
@@ -187,6 +213,7 @@ func TestTheShepherdMarksReadyOnlyWhileItHoldsTheItem(t *testing.T) {
 		t.Fatalf("an item for another pull request: %s", out)
 	}
 	id := r.hq.AddItem(offShep, "pr-shepherd.opened", "Example-Org/Delta-Infra#5")
+	r.hq.SetPayload(id, shepCleanLoop)
 	r.hq.SetClaim(id, "officer-shepherd-delta-infra-2", time.Now().Add(time.Hour))
 	if out := r.ready(t); !strings.Contains(out, `"gate":"item"`) {
 		t.Fatalf("held by another instance: %s", out)
@@ -207,26 +234,26 @@ func TestTheShepherdMarksReadyOnlyWhileItHoldsTheItem(t *testing.T) {
 	}
 }
 
-// TestTheShepherdReadsTheAuditorsThroughItsRuntime: the auditors of the
-// officer's ship block reach the mark-ready audit gate through the runtime
-// muster builds — an auditor's verdict with a 🔴 open is refused by the audit
-// gate with the item held; the clean verdict converts (control).
-func TestTheShepherdReadsTheAuditorsThroughItsRuntime(t *testing.T) {
+// TestTheShepherdReadsTheVerdictFromHQThroughItsRuntime: the audit gate reads
+// the auditor's report HQ recorded on the held item, through the runtime
+// muster builds — a red verdict is refused by the audit gate with the item
+// held, an auditor's clean COMMENT changes nothing, and the clean report
+// converts (control).
+func TestTheShepherdReadsTheVerdictFromHQThroughItsRuntime(t *testing.T) {
 	r := newShepAPIRig(t)
-	id := r.hq.AddItem(offShep, "pr-shepherd.opened", officers.ShepherdSubject(shepRepoAPI, 5))
-	r.hq.SetClaim(id, r.inst.Name, time.Now().Add(time.Hour))
-	r.shepGH.mu.Lock()
-	r.shepGH.auditBody = "```audit-round-1\nGate: run 1 on " + shepHeadAPI[:8] + "\nLedger: round 1 · findings 🔴1 🟡0 🟢0\n```"
-	r.shepGH.mu.Unlock()
-	if out := r.ready(t); !strings.Contains(out, `"gate":"audit"`) {
-		t.Fatalf("an open 🔴: %s, want an audit refusal", out)
+	id := r.hold(t)
+	r.hq.SetPayload(id, strings.Replace(shepCleanLoop, "no-red", "red", 1))
+	if out := r.ready(t); !strings.Contains(out, `"gate":"audit"`) || !strings.Contains(out, "the verdict is red, not no-red") {
+		t.Fatalf("a red verdict: %s, want an audit refusal", out)
+	}
+	r.hq.SetPayload(id, `{"pr_loop":{"repo":"`+shepRepoAPI+`","pr":5,"head_sha":"`+shepHeadAPI+`","round":1}}`)
+	if out := r.ready(t); !strings.Contains(out, "carries no auditor's report") {
+		t.Fatalf("no report on the item (a clean audit comment on the pull request): %s, want an audit refusal", out)
 	}
 	if n := len(r.shepGH.readiedPRs()); n != 0 {
 		t.Fatalf("an audit refusal converted %d pull request(s)", n)
 	}
-	r.shepGH.mu.Lock()
-	r.shepGH.auditBody = ""
-	r.shepGH.mu.Unlock()
+	r.hq.SetPayload(id, shepCleanLoop)
 	if out := r.ready(t); !strings.Contains(out, `"ready":true`) {
 		t.Fatalf("control: %s", out)
 	}
@@ -237,8 +264,7 @@ func TestTheShepherdReadsTheAuditorsThroughItsRuntime(t *testing.T) {
 // by a look-alike login is refused by the author gate even with the item held.
 func TestTheShepherdReadsTheAuthorsAppThroughItsRuntime(t *testing.T) {
 	r := newShepAPIRig(t)
-	id := r.hq.AddItem(offShep, "pr-shepherd.opened", officers.ShepherdSubject(shepRepoAPI, 5))
-	r.hq.SetClaim(id, r.inst.Name, time.Now().Add(time.Hour))
+	r.hold(t)
 	r.authGH.slug = "delta-impostor" // the author officer's App is now another bot
 	if out := r.ready(t); !strings.Contains(out, `"gate":"author"`) {
 		t.Fatalf("the author's App is not the listed login: %s, want an author refusal", out)

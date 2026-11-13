@@ -85,7 +85,33 @@ type PushGate struct {
 	// holding item of this officer under a live lease: a draft officer's new
 	// pull request names its item in its branch, and the item must be one the
 	// instance claimed. nil: every new pull request is refused (fail closed).
-	ItemClaimed func(ctx context.Context, instance string, item int) error
+	ItemClaimed func(ctx context.Context, instance string, item int) (officers.Item, error)
+	// FixItems are the pull-request fix items (kind *.pr_fix) HQ shows
+	// instance holding under a live lease (fixpush.go). nil: no push is
+	// looked up.
+	FixItems func(ctx context.Context, instance string) ([]officers.Item, error)
+	// Loops is a draft officer's review-loop record (fixpush.go): which of its
+	// pull requests HQ put in a loop (their writes then need a held fix
+	// item), and the announcements that never got HQ's 200 (the sweep
+	// re-announces those). nil: no loop rule, no re-announcement.
+	Loops PRLoops
+	// OfficerShadow and Shadowed are this officer's ShadowRule (a write under
+	// a fix item in shadow is refused and recorded).
+	OfficerShadow func(ctx context.Context) (bool, error)
+	Shadowed      func(item officers.Item, line string)
+	// PROpened tells HQ a draft officer opened pull request p (POST
+	// /officers/{id}/pr-opened, with the officer's own token), so HQ can start
+	// its review loop. Called by muster only — never an instance's tool — and
+	// only on the clean branch of the create re-check (afterCreate). nil: HQ
+	// is not told.
+	PROpened func(ctx context.Context, p officers.PROpened) (officers.PROpenedAnswer, error)
+	// PROpenedBackoff replaces DefaultPROpenedBackoff (tests); Async runs an
+	// announcement off the create request (nil: a goroutine; tests run it
+	// inline).
+	PROpenedBackoff []time.Duration
+	// SettleBackoff replaces DefaultSettleBackoff (tests).
+	SettleBackoff []time.Duration
+	Async         func(func())
 	// CreateWait bounds how long a draft officer's new pull request waits for
 	// another one of its creates to finish (DefaultCreateWait when 0).
 	CreateWait time.Duration
@@ -323,6 +349,14 @@ func (g *PushGate) admitReceivePack(r *http.Request, sr officers.ShipRepo) (*htt
 			return nil, refused("deleting %s: a draft officer never deletes a branch (the daily orphan report lists abandoned ones for a human)", c.ref)
 		}
 	}
+	// A push under a held pull-request fix item (fixpush.go): its pull
+	// request is the officer's own and open, and it is not in shadow —
+	// checked before anything is forwarded.
+	if g.Ship.IsDraft() {
+		if err := g.admitFixPush(r.Context(), sr, cmds); err != nil {
+			return nil, err
+		}
+	}
 	head := pre.Bytes()
 	var shep *shepherdPush
 	if g.Ship.IsShepherd() && len(cmds) > 0 {
@@ -539,7 +573,17 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 			if err != nil || !g.Ship.IsDraft() {
 				return err
 			}
-			return g.draftEdit(r.Context(), sr, gh, pr, m)
+			if err := g.draftEdit(r.Context(), sr, gh, pr, m); err != nil {
+				return err
+			}
+			var fields []string
+			for _, f := range []string{"title", "body"} {
+				if _, ok := m[f]; ok {
+					fields = append(fields, f)
+				}
+			}
+			closing := strings.EqualFold(jsonString(m["state"]), "closed")
+			return g.loopWrite(r.Context(), sr, gh, pr, callerInstance(r.Context()), editWould(sr.Repo, n, closing, fields))
 		})
 	case r.Method == http.MethodPost && len(tail) == 3 && tail[0] == "issues" && isNumber(tail[1]) && tail[2] == "comments":
 		n, _ := strconv.Atoi(tail[1])
@@ -548,7 +592,11 @@ func (g *PushGate) admitAPI(r *http.Request, segs []string) (*http.Request, erro
 			if err != nil || !g.Ship.IsDraft() {
 				return err
 			}
-			return g.draftComment(r.Context(), sr, pr, jsonString(m["body"]))
+			body := jsonString(m["body"])
+			if err := g.draftComment(r.Context(), sr, pr, body); err != nil {
+				return err
+			}
+			return g.loopWrite(r.Context(), sr, gh, pr, callerInstance(r.Context()), commentWould(sr.Repo, n, body))
 		})
 	}
 	return nil, refused("%s api.github.com/%s", r.Method, path)

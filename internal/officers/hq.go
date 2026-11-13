@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,16 @@ type Item struct {
 	// muster. Absent (an HQ without it): the item has no clock, and is not
 	// capped.
 	ClaimedAt *time.Time `json:"claimed_at"`
+	// Payload is HQ's `payload`, raw: what the item's producer attached. A
+	// pull-request loop item carries `pr_loop` (and a findings item `from`,
+	// the auditor's report written by HQ): officership.LoopPayload reads it.
+	// Absent: nil.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// Shadow is HQ's `shadow`: true when HQ runs this item in shadow (a write
+	// it asks for is only recorded, never made), false when not. ABSENT (nil)
+	// when the officer's type has no shadow policy for items: the officer
+	// row's `shadow` decides (Client.Shadow).
+	Shadow *bool `json:"shadow,omitempty"`
 }
 
 // LeaseLive reports whether the item's lease is unexpired at now. An item with
@@ -423,7 +434,32 @@ type Completion struct {
 	// (civ-hq docs/OFFICERS.md "Item cost") only when set: nil is an unknown
 	// cost, and sends neither field.
 	Cost *ItemCost `json:"-"`
+	// Handoff is HQ's `handoff` (the review loop's next step, e.g. the next
+	// audit round of a pull request at HeadSHA). nil: not sent.
+	Handoff *Handoff `json:"-"`
 }
+
+// Handoff is a completion's `handoff`: {"head_sha": <40 lower-case hex>},
+// and on a shepherd's complete optionally "to": "author". HQ decides which items and outcomes take one (it refuses it on any
+// outcome but done) and where it goes; muster checks only its shape
+// (ValidHandoffHead) and that the outcome is done.
+type Handoff struct {
+	HeadSHA string `json:"head_sha"`
+	// To is HandoffToAuthor on a shepherd's hand-off of a clean round's
+	// fixes to the pull request's authoring officer; "" (not sent) otherwise.
+	To string `json:"to,omitempty"`
+}
+
+// HandoffToAuthor is the one `handoff.to` value: a shepherd hands a clean
+// round's fixes to the pull request's AUTHORING officer (HQ enqueues its
+// *.pr_fix item).
+const HandoffToAuthor = "author"
+
+// handoffHeadRE is a hand-off head: a full commit sha, lower-case.
+var handoffHeadRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// ValidHandoffHead reports whether sha is a hand-off head (40 lower-case hex).
+func ValidHandoffHead(sha string) bool { return handoffHeadRE.MatchString(sha) }
 
 // ItemCost is an item's cost as HQ takes it: USD, and who computed it.
 type ItemCost struct {
@@ -515,6 +551,10 @@ const MaxItemCostUSD = 10000
 // CompleteDroppingCost).
 func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {
 	body := map[string]any{"instance": instance, "outcome": done.Outcome, "summary": done.Summary, "links": done.Links}
+	// Only when given: an HQ that predates the hand-off never sees the field.
+	if done.Handoff != nil {
+		body["handoff"] = done.Handoff
+	}
 	if done.Cost != nil {
 		body["cost_usd"], body["cost_from"] = done.Cost.USD, done.Cost.From
 	}
@@ -818,6 +858,75 @@ type Notice struct {
 
 // MaxNoticePaths bounds a notice's path list; the rest are counted in Summary.
 const MaxNoticePaths = 50
+
+// Shadow reads HQ's officer row (GET /officers/{id}) for its `shadow`: true
+// when HQ runs the officer in shadow. A row without a boolean `shadow` is an
+// error, and every caller treats an error as shadow (fail closed).
+func (c *Client) Shadow(ctx context.Context) (bool, error) {
+	raw, err := c.Do(ctx, http.MethodGet, c.officerPath(), nil)
+	if err != nil {
+		return false, err
+	}
+	var o struct {
+		Shadow *bool `json:"shadow"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil || o.Shadow == nil {
+		return false, fmt.Errorf("officers: HQ's officer %s carries no boolean `shadow`", c.officer.ID)
+	}
+	return *o.Shadow, nil
+}
+
+// PROpened is the body of POST /officers/{id}/pr-opened: a pull request the
+// officer just opened, which HQ may start a review loop for. Exactly these
+// fields (HQ refuses unknown ones).
+type PROpened struct {
+	// Repo is owner/name; PR the number; HeadSHA the 40-hex head the pull
+	// request was created on; HeadRef its branch; Base its base branch;
+	// Author its author's login as GitHub reports it (an App's bot is
+	// `<slug>[bot]`).
+	Repo    string `json:"repo"`
+	PR      int    `json:"pr"`
+	HeadSHA string `json:"head_sha"`
+	HeadRef string `json:"head_ref"`
+	Base    string `json:"base"`
+	Author  string `json:"author"`
+}
+
+// PROpenedAnswer is HQ's 200 to pr-opened: the loop items it created, and
+// the officers it skipped (each with HQ's reason, kept raw).
+type PROpenedAnswer struct {
+	Items []struct {
+		OfficerID string `json:"officer_id"`
+		ItemID    ItemID `json:"item_id"`
+		Created   bool   `json:"created"`
+	} `json:"items"`
+	Skipped []json.RawMessage `json:"skipped"`
+}
+
+// PROpened POSTs p to /officers/{id}/pr-opened with the officer's own token.
+// A 4xx (409 officer_shadow / officer_disabled / pr_opened_ambiguous, 400,
+// 403, 404) is *HQError; an outage wraps ErrHQUnavailable. It is called by
+// muster itself, never by an instance (no tool reaches it).
+func (c *Client) PROpened(ctx context.Context, p PROpened) (PROpenedAnswer, error) {
+	raw, err := c.Do(ctx, http.MethodPost, c.officerPath()+"/pr-opened", p)
+	if err != nil {
+		return PROpenedAnswer{}, err
+	}
+	var a PROpenedAnswer
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return PROpenedAnswer{}, fmt.Errorf("officers: HQ's pr-opened answer is not the expected JSON: %v", err)
+	}
+	return a, nil
+}
+
+// MergeAsk POSTs body (already validated and encoded JSON) to
+// /officers/{id}/items/{item}/merge-asks with the officer's own token and
+// returns HQ's 201 body. A 4xx is *HQError (HQ's body kept verbatim); HQ's
+// 502 github_unavailable is *RetryableError; any other failure wraps
+// ErrHQUnavailable.
+func (c *Client) MergeAsk(ctx context.Context, item ItemID, body []byte) ([]byte, error) {
+	return c.doCoded(ctx, http.MethodPost, c.itemPath(item, "merge-asks"), "application/json", body, nil, []string{"github_unavailable"})
+}
 
 // PostNotice POSTs n to path (under hq_url; ship.NoticeURLPath). Any failure
 // — a 4xx, a 5xx, no answer — is an error: the caller refuses the merge.

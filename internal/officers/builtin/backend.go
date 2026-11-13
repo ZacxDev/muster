@@ -44,17 +44,21 @@ func NewBackend(store *Store, o officers.Officer, now func() time.Time, scope fu
 	return &Backend{store: store, officer: o, now: now, scope: scope}
 }
 
-var _ officers.Backend = (*Backend)(nil)
+var (
+	_ officers.Backend     = (*Backend)(nil)
+	_ officers.SwitchGated = (*Backend)(nil)
+)
 
-// capabilities is what the built-in backend serves on day 1 beyond the core
-// verbs: tiers, the investigation block, item cost.
-var capabilities = officers.NewCapabilities(officers.CapTiers, officers.CapInvestigation, officers.CapCost)
+// SwitchGatesWake implements officers.SwitchGated: the wake loop honours a
+// builtin officer's switch (officer_defs.enabled), its only "off".
+func (b *Backend) SwitchGatesWake() {}
 
 // Officer implements officers.Backend.
 func (b *Backend) Officer() officers.Officer { return b.officer }
 
-// Capabilities implements officers.Backend.
-func (b *Backend) Capabilities() officers.Capabilities { return capabilities }
+// Capabilities implements officers.Backend: officers.BuiltinCapabilities,
+// the one value the kickoff is written from (officers.DeclaredCapabilities).
+func (b *Backend) Capabilities() officers.Capabilities { return officers.BuiltinCapabilities }
 
 // Scrub implements officers.Backend: the built-in backend holds no credential.
 func (b *Backend) Scrub(s string) string { return s }
@@ -478,13 +482,15 @@ func (b *Backend) Brief(ctx context.Context) ([]byte, error) {
 }
 
 // Enabled implements officers.Backend: the officer's switch; an officer the
-// store does not declare is an error, never "enabled".
+// store does not define is a 404 decision, never "enabled".
 func (b *Backend) Enabled(ctx context.Context) (bool, error) {
 	var on bool
 	err := b.store.pool.QueryRow(b.scope(ctx), `SELECT enabled FROM officer_defs WHERE owner_id = $1 AND officer = $2`,
 		b.officer.Owner, b.officer.ID).Scan(&on)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, fmt.Errorf("builtin: officer %s is not declared in the built-in backend", b.officer.ID)
+		// HQ's answer for an officer it does not know: a 404 decision, which
+		// the wake loop counts toward a configuration fault (not an outage).
+		return false, refuse(http.StatusNotFound, "not_found", "officer "+b.officer.ID+" is not defined in the built-in backend", nil)
 	}
 	if err != nil {
 		return false, outage("officer", err)

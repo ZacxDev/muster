@@ -50,7 +50,7 @@ func shepShip() map[string]any {
 		"stage": "shepherd",
 		"repos": []any{map[string]any{"repo": shepRepo, "base": "trunk", "github_app": map[string]any{"id": 7002, "account": "example-org:4242"},
 			"forbidden_paths": []string{".github/**"}}},
-		"shepherd": map[string]any{"authors": []any{map[string]any{"login": shepLogin, "officer": shepAuthor}}, "auditors": []any{shepAudit}},
+		"shepherd": map[string]any{"authors": []any{map[string]any{"login": shepLogin, "officer": shepAuthor}}},
 		"notice":   map[string]any{"channel": "ch/example-alerts"},
 	}
 }
@@ -95,9 +95,6 @@ func TestParseReadsAShepherd(t *testing.T) {
 	want := []officers.ShepherdAuthor{{Login: shepLogin, Officer: shepAuthor}}
 	if s.Shepherd == nil || !reflect.DeepEqual(s.Shepherd.Authors, want) {
 		t.Fatalf("authors = %+v, want %+v", s.Shepherd, want)
-	}
-	if !reflect.DeepEqual(s.Shepherd.Auditors, []string{shepAudit}) || !s.Shepherd.Auditor("EXAMPLE-AUDITOR") || s.Shepherd.Auditor(shepLogin) {
-		t.Fatalf("auditors = %v", s.Shepherd.Auditors)
 	}
 	if a, ok := s.Shepherd.Author("EXAMPLE-INVESTIGATOR[BOT]"); !ok || a.Officer != shepAuthor {
 		t.Fatalf("Author (case-folded) = %+v, %v", a, ok)
@@ -162,15 +159,15 @@ func TestParseRefusesABadShepherd(t *testing.T) {
 		"a bare login": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(shepOther)))}, "is a bare login"},
 		"an entry with no officer": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther})))},
 			"names no officer"},
-		"an auditor that is not a login": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
-			m["shepherd"].(map[string]any)["auditors"] = []any{"not a login"}
-		}))}, "auditors[0] \"not a login\" is not a GitHub login"},
-		"an auditor who is an author": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
-			m["shepherd"].(map[string]any)["auditors"] = []any{"Example-Investigator[bot]"}
-		}))}, "is also an author"},
-		"an auditor twice": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
-			m["shepherd"].(map[string]any)["auditors"] = []any{shepAudit, "Example-Auditor"}
-		}))}, "auditors lists"},
+		// The removed key is refused, never ignored: the verdict comes from
+		// HQ now, and a listed auditor would read as still in force. An
+		// empty list is refused too.
+		"auditors (removed)": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+			m["shepherd"].(map[string]any)["auditors"] = []any{shepAudit}
+		}))}, "shepherd.auditors is no longer read: officer_shepherd_mark_ready takes the audit verdict from HQ"},
+		"auditors (removed, empty)": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(func(m map[string]any) {
+			m["shepherd"].(map[string]any)["auditors"] = []any{}
+		}))}, "shepherd.auditors is no longer read"},
 		"an unknown author key": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther, "role": "x"})))},
 			"unknown field"},
 		"itself as an author": {[]map[string]any{shepAuthorDecl(), shepDecl(ship(authors(map[string]any{"login": shepOther, "officer": shepID})))},

@@ -152,25 +152,28 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 		RouteOrigin{Via: RouteViaMCP, Host: "h", Session: "s"}); !errors.Is(err, ErrNoReply) {
 		t.Fatalf("a no_reply message routed via the owner's door: %v", err)
 	}
-	// muster's own routes (by thread, by pull request) take a QUEUED message,
-	// so each is tried on a queued no_reply one: refused, and the message is
-	// left queued (the refusal rolls back the hand-over to the chief).
+	// muster's own route by thread takes a QUEUED message, so it is tried on a
+	// queued no_reply one: refused, and the message is left queued (the refusal
+	// rolls back the hand-over to the chief).
 	in := msg("m-noreply-queued")
 	in.NoReply = true
 	queued, _, err := w.s.Submit(plugin(2), w.p.ID, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, o := range []RouteOrigin{
-		{Via: RouteViaThread, Session: "s", Thread: "thread-1"},
-		{Via: RouteViaPR, Session: "s", PR: "o/r#1", HeadSHA: "0123456789abcdef0123456789abcdef01234567"},
-	} {
-		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, o); !errors.Is(err, ErrNoReply) {
-			t.Fatalf("a no_reply message routed via %s: %v; want ErrNoReply", o, err)
-		}
-		if m, _ := w.s.Message(plugin(2), queued.ID); m.Status != StatusQueued {
-			t.Fatalf("after the refused route via %s the message is %s; want still queued", o, m.Status)
-		}
+	thread := RouteOrigin{Via: RouteViaThread, Session: "s", Thread: "thread-1"}
+	if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, thread); !errors.Is(err, ErrNoReply) {
+		t.Fatalf("a no_reply message routed via %s: %v; want ErrNoReply", thread, err)
+	}
+	if m, _ := w.s.Message(plugin(2), queued.ID); m.Status != StatusQueued {
+		t.Fatalf("after the refused route via %s the message is %s; want still queued", thread, m.Status)
+	}
+	// CHANGED with reviews answered through HQ: a route by pull request takes
+	// a no_reply message — one-way, with its round, so Route.AnswersViaHQ.
+	pr := RouteOrigin{Via: RouteViaPR, Session: "s", PR: "o/r#1", HeadSHA: "0123456789abcdef0123456789abcdef01234567"}
+	r, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, queued.ID, target, time.Hour, pr)
+	if err != nil || !r.OneWay || r.PRHeadSHA != pr.HeadSHA || !r.AnswersViaHQ() {
+		t.Fatalf("a no_reply message routed via %s: %+v %v; want a one-way review route", pr, r, err)
 	}
 	w.route(t, w.m)
 	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrAlreadyRouted) {

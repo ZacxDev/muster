@@ -6,9 +6,11 @@
 package hqtest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -66,6 +68,11 @@ type Item struct {
 	// reported. A later complete without them keeps them (HQ's coalesce).
 	CostUSD  *float64 `json:"cost_usd,omitempty"`
 	CostFrom *string  `json:"cost_from,omitempty"`
+	// Payload is the item's `payload` as HQ serves it (SetPayload); absent
+	// when none. Shadow is its `shadow` (SetItemShadow); absent (nil) as for
+	// a type with no shadow-by-count policy.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Shadow  *bool           `json:"shadow,omitempty"`
 }
 
 // costFromRe is HQ's cost source id (civ-hq store/officer_cost.go).
@@ -144,6 +151,22 @@ type Server struct {
 	Evaluations []Evaluation
 	// Disabled officers answer `enabled: false` on GET /officers/{id}.
 	Disabled map[string]bool
+	// OfficerShadow officers answer `shadow: true` on GET /officers/{id};
+	// NoShadowField leaves `shadow` out of the row (an HQ without it).
+	OfficerShadow map[string]bool
+	NoShadowField bool
+	// PROpenedCalls is every POST /officers/{id}/pr-opened, in order;
+	// PROpenedStatus/PROpenedCode, when set, are answered instead of 200.
+	PROpenedCalls  []Request
+	PROpenedStatus int
+	PROpenedCode   string
+	// MergeAskCalls is every POST /officers/{id}/items/{item}/merge-asks, in
+	// order; MergeAskStatus/MergeAskCode, when set, are answered instead of
+	// 201 (with MergeAskMessage as the error).
+	MergeAskCalls   []Request
+	MergeAskStatus  int
+	MergeAskCode    string
+	MergeAskMessage string
 	// Notices is every notice POSTed to /officers/{id}/notices that was
 	// accepted; NoticeStatus, when non-zero, is answered instead (e.g. 503).
 	Notices      []Notice
@@ -1171,6 +1194,44 @@ func (s *Server) SetPriority(id, priority string) {
 	s.items[id].Priority = priority
 }
 
+// PROpenedRequests returns every pr-opened request so far.
+func (s *Server) PROpenedRequests() []Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Request(nil), s.PROpenedCalls...)
+}
+
+// MergeAskRequests returns every merge-ask request so far.
+func (s *Server) MergeAskRequests() []Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Request(nil), s.MergeAskCalls...)
+}
+
+// SetPayload sets item id's `payload` (raw JSON).
+func (s *Server) SetPayload(id string, raw string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].Payload = json.RawMessage(raw)
+}
+
+// SetItemShadow sets item id's `shadow` (nil: absent).
+func (s *Server) SetItemShadow(id string, shadow *bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[id].Shadow = shadow
+}
+
+// SetOfficerShadow sets whether officer's row answers `shadow: true`.
+func (s *Server) SetOfficerShadow(officer string, shadow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.OfficerShadow == nil {
+		s.OfficerShadow = map[string]bool{}
+	}
+	s.OfficerShadow[officer] = shadow
+}
+
 // Item returns a copy of item id.
 func (s *Server) Item(id string) Item {
 	s.mu.Lock()
@@ -1323,8 +1384,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 4 && parts[1] == "items" && r.Method == http.MethodPost:
 		s.itemVerb(w, officer, parts[2], parts[3], body, now)
 	case len(parts) == 1 && r.Method == http.MethodGet:
-		// GET /officers/{id}: the officer row, `enabled` as HQ spells it.
-		s.write(w, http.StatusOK, map[string]any{"id": officer, "enabled": !s.Disabled[officer]})
+		// GET /officers/{id}: the officer row, `enabled` and `shadow` as HQ
+		// spells them.
+		row := map[string]any{"id": officer, "enabled": !s.Disabled[officer]}
+		if !s.NoShadowField {
+			row["shadow"] = s.OfficerShadow[officer]
+		}
+		s.write(w, http.StatusOK, row)
+	case len(parts) == 2 && parts[1] == "pr-opened" && r.Method == http.MethodPost:
+		s.PROpenedCalls = append(s.PROpenedCalls, s.reqs[len(s.reqs)-1])
+		if s.PROpenedStatus != 0 {
+			s.write(w, s.PROpenedStatus, map[string]any{"error": "pr-opened refused by the fake", "code": s.PROpenedCode})
+			return
+		}
+		s.write(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"officer_id": "audit:fixture", "item_id": 901, "created": true}}, "skipped": []any{}})
 	case len(parts) == 2 && parts[1] == "notices" && r.Method == http.MethodPost:
 		if s.NoticeStatus != 0 {
 			s.write(w, s.NoticeStatus, map[string]any{"error": "notice refused by the fake"})
@@ -1461,6 +1534,22 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			s.write(w, http.StatusBadRequest, map[string]any{"error": msg, "code": "invalid"})
 			return
 		}
+	}
+	if verb == "merge-asks" {
+		req := s.reqs[len(s.reqs)-1]
+		s.MergeAskCalls = append(s.MergeAskCalls, req)
+		// HQ's decoder: one object of exactly its fields, of its types
+		// (DecodeMergeAsk); anything else is a 400 invalid, as HQ answers.
+		if _, err := DecodeMergeAsk(req.Raw); err != nil {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "body: " + err.Error(), "code": "invalid"})
+			return
+		}
+		if s.MergeAskStatus != 0 {
+			s.write(w, s.MergeAskStatus, map[string]any{"error": s.MergeAskMessage, "code": s.MergeAskCode})
+			return
+		}
+		s.write(w, http.StatusCreated, map[string]any{"merge": map[string]any{"id": 77}, "ask": map[string]any{"id": 88}, "item": map[string]any{"id": id}})
+		return
 	}
 	it, ok := s.items[id]
 	if !ok || it.OfficerID != officer {
@@ -1909,4 +1998,63 @@ func (s *Server) ask(w http.ResponseWriter, officer string, it *Item, instance s
 			"delivery": map[string]any{"notice": "both", "inbox": true, "dm": "queued"}},
 		"item": *it,
 	})
+}
+
+// MergeAskRequest is a COPY of HQ's merge-ask create body (its officermerge
+// Request and Evidence types), field for field and type for type, so the
+// fake decodes muster's body exactly as HQ does. Keep it in step with HQ's.
+type MergeAskRequest struct {
+	Instance string           `json:"instance"`
+	To       string           `json:"to,omitempty"`
+	Repo     string           `json:"repo"`
+	PR       int64            `json:"pr"`
+	HeadSHA  string           `json:"head_sha"`
+	BaseRef  string           `json:"base_ref"`
+	BaseSHA  string           `json:"base_sha"`
+	Summary  string           `json:"summary"`
+	Purpose  string           `json:"purpose"`
+	How      string           `json:"how"`
+	Evidence MergeAskEvidence `json:"evidence"`
+}
+
+// MergeAskEvidence is HQ's Evidence.
+type MergeAskEvidence struct {
+	OfficerItem       MergeAskItem      `json:"officer_item"`
+	OpenYellows       []MergeAskFinding `json:"open_yellows"`
+	ProtectedIdentity MergeAskGate      `json:"protected_identity"`
+	SettledAt         string            `json:"settled_at"`
+	Rollback          string            `json:"rollback"`
+}
+
+// MergeAskItem is HQ's EvidenceItem: the item id is an INTEGER.
+type MergeAskItem struct {
+	Officer string `json:"officer"`
+	Item    int64  `json:"item"`
+}
+
+// MergeAskFinding is HQ's Finding.
+type MergeAskFinding struct {
+	Where string `json:"where"`
+	Text  string `json:"text"`
+}
+
+// MergeAskGate is HQ's Gate.
+type MergeAskGate struct {
+	Result string `json:"result"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// DecodeMergeAsk decodes raw as HQ does: one object, unknown fields refused,
+// every field its type.
+func DecodeMergeAsk(raw []byte) (MergeAskRequest, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var r MergeAskRequest
+	if err := dec.Decode(&r); err != nil {
+		return MergeAskRequest{}, err
+	}
+	if dec.More() {
+		return MergeAskRequest{}, errors.New("more than one JSON value")
+	}
+	return r, nil
 }
