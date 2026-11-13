@@ -130,8 +130,9 @@ func TestResumedReasonsIsGoneAlone(t *testing.T) {
 }
 
 // TestMissedPassesCountAndReset: Missed counts consecutive missing passes on
-// an open episode (0 on an ended one); Present and Observe reset the count;
-// the count is read back on the episode.
+// an open episode (0 on an ended one) and records whether the latest saw the
+// window listed dead (an omission clears it); Present and Observe reset both;
+// both are read back on the episode.
 func TestMissedPassesCountAndReset(t *testing.T) {
 	p := pgStore(t)
 	ctx := asUser(2)
@@ -139,41 +140,42 @@ func TestMissedPassesCountAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := func() int {
+	read := func(when string, wantN int, wantDead bool) {
 		t.Helper()
 		got, ok, err := p.OpenFor(ctx, KindMirror, "k-miss")
 		if err != nil || !ok {
-			t.Fatalf("read: %v %v", ok, err)
+			t.Fatalf("%s: read: %v %v", when, ok, err)
 		}
-		return got.MissedPasses
-	}
-	for want := 1; want <= 2; want++ {
-		if n, err := p.Missed(ctx, e.ID); err != nil || n != want {
-			t.Fatalf("missed #%d: %d %v", want, n, err)
+		if got.MissedPasses != wantN || got.DeadListed != wantDead {
+			t.Fatalf("%s: missed %d dead %v, want %d %v", when, got.MissedPasses, got.DeadListed, wantN, wantDead)
 		}
 	}
-	if n := read(); n != 2 {
-		t.Fatalf("read back: %d", n)
+	if n, err := p.Missed(ctx, e.ID, true); err != nil || n != 1 {
+		t.Fatalf("missed #1: %d %v", n, err)
+	}
+	read("listed dead", 1, true)
+	if n, err := p.Missed(ctx, e.ID, false); err != nil || n != 2 {
+		t.Fatalf("missed #2: %d %v", n, err)
+	}
+	read("then omitted", 2, false)
+	if _, err := p.Missed(ctx, e.ID, true); err != nil {
+		t.Fatal(err)
 	}
 	if err := p.Present(ctx, e.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n := read(); n != 0 {
-		t.Fatalf("after Present: %d", n)
-	}
-	if n, _ := p.Missed(ctx, e.ID); n != 1 {
+	read("after Present", 0, false)
+	if n, _ := p.Missed(ctx, e.ID, true); n != 1 {
 		t.Fatalf("missed after Present: %d", n)
 	}
 	if err := p.Observe(ctx, e.ID, Observation{State: StateStalled, StreakKey: "since:1", At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if n := read(); n != 0 {
-		t.Fatalf("after Observe: %d", n)
-	}
+	read("after Observe", 0, false)
 	if _, err := p.End(ctx, e.ID, EndGone, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := p.Missed(ctx, e.ID); err != nil || n != 0 {
+	if n, err := p.Missed(ctx, e.ID, false); err != nil || n != 0 {
 		t.Fatalf("missed on an ended episode: %d %v", n, err)
 	}
 }

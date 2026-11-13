@@ -329,7 +329,7 @@ An episode is one stop of one session.
     and reporting, on `episodeGoneMisses` (3, about 90 s) consecutive passes.
     A window the host lists without its session key is present, not missing;
     a pass whose host is offline or unread counts for nothing. The count is
-    persisted on the episode (`missed_passes`, migration 0121), so a restart
+    persisted on the episode (`missed_passes`, migration 0123), so a restart
     neither loses it nor starts it over.
 
   **Why not end it on the first missing pass.** A connected host's listing

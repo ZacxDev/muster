@@ -45,8 +45,15 @@ type Episode struct {
 	// none. Not final: a later reason to push clears it (ClaimPush).
 	Quiet string
 	// MissedPasses is how many consecutive state passes found the session
-	// missing (migration 0121; Missed, Present, Observe).
+	// missing (migration 0123; Missed, Present, Observe).
 	MissedPasses int
+	// DeadListed: the LAST connected pass that found the session missing saw
+	// its window LISTED, at its place, as a pane holding no agent of its
+	// conversation (a shell, a new Claude conversation, a reason muster
+	// cannot read) — positive evidence the session is dead, not an omission.
+	// Set and cleared by Missed; cleared by Present and Observe (migration
+	// 0123).
+	DeadListed bool
 	// ResumedFrom is the first episode of the stop this one resumed (it opened
 	// after that stop ended 'gone', on the same streak: resumedReasons); 0
 	// for none. The chief's decision taken in that episode is this one's.
@@ -125,10 +132,11 @@ type Store interface {
 	// MarkCleared records that ended episode id's notification was closed.
 	MarkCleared(ctx context.Context, id int64, at time.Time) error
 	// Missed records one more consecutive pass that found open episode id's
-	// session missing, and returns the count (0 when it is not open).
-	Missed(ctx context.Context, id int64) (int, error)
-	// Present resets open episode id's missed passes: a pass found it,
-	// listed without its key. (Observe resets them too.)
+	// session missing, and whether that pass saw its window listed dead
+	// (Episode.DeadListed); it returns the count (0 when it is not open).
+	Missed(ctx context.Context, id int64, dead bool) (int, error)
+	// Present resets open episode id's missed passes and dead mark: a pass
+	// found it, listed without its key. (Observe resets them too.)
 	Present(ctx context.Context, id int64) error
 }
 
@@ -168,14 +176,14 @@ const cols = `id, owner_id, session_kind, session_key, seq, state, waiting, aske
 	window_index, coalesce(agent_id, 0), coalesce(chat_session_id, 0), streak_key, classified_streak,
 	jev_label, jev_needs_input, jev_asks_permission, jev_neither, jev_ask_score, jev_model, jev_error,
 	opened_at, state_since, coalesce(busy_since, 'epoch'::timestamptz), coalesce(busy_seen_at, 'epoch'::timestamptz),
-	coalesce(ended_at, 'epoch'::timestamptz), end_reason, coalesce(pushed_at, 'epoch'::timestamptz), coalesce(cleared_at, 'epoch'::timestamptz), quiet, missed_passes, coalesce(resumed_from, 0)`
+	coalesce(ended_at, 'epoch'::timestamptz), end_reason, coalesce(pushed_at, 'epoch'::timestamptz), coalesce(cleared_at, 'epoch'::timestamptz), quiet, missed_passes, coalesce(resumed_from, 0), dead_listed`
 
 func scan(row pgx.Row) (Episode, error) {
 	var e Episode
 	err := row.Scan(&e.ID, &e.Owner, &e.Kind, &e.Key, &e.Seq, &e.State, &e.Waiting, &e.Asked, &e.Runtime, &e.Host, &e.TmuxSession, &e.Window,
 		&e.Index, &e.AgentID, &e.ChatSessionID, &e.StreakKey, &e.ClassifiedStreak,
 		&e.Jev.Label, &e.Jev.NeedsInput, &e.Jev.AsksPermission, &e.Jev.Neither, &e.Jev.AskScore, &e.Jev.Model, &e.Jev.Err,
-		&e.OpenedAt, &e.StateSince, &e.BusySince, &e.BusySeen, &e.EndedAt, &e.EndReason, &e.PushedAt, &e.ClearedAt, &e.Quiet, &e.MissedPasses, &e.ResumedFrom)
+		&e.OpenedAt, &e.StateSince, &e.BusySince, &e.BusySeen, &e.EndedAt, &e.EndReason, &e.PushedAt, &e.ClearedAt, &e.Quiet, &e.MissedPasses, &e.ResumedFrom, &e.DeadListed)
 	if err != nil {
 		return Episode{}, err
 	}
@@ -312,7 +320,7 @@ func (p *PG) Observe(ctx context.Context, id int64, o Observation) error {
 	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET
 			state_since = CASE WHEN state = $2 THEN state_since ELSE $11 END,
 			state = $2, waiting = $3, mirror_host = $4, mirror_session = $5, mirror_window = $6, window_index = $7,
-			streak_key = $8, busy_since = $9, busy_seen_at = $10, missed_passes = 0, updated_at = $11
+			streak_key = $8, busy_since = $9, busy_seen_at = $10, missed_passes = 0, dead_listed = false, updated_at = $11
 		WHERE id = $1 AND ended_at IS NULL`,
 		id, o.State, o.Waiting, cut(o.Host, 200), cut(o.TmuxSession, 200), cut(o.Window, 32), o.Index, cut(o.StreakKey, 100),
 		nullTime(o.BusySince), nullTime(o.BusySeen), o.At)
@@ -452,10 +460,10 @@ func (p *PG) MarkCleared(ctx context.Context, id int64, at time.Time) error {
 }
 
 // Missed implements Store.
-func (p *PG) Missed(ctx context.Context, id int64) (int, error) {
+func (p *PG) Missed(ctx context.Context, id int64, dead bool) (int, error) {
 	var n int
-	err := p.pool.QueryRow(ctx, `UPDATE session_episodes SET missed_passes = missed_passes + 1, updated_at = now()
-		WHERE id = $1 AND ended_at IS NULL RETURNING missed_passes`, id).Scan(&n)
+	err := p.pool.QueryRow(ctx, `UPDATE session_episodes SET missed_passes = missed_passes + 1, dead_listed = $2, updated_at = now()
+		WHERE id = $1 AND ended_at IS NULL RETURNING missed_passes`, id, dead).Scan(&n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -464,7 +472,7 @@ func (p *PG) Missed(ctx context.Context, id int64) (int, error) {
 
 // Present implements Store.
 func (p *PG) Present(ctx context.Context, id int64) error {
-	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET missed_passes = 0, updated_at = now()
-		WHERE id = $1 AND ended_at IS NULL AND missed_passes <> 0`, id)
+	_, err := p.pool.Exec(ctx, `UPDATE session_episodes SET missed_passes = 0, dead_listed = false, updated_at = now()
+		WHERE id = $1 AND ended_at IS NULL AND (missed_passes <> 0 OR dead_listed)`, id)
 	return err
 }

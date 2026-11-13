@@ -8,71 +8,122 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/sessionstate"
 )
 
-// #635 audit round 2: the host-drop push of a held wait is gated on the pass
-// never having found its window missing; a Claude pane the host could not
-// match to its transcript is present; the waiting hook's re-show; the service
-// worker's silent mapping.
+// #635 audit rounds 2 and 3: the host-drop push of a held wait is suppressed
+// only on POSITIVE evidence the session is dead (its window last listed
+// holding no agent of it), never on an omission; a Claude pane the host could
+// not match to an existing transcript is present, a NEW transcript-less one
+// is not; the waiting hook's re-show; the service worker's silent mapping.
 
-// TestAHeldWaitSeenMissingIsNotPushedOnADrop (regression, audit round 2): a
-// waiting stop held in its grace; its Claude is Ctrl-C'd (the shell stays) and
-// a connected pass or two see the window missing; then the host drops for
-// minutes, before the threshold could end the stop. Nothing is pushed — at 1,
-// 2 or 3 missing passes. CONTROL: a wait still listed waiting when its host
-// drops IS pushed (the drop rule, unchanged). RED before the fix at 1 and 2:
-// the drop pushed "needs you" for a dead session.
-func TestAHeldWaitSeenMissingIsNotPushedOnADrop(t *testing.T) {
-	for _, misses := range []int{0, 1, 2, 3} {
-		t.Run("missed "+strconv.Itoa(misses), func(t *testing.T) {
+// noteFor is the fixture's window as a Claude Code pane with no rendered view
+// for reason code (mirror.AgentNote*; "" for an older host's words alone).
+func noteFor(w mirror.Window, code string) mirror.Window {
+	w = shellIn(w, "claude")
+	w.AgentNote, w.AgentNoteCode = "Claude Code is running here, but it has no rendered view.", code
+	return w
+}
+
+// TestAHeldWaitIsPushedOnADropUnlessListedDead (regression, audit rounds 2
+// and 3): a waiting stop held in its grace; then one, two or three connected
+// passes; then its host drops for minutes, before the threshold could end the
+// stop. PUSHED when the window was still listed waiting (control) or merely
+// LEFT OUT of the last listing (an omission is no evidence); NOT pushed when
+// the last listing showed the window holding no agent of the conversation —
+// the shell left after a Ctrl-C (1, 2 or 3 passes), or a new transcript-less
+// Claude started in it. RED before the round-3 fix: "omitted once" was
+// silenced by the count gate. RED before the round-2 fix: "shell" at 1 and 2
+// were pushed.
+func TestAHeldWaitIsPushedOnADropUnlessListedDead(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		passes int
+		list   func(full []mirror.Window) []mirror.Window
+		pushed bool
+	}{
+		{"still waiting (control)", 1, func(full []mirror.Window) []mirror.Window { return full }, true},
+		{"omitted once", 1, func([]mirror.Window) []mirror.Window { return shellOnly }, true},
+		{"listed as a shell once", 1, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{shellIn(full[0], "zsh")}
+		}, false},
+		{"listed as a shell twice", 2, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{shellIn(full[0], "zsh")}
+		}, false},
+		{"listed as a shell three times", 3, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{shellIn(full[0], "zsh")}
+		}, false},
+		{"a new transcript-less Claude once", 1, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{noteFor(full[0], mirror.AgentNoteNotYet)}
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			f := newStateFixture(t, false)
 			f.status(mirror.StatusWaiting, 5*time.Second)
 			f.statePass(t)
 			if e := f.oneEpisode(t); !e.Waiting || !e.PushedAt.IsZero() {
 				t.Fatalf("a held wait: %+v", e)
 			}
-			ws := f.windowsNow()
-			if misses > 0 {
-				ws[0] = shellIn(ws[0], "zsh")
-				f.listing(true, ws)
-				for i := 0; i < misses; i++ {
-					f.advance(5 * time.Second)
-					f.statePass(t)
-				}
+			ws := c.list(f.windowsNow())
+			f.listing(true, ws)
+			for i := 0; i < c.passes; i++ {
+				f.advance(5 * time.Second)
+				f.statePass(t)
 			}
 			f.listing(false, ws)
 			for i := 0; i < 10; i++ {
 				f.nextPass(t)
 			}
 			got := f.sentEpisodes()
-			if misses == 0 {
-				if len(got) != 1 {
-					t.Fatalf("CONTROL: pushes %v, want the held wait pushed once on the drop", got)
-				}
-				return
+			if c.pushed && len(got) != 1 {
+				t.Fatalf("pushes %v, want the held wait pushed once on the drop", got)
 			}
-			if len(got) != 0 {
-				t.Fatalf("pushes: %v — a wait seen missing on %d pass(es) was pushed on a host drop", got, misses)
+			if !c.pushed && len(got) != 0 {
+				t.Fatalf("pushes: %v — a wait last listed dead was pushed on a host drop", got)
 			}
 		})
 	}
 }
 
-// TestAClaudePaneWithoutItsTranscriptIsPresent: a running Claude Code pane the
-// host could not match to its transcript is listed as no runtime, with no
-// key, carrying the host's no-view note (Window.AgentNote). Present, not
-// missing: nothing ends — where a plain shell (no note) ends gone.
-func TestAClaudePaneWithoutItsTranscriptIsPresent(t *testing.T) {
-	f := newStateFixture(t, false)
-	e := pushedStop(t, f)
-	ws := f.windowsNow()
-	ws[0] = shellIn(ws[0], "claude")
-	ws[0].AgentNote = "Claude Code is running here, but its transcript was not found"
-	f.listing(true, ws)
-	for i := 0; i < 2*episodeGoneMisses; i++ {
-		f.nextPass(t)
+// TestAClaudePaneWithoutItsTranscriptIsPresentOnlyIfItCanBeTheSame: a Claude
+// Code pane listed with no key and its no-view reason code. A pane the host
+// could not MATCH to an existing transcript (no_transcript, no_env) is
+// present — nothing ends. A NEW conversation (not_yet: Ctrl-C, then a fresh
+// `claude`), a host that cannot read processes (no_procs), and an older
+// host's note with no code (unknown) are not this conversation: it ends gone
+// at the threshold.
+func TestAClaudePaneWithoutItsTranscriptIsPresentOnlyIfItCanBeTheSame(t *testing.T) {
+	for _, c := range []struct {
+		code    string
+		present bool
+	}{
+		{mirror.AgentNoteNoTranscript, true},
+		{mirror.AgentNoteNoEnv, true},
+		{mirror.AgentNoteNotYet, false},
+		{mirror.AgentNoteNoProcs, false},
+		{"", false},
+	} {
+		t.Run("code "+strconv.Quote(c.code), func(t *testing.T) {
+			f := newStateFixture(t, false)
+			e := pushedStop(t, f)
+			ws := f.windowsNow()
+			ws[0] = noteFor(ws[0], c.code)
+			f.listing(true, ws)
+			if c.present {
+				for i := 0; i < 2*episodeGoneMisses; i++ {
+					f.nextPass(t)
+				}
+				f.openStill(t, e.ID, "a Claude pane the host could not match to its transcript")
+				return
+			}
+			for i := 0; i < episodeGoneMisses; i++ {
+				f.nextPass(t)
+			}
+			if got := f.oneOf(t, e.ID); got.Open() || got.EndReason != sessionstate.EndGone {
+				t.Fatalf("a pane that is not this conversation: %+v, want ended gone", got)
+			}
+		})
 	}
-	f.openStill(t, e.ID, "a Claude pane the host could not match to its transcript")
 }
 
 // TestTheWaitingHookReshowsAStopBackFromGone: a waiting stop is pushed, goes
