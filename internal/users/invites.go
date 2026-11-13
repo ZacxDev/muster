@@ -423,9 +423,9 @@ func (s *PGStore) RedeemInvite(ctx context.Context, tokenHash []byte, email, dis
 	return u, nil
 }
 
-// ListUsers returns every user, oldest first.
+// ListUsers returns every PERSON, oldest first (teams are on /admin/teams).
 func (s *PGStore) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(sys(ctx), `SELECT `+userCols+` FROM users ORDER BY id`)
+	rows, err := s.pool.Query(sys(ctx), `SELECT `+userCols+` FROM users WHERE kind = 'person' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

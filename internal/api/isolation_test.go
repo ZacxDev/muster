@@ -240,15 +240,19 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/reset":  classPublic,
 	"POST /auth/reset": classPublic,
 
-	"GET /admin/invites":                     classAdminOnly,
-	"GET /admin/users":                       classAdminOnly,
-	"POST /admin/invites":                    classAdminOnly,
-	"POST /admin/invites/{id}/revoke":        classAdminOnly,
-	"POST /admin/users/{id}/disable":         classAdminOnly,
-	"POST /admin/users/{id}/enable":          classAdminOnly,
-	"POST /admin/users/{id}/reset-link":      classAdminOnly,
-	"POST /admin/users/{id}/role":            classAdminOnly,
-	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
+	"GET /admin/invites":                           classAdminOnly,
+	"GET /admin/teams":                             classAdminOnly,
+	"POST /admin/teams":                            classAdminOnly,
+	"POST /admin/teams/{id}/members":               classAdminOnly,
+	"POST /admin/teams/{id}/members/{user}/remove": classAdminOnly,
+	"GET /admin/users":                             classAdminOnly,
+	"POST /admin/invites":                          classAdminOnly,
+	"POST /admin/invites/{id}/revoke":              classAdminOnly,
+	"POST /admin/users/{id}/disable":               classAdminOnly,
+	"POST /admin/users/{id}/enable":                classAdminOnly,
+	"POST /admin/users/{id}/reset-link":            classAdminOnly,
+	"POST /admin/users/{id}/role":                  classAdminOnly,
+	"POST /admin/users/{id}/passkeys/delete":       classAdminOnly,
 	// Instance branding's writes (branding.go, requireAdminRole): an admin's
 	// session only, in either sign-in mode.
 	"PUT /api/instance/branding":             classAdminOnly,
@@ -2034,6 +2038,26 @@ func is2xx(code int) bool { return code >= 200 && code < 300 }
 // TestNoRouteLetsOneUserReachAnothersData is the walk. See the file header.
 func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	w := newIsoWorld(t)
+	// Teams, phase 1 (docs/design/team-sharing.md): A and B are TEAMMATES —
+	// A manages a team in which B is an operator — and the team itself owns a
+	// task carrying A's canary. Phase 1 shares nothing, so every assertion
+	// below must hold unchanged: membership gives B none of A's rows, and none
+	// of the team's.
+	team := w.addTeamOf(t, w.a.uid, w.b.uid)
+	// Every principal in this walk reads its role AND memberships from the
+	// database, as production does, so B walks AS a member of A's team.
+	w.srv.ext.Users = users.NewPG(w.pool)
+	if p := w.srv.principalFor(w.sys, w.b.uid, authz.ViaSession); p.Team || p.Role != authz.RoleMember {
+		t.Fatalf("control: B's principal = %v", p)
+	} else if r, ok := p.Teams.RoleIn(team); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: B's request principal carries memberships %q; want operator of team %d", p.Teams, team)
+	}
+	teamTask := func() string {
+		var js string
+		_ = w.pool.QueryRow(w.sys, `SELECT COALESCE(json_agg(n ORDER BY n.id)::text, '') FROM notes n WHERE owner_id = $1`, team).Scan(&js)
+		return js
+	}
+	teamBefore := teamTask()
 	routes := sortedRoutes()
 	before := w.snapshot()
 	w.router.reset()
@@ -2125,6 +2149,9 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 	// --- the mutation leg ---
 	w.sameRows(t, "B's walk", before)
+	if after := teamTask(); after != teamBefore || !strings.Contains(after, w.canary) {
+		t.Errorf("B's walk changed the TEAM's task (or the fixture has none):\n before %s\n after  %s", teamBefore, after)
+	}
 	// --- the connect leg ---
 	if got := w.up.sawSecret(w.canary + "-SECRET"); got != 0 {
 		t.Errorf("A's connector secret was injected upstream %d time(s) during B's walk", got)
@@ -2690,4 +2717,42 @@ type isoNoSuggestions struct{}
 
 func (isoNoSuggestions) Generate(context.Context, int64, string) (suggest.Generation, error) {
 	return suggest.Generation{}, nil
+}
+
+// addTeamOf makes a team managed by manager with operator as an operator, and
+// a task the TEAM owns that carries the world's canary (written as System:
+// nothing in phase 1 writes a team-owned row). The positive control is that
+// B's membership is what a request principal reads (users.Account), so the
+// walk runs with it.
+func (w *isoWorld) addTeamOf(t *testing.T, manager, operator int64) int64 {
+	t.Helper()
+	store := users.NewPG(w.pool)
+	by := users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession}
+	team, err := store.CreateTeam(w.sys, by, "iso-team-"+w.suffix, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTeamMember(w.sys, by, team.ID, operator, authz.TeamOperator); err != nil {
+		t.Fatal(err)
+	}
+	var note int64
+	if err := w.pool.QueryRow(w.sys, `INSERT INTO notes (owner_id, title) VALUES ($1, $2) RETURNING id`,
+		team.ID, "team task "+w.canary).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		_, _ = w.pool.Exec(bg, `DELETE FROM notes WHERE owner_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM team_members WHERE team_id = $1`, team.ID)
+		_, _ = w.pool.Exec(bg, `DELETE FROM audit_log WHERE object = $1`, users.TeamObject(team.ID))
+		_, _ = w.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, team.ID)
+	})
+	acct, err := store.Account(w.sys, operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := acct.Teams.RoleIn(team.ID); !ok || r != authz.TeamOperator {
+		t.Fatalf("control: the member's account reads %q; want operator of team %d", acct.Teams, team.ID)
+	}
+	return team.ID
 }

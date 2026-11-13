@@ -6,6 +6,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // This file is where every authentication wrapper turns "the credential
@@ -108,20 +109,20 @@ func (s *Server) roleOf(ctx context.Context, uid int64) authz.Role {
 	return s.principalFor(ctx, uid, "").Role
 }
 
-// roleOfChecked is roleOf WITHOUT the member fallback: a failed read is
-// returned, so a door whose decision a wrong "member" would CHANGE (not just
-// narrow) can refuse instead.
+// accountOfChecked is everything principalFor builds a principal from — the
+// role, whether uid is a team, the person's team memberships — WITHOUT the
+// member fallback: a failed read is returned.
 //
 // principalFor calls it and marks a failure as authz.Principal.RoleUncertain;
 // see there for the rule that flag carries.
-func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, error) {
+func (s *Server) accountOfChecked(ctx context.Context, uid int64) (users.Account, error) {
 	if s.ext.Users == nil {
 		if uid == authz.OperatorUserID {
-			return authz.RoleAdmin, nil
+			return users.Account{Role: authz.RoleAdmin}, nil
 		}
-		return authz.RoleMember, nil
+		return users.Account{Role: authz.RoleMember}, nil
 	}
-	return s.ext.Users.Role(authz.System(ctx), uid)
+	return s.ext.Users.Account(authz.System(ctx), uid)
 }
 
 // principalFor builds the request principal for a user admitted through via.
@@ -133,13 +134,19 @@ func (s *Server) roleOfChecked(ctx context.Context, uid int64) (authz.Role, erro
 // (connectors.ReconcileGrant) — holds on the session, route, agent and
 // connector doors alike.
 func (s *Server) principalFor(ctx context.Context, uid int64, via authz.Via) authz.Principal {
-	r, err := s.roleOfChecked(ctx, uid)
+	a, err := s.accountOfChecked(ctx, uid)
 	if err != nil {
 		s.logger.Printf("principal: reading user %d's role: %v (acting as member, role uncertain)", uid, err)
 		return authz.Principal{UserID: uid, Role: authz.RoleMember, Via: via, RoleUncertain: true}
 	}
-	return authz.Principal{UserID: uid, Role: r, Via: via}
+	return authz.Principal{UserID: uid, Role: a.Role, Via: via, Team: a.Team, Teams: a.Teams}
 }
+
+// TeamSignInRefusal is what every door answers a credential that resolves to a
+// TEAM (users.kind = 'team'): a team owns things, and no one signs in as one
+// (docs/design/team-sharing.md). admit answers it before the principal is
+// attached; authz.WithPrincipal's panic is the backstop for any other caller.
+const TeamSignInRefusal = "a team cannot sign in; sign in as a person"
 
 // admit attaches p to the request and hands it to next. See the file header:
 // it is the only way a wrapper may call next.
@@ -150,6 +157,14 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, next http.Handler
 	}
 	// A device credential opens the device tier and nothing else (devices.go).
 	if s.refuseDeviceTokenElsewhere(w, r, p.Via) {
+		return
+	}
+	// A credential that resolves to a team is refused at every door: this is
+	// the one place each wrapper's principal passes
+	// (TestNoDoorAdmitsATeam walks every route through it).
+	if p.Team {
+		s.logger.Printf("principal: refused a %s credential that resolves to team %d", p.Via, p.UserID)
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": TeamSignInRefusal})
 		return
 	}
 	r = r.WithContext(authz.WithPrincipal(r.Context(), p))

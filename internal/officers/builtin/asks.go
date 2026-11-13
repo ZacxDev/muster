@@ -482,14 +482,17 @@ func (s *Store) NoticeAbandoned(ctx context.Context, owner, item, recipient int6
 	return err
 }
 
-// UsersExist reports the ids among ids that are not muster users (none: nil).
+// UsersExist reports the ids among ids that are not muster PERSONS (none:
+// nil). A team id is reported missing: escalating to a team arrives with phase
+// 3 of docs/design/team-sharing.md, and until then an ask raised for a team
+// would be one no person can see.
 // ctx must read every user (the system scope): users is self-read under
 // row-level security.
 func (s *Store) UsersExist(ctx context.Context, ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT x FROM unnest($1::bigint[]) x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x)`, ids)
+	rows, err := s.pool.Query(ctx, `SELECT x FROM unnest($1::bigint[]) x WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = x AND u.kind = 'person')`, ids)
 	if err != nil {
 		return nil, err
 	}

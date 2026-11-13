@@ -27,6 +27,9 @@ var wantUserKeyedPolicies = []string{
 	"audit_log self_append INSERT USING= CHECK=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text))",
 	"audit_log self_read SELECT USING=((user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text)) CHECK=",
 	"invites scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",
+	// team_members (0125): a person reads the rows naming them; only scope all writes.
+	"team_members scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",
+	"team_members self_read SELECT USING=(user_id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) CHECK=",
 	"users scope_all ALL USING=(current_setting('muster.scope'::text, true) = 'all'::text) CHECK=(current_setting('muster.scope'::text, true) = 'all'::text)",
 	"users self_read SELECT USING=((id = (NULLIF(current_setting('muster.uid'::text, true), ''::text))::bigint) OR (current_setting('muster.scope'::text, true) = 'all'::text)) CHECK=",
 }

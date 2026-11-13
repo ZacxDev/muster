@@ -59,6 +59,36 @@ usable. That lets you bind the operator's login before you switch modes.
   (`/account/credentials`, which needs the connector key). The pool configured in
   the server's environment belongs to the admin.
 
+## Teams
+
+A team is a group of people on one muster server who will share sessions,
+officers and tasks ([design/team-sharing.md](design/team-sharing.md)). **This
+version records teams and their members, and shares nothing yet.** A row a
+team owns is visible to no person, its members included.
+
+- **What a team is.** A `users` row of kind `team`: something that can own
+  things. **No one signs in as a team.** It has no login, no email and no
+  password, and it cannot be an admin, be invited, hold a passkey, mint a token
+  or pair a phone. Any credential that resolves to a team is refused at every
+  door with "a team cannot sign in; sign in as a person", and so is a mirror
+  token whose owner is a team.
+- **Members and roles.** Each member has one role: `viewer`, `operator` or
+  `manager`. A team is never a member of a team. The roles take effect in later
+  versions (watch; type and answer; manage the team's tokens, charters and
+  approvals). Each request reads the person's memberships together with their
+  role, so a change applies from the next request.
+- **Who manages teams.** In this version only an admin does, on
+  **Admin → Teams** (`/admin/teams`). An admin creates a team, naming its first
+  manager, and adds, re-roles and removes members. Being an admin gives no
+  membership: an admin who is not a member sees nothing of a team either. Every
+  change writes an `audit_log` row naming the acting admin (`team.create`,
+  `team.member.set`, `team.member.remove`), in the same transaction as the
+  change. The rows are listed under **Recent account activity** on
+  `/admin/users`.
+- **Not a user.** A team is not listed on `/admin/users`, and every user action
+  there answers 404 for a team's id. An officer's `--escalate-to` refuses a
+  team's id for now.
+
 ## Passkeys
 
 Passkeys are GoTrue's own WebAuthn passkeys, proxied through muster. They are

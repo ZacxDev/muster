@@ -168,7 +168,7 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 // security: keyed by a USER column (users.id, api_tokens.user_id,
 // audit_log.user_id) or admin-only (invites), not by owner_id. Their policies
 // are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
-var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
+var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "team_members", "users"}
 
 // instanceTables are tables that belong to the SERVER, not to a user: no
 // owner_id, under forced row-level security with a scope_all policy only (the
