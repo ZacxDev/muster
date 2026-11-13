@@ -35,7 +35,10 @@ import (
 // what it is about. Its answer is owed to the chief, exactly as a request
 // route's is (FinishAnswerToChiefRoute), and never becomes a reply draft —
 // RelayRoute still refuses a no_reply message, and 0087 forbids a draft on the
-// row — so the sender is never contacted.
+// row — so the sender is never contacted. A pull-request review answered
+// through HQ — a no_reply one, routed by pull request — is one-way too
+// (Route.AnswersViaHQ): route_reply refuses it, and it closes as handled by its
+// deadline (TimeOutRoute).
 //
 // A route carries the OWNER'S OWN REQUEST instead (request_text, migration
 // 0084): the chief's relay of a message the owner typed in its chat, checked by
@@ -194,7 +197,9 @@ type Route struct {
 	// route, and on a review route made before 0070.
 	PRHeadSHA string
 	// OneWay marks a route carrying a no_reply plugin message (migration
-	// 0087): a heads-up whose answer goes to the chief only.
+	// 0087): a heads-up whose answer goes to the chief only — or, on a review
+	// route, a review answered through HQ (AnswersViaHQ), which route_reply
+	// never answers (internal/api's answerHQReviewRoute).
 	OneWay bool
 	// Redraft marks a RouteSendFailed route whose hand-back goes back to the
 	// session it was routed to, to write the reply again (migration 0112),
@@ -206,6 +211,14 @@ type Route struct {
 // IsPRReview reports whether muster made r for a pull-request review: the one
 // structured mark, the round it carries (PRHeadSHA).
 func (r Route) IsPRReview() bool { return r.PRHeadSHA != "" }
+
+// AnswersViaHQ reports whether r is a pull-request review whose findings the
+// session answers through HQ's PR-review respond channel, never by mail: a
+// review route (IsPRReview) that is ONE-WAY, which CreateRouteFrom makes for
+// a RouteViaPR origin exactly when the message is no_reply (no other origin
+// records a round). The ONE predicate: the paste (internal/api's
+// hqReviewPreface) and route_reply's refusal both branch on it.
+func (r Route) AnswersViaHQ() bool { return r.IsPRReview() && r.OneWay }
 
 // RouteTarget names the session a route goes to: a kind ("agent", "mirror"),
 // its key (the agent id, the Claude session id) and what it is called.
@@ -408,10 +421,12 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 //
 // 🔴 A no_reply MESSAGE IS ROUTED ONE-WAY BY THE CHIEF ONLY (origin zero) — and
 // by an approved routing rule (RouteViaRule), which does what the chief's
-// route_to_session would. Every other origin — the owner's door, a route by
-// thread or pull request — still refuses it (ErrNoReply), as does a TASK EVENT
-// (IsTaskEvent: its task is routed with task_id instead). The route is marked
-// one_way in its row, so its answer can only ever go to the chief.
+// route_to_session would — and by a route by pull request (RouteViaPR): a
+// no_reply review is answered through HQ (Route.AnswersViaHQ), never by mail.
+// Every other origin — the owner's door, a route by thread — still refuses it
+// (ErrNoReply), as does a TASK EVENT (IsTaskEvent: its task is routed with
+// task_id instead). The route is marked one_way in its row, so 0087's check
+// forbids it a reply draft.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -440,7 +455,7 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound
 		}
-		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule) || IsTaskEvent(m)) {
+		if m.NoReply && ((origin.Via != "" && origin.Via != RouteViaRule && origin.Via != RouteViaPR) || IsTaskEvent(m)) {
 			return ErrNoReply
 		}
 		if inFlight != nil {

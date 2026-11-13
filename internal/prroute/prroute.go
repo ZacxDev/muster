@@ -7,6 +7,7 @@
 package prroute
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -124,6 +125,101 @@ func ParseMail(body string) (Ref, bool) {
 		ref.HeadRef = *in.HeadRef
 	}
 	return ref, true
+}
+
+// Review is what a review mail's machine block says beyond Ref: the round's
+// id and its findings' short ids — what HQ's PR-review respond channel takes
+// (`finding` as the short id WITH `pr`) to answer one.
+type Review struct {
+	Ref
+	// ReviewID is the block's review_id, "" when it is absent or not in
+	// reviewIDPattern.
+	ReviewID string
+	// Findings is the block's findings that carry a well-formed id, in the
+	// block's order, at most MaxReviewFindings.
+	Findings []Finding
+	// Listed is how many entries the block's findings array holds, ids or
+	// not: whether the round HAS findings, which Findings (well-formed ids
+	// only, bounded) cannot tell. 0 for a round with none — its mail asks
+	// nothing to answer finding by finding — and 0 when FindingsKnown is false.
+	Listed int
+	// FindingsKnown says the block HAS a findings key holding a JSON array.
+	// Without it — the key missing, or a value of another shape — whether the
+	// round has findings is UNKNOWN, never "none": Listed 0 then proves
+	// nothing.
+	FindingsKnown bool
+}
+
+// Finding is one finding's id and severity, both validated: muster prints
+// them OUTSIDE the untrusted fence (internal/api's hqReviewPreface), so only
+// text in these grammars is kept.
+type Finding struct {
+	// ID is the finding's short id, "f_" and 12 lower-case hex.
+	ID string
+	// Severity is the finding's severity (lower-case letters), "" when absent
+	// or not one.
+	Severity string
+}
+
+// MaxReviewFindings bounds Review.Findings: the gate keeps a handful per lane,
+// and the paste has a size cap.
+const MaxReviewFindings = 50
+
+var (
+	findingIDPattern = regexp.MustCompile(`^f_[0-9a-f]{12}$`)
+	reviewIDPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	severityPattern  = regexp.MustCompile(`^[a-z]{1,16}$`)
+)
+
+// ParseReview is ParseMail with the round's review_id and its findings' ids:
+// ok exactly when ParseMail's is (the same block, the same rules). A finding
+// without a well-formed id is left out, never repaired; a review_id or
+// severity outside its grammar reads as "".
+func ParseReview(body string) (Review, bool) {
+	ref, ok := ParseMail(body)
+	if !ok {
+		return Review{}, false
+	}
+	rv := Review{Ref: ref}
+	raw, _ := lastJSONBlock(body)
+	var in struct {
+		ReviewID any             `json:"review_id"`
+		Findings json.RawMessage `json:"findings"`
+	}
+	// ParseMail decoded this block, so it is a JSON object: only the two
+	// fields' shapes can differ, and each is checked on its own.
+	_ = json.Unmarshal([]byte(raw), &in)
+	if s, isStr := in.ReviewID.(string); isStr && reviewIDPattern.MatchString(s) {
+		rv.ReviewID = s
+	}
+	var findings []struct {
+		ID       any `json:"id"`
+		Severity any `json:"severity"`
+	}
+	// 🔴 A MISSING OR MIS-SHAPED findings IS UNKNOWN, NOT EMPTY. Only a present
+	// JSON array (null is not one) is read; anything else leaves FindingsKnown
+	// false, so a caller never takes "no findings" from an absence.
+	if t := bytes.TrimSpace(in.Findings); len(t) > 0 && t[0] == '[' && json.Unmarshal(t, &findings) == nil {
+		rv.FindingsKnown = true
+	} else {
+		findings = nil
+	}
+	rv.Listed = len(findings)
+	for _, f := range findings {
+		id, isStr := f.ID.(string)
+		if !isStr || !findingIDPattern.MatchString(id) {
+			continue
+		}
+		sev, _ := f.Severity.(string)
+		if !severityPattern.MatchString(sev) {
+			sev = ""
+		}
+		rv.Findings = append(rv.Findings, Finding{ID: id, Severity: sev})
+		if len(rv.Findings) == MaxReviewFindings {
+			break
+		}
+	}
+	return rv, true
 }
 
 // lastJSONBlock is the content of body's last CLOSED fenced block whose info

@@ -224,11 +224,16 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 		body     string
 		senders  string // "" leaves the fixture's list
 		off      bool   // no PRMail at all
+		// noReply: the plugin marked the message no_reply, so it would be a
+		// review answered through HQ — the sender rules still decide first.
+		noReply bool
 	}{
 		{name: "no author recorded", sender: prSender, verified: true,
 			body: reviewBody(`"repo":"acme-labs/gadget-api","pr":4817,"head_sha":"` + prSHA + `"`)},
 		{name: "an unverified sender", sender: prSender, verified: false, body: reviewBody(fullFields())},
 		{name: "an unlisted sender", sender: "elsewhere/pr-check", verified: true, body: reviewBody(fullFields())},
+		{name: "an unverified sender, no_reply", sender: prSender, verified: false, body: reviewBody(fullFields()), noReply: true},
+		{name: "an unlisted sender, no_reply", sender: "elsewhere/pr-check", verified: true, body: reviewBody(fullFields()), noReply: true},
 		{name: "today's mail, no repo", sender: prSender, verified: true,
 			body: reviewBody(`"pr":` + strconv.Itoa(prNumber) + `,"head_sha":"` + prSHA + `"`)},
 		{name: "an empty list", sender: prSender, verified: true, body: reviewBody(fullFields()), senders: "-"},
@@ -244,7 +249,19 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 			case c.senders == "-":
 				f.srv.ext.PRMail = &PRMail{}
 			}
-			m := f.review(t, "pr-nomatch-"+strconv.Itoa(i), c.sender, c.verified, c.body)
+			var m plugins.Message
+			if c.noReply {
+				var created bool
+				var err error
+				m, created, err = f.plugins.Submit(f.asOwner, f.agentMail.ID, plugins.MessageIn{ExternalID: "pr-nomatch-" + strconv.Itoa(i),
+					Sender: c.sender, Subject: "review: Gizmo route", Body: c.body, SenderVerified: c.verified, NoReply: true})
+				if err != nil || !created {
+					t.Fatalf("submit: %v %v", created, err)
+				}
+				f.dispatch(t, m)
+			} else {
+				m = f.review(t, "pr-nomatch-"+strconv.Itoa(i), c.sender, c.verified, c.body)
+			}
 			if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 || len(f.queued(t)) != 0 {
 				t.Fatalf("%d routes, %d chief turns, %d queued; want 0, 1, 0", len(rs), f.turns.count(), len(f.queued(t)))
 			}
@@ -262,6 +279,13 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 	f.authored(t, f.asOwner, routeSID, prCreated())
 	if rs := f.routesOf(t, f.review(t, "pr-nomatch-control", prSender, true, reviewBody(fullFields()))); len(rs) != 1 {
 		t.Fatalf("control: %d routes", len(rs))
+	}
+	// And a no_reply one from a verified, listed sender IS routed (one-way), so
+	// the no_reply cases above are refused by the sender rules, not by no_reply.
+	g := newPRFixture(t)
+	g.authored(t, g.asOwner, routeSID, prCreated())
+	if rs := g.routesOf(t, g.reviewNoReplyBody(t, "pr-nomatch-control-noreply", reviewBody(fullFields()))); len(rs) != 1 || !rs[0].OneWay {
+		t.Fatalf("no_reply control: routes %+v; want one, one-way", rs)
 	}
 }
 
