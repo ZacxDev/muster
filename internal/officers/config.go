@@ -104,6 +104,21 @@ type Officer struct {
 	// holds it, at most MaxReadRepos, and accepted beside any ship stage (never
 	// one of ship.repos).
 	ReadRepos []string `json:"read_repos,omitempty"`
+	// ReadGrant is how ReadRepos are granted: "" (the default) is the
+	// per-instance `github` approval above; ReadGrantStanding serves them with
+	// NO approval, anonymously, reads only, each verified PUBLIC with GitHub
+	// (connectors' standing public read). Standing is accepted only on a
+	// builtin officer, never beside ship, and does not need Repo.
+	// StandingReadRepos and ApprovalReadRepos are the one read of it.
+	ReadGrant string `json:"read_grant,omitempty"`
+	// ReadAt is where a standing read is pointed: "" names no ref (the
+	// default branch), ReadAtRelease names muster's own release tag
+	// (ReleaseTag). Accepted only with ReadGrantStanding.
+	ReadAt string `json:"read_at,omitempty"`
+	// ReleaseTag is the git tag of the muster release this server runs
+	// ("v0.221.0"), stamped by StampReleaseTag for an officer with ReadAt
+	// ReadAtRelease; "" when the build's version is not a release.
+	ReleaseTag string `json:"-"`
 	// Ship, when set, lets the officer push branches, open pull requests, and
 	// (by stage) merge its own pull requests and tag releases in Repo — every
 	// write filtered or performed by muster (ship.go). nil for every other
@@ -229,6 +244,8 @@ type declared struct {
 	Image        string   `json:"image"`
 	Repo         string   `json:"repo"`
 	ReadRepos    []string `json:"read_repos"`
+	ReadGrant    string   `json:"read_grant"`
+	ReadAt       string   `json:"read_at"`
 	Connectors   []string `json:"connectors"`
 	// Ship is parsed by parseShip (ship.go), which reads its own secrets.
 	Ship json.RawMessage `json:"ship"`
@@ -438,15 +455,17 @@ func MayRequestConnector(o Officer, name string) bool {
 // listed twice (in any case), an entry that is `repo` itself, more than
 // MaxReadRepos entries, and any entry when there is no `repo`.
 //
-// 🔴 read_repos NEEDS repo. The GitHub App refuses a caller with no repository
-// of its own (githubapp.App.Credential), and a request whose path names no
-// repository (/graphql, /rate_limit) is served with the token for `repo`; an
-// officer with read_repos alone would have neither.
-func parseReadRepos(repo string, in []string) ([]string, error) {
+// 🔴 read_repos NEEDS repo — unless standing. The GitHub App refuses a caller
+// with no repository of its own (githubapp.App.Credential), and a request
+// whose path names no repository (/graphql, /rate_limit) is served with the
+// token for `repo`; an officer with read_repos alone would have neither. A
+// standing read (read_grant "standing") uses no App token at all, so it does
+// not need one.
+func parseReadRepos(repo string, in []string, standing bool) ([]string, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
-	if repo == "" {
+	if repo == "" && !standing {
 		return nil, errors.New("read_repos needs `repo`: the officer's own repository is what a request that names " +
 			"no repository is served for, and the GitHub App refuses an agent without one")
 	}
@@ -472,6 +491,97 @@ func parseReadRepos(repo string, in []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// The values of an officer's `read_grant` and `read_at`.
+const (
+	// ReadGrantStanding serves read_repos with no approval: anonymously, reads
+	// only, each verified public (Officer.ReadGrant).
+	ReadGrantStanding = "standing"
+	// ReadAtRelease points a standing read at muster's own release tag
+	// (Officer.ReadAt, Officer.ReleaseTag).
+	ReadAtRelease = "release"
+)
+
+// parseReadGrant reads `read_grant` and `read_at`, FAIL CLOSED: "standing" is
+// refused on an officer that is not builtin (an HQ officer's grants are
+// unchanged by it; a builtin officer cannot ship, parseBackend refuses `ship`)
+// and without read_repos; `read_at` is
+// refused without "standing"; any other value is refused.
+func parseReadGrant(o Officer, d declared) (grant, at string, err error) {
+	switch g := strings.TrimSpace(d.ReadGrant); g {
+	case "":
+	case ReadGrantStanding:
+		switch {
+		case !o.IsBuiltin():
+			return "", "", errors.New(`read_grant "standing" is for a builtin officer only ("backend": "builtin"); ` +
+				"an HQ officer's read_repos are approved per instance")
+		case len(d.ReadRepos) == 0:
+			return "", "", errors.New(`read_grant "standing" needs read_repos: it grants nothing else`)
+		}
+		grant = g
+	default:
+		return "", "", fmt.Errorf("read_grant %q is not %q (leave it out for the per-instance approval)", d.ReadGrant, ReadGrantStanding)
+	}
+	switch a := strings.TrimSpace(d.ReadAt); a {
+	case "":
+	case ReadAtRelease:
+		if grant != ReadGrantStanding {
+			return "", "", errors.New(`read_at needs read_grant "standing"`)
+		}
+		at = a
+	default:
+		return "", "", fmt.Errorf("read_at %q is not %q", d.ReadAt, ReadAtRelease)
+	}
+	return grant, at, nil
+}
+
+// StandingReadRepos are the repositories o's instances READ through the
+// standing public read (connectors.Caller.PublicReadRepos): its read_repos
+// when it is a builtin officer that declares read_grant "standing" and does
+// not ship; nil for every other officer. 🔴 THE ONE RULE for who gets a
+// standing read: internal/api reads it, and nothing else decides it.
+func (o Officer) StandingReadRepos() []string {
+	if o.ReadGrant != ReadGrantStanding || !o.IsBuiltin() || o.Ship != nil {
+		return nil
+	}
+	return o.ReadRepos
+}
+
+// ApprovalReadRepos are o's read_repos served under the per-instance `github`
+// grant (connectors.Caller.ReadRepos, part of the grant's RepoScope): all of
+// them, unless they are standing (StandingReadRepos), when none are.
+func (o Officer) ApprovalReadRepos() []string {
+	if len(o.StandingReadRepos()) > 0 {
+		return nil
+	}
+	return o.ReadRepos
+}
+
+// releaseVersionRE is a release build's version (api.BuildVersion): x.y.z.
+var releaseVersionRE = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// ReleaseTagOf is the git tag of the muster release whose version is version
+// ("0.221.0" -> "v0.221.0"), "" for a build that is not a release ("dev").
+func ReleaseTagOf(version string) string {
+	v := strings.TrimSpace(version)
+	if !releaseVersionRE.MatchString(v) {
+		return ""
+	}
+	return "v" + strings.TrimPrefix(v, "v")
+}
+
+// StampReleaseTag returns list with ReleaseTag set, from version (the
+// server's build version), on every officer whose standing read is pointed at
+// muster's release (ReadAt ReadAtRelease).
+func StampReleaseTag(list []Officer, version string) []Officer {
+	out := append([]Officer(nil), list...)
+	for i := range out {
+		if out[i].ReadAt == ReadAtRelease {
+			out[i].ReleaseTag = ReleaseTagOf(version)
+		}
+	}
+	return out
 }
 
 // TokenEnvPrefix is the prefix of the variable each officer's HQ token is read
@@ -644,7 +754,12 @@ func (d declared) officer(getenv func(string) string, maxName int, images []stri
 	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
 		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
 	}
-	readRepos, err := parseReadRepos(o.Repo, d.ReadRepos)
+	grant, at, err := parseReadGrant(o, d)
+	if err != nil {
+		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+	}
+	o.ReadGrant, o.ReadAt = grant, at
+	readRepos, err := parseReadRepos(o.Repo, d.ReadRepos, grant == ReadGrantStanding)
 	if err != nil {
 		return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 	}

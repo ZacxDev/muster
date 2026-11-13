@@ -37,8 +37,9 @@ is unchanged. Only an officer whose type grants `outbound_drafts` gets that
 tool.
 
 - **On a pod** that approval is also the only way out: its other ways out of
-  its pod are muster's tools and the connectors its owner approves one request
-  at a time. Do not approve a connector that can write to the outside world for
+  its pod are muster's tools, the connectors its owner approves one request
+  at a time, and any PUBLIC repositories it is declared to read
+  ([below](#letting-it-read-public-repositories-read_grant-standing)). Do not approve a connector that can write to the outside world for
   one, and give it no `repo` with write access.
 - 🔴 **On a host** (`"runtime": "host"`) the approval is the **sanctioned
   path, not an enforcement boundary.** The instance runs as the machine's
@@ -234,8 +235,10 @@ What happens:
   items wait.
 
 Refused at boot, each named: `backend` other than `builtin`, no `host` or `repo`,
-and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos`,
-`llm`, `kube` (plus what every builtin officer refuses). `connectors` and
+and `tiers`, `model`, `image`, `cc_account`, `cc_failover`, `read_repos` (so a
+[standing read](#letting-it-read-public-repositories-read_grant-standing) too:
+it is served through muster's proxy with the agent token a host session never
+holds), `llm`, `kube` (plus what every builtin officer refuses). `connectors` and
 [outbound drafts](#5b-outbound-drafts-through-a-bound-plugin) work on a host.
 
 🔴 **The security model is the machine's, not a pod's.** An instance runs as
@@ -253,6 +256,30 @@ user you would let run that charter unattended. The full list is in the
 
 **Check:** the boot log's `officers: <id> on: runtime host on <machine> …` line,
 and the ON line's `S on hosts` count.
+
+### Letting it read public repositories (`read_grant: "standing"`)
+
+An officer that answers questions about a product needs its docs and source.
+When those are in PUBLIC repositories, declare them as a standing read: every
+instance reads them from its first turn, with no `github` request for its
+owner to approve on each scale-up.
+
+```yaml
+- name: MUSTER_OFFICERS
+  value: >-
+    [{"id": "marketing:example", "backend": "builtin", "max_instances": 1,
+      "idle_scale_to_zero_after": "30m",
+      "read_repos": ["example-org/product"], "read_grant": "standing", "read_at": "release"}]
+```
+
+muster serves the reads itself, anonymously (no credential), reads only, and
+only after GitHub confirms each repository is public; a private one, a write,
+or any other repository is refused or takes the ordinary per-instance grant.
+`read_at: "release"` points the instance at the tag of the muster release the
+server runs. Builtin officers only: on an HQ officer it is a boot refusal. The
+rules in full: [officers.md](officers.md#a-standing-public-read-read_grant-standing).
+The pod needs no GitHub egress (muster-server makes the call), so section 2b's
+egress is enough.
 
 ## 4. Feed its queue
 

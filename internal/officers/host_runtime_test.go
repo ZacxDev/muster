@@ -21,7 +21,7 @@ func hostDecl(extra string) string {
 	return `[{"id":"marketing:example","backend":"builtin","runtime":"host","host":"host-alpha","repo":"example-org/example-site"` + extra + `}]`
 }
 
-func noEnv(string) string { return "" }
+// noEnv is read_grant_test.go's (one helper for the package).
 
 // TestAHostOfficerParses: the fields land, the runtime is host, and String
 // says so; a declaration with no runtime is a pod officer.

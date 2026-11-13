@@ -61,7 +61,9 @@ MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers o
 | `cc_failover` | `false` | With `cc_account`: let a pinned instance fail over to another account anyway ([account failover](#account-failover)). Without `cc_account` it changes nothing: an unpinned instance fails over by default. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 | `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
-| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. |
+| `read_repos` | none | Up to 5 further GitHub repositories (`owner/name`, the same shape check as `repo`) the instances may **read**, READ ONLY, through the same `github` connector and the same approval — see [Reading a repository](#reading-a-repository-repo). Needs `repo`; an entry equal to `repo`, a duplicate (in any case), a sixth entry, a bad shape, or (on a [shipping officer](#shipping-officers)) an entry that is one of its ship repositories is a boot refusal naming the officer; so is `read_repos` on a shipping officer when the deployment has no GitHub App of its own (`MUSTER_GITHUB_APP_ID` unset). Kept lowercased and sorted, so reordering it changes nothing. Needs no `repo` with `read_grant: "standing"`. |
+| `read_grant` | none (per-instance approval) | `"standing"`: the `read_repos` are read with **no approval**, anonymously, reads only, each checked PUBLIC with GitHub — see [A standing public read](#a-standing-public-read-read_grant-standing). A **builtin** officer only: on an HQ officer, without `read_repos`, or any other value, a boot refusal naming the officer. |
+| `read_at` | none (default branch) | `"release"`: a standing read is pointed at muster's own release tag (`v<the server's version>`), named in the first message. Needs `read_grant: "standing"`; any other value is a boot refusal. |
 | `connectors` | none | Connector names, besides `github`, the instances may request — e.g. a [postgres connector](connectors.md#postgres-connectors) for read-only SQL through `postgres_query`. Declaring one grants nothing: each instance's request is approved by hand, never from a shared approval ([below](#reading-a-repository-repo)). `github` itself, and a name that is not a connector name, is a boot refusal. |
 | `ship` | none | Lets the officer push, merge its own pull requests and tag releases in `repo`, through muster's gates: [Shipping officers](#shipping-officers). |
 | `transcript` | off | `{"enabled": true}` forwards each instance's live session transcript to HQ while it holds a claimed item: [Transcript to HQ](#transcript-to-hq). Strict: any other key is a boot refusal. |
@@ -605,7 +607,92 @@ for officers, and none for any other configured agent. The instance asks once
 repository — approves an officer instance's request, and an officer's approval
 is never shared. Each instance's `github` request waits for its own decision.
 The App is an admin's: an `owner` who is not an admin is offered the stored
-`github` connector instead, and the App mints nothing for them.
+`github` connector instead, and the App mints nothing for them. (A
+[standing public read](#a-standing-public-read-read_grant-standing) is not a
+shared approval: it is no grant at all, and carries no credential.)
+
+#### A standing public read (`read_grant: "standing"`)
+
+A **builtin** officer whose `read_repos` are PUBLIC repositories — for example
+muster's own source, so a marketing officer can answer a product question from
+the docs and code — may read them with no approval at all:
+
+```json
+{"id": "marketing:example", "backend": "builtin",
+ "read_repos": ["example-org/product"], "read_grant": "standing", "read_at": "release"}
+```
+
+No `github` request is filed, its owner is never prompted, and every instance
+reads from its first turn, whatever scales up. It is narrow by construction
+(`internal/connectors/public_read.go`, decided in the proxy BEFORE any grant is
+read or filed):
+
+- 🔴 **No credential.** A standing read is forwarded **anonymously** — no App
+  token, no stored secret, and the agent's own muster token is dropped as on
+  every proxied request — so GitHub serves only what it serves to anyone.
+- 🔴 **Public only, checked.** Before the first read of a repository, and again
+  after 10 minutes, muster asks GitHub's API anonymously
+  (`GET /repos/<owner>/<name>`, redirects not followed) and serves the read only
+  when GitHub answers 200 with that exact `full_name`, `private: false` and
+  `visibility: "public"`. A 404 (private, or absent), another name, a redirect
+  (a rename: declare the current name) or another visibility is a **403**
+  naming the repository and why (cached for a minute); a check GitHub could not
+  answer (rate limit, network) is asked again next time: while a repository's
+  last verdict was public it keeps being served (GitHub still refuses a
+  private one, since no credential is sent); with no verdict yet, or a
+  not-public one, it is a 502. A
+  private repository needs the per-instance grant: declare it without
+  `read_grant` (and with `repo`).
+- 🔴 **Reads only.** `GET` and `HEAD`, git's `info/refs` for the
+  `git-upload-pack` service, and its fetch `POST …/git-upload-pack`. A push
+  (`git-receive-pack`, as a POST or as the `info/refs` service) or any API
+  write to a declared repository is a **403** from muster, never forwarded and
+  never handed to the ordinary path.
+- 🔴 **The declared repositories only.** The repository is decided from the
+  path by the App's own rule (`connectors.GitHubTargetRepo`). A request for any
+  other repository, or a path that names none (`/graphql`), is not a standing
+  read: it takes the ordinary path — the instance's `github` grant, as above.
+- **Not stopped by revoking or denying the `github` grant.** A standing read
+  needs no grant, so the owner's decision on one does not reach it; to stop
+  it, remove `read_grant` (or the repository) from `MUSTER_OFFICERS` and
+  restart muster.
+- 🔴 **Builtin officers only.** `read_grant: "standing"` on an HQ officer is a
+  boot refusal, and `officers.Officer.StandingReadRepos` — the one rule the
+  connect door reads — gives an HQ or shipping officer nothing whatever its
+  value says. An HQ officer's `read_repos` are approved per instance, as before.
+- **No `repo` needed**, since no App token is minted. With a `repo` too, that
+  repository (and only it) still goes through the per-instance grant.
+
+The hosts are the GitHub App's (`github.com` / `api.github.com` without one).
+Each read is audited on the connector audit log as `standing public read of
+<owner>/<name>`, and the boot log names the officer's standing read and its ref:
+
+```
+officers: marketing:example: standing public read of example-org/product at muster's release tag v0.221.0 (no approval; anonymous, reads only, each checked public with GitHub)
+```
+
+**`read_at: "release"`** points the instance at the tag of the muster release
+the server runs (`v` + its build version, `officers.ReleaseTagOf`), so a
+question about muster is answered from what is deployed, not from unreleased
+work on the default branch. A build that is not a release (`dev`) has no tag:
+the first message then says to read the default branch and to say so.
+
+**What the instance is told.** Its first message names the repositories, says
+no approval is needed (and not to `connector_request` them), names the tag, and
+gives both recipes with the proxy written out — git's `https://github.com/` is
+routed through the proxy only for an approved grant, so the clone names it:
+
+```sh
+git -c "http.$MUSTER_CONNECT_URL/.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" \
+  -c "http.$MUSTER_CONNECT_URL/.followRedirects=false" clone --depth 1 --branch v0.221.0 \
+  "$MUSTER_CONNECT_URL/connect/github/github.com/<owner>/<name>.git"
+curl -sS -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" \
+  "$MUSTER_CONNECT_URL/connect/github/api.github.com/repos/<owner>/<name>/contents/<path>?ref=v0.221.0"
+```
+
+The officer pod needs no GitHub egress: muster-server makes both calls. GitHub
+allows few anonymous REST reads an hour per address (shared by every standing
+read from the deployment), so the clone is the recipe to prefer.
 
 ### Reading pull requests with `gh`
 
