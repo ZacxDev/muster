@@ -200,7 +200,8 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
     a reply from the agent puts a dot on the panel's title, or on the bar
     button in full screen, where the header is hidden. The dot clears when the
     conversation is in view again: the panel closes, or becomes a side panel.
-    Beside the page the replies stay in view, so there is no dot. A Terminal
+    A reconnect that redraws the conversation, however many batches it takes,
+    does not set it. Beside the page the replies stay in view, so there is no dot. A Terminal
     view has no transcript to watch, so it has no dot.
 - **Both mint at click time.** The page posts `POST /plugin-handoffs` for that
   plugin and the window on screen, then goes to the URL it answers. A refused
@@ -274,8 +275,9 @@ on `/mirror/terminal`, so the button is on both. An agent's pages
 - **Escape** closes the panel only when no other dialog or popover is open.
   While the panel covers the page (below `sm`, and in full screen) everything
   it covers is made inert, so Tab reaches only the panel and the message bar
-  (while the bar is shown). Dialogs and popovers are never made inert, so a
-  step-up confirm opened by a Send still answers. Beside the page nothing is
+  (while the bar is shown). Dialogs, popovers and the toasts are never made
+  inert, wherever they sit, so the command palette opened from the bar and a
+  step-up confirm opened by a Send still answer. Beside the page nothing is
   inert. All of it is undone on close.
 
 ## The plugin author's contract

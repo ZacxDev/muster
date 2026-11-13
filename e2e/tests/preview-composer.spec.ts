@@ -53,7 +53,13 @@ const rig = new MirrorRig(previewComposerPort, 'e2e-pvc', {
 const origin = rig.origin;
 const names: string[] = [];
 let tr = '';
+let tr3 = '';
 let pasteFile = '';
+let hostEnv: NodeJS.ProcessEnv = {};
+// @3's conversation: more events than one batch of the wire carries (64,
+// internal/mirror/wire.go MaxBatchEvents), so its redraw after a reconnect
+// arrives in several batches.
+const LONG_PAIRS = 45;
 
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
@@ -81,17 +87,21 @@ test.beforeAll(async () => {
   await rig.start();
   const now = Math.floor(Date.now() / 1000);
   tr = rig.transcript(cc.prompt('the prompt of the preview window') + cc.reply('Answered.'), 'one');
-  const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\nwork|@2|2|0|zsh|${now - 120}|\n`, 'windows');
+  let long = '';
+  for (let i = 1; i <= LONG_PAIRS; i++) long += cc.prompt(`long prompt ${i}`) + cc.reply(`long reply ${i}`);
+  tr3 = rig.transcript(long, 'long');
+  const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${tr}\nwork|@2|2|0|zsh|${now - 120}|\nwork|@3|3|0|claude|${now - 180}|${tr3}\n`, 'windows');
   const previews = path.join(rig.dir, 'previews-played');
-  fs.writeFileSync(previews, '@1 1 0\n@2 1 0\n');
+  fs.writeFileSync(previews, '@1 1 0\n@2 1 0\n@3 1 0\n');
   pasteFile = path.join(rig.dir, 'pasted');
-  await rig.startHost({
+  hostEnv = {
     MUSTER_MIRROR_INTERACTIVE: '1',
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
     MUSTER_MIRROR_E2E_REFRESH: '300ms',
     MUSTER_MIRROR_E2E_PREVIEWS_FILE: previews,
     MUSTER_MIRROR_E2E_PASTE_FILE: pasteFile,
-  });
+  };
+  await rig.startHost(hostEnv);
 });
 
 test.afterAll(async () => {
@@ -263,12 +273,12 @@ test.describe('a phone', () => {
     expect(Math.abs(bar.bottom - 844), 'the bar is on the screen\'s bottom').toBeLessThanOrEqual(1);
     expect(Math.abs(bar.y - closedBar.y), 'the bar did not move when the panel opened').toBeLessThanOrEqual(1);
     await expect(page.locator('#mv-compose')).toBeVisible();
-    expect(await inert(page, '#mv-compose'), 'the bar is not inert').toBe(false);
+    expect(await inert(page, '#mv-send'), 'the bar (its Send) is not inert').toBe(false);
     for (const sel of ['#mv-text', '#mv-send', '#mv-dictate', '#mv-attach']) {
       expect(await onTop(page, sel), `${sel} is on top where it is tapped`).toBe('itself');
     }
     // What the panel covers stays inert (Tab cannot reach it).
-    expect(await inert(page, 'header'), 'the header behind the panel is inert').toBe(true);
+    expect(await inert(page, '#mv-back'), 'the header\'s Home control behind the panel is inert').toBe(true);
     expect(await inert(page, '#mv-log'), 'the conversation behind the panel is inert').toBe(true);
     expect(await inert(page, '#preview-panel'), 'the panel is not').toBe(false);
     expect(await rootFlags(page)).toEqual(['data-preview-bar']);
@@ -348,8 +358,100 @@ test.describe('a phone', () => {
 
     // CLOSED: nothing inert, the layout as it was.
     expect(await rootFlags(page)).toEqual([]);
-    expect(await inert(page, 'header')).toBe(false);
+    expect(await inert(page, '#mv-back')).toBe(false);
     expect(await page.locator('#preview-panel').evaluate((p) => (p as HTMLElement).style.bottom)).toBe('');
+  });
+
+  // 🔴 AN OVERLAY NESTED IN A COVERED ELEMENT STAYS LIVE. The bar's search
+  // button opens the command palette, a popover that sits inside
+  // #sidebar-root (whose panel and backdrop the preview covers): it must
+  // take focus and typing, while what it sits beside stays inert.
+  test('the command palette opened from the bar under the panel takes focus and typing', async ({ page, context }) => {
+    test.setTimeout(120_000);
+    await ready(page, context);
+    await openRendered(page);
+    await openPanel(page);
+    await panelOnBar(page, 'opened');
+    const open = page.locator('#switcher-search-open');
+    expect(await onTop(page, '#switcher-search-open'), 'the bar\'s search button is on top').toBe('itself');
+    await open.tap();
+    const input = page.locator('#switcher-search-input');
+    await expect(input).toBeVisible();
+    expect(await inert(page, '#switcher-search-input'), 'the palette is not inert').toBe(false);
+    await expect(input, 'focus is in the palette\'s input').toBeFocused();
+    await page.keyboard.type('work');
+    await expect(input, 'typing reached the palette').toHaveValue('work');
+    // What the panel covers in the same box stays inert.
+    expect(await inert(page, '#sidebar'), 'the sidebar beside the palette stays inert').toBe(true);
+    expect(await inert(page, '#mv-back'), 'the header\'s Home control stays inert').toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(input).toBeHidden();
+    await expect(page.locator('#preview-panel'), 'Escape was the palette\'s').toBeVisible();
+  });
+
+  // 🔴 A RECONNECT'S REDRAW IS NOT A REPLY. The host restarts, so the view's
+  // log is reset and redrawn — in several batches, each in its own task
+  // (more than 64 events). No dot; a reply after it sets one. The page's
+  // incoming socket messages are recorded, so the multi-batch redraw is a
+  // measured fact of this run, not an assumption.
+  test('a reconnect that redraws the log in several batches sets no dot, and a new reply after it does', async ({ page, context }) => {
+    test.setTimeout(150_000);
+    await page.addInitScript(() => {
+      const w = window as unknown as { __msgs: { reset: boolean; ops: number }[]; __socks: WebSocket[] };
+      w.__msgs = [];
+      w.__socks = [];
+      const C = window.WebSocket;
+      const N = function (this: unknown, url: string | URL, p?: string | string[]) {
+        // A resume the host cannot take starts over with a Reset backfill
+        // (internal/mirrorhost/transcript.go): played by the reconnect asking
+        // for none.
+        if ((w as any).__noResume) url = String(url).replace(/&gen=[^&]*&offset=[^&]*/, '');
+        const o = p === undefined ? new C(url) : new C(url, p);
+        w.__socks.push(o);
+        o.addEventListener('message', (ev) => {
+          try {
+            const m = JSON.parse(String((ev as MessageEvent).data));
+            if (m && (m.ops || m.reset)) w.__msgs.push({ reset: !!m.reset, ops: (m.ops || []).length });
+          } catch (e) { /* not JSON */ }
+        });
+        return o;
+      } as unknown as typeof WebSocket;
+      N.prototype = C.prototype;
+      for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'] as const) (N as any)[k] = (C as any)[k];
+      window.WebSocket = N;
+    });
+    await ready(page, context);
+    await page.goto(origin + viewOf('@3'));
+    const bubbles = page.locator('#mv-log [data-bubble="assistant"]');
+    await expect(bubbles, `@3's conversation is drawn (log:\n${rig.log})`).toHaveCount(LONG_PAIRS, { timeout: 20_000 });
+    await openPanel(page);
+    const dot = page.locator('#preview-panel [data-preview-dot="header"]');
+    await expect(dot).toBeHidden();
+    const mark = await page.evaluate(() => (window as unknown as { __msgs: unknown[] }).__msgs.length);
+
+    await page.evaluate(() => { (window as any).__noResume = true; (window as any).__socks.forEach((s: WebSocket) => s.close()); });
+    // The redraw: a reset, then more batches after it.
+    await expect
+      .poll(
+        async () => {
+          const ms = (await page.evaluate(() => (window as unknown as { __msgs: { reset: boolean; ops: number }[] }).__msgs)).slice(mark);
+          // The redraw's first batch is a full one (64 events: the wire's
+          // cap), so the rest of it follows in batches of their own.
+          const at = ms.findIndex((m) => m.reset && m.ops >= 60);
+          return at < 0 ? -1 : ms.slice(at + 1).filter((m) => m.ops > 0).length;
+        },
+        { message: `a reset arrived and more batches after it (log:\n${rig.log})`, timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+    await expect(bubbles, 'redrawn whole').toHaveCount(LONG_PAIRS, { timeout: 20_000 });
+    await page.waitForTimeout(500);
+    await expect(dot, 'the redraw set no dot').toBeHidden();
+    await expect(page.locator('#preview-panel')).not.toHaveAttribute('data-preview-unread', '');
+
+    // A REAL reply after it does.
+    fs.appendFileSync(tr3, cc.reply('a reply after the reconnect'));
+    await expect(bubbles).toHaveCount(LONG_PAIRS + 1, { timeout: 20_000 });
+    await expect(dot, 'a new reply set the dot').toBeVisible();
   });
 
   test('the Terminal view: its own page and the view switch\'s frame keep the bar live under the panel, the panel ends at its top and follows the keyboard', async ({ page, context }) => {
@@ -361,8 +463,8 @@ test.describe('a phone', () => {
     await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
     await openPanel(page);
     const { panel } = await panelOnBar(page, 'the Terminal view');
-    expect(await inert(page, '#mv-compose'), 'the bar is not inert').toBe(false);
-    expect(await inert(page, 'header'), 'the header behind the panel is inert').toBe(true);
+    expect(await inert(page, '#mv-send'), 'the bar (its Send) is not inert').toBe(false);
+    expect(await inert(page, '#term-back'), 'the header\'s Back control behind the panel is inert').toBe(true);
     for (const sel of ['#mv-input', '#mv-send']) expect(await onTop(page, sel), `${sel} is on top`).toBe('itself');
     expect(await rootFlags(page)).toEqual(['data-preview-bar']);
     await sendFrom(page, 'typed into the shell beside the preview', 'tap');
@@ -387,8 +489,8 @@ test.describe('a phone', () => {
     await expect(f.locator('#mv-input')).toBeEnabled({ timeout: 20_000 });
     await openPanel(f);
     await panelOnBar(f, 'in the frame');
-    expect(await inert(f, '#mv-compose'), 'the frame\'s bar is not inert').toBe(false);
-    expect(await inert(f, 'header'), 'the frame\'s header is inert').toBe(true);
+    expect(await inert(f, '#mv-send'), 'the frame\'s bar is not inert').toBe(false);
+    expect(await inert(f, '#term-back'), 'the frame\'s header controls are inert').toBe(true);
     for (const sel of ['#mv-input', '#mv-send']) expect(await onTop(f, sel), `${sel} is on top in the frame`).toBe('itself');
     expect(await rootFlags(f)).toEqual(['data-preview-bar']);
     await sendFrom(f, 'typed from the framed terminal', 'tap');
@@ -501,7 +603,7 @@ test.describe('full screen in the Android app', () => {
     await full.click();
     await expect(panelEl).toHaveAttribute('data-preview-full', '');
     await expect(page.locator('#mv-compose'), 'the bar is hidden').toBeHidden();
-    expect(await inert(page, '#mv-compose'), 'and inert').toBe(true);
+    expect(await inert(page, '#mv-send'), 'and its controls inert').toBe(true);
     const pb = await rect(page, '#preview-panel');
     expect([pb.x, pb.y, pb.w, pb.h].map(Math.round), 'the panel is the viewport').toEqual([0, 0, 390, 844]);
     await expect(toggle).toBeVisible();
@@ -536,7 +638,7 @@ test.describe('full screen in the Android app', () => {
     await expect(toggle).toHaveAttribute('aria-label', 'Hide message bar');
     expect(await rootFlags(page)).toEqual(['data-preview-bar']);
     await expect(page.locator('#mv-compose')).toBeVisible();
-    expect(await inert(page, '#mv-compose'), 'the shown bar is not inert').toBe(false);
+    expect(await inert(page, '#mv-send'), 'the shown bar (its Send) is not inert').toBe(false);
     const shown = await panelOnBar(page, 'the bar shown in full screen');
     expect(Math.round(shown.panel.y), 'still full screen above the bar').toBe(0);
     expect((await rect(page, '[data-preview-bar-toggle]')).bottom, 'the button is above the bar').toBeLessThanOrEqual(shown.bar.y);
@@ -582,7 +684,7 @@ test.describe('full screen in the Android app', () => {
     await expect(panelEl).toBeHidden();
     expect(await rootFlags(page), 'closed: the layout as it was').toEqual([]);
     await expect(page.locator('#mv-compose')).toBeVisible();
-    expect(await inert(page, 'header')).toBe(false);
+    expect(await inert(page, '#mv-back')).toBe(false);
     expect(await back(), 'with nothing open Back is the shell\'s').toBe(false);
     // The chat is in view: the dot has cleared.
     await openPanel(page);

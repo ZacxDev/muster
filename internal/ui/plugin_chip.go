@@ -63,15 +63,20 @@ import (
 //     z-40), so its popups — the `/` menu, the suggested replies, the
 //     attachments, the mic's line, all placed bottom-full of it — open over
 //     the panel. What the panel still covers is made inert, so Tab reaches
-//     the panel and the bar only; dialogs and popovers are never made inert
-//     (a step-up confirm opened by a Send must answer). Beside the page
-//     ("side") nothing is inert.
+//     the panel and the bar only. Dialogs, popovers and the toasts' host are
+//     never made inert, WHEREVER THEY SIT (the command palette the bar's
+//     search opens is a popover inside #sidebar-root; a step-up confirm
+//     opened by a Send must answer): an element that holds one is not made
+//     inert whole, its other children are. Beside the page ("side") nothing
+//     is inert.
 //   - THE NEW-REPLY DOT: while the panel COVERS the conversation ("bar" and
 //     "full") a reply from the agent (a new assistant bubble in #mv-log, the
 //     Rendered view's transcript) puts a dot on the panel's title, and on the
 //     show-bar button in full screen, whose header is hidden. It clears when
 //     the conversation is in view again: the panel closes, or becomes a side
-//     panel. Beside the page the replies are in view, so it never shows
+//     panel. A reconnect's redraw of the log (a reset, then batches) is not
+//     a reply: a reply is a bubble the log holds more copies of than were
+//     ever seen. Beside the page the replies are in view, so it never shows
 //     there. A Terminal view has no transcript to watch, so no dot.
 //   - Both mint a one-time hand-off at CLICK time (POST /plugin-handoffs,
 //     aimed at this window) and go to the entry URL it answers; drawing the
@@ -531,11 +536,14 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // popover (each is in the top layer, over the panel). Only what this set
   // inert is restored.
   var inerted = [], raised = false;
+  // KEEP: what the panel never makes inert — the top layer's dialogs and
+  // popovers (closed, they take no focus anyway) and the toasts' host.
+  var KEEP = 'dialog,[popover],#action-toasts';
   function shield() {
     var p = panel();
     if (!p) return;
     var m = previewMode(), c = compose(), root = document.documentElement;
-    var bar = m === 'bar', cover = bar || m === 'full';
+    var bar = m === 'bar', covers = bar || m === 'full';
     flag(root, '`+previewBarAttr+`', bar);
     flag(root, '`+previewNoBarAttr+`', m === 'full' && !!c);
     flag(root, '`+previewSideAttr+`', m === 'side');
@@ -565,21 +573,28 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
       }
     }
     var want = [];
-    if (cover) {
-      var kids = document.body.children;
+    // 🔴 AN OVERLAY IS KEPT WHEREVER IT SITS, not only as a child of the body:
+    // the command palette (a popover) and the toasts' host are inside
+    // #sidebar-root, whose own panel and backdrop the panel covers. A child
+    // that holds a kept element (or the panel, or the live bar) is not made
+    // inert whole: its children are, each by the same rule, so everything
+    // covered stays out of Tab's reach and only the overlays stay live.
+    function cover(el) {
+      var kids = el.children;
       for (var i = 0; i < kids.length; i++) {
         var k = kids[i];
-        if (k === p || k.contains(p) || k.tagName === 'SCRIPT' || k.tagName === 'DIALOG' || k.hasAttribute('popover')) continue;
-        if (bar && (k === c || k.contains(c))) continue;
+        if (k === p || k.tagName === 'SCRIPT' || k.tagName === 'STYLE' || k.matches(KEEP) || (bar && k === c)) continue;
         if (k.inert && inerted.indexOf(k) < 0) continue;
+        if (k.contains(p) || (bar && k.contains(c)) || k.querySelector(KEEP)) { cover(k); continue; }
         want.push(k);
       }
     }
+    if (covers) cover(document.body);
     inerted.forEach(function (k) { if (want.indexOf(k) < 0) k.inert = false; });
     want.forEach(function (k) { if (!k.inert) k.inert = true; });
     inerted = want;
     // The conversation is in view again: the dot has said its piece.
-    if (!cover) flag(p, 'data-preview-unread', false);
+    if (!covers) flag(p, 'data-preview-unread', false);
   }
   // relayout runs shield after the frame's other layout work: two frames on,
   // so the pinned bar's own measure (composerPinScript, one frame on from
@@ -594,34 +609,50 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // the window, the keyboard's viewport (the top window's inside the view
   // switch's frame, as the pinned bar measures it) and the bar's own size.
   function watch() {
+    watchViewport();
     if (watching) return;
     watching = true;
     window.addEventListener('resize', relayout);
-    // Back from the back/forward cache with the panel open: measured again.
-    window.addEventListener('pageshow', relayout);
-    var vw = window;
-    try { if (window.frameElement && window.frameElement.hasAttribute('`+ViewFrameAttr+`')) vw = window.parent; } catch (e) {}
-    if (vw.visualViewport) {
-      vw.visualViewport.addEventListener('resize', relayout);
-      vw.visualViewport.addEventListener('scroll', relayout);
-      if (vw !== window) window.addEventListener('pagehide', function () {
-        vw.visualViewport.removeEventListener('resize', relayout);
-        vw.visualViewport.removeEventListener('scroll', relayout);
-      });
-    }
+    // Back from the back/forward cache with the panel open: the keyboard's
+    // viewport followed again (a frame's pagehide let go of it) and measured.
+    window.addEventListener('pageshow', function () { var p = panel(); if (p && !p.hidden) watchViewport(); relayout(); });
     var c = compose();
     if (c && typeof ResizeObserver !== 'undefined') new ResizeObserver(relayout).observe(c);
   }
+  // watchViewport follows the keyboard's viewport. Inside the view switch's
+  // frame that is the top window's, let go of on the frame's pagehide (a
+  // frame that goes away leaves nothing listening there) — and taken again by
+  // the next watch, so a frame restored from the back/forward cache follows it.
+  var vvWatching = false;
+  function watchViewport() {
+    if (vvWatching) return;
+    var vw = window;
+    try { if (window.frameElement && window.frameElement.hasAttribute('`+ViewFrameAttr+`')) vw = window.parent; } catch (e) {}
+    if (!vw.visualViewport) return;
+    vvWatching = true;
+    vw.visualViewport.addEventListener('resize', relayout);
+    vw.visualViewport.addEventListener('scroll', relayout);
+    if (vw !== window) window.addEventListener('pagehide', function off() {
+      window.removeEventListener('pagehide', off);
+      vw.visualViewport.removeEventListener('resize', relayout);
+      vw.visualViewport.removeEventListener('scroll', relayout);
+      vvWatching = false;
+    });
+  }
   // THE NEW-REPLY DOT: while the panel covers the conversation, a reply in
   // it sets the dot (shield clears it once the conversation is in view). A
-  // reply is a new assistant bubble: more of them than were seen, or a
-  // different last one — so the log redrawn whole (a reconnect's reset,
-  // which re-appends the same bubbles) is not one.
-  var logObs = null, seen = { n: 0, last: '' };
+  // reply is an assistant bubble the log holds MORE copies of than were ever
+  // seen at once, counted by its text. 🔴 A RESET IS NOT A REPLY: a
+  // reconnect clears the log and redraws it in batches of up to 64 events,
+  // each in its own task, so between batches the log holds a part of what it
+  // held — never more copies of any reply than were seen — and the whole of
+  // it once redrawn. Only a reply that was not there before adds one.
+  var logObs = null, seen = Object.create(null);
   function replies() {
-    var log = document.getElementById('mv-log');
+    var log = document.getElementById('mv-log'), out = Object.create(null);
     var bs = log ? log.querySelectorAll('[data-bubble="assistant"]') : [];
-    return { n: bs.length, last: bs.length ? bs[bs.length - 1].textContent : '' };
+    for (var i = 0; i < bs.length; i++) { var t = bs[i].textContent; out[t] = (out[t] || 0) + 1; }
+    return out;
   }
   function watchReplies(on) {
     if (logObs) { logObs.disconnect(); logObs = null; }
@@ -629,9 +660,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (!on || !log || typeof MutationObserver === 'undefined') return;
     seen = replies();
     logObs = new MutationObserver(function () {
-      var now = replies(), m = previewMode();
-      var fresh = now.n > seen.n || (now.n && now.last !== seen.last);
-      seen = { n: Math.max(seen.n, now.n), last: now.last };
+      var now = replies(), m = previewMode(), fresh = false;
+      for (var t in now) if (now[t] > (seen[t] || 0)) { seen[t] = now[t]; fresh = true; }
       if (fresh && (m === 'bar' || m === 'full')) flag(panel(), 'data-preview-unread', true);
     });
     logObs.observe(log, { childList: true, subtree: true });
