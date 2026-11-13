@@ -1223,7 +1223,8 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		// A note about a runtime muster does not know is that runtime's
 		// words: dropped with it.
 		if w.AgentNote = cleanNote(w.AgentNote); (!onWire && w.Claude) || unknownRuntime {
-			w.AgentNote = ""
+			// Its code goes with it: the two never disagree.
+			w.AgentNote, w.AgentNoteCode = "", ""
 		}
 		// Its code names a Claude Code pane's reason: only on a window that is
 		// not Claude and names no runtime; only a known one. NOT tied to the

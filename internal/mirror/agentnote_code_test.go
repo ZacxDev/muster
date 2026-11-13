@@ -24,6 +24,9 @@ func TestTheNoViewCodeIsKeptOnlyWhereItMeansSomething(t *testing.T) {
 			t.Errorf("%s: %+v, want code %q", c.name, got, c.want)
 		}
 	}
+	if got := NormalizeWindows([]Window{{Session: "s", ID: "@1", Runtime: "not-a-runtime", AgentNote: "x", AgentNoteCode: AgentNoteNoEnv}}, 0); len(got) != 1 || got[0].AgentNote != "" || got[0].AgentNoteCode != "" {
+		t.Errorf("an unknown runtime's note and code: %+v, want both dropped together", got)
+	}
 	a := Window{Session: "s", ID: "@1", AgentNote: "x", AgentNoteCode: AgentNoteNotYet}
 	b := a
 	b.AgentNoteCode = AgentNoteNoTranscript

@@ -56,6 +56,15 @@ func TestAHeldWaitIsPushedOnADropUnlessListedDead(t *testing.T) {
 		{"a new transcript-less Claude once", 1, func(full []mirror.Window) []mirror.Window {
 			return []mirror.Window{noteFor(full[0], mirror.AgentNoteNotYet)}
 		}, false},
+		// Unknown is not evidence (audit round 4): a host that cannot read its
+		// process table, and an older host's note with no code, say nothing
+		// of which conversation the pane holds — the drop push stands.
+		{"a no_procs note once", 1, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{noteFor(full[0], mirror.AgentNoteNoProcs)}
+		}, true},
+		{"a code-less note once", 1, func(full []mirror.Window) []mirror.Window {
+			return []mirror.Window{noteFor(full[0], "")}
+		}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newStateFixture(t, false)

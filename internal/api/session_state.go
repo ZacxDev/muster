@@ -223,11 +223,12 @@ func (s *Server) sessionStateOwner(octx context.Context, owner int64, budget *in
 			// windows before their Claude session ids), so it is unseen there
 			// while it is right where the episode left it — when its pane still
 			// holds its agent (listedUnkeyed).
-			var present bool
+			ev := listingNone
 			if reporting[ep.Host] {
-				present, dead = listedUnkeyed(hs, ep)
+				ev = listedUnkeyed(hs, ep)
 			}
-			if present {
+			dead = ev == listingDead
+			if ev == listingPresent {
 				if err := s.ext.Episodes.Present(octx, ep.ID); err != nil {
 					s.logger.Printf("session state: episode %d: present: %v", ep.ID, err)
 				}
@@ -320,31 +321,53 @@ func (s *Server) missedPass(octx context.Context, ep sessionstate.Episode, dead 
 //   - dead: listed there holding NO agent of this conversation — a pane that
 //     runs no agent (Claude exited and left the shell, or a tmux restart
 //     reused the window id for another shell), a NEW Claude conversation with
-//     no transcript yet (reason not_yet), a no-view note whose reason muster
-//     cannot read (an older host: unknown counts as not this conversation),
-//     or another conversation's key. Positive evidence the session is gone
-//     from it (Episode.DeadListed).
-//   - neither: not listed at all — an omission, no evidence either way.
+//     no transcript yet (reason not_yet), or another conversation's key.
+//     POSITIVE evidence the session is gone from it (Episode.DeadListed).
+//   - unknown: listed there as a Claude Code pane whose reason says nothing
+//     about which conversation it holds — the host cannot read its process
+//     table (no_procs), or an older host's note with no code. Not present
+//     (it counts toward the gone threshold, as missing), but no evidence the
+//     session is dead either: it never sets DeadListed (audit round 4).
+//   - none: not listed at all — an omission, no evidence either way.
 //
 // 🔴 A PANE THAT HOLDS NO AGENT OF THE CONVERSATION IS NOT "UNKEYED" (audit
 // rounds 1 and 3): counted present, such an episode never ended, its push was
 // never withdrawn, and a later host drop could push a held "needs you" for a
 // session that no longer exists.
-func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) (present, dead bool) {
+func listedUnkeyed(hs []mirror.HostView, ep sessionstate.Episode) listingEvidence {
 	for _, h := range hs {
 		if h.Host != ep.Host || !h.Online || !h.StatusReport {
 			continue
 		}
 		for _, w := range h.Windows {
-			if w.Session == ep.TmuxSession && w.ID == ep.Window {
-				key, _ := stateWindowKey(w)
-				present = key == "" && (w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode || w.ClaudeUnmatched())
-				return present, !present
+			if w.Session != ep.TmuxSession || w.ID != ep.Window {
+				continue
 			}
+			key, _ := stateWindowKey(w)
+			switch {
+			case key != "":
+				return listingDead // another conversation's key
+			case w.Claude || w.AgentRuntime() == mirror.RuntimeOpenCode || w.ClaudeUnmatched():
+				return listingPresent
+			case w.AgentNoteCode == mirror.AgentNoteNoProcs || (w.AgentNote != "" && w.AgentNoteCode == ""):
+				return listingUnknown
+			}
+			return listingDead // a shell, or a new conversation (not_yet)
 		}
 	}
-	return false, false
+	return listingNone
 }
+
+// listingEvidence is what a connected listing says of an episode's window
+// that the stall facts did not see (listedUnkeyed).
+type listingEvidence int
+
+const (
+	listingNone    listingEvidence = iota // not listed: an omission
+	listingPresent                        // its pane still holds its agent
+	listingDead                           // listed holding no agent of it
+	listingUnknown                        // listed, its reason unreadable
+)
 
 // heldWaitFacts is what open waiting episode ep is settled on when no status
 // is read for it — by the waiting hook, and by the pass for a window it cannot
