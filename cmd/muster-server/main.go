@@ -2166,6 +2166,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					label, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
 					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort,
 					strings.Join(networkPolicyVerbs(), "/"), label)
+				// Officer egress, in both states: what an officer's lock admits
+				// on top of the connect port (officers only; agentspec.
+				// claudeCodeNetworkFor).
+				l.Print(officerEgressBannerLine(a.cfg))
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",

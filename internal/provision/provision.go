@@ -434,6 +434,16 @@ func Fingerprint(s Spec) string {
 		if n.NoClusterDNS {
 			w("network-no-cluster-dns")
 		}
+		// Same rule again: its own line, only when declared, sorted (order
+		// admits nothing different).
+		if len(n.EgressCIDRs) > 0 {
+			cidrs := make([]string, 0, len(n.EgressCIDRs))
+			for _, c := range n.EgressCIDRs {
+				cidrs = append(cidrs, c.String())
+			}
+			sort.Strings(cidrs)
+			w("network-egress-cidrs", strings.Join(cidrs, "\x1f"))
+		}
 	}
 
 	// 🔴 THE SIDECAR COUNTS, AND ONLY WHEN DECLARED — Security's rule, for

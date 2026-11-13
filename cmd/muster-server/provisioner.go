@@ -728,6 +728,10 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		// port, so a URL here always comes with the pod port its policy allows.
 		ConnectURL:  cfg.AgentConnectURL,
 		ConnectPort: cfg.ConnectPort,
+		// Officers only (agentspec.claudeCodeNetworkFor); config.validate
+		// refuses either without an agent NetworkPolicy.
+		OfficerEgressCIDRs: slices.Clone(cfg.OfficerEgressCIDRs),
+		OfficerEgressDNS:   cfg.OfficerEgressDNS,
 
 		ComposeContainer: cfg.chiefCompose(),
 	}, nil
