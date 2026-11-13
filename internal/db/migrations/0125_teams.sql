@@ -89,8 +89,7 @@ CREATE TABLE IF NOT EXISTS public.team_members (
     role      TEXT        NOT NULL CHECK (role IN ('viewer', 'operator', 'manager')),
     added_by  BIGINT      NOT NULL REFERENCES public.users (id),
     added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (team_id, user_id),
-    CONSTRAINT team_members_not_self CHECK (team_id <> user_id)
+    PRIMARY KEY (team_id, user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_team_members_user ON public.team_members (user_id);

@@ -94,6 +94,11 @@ func TestNoDoorAdmitsATeam(t *testing.T) {
 // (publicRoutes), why a team cannot use it. It is pinned to publicRoutes in
 // both directions, so a new unauthenticated entry point cannot ship without
 // someone stating, here, how it keeps a team out.
+//
+// ⚠ A FORCING FUNCTION, NOT COVERAGE. It checks that a sentence exists, never
+// that the route behaves as the sentence says. The behavioural tests are
+// TestATeamRowIsNeverASignInIdentity (the sign-in rows) and
+// TestATeamOwnedMirrorTokenIsRefused (the mirror rows).
 var publicRouteTeamGuard = map[string]string{
 	// No identity at all: nothing for a team to be.
 	"GET /apple-touch-icon-precomposed.png": guardNoIdentity,
