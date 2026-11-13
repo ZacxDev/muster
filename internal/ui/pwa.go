@@ -280,6 +280,34 @@ var pwaScriptSrc = staticJS("pwa", `
   // 🔴 A SPOT THE OPERATOR DRAGGED THE PILL TO WINS (savedPos): it is used,
   // clamped to the viewport, instead of the corner and the slide-down below.
   // With none saved, the corner and the slide-down apply as before.
+  //
+  // 🔴 BUT A SAVED SPOT STILL COVERS NO CONTROL. Clamped into a viewport the
+  // phone keyboard shrank (the pages declare interactive-widget=
+  // resizes-content: innerHeight drops and resize fires), a spot low on the
+  // screen landed ON the pinned composer and Send — z-[35] over z-20, so the
+  // pill took the taps. So the clamped spot is checked like the corner is,
+  // and if it covers a control the pill goes to the NEAREST free spot up or
+  // down its column (nearestFreeTop). The saved spot is not rewritten: when
+  // the keyboard closes, the pill goes back to it.
+  function nearestFreeTop(t, pill, left) {
+    var boxes = controlBoxes(t, pill);
+    var start = pill.top;
+    if (overlap(boxes, pill, start, pill.height) === 0) return start;
+    var lo = clampPos(t, { left: left, top: -1e9 }).top;
+    var hi = clampPos(t, { left: left, top: 1e9 }).top;
+    var best = start, bestCost = Infinity;
+    for (var d = 4; start - d >= lo || start + d <= hi; d += 4) {
+      var tops = [start - d, start + d];
+      for (var k = 0; k < 2; k++) {
+        var top = tops[k];
+        if (top < lo || top > hi) continue;
+        var cost = overlap(boxes, pill, top, pill.height);
+        if (cost === 0) return top;
+        if (cost < bestCost) { best = top; bestCost = cost; }
+      }
+    }
+    return best;
+  }
   function placeToast(t) {
     var vis = t.style.visibility;
     var wasHidden = t.hidden;
@@ -290,7 +318,10 @@ var pwaScriptSrc = staticJS("pwa", `
     t.hidden = false;
     var saved = savedPos();
     if (saved) {
-      applyPos(t, clampPos(t, saved));
+      var at = clampPos(t, saved);
+      applyPos(t, at);
+      at.top = nearestFreeTop(t, t.getBoundingClientRect(), at.left);
+      applyPos(t, at);
       t.hidden = wasHidden;
       t.style.visibility = vis;
       return;
@@ -326,31 +357,39 @@ var pwaScriptSrc = staticJS("pwa", `
   // server stamped into those bytes. No network request. A worker that does
   // not answer within VERSION_ASK_MS (an older sw.js, a worker that went
   // redundant) leaves the pill's "Update available" label — the pill is shown
-  // either way, and Reload never waits on this. The answer is kept per worker,
-  // so a re-offer after a swap draws at once.
+  // either way, and Reload never waits on this. A real ANSWER is kept per
+  // worker, so a re-offer after a swap draws at once; a timeout is not kept
+  // (the worker was asked, not answered), and an answer that arrives after it
+  // redraws the pill in place if the pill is still showing that worker.
   var VERSION_ASK_MS = 1000;
   var RELEASE_RE = /` + releaseVersionPattern + `/;
   var asked = { w: null, v: null };
+  var shownFor = null; // the waiting worker the visible pill describes
   function workerVersion(w, done) {
     if (!w || typeof w.postMessage !== 'function') return done(null);
     if (asked.w === w) return done(asked.v);
     var over = false;
-    var finish = function (v) {
+    var timer = setTimeout(function () {
       if (over) return;
       over = true;
-      asked = { w: w, v: v };
-      done(v);
-    };
-    var timer = setTimeout(function () { finish(null); }, VERSION_ASK_MS);
+      done(null);
+    }, VERSION_ASK_MS);
     try {
       var ch = new MessageChannel();
       ch.port1.onmessage = function (e) {
         clearTimeout(timer);
         var b = e.data && e.data.build;
-        finish(typeof b === 'string' && b ? b : null);
+        var v = typeof b === 'string' && b ? b : null;
+        asked = { w: w, v: v };
+        if (!over) { over = true; done(v); return; }
+        var t = document.getElementById('sw-update-toast');
+        if (t && !t.hidden && shownFor === w) drawVersions(t, v);
       };
       w.postMessage({ type: 'GET_VERSION' }, [ch.port2]);
-    } catch (err) { clearTimeout(timer); finish(null); }
+    } catch (err) {
+      clearTimeout(timer);
+      if (!over) { over = true; done(null); }
+    }
   }
   // drawVersions: "Update <current> → <new>" when both are known and differ,
   // the plain label otherwise. Only the new version can link: to its release
@@ -371,6 +410,10 @@ var pwaScriptSrc = staticJS("pwa", `
         n.className = '` + releaseLinkClass + `';
         n.setAttribute('data-sw-release', v);
         n.setAttribute('aria-label', 'Release notes for ' + v);
+        // 🔴 NOT NATIVELY DRAGGABLE: a link is, by default, so a mouse press on
+        // it that moved started the browser's own link drag, which cancels the
+        // pointer stream (pointercancel) and the pill stopped a few px in.
+        n.draggable = false;
       } else {
         n = document.createElement('span');
         n.className = 'font-semibold';
@@ -415,8 +458,9 @@ var pwaScriptSrc = staticJS("pwa", `
   // clampPos: p moved the least distance that puts the whole pill inside the
   // viewport, inside the safe-area insets. A pill wider (taller) than the room
   // sits at the left (top) inset.
-  function clampPos(t, p) {
-    var b = t.getBoundingClientRect(), i = insets();
+  // ins: insets already read (a drag reads them once, at its start).
+  function clampPos(t, p, ins) {
+    var b = t.getBoundingClientRect(), i = ins || insets();
     var vw = Math.min(document.documentElement.clientWidth || window.innerWidth, window.innerWidth);
     var vh = window.innerHeight;
     return {
@@ -443,7 +487,7 @@ var pwaScriptSrc = staticJS("pwa", `
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (e.target.closest('button')) return;
     var b = t.getBoundingClientRect();
-    drag = { t: t, id: e.pointerId, x: e.clientX, y: e.clientY, left: b.left, top: b.top, moved: false };
+    drag = { t: t, id: e.pointerId, x: e.clientX, y: e.clientY, left: b.left, top: b.top, moved: false, ins: insets() };
   }
   // 🔴 THE PILL ITSELF LISTENS FOR click, NOT ONLY THE DOCUMENT. Chromium's
   // touch adjustment moves a touch that lands on a node that does not respond
@@ -455,12 +499,23 @@ var pwaScriptSrc = staticJS("pwa", `
   // letting go over the release link does not open it. The pill is swapped
   // with the body on a boosted navigation, so each pill is bound when it is
   // offered (bindDrag, once per element).
-  var justDragged = false;
+  // 🔴 THE SWALLOW LASTS UNTIL THE NEXT PRESS, OR 350 ms. Not setTimeout(0):
+  // a touch browser may deliver the gesture's click a frame or more after
+  // pointerup (iOS's synthesized click historically ~300 ms later). The next
+  // pointerdown is a new gesture, so it ends the window deterministically; the
+  // 350 ms cap only bounds a click with no press before it (Enter on the link).
+  var justDragged = false, swallowTimer = null;
+  var SWALLOW_MS = 350;
   function swallowDragClick(e) {
     if (!justDragged) return;
     e.preventDefault();
     e.stopPropagation();
   }
+  function endSwallow() {
+    justDragged = false;
+    clearTimeout(swallowTimer);
+  }
+  document.addEventListener('pointerdown', endSwallow, true);
   function bindDrag(t) {
     if (t.__musterDrag) return;
     t.__musterDrag = true;
@@ -477,7 +532,7 @@ var pwaScriptSrc = staticJS("pwa", `
       drag.t.setAttribute('data-sw-dragging', '');
     }
     e.preventDefault();
-    applyPos(drag.t, clampPos(drag.t, { left: drag.left + dx, top: drag.top + dy }));
+    applyPos(drag.t, clampPos(drag.t, { left: drag.left + dx, top: drag.top + dy }, drag.ins));
   });
   function endDrag(e) {
     if (!drag || e.pointerId !== drag.id) return;
@@ -485,18 +540,35 @@ var pwaScriptSrc = staticJS("pwa", `
     drag = null;
     if (!d.moved) return;
     d.t.removeAttribute('data-sw-dragging');
+    // A pill swapped out mid-drag (a boosted navigation) has no box: saving
+    // its {0,0} would park every later pill in the corner. Save nothing.
+    if (!d.t.isConnected) return;
     var b = d.t.getBoundingClientRect();
     savePos({ left: b.left, top: b.top });
     justDragged = true;
-    setTimeout(function () { justDragged = false; }, 0);
+    clearTimeout(swallowTimer);
+    swallowTimer = setTimeout(endSwallow, SWALLOW_MS);
   }
   document.addEventListener('pointerup', endDrag);
   document.addEventListener('pointercancel', endDrag);
 
+  // 🔴 A VISIBLE PILL OFFERED A DIFFERENT WORKER IS REDRAWN IN PLACE. A newer
+  // build (c) replacing the waiting one (b) used to leave "→ b" and b's
+  // release link on screen while Reload installed c. Its label is redrawn
+  // for c where it stands; the pill is not moved.
   function offerUpdate(w) {
     if (w && w === dismissed) return;
     var t = document.getElementById('sw-update-toast');
-    if (!t || !t.hidden) return;
+    if (!t) return;
+    if (!t.hidden) {
+      if (!w || w === shownFor) return;
+      shownFor = w;
+      workerVersion(w, function (v) {
+        var t2 = document.getElementById('sw-update-toast');
+        if (t2 && !t2.hidden && shownFor === w) drawVersions(t2, v);
+      });
+      return;
+    }
     whenSettled(function () {
       workerVersion(w, function (v) {
         var t2 = document.getElementById('sw-update-toast');
@@ -506,20 +578,22 @@ var pwaScriptSrc = staticJS("pwa", `
         drawVersions(t2, v);
         bindDrag(t2);
         placeToast(t2);
+        shownFor = w;
         t2.hidden = false;
       });
     });
   }
   // A swap that lands a control UNDER a visible pill (a list refresh) moves the
   // pill off it. Only then: an unprompted move is a layout shift, so a pill
-  // that covers nothing is never touched. A pill at a dragged spot stays there
-  // — only re-clamped, so a resize cannot leave it off screen (a rotation
-  // fires resize too, so it needs no listener of its own).
+  // that covers nothing is never touched. A pill at a dragged spot is placed
+  // from that spot again — re-clamped and kept off controls (placeToast) — so
+  // a resize (a rotation, the phone keyboard; a rotation fires resize too, so
+  // it needs no listener of its own) cannot leave it off screen or on Send.
+  // Not while it is being dragged: the drag owns its position.
   function replaceIfCovering() {
     var t = document.getElementById('sw-update-toast');
-    if (!t || t.hidden) return;
-    var saved = savedPos();
-    if (saved) { applyPos(t, clampPos(t, saved)); return; }
+    if (!t || t.hidden || drag) return;
+    if (savedPos()) { placeToast(t); return; }
     var pill = t.getBoundingClientRect();
     if (overlap(controlBoxes(t, pill), pill, pill.top, pill.height) > 0) placeToast(t);
   }

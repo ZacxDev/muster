@@ -799,6 +799,23 @@ const centre = async (page: Page, sel: string): Promise<Pt> => {
   return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
 };
 
+// answerAsRelease makes every WAITING worker answer GET_VERSION with v (the
+// e2e builds are not releases), so the page's drawing of a release is tested.
+async function answerAsRelease(page: Page, v: string): Promise<void> {
+  await page.addInitScript((build) => {
+    const orig = ServiceWorker.prototype.postMessage;
+    ServiceWorker.prototype.postMessage = function (this: ServiceWorker, msg: unknown, ...rest: unknown[]) {
+      const m = msg as { type?: string };
+      if (m && m.type === 'GET_VERSION' && this !== navigator.serviceWorker.controller) {
+        const ports = rest[0] as MessagePort[];
+        ports[0].postMessage({ build });
+        return;
+      }
+      return (orig as (...a: unknown[]) => void).call(this, msg, ...rest);
+    };
+  }, v);
+}
+
 const pillViewports = [
   { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }, touch: true },
   { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false }, touch: false },
@@ -834,18 +851,7 @@ for (const vp of pillViewports) {
     // with a release version here — the e2e builds are not releases — so the
     // page's drawing of a release is what is tested.
     test('a release version links to its notes, and a tap on it opens them', async ({ page, context }) => {
-      await page.addInitScript(() => {
-        const orig = ServiceWorker.prototype.postMessage;
-        ServiceWorker.prototype.postMessage = function (this: ServiceWorker, msg: unknown, ...rest: unknown[]) {
-          const m = msg as { type?: string };
-          if (m && m.type === 'GET_VERSION' && this !== navigator.serviceWorker.controller) {
-            const ports = rest[0] as MessagePort[];
-            ports[0].postMessage({ build: '0.211.0' });
-            return;
-          }
-          return (orig as (...a: unknown[]) => void).call(this, msg, ...rest);
-        };
-      });
+      await answerAsRelease(page, '0.211.0');
       let notes = 0;
       await context.route('https://github.com/**', (route) => { notes++; return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>notes</title>' }); });
       await offerB(page);
@@ -993,6 +999,57 @@ for (const vp of pillViewports) {
       expect(await savedPos(page), 'the tap on Reload became a drag').toBeNull();
     });
 
+    // 🔴 A NEWER BUILD WHILE THE PILL SHOWS: the label is redrawn for it, in
+    // place. It used to keep "→ b" while Reload installed c.
+    test('a newer build arriving while the pill shows redraws its version in place', async ({ page }) => {
+      await offerB(page);
+      const versions = page.locator('#sw-update-toast [data-sw-versions]');
+      await expect(versions).toHaveText(`Update ${versionA} → ${versionB}`);
+      const before = await pillBox(page);
+      await server!.stop();
+      server = await startServer(versionC, updatePort);
+      await page.evaluate(checkForUpdate);
+      await expect(versions, 'the label names the build Reload will install').toHaveText(`Update ${versionA} → ${versionC}`);
+      const after = await pillBox(page);
+      expect([after.x + after.width, after.y], 'redrawn in place, not moved').toEqual([before.x + before.width, before.y]);
+      const reloaded = page.waitForEvent('load', { timeout: 15_000 });
+      await page.locator('[data-sw-reload]').click();
+      await reloaded;
+      expect(await page.evaluate(controllerBuild)).toBe(versionC);
+    });
+
+    // A drag that starts on the release link and is let go over it (the link
+    // moves with the pointer) does not open the notes; a tap afterwards does.
+    test('a drag released over the release link does not open it', async ({ page, context }) => {
+      await answerAsRelease(page, '0.211.0');
+      let notes = 0;
+      await context.route('https://github.com/**', (route) => { notes++; return route.fulfill({ status: 200, contentType: 'text/html', body: '<title>notes</title>' }); });
+      let popups = 0;
+      context.on('page', () => { popups++; });
+      await offerB(page);
+      const link = page.locator('#sw-update-toast a[data-sw-release]');
+      await expect(link).toHaveText('0.211.0');
+      const at = await centre(page, '#sw-update-toast a[data-sw-release]');
+      const to = { x: at.x - 120, y: at.y + 150 };
+      await press(page, vp.touch, at, to);
+      expect(await savedPos(page), 'CONTROL: it was a drag').not.toBeNull();
+      const now = await centre(page, '#sw-update-toast a[data-sw-release]');
+      expect(Math.abs(now.x - to.x) < 2 && Math.abs(now.y - to.y) < 2, `CONTROL: let go over the link: ${JSON.stringify({ now, to })}`).toBe(true);
+      // ⚠ CHROMIUM NEVER CLICKS THE LINK AT THE END OF A DRAG (measured: with
+      // the swallow deleted this test stayed green) — the captured pointer
+      // retargets a mouse click to the pill, and a moved touch is no tap. An
+      // engine that delivers the gesture's click late (iOS's synthesized
+      // click) is played here: a click on the link right after the release.
+      await link.evaluate((a) => a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+      // Positive control, and the bound on a late open: a tap opens exactly one.
+      const popup = context.waitForEvent('page');
+      if (vp.touch) await link.tap();
+      else await link.click();
+      await (await popup).waitForLoadState();
+      expect(popups, 'only the tap opened the notes, not the drag').toBe(1);
+      expect(notes).toBe(1);
+    });
+
     // 🔴 CLAMPED: dragged past an edge, the pill stops AT the edge; a smaller
     // viewport pulls it back inside; the original viewport puts it back at the
     // spot it was left at (a clamp does not overwrite the saved spot).
@@ -1023,9 +1080,15 @@ for (const vp of pillViewports) {
         }, { message: 'the pill is pulled inside the smaller viewport' })
         .toBe(true);
       await page.setViewportSize(vp.use.viewport);
+      // Back in the column it was left in, placed from the saved spot again —
+      // at it, or moved UP off a control it would cover there (the bottom-right
+      // corner holds the chat button): never left where the clamp put it.
       await expect
-        .poll(async () => { const b = await pillBox(page); return [Math.round(b.x), Math.round(b.y)]; }, { message: 'back at the spot it was left at' })
-        .toEqual([Math.round(edge.x), Math.round(edge.y)]);
+        .poll(async () => { const b = await pillBox(page); return Math.round(b.x); }, { message: 'back in the column it was left in' })
+        .toBe(Math.round(edge.x));
+      const backAt = await pillBox(page);
+      expect(backAt.y, `placed from the saved spot: ${JSON.stringify({ backAt, edge })}`).toBeLessThanOrEqual(edge.y + 0.5);
+      expect((await page.evaluate(coverageJS)).covered, 'covers no control').toEqual([]);
 
       // To the top-left corner, held by its text (a body point well inside
       // the pill): it would hang past the left and top edges.
@@ -1041,6 +1104,61 @@ for (const vp of pillViewports) {
     });
   });
 }
+
+// 🔴 THE PHONE KEYBOARD. The pages declare interactive-widget=resizes-content,
+// so an open keyboard shrinks the viewport and fires resize, and the pinned
+// composer rises with it. A saved spot must not end up on the composer or
+// Send: the pill moves off them, and the saved spot is kept for when the
+// keyboard closes. (Measured: a spot clamped to the very bottom lands on the
+// composer's lower padding, below its controls; the spot that meets them is
+// where the risen composer's textarea will be, so that is where it is left.)
+test.describe('the pill and the phone keyboard', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('a saved spot is moved off the composer when the keyboard brings the composer up under it', async ({ page }) => {
+    const origin = await offerB(page);
+    await page.goto(origin + '/agents/docs-sweeper');
+    await expect(page.locator('#sw-update-toast')).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    await expect(page.locator('#chat-input')).toBeVisible();
+    const full = 844, kb = { width: 390, height: 508 }; // 844 less a keyboard
+    // Where the textarea will be once the keyboard is up: the composer is
+    // pinned to the bottom, so its distance from the bottom is kept.
+    const inputTop = await page.locator('#chat-input').evaluate((e) => e.getBoundingClientRect().top);
+    const target = kb.height - (full - inputTop) + 2;
+    const start = await pillBox(page);
+    const from = bodyPoint(start);
+    await press(page, true, from, { x: from.x - 100, y: from.y + (target - start.y) });
+    const saved = JSON.parse((await savedPos(page))!);
+    expect(Math.abs(saved.top - target), 'CONTROL: left where the risen textarea will be').toBeLessThan(1.5);
+
+    await page.setViewportSize(kb);
+    const sel = ['textarea', 'button', 'input', 'select', '[role=button]'].map((x) => '#chat-form ' + x).join(', ');
+    const hits = () =>
+      page.evaluate((q) => {
+        const t = document.getElementById('sw-update-toast')!.getBoundingClientRect();
+        const out: string[] = [];
+        let seen = 0;
+        for (const e of document.querySelectorAll(q)) {
+          const b = e.getBoundingClientRect();
+          if (!b.width || !b.height || getComputedStyle(e).visibility === 'hidden') continue;
+          seen++;
+          if (b.left < t.right && t.left < b.right && b.top < t.bottom && t.top < b.bottom) out.push(e.tagName + (e.id ? '#' + e.id : '') + ' ' + JSON.stringify([b.top, b.bottom]));
+        }
+        return { seen, out, pill: [t.top, t.bottom], vh: innerHeight };
+      }, sel);
+    await expect.poll(async () => (await hits()).vh).toBe(kb.height);
+    // CONTROL: the composer's textarea really rose to the saved spot.
+    const risen = await page.locator('#chat-input').evaluate((e) => { const b = e.getBoundingClientRect(); return [b.top, b.bottom]; });
+    expect(risen[0] < saved.top + start.height && saved.top < risen[1], `CONTROL: the saved spot is on the risen textarea: ${JSON.stringify({ risen, saved })}`).toBe(true);
+    await expect
+      .poll(async () => { const h = await hits(); return { seen: h.seen > 0, out: h.out }; }, { message: 'the pill covers no composer control' })
+      .toEqual({ seen: true, out: [] });
+    const b = await pillBox(page);
+    expect(b.y + b.height, 'inside the shrunk viewport').toBeLessThanOrEqual(kb.height + 0.5);
+    expect(JSON.parse((await savedPos(page))!), 'the saved spot is kept').toEqual(saved);
+  });
+});
 
 // Storage that throws (a private window, blocked site data): the pill is still
 // offered, still drags, and the spot lives for the page.
@@ -1065,7 +1183,11 @@ test.describe('the pill without storage', () => {
       document.body.dispatchEvent(new Event('htmx:load', { bubbles: true }));
     });
     await expect(page.locator('#sw-update-toast')).toBeVisible();
+    // Placed from the in-memory spot: its column, its height or the nearest
+    // spot that covers no control.
     const again = await pillBox(page);
-    expect([Math.round(again.x), Math.round(again.y)]).toEqual([Math.round(moved.x), Math.round(moved.y)]);
+    expect(Math.round(again.x)).toBe(Math.round(moved.x));
+    expect(Math.abs(again.y - moved.y), JSON.stringify({ again, moved })).toBeLessThan(80);
+    expect((await page.evaluate(coverageJS)).covered).toEqual([]);
   });
 });
