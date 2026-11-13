@@ -26,6 +26,9 @@ type Backend struct {
 	officer officers.Officer
 	now     func() time.Time
 	scope   func(context.Context) context.Context
+	// asker raises an instance's officer_ask_person as an Attention ask
+	// (WithAsker); nil refuses every ask as an outage.
+	asker Asker
 	// faultDoubleClaim is the conformance suite's fault (export_test.go):
 	// a claim of an item another instance holds under a live lease succeeds.
 	faultDoubleClaim bool
@@ -66,7 +69,7 @@ func (b *Backend) Scrub(s string) string { return s }
 // itemCols is what every verb reads of an item, in itemRow's scan order.
 const itemCols = `id, officer, kind, subject_key, payload, status, tier, priority, not_before, blocked,
 	coalesce(claimed_by, ''), claimed_at, lease_expires_at, attempts, coalesce(outcome, ''), coalesce(summary, ''),
-	links, coalesce(routine_summary, ''), investigation, cost_usd::float8, coalesce(cost_from, ''), created_at, updated_at`
+	links, coalesce(routine_summary, ''), investigation, cost_usd::float8, coalesce(cost_from, ''), created_at, updated_at, asks`
 
 // itemRow is an item as the contract spells it (the JSON an instance reads).
 type itemRow struct {
@@ -93,13 +96,16 @@ type itemRow struct {
 	CostFrom       string          `json:"cost_from,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+	// Asks are the Attention asks raised on the item (officer_ask_person,
+	// migration 0120), with their answers once given.
+	Asks json.RawMessage `json:"asks"`
 }
 
 func scanItem(row pgx.Row) (itemRow, error) {
 	var it itemRow
 	err := row.Scan(&it.ID, &it.OfficerID, &it.Kind, &it.SubjectKey, &it.Payload, &it.Status, &it.Tier, &it.Priority, &it.NotBefore, &it.Blocked,
 		&it.ClaimedBy, &it.ClaimedAt, &it.LeaseExpiresAt, &it.Attempts, &it.Outcome, &it.Summary,
-		&it.Links, &it.RoutineSummary, &it.Investigation, &it.CostUSD, &it.CostFrom, &it.CreatedAt, &it.UpdatedAt)
+		&it.Links, &it.RoutineSummary, &it.Investigation, &it.CostUSD, &it.CostFrom, &it.CreatedAt, &it.UpdatedAt, &it.Asks)
 	return it, err
 }
 
@@ -335,13 +341,20 @@ func (b *Backend) Complete(ctx context.Context, item officers.ItemID, instance s
 			return answer(map[string]any{"item": it})
 		}
 		status := officers.StatusDone
+		notices := json.RawMessage(`[]`)
 		if done.Outcome == "escalated" {
 			status = officers.StatusEscalated
+			// 🔴 WHO IS NOTIFIED IS WRITTEN IN THIS TRANSACTION: an escalation
+			// that commits has its notices, and one that does not has none.
+			if notices, err = noticesFor(ctx, tx, b.officer.Owner, b.officer.ID); err != nil {
+				return nil, err
+			}
 		}
 		it, err = scanItem(tx.QueryRow(ctx, `UPDATE officer_items SET status = $2, outcome = $3, summary = $4, links = $5, claimed_by = NULL,
 			lease_expires_at = NULL, investigation = coalesce($6, investigation), cost_usd = coalesce($7, cost_usd),
-			cost_from = coalesce($8, cost_from), updated_at = $9
-			WHERE id = $1 RETURNING `+itemCols, it.ID, status, done.Outcome, done.Summary, links, inv, costUSD, costFrom, now))
+			cost_from = coalesce($8, cost_from), updated_at = $9,
+			notices = CASE WHEN $2 = 'escalated' THEN $10::jsonb ELSE notices END
+			WHERE id = $1 RETURNING `+itemCols, it.ID, status, done.Outcome, done.Summary, links, inv, costUSD, costFrom, now, notices))
 		if err != nil {
 			return nil, err
 		}

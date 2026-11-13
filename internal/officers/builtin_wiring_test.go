@@ -57,17 +57,19 @@ func TestDeclaredCapabilitiesFollowTheBackend(t *testing.T) {
 		t.Fatalf("HQ declared %v, want every capability %v", hq.Verbs, officers.AllCapabilities())
 	}
 	bi := officers.DeclaredCapabilities(officers.Officer{ID: "release:x", Backend: officers.BackendBuiltin})
-	if strings.Join(bi.Verbs, ",") != strings.Join(officers.BuiltinCapabilities.Verbs, ",") || bi.Has(officers.CapCaptain) || bi.Has(officers.CapObsRaw) {
+	if strings.Join(bi.Verbs, ",") != strings.Join(officers.BuiltinCapabilities.Verbs, ",") || bi.Has(officers.CapCaptain) || bi.Has(officers.CapObsRaw) || !bi.Has(officers.CapAsks) {
 		t.Fatalf("builtin declared %v, want %v", bi.Verbs, officers.BuiltinCapabilities.Verbs)
 	}
 }
 
 // TestABuiltinOfficersKickoffNamesOnlyWhatItsBackendServes: the kickoff is
 // written from the backend's capabilities. A builtin release officer with
-// tiers is told no ask tool, no raw-obs note and no captain step (its backend
-// serves none of them), is told its queue is muster's, and is never told of an
-// HQ credential. The same officer on HQ is told all three (the golden in
-// internal/api pins an HQ officer's text byte for byte).
+// tiers is told no raw-obs note and no captain step (its backend serves
+// neither), is told the ask tool as the built-in backend serves it (to the
+// owner, no images — never HQ's GitHub-login form), that its queue is
+// muster's, and never of an HQ credential. The same officer on HQ is told all
+// of HQ's (the golden in internal/api pins an HQ officer's text byte for
+// byte).
 func TestABuiltinOfficersKickoffNamesOnlyWhatItsBackendServes(t *testing.T) {
 	tiers := `"tiers":{"routine":{"model":"haiku","max_instances":1},"judgement":{"model":"opus","max_instances":1}}`
 	bi := parseOne(t, `{"id":"release:example","backend":"builtin",`+tiers+`}`, nil)
@@ -76,12 +78,13 @@ func TestABuiltinOfficersKickoffNamesOnlyWhatItsBackendServes(t *testing.T) {
 	for _, pool := range []string{officers.TierJudgement, officers.TierRoutine} {
 		b := officers.KickoffText(bi.Pool(pool), 1)
 		h := officers.KickoffText(hq.Pool(pool), 1)
-		for _, absent := range []string{officers.ToolAskPerson, officers.ToolObsRaw, officers.ToolReleaseEvaluation, "HQ credential", "items HQ produces", "HQ notifies"} {
+		for _, absent := range []string{"their GitHub login", "image_ids", officers.ToolObsRaw, officers.ToolReleaseEvaluation, "HQ credential", "items HQ produces", "HQ notifies"} {
 			if strings.Contains(b, absent) {
 				t.Errorf("%s pool: a builtin officer's kickoff names %q, which its backend does not serve:\n%s", pool, absent, b)
 			}
 		}
-		for _, present := range []string{"queued in muster", "versioned in muster", "no token to hold", "this officer has no HQ"} {
+		for _, present := range []string{"queued in muster", "versioned in muster", "no token to hold", "this officer has no HQ",
+			officers.ToolAskPerson + `{item_id, to: "owner"`, "muster re-opens it with the answer"} {
 			if !strings.Contains(b, present) {
 				t.Errorf("%s pool: a builtin officer's kickoff lacks %q:\n%s", pool, present, b)
 			}

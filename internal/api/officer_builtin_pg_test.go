@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -28,6 +29,7 @@ func builtinOfficerServer(t *testing.T, f *connFixture, raw string, logs *bytes.
 	dsn := dbtest.DSN(t)
 	wipe := func() {
 		dbtest.OwnerExec(t, dsn, `TRUNCATE officer_schedules, officer_items, officer_defs, officer_types RESTART IDENTITY`)
+		dbtest.OwnerExec(t, dsn, `DELETE FROM attention_asks WHERE asker_label LIKE 'officer %'`)
 	}
 	wipe()
 	t.Cleanup(func() {
@@ -40,7 +42,12 @@ func builtinOfficerServer(t *testing.T, f *connFixture, raw string, logs *bytes.
 	}
 	store := builtin.NewStore(f.pool)
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword}, log.New(logs, "", 0))
-	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"}})
+	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: f.store, Provisioner: stubProvisioner{}, Kinds: stubKinds{pick: "acct-one"},
+		Attention: attention.NewPG(f.pool)})
+	s.EnableOfficerStore(store)
+	if len(list) == 0 {
+		return s, store // the empty roster: the store on, no officer declared
+	}
 	if _, err := s.EnableOfficers(OfficersConfig{Officers: list, InstallSession: discardSession, Builtin: store}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +93,7 @@ func TestABuiltinOfficerWorksAnItemEndToEnd(t *testing.T) {
 			listed = append(listed, d.Name)
 		}
 	}
-	core := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease}
+	core := []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolAskPerson}
 	if got, want := strings.Join(listed, ","), strings.Join(core, ","); got != want {
 		t.Fatalf("a builtin officer is offered %s, want exactly what its backend serves: %s", got, want)
 	}

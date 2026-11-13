@@ -755,6 +755,11 @@ type config struct {
 	// Officers is MUSTER_OFFICERS parsed, each with its token
 	// (officers.Parse). Empty: the officer runtime is off.
 	Officers []officers.Officer
+	// OfficersSet is MUSTER_OFFICERS being set at all, an empty `[]`
+	// included: with a database it turns on the built-in officer store (the
+	// admin API and the Attention sweep) whether or not any officer is
+	// declared — the "on, empty roster" state.
+	OfficersSet bool
 	// OfficerImagePullSecret is MUSTER_OFFICER_IMAGE_PULL_SECRET, trimmed;
 	// "" is none. OfficerImageRegistries is whether
 	// MUSTER_OFFICER_IMAGE_REGISTRIES is set (validateOfficerImagePullSecret).
@@ -1759,6 +1764,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
 		return config{}, err
 	}
+	// Set at all — `[]` included — turns the officer runtime's built-in store
+	// on (its admin API and Attention sweep) even with no officer declared.
+	c.OfficersSet = strings.TrimSpace(getenv(envOfficers)) != ""
 	c.OfficerImagePullSecret = strings.TrimSpace(getenv(envOfficerImagePullSecret))
 	c.OfficerImageRegistries = strings.TrimSpace(getenv(officers.ImageRegistriesEnv)) != ""
 	c.SendQueueIdle = sendqueue.DefaultIdleFor

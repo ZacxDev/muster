@@ -1,6 +1,6 @@
 # Officers as a first-class feature (pluggable backend)
 
-**Status: slices 0–5 built** (this revision supersedes the draft of
+**Status: slices 0–7 built** (this revision supersedes the draft of
 muster#503). Each slice below lands as its own pull request; slices 0–4 change
 nothing an existing HQ officer sees or does.
 
@@ -256,9 +256,11 @@ Core verbs **plus asks plus Attention escalation**:
   the item is `waiting` until it is answered, then re-opens with the answer
   on it and muster wakes an instance — HQ's asks semantics, delivered by
   muster.
-- **escalation**: an `escalated` complete notifies the owner (and
+- **escalation**: an `escalated` complete asks the owner (and
   `escalate_to`) through Attention, once per item per recipient, written in
-  the same transaction as the complete; shadow mode records without notifying.
+  the same transaction as the complete; an answer flows back — the item
+  re-opens for the officer with the answer on it; shadow mode records without
+  asking anyone.
 
 Not on day 1: obs, transcripts, usage/pools ledgers, derived asks, gap tasks,
 tasks read, PR context, ship, captain. A builtin officer is simply not offered
@@ -276,8 +278,8 @@ S is up to 300 changed non-test lines, M up to 1,000.
 | 3 | `backendtest` conformance suite + fault knob, run against HQ (hqtest) | M | green in CI; red with the fault on |
 | 4 | migration 0118 + `officers/builtin` store and backend, not wired; suite run against it | M | green in CI against Postgres; red with the fault on; the migration applies on the deployment |
 | 5 | **wiring** (built): `Officer.Backend`, `Backends` routes builtin officers to `builtin.Backend`; capability-gated kickoff notes; boot line lists each officer's backend and offered tools; the wake loop honours a builtin officer's switch. Not done, deliberately: the claim-next 404 sniff stays (the built-in backend never answers claim-next 404, so it is inert for it), and no declarative seed file (charters live only in Postgres: Open questions) | M | a builtin officer runs end to end on a dev deployment (item → pod → claim → complete) |
-| 6 | **Attention asks + escalation** for builtin officers | M | one Attention ask per ask, re-open on answer; one notification per recipient per escalated item, zero in shadow (tests) |
-| 7 | **admin REST + CLI `muster officer`**: list/enqueue/resolve items, types, defs | M | the CLI enqueues an item that a builtin officer then claims (test) |
+| 6 | **Attention asks + escalation** for builtin officers (built: migration 0120 `asks`/`notices` columns; an instance's ask and an escalation are both Attention **asks** — an answer to an escalation re-opens the item for the officer with the answer on it (operator ask: "escalations become Attention asks; answers flow back to the officer"), a dismissal leaves it escalated; the sweep settles all of it conditionally, across replicas) | M | one Attention ask per ask, re-open on answer; one notification per recipient per escalated item, zero in shadow (tests) |
+| 7 | **admin REST + CLI `muster officer`** (built; schedules' admin is slice 8): list/enqueue/resolve items, types, defs; `MUSTER_OFFICERS=[]` (the empty roster) turns the store on with no officer declared | M | the CLI enqueues an item that a builtin officer then claims (test) |
 | 8 | **schedules**: cron fire with `skip_if_live`, missed fires collapse to one, once across replicas | M | a schedule fires once across a restart and two replicas (tests) |
 | 9 | **egress** for officer instances (below) | S | an instance reaches exactly the admitted CIDRs; DNS only when unfiltered is set (policy test) |
 | 10 | **docs**: split officers.md into runtime / contract / built-in backend; a runnable sample | M | a fresh reader runs the sample from the doc alone |

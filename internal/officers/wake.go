@@ -695,7 +695,7 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		// scaled to zero; it wakes normally once HQ answers again. Logged once
 		// per change, counted on the gauge.
 		if changed && o.IsBuiltin() {
-			r.log.Printf("officers: %s: the built-in backend does not define this officer (answered %s on %d consecutive passes): a CONFIGURATION fault — define it in the built-in store (docs/design/officers-first-class.md). "+
+			r.log.Printf("officers: %s: the built-in backend does not define this officer (answered %s on %d consecutive passes): a CONFIGURATION fault — define it with `muster officer def put` (docs/officers-builtin.md). "+
 				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, refusal, strikes, next.Sub(now).Round(time.Second))
 		} else if changed {
 			r.log.Printf("officers: %s: HQ refuses this officer (HQ answered %s on %d consecutive passes): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+

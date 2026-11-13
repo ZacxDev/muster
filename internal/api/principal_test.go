@@ -410,6 +410,17 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
+		"GET /api/officers/types",
+		"GET /api/officers/types/{key}",
+		"PUT /api/officers/types/{key}",
+		"DELETE /api/officers/types/{key}",
+		"GET /api/officers/defs",
+		"PUT /api/officers/defs/{officer}",
+		"DELETE /api/officers/defs/{officer}",
+		"GET /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items/{id}/resolve",
 	},
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
@@ -449,6 +460,17 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
 		"POST /api/plugins/messages/{id}/retry",
+		// The built-in officer store's admin API (officer_admin.go): requireArmedHookToken.
+		"GET /api/officers/types",
+		"GET /api/officers/types/{key}",
+		"PUT /api/officers/types/{key}",
+		"DELETE /api/officers/types/{key}",
+		"GET /api/officers/defs",
+		"PUT /api/officers/defs/{officer}",
+		"DELETE /api/officers/defs/{officer}",
+		"GET /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items",
+		"POST /api/officers/defs/{officer}/items/{id}/resolve",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
@@ -813,12 +835,22 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
 	// and session routing's answer (it decides what an outside party is sent).
 	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
-		"POST /api/plugin-threads":              true,
-		"POST /api/pr-sessions":                 true,
-		"POST /api/plugins/messages/{id}/retry": true,
-		"POST /api/chief/replace":               true,
-		"POST /api/agents":                      true,
-		"GET /api/doctor":                       true}
+		"POST /api/plugin-threads":                             true,
+		"POST /api/pr-sessions":                                true,
+		"POST /api/plugins/messages/{id}/retry":                true,
+		"GET /api/officers/types":                              true,
+		"GET /api/officers/types/{key}":                        true,
+		"PUT /api/officers/types/{key}":                        true,
+		"DELETE /api/officers/types/{key}":                     true,
+		"GET /api/officers/defs":                               true,
+		"PUT /api/officers/defs/{officer}":                     true,
+		"DELETE /api/officers/defs/{officer}":                  true,
+		"GET /api/officers/defs/{officer}/items":               true,
+		"POST /api/officers/defs/{officer}/items":              true,
+		"POST /api/officers/defs/{officer}/items/{id}/resolve": true,
+		"POST /api/chief/replace":                              true,
+		"POST /api/agents":                                     true,
+		"GET /api/doctor":                                      true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {

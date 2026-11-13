@@ -834,6 +834,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The officer runtime (docs/officers.md): its wake loop is started by
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
+	// The built-in officer store (internal/officers/builtin): on whenever
+	// MUSTER_OFFICERS is set — `[]`, the empty roster, included — and there is
+	// a database: the admin API (`muster officer`) and the Attention sweep.
+	var officerStore *builtin.Store
+	if cfg.OfficersSet && a.pool != nil {
+		officerStore = builtin.NewStore(a.pool)
+		srv.EnableOfficerStore(officerStore)
+	}
 	if len(cfg.Officers) > 0 {
 		ocfg := officersConfig(cfg, prov)
 		if a.pool != nil {
@@ -849,7 +857,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ocfg.PRLoops = officers.NewPGPRLoopStore(a.pool)
 			// A builtin officer's type, charter, switch and queue live here
 			// too (migration 0118); one declared with no database is refused.
-			ocfg.Builtin = builtin.NewStore(a.pool)
+			ocfg.Builtin = officerStore
 		}
 		if a.officers, err = srv.EnableOfficers(ocfg); err != nil {
 			a.Close()
@@ -1224,6 +1232,14 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.officers != nil {
 		go a.officers.Run(ctx)
 	}
+	// The built-in officer store's Attention sweep (asks back onto items,
+	// escalation notices out). Unguarded at replicas > 1: every write it makes
+	// is conditional on the row it read (an ask still open, a notice still
+	// unraised), so two pods settle each once and the loser of a notice race
+	// withdraws its copy.
+	if a.srv != nil && a.srv.OfficerStoreOn() {
+		go a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep)
+	}
 	// The officers' declared pools, to each officer's HQ: at once (boot), then
 	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
 	// set, and HQ replaces it.
@@ -1513,8 +1529,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			}
 		}
 		l.Printf("officers: ON — %d declared in %s (%d on HQ, %d on the built-in backend); woken by polling their backends", len(a.cfg.Officers), envOfficers, hq, bi)
+	} else if a.cfg.OfficersSet {
+		l.Printf("officers: ON — empty roster (%s declares none)", envOfficers)
 	} else {
 		l.Printf("officers: OFF (%s declares none)", envOfficers)
+	}
+
+	switch {
+	case a.srv != nil && a.srv.OfficerStoreOn():
+		l.Printf("officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every %s", api.DefaultOfficerAttentionSweep)
+	case a.cfg.OfficersSet:
+		l.Printf("officers: built-in store OFF — %s is set but there is no database (%s)", envOfficers, envDatabase)
 	}
 
 	if a.pool != nil {

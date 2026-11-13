@@ -33,6 +33,8 @@ DELETE /api/device
 DELETE /api/device/push
 DELETE /api/instance/branding/app-icon
 DELETE /api/instance/branding/logo
+DELETE /api/officers/defs/{officer}
+DELETE /api/officers/types/{key}
 DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
@@ -77,6 +79,10 @@ GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/instance
 GET /api/jobs/{id}
+GET /api/officers/defs
+GET /api/officers/defs/{officer}/items
+GET /api/officers/types
+GET /api/officers/types/{key}
 GET /api/openrouter/models
 GET /api/projects
 GET /api/push/vapid-public-key
@@ -233,6 +239,8 @@ POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel
 POST /api/jobs
+POST /api/officers/defs/{officer}/items
+POST /api/officers/defs/{officer}/items/{id}/resolve
 POST /api/plugin-threads
 POST /api/plugins/messages/{id}/retry
 POST /api/pr-sessions
@@ -339,3 +347,5 @@ POST /uploads
 POST /uploads/{id}/revoke
 PUT /api/device/push
 PUT /api/instance/branding
+PUT /api/officers/defs/{officer}
+PUT /api/officers/types/{key}
