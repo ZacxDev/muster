@@ -376,7 +376,9 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 
 // noteSuccess clears the agent's stale "kickoff failed" record
 // (agents.KickoffFailed) when this turn COMPLETED: no error and a non-blank
-// reply.
+// reply. Which records clear is the store's decision, not this function's: a
+// resend-safe cause (agents.KickoffResendSafe) is kept by
+// agents.Store.ClearKickoffFailure's own predicate.
 //
 // 🔴 IT IS HERE, NOT AT EACH CALLER, BECAUSE THIS IS THE ONE PLACE EVERY TURN
 // PASSES THROUGH. Chat and ChatWithTools are Resolve + Send / SendWithTools, and

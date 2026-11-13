@@ -12,7 +12,7 @@ import (
 
 // rowClearer is Config.Kickoff over ONE in-memory agent row, applying the same
 // predicate as agents.PGStore.ClearKickoffFailure (kicked_off AND kickoff_error
-// set). The SQL itself is pinned against Postgres by
+// set AND not a resend-safe cause). The SQL itself is pinned against Postgres by
 // internal/agents TestClearKickoffFailure*; this fake exists so the assertion
 // below can be the user-visible one — agents.KickoffFailed on the row — rather
 // than a call count.
@@ -26,7 +26,7 @@ func (c *rowClearer) ClearKickoffFailure(_ context.Context, id int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
-	if id == c.row.ID && c.row.KickedOff && c.row.KickoffError != "" {
+	if id == c.row.ID && c.row.KickedOff && c.row.KickoffError != "" && !agents.KickoffResendSafe(c.row) {
 		c.row.KickoffError = ""
 	}
 	return nil

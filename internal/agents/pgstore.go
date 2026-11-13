@@ -429,9 +429,23 @@ func (s *PGStore) SetKickoffError(ctx context.Context, id int64, msg string) err
 // kickoff_error is the checkout-wait marker (WaitedForCheckout) or a
 // not-delivered record, and an operator chat turn to such an agent must not erase
 // either. Pinned by TestClearKickoffFailureLeavesAnOwedRowAlone.
+//
+// 🔴 A RESEND-SAFE CAUSE IS KEPT (operator decision). A first turn whose recorded
+// cause PROVES the task was never delivered — [KickoffResendSafe]: the
+// never-connected, not-accepted and busy prefixes — keeps its badge and its
+// "safe to re-send" remedy after a later turn completes, because that later turn
+// did not carry the task and the operator still owes the re-send. Only causes
+// under which the task may have arrived (timeout, shutdown, transport error,
+// empty reply, unrecognised text) are cleared. The three prefixes are the SAME
+// constants KickoffResendSafe reads, passed as parameters, so the SQL cannot drift
+// from it. Pinned by TestClearKickoffFailureKeepsAResendSafeCause.
 func (s *PGStore) ClearKickoffFailure(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE agents SET kickoff_error='' WHERE id=$1 AND kicked_off AND kickoff_error<>''`, id)
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET kickoff_error=''
+		WHERE id=$1 AND kicked_off AND kickoff_error<>''
+		  AND NOT starts_with(kickoff_error, $2)
+		  AND NOT starts_with(kickoff_error, $3)
+		  AND NOT starts_with(kickoff_error, $4)`,
+		id, KickoffNeverConnectedReason, KickoffNotAcceptedReason, KickoffBusyReason)
 	return err
 }
 

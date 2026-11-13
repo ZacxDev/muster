@@ -446,8 +446,10 @@ type Store interface {
 	// row is kicked_off and the error is set. It touches nothing else — not
 	// kicked_off, not kickoff_attempts, not updated_at — and a row that is not
 	// kicked off (an owed agent's awaiting-grant / awaiting-clone marker, a
-	// never-delivered record) is never matched. Called from the one place every
-	// turn completes: internal/agentgateway's Send / SendWithTools.
+	// never-delivered record) is never matched. Nor is a RESEND-SAFE cause
+	// ([KickoffResendSafe]): it proves the task was never delivered, so its badge
+	// and re-send remedy stay until the operator acts. Called from the one place
+	// every turn completes: internal/agentgateway's Send / SendWithTools.
 	ClearKickoffFailure(ctx context.Context, id int64) error
 	// MarkKickoffStuck sets an owed row to `error` with errMsg (and clears
 	// last_output, as UpdateStatus does) ONLY if the row is still the one the

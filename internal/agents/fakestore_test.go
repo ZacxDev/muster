@@ -279,7 +279,7 @@ func (f *fakeStore) SetKickoffError(ctx context.Context, id int64, msg string) e
 func (f *fakeStore) ClearKickoffFailure(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if a, ok := f.agents[id]; ok && a.KickedOff && a.KickoffError != "" {
+	if a, ok := f.agents[id]; ok && a.KickedOff && a.KickoffError != "" && !KickoffResendSafe(a) {
 		a.KickoffError = ""
 		f.agents[id] = a
 	}

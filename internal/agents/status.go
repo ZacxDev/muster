@@ -164,6 +164,12 @@ func KickoffOwed(a Agent) bool { return a.PendingNote != "" && !a.KickedOff }
 // (internal/agentgateway's Send / SendWithTools). kicked_off and
 // kickoff_attempts are untouched, so nothing is re-sent. A failed, timed-out or
 // blank later turn leaves the record.
+//
+// ⚠ EXCEPT A RESEND-SAFE CAUSE ([KickoffResendSafe]: never connected, not
+// accepted, busy). That cause proves the task was never delivered, and a later
+// turn that completed did not carry it, so the badge and its re-send remedy stay
+// until the operator re-sends. Only causes under which the task may have arrived
+// (timeout, shutdown, transport error, empty reply, unrecognised text) clear.
 func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
 
 // KickoffNeverConnectedReason opens agents.kickoff_error when a stamped first turn
