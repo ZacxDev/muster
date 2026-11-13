@@ -368,6 +368,8 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/pr-sessions": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
+	// Binding a plugin to a builtin officer (plugin_outbound.go), hook tier, as its owner.
+	"PUT /api/plugins/{id}/deliver-to": classAdmin,
 	// The built-in officer store's admin API (officer_admin.go): hook tier
 	// (personal token: its owner; shared hook token: the operator), every
 	// store call naming the caller's owner and under its principal.
@@ -458,6 +460,17 @@ var isolationClasses = map[string]routeClass{
 	// Checks replies on an existing plugin names A's plugin by id: B's session
 	// must get the ghost's 404 (row-level security).
 	"POST /plugins/{id}/draft-checks": classParam,
+	"POST /plugins/{id}/deliver-to":   classParam,
+	// A pairing request's decisions name it by id; another owner's is the
+	// ghost's 404 (row-level security).
+	"POST /plugins/pair/{id}/approve": classParam,
+	"POST /plugins/pair/{id}/deny":    classParam,
+	// The pairing door: no credential (the request) or a poll secret no walker
+	// holds (the poll).
+	"POST /plugin/v1/pair":             classPublic,
+	"GET /plugin/v1/pair/{request_id}": classPublic,
+	// An outbound draft's medium, its owner's (row-level security).
+	"GET /plugins/drafts/{id}/media/{n}": classParam,
 	// Routing rules (routing_rules.go, 0107): the page lists the caller's own
 	// rules; each write names a rule by id, and another owner's is not found.
 	// The usage page reads the caller's own telemetry rows only.
@@ -531,6 +544,7 @@ var isolationClasses = map[string]routeClass{
 	// B's plugin must not decide (CheckDraft joins the draft to its plugin).
 	"GET /plugin/v1/drafts/checks":      classPlugin,
 	"POST /plugin/v1/drafts/{id}/check": classPlugin,
+	"POST /plugin/v1/drafts/{id}/media": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
@@ -1948,6 +1962,22 @@ var sideEffectControlled = map[string]string{
 	// passkey (303, gone from GoTrue), after a fresh session of B's was
 	// refused it (404, still there).
 	"POST /account/passkeys/{id}/delete": "fresh sessions: B's delete of A's passkey is refused and leaves it; A's removes it",
+	// 🔴 THE OUTBOUND-DRAFT ROUTES NAME AN OUTBOUND DRAFT OR A PLUGIN THIS
+	// WORLD'S WALK CANNOT REACH: A's draft here is a reply draft (no media),
+	// a medium upload is refused on its headers before any lookup, and the
+	// admin door's {id} is not substituted. Their owner isolation — B's
+	// plugin cannot upload to A's draft, B's session cannot read A's medium,
+	// B's token cannot rebind A's plugin, each answering what a ghost gets —
+	// is TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go).
+	"POST /plugin/v1/drafts/{id}/media":  "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"GET /plugins/drafts/{id}/media/{n}": "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	"PUT /api/plugins/{id}/deliver-to":   "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a pairing poll's credential is
+	// the poll secret no walker holds, so A's own answer is the ghost's 404.
+	// Its control is TestAPairedTokenIsHandedOutOnceAndOnlyWithTheCode: the
+	// same route with the secret answers pending, then the token once; with
+	// none or a wrong one, that 404.
+	"GET /plugin/v1/pair/{request_id}": "a poll secret no walker holds; controlled in plugin_pairing_pg_test.go",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where

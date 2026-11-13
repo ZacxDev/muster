@@ -32,7 +32,8 @@ The whole loop:
 | door | who | routes |
 |---|---|---|
 | The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
-| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and `POST /plugin/v1/drafts/{id}/media` (with `draft_checks`), `POST /plugin/v1/tasks`, `GET /plugin/v1/self` |
+| A plugin **pairing** | none (then a poll secret) | `POST /plugin/v1/pair`, `GET /plugin/v1/pair/{request_id}`: [pairing a plugin](#pairing-a-plugin-without-handling-its-token) |
 
 A plugin token is shown once, when you create it. muster stores only its
 sha256. The token acts as you, and only on `/plugin/v1/*`:
@@ -55,7 +56,7 @@ A plugin token opens only the routes its **capabilities** allow:
 |---|---|
 | `messages` | every route below except `GET /plugin/v1/self` and the hand-off redeem: messages, drafts, tasks and task writes |
 | `viewer` | the [viewer hand-off](#viewer-hand-off): `POST /plugin/v1/handoffs/redeem`. It is the seam [previews](previews.md) build on ([design](design/previews.md#capabilities-on-a-plugin-token)) |
-| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks` and `POST /plugin/v1/drafts/{id}/check`. Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
+| `draft_checks` | the [pre-approval check](#check-a-reply-before-it-can-be-approved): `GET /plugin/v1/drafts/checks`, `POST /plugin/v1/drafts/{id}/check` and an outbound draft's [media upload](#post-pluginv1draftsidmedia-upload-one-refs-bytes). Only beside `messages`. It also changes what muster does: a pending draft of this plugin's messages cannot be approved until the plugin says it can send it (migration `0112`) |
 
 Every token minted before capabilities existed has `messages` (migration
 `0102`). `GET /plugin/v1/self` takes any live token. The set is fixed when the
@@ -298,8 +299,11 @@ and its capabilities:
 
 ```json
 {"plugin_id": 3, "plugin_name": "example-inbox", "owner_id": 1,
- "owner_login": "owner@example.invalid", "capabilities": ["messages"]}
+ "owner_login": "owner@example.invalid", "capabilities": ["messages"],
+ "deliver_to": null}
 ```
+
+`deliver_to` is `"officer:<id>"` for a plugin [bound to an officer](#a-plugin-bound-to-an-officer).
 
 `owner_login` is the owner's email, or the account's display name when it has
 no email. A revoked token or a disabled owner gets the `401` above, so calling
@@ -567,6 +571,286 @@ So a plugin should:
    offers one twice either; a new reply always has a new `draft_id`);
 3. post the result as soon as it knows, and post it again if it did not see an
    answer (a repeat is safe).
+
+### A plugin bound to an officer
+
+A plugin can work for one [builtin officer](officers-builtin.md) instead of
+your chief. Its messages become **items** in that officer's queue, and the
+officer files **outbound drafts** — new posts, or replies on an upstream
+thread — that the plugin sends once you approve the exact text and media. The
+plugin does every outward thing itself; the officer has no other way out.
+
+The binding is the plugin's **`deliver_to`**: `officer:<officer id>`, for
+example `officer:example:main` (an officer id is `<type>:<area>`). Set it:
+
+- when minting, in the **Deliver to** field on `/plugins`, or in a
+  [pairing request](#pairing-a-plugin-without-handling-its-token);
+- later, on the plugin's `/plugins` card (**Deliver to** form; empty clears it);
+- over the admin REST door: `PUT /api/plugins/{id}/deliver-to
+  {"deliver_to": "officer:example:main"}` (`""` clears it), behind the hook
+  tier, acting as the caller; or the CLI:
+  `muster plugins deliver-to <plugin id> officer:example:main` (`--clear`).
+
+Every door refuses a binding unless the officer is **defined in the built-in
+store for the plugin's owner** (`muster officer def put`), and the built-in
+store is on (`MUSTER_OFFICERS` set). One owner's plugin can never name another
+owner's officer: the officer is read under the owner's row-level security, so
+another owner's officer reads as missing. Each change writes a
+`plugin.deliver_to.changed` audit row. `GET /plugin/v1/self` answers
+`deliver_to` (`null` when unbound).
+
+#### Inbound: `POST /plugin/v1/messages` from a bound plugin
+
+The same route and body, with three more fields:
+
+| field | required | rule |
+|---|---|---|
+| `kind` | no | `plan`, `reply`, `snapshot` or `note` (the default). |
+| `venue` | with `kind: "reply"` | Where it happened: 1 to 64 lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit (`reddit`, `x`, `example.forum`). |
+| `thread` | with `kind: "reply"` | The upstream reference of the human reply to answer (the field every message already has). |
+
+`kind` and `venue` are refused (400) on a plugin with no `deliver_to`.
+
+Instead of a chief turn, muster creates one **item** in the officer's queue,
+in the same transaction that stores the message:
+
+| item field | value |
+|---|---|
+| `kind` | `plugin.<kind>`, e.g. `plugin.reply` |
+| `subject_key` | `plugin:<plugin id>:<external_id>`, so a repeat is the same item and two plugins never share one |
+| `payload` | `{"plugin": "<name>", "plugin_id", "message_id", "external_id", "kind", "venue", "thread", "received_at", "message": "<fenced block>"}` |
+| tier, priority | judgement, normal |
+
+`payload.message` is the sender, subject and body as a fenced **untrusted**
+block, exactly as a chief turn shows a message: the officer reads it as data,
+never as instructions.
+
+| answer | meaning |
+|---|---|
+| `202 {"id", "status": "delivered", "item_id"}` | stored, and the item created |
+| `200 {"id", "status", "item_id"}` | a repeat of this `external_id`: the stored message and its item, nothing new |
+| `409 {"error"}` | the officer the plugin is bound to is no longer defined for its owner (or the built-in store is off): **nothing was stored**. Send it again once the officer is back |
+| `400`, `429` | as for every message. The hourly allowance (60) is the same one; a bound plugin's messages never wait in the chief's queue |
+
+The wake loop starts an instance for the new item within the officer's poll
+interval.
+
+#### Outbound drafts: `officer_post_draft`
+
+A builtin officer whose **type** grants the `outbound_drafts` capability
+(`"capabilities": ["outbound_drafts"]` in the type's policy:
+`muster officer type put <key> --policy '{"capabilities":["outbound_drafts"]}'`)
+is offered one more tool, `officer_post_draft`; see
+[officers.md](officers.md#outbound-drafts-officer_post_draft). An HQ officer is
+never offered it, and neither is a builtin officer whose type does not grant
+it. The draft it files belongs to the plugin bound to that officer, carries no
+message, and is checked, approved, claimed and settled through the routes
+below.
+
+🔴 **A plugin that takes outbound drafts must have `draft_checks`.** The media
+reach muster only through the check, so `officer_post_draft` refuses a plugin
+without it. An outbound draft's check **never lapses**: it awaits the plugin's
+verdict until the draft expires (7 days). Turning **Checks replies** off for
+the plugin REFUSES its outbound drafts still awaiting the check (`rejected`,
+detail "the plugin's Checks replies was turned off…"), since none could be
+approved without it.
+
+An outbound draft's body may contain **public host names and URLs**, such as
+`github.com/example/project`, so a post can link to the project. Everything
+else in the [screen](#replying-drafts-you-approve) still applies: no IP
+address, no internal host name (`.lan`, `.local`, `.internal`, `.svc`,
+`.cluster`), no credential- or token-shaped string, no infrastructure word, no
+one of the deployment's own names, no hidden character. A reply your chief
+drafts is screened as before, host names refused.
+
+#### `GET /plugin/v1/drafts/checks` for an outbound draft
+
+Every entry now says its `kind`. An outbound one carries its target and media
+instead of a message:
+
+```json
+{"drafts": [
+  {"draft_id": 17, "kind": "reply", "message_external_id": "msg-0001",
+   "body": "Thanks, noon works.", "created_at": "2000-01-02T03:04:05Z"},
+  {"draft_id": 18, "kind": "outbound", "message_external_id": "",
+   "body": "…", "created_at": "2000-01-02T03:04:05Z",
+   "venue": "example.forum", "target": {"kind": "reply", "ref": "t1_abc"},
+   "media": [{"ref": "launch/hero-1", "uploaded": false},
+             {"ref": "launch/demo-2", "uploaded": true, "sha256": "…",
+              "content_type": "video/mp4", "size": 1048576}]}
+]}
+```
+
+`target.kind` is `post` (a new post; `ref` is `""`) or `reply` (`ref` is the
+upstream reference to answer). `media` is in the order the officer gave, at
+most 4; each `ref` is `<angle>/<id>`, which the plugin resolves on its own
+machine.
+
+#### `POST /plugin/v1/drafts/{id}/media`: upload one ref's bytes
+
+One call per ref, before the check. The body is the file's raw bytes:
+
+```
+POST /plugin/v1/drafts/18/media?ref=launch%2Fhero-1
+Authorization: Bearer mpl_…
+Content-Type: image/webp
+X-Content-SHA256: <64 lower-case hex digits: the SHA-256 of the body>
+```
+
+| rule | |
+|---|---|
+| types | `image/png`, `image/jpeg`, `image/webp` up to 5 MiB; `video/mp4` up to 16 MiB |
+| type check | muster sniffs the bytes and refuses a body whose type is not the `Content-Type` sent |
+| hash | muster hashes the body and refuses it unless it equals `X-Content-SHA256` |
+| when | only while the draft awaits its check |
+| once | a ref's bytes are fixed once uploaded. The same bytes again answer `200`; different bytes are `409` |
+
+| answer | meaning |
+|---|---|
+| `201 {"draft_id", "ref", "sha256", "content_type", "size"}` | stored in muster's object store |
+| `200 {…}` | these exact bytes were already stored for this ref |
+| `400 {"error"}` | `ref` is not one of the draft's, a type or hash rule is broken |
+| `403` | the token does not have `draft_checks` |
+| `404 {"error"}` | no such outbound draft of this plugin's |
+| `409 {"error"}` | the draft is not awaiting its check, or other bytes are already stored for this ref |
+| `413 {"error"}` | over the type's cap |
+| `503 {"error"}` | this server has no object store ([file attachments](uploads.md) off) |
+
+The bytes go to the [file attachments](uploads.md) bucket under
+`uploads/plugin-drafts/<draft id>/<random id>`, so the access key and the
+`uploads/` lifecycle rule that page asks for already cover them. A rule that
+expires objects sooner than 7 days can remove a draft's media before you
+decide it.
+
+Then `POST /plugin/v1/drafts/{id}/check` as for any draft. 🔴 **A
+`sendable: true` verdict on an outbound draft is refused (409, `"missing":
+[refs]`) until every ref has its bytes**, so you are never asked to approve a
+post whose media you cannot see. A `sendable: false` verdict needs no media.
+
+#### What you approve
+
+The outbound draft's card on the Reply drafts tab shows the venue and target
+(for a reply target, the human reply muster received with that `thread`,
+escaped and labelled untrusted; or a line saying none arrived), the exact body
+spelled out as for every draft, and every uploaded image rendered and every
+video playable, each with its ref and SHA-256.
+
+🔴 **Approval binds the body and every medium.** The card's **Approve and
+send** posts the body's SHA-256 and the ordered list of the media's SHA-256
+values it showed you; `plugin_draft_decide` must pass them too
+(`body_sha256`, `media_sha256`). muster refuses the approval unless both match
+what is stored, records them on the draft, and refuses it outright while any
+ref has no bytes. The 12-hour sign-in rule and the push are as for every draft.
+
+#### `POST /plugin/v1/drafts/claim` for an outbound draft
+
+```json
+{"draft_id": 18, "kind": "outbound", "message_external_id": "",
+ "body": "…", "body_sha256": "…", "approved_at": "2000-01-02T03:04:05Z",
+ "venue": "example.forum", "target": {"kind": "reply", "ref": "t1_abc"},
+ "media": [{"ref": "launch/hero-1", "sha256": "…", "content_type": "image/webp", "size": 81234}]}
+```
+
+A reply draft's claim is unchanged, plus `"kind": "reply"`. Before handing an
+outbound draft out, muster re-checks that its body and media still hash to
+what you approved — the body's own hash, and the media hashes recorded at
+upload (the bytes in the object store are not re-read: the plugin's own
+re-hash below is the check on them); one that does not is **withdrawn**
+(rejected, with the detail "the body or media changed after approval") and
+never handed out. muster's database already refuses any change to the body
+or media after approval, so this is a second check, not the first.
+
+🔴 **The plugin re-hashes its own files before it posts.** Any file whose
+SHA-256 is not the claim's: post nothing and report
+`{"ok": false, "detail": "media changed since approval"}`.
+
+#### The result
+
+`POST /plugin/v1/drafts/{id}/result` as for any draft, at most once. Report
+`external_ref` as the post's id or URL. Read the post back before you report
+`ok: true`, and never retry a post without first confirming it is absent.
+
+After the result, for an outbound draft filed with an `item_id`:
+
+- `ok: true`: muster completes that item (`done`, summary `posted <external_ref>
+  (draft <id>)`) unless an instance holds it or it is already finished.
+- `ok: false`, or a `sendable: false` check: muster queues a new item for the
+  officer, kind `draft.refused`, subject `draft:<id>`, with the draft id,
+  venue, target and the plugin's detail, so it can write a better one — at
+  most 3 such items wait at once per officer, so a plugin that refuses every
+  draft cannot loop the officer; past that only your push says so. A draft
+  you reject goes nowhere: that was your decision.
+
+### Pairing a plugin without handling its token
+
+A plugin can ask for its own token, so the `mpl_` token is never typed, pasted
+or seen by anyone — the plugin receives it straight from muster.
+
+1. The plugin calls `POST /plugin/v1/pair` (no credential) and prints the
+   `code` it gets back.
+2. Its owner sees the request in Attention and on `/plugins`, and approves it
+   by typing the code the plugin printed (only its hash is stored, so the page
+   cannot show it: typing it IS the comparison), or denies it.
+3. The plugin polls `GET /plugin/v1/pair/{request_id}` with its
+   `poll_secret`, and receives the token **once**.
+
+#### `POST /plugin/v1/pair`
+
+```json
+{"owner": "owner@example.invalid", "name": "example-relay", "label": "Example relay",
+ "data_scope": "example", "capabilities": ["messages", "draft_checks"],
+ "deliver_to": "officer:example:main"}
+```
+
+| field | required | rule |
+|---|---|---|
+| `owner` | yes | the owner's login (their email, as `GET /plugin/v1/self` names it) |
+| `name`, `label` | yes | as on `/plugins` |
+| `data_scope` | no | as on `/plugins`; default the `name` |
+| `capabilities` | yes | `messages`, optionally with `draft_checks`. `viewer` cannot be paired |
+| `deliver_to` | no | `officer:<id>`, checked again when the owner approves |
+
+| answer | meaning |
+|---|---|
+| `202 {"request_id", "code", "poll_secret", "expires_at"}` | the request is waiting for the owner. `code` is 8 characters as `XXXX-XXXX` (no `0`, `1`, `I`, `L`, `O`, `U`); show it to the owner. Keep `poll_secret` private |
+| `400 {"error"}` | a field breaks a rule |
+| `429 {"error"}` | too many requests: 5 per source address in 10 minutes, 50 on the server. Retry after `Retry-After`. ⚠ The server-wide allowance is one anyone can spend; when it is spent, mint the token on `/plugins` instead |
+
+The answer is the same `202` whether or not `owner` names an account, so the
+route says nothing about who has one; a request for no account simply
+expires. A request expires **10 minutes** after it was made. muster stores
+only the SHA-256 of the code and of the poll secret.
+
+#### `GET /plugin/v1/pair/{request_id}`
+
+`Authorization: Bearer <poll_secret>`.
+
+| answer | meaning |
+|---|---|
+| `200 {"status": "pending", "expires_at"}` | not decided yet: poll again in a few seconds |
+| `200 {"status": "approved", "token": "mpl_…", "plugin_id", "plugin_name", "capabilities", "deliver_to"}` | the plugin is minted now and this is its token. **This answer is given once**: store the token (0600) before anything else |
+| `200 {"status": "redeemed"}` | the token was already handed out. If you lost it, revoke the plugin and pair again |
+| `200 {"status": "denied"}` / `{"status": "expired"}` | nothing was minted |
+| `404 {"error"}` | no such request, or the poll secret is missing or wrong (the same answer for all three) |
+| `409 {"status": "pending", "error"}` | approved, but the owner now has a live plugin of that name, or the officer is no longer defined: nothing was minted. Revoke or define, and it can still be redeemed until it expires |
+
+#### Deciding a pairing request
+
+On `/plugins`, each pending request shows its name, label, capabilities,
+`deliver_to` and when it expires, with a **Code the plugin printed** field and
+**Approve** (a sign-in from the last 12 hours, as approving a reply; a code
+that does not match is refused) and **Deny**. From your own mirrored Claude
+Code session:
+
+| tool | what it does |
+|---|---|
+| `plugin_requests_list` | your pending pairing requests: `id`, name, label, capabilities, `deliver_to`, `created_at`, `expires_at`. The code is **not** listed: you read it from the plugin |
+| `plugin_request_decide {id, decision, code}` | `approve` or `deny`. `code` must be the code the plugin printed (case and the dash are ignored); a mismatch is refused, and so is an expired, decided or another owner's request |
+
+Approving checks what minting checks: the name is free among your live
+plugins, the capabilities are allowed, and `deliver_to` names an officer
+defined for you. Each decision writes a `plugin.pair.approved` or
+`plugin.pair.denied` audit row, and the token's hand-out `plugin.created`.
 
 ### `POST /plugin/v1/tasks`: one task per upstream record
 

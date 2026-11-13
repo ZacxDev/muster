@@ -265,7 +265,8 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   const claim = await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 5 } });
   expect(claim.status(), await claim.text()).toBe(200);
   const claimed = (await claim.json()) as Record<string, unknown>;
-  expect(Object.keys(claimed).sort()).toEqual(['approved_at', 'body', 'draft_id', 'message_external_id']);
+  expect(Object.keys(claimed).sort()).toEqual(['approved_at', 'body', 'draft_id', 'kind', 'message_external_id']);
+  expect(claimed.kind).toBe('reply');
   expect(claimed.draft_id).toBe(draftID);
   expect(claimed.body).toBe('Yes, noon works.');
   expect(claimed.message_external_id).toBe('e2e-msg-1');

@@ -86,6 +86,7 @@ officer type delete
 officer type get
 officer type ls
 officer type put
+plugins deliver-to
 plugins retry
 route reply
 task comment
@@ -113,7 +114,8 @@ whoami"
 # 30 -> 40: the ten `officer type|def|item` verbs (the built-in officer store's
 #           admin API, docs/officers-builtin.md; muster#503 slice 7).
 # 40 -> 43: `officer schedule ls|put|delete` (slice 8).
-WANT_COUNT=43
+# 43 -> 44: `plugins deliver-to` (bind a plugin to a builtin officer, phase 3).
+WANT_COUNT=44
 
 # FORBIDDEN is the other half of the split: verbs that belong to the upstream
 # CLI this one was extracted from and must NEVER appear here.

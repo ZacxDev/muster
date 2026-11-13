@@ -249,6 +249,7 @@ var pluginDoorRoutes = []pluginDoorRoute{
 	// fixture's messages token is refused at the capability check.
 	{"/plugin/v1/drafts/checks", "", "", http.StatusForbidden, http.MethodGet},
 	{"/plugin/v1/drafts/5/check", `{"sendable":true}`, "", http.StatusForbidden, ""},
+	{"/plugin/v1/drafts/5/media?ref=a/b", "x", "", http.StatusForbidden, ""},
 }
 
 // pluginDoorRoute is one pluginDoorRoutes entry; method "" is POST.

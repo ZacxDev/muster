@@ -96,9 +96,9 @@ func TestPluginCapabilitiesThroughTheRealStore(t *testing.T) {
 
 	for tok, want := range map[string]string{
 		msgTok: `{"plugin_id":` + strconv.FormatInt(msgPlugin.ID, 10) + `,"plugin_name":"caps-messages","owner_id":` +
-			strconv.FormatInt(owner, 10) + `,"owner_login":"` + email + `","capabilities":["messages"]}`,
+			strconv.FormatInt(owner, 10) + `,"owner_login":"` + email + `","capabilities":["messages"],"deliver_to":null}`,
 		viewTok: `{"plugin_id":` + strconv.FormatInt(viewPlugin.ID, 10) + `,"plugin_name":"caps-viewer","owner_id":` +
-			strconv.FormatInt(owner, 10) + `,"owner_login":"` + email + `","capabilities":["viewer"]}`,
+			strconv.FormatInt(owner, 10) + `,"owner_login":"` + email + `","capabilities":["viewer"],"deliver_to":null}`,
 	} {
 		rec := call("GET", "/plugin/v1/self", tok, "")
 		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
