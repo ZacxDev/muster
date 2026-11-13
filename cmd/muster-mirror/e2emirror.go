@@ -27,7 +27,8 @@ import (
 // (e2e/tests/mirrored.spec.ts builds it). It replaces tmux with a fake whose
 // sessions are MUSTER_MIRROR_E2E_SESSIONS (comma-separated) and whose terminal
 // prints, on screen, exactly what reached it: `FAKE-MIRROR session=<s>
-// mode=ro|rw`, `size=CxR` per resize and `in=<HEX>` per input chunk. The dial,
+// mode=ro|rw`, `size=CxR` per resize and `in=<HEX>` per input chunk (plus, when
+// MUSTER_MIRROR_E2E_PROMPT is set, canned prompt lines it draws itself). The dial,
 // the token, the registration, the tunnel and everything in muster are real.
 //
 // THE RENDERED VIEW (tunnel v2): with MUSTER_MIRROR_E2E_CLAUDE=<session>=<path>
