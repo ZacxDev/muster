@@ -190,9 +190,10 @@ PWA manifest's install-sheet screenshots.
 a temp dir so `docs/img/` is untouched, and `node verdict.mjs --docshots` judges
 the report: exactly the expected number of passes, all from `docs.spec.ts`, and
 no skip. CI's `docshots` job runs it on every change, so a UI change that breaks
-the generator goes red at once. `mirror-terminal.png` is left out of both runs
-until #623 (its terminal comes out blank); `MUSTER_E2E_DOCSHOTS_TERMINAL=1` puts
-it back.
+the generator goes red at once. The `mirror-terminal.png` shot also checks that
+rows with text are drawn inside the visible terminal, not just present in the
+page (#623: a fixture printing only on row 1 of a window taller than the page
+gave a blank image, because the Terminal view holds such a view at its bottom).
 
 ## What green does not prove
 

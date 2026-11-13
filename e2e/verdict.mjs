@@ -41,11 +41,11 @@ import { specFiles } from './legs.mjs';
 // failure. A run error, or a missing or empty report, fails too.
 //
 // DOCSHOTS_COUNT is the number of test() calls docs.spec.ts makes in a default
-// run: 12, since mirror-terminal.png is opted out until #623 (see the spec). It
-// is the ONE copy of that count, and it is EXACT, not a floor: a shot added or
+// run: 13, one per shot. It is the ONE copy of that count, and it is EXACT,
+// not a floor: a shot added or
 // removed without editing it here fails the check, so the two cannot drift.
 const DOCSHOTS_FILE = 'docshots/docs.spec.ts';
-const DOCSHOTS_COUNT = 12;
+const DOCSHOTS_COUNT = 13;
 
 function docshotsVerdict(path) {
   let report;

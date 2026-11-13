@@ -417,6 +417,28 @@ func e2eAttachQueries() string {
 	return "\x1b[c\x1b[>c\x1b[6n\x1b[?1004h"
 }
 
+// e2ePrompt is what the fake writes last on every attach when
+// MUSTER_MIRROR_E2E_PROMPT is set: its lines (separated by "|"), drawn so the
+// last one sits on the window's BOTTOM row, where a real shell's prompt is
+// once it has any history. Without it the fake's only text is its banner on
+// row 1, which a window taller than the page never shows: the Terminal view
+// holds an overflowing view at its bottom on purpose (terminal.go, atBottom),
+// so row 1 is scrolled out of sight (#623). The cursor is put on the last row
+// with a row past any window's height (a terminal clamps it), then moved up to
+// the first of the lines; no newline follows the last one, so nothing scrolls.
+func e2ePrompt() string {
+	v := os.Getenv("MUSTER_MIRROR_E2E_PROMPT")
+	if v == "" {
+		return ""
+	}
+	lines := strings.Split(v, "|")
+	up := ""
+	if len(lines) > 1 {
+		up = fmt.Sprintf("\x1b[%dA", len(lines)-1)
+	}
+	return "\x1b[9999;1H" + up + strings.Join(lines, "\r\n")
+}
+
 // edgeLine is a ruler ending exactly at the client's last column with
 // RIGHT-EDGE, so a browser test can scroll to it: on a client wider than the
 // page it is off-screen until scrolled.
@@ -435,7 +457,7 @@ func (fakeBackend) Attach(_ context.Context, session string, readOnly bool, cols
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries())
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries() + e2ePrompt())
 	return t, nil
 }
 
@@ -620,7 +642,7 @@ func (w windowFake) AttachWindow(_ context.Context, session, window string, read
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries())
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries() + e2ePrompt())
 	return t, nil
 }
 
