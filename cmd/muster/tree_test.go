@@ -54,7 +54,7 @@ import (
 // 29 → 30: `agent create` (agent_create.go), POST /api/agents — the machine
 // route that replaced the web UI's dispatch form (docs/design/chief-dispatch.md
 // phase 2), on its own agent-create token.
-const wantVerbCount = 40
+const wantVerbCount = 43
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -123,6 +123,10 @@ var wiring = []struct {
 	{"officer item ls", []string{"officer", "item", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/items"},
 	{"officer item enqueue", []string{"officer", "item", "enqueue", "marketing:example", "--kind", "post", "--subject", "s1"}, "POST /api/officers/defs/marketing:example/items"},
 	{"officer item resolve", []string{"officer", "item", "resolve", "marketing:example", "7"}, "POST /api/officers/defs/marketing:example/items/7/resolve"},
+	// Schedules (slice 8): three more.
+	{"officer schedule ls", []string{"officer", "schedule", "ls", "marketing:example"}, "GET /api/officers/defs/marketing:example/schedules"},
+	{"officer schedule put", []string{"officer", "schedule", "put", "marketing:example", "nightly", "--cron", "0 6 * * *", "--kind", "k", "--subject", "s"}, "PUT /api/officers/defs/marketing:example/schedules/nightly"},
+	{"officer schedule delete", []string{"officer", "schedule", "delete", "marketing:example", "nightly"}, "DELETE /api/officers/defs/marketing:example/schedules/nightly"},
 	// The 23rd verb: `doctor` (doctor.go), the onboarding check. The harness
 	// serves plain http, so `server` would FAIL; it is skipped here, as are the
 	// checks that need a sign-in. What this row pins is the route.
@@ -296,6 +300,9 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("GET /api/officers/defs/marketing:example/items", http.StatusOK, `{"items":[]}`)
 			h.json("POST /api/officers/defs/marketing:example/items", http.StatusCreated, `{"id":7,"created":true}`)
 			h.json("POST /api/officers/defs/marketing:example/items/7/resolve", http.StatusOK, `{"item":{"id":7}}`)
+			h.json("GET /api/officers/defs/marketing:example/schedules", http.StatusOK, `{"schedules":[]}`)
+			h.json("PUT /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"name":"nightly"}`)
+			h.json("DELETE /api/officers/defs/marketing:example/schedules/nightly", http.StatusOK, `{"deleted":"nightly"}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
 			h.json("GET /api/attention/summary", http.StatusOK, `{"partial":false,"items":[`+
 				`{"key":"ask-3","kind":"notice","host":"alpha","target":"main:1","since":10}]}`)

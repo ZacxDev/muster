@@ -421,6 +421,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/items",
 		"POST /api/officers/defs/{officer}/items",
 		"POST /api/officers/defs/{officer}/items/{id}/resolve",
+		"GET /api/officers/defs/{officer}/schedules",
+		"PUT /api/officers/defs/{officer}/schedules/{name}",
+		"DELETE /api/officers/defs/{officer}/schedules/{name}",
 	},
 	authz.ViaService: {
 		// The machine job API (jobs.go): requireServiceToken, the service tier ONLY.
@@ -471,6 +474,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/officers/defs/{officer}/items",
 		"POST /api/officers/defs/{officer}/items",
 		"POST /api/officers/defs/{officer}/items/{id}/resolve",
+		"GET /api/officers/defs/{officer}/schedules",
+		"PUT /api/officers/defs/{officer}/schedules/{name}",
+		"DELETE /api/officers/defs/{officer}/schedules/{name}",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
 		"GET /api/flows/jobs",
@@ -848,6 +854,9 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"GET /api/officers/defs/{officer}/items":               true,
 		"POST /api/officers/defs/{officer}/items":              true,
 		"POST /api/officers/defs/{officer}/items/{id}/resolve": true,
+		"GET /api/officers/defs/{officer}/schedules":           true,
+		"PUT /api/officers/defs/{officer}/schedules/{name}":    true,
+		"DELETE /api/officers/defs/{officer}/schedules/{name}": true,
 		"POST /api/chief/replace":                              true,
 		"POST /api/agents":                                     true,
 		"GET /api/doctor":                                      true}

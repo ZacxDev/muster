@@ -41,7 +41,7 @@ sweep. No officer runs yet. The boot log says:
 
 ```
 officers: ON — empty roster (MUSTER_OFFICERS declares none)
-officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s
+officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every 15s, schedules every 30s (UTC cron)
 ```
 
 Unset (or blank), the store is off and every `/api/officers/…` route answers
@@ -123,6 +123,31 @@ kind and subject returns that item (`created: false`). The wake loop starts
 an instance for claimable work within its poll interval. `resolve` is refused
 (409) while an instance holds the item under a live lease.
 
+## 4b. Schedules (cron, UTC)
+
+```sh
+muster officer schedule put marketing:example weekly-digest \
+    --cron "0 9 * * 1" --kind digest.weekly --subject weekly --priority normal
+muster officer schedule ls marketing:example
+muster officer schedule delete marketing:example weekly-digest
+```
+
+Five fields (minute hour day-of-month month day-of-week), evaluated in
+**UTC**; `*`, numbers, ranges `a-b`, lists and steps `*/n`; day-of-week 0–6 (0
+or 7 Sunday); when both day fields are restricted a day matches if either
+does. No names (`MON`) or `@daily`. muster checks every 30 seconds:
+
+- **once**: a fire is a compare-and-set on the schedule's `next_fire_at`, so of
+  two replicas (or a restarted muster) exactly one enqueues, in the same
+  transaction as the advance;
+- **missed fires collapse to one**: after downtime a schedule fires once, then
+  at its next future time;
+- `--skip-if-live` (default): a fire while an item of that kind and subject
+  is still live enqueues nothing; `--skip-if-live=false` makes every fire its
+  own item (`<subject>@<fire minute>`);
+- a switched-off officer is not fed, and its schedules still advance (no
+  backlog on switching it back on).
+
 ## 5. Asks and escalations, through Attention
 
 - **An instance's question** — `officer_ask_person{item_id, to: "owner",
@@ -161,5 +186,7 @@ running it; its store rows stay.
 | PUT / DELETE | `/api/officers/defs/{officer}` | PUT `{enabled?, mode?, escalate_to?}` |
 | GET / POST | `/api/officers/defs/{officer}/items` | GET `?status=&limit=`; POST `{kind, subject_key, payload?, tier?, priority?, not_before?}` |
 | POST | `/api/officers/defs/{officer}/items/{id}/resolve` | `{outcome, summary}` |
+| GET | `/api/officers/defs/{officer}/schedules` | |
+| PUT / DELETE | `/api/officers/defs/{officer}/schedules/{name}` | PUT `{cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}` |
 
 All behind the hook tier (`requireArmedHookToken`); 404 while the store is off.

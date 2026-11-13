@@ -27,6 +27,8 @@ const (
 	officerDefRoute     = "/api/officers/defs/{officer}"
 	officerItemsRoute   = "/api/officers/defs/{officer}/items"
 	officerResolveRoute = "/api/officers/defs/{officer}/items/{id}/resolve"
+	officerSchedsRoute  = "/api/officers/defs/{officer}/schedules"
+	officerSchedRoute   = "/api/officers/defs/{officer}/schedules/{name}"
 )
 
 func newOfficerCmd(a *app) *cobra.Command {
@@ -41,7 +43,7 @@ escalation recipients — and lets you queue and resolve its items.
 Order: put the type first (officer type put), then the officer (officer def
 put <type>:<area>); an officer's type is the part of its id before the colon.`,
 	}
-	cmd.AddCommand(newOfficerTypeCmd(a), newOfficerDefCmd(a), newOfficerItemCmd(a))
+	cmd.AddCommand(newOfficerTypeCmd(a), newOfficerDefCmd(a), newOfficerItemCmd(a), newOfficerScheduleCmd(a))
 	return cmd
 }
 
@@ -220,5 +222,57 @@ func newOfficerItemCmd(a *app) *cobra.Command {
 	res.Flags().StringVar(&outcome, "outcome", "no_action", "done, no_action or escalated")
 	res.Flags().StringVar(&summary, "summary", "", "why")
 	cmd.AddCommand(ls, enq, res)
+	return cmd
+}
+
+func newOfficerScheduleCmd(a *app) *cobra.Command {
+	cmd := &cobra.Command{Use: "schedule", Short: "An officer's cron schedules (UTC): each due time enqueues one item"}
+	ls := &cobra.Command{
+		Use: "ls <officer>", Short: "GET " + officerSchedsRoute, Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.officerCall(cmd, http.MethodGet, officerSchedsRoute, map[string]string{"officer": args[0]}, nil, nil)
+		},
+	}
+	var cron, kind, subject, payload, tier, priority string
+	var skipIfLive, enabled bool
+	put := &cobra.Command{
+		Use:   "put <officer> <name>",
+		Short: "PUT " + officerSchedRoute + " — create or replace a schedule (next fire computed from now)",
+		Long: `Create or replace a schedule. --cron is five fields (minute hour day-of-month
+month day-of-week) in UTC. With --skip-if-live (default) a fire while an item
+of that kind and subject is still live enqueues nothing; with
+--skip-if-live=false each fire is its own item (subject suffixed with the
+fire's minute). Missed fires collapse to one.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cron == "" || kind == "" || subject == "" {
+				return failf(exitUsage, "--cron, --kind and --subject are required")
+			}
+			body := map[string]any{"cron": cron, "kind": kind, "subject_key": subject, "tier": tier, "priority": priority,
+				"skip_if_live": skipIfLive, "enabled": enabled}
+			if payload != "" {
+				if !json.Valid([]byte(payload)) {
+					return failf(exitUsage, "--payload is not JSON")
+				}
+				body["payload"] = json.RawMessage(payload)
+			}
+			return a.officerCall(cmd, http.MethodPut, officerSchedRoute, map[string]string{"officer": args[0], "name": args[1]}, nil, body)
+		},
+	}
+	put.Flags().StringVar(&cron, "cron", "", "five-field cron, UTC (required)")
+	put.Flags().StringVar(&kind, "kind", "", "the item's kind (required)")
+	put.Flags().StringVar(&subject, "subject", "", "the item's subject key (required)")
+	put.Flags().StringVar(&payload, "payload", "", "a JSON object the instance reads")
+	put.Flags().StringVar(&tier, "tier", "", "routine or judgement (default judgement)")
+	put.Flags().StringVar(&priority, "priority", "", "urgent, high, normal or low (default normal)")
+	put.Flags().BoolVar(&skipIfLive, "skip-if-live", true, "enqueue nothing while an item of that subject is live")
+	put.Flags().BoolVar(&enabled, "enabled", true, "the schedule's switch")
+	del := &cobra.Command{
+		Use: "delete <officer> <name>", Short: "DELETE " + officerSchedRoute, Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.officerCall(cmd, http.MethodDelete, officerSchedRoute, map[string]string{"officer": args[0], "name": args[1]}, nil, nil)
+		},
+	}
+	cmd.AddCommand(ls, put, del)
 	return cmd
 }

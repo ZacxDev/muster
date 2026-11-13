@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -27,6 +28,9 @@ import (
 //	GET    /api/officers/defs/{officer}/items        ?status=&limit=
 //	POST   /api/officers/defs/{officer}/items        {kind, subject_key, payload?, tier?, priority?, not_before?}
 //	POST   /api/officers/defs/{officer}/items/{id}/resolve   {outcome, summary}
+//	GET    /api/officers/defs/{officer}/schedules    the officer's cron schedules
+//	PUT    /api/officers/defs/{officer}/schedules/{name}   {cron, kind, subject_key, payload?, tier?, priority?, skip_if_live?, enabled?}
+//	DELETE /api/officers/defs/{officer}/schedules/{name}
 //
 // 🔴 OWNER-SCOPED TWICE. Every call acts as the CALLER (a personal token: its
 // owner; the shared hook token: the operator, on an armed server only —
@@ -62,6 +66,9 @@ func (s *Server) registerOfficerAdminRoutes(mux Mux) {
 	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/items", h(s.handleOfficerItems))
 	mux.HandleFunc("POST "+officerAdminPrefix+"/defs/{officer}/items", h(s.handleOfficerItemEnqueue))
 	mux.HandleFunc("POST "+officerAdminPrefix+"/defs/{officer}/items/{id}/resolve", h(s.handleOfficerItemResolve))
+	mux.HandleFunc("GET "+officerAdminPrefix+"/defs/{officer}/schedules", h(s.handleOfficerSchedules))
+	mux.HandleFunc("PUT "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerSchedulePut))
+	mux.HandleFunc("DELETE "+officerAdminPrefix+"/defs/{officer}/schedules/{name}", h(s.handleOfficerScheduleDelete))
 }
 
 // requireOfficerStore answers 404 while the store is off.
@@ -316,4 +323,65 @@ func (s *Server) handleOfficerItemResolve(w http.ResponseWriter, r *http.Request
 	}
 	s.logger.Printf("officers: user %d resolved item %d of %s (%s)", adminOwner(r), id, officer, in.Outcome)
 	s.writeJSON(w, http.StatusOK, map[string]any{"item": json.RawMessage(raw)})
+}
+
+func (s *Server) handleOfficerSchedules(w http.ResponseWriter, r *http.Request) {
+	list, err := s.officerStore.ListSchedules(r.Context(), adminOwner(r), r.PathValue("officer"))
+	if err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"schedules": list})
+}
+
+func (s *Server) handleOfficerSchedulePut(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Cron       string          `json:"cron"`
+		Kind       string          `json:"kind"`
+		SubjectKey string          `json:"subject_key"`
+		Payload    json.RawMessage `json:"payload"`
+		Tier       string          `json:"tier"`
+		Priority   string          `json:"priority"`
+		SkipIfLive *bool           `json:"skip_if_live"`
+		Enabled    *bool           `json:"enabled"`
+	}
+	if !s.decodeAdmin(w, r, &in) {
+		return
+	}
+	skip, on := true, true
+	if in.SkipIfLive != nil {
+		skip = *in.SkipIfLive
+	}
+	if in.Enabled != nil {
+		on = *in.Enabled
+	}
+	officer := r.PathValue("officer")
+	sc, err := s.officerStore.PutSchedule(r.Context(), adminOwner(r), officer, builtin.Schedule{Name: r.PathValue("name"), Cron: in.Cron, Kind: in.Kind,
+		SubjectKey: in.SubjectKey, Payload: in.Payload, Tier: in.Tier, Priority: in.Priority, SkipIfLive: skip, Enabled: on}, s.officerNow())
+	if err != nil {
+		s.adminStoreErr(w, "officer", err)
+		return
+	}
+	s.logger.Printf("officers: user %d put schedule %s of %s (%s, next %v)", adminOwner(r), sc.Name, officer, sc.Cron, sc.NextFireAt)
+	s.writeJSON(w, http.StatusOK, sc)
+}
+
+func (s *Server) handleOfficerScheduleDelete(w http.ResponseWriter, r *http.Request) {
+	officer, name := r.PathValue("officer"), r.PathValue("name")
+	if err := s.officerStore.DeleteSchedule(r.Context(), adminOwner(r), officer, name); err != nil {
+		s.adminStoreErr(w, "schedule", err)
+		return
+	}
+	s.logger.Printf("officers: user %d deleted schedule %s of %s", adminOwner(r), name, officer)
+	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
+}
+
+// RunOfficerScheduler fires the built-in store's due schedules every
+// interval until ctx ends (builtin.Store.RunScheduler); nothing while the
+// store is off.
+func (s *Server) RunOfficerScheduler(ctx context.Context, interval time.Duration) {
+	if s.officerStore == nil {
+		return
+	}
+	s.officerStore.RunScheduler(ctx, interval, authz.System, s.officerNow, s.logger.Printf)
 }

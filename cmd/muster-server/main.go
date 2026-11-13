@@ -1239,6 +1239,9 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// withdraws its copy.
 	if a.srv != nil && a.srv.OfficerStoreOn() {
 		go a.srv.RunOfficerAttentionSweep(ctx, api.DefaultOfficerAttentionSweep)
+		// Schedules: unguarded at replicas > 1 — a fire is a compare-and-set
+		// on next_fire_at, so of two pods exactly one fires each due time.
+		go a.srv.RunOfficerScheduler(ctx, builtin.DefaultScheduleInterval)
 	}
 	// The officers' declared pools, to each officer's HQ: at once (boot), then
 	// every 10 minutes. Unguarded at replicas > 1: each pod pushes the same
@@ -1537,7 +1540,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 
 	switch {
 	case a.srv != nil && a.srv.OfficerStoreOn():
-		l.Printf("officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every %s", api.DefaultOfficerAttentionSweep)
+		l.Printf("officers: built-in store ON — admin API at /api/officers (`muster officer`), Attention sweep every %s, schedules every %s (UTC cron)",
+			api.DefaultOfficerAttentionSweep, builtin.DefaultScheduleInterval)
 	case a.cfg.OfficersSet:
 		l.Printf("officers: built-in store OFF — %s is set but there is no database (%s)", envOfficers, envDatabase)
 	}

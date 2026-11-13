@@ -381,6 +381,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/officers/defs/{officer}/items":               classAdmin,
 	"POST /api/officers/defs/{officer}/items":              classAdmin,
 	"POST /api/officers/defs/{officer}/items/{id}/resolve": classAdmin,
+	"GET /api/officers/defs/{officer}/schedules":           classAdmin,
+	"PUT /api/officers/defs/{officer}/schedules/{name}":    classAdmin,
+	"DELETE /api/officers/defs/{officer}/schedules/{name}": classAdmin,
 	"POST /api/tasks/{id}/comments":                        classAdmin,
 	// The machine job API (jobs.go): the service tier, acting as user 1.
 	"GET /api/jobs/{id}": classAdmin,
@@ -1140,6 +1143,9 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	aOffItem, _, err := ost.Enqueue(ua, w.a.uid, builtin.NewItem{Officer: aOffType + ":a", Kind: "iso", SubjectKey: "iso",
 		Payload: json.RawMessage(`{"note":"` + w.canary + ` item"}`)}, time.Now())
 	must(err, "an officer item")
+	_, err = ost.PutSchedule(ua, w.a.uid, aOffType+":a", builtin.Schedule{Name: "nightly", Cron: "0 6 * * *", Kind: "iso",
+		SubjectKey: w.canary + "-sched", SkipIfLive: true, Enabled: true}, time.Now())
+	must(err, "an officer schedule")
 	w.officerStore = ost
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
@@ -1532,7 +1538,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		// The built-in officer store's admin API: its own path names, and a
 		// body each route accepts, so a refusal is about WHOSE row.
 		path = strings.NewReplacer("{key}", o.officerType, "{officer}", url.PathEscape(o.officer),
-			"{id}", strconv.FormatInt(o.officerItem, 10)).Replace(path)
+			"{id}", strconv.FormatInt(o.officerItem, 10), "{name}", "nightly").Replace(path)
 		switch {
 		case method == http.MethodGet || method == http.MethodDelete:
 			return method, path, ""
@@ -1542,6 +1548,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 			return method, path, `{"kind":"iso-write","subject_key":"iso-` + strconv.FormatInt(actor.uid, 10) + `"}`
 		case strings.Contains(path, "/types/"):
 			return method, path, `{"name":"iso","charter":"iso-write"}`
+		case strings.Contains(path, "/schedules/"):
+			return method, path, `{"cron":"0 6 * * *","kind":"iso","subject_key":"iso"}`
 		}
 		return method, path, `{}`
 	}
@@ -1882,9 +1890,10 @@ var sideEffectControlled = map[string]string{
 	// "someone else's object" for the status to tell apart. That B's PUT of A's
 	// key writes a row of B's and leaves A's untouched is
 	// TestTheAdminAPIIsOwnerScoped's (officer_builtin_attention_pg_test.go).
-	"PUT /api/officers/types/{key}":    "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
-	"PUT /api/officers/defs/{officer}": "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
-	"POST /agents/{id}/start":          "the provisioner acted for A (isoProvisioner records it), never for B",
+	"PUT /api/officers/types/{key}":                     "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}":                  "an upsert of the caller's own row: controlled in TestTheAdminAPIIsOwnerScoped",
+	"PUT /api/officers/defs/{officer}/schedules/{name}": "an upsert of the caller's own officer's schedule: B's names B's own (absent) officer → 404 like a ghost; controlled in TestTheAdminAPIIsOwnerScoped",
+	"POST /agents/{id}/start":                           "the provisioner acted for A (isoProvisioner records it), never for B",
 	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
 	// challenge its own device asked for, signed by that device's step-up key,
 	// so A's device's bare request is refused like the ghost's. Its control is
