@@ -117,6 +117,9 @@ type Store interface {
 	DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
+	// RenewDraft extends pluginID's live lease on a draft it claimed, within
+	// MaxLeaseTotal of the claim.
+	RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error)
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
 	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (d Draft, fresh bool, err error)

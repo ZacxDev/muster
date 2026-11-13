@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
@@ -567,9 +568,18 @@ func (s *Server) outboundSettled(ctx context.Context, owner int64, d plugins.Dra
 	ctx = context.WithoutCancel(ctx)
 	if d.Status == plugins.DraftSent {
 		if d.OfficerItemID != nil {
+			// A LATE result (the draft was unconfirmed, its item escalated to
+			// the owner asking whether it was posted) settles it too, and the
+			// owner's now-answered escalation asks are withdrawn.
 			summary := "posted " + d.ExternalRef + " (draft " + strconv.FormatInt(d.ID, 10) + ")"
-			if _, err := s.officerStore.ResolveItem(ctx, owner, officer, *d.OfficerItemID, "done", summary, now); err != nil {
-				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is: %v", d.ID, *d.OfficerItemID, officer, err)
+			settled, withdraw, err := s.officerStore.DraftPosted(ctx, owner, officer, *d.OfficerItemID, d.ID, summary, now)
+			if err != nil || !settled {
+				s.logger.Printf("plugins: draft %d sent; item %d of %s left as it is (%v)", d.ID, *d.OfficerItemID, officer, err)
+			}
+			for _, w := range withdraw {
+				if _, err := s.cancelAsk(s.attentionPrincipal(ctx, w.Recipient), w.AttentionID); err != nil && !errors.Is(err, attention.ErrNotOpen) {
+					s.logger.Printf("plugins: draft %d sent late; withdraw user %d's escalation ask %d: %v", d.ID, w.Recipient, w.AttentionID, err)
+				}
 			}
 		}
 		return false

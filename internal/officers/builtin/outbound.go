@@ -222,6 +222,68 @@ func (s *Store) DraftEndedTx(ctx context.Context, tx pgx.Tx, owner int64, e Draf
 	return out, nil
 }
 
+// DraftPosted settles owner's officer's item id, the item outbound draft
+// draft was filed for, now that the draft was reported POSTED: done, with
+// summary. It is the owner's ResolveItem (refused while an instance holds the
+// item under a live lease; finished items are left as they are) widened by
+// one case, the LATE result: an item ESCALATED because its draft ended
+// unconfirmed (DraftEndedTx) is settled too, provided no newer draft was
+// filed for it — the owner's question ("may it have been posted?") is now
+// answered — and withdraw names the escalation asks already raised, for the
+// caller to withdraw. settled false: the item was left as it is.
+func (s *Store) DraftPosted(ctx context.Context, owner int64, officer string, id, draft int64, summary string, now time.Time) (settled bool, withdraw []OpenEscalation, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	it, err := scanItem(tx.QueryRow(ctx, `SELECT `+itemCols+` FROM officer_items WHERE owner_id = $1 AND officer = $2 AND id = $3 FOR UPDATE`,
+		owner, officer, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	switch {
+	case it.Status == officers.StatusDone, it.live(now):
+		return false, nil, nil
+	case it.Status == officers.StatusEscalated:
+		var newer bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_reply_drafts WHERE owner_id = $1 AND officer_item_id = $2 AND id > $3)`,
+			owner, it.ID, draft).Scan(&newer); err != nil {
+			return false, nil, err
+		}
+		if newer {
+			return false, nil, nil
+		}
+		rows, err := tx.Query(ctx, `SELECT (n->>'recipient')::bigint, (n->>'attention_id')::bigint FROM officer_items i, jsonb_array_elements(i.notices) n
+			WHERE i.id = $1 AND n->'settled' = 'false'::jsonb AND n->'attention_id' <> 'null'::jsonb`, it.ID)
+		if err != nil {
+			return false, nil, err
+		}
+		if withdraw, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (OpenEscalation, error) {
+			e := OpenEscalation{Owner: owner, Item: it.ID, Officer: officer}
+			err := r.Scan(&e.Recipient, &e.AttentionID)
+			return e, err
+		}); err != nil {
+			return false, nil, err
+		}
+	}
+	// Done is enough for the escalation's notices: an unraised one is never
+	// raised (DueNotices reads escalated items only), and a raised one's
+	// answer re-opens nothing (SettleEscalation re-opens only while
+	// escalated).
+	if _, err := tx.Exec(ctx, `UPDATE officer_items SET status = 'done', outcome = 'done', summary = $2, claimed_by = NULL, lease_expires_at = NULL,
+		updated_at = $3 WHERE id = $1`, it.ID, summary, now); err != nil {
+		return false, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, nil, err
+	}
+	return true, withdraw, nil
+}
+
 // waitingRefusal is the lease_lost refusal of a verb on a WAITING item, saying
 // what it waits on (its asks name an open one, or else the outbound draft
 // filed for it): the code is the contract's, the words are the instance's.

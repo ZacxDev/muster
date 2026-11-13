@@ -69,8 +69,12 @@ const (
 	// DraftTTL: a draft not sent within this of being written expires, whether
 	// it was still pending or approved and never claimed.
 	DraftTTL = 7 * 24 * time.Hour
-	// LeaseDuration: how long a claiming plugin has to report a result.
+	// LeaseDuration: how long a claiming plugin has to report a result, or
+	// to renew its lease (RenewDraft) for another LeaseDuration.
 	LeaseDuration = 2 * time.Minute
+	// MaxLeaseTotal bounds a claim's renewals: a lease never runs past
+	// claimed_at + MaxLeaseTotal, so a plugin cannot hold a draft for ever.
+	MaxLeaseTotal = 10 * time.Minute
 	// MaxClaimWait bounds one long-poll of the claim route.
 	MaxClaimWait = 25 * time.Second
 	// MaxExternalRefRunes and MaxDetailBytes cap what a result may carry.
@@ -284,6 +288,12 @@ var (
 	// ErrDraftUnchecked: an approval of a draft its plugin has not checked yet
 	// (Draft.AwaitingCheck).
 	ErrDraftUnchecked = errors.New("plugins: the plugin has not checked this draft yet")
+	// ErrLeaseLapsed: the claim's lease already lapsed, so the draft is (or
+	// is about to be swept) unconfirmed and can no longer be renewed (409).
+	ErrLeaseLapsed = errors.New("plugins: the claim's lease has already lapsed")
+	// ErrLeaseAtMax: the lease already runs to claimed_at + MaxLeaseTotal
+	// (409).
+	ErrLeaseAtMax = errors.New("plugins: the claim's lease is already as long as it may be")
 	// ErrCheckConflict: the draft already has the OTHER verdict (409).
 	ErrCheckConflict = errors.New("plugins: the draft already has a different verdict")
 )
@@ -1054,6 +1064,56 @@ func (s *PGStore) claimOne(ctx context.Context, pluginID int64) (c Claim, found,
 		return Claim{}, false, false, err
 	}
 	return c, found, retry, nil
+}
+
+// RenewDraft extends plugin pluginID's lease on a draft IT claimed: to
+// LeaseDuration from now, but never past claimed_at + MaxLeaseTotal. For a
+// plugin whose send legitimately takes longer than one lease (a post through
+// a browser), so a slow success is not swept unconfirmed under it.
+//
+// 🔴 ONLY A LIVE LEASE IS RENEWED, under the draft's row lock: a lapsed one
+// is unconfirmed — the at-most-once rule (file header) — whether or not the
+// sweep has said so yet, and renewing it would revive a claim muster has
+// given up on (ErrLeaseLapsed). Refused: another plugin's draft or none
+// (ErrNotFound); one not claimed, or already settled (ErrDraftState); one
+// whose lease already runs to the bound (ErrLeaseAtMax). Audited.
+func (s *PGStore) RenewDraft(ctx context.Context, pluginID, draftID int64) (Draft, error) {
+	var d Draft
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := scanDraft(tx.QueryRow(ctx, `SELECT `+prefixed("d", draftCols)+`
+			  FROM plugin_reply_drafts d
+			  LEFT JOIN plugin_messages m ON m.id = d.message_id AND m.owner_id = d.owner_id
+			 WHERE d.id = $1 AND coalesce(m.plugin_id, d.plugin_id) = $2
+			   FOR UPDATE OF d`, draftID, pluginID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		d = cur
+		if cur.Status != DraftApproved || cur.ClaimedAt == nil || cur.LeaseUntil == nil {
+			return ErrDraftState
+		}
+		var lapsed, atMax bool
+		if err := tx.QueryRow(ctx, `SELECT lease_until <= now(), lease_until >= claimed_at + make_interval(secs => $2)
+			FROM plugin_reply_drafts WHERE id = $1`, draftID, MaxLeaseTotal.Seconds()).Scan(&lapsed, &atMax); err != nil {
+			return err
+		}
+		switch {
+		case lapsed:
+			return ErrLeaseLapsed
+		case atMax:
+			return ErrLeaseAtMax
+		}
+		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
+			SET lease_until = least(now() + make_interval(secs => $2), claimed_at + make_interval(secs => $3))
+			WHERE id = $1 RETURNING `+draftCols, draftID, LeaseDuration.Seconds(), MaxLeaseTotal.Seconds())); err != nil {
+			return err
+		}
+		return audit(ctx, tx, "plugin.draft.renewed", DraftObject(draftID), map[string]any{"plugin_id": pluginID, "lease_until": d.LeaseUntil})
+	})
+	return d, err
 }
 
 // BindingBrokenDetail is an outbound draft's detail when the claim withdrew

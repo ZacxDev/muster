@@ -41,6 +41,7 @@ var noCodenameFirst = map[string]string{
 	"officer_cap_hold.go Server.officerCapHoldNotice":      "an officer's pool: names an officer",
 	"pages.go Server.pageResponded":                        "a shared page's response: names a page",
 	"plugin_drafts.go Server.notifyDraftRefused":           "a plugin draft: fixed title, names no session",
+	"plugin_drafts.go Server.notifyOfficerNotTold":         "an officer's outbound draft: fixed title, names no session",
 	"plugin_pairing.go Server.pairRequested":               "a plugin pairing request: fixed title, names no session",
 	"push_task.go Server.flushCreatedTasks":                "a task: names a task",
 	"push_task.go Server.notifyAgentRunning":               "a task's agent: an agent has no tmux window",
