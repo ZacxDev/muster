@@ -664,5 +664,6 @@ except the last two, which the Compose smoke test sets and which say so.
 | `MUSTER_MIRROR_E2E_ACTIVE_FILE` | none | no | (`e2emirror`) `session=index` lines: each session's active window. |
 | `MUSTER_MIRROR_E2E_ACTIVITY_FILE` | none | no | (`e2emirror`) `session=<unix seconds>` lines: each session's last activity. |
 | `MUSTER_MIRROR_E2E_WINDOW` | none | no | (`e2emirror`) The `CxR` window size the fake reports. |
+| `MUSTER_MIRROR_E2E_PROMPT` | unset | no | (`e2emirror`) `\|`-separated lines the fake terminal draws on every attach, ending on the window's bottom row where a real prompt sits (canned text, not anything that reached it). Unset, it draws none. |
 | `MUSTER_MIRROR_E2E_SCROLL_FILE` | none | no | (`e2emirror`) Turns on copy-mode scrolling and records each scroll (`<pane> <lines> pos=<n>`) and cancel (`<pane> cancel`). While `<file>.mode` exists every pane is in another mode, and a scroll is refused as one. Unset, the fake is an older host that cannot scroll. |
 | `MUSTER_MIRROR_E2E_NO_STATUS` | none | no | (`e2emirror`) `1`: the per-window fake does not advertise Claude Code status, as an older muster-mirror does. (Its status and time otherwise come from `<transcript>.status`, `{"status", "statusUpdatedAt"}`; without that file it reports a status with no time.) |
