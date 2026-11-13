@@ -107,7 +107,7 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 	// requireArmedHookToken too, every route of it.
 	armedHook := 8
 	for _, r := range routeVias[authz.ViaHook] {
-		if strings.Contains(r, " /api/officers/") {
+		if strings.Contains(r, " /api/officers/") || strings.HasSuffix(r, "/deliver-to") {
 			armedHook++
 		}
 	}

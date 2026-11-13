@@ -1972,6 +1972,12 @@ var sideEffectControlled = map[string]string{
 	"POST /plugin/v1/drafts/{id}/media":  "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
 	"GET /plugins/drafts/{id}/media/{n}": "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
 	"PUT /api/plugins/{id}/deliver-to":   "controlled in TestTheOutboundRoutesAreOwnerScoped (plugin_outbound_pg_test.go)",
+	// 🔴 A BEARER CAPABILITY, AS GET /f/{id}: a pairing poll's credential is
+	// the poll secret no walker holds, so A's own answer is the ghost's 404.
+	// Its control is TestAPairedTokenIsHandedOutOnceAndOnlyWithTheCode: the
+	// same route with the secret answers pending, then the token once; with
+	// none or a wrong one, that 404.
+	"GET /plugin/v1/pair/{request_id}": "a poll secret no walker holds; controlled in plugin_pairing_pg_test.go",
 }
 
 // controlMarkers: a route whose owner and ghost answers share a status, where

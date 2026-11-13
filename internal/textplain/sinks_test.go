@@ -156,6 +156,7 @@ var apiExempt = map[string]exemption{
 	"admin.go Server.renderAdminUsers u.DisplayName":                 {3, whyPerson},
 	"passkeys.go Server.handleAdminUserPasskeysDelete u.DisplayName": {1, whyPerson},
 	"plugins.go Server.renderPluginsPage p.Label":                    {1, "a plugin's configured label (its name), not a title"},
+	"plugin_pairing.go Server.pairSectionHTML p.Label":               {1, "a pairing request's label (the plugin's name to be), not a title"},
 	"pages.go Server.renderPagesList p.Creator.Label":                {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
 	"pages.go Server.renderPageDetail l.Label":                       {1, "a share link's label: its creation time and its token hash's first 8 hex digits, computed by pages.Link.Label; never author text"},
 	"pages.go Server.renderPageDetail p.Creator.Label":               {1, "a page's creator: an agent's name or a mirrored host's window label, not a title"},
