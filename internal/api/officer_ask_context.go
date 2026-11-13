@@ -74,6 +74,22 @@ func (s *Server) officerItemContext(ctx context.Context, owner int64, officer st
 	return &attention.ItemContext{Officer: officer, ItemID: about.ItemID, Kind: about.Kind, Subject: about.SubjectKey, Source: src}
 }
 
+// officerNoticeContext is c as escalation notice n's recipient may see it: the
+// whole of it for the item's OWNER; for any other recipient (escalate_to)
+// the item line alone, without the source message. That message is the
+// owner's plugin_messages row, which row-level security keeps from every
+// other user, and muster reads it as the owner: the escalation must not
+// hand it on. The item's officer, id, kind and subject are already in the
+// notice's question.
+func officerNoticeContext(c *attention.ItemContext, n builtin.DueNotice) *attention.ItemContext {
+	if c == nil || n.Recipient == n.Owner {
+		return c
+	}
+	out := *c
+	out.Source = nil
+	return &out
+}
+
 // The owner-facing words of an ask's context (officerContextHTML).
 const (
 	officerNoteLabel     = "The officer's note"

@@ -234,6 +234,10 @@ never from the officer's prose (`attention_asks.item_context`, migration 0125):
 - a message muster cannot read then is shown as unread, with its venue and
   thread.
 
+The source message is the **owner's**: an escalation's other recipients
+(`--escalate-to`) get the officer and item line only, never the message,
+which row-level security keeps from them.
+
 `attention_list` returns it as the item's `context`. The push stays short:
 `Officer <id> · item <n> · <the note's first line>` — no outside sender's
 words on a lock screen. An ask about any other item is unchanged.

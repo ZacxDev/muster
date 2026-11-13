@@ -254,7 +254,7 @@ func (s *Server) raiseOfficerNotice(ctx, sys context.Context, n builtin.DueNotic
 	a, err := s.ext.Attention.Create(rctx, attention.New{
 		Asker:    attention.Asker{System: true, Label: officerAskLabel(n.Officer)},
 		Question: officerNoticeText(n),
-		Context:  s.officerItemContext(ctx, n.Owner, n.Officer, n.About()),
+		Context:  officerNoticeContext(s.officerItemContext(ctx, n.Owner, n.Officer, n.About()), n),
 	})
 	var pg *pgconn.PgError
 	switch {

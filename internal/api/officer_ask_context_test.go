@@ -204,3 +204,29 @@ func TestOnlyAPluginItemGetsAContext(t *testing.T) {
 		t.Fatalf("an unread message: %s", h)
 	}
 }
+
+// TestEveryContextFieldIsCleaned: venue, thread and url are cleaned too — an
+// admin can enqueue a plugin.* item with ANY payload, past MessageIn.Validate —
+// and a url that survives is escaped on the card, never markup.
+func TestEveryContextFieldIsCleaned(t *testing.T) {
+	c := cleanCtx(t, &attention.ItemContext{Officer: "o\nx", ItemID: 1, Kind: "plugin.reply\u202e", Subject: "s\x1b",
+		Source: &attention.SourceMessage{Plugin: "p\x00", Venue: "v\nThe officer's note", Thread: "t\u2066x", URL: "javascript:alert(1)"}})
+	for name, v := range map[string]string{"officer": c.Officer, "kind": c.Kind, "subject": c.Subject, "plugin": c.Source.Plugin,
+		"venue": c.Source.Venue, "thread": c.Source.Thread} {
+		for _, r := range v {
+			if r == '\n' || r == 0x1b || r == 0 || unicode.Is(unicode.Bidi_Control, r) {
+				t.Errorf("%s %q keeps U+%04X", name, v, r)
+			}
+		}
+	}
+	if c.Source.URL != "" {
+		t.Errorf("a javascript: url kept: %q", c.Source.URL)
+	}
+	u := cleanCtx(t, &attention.ItemContext{Officer: "o", ItemID: 1, Source: &attention.SourceMessage{URL: `https://example.test/"><script>x</script>`}})
+	if u.Source.URL == "" {
+		t.Fatal("fixture: the url was dropped, so the escape below is not reached")
+	}
+	if h := officerContextHTML(u); strings.Contains(h, "<script") || strings.Contains(h, `"><`) || !strings.Contains(h, "&lt;script&gt;") {
+		t.Fatalf("the url is not escaped: %s", h)
+	}
+}

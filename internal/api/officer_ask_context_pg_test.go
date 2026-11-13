@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/builtin"
 	"github.com/ZacxDev/muster/internal/push"
@@ -226,5 +227,42 @@ func TestAnAskShowsOnlyItsOwnItemsMessage(t *testing.T) {
 		if !got.Unread || got.Sender != "" || got.Body != "" {
 			t.Errorf("a payload naming %s's message: %+v, want it unread", name, got)
 		}
+	}
+}
+
+// TestAnEscalateToRecipientDoesNotGetTheOwnersMessage: an escalation reaches
+// the owner AND an --escalate-to user; the owner's ask carries the source
+// message, the other user's carries the item line only — the message is the
+// owner's row, which row-level security keeps from that user.
+func TestAnEscalateToRecipientDoesNotGetTheOwnersMessage(t *testing.T) {
+	w := newOutboundWorld(t, true)
+	if err := w.store.PutDef(w.ctx, 1, builtin.Def{Officer: builtinOfficerID, Enabled: true, EscalateTo: []int64{w.other}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = $1`, w.other)
+	})
+	item := postFixtureMessage(t, w, "ctx:escto:1")
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolClaim, `{}`); isToolErr(out) {
+		t.Fatalf("claim: %s", out)
+	}
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolComplete,
+		`{"item_id":"`+strconv.FormatInt(item, 10)+`","outcome":"escalated","summary":"`+ctxNote+`"}`); isToolErr(out) {
+		t.Fatalf("complete: %s", out)
+	}
+	w.srv.SweepOfficerAttention(context.Background())
+	owner := officerAsks(t, w.srv)
+	others, err := w.srv.ext.Attention.Open(w.srv.attentionPrincipal(context.Background(), w.other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owner) != 1 || owner[0].Context == nil || owner[0].Context.Source == nil || owner[0].Context.Source.Sender != ctxSender {
+		t.Fatalf("the owner's ask: %+v, want the source message", owner)
+	}
+	if len(others) != 1 || others[0].Context == nil || others[0].Context.ItemID != item || others[0].Context.Source != nil {
+		t.Fatalf("the escalate_to user's asks: %+v, want one with the item line and no source", others)
+	}
+	if h := officerContextHTML(others[0].Context); strings.Contains(h, ctxLine1) || strings.Contains(h, ctxSender) || strings.Contains(h, ctxVenue) {
+		t.Fatalf("the escalate_to user's card shows the owner's message: %s", h)
 	}
 }
