@@ -772,14 +772,30 @@ SHA-256 is not the claim's: post nothing and report
 
 After the result, for an outbound draft filed with an `item_id`:
 
+- From the moment the draft is filed, that item is **waiting** with no holder:
+  it waits on the draft. The instance can neither complete nor release it
+  (the refusal says why), and no instance can claim it again, so it is never
+  finished before the post exists nor drafted twice.
 - `ok: true`: muster completes that item (`done`, summary `posted <external_ref>
-  (draft <id>)`) unless an instance holds it or it is already finished.
-- `ok: false`, or a `sendable: false` check: muster queues a new item for the
-  officer, kind `draft.refused`, subject `draft:<id>`, with the draft id,
-  venue, target and the plugin's detail, so it can write a better one — at
-  most 3 such items wait at once per officer, so a plugin that refuses every
-  draft cannot loop the officer; past that only your push says so. A draft
-  you reject goes nowhere: that was your decision.
+  (draft <id>)`).
+- `ok: false`, a `sendable: false` check, or **your rejection** (Reject or
+  Withdraw on the card, or `plugin_draft_decide` with `decision: "reject"`):
+  muster queues a new item for the officer, kind `draft.refused`, subject
+  `draft:<id>`, payload `{draft_id, item_id, venue, target, media, status,
+  by, detail}` — `by` is `plugin` or `owner`; `detail` is the plugin's detail,
+  or your reason (`"rejected by the owner, no reason given"` when you gave
+  none) — so it can write a better one. In the same transaction the item the
+  draft was for is finished `no_action`, its summary naming the new item: the
+  work continues there.
+- 🔴 **Bounded:** at most 3 `draft.refused` items wait at once per officer,
+  counted and inserted in one transaction under one lock, so neither a plugin
+  that refuses every draft nor two refusals at the same instant can loop the
+  officer past it. Past the bound nothing is queued, the item the draft was for
+  stays waiting, and only your push (for a plugin's refusal) says so: resolve
+  the item by hand (`POST /api/officers/defs/{officer}/items/{id}/resolve`).
+- ⚠ A draft that **expires** undecided, becomes **unconfirmed**, or whose
+  binding broke at the claim settles nothing: its item stays waiting until you
+  resolve it by hand. (An unconfirmed draft's late result still settles it.)
 
 ### Pairing a plugin without handling its token
 
@@ -1828,6 +1844,13 @@ Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts
   direction. An approved draft no plugin has collected yet shows **Withdraw the
   approval**, which rejects it the same way; once a plugin has collected it, it
   cannot be withdrawn.
+- Both take an optional **reason**: plain text, at most 1,000 characters (a
+  newline or tab is fine; any other control or invisible character is
+  refused). It is stored on the draft (migration `0123`), written to the
+  decision's audit row, and drawn on the card's history as *Your reason: …*.
+  For a reply draft that is all it does: the chief or session that wrote it is
+  not told. For an officer's [outbound draft](#the-result) its officer is told
+  it, as the `detail` of a `draft.refused` item.
 - If an earlier reply to the same message is unconfirmed, a pending card says
   the sender may get both.
 
@@ -1840,7 +1863,7 @@ with two tools no dispatched agent (the chief included) is offered:
 | tool | what it does |
 |---|---|
 | `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Read-only. |
-| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is **queued**, not yet sent: the plugin's next claim collects it and tries to send it; a refusal [comes back](#when-the-plugin-refuses-a-reply)) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), an approval of a draft its plugin has [not checked yet](#check-a-reply-before-it-can-be-approved) or refused, a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
+| `plugin_draft_decide {id, decision, body_sha256, reason?}` | `decision` is `approve` (it is **queued**, not yet sent: the plugin's next claim collects it and tries to send it; a refusal [comes back](#when-the-plugin-refuses-a-reply)) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), an approval of a draft its plugin has [not checked yet](#check-a-reply-before-it-can-be-approved) or refused, a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). `reason` goes with a `reject` only (an approval naming one is refused): the card's reason, with the same bound and the same effect. |
 
 Every decision's `plugin.draft.*` audit row records where it was made
 (`decided_via`): `browser` for the card, `mcp from <host>/<session>` for

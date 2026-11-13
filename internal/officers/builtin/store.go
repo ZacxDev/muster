@@ -188,15 +188,6 @@ func (s *Store) EnqueueTx(ctx context.Context, tx pgx.Tx, owner int64, n NewItem
 	return id, classify(err)
 }
 
-// CountLive is how many of officer's items of kind are live (open, claimed
-// or waiting), for owner.
-func (s *Store) CountLive(ctx context.Context, owner int64, officer, kind string) (int, error) {
-	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM officer_items WHERE owner_id = $1 AND officer = $2 AND kind = $3
-		AND status IN ('open', 'claimed', 'waiting')`, owner, officer, kind).Scan(&n)
-	return n, err
-}
-
 // CapOutboundDrafts is the type capability that offers a builtin officer
 // officer_post_draft: "capabilities": ["outbound_drafts"] in its type's
 // policy (docs/officers.md "Outbound drafts").

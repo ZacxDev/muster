@@ -210,7 +210,7 @@ func (b *Backend) Claim(ctx context.Context, item officers.ItemID, instance stri
 		case it.NotBefore != nil && it.NotBefore.After(now):
 			return nil, refuse(http.StatusConflict, "not_due", "not due yet", map[string]any{"not_before": it.NotBefore})
 		case it.Status == "waiting":
-			return nil, refuse(http.StatusConflict, "waiting", "an ask on the item is open", nil)
+			return nil, refuse(http.StatusConflict, "waiting", waitingWhy(it), nil)
 		}
 		exp := now.Add(time.Duration(officers.ClampLease(leaseSeconds)) * time.Second)
 		it, err = scanItem(tx.QueryRow(ctx, `UPDATE officer_items SET status = 'claimed', claimed_by = $2, claimed_at = $3, lease_expires_at = $4,
@@ -324,6 +324,9 @@ func (b *Backend) Complete(ctx context.Context, item officers.ItemID, instance s
 			return nil, err
 		}
 		now := b.now()
+		if it.Status == officers.StatusWaiting {
+			return nil, waitingRefusal(it)
+		}
 		if !it.live(now) || it.ClaimedBy != instance {
 			return nil, leaseLost()
 		}
@@ -369,6 +372,9 @@ func (b *Backend) Release(ctx context.Context, item officers.ItemID, instance st
 		it, err := b.lockItem(ctx, tx, item)
 		if err != nil {
 			return nil, err
+		}
+		if it.Status == officers.StatusWaiting {
+			return nil, waitingRefusal(it)
 		}
 		if it.Status != officers.StatusClaimed || it.ClaimedBy != instance {
 			return nil, leaseLost()

@@ -646,8 +646,19 @@ func TestAResultSettlesTheOfficersItem(t *testing.T) {
 	if rec := w.check(w.tok, id, true, ""); rec.Code != http.StatusOK {
 		t.Fatalf("check: %d %s", rec.Code, rec.Body.String())
 	}
-	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolRelease, `{"item_id":"`+strconv.FormatInt(item, 10)+`"}`); isToolErr(out) {
-		t.Fatalf("release: %s", out)
+	// 🔴 THE ITEM WAITS ON ITS DRAFT (regression guard: it stayed claimed by
+	// the instance, which could complete it before the post existed, or let
+	// its lease lapse into a second claim and a second draft): waiting, no
+	// holder, and the instance can neither complete nor release it.
+	if st, _, _, holder := w.itemRow(item); st != officers.StatusWaiting || holder != "" {
+		t.Fatalf("the item after filing: %s held by %q; want waiting with no holder", st, holder)
+	}
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolComplete, `{"item_id":"`+strconv.FormatInt(item, 10)+
+		`","outcome":"done","summary":"filed the draft"}`); !isToolErr(out) || !strings.Contains(out, "waits on the outbound draft filed for it") {
+		t.Fatalf("complete while its draft is out: %s; want refused naming the draft", out)
+	}
+	if out := w.srv.dispatchAgentTool(w.ctx, w.agent, officers.ToolRelease, `{"item_id":"`+strconv.FormatInt(item, 10)+`"}`); !isToolErr(out) {
+		t.Fatalf("release while its draft is out: %s; want refused", out)
 	}
 	if rec := w.approve(id, bindingForm("A plain post.")); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())

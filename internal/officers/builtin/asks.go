@@ -171,10 +171,16 @@ type OpenAsk struct {
 // The caller pages on with the last item's id, so asks still awaiting an
 // answer can never crowd settled ones out of a sweep. ctx must act for every
 // owner (the system scope): it is the sweep that settles them.
+//
+// 🔴 ONLY ITEMS WITH AN OPEN ASK FILL THE PAGE. An item can be waiting with
+// no ask at all (on the outbound draft filed for it, outbound.go); counted
+// in the page it returns no row, and the caller, reading a short page as the
+// last one, stopped before the items behind it.
 func (s *Store) OpenAsks(ctx context.Context, after int64, limit int) ([]OpenAsk, error) {
 	rows, err := s.pool.Query(ctx, `SELECT i.owner_id, i.id, i.officer, (e->>'ask_id')::bigint
 		FROM officer_items i, jsonb_array_elements(i.asks) e
-		WHERE i.id IN (SELECT id FROM officer_items WHERE status = 'waiting' AND id > $2 ORDER BY id LIMIT $1)
+		WHERE i.id IN (SELECT id FROM officer_items WHERE status = 'waiting' AND asks @> '[{"status": "open"}]'
+		                AND id > $2 ORDER BY id LIMIT $1)
 			AND e->>'status' = 'open' ORDER BY i.id`, limit, after)
 	if err != nil {
 		return nil, err

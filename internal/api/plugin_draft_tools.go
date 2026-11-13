@@ -88,13 +88,15 @@ func pluginDraftOnlyToolDefs() []agents.ToolDef {
 				"has not checked yet (awaiting_plugin_check) cannot be approved. body_sha256 must be the value plugin_drafts_list gave " +
 				"for that draft, so the decision is on exactly the text your owner read. For an OUTBOUND draft, approving also needs " +
 				"media_sha256: the list plugin_drafts_list gave (in order; [] when it has no media), so the decision is on exactly the " +
-				"images and videos your owner saw; an approval while any medium is not uploaded is refused.",
+				"images and videos your owner saw; an approval while any medium is not uploaded is refused. A rejection may carry your owner's " +
+				"reason (plain text, at most 1000 characters), stored on the draft; for an OUTBOUND draft its officer is told the reason so it can redraft.",
 			Parameters: objSchema(map[string]any{
 				"id":          intProp("The draft's id, as plugin_drafts_list returns it.", 1, 1<<53),
 				"decision":    map[string]any{"type": "string", "enum": []string{"approve", "reject"}, "description": "Your owner's decision."},
 				"body_sha256": strProp("The draft's body_sha256, exactly as plugin_drafts_list returns it (64 lowercase hex digits)."),
 				"media_sha256": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 					"description": "An outbound draft's approval only: its media_sha256 exactly as plugin_drafts_list returns it, in order ([] for none)."},
+				"reason": strProp("Optional, a rejection only: your owner's reason, in their words (plain text, at most 1000 characters)."),
 			}, "id", "decision", "body_sha256")},
 	}
 }
@@ -268,9 +270,10 @@ func (s *Server) toolPluginDraftDecide(ctx context.Context, c toolCaller, argume
 		Decision    string   `json:"decision"`
 		BodySHA256  string   `json:"body_sha256"`
 		MediaSHA256 []string `json:"media_sha256"`
+		Reason      string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
-		return toolErr("arguments are {id, decision: \"approve\" or \"reject\", body_sha256}")
+		return toolErr("arguments are {id, decision: \"approve\" or \"reject\", body_sha256, reason?}")
 	}
 	if in.ID <= 0 {
 		return toolErr("id must be a reply draft's id (a positive number)")
@@ -293,7 +296,7 @@ func (s *Server) toolPluginDraftDecide(ctx context.Context, c toolCaller, argume
 		return toolErr("this session's host or session id is not one the mirror wire accepts")
 	}
 	d, refused := s.decideDraftAs(ctx, in.ID, plugins.DraftDecision{Approve: approve, Via: via, BodySHA256: in.BodySHA256,
-		MediaSHA256: in.MediaSHA256})
+		MediaSHA256: in.MediaSHA256, Reason: in.Reason})
 	if refused != nil {
 		return toolErr("draft %d: %s", in.ID, refused.msg)
 	}
@@ -302,6 +305,9 @@ func (s *Server) toolPluginDraftDecide(ctx context.Context, c toolCaller, argume
 		"decided_from": via.Host + "/" + via.Session}
 	if d.Status == plugins.DraftApproved {
 		out["note"] = DraftApprovedNote
+	}
+	if d.DecisionReason != nil {
+		out["reason"] = *d.DecisionReason
 	}
 	return toolJSON(out)
 }
