@@ -412,7 +412,9 @@ func TestAnOutboundDraftIsNotSendableOrApprovableBeforeItsMedia(t *testing.T) {
 	if _, err := w.f.pool.Exec(authz.System(w.ctx), `UPDATE plugin_reply_drafts SET check_state = 'sendable', checked_at = now() WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	rec = w.approve(id, bindingForm(twoMediaBody, outWebPBytes, []byte{}))
+	// The decider names exactly what is stored — the uploaded medium's hash and
+	// "" for the missing one — so no hash check can refuse it: only the media rule.
+	rec = w.approve(id, url.Values{"body_sha256": {sumHex([]byte(twoMediaBody))}, "media_sha256": {sumHex(outWebPBytes) + ","}})
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Not every image or video") {
 		t.Fatalf("approving with a medium missing: %d; want 409 not every medium", rec.Code)
 	}

@@ -65,10 +65,14 @@ const (
 	// MaxImageBytes and MaxVideoBytes bound one uploaded medium.
 	MaxImageBytes = 5 << 20
 	MaxVideoBytes = 16 << 20
-	// MediaKeyPrefix begins every uploaded medium's object key. Not under
-	// internal/uploads' "uploads/" prefix, whose lifecycle rule may expire an
-	// object before a 7-day draft is decided.
-	MediaKeyPrefix = "plugin-drafts/"
+	// MediaKeyPrefix begins every uploaded medium's object key: under
+	// internal/uploads' "uploads/" prefix, so the access key and the lifecycle
+	// rule docs/uploads.md asks for already cover it — the bytes are written
+	// with the key's existing permission and expire with the bucket's rule
+	// (8 days in the documented one: longer than a draft lives). A rule
+	// shorter than DraftTTL can expire a draft's media before it is decided
+	// (docs/plugins.md says so).
+	MediaKeyPrefix = "uploads/plugin-drafts/"
 )
 
 // MediaTypes are the types an outbound medium may have, and each one's cap.

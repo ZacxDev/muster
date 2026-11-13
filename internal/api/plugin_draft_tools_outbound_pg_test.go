@@ -60,7 +60,7 @@ func TestPluginDraftDecideBindsAnOutboundDraftsMedia(t *testing.T) {
 		args["id"], args["decision"], args["body_sha256"] = d.ID, "approve", sha(body)
 		return f.mcp(t, f.tok, otherRouteSID, "plugin_draft_decide", args)
 	}
-	if text, isErr := decide(map[string]any{}); !isErr || !strings.Contains(text, "media_sha256") {
+	if text, isErr := decide(map[string]any{}); !isErr || !strings.Contains(text, "names the body_sha256 and media_sha256") {
 		t.Fatalf("approving without media_sha256: %s; want refused naming it", text)
 	}
 	if text, isErr := decide(map[string]any{"media_sha256": []string{sha("launch/demo-2"), sha("launch/hero-1")}}); !isErr ||
@@ -73,6 +73,25 @@ func TestPluginDraftDecideBindsAnOutboundDraftsMedia(t *testing.T) {
 	if text, isErr := decide(map[string]any{"media_sha256": []string{sha("launch/hero-1"), sha("launch/demo-2")}}); isErr ||
 		!strings.Contains(text, `"status":"approved"`) {
 		t.Fatalf("approving with the exact media: %s", text)
+	}
+	// A draft with NO media: an approval must still say so (media_sha256: []),
+	// so an approval that never looked at the media is never taken for one
+	// that did (nil and [] are otherwise equal).
+	bare, err := f.plugins.FileOutbound(f.asOwner, f.chief.ID, f.owner, f.chief.Name, plugins.NewOutbound{Officer: "example:main",
+		Plugin: f.plugin.Name, Venue: "example.forum", Target: plugins.OutboundTarget{Kind: plugins.TargetPost}, Body: "Text only."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.plugins.CheckDraft(asPlugin, f.plugin.ID, bare.ID, plugins.DraftCheck{Sendable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if text, isErr := f.mcp(t, f.tok, otherRouteSID, "plugin_draft_decide", map[string]any{"id": bare.ID, "decision": "approve",
+		"body_sha256": sha("Text only.")}); !isErr || !strings.Contains(text, "names the body_sha256 and media_sha256") {
+		t.Fatalf("approving a media-less outbound draft without media_sha256: %s; want refused", text)
+	}
+	if text, isErr := f.mcp(t, f.tok, otherRouteSID, "plugin_draft_decide", map[string]any{"id": bare.ID, "decision": "approve",
+		"body_sha256": sha("Text only."), "media_sha256": []string{}}); isErr || !strings.Contains(text, `"status":"approved"`) {
+		t.Fatalf("control: approving it with media_sha256 []: %s", text)
 	}
 	stored, err := f.plugins.Draft(f.asOwner, d.ID)
 	if err != nil || stored.ApprovedMediaSHA256 == nil || strings.Join(stored.ApprovedMediaSHA256, ",") != sha("launch/hero-1")+","+sha("launch/demo-2") {

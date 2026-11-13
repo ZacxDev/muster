@@ -675,7 +675,13 @@ X-Content-SHA256: <64 lower-case hex digits: the SHA-256 of the body>
 | `404 {"error"}` | no such outbound draft of this plugin's |
 | `409 {"error"}` | the draft is not awaiting its check, or other bytes are already stored for this ref |
 | `413 {"error"}` | over the type's cap |
-| `503 {"error"}` | this server has no object store (`MUSTER_UPLOAD_*` unset) |
+| `503 {"error"}` | this server has no object store ([file attachments](uploads.md) off) |
+
+The bytes go to the [file attachments](uploads.md) bucket under
+`uploads/plugin-drafts/<draft id>/<random id>`, so the access key and the
+`uploads/` lifecycle rule that page asks for already cover them. A rule that
+expires objects sooner than 7 days can remove a draft's media before you
+decide it.
 
 Then `POST /plugin/v1/drafts/{id}/check` as for any draft. 🔴 **A
 `sendable: true` verdict on an outbound draft is refused (409, `"missing":
