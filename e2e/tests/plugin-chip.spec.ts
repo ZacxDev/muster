@@ -348,9 +348,10 @@ test('the Preview button follows the host: hidden while the window has nothing t
 // to the system browser, so a new tab there left the app (operator report);
 // full screen keeps the SAME frame — not reloaded, no new mint — filling the
 // screen edge to edge, with an Exit button; Exit, Escape and the shell's Back
-// (window.musterBack, under a back-claim) each leave it. From inside the
-// view-swap frame the claim goes to the MAIN frame's bridge (the app refuses
-// a subframe's) and the main frame's Back leaves the frame's full screen.
+// (window.musterBack) each leave it. The panel holds the back-claim from open
+// to close, full screen or not (the next test). From inside the view-swap
+// frame the claim goes to the MAIN frame's bridge (the app refuses a
+// subframe's) and the main frame's Back leaves the frame's full screen.
 test('in the Android app New tab is Full screen: the same frame fills the screen, nothing is opened or minted, and Exit, Escape and Back leave it', async ({ page, context }) => {
   test.setTimeout(150_000);
   await page.addInitScript(() => {
@@ -382,7 +383,7 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(full).toHaveAttribute('aria-label', 'Show the preview full screen');
   await expect(panel.locator('a, button').filter({ hasText: 'New tab' }), 'no New tab in the app').toHaveCount(0);
   await expect(exit).toBeHidden();
-  expect(await msgs(), 'nothing claimed before full screen').toEqual([]);
+  expect(await msgs(), 'the open panel claims Back').toEqual([CLAIM_ON]);
 
   // FULL SCREEN: the same document in the same frame (a mark set in it
   // survives), no new page, no new mint; panel and frame are the viewport.
@@ -403,27 +404,32 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await page.waitForTimeout(500);
   expect(context.pages().length, 'no tab was opened').toBe(pages);
   expect(landings, 'nothing was minted').toHaveLength(1);
-  expect(await msgs(), 'full screen claims Back').toEqual([CLAIM_ON]);
+  expect(await msgs(), 'full screen keeps the panel\'s claim, posting nothing').toEqual([CLAIM_ON]);
 
-  // EXIT: back to the panel, its header and Full screen, the claim released.
+  // EXIT: back to the panel, its header and Full screen, the claim kept (the
+  // panel is still open).
   await exit.click();
   await expect(panel).not.toHaveAttribute('data-preview-full', '');
   await expect(head).toBeVisible();
   await expect(full).toBeFocused();
   await expect(panel).toBeVisible();
-  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF]);
+  expect(await msgs()).toEqual([CLAIM_ON]);
 
-  // THE SHELL'S BACK: musterBack leaves full screen (true), and with full
-  // screen gone answers as before (false: no dock open), the panel still open.
+  // THE SHELL'S BACK: the first press leaves full screen (true) and keeps the
+  // claim; the second closes the panel (true) and releases it.
   await full.click();
   await expect(panel).toHaveAttribute('data-preview-full', '');
   expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'Back left full screen').toBe(true);
   await expect(panel).not.toHaveAttribute('data-preview-full', '');
   await expect(panel).toBeVisible();
-  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'Back with no full screen and no dock').toBe(false);
-  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
+  expect(await msgs(), 'leaving full screen kept the claim').toEqual([CLAIM_ON]);
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'the second Back closed the panel').toBe(true);
+  await expect(panel).toBeHidden();
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF]);
 
   // ESCAPE: the first leaves full screen, the second closes the panel.
+  await page.locator('#preview-toggle-row').click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
   await full.click();
   await expect(panel).toHaveAttribute('data-preview-full', '');
   await page.keyboard.press('Escape');
@@ -431,7 +437,7 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   await expect(panel).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(panel).toBeHidden();
-  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
 
   // 🔴 BACK STILL REACHES THE DOCK AFTER FULL SCREEN HAS BEEN USED: full
   // screen wrapped this window's musterBack, and with full screen gone the
@@ -484,5 +490,128 @@ test('in the Android app New tab is Full screen: the same frame fills the screen
   expect(frameMsgs, 'nothing posted to the subframe\'s bridge').toEqual([]);
   expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'the main frame\'s Back left the frame\'s full screen').toBe(true);
   await expect(term.locator('#preview-panel')).not.toHaveAttribute('data-preview-full', '');
+  expect((await msgs()).slice(before), 'the frame\'s open panel still holds the claim').toEqual([CLAIM_ON]);
+  expect(await page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack()), 'the main frame\'s next Back closed the frame\'s panel').toBe(true);
+  await expect(term.locator('#preview-panel')).toBeHidden();
   expect((await msgs()).slice(before)).toEqual([CLAIM_ON, CLAIM_OFF]);
+});
+
+// 🔴 BACK IN THE REGULAR PANEL, IN THE ANDROID APP (operator report: Back in
+// the panel, header showing, "doesn't actually go back, it just causes the
+// preview to go to a white screen and then break"). With no back-claim the
+// shell's Back is the WebView's goBack, which walks the tab's JOINT session
+// history — subframe navigations included — so it sent the panel's frame back
+// to an already-spent hand-off URL. Two layers, each pinned here: the panel
+// claims Back from open to close (a press closes it), and loading the frame
+// adds no entry to the top window's history (history.length), so even an
+// unclaimed Back cannot strand it. The switcher dock shares the app's ONE
+// claim flag, and from `sm` up it can open over the side panel: closing the
+// dock must not release the claim the still-open panel holds.
+test('in the Android app Back closes the regular panel: the open panel claims Back, its frame adds no history entry, and the dock opened over the side panel leaves the panel its claim', async ({ page, context }) => {
+  test.setTimeout(150_000);
+  await page.addInitScript(() => {
+    const w = window as unknown as { __appMsgs: string[]; musterApp: { postMessage(m: string): void } };
+    w.__appMsgs = [];
+    w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
+  });
+  const CLAIM_ON = JSON.stringify({ type: 'back-claim', open: true });
+  const CLAIM_OFF = JSON.stringify({ type: 'back-claim', open: false });
+  const msgs = () => page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs.slice());
+  const back = () => page.evaluate(() => (window as unknown as { musterBack(): boolean }).musterBack());
+  const historyLength = () => page.evaluate(() => history.length);
+  const dockOpen = () => page.evaluate(() => !!(document.getElementById('switcher-dock') as HTMLDialogElement | null)?.open);
+  await ready(page);
+  // Two live viewers, so the panel's header has the plugin picker, whose
+  // change reloads a frame that already holds a page.
+  const other = await mintViewer(page, 'Back viewer other');
+  const { token, id } = await mintViewer(page, 'Back viewer');
+  const landings = await playEntry(context, token);
+  await buttonFor(page, '@1', true);
+
+  await page.goto(origin + viewOf('@1'));
+  const panel = page.locator('#preview-panel');
+  const framed = page.frameLocator('#preview-panel iframe');
+  const toggle = page.locator('#preview-toggle-row');
+  await expect(toggle).toBeVisible();
+  const h0 = await historyLength();
+  expect(await msgs(), 'nothing claimed while the panel is shut').toEqual([]);
+
+  // (a) THE REGULAR PANEL CLAIMS BACK, and the hand-off's load adds no entry.
+  await toggle.click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  await expect(panel.locator('h2#preview-panel-title'), 'the regular panel, its header showing').toBeVisible();
+  await expect(panel).not.toHaveAttribute('data-preview-full', '');
+  expect(await msgs(), 'the open regular panel claimed Back').toEqual([CLAIM_ON]);
+  expect(await historyLength(), 'loading the hand-off in the frame added no history entry').toBe(h0);
+  // The frame is sandboxed exactly as drawn (it is a new element per load).
+  await expect(panel.locator('iframe')).toHaveAttribute('sandbox', SANDBOX);
+  await expect(panel.locator('iframe')).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect(panel.locator('iframe')).toHaveAttribute('allow', '');
+  await expect(panel.locator('iframe')).toHaveCount(1);
+  // THE SHELL'S BACK closes it (true: handled, no goBack) and releases.
+  expect(await back(), 'Back closed the regular panel').toBe(true);
+  await expect(panel).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel.locator('iframe')).toHaveAttribute('src', 'about:blank');
+  expect(await msgs(), 'closing released the claim').toEqual([CLAIM_ON, CLAIM_OFF]);
+  expect(await historyLength(), 'unloading the frame added no history entry').toBe(h0);
+
+  // A second opening: a fresh hand-off, still no entry; Close releases too.
+  await toggle.click();
+  await expect.poll(() => landings.length).toBe(2);
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  expect(await historyLength(), 'a second hand-off added no history entry').toBe(h0);
+  // The picker's change mints and loads ANOTHER hand-off into the frame that
+  // holds the first one's page: still no entry, either way.
+  const picker = panel.locator('[data-preview-plugin]');
+  await picker.selectOption(String(other.id));
+  await expect.poll(() => landings.length).toBe(3);
+  await expect(framed.locator('#fake-entry')).toBeVisible();
+  expect(landings[2].url.searchParams.get('muster_plugin')).toBe(String(other.id));
+  expect(await historyLength(), 'the picker\'s reload of a loaded frame added no history entry').toBe(h0);
+  await picker.selectOption(String(id));
+  await expect.poll(() => landings.length).toBe(4);
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  expect(await historyLength()).toBe(h0);
+  await panel.locator('[data-preview-close]').click();
+  await expect(panel).toBeHidden();
+  expect(await msgs()).toEqual([CLAIM_ON, CLAIM_OFF, CLAIM_ON, CLAIM_OFF]);
+  expect(await historyLength()).toBe(h0);
+
+  // (d) THE DOCK STILL HAS BACK after the regular panel was used: the panel's
+  // wrapper hands the press to the dock's close.
+  await page.locator('#switcher-toggle').tap();
+  await expect.poll(dockOpen, 'the dock opened').toBe(true);
+  expect(await back(), 'Back closed the dock through the wrapper').toBe(true);
+  await expect.poll(dockOpen, 'the dock closed').toBe(false);
+  await expect.poll(async () => (await msgs()).slice(4), 'the dock\'s own claim pair').toEqual([CLAIM_ON, CLAIM_OFF]);
+  expect(await back(), 'with nothing open Back is the shell\'s').toBe(false);
+
+  // A WIDE SCREEN (a tablet): nothing behind the side panel is inert, so the
+  // dock can open OVER the open panel. The one claim stays held until BOTH
+  // have closed, whichever way the dock closes.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.locator('#preview-toggle').click();
+  await expect(framed.locator('#fake-redeem')).toHaveText(`200 ${rig.host} @1`);
+  const n = (await msgs()).length;
+  expect((await msgs()).slice(n - 1), 'the side panel claimed Back').toEqual([CLAIM_ON]);
+  await page.locator('#switcher-toggle').tap();
+  await expect.poll(dockOpen, 'the dock opened over the side panel').toBe(true);
+  // Back closes the DOCK first (it is modal, on top), and the panel keeps the claim.
+  expect(await back(), 'Back closed the dock over the panel').toBe(true);
+  await expect.poll(dockOpen).toBe(false);
+  await expect(panel).toBeVisible();
+  await expect.poll(async () => (await msgs()).slice(-1), 'the dock\'s close left the panel\'s claim on').toEqual([CLAIM_ON]);
+  // The dock closed its own way (Escape) does the same.
+  await page.locator('#switcher-toggle').tap();
+  await expect.poll(dockOpen).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(dockOpen).toBe(false);
+  await expect(panel, 'Escape was the dock\'s, not the panel\'s').toBeVisible();
+  await expect.poll(async () => (await msgs()).slice(-1)).toEqual([CLAIM_ON]);
+  // Then Back closes the panel and the claim ends.
+  expect(await back(), 'the next Back closed the side panel').toBe(true);
+  await expect(panel).toBeHidden();
+  expect((await msgs()).slice(-1)).toEqual([CLAIM_OFF]);
+  expect(await historyLength(), 'nothing on the wide screen added a history entry').toBe(h0);
 });

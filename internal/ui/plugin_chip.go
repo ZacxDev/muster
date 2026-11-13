@@ -381,12 +381,31 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
       });
     });
   }
+  // 🔴 THE FRAME ADDS NOTHING TO THE TAB'S HISTORY. Assigning src to the
+  // live frame is a navigation of it, and a frame's navigations are entries
+  // in the tab's joint session history: Back (the Android shell's goBack
+  // among them) then walked the frame back to an already-spent hand-off URL,
+  // a white, broken frame. So each load is a NEW frame, with the old one's
+  // attributes (the sandbox first of all) and its src set BEFORE it is
+  // inserted, put in the old one's place: a new frame's first load is no
+  // entry.
+  function load(url) {
+    var old = frame();
+    if (!old) return;
+    var f = document.createElement('iframe');
+    for (var i = 0; i < old.attributes.length; i++) {
+      var a = old.attributes[i];
+      if (a.name !== 'src') f.setAttribute(a.name, a.value);
+    }
+    f.src = url;
+    old.replaceWith(f);
+  }
   function show() {
     if (busy) return;
     busy = true;
     say('');
     mint().then(function (url) {
-      if (!panel().hidden) frame().src = url;
+      if (!panel().hidden) load(url);
     }).catch(function (e) {
       say(e && e.message ? e.message : 'the hand-off failed');
     }).then(function () { busy = false; });
@@ -426,11 +445,18 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
   // the app refuses a bridge message from a subframe. In a browser there is
   // no such object, and New tab is exactly what it was.
   //
-  // BACK: the shell offers its Back press to the page while the page posts a
-  // back-claim (switcher_dock.go, docs/design/switcher-dock.md "The shell
-  // change"), asking the main frame's window.musterBack. While full screen
-  // this panel claims it, and the main frame's musterBack is wrapped (once)
-  // to leave full screen first, else to answer as before (the dock's close).
+  // 🔴 BACK BELONGS TO THE PANEL WHILE IT IS OPEN (operator report: Back in
+  // the panel "goes to a white screen and then breaks"). The shell offers its
+  // Back press to the page while the page holds a back-claim
+  // (docs/design/switcher-dock.md "The shell change"), asking the main
+  // frame's window.musterBack; with no claim it is the WebView's goBack. So
+  // the panel claims Back from open to close, full screen or not, through
+  // the page's one claim function (backClaimJS, shared with the switcher
+  // dock, which can open over the side panel), and the main frame's
+  // musterBack is wrapped (once): full screen, a press leaves it (the claim
+  // stays: the panel is still open); else the dock's close, if the dock was
+  // open; else it closes the panel. In a browser there is no bridge, and
+  // nothing is posted.
   function shellWin() {
     var w = window;
     try { while (w !== w.top && w.parent && w.parent.document) w = w.parent; } catch (e) {}
@@ -440,25 +466,38 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     try { var b = shellWin().`+AppBridgeName+`; return b && typeof b.postMessage === 'function' ? b : null; } catch (e) { return null; }
   }
   function inApp() { return !!bridge(); }
-  function claim(on) {
-    var b = bridge();
-    try { if (b) b.postMessage(JSON.stringify({ type: 'back-claim', open: on })); } catch (e) {}
+  `+backClaimJS+`
+  // This document's panel's name among the claim's holders (a view-swap
+  // frame has its own panel, and its own name).
+  var WHO = 'preview-' + Math.random().toString(36).slice(2);
+  var holding = false;
+  function hold(on) {
+    if (holding === on) return;
+    holding = on;
+    var S = shellWin();
+    try {
+      if (on) S.__musterPreview = { win: window, exitFull: exitFull, close: close };
+      else if (S.__musterPreview && S.__musterPreview.win === window) S.__musterPreview = null;
+    } catch (e) {}
+    musterClaimBack(WHO, on);
   }
-  // Wrapped when full screen is entered (the dock has defined its own by
-  // then), and again if anything has replaced the wrapper since.
+  // Wrapped when the panel opens (the dock has defined its own by then), and
+  // again if anything has replaced the wrapper since. It reads whichever
+  // document's panel is open (S.__musterPreview), so one wrapper serves the
+  // main frame's panel and a view-swap frame's.
   function hookBack() {
     var S = shellWin();
     if (S.musterBack && S.musterBack === S.__musterPreviewBack) return;
     var prev = S.musterBack;
     S.musterBack = S.__musterPreviewBack = function () {
-      var o = S.__musterPreviewFull;
-      if (o) {
-        S.__musterPreviewFull = null;
-        var live = false;
-        try { live = !o.win.closed && o.exit(); } catch (e) {}
-        if (live) return true;
-      }
-      return typeof prev === 'function' ? prev() : false;
+      var o = S.__musterPreview, live = false;
+      try { live = !!o && !o.win.closed; } catch (e) {}
+      if (!live) S.__musterPreview = null;
+      if (live) { try { if (o.exitFull()) return true; } catch (e) {} }
+      // The dock is modal over the panel when both are open: it goes first.
+      if (typeof prev === 'function' && prev() === true) return true;
+      if (live) { try { if (o.close()) return true; } catch (e) {} }
+      return false;
     };
   }
   function isFull() { var p = panel(); return !!(p && p.hasAttribute(FULL)); }
@@ -468,9 +507,6 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     p.setAttribute(FULL, '');
     shield();
     hookBack();
-    var S = shellWin();
-    S.__musterPreviewFull = { win: window, exit: exitFull };
-    claim(true);
     var x = p.querySelector('[data-preview-exit-full]');
     if (x) x.focus({ preventScroll: true });
   }
@@ -480,8 +516,6 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     var p = panel();
     if (!p || !p.hasAttribute(FULL)) return false;
     p.removeAttribute(FULL);
-    try { var S = shellWin(); if (S.__musterPreviewFull && S.__musterPreviewFull.win === window) S.__musterPreviewFull = null; } catch (e) {}
-    claim(false);
     shield();
     if (closing !== true) {
       var f = p.querySelector('[data-preview-newtab]');
@@ -489,9 +523,10 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     }
     return true;
   }
-  // htmx's history snapshot is the body's HTML: never take it full screen.
-  document.addEventListener('htmx:beforeHistorySave', function () { exitFull(true); });
-  window.addEventListener('pagehide', function () { if (isFull()) exitFull(true); });
+  // htmx's history snapshot is the body's HTML: never take the panel in it
+  // open (it would come back framing a spent hand-off), nor its claim on.
+  document.addEventListener('htmx:beforeHistorySave', function () { close(); hold(false); });
+  window.addEventListener('pagehide', function () { if (isFull()) exitFull(true); hold(false); });
 
   // label is the hand-off control's words for where the panel runs: New tab
   // in a browser (as drawn), Full screen in the app.
@@ -510,20 +545,26 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     expanded();
     var c = p.querySelector('[data-preview-close]');
     if (c) c.focus();
+    hookBack();
+    hold(true);
     show();
   }
+  // close closes the panel; true when it was open.
   function close() {
     var p = panel();
-    if (!p || p.hidden) return;
+    if (!p || p.hidden) return false;
     exitFull(true);
     p.hidden = true;
     shield();
     // The plugin's page ends with the panel: nothing of it runs on hidden.
-    frame().src = 'about:blank';
+    // A new blank frame, never a navigation of this one (see load).
+    load('about:blank');
+    hold(false);
     say('');
     expanded();
     var t = toggle();
     if (t) t.focus();
+    return true;
   }
   function newTab() {
     if (busy) return;
