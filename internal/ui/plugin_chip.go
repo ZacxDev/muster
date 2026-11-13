@@ -34,14 +34,50 @@ import (
 //     previewPollEvery only while the tab is shown AND the page is at its
 //     width — so one request per tick, and the page holds no event stream.
 //   - THE PANEL opens on the button: the plugin's page (the gateway's session
-//     page) in a sandboxed frame, a side panel beside the conversation from
-//     `sm` up and the whole screen below it — where everything behind it is
-//     made inert while it is open, so Tab stays in it. Close (or Escape, when
+//     page) in a sandboxed frame. Close (or Escape, when
 //     no other dialog or popover is open to take it) unloads the page. "New
 //     tab" in its header is the hand-off in a new tab instead — except in the
 //     Android app, where that same control reads "Full screen": the same frame fills the
 //     screen, never a new tab (the app would hand that to the system browser;
 //     see enterFull in the script).
+//   - 🔴 THE MESSAGE BAR STAYS USABLE WHILE THE PANEL IS OPEN (operator ask:
+//     "chat and send messages while I'm looking at the preview"). The page's
+//     ONE composer, #mv-compose, is kept: never a second one
+//     (TestEveryMessageBoxIsOneComposer). The panel's layout (previewMode):
+//   - "bar", below `sm`: the panel fills the screen down to the TOP of
+//     #mv-compose, which stays live under it. Its bottom is measured from
+//     the bar, never a constant: the keyboard raises the bar (the Rendered
+//     view's pin script, or a page that resizes) and the panel shrinks with
+//     it.
+//   - "side", from `sm` up: the panel runs the full height at the right, and
+//     the conversation AND the bar end at its left edge (the body's right
+//     padding, and a pinned bar's `right`), so Send and the replies stay in
+//     view beside it.
+//   - "full", full screen (the Android app): the bar is hidden; a
+//     semi-transparent round button at the bottom right ("Show message bar")
+//     shows it, and the panel is then laid out as "bar" above it. The same
+//     button hides it again ("Hide message bar"); Exit, Escape and Back
+//     leave full screen whatever the bar's state, and full screen always
+//     opens with the bar hidden.
+//     While the bar is up its z-order is above the panel's (z-41 against
+//     z-40), so its popups — the `/` menu, the suggested replies, the
+//     attachments, the mic's line, all placed bottom-full of it — open over
+//     the panel. What the panel still covers is made inert, so Tab reaches
+//     the panel and the bar only. Dialogs, popovers and the toasts' host are
+//     never made inert, WHEREVER THEY SIT (the command palette the bar's
+//     search opens is a popover inside #sidebar-root; a step-up confirm
+//     opened by a Send must answer): an element that holds one is not made
+//     inert whole, its other children are. Beside the page ("side") nothing
+//     is inert.
+//   - THE NEW-REPLY DOT: while the panel COVERS the conversation ("bar" and
+//     "full") a reply from the agent (a new assistant bubble in #mv-log, the
+//     Rendered view's transcript) puts a dot on the panel's title, and on the
+//     show-bar button in full screen, whose header is hidden. It clears when
+//     the conversation is in view again: the panel closes, or becomes a side
+//     panel. A reconnect's redraw of the log (a reset, then batches) is not
+//     a reply: a reply is a bubble the log holds more copies of than were
+//     ever seen. Beside the page the replies are in view, so it never shows
+//     there. A Terminal view has no transcript to watch, so no dot.
 //   - Both mint a one-time hand-off at CLICK time (POST /plugin-handoffs,
 //     aimed at this window) and go to the entry URL it answers; drawing the
 //     button mints nothing. One mint at a time.
@@ -76,7 +112,10 @@ import (
 //     second row's 20px), so neither moves the conversation: the views with a
 //     live preview are measured by cls.spec.ts, and plugin-chip.spec.ts
 //     measures the title and the header unchanged when the button appears
-//     at a phone's width.
+//     at a phone's width. Every layout change above is keyed on attributes
+//     the script sets on <html> only while the panel is open
+//     (previewPanelStyle), so a page loads exactly as before;
+//     preview-composer.spec.ts measures the open panel at rest.
 
 // PluginChipSandbox is the panel's frame's sandbox, exactly: no
 // allow-top-navigation of any kind.
@@ -254,7 +293,46 @@ func previewButtonSlot(c *PluginChips, place PreviewPlace) g.Node {
 // only: its header's one hand-off control reads Full screen there).
 const PreviewFullAttr = "data-preview-full"
 
+// The <html> attributes the panel's script sets while it is open, one per
+// layout (see the file comment): previewBarAttr below `sm` and in full screen
+// with the bar shown, previewNoBarAttr in full screen with it hidden,
+// previewSideAttr beside the page.
+const (
+	previewBarAttr   = "data-preview-bar"
+	previewNoBarAttr = "data-preview-nobar"
+	previewSideAttr  = "data-preview-side"
+)
+
+// previewSideWidth is the side panel's width: the panel's own class
+// (sm:w-[…], spelled out for Tailwind) and the room previewPanelStyle takes
+// from the page beside it are this one value (TestThePreviewSidePanelTakesItsOwnWidth).
+const previewSideWidth = "min(40rem,60vw)"
+
+// previewPanelStyle lays the page out around the open panel, keyed on the
+// attributes above (nothing applies while it is closed):
+//   - the bar above the panel (z-41 over its z-40), with its popups;
+//   - the bar hidden in full screen (visibility: its room is kept, so nothing
+//     moves when it comes back);
+//   - beside the side panel, the page's column ends at the panel's left edge.
+//     A pinned bar (position:fixed) is not in that column: the script gives it
+//     the same room as its `right`.
+var previewPanelStyle = `html[` + previewBarAttr + `] #mv-compose{z-index:41}` +
+	`html[` + previewNoBarAttr + `] #mv-compose{visibility:hidden}` +
+	`html[` + previewSideAttr + `] body{padding-right:` + previewSideWidth + `}`
+
 const exitFullIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
+
+// chatIcon is the show-bar button's face (a speech bubble); hideBarIcon its
+// face while the bar is shown (a chevron down).
+const chatIcon = `<svg class="h-5 w-5 shrink-0 group-aria-expanded/bar:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>`
+const hideBarIcon = `<svg class="hidden h-5 w-5 shrink-0 group-aria-expanded/bar:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>`
+
+// PreviewBarToggleLabel is the full screen's floating button's name while the
+// message bar is hidden; previewBarHideLabel while it is shown.
+const (
+	PreviewBarToggleLabel = "Show message bar"
+	previewBarHideLabel   = "Hide message bar"
+)
 
 // previewPanel is the panel the button opens (closed), and its script.
 func previewPanel(c *PluginChips) g.Node {
@@ -284,15 +362,24 @@ func previewPanel(c *PluginChips) g.Node {
 			g.Attr("data-host", c.Host),
 			g.Attr("data-window", c.Window),
 			g.Attr("data-plugin", strconv.FormatInt(first.ID, 10)),
-			// The whole screen below `sm`; a side panel from `sm` up, over
-			// the conversation's right part and under nothing (z-40: above
-			// the page, below the sidebar's overlay and the dialogs). Full
+			// The screen above the message bar below `sm` (the script sets
+			// its bottom to the bar's top); a full-height side panel from
+			// `sm` up, the page narrowed beside it (z-40: above the page,
+			// below the bar while the bar is over it, and the dialogs). Full
 			// screen (PreviewFullAttr, the Android app only) it is the whole
-			// screen at every width, its header hidden.
+			// screen at every width, its header hidden — down to the bar's
+			// top while the bar is shown.
+			// 🔴 sm:w-[…] IS previewSideWidth, spelled out for Tailwind.
 			Class("group fixed inset-0 z-40 flex-col bg-s1 text-fg shadow-2xl ring-1 ring-line [&:not([hidden])]:flex sm:left-auto sm:w-[min(40rem,60vw)] sm:border-l sm:border-line "+
 				"data-[preview-full]:ring-0 data-[preview-full]:sm:left-0 data-[preview-full]:sm:w-full data-[preview-full]:sm:border-l-0"),
 			Div(Class("flex h-12 shrink-0 items-center gap-1 border-b border-line pl-4 pr-1 group-data-[preview-full]:hidden"),
-				H2(ID("preview-panel-title"), Class("min-w-0 flex-1 truncate text-sm font-semibold"), g.Text("Preview")),
+				Div(Class("flex min-w-0 flex-1 items-center gap-2"),
+					H2(ID("preview-panel-title"), Class("min-w-0 truncate text-sm font-semibold"), g.Text("Preview")),
+					// The new-reply dot (see the file comment).
+					Span(g.Attr("data-preview-dot", "header"), g.Attr("title", "New reply"),
+						Class("hidden h-2.5 w-2.5 shrink-0 rounded-full bg-accent group-data-[preview-unread]:inline-block"),
+						Span(Class("sr-only"), g.Text("New reply"))),
+				),
 				picker,
 				// ONE hand-off control: New tab in a browser; in the Android
 				// app the script relabels it Full screen when the panel opens,
@@ -314,6 +401,18 @@ func previewPanel(c *PluginChips) g.Node {
 			Button(Type("button"), g.Attr("data-preview-exit-full", ""), g.Attr("aria-label", "Exit full screen"),
 				Class("press absolute right-2 top-[max(0.5rem,env(safe-area-inset-top))] z-10 hidden min-h-[44px] items-center gap-1.5 rounded-full bg-s1/90 px-3 text-sm font-semibold text-fg shadow-lg ring-1 ring-line group-data-[preview-full]:inline-flex"),
 				g.Raw(exitFullIcon), Span(g.Text("Exit"))),
+			// Full screen's message-bar button, over the preview's bottom
+			// right corner (inside the safe areas, a 44px target), drawn only
+			// while full screen: it shows the bar (the panel then ends at the
+			// bar's top, the button above it) and hides it again. Faint
+			// until pressed or focused, so the preview under it still reads.
+			// The script hides it on a page with no message bar.
+			Button(Type("button"), g.Attr("data-preview-bar-toggle", ""), g.Attr("aria-label", PreviewBarToggleLabel),
+				g.Attr("aria-expanded", "false"), g.Attr("title", PreviewBarToggleLabel),
+				Class("press group/bar absolute bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-right))] z-10 hidden h-11 w-11 items-center justify-center rounded-full bg-s1/80 text-fg opacity-60 shadow-lg ring-1 ring-line transition-opacity hover:opacity-100 focus-visible:opacity-100 group-data-[preview-full]:inline-flex"),
+				g.Raw(chatIcon), g.Raw(hideBarIcon),
+				Span(g.Attr("data-preview-dot", "full"), g.Attr("aria-hidden", "true"),
+					Class("absolute right-0.5 top-0.5 hidden h-3 w-3 rounded-full bg-accent ring-2 ring-s1 group-data-[preview-unread]:block"))),
 			P(ID("preview-error"), g.Attr("role", "status"), g.Attr("hidden", ""),
 				Class("shrink-0 border-b border-line bg-danger/15 px-3 py-2 text-xs text-fg break-words")),
 			IFrame(
@@ -324,6 +423,7 @@ func previewPanel(c *PluginChips) g.Node {
 				Class("min-h-0 w-full flex-1 border-0 bg-bg"),
 			),
 		),
+		StyleEl(g.Raw(previewPanelStyle)),
 		staticScript(previewPanelScriptSrc),
 	}
 }
@@ -412,27 +512,166 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
       say(e && e.message ? e.message : 'the hand-off failed');
     }).then(function () { busy = false; });
   }
-  // FULL SCREEN (below sm) the panel is all there is: everything behind it is
-  // made inert, so Tab cannot reach a control it covers. Only what this set
-  // inert is restored. Beside the page (sm and up) nothing is: the
-  // conversation stays usable next to it.
-  var inerted = [];
+  // 🔴 THE LAYOUT AROUND THE OPEN PANEL (the file comment): previewMode is
+  // '' (closed), 'bar' (the panel above the live message bar: below sm, or
+  // full screen with the bar shown), 'full' (full screen, the bar hidden) or
+  // 'side' (beside the page, sm and up). shield() applies it — every time
+  // anything it reads may have moved; it is idempotent, so a call that
+  // changes nothing writes nothing.
+  var barUp = false;
+  function compose() { return document.getElementById('mv-compose'); }
+  function previewMode() {
+    var p = panel();
+    if (!p || p.hidden) return '';
+    if (p.hasAttribute(FULL)) return barUp && compose() ? 'bar' : 'full';
+    return window.innerWidth < 640 ? (compose() ? 'bar' : 'full') : 'side';
+  }
+  function flag(el, name, on) {
+    if (on === el.hasAttribute(name)) return;
+    if (on) el.setAttribute(name, ''); else el.removeAttribute(name);
+  }
+  function setStyle(el, prop, v) { if (el.style[prop] !== v) el.style[prop] = v; }
+  // What the panel covers is made inert, so Tab cannot reach a control it
+  // hides; the bar, while it is up, is not, and neither is a dialog or a
+  // popover (each is in the top layer, over the panel). Only what this set
+  // inert is restored.
+  var inerted = [], raised = false;
+  // KEEP: what the panel never makes inert — the top layer's dialogs and
+  // popovers (closed, they take no focus anyway) and the toasts' host.
+  var KEEP = 'dialog,[popover],#action-toasts';
   function shield() {
-    var p = panel(), full = p && !p.hidden && (window.innerWidth < 640 || p.hasAttribute(FULL));
-    if (full && !inerted.length) {
-      var kids = document.body.children;
+    var p = panel();
+    if (!p) return;
+    var m = previewMode(), c = compose(), root = document.documentElement;
+    var bar = m === 'bar', covers = bar || m === 'full';
+    flag(root, '`+previewBarAttr+`', bar);
+    flag(root, '`+previewNoBarAttr+`', m === 'full' && !!c);
+    flag(root, '`+previewSideAttr+`', m === 'side');
+    if (c) {
+      // The bar over the panel needs a stacking position: a pinned bar has
+      // one (fixed); an in-flow one (a Terminal view's) is given relative.
+      if (bar && !raised && getComputedStyle(c).position === 'static') { c.style.position = 'relative'; raised = true; }
+      else if (!bar && raised) { c.style.position = ''; raised = false; }
+      // A pinned bar is not in the page's column: beside the side panel it
+      // ends where the panel starts, as the column does.
+      var pinned = !raised && getComputedStyle(c).position === 'fixed';
+      setStyle(c, 'right', m === 'side' && pinned ? p.getBoundingClientRect().width + 'px' : '');
+    }
+    // 🔴 THE PANEL ENDS AT THE BAR'S TOP, MEASURED: the keyboard moves the
+    // bar (and the bar's own rows change its height), so no constant would
+    // hold. A fixed element's bottom is measured from the layout viewport's.
+    setStyle(p, 'bottom', bar ? Math.max(0, document.documentElement.clientHeight - c.getBoundingClientRect().top) + 'px' : '');
+    var t = p.querySelector('[data-preview-bar-toggle]');
+    if (t) {
+      setStyle(t, 'display', c ? '' : 'none');
+      var up = barUp && !!c;
+      if (t.getAttribute('aria-expanded') !== String(up)) {
+        t.setAttribute('aria-expanded', String(up));
+        var name = up ? '`+previewBarHideLabel+`' : '`+PreviewBarToggleLabel+`';
+        t.setAttribute('aria-label', name);
+        t.setAttribute('title', name);
+      }
+    }
+    var want = [];
+    // 🔴 AN OVERLAY IS KEPT WHEREVER IT SITS, not only as a child of the body:
+    // the command palette (a popover) and the toasts' host are inside
+    // #sidebar-root, whose own panel and backdrop the panel covers. A child
+    // that holds a kept element (or the panel, or the live bar) is not made
+    // inert whole: its children are, each by the same rule, so everything
+    // covered stays out of Tab's reach and only the overlays stay live.
+    function cover(el) {
+      var kids = el.children;
       for (var i = 0; i < kids.length; i++) {
         var k = kids[i];
-        if (k === p || k.contains(p) || k.tagName === 'SCRIPT' || k.inert) continue;
-        k.inert = true;
-        inerted.push(k);
+        if (k === p || k.tagName === 'SCRIPT' || k.tagName === 'STYLE' || k.matches(KEEP) || (bar && k === c)) continue;
+        if (k.inert && inerted.indexOf(k) < 0) continue;
+        if (k.contains(p) || (bar && k.contains(c)) || k.querySelector(KEEP)) { cover(k); continue; }
+        want.push(k);
       }
-    } else if (!full && inerted.length) {
-      inerted.forEach(function (k) { k.inert = false; });
-      inerted = [];
     }
+    if (covers) cover(document.body);
+    inerted.forEach(function (k) { if (want.indexOf(k) < 0) k.inert = false; });
+    want.forEach(function (k) { if (!k.inert) k.inert = true; });
+    inerted = want;
+    // The conversation is in view again: the dot has said its piece.
+    if (!covers) flag(p, 'data-preview-unread', false);
   }
-  window.addEventListener('resize', shield);
+  // relayout runs shield after the frame's other layout work: two frames on,
+  // so the pinned bar's own measure (composerPinScript, one frame on from
+  // the same viewport event) has placed it first.
+  var queued = false, watching = false;
+  function relayout() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () { requestAnimationFrame(function () { queued = false; shield(); }); });
+  }
+  // watch starts following what moves the bar, once (at the first open):
+  // the window, the keyboard's viewport (the top window's inside the view
+  // switch's frame, as the pinned bar measures it) and the bar's own size.
+  function watch() {
+    watchViewport();
+    if (watching) return;
+    watching = true;
+    window.addEventListener('resize', relayout);
+    // Back from the back/forward cache with the panel open: the keyboard's
+    // viewport followed again (a frame's pagehide let go of it) and measured.
+    window.addEventListener('pageshow', function () { var p = panel(); if (p && !p.hidden) watchViewport(); relayout(); });
+    var c = compose();
+    if (c && typeof ResizeObserver !== 'undefined') new ResizeObserver(relayout).observe(c);
+  }
+  // watchViewport follows the keyboard's viewport. Inside the view switch's
+  // frame that is the top window's, let go of on the frame's pagehide (a
+  // frame that goes away leaves nothing listening there) — and taken again by
+  // the next watch, so a frame restored from the back/forward cache follows it.
+  var vvWatching = false;
+  function watchViewport() {
+    if (vvWatching) return;
+    var vw = window;
+    try { if (window.frameElement && window.frameElement.hasAttribute('`+ViewFrameAttr+`')) vw = window.parent; } catch (e) {}
+    if (!vw.visualViewport) return;
+    vvWatching = true;
+    vw.visualViewport.addEventListener('resize', relayout);
+    vw.visualViewport.addEventListener('scroll', relayout);
+    if (vw !== window) window.addEventListener('pagehide', function off() {
+      window.removeEventListener('pagehide', off);
+      vw.visualViewport.removeEventListener('resize', relayout);
+      vw.visualViewport.removeEventListener('scroll', relayout);
+      vvWatching = false;
+    });
+  }
+  // THE NEW-REPLY DOT: while the panel covers the conversation, a reply in
+  // it sets the dot (shield clears it once the conversation is in view). A
+  // reply is an assistant bubble the log holds MORE copies of than were ever
+  // seen at once, counted by its text. 🔴 A RESET IS NOT A REPLY: a
+  // reconnect clears the log and redraws it in batches of up to 64 events,
+  // each in its own task, so between batches the log holds a part of what it
+  // held — never more copies of any reply than were seen — and the whole of
+  // it once redrawn. Only a reply that was not there before adds one.
+  var logObs = null, seen = Object.create(null);
+  function replies() {
+    var log = document.getElementById('mv-log'), out = Object.create(null);
+    var bs = log ? log.querySelectorAll('[data-bubble="assistant"]') : [];
+    for (var i = 0; i < bs.length; i++) { var t = bs[i].textContent; out[t] = (out[t] || 0) + 1; }
+    return out;
+  }
+  function watchReplies(on) {
+    if (logObs) { logObs.disconnect(); logObs = null; }
+    var log = document.getElementById('mv-log');
+    if (!on || !log || typeof MutationObserver === 'undefined') return;
+    seen = replies();
+    logObs = new MutationObserver(function () {
+      var now = replies(), m = previewMode(), fresh = false;
+      for (var t in now) if (now[t] > (seen[t] || 0)) { seen[t] = now[t]; fresh = true; }
+      if (fresh && (m === 'bar' || m === 'full')) flag(panel(), 'data-preview-unread', true);
+    });
+    logObs.observe(log, { childList: true, subtree: true });
+  }
+  // showBar is full screen's message-bar button: the bar shown (the panel
+  // above it) or hidden again.
+  function showBar(on) {
+    barUp = !!on;
+    shield();
+  }
 
   // 🔴 INSIDE THE ANDROID APP NEW TAB IS FULL SCREEN (operator decision): the
   // app's WebView sends every origin but muster's to the system browser, so a
@@ -533,6 +772,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     var p = panel();
     if (!p || p.hidden || isFull()) return;
     p.setAttribute(FULL, '');
+    // Full screen opens with the message bar hidden (its button shows it).
+    barUp = false;
     shield();
     hookBack();
     var x = p.querySelector('[data-preview-exit-full]');
@@ -544,6 +785,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     var p = panel();
     if (!p || !p.hasAttribute(FULL)) return false;
     p.removeAttribute(FULL);
+    barUp = false;
     shield();
     if (closing !== true) {
       var f = p.querySelector('[data-preview-newtab]');
@@ -574,6 +816,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (!p.hidden) return;
     label(p);
     p.hidden = false;
+    watch();
+    watchReplies(true);
     shield();
     expanded();
     var c = p.querySelector('[data-preview-close]');
@@ -588,6 +832,7 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     if (!p || p.hidden) return false;
     exitFull(true);
     p.hidden = true;
+    watchReplies(false);
     shield();
     // The plugin's page ends with the panel: nothing of it runs on hidden.
     // A new blank frame, never a navigation of this one (see load).
@@ -623,7 +868,8 @@ var previewPanelScriptSrc = staticJS("preview-panel", `
     // The one hand-off control: in the app a new tab would leave it, so
     // there it is full screen, never window.open.
     if (t.closest('[data-preview-newtab]')) { ev.preventDefault(); if (inApp()) enterFull(); else newTab(); return; }
-    if (t.closest('[data-preview-exit-full]')) { ev.preventDefault(); exitFull(); }
+    if (t.closest('[data-preview-exit-full]')) { ev.preventDefault(); exitFull(); return; }
+    if (t.closest('[data-preview-bar-toggle]')) { ev.preventDefault(); showBar(!barUp); }
   });
   document.addEventListener('change', function (ev) {
     var t = ev.target;
